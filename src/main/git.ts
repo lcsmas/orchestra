@@ -1,0 +1,192 @@
+import { simpleGit } from 'simple-git';
+import path from 'node:path';
+import { existsSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import type { DiffFile } from '../shared/types';
+
+const pexec = promisify(execFile);
+
+export async function detectDefaultBranch(repoPath: string): Promise<string> {
+  const git = simpleGit(repoPath);
+  try {
+    const res = await git.raw(['symbolic-ref', 'refs/remotes/origin/HEAD']);
+    return res.trim().replace('refs/remotes/origin/', '');
+  } catch {
+    // Fall through.
+  }
+  for (const b of ['main', 'master', 'develop']) {
+    try {
+      await git.revparse(['--verify', b]);
+      return b;
+    } catch {
+      /* next */
+    }
+  }
+  return 'main';
+}
+
+export async function isGitRepo(p: string): Promise<boolean> {
+  try {
+    const git = simpleGit(p);
+    await git.revparse(['--is-inside-work-tree']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function getRepoName(repoPath: string): Promise<string> {
+  return path.basename(repoPath);
+}
+
+export async function createWorktree(
+  repoPath: string,
+  branch: string,
+  baseBranch: string,
+  worktreePath: string,
+): Promise<void> {
+  const git = simpleGit(repoPath);
+  // Create branch from base, then worktree.
+  const branches = await git.branchLocal();
+  if (!branches.all.includes(branch)) {
+    await git.raw(['branch', branch, baseBranch]);
+  }
+  await git.raw(['worktree', 'add', worktreePath, branch]);
+}
+
+export async function removeWorktree(repoPath: string, worktreePath: string): Promise<void> {
+  const git = simpleGit(repoPath);
+  try {
+    await git.raw(['worktree', 'remove', '--force', worktreePath]);
+  } catch {
+    if (existsSync(worktreePath)) await rm(worktreePath, { recursive: true, force: true });
+  }
+}
+
+export async function getDiff(worktreePath: string, baseBranch: string): Promise<DiffFile[]> {
+  const git = simpleGit(worktreePath);
+  // Compare worktree (including uncommitted) against merge-base with baseBranch.
+  let base: string;
+  try {
+    base = (await git.raw(['merge-base', 'HEAD', baseBranch])).trim();
+  } catch {
+    base = 'HEAD';
+  }
+
+  // Collect numstat for committed + uncommitted diff vs base.
+  const committedStat = await safeRaw(git, ['diff', '--numstat', base, 'HEAD']);
+  const workingStat = await safeRaw(git, ['diff', '--numstat', 'HEAD']);
+  const untracked = await safeRaw(git, ['ls-files', '--others', '--exclude-standard']);
+
+  const fileMap = new Map<string, DiffFile>();
+
+  const parseNumstat = (raw: string) => {
+    for (const line of raw.split('\n').filter(Boolean)) {
+      const [addsStr, delsStr, file] = line.split('\t');
+      if (!file) continue;
+      const prev = fileMap.get(file);
+      const additions = (prev?.additions ?? 0) + (addsStr === '-' ? 0 : Number(addsStr || 0));
+      const deletions = (prev?.deletions ?? 0) + (delsStr === '-' ? 0 : Number(delsStr || 0));
+      fileMap.set(file, {
+        path: file,
+        status: prev?.status ?? 'modified',
+        additions,
+        deletions,
+        oldContent: '',
+        newContent: '',
+      });
+    }
+  };
+
+  parseNumstat(committedStat);
+  parseNumstat(workingStat);
+
+  for (const f of untracked.split('\n').filter(Boolean)) {
+    fileMap.set(f, {
+      path: f,
+      status: 'added',
+      additions: 0,
+      deletions: 0,
+      oldContent: '',
+      newContent: '',
+    });
+  }
+
+  // Fill content for each file (capped to avoid megafiles).
+  const out: DiffFile[] = [];
+  for (const f of fileMap.values()) {
+    const oldContent = await safeShow(git, `${base}:${f.path}`);
+    const newContent = await safeShow(git, `:${f.path}`); // index
+    const workingContent = await readWorking(worktreePath, f.path);
+    out.push({
+      ...f,
+      oldContent: truncate(oldContent),
+      newContent: truncate(workingContent || newContent),
+      status:
+        oldContent && !workingContent && !newContent
+          ? 'deleted'
+          : !oldContent
+            ? 'added'
+            : 'modified',
+    });
+  }
+  return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function safeRaw(git: ReturnType<typeof simpleGit>, args: string[]): Promise<string> {
+  try {
+    return await git.raw(args);
+  } catch {
+    return '';
+  }
+}
+
+async function safeShow(git: ReturnType<typeof simpleGit>, ref: string): Promise<string> {
+  try {
+    return await git.raw(['show', ref]);
+  } catch {
+    return '';
+  }
+}
+
+async function readWorking(worktreePath: string, file: string): Promise<string> {
+  try {
+    const { readFile } = await import('node:fs/promises');
+    return await readFile(path.join(worktreePath, file), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function truncate(s: string, max = 300_000): string {
+  if (s.length > max) return s.slice(0, max) + '\n\n... (truncated by Orchestra) ...\n';
+  return s;
+}
+
+export async function commitAll(worktreePath: string, message: string): Promise<void> {
+  const git = simpleGit(worktreePath);
+  await git.add('.');
+  await git.commit(message);
+}
+
+export async function pushBranch(worktreePath: string, branch: string): Promise<void> {
+  const git = simpleGit(worktreePath);
+  await git.push(['-u', 'origin', branch]);
+}
+
+export async function createPullRequest(
+  worktreePath: string,
+  title: string,
+  body: string,
+  baseBranch: string,
+): Promise<string> {
+  const { stdout } = await pexec(
+    'gh',
+    ['pr', 'create', '--title', title, '--body', body, '--base', baseBranch],
+    { cwd: worktreePath },
+  );
+  const url = stdout.trim().split('\n').pop() ?? '';
+  return url;
+}
