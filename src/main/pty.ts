@@ -7,9 +7,13 @@ async function loadPty() {
   return ptyMod;
 }
 
+// Cap the scrollback buffer at 512 KB per session.
+const BUFFER_CAP = 512 * 1024;
+
 interface Session {
   pty: IPty;
   id: string;
+  buffer: string;
 }
 
 const sessions = new Map<string, Session>();
@@ -32,9 +36,15 @@ export async function startPty(opts: {
     cwd: opts.cwd,
     env: { ...process.env, TERM: 'xterm-256color' },
   });
-  sessions.set(opts.id, { pty: proc, id: opts.id });
+  const session: Session = { pty: proc, id: opts.id, buffer: '' };
+  sessions.set(opts.id, session);
 
   proc.onData((data) => {
+    // Append to scrollback buffer, trimming from the front when over cap.
+    session.buffer += data;
+    if (session.buffer.length > BUFFER_CAP) {
+      session.buffer = session.buffer.slice(session.buffer.length - BUFFER_CAP);
+    }
     opts.window.webContents.send('pty:data', opts.id, data);
   });
   proc.onExit(({ exitCode }) => {
@@ -71,4 +81,10 @@ export function stopAll() {
 
 export function isRunning(id: string) {
   return sessions.has(id);
+}
+
+/** Returns the accumulated scrollback buffer for a session, or null if not found. */
+export function getPtyBuffer(id: string): string | null {
+  const s = sessions.get(id);
+  return s ? s.buffer : null;
 }

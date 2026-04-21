@@ -16,6 +16,7 @@ const api: OrchestraAPI = {
   ptyWrite: (id, data) => ipcRenderer.invoke('pty:write', id, data),
   ptyResize: (id, cols, rows) => ipcRenderer.invoke('pty:resize', id, cols, rows),
   ptyStop: (id) => ipcRenderer.invoke('pty:stop', id),
+  ptyGetBuffer: (id) => ipcRenderer.invoke('pty:getBuffer', id),
   onPtyData: (cb) => {
     const listener = (_e: unknown, id: string, data: string) => cb(id, data);
     ipcRenderer.on('pty:data', listener);

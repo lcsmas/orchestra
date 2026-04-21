@@ -18,6 +18,7 @@ export interface OrchestraAPI {
   ptyWrite: (id: string, data: string) => Promise<void>;
   ptyResize: (id: string, cols: number, rows: number) => Promise<void>;
   ptyStop: (id: string) => Promise<void>;
+  ptyGetBuffer: (id: string) => Promise<string | null>;
   onPtyData: (cb: (id: string, data: string) => void) => () => void;
   onPtyExit: (cb: (id: string, code: number) => void) => () => void;
 

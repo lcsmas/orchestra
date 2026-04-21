@@ -5,13 +5,15 @@ import '@xterm/xterm/css/xterm.css';
 
 interface Props {
   workspaceId: string;
+  isActive: boolean;
 }
 
-export function TerminalView({ workspaceId }: Props) {
+export function TerminalView({ workspaceId, isActive }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
 
+  // Mount xterm once per workspaceId. Never unmounts while the workspace exists.
   useEffect(() => {
     if (!containerRef.current) return;
     const term = new XTerm({
@@ -35,6 +37,13 @@ export function TerminalView({ workspaceId }: Props) {
     fitRef.current = fit;
 
     const { cols, rows } = term;
+
+    // Replay any buffered output that accumulated before this mount, then start
+    // the pty (startPty is idempotent on the main side).
+    window.orchestra.ptyGetBuffer(workspaceId).then((buf) => {
+      if (buf) term.write(buf);
+    });
+
     window.orchestra.ptyStart(workspaceId, cols, rows).catch((e) => {
       term.writeln(`\r\n\x1b[31mFailed to start agent: ${e.message}\x1b[0m`);
     });
@@ -71,5 +80,32 @@ export function TerminalView({ workspaceId }: Props) {
     };
   }, [workspaceId]);
 
-  return <div ref={containerRef} className="terminal-pane" />;
+  // Re-fit whenever this terminal becomes the visible one. The element has
+  // real dimensions only when it is not hidden, so fit() must run after
+  // display is restored.
+  useEffect(() => {
+    if (isActive && fitRef.current && termRef.current) {
+      // Use rAF to let the browser apply the style change before measuring.
+      requestAnimationFrame(() => {
+        try {
+          fitRef.current!.fit();
+          window.orchestra.ptyResize(
+            workspaceId,
+            termRef.current!.cols,
+            termRef.current!.rows,
+          );
+        } catch {
+          /* ignore */
+        }
+      });
+    }
+  }, [isActive, workspaceId]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="terminal-pane"
+      style={isActive ? undefined : { display: 'none' }}
+    />
+  );
 }

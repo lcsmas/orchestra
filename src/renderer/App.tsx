@@ -29,7 +29,7 @@ export function App() {
             <button className="primary" onClick={() => setShowNew(true)}>+ New workspace</button>
           </div>
         )}
-        {active && (
+        {loaded && active && (
           <>
             <div className="toolbar">
               <div className="title">{active.name}</div>
@@ -61,12 +61,18 @@ export function App() {
                 Archive
               </button>
             </div>
+            {/* Render a TerminalView for every workspace but only show the active one.
+                This keeps each xterm.js instance alive (preserving its scrollback buffer)
+                even when the user switches to a different workspace tab. */}
             <div className="pane">
-              {view === 'terminal' ? (
-                <TerminalView workspaceId={active.id} />
-              ) : (
-                <DiffView workspaceId={active.id} />
-              )}
+              {workspaces.map((ws) => (
+                <TerminalView
+                  key={ws.id}
+                  workspaceId={ws.id}
+                  isActive={ws.id === activeId && view === 'terminal'}
+                />
+              ))}
+              {view === 'diff' && <DiffView workspaceId={active.id} />}
             </div>
           </>
         )}
