@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { DiffFile } from '../shared/types';
+import type { DiffFile, DiffStats } from '../shared/types';
 
 const pexec = promisify(execFile);
 
@@ -41,6 +41,24 @@ export async function getRepoName(repoPath: string): Promise<string> {
   return path.basename(repoPath);
 }
 
+export async function listBranches(repoPath: string): Promise<string[]> {
+  const git = simpleGit(repoPath);
+  try {
+    const res = await git.branchLocal();
+    return res.all.slice().sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
+}
+
+export async function switchWorktreeBranch(
+  worktreePath: string,
+  branch: string,
+): Promise<void> {
+  const git = simpleGit(worktreePath);
+  await git.raw(['switch', branch]);
+}
+
 export async function createWorktree(
   repoPath: string,
   branch: string,
@@ -65,18 +83,10 @@ export async function removeWorktree(repoPath: string, worktreePath: string): Pr
   }
 }
 
-export async function getDiff(worktreePath: string, baseBranch: string): Promise<DiffFile[]> {
+export async function getDiff(worktreePath: string, _baseBranch: string): Promise<DiffFile[]> {
   const git = simpleGit(worktreePath);
-  // Compare worktree (including uncommitted) against merge-base with baseBranch.
-  let base: string;
-  try {
-    base = (await git.raw(['merge-base', 'HEAD', baseBranch])).trim();
-  } catch {
-    base = 'HEAD';
-  }
-
-  // Collect numstat for committed + uncommitted diff vs base.
-  const committedStat = await safeRaw(git, ['diff', '--numstat', base, 'HEAD']);
+  // Uncommitted-only diff: compare working tree + index against HEAD, plus
+  // untracked files. Anything already committed to the branch does not appear.
   const workingStat = await safeRaw(git, ['diff', '--numstat', 'HEAD']);
   const untracked = await safeRaw(git, ['ls-files', '--others', '--exclude-standard']);
 
@@ -100,7 +110,6 @@ export async function getDiff(worktreePath: string, baseBranch: string): Promise
     }
   };
 
-  parseNumstat(committedStat);
   parseNumstat(workingStat);
 
   for (const f of untracked.split('\n').filter(Boolean)) {
@@ -114,10 +123,9 @@ export async function getDiff(worktreePath: string, baseBranch: string): Promise
     });
   }
 
-  // Fill content for each file (capped to avoid megafiles).
   const out: DiffFile[] = [];
   for (const f of fileMap.values()) {
-    const oldContent = await safeShow(git, `${base}:${f.path}`);
+    const oldContent = await safeShow(git, `HEAD:${f.path}`);
     const newContent = await safeShow(git, `:${f.path}`); // index
     const workingContent = await readWorking(worktreePath, f.path);
     out.push({
@@ -133,6 +141,33 @@ export async function getDiff(worktreePath: string, baseBranch: string): Promise
     });
   }
   return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+export async function getDiffStats(
+  worktreePath: string,
+  _baseBranch: string,
+): Promise<DiffStats> {
+  const git = simpleGit(worktreePath);
+  const working = await safeRaw(git, ['diff', '--numstat', 'HEAD']);
+  const untracked = await safeRaw(git, ['ls-files', '--others', '--exclude-standard']);
+
+  const files = new Set<string>();
+  let additions = 0;
+  let deletions = 0;
+
+  const parse = (raw: string) => {
+    for (const line of raw.split('\n').filter(Boolean)) {
+      const [addsStr, delsStr, file] = line.split('\t');
+      if (!file) continue;
+      files.add(file);
+      additions += addsStr === '-' ? 0 : Number(addsStr || 0);
+      deletions += delsStr === '-' ? 0 : Number(delsStr || 0);
+    }
+  };
+  parse(working);
+  for (const f of untracked.split('\n').filter(Boolean)) files.add(f);
+
+  return { additions, deletions, files: files.size };
 }
 
 async function safeRaw(git: ReturnType<typeof simpleGit>, args: string[]): Promise<string> {
@@ -189,4 +224,41 @@ export async function createPullRequest(
   );
   const url = stdout.trim().split('\n').pop() ?? '';
   return url;
+}
+
+export async function findPullRequest(
+  worktreePath: string,
+  branch: string,
+): Promise<import('../shared/types').PRsForBranch> {
+  try {
+    const { stdout } = await pexec(
+      'gh',
+      [
+        'pr',
+        'list',
+        '--head',
+        branch,
+        '--state',
+        'all',
+        '--json',
+        'url,number,state,title',
+        '--limit',
+        '50',
+      ],
+      { cwd: worktreePath },
+    );
+    const all = JSON.parse(stdout.trim() || '[]') as Array<{
+      url: string;
+      number: number;
+      state: 'OPEN' | 'CLOSED' | 'MERGED';
+      title: string;
+    }>;
+    // gh returns newest-first.
+    const open = all.find((p) => p.state === 'OPEN') ?? null;
+    const latest = all[0] ?? null;
+    const mergedCount = all.filter((p) => p.state === 'MERGED').length;
+    return { all, open, latest, mergedCount };
+  } catch {
+    return { all: [], open: null, latest: null, mergedCount: 0 };
+  }
 }

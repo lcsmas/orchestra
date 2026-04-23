@@ -60,6 +60,15 @@ export function readScrollback(id: string): string {
   }
 }
 
+export function hasScrollback(id: string): boolean {
+  const p = logFileFor(id);
+  try {
+    return fs.existsSync(p) && fs.statSync(p).size > 0;
+  } catch {
+    return false;
+  }
+}
+
 export function clearScrollback(id: string) {
   const p = logFileFor(id);
   try {
@@ -81,8 +90,14 @@ export async function startPty(opts: {
   cols: number;
   rows: number;
   window: BrowserWindow;
+  onAgentData?: (id: string, data: string) => void;
 }) {
   if (sessions.has(opts.id)) return; // already running
+  if (!fs.existsSync(opts.cwd)) {
+    throw new Error(
+      `Workspace directory no longer exists: ${opts.cwd}. Delete this workspace from the sidebar or recreate the worktree.`,
+    );
+  }
   const pty = await loadPty();
   await ensureLogDir();
   const logPath = logFileFor(opts.id);
@@ -119,6 +134,7 @@ export async function startPty(opts: {
           session.logStream = fs.createWriteStream(session.logPath, { flags: 'a' });
         }
       }
+      if (opts.onAgentData) opts.onAgentData(opts.id, data);
       if (!canSend(opts.window)) return;
       opts.window.webContents.send('pty:data', opts.id, data);
     }),

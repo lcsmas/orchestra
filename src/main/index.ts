@@ -1,9 +1,39 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { store } from './store';
-import { detectDefaultBranch, getDiff, isGitRepo, commitAll, pushBranch, createPullRequest } from './git';
-import { archiveWorkspace, createWorkspace, ensureRoot, openInEditor } from './workspaces';
-import { resizePty, startPty, stopAll, stopPty, writePty, readScrollback, clearScrollback } from './pty';
+import {
+  detectDefaultBranch,
+  getDiff,
+  isGitRepo,
+  commitAll,
+  pushBranch,
+  createPullRequest,
+  findPullRequest,
+  listBranches,
+  switchWorktreeBranch,
+  getDiffStats,
+} from './git';
+import type { Workspace } from '../shared/types';
+import {
+  archiveWorkspace,
+  createWorkspace,
+  deleteWorkspace,
+  ensureRoot,
+  openInEditor,
+  unarchiveWorkspace,
+} from './workspaces';
+import {
+  resizePty,
+  startPty,
+  stopAll,
+  stopPty,
+  writePty,
+  readScrollback,
+  clearScrollback,
+  isRunning,
+} from './pty';
+import { clearActivity, noteData, noteSubmit } from './activity';
 import type { CreateWorkspaceInput } from '../shared/types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -18,6 +48,16 @@ if (process.platform === 'linux') {
 
 async function createMainWindow() {
   await store.load();
+  // Each app launch is a fresh session: no PTYs are running yet, so every
+  // non-archived workspace starts as `waiting` (yellow dot). Selecting a
+  // workspace in the sidebar mounts its terminal, which triggers pty:start
+  // and flips it to `idle` — at that point the activity tracker takes over.
+  for (const ws of store.workspaces) {
+    if (ws.archived) continue;
+    if (ws.status !== 'waiting') {
+      await store.upsertWorkspace({ ...ws, status: 'waiting' });
+    }
+  }
   await ensureRoot();
 
   mainWindow = new BrowserWindow({
@@ -34,9 +74,21 @@ async function createMainWindow() {
     },
   });
 
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    void openUrlExternally(url);
+    return { action: 'deny' };
+  });
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const current = mainWindow?.webContents.getURL() ?? '';
+    if (url === current) return;
+    if (VITE_DEV_SERVER_URL && url.startsWith(VITE_DEV_SERVER_URL)) return;
+    event.preventDefault();
+    void openUrlExternally(url);
+  });
+
   if (VITE_DEV_SERVER_URL) {
     await mainWindow.loadURL(VITE_DEV_SERVER_URL);
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
     await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
@@ -49,6 +101,47 @@ function getMainWindow(): BrowserWindow {
 
 // ---------- IPC ----------
 
+// Only allow http(s) URLs out to the OS. Other schemes are ignored to avoid
+// opening arbitrary things (file://, javascript:, etc.) from PTY output.
+function isSafeHttpUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+async function openUrlExternally(url: string): Promise<void> {
+  if (!isSafeHttpUrl(url)) return;
+  const ok = await openViaOS(url);
+  if (!ok) await shell.openExternal(url);
+}
+
+function openViaOS(url: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    // Use the OS-level "open" command so the URL is handed to the user's
+    // default browser, which reuses its existing running instance (most
+    // recent Chrome window gets a new tab, rather than spawning a new
+    // Chrome process that might miss the singleton).
+    const [cmd, args]: [string, string[]] =
+      process.platform === 'darwin'
+        ? ['open', [url]]
+        : process.platform === 'win32'
+          ? ['cmd', ['/c', 'start', '""', url]]
+          : ['xdg-open', [url]];
+    const child = execFile(cmd, args, { detached: true }, (err) => {
+      if (err) resolve(false);
+    });
+    child.unref();
+    setTimeout(() => resolve(true), 120);
+  });
+}
+
+ipcMain.handle('app:openExternal', async (_e, url: string) => {
+  await openUrlExternally(url);
+});
+
 ipcMain.handle('repos:list', () => store.repos);
 
 ipcMain.handle('repos:add', async (_e, absPath: string) => {
@@ -59,6 +152,18 @@ ipcMain.handle('repos:add', async (_e, absPath: string) => {
 
 ipcMain.handle('repos:remove', async (_e, absPath: string) => {
   await store.removeRepo(absPath);
+});
+
+ipcMain.handle('dialog:confirm', async (_e, message: string, detail?: string) => {
+  const res = await dialog.showMessageBox(getMainWindow(), {
+    type: 'question',
+    buttons: ['Cancel', 'Delete'],
+    defaultId: 0,
+    cancelId: 0,
+    message,
+    detail,
+  });
+  return res.response === 1;
 });
 
 ipcMain.handle('dialog:pickDir', async () => {
@@ -79,29 +184,101 @@ ipcMain.handle('workspaces:archive', async (_e, id: string) => {
   await archiveWorkspace(id, getMainWindow());
 });
 
+ipcMain.handle('workspaces:unarchive', async (_e, id: string) => {
+  await unarchiveWorkspace(id, getMainWindow());
+});
+
+ipcMain.handle('workspaces:delete', async (_e, id: string) => {
+  await deleteWorkspace(id, getMainWindow());
+});
+
 ipcMain.handle('workspaces:openInEditor', async (_e, id: string, editor: 'code' | 'cursor') => {
   await openInEditor(id, editor);
+});
+
+ipcMain.handle('workspaces:markSeen', async (_e, id: string) => {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived) return;
+  if (ws.status !== 'waiting') return;
+  const updated: Workspace = { ...ws, status: 'idle' };
+  await store.upsertWorkspace(updated);
+  getMainWindow().webContents.send('workspace:update', updated);
 });
 
 ipcMain.handle('pty:start', async (_e, id: string, cols: number, rows: number) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
+  if (isRunning(id)) {
+    // Renderer remounted (HMR / reload) but the PTY is still alive. The fresh
+    // xterm canvas is blank and Claude/Codex have no reason to repaint on
+    // their own, so bounce the size to force a SIGWINCH-driven redraw.
+    resizePty(id, Math.max(20, cols - 1), Math.max(5, rows));
+    setTimeout(() => resizePty(id, cols, rows), 40);
+    return;
+  }
+  // Resume only if the user has actually submitted something. A scrollback log
+  // exists even when the agent just printed its startup TUI, so using it as
+  // the resume signal causes `claude --continue` to fail with "No conversation
+  // found to continue". The renderer flips ws.hasInput once the user presses
+  // Enter at least once.
+  const resuming = ws.hasInput === true;
+  const claudeArgs = resuming
+    ? ['--continue', '--dangerously-skip-permissions']
+    : ['--dangerously-skip-permissions'];
+  const codexArgs = resuming ? ['resume', '--last'] : [];
   await startPty({
     id,
     cwd: ws.worktreePath,
     command: ws.agent === 'claude' ? 'claude' : 'codex',
-    args: ws.agent === 'claude' ? ['--dangerously-skip-permissions'] : [],
+    args: ws.agent === 'claude' ? claudeArgs : codexArgs,
     cols,
     rows,
     window: getMainWindow(),
+    onAgentData: (wsId, data) => noteData(wsId, data, getMainWindow()),
   });
+  // First-ever terminal spawn: drop the `waiting` yellow dot now that the
+  // agent TUI is up. Subsequent submit/data will take over from the activity
+  // tracker.
+  if (ws.status === 'waiting') {
+    const updated: Workspace = { ...ws, status: 'idle' };
+    await store.upsertWorkspace(updated);
+    getMainWindow().webContents.send('workspace:update', updated);
+  }
+  // First-ever spawn: pipe the initial task (if any) into the agent once it
+  // has had a moment to initialize its TUI.
+  if (!resuming && ws.lastTask) {
+    const task = ws.lastTask;
+    setTimeout(() => {
+      writePty(id, task + '\n');
+      noteSubmit(id, getMainWindow());
+    }, 1200);
+  }
 });
 
-ipcMain.handle('pty:write', (_e, id: string, data: string) => writePty(id, data));
+ipcMain.handle('pty:write', async (_e, id: string, data: string) => {
+  // Flip hasInput the first time the user actually submits something (Enter
+  // key / carriage return). This is what gates `claude --continue` on the
+  // next PTY start, so we avoid "No conversation found" when the log is
+  // only startup TUI noise.
+  const submitted = data.includes('\r') || data.includes('\n');
+  if (submitted) {
+    const ws = store.getWorkspace(id);
+    if (ws && !ws.hasInput) {
+      const updated = { ...ws, hasInput: true };
+      await store.upsertWorkspace(updated);
+      getMainWindow().webContents.send('workspace:update', updated);
+    }
+    noteSubmit(id, getMainWindow());
+  }
+  return writePty(id, data);
+});
 ipcMain.handle('pty:resize', (_e, id: string, cols: number, rows: number) =>
   resizePty(id, cols, rows),
 );
-ipcMain.handle('pty:stop', (_e, id: string) => stopPty(id));
+ipcMain.handle('pty:stop', (_e, id: string) => {
+  clearActivity(id);
+  return stopPty(id);
+});
 ipcMain.handle('pty:scrollback', (_e, id: string) => readScrollback(id));
 ipcMain.handle('pty:clearScrollback', (_e, id: string) => clearScrollback(id));
 
@@ -109,6 +286,12 @@ ipcMain.handle('git:diff', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
   return getDiff(ws.worktreePath, ws.baseBranch);
+});
+
+ipcMain.handle('git:stats', async (_e, id: string) => {
+  const ws = store.getWorkspace(id);
+  if (!ws) throw new Error('workspace not found');
+  return getDiffStats(ws.worktreePath, ws.baseBranch);
 });
 
 ipcMain.handle('git:commit', async (_e, id: string, message: string) => {
@@ -127,6 +310,54 @@ ipcMain.handle('git:pr', async (_e, id: string, title: string, body: string) => 
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
   return createPullRequest(ws.worktreePath, title, body, ws.baseBranch);
+});
+
+ipcMain.handle('git:findPR', async (_e, id: string) => {
+  const ws = store.getWorkspace(id);
+  if (!ws) throw new Error('workspace not found');
+  return findPullRequest(ws.worktreePath, ws.branch);
+});
+
+ipcMain.handle('git:listBranches', async (_e, id: string) => {
+  const ws = store.getWorkspace(id);
+  if (!ws) throw new Error('workspace not found');
+  return listBranches(ws.repoPath);
+});
+
+ipcMain.handle('nvim:start', async (_e, id: string, cols: number, rows: number) => {
+  const ws = store.getWorkspace(id);
+  if (!ws) throw new Error('workspace not found');
+  const nvimId = `${id}:nvim`;
+  if (isRunning(nvimId)) {
+    // Renderer remounted — nudge a repaint.
+    resizePty(nvimId, Math.max(20, cols - 1), Math.max(5, rows));
+    setTimeout(() => resizePty(nvimId, cols, rows), 40);
+    return;
+  }
+  await startPty({
+    id: nvimId,
+    cwd: ws.worktreePath,
+    command: 'nvim',
+    args: ['.'],
+    cols,
+    rows,
+    window: getMainWindow(),
+  });
+});
+
+ipcMain.handle('nvim:stop', async (_e, id: string) => {
+  stopPty(`${id}:nvim`);
+});
+
+ipcMain.handle('git:switchBranch', async (_e, id: string, branch: string) => {
+  const ws = store.getWorkspace(id);
+  if (!ws) throw new Error('workspace not found');
+  if (ws.branch === branch) return ws;
+  await switchWorktreeBranch(ws.worktreePath, branch);
+  const updated: Workspace = { ...ws, branch };
+  await store.upsertWorkspace(updated);
+  getMainWindow().webContents.send('workspace:update', updated);
+  return updated;
 });
 
 // ---------- Lifecycle ----------

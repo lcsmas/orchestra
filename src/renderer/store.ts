@@ -1,9 +1,11 @@
 import { create } from 'zustand';
-import type { CreateWorkspaceInput, RepoEntry, Workspace } from '../shared/types';
+import type { CreateWorkspaceInput, DiffStats, PRsForBranch, RepoEntry, Workspace } from '../shared/types';
 
 interface State {
   repos: RepoEntry[];
   workspaces: Workspace[];
+  stats: Record<string, DiffStats>;
+  prs: Record<string, PRsForBranch>;
   activeId: string | null;
   view: 'terminal' | 'diff';
   loaded: boolean;
@@ -14,17 +16,34 @@ interface State {
   addRepo: () => Promise<RepoEntry | null>;
   createWorkspace: (input: CreateWorkspaceInput) => Promise<void>;
   quickCreateWorkspace: () => Promise<void>;
+  createWorkspaceInNewRepo: () => Promise<void>;
   archive: (id: string) => Promise<void>;
+  unarchive: (id: string) => Promise<void>;
+  deleteWorkspace: (id: string) => Promise<void>;
+  refreshStats: (id: string) => Promise<void>;
+  refreshAllStats: () => Promise<void>;
+  refreshPR: (id: string) => Promise<void>;
+  refreshAllPRs: () => Promise<void>;
 }
 
 export const useStore = create<State>((set, get) => ({
   repos: [],
   workspaces: [],
+  stats: {},
+  prs: {},
   activeId: null,
   view: 'terminal',
   loaded: false,
 
-  setActive: (id) => set({ activeId: id }),
+  setActive: (id) => {
+    set({ activeId: id });
+    if (id) {
+      const ws = get().workspaces.find((w) => w.id === id);
+      if (ws && ws.status === 'waiting') {
+        void window.orchestra.markSeen(id).catch(() => {});
+      }
+    }
+  },
   setView: (v) => set({ view: v }),
 
   load: async () => {
@@ -67,11 +86,77 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
+  createWorkspaceInNewRepo: async () => {
+    const repo = await get().addRepo();
+    if (!repo) return;
+    try {
+      await get().createWorkspace({ repoPath: repo.path });
+    } catch (e) {
+      alert(`Could not create workspace: ${(e as Error).message}`);
+    }
+  },
+
   archive: async (id) => {
     await window.orchestra.archiveWorkspace(id);
     const s = get();
-    const remaining = s.workspaces.filter((w) => w.id !== id);
-    set({ workspaces: remaining, activeId: remaining[0]?.id ?? null });
+    const workspaces = s.workspaces.map((w) =>
+      w.id === id ? { ...w, archived: true, archivedAt: Date.now(), status: 'stopped' as const } : w,
+    );
+    const activeId =
+      s.activeId === id
+        ? workspaces.find((w) => !w.archived)?.id ?? null
+        : s.activeId;
+    set({ workspaces, activeId });
+  },
+
+  unarchive: async (id) => {
+    await window.orchestra.unarchiveWorkspace(id);
+    set((s) => ({
+      workspaces: s.workspaces.map((w) =>
+        w.id === id ? { ...w, archived: false, archivedAt: undefined, status: 'idle' as const } : w,
+      ),
+      activeId: s.activeId ?? id,
+    }));
+  },
+
+  deleteWorkspace: async (id) => {
+    await window.orchestra.deleteWorkspace(id);
+    const s = get();
+    const workspaces = s.workspaces.filter((w) => w.id !== id);
+    const activeId =
+      s.activeId === id
+        ? workspaces.find((w) => !w.archived)?.id ?? null
+        : s.activeId;
+    const { [id]: _gone, ...rest } = s.stats;
+    set({ workspaces, activeId, stats: rest });
+  },
+
+  refreshStats: async (id) => {
+    try {
+      const stats = await window.orchestra.getDiffStats(id);
+      set((s) => ({ stats: { ...s.stats, [id]: stats } }));
+    } catch {
+      /* worktree may be stale or git busy — ignore */
+    }
+  },
+
+  refreshAllStats: async () => {
+    const ids = get().workspaces.filter((w) => !w.archived).map((w) => w.id);
+    await Promise.all(ids.map((id) => get().refreshStats(id)));
+  },
+
+  refreshPR: async (id) => {
+    try {
+      const pr = await window.orchestra.findPR(id);
+      set((s) => ({ prs: { ...s.prs, [id]: pr } }));
+    } catch {
+      /* gh missing, no remote, etc. — ignore */
+    }
+  },
+
+  refreshAllPRs: async () => {
+    const ids = get().workspaces.filter((w) => !w.archived).map((w) => w.id);
+    await Promise.all(ids.map((id) => get().refreshPR(id)));
   },
 }));
 
@@ -80,4 +165,20 @@ window.orchestra.onWorkspaceUpdate((w) => {
   useStore.setState((s) => ({
     workspaces: s.workspaces.map((x) => (x.id === w.id ? { ...x, ...w } : x)),
   }));
+});
+window.orchestra.onWorkspaceRemoved((id) => {
+  useStore.setState((s) => {
+    const workspaces = s.workspaces.filter((w) => w.id !== id);
+    const activeId =
+      s.activeId === id
+        ? workspaces.find((w) => !w.archived)?.id ?? null
+        : s.activeId;
+    const { [id]: _gonePr, ...prs } = s.prs;
+    const { [id]: _goneStat, ...stats } = s.stats;
+    return { workspaces, activeId, prs, stats };
+  });
+});
+window.orchestra.onWorkspaceFocus((id) => {
+  const s = useStore.getState();
+  if (s.workspaces.some((w) => w.id === id)) s.setActive(id);
 });

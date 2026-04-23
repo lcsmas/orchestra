@@ -9,12 +9,11 @@ interface Props {
   isActive: boolean;
 }
 
-export function TerminalView({ workspaceId, isActive }: Props) {
+export function NvimView({ workspaceId, isActive }: Props) {
+  const sessionId = `${workspaceId}:nvim`;
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
 
-  // Mount xterm once per workspaceId. Never unmounts while the workspace exists.
   useEffect(() => {
     if (!containerRef.current) return;
     const term = new XTerm({
@@ -28,7 +27,7 @@ export function TerminalView({ workspaceId, isActive }: Props) {
         selectionBackground: '#334155',
       },
       convertEol: true,
-      scrollback: 10000,
+      scrollback: 2000,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -39,7 +38,6 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     );
     term.open(containerRef.current);
     termRef.current = term;
-    fitRef.current = fit;
 
     let cancelled = false;
     let started = false;
@@ -53,22 +51,17 @@ export function TerminalView({ workspaceId, isActive }: Props) {
         if (!Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
         const cols = dims.cols;
         const rows = dims.rows;
-        const xtermChanged = cols !== term.cols || rows !== term.rows;
-        if (xtermChanged) term.resize(cols, rows);
+        if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
         if (started && (cols !== lastSentCols || rows !== lastSentRows)) {
           lastSentCols = cols;
           lastSentRows = rows;
-          window.orchestra.ptyResize(workspaceId, cols, rows);
+          window.orchestra.ptyResize(sessionId, cols, rows);
         }
       } catch {
         /* ignore */
       }
     };
 
-    // Start the PTY only after we have real container dimensions. Inactive
-    // workspace tabs render with display:none, which makes proposeDimensions
-    // return null/zero and would otherwise spawn the PTY at default 80×24
-    // and mis-wrap all scrollback before the tab is ever shown.
     const start = () => {
       if (started || cancelled) return;
       const dims = (() => {
@@ -82,32 +75,24 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       if (!Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
       term.resize(dims.cols, dims.rows);
       started = true;
-      const cols = dims.cols;
-      const rows = dims.rows;
-      lastSentCols = cols;
-      lastSentRows = rows;
-      // Do NOT replay the raw PTY scrollback log into xterm. Claude/Codex emit
-      // escape sequences (synchronized-update queries, device attribute
-      // requests, etc.) that xterm.js's parser can't handle and renders as
-      // literal `^[[...` garbage when replayed. Agent context is preserved
-      // through the agent's own session store (claude --continue / codex
-      // resume --last), so we just spawn a fresh TUI that paints itself.
-      window.orchestra.ptyStart(workspaceId, cols, rows).catch((e) => {
-        term.writeln(`\r\n\x1b[31mFailed to start agent: ${e.message}\x1b[0m`);
+      lastSentCols = dims.cols;
+      lastSentRows = dims.rows;
+      window.orchestra.nvimStart(workspaceId, dims.cols, dims.rows).catch((e) => {
+        term.writeln(`\r\n\x1b[31mFailed to start nvim: ${e.message}\x1b[0m`);
       });
     };
 
     const offData = window.orchestra.onPtyData((id, data) => {
-      if (id === workspaceId) term.write(data);
+      if (id === sessionId) term.write(data);
     });
     const offExit = window.orchestra.onPtyExit((id, code) => {
-      if (id === workspaceId) {
-        term.writeln(`\r\n\x1b[33m[agent exited with code ${code}]\x1b[0m`);
+      if (id === sessionId) {
+        term.writeln(`\r\n\x1b[33m[nvim exited with code ${code}]\x1b[0m`);
       }
     });
 
     term.onData((data) => {
-      window.orchestra.ptyWrite(workspaceId, data);
+      window.orchestra.ptyWrite(sessionId, data);
     });
 
     const ro = new ResizeObserver(() => {
@@ -119,39 +104,19 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     });
     ro.observe(containerRef.current);
 
-    // Kick a first attempt in case the container already has dimensions.
     const raf = requestAnimationFrame(start);
-
-    // Re-fit when the window becomes visible or regains focus. The container
-    // size doesn't change on window show, so ResizeObserver won't fire; xterm
-    // can end up rendering smaller than the viewport if the canvas was
-    // measured while occluded or at an intermediate layout size.
-    const onVisible = () => {
-      if (!started || document.visibilityState !== 'visible') return;
-      requestAnimationFrame(refit);
-    };
-    const onFocus = () => {
-      if (!started) return;
-      requestAnimationFrame(refit);
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    window.addEventListener('focus', onFocus);
 
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf);
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('focus', onFocus);
       ro.disconnect();
       offData();
       offExit();
       term.dispose();
       termRef.current = null;
     };
-  }, [workspaceId]);
+  }, [workspaceId, sessionId]);
 
-  // Focus xterm's input when this tab becomes active so typing goes straight
-  // to the agent without requiring a click.
   useEffect(() => {
     if (!isActive || !termRef.current) return;
     const raf = requestAnimationFrame(() => {
@@ -164,10 +129,5 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     return () => cancelAnimationFrame(raf);
   }, [isActive]);
 
-  return (
-    <div
-      ref={containerRef}
-      className={`terminal-pane ${isActive ? 'active' : ''}`}
-    />
-  );
+  return <div ref={containerRef} className="nvim-inner" />;
 }

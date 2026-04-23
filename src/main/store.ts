@@ -1,5 +1,5 @@
 import { app } from 'electron';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { RepoEntry, Workspace } from '../shared/types';
@@ -14,6 +14,10 @@ const DEFAULT: StoreShape = { repos: [], workspaces: [] };
 export class Store {
   private file: string;
   private data: StoreShape = DEFAULT;
+  // Chain of pending saves — each save waits for the previous to finish before
+  // writing. Prevents concurrent writeFile calls from interleaving and
+  // truncating each other, which was corrupting store.json.
+  private writeChain: Promise<void> = Promise.resolve();
 
   constructor() {
     const dir = path.join(app.getPath('userData'), 'orchestra');
@@ -37,7 +41,18 @@ export class Store {
   }
 
   async save() {
-    await writeFile(this.file, JSON.stringify(this.data, null, 2), 'utf8');
+    // Serialize every save through a single promise chain, and write atomically
+    // (tmp + rename) so a mid-write crash or overlapping write can't leave a
+    // truncated / interleaved store.json on disk.
+    const next = this.writeChain.then(async () => {
+      const payload = JSON.stringify(this.data, null, 2);
+      const tmp = `${this.file}.tmp`;
+      await writeFile(tmp, payload, 'utf8');
+      await rename(tmp, this.file);
+    });
+    // Never let one failure poison subsequent saves.
+    this.writeChain = next.catch(() => undefined);
+    return next;
   }
 
   get repos() {
