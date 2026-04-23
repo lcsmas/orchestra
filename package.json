@@ -1,7 +1,7 @@
 {
   "name": "orchestra",
   "version": "0.1.0",
-  "description": "Run parallel Claude Code agents in isolated git worktrees",
+  "description": "Run parallel Claude Code and Codex agents in isolated git worktrees",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
