@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { RepoEntry, Workspace } from '../shared/types';
+import type { CreateWorkspaceInput, RepoEntry, Workspace } from '../shared/types';
 
 interface State {
   repos: RepoEntry[];
@@ -11,14 +11,9 @@ interface State {
   setActive: (id: string | null) => void;
   setView: (v: 'terminal' | 'diff') => void;
   load: () => Promise<void>;
-  addRepo: () => Promise<void>;
-  createWorkspace: (input: {
-    repoPath: string;
-    branch: string;
-    baseBranch: string;
-    task?: string;
-    agent: 'claude' | 'codex';
-  }) => Promise<void>;
+  addRepo: () => Promise<RepoEntry | null>;
+  createWorkspace: (input: CreateWorkspaceInput) => Promise<void>;
+  quickCreateWorkspace: () => Promise<void>;
   archive: (id: string) => Promise<void>;
 }
 
@@ -42,19 +37,34 @@ export const useStore = create<State>((set, get) => ({
 
   addRepo: async () => {
     const dir = await window.orchestra.pickDirectory();
-    if (!dir) return;
+    if (!dir) return null;
     try {
-      await window.orchestra.addRepo(dir);
+      const added = await window.orchestra.addRepo(dir);
       const repos = await window.orchestra.listRepos();
       set({ repos });
+      return added ?? repos.find((r) => r.path === dir) ?? null;
     } catch (e) {
       alert(`Could not add repo: ${(e as Error).message}`);
+      return null;
     }
   },
 
   createWorkspace: async (input) => {
     const ws = await window.orchestra.createWorkspace(input);
     set((s) => ({ workspaces: [...s.workspaces, ws], activeId: ws.id }));
+  },
+
+  quickCreateWorkspace: async () => {
+    let repo = get().repos[0] ?? null;
+    if (!repo) {
+      repo = await get().addRepo();
+      if (!repo) return;
+    }
+    try {
+      await get().createWorkspace({ repoPath: repo.path });
+    } catch (e) {
+      alert(`Could not create workspace: ${(e as Error).message}`);
+    }
   },
 
   archive: async (id) => {

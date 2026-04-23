@@ -3,12 +3,18 @@ import path from 'node:path';
 import { store } from './store';
 import { detectDefaultBranch, getDiff, isGitRepo, commitAll, pushBranch, createPullRequest } from './git';
 import { archiveWorkspace, createWorkspace, ensureRoot, openInEditor } from './workspaces';
-import { resizePty, startPty, stopAll, stopPty, writePty, getPtyBuffer } from './pty';
+import { resizePty, startPty, stopAll, stopPty, writePty, readScrollback, clearScrollback } from './pty';
 import type { CreateWorkspaceInput } from '../shared/types';
 
 let mainWindow: BrowserWindow | null = null;
 
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
+
+// Silence Linux/Wayland GPU vsync probe warnings.
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
+  app.commandLine.appendSwitch('disable-gpu-vsync');
+}
 
 async function createMainWindow() {
   await store.load();
@@ -84,7 +90,7 @@ ipcMain.handle('pty:start', async (_e, id: string, cols: number, rows: number) =
     id,
     cwd: ws.worktreePath,
     command: ws.agent === 'claude' ? 'claude' : 'codex',
-    args: [],
+    args: ws.agent === 'claude' ? ['--dangerously-skip-permissions'] : [],
     cols,
     rows,
     window: getMainWindow(),
@@ -96,7 +102,8 @@ ipcMain.handle('pty:resize', (_e, id: string, cols: number, rows: number) =>
   resizePty(id, cols, rows),
 );
 ipcMain.handle('pty:stop', (_e, id: string) => stopPty(id));
-ipcMain.handle('pty:getBuffer', (_e, id: string) => getPtyBuffer(id));
+ipcMain.handle('pty:scrollback', (_e, id: string) => readScrollback(id));
+ipcMain.handle('pty:clearScrollback', (_e, id: string) => clearScrollback(id));
 
 ipcMain.handle('git:diff', async (_e, id: string) => {
   const ws = store.getWorkspace(id);

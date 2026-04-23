@@ -37,16 +37,23 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     fitRef.current = fit;
 
     const { cols, rows } = term;
-
-    // Replay any buffered output that accumulated before this mount, then start
-    // the pty (startPty is idempotent on the main side).
-    window.orchestra.ptyGetBuffer(workspaceId).then((buf) => {
-      if (buf) term.write(buf);
-    });
-
-    window.orchestra.ptyStart(workspaceId, cols, rows).catch((e) => {
-      term.writeln(`\r\n\x1b[31mFailed to start agent: ${e.message}\x1b[0m`);
-    });
+    let cancelled = false;
+    (async () => {
+      try {
+        const history = await window.orchestra.ptyScrollback(workspaceId);
+        if (cancelled) return;
+        if (history) {
+          term.write(history);
+          term.write('\r\n\x1b[2m[── restored from previous session ──]\x1b[0m\r\n');
+        }
+      } catch {
+        /* ignore scrollback errors */
+      }
+      if (cancelled) return;
+      window.orchestra.ptyStart(workspaceId, cols, rows).catch((e) => {
+        term.writeln(`\r\n\x1b[31mFailed to start agent: ${e.message}\x1b[0m`);
+      });
+    })();
 
     const offData = window.orchestra.onPtyData((id, data) => {
       if (id === workspaceId) term.write(data);
@@ -72,6 +79,7 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     ro.observe(containerRef.current);
 
     return () => {
+      cancelled = true;
       ro.disconnect();
       offData();
       offExit();

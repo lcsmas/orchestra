@@ -24,10 +24,10 @@ export interface DiffFile {
 
 export interface CreateWorkspaceInput {
   repoPath: string;
-  branch: string;
-  baseBranch: string;
+  branch?: string;
+  baseBranch?: string;
   task?: string;
-  agent: 'claude' | 'codex';
+  agent?: 'claude' | 'codex';
 }
 
 export interface RepoEntry {

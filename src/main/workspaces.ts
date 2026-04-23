@@ -7,7 +7,7 @@ import { BrowserWindow, shell } from 'electron';
 import { execFile } from 'node:child_process';
 import { store } from './store';
 import { createWorktree, removeWorktree } from './git';
-import { startPty, stopPty, writePty } from './pty';
+import { startPty, stopPty, writePty, clearScrollback } from './pty';
 import type { CreateWorkspaceInput, Workspace } from '../shared/types';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
@@ -23,33 +23,38 @@ export async function createWorkspace(
   await ensureRoot();
   const id = randomUUID();
   const repoName = path.basename(input.repoPath);
-  const safeBranch = input.branch.replace(/[^a-zA-Z0-9._-]/g, '-');
+  const repo = store.repos.find((r) => r.path === input.repoPath);
+  const baseBranch = input.baseBranch || repo?.defaultBranch || 'main';
+  const branch = input.branch || `orchestra/${id.slice(0, 8)}`;
+  const agent = input.agent ?? 'claude';
+  const safeBranch = branch.replace(/[^a-zA-Z0-9._-]/g, '-');
   const worktreePath = path.join(ORCHESTRA_ROOT, `${repoName}-${safeBranch}-${id.slice(0, 8)}`);
 
-  await createWorktree(input.repoPath, input.branch, input.baseBranch, worktreePath);
+  await createWorktree(input.repoPath, branch, baseBranch, worktreePath);
 
   const ws: Workspace = {
     id,
-    name: `${repoName} · ${input.branch}`,
+    name: `${repoName} · ${branch}`,
     repoPath: input.repoPath,
     worktreePath,
-    branch: input.branch,
-    baseBranch: input.baseBranch,
+    branch,
+    baseBranch,
     createdAt: Date.now(),
     status: 'running',
-    agent: input.agent,
+    agent,
     lastTask: input.task,
   };
   await store.upsertWorkspace(ws);
   window.webContents.send('workspace:update', ws);
 
   // Spawn the agent in a pty. We pipe the task (if any) as the first input.
-  const command = input.agent === 'claude' ? 'claude' : 'codex';
+  const command = agent === 'claude' ? 'claude' : 'codex';
+  const args = agent === 'claude' ? ['--dangerously-skip-permissions'] : [];
   await startPty({
     id,
     cwd: worktreePath,
     command,
-    args: [],
+    args,
     cols: 120,
     rows: 32,
     window,
@@ -66,6 +71,7 @@ export async function archiveWorkspace(id: string, window: BrowserWindow): Promi
   const ws = store.getWorkspace(id);
   if (!ws) return;
   stopPty(id);
+  clearScrollback(id);
   try {
     await removeWorktree(ws.repoPath, ws.worktreePath);
   } catch {

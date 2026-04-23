@@ -3,12 +3,11 @@ import { useStore } from './store';
 import { Sidebar } from './components/Sidebar';
 import { TerminalView } from './components/Terminal';
 import { DiffView } from './components/DiffView';
-import { NewWorkspaceModal } from './components/NewWorkspaceModal';
 import { PRModal } from './components/PRModal';
 
 export function App() {
-  const { workspaces, activeId, view, setView, load, loaded, archive } = useStore();
-  const [showNew, setShowNew] = useState(false);
+  const { workspaces, activeId, view, setView, load, loaded, archive, quickCreateWorkspace } =
+    useStore();
   const [showPR, setShowPR] = useState(false);
 
   useEffect(() => {
@@ -19,14 +18,14 @@ export function App() {
 
   return (
     <div className="app">
-      <Sidebar onNew={() => setShowNew(true)} />
+      <Sidebar onNew={quickCreateWorkspace} />
       <main className="main">
         {!loaded && <div className="empty">Loading…</div>}
         {loaded && !active && (
           <div className="empty">
             <h2>Welcome to Orchestra</h2>
             <div>Spawn a Claude Code or Codex agent in an isolated git worktree.</div>
-            <button className="primary" onClick={() => setShowNew(true)}>+ New workspace</button>
+            <button className="primary" onClick={quickCreateWorkspace}>+ New workspace</button>
           </div>
         )}
         {loaded && active && (
@@ -78,7 +77,6 @@ export function App() {
         )}
       </main>
 
-      {showNew && <NewWorkspaceModal onClose={() => setShowNew(false)} />}
       {showPR && active && <PRModal ws={active} onClose={() => setShowPR(false)} />}
     </div>
   );
