@@ -14,7 +14,7 @@ Run parallel Claude Code / Codex agents in isolated git worktrees, with a visual
 ## Requirements
 
 - Node 20+
-- `claude` CLI (Claude Code) on PATH, and/or `codex`
+- `claude` CLI (Claude Code) on PATH, and/or `codex` CLI
 - `gh` CLI authenticated (for the PR button)
 - Linux needs standard build tools for `node-pty` native module
 
