@@ -1,6 +1,6 @@
 # Orchestra
 
-Run parallel Claude Code / Codex agents in isolated git worktrees, with a visual dashboard and diff-first review UI. Linux / macOS / Windows (Electron).
+Run parallel Claude Code / Codex agents in isolated git worktrees, with a visual dashboard and a diff-first review UI. Cross-platform Electron app (Linux / macOS / Windows).
 
 ## Features
 
