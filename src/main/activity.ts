@@ -19,6 +19,12 @@ import type { Workspace, WorkspaceStatus } from '../shared/types';
 // The tracker is gated by `armed` (flipped by noteSubmit) so startup replay —
 // e.g. `claude --continue` redrawing the previous turn — can never trigger a
 // fake finished event before the user has actually sent input this session.
+//
+// On top of the process-state signal, `noteData` scans the PTY stream for the
+// REPL's idle-footer strings ("? for shortcuts" etc). Once we've observed at
+// least BUSY_TICKS_THRESHOLD of real CPU work this turn, the re-appearance of
+// the footer is a strong positive signal the turn has ended and we fire
+// immediately instead of waiting for the full QUIET_SAMPLES settle time.
 
 const POLL_INTERVAL_MS = 500;
 // 2s of low CPU = idle. Short enough to feel snappy, long enough to ride out
@@ -30,6 +36,27 @@ const QUIET_SAMPLES = 4;
 // per 500 ms poll) cleanly separates real work from idle animation noise.
 const BUSY_TICKS_THRESHOLD = 2;
 
+// Footer strings Claude Code / Codex render only in the idle input footer.
+// Best-effort list; false negatives just fall back to the CPU gate. False
+// positives are guarded by `sawBusyWork` — the footer only short-circuits
+// after we've observed real CPU work this turn, so the pre-submit footer
+// can't trivially fire a finished event.
+const PROMPT_MARKERS = [
+  '? for shortcuts',
+  'bypassing permissions',
+  'shift+tab',
+  'esc to clear',
+  'esc to cancel',
+];
+
+// Strip ANSI escape sequences + cursor/color controls so substring matching
+// is reliable across redraws.
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*\x07)/g;
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, '');
+}
+
 interface Track {
   armed: boolean;
   running: boolean;
@@ -37,6 +64,8 @@ interface Track {
   pollTimer: NodeJS.Timeout | null;
   lastTicks: number;
   quietStreak: number;
+  sawBusyWork: boolean; // observed BUSY_TICKS_THRESHOLD-level work this turn
+  tail: string;         // small trailing window for cross-chunk marker match
 }
 
 const tracks = new Map<string, Track>();
@@ -51,10 +80,17 @@ function getTrack(id: string): Track {
       pollTimer: null,
       lastTicks: 0,
       quietStreak: 0,
+      sawBusyWork: false,
+      tail: '',
     };
     tracks.set(id, t);
   }
   return t;
+}
+
+function hasPromptMarker(buf: string): boolean {
+  const lower = buf.toLowerCase();
+  return PROMPT_MARKERS.some((m) => lower.includes(m));
 }
 
 async function collectDescendants(pid: number, acc = new Set<number>()): Promise<Set<number>> {
@@ -151,6 +187,7 @@ async function poll(id: string, window: BrowserWindow): Promise<void> {
 
   if (delta > BUSY_TICKS_THRESHOLD) {
     t.quietStreak = 0;
+    t.sawBusyWork = true;
     if (!t.running) {
       t.running = true;
       void setStatus(id, 'running', window);
@@ -180,15 +217,28 @@ export function noteSubmit(id: string, window: BrowserWindow) {
   t.armed = true;
   t.running = true;
   t.quietStreak = 0;
+  t.sawBusyWork = false;
+  t.tail = '';
   void setStatus(id, 'running', window);
   if (t.pollTimer) clearTimeout(t.pollTimer);
   t.pollTimer = setTimeout(() => void poll(id, window), POLL_INTERVAL_MS);
 }
 
-// Retained for backwards compatibility with the IPC wiring; process-state
-// polling replaces the old text-scraping path so incoming chunks are no-ops.
-export function noteData(_id: string, _chunk: string, _window: BrowserWindow) {
-  /* intentionally empty */
+export function noteData(id: string, chunk: string, window: BrowserWindow) {
+  const t = tracks.get(id);
+  if (!t || !t.armed || !t.running || !t.sawBusyWork) return;
+  const stripped = stripAnsi(chunk);
+  const probe = t.tail + stripped;
+  t.tail = probe.slice(-512);
+  if (!hasPromptMarker(probe)) return;
+  // Prompt footer reappeared after real CPU work — the turn has ended. Short-
+  // circuit the CPU quiet-streak settle time.
+  t.running = false;
+  if (t.pollTimer) {
+    clearTimeout(t.pollTimer);
+    t.pollTimer = null;
+  }
+  fireFinished(id, window);
 }
 
 export function clearActivity(id: string) {
