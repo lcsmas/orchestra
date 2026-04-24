@@ -60,7 +60,7 @@ export async function createWorkspace(
     branch,
     baseBranch,
     createdAt: Date.now(),
-    status: 'waiting',
+    status: 'idle',
     agent,
     lastTask: input.task,
   };
