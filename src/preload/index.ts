@@ -16,6 +16,7 @@ const api: OrchestraAPI = {
   deleteWorkspace: (id) => ipcRenderer.invoke('workspaces:delete', id),
   openInEditor: (id, editor) => ipcRenderer.invoke('workspaces:openInEditor', id, editor),
   markSeen: (id) => ipcRenderer.invoke('workspaces:markSeen', id),
+  renameBranch: (id, newBranch) => ipcRenderer.invoke('workspaces:renameBranch', id, newBranch),
 
   ptyStart: (id, cols, rows) => ipcRenderer.invoke('pty:start', id, cols, rows),
   ptyWrite: (id, data) => ipcRenderer.invoke('pty:write', id, data),

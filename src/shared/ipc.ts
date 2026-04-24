@@ -24,6 +24,7 @@ export interface OrchestraAPI {
   deleteWorkspace: (id: string) => Promise<void>;
   openInEditor: (id: string, editor: 'code' | 'cursor') => Promise<void>;
   markSeen: (id: string) => Promise<void>;
+  renameBranch: (id: string, newBranch: string) => Promise<Workspace>;
 
   // Terminal (pty)
   ptyStart: (id: string, cols: number, rows: number) => Promise<void>;

@@ -147,6 +147,25 @@ export function Sidebar({ onNewFromRepo }: Props) {
   } = useStore();
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+
+  const startRename = (e: React.MouseEvent, ws: Workspace) => {
+    e.stopPropagation();
+    setRenamingId(ws.id);
+    setRenameDraft(ws.branch);
+  };
+
+  const commitRename = async (ws: Workspace) => {
+    const next = renameDraft.trim();
+    setRenamingId(null);
+    if (!next || next === ws.branch) return;
+    try {
+      await window.orchestra.renameBranch(ws.id, next);
+    } catch (err) {
+      alert(`Could not rename branch: ${(err as Error).message}`);
+    }
+  };
 
   const active = workspaces.filter((w) => !w.archived);
   const archived = workspaces.filter((w) => w.archived);
@@ -277,7 +296,33 @@ export function Sidebar({ onNewFromRepo }: Props) {
                     }
                   />
                   <div className="ws-meta">
-                    <div className="ws-name">{w.branch}</div>
+                    {renamingId === w.id ? (
+                      <input
+                        className="ws-name-input"
+                        autoFocus
+                        value={renameDraft}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => setRenameDraft(e.target.value)}
+                        onBlur={() => commitRename(w)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitRename(w);
+                          else if (e.key === 'Escape') setRenamingId(null);
+                        }}
+                      />
+                    ) : (
+                      <div
+                        className="ws-name"
+                        title={
+                          w.branchManuallySet
+                            ? `${w.branch} (locked)`
+                            : `${w.branch} — double-click to rename`
+                        }
+                        onDoubleClick={(e) => startRename(e, w)}
+                      >
+                        {w.branch}
+                        {!w.branchManuallySet && <span className="ws-name-auto"> · auto</span>}
+                      </div>
+                    )}
                     <div className="ws-sub">{w.agent}</div>
                   </div>
                   {visiblePRs.length > 0 && (
