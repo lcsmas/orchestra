@@ -1,11 +1,20 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from './store';
 import { Sidebar } from './components/Sidebar';
 import { TerminalView } from './components/Terminal';
 import { DiffView } from './components/DiffView';
 import { BranchPicker } from './components/BranchPicker';
 import { NvimView } from './components/NvimView';
+import { DialogHost } from './components/Dialog';
 import { playFinishedChime } from './chime';
+
+const NVIM_WIDTH_KEY = 'orchestra.nvimPaneWidthPx';
+const NVIM_WIDTH_DEFAULT = 520;
+const NVIM_WIDTH_MIN = 280;
+function loadNvimWidth(): number {
+  const raw = Number(localStorage.getItem(NVIM_WIDTH_KEY));
+  return Number.isFinite(raw) && raw >= NVIM_WIDTH_MIN ? raw : NVIM_WIDTH_DEFAULT;
+}
 
 export function App() {
   const {
@@ -22,10 +31,43 @@ export function App() {
     refreshAllPRs,
   } = useStore();
   const [nvimOpen, setNvimOpen] = useState(false);
+  const [nvimWidth, setNvimWidth] = useState<number>(() => loadNvimWidth());
+  const paneRowRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // Drag to resize the nvim pane. Width is clamped so the terminal pane keeps
+  // at least NVIM_WIDTH_MIN too, and persisted on drag end.
+  const onResizerMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const row = paneRowRef.current;
+    if (!row) return;
+    const startX = e.clientX;
+    const startWidth = nvimWidth;
+    const rowRect = row.getBoundingClientRect();
+    const maxWidth = Math.max(NVIM_WIDTH_MIN, rowRect.width - NVIM_WIDTH_MIN);
+    const onMove = (ev: MouseEvent) => {
+      const delta = startX - ev.clientX;
+      const next = Math.max(NVIM_WIDTH_MIN, Math.min(maxWidth, startWidth + delta));
+      setNvimWidth(next);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      setNvimWidth((w) => {
+        localStorage.setItem(NVIM_WIDTH_KEY, String(w));
+        return w;
+      });
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
 
   useEffect(() => {
     if (!loaded) return;
@@ -47,9 +89,11 @@ export function App() {
   }, [loaded, workspaces.length, refreshAllPRs]);
 
   useEffect(() => {
-    return window.orchestra.onAgentFinished((finishedId) => {
+    return window.orchestra.onAgentFinished((finishedId, focused) => {
       // User is actively on this workspace: no chime, no yellow dot blip.
-      if (document.hasFocus() && useStore.getState().activeId === finishedId) {
+      // Trust the main-process focus flag — `document.hasFocus()` is unreliable
+      // on Wayland/CDP and returns stale `true` when the window is hidden.
+      if (focused && useStore.getState().activeId === finishedId) {
         void window.orchestra.markSeen(finishedId).catch(() => {});
         return;
       }
@@ -60,6 +104,27 @@ export function App() {
   const liveWorkspaces = workspaces.filter((w) => !w.archived);
   const active = liveWorkspaces.find((w) => w.id === activeId);
   const openPR = active ? prs[active.id]?.open ?? null : null;
+  const [merging, setMerging] = useState(false);
+  const onMerge = async () => {
+    if (!active || merging) return;
+    setMerging(true);
+    try {
+      const res = await window.orchestra.mergeWorktree(active.id);
+      if (res.status === 'pending-commit') {
+        alert(res.message);
+        return;
+      }
+      if (res.pushError) {
+        alert(
+          `Merged ${active.branch} into ${active.baseBranch}, but push failed:\n${res.pushError}`,
+        );
+      }
+    } catch (e) {
+      alert(`Could not merge: ${(e as Error).message}`);
+    } finally {
+      setMerging(false);
+    }
+  };
 
   return (
     <div className="app">
@@ -113,6 +178,35 @@ export function App() {
                   )}
                 </button>
               </div>
+              <button
+                className={`merge-btn ${active.mergedAt ? 'done' : ''}`}
+                onClick={onMerge}
+                disabled={merging || !!active.mergedAt}
+                title={
+                  active.mergedAt
+                    ? `Already merged into ${active.baseBranch}`
+                    : `Squash-merge ${active.branch} into ${active.baseBranch} and push`
+                }
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.6}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  shapeRendering="geometricPrecision"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <circle cx="18" cy="18" r="3" />
+                  <circle cx="6" cy="6" r="3" />
+                  <path d="M6 21V9a9 9 0 0 0 9 9" />
+                </svg>
+                {merging ? 'Merging…' : active.mergedAt ? 'Merged' : 'Merge'}
+              </button>
               {openPR ? (
                 <button
                   className="primary pr-link"
@@ -123,7 +217,7 @@ export function App() {
                 </button>
               ) : (
                 <button
-                  className="primary"
+                  className="pr-link pr-link-create"
                   onClick={() => {
                     const id = active.id;
                     const prompt =
@@ -166,7 +260,10 @@ export function App() {
             {/* Render a TerminalView for every workspace but only show the active one.
                 This keeps each xterm.js instance alive (preserving its scrollback buffer)
                 even when the user switches to a different workspace tab. */}
-            <div className={`pane-row ${nvimOpen ? 'with-nvim' : ''}`}>
+            <div
+              ref={paneRowRef}
+              className={`pane-row ${nvimOpen ? 'with-nvim' : ''}`}
+            >
               <div className="pane">
                 {liveWorkspaces.map((ws) => (
                   <TerminalView
@@ -178,15 +275,27 @@ export function App() {
                 {view === 'diff' && <DiffView workspaceId={active.id} />}
               </div>
               {nvimOpen && (
-                <div className="nvim-pane">
-                  <NvimView workspaceId={active.id} isActive={nvimOpen} />
-                </div>
+                <>
+                  <div
+                    className="pane-resizer"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize file pane"
+                    onMouseDown={onResizerMouseDown}
+                  />
+                  <div
+                    className="nvim-pane"
+                    style={{ flex: `0 0 ${nvimWidth}px` }}
+                  >
+                    <NvimView workspaceId={active.id} isActive={nvimOpen} />
+                  </div>
+                </>
               )}
             </div>
           </>
         )}
       </main>
-
+      <DialogHost />
     </div>
   );
 }

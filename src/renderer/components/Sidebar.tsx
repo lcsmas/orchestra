@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../store';
 import type { Workspace, WorkspaceStatus } from '../../shared/types';
 import { SoundSettings } from './SoundSettings';
+import { dialog } from './Dialog';
 
 interface Props {
   onNewFromRepo: () => void;
@@ -175,7 +176,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
     try {
       await archive(id);
     } catch (err) {
-      alert(`Could not archive workspace: ${(err as Error).message}`);
+      void dialog.error('Could not archive workspace', (err as Error).message);
     }
   };
 
@@ -184,21 +185,24 @@ export function Sidebar({ onNewFromRepo }: Props) {
     try {
       await unarchive(id);
     } catch (err) {
-      alert(`Could not restore workspace: ${(err as Error).message}`);
+      void dialog.error('Could not restore workspace', (err as Error).message);
     }
   };
 
   const onDelete = async (e: React.MouseEvent, id: string, name: string) => {
     e.stopPropagation();
-    const ok = await window.orchestra.confirm(
-      `Delete "${name}" permanently?`,
-      'This removes the git worktree from disk.',
-    );
+    const ok = await dialog.confirm({
+      title: 'Delete workspace',
+      message: `Delete "${name}" permanently?`,
+      detail: 'This removes the git worktree from disk.',
+      tone: 'danger',
+      confirmLabel: 'Delete',
+    });
     if (!ok) return;
     try {
       await deleteWorkspace(id);
     } catch (err) {
-      alert(`Could not delete workspace: ${(err as Error).message}`);
+      void dialog.error('Could not delete workspace', (err as Error).message);
     }
   };
 
@@ -207,7 +211,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
     try {
       await createWorkspace({ repoPath });
     } catch (err) {
-      alert(`Could not create workspace: ${(err as Error).message}`);
+      void dialog.error('Could not create workspace', (err as Error).message);
     }
   };
 
@@ -282,7 +286,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
               return (
                 <div
                   key={w.id}
-                  className={`ws-item ${activeId === w.id ? 'active' : ''}`}
+                  className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt ? 'merged' : ''}`}
                   onClick={() => setActive(w.id)}
                 >
                   <div
@@ -295,74 +299,84 @@ export function Sidebar({ onNewFromRepo }: Props) {
                           : w.status
                     }
                   />
-                  <div className="ws-meta">
-                    {renamingId === w.id ? (
-                      <input
-                        className="ws-name-input"
-                        autoFocus
-                        value={renameDraft}
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={(e) => setRenameDraft(e.target.value)}
-                        onBlur={() => commitRename(w)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') commitRename(w);
-                          else if (e.key === 'Escape') setRenamingId(null);
-                        }}
-                      />
-                    ) : (
-                      <div
-                        className="ws-name"
-                        title={
-                          w.branchManuallySet
-                            ? `${w.branch} (locked)`
-                            : `${w.branch} — double-click to rename`
-                        }
-                        onDoubleClick={(e) => startRename(e, w)}
-                      >
-                        {w.branch}
-                        {!w.branchManuallySet && <span className="ws-name-auto"> · auto</span>}
-                      </div>
-                    )}
-                    <div className="ws-sub">{w.agent}</div>
-                  </div>
-                  {visiblePRs.length > 0 && (
-                    <span className="pr-badges">
-                      {visiblePRs.map((p) => (
-                        <span
-                          key={p.number}
-                          className={`pr-badge ${p.state.toLowerCase()}`}
-                          title={`PR #${p.number} · ${p.state.toLowerCase()} · ${p.title}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            window.orchestra.openExternal(p.url);
+                  <div className="ws-body">
+                    <div className="ws-name-row">
+                      {renamingId === w.id ? (
+                        <input
+                          className="ws-name-input"
+                          autoFocus
+                          value={renameDraft}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => setRenameDraft(e.target.value)}
+                          onBlur={() => commitRename(w)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') commitRename(w);
+                            else if (e.key === 'Escape') setRenamingId(null);
                           }}
+                        />
+                      ) : (
+                        <div
+                          className="ws-name"
+                          title={
+                            w.branchManuallySet
+                              ? `${w.branch} (locked)`
+                              : `${w.branch} — double-click to rename`
+                          }
+                          onDoubleClick={(e) => startRename(e, w)}
                         >
-                          {p.state === 'MERGED' ? (
-                            <PRMergedIcon />
-                          ) : p.state === 'CLOSED' ? (
-                            <PRClosedIcon />
-                          ) : (
-                            <PROpenIcon />
+                          {w.branch}
+                          {!w.branchManuallySet && (
+                            <span className="ws-name-auto"> · auto</span>
                           )}
-                          <span className="pr-badge-num">#{p.number}</span>
-                        </span>
-                      ))}
-                      {hiddenPRs > 0 && (
-                        <span
-                          className="pr-badge more"
-                          title={`${hiddenPRs} more PR${hiddenPRs === 1 ? '' : 's'} from this branch`}
-                        >
-                          +{hiddenPRs}
+                        </div>
+                      )}
+                      {w.mergedAt && (
+                        <span className="merged-pill" title={`Merged into ${w.baseBranch}`}>
+                          merged
                         </span>
                       )}
-                    </span>
-                  )}
-                  {hasChanges && (
-                    <span className="diff-indicator compact" title={`${s.files} file${s.files === 1 ? '' : 's'} changed`}>
-                      {s.additions > 0 && <span className="add">+{s.additions}</span>}
-                      {s.deletions > 0 && <span className="del">−{s.deletions}</span>}
-                    </span>
-                  )}
+                      {hasChanges && (
+                        <span className="diff-indicator compact" title={`${s.files} file${s.files === 1 ? '' : 's'} changed`}>
+                          {s.additions > 0 && <span className="add">+{s.additions}</span>}
+                          {s.deletions > 0 && <span className="del">−{s.deletions}</span>}
+                        </span>
+                      )}
+                    </div>
+                    {visiblePRs.length > 0 && (
+                      <div className="ws-meta-row">
+                        <span className="pr-badges">
+                          {visiblePRs.map((p) => (
+                            <span
+                              key={p.number}
+                              className={`pr-badge ${p.state.toLowerCase()}`}
+                              title={`PR #${p.number} · ${p.state.toLowerCase()} · ${p.title}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                window.orchestra.openExternal(p.url);
+                              }}
+                            >
+                              {p.state === 'MERGED' ? (
+                                <PRMergedIcon />
+                              ) : p.state === 'CLOSED' ? (
+                                <PRClosedIcon />
+                              ) : (
+                                <PROpenIcon />
+                              )}
+                              <span className="pr-badge-num">#{p.number}</span>
+                            </span>
+                          ))}
+                          {hiddenPRs > 0 && (
+                            <span
+                              className="pr-badge more"
+                              title={`${hiddenPRs} more PR${hiddenPRs === 1 ? '' : 's'} from this branch`}
+                            >
+                              +{hiddenPRs}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    )}
+                  </div>
                   <button
                     className="ws-icon-btn"
                     title="Archive workspace"

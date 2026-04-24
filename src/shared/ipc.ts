@@ -13,7 +13,6 @@ export interface OrchestraAPI {
   listRepos: () => Promise<RepoEntry[]>;
   removeRepo: (absPath: string) => Promise<void>;
   pickDirectory: () => Promise<string | null>;
-  confirm: (message: string, detail?: string) => Promise<boolean>;
   openExternal: (url: string) => Promise<void>;
 
   // Workspaces
@@ -47,12 +46,18 @@ export interface OrchestraAPI {
   findPR: (id: string) => Promise<PRsForBranch>;
   listBranches: (id: string) => Promise<string[]>;
   switchBranch: (id: string, branch: string) => Promise<Workspace>;
+  mergeWorktree: (
+    id: string,
+  ) => Promise<
+    | { status: 'merged'; pushed: boolean; pushError?: string }
+    | { status: 'pending-commit'; message: string }
+  >;
 
   // Events
   onWorkspaceUpdate: (cb: (w: Workspace) => void) => () => void;
   onWorkspaceRemoved: (cb: (id: string) => void) => () => void;
   onWorkspaceFocus: (cb: (id: string) => void) => () => void;
-  onAgentFinished: (cb: (id: string) => void) => () => void;
+  onAgentFinished: (cb: (id: string, focused: boolean) => void) => () => void;
 }
 
 declare global {
