@@ -5,6 +5,7 @@ import { TerminalView } from './components/Terminal';
 import { DiffView } from './components/DiffView';
 import { BranchPicker } from './components/BranchPicker';
 import { NvimView } from './components/NvimView';
+import { DialogHost } from './components/Dialog';
 import { playFinishedChime } from './chime';
 
 export function App() {
@@ -186,7 +187,7 @@ export function App() {
           </>
         )}
       </main>
-
+      <DialogHost />
     </div>
   );
 }

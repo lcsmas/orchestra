@@ -6,7 +6,6 @@ const api: OrchestraAPI = {
   listRepos: () => ipcRenderer.invoke('repos:list'),
   removeRepo: (p) => ipcRenderer.invoke('repos:remove', p),
   pickDirectory: () => ipcRenderer.invoke('dialog:pickDir'),
-  confirm: (message, detail) => ipcRenderer.invoke('dialog:confirm', message, detail),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
 
   listWorkspaces: () => ipcRenderer.invoke('workspaces:list'),
