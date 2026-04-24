@@ -1,6 +1,14 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import fixPath from 'fix-path';
+
+// Desktop launchers (file manager, app grid, .desktop files) start Electron
+// without sourcing the user's shell rc, so PATH is the bare login PATH and
+// agent binaries like `claude`, `codex`, `nvim` aren't found. Run this before
+// anything spawns a child process — asks the user's login shell for its PATH
+// and copies it onto process.env.PATH. No-ops when launched from a terminal.
+fixPath();
 import { store } from './store';
 import {
   detectDefaultBranch,
