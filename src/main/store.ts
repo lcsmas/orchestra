@@ -38,6 +38,18 @@ export class Store {
     } catch {
       this.data = DEFAULT;
     }
+    // `running` across a restart can only be stale crash state — no PTY is
+    // alive yet. Reset to idle. `waiting` is intentionally preserved so an
+    // unread "agent finished" dot from the previous session survives until the
+    // user actually views the workspace (markSeen).
+    let mutated = false;
+    for (const ws of this.data.workspaces) {
+      if (ws.status === 'running') {
+        ws.status = 'idle';
+        mutated = true;
+      }
+    }
+    if (mutated) await this.save();
   }
 
   async save() {

@@ -14,6 +14,10 @@ export interface Workspace {
   archived?: boolean;
   archivedAt?: number;
   hasInput?: boolean;
+  /** True once the user has manually set the branch name. Auto-rename from
+   * Claude's `.orchestra/branch-name` file is disabled when this is true. */
+  branchManuallySet?: boolean;
+  mergedAt?: number;
 }
 
 export interface DiffFile {

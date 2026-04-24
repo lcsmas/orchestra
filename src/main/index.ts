@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { store } from './store';
@@ -13,6 +13,8 @@ import {
   listBranches,
   switchWorktreeBranch,
   getDiffStats,
+  isWorktreeDirty,
+  mergeIntoBase,
 } from './git';
 import type { Workspace } from '../shared/types';
 import {
@@ -21,6 +23,8 @@ import {
   deleteWorkspace,
   ensureRoot,
   openInEditor,
+  renameWorkspaceBranch,
+  startBranchNameWatcher,
   unarchiveWorkspace,
 } from './workspaces';
 import {
@@ -33,7 +37,7 @@ import {
   clearScrollback,
   isRunning,
 } from './pty';
-import { clearActivity, noteData, noteSubmit } from './activity';
+import { clearActivity, noteData, notePtyStart, noteSubmit } from './activity';
 import type { CreateWorkspaceInput } from '../shared/types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -46,19 +50,21 @@ if (process.platform === 'linux') {
   app.commandLine.appendSwitch('disable-gpu-vsync');
 }
 
+// Expose Chrome DevTools Protocol in dev so chrome-devtools-mcp can attach.
+if (VITE_DEV_SERVER_URL) {
+  app.commandLine.appendSwitch('remote-debugging-port', '9222');
+}
+
 async function createMainWindow() {
   await store.load();
-  // Each app launch is a fresh session: no PTYs are running yet, so every
-  // non-archived workspace starts as `waiting` (yellow dot). Selecting a
-  // workspace in the sidebar mounts its terminal, which triggers pty:start
-  // and flips it to `idle` — at that point the activity tracker takes over.
-  for (const ws of store.workspaces) {
-    if (ws.archived) continue;
-    if (ws.status !== 'waiting') {
-      await store.upsertWorkspace({ ...ws, status: 'waiting' });
-    }
-  }
   await ensureRoot();
+  // Re-attach branch-name watchers for all non-archived workspaces — Claude
+  // may have dropped the suggestion file while Orchestra was closed.
+  // Deferred until after mainWindow is created.
+
+  // Drop the default Electron menu (File/Edit/View/Window/Help). We don't ship
+  // any custom menu commands; the strip just eats vertical space.
+  Menu.setApplicationMenu(null);
 
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -67,12 +73,14 @@ async function createMainWindow() {
     minHeight: 600,
     title: 'Orchestra',
     backgroundColor: '#0b0d10',
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
+  mainWindow.setMenuBarVisibility(false);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void openUrlExternally(url);
@@ -91,6 +99,11 @@ async function createMainWindow() {
     await mainWindow.loadURL(VITE_DEV_SERVER_URL);
   } else {
     await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+  }
+
+  for (const ws of store.workspaces) {
+    if (ws.archived) continue;
+    startBranchNameWatcher(ws, mainWindow);
   }
 }
 
@@ -152,18 +165,6 @@ ipcMain.handle('repos:add', async (_e, absPath: string) => {
 
 ipcMain.handle('repos:remove', async (_e, absPath: string) => {
   await store.removeRepo(absPath);
-});
-
-ipcMain.handle('dialog:confirm', async (_e, message: string, detail?: string) => {
-  const res = await dialog.showMessageBox(getMainWindow(), {
-    type: 'question',
-    buttons: ['Cancel', 'Delete'],
-    defaultId: 0,
-    cancelId: 0,
-    message,
-    detail,
-  });
-  return res.response === 1;
 });
 
 ipcMain.handle('dialog:pickDir', async () => {
@@ -235,11 +236,13 @@ ipcMain.handle('pty:start', async (_e, id: string, cols: number, rows: number) =
     rows,
     window: getMainWindow(),
     onAgentData: (wsId, data) => noteData(wsId, data, getMainWindow()),
+    onAgentPid: (wsId, pid) => notePtyStart(wsId, pid),
   });
-  // First-ever terminal spawn: drop the `waiting` yellow dot now that the
-  // agent TUI is up. Subsequent submit/data will take over from the activity
-  // tracker.
-  if (ws.status === 'waiting') {
+  // Preserve the `waiting` yellow dot across restarts: if the previous session
+  // ended with an unread "agent finished" state, the dot stays until the user
+  // actually reads it (via markSeen from setActive). Only clear stale
+  // `running` state left over from a prior crash.
+  if (ws.status === 'running') {
     const updated: Workspace = { ...ws, status: 'idle' };
     await store.upsertWorkspace(updated);
     getMainWindow().webContents.send('workspace:update', updated);
@@ -347,6 +350,42 @@ ipcMain.handle('nvim:start', async (_e, id: string, cols: number, rows: number) 
 
 ipcMain.handle('nvim:stop', async (_e, id: string) => {
   stopPty(`${id}:nvim`);
+});
+
+ipcMain.handle(
+  'workspaces:renameBranch',
+  async (_e, id: string, newBranch: string) => {
+    return renameWorkspaceBranch(id, newBranch, { manual: true }, getMainWindow());
+  },
+);
+
+ipcMain.handle('git:merge', async (_e, id: string) => {
+  const ws = store.getWorkspace(id);
+  if (!ws) throw new Error('workspace not found');
+
+  if (await isWorktreeDirty(ws.worktreePath)) {
+    const prompt =
+      'There are uncommitted changes in this worktree. Please review them, then commit ALL pending changes with a clear message and push the branch. After you finish, the user will click Merge again.';
+    writePty(id, prompt);
+    setTimeout(() => writePty(id, '\r'), 80);
+    return {
+      status: 'pending-commit' as const,
+      message:
+        'Worktree has uncommitted changes — asked the agent to commit them. Click Merge again once the commit lands.',
+    };
+  }
+
+  const { pushed, pushError } = await mergeIntoBase({
+    repoPath: ws.repoPath,
+    branch: ws.branch,
+    baseBranch: ws.baseBranch,
+  });
+
+  const updated: Workspace = { ...ws, mergedAt: Date.now() };
+  await store.upsertWorkspace(updated);
+  getMainWindow().webContents.send('workspace:update', updated);
+
+  return { status: 'merged' as const, pushed, pushError };
 });
 
 ipcMain.handle('git:switchBranch', async (_e, id: string, branch: string) => {

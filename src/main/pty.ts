@@ -91,6 +91,7 @@ export async function startPty(opts: {
   rows: number;
   window: BrowserWindow;
   onAgentData?: (id: string, data: string) => void;
+  onAgentPid?: (id: string, pid: number) => void;
 }) {
   if (sessions.has(opts.id)) return; // already running
   if (!fs.existsSync(opts.cwd)) {
@@ -121,6 +122,8 @@ export async function startPty(opts: {
     logPath,
   };
   sessions.set(opts.id, session);
+
+  if (opts.onAgentPid && proc.pid) opts.onAgentPid(opts.id, proc.pid);
 
   session.disposables.push(
     proc.onData((data) => {
@@ -199,10 +202,4 @@ export function stopAll() {
 
 export function isRunning(id: string) {
   return sessions.has(id);
-}
-
-export function getPtyPid(id: string): number | undefined {
-  const s = sessions.get(id);
-  if (!s || s.stopped) return undefined;
-  return s.pty.pid;
 }

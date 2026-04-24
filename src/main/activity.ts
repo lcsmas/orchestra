@@ -1,58 +1,46 @@
 import { BrowserWindow, Notification } from 'electron';
-import { execFile } from 'node:child_process';
-import os from 'node:os';
-import { promisify } from 'node:util';
-import pidusage from 'pidusage';
+import { readFile } from 'node:fs/promises';
 import { store } from './store';
-import { getPtyPid } from './pty';
 import type { Workspace, WorkspaceStatus } from '../shared/types';
 
-// "Agent finished" is a composite decision across three signals. Each one is
-// imperfect on its own — combining them avoids the 2-minute-overrun bug where
-// a long-running bash child silenced the Claude Code spinner and caused a
-// premature "finished".
+// Robust "is the agent working?" detector.
 //
-// 1. Marker-gone (original signal): Claude Code re-renders a status line like
-//    `✻ Cogitating… (3s · ↓ 163 tokens · thinking)` on every frame while a
-//    turn is in flight. When the marker is absent for MARKER_GONE_MS, the
-//    turn *looks* idle from the TUI's point of view.
+// We observe the agent's own process tree via /proc instead of scraping TUI
+// text. Every POLL_INTERVAL_MS we sum (utime + stime) CPU ticks across the
+// PTY child and all its descendants. If that total grew since the last poll,
+// the agent (or a tool subprocess it spawned) did CPU work. QUIET_SAMPLES
+// consecutive zero-delta polls means the agent has returned to its input
+// prompt — fire "finished".
 //
-// 2. CPU-idle (new): we walk the PTY's process tree every second via
-//    `pidusage` and treat the agent as busy whenever the tree's aggregate
-//    CPU% is above CPU_BUSY_THRESHOLD. A long `rg`, `tsc`, or `bash` child
-//    keeps CPU high even when the spinner has been replaced by child stdout.
+// This is agent-agnostic: claude, codex, a plain shell, a future TUI — any of
+// them look "busy" when they're burning cycles and "idle" when they're blocked
+// in read()/epoll_wait() waiting for the next keypress.
 //
-// 3. Prompt-seen (new): once we've observed at least one busy marker since
-//    the last submit, the re-appearance of the REPL prompt footer (`? for
-//    shortcuts` etc.) is a positive signal that the turn actually ended.
-//    Short-circuits the CPU gate for fast turns.
+// The tracker is gated by `armed` (flipped by noteSubmit) so startup replay —
+// e.g. `claude --continue` redrawing the previous turn — can never trigger a
+// fake finished event before the user has actually sent input this session.
 //
-// Finish rule: marker-gone AND (prompt-seen OR cpu-idle-settled OR cpu-sampler
-// unavailable). Prompt-seen short-circuits when we're confident; CPU acts as
-// the hard guard against the long-bash case.
-const MARKER_GONE_MS = 4000;
-const CPU_POLL_MS = 1000;
-const CPU_BUSY_THRESHOLD = 8; // percent — below this, the tree is idle
-const CPU_IDLE_MS = 2500; // tree must stay below threshold this long
+// On top of the process-state signal, `noteData` scans the PTY stream for the
+// REPL's idle-footer strings ("? for shortcuts" etc). Once we've observed at
+// least BUSY_TICKS_THRESHOLD of real CPU work this turn, the re-appearance of
+// the footer is a strong positive signal the turn has ended and we fire
+// immediately instead of waiting for the full QUIET_SAMPLES settle time.
 
-// Substrings we consider "agent is busy". Case-insensitive.
-const BUSY_MARKERS = [
-  'tokens ·',          // Claude Code spinner line, reliable
-  'tokens)',           // fallback if the · glyph mangles
-  'esc to interrupt',  // older Claude / Codex
-  'ctrl+c to interrupt',
-  'press esc',
-];
+const POLL_INTERVAL_MS = 500;
+// 2s of low CPU = idle. Short enough to feel snappy, long enough to ride out
+// API round-trips that leave every process blocked in epoll_wait for a beat.
+const QUIET_SAMPLES = 4;
+// Minimum per-poll CPU ticks to count as "busy". Idle claude/codex TUIs redraw
+// a blinking cursor / status timer and rack up 1 tick every ~1–2 s; active
+// turns produce 5–50+ ticks per poll. A threshold of 2 ticks (20 ms of CPU
+// per 500 ms poll) cleanly separates real work from idle animation noise.
+const BUSY_TICKS_THRESHOLD = 2;
 
-// Gerund words that close Claude Code's spinner line: "... · thinking)".
-const BUSY_GERUND_RE =
-  /\b(thinking|working|cogitating|pondering|generating|analyzing|loading|fetching|streaming|searching|querying|reading|writing|computing|processing|brewing|baking|herding|bubbling)\)/i;
-
-// Footer strings Claude Code / Codex show in the idle input footer — only
-// rendered when the turn is not in flight. Best-effort list: false negatives
-// (prompt not detected) fall back to CPU gate; false positives are guarded by
-// the `sawBusyMarker` flag so we only trust the prompt after a spinner has
-// actually come and gone.
+// Footer strings Claude Code / Codex render only in the idle input footer.
+// Best-effort list; false negatives just fall back to the CPU gate. False
+// positives are guarded by `sawBusyWork` — the footer only short-circuits
+// after we've observed real CPU work this turn, so the pre-submit footer
+// can't trivially fire a finished event.
 const PROMPT_MARKERS = [
   '? for shortcuts',
   'bypassing permissions',
@@ -70,16 +58,14 @@ function stripAnsi(s: string): string {
 }
 
 interface Track {
+  armed: boolean;
   running: boolean;
-  markerTimer: NodeJS.Timeout | null;
-  lastMarkerAt: number;
-  cpuTimer: NodeJS.Timeout | null;
-  cpuIdleSince: number | null; // null while above threshold or unknown
-  cpuSamplerFailed: boolean;   // sampler broken → skip CPU gate
-  sawBusyMarker: boolean;      // at least one marker since last submit
-  promptSeen: boolean;         // prompt reappeared after busy marker
-  tail: string;
-  window: BrowserWindow | null;
+  pid: number | null;
+  pollTimer: NodeJS.Timeout | null;
+  lastTicks: number;
+  quietStreak: number;
+  sawBusyWork: boolean; // observed BUSY_TICKS_THRESHOLD-level work this turn
+  tail: string;         // small trailing window for cross-chunk marker match
 }
 
 const tracks = new Map<string, Track>();
@@ -88,26 +74,18 @@ function getTrack(id: string): Track {
   let t = tracks.get(id);
   if (!t) {
     t = {
+      armed: false,
       running: false,
-      markerTimer: null,
-      lastMarkerAt: 0,
-      cpuTimer: null,
-      cpuIdleSince: null,
-      cpuSamplerFailed: false,
-      sawBusyMarker: false,
-      promptSeen: false,
+      pid: null,
+      pollTimer: null,
+      lastTicks: 0,
+      quietStreak: 0,
+      sawBusyWork: false,
       tail: '',
-      window: null,
     };
     tracks.set(id, t);
   }
   return t;
-}
-
-function hasBusyMarker(buf: string): boolean {
-  const lower = buf.toLowerCase();
-  if (BUSY_MARKERS.some((m) => lower.includes(m))) return true;
-  return BUSY_GERUND_RE.test(buf);
 }
 
 function hasPromptMarker(buf: string): boolean {
@@ -115,95 +93,40 @@ function hasPromptMarker(buf: string): boolean {
   return PROMPT_MARKERS.some((m) => lower.includes(m));
 }
 
-const execFileAsync = promisify(execFile);
-
-// Walk the PTY's process tree. On Linux/macOS we parse `ps -A -o pid=,ppid=`
-// once per sample and DFS from the root. On Windows this degrades to the
-// single root pid (pidusage still works, but child CPU is invisible).
-async function treePids(root: number): Promise<number[]> {
-  if (os.platform() === 'win32') return [root];
+async function collectDescendants(pid: number, acc = new Set<number>()): Promise<Set<number>> {
+  if (acc.has(pid)) return acc;
+  acc.add(pid);
   try {
-    const { stdout } = await execFileAsync('ps', ['-A', '-o', 'pid=,ppid='], {
-      maxBuffer: 4 * 1024 * 1024,
-    });
-    const byParent = new Map<number, number[]>();
-    for (const line of stdout.split('\n')) {
-      const m = line.trim().match(/^(\d+)\s+(\d+)$/);
-      if (!m) continue;
-      const pid = Number(m[1]);
-      const ppid = Number(m[2]);
-      const arr = byParent.get(ppid);
-      if (arr) arr.push(pid);
-      else byParent.set(ppid, [pid]);
+    const data = await readFile(`/proc/${pid}/task/${pid}/children`, 'utf8');
+    for (const c of data.trim().split(/\s+/).filter(Boolean)) {
+      const cpid = Number(c);
+      if (!Number.isNaN(cpid)) await collectDescendants(cpid, acc);
     }
-    const out: number[] = [root];
-    const stack: number[] = [root];
-    while (stack.length) {
-      const p = stack.pop() as number;
-      const kids = byParent.get(p);
-      if (!kids) continue;
-      for (const k of kids) {
-        out.push(k);
-        stack.push(k);
-      }
-    }
-    return out;
   } catch {
-    return [root];
+    /* process exited mid-walk, fine */
   }
+  return acc;
 }
 
-// Returns aggregate CPU% across the tree, or -1 if sampling failed.
-async function sampleTreeCpu(root: number): Promise<number> {
-  try {
-    const pids = await treePids(root);
-    // pidusage accepts an array and returns { [pid]: { cpu, ... } } for
-    // pids still alive. Dead pids are silently dropped.
-    const stats = (await pidusage(pids)) as Record<string, { cpu: number }>;
-    let total = 0;
-    for (const s of Object.values(stats)) {
-      if (s && typeof s.cpu === 'number') total += s.cpu;
+async function totalCpuTicks(pids: Set<number>): Promise<number> {
+  let total = 0;
+  for (const pid of pids) {
+    try {
+      const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+      // /proc/<pid>/stat: "pid (comm with possibly spaces) state ppid ..."
+      // After the last ')' the remaining fields are whitespace-separated and
+      // stable. utime = field 14, stime = field 15 of the overall line,
+      // i.e. index 11 and 12 in the post-')' tail (which starts at `state`).
+      const tail = stat.slice(stat.lastIndexOf(')') + 2).split(/\s+/);
+      const utime = Number(tail[11]);
+      const stime = Number(tail[12]);
+      if (!Number.isNaN(utime)) total += utime;
+      if (!Number.isNaN(stime)) total += stime;
+    } catch {
+      /* pid gone, skip */
     }
-    return total;
-  } catch {
-    return -1;
   }
-}
-
-function startCpuSampler(id: string, t: Track) {
-  if (t.cpuTimer) return;
-  const tick = async () => {
-    if (!tracks.has(id) || !t.running) return;
-    const pid = getPtyPid(id);
-    if (pid == null) {
-      t.cpuSamplerFailed = true;
-      return;
-    }
-    const cpu = await sampleTreeCpu(pid);
-    if (cpu < 0) {
-      t.cpuSamplerFailed = true;
-      return;
-    }
-    t.cpuSamplerFailed = false;
-    const now = Date.now();
-    if (cpu < CPU_BUSY_THRESHOLD) {
-      if (t.cpuIdleSince == null) t.cpuIdleSince = now;
-    } else {
-      t.cpuIdleSince = null;
-    }
-    if (t.window) maybeFinish(id, t.window);
-  };
-  t.cpuTimer = setInterval(() => {
-    void tick();
-  }, CPU_POLL_MS);
-  void tick();
-}
-
-function stopCpuSampler(t: Track) {
-  if (t.cpuTimer) {
-    clearInterval(t.cpuTimer);
-    t.cpuTimer = null;
-  }
+  return total;
 }
 
 async function setStatus(
@@ -223,12 +146,17 @@ async function setStatus(
 }
 
 function fireFinished(id: string, window: BrowserWindow) {
+  const focused = window.isFocused();
   void setStatus(id, 'waiting', window).then((ws) => {
     if (!ws) return;
     if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-      window.webContents.send('agent:finished', id);
+      // Ship the main-process focus state with the event. `document.hasFocus()`
+      // is unreliable in the renderer (returns stale true on Wayland when the
+      // window is hidden on another workspace / CDP is attached), so the
+      // renderer trusts this flag instead.
+      window.webContents.send('agent:finished', id, focused);
     }
-    if (window.isFocused()) return; // skip the OS popup when already here
+    if (focused) return;
     try {
       const n = new Notification({
         title: 'Agent finished',
@@ -249,99 +177,73 @@ function fireFinished(id: string, window: BrowserWindow) {
   });
 }
 
-// Evaluate the composite gate. Called from the marker-gone timer, CPU poll
-// tick, and prompt-detected data path. Firing is idempotent via t.running.
-function maybeFinish(id: string, window: BrowserWindow) {
+async function poll(id: string, window: BrowserWindow): Promise<void> {
   const t = tracks.get(id);
-  if (!t || !t.running) return;
-  const now = Date.now();
-  const markerGone = now - t.lastMarkerAt >= MARKER_GONE_MS;
-  if (!markerGone) return;
-  const cpuIdleSettled =
-    t.cpuIdleSince != null && now - t.cpuIdleSince >= CPU_IDLE_MS;
-  // If the sampler is broken, we can't gate on CPU — fall back to
-  // marker-only (current-day behavior) rather than getting stuck.
-  const cpuReady = t.cpuSamplerFailed || cpuIdleSettled;
-  // Prompt-seen is a strong positive signal; short-circuit the CPU gate.
-  const ready = t.promptSeen || cpuReady;
-  if (!ready) return;
+  if (!t || !t.armed || t.pid == null) return;
+  const descendants = await collectDescendants(t.pid);
+  const ticks = await totalCpuTicks(descendants);
+  const delta = ticks - t.lastTicks;
+  t.lastTicks = ticks;
 
-  t.running = false;
-  if (t.markerTimer) {
-    clearTimeout(t.markerTimer);
-    t.markerTimer = null;
+  if (delta > BUSY_TICKS_THRESHOLD) {
+    t.quietStreak = 0;
+    t.sawBusyWork = true;
+    if (!t.running) {
+      t.running = true;
+      void setStatus(id, 'running', window);
+    }
+  } else {
+    t.quietStreak += 1;
+    if (t.running && t.quietStreak >= QUIET_SAMPLES) {
+      t.running = false;
+      t.pollTimer = null;
+      fireFinished(id, window);
+      return;
+    }
   }
-  stopCpuSampler(t);
-  fireFinished(id, window);
+  t.pollTimer = setTimeout(() => void poll(id, window), POLL_INTERVAL_MS);
+}
+
+export function notePtyStart(id: string, pid: number) {
+  const t = getTrack(id);
+  t.pid = pid;
+  // Seed the baseline so the first delta doesn't count pre-spawn CPU time.
+  t.lastTicks = 0;
+  t.quietStreak = 0;
 }
 
 export function noteSubmit(id: string, window: BrowserWindow) {
-  // Optimistic: flip to running immediately so the dot reacts fast. The next
-  // data chunk with a busy marker confirms it and extends the deadline. If
-  // the spinner never renders (one-line response), the fallback marker timer
-  // still fires and the CPU gate lets us finish.
   const t = getTrack(id);
+  t.armed = true;
   t.running = true;
-  t.window = window;
-  t.lastMarkerAt = Date.now();
-  t.sawBusyMarker = false;
-  t.promptSeen = false;
-  t.cpuIdleSince = null;
-  t.cpuSamplerFailed = false;
-  if (t.markerTimer) clearTimeout(t.markerTimer);
-  t.markerTimer = setTimeout(() => {
-    t.markerTimer = null;
-    maybeFinish(id, window);
-  }, MARKER_GONE_MS);
-  startCpuSampler(id, t);
+  t.quietStreak = 0;
+  t.sawBusyWork = false;
+  t.tail = '';
   void setStatus(id, 'running', window);
+  if (t.pollTimer) clearTimeout(t.pollTimer);
+  t.pollTimer = setTimeout(() => void poll(id, window), POLL_INTERVAL_MS);
 }
 
 export function noteData(id: string, chunk: string, window: BrowserWindow) {
-  const t = getTrack(id);
-  t.window = window;
+  const t = tracks.get(id);
+  if (!t || !t.armed || !t.running || !t.sawBusyWork) return;
   const stripped = stripAnsi(chunk);
-  // Bigger tail than before so full prompt-footer lines (which can run long
-  // with keymap hints) still match when split across chunk boundaries.
   const probe = t.tail + stripped;
   t.tail = probe.slice(-512);
-
-  const busy = hasBusyMarker(probe);
-  const prompt = hasPromptMarker(probe);
-
-  if (busy) {
-    t.lastMarkerAt = Date.now();
-    t.sawBusyMarker = true;
-    // If the prompt was previously visible (e.g. between turns) and a new
-    // busy marker arrives, the user has resubmitted — clear the stale
-    // prompt-seen flag so we don't short-circuit the next idle check.
-    t.promptSeen = false;
-    if (!t.running) {
-      t.running = true;
-      startCpuSampler(id, t);
-      void setStatus(id, 'running', window);
-    }
-    if (t.markerTimer) clearTimeout(t.markerTimer);
-    t.markerTimer = setTimeout(() => {
-      t.markerTimer = null;
-      maybeFinish(id, window);
-    }, MARKER_GONE_MS);
-    return;
+  if (!hasPromptMarker(probe)) return;
+  // Prompt footer reappeared after real CPU work — the turn has ended. Short-
+  // circuit the CPU quiet-streak settle time.
+  t.running = false;
+  if (t.pollTimer) {
+    clearTimeout(t.pollTimer);
+    t.pollTimer = null;
   }
-
-  // Only trust the prompt footer once we've seen a busy marker this turn —
-  // otherwise the idle footer that was already on screen at submit time
-  // would trivially flip promptSeen=true and short-circuit the gate.
-  if (prompt && t.running && t.sawBusyMarker && !t.promptSeen) {
-    t.promptSeen = true;
-    maybeFinish(id, window);
-  }
+  fireFinished(id, window);
 }
 
 export function clearActivity(id: string) {
   const t = tracks.get(id);
   if (!t) return;
-  if (t.markerTimer) clearTimeout(t.markerTimer);
-  stopCpuSampler(t);
+  if (t.pollTimer) clearTimeout(t.pollTimer);
   tracks.delete(id);
 }

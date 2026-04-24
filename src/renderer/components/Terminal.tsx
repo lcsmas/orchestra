@@ -11,6 +11,7 @@ interface Props {
 
 export function TerminalView({ workspaceId, isActive }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const thumbRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
 
@@ -22,7 +23,7 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       fontSize: 13,
       fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
       theme: {
-        background: '#000000',
+        background: '#1a1f26',
         foreground: '#e6e9ef',
         cursor: '#6ea8ff',
         selectionBackground: '#334155',
@@ -40,6 +41,30 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     term.open(containerRef.current);
     termRef.current = term;
     fitRef.current = fit;
+
+    // Custom overlay scrollbar. The native xterm-viewport scrollbar is hidden
+    // via CSS (no reserved gutter), and this thumb floats over the terminal
+    // content only while the pane is hovered. Position is synced from the
+    // viewport's scrollTop / scrollHeight on every scroll.
+    const viewport = containerRef.current.querySelector('.xterm-viewport') as HTMLElement | null;
+    const syncThumb = () => {
+      const thumb = thumbRef.current;
+      if (!thumb || !viewport) return;
+      const { scrollHeight, clientHeight, scrollTop } = viewport;
+      if (scrollHeight <= clientHeight) {
+        thumb.style.opacity = '0';
+        return;
+      }
+      const trackH = clientHeight;
+      const thumbH = Math.max(30, (clientHeight / scrollHeight) * trackH);
+      const maxTop = trackH - thumbH;
+      const top = (scrollTop / (scrollHeight - clientHeight)) * maxTop;
+      thumb.style.height = `${thumbH}px`;
+      thumb.style.transform = `translateY(${top}px)`;
+      thumb.style.opacity = '';
+    };
+    viewport?.addEventListener('scroll', syncThumb, { passive: true });
+    const thumbSyncRaf = requestAnimationFrame(syncThumb);
 
     let cancelled = false;
     let started = false;
@@ -140,6 +165,8 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf);
+      cancelAnimationFrame(thumbSyncRaf);
+      viewport?.removeEventListener('scroll', syncThumb);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onFocus);
       ro.disconnect();
@@ -168,6 +195,8 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     <div
       ref={containerRef}
       className={`terminal-pane ${isActive ? 'active' : ''}`}
-    />
+    >
+      <div ref={thumbRef} className="term-scroll-thumb" aria-hidden="true" />
+    </div>
   );
 }

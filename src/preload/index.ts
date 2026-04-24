@@ -6,7 +6,6 @@ const api: OrchestraAPI = {
   listRepos: () => ipcRenderer.invoke('repos:list'),
   removeRepo: (p) => ipcRenderer.invoke('repos:remove', p),
   pickDirectory: () => ipcRenderer.invoke('dialog:pickDir'),
-  confirm: (message, detail) => ipcRenderer.invoke('dialog:confirm', message, detail),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
 
   listWorkspaces: () => ipcRenderer.invoke('workspaces:list'),
@@ -16,6 +15,7 @@ const api: OrchestraAPI = {
   deleteWorkspace: (id) => ipcRenderer.invoke('workspaces:delete', id),
   openInEditor: (id, editor) => ipcRenderer.invoke('workspaces:openInEditor', id, editor),
   markSeen: (id) => ipcRenderer.invoke('workspaces:markSeen', id),
+  renameBranch: (id, newBranch) => ipcRenderer.invoke('workspaces:renameBranch', id, newBranch),
 
   ptyStart: (id, cols, rows) => ipcRenderer.invoke('pty:start', id, cols, rows),
   ptyWrite: (id, data) => ipcRenderer.invoke('pty:write', id, data),
@@ -44,6 +44,7 @@ const api: OrchestraAPI = {
   findPR: (id) => ipcRenderer.invoke('git:findPR', id),
   listBranches: (id) => ipcRenderer.invoke('git:listBranches', id),
   switchBranch: (id, branch) => ipcRenderer.invoke('git:switchBranch', id, branch),
+  mergeWorktree: (id) => ipcRenderer.invoke('git:merge', id),
 
   onWorkspaceUpdate: (cb) => {
     const listener = (_e: unknown, w: unknown) => cb(w as never);
@@ -61,7 +62,7 @@ const api: OrchestraAPI = {
     return () => ipcRenderer.off('workspace:focus', listener);
   },
   onAgentFinished: (cb) => {
-    const listener = (_e: unknown, id: string) => cb(id);
+    const listener = (_e: unknown, id: string, focused: boolean) => cb(id, focused);
     ipcRenderer.on('agent:finished', listener);
     return () => ipcRenderer.off('agent:finished', listener);
   },
