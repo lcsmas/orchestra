@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../store';
 import type { Workspace, WorkspaceStatus } from '../../shared/types';
 import { SoundSettings } from './SoundSettings';
+import { dialog } from './Dialog';
 
 interface Props {
   onNewFromRepo: () => void;
@@ -156,7 +157,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
     try {
       await archive(id);
     } catch (err) {
-      alert(`Could not archive workspace: ${(err as Error).message}`);
+      void dialog.error('Could not archive workspace', (err as Error).message);
     }
   };
 
@@ -165,21 +166,24 @@ export function Sidebar({ onNewFromRepo }: Props) {
     try {
       await unarchive(id);
     } catch (err) {
-      alert(`Could not restore workspace: ${(err as Error).message}`);
+      void dialog.error('Could not restore workspace', (err as Error).message);
     }
   };
 
   const onDelete = async (e: React.MouseEvent, id: string, name: string) => {
     e.stopPropagation();
-    const ok = await window.orchestra.confirm(
-      `Delete "${name}" permanently?`,
-      'This removes the git worktree from disk.',
-    );
+    const ok = await dialog.confirm({
+      title: 'Delete workspace',
+      message: `Delete "${name}" permanently?`,
+      detail: 'This removes the git worktree from disk.',
+      tone: 'danger',
+      confirmLabel: 'Delete',
+    });
     if (!ok) return;
     try {
       await deleteWorkspace(id);
     } catch (err) {
-      alert(`Could not delete workspace: ${(err as Error).message}`);
+      void dialog.error('Could not delete workspace', (err as Error).message);
     }
   };
 
@@ -188,7 +192,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
     try {
       await createWorkspace({ repoPath });
     } catch (err) {
-      alert(`Could not create workspace: ${(err as Error).message}`);
+      void dialog.error('Could not create workspace', (err as Error).message);
     }
   };
 

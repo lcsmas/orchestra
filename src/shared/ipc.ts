@@ -13,7 +13,6 @@ export interface OrchestraAPI {
   listRepos: () => Promise<RepoEntry[]>;
   removeRepo: (absPath: string) => Promise<void>;
   pickDirectory: () => Promise<string | null>;
-  confirm: (message: string, detail?: string) => Promise<boolean>;
   openExternal: (url: string) => Promise<void>;
 
   // Workspaces

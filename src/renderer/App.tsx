@@ -5,6 +5,7 @@ import { TerminalView } from './components/Terminal';
 import { DiffView } from './components/DiffView';
 import { BranchPicker } from './components/BranchPicker';
 import { NvimView } from './components/NvimView';
+import { DialogHost } from './components/Dialog';
 import { playFinishedChime } from './chime';
 
 const NVIM_WIDTH_KEY = 'orchestra.nvimPaneWidthPx';
@@ -294,7 +295,7 @@ export function App() {
           </>
         )}
       </main>
-
+      <DialogHost />
     </div>
   );
 }

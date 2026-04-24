@@ -157,18 +157,6 @@ ipcMain.handle('repos:remove', async (_e, absPath: string) => {
   await store.removeRepo(absPath);
 });
 
-ipcMain.handle('dialog:confirm', async (_e, message: string, detail?: string) => {
-  const res = await dialog.showMessageBox(getMainWindow(), {
-    type: 'question',
-    buttons: ['Cancel', 'Delete'],
-    defaultId: 0,
-    cancelId: 0,
-    message,
-    detail,
-  });
-  return res.response === 1;
-});
-
 ipcMain.handle('dialog:pickDir', async () => {
   const res = await dialog.showOpenDialog(getMainWindow(), {
     properties: ['openDirectory'],

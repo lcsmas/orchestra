@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { CreateWorkspaceInput, DiffStats, PRsForBranch, RepoEntry, Workspace } from '../shared/types';
+import { dialog } from './components/Dialog';
 
 interface State {
   repos: RepoEntry[];
@@ -63,7 +64,7 @@ export const useStore = create<State>((set, get) => ({
       set({ repos });
       return added ?? repos.find((r) => r.path === dir) ?? null;
     } catch (e) {
-      alert(`Could not add repo: ${(e as Error).message}`);
+      void dialog.error('Could not add repo', (e as Error).message);
       return null;
     }
   },
@@ -82,7 +83,7 @@ export const useStore = create<State>((set, get) => ({
     try {
       await get().createWorkspace({ repoPath: repo.path });
     } catch (e) {
-      alert(`Could not create workspace: ${(e as Error).message}`);
+      void dialog.error('Could not create workspace', (e as Error).message);
     }
   },
 
@@ -92,7 +93,7 @@ export const useStore = create<State>((set, get) => ({
     try {
       await get().createWorkspace({ repoPath: repo.path });
     } catch (e) {
-      alert(`Could not create workspace: ${(e as Error).message}`);
+      void dialog.error('Could not create workspace', (e as Error).message);
     }
   },
 
