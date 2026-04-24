@@ -673,6 +673,25 @@ input:focus, textarea:focus, select:focus {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.ws-name-auto {
+  color: var(--text-dim);
+  font-weight: 400;
+  font-size: 11px;
+  margin-left: 4px;
+  opacity: 0.75;
+}
+.ws-name-input {
+  font: inherit;
+  font-weight: 500;
+  width: 100%;
+  padding: 1px 4px;
+  margin: -2px 0;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--accent, #4a9eff);
+  border-radius: 3px;
+  outline: none;
+}
 .ws-icon-btn {
   flex-shrink: 0;
   width: 22px;

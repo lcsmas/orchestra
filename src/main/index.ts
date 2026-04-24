@@ -23,6 +23,8 @@ import {
   deleteWorkspace,
   ensureRoot,
   openInEditor,
+  renameWorkspaceBranch,
+  startBranchNameWatcher,
   unarchiveWorkspace,
 } from './workspaces';
 import {
@@ -56,6 +58,9 @@ if (VITE_DEV_SERVER_URL) {
 async function createMainWindow() {
   await store.load();
   await ensureRoot();
+  // Re-attach branch-name watchers for all non-archived workspaces — Claude
+  // may have dropped the suggestion file while Orchestra was closed.
+  // Deferred until after mainWindow is created.
 
   // Drop the default Electron menu (File/Edit/View/Window/Help). We don't ship
   // any custom menu commands; the strip just eats vertical space.
@@ -94,6 +99,11 @@ async function createMainWindow() {
     await mainWindow.loadURL(VITE_DEV_SERVER_URL);
   } else {
     await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+  }
+
+  for (const ws of store.workspaces) {
+    if (ws.archived) continue;
+    startBranchNameWatcher(ws, mainWindow);
   }
 }
 
@@ -341,6 +351,13 @@ ipcMain.handle('nvim:start', async (_e, id: string, cols: number, rows: number) 
 ipcMain.handle('nvim:stop', async (_e, id: string) => {
   stopPty(`${id}:nvim`);
 });
+
+ipcMain.handle(
+  'workspaces:renameBranch',
+  async (_e, id: string, newBranch: string) => {
+    return renameWorkspaceBranch(id, newBranch, { manual: true }, getMainWindow());
+  },
+);
 
 ipcMain.handle('git:merge', async (_e, id: string) => {
   const ws = store.getWorkspace(id);

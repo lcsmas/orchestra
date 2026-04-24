@@ -1,12 +1,12 @@
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { mkdir, readFile, writeFile, appendFile } from 'node:fs/promises';
+import { existsSync, watch, type FSWatcher } from 'node:fs';
 import { BrowserWindow, shell } from 'electron';
 import { execFile } from 'node:child_process';
 import { store } from './store';
-import { createWorktree, removeWorktree } from './git';
+import { createWorktree, removeWorktree, renameWorktreeBranch } from './git';
 import { stopPty, clearScrollback } from './pty';
 import { clearActivity } from './activity';
 import type { CreateWorkspaceInput, Workspace } from '../shared/types';
@@ -51,6 +51,9 @@ export async function createWorkspace(
   const worktreePath = path.join(ORCHESTRA_ROOT, `${repoName}-${safeBranch}-${id.slice(0, 8)}`);
 
   await createWorktree(input.repoPath, branch, baseBranch, worktreePath);
+  // If the user passed an explicit branch name, lock it against auto-rename.
+  const manuallySet = Boolean(input.branch);
+  await installBranchSuggestionHint(worktreePath, agent);
 
   const ws: Workspace = {
     id,
@@ -63,9 +66,11 @@ export async function createWorkspace(
     status: 'idle',
     agent,
     lastTask: input.task,
+    branchManuallySet: manuallySet,
   };
   await store.upsertWorkspace(ws);
   window.webContents.send('workspace:update', ws);
+  startBranchNameWatcher(ws, window);
 
   // Do NOT spawn the agent PTY here. The renderer's TerminalView will invoke
   // `pty:start` once the terminal container has real dimensions, so the agent
@@ -85,6 +90,7 @@ export async function archiveWorkspace(id: string, window: BrowserWindow): Promi
   stopPty(id);
   stopPty(`${id}:nvim`);
   clearActivity(id);
+  stopBranchNameWatcher(id);
   const updated: Workspace = {
     ...ws,
     archived: true,
@@ -106,6 +112,7 @@ export async function unarchiveWorkspace(id: string, window: BrowserWindow): Pro
   };
   await store.upsertWorkspace(updated);
   window.webContents.send('workspace:update', updated);
+  startBranchNameWatcher(updated, window);
 }
 
 export async function deleteWorkspace(id: string, window: BrowserWindow): Promise<void> {
@@ -116,6 +123,7 @@ export async function deleteWorkspace(id: string, window: BrowserWindow): Promis
   stopPty(id);
   stopPty(`${id}:nvim`);
   clearActivity(id);
+  stopBranchNameWatcher(id);
   clearScrollback(id);
   try {
     await removeWorktree(ws.repoPath, ws.worktreePath);
@@ -124,6 +132,164 @@ export async function deleteWorkspace(id: string, window: BrowserWindow): Promis
   }
   await store.removeWorkspace(id);
   window.webContents.send('workspace:removed', id);
+}
+
+// ---------- Branch rename ----------
+
+/** Rename the branch (and move the worktree dir to match) for a workspace.
+ * `manual` is true when the user typed the name themselves — it sets the
+ * `branchManuallySet` latch so Claude's auto-rename stops firing.
+ * Returns the updated workspace. */
+export async function renameWorkspaceBranch(
+  id: string,
+  rawNewBranch: string,
+  opts: { manual: boolean },
+  window: BrowserWindow,
+): Promise<Workspace> {
+  const ws = store.getWorkspace(id);
+  if (!ws) throw new Error('workspace not found');
+  const newBranch = sanitizeBranchName(rawNewBranch);
+  if (!newBranch) throw new Error('invalid branch name');
+  if (newBranch === ws.branch) {
+    if (opts.manual && !ws.branchManuallySet) {
+      const updated = { ...ws, branchManuallySet: true };
+      await store.upsertWorkspace(updated);
+      window.webContents.send('workspace:update', updated);
+      return updated;
+    }
+    return ws;
+  }
+  const repoName = path.basename(ws.repoPath);
+  const newWorktreePath = path.join(
+    ORCHESTRA_ROOT,
+    `${repoName}-${newBranch}-${ws.id.slice(0, 8)}`,
+  );
+  // Stop watcher during the move — the directory vanishes mid-rename.
+  stopBranchNameWatcher(ws.id);
+  await renameWorktreeBranch(ws.worktreePath, newWorktreePath, ws.branch, newBranch);
+
+  const updated: Workspace = {
+    ...ws,
+    branch: newBranch,
+    worktreePath: newWorktreePath,
+    name: `${repoName} · ${newBranch}`,
+    branchManuallySet: opts.manual || ws.branchManuallySet,
+  };
+  await store.upsertWorkspace(updated);
+  window.webContents.send('workspace:update', updated);
+  startBranchNameWatcher(updated, window);
+  return updated;
+}
+
+function sanitizeBranchName(raw: string): string {
+  // Keep the same allow-list used when creating worktree paths.
+  return raw.trim().replace(/\s+/g, '-').replace(/[^a-zA-Z0-9._/-]/g, '').slice(0, 80);
+}
+
+// ---------- Claude/Codex suggestion file watcher ----------
+//
+// Orchestra asks the agent (via a CLAUDE.md instruction we inject on create)
+// to write a proposed branch name to `<worktree>/.orchestra/branch-name`. We
+// watch for that file; when it appears and the user hasn't already locked a
+// name, we rename the branch + worktree to match.
+
+const watchers = new Map<string, FSWatcher>();
+
+async function installBranchSuggestionHint(
+  worktreePath: string,
+  agent: 'claude' | 'codex',
+): Promise<void> {
+  const hint = `
+
+## Orchestra: proposing a branch name
+
+This workspace was created with an auto-generated branch name. Once you
+understand what the user is building (usually within the first couple of
+exchanges), write a short kebab-case branch name that describes the work
+to \`.orchestra/branch-name\` in this worktree. Example:
+
+    mkdir -p .orchestra && printf '%s\\n' 'add-oauth-login' > .orchestra/branch-name
+
+Keep it concise (3–5 words), lowercase, hyphen-separated. Orchestra will
+rename the git branch and worktree dir automatically — but only until the
+user renames it themselves, at which point Orchestra ignores further writes.
+`;
+  try {
+    const dir = path.join(worktreePath, '.orchestra');
+    await mkdir(dir, { recursive: true });
+    const gitignore = path.join(dir, '.gitignore');
+    if (!existsSync(gitignore)) await writeFile(gitignore, '*\n');
+    const claudeFile = path.join(
+      worktreePath,
+      agent === 'claude' ? 'CLAUDE.md' : 'AGENTS.md',
+    );
+    const existing = existsSync(claudeFile) ? await readFile(claudeFile, 'utf8') : '';
+    if (!existing.includes('Orchestra: proposing a branch name')) {
+      await appendFile(claudeFile, (existing ? '' : '# Agent notes\n') + hint);
+    }
+  } catch {
+    /* best-effort — instructions help but aren't required */
+  }
+}
+
+export function startBranchNameWatcher(ws: Workspace, window: BrowserWindow): void {
+  stopBranchNameWatcher(ws.id);
+  if (ws.branchManuallySet) return;
+  const dir = path.join(ws.worktreePath, '.orchestra');
+  try {
+    if (!existsSync(dir)) return;
+    const watcher = watch(dir, { persistent: false }, (_event, filename) => {
+      if (filename !== 'branch-name') return;
+      void handleBranchSuggestion(ws.id, window);
+    });
+    watchers.set(ws.id, watcher);
+    // Fire once immediately in case the file was created before we attached.
+    void handleBranchSuggestion(ws.id, window);
+  } catch {
+    /* watcher is best-effort */
+  }
+}
+
+export function stopBranchNameWatcher(id: string): void {
+  const w = watchers.get(id);
+  if (!w) return;
+  try {
+    w.close();
+  } catch {
+    /* noop */
+  }
+  watchers.delete(id);
+}
+
+let pending = new Map<string, NodeJS.Timeout>();
+async function handleBranchSuggestion(id: string, window: BrowserWindow): Promise<void> {
+  // Debounce: the agent may write + truncate + write again. Coalesce to one
+  // rename per 400 ms quiet window.
+  const existing = pending.get(id);
+  if (existing) clearTimeout(existing);
+  pending.set(
+    id,
+    setTimeout(async () => {
+      pending.delete(id);
+      const ws = store.getWorkspace(id);
+      if (!ws || ws.archived || ws.branchManuallySet) return;
+      const file = path.join(ws.worktreePath, '.orchestra', 'branch-name');
+      let suggested = '';
+      try {
+        suggested = (await readFile(file, 'utf8')).trim();
+      } catch {
+        return;
+      }
+      if (!suggested) return;
+      const sanitized = sanitizeBranchName(suggested);
+      if (!sanitized || sanitized === ws.branch) return;
+      try {
+        await renameWorkspaceBranch(id, sanitized, { manual: false }, window);
+      } catch {
+        /* ignore — user may have just manually renamed, branch conflict, etc. */
+      }
+    }, 400),
+  );
 }
 
 export async function openInEditor(id: string, editor: 'code' | 'cursor'): Promise<void> {
