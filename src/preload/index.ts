@@ -44,6 +44,7 @@ const api: OrchestraAPI = {
   findPR: (id) => ipcRenderer.invoke('git:findPR', id),
   listBranches: (id) => ipcRenderer.invoke('git:listBranches', id),
   switchBranch: (id, branch) => ipcRenderer.invoke('git:switchBranch', id, branch),
+  mergeWorktree: (id) => ipcRenderer.invoke('git:merge', id),
 
   onWorkspaceUpdate: (cb) => {
     const listener = (_e: unknown, w: unknown) => cb(w as never);
@@ -61,7 +62,7 @@ const api: OrchestraAPI = {
     return () => ipcRenderer.off('workspace:focus', listener);
   },
   onAgentFinished: (cb) => {
-    const listener = (_e: unknown, id: string) => cb(id);
+    const listener = (_e: unknown, id: string, focused: boolean) => cb(id, focused);
     ipcRenderer.on('agent:finished', listener);
     return () => ipcRenderer.off('agent:finished', listener);
   },

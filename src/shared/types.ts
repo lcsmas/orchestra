@@ -14,6 +14,7 @@ export interface Workspace {
   archived?: boolean;
   archivedAt?: number;
   hasInput?: boolean;
+  mergedAt?: number;
 }
 
 export interface DiffFile {

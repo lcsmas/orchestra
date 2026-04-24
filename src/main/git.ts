@@ -226,6 +226,81 @@ export async function createPullRequest(
   return url;
 }
 
+export async function isWorktreeDirty(worktreePath: string): Promise<boolean> {
+  const git = simpleGit(worktreePath);
+  const res = await safeRaw(git, ['status', '--porcelain']);
+  return res.trim().length > 0;
+}
+
+export async function mergeIntoBase(params: {
+  repoPath: string;
+  branch: string;
+  baseBranch: string;
+}): Promise<{ pushed: boolean; pushError?: string }> {
+  const { repoPath, branch, baseBranch } = params;
+  const main = simpleGit(repoPath);
+
+  // Must be able to check out baseBranch in the main repo. Bail early on a
+  // dirty main working tree rather than silently clobbering user work.
+  const mainStatus = await safeRaw(main, ['status', '--porcelain']);
+  if (mainStatus.trim().length > 0) {
+    throw new Error(
+      `main repo at ${repoPath} has uncommitted changes — commit or stash them before merging`,
+    );
+  }
+
+  // Verify the branch actually has commits to merge.
+  const ahead = (await safeRaw(main, ['rev-list', '--count', `${baseBranch}..${branch}`])).trim();
+  if (ahead === '0') {
+    throw new Error(`branch ${branch} has no commits ahead of ${baseBranch} — nothing to merge`);
+  }
+
+  const originalBranch = (await safeRaw(main, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+  const switched = originalBranch !== baseBranch;
+
+  if (switched) {
+    try {
+      await main.raw(['checkout', baseBranch]);
+    } catch (e) {
+      throw new Error(
+        `could not check out ${baseBranch} in main repo (may be checked out in another worktree): ${(e as Error).message}`,
+      );
+    }
+  }
+
+  // Best-effort fast-forward against origin so we merge onto the latest tip.
+  // Swallow errors: no remote, no upstream, offline, etc. are all acceptable.
+  await safeRaw(main, ['pull', '--ff-only', 'origin', baseBranch]);
+
+  // Use the feature branch's last commit subject as the squash commit message.
+  const subject =
+    (await safeRaw(main, ['log', '-1', '--pretty=%s', branch])).trim() ||
+    `Merge ${branch} into ${baseBranch}`;
+
+  try {
+    await main.raw(['merge', '--squash', branch]);
+    await main.raw(['commit', '-m', subject]);
+  } catch (e) {
+    await safeRaw(main, ['merge', '--abort']);
+    await safeRaw(main, ['reset', '--hard', `origin/${baseBranch}`]).catch(() => undefined);
+    if (switched) await safeRaw(main, ['checkout', originalBranch]);
+    throw new Error(`merge failed (likely conflicts): ${(e as Error).message}`);
+  }
+
+  let pushed = false;
+  let pushError: string | undefined;
+  try {
+    await main.raw(['push', 'origin', baseBranch]);
+    pushed = true;
+  } catch (e) {
+    pushError = (e as Error).message;
+  }
+
+  if (switched) await safeRaw(main, ['checkout', originalBranch]);
+
+  return { pushed, pushError };
+}
+
 export async function findPullRequest(
   worktreePath: string,
   branch: string,

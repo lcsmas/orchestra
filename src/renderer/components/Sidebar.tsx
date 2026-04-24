@@ -263,7 +263,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
               return (
                 <div
                   key={w.id}
-                  className={`ws-item ${activeId === w.id ? 'active' : ''}`}
+                  className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt ? 'merged' : ''}`}
                   onClick={() => setActive(w.id)}
                 >
                   <div
@@ -276,48 +276,56 @@ export function Sidebar({ onNewFromRepo }: Props) {
                           : w.status
                     }
                   />
-                  <div className="ws-meta">
-                    <div className="ws-name">{w.branch}</div>
-                    <div className="ws-sub">{w.agent}</div>
-                  </div>
-                  {visiblePRs.length > 0 && (
-                    <span className="pr-badges">
-                      {visiblePRs.map((p) => (
-                        <span
-                          key={p.number}
-                          className={`pr-badge ${p.state.toLowerCase()}`}
-                          title={`PR #${p.number} · ${p.state.toLowerCase()} · ${p.title}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            window.orchestra.openExternal(p.url);
-                          }}
-                        >
-                          {p.state === 'MERGED' ? (
-                            <PRMergedIcon />
-                          ) : p.state === 'CLOSED' ? (
-                            <PRClosedIcon />
-                          ) : (
-                            <PROpenIcon />
-                          )}
-                          <span className="pr-badge-num">#{p.number}</span>
-                        </span>
-                      ))}
-                      {hiddenPRs > 0 && (
-                        <span
-                          className="pr-badge more"
-                          title={`${hiddenPRs} more PR${hiddenPRs === 1 ? '' : 's'} from this branch`}
-                        >
-                          +{hiddenPRs}
+                  <div className="ws-body">
+                    <div className="ws-name-row">
+                      <div className="ws-name" title={w.branch}>{w.branch}</div>
+                      {w.mergedAt && (
+                        <span className="merged-pill" title={`Merged into ${w.baseBranch}`}>
+                          merged
                         </span>
                       )}
-                    </span>
-                  )}
-                  {hasChanges && (
-                    <span className="diff-indicator compact" title={`${s.files} file${s.files === 1 ? '' : 's'} changed`}>
-                      {s.additions > 0 && <span className="add">+{s.additions}</span>}
-                      {s.deletions > 0 && <span className="del">−{s.deletions}</span>}
-                    </span>
-                  )}
+                      {hasChanges && (
+                        <span className="diff-indicator compact" title={`${s.files} file${s.files === 1 ? '' : 's'} changed`}>
+                          {s.additions > 0 && <span className="add">+{s.additions}</span>}
+                          {s.deletions > 0 && <span className="del">−{s.deletions}</span>}
+                        </span>
+                      )}
+                    </div>
+                    {visiblePRs.length > 0 && (
+                      <div className="ws-meta-row">
+                        <span className="pr-badges">
+                          {visiblePRs.map((p) => (
+                            <span
+                              key={p.number}
+                              className={`pr-badge ${p.state.toLowerCase()}`}
+                              title={`PR #${p.number} · ${p.state.toLowerCase()} · ${p.title}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                window.orchestra.openExternal(p.url);
+                              }}
+                            >
+                              {p.state === 'MERGED' ? (
+                                <PRMergedIcon />
+                              ) : p.state === 'CLOSED' ? (
+                                <PRClosedIcon />
+                              ) : (
+                                <PROpenIcon />
+                              )}
+                              <span className="pr-badge-num">#{p.number}</span>
+                            </span>
+                          ))}
+                          {hiddenPRs > 0 && (
+                            <span
+                              className="pr-badge more"
+                              title={`${hiddenPRs} more PR${hiddenPRs === 1 ? '' : 's'} from this branch`}
+                            >
+                              +{hiddenPRs}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    )}
+                  </div>
                   <button
                     className="ws-icon-btn"
                     title="Archive workspace"
