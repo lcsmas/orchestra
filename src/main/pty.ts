@@ -200,3 +200,9 @@ export function stopAll() {
 export function isRunning(id: string) {
   return sessions.has(id);
 }
+
+export function getPtyPid(id: string): number | undefined {
+  const s = sessions.get(id);
+  if (!s || s.stopped) return undefined;
+  return s.pty.pid;
+}
