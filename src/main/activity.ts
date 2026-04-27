@@ -1,133 +1,16 @@
 import { BrowserWindow, Notification } from 'electron';
-import { readFile } from 'node:fs/promises';
 import { store } from './store';
+import { getBranchMergeState } from './git';
 import type { Workspace, WorkspaceStatus } from '../shared/types';
 
-// Robust "is the agent working?" detector.
+// Hook-driven activity tracker.
 //
-// We observe the agent's own process tree via /proc instead of scraping TUI
-// text. Every POLL_INTERVAL_MS we sum (utime + stime) CPU ticks across the
-// PTY child and all its descendants. If that total grew since the last poll,
-// the agent (or a tool subprocess it spawned) did CPU work. QUIET_SAMPLES
-// consecutive zero-delta polls means the agent has returned to its input
-// prompt — fire "finished".
+// Claude Code's UserPromptSubmit + Stop hooks (installed per-workspace in
+// .claude/settings.local.json by workspaces.ts) POST `{id, event}` JSON to the
+// hooks-server's Unix socket. The hooks-server forwards each event here.
 //
-// This is agent-agnostic: claude, codex, a plain shell, a future TUI — any of
-// them look "busy" when they're burning cycles and "idle" when they're blocked
-// in read()/epoll_wait() waiting for the next keypress.
-//
-// The tracker is gated by `armed` (flipped by noteSubmit) so startup replay —
-// e.g. `claude --continue` redrawing the previous turn — can never trigger a
-// fake finished event before the user has actually sent input this session.
-//
-// On top of the process-state signal, `noteData` scans the PTY stream for the
-// REPL's idle-footer strings ("? for shortcuts" etc). Once we've observed at
-// least BUSY_TICKS_THRESHOLD of real CPU work this turn, the re-appearance of
-// the footer is a strong positive signal the turn has ended and we fire
-// immediately instead of waiting for the full QUIET_SAMPLES settle time.
-
-const POLL_INTERVAL_MS = 500;
-// 2s of low CPU = idle. Short enough to feel snappy, long enough to ride out
-// API round-trips that leave every process blocked in epoll_wait for a beat.
-const QUIET_SAMPLES = 4;
-// Minimum per-poll CPU ticks to count as "busy". Idle claude/codex TUIs redraw
-// a blinking cursor / status timer and rack up 1 tick every ~1–2 s; active
-// turns produce 5–50+ ticks per poll. A threshold of 2 ticks (20 ms of CPU
-// per 500 ms poll) cleanly separates real work from idle animation noise.
-const BUSY_TICKS_THRESHOLD = 2;
-
-// Footer strings Claude Code / Codex render only in the idle input footer.
-// Best-effort list; false negatives just fall back to the CPU gate. False
-// positives are guarded by `sawBusyWork` — the footer only short-circuits
-// after we've observed real CPU work this turn, so the pre-submit footer
-// can't trivially fire a finished event.
-const PROMPT_MARKERS = [
-  '? for shortcuts',
-  'bypassing permissions',
-  'shift+tab',
-  'esc to clear',
-  'esc to cancel',
-];
-
-// Strip ANSI escape sequences + cursor/color controls so substring matching
-// is reliable across redraws.
-// eslint-disable-next-line no-control-regex
-const ANSI_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*\x07)/g;
-function stripAnsi(s: string): string {
-  return s.replace(ANSI_RE, '');
-}
-
-interface Track {
-  armed: boolean;
-  running: boolean;
-  pid: number | null;
-  pollTimer: NodeJS.Timeout | null;
-  lastTicks: number;
-  quietStreak: number;
-  sawBusyWork: boolean; // observed BUSY_TICKS_THRESHOLD-level work this turn
-  tail: string;         // small trailing window for cross-chunk marker match
-}
-
-const tracks = new Map<string, Track>();
-
-function getTrack(id: string): Track {
-  let t = tracks.get(id);
-  if (!t) {
-    t = {
-      armed: false,
-      running: false,
-      pid: null,
-      pollTimer: null,
-      lastTicks: 0,
-      quietStreak: 0,
-      sawBusyWork: false,
-      tail: '',
-    };
-    tracks.set(id, t);
-  }
-  return t;
-}
-
-function hasPromptMarker(buf: string): boolean {
-  const lower = buf.toLowerCase();
-  return PROMPT_MARKERS.some((m) => lower.includes(m));
-}
-
-async function collectDescendants(pid: number, acc = new Set<number>()): Promise<Set<number>> {
-  if (acc.has(pid)) return acc;
-  acc.add(pid);
-  try {
-    const data = await readFile(`/proc/${pid}/task/${pid}/children`, 'utf8');
-    for (const c of data.trim().split(/\s+/).filter(Boolean)) {
-      const cpid = Number(c);
-      if (!Number.isNaN(cpid)) await collectDescendants(cpid, acc);
-    }
-  } catch {
-    /* process exited mid-walk, fine */
-  }
-  return acc;
-}
-
-async function totalCpuTicks(pids: Set<number>): Promise<number> {
-  let total = 0;
-  for (const pid of pids) {
-    try {
-      const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
-      // /proc/<pid>/stat: "pid (comm with possibly spaces) state ppid ..."
-      // After the last ')' the remaining fields are whitespace-separated and
-      // stable. utime = field 14, stime = field 15 of the overall line,
-      // i.e. index 11 and 12 in the post-')' tail (which starts at `state`).
-      const tail = stat.slice(stat.lastIndexOf(')') + 2).split(/\s+/);
-      const utime = Number(tail[11]);
-      const stime = Number(tail[12]);
-      if (!Number.isNaN(utime)) total += utime;
-      if (!Number.isNaN(stime)) total += stime;
-    } catch {
-      /* pid gone, skip */
-    }
-  }
-  return total;
-}
+// No /proc sampling, no PTY scraping, no per-workspace timer state — status
+// transitions are 1:1 with Claude's own lifecycle events.
 
 async function setStatus(
   id: string,
@@ -145,17 +28,23 @@ async function setStatus(
   return updated;
 }
 
-function fireFinished(id: string, window: BrowserWindow) {
+function fireFinished(id: string, window: BrowserWindow): void {
   const focused = window.isFocused();
   void setStatus(id, 'waiting', window).then((ws) => {
     if (!ws) return;
     if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-      // Ship the main-process focus state with the event. `document.hasFocus()`
+      // Ship the main-process focus state with the event. document.hasFocus()
       // is unreliable in the renderer (returns stale true on Wayland when the
       // window is hidden on another workspace / CDP is attached), so the
       // renderer trusts this flag instead.
       window.webContents.send('agent:finished', id, focused);
     }
+    // Re-evaluate "is this branch in sync with base after a merge, or has
+    // it diverged again?" each time the agent's turn ends. Agents drive the
+    // merge themselves via the Merge button's prompt, and may keep working
+    // on the branch afterward — so the pill cycles on/off with each merge
+    // and re-divergence rather than being a one-shot terminal state.
+    void detectAndUpdateMergeState(id, window);
     if (focused) return;
     try {
       const n = new Notification({
@@ -177,73 +66,48 @@ function fireFinished(id: string, window: BrowserWindow) {
   });
 }
 
-async function poll(id: string, window: BrowserWindow): Promise<void> {
-  const t = tracks.get(id);
-  if (!t || !t.armed || t.pid == null) return;
-  const descendants = await collectDescendants(t.pid);
-  const ticks = await totalCpuTicks(descendants);
-  const delta = ticks - t.lastTicks;
-  t.lastTicks = ticks;
-
-  if (delta > BUSY_TICKS_THRESHOLD) {
-    t.quietStreak = 0;
-    t.sawBusyWork = true;
-    if (!t.running) {
-      t.running = true;
-      void setStatus(id, 'running', window);
-    }
-  } else {
-    t.quietStreak += 1;
-    if (t.running && t.quietStreak >= QUIET_SAMPLES) {
-      t.running = false;
-      t.pollTimer = null;
-      fireFinished(id, window);
-      return;
-    }
+async function detectAndUpdateMergeState(
+  id: string,
+  window: BrowserWindow,
+): Promise<void> {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived) return;
+  const { merged, diverged } = await getBranchMergeState(
+    ws.repoPath,
+    ws.branch,
+    ws.baseBranch,
+  );
+  // mergedAt is "timestamp of most recent merge" — set/refresh on every
+  // merge cycle, never cleared. The `divergedFromBase` flag is what tells
+  // the renderer whether the branch is currently in sync with that merge
+  // (pill visible) or has new commits since (pill hidden, button enabled).
+  const fresh = store.getWorkspace(id);
+  if (!fresh || fresh.archived) return;
+  const nextMergedAt = merged ? Date.now() : fresh.mergedAt;
+  const nextDiverged = diverged;
+  const changed =
+    nextMergedAt !== fresh.mergedAt ||
+    Boolean(fresh.divergedFromBase) !== nextDiverged;
+  if (!changed) return;
+  const updated: Workspace = {
+    ...fresh,
+    mergedAt: nextMergedAt,
+    divergedFromBase: nextDiverged,
+  };
+  await store.upsertWorkspace(updated);
+  if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+    window.webContents.send('workspace:update', updated);
   }
-  t.pollTimer = setTimeout(() => void poll(id, window), POLL_INTERVAL_MS);
 }
 
-export function notePtyStart(id: string, pid: number) {
-  const t = getTrack(id);
-  t.pid = pid;
-  // Seed the baseline so the first delta doesn't count pre-spawn CPU time.
-  t.lastTicks = 0;
-  t.quietStreak = 0;
-}
-
-export function noteSubmit(id: string, window: BrowserWindow) {
-  const t = getTrack(id);
-  t.armed = true;
-  t.running = true;
-  t.quietStreak = 0;
-  t.sawBusyWork = false;
-  t.tail = '';
-  void setStatus(id, 'running', window);
-  if (t.pollTimer) clearTimeout(t.pollTimer);
-  t.pollTimer = setTimeout(() => void poll(id, window), POLL_INTERVAL_MS);
-}
-
-export function noteData(id: string, chunk: string, window: BrowserWindow) {
-  const t = tracks.get(id);
-  if (!t || !t.armed || !t.running || !t.sawBusyWork) return;
-  const stripped = stripAnsi(chunk);
-  const probe = t.tail + stripped;
-  t.tail = probe.slice(-512);
-  if (!hasPromptMarker(probe)) return;
-  // Prompt footer reappeared after real CPU work — the turn has ended. Short-
-  // circuit the CPU quiet-streak settle time.
-  t.running = false;
-  if (t.pollTimer) {
-    clearTimeout(t.pollTimer);
-    t.pollTimer = null;
+export function dispatchHookEvent(
+  id: string,
+  event: string,
+  window: BrowserWindow,
+): void {
+  if (event === 'submit') {
+    void setStatus(id, 'running', window);
+  } else if (event === 'stop') {
+    fireFinished(id, window);
   }
-  fireFinished(id, window);
-}
-
-export function clearActivity(id: string) {
-  const t = tracks.get(id);
-  if (!t) return;
-  if (t.pollTimer) clearTimeout(t.pollTimer);
-  tracks.delete(id);
 }

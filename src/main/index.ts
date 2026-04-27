@@ -20,8 +20,6 @@ import {
   findPullRequest,
   listBranches,
   getDiffStats,
-  isWorktreeDirty,
-  mergeIntoBase,
 } from './git';
 import type { Workspace } from '../shared/types';
 import {
@@ -29,6 +27,7 @@ import {
   createWorkspace,
   deleteWorkspace,
   ensureRoot,
+  installOrchestraHooks,
   openInEditor,
   renameWorkspaceBranch,
   startBranchNameWatcher,
@@ -45,7 +44,7 @@ import {
   clearScrollback,
   isRunning,
 } from './pty';
-import { clearActivity, noteData, notePtyStart, noteSubmit } from './activity';
+import { startHooksServer, stopHooksServer } from './hooks-server';
 import type { CreateWorkspaceInput } from '../shared/types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -66,6 +65,10 @@ if (VITE_DEV_SERVER_URL) {
 async function createMainWindow() {
   await store.load();
   await ensureRoot();
+  // Hook server must be ready before any PTY spawns: spawned claude inherits
+  // ORCHESTRA_SOCK from the env we'll set on the pty.spawn call, and that
+  // value is read from getHookSocketPath() which only returns non-null after
+  // listen() resolves.
   // Re-attach branch-name watchers for all non-archived workspaces — Claude
   // may have dropped the suggestion file while Orchestra was closed.
   // Deferred until after mainWindow is created.
@@ -89,6 +92,8 @@ async function createMainWindow() {
     },
   });
   mainWindow.setMenuBarVisibility(false);
+
+  await startHooksServer(mainWindow);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void openUrlExternally(url);
@@ -235,6 +240,8 @@ ipcMain.handle('pty:start', async (_e, id: string, cols: number, rows: number) =
     ? ['--continue', '--dangerously-skip-permissions']
     : ['--dangerously-skip-permissions'];
   const codexArgs = resuming ? ['resume', '--last'] : [];
+  // Idempotent: upgrades workspaces created before the activity hook landed.
+  await installOrchestraHooks(ws.worktreePath, ws.agent);
   await startPty({
     id,
     cwd: ws.worktreePath,
@@ -243,8 +250,7 @@ ipcMain.handle('pty:start', async (_e, id: string, cols: number, rows: number) =
     cols,
     rows,
     window: getMainWindow(),
-    onAgentData: (wsId, data) => noteData(wsId, data, getMainWindow()),
-    onAgentPid: (wsId, pid) => notePtyStart(wsId, pid),
+    workspaceId: id,
   });
   // Preserve the `waiting` yellow dot across restarts: if the previous session
   // ended with an unread "agent finished" state, the dot stays until the user
@@ -261,7 +267,7 @@ ipcMain.handle('pty:start', async (_e, id: string, cols: number, rows: number) =
     const task = ws.lastTask;
     setTimeout(() => {
       writePty(id, task + '\n');
-      noteSubmit(id, getMainWindow());
+      // Status flips to running once Claude fires its UserPromptSubmit hook.
     }, 1200);
   }
 });
@@ -270,7 +276,8 @@ ipcMain.handle('pty:write', async (_e, id: string, data: string) => {
   // Flip hasInput the first time the user actually submits something (Enter
   // key / carriage return). This is what gates `claude --continue` on the
   // next PTY start, so we avoid "No conversation found" when the log is
-  // only startup TUI noise.
+  // only startup TUI noise. Activity status itself flips from Claude's own
+  // UserPromptSubmit hook, not from this handler.
   const submitted = data.includes('\r') || data.includes('\n');
   if (submitted) {
     const ws = store.getWorkspace(id);
@@ -279,7 +286,6 @@ ipcMain.handle('pty:write', async (_e, id: string, data: string) => {
       await store.upsertWorkspace(updated);
       getMainWindow().webContents.send('workspace:update', updated);
     }
-    noteSubmit(id, getMainWindow());
   }
   return writePty(id, data);
 });
@@ -287,7 +293,6 @@ ipcMain.handle('pty:resize', (_e, id: string, cols: number, rows: number) =>
   resizePty(id, cols, rows),
 );
 ipcMain.handle('pty:stop', (_e, id: string) => {
-  clearActivity(id);
   return stopPty(id);
 });
 ipcMain.handle('pty:scrollback', (_e, id: string) => readScrollback(id));
@@ -371,29 +376,25 @@ ipcMain.handle('git:merge', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
 
-  if (await isWorktreeDirty(ws.worktreePath)) {
-    const prompt =
-      'There are uncommitted changes in this worktree. Please review them, then commit ALL pending changes with a clear message and push the branch. After you finish, the user will click Merge again.';
-    writePty(id, prompt);
-    setTimeout(() => writePty(id, '\r'), 80);
-    return {
-      status: 'pending-commit' as const,
-      message:
-        'Worktree has uncommitted changes — asked the agent to commit them. Click Merge again once the commit lands.',
-    };
-  }
+  // Hand the merge off to the agent: it has full context of the work it just
+  // did and writes its own commit messages along the way. The agent runs
+  // inside the worktree (whose HEAD is the feature branch); to update the
+  // base branch it must operate on the main repo via `git -C <repoPath>`
+  // since the worktree's HEAD is pinned.
+  const prompt =
+    `Please merge this branch into \`${ws.baseBranch}\` and push.\n\n` +
+    `- Feature branch: \`${ws.branch}\` (current worktree HEAD)\n` +
+    `- Base branch: \`${ws.baseBranch}\`\n` +
+    `- Main repo path: \`${ws.repoPath}\`\n\n` +
+    `If there are uncommitted changes, commit them first with a clear message. ` +
+    `Then run the merge against the main repo (use \`git -C "${ws.repoPath}" ...\` so the worktree HEAD stays put), ` +
+    `and \`git push\` the base branch. ` +
+    `Tell me when it's done or if anything goes wrong.`;
 
-  const { pushed, pushError } = await mergeIntoBase({
-    repoPath: ws.repoPath,
-    branch: ws.branch,
-    baseBranch: ws.baseBranch,
-  });
+  writePty(id, prompt);
+  setTimeout(() => writePty(id, '\r'), 80);
 
-  const updated: Workspace = { ...ws, mergedAt: Date.now() };
-  await store.upsertWorkspace(updated);
-  getMainWindow().webContents.send('workspace:update', updated);
-
-  return { status: 'merged' as const, pushed, pushError };
+  return { status: 'requested' as const };
 });
 
 ipcMain.handle('git:switchBranch', async (_e, id: string, branch: string) => {
@@ -406,11 +407,13 @@ app.whenReady().then(createMainWindow);
 
 app.on('window-all-closed', () => {
   stopAll();
+  stopHooksServer();
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
   stopAll();
+  stopHooksServer();
 });
 
 app.on('activate', () => {

@@ -109,18 +109,13 @@ export function App() {
     if (!active || merging) return;
     setMerging(true);
     try {
-      const res = await window.orchestra.mergeWorktree(active.id);
-      if (res.status === 'pending-commit') {
-        alert(res.message);
-        return;
-      }
-      if (res.pushError) {
-        alert(
-          `Merged ${active.branch} into ${active.baseBranch}, but push failed:\n${res.pushError}`,
-        );
-      }
+      // The merge button now just hands a structured prompt to the agent —
+      // the agent has full work context and writes a better commit message
+      // than we could synthesise. No success/failure UI here; the agent
+      // reports back in its own terminal output.
+      await window.orchestra.mergeWorktree(active.id);
     } catch (e) {
-      alert(`Could not merge: ${(e as Error).message}`);
+      alert(`Could not request merge: ${(e as Error).message}`);
     } finally {
       setMerging(false);
     }
@@ -178,16 +173,24 @@ export function App() {
                   )}
                 </button>
               </div>
-              <button
-                className={`merge-btn ${active.mergedAt ? 'done' : ''}`}
-                onClick={onMerge}
-                disabled={merging || !!active.mergedAt}
-                title={
-                  active.mergedAt
-                    ? `Already merged into ${active.baseBranch}`
-                    : `Squash-merge ${active.branch} into ${active.baseBranch} and push`
-                }
-              >
+              {(() => {
+                // "In sync" = at least one merge has landed AND the branch
+                // hasn't diverged since. The button stays clickable in
+                // either state — agents handle re-merges fine, and the user
+                // may want to ship a follow-up commit on a previously
+                // merged branch. Disable only while a merge request is
+                // in flight to prevent double-fire.
+                const inSync = !!active.mergedAt && !active.divergedFromBase;
+                const tip = inSync
+                  ? `Already merged into ${active.baseBranch} — click to re-merge follow-up work`
+                  : `Merge ${active.branch} into ${active.baseBranch} and push`;
+                return (
+                  <button
+                    className={`merge-btn ${inSync ? 'done' : ''}`}
+                    onClick={onMerge}
+                    disabled={merging}
+                    title={tip}
+                  >
                 <svg
                   viewBox="0 0 24 24"
                   width="13"
@@ -205,8 +208,10 @@ export function App() {
                   <circle cx="6" cy="6" r="3" />
                   <path d="M6 21V9a9 9 0 0 0 9 9" />
                 </svg>
-                {merging ? 'Merging…' : active.mergedAt ? 'Merged' : 'Merge'}
-              </button>
+                    {merging ? 'Merging…' : inSync ? 'Merged' : 'Merge'}
+                  </button>
+                );
+              })()}
               {openPR ? (
                 <button
                   className="primary pr-link"

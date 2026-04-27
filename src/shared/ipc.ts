@@ -47,12 +47,7 @@ export interface OrchestraAPI {
   findPR: (id: string) => Promise<PRsForBranch>;
   listBranches: (id: string) => Promise<string[]>;
   switchBranch: (id: string, branch: string) => Promise<Workspace>;
-  mergeWorktree: (
-    id: string,
-  ) => Promise<
-    | { status: 'merged'; pushed: boolean; pushError?: string }
-    | { status: 'pending-commit'; message: string }
-  >;
+  mergeWorktree: (id: string) => Promise<{ status: 'requested' }>;
 
   // Events
   onWorkspaceUpdate: (cb: (w: Workspace) => void) => () => void;

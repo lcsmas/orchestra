@@ -239,79 +239,33 @@ export async function createPullRequest(
   return url;
 }
 
-export async function isWorktreeDirty(worktreePath: string): Promise<boolean> {
-  const git = simpleGit(worktreePath);
-  const res = await safeRaw(git, ['status', '--porcelain']);
-  return res.trim().length > 0;
-}
-
-export async function mergeIntoBase(params: {
-  repoPath: string;
-  branch: string;
-  baseBranch: string;
-}): Promise<{ pushed: boolean; pushError?: string }> {
-  const { repoPath, branch, baseBranch } = params;
-  const main = simpleGit(repoPath);
-
-  // Must be able to check out baseBranch in the main repo. Bail early on a
-  // dirty main working tree rather than silently clobbering user work.
-  const mainStatus = await safeRaw(main, ['status', '--porcelain']);
-  if (mainStatus.trim().length > 0) {
-    throw new Error(
-      `main repo at ${repoPath} has uncommitted changes — commit or stash them before merging`,
-    );
-  }
-
-  // Verify the branch actually has commits to merge.
-  const ahead = (await safeRaw(main, ['rev-list', '--count', `${baseBranch}..${branch}`])).trim();
-  if (ahead === '0') {
-    throw new Error(`branch ${branch} has no commits ahead of ${baseBranch} — nothing to merge`);
-  }
-
-  const originalBranch = (await safeRaw(main, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
-  const switched = originalBranch !== baseBranch;
-
-  if (switched) {
-    try {
-      await main.raw(['checkout', baseBranch]);
-    } catch (e) {
-      throw new Error(
-        `could not check out ${baseBranch} in main repo (may be checked out in another worktree): ${(e as Error).message}`,
-      );
-    }
-  }
-
-  // Best-effort fast-forward against origin so we merge onto the latest tip.
-  // Swallow errors: no remote, no upstream, offline, etc. are all acceptable.
-  await safeRaw(main, ['pull', '--ff-only', 'origin', baseBranch]);
-
-  // Use the feature branch's last commit subject as the squash commit message.
-  const subject =
-    (await safeRaw(main, ['log', '-1', '--pretty=%s', branch])).trim() ||
-    `Merge ${branch} into ${baseBranch}`;
-
+/** Snapshot of how `branch` relates to `baseBranch`:
+ *  - `merged`: every commit on branch is reachable from base AND the two
+ *    refs point at different commits → a real merge has landed.
+ *  - `diverged`: branch has commits not reachable from base → unshipped work.
+ *
+ *  These are mutually exclusive. The `!merged && !diverged` case is either a
+ *  fresh branch (branch HEAD == base HEAD) or a fast-forward-merged branch
+ *  where the two refs converged — both ambiguous, so neither flag is set.
+ *  FF false-negatives are rare enough that missing the stamp is acceptable. */
+export async function getBranchMergeState(
+  repoPath: string,
+  branch: string,
+  baseBranch: string,
+): Promise<{ merged: boolean; diverged: boolean }> {
   try {
-    await main.raw(['merge', '--squash', branch]);
-    await main.raw(['commit', '-m', subject]);
-  } catch (e) {
-    await safeRaw(main, ['merge', '--abort']);
-    await safeRaw(main, ['reset', '--hard', `origin/${baseBranch}`]).catch(() => undefined);
-    if (switched) await safeRaw(main, ['checkout', originalBranch]);
-    throw new Error(`merge failed (likely conflicts): ${(e as Error).message}`);
+    const git = simpleGit(repoPath);
+    const aheadStr = (await git.raw(['rev-list', '--count', `${baseBranch}..${branch}`])).trim();
+    const ahead = Number(aheadStr) || 0;
+    if (ahead > 0) return { merged: false, diverged: true };
+    const [branchSha, baseSha] = await Promise.all([
+      git.raw(['rev-parse', branch]).then((s) => s.trim()),
+      git.raw(['rev-parse', baseBranch]).then((s) => s.trim()),
+    ]);
+    return { merged: branchSha !== baseSha, diverged: false };
+  } catch {
+    return { merged: false, diverged: false };
   }
-
-  let pushed = false;
-  let pushError: string | undefined;
-  try {
-    await main.raw(['push', 'origin', baseBranch]);
-    pushed = true;
-  } catch (e) {
-    pushError = (e as Error).message;
-  }
-
-  if (switched) await safeRaw(main, ['checkout', originalBranch]);
-
-  return { pushed, pushError };
 }
 
 export async function findPullRequest(

@@ -348,7 +348,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
               return (
                 <div
                   key={w.id}
-                  className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt ? 'merged' : ''}`}
+                  className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}`}
                   onClick={() => setActive(w.id)}
                 >
                   <div
@@ -392,7 +392,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
                           )}
                         </div>
                       )}
-                      {w.mergedAt && (
+                      {w.mergedAt && !w.divergedFromBase && (
                         <span className="merged-pill" title={`Merged into ${w.baseBranch}`}>
                           merged
                         </span>

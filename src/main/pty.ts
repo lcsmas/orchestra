@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
+import { getHookSocketPath } from './hooks-server';
 
 let ptyMod: typeof import('node-pty') | null = null;
 async function loadPty() {
@@ -90,8 +91,9 @@ export async function startPty(opts: {
   cols: number;
   rows: number;
   window: BrowserWindow;
-  onAgentData?: (id: string, data: string) => void;
-  onAgentPid?: (id: string, pid: number) => void;
+  /** Workspace id to surface to Claude hooks via $ORCHESTRA_WS_ID. Omit for
+   * non-agent PTYs (nvim, etc.) that don't need to phone status home. */
+  workspaceId?: string;
 }) {
   if (sessions.has(opts.id)) return; // already running
   if (!fs.existsSync(opts.cwd)) {
@@ -105,12 +107,22 @@ export async function startPty(opts: {
   const initialSize = trimLogIfNeeded(logPath);
   const logStream = fs.createWriteStream(logPath, { flags: 'a' });
 
+  const env: Record<string, string> = {
+    ...(process.env as Record<string, string>),
+    TERM: 'xterm-256color',
+  };
+  const sock = getHookSocketPath();
+  if (sock && opts.workspaceId) {
+    env.ORCHESTRA_SOCK = sock;
+    env.ORCHESTRA_WS_ID = opts.workspaceId;
+  }
+
   const proc = pty.spawn(opts.command, opts.args, {
     name: 'xterm-256color',
     cols: Math.max(20, opts.cols),
     rows: Math.max(5, opts.rows),
     cwd: opts.cwd,
-    env: { ...process.env, TERM: 'xterm-256color' },
+    env,
   });
   const session: Session = {
     pty: proc,
@@ -122,8 +134,6 @@ export async function startPty(opts: {
     logPath,
   };
   sessions.set(opts.id, session);
-
-  if (opts.onAgentPid && proc.pid) opts.onAgentPid(opts.id, proc.pid);
 
   session.disposables.push(
     proc.onData((data) => {
@@ -137,7 +147,6 @@ export async function startPty(opts: {
           session.logStream = fs.createWriteStream(session.logPath, { flags: 'a' });
         }
       }
-      if (opts.onAgentData) opts.onAgentData(opts.id, data);
       if (!canSend(opts.window)) return;
       opts.window.webContents.send('pty:data', opts.id, data);
     }),

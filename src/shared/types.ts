@@ -17,7 +17,18 @@ export interface Workspace {
   /** True once the user has manually set the branch name. Auto-rename from
    * Claude's `.orchestra/branch-name` file is disabled when this is true. */
   branchManuallySet?: boolean;
+  /** Timestamp of the most recent merge of this branch into its base branch.
+   * Updated on each successful merge cycle (a branch can be merged, diverge
+   * again as work continues, and be merged again — `mergedAt` always holds
+   * the latest stamp). Use together with `divergedFromBase` for the visual
+   * "currently in sync since last merge" signal. */
   mergedAt?: number;
+  /** True when the branch has commits not yet on the base branch — i.e.
+   * unshipped work. Recomputed by the activity tracker after every agent
+   * turn (Stop hook). When false AND `mergedAt` is set, the branch is
+   * currently in sync with base after at least one merge → render the
+   * "merged" pill. */
+  divergedFromBase?: boolean;
 }
 
 export interface DiffFile {

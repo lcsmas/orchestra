@@ -13,7 +13,6 @@ import {
   switchWorktreeBranch,
 } from './git';
 import { isRunning, stopPty, clearScrollback } from './pty';
-import { clearActivity } from './activity';
 import type { CreateWorkspaceInput, Workspace } from '../shared/types';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
@@ -56,7 +55,7 @@ export async function createWorkspace(
   const worktreePath = path.join(ORCHESTRA_ROOT, `${repoName}-${safeBranch}-${id.slice(0, 8)}`);
 
   await createWorktree(input.repoPath, branch, baseBranch, worktreePath);
-  await installFirstPromptHook(worktreePath, agent);
+  await installOrchestraHooks(worktreePath, agent);
 
   const ws: Workspace = {
     id,
@@ -92,7 +91,6 @@ export async function archiveWorkspace(id: string, window: BrowserWindow): Promi
   // dedicated Archived section where they can be restored or hard-deleted.
   stopPty(id);
   stopPty(`${id}:nvim`);
-  clearActivity(id);
   stopBranchNameWatcher(id);
   const updated: Workspace = {
     ...ws,
@@ -125,7 +123,6 @@ export async function deleteWorkspace(id: string, window: BrowserWindow): Promis
   // scrollback log, and remove the store record.
   stopPty(id);
   stopPty(`${id}:nvim`);
-  clearActivity(id);
   stopBranchNameWatcher(id);
   clearScrollback(id);
   try {
@@ -139,12 +136,12 @@ export async function deleteWorkspace(id: string, window: BrowserWindow): Promis
 
 // ---------- Branch rename ----------
 
-/** Rename the branch on a workspace. The worktree dir stays put — branch is
- * just a property of the workspace, not its identity. `manual` is true when
- * the user typed the name themselves and sets the `branchManuallySet` latch
- * so the agent's auto-rename suggestion stops firing. Stops any running
- * agent/nvim and emits `pty:restart` so they respawn against the renamed
- * branch (HEAD is the same commit, but their internal state is reset). */
+/** Rename the branch on a workspace. The worktree dir stays put and the
+ * agent keeps running — `git branch -m` is purely a ref rename, so HEAD,
+ * CWD, and open files are unaffected. The agent's TUI banner may show a
+ * stale branch name until it next repaints, but that's cosmetic.
+ * `manual` is true when the user typed the name themselves and sets the
+ * `branchManuallySet` latch so the auto-rename suggestion stops firing. */
 export async function renameWorkspaceBranch(
   id: string,
   rawNewBranch: string,
@@ -165,12 +162,7 @@ export async function renameWorkspaceBranch(
     return ws;
   }
   const repoName = path.basename(ws.repoPath);
-  const nvimId = `${id}:nvim`;
-  const restartAgent = isRunning(id);
-  const restartNvim = isRunning(nvimId);
   stopBranchNameWatcher(ws.id);
-  stopPty(id);
-  stopPty(nvimId);
   await renameWorktreeBranch(ws.worktreePath, ws.branch, newBranch);
 
   const updated: Workspace = {
@@ -182,8 +174,6 @@ export async function renameWorkspaceBranch(
   await store.upsertWorkspace(updated);
   window.webContents.send('workspace:update', updated);
   startBranchNameWatcher(updated, window);
-  if (restartAgent) window.webContents.send('pty:restart', id);
-  if (restartNvim) window.webContents.send('pty:restart', nvimId);
   return updated;
 }
 
@@ -209,7 +199,6 @@ export async function switchWorkspaceBranch(
   const restartNvim = isRunning(nvimId);
   stopPty(id);
   stopPty(nvimId);
-  clearActivity(id);
   clearScrollback(id);
   stopBranchNameWatcher(id);
 
@@ -233,24 +222,48 @@ export async function switchWorkspaceBranch(
   return updated;
 }
 
-// ---------- First-prompt branch rename ----------
+// ---------- Per-workspace Claude Code hooks ----------
 //
-// On workspace creation we install a Claude `UserPromptSubmit` hook into
-// `<worktree>/.claude/settings.local.json`. The hook dumps the prompt JSON
-// into `<worktree>/.orchestra/first-prompt.json` exactly once (subsequent
-// prompts short-circuit because the file already exists). A watcher in the
-// main process picks that up, runs `claude -p` headlessly to suggest a
-// kebab-case branch name from the user's message, and renames the branch +
-// worktree. After the rename we lock the branch (`branchManuallySet=true`)
-// so this fires at most once per workspace lifetime. Codex has no equivalent
-// hook so its workspaces keep their auto-generated random names.
+// Two responsibilities live in the same `<worktree>/.claude/settings.local.json`:
+//
+// 1. First-prompt branch rename. UserPromptSubmit hook dumps the prompt JSON
+//    into `<worktree>/.orchestra/first-prompt.json` exactly once (subsequent
+//    prompts short-circuit because the file already exists). A watcher in the
+//    main process picks that up, runs `claude -p` headlessly to suggest a
+//    kebab-case branch name from the user's message, and renames the branch +
+//    worktree. After the rename we lock the branch (`branchManuallySet=true`)
+//    so this fires at most once per workspace lifetime.
+//
+// 2. Activity tracking. UserPromptSubmit + Stop hooks POST `{id, event}` to
+//    the orchestra hooks-server's Unix socket so workspace status flips
+//    running ↔ waiting from Claude's own lifecycle events. Both commands are
+//    env-guarded with `[ -n "$ORCHESTRA_SOCK" ]` so they're a silent no-op
+//    when the user runs claude outside orchestra.
+//
+// Codex has no equivalent hook system, so its workspaces keep their
+// auto-generated random branch names and rely on the agent process exit for
+// status (currently unimplemented for codex).
 
-const HOOK_COMMAND =
+const HOOK_FIRST_PROMPT_CMD =
   "sh -c '[ -f .orchestra/first-prompt.json ] && exit 0; mkdir -p .orchestra && cat > .orchestra/first-prompt.json'";
+
+const HOOK_ACTIVITY_SUBMIT_CMD =
+  '[ -n "$ORCHESTRA_SOCK" ] && curl -s --max-time 1 --unix-socket "$ORCHESTRA_SOCK" -d \'{"id":"\'"$ORCHESTRA_WS_ID"\'","event":"submit"}\' http://x/event > /dev/null 2>&1 || true';
+
+const HOOK_ACTIVITY_STOP_CMD =
+  '[ -n "$ORCHESTRA_SOCK" ] && curl -s --max-time 1 --unix-socket "$ORCHESTRA_SOCK" -d \'{"id":"\'"$ORCHESTRA_WS_ID"\'","event":"stop"}\' http://x/event > /dev/null 2>&1 || true';
 
 const watchers = new Map<string, FSWatcher>();
 
-async function installFirstPromptHook(
+function upsertHookCommand(list: unknown[], command: string): void {
+  const present = list.some((entry) => {
+    const inner = (entry as { hooks?: Array<{ command?: string }> })?.hooks ?? [];
+    return inner.some((h) => h?.command === command);
+  });
+  if (!present) list.push({ hooks: [{ type: 'command', command }] });
+}
+
+export async function installOrchestraHooks(
   worktreePath: string,
   agent: 'claude' | 'codex',
 ): Promise<void> {
@@ -273,15 +286,16 @@ async function installFirstPromptHook(
       }
     }
     const hooks = ((settings.hooks as Record<string, unknown>) ??= {});
-    const list = ((hooks.UserPromptSubmit as unknown[]) ??= []);
-    const alreadyInstalled = list.some((entry) => {
-      const inner = (entry as { hooks?: Array<{ command?: string }> })?.hooks ?? [];
-      return inner.some((h) => h?.command === HOOK_COMMAND);
-    });
-    if (!alreadyInstalled) {
-      list.push({ hooks: [{ type: 'command', command: HOOK_COMMAND }] });
-    }
-    hooks.UserPromptSubmit = list;
+
+    const submitList = ((hooks.UserPromptSubmit as unknown[]) ??= []);
+    upsertHookCommand(submitList, HOOK_FIRST_PROMPT_CMD);
+    upsertHookCommand(submitList, HOOK_ACTIVITY_SUBMIT_CMD);
+    hooks.UserPromptSubmit = submitList;
+
+    const stopList = ((hooks.Stop as unknown[]) ??= []);
+    upsertHookCommand(stopList, HOOK_ACTIVITY_STOP_CMD);
+    hooks.Stop = stopList;
+
     settings.hooks = hooks;
     await writeFile(settingsFile, JSON.stringify(settings, null, 2));
   } catch {
