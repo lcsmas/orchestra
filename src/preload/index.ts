@@ -35,6 +35,11 @@ const api: OrchestraAPI = {
     ipcRenderer.on('pty:exit', listener);
     return () => ipcRenderer.off('pty:exit', listener);
   },
+  onPtyRestart: (cb) => {
+    const listener = (_e: unknown, id: string) => cb(id);
+    ipcRenderer.on('pty:restart', listener);
+    return () => ipcRenderer.off('pty:restart', listener);
+  },
 
   getDiff: (id) => ipcRenderer.invoke('git:diff', id),
   getDiffStats: (id) => ipcRenderer.invoke('git:stats', id),

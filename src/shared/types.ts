@@ -37,7 +37,6 @@ export interface DiffStats {
 
 export interface CreateWorkspaceInput {
   repoPath: string;
-  branch?: string;
   baseBranch?: string;
   task?: string;
   agent?: 'claude' | 'codex';

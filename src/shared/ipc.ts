@@ -36,6 +36,7 @@ export interface OrchestraAPI {
   nvimStop: (id: string) => Promise<void>;
   onPtyData: (cb: (id: string, data: string) => void) => () => void;
   onPtyExit: (cb: (id: string, code: number) => void) => () => void;
+  onPtyRestart: (cb: (id: string) => void) => () => void;
 
   // Git / Diff
   getDiff: (id: string) => Promise<DiffFile[]>;

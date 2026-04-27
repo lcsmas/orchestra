@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import type { Workspace, WorkspaceStatus } from '../../shared/types';
 import { SoundSettings } from './SoundSettings';
@@ -150,6 +150,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
+  const [selectedArchived, setSelectedArchived] = useState<Set<string>>(new Set());
 
   const startRename = (e: React.MouseEvent, ws: Workspace) => {
     e.stopPropagation();
@@ -170,6 +171,57 @@ export function Sidebar({ onNewFromRepo }: Props) {
 
   const active = workspaces.filter((w) => !w.archived);
   const archived = workspaces.filter((w) => w.archived);
+
+  const allArchivedSelected =
+    archived.length > 0 && archived.every((w) => selectedArchived.has(w.id));
+  const someArchivedSelected = selectedArchived.size > 0 && !allArchivedSelected;
+
+  // Reset selection when the section is collapsed.
+  useEffect(() => {
+    if (!archivedOpen) setSelectedArchived(new Set());
+  }, [archivedOpen]);
+
+  const toggleArchivedSelection = (id: string) => {
+    setSelectedArchived((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllArchived = () => {
+    setSelectedArchived(allArchivedSelected ? new Set() : new Set(archived.map((w) => w.id)));
+  };
+
+  const onDeleteSelectedArchived = async () => {
+    const ids = archived.filter((w) => selectedArchived.has(w.id)).map((w) => w.id);
+    if (ids.length === 0) return;
+    const ok = await dialog.confirm({
+      title: ids.length === 1 ? 'Delete workspace' : 'Delete archived workspaces',
+      message:
+        ids.length === 1
+          ? 'Delete the selected workspace permanently?'
+          : `Delete ${ids.length} archived workspaces permanently?`,
+      detail:
+        ids.length === 1
+          ? 'This removes the git worktree from disk.'
+          : 'This removes all selected git worktrees from disk.',
+      tone: 'danger',
+      confirmLabel: ids.length === 1 ? 'Delete' : `Delete ${ids.length}`,
+    });
+    if (!ok) return;
+    setSelectedArchived(new Set());
+    await Promise.all(
+      ids.map(async (id) => {
+        try {
+          await deleteWorkspace(id);
+        } catch (err) {
+          void dialog.error('Could not delete workspace', (err as Error).message);
+        }
+      }),
+    );
+  };
 
   const onArchive = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -216,6 +268,14 @@ export function Sidebar({ onNewFromRepo }: Props) {
   };
 
   const activeGroups = groupByRepo(active);
+  // Show every registered repo as a section, plus any orphan repoPaths that
+  // still have workspaces (e.g. the repo entry was removed but workspaces
+  // remain). This way a repo header stays visible — with a 0 count and an
+  // active "+" button — even after every workspace in it is archived.
+  const repoOrder: string[] = [
+    ...repos.map((r) => r.path),
+    ...Array.from(activeGroups.keys()).filter((p) => !repos.some((r) => r.path === p)),
+  ];
 
   const repoLabel = (repoPath: string) => {
     const repo = repos.find((r) => r.path === repoPath);
@@ -249,12 +309,14 @@ export function Sidebar({ onNewFromRepo }: Props) {
         </div>
       </div>
       <div className="ws-list">
-        {active.length === 0 && archived.length === 0 && (
+        {repoOrder.length === 0 && archived.length === 0 && (
           <div style={{ padding: '20px', color: 'var(--text-dim)', fontSize: 12 }}>
             No agents running. Click <strong>Repo</strong> to map a git repo and spawn one.
           </div>
         )}
-        {Array.from(activeGroups.entries()).map(([repoPath, items]) => (
+        {repoOrder.map((repoPath) => {
+          const items = activeGroups.get(repoPath) ?? [];
+          return (
           <div key={repoPath} className="repo-section">
             <div className="repo-header" title={repoPath}>
               <span className="repo-name">{repoLabel(repoPath)}</span>
@@ -389,7 +451,8 @@ export function Sidebar({ onNewFromRepo }: Props) {
               );
             })}
           </div>
-        ))}
+          );
+        })}
 
         {soundSettingsOpen && <SoundSettings onClose={() => setSoundSettingsOpen(false)} />}
 
@@ -406,33 +469,75 @@ export function Sidebar({ onNewFromRepo }: Props) {
             </button>
             {archivedOpen && (
               <div className="archived-list">
-                {archived.map((w) => (
-                  <div key={w.id} className="ws-item archived" title={w.name}>
-                    <div className={`ws-dot ${w.status as WorkspaceStatus}`} />
-                    <div className="ws-meta">
-                      <div className="ws-name">{w.branch}</div>
-                      <div className="ws-sub">
-                        {repoLabel(w.repoPath)} · {w.agent}
+                <div className="archived-bar">
+                  <label className="archived-check" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={allArchivedSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someArchivedSelected;
+                      }}
+                      onChange={toggleSelectAllArchived}
+                      aria-label={allArchivedSelected ? 'Deselect all' : 'Select all archived'}
+                    />
+                  </label>
+                  <span className="archived-bar-count">
+                    {selectedArchived.size > 0 ? `${selectedArchived.size} selected` : 'Select all'}
+                  </span>
+                  {selectedArchived.size > 0 && (
+                    <button
+                      className="archived-bar-delete"
+                      onClick={onDeleteSelectedArchived}
+                    >
+                      Delete {selectedArchived.size}
+                    </button>
+                  )}
+                </div>
+                {archived.map((w) => {
+                  const isSelected = selectedArchived.has(w.id);
+                  return (
+                    <div
+                      key={w.id}
+                      className={`ws-item archived${isSelected ? ' selected' : ''}`}
+                      title={w.name}
+                    >
+                      <label
+                        className="archived-check"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleArchivedSelection(w.id)}
+                          aria-label={`Select workspace ${w.name}`}
+                        />
+                      </label>
+                      <div className={`ws-dot ${w.status as WorkspaceStatus}`} />
+                      <div className="ws-meta">
+                        <div className="ws-name">{w.branch}</div>
+                        <div className="ws-sub">
+                          {repoLabel(w.repoPath)} · {w.agent}
+                        </div>
                       </div>
+                      <button
+                        className="ws-icon-btn"
+                        title="Restore workspace"
+                        aria-label={`Restore workspace ${w.name}`}
+                        onClick={(e) => onUnarchive(e, w.id)}
+                      >
+                        <RestoreIcon />
+                      </button>
+                      <button
+                        className="ws-icon-btn danger"
+                        title="Delete workspace permanently"
+                        aria-label={`Delete workspace ${w.name}`}
+                        onClick={(e) => onDelete(e, w.id, w.name)}
+                      >
+                        <TrashIcon />
+                      </button>
                     </div>
-                    <button
-                      className="ws-icon-btn"
-                      title="Restore workspace"
-                      aria-label={`Restore workspace ${w.name}`}
-                      onClick={(e) => onUnarchive(e, w.id)}
-                    >
-                      <RestoreIcon />
-                    </button>
-                    <button
-                      className="ws-icon-btn danger"
-                      title="Delete workspace permanently"
-                      aria-label={`Delete workspace ${w.name}`}
-                      onClick={(e) => onDelete(e, w.id, w.name)}
-                    >
-                      <TrashIcon />
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

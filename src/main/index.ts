@@ -19,7 +19,6 @@ import {
   createPullRequest,
   findPullRequest,
   listBranches,
-  switchWorktreeBranch,
   getDiffStats,
   isWorktreeDirty,
   mergeIntoBase,
@@ -33,6 +32,7 @@ import {
   openInEditor,
   renameWorkspaceBranch,
   startBranchNameWatcher,
+  switchWorkspaceBranch,
   unarchiveWorkspace,
 } from './workspaces';
 import {
@@ -397,14 +397,7 @@ ipcMain.handle('git:merge', async (_e, id: string) => {
 });
 
 ipcMain.handle('git:switchBranch', async (_e, id: string, branch: string) => {
-  const ws = store.getWorkspace(id);
-  if (!ws) throw new Error('workspace not found');
-  if (ws.branch === branch) return ws;
-  await switchWorktreeBranch(ws.worktreePath, branch);
-  const updated: Workspace = { ...ws, branch };
-  await store.upsertWorkspace(updated);
-  getMainWindow().webContents.send('workspace:update', updated);
-  return updated;
+  return switchWorkspaceBranch(id, branch, getMainWindow());
 });
 
 // ---------- Lifecycle ----------

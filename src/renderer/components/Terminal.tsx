@@ -130,9 +130,48 @@ export function TerminalView({ workspaceId, isActive }: Props) {
         term.writeln(`\r\n\x1b[33m[agent exited with code ${code}]\x1b[0m`);
       }
     });
+    // Main process stopped the pty and wants us to spawn a fresh one — used
+    // on branch switch so the agent starts over against the new branch
+    // instead of running with stale in-memory context from the old one.
+    const offRestart = window.orchestra.onPtyRestart((id) => {
+      if (id !== workspaceId) return;
+      term.reset();
+      started = false;
+      lastSentCols = 0;
+      lastSentRows = 0;
+      start();
+    });
 
     term.onData((data) => {
       window.orchestra.ptyWrite(workspaceId, data);
+    });
+
+    // Clipboard shortcuts. The agent must never receive SIGINT, so plain
+    // Ctrl+C is repurposed as copy. Ctrl+Shift+C / Cmd+C also copy; Ctrl+V /
+    // Ctrl+Shift+V / Cmd+V paste.
+    const isMac = navigator.platform.toUpperCase().includes('MAC');
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true;
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (!mod) return true;
+      const key = e.key.toLowerCase();
+      if (key === 'c') {
+        const sel = term.getSelection();
+        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+        e.preventDefault();
+        return false;
+      }
+      if (key === 'v') {
+        navigator.clipboard
+          .readText()
+          .then((text) => {
+            if (text) window.orchestra.ptyWrite(workspaceId, text);
+          })
+          .catch(() => {});
+        e.preventDefault();
+        return false;
+      }
+      return true;
     });
 
     const ro = new ResizeObserver(() => {
@@ -172,6 +211,7 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       ro.disconnect();
       offData();
       offExit();
+      offRestart();
       term.dispose();
       termRef.current = null;
     };

@@ -90,6 +90,14 @@ export function NvimView({ workspaceId, isActive }: Props) {
         term.writeln(`\r\n\x1b[33m[nvim exited with code ${code}]\x1b[0m`);
       }
     });
+    const offRestart = window.orchestra.onPtyRestart((id) => {
+      if (id !== sessionId) return;
+      term.reset();
+      started = false;
+      lastSentCols = 0;
+      lastSentRows = 0;
+      start();
+    });
 
     term.onData((data) => {
       window.orchestra.ptyWrite(sessionId, data);
@@ -112,6 +120,7 @@ export function NvimView({ workspaceId, isActive }: Props) {
       ro.disconnect();
       offData();
       offExit();
+      offRestart();
       term.dispose();
       termRef.current = null;
     };
