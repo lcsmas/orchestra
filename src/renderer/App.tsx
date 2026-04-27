@@ -5,8 +5,11 @@ import { TerminalView } from './components/Terminal';
 import { DiffView } from './components/DiffView';
 import { BranchPicker } from './components/BranchPicker';
 import { NvimView } from './components/NvimView';
-import { DialogHost } from './components/Dialog';
+import { RunTerminal } from './components/RunTerminal';
+import { SetupBanner } from './components/SetupBanner';
+import { DialogHost, dialog } from './components/Dialog';
 import { playFinishedChime } from './chime';
+import type { RepoEntry } from '../shared/types';
 
 const NVIM_WIDTH_KEY = 'orchestra.nvimPaneWidthPx';
 const NVIM_WIDTH_DEFAULT = 520;
@@ -19,6 +22,7 @@ function loadNvimWidth(): number {
 export function App() {
   const {
     workspaces,
+    repos,
     activeId,
     view,
     setView,
@@ -30,6 +34,7 @@ export function App() {
     prs,
     refreshAllPRs,
   } = useStore();
+  const findRepo = (path: string): RepoEntry | undefined => repos.find((r) => r.path === path);
   const [nvimOpen, setNvimOpen] = useState(false);
   const [nvimWidth, setNvimWidth] = useState<number>(() => loadNvimWidth());
   const paneRowRef = useRef<HTMLDivElement>(null);
@@ -101,10 +106,36 @@ export function App() {
     });
   }, []);
 
+  useEffect(() => {
+    return window.orchestra.onAgentNeedsInput((id, focused) => {
+      // Same focus heuristic as agent:finished — don't chime if the user is
+      // already looking at the workspace that needs input.
+      if (focused && useStore.getState().activeId === id) return;
+      playFinishedChime();
+    });
+  }, []);
+
   const liveWorkspaces = workspaces.filter((w) => !w.archived);
   const active = liveWorkspaces.find((w) => w.id === activeId);
   const openPR = active ? prs[active.id]?.open ?? null : null;
   const [merging, setMerging] = useState(false);
+  const onRestart = async () => {
+    if (!active) return;
+    if (active.status === 'running') {
+      const ok = await dialog.confirm({
+        title: 'Restart agent?',
+        message: `${active.branch} is mid-turn. Restarting will kill the current response.`,
+        detail: 'The conversation resumes via `claude --continue`, but in-flight output is lost.',
+        tone: 'danger',
+      });
+      if (!ok) return;
+    }
+    try {
+      await window.orchestra.restartAgent(active.id);
+    } catch (e) {
+      void dialog.error(`Could not restart agent: ${(e as Error).message}`);
+    }
+  };
   const onMerge = async () => {
     if (!active || merging) return;
     setMerging(true);
@@ -172,7 +203,49 @@ export function App() {
                     </span>
                   )}
                 </button>
+                {(() => {
+                  const repo = findRepo(active.repoPath);
+                  const hasRun = !!repo?.scripts?.run;
+                  // Tab stays visible without a run script so users notice the
+                  // affordance and discover the gear-icon entry point.
+                  return (
+                    <button
+                      className={`tab ${view === 'run' ? 'active' : ''}`}
+                      onClick={() => setView('run')}
+                      title={
+                        hasRun
+                          ? 'Spawn the configured run script (dev server, etc.)'
+                          : 'No run script configured for this repo — click to learn more'
+                      }
+                    >
+                      Run
+                      {!hasRun && <span className="tab-dim"> · setup</span>}
+                    </button>
+                  );
+                })()}
               </div>
+              <button
+                className="restart-btn"
+                onClick={onRestart}
+                title="Restart agent (resumes via --continue, picks up MCP / settings changes)"
+                aria-label="Restart agent"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.8}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path d="M21 12a9 9 0 1 1-3.18-6.86" />
+                  <polyline points="21 4 21 9 16 9" />
+                </svg>
+              </button>
               {(() => {
                 // "In sync" = at least one merge has landed AND the branch
                 // hasn't diverged since. The button stays clickable in
@@ -220,23 +293,33 @@ export function App() {
                 >
                   PR #{openPR.number}
                 </button>
-              ) : (
-                <button
-                  className="pr-link pr-link-create"
-                  onClick={() => {
-                    const id = active.id;
-                    const prompt =
-                      'Please create a pull request for the current branch: commit any pending changes, push the branch, and open the PR with a concise title and summary.';
-                    // Type the prompt first, then send Enter as a separate keystroke
-                    // so Claude's TUI treats it as a submit, not a pasted newline.
-                    window.orchestra.ptyWrite(id, prompt);
-                    setTimeout(() => window.orchestra.ptyWrite(id, '\r'), 80);
-                  }}
-                  title="Ask the focused Claude Code agent to create a PR"
-                >
-                  Open PR
-                </button>
-              )}
+              ) : (() => {
+                // Prime the button when there are local commits not on origin —
+                // the user is one push away from being able to actually open
+                // a PR, so make the affordance visually obvious.
+                const unpushed = active.unpushedAhead ?? 0;
+                const primed = unpushed > 0;
+                const tip = primed
+                  ? `${unpushed} commit${unpushed === 1 ? '' : 's'} ready to push — ask the agent to push and open a PR`
+                  : 'Ask the focused Claude Code agent to create a PR';
+                return (
+                  <button
+                    className={`pr-link pr-link-create${primed ? ' primed' : ''}`}
+                    onClick={() => {
+                      const id = active.id;
+                      const prompt =
+                        'Please create a pull request for the current branch: commit any pending changes, push the branch, and open the PR with a concise title and summary.';
+                      // Type the prompt first, then send Enter as a separate keystroke
+                      // so Claude's TUI treats it as a submit, not a pasted newline.
+                      window.orchestra.ptyWrite(id, prompt);
+                      setTimeout(() => window.orchestra.ptyWrite(id, '\r'), 80);
+                    }}
+                    title={tip}
+                  >
+                    {primed ? `Open PR · ↑${unpushed}` : 'Open PR'}
+                  </button>
+                );
+              })()}
               <button
                 className={`pane-toggle ${nvimOpen ? 'active' : ''}`}
                 onClick={() => setNvimOpen((v) => !v)}
@@ -262,6 +345,14 @@ export function App() {
                 </svg>
               </button>
             </div>
+            {/* SetupBanner sits ABOVE .pane-row, not inside .pane. Inside,
+                the active TerminalView uses `position: absolute; inset: 0`
+                and would eclipse the banner on the Terminal tab. Above the
+                row, it's a normal flex child taking its natural height when
+                visible, zero when null. The `setup-` key prefix avoids
+                colliding with sibling keys (RunTerminal also keys by
+                `active.id`). */}
+            <SetupBanner key={`setup-${active.id}`} workspace={active} />
             {/* Render a TerminalView for every workspace but only show the active one.
                 This keeps each xterm.js instance alive (preserving its scrollback buffer)
                 even when the user switches to a different workspace tab. */}
@@ -278,6 +369,19 @@ export function App() {
                   />
                 ))}
                 {view === 'diff' && <DiffView workspaceId={active.id} />}
+                {view === 'run' && (
+                  <RunTerminal
+                    // Prefix avoids colliding with the sibling TerminalView's
+                    // key (it uses the same workspace id). Without the prefix,
+                    // when the active workspace's TerminalView and the
+                    // RunTerminal coexist as `.pane` children, React warns and
+                    // can reuse fibers across component types.
+                    key={`run-${active.id}`}
+                    workspaceId={active.id}
+                    isActive={true}
+                    hasRunScript={!!findRepo(active.repoPath)?.scripts?.run}
+                  />
+                )}
               </div>
               {nvimOpen && (
                 <>

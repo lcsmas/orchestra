@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import type { Workspace, WorkspaceStatus } from '../../shared/types';
 import { SoundSettings } from './SoundSettings';
+import { RepoScriptsModal } from './RepoScriptsModal';
 import { dialog } from './Dialog';
 
 interface Props {
@@ -57,6 +58,29 @@ function RestoreIcon() {
         fill="currentColor"
         d="M8 3a5 5 0 1 1-4.9 6h1.05A4 4 0 1 0 8 4V5.6L5.5 3.8 8 2v1Z"
       />
+    </svg>
+  );
+}
+
+function GearIcon() {
+  // Lucide `settings` — same stroke vocabulary as the merge / restart / PR
+  // icons elsewhere in the app, so it visually belongs to that family.
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="13"
+      height="13"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      shapeRendering="geometricPrecision"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z" />
+      <circle cx="12" cy="12" r="3" />
     </svg>
   );
 }
@@ -148,6 +172,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
   } = useStore();
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
+  const [scriptsRepoPath, setScriptsRepoPath] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [selectedArchived, setSelectedArchived] = useState<Set<string>>(new Set());
@@ -323,6 +348,17 @@ export function Sidebar({ onNewFromRepo }: Props) {
               <span className="repo-header-actions">
                 <span className="repo-count">{items.length}</span>
                 <button
+                  className="repo-scripts-btn"
+                  title={`Configure setup / run / archive scripts for ${repoLabel(repoPath)}`}
+                  aria-label={`Configure scripts for ${repoLabel(repoPath)}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setScriptsRepoPath(repoPath);
+                  }}
+                >
+                  <GearIcon />
+                </button>
+                <button
                   className="repo-add"
                   title={`New workspace in ${repoLabel(repoPath)}`}
                   aria-label={`New workspace in ${repoLabel(repoPath)}`}
@@ -358,7 +394,9 @@ export function Sidebar({ onNewFromRepo }: Props) {
                         ? 'Agent is working…'
                         : w.status === 'idle'
                           ? 'Agent is idle'
-                          : w.status
+                          : w.status === 'stalled'
+                            ? 'Agent stalled — check terminal (rate limit, /login, or crashed)'
+                            : w.status
                     }
                   />
                   <div className="ws-body">
@@ -397,10 +435,35 @@ export function Sidebar({ onNewFromRepo }: Props) {
                           merged
                         </span>
                       )}
+                      {!!w.unpushedAhead && w.unpushedAhead > 0 && (
+                        <span
+                          className="unpushed-pill"
+                          title={`${w.unpushedAhead} commit${w.unpushedAhead === 1 ? '' : 's'} not yet on origin — ready to push`}
+                        >
+                          ↑{w.unpushedAhead}
+                        </span>
+                      )}
                       {hasChanges && (
                         <span className="diff-indicator compact" title={`${s.files} file${s.files === 1 ? '' : 's'} changed`}>
                           {s.additions > 0 && <span className="add">+{s.additions}</span>}
                           {s.deletions > 0 && <span className="del">−{s.deletions}</span>}
+                        </span>
+                      )}
+                      {w.setupStatus === 'failed' && (
+                        <span
+                          className="setup-pill failed"
+                          title={`Setup script failed: ${w.setupError ?? 'see log'}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActive(w.id);
+                          }}
+                        >
+                          setup
+                        </span>
+                      )}
+                      {w.setupStatus === 'running' && (
+                        <span className="setup-pill running" title="Setup script running">
+                          setup…
                         </span>
                       )}
                     </div>
@@ -455,6 +518,13 @@ export function Sidebar({ onNewFromRepo }: Props) {
         })}
 
         {soundSettingsOpen && <SoundSettings onClose={() => setSoundSettingsOpen(false)} />}
+        {scriptsRepoPath && (
+          <RepoScriptsModal
+            repoPath={scriptsRepoPath}
+            repoName={repoLabel(scriptsRepoPath)}
+            onClose={() => setScriptsRepoPath(null)}
+          />
+        )}
 
         {archived.length > 0 && (
           <div className="archived-section">

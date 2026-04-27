@@ -2,7 +2,10 @@ import { app } from 'electron';
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import type { RepoEntry, Workspace } from '../shared/types';
+import type { RepoEntry, RepoScripts, Workspace } from '../shared/types';
+
+const PORT_RANGE_START = 55100;
+const PORT_RANGE_END = 55600; // exclusive — keeps 500 slots, well above realistic concurrency
 
 interface StoreShape {
   repos: RepoEntry[];
@@ -38,13 +41,14 @@ export class Store {
     } catch {
       this.data = DEFAULT;
     }
-    // `running` across a restart can only be stale crash state — no PTY is
-    // alive yet. Reset to idle. `waiting` is intentionally preserved so an
-    // unread "agent finished" dot from the previous session survives until the
-    // user actually views the workspace (markSeen).
+    // `running` and `stalled` across a restart can only be stale state from
+    // a prior PTY that no longer exists — reset to idle. `waiting` is
+    // intentionally preserved so an unread "agent finished" dot from the
+    // previous session survives until the user actually views the workspace
+    // (markSeen).
     let mutated = false;
     for (const ws of this.data.workspaces) {
-      if (ws.status === 'running') {
+      if (ws.status === 'running' || ws.status === 'stalled') {
         ws.status = 'idle';
         mutated = true;
       }
@@ -102,6 +106,43 @@ export class Store {
 
   getWorkspace(id: string): Workspace | undefined {
     return this.data.workspaces.find((w) => w.id === id);
+  }
+
+  /** Hand out the next free port in [PORT_RANGE_START, PORT_RANGE_END). Counts
+   * a port as taken iff a non-archived workspace holds it — archived ones can
+   * recycle their ports since their dev servers are gone. */
+  allocatePort(): number {
+    const used = new Set<number>();
+    for (const w of this.data.workspaces) {
+      if (w.archived) continue;
+      if (typeof w.port === 'number') used.add(w.port);
+    }
+    for (let p = PORT_RANGE_START; p < PORT_RANGE_END; p++) {
+      if (!used.has(p)) return p;
+    }
+    throw new Error('No free Orchestra port available');
+  }
+
+  async setRepoScripts(absPath: string, scripts: RepoScripts) {
+    const repo = this.data.repos.find((r) => r.path === absPath);
+    if (!repo) throw new Error(`repo not found: ${absPath}`);
+    // Drop empty fields so we don't persist junk like {setup: ''}.
+    const cleaned: RepoScripts = {};
+    if (scripts.setup && scripts.setup.trim()) cleaned.setup = scripts.setup;
+    if (scripts.run && scripts.run.trim()) cleaned.run = scripts.run;
+    if (scripts.archive && scripts.archive.trim()) cleaned.archive = scripts.archive;
+    if (Object.keys(cleaned).length === 0) {
+      delete repo.scripts;
+    } else {
+      repo.scripts = cleaned;
+    }
+    await this.save();
+    return repo;
+  }
+
+  getRepoScripts(absPath: string): RepoScripts {
+    const repo = this.data.repos.find((r) => r.path === absPath);
+    return repo?.scripts ?? {};
   }
 }
 

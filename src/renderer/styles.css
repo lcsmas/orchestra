@@ -247,6 +247,27 @@ button.merge-btn.done {
   border-color: rgba(179, 139, 255, 0.35);
 }
 
+button.restart-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  color: var(--text-dim, #9aa3b2);
+  border-radius: 6px;
+  transition: background 140ms var(--ease), border-color 140ms var(--ease),
+    color 140ms var(--ease), transform 140ms var(--ease);
+}
+button.restart-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.22);
+  color: var(--text, #e5e9f0);
+  transform: rotate(-15deg);
+}
+
 .merged-pill {
   display: inline-flex;
   align-items: center;
@@ -262,6 +283,37 @@ button.merge-btn.done {
   border: 1px solid rgba(179, 139, 255, 0.32);
 }
 .ws-item.merged .ws-name { text-decoration: line-through; color: var(--text-dim); }
+
+/* "↑N" badge — branch has commits not yet on origin. Amber so it reads as
+   a soft "action available" cue, not an error. Sits next to the diff
+   indicator in the sidebar row. */
+.unpushed-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  margin-left: 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: #f5c46b;
+  background: rgba(245, 196, 107, 0.10);
+  border: 1px solid rgba(245, 196, 107, 0.32);
+}
+
+/* Open PR button when there are local commits ready to push — same shape
+   as the regular create button but tinted amber to match the sidebar pill,
+   so the "you can ship now" affordance is visible at a glance. */
+button.pr-link.pr-link-create.primed {
+  color: #f5c46b;
+  background: rgba(245, 196, 107, 0.10);
+  border-color: rgba(245, 196, 107, 0.40);
+}
+button.pr-link.pr-link-create.primed:hover {
+  background: rgba(245, 196, 107, 0.18);
+  border-color: rgba(245, 196, 107, 0.60);
+  box-shadow: 0 4px 14px rgba(245, 196, 107, 0.20);
+}
 
 input, textarea, select {
   font-family: inherit;
@@ -568,6 +620,18 @@ input:focus, textarea:focus, select:focus {
 .ws-dot.waiting { background: var(--yellow); box-shadow: 0 0 8px rgba(255, 200, 87, 0.55); }
 .ws-dot.error { background: var(--red); box-shadow: 0 0 8px rgba(255, 107, 107, 0.5); }
 .ws-dot.stopped { background: #555; opacity: 0.6; }
+/* Stalled = appeared running but PTY went silent past the watchdog window.
+   Amber-red with a slow pulse so it reads as "something's wrong here" without
+   screaming like the hard error state. */
+.ws-dot.stalled {
+  background: #ff8a4c;
+  box-shadow: 0 0 8px rgba(255, 138, 76, 0.55);
+  animation: ws-dot-stalled-pulse 2.4s ease-in-out infinite;
+}
+@keyframes ws-dot-stalled-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
 
 @keyframes ws-dot-pulse {
   0% { box-shadow: 0 0 0 0 rgba(91, 214, 139, 0.55), 0 0 6px rgba(91, 214, 139, 0.8); }
@@ -1554,3 +1618,322 @@ button.danger-primary:active {
   background: var(--bg-2);
 }
 .diff-header .path { flex: 1; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+
+/* ---------- Repo scripts modal ---------- */
+.repo-scripts-modal {
+  width: 640px;
+  max-width: 96vw;
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
+}
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 18px 22px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.modal-header h2 { margin: 0; font-size: 15px; }
+.modal-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-family: ui-monospace, Menlo, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 480px;
+}
+.modal-close {
+  background: transparent;
+  border: 0;
+  color: var(--text-dim);
+  font-size: 20px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+}
+.modal-close:hover { color: var(--text); }
+.modal-body {
+  padding: 16px 22px;
+  overflow: auto;
+  flex: 1;
+}
+.modal-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 0 0 14px;
+  line-height: 1.5;
+}
+.modal-hint code {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11.5px;
+}
+.field-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 5px;
+}
+.field-label {
+  font-size: 11px;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: 600;
+}
+.field-hint {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.field-textarea {
+  width: 100%;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12.5px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 8px 10px;
+  resize: vertical;
+  min-height: 80px;
+  line-height: 1.5;
+}
+.field-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.modal-error {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: rgba(220, 80, 80, 0.12);
+  border: 1px solid rgba(220, 80, 80, 0.3);
+  border-radius: var(--radius);
+  color: #ffb4b4;
+  font-size: 12px;
+}
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 22px 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.modal-footer button {
+  padding: 6px 14px;
+  font-size: 12.5px;
+}
+
+/* ---------- Repo scripts gear (sidebar) ---------- */
+/* Pure icon — no chrome. Sits in the .repo-header flex row alongside the
+   count and the bordered + button; we deliberately don't echo the + button's
+   border so the gear reads as a tertiary affordance, not a peer action. */
+.repo-scripts-btn {
+  background: transparent;
+  border: 0;
+  /* Global `button {}` applies box-shadow: var(--shadow-sm); zero it here
+   * so the gear reads as a flat icon, not a raised control. Same for the
+   * focus-visible glow further down. */
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  opacity: 0.6;
+  cursor: pointer;
+  transition: opacity 120ms var(--ease), color 120ms var(--ease);
+}
+.repo-scripts-btn:hover {
+  background: transparent;
+  box-shadow: none;
+  border-color: transparent;
+  opacity: 1;
+  color: var(--text);
+}
+.repo-scripts-btn:focus-visible {
+  outline: none;
+  box-shadow: none;
+  border-color: transparent;
+  opacity: 1;
+  color: var(--text);
+}
+
+/* ---------- Run tab content ---------- */
+.tab-dim {
+  color: var(--text-dim);
+  font-weight: normal;
+}
+.run-pane {
+  display: none;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: #1a1f26;
+}
+.run-pane.active {
+  display: flex;
+}
+.run-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.run-action {
+  padding: 4px 14px;
+  font-size: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+  color: var(--text);
+  cursor: pointer;
+}
+.run-action.start { color: #6fce8a; }
+.run-action.stop { color: #ff8b8b; }
+.run-action:hover { background: rgba(255, 255, 255, 0.08); }
+.run-status {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.run-terminal-container {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 4px 4px;
+}
+.run-pane.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.run-empty {
+  max-width: 420px;
+  text-align: center;
+  color: var(--text-dim);
+  padding: 24px;
+}
+.run-empty h3 { margin: 0 0 8px; color: var(--text); font-size: 14px; }
+.run-empty p { margin: 0; font-size: 12.5px; line-height: 1.6; }
+.run-empty code {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11.5px;
+}
+
+/* ---------- Setup banner ---------- */
+.setup-banner {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.setup-banner.running { background: rgba(110, 168, 255, 0.08); }
+.setup-banner.failed { background: rgba(220, 80, 80, 0.10); }
+.setup-banner-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.setup-banner-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.setup-banner-text strong { font-weight: 600; color: var(--text); }
+.setup-banner-sub {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.setup-banner-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(110, 168, 255, 0.25);
+  border-top-color: #6ea8ff;
+  border-radius: 50%;
+  animation: setup-spin 0.7s linear infinite;
+  flex: 0 0 auto;
+}
+@keyframes setup-spin {
+  to { transform: rotate(360deg); }
+}
+.setup-banner-x {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(220, 80, 80, 0.5);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+.setup-banner button {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  color: var(--text);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.setup-banner button:hover { background: rgba(255, 255, 255, 0.10); }
+.setup-banner button.primary {
+  background: rgba(110, 168, 255, 0.20);
+  border-color: rgba(110, 168, 255, 0.4);
+}
+.setup-banner button.primary:hover { background: rgba(110, 168, 255, 0.30); }
+.setup-banner-log {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: var(--radius);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  max-height: 240px;
+  overflow: auto;
+  color: #cbd1d8;
+}
+
+/* ---------- Sidebar setup pill ---------- */
+.setup-pill {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  letter-spacing: 0.3px;
+  cursor: default;
+}
+.setup-pill.failed {
+  background: rgba(220, 80, 80, 0.18);
+  color: #ffb4b4;
+  cursor: pointer;
+}
+.setup-pill.running {
+  background: rgba(110, 168, 255, 0.18);
+  color: #b8d4ff;
+}

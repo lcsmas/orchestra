@@ -13,6 +13,7 @@ import {
   switchWorktreeBranch,
 } from './git';
 import { isRunning, stopPty, clearScrollback } from './pty';
+import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import type { CreateWorkspaceInput, Workspace } from '../shared/types';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
@@ -57,6 +58,11 @@ export async function createWorkspace(
   await createWorktree(input.repoPath, branch, baseBranch, worktreePath);
   await installOrchestraHooks(worktreePath, agent);
 
+  // Allocate a port up-front so it survives setup-script failure (the worktree
+  // stays around on failure; we want the same port across retries).
+  const port = store.allocatePort();
+  const setupScript = store.getRepoScripts(input.repoPath).setup;
+
   const ws: Workspace = {
     id,
     name: `${repoName} · ${branch}`,
@@ -69,10 +75,21 @@ export async function createWorkspace(
     agent,
     lastTask: input.task,
     branchManuallySet: false,
+    port,
+    setupStatus: setupScript ? 'pending' : 'ok',
   };
   await store.upsertWorkspace(ws);
   window.webContents.send('workspace:update', ws);
   startBranchNameWatcher(ws, window);
+
+  // Fire setup script asynchronously — don't block the create call. Renderer
+  // sees `setupStatus: 'pending'` immediately and watches workspace:update for
+  // the running → ok/failed transition.
+  if (setupScript) {
+    void runSetupScript(id, window).catch(() => {
+      /* runSetupScript already persists `failed`; nothing to do here. */
+    });
+  }
 
   // Do NOT spawn the agent PTY here. The renderer's TerminalView will invoke
   // `pty:start` once the terminal container has real dimensions, so the agent
@@ -90,6 +107,7 @@ export async function archiveWorkspace(id: string, window: BrowserWindow): Promi
   // archived workspaces from the main list and surfaces them under a
   // dedicated Archived section where they can be restored or hard-deleted.
   stopPty(id);
+  stopPty(`${id}:run`);
   stopPty(`${id}:nvim`);
   stopBranchNameWatcher(id);
   const updated: Workspace = {
@@ -119,11 +137,29 @@ export async function unarchiveWorkspace(id: string, window: BrowserWindow): Pro
 export async function deleteWorkspace(id: string, window: BrowserWindow): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws) return;
-  // Hard delete: stop agent, remove the git worktree from disk, drop the
-  // scrollback log, and remove the store record.
+  // Hard delete: stop agent, run user's archive script (best-effort), remove
+  // the git worktree from disk, drop the scrollback log, and remove the store
+  // record. Archive script runs BEFORE worktree removal so it can still see
+  // the files / cwd.
   stopPty(id);
+  stopPty(`${id}:run`);
   stopPty(`${id}:nvim`);
   stopBranchNameWatcher(id);
+
+  const archiveScript = store.getRepoScripts(ws.repoPath).archive;
+  if (archiveScript && existsSync(ws.worktreePath)) {
+    try {
+      await runOneShot({
+        script: archiveScript,
+        cwd: ws.worktreePath,
+        env: buildScriptEnv(ws),
+        logFile: archiveLogPath(id),
+      });
+    } catch {
+      /* best-effort — never block deletion */
+    }
+  }
+
   clearScrollback(id);
   try {
     await removeWorktree(ws.repoPath, ws.worktreePath);
@@ -132,6 +168,64 @@ export async function deleteWorkspace(id: string, window: BrowserWindow): Promis
   }
   await store.removeWorkspace(id);
   window.webContents.send('workspace:removed', id);
+}
+
+/** Run (or re-run) the repo's setup script for a workspace. Persists
+ * `setupStatus` transitions through `running` → `ok`|`failed` so the UI can
+ * show progress. Safe to call when no setup script is configured (no-op). */
+export async function runSetupScript(id: string, window: BrowserWindow): Promise<void> {
+  const ws = store.getWorkspace(id);
+  if (!ws) return;
+  const script = store.getRepoScripts(ws.repoPath).setup;
+  if (!script) {
+    if (ws.setupStatus !== 'ok') {
+      const updated: Workspace = { ...ws, setupStatus: 'ok', setupError: undefined };
+      await store.upsertWorkspace(updated);
+      window.webContents.send('workspace:update', updated);
+    }
+    return;
+  }
+  if (!existsSync(ws.worktreePath)) return;
+
+  const running: Workspace = { ...ws, setupStatus: 'running', setupError: undefined };
+  await store.upsertWorkspace(running);
+  window.webContents.send('workspace:update', running);
+
+  const result = await runOneShot({
+    script,
+    cwd: ws.worktreePath,
+    env: buildScriptEnv(ws),
+    logFile: setupLogPath(id),
+  });
+
+  // Re-read in case other state mutated mid-run (rare — setup runs early in a
+  // workspace's life — but `branchManuallySet` etc. could land in between).
+  const fresh = store.getWorkspace(id);
+  if (!fresh) return;
+  const done: Workspace = {
+    ...fresh,
+    setupStatus: result.exitCode === 0 ? 'ok' : 'failed',
+    setupError:
+      result.exitCode === 0
+        ? undefined
+        : result.lastStderrLine || `exit ${result.exitCode}`,
+  };
+  await store.upsertWorkspace(done);
+  window.webContents.send('workspace:update', done);
+}
+
+/** Re-allocate a port for an existing workspace that doesn't have one yet
+ * (legacy workspaces created before scripts existed). Idempotent. */
+export async function ensureWorkspacePort(
+  id: string,
+  window: BrowserWindow,
+): Promise<Workspace | undefined> {
+  const ws = store.getWorkspace(id);
+  if (!ws || typeof ws.port === 'number') return ws;
+  const updated: Workspace = { ...ws, port: store.allocatePort() };
+  await store.upsertWorkspace(updated);
+  window.webContents.send('workspace:update', updated);
+  return updated;
 }
 
 // ---------- Branch rename ----------
@@ -253,6 +347,9 @@ const HOOK_ACTIVITY_SUBMIT_CMD =
 const HOOK_ACTIVITY_STOP_CMD =
   '[ -n "$ORCHESTRA_SOCK" ] && curl -s --max-time 1 --unix-socket "$ORCHESTRA_SOCK" -d \'{"id":"\'"$ORCHESTRA_WS_ID"\'","event":"stop"}\' http://x/event > /dev/null 2>&1 || true';
 
+const HOOK_ACTIVITY_NOTIFY_CMD =
+  '[ -n "$ORCHESTRA_SOCK" ] && curl -s --max-time 1 --unix-socket "$ORCHESTRA_SOCK" -d \'{"id":"\'"$ORCHESTRA_WS_ID"\'","event":"notify"}\' http://x/event > /dev/null 2>&1 || true';
+
 const watchers = new Map<string, FSWatcher>();
 
 function upsertHookCommand(list: unknown[], command: string): void {
@@ -295,6 +392,15 @@ export async function installOrchestraHooks(
     const stopList = ((hooks.Stop as unknown[]) ??= []);
     upsertHookCommand(stopList, HOOK_ACTIVITY_STOP_CMD);
     hooks.Stop = stopList;
+
+    // Claude's Notification hook fires when the agent needs the user's
+    // attention — most commonly the 60s-idle "waiting for your input"
+    // reminder, occasionally a tool-permission prompt (rare with
+    // --dangerously-skip-permissions but possible). Drives a louder OS
+    // notification than the gentle Stop chime.
+    const notifyList = ((hooks.Notification as unknown[]) ??= []);
+    upsertHookCommand(notifyList, HOOK_ACTIVITY_NOTIFY_CMD);
+    hooks.Notification = notifyList;
 
     settings.hooks = hooks;
     await writeFile(settingsFile, JSON.stringify(settings, null, 2));

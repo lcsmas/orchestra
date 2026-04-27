@@ -5,6 +5,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { getHookSocketPath } from './hooks-server';
+import { noteAgentActivity } from './activity';
 
 let ptyMod: typeof import('node-pty') | null = null;
 async function loadPty() {
@@ -94,6 +95,10 @@ export async function startPty(opts: {
   /** Workspace id to surface to Claude hooks via $ORCHESTRA_WS_ID. Omit for
    * non-agent PTYs (nvim, etc.) that don't need to phone status home. */
   workspaceId?: string;
+  /** Extra env vars merged into the spawned process env (after process.env,
+   * before TERM and the hook vars). Used by the run-script PTY to expose
+   * `ORCHESTRA_PORT`, `ORCHESTRA_ROOT_PATH`, etc. */
+  extraEnv?: Record<string, string>;
 }) {
   if (sessions.has(opts.id)) return; // already running
   if (!fs.existsSync(opts.cwd)) {
@@ -109,6 +114,7 @@ export async function startPty(opts: {
 
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
+    ...(opts.extraEnv ?? {}),
     TERM: 'xterm-256color',
   };
   const sock = getHookSocketPath();
@@ -138,6 +144,9 @@ export async function startPty(opts: {
   session.disposables.push(
     proc.onData((data) => {
       if (session.stopped) return;
+      // Feed the stall watchdog. Only agent PTYs (those with workspaceId)
+      // need this — nvim and friends have no status of their own.
+      if (opts.workspaceId) noteAgentActivity(opts.workspaceId);
       if (session.logStream) {
         session.logStream.write(data);
         session.logBytes += Buffer.byteLength(data);

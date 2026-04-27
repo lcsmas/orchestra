@@ -243,28 +243,61 @@ export async function createPullRequest(
  *  - `merged`: every commit on branch is reachable from base AND the two
  *    refs point at different commits → a real merge has landed.
  *  - `diverged`: branch has commits not reachable from base → unshipped work.
+ *  - `unpushedAhead`: count of local commits not yet on the remote. If
+ *    `origin/<branch>` exists, this is `origin/<branch>..<branch>`. If the
+ *    branch was never pushed, every local commit ahead of base counts as
+ *    unpushed (`baseBranch..branch`) so the renderer can still surface the
+ *    "ready to push" signal on a virgin branch.
  *
- *  These are mutually exclusive. The `!merged && !diverged` case is either a
- *  fresh branch (branch HEAD == base HEAD) or a fast-forward-merged branch
- *  where the two refs converged — both ambiguous, so neither flag is set.
- *  FF false-negatives are rare enough that missing the stamp is acceptable. */
+ *  `merged` and `diverged` are mutually exclusive. The `!merged && !diverged`
+ *  case is either a fresh branch (branch HEAD == base HEAD) or a fast-forward-
+ *  merged branch where the two refs converged — both ambiguous, so neither
+ *  flag is set. FF false-negatives are rare enough that missing the stamp is
+ *  acceptable. */
 export async function getBranchMergeState(
   repoPath: string,
   branch: string,
   baseBranch: string,
-): Promise<{ merged: boolean; diverged: boolean }> {
+): Promise<{ merged: boolean; diverged: boolean; unpushedAhead: number }> {
   try {
     const git = simpleGit(repoPath);
+    const unpushedAhead = await computeUnpushedAhead(git, branch, baseBranch);
     const aheadStr = (await git.raw(['rev-list', '--count', `${baseBranch}..${branch}`])).trim();
     const ahead = Number(aheadStr) || 0;
-    if (ahead > 0) return { merged: false, diverged: true };
+    if (ahead > 0) return { merged: false, diverged: true, unpushedAhead };
     const [branchSha, baseSha] = await Promise.all([
       git.raw(['rev-parse', branch]).then((s) => s.trim()),
       git.raw(['rev-parse', baseBranch]).then((s) => s.trim()),
     ]);
-    return { merged: branchSha !== baseSha, diverged: false };
+    return { merged: branchSha !== baseSha, diverged: false, unpushedAhead };
   } catch {
-    return { merged: false, diverged: false };
+    return { merged: false, diverged: false, unpushedAhead: 0 };
+  }
+}
+
+async function computeUnpushedAhead(
+  git: ReturnType<typeof simpleGit>,
+  branch: string,
+  baseBranch: string,
+): Promise<number> {
+  const remoteRef = `origin/${branch}`;
+  try {
+    await git.raw(['rev-parse', '--verify', remoteRef]);
+    const out = (
+      await git.raw(['rev-list', '--count', `${remoteRef}..${branch}`])
+    ).trim();
+    return Number(out) || 0;
+  } catch {
+    // No remote tracking ref → branch has never been pushed. Treat every
+    // commit ahead of base as unpushed so the user still gets the signal.
+    try {
+      const out = (
+        await git.raw(['rev-list', '--count', `${baseBranch}..${branch}`])
+      ).trim();
+      return Number(out) || 0;
+    } catch {
+      return 0;
+    }
   }
 }
 

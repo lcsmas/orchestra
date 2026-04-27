@@ -21,10 +21,19 @@ const api: OrchestraAPI = {
   ptyWrite: (id, data) => ipcRenderer.invoke('pty:write', id, data),
   ptyResize: (id, cols, rows) => ipcRenderer.invoke('pty:resize', id, cols, rows),
   ptyStop: (id) => ipcRenderer.invoke('pty:stop', id),
+  restartAgent: (id) => ipcRenderer.invoke('agent:restart', id),
   ptyScrollback: (id) => ipcRenderer.invoke('pty:scrollback', id),
   ptyClearScrollback: (id) => ipcRenderer.invoke('pty:clearScrollback', id),
   nvimStart: (id, cols, rows) => ipcRenderer.invoke('nvim:start', id, cols, rows),
   nvimStop: (id) => ipcRenderer.invoke('nvim:stop', id),
+
+  getRepoScripts: (repoPath) => ipcRenderer.invoke('repos:getScripts', repoPath),
+  setRepoScripts: (repoPath, scripts) => ipcRenderer.invoke('repos:setScripts', repoPath, scripts),
+  retrySetup: (id) => ipcRenderer.invoke('scripts:retrySetup', id),
+  readSetupLog: (id) => ipcRenderer.invoke('scripts:readSetupLog', id),
+  runScriptStart: (id, cols, rows) => ipcRenderer.invoke('scripts:runStart', id, cols, rows),
+  runScriptStop: (id) => ipcRenderer.invoke('scripts:runStop', id),
+  runScriptScrollback: (id) => ipcRenderer.invoke('scripts:runScrollback', id),
   onPtyData: (cb) => {
     const listener = (_e: unknown, id: string, data: string) => cb(id, data);
     ipcRenderer.on('pty:data', listener);
@@ -70,6 +79,11 @@ const api: OrchestraAPI = {
     const listener = (_e: unknown, id: string, focused: boolean) => cb(id, focused);
     ipcRenderer.on('agent:finished', listener);
     return () => ipcRenderer.off('agent:finished', listener);
+  },
+  onAgentNeedsInput: (cb) => {
+    const listener = (_e: unknown, id: string, focused: boolean) => cb(id, focused);
+    ipcRenderer.on('agent:needs-input', listener);
+    return () => ipcRenderer.off('agent:needs-input', listener);
   },
 };
 

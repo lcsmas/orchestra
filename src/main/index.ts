@@ -1,6 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
 import fixPath from 'fix-path';
 
 // Desktop launchers (file manager, app grid, .desktop files) start Electron
@@ -27,13 +26,17 @@ import {
   createWorkspace,
   deleteWorkspace,
   ensureRoot,
+  ensureWorkspacePort,
   installOrchestraHooks,
   openInEditor,
   renameWorkspaceBranch,
+  runSetupScript,
   startBranchNameWatcher,
   switchWorkspaceBranch,
   unarchiveWorkspace,
 } from './workspaces';
+import { buildScriptEnv, readScriptLog, setupLogPath } from './scripts';
+import type { RepoScripts } from '../shared/types';
 import {
   resizePty,
   startPty,
@@ -45,6 +48,11 @@ import {
   isRunning,
 } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
+import {
+  detectAndUpdateMergeState,
+  startStallWatchdog,
+  stopStallWatchdog,
+} from './activity';
 import type { CreateWorkspaceInput } from '../shared/types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -94,6 +102,7 @@ async function createMainWindow() {
   mainWindow.setMenuBarVisibility(false);
 
   await startHooksServer(mainWindow);
+  startStallWatchdog(mainWindow);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void openUrlExternally(url);
@@ -140,28 +149,7 @@ function isSafeHttpUrl(url: string): boolean {
 
 async function openUrlExternally(url: string): Promise<void> {
   if (!isSafeHttpUrl(url)) return;
-  const ok = await openViaOS(url);
-  if (!ok) await shell.openExternal(url);
-}
-
-function openViaOS(url: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    // Use the OS-level "open" command so the URL is handed to the user's
-    // default browser, which reuses its existing running instance (most
-    // recent Chrome window gets a new tab, rather than spawning a new
-    // Chrome process that might miss the singleton).
-    const [cmd, args]: [string, string[]] =
-      process.platform === 'darwin'
-        ? ['open', [url]]
-        : process.platform === 'win32'
-          ? ['cmd', ['/c', 'start', '""', url]]
-          : ['xdg-open', [url]];
-    const child = execFile(cmd, args, { detached: true }, (err) => {
-      if (err) resolve(false);
-    });
-    child.unref();
-    setTimeout(() => resolve(true), 120);
-  });
+  await shell.openExternal(url);
 }
 
 ipcMain.handle('app:openExternal', async (_e, url: string) => {
@@ -295,6 +283,16 @@ ipcMain.handle('pty:resize', (_e, id: string, cols: number, rows: number) =>
 ipcMain.handle('pty:stop', (_e, id: string) => {
   return stopPty(id);
 });
+ipcMain.handle('agent:restart', (_e, id: string) => {
+  // Mirror the branch-switch path: stop the agent PTY here (the renderer's
+  // xterm doesn't get torn down — it just resets) and tell the renderer to
+  // spawn a fresh PTY. `pty:start` will pick `claude --continue` since
+  // ws.hasInput is true, so the conversation resumes against the new
+  // process — which is what makes MCP/settings.json edits take effect.
+  if (!isRunning(id)) return;
+  stopPty(id);
+  getMainWindow().webContents.send('pty:restart', id);
+});
 ipcMain.handle('pty:scrollback', (_e, id: string) => readScrollback(id));
 ipcMain.handle('pty:clearScrollback', (_e, id: string) => clearScrollback(id));
 
@@ -307,6 +305,11 @@ ipcMain.handle('git:diff', async (_e, id: string) => {
 ipcMain.handle('git:stats', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
+  // Piggyback merge/unpushed state refresh on the renderer's 8s stats poll.
+  // Cheap (two `rev-list --count` calls), and keeps the ↑N badge live even
+  // when the agent isn't running — which is exactly when the user finishes
+  // a commit and wants to see "ready to push".
+  void detectAndUpdateMergeState(id, getMainWindow()).catch(() => {});
   return getDiffStats(ws.worktreePath, ws.baseBranch);
 });
 
@@ -401,6 +404,61 @@ ipcMain.handle('git:switchBranch', async (_e, id: string, branch: string) => {
   return switchWorkspaceBranch(id, branch, getMainWindow());
 });
 
+// ---------- Repo scripts (setup / run / archive) ----------
+
+ipcMain.handle('repos:getScripts', (_e, repoPath: string) => {
+  return store.getRepoScripts(repoPath);
+});
+
+ipcMain.handle('repos:setScripts', async (_e, repoPath: string, scripts: RepoScripts) => {
+  return store.setRepoScripts(repoPath, scripts);
+});
+
+ipcMain.handle('scripts:retrySetup', async (_e, id: string) => {
+  await runSetupScript(id, getMainWindow());
+});
+
+ipcMain.handle('scripts:readSetupLog', (_e, id: string) => {
+  return readScriptLog(setupLogPath(id));
+});
+
+ipcMain.handle('scripts:runStart', async (_e, id: string, cols: number, rows: number) => {
+  const ws0 = store.getWorkspace(id);
+  if (!ws0) throw new Error('workspace not found');
+  const script = store.getRepoScripts(ws0.repoPath).run;
+  if (!script) throw new Error('no run script configured for this repo');
+  // Lazy port allocation for legacy workspaces created before scripts existed.
+  const ws = (await ensureWorkspacePort(id, getMainWindow())) ?? ws0;
+  const runId = `${id}:run`;
+  if (isRunning(runId)) {
+    resizePty(runId, Math.max(20, cols - 1), Math.max(5, rows));
+    setTimeout(() => resizePty(runId, cols, rows), 40);
+    return;
+  }
+  await startPty({
+    id: runId,
+    cwd: ws.worktreePath,
+    command: 'bash',
+    args: ['-lc', script],
+    cols,
+    rows,
+    window: getMainWindow(),
+    // Run pty inherits ORCHESTRA_* via the env passed at spawn time. node-pty's
+    // env is overridden, not merged, so we pass the full block. The agent
+    // hook env (ORCHESTRA_SOCK, ORCHESTRA_WS_ID) is intentionally absent —
+    // the run script isn't an agent.
+    extraEnv: buildScriptEnv(ws),
+  });
+});
+
+ipcMain.handle('scripts:runStop', (_e, id: string) => {
+  stopPty(`${id}:run`);
+});
+
+ipcMain.handle('scripts:runScrollback', (_e, id: string) => {
+  return readScrollback(`${id}:run`);
+});
+
 // ---------- Lifecycle ----------
 
 app.whenReady().then(createMainWindow);
@@ -408,12 +466,14 @@ app.whenReady().then(createMainWindow);
 app.on('window-all-closed', () => {
   stopAll();
   stopHooksServer();
+  stopStallWatchdog();
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
   stopAll();
   stopHooksServer();
+  stopStallWatchdog();
 });
 
 app.on('activate', () => {

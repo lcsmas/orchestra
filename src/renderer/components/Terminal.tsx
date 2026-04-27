@@ -30,6 +30,14 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       },
       convertEol: true,
       scrollback: 10000,
+      // Override the default OSC 8 hyperlink activator (a confirm() dialog
+      // followed by window.open()) so explicit terminal hyperlinks open in
+      // the user's browser via our IPC, same as plain text URLs.
+      linkHandler: {
+        activate: (_e, uri) => {
+          window.orchestra.openExternal(uri);
+        },
+      },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);

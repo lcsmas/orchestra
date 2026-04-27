@@ -1,4 +1,14 @@
-export type WorkspaceStatus = 'idle' | 'running' | 'waiting' | 'error' | 'stopped';
+export type WorkspaceStatus =
+  | 'idle'
+  | 'running'
+  | 'waiting'
+  | 'error'
+  | 'stopped'
+  /** Agent appeared to be running but the PTY has gone silent for longer
+   * than the watchdog window — almost always a rate-limit / usage-disabled
+   * wall, occasionally a crashed claude. The dot warns the user to check
+   * the terminal; status flips back to `running` on the next submit. */
+  | 'stalled';
 
 export interface Workspace {
   id: string;
@@ -29,6 +39,24 @@ export interface Workspace {
    * currently in sync with base after at least one merge → render the
    * "merged" pill. */
   divergedFromBase?: boolean;
+  /** Count of local commits not yet on `origin/<branch>` (or, if the branch
+   * has never been pushed, count of local commits ahead of `baseBranch`).
+   * Drives the "↑N" badge in the sidebar so the user can see committed-but-
+   * not-pushed work without leaving the workspace tab. Recomputed alongside
+   * `divergedFromBase` on every Stop hook. */
+  unpushedAhead?: number;
+  /** Auto-allocated dev-server port handed to setup/run scripts as
+   * `$ORCHESTRA_PORT`. Lets multiple workspaces run dev servers in parallel
+   * without colliding. Allocated at creation, freed on hard delete. */
+  port?: number;
+  /** Outcome of the most recent setup-script run. `pending` between creation
+   * and the first run, `running` while bash is alive, `ok`/`failed` at exit.
+   * Drives the sidebar setup-failed indicator and the retry button. Absent
+   * on workspaces created before scripts existed (legacy = treated as `ok`). */
+  setupStatus?: 'pending' | 'running' | 'ok' | 'failed';
+  /** Last line of stderr (or the spawn error) when `setupStatus === 'failed'`.
+   * Full output lives in `~/.orchestra/scripts/<id>-setup.log`. */
+  setupError?: string;
 }
 
 export interface DiffFile {
@@ -53,10 +81,26 @@ export interface CreateWorkspaceInput {
   agent?: 'claude' | 'codex';
 }
 
+export interface RepoScripts {
+  /** One-shot script run after `git worktree add` and Orchestra's hook
+   * install, with `$ORCHESTRA_*` env vars. Typical content: `pnpm install`,
+   * `ln -sf $ORCHESTRA_ROOT_PATH/.env .env`. Failure does NOT block workspace
+   * creation — the worktree stays put and the user can retry from the UI. */
+  setup?: string;
+  /** Long-lived script bound to a workspace's "Run" button. Typically a dev
+   * server invoked with `--port $ORCHESTRA_PORT` so multiple workspaces can
+   * run concurrently. Spawned in a separate PTY (`<wsId>:run`). */
+  run?: string;
+  /** Best-effort one-shot run before `git worktree remove` on hard delete.
+   * Use to drop per-workspace external resources (DBs, caches). */
+  archive?: string;
+}
+
 export interface RepoEntry {
   path: string;
   name: string;
   defaultBranch: string;
+  scripts?: RepoScripts;
 }
 
 export interface PRInfo {

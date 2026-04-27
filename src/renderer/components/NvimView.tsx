@@ -28,6 +28,11 @@ export function NvimView({ workspaceId, isActive }: Props) {
       },
       convertEol: true,
       scrollback: 2000,
+      linkHandler: {
+        activate: (_e, uri) => {
+          window.orchestra.openExternal(uri);
+        },
+      },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);

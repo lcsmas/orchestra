@@ -4,6 +4,7 @@ import type {
   DiffStats,
   PRsForBranch,
   RepoEntry,
+  RepoScripts,
   Workspace,
 } from './types';
 
@@ -30,6 +31,10 @@ export interface OrchestraAPI {
   ptyWrite: (id: string, data: string) => Promise<void>;
   ptyResize: (id: string, cols: number, rows: number) => Promise<void>;
   ptyStop: (id: string) => Promise<void>;
+  /** Restart the agent process while keeping the conversation: stops the
+   * current PTY and triggers a fresh spawn that runs `claude --continue`,
+   * picking up MCP server / settings.json changes without losing context. */
+  restartAgent: (id: string) => Promise<void>;
   ptyScrollback: (id: string) => Promise<string>;
   ptyClearScrollback: (id: string) => Promise<void>;
   nvimStart: (id: string, cols: number, rows: number) => Promise<void>;
@@ -49,11 +54,28 @@ export interface OrchestraAPI {
   switchBranch: (id: string, branch: string) => Promise<Workspace>;
   mergeWorktree: (id: string) => Promise<{ status: 'requested' }>;
 
+  // Repo scripts (setup / run / archive)
+  getRepoScripts: (repoPath: string) => Promise<RepoScripts>;
+  setRepoScripts: (repoPath: string, scripts: RepoScripts) => Promise<RepoEntry>;
+  retrySetup: (id: string) => Promise<void>;
+  /** Returns the captured stdout+stderr of the most recent setup-script run
+   * for this workspace, or `''` if none has run. */
+  readSetupLog: (id: string) => Promise<string>;
+  /** Spawn the run-script PTY (`<id>:run`). Idempotent: if already running,
+   * just nudges a resize. Throws when no run script is configured. */
+  runScriptStart: (id: string, cols: number, rows: number) => Promise<void>;
+  runScriptStop: (id: string) => Promise<void>;
+  runScriptScrollback: (id: string) => Promise<string>;
+
   // Events
   onWorkspaceUpdate: (cb: (w: Workspace) => void) => () => void;
   onWorkspaceRemoved: (cb: (id: string) => void) => () => void;
   onWorkspaceFocus: (cb: (id: string) => void) => () => void;
   onAgentFinished: (cb: (id: string, focused: boolean) => void) => () => void;
+  /** Fires when Claude's Notification hook fires — typically the 60s idle
+   * "waiting for your input" reminder. `focused` reflects the main-process
+   * window focus state at hook-time. */
+  onAgentNeedsInput: (cb: (id: string, focused: boolean) => void) => () => void;
 }
 
 declare global {

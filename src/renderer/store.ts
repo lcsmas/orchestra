@@ -8,12 +8,13 @@ interface State {
   stats: Record<string, DiffStats>;
   prs: Record<string, PRsForBranch>;
   activeId: string | null;
-  view: 'terminal' | 'diff';
+  view: 'terminal' | 'diff' | 'run';
   loaded: boolean;
 
   setActive: (id: string | null) => void;
-  setView: (v: 'terminal' | 'diff') => void;
+  setView: (v: 'terminal' | 'diff' | 'run') => void;
   load: () => Promise<void>;
+  refreshRepos: () => Promise<void>;
   addRepo: () => Promise<RepoEntry | null>;
   createWorkspace: (input: CreateWorkspaceInput) => Promise<void>;
   quickCreateWorkspace: () => Promise<void>;
@@ -53,6 +54,11 @@ export const useStore = create<State>((set, get) => ({
       window.orchestra.listWorkspaces(),
     ]);
     set({ repos, workspaces, loaded: true, activeId: workspaces[0]?.id ?? null });
+  },
+
+  refreshRepos: async () => {
+    const repos = await window.orchestra.listRepos();
+    set({ repos });
   },
 
   addRepo: async () => {
