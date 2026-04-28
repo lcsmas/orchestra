@@ -109,8 +109,12 @@ export function App() {
   useEffect(() => {
     return window.orchestra.onAgentNeedsInput((id, focused) => {
       // Same focus heuristic as agent:finished — don't chime if the user is
-      // already looking at the workspace that needs input.
-      if (focused && useStore.getState().activeId === id) return;
+      // already looking at the workspace, and clear the unread dot so it
+      // doesn't sit yellow until the user clicks back into the conversation.
+      if (focused && useStore.getState().activeId === id) {
+        void window.orchestra.markSeen(id).catch(() => {});
+        return;
+      }
       playFinishedChime();
     });
   }, []);
