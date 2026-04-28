@@ -160,6 +160,15 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     const isMac = navigator.platform.toUpperCase().includes('MAC');
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
+      // Shift+Enter → insert newline instead of submitting. xterm.js sends a
+      // plain `\r` for both Enter and Shift+Enter, so Claude's TUI can't tell
+      // them apart. Sending ESC+CR is what Claude Code's `/terminal-setup`
+      // configures in VS Code/iTerm2 for the same effect.
+      if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        window.orchestra.ptyWrite(workspaceId, '\x1b\r');
+        e.preventDefault();
+        return false;
+      }
       const mod = isMac ? e.metaKey : e.ctrlKey;
       if (!mod) return true;
       const key = e.key.toLowerCase();
