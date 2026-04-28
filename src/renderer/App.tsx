@@ -109,15 +109,32 @@ export function App() {
   useEffect(() => {
     return window.orchestra.onAgentNeedsInput((id, focused) => {
       // Same focus heuristic as agent:finished — don't chime if the user is
-      // already looking at the workspace, and clear the unread dot so it
-      // doesn't sit yellow until the user clicks back into the conversation.
-      if (focused && useStore.getState().activeId === id) {
-        void window.orchestra.markSeen(id).catch(() => {});
-        return;
-      }
+      // already looking at the workspace. The dot itself is cleared by the
+      // state-watcher effect below, which also covers the cases where main
+      // never sends an event (notify dropped because status was already
+      // `waiting`) or where `window.isFocused()` was momentarily wrong.
+      if (focused && useStore.getState().activeId === id) return;
       playFinishedChime();
     });
   }, []);
+
+  // Auto-clear the yellow "unread" dot whenever the active workspace is in
+  // `waiting` and the orchestra window is currently focused. This is the
+  // single source of truth for "user has seen this" — it doesn't depend on a
+  // specific event firing or on main's focus snapshot at event time.
+  useEffect(() => {
+    if (!activeId) return;
+    const active = workspaces.find((w) => w.id === activeId);
+    if (!active || active.status !== 'waiting') return;
+    const clearIfFocused = () => {
+      if (document.hasFocus()) {
+        void window.orchestra.markSeen(activeId).catch(() => {});
+      }
+    };
+    clearIfFocused();
+    window.addEventListener('focus', clearIfFocused);
+    return () => window.removeEventListener('focus', clearIfFocused);
+  }, [activeId, workspaces]);
 
   const liveWorkspaces = workspaces.filter((w) => !w.archived);
   const active = liveWorkspaces.find((w) => w.id === activeId);
