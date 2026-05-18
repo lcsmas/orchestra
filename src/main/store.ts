@@ -93,6 +93,13 @@ export class Store {
     await this.save();
   }
 
+  async updateRepo(absPath: string, patch: Partial<RepoEntry>) {
+    const i = this.data.repos.findIndex((r) => r.path === absPath);
+    if (i < 0) return;
+    this.data.repos[i] = { ...this.data.repos[i], ...patch };
+    await this.save();
+  }
+
   async upsertWorkspace(w: Workspace) {
     const i = this.data.workspaces.findIndex((x) => x.id === w.id);
     if (i >= 0) this.data.workspaces[i] = w;

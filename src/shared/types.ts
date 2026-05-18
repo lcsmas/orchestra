@@ -91,6 +91,11 @@ export interface RepoEntry {
   name: string;
   defaultBranch: string;
   scripts?: RepoScripts;
+  /** Canonical web URL for the repo's `origin` remote (e.g.
+   * `https://github.com/owner/repo`), normalized from whatever the remote
+   * is set to (ssh, https, scp-style git@…). Undefined if no `origin` is
+   * configured or the URL cannot be parsed. */
+  remoteUrl?: string;
 }
 
 export interface PRInfo {

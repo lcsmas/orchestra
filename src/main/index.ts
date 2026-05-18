@@ -11,6 +11,7 @@ fixPath();
 import { store } from './store';
 import {
   detectDefaultBranch,
+  detectRemoteUrl,
   getDiff,
   isGitRepo,
   commitAll,
@@ -146,12 +147,28 @@ ipcMain.handle('app:openExternal', async (_e, url: string) => {
   await openUrlExternally(url);
 });
 
-ipcMain.handle('repos:list', () => store.repos);
+ipcMain.handle('repos:list', async () => {
+  // Lazy-backfill `remoteUrl` for any repo added before that field existed,
+  // or whose origin URL changed since it was first mapped. Best-effort —
+  // missing origin / unknown URL shape just leaves remoteUrl undefined.
+  for (const r of store.repos) {
+    if (r.remoteUrl) continue;
+    const url = await detectRemoteUrl(r.path).catch(() => undefined);
+    if (url) await store.updateRepo(r.path, { remoteUrl: url });
+  }
+  return store.repos;
+});
 
 ipcMain.handle('repos:add', async (_e, absPath: string) => {
   if (!(await isGitRepo(absPath))) throw new Error(`${absPath} is not a git repo`);
   const defaultBranch = await detectDefaultBranch(absPath);
-  return store.addRepo({ path: absPath, name: path.basename(absPath), defaultBranch });
+  const remoteUrl = await detectRemoteUrl(absPath).catch(() => undefined);
+  return store.addRepo({
+    path: absPath,
+    name: path.basename(absPath),
+    defaultBranch,
+    remoteUrl,
+  });
 });
 
 ipcMain.handle('repos:remove', async (_e, absPath: string) => {

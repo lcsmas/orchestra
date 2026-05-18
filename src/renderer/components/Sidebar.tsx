@@ -331,6 +331,10 @@ export function Sidebar({ onNewFromRepo }: Props) {
     return segments[segments.length - 1] ?? repoPath;
   };
 
+  const repoRemoteUrl = (repoPath: string): string | undefined => {
+    return repos.find((r) => r.path === repoPath)?.remoteUrl;
+  };
+
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -369,6 +373,20 @@ export function Sidebar({ onNewFromRepo }: Props) {
               <span className="repo-name">{repoLabel(repoPath)}</span>
               <span className="repo-header-actions">
                 <span className="repo-count">{items.length}</span>
+                {repoRemoteUrl(repoPath) && (
+                  <button
+                    className="repo-scripts-btn"
+                    title={`Open ${repoLabel(repoPath)} on GitHub`}
+                    aria-label={`Open ${repoLabel(repoPath)} on GitHub`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const url = repoRemoteUrl(repoPath);
+                      if (url) window.orchestra.openExternal(url);
+                    }}
+                  >
+                    <GitHubIcon />
+                  </button>
+                )}
                 <button
                   className="repo-scripts-btn"
                   title={`Configure setup / run / archive scripts for ${repoLabel(repoPath)}`}

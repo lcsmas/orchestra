@@ -8,6 +8,32 @@ import type { DiffFile, DiffStats } from '../shared/types';
 
 const pexec = promisify(execFile);
 
+/** Read the `origin` remote URL and normalize it to a browser-friendly form.
+ * Handles the three forms git emits: scp-style (`git@host:owner/repo.git`),
+ * `ssh://git@host/owner/repo.git`, and plain `https://host/owner/repo.git`.
+ * Returns undefined for any URL we can't confidently rewrite to https — the
+ * caller treats undefined as "no link in the UI". */
+export async function detectRemoteUrl(repoPath: string): Promise<string | undefined> {
+  const git = simpleGit(repoPath);
+  let raw: string;
+  try {
+    raw = (await git.raw(['config', '--get', 'remote.origin.url'])).trim();
+  } catch {
+    return undefined;
+  }
+  if (!raw) return undefined;
+  // scp-style: git@host:owner/repo(.git)
+  const scp = raw.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+  if (scp) return `https://${scp[1]}/${scp[2]}`;
+  // ssh://git@host/owner/repo(.git) or ssh://host/owner/repo(.git)
+  const ssh = raw.match(/^ssh:\/\/(?:[^@]+@)?([^/]+)\/(.+?)(?:\.git)?$/);
+  if (ssh) return `https://${ssh[1]}/${ssh[2]}`;
+  // https://host/owner/repo(.git) — drop the .git suffix if present
+  const https = raw.match(/^(https?:\/\/[^/]+\/.+?)(?:\.git)?$/);
+  if (https) return https[1];
+  return undefined;
+}
+
 export async function detectDefaultBranch(repoPath: string): Promise<string> {
   const git = simpleGit(repoPath);
   try {
