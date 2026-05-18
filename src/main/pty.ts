@@ -5,7 +5,6 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { getHookSocketPath } from './hooks-server';
-import { noteAgentActivity } from './activity';
 
 let ptyMod: typeof import('node-pty') | null = null;
 async function loadPty() {
@@ -144,9 +143,6 @@ export async function startPty(opts: {
   session.disposables.push(
     proc.onData((data) => {
       if (session.stopped) return;
-      // Feed the stall watchdog. Only agent PTYs (those with workspaceId)
-      // need this — nvim and friends have no status of their own.
-      if (opts.workspaceId) noteAgentActivity(opts.workspaceId);
       if (session.logStream) {
         session.logStream.write(data);
         session.logBytes += Buffer.byteLength(data);

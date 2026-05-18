@@ -41,14 +41,15 @@ export class Store {
     } catch {
       this.data = DEFAULT;
     }
-    // `running` and `stalled` across a restart can only be stale state from
-    // a prior PTY that no longer exists — reset to idle. `waiting` is
-    // intentionally preserved so an unread "agent finished" dot from the
-    // previous session survives until the user actually views the workspace
-    // (markSeen).
+    // `running` across a restart can only be stale state from a prior PTY
+    // that no longer exists — reset to idle. `waiting` is intentionally
+    // preserved so an unread "agent finished" dot from the previous session
+    // survives until the user actually views the workspace (markSeen).
     let mutated = false;
     for (const ws of this.data.workspaces) {
-      if (ws.status === 'running' || ws.status === 'stalled') {
+      // Migrate the obsolete 'stalled' status from older orchestra versions
+      // (the PTY-quiescence watchdog has been removed) — treat as idle.
+      if (ws.status === 'running' || (ws.status as string) === 'stalled') {
         ws.status = 'idle';
         mutated = true;
       }

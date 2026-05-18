@@ -4,6 +4,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { BrowserWindow } from 'electron';
 import { dispatchHookEvent } from './activity';
+import { dispatchRenameRequest } from './workspaces';
 
 // Tiny HTTP server bound to a Unix socket. Each workspace's
 // .claude/settings.local.json registers Claude Code lifecycle hooks
@@ -43,6 +44,7 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
       res.writeHead(405).end();
       return;
     }
+    const route = req.url ?? '/';
     let body = '';
     req.setEncoding('utf8');
     req.on('data', (chunk) => {
@@ -52,9 +54,16 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
     });
     req.on('end', () => {
       try {
-        const msg = JSON.parse(body) as { id?: unknown; event?: unknown };
-        if (typeof msg.id === 'string' && typeof msg.event === 'string') {
-          dispatchHookEvent(msg.id, msg.event, window);
+        const msg = JSON.parse(body) as Record<string, unknown>;
+        if (route === '/rename') {
+          if (typeof msg.id === 'string' && typeof msg.branch === 'string') {
+            void dispatchRenameRequest(msg.id, msg.branch, window);
+          }
+        } else {
+          // Default route handles activity events: /event or anything else.
+          if (typeof msg.id === 'string' && typeof msg.event === 'string') {
+            dispatchHookEvent(msg.id, msg.event, window);
+          }
         }
       } catch {
         /* invalid JSON — ignore */

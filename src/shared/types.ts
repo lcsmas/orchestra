@@ -1,14 +1,4 @@
-export type WorkspaceStatus =
-  | 'idle'
-  | 'running'
-  | 'waiting'
-  | 'error'
-  | 'stopped'
-  /** Agent appeared to be running but the PTY has gone silent for longer
-   * than the watchdog window — almost always a rate-limit / usage-disabled
-   * wall, occasionally a crashed claude. The dot warns the user to check
-   * the terminal; status flips back to `running` on the next submit. */
-  | 'stalled';
+export type WorkspaceStatus = 'idle' | 'running' | 'waiting' | 'error' | 'stopped';
 
 export interface Workspace {
   id: string;

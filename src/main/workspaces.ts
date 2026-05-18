@@ -1,8 +1,8 @@
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
-import { existsSync, watch, type FSWatcher } from 'node:fs';
+import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { BrowserWindow, shell } from 'electron';
 import { execFile } from 'node:child_process';
 import { store } from './store';
@@ -80,7 +80,6 @@ export async function createWorkspace(
   };
   await store.upsertWorkspace(ws);
   window.webContents.send('workspace:update', ws);
-  startBranchNameWatcher(ws, window);
 
   // Fire setup script asynchronously — don't block the create call. Renderer
   // sees `setupStatus: 'pending'` immediately and watches workspace:update for
@@ -109,7 +108,6 @@ export async function archiveWorkspace(id: string, window: BrowserWindow): Promi
   stopPty(id);
   stopPty(`${id}:run`);
   stopPty(`${id}:nvim`);
-  stopBranchNameWatcher(id);
   const updated: Workspace = {
     ...ws,
     archived: true,
@@ -131,7 +129,6 @@ export async function unarchiveWorkspace(id: string, window: BrowserWindow): Pro
   };
   await store.upsertWorkspace(updated);
   window.webContents.send('workspace:update', updated);
-  startBranchNameWatcher(updated, window);
 }
 
 export async function deleteWorkspace(id: string, window: BrowserWindow): Promise<void> {
@@ -144,7 +141,6 @@ export async function deleteWorkspace(id: string, window: BrowserWindow): Promis
   stopPty(id);
   stopPty(`${id}:run`);
   stopPty(`${id}:nvim`);
-  stopBranchNameWatcher(id);
 
   const archiveScript = store.getRepoScripts(ws.repoPath).archive;
   if (archiveScript && existsSync(ws.worktreePath)) {
@@ -234,8 +230,9 @@ export async function ensureWorkspacePort(
  * agent keeps running — `git branch -m` is purely a ref rename, so HEAD,
  * CWD, and open files are unaffected. The agent's TUI banner may show a
  * stale branch name until it next repaints, but that's cosmetic.
- * `manual` is true when the user typed the name themselves and sets the
- * `branchManuallySet` latch so the auto-rename suggestion stops firing. */
+ * `manual` is true when the rename came from a user action (typing in the
+ * UI) or from the agent itself; both lock the branch via `branchManuallySet`
+ * so the auto-rename instruction stops firing on subsequent sessions. */
 export async function renameWorkspaceBranch(
   id: string,
   rawNewBranch: string,
@@ -256,7 +253,6 @@ export async function renameWorkspaceBranch(
     return ws;
   }
   const repoName = path.basename(ws.repoPath);
-  stopBranchNameWatcher(ws.id);
   await renameWorktreeBranch(ws.worktreePath, ws.branch, newBranch);
 
   const updated: Workspace = {
@@ -267,8 +263,27 @@ export async function renameWorkspaceBranch(
   };
   await store.upsertWorkspace(updated);
   window.webContents.send('workspace:update', updated);
-  startBranchNameWatcher(updated, window);
   return updated;
+}
+
+/** Handle a rename request coming from the agent via the hooks-server socket.
+ * Locks the branch after a successful rename so the SessionStart instruction
+ * stops firing (one rename per workspace lifetime). Silent no-op if the
+ * branch is already user-set or the requested name is invalid — the agent
+ * doesn't get error feedback from the socket call, so we just refuse. */
+export async function dispatchRenameRequest(
+  id: string,
+  rawNewBranch: string,
+  window: BrowserWindow,
+): Promise<void> {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived) return;
+  if (ws.branchManuallySet) return;
+  try {
+    await renameWorkspaceBranch(id, rawNewBranch, { manual: true }, window);
+  } catch {
+    /* invalid name, branch conflict — silently ignore */
+  }
 }
 
 function sanitizeBranchName(raw: string): string {
@@ -294,7 +309,6 @@ export async function switchWorkspaceBranch(
   stopPty(id);
   stopPty(nvimId);
   clearScrollback(id);
-  stopBranchNameWatcher(id);
 
   await switchWorktreeBranch(ws.worktreePath, branch);
 
@@ -310,7 +324,6 @@ export async function switchWorkspaceBranch(
   };
   await store.upsertWorkspace(updated);
   window.webContents.send('workspace:update', updated);
-  startBranchNameWatcher(updated, window);
   if (restartAgent) window.webContents.send('pty:restart', id);
   if (restartNvim) window.webContents.send('pty:restart', nvimId);
   return updated;
@@ -320,26 +333,22 @@ export async function switchWorkspaceBranch(
 //
 // Two responsibilities live in the same `<worktree>/.claude/settings.local.json`:
 //
-// 1. First-prompt branch rename. UserPromptSubmit hook dumps the prompt JSON
-//    into `<worktree>/.orchestra/first-prompt.json` exactly once (subsequent
-//    prompts short-circuit because the file already exists). A watcher in the
-//    main process picks that up, runs `claude -p` headlessly to suggest a
-//    kebab-case branch name from the user's message, and renames the branch +
-//    worktree. After the rename we lock the branch (`branchManuallySet=true`)
-//    so this fires at most once per workspace lifetime.
+// 1. Agent-driven branch rename. A SessionStart hook injects an instruction
+//    telling the agent to rename the branch via the orchestra socket once it
+//    understands the work. The hook gates on `ORCHESTRA_BRANCH_AUTO=1`, which
+//    main only sets when `branchManuallySet === false` — so the instruction
+//    stops appearing after the first successful rename (or after the user
+//    types a name in the UI).
 //
-// 2. Activity tracking. UserPromptSubmit + Stop hooks POST `{id, event}` to
-//    the orchestra hooks-server's Unix socket so workspace status flips
-//    running ↔ waiting from Claude's own lifecycle events. Both commands are
-//    env-guarded with `[ -n "$ORCHESTRA_SOCK" ]` so they're a silent no-op
-//    when the user runs claude outside orchestra.
+// 2. Activity tracking. UserPromptSubmit + Stop + Notification hooks POST
+//    `{id, event}` to the orchestra hooks-server's Unix socket so workspace
+//    status flips running ↔ waiting from Claude's own lifecycle events. Hook
+//    commands are env-guarded with `[ -n "$ORCHESTRA_SOCK" ]` so they're a
+//    silent no-op when claude is run outside orchestra.
 //
 // Codex has no equivalent hook system, so its workspaces keep their
 // auto-generated random branch names and rely on the agent process exit for
 // status (currently unimplemented for codex).
-
-const HOOK_FIRST_PROMPT_CMD =
-  "sh -c '[ -f .orchestra/first-prompt.json ] && exit 0; mkdir -p .orchestra && cat > .orchestra/first-prompt.json'";
 
 const HOOK_ACTIVITY_SUBMIT_CMD =
   '[ -n "$ORCHESTRA_SOCK" ] && curl -s --max-time 1 --unix-socket "$ORCHESTRA_SOCK" -d \'{"id":"\'"$ORCHESTRA_WS_ID"\'","event":"submit"}\' http://x/event > /dev/null 2>&1 || true';
@@ -350,7 +359,27 @@ const HOOK_ACTIVITY_STOP_CMD =
 const HOOK_ACTIVITY_NOTIFY_CMD =
   '[ -n "$ORCHESTRA_SOCK" ] && curl -s --max-time 1 --unix-socket "$ORCHESTRA_SOCK" -d \'{"id":"\'"$ORCHESTRA_WS_ID"\'","event":"notify"}\' http://x/event > /dev/null 2>&1 || true';
 
-const watchers = new Map<string, FSWatcher>();
+// SessionStart hook delegates to a small shell script we drop into the
+// worktree. Inlining the multi-line instruction in a single JSON-encoded
+// hook command requires brutal quote-escaping, and a script file is far
+// easier to read and modify. Path is relative to the agent's cwd (worktree).
+const HOOK_SESSION_START_RENAME_CMD = 'bash .orchestra/rename-instruction.sh';
+
+const RENAME_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
+# Auto-installed by orchestra. Prints a one-time rename instruction into the
+# agent's session context when the workspace is still on its auto-generated
+# branch. Gated on ORCHESTRA_BRANCH_AUTO=1, which orchestra only sets when
+# the branch has not yet been renamed by the user or the agent.
+[ "\${ORCHESTRA_BRANCH_AUTO:-0}" = "1" ] || exit 0
+[ -n "\${ORCHESTRA_SOCK:-}" ] || exit 0
+cat <<EOF
+[orchestra] This workspace is on the auto-generated branch '\${ORCHESTRA_BRANCH:-unknown}'. Once you understand the specific work this conversation is about, rename the branch by running this exact command (do NOT use 'git branch -m'):
+
+  curl -s --max-time 2 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"id\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\",\\\\"branch\\\\":\\\\"<new-branch-name>\\\\"}" http://x/rename
+
+Pick a short kebab-case name (3-6 words) that reflects the actual work, e.g. fix-checkout-typo, add-stripe-webhook-retry, route-demande-accessoire. Do this proactively the moment the scope is clear — not on the first prompt if the prompt is exploratory.
+EOF
+`;
 
 function upsertHookCommand(list: unknown[], command: string): void {
   const present = list.some((entry) => {
@@ -358,6 +387,15 @@ function upsertHookCommand(list: unknown[], command: string): void {
     return inner.some((h) => h?.command === command);
   });
   if (!present) list.push({ hooks: [{ type: 'command', command }] });
+}
+
+/** Drop any hook entry whose command matches the predicate. Used to evict
+ * legacy hook commands installed by older orchestra versions. */
+function removeHookCommand(list: unknown[], match: (cmd: string) => boolean): unknown[] {
+  return list.filter((entry) => {
+    const inner = (entry as { hooks?: Array<{ command?: string }> })?.hooks ?? [];
+    return !inner.some((h) => typeof h?.command === 'string' && match(h.command));
+  });
 }
 
 export async function installOrchestraHooks(
@@ -370,6 +408,16 @@ export async function installOrchestraHooks(
     await mkdir(dir, { recursive: true });
     const gitignore = path.join(dir, '.gitignore');
     if (!existsSync(gitignore)) await writeFile(gitignore, '*\n');
+
+    // Idempotent: rewrite the script every install so updates to the
+    // instruction text propagate to existing workspaces on next pty:start.
+    const renameScript = path.join(dir, 'rename-instruction.sh');
+    await writeFile(renameScript, RENAME_INSTRUCTION_SCRIPT);
+    try {
+      await chmod(renameScript, 0o755);
+    } catch {
+      /* best-effort */
+    }
 
     const settingsDir = path.join(worktreePath, '.claude');
     await mkdir(settingsDir, { recursive: true });
@@ -384,8 +432,10 @@ export async function installOrchestraHooks(
     }
     const hooks = ((settings.hooks as Record<string, unknown>) ??= {});
 
-    const submitList = ((hooks.UserPromptSubmit as unknown[]) ??= []);
-    upsertHookCommand(submitList, HOOK_FIRST_PROMPT_CMD);
+    // Evict the legacy first-prompt.json writer from any pre-upgrade workspace
+    // so prompts no longer get dumped to disk after this hook system landed.
+    let submitList = ((hooks.UserPromptSubmit as unknown[]) ??= []);
+    submitList = removeHookCommand(submitList, (cmd) => cmd.includes('.orchestra/first-prompt.json'));
     upsertHookCommand(submitList, HOOK_ACTIVITY_SUBMIT_CMD);
     hooks.UserPromptSubmit = submitList;
 
@@ -402,111 +452,15 @@ export async function installOrchestraHooks(
     upsertHookCommand(notifyList, HOOK_ACTIVITY_NOTIFY_CMD);
     hooks.Notification = notifyList;
 
+    const sessionStartList = ((hooks.SessionStart as unknown[]) ??= []);
+    upsertHookCommand(sessionStartList, HOOK_SESSION_START_RENAME_CMD);
+    hooks.SessionStart = sessionStartList;
+
     settings.hooks = hooks;
     await writeFile(settingsFile, JSON.stringify(settings, null, 2));
   } catch {
     /* best-effort */
   }
-}
-
-export function startBranchNameWatcher(ws: Workspace, window: BrowserWindow): void {
-  stopBranchNameWatcher(ws.id);
-  if (ws.branchManuallySet) return;
-  if (ws.agent !== 'claude') return;
-  const dir = path.join(ws.worktreePath, '.orchestra');
-  try {
-    if (!existsSync(dir)) return;
-    const watcher = watch(dir, { persistent: false }, (_event, filename) => {
-      if (filename !== 'first-prompt.json') return;
-      void handleFirstPrompt(ws.id, window);
-    });
-    watchers.set(ws.id, watcher);
-    // Fire once in case the file appeared before we attached.
-    void handleFirstPrompt(ws.id, window);
-  } catch {
-    /* watcher is best-effort */
-  }
-}
-
-export function stopBranchNameWatcher(id: string): void {
-  const w = watchers.get(id);
-  if (!w) return;
-  try {
-    w.close();
-  } catch {
-    /* noop */
-  }
-  watchers.delete(id);
-}
-
-const pending = new Map<string, NodeJS.Timeout>();
-const inFlight = new Set<string>();
-
-async function handleFirstPrompt(id: string, window: BrowserWindow): Promise<void> {
-  // Debounce: the hook writes via `cat >` which may emit multiple change
-  // events. Coalesce to one read per 200 ms quiet window.
-  const existing = pending.get(id);
-  if (existing) clearTimeout(existing);
-  pending.set(
-    id,
-    setTimeout(async () => {
-      pending.delete(id);
-      if (inFlight.has(id)) return;
-      const ws = store.getWorkspace(id);
-      if (!ws || ws.archived || ws.branchManuallySet) return;
-      const file = path.join(ws.worktreePath, '.orchestra', 'first-prompt.json');
-      let prompt = '';
-      try {
-        const raw = (await readFile(file, 'utf8')).trim();
-        const json = JSON.parse(raw) as { prompt?: unknown };
-        prompt = String(json.prompt ?? '').trim();
-      } catch {
-        return;
-      }
-      if (!prompt) return;
-      inFlight.add(id);
-      try {
-        const suggested = await suggestBranchName(prompt);
-        if (!suggested) return;
-        const sanitized = sanitizeBranchName(suggested);
-        if (!sanitized || sanitized === ws.branch) return;
-        const fresh = store.getWorkspace(id);
-        if (!fresh || fresh.branchManuallySet) return;
-        // Lock the branch after auto-rename so this fires at most once.
-        await renameWorkspaceBranch(id, sanitized, { manual: true }, window);
-      } catch {
-        /* ignore — branch conflict, user already renamed, claude unavailable */
-      } finally {
-        inFlight.delete(id);
-        try {
-          await unlink(file);
-        } catch {
-          /* noop */
-        }
-      }
-    }, 200),
-  );
-}
-
-function suggestBranchName(userMessage: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    const promptText = `Suggest a short kebab-case git branch name (3-5 words, lowercase, hyphen-separated) that describes the work the user is asking for. Output ONLY the branch name on a single line. No quotes, no commentary.\n\nUser request:\n${userMessage}`;
-    execFile(
-      'claude',
-      ['-p', promptText],
-      { timeout: 30_000, maxBuffer: 1024 * 1024 },
-      (err, stdout) => {
-        if (err) return resolve(null);
-        const last = stdout
-          .trim()
-          .split('\n')
-          .map((l) => l.trim())
-          .filter(Boolean)
-          .pop();
-        resolve(last || null);
-      },
-    );
-  });
 }
 
 export async function openInEditor(id: string, editor: 'code' | 'cursor'): Promise<void> {

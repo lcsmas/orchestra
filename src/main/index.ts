@@ -31,7 +31,6 @@ import {
   openInEditor,
   renameWorkspaceBranch,
   runSetupScript,
-  startBranchNameWatcher,
   switchWorkspaceBranch,
   unarchiveWorkspace,
 } from './workspaces';
@@ -48,11 +47,7 @@ import {
   isRunning,
 } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
-import {
-  detectAndUpdateMergeState,
-  startStallWatchdog,
-  stopStallWatchdog,
-} from './activity';
+import { detectAndUpdateMergeState } from './activity';
 import type { CreateWorkspaceInput } from '../shared/types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -102,7 +97,6 @@ async function createMainWindow() {
   mainWindow.setMenuBarVisibility(false);
 
   await startHooksServer(mainWindow);
-  startStallWatchdog(mainWindow);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void openUrlExternally(url);
@@ -123,10 +117,6 @@ async function createMainWindow() {
     await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
-  for (const ws of store.workspaces) {
-    if (ws.archived) continue;
-    startBranchNameWatcher(ws, mainWindow);
-  }
 }
 
 function getMainWindow(): BrowserWindow {
@@ -230,6 +220,15 @@ ipcMain.handle('pty:start', async (_e, id: string, cols: number, rows: number) =
   const codexArgs = resuming ? ['resume', '--last'] : [];
   // Idempotent: upgrades workspaces created before the activity hook landed.
   await installOrchestraHooks(ws.worktreePath, ws.agent);
+  // Expose the current branch and auto-rename gate to hooks. The SessionStart
+  // hook reads ORCHESTRA_BRANCH_AUTO=1 to decide whether to inject the
+  // rename-instruction context — flipping `branchManuallySet` true (after a
+  // user or agent rename) clears the env on the next pty:start, so the
+  // instruction stops appearing.
+  const extraEnv: Record<string, string> = {
+    ORCHESTRA_BRANCH: ws.branch,
+    ORCHESTRA_BRANCH_AUTO: ws.branchManuallySet ? '0' : '1',
+  };
   await startPty({
     id,
     cwd: ws.worktreePath,
@@ -239,6 +238,7 @@ ipcMain.handle('pty:start', async (_e, id: string, cols: number, rows: number) =
     rows,
     window: getMainWindow(),
     workspaceId: id,
+    extraEnv,
   });
   // Preserve the `waiting` yellow dot across restarts: if the previous session
   // ended with an unread "agent finished" state, the dot stays until the user
@@ -466,14 +466,12 @@ app.whenReady().then(createMainWindow);
 app.on('window-all-closed', () => {
   stopAll();
   stopHooksServer();
-  stopStallWatchdog();
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
   stopAll();
   stopHooksServer();
-  stopStallWatchdog();
 });
 
 app.on('activate', () => {

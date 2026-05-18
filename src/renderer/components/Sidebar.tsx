@@ -394,9 +394,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
                         ? 'Agent is working…'
                         : w.status === 'idle'
                           ? 'Agent is idle'
-                          : w.status === 'stalled'
-                            ? 'Agent stalled — check terminal (rate limit, /login, or crashed)'
-                            : w.status
+                          : w.status
                     }
                   />
                   <div className="ws-body">
