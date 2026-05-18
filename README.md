@@ -8,7 +8,7 @@ Spawn a swarm of Claude Code or Codex agents, give each its own branch in an iso
 ![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey)
 ![Electron](https://img.shields.io/badge/electron-33-47848F?logo=electron&logoColor=white)
 
-<!-- Add a screenshot or GIF here before publishing: docs/screenshot.png -->
+![Orchestra dashboard with three parallel workspaces in the sidebar and a live agent terminal](docs/screenshot.png)
 
 ## Why Orchestra
 
