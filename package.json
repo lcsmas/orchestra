@@ -2,6 +2,16 @@
   "name": "orchestra",
   "version": "0.1.0",
   "description": "Run parallel Claude Code and Codex agents in isolated git worktrees",
+  "license": "Apache-2.0",
+  "author": "Lucas Mas",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lcsmas/orchestra.git"
+  },
+  "homepage": "https://github.com/lcsmas/orchestra",
+  "bugs": {
+    "url": "https://github.com/lcsmas/orchestra/issues"
+  },
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
