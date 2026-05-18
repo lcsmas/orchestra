@@ -74,6 +74,45 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     viewport?.addEventListener('scroll', syncThumb, { passive: true });
     const thumbSyncRaf = requestAnimationFrame(syncThumb);
 
+    // Drag-to-scroll on the custom thumb. The native xterm-viewport scrollbar
+    // is hidden, so without this the thumb is decorative — scroll only works
+    // via wheel/keyboard. Translate pointer dy into viewport.scrollTop using
+    // the same scrollHeight-vs-track ratio syncThumb uses.
+    const thumb = thumbRef.current;
+    let dragStartY = 0;
+    let dragStartScrollTop = 0;
+    const onThumbMove = (e: PointerEvent) => {
+      if (!viewport || !thumb) return;
+      const { scrollHeight, clientHeight } = viewport;
+      const trackH = clientHeight;
+      const thumbH = Math.max(30, (clientHeight / scrollHeight) * trackH);
+      const maxTop = trackH - thumbH;
+      if (maxTop <= 0) return;
+      const dy = e.clientY - dragStartY;
+      const scrollRange = scrollHeight - clientHeight;
+      viewport.scrollTop = dragStartScrollTop + (dy / maxTop) * scrollRange;
+    };
+    const onThumbUp = (e: PointerEvent) => {
+      thumb?.classList.remove('dragging');
+      thumb?.releasePointerCapture(e.pointerId);
+      window.removeEventListener('pointermove', onThumbMove);
+      window.removeEventListener('pointerup', onThumbUp);
+      window.removeEventListener('pointercancel', onThumbUp);
+    };
+    const onThumbDown = (e: PointerEvent) => {
+      if (!viewport || !thumb) return;
+      e.preventDefault();
+      e.stopPropagation();
+      dragStartY = e.clientY;
+      dragStartScrollTop = viewport.scrollTop;
+      thumb.classList.add('dragging');
+      thumb.setPointerCapture(e.pointerId);
+      window.addEventListener('pointermove', onThumbMove);
+      window.addEventListener('pointerup', onThumbUp);
+      window.addEventListener('pointercancel', onThumbUp);
+    };
+    thumb?.addEventListener('pointerdown', onThumbDown);
+
     let cancelled = false;
     let started = false;
     let lastSentCols = 0;
@@ -223,6 +262,10 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       cancelAnimationFrame(raf);
       cancelAnimationFrame(thumbSyncRaf);
       viewport?.removeEventListener('scroll', syncThumb);
+      thumb?.removeEventListener('pointerdown', onThumbDown);
+      window.removeEventListener('pointermove', onThumbMove);
+      window.removeEventListener('pointerup', onThumbUp);
+      window.removeEventListener('pointercancel', onThumbUp);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onFocus);
       ro.disconnect();

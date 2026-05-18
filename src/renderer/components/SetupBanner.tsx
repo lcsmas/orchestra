@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Workspace } from '../../shared/types';
 
 interface Props {
@@ -13,7 +13,28 @@ export function SetupBanner({ workspace }: Props) {
   const [log, setLog] = useState('');
   const [retrying, setRetrying] = useState(false);
 
-  if (status !== 'running' && status !== 'failed') return null;
+  // Keep the banner mounted while the log panel is open even after setup
+  // succeeds — otherwise the user's log view vanishes the instant the script
+  // exits, which feels like the logs got deleted.
+  const visible = status === 'running' || status === 'failed' || logOpen;
+
+  // Re-read the log on status changes while open so the user sees the final
+  // output, not just the snapshot from when they clicked "View log".
+  useEffect(() => {
+    if (!logOpen) return;
+    let cancelled = false;
+    void window.orchestra
+      .readSetupLog(workspace.id)
+      .then((text) => {
+        if (!cancelled) setLog(text || '(no setup log captured yet)');
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [logOpen, status, workspace.id]);
+
+  if (!visible) return null;
 
   const onViewLog = async () => {
     if (logOpen) {
@@ -46,7 +67,7 @@ export function SetupBanner({ workspace }: Props) {
   return (
     <div className={`setup-banner ${status}`}>
       <div className="setup-banner-row">
-        {status === 'running' ? (
+        {status === 'running' && (
           <>
             <span className="setup-banner-spinner" aria-hidden="true" />
             <div className="setup-banner-text">
@@ -55,7 +76,8 @@ export function SetupBanner({ workspace }: Props) {
             </div>
             <button onClick={onViewLog}>{logOpen ? 'Hide log' : 'View log'}</button>
           </>
-        ) : (
+        )}
+        {status === 'failed' && (
           <>
             <span className="setup-banner-x" aria-hidden="true">
               !
@@ -70,6 +92,15 @@ export function SetupBanner({ workspace }: Props) {
             <button className="primary" onClick={onRetry} disabled={retrying}>
               {retrying ? 'Retrying…' : 'Retry'}
             </button>
+          </>
+        )}
+        {status !== 'running' && status !== 'failed' && (
+          <>
+            <div className="setup-banner-text">
+              <strong>Setup complete</strong>
+              <span className="setup-banner-sub">Showing previous setup log</span>
+            </div>
+            <button onClick={onViewLog}>Hide log</button>
           </>
         )}
       </div>

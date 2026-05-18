@@ -620,18 +620,6 @@ input:focus, textarea:focus, select:focus {
 .ws-dot.waiting { background: var(--yellow); box-shadow: 0 0 8px rgba(255, 200, 87, 0.55); }
 .ws-dot.error { background: var(--red); box-shadow: 0 0 8px rgba(255, 107, 107, 0.5); }
 .ws-dot.stopped { background: #555; opacity: 0.6; }
-/* Stalled = appeared running but PTY went silent past the watchdog window.
-   Amber-red with a slow pulse so it reads as "something's wrong here" without
-   screaming like the hard error state. */
-.ws-dot.stalled {
-  background: #ff8a4c;
-  box-shadow: 0 0 8px rgba(255, 138, 76, 0.55);
-  animation: ws-dot-stalled-pulse 2.4s ease-in-out infinite;
-}
-@keyframes ws-dot-stalled-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.55; }
-}
 
 @keyframes ws-dot-pulse {
   0% { box-shadow: 0 0 0 0 rgba(91, 214, 139, 0.55), 0 0 6px rgba(91, 214, 139, 0.8); }
@@ -1404,16 +1392,27 @@ button.active {
   position: absolute;
   top: 0;
   right: 2px;
-  width: 3px;
+  width: 8px;
   min-height: 30px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.28);
   opacity: 0;
-  pointer-events: none;
-  transition: opacity 160ms var(--ease);
+  cursor: grab;
+  /* The thumb sits in front of the xterm canvas so pointerdown lands here
+     for drag, but the track area around it stays click-through to xterm. */
+  pointer-events: auto;
+  transition: opacity 160ms var(--ease), background-color 140ms var(--ease);
   z-index: 5;
 }
 .terminal-pane.active:hover .term-scroll-thumb {
+  opacity: 1;
+}
+.terminal-pane .term-scroll-thumb:hover {
+  background: rgba(255, 255, 255, 0.45);
+}
+.terminal-pane .term-scroll-thumb.dragging {
+  background: rgba(255, 255, 255, 0.55);
+  cursor: grabbing;
   opacity: 1;
 }
 
