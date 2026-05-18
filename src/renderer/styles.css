@@ -536,6 +536,31 @@ input:focus, textarea:focus, select:focus {
   padding: 2px 6px;
   font-size: 11px;
 }
+.sidebar-footer {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  flex-shrink: 0;
+}
+.sidebar-footer-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 140ms var(--ease), background-color 140ms var(--ease);
+}
+.sidebar-footer-link:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+.sidebar-footer-link svg:last-child {
+  opacity: 0.6;
+}
 .ws-list {
   overflow-y: auto;
   flex: 1;
