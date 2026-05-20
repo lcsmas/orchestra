@@ -13,6 +13,12 @@
     "url": "https://github.com/lcsmas/orchestra/issues"
   },
   "main": "dist-electron/main.js",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "node-pty"
+    ]
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build && electron-builder",
