@@ -1,13 +1,24 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron';
 import path from 'node:path';
-import fixPath from 'fix-path';
+import { shellEnvSync } from 'shell-env';
 
-// Desktop launchers (file manager, app grid, .desktop files) start Electron
-// without sourcing the user's shell rc, so PATH is the bare login PATH and
-// agent binaries like `claude`, `codex`, `nvim` aren't found. Run this before
-// anything spawns a child process — asks the user's login shell for its PATH
-// and copies it onto process.env.PATH. No-ops when launched from a terminal.
-fixPath();
+// Desktop launchers (file manager, app grid, .desktop files, rofi/combi) start
+// Electron without sourcing the user's shell rc, so the process inherits only
+// the bare graphical-session environment: PATH lacks agent binaries like
+// `claude`/`codex`/`nvim`, AND exported secrets (e.g. MCP DB creds sourced from
+// ~/.zshrc) are missing. Since the agent pty execs `claude` directly (no shell,
+// see startPty), whatever is absent here never reaches the agent's MCP servers.
+// Capture the full login+interactive shell environment once, before anything
+// spawns a child process, and merge it onto process.env. shell-env runs
+// `$SHELL -ilc env` (sourcing .zshrc), strips ANSI, and returns every export;
+// it no-ops to process.env on Windows or shell failure, and is effectively a
+// no-op when launched from a terminal (the env is already present). This
+// supersedes fix-path, which only ever repaired PATH and discarded the rest.
+try {
+  Object.assign(process.env, shellEnvSync());
+} catch {
+  // shell-env already falls back internally; ignore any unexpected failure.
+}
 import { store } from './store';
 import {
   detectDefaultBranch,
