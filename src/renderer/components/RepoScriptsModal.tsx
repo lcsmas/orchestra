@@ -89,10 +89,18 @@ export function RepoScriptsModal({ repoPath, repoName, onClose }: Props) {
   // portal, `.modal-backdrop` is trapped inside the 280px sidebar column
   // instead of covering the viewport.
   return createPortal(
-    <div className="modal-backdrop" onClick={onClose}>
+    <div
+      className="modal-backdrop"
+      // Close only when the press *starts* on the backdrop. Using onClick would
+      // also fire when a text-selection drag begins inside a field and the mouse
+      // is released over the backdrop — the resulting click targets the backdrop
+      // and would wrongly dismiss the dialog mid-edit.
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
       <div
         className="modal repo-scripts-modal"
-        onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-label={`Scripts for ${repoName}`}
       >

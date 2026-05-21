@@ -23,8 +23,15 @@ export function SoundSettings({ onClose }: Props) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal sound-settings" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="modal-backdrop"
+      // Close only when the press starts on the backdrop, so a text-selection
+      // drag that ends over the backdrop doesn't dismiss the dialog mid-edit.
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="modal sound-settings">
         <h2>Notification sound</h2>
         <div className="sound-hint">
           Plays when an agent finishes working. Click a row to preview and select.

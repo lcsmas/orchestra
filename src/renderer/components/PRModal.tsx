@@ -35,8 +35,15 @@ export function PRModal({ ws, onClose }: Props) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="modal-backdrop"
+      // Close only when the press starts on the backdrop, so a text-selection
+      // drag that ends over the backdrop doesn't dismiss the dialog mid-edit.
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="modal">
         <h2>Open pull request</h2>
         {stage === 'form' && (
           <>
