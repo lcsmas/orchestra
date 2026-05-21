@@ -14,6 +14,19 @@ import { shellEnvSync } from 'shell-env';
 // it no-ops to process.env on Windows or shell failure, and is effectively a
 // no-op when launched from a terminal (the env is already present). This
 // supersedes fix-path, which only ever repaired PATH and discarded the rest.
+// Launching via `npm run dev` / `npm start` injects npm_* lifecycle vars
+// (npm_config_prefix, npm_package_*, …) into our environment. They propagate to
+// every child we spawn — agent PTYs and the run/setup/archive scripts — and
+// npm_config_prefix in particular makes nvm refuse to switch Node ("nvm is not
+// compatible with the npm_config_prefix environment variable"), silently
+// breaking run scripts that call `nvm use`. Strip them *before* capturing the
+// shell env below, so the shell-env child (which inherits our env) and every
+// process we later spawn see the clean environment a real GUI launch gets. A
+// user who genuinely exports an npm_* var from their rc gets it back via the
+// shellEnvSync merge, since that runs after this and re-sources their rc.
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith('npm_')) delete process.env[key];
+}
 try {
   Object.assign(process.env, shellEnvSync());
 } catch {
@@ -46,7 +59,7 @@ import {
   switchWorkspaceBranch,
   unarchiveWorkspace,
 } from './workspaces';
-import { buildScriptEnv, readScriptLog, setupLogPath } from './scripts';
+import { buildScriptEnv, loginShellArgv, readScriptLog, setupLogPath } from './scripts';
 import type { RepoScripts } from '../shared/types';
 import {
   resizePty,
@@ -463,11 +476,12 @@ ipcMain.handle('scripts:runStart', async (_e, id: string, cols: number, rows: nu
     setTimeout(() => resizePty(runId, cols, rows), 40);
     return;
   }
+  const { command, args } = loginShellArgv(script);
   await startPty({
     id: runId,
     cwd: ws.worktreePath,
-    command: 'bash',
-    args: ['-lc', script],
+    command,
+    args,
     cols,
     rows,
     window: getMainWindow(),

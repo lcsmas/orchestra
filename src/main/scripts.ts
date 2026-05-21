@@ -45,6 +45,17 @@ export function buildScriptEnv(ws: Workspace): Record<string, string> {
   return env;
 }
 
+/** Build the argv for running `script` under the user's interactive login shell.
+ * We use `$SHELL` (not hardcoded `bash`) with `-i` because version managers like
+ * nvm install their shell *function* into the interactive rc — `~/.zshrc` for a
+ * zsh user, `~/.bashrc` for bash — which a non-interactive or login-only shell
+ * never sources. A hardcoded `bash -lc` reads `~/.bash_profile`/`~/.bashrc` and
+ * never touches `~/.zshrc`, so `nvm` is undefined for zsh users. Mirrors how
+ * `shell-env` (`$SHELL -ilc env`) captures the env at startup. */
+export function loginShellArgv(script: string): { command: string; args: string[] } {
+  return { command: process.env.SHELL || 'bash', args: ['-ilc', script] };
+}
+
 export interface OneShotResult {
   exitCode: number;
   /** Last non-empty line of stderr, or '' if none. Surfaces in the UI as
@@ -52,11 +63,11 @@ export interface OneShotResult {
   lastStderrLine: string;
 }
 
-/** Run a one-shot script (setup, archive) under `bash -lc`, capture both
- * streams to `logFile`, return exit code. `bash -lc` sources the user's
- * login profile so `pnpm`, `nvm`, etc. resolve to the same versions the user
- * sees in their terminal — important on Linux desktops where the desktop
- * launcher's PATH is bare. */
+/** Run a one-shot script (setup, archive) under the user's interactive login
+ * shell (see `loginShellArgv`), capture both streams to `logFile`, return exit
+ * code. Running it the way the user's terminal would makes `pnpm`, `nvm`, etc.
+ * resolve to the same versions they see interactively — important on Linux
+ * desktops where the desktop launcher's PATH is bare. */
 export async function runOneShot(opts: {
   script: string;
   cwd: string;
@@ -83,7 +94,8 @@ export async function runOneShot(opts: {
     let lastStderrLine = '';
     let proc;
     try {
-      proc = spawn('bash', ['-lc', opts.script], {
+      const { command, args } = loginShellArgv(opts.script);
+      proc = spawn(command, args, {
         cwd: opts.cwd,
         env: { ...process.env, ...opts.env },
         stdio: ['ignore', 'pipe', 'pipe'],
