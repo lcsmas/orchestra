@@ -5,16 +5,17 @@ import type { Workspace, WorkspaceStatus } from '../shared/types';
 
 // Hook-driven activity tracker.
 //
-// Claude Code's UserPromptSubmit + Stop hooks (installed per-workspace in
-// .claude/settings.local.json by workspaces.ts) POST `{id, event}` JSON to the
-// hooks-server's Unix socket. The hooks-server forwards each event here.
+// Claude Code's UserPromptSubmit + Stop + Notification hooks (installed
+// per-workspace in .claude/settings.local.json by workspaces.ts) POST
+// `{id, event}` JSON to the hooks-server's Unix socket. The hooks-server
+// forwards each event here.
 //
 // State is a clean function of those events:
 //   submit → running
 //   stop   → waiting (chime + finished-toast)
-// Notification hook is intentionally ignored: under
-// `--dangerously-skip-permissions` it only fires the 30–60s idle reminder,
-// which is noise during long tool calls / `/loop` monitor waits.
+//   notify → waiting (chime + needs-input-toast) — Claude fires this when the
+//            agent is prompting the user for an answer (permission prompts
+//            and the 60s idle reminder).
 
 async function setStatus(
   id: string,
@@ -54,6 +55,34 @@ function fireFinished(id: string, window: BrowserWindow): void {
       const n = new Notification({
         title: 'Agent finished',
         body: `${ws.name} is ready for review`,
+        silent: true,
+      });
+      n.on('click', () => {
+        if (!window.isDestroyed()) {
+          window.show();
+          window.focus();
+          window.webContents.send('workspace:focus', id);
+        }
+      });
+      n.show();
+    } catch {
+      /* notifications unsupported on this platform */
+    }
+  });
+}
+
+function fireNeedsInput(id: string, window: BrowserWindow): void {
+  const focused = window.isFocused();
+  void setStatus(id, 'waiting', window).then((ws) => {
+    if (!ws) return;
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+      window.webContents.send('agent:needs-input', id, focused);
+    }
+    if (focused) return;
+    try {
+      const n = new Notification({
+        title: 'Agent needs input',
+        body: `${ws.name} is waiting for your answer`,
         silent: true,
       });
       n.on('click', () => {
@@ -116,6 +145,7 @@ export function dispatchHookEvent(
     void setStatus(id, 'running', window);
   } else if (event === 'stop') {
     fireFinished(id, window);
+  } else if (event === 'notify') {
+    fireNeedsInput(id, window);
   }
-  // 'notify' (Claude's idle reminder under skip-perms) is a no-op.
 }
