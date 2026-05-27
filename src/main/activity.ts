@@ -105,18 +105,21 @@ export async function detectAndUpdateMergeState(
 ): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return;
-  const { merged, diverged, unpushedAhead } = await getBranchMergeState(
+  const { merged, diverged, unpushedAhead, stalePointer } = await getBranchMergeState(
     ws.repoPath,
     ws.branch,
     ws.baseBranch,
   );
   // mergedAt is "timestamp of most recent merge" — set/refresh on every
-  // merge cycle, never cleared. The `divergedFromBase` flag is what tells
-  // the renderer whether the branch is currently in sync with that merge
-  // (pill visible) or has new commits since (pill hidden, button enabled).
+  // merge cycle. `divergedFromBase` is what tells the renderer whether the
+  // branch is currently in sync with that merge (pill visible) or has new
+  // commits since (pill hidden, button enabled). Cleared only on
+  // `stalePointer`, which signals the branch tip is just an old commit on
+  // base's history with no real merge — clears false positives written by
+  // the pre-fix detection.
   const fresh = store.getWorkspace(id);
   if (!fresh || fresh.archived) return;
-  const nextMergedAt = merged ? Date.now() : fresh.mergedAt;
+  const nextMergedAt = merged ? Date.now() : stalePointer ? undefined : fresh.mergedAt;
   const nextDiverged = diverged;
   const nextUnpushed = unpushedAhead;
   const changed =

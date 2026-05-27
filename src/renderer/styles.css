@@ -282,7 +282,7 @@ button.restart-btn:hover {
   background: rgba(179, 139, 255, 0.12);
   border: 1px solid rgba(179, 139, 255, 0.32);
 }
-.ws-item.merged .ws-name { text-decoration: line-through; color: var(--text-dim); }
+.ws-item.merged .ws-name { color: var(--text-dim); }
 
 /* "↑N" badge — branch has commits not yet on origin. Amber so it reads as
    a soft "action available" cue, not an error. Sits next to the diff

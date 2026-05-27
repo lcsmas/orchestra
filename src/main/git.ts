@@ -266,8 +266,11 @@ export async function createPullRequest(
 }
 
 /** Snapshot of how `branch` relates to `baseBranch`:
- *  - `merged`: every commit on branch is reachable from base AND the two
- *    refs point at different commits → a real merge has landed.
+ *  - `merged`: branch was folded into base via a merge commit that takes the
+ *    branch tip as a non-first parent. This excludes the lookalike case where
+ *    a branch was created from an older commit on base and never advanced —
+ *    that branch's tip sits on base's first-parent chain, satisfies "fully
+ *    reachable from base", but no real merge ever happened.
  *  - `diverged`: branch has commits not reachable from base → unshipped work.
  *  - `unpushedAhead`: count of local commits not yet on the remote. If
  *    `origin/<branch>` exists, this is `origin/<branch>..<branch>`. If the
@@ -275,29 +278,71 @@ export async function createPullRequest(
  *    unpushed (`baseBranch..branch`) so the renderer can still surface the
  *    "ready to push" signal on a virgin branch.
  *
- *  `merged` and `diverged` are mutually exclusive. The `!merged && !diverged`
- *  case is either a fresh branch (branch HEAD == base HEAD) or a fast-forward-
- *  merged branch where the two refs converged — both ambiguous, so neither
- *  flag is set. FF false-negatives are rare enough that missing the stamp is
- *  acceptable. */
+ *  `merged` and `diverged` are mutually exclusive. Fast-forward and rebase
+ *  merges are indistinguishable from "branched and never advanced" or from
+ *  "branch was rewritten" respectively, so they may yield a false-negative
+ *  on `merged` — accepted trade-off for not flagging stale branch points. */
 export async function getBranchMergeState(
   repoPath: string,
   branch: string,
   baseBranch: string,
-): Promise<{ merged: boolean; diverged: boolean; unpushedAhead: number }> {
+): Promise<{
+  merged: boolean;
+  diverged: boolean;
+  unpushedAhead: number;
+  /** True when the branch tip is just a stale pointer at an older commit on
+   *  base — branch is fully reachable from base, refs differ, but no merge
+   *  commit folded it in. Used by callers to clear any stale `mergedAt`
+   *  written by earlier buggy detection. */
+  stalePointer: boolean;
+}> {
   try {
     const git = simpleGit(repoPath);
     const unpushedAhead = await computeUnpushedAhead(git, branch, baseBranch);
     const aheadStr = (await git.raw(['rev-list', '--count', `${baseBranch}..${branch}`])).trim();
     const ahead = Number(aheadStr) || 0;
-    if (ahead > 0) return { merged: false, diverged: true, unpushedAhead };
+    if (ahead > 0) return { merged: false, diverged: true, unpushedAhead, stalePointer: false };
     const [branchSha, baseSha] = await Promise.all([
       git.raw(['rev-parse', branch]).then((s) => s.trim()),
       git.raw(['rev-parse', baseBranch]).then((s) => s.trim()),
     ]);
-    return { merged: branchSha !== baseSha, diverged: false, unpushedAhead };
+    if (branchSha === baseSha) {
+      return { merged: false, diverged: false, unpushedAhead, stalePointer: false };
+    }
+    const merged = await branchTipWasMergedInto(git, branchSha, baseSha);
+    return { merged, diverged: false, unpushedAhead, stalePointer: !merged };
   } catch {
-    return { merged: false, diverged: false, unpushedAhead: 0 };
+    return { merged: false, diverged: false, unpushedAhead: 0, stalePointer: false };
+  }
+}
+
+/** True when some commit reachable from `baseSha` has `branchSha` as a
+ *  non-first parent — i.e., a merge commit folded the branch into base.
+ *  Walks `branchSha..baseSha` with `--ancestry-path` so the scan is bounded
+ *  by the work done since branchSha, not base's full history. */
+async function branchTipWasMergedInto(
+  git: ReturnType<typeof simpleGit>,
+  branchSha: string,
+  baseSha: string,
+): Promise<boolean> {
+  try {
+    const out = await git.raw([
+      'rev-list',
+      '--parents',
+      '--ancestry-path',
+      `${branchSha}..${baseSha}`,
+    ]);
+    for (const line of out.split('\n')) {
+      const parts = line.trim().split(/\s+/);
+      // parts[0] = commit, parts[1] = first parent, parts[2..] = merge parents.
+      // A non-first-parent match means a merge commit pulled branchSha in.
+      for (let i = 2; i < parts.length; i++) {
+        if (parts[i] === branchSha) return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
   }
 }
 
