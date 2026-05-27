@@ -408,3 +408,111 @@ export async function findPullRequest(
     return { all: [], open: null, latest: null, mergedCount: 0 };
   }
 }
+
+/** Snapshot of how local `<baseBranch>` relates to `origin/<baseBranch>`,
+ *  computed without any network access. The caller is responsible for
+ *  running a fetch first when freshness is needed. Returns `hasUpstream:
+ *  false` when no `origin/<baseBranch>` ref exists (repo not fetched yet,
+ *  or remote doesn't have that branch). */
+export async function getBaseSyncState(
+  repoPath: string,
+  baseBranch: string,
+): Promise<{ behind: number; ahead: number; hasUpstream: boolean }> {
+  try {
+    const git = simpleGit(repoPath);
+    try {
+      await git.raw(['rev-parse', '--verify', `refs/remotes/origin/${baseBranch}`]);
+    } catch {
+      return { behind: 0, ahead: 0, hasUpstream: false };
+    }
+    const [behindStr, aheadStr] = await Promise.all([
+      git.raw(['rev-list', '--count', `${baseBranch}..origin/${baseBranch}`]),
+      git.raw(['rev-list', '--count', `origin/${baseBranch}..${baseBranch}`]),
+    ]);
+    return {
+      behind: Number(behindStr.trim()) || 0,
+      ahead: Number(aheadStr.trim()) || 0,
+      hasUpstream: true,
+    };
+  } catch {
+    return { behind: 0, ahead: 0, hasUpstream: false };
+  }
+}
+
+/** Env block applied to every fetch/pull this module runs. The renderer has
+ *  no UI to answer credential prompts, so any auth-requiring fetch must
+ *  fail fast instead of hanging on `gnome-ssh-askpass` or git's terminal
+ *  prompt. We also override the credential helper chain for github.com to
+ *  delegate to `gh auth git-credential`, which serves the user's gh CLI
+ *  token from the OS keyring — that's typically the only credential source
+ *  guaranteed to work in a desktop app's non-interactive context. The
+ *  GIT_CONFIG_COUNT/KEY/VALUE form lets us inject git config without
+ *  touching `~/.gitconfig`. The empty-value entry first clears the
+ *  inherited helper chain (e.g. a broken `store`), then `gh` becomes the
+ *  only helper for github.com URLs. Non-github remotes are unaffected. */
+const NON_INTERACTIVE_GIT_ENV = {
+  ...process.env,
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_ASKPASS: '/bin/echo',
+  SSH_ASKPASS: '/bin/echo',
+  SSH_ASKPASS_REQUIRE: 'never',
+  GIT_CONFIG_COUNT: '2',
+  GIT_CONFIG_KEY_0: 'credential.https://github.com.helper',
+  GIT_CONFIG_VALUE_0: '',
+  GIT_CONFIG_KEY_1: 'credential.https://github.com.helper',
+  GIT_CONFIG_VALUE_1: '!gh auth git-credential',
+} as NodeJS.ProcessEnv;
+
+async function runGit(repoPath: string, args: string[]): Promise<string> {
+  try {
+    const { stdout } = await pexec('git', args, {
+      cwd: repoPath,
+      env: NON_INTERACTIVE_GIT_ENV,
+    });
+    return stdout;
+  } catch (e) {
+    // execFile errors swallow stderr behind a generic "Command failed"
+    // message; surface the first stderr line so callers can show why.
+    const err = e as { stderr?: string; message?: string };
+    const detail = (err.stderr ?? '').trim().split('\n').filter(Boolean).pop();
+    if (detail) throw new Error(detail);
+    throw e;
+  }
+}
+
+/** Bring `<baseBranch>` in sync with `origin/<baseBranch>` for the repo at
+ *  `repoPath`. Strategy cascade (chosen because the base branch may or may
+ *  not be checked out in a worktree):
+ *
+ *   1. `git fetch origin <base>:<base>` — atomic, updates both the local
+ *      ref and the remote-tracking ref. Fails when `<base>` is checked out
+ *      in any worktree.
+ *   2. If `<base>` is checked out in `repoPath` itself: `git pull --ff-only
+ *      origin <base>`. Safe with a dirty tree (ff-only refuses to clobber).
+ *   3. Otherwise: `git fetch origin <base>` — updates only the remote ref,
+ *      leaves local untouched. The base may be checked out in a worktree
+ *      we don't manage; touching it from here would be a surprise.
+ *
+ *  Returns `localUpdated: true` only when the local `<base>` ref advanced. */
+export async function syncBaseBranch(
+  repoPath: string,
+  baseBranch: string,
+): Promise<{ localUpdated: boolean }> {
+  try {
+    await runGit(repoPath, ['fetch', 'origin', `${baseBranch}:${baseBranch}`]);
+    return { localUpdated: true };
+  } catch {
+    /* base is checked out somewhere — try strategy 2 */
+  }
+  try {
+    const head = (await runGit(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+    if (head === baseBranch) {
+      await runGit(repoPath, ['pull', '--ff-only', 'origin', baseBranch]);
+      return { localUpdated: true };
+    }
+  } catch {
+    /* dirty tree or non-ff — fall through to remote-only fetch */
+  }
+  await runGit(repoPath, ['fetch', 'origin', baseBranch]);
+  return { localUpdated: false };
+}

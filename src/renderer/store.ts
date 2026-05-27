@@ -1,5 +1,12 @@
 import { create } from 'zustand';
-import type { CreateWorkspaceInput, DiffStats, PRsForBranch, RepoEntry, Workspace } from '../shared/types';
+import type {
+  CreateWorkspaceInput,
+  DiffStats,
+  PRsForBranch,
+  RepoEntry,
+  RepoSyncState,
+  Workspace,
+} from '../shared/types';
 import { dialog } from './components/Dialog';
 
 interface State {
@@ -7,6 +14,9 @@ interface State {
   workspaces: Workspace[];
   stats: Record<string, DiffStats>;
   prs: Record<string, PRsForBranch>;
+  /** Per-repo base-branch sync state (behind/ahead of origin/<base>),
+   *  keyed by repoPath. Updated by `repo:syncState` events. */
+  repoSync: Record<string, RepoSyncState>;
   activeId: string | null;
   view: 'terminal' | 'diff' | 'run';
   loaded: boolean;
@@ -33,6 +43,7 @@ export const useStore = create<State>((set, get) => ({
   workspaces: [],
   stats: {},
   prs: {},
+  repoSync: {},
   activeId: null,
   view: 'terminal',
   loaded: false,
@@ -49,11 +60,20 @@ export const useStore = create<State>((set, get) => ({
   setView: (v) => set({ view: v }),
 
   load: async () => {
-    const [repos, workspaces] = await Promise.all([
+    const [repos, workspaces, syncStates] = await Promise.all([
       window.orchestra.listRepos(),
       window.orchestra.listWorkspaces(),
+      window.orchestra.listRepoSyncStates().catch(() => []),
     ]);
-    set({ repos, workspaces, loaded: true, activeId: workspaces[0]?.id ?? null });
+    const repoSync: Record<string, RepoSyncState> = {};
+    for (const s of syncStates) repoSync[s.repoPath] = s;
+    set({
+      repos,
+      workspaces,
+      repoSync,
+      loaded: true,
+      activeId: workspaces[0]?.id ?? null,
+    });
   },
 
   refreshRepos: async () => {
@@ -188,4 +208,9 @@ window.orchestra.onWorkspaceRemoved((id) => {
 window.orchestra.onWorkspaceFocus((id) => {
   const s = useStore.getState();
   if (s.workspaces.some((w) => w.id === id)) s.setActive(id);
+});
+window.orchestra.onRepoSyncState((s) => {
+  useStore.setState((state) => ({
+    repoSync: { ...state.repoSync, [s.repoPath]: s },
+  }));
 });

@@ -73,6 +73,12 @@ import {
 } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
 import { detectAndUpdateMergeState } from './activity';
+import {
+  primeLocalSyncStates,
+  snapshotSyncStates,
+  syncAllRepos,
+  syncOneRepo,
+} from './repo-sync';
 import type { CreateWorkspaceInput } from '../shared/types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -142,6 +148,20 @@ async function createMainWindow() {
     await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
+  // Base-branch sync: prime local state immediately (no network) so the
+  // sidebar paints with whatever the on-disk refs say, then kick a real
+  // fetch in the background. Prime must complete before sync starts —
+  // otherwise the prime's late `syncing:false, syncedAt:0` event races
+  // ahead of sync completion and clobbers the success state. Subsequent
+  // fetches are driven by window focus.
+  primeLocalSyncStates(mainWindow)
+    .catch(() => {})
+    .then(() => syncAllRepos(mainWindow))
+    .catch(() => {});
+  mainWindow.on('focus', () => {
+    if (!mainWindow) return;
+    void syncAllRepos(mainWindow).catch(() => {});
+  });
 }
 
 function getMainWindow(): BrowserWindow {
@@ -197,6 +217,12 @@ ipcMain.handle('repos:add', async (_e, absPath: string) => {
 
 ipcMain.handle('repos:remove', async (_e, absPath: string) => {
   await store.removeRepo(absPath);
+});
+
+ipcMain.handle('repos:listSyncStates', () => snapshotSyncStates());
+
+ipcMain.handle('repos:syncBase', async (_e, repoPath: string) => {
+  await syncOneRepo(repoPath, getMainWindow());
 });
 
 ipcMain.handle('dialog:pickDir', async () => {

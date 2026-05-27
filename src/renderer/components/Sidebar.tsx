@@ -186,6 +186,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
     activeId,
     stats,
     prs,
+    repoSync,
     setActive,
     archive,
     unarchive,
@@ -408,6 +409,41 @@ export function Sidebar({ onNewFromRepo }: Props) {
                 </button>
               </span>
             </div>
+            {(() => {
+              const sync = repoSync[repoPath];
+              if (!sync) return null;
+              return (
+                <div
+                  className={`repo-sync ${sync.syncing ? 'syncing' : ''} ${sync.error ? 'error' : ''}`}
+                  title={
+                    sync.error
+                      ? `Last fetch failed: ${sync.error}`
+                      : sync.syncedAt
+                        ? `Last synced ${new Date(sync.syncedAt).toLocaleTimeString()}`
+                        : 'Not yet synced'
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!sync.syncing) window.orchestra.syncRepoBase(repoPath);
+                  }}
+                >
+                  <span className="repo-sync-base">{sync.baseBranch}</span>
+                  {!sync.hasUpstream ? (
+                    <span className="repo-sync-status muted">no upstream</span>
+                  ) : sync.behind === 0 && sync.ahead === 0 ? (
+                    <span className="repo-sync-status muted">
+                      up to date
+                    </span>
+                  ) : (
+                    <span className="repo-sync-status">
+                      {sync.behind > 0 && <span className="behind">↓{sync.behind}</span>}
+                      {sync.ahead > 0 && <span className="ahead">↑{sync.ahead}</span>}
+                    </span>
+                  )}
+                  {sync.syncing && <span className="repo-sync-spinner" />}
+                </div>
+              );
+            })()}
             {items.map((w) => {
               const s = stats[w.id];
               const hasChanges = !!s && (s.additions > 0 || s.deletions > 0);

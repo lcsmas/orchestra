@@ -618,6 +618,47 @@ input:focus, textarea:focus, select:focus {
   color: var(--text);
   border-color: var(--accent);
 }
+/* Thin row under each repo group header: shows the base branch (e.g.
+   `develop`) and how local stacks up against `origin/<base>`. Click to
+   force a fetch + ff. Auto-syncs on app focus from the main process. */
+.repo-sync {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 14px 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.12s ease;
+}
+.repo-sync:hover { color: var(--text); }
+.repo-sync.syncing { cursor: progress; }
+.repo-sync.error { color: #ff7a7a; }
+.repo-sync-base {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  color: var(--text-dim);
+}
+.repo-sync:hover .repo-sync-base { color: var(--text); }
+.repo-sync-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.repo-sync-status.muted { color: var(--text-dim); opacity: 0.7; }
+.repo-sync-status .behind { color: #ffb86b; }
+.repo-sync-status .ahead { color: #7ee787; }
+.repo-sync-spinner {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-dim);
+  border-top-color: transparent;
+  animation: repo-sync-spin 0.8s linear infinite;
+  margin-left: auto;
+}
+@keyframes repo-sync-spin { to { transform: rotate(360deg); } }
 .ws-item {
   padding: 10px 14px;
   border-left: 2px solid transparent;

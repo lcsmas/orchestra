@@ -5,6 +5,7 @@ import type {
   PRsForBranch,
   RepoEntry,
   RepoScripts,
+  RepoSyncState,
   Workspace,
 } from './types';
 
@@ -13,6 +14,12 @@ export interface OrchestraAPI {
   addRepo: (absPath: string) => Promise<RepoEntry>;
   listRepos: () => Promise<RepoEntry[]>;
   removeRepo: (absPath: string) => Promise<void>;
+  /** Snapshot of every known repo's base-branch sync state. Empty before
+   *  the first sync completes; afterwards live updates flow via
+   *  `onRepoSyncState`. */
+  listRepoSyncStates: () => Promise<RepoSyncState[]>;
+  /** Manually trigger a fetch + ff for one repo's base branch. */
+  syncRepoBase: (repoPath: string) => Promise<void>;
   pickDirectory: () => Promise<string | null>;
   openExternal: (url: string) => Promise<void>;
 
@@ -76,6 +83,10 @@ export interface OrchestraAPI {
    * "waiting for your input" reminder. `focused` reflects the main-process
    * window focus state at hook-time. */
   onAgentNeedsInput: (cb: (id: string, focused: boolean) => void) => () => void;
+  /** Fires whenever a repo's base-branch sync state changes (started a
+   *  fetch, finished a fetch, ahead/behind count moved). One event per
+   *  state transition, keyed by repoPath. */
+  onRepoSyncState: (cb: (s: RepoSyncState) => void) => () => void;
 }
 
 declare global {

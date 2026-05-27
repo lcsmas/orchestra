@@ -5,6 +5,8 @@ const api: OrchestraAPI = {
   addRepo: (p) => ipcRenderer.invoke('repos:add', p),
   listRepos: () => ipcRenderer.invoke('repos:list'),
   removeRepo: (p) => ipcRenderer.invoke('repos:remove', p),
+  listRepoSyncStates: () => ipcRenderer.invoke('repos:listSyncStates'),
+  syncRepoBase: (p) => ipcRenderer.invoke('repos:syncBase', p),
   pickDirectory: () => ipcRenderer.invoke('dialog:pickDir'),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
 
@@ -84,6 +86,11 @@ const api: OrchestraAPI = {
     const listener = (_e: unknown, id: string, focused: boolean) => cb(id, focused);
     ipcRenderer.on('agent:needs-input', listener);
     return () => ipcRenderer.off('agent:needs-input', listener);
+  },
+  onRepoSyncState: (cb) => {
+    const listener = (_e: unknown, s: unknown) => cb(s as never);
+    ipcRenderer.on('repo:syncState', listener);
+    return () => ipcRenderer.off('repo:syncState', listener);
   },
 };
 

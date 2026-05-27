@@ -115,3 +115,26 @@ export interface PRsForBranch {
   /** Count of merged PRs ever opened from this branch. */
   mergedCount: number;
 }
+
+/** Sync status of a repo's base branch (e.g. `develop`/`main`) against its
+ *  `origin/<base>` remote-tracking ref. Produced by the main process on app
+ *  focus and after manual sync, broadcast to the renderer for display in
+ *  the sidebar repo-group row. */
+export interface RepoSyncState {
+  repoPath: string;
+  baseBranch: string;
+  /** Commits on `origin/<base>` that are missing from local `<base>`. */
+  behind: number;
+  /** Commits on local `<base>` that are missing from `origin/<base>` — rare
+   *  for the base branch but possible if someone committed locally. */
+  ahead: number;
+  /** True once we've successfully fetched `origin/<base>` at least once.
+   *  False means no upstream tracking ref exists or the fetch failed. */
+  hasUpstream: boolean;
+  /** Epoch ms of the last successful fetch. 0 before any fetch. */
+  syncedAt: number;
+  /** True while a fetch is in flight. */
+  syncing: boolean;
+  /** Last fetch error, if any. Cleared on next successful fetch. */
+  error?: string;
+}
