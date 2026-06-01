@@ -7,6 +7,7 @@ const api: OrchestraAPI = {
   removeRepo: (p) => ipcRenderer.invoke('repos:remove', p),
   listRepoSyncStates: () => ipcRenderer.invoke('repos:listSyncStates'),
   syncRepoBase: (p) => ipcRenderer.invoke('repos:syncBase', p),
+  reorderRepos: (paths) => ipcRenderer.invoke('repos:reorder', paths),
   pickDirectory: () => ipcRenderer.invoke('dialog:pickDir'),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
 
@@ -18,6 +19,7 @@ const api: OrchestraAPI = {
   openInEditor: (id, editor) => ipcRenderer.invoke('workspaces:openInEditor', id, editor),
   markSeen: (id) => ipcRenderer.invoke('workspaces:markSeen', id),
   renameBranch: (id, newBranch) => ipcRenderer.invoke('workspaces:renameBranch', id, newBranch),
+  reorderWorkspaces: (ids) => ipcRenderer.invoke('workspaces:reorder', ids),
 
   ptyStart: (id, cols, rows) => ipcRenderer.invoke('pty:start', id, cols, rows),
   ptyWrite: (id, data) => ipcRenderer.invoke('pty:write', id, data),

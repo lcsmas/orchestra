@@ -32,6 +32,8 @@ interface State {
   archive: (id: string) => Promise<void>;
   unarchive: (id: string) => Promise<void>;
   deleteWorkspace: (id: string) => Promise<void>;
+  reorderWorkspaces: (orderedIds: string[]) => Promise<void>;
+  reorderRepos: (orderedPaths: string[]) => Promise<void>;
   refreshStats: (id: string) => Promise<void>;
   refreshAllStats: () => Promise<void>;
   refreshPR: (id: string) => Promise<void>;
@@ -156,6 +158,40 @@ export const useStore = create<State>((set, get) => ({
         : s.activeId;
     const { [id]: _gone, ...rest } = s.stats;
     set({ workspaces, activeId, stats: rest });
+  },
+
+  reorderWorkspaces: async (orderedIds) => {
+    set((s) => {
+      const rank = new Map(orderedIds.map((id, i) => [id, i] as const));
+      const workspaces = [...s.workspaces].sort(
+        (a, b) =>
+          (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+          (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+      );
+      return { workspaces };
+    });
+    try {
+      await window.orchestra.reorderWorkspaces(orderedIds);
+    } catch (e) {
+      void dialog.error('Could not reorder workspaces', (e as Error).message);
+    }
+  },
+
+  reorderRepos: async (orderedPaths) => {
+    set((s) => {
+      const rank = new Map(orderedPaths.map((p, i) => [p, i] as const));
+      const repos = [...s.repos].sort(
+        (a, b) =>
+          (rank.get(a.path) ?? Number.MAX_SAFE_INTEGER) -
+          (rank.get(b.path) ?? Number.MAX_SAFE_INTEGER),
+      );
+      return { repos };
+    });
+    try {
+      await window.orchestra.reorderRepos(orderedPaths);
+    } catch (e) {
+      void dialog.error('Could not reorder repos', (e as Error).message);
+    }
   },
 
   refreshStats: async (id) => {

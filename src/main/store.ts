@@ -112,6 +112,30 @@ export class Store {
     await this.save();
   }
 
+  /** Reorder workspaces to match `orderedIds`. Any workspace whose id is not
+   *  in the list keeps its relative order and trails the listed ones. */
+  async reorderWorkspaces(orderedIds: string[]) {
+    const rank = new Map(orderedIds.map((id, i) => [id, i] as const));
+    this.data.workspaces.sort(
+      (a, b) =>
+        (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+        (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+    );
+    await this.save();
+  }
+
+  /** Reorder registered repos to match `orderedPaths`. Unknown paths keep
+   *  their relative order and trail the listed ones. */
+  async reorderRepos(orderedPaths: string[]) {
+    const rank = new Map(orderedPaths.map((p, i) => [p, i] as const));
+    this.data.repos.sort(
+      (a, b) =>
+        (rank.get(a.path) ?? Number.MAX_SAFE_INTEGER) -
+        (rank.get(b.path) ?? Number.MAX_SAFE_INTEGER),
+    );
+    await this.save();
+  }
+
   getWorkspace(id: string): Workspace | undefined {
     return this.data.workspaces.find((w) => w.id === id);
   }

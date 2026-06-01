@@ -225,6 +225,10 @@ ipcMain.handle('repos:syncBase', async (_e, repoPath: string) => {
   await syncOneRepo(repoPath, getMainWindow());
 });
 
+ipcMain.handle('repos:reorder', async (_e, orderedPaths: string[]) => {
+  await store.reorderRepos(orderedPaths);
+});
+
 ipcMain.handle('dialog:pickDir', async () => {
   const res = await dialog.showOpenDialog(getMainWindow(), {
     properties: ['openDirectory'],
@@ -234,6 +238,10 @@ ipcMain.handle('dialog:pickDir', async () => {
 });
 
 ipcMain.handle('workspaces:list', () => store.workspaces);
+
+ipcMain.handle('workspaces:reorder', async (_e, orderedIds: string[]) => {
+  await store.reorderWorkspaces(orderedIds);
+});
 
 ipcMain.handle('workspaces:create', async (_e, input: CreateWorkspaceInput) => {
   return createWorkspace(input, getMainWindow());

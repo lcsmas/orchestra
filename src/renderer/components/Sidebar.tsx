@@ -192,6 +192,8 @@ export function Sidebar({ onNewFromRepo }: Props) {
     unarchive,
     deleteWorkspace,
     createWorkspace,
+    reorderWorkspaces,
+    reorderRepos,
   } = useStore();
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
@@ -199,6 +201,54 @@ export function Sidebar({ onNewFromRepo }: Props) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [selectedArchived, setSelectedArchived] = useState<Set<string>>(new Set());
+  // Drag-and-drop reordering state. A workspace drag and a repo-group drag are
+  // mutually exclusive — only one of these is ever non-null at a time.
+  const [dragWs, setDragWs] = useState<{ id: string; repoPath: string } | null>(null);
+  const [dropWs, setDropWs] = useState<{ id: string; pos: 'before' | 'after' } | null>(null);
+  const [dragRepo, setDragRepo] = useState<string | null>(null);
+  const [dropRepo, setDropRepo] = useState<{ path: string; pos: 'before' | 'after' } | null>(null);
+
+  const clearDnd = () => {
+    setDragWs(null);
+    setDropWs(null);
+    setDragRepo(null);
+    setDropRepo(null);
+  };
+
+  // Commit a workspace move: pull the dragged id out of the full ordering and
+  // re-insert it before/after the drop target, then persist the new order.
+  const commitWsDrop = () => {
+    if (!dragWs || !dropWs || dragWs.id === dropWs.id) return clearDnd();
+    const ids = workspaces.map((w) => w.id);
+    const from = ids.indexOf(dragWs.id);
+    if (from < 0) return clearDnd();
+    ids.splice(from, 1);
+    let to = ids.indexOf(dropWs.id);
+    if (to < 0) return clearDnd();
+    if (dropWs.pos === 'after') to += 1;
+    ids.splice(to, 0, dragWs.id);
+    void reorderWorkspaces(ids);
+    clearDnd();
+  };
+
+  const commitRepoDrop = () => {
+    if (!dragRepo || !dropRepo || dragRepo === dropRepo.path) return clearDnd();
+    const paths = repos.map((r) => r.path);
+    const from = paths.indexOf(dragRepo);
+    if (from < 0) return clearDnd();
+    paths.splice(from, 1);
+    let to = paths.indexOf(dropRepo.path);
+    if (to < 0) return clearDnd();
+    if (dropRepo.pos === 'after') to += 1;
+    paths.splice(to, 0, dragRepo);
+    void reorderRepos(paths);
+    clearDnd();
+  };
+
+  const dropPosFromEvent = (e: React.DragEvent): 'before' | 'after' => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+  };
 
   const startRename = (e: React.MouseEvent, ws: Workspace) => {
     e.stopPropagation();
@@ -368,9 +418,54 @@ export function Sidebar({ onNewFromRepo }: Props) {
         )}
         {repoOrder.map((repoPath) => {
           const items = activeGroups.get(repoPath) ?? [];
+          // Only registered repos can be reordered — orphan repoPaths (entry
+          // removed but workspaces remain) always trail and aren't draggable.
+          const isRegisteredRepo = repos.some((r) => r.path === repoPath);
+          const repoDnd =
+            dragRepo === repoPath
+              ? ' repo-dragging'
+              : dropRepo?.path === repoPath
+                ? ` repo-drop-${dropRepo.pos}`
+                : '';
           return (
-          <div key={repoPath} className="repo-section">
-            <div className="repo-header" title={repoPath}>
+          <div
+            key={repoPath}
+            className={`repo-section${repoDnd}`}
+            onDragOver={(e) => {
+              if (!dragRepo || dragRepo === repoPath || !isRegisteredRepo) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+              const pos = dropPosFromEvent(e);
+              setDropRepo((prev) =>
+                prev?.path === repoPath && prev.pos === pos ? prev : { path: repoPath, pos },
+              );
+            }}
+            onDrop={(e) => {
+              if (!dragRepo) return;
+              e.preventDefault();
+              commitRepoDrop();
+            }}
+          >
+            <div
+              className="repo-header"
+              title={repoPath}
+              draggable={isRegisteredRepo}
+              onDragStart={(e) => {
+                if ((e.target as HTMLElement).closest('button')) {
+                  e.preventDefault();
+                  return;
+                }
+                setDragWs(null);
+                setDragRepo(repoPath);
+                e.dataTransfer.effectAllowed = 'move';
+                try {
+                  e.dataTransfer.setData('text/plain', repoPath);
+                } catch {
+                  /* some platforms reject setData — drag still works */
+                }
+              }}
+              onDragEnd={clearDnd}
+            >
               <span className="repo-name">{repoLabel(repoPath)}</span>
               <span className="repo-header-actions">
                 <span className="repo-count">{items.length}</span>
@@ -457,11 +552,50 @@ export function Sidebar({ onNewFromRepo }: Props) {
               });
               const visiblePRs = orderedPRs.slice(0, 3);
               const hiddenPRs = orderedPRs.length - visiblePRs.length;
+              const wsDnd =
+                dragWs?.id === w.id
+                  ? ' dragging'
+                  : dropWs?.id === w.id
+                    ? ` drop-${dropWs.pos}`
+                    : '';
               return (
                 <div
                   key={w.id}
-                  className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}`}
+                  className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}${wsDnd}`}
                   onClick={() => setActive(w.id)}
+                  draggable={renamingId !== w.id}
+                  onDragStart={(e) => {
+                    if ((e.target as HTMLElement).closest('button, input')) {
+                      e.preventDefault();
+                      return;
+                    }
+                    e.stopPropagation();
+                    setDragRepo(null);
+                    setDragWs({ id: w.id, repoPath: w.repoPath });
+                    e.dataTransfer.effectAllowed = 'move';
+                    try {
+                      e.dataTransfer.setData('text/plain', w.id);
+                    } catch {
+                      /* some platforms reject setData — drag still works */
+                    }
+                  }}
+                  onDragOver={(e) => {
+                    // Same-repo reordering only — cross-repo drops are a no-op.
+                    if (!dragWs || dragWs.repoPath !== w.repoPath || dragWs.id === w.id) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    const pos = dropPosFromEvent(e);
+                    setDropWs((prev) =>
+                      prev?.id === w.id && prev.pos === pos ? prev : { id: w.id, pos },
+                    );
+                  }}
+                  onDrop={(e) => {
+                    if (!dragWs) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    commitWsDrop();
+                  }}
+                  onDragEnd={clearDnd}
                 >
                   <div
                     className={`ws-dot ${w.status as WorkspaceStatus}`}

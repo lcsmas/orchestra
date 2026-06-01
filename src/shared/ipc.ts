@@ -20,6 +20,9 @@ export interface OrchestraAPI {
   listRepoSyncStates: () => Promise<RepoSyncState[]>;
   /** Manually trigger a fetch + ff for one repo's base branch. */
   syncRepoBase: (repoPath: string) => Promise<void>;
+  /** Persist a new ordering of registered repos. Pass the full list of repo
+   *  paths in the desired order; any unknown path is ignored. */
+  reorderRepos: (orderedPaths: string[]) => Promise<void>;
   pickDirectory: () => Promise<string | null>;
   openExternal: (url: string) => Promise<void>;
 
@@ -32,6 +35,9 @@ export interface OrchestraAPI {
   openInEditor: (id: string, editor: 'code' | 'cursor') => Promise<void>;
   markSeen: (id: string) => Promise<void>;
   renameBranch: (id: string, newBranch: string) => Promise<Workspace>;
+  /** Persist a new ordering of workspaces. Pass the full list of workspace
+   *  ids in the desired order; any unknown id is ignored. */
+  reorderWorkspaces: (orderedIds: string[]) => Promise<void>;
 
   // Terminal (pty)
   ptyStart: (id: string, cols: number, rows: number) => Promise<void>;
