@@ -13,6 +13,9 @@ interface State {
   repos: RepoEntry[];
   workspaces: Workspace[];
   stats: Record<string, DiffStats>;
+  /** Apparent worktree size in bytes, keyed by workspace id. Refreshed off the
+   *  hot stats poll (on load / workspace-set change) since `du` is heavier. */
+  sizes: Record<string, number>;
   prs: Record<string, PRsForBranch>;
   /** Per-repo base-branch sync state (behind/ahead of origin/<base>),
    *  keyed by repoPath. Updated by `repo:syncState` events. */
@@ -36,6 +39,7 @@ interface State {
   reorderRepos: (orderedPaths: string[]) => Promise<void>;
   refreshStats: (id: string) => Promise<void>;
   refreshAllStats: () => Promise<void>;
+  refreshSizes: () => Promise<void>;
   refreshPR: (id: string) => Promise<void>;
   refreshAllPRs: () => Promise<void>;
 }
@@ -44,6 +48,7 @@ export const useStore = create<State>((set, get) => ({
   repos: [],
   workspaces: [],
   stats: {},
+  sizes: {},
   prs: {},
   repoSync: {},
   activeId: null,
@@ -206,6 +211,15 @@ export const useStore = create<State>((set, get) => ({
   refreshAllStats: async () => {
     const ids = get().workspaces.filter((w) => !w.archived).map((w) => w.id);
     await Promise.all(ids.map((id) => get().refreshStats(id)));
+  },
+
+  refreshSizes: async () => {
+    try {
+      const sizes = await window.orchestra.getWorktreeSizes();
+      set({ sizes });
+    } catch {
+      /* du unavailable (e.g. non-unix) or root missing — leave sizes as-is */
+    }
   },
 
   refreshPR: async (id) => {

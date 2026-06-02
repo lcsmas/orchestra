@@ -31,6 +31,7 @@ export function App() {
     createWorkspaceInNewRepo,
     stats,
     refreshAllStats,
+    refreshSizes,
     prs,
     refreshAllPRs,
   } = useStore();
@@ -80,6 +81,14 @@ export function App() {
     const timer = setInterval(refreshAllStats, 8000);
     return () => clearInterval(timer);
   }, [loaded, workspaces.length, refreshAllStats]);
+
+  // Worktree sizes are far heavier to compute than diff stats (a full `du`
+  // pass), so they ride their own effect — recomputed only on load and when a
+  // workspace is added/removed, never on the 8s stats interval.
+  useEffect(() => {
+    if (!loaded) return;
+    refreshSizes();
+  }, [loaded, workspaces.length, refreshSizes]);
 
   useEffect(() => {
     if (!loaded) return;

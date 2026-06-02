@@ -9,6 +9,20 @@ interface Props {
   onNewFromRepo: () => void;
 }
 
+/** Compact human size for a worktree, e.g. 1536 → "1.5 KB", 2.8e9 → "2.6 GB".
+ *  Binary units (matches what `du`/file managers report). */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let val = bytes / 1024;
+  let i = 0;
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024;
+    i += 1;
+  }
+  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
+}
+
 function BellIcon() {
   return (
     <svg
@@ -185,6 +199,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
     repos,
     activeId,
     stats,
+    sizes,
     prs,
     repoSync,
     setActive,
@@ -201,6 +216,12 @@ export function Sidebar({ onNewFromRepo }: Props) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [selectedArchived, setSelectedArchived] = useState<Set<string>>(new Set());
+  // Workspaces whose worktree is mid-deletion — drives the per-row spinner and
+  // disables that row's buttons until `deleteWorkspace` resolves.
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+  // Determinate progress for a bulk "Delete N" run: how many of `total` have
+  // finished. Null when no bulk delete is in flight.
+  const [bulkDelete, setBulkDelete] = useState<{ done: number; total: number } | null>(null);
   // Drag-and-drop reordering state. A workspace drag and a repo-group drag are
   // mutually exclusive — only one of these is ever non-null at a time.
   const [dragWs, setDragWs] = useState<{ id: string; repoPath: string } | null>(null);
@@ -292,6 +313,14 @@ export function Sidebar({ onNewFromRepo }: Props) {
     setSelectedArchived(allArchivedSelected ? new Set() : new Set(archived.map((w) => w.id)));
   };
 
+  const markDeleting = (id: string, on: boolean) =>
+    setDeletingIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+
   const onDeleteSelectedArchived = async () => {
     const ids = archived.filter((w) => selectedArchived.has(w.id)).map((w) => w.id);
     if (ids.length === 0) return;
@@ -310,15 +339,21 @@ export function Sidebar({ onNewFromRepo }: Props) {
     });
     if (!ok) return;
     setSelectedArchived(new Set());
-    await Promise.all(
-      ids.map(async (id) => {
-        try {
-          await deleteWorkspace(id);
-        } catch (err) {
-          void dialog.error('Could not delete workspace', (err as Error).message);
-        }
-      }),
-    );
+    // Sequential so the bar advances one worktree at a time and disk I/O stays
+    // gentle. Each row spins while its own deletion is in flight.
+    setBulkDelete({ done: 0, total: ids.length });
+    for (const id of ids) {
+      markDeleting(id, true);
+      try {
+        await deleteWorkspace(id);
+      } catch (err) {
+        void dialog.error('Could not delete workspace', (err as Error).message);
+      } finally {
+        markDeleting(id, false);
+        setBulkDelete((prev) => (prev ? { ...prev, done: prev.done + 1 } : prev));
+      }
+    }
+    setBulkDelete(null);
   };
 
   const onArchive = async (e: React.MouseEvent, id: string) => {
@@ -349,10 +384,13 @@ export function Sidebar({ onNewFromRepo }: Props) {
       confirmLabel: 'Delete',
     });
     if (!ok) return;
+    markDeleting(id, true);
     try {
       await deleteWorkspace(id);
     } catch (err) {
       void dialog.error('Could not delete workspace', (err as Error).message);
+    } finally {
+      markDeleting(id, false);
     }
   };
 
@@ -542,6 +580,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
             {items.map((w) => {
               const s = stats[w.id];
               const hasChanges = !!s && (s.additions > 0 || s.deletions > 0);
+              const sizeBytes = sizes[w.id];
               const prRecord = prs[w.id];
               const allPRs = prRecord?.all ?? [];
               // Show open first, then the rest in gh's newest-first order.
@@ -675,7 +714,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
                         </span>
                       )}
                     </div>
-                    {visiblePRs.length > 0 && (
+                    {(visiblePRs.length > 0 || sizeBytes != null) && (
                       <div className="ws-meta-row">
                         <span className="pr-badges">
                           {visiblePRs.map((p) => (
@@ -707,6 +746,14 @@ export function Sidebar({ onNewFromRepo }: Props) {
                             </span>
                           )}
                         </span>
+                        {sizeBytes != null && (
+                          <span
+                            className="ws-size"
+                            title="Worktree size on disk (apparent; btrfs reflinks are shared between worktrees, so this is not all reclaimable)"
+                          >
+                            {formatBytes(sizeBytes)}
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>
@@ -747,36 +794,52 @@ export function Sidebar({ onNewFromRepo }: Props) {
             </button>
             {archivedOpen && (
               <div className="archived-list">
-                <div className="archived-bar">
-                  <label className="archived-check" onClick={(e) => e.stopPropagation()}>
-                    <input
-                      type="checkbox"
-                      checked={allArchivedSelected}
-                      ref={(el) => {
-                        if (el) el.indeterminate = someArchivedSelected;
-                      }}
-                      onChange={toggleSelectAllArchived}
-                      aria-label={allArchivedSelected ? 'Deselect all' : 'Select all archived'}
-                    />
-                  </label>
-                  <span className="archived-bar-count">
-                    {selectedArchived.size > 0 ? `${selectedArchived.size} selected` : 'Select all'}
-                  </span>
-                  {selectedArchived.size > 0 && (
-                    <button
-                      className="archived-bar-delete"
-                      onClick={onDeleteSelectedArchived}
-                    >
-                      Delete {selectedArchived.size}
-                    </button>
-                  )}
-                </div>
+                {bulkDelete ? (
+                  <div className="archived-bar archived-bar-progress">
+                    <div className="archived-progress-label">
+                      Deleting {bulkDelete.done} of {bulkDelete.total}…
+                    </div>
+                    <div className="archived-progress-track">
+                      <div
+                        className="archived-progress-fill"
+                        style={{ width: `${(bulkDelete.done / bulkDelete.total) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="archived-bar">
+                    <label className="archived-check" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={allArchivedSelected}
+                        ref={(el) => {
+                          if (el) el.indeterminate = someArchivedSelected;
+                        }}
+                        onChange={toggleSelectAllArchived}
+                        aria-label={allArchivedSelected ? 'Deselect all' : 'Select all archived'}
+                      />
+                    </label>
+                    <span className="archived-bar-count">
+                      {selectedArchived.size > 0 ? `${selectedArchived.size} selected` : 'Select all'}
+                    </span>
+                    {selectedArchived.size > 0 && (
+                      <button
+                        className="archived-bar-delete"
+                        onClick={onDeleteSelectedArchived}
+                      >
+                        Delete {selectedArchived.size}
+                      </button>
+                    )}
+                  </div>
+                )}
                 {archived.map((w) => {
                   const isSelected = selectedArchived.has(w.id);
+                  const sizeBytes = sizes[w.id];
+                  const isDeleting = deletingIds.has(w.id);
                   return (
                     <div
                       key={w.id}
-                      className={`ws-item archived${isSelected ? ' selected' : ''}`}
+                      className={`ws-item archived${isSelected ? ' selected' : ''}${isDeleting ? ' deleting' : ''}`}
                       title={w.name}
                     >
                       <label
@@ -786,6 +849,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
                         <input
                           type="checkbox"
                           checked={isSelected}
+                          disabled={isDeleting}
                           onChange={() => toggleArchivedSelection(w.id)}
                           aria-label={`Select workspace ${w.name}`}
                         />
@@ -797,22 +861,41 @@ export function Sidebar({ onNewFromRepo }: Props) {
                           {repoLabel(w.repoPath)} · {w.agent}
                         </div>
                       </div>
-                      <button
-                        className="ws-icon-btn"
-                        title="Restore workspace"
-                        aria-label={`Restore workspace ${w.name}`}
-                        onClick={(e) => onUnarchive(e, w.id)}
-                      >
-                        <RestoreIcon />
-                      </button>
-                      <button
-                        className="ws-icon-btn danger"
-                        title="Delete workspace permanently"
-                        aria-label={`Delete workspace ${w.name}`}
-                        onClick={(e) => onDelete(e, w.id, w.name)}
-                      >
-                        <TrashIcon />
-                      </button>
+                      {sizeBytes != null && (
+                        <span
+                          className="ws-size"
+                          title="Worktree size on disk (apparent; btrfs reflinks are shared between worktrees, so this is not all reclaimable)"
+                        >
+                          {formatBytes(sizeBytes)}
+                        </span>
+                      )}
+                      {isDeleting ? (
+                        <span
+                          className="ws-spinner"
+                          title="Deleting worktree from disk…"
+                          aria-label="Deleting"
+                          role="status"
+                        />
+                      ) : (
+                        <>
+                          <button
+                            className="ws-icon-btn"
+                            title="Restore workspace"
+                            aria-label={`Restore workspace ${w.name}`}
+                            onClick={(e) => onUnarchive(e, w.id)}
+                          >
+                            <RestoreIcon />
+                          </button>
+                          <button
+                            className="ws-icon-btn danger"
+                            title="Delete workspace permanently"
+                            aria-label={`Delete workspace ${w.name}`}
+                            onClick={(e) => onDelete(e, w.id, w.name)}
+                          >
+                            <TrashIcon />
+                          </button>
+                        </>
+                      )}
                     </div>
                   );
                 })}

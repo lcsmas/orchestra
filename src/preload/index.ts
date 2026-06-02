@@ -56,6 +56,7 @@ const api: OrchestraAPI = {
 
   getDiff: (id) => ipcRenderer.invoke('git:diff', id),
   getDiffStats: (id) => ipcRenderer.invoke('git:stats', id),
+  getWorktreeSizes: () => ipcRenderer.invoke('workspaces:sizes'),
   commit: (id, msg) => ipcRenderer.invoke('git:commit', id, msg),
   push: (id) => ipcRenderer.invoke('git:push', id),
   createPR: (id, title, body) => ipcRenderer.invoke('git:pr', id, title, body),

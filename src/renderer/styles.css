@@ -799,6 +799,27 @@ input:focus, textarea:focus, select:focus {
   min-width: 0;
 }
 .ws-meta { flex: 1; min-width: 0; }
+/* Worktree disk size — muted, pushed to the trailing edge of the meta row. */
+.ws-size {
+  margin-left: auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+/* Per-row delete spinner (same look as the setup-banner spinner) and the
+   dimmed/non-interactive state of a worktree being removed. */
+.ws-item.deleting { opacity: 0.55; pointer-events: none; }
+.ws-spinner {
+  width: 14px;
+  height: 14px;
+  margin: 0 5px;
+  border: 2px solid rgba(110, 168, 255, 0.25);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: setup-spin 0.7s linear infinite;
+  flex: 0 0 auto;
+}
 .ws-sub {
   font-size: 11px;
   color: var(--text-dim);
@@ -929,6 +950,30 @@ input:focus, textarea:focus, select:focus {
   border-color: var(--red);
   color: #fff;
   transform: none;
+}
+/* Determinate progress for a bulk "Delete N" run. Replaces the select/delete
+   controls in the archived bar while deletion is in flight. */
+.archived-bar-progress {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.archived-progress-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.archived-progress-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.archived-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 200ms var(--ease);
 }
 
 .archived-check {

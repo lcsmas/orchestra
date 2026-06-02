@@ -52,6 +52,7 @@ import {
   deleteWorkspace,
   ensureRoot,
   ensureWorkspacePort,
+  getWorktreeSizes,
   installOrchestraHooks,
   openInEditor,
   renameWorkspaceBranch,
@@ -387,6 +388,8 @@ ipcMain.handle('git:stats', async (_e, id: string) => {
   void detectAndUpdateMergeState(id, getMainWindow()).catch(() => {});
   return getDiffStats(ws.worktreePath, ws.baseBranch);
 });
+
+ipcMain.handle('workspaces:sizes', () => getWorktreeSizes());
 
 ipcMain.handle('git:commit', async (_e, id: string, message: string) => {
   const ws = store.getWorkspace(id);

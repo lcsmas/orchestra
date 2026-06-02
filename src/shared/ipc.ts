@@ -59,6 +59,9 @@ export interface OrchestraAPI {
   // Git / Diff
   getDiff: (id: string) => Promise<DiffFile[]>;
   getDiffStats: (id: string) => Promise<DiffStats>;
+  /** Apparent on-disk size (bytes) of every workspace's worktree, keyed by
+   *  workspace id. Computed in one `du` pass; absent ids have no worktree. */
+  getWorktreeSizes: () => Promise<Record<string, number>>;
   commit: (id: string, message: string) => Promise<void>;
   push: (id: string) => Promise<void>;
   createPR: (id: string, title: string, body: string) => Promise<string>;

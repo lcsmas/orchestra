@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { BrowserWindow, shell } from 'electron';
 import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { store } from './store';
 import {
   createWorktree,
@@ -17,6 +18,50 @@ import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scri
 import type { CreateWorkspaceInput, Workspace } from '../shared/types';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
+
+const execFileP = promisify(execFile);
+
+/**
+ * Apparent on-disk size of every workspace's worktree, keyed by workspace id
+ * (bytes). Computed with a SINGLE `du` pass over the whole worktrees root —
+ * `--max-depth=1` reports each immediate child dir, so one process + one warm
+ * page cache covers all worktrees, versus spawning `du` per workspace.
+ *
+ * NOTE: `du` reports apparent size. On btrfs (the typical setup) worktrees
+ * share `node_modules` via reflinked extents, so summing these does NOT equal
+ * reclaimable space — most of it is shared. This is a "how big does this look"
+ * number, not "how much you'd get back by deleting it".
+ *
+ * Off the hot stats poll by design: a cold pass over GiB-scale trees takes
+ * seconds. Callers refresh on load / on workspace-set change, not every tick.
+ */
+export async function getWorktreeSizes(): Promise<Record<string, number>> {
+  let out = '';
+  try {
+    // `-s` conflicts with `--max-depth`, so list children with `-k` (KiB).
+    ({ stdout: out } = await execFileP('du', ['-k', '--max-depth=1', ORCHESTRA_ROOT]));
+  } catch (e) {
+    // `du` exits non-zero if an entry vanishes mid-scan but still prints the
+    // rest on stdout — salvage whatever it managed to emit.
+    out = (e as { stdout?: string }).stdout ?? '';
+  }
+  // Parse "<KiB>\t<absolute path>" lines into a path → bytes map. The root's
+  // own total line is present too but is simply never matched to a worktree.
+  const byPath = new Map<string, number>();
+  for (const line of out.split('\n')) {
+    const tab = line.indexOf('\t');
+    if (tab < 0) continue;
+    const kib = Number(line.slice(0, tab));
+    if (!Number.isFinite(kib)) continue;
+    byPath.set(line.slice(tab + 1), kib * 1024);
+  }
+  const sizes: Record<string, number> = {};
+  for (const ws of store.workspaces) {
+    const bytes = byPath.get(ws.worktreePath);
+    if (bytes != null) sizes[ws.id] = bytes;
+  }
+  return sizes;
+}
 
 const ADJECTIVES = [
   'brave', 'calm', 'clever', 'cosmic', 'crimson', 'curious', 'daring', 'electric',
