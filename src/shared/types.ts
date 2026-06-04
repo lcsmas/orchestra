@@ -98,7 +98,7 @@ export interface RepoEntry {
   remoteUrl?: string;
 }
 
-export interface PRInfo {
+interface PRInfo {
   url: string;
   number: number;
   state: 'OPEN' | 'CLOSED' | 'MERGED';

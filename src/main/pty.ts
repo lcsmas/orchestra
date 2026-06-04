@@ -61,15 +61,6 @@ export function readScrollback(id: string): string {
   }
 }
 
-export function hasScrollback(id: string): boolean {
-  const p = logFileFor(id);
-  try {
-    return fs.existsSync(p) && fs.statSync(p).size > 0;
-  } catch {
-    return false;
-  }
-}
-
 export function clearScrollback(id: string) {
   const p = logFileFor(id);
   try {

@@ -28,7 +28,7 @@ function baseFor(repoPath: string): { baseBranch: string } | null {
 /** Read the current sync state without doing any network I/O. Used on
  *  startup to populate the cache from whatever the local refs already say,
  *  before the first network fetch lands. */
-export async function refreshSyncStateLocal(
+async function refreshSyncStateLocal(
   repoPath: string,
   window: BrowserWindow,
 ): Promise<void> {

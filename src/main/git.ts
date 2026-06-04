@@ -63,10 +63,6 @@ export async function isGitRepo(p: string): Promise<boolean> {
   }
 }
 
-export async function getRepoName(repoPath: string): Promise<string> {
-  return path.basename(repoPath);
-}
-
 export async function listBranches(repoPath: string): Promise<string[]> {
   const git = simpleGit(repoPath);
   try {
@@ -251,32 +247,6 @@ async function readWorking(worktreePath: string, file: string): Promise<string> 
 function truncate(s: string, max = 300_000): string {
   if (s.length > max) return s.slice(0, max) + '\n\n... (truncated by Orchestra) ...\n';
   return s;
-}
-
-export async function commitAll(worktreePath: string, message: string): Promise<void> {
-  const git = simpleGit(worktreePath);
-  await git.add('.');
-  await git.commit(message);
-}
-
-export async function pushBranch(worktreePath: string, branch: string): Promise<void> {
-  const git = simpleGit(worktreePath);
-  await git.push(['-u', 'origin', branch]);
-}
-
-export async function createPullRequest(
-  worktreePath: string,
-  title: string,
-  body: string,
-  baseBranch: string,
-): Promise<string> {
-  const { stdout } = await pexec(
-    'gh',
-    ['pr', 'create', '--title', title, '--body', body, '--base', baseBranch],
-    { cwd: worktreePath },
-  );
-  const url = stdout.trim().split('\n').pop() ?? '';
-  return url;
 }
 
 /** Snapshot of how `branch` relates to `baseBranch`:

@@ -14,7 +14,7 @@ interface StoreShape {
 
 const DEFAULT: StoreShape = { repos: [], workspaces: [] };
 
-export class Store {
+class Store {
   private file: string;
   private data: StoreShape = DEFAULT;
   // Chain of pending saves — each save waits for the previous to finish before
@@ -86,11 +86,6 @@ export class Store {
       await this.save();
     }
     return r;
-  }
-
-  async removeRepo(absPath: string) {
-    this.data.repos = this.data.repos.filter((r) => r.path !== absPath);
-    await this.save();
   }
 
   async updateRepo(absPath: string, patch: Partial<RepoEntry>) {

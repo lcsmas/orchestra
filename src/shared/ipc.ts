@@ -13,7 +13,6 @@ export interface OrchestraAPI {
   // Repos
   addRepo: (absPath: string) => Promise<RepoEntry>;
   listRepos: () => Promise<RepoEntry[]>;
-  removeRepo: (absPath: string) => Promise<void>;
   /** Snapshot of every known repo's base-branch sync state. Empty before
    *  the first sync completes; afterwards live updates flow via
    *  `onRepoSyncState`. */
@@ -42,15 +41,11 @@ export interface OrchestraAPI {
   ptyStart: (id: string, cols: number, rows: number) => Promise<void>;
   ptyWrite: (id: string, data: string) => Promise<void>;
   ptyResize: (id: string, cols: number, rows: number) => Promise<void>;
-  ptyStop: (id: string) => Promise<void>;
   /** Restart the agent process while keeping the conversation: stops the
    * current PTY and triggers a fresh spawn that runs `claude --continue`,
    * picking up MCP server / settings.json changes without losing context. */
   restartAgent: (id: string) => Promise<void>;
-  ptyScrollback: (id: string) => Promise<string>;
-  ptyClearScrollback: (id: string) => Promise<void>;
   nvimStart: (id: string, cols: number, rows: number) => Promise<void>;
-  nvimStop: (id: string) => Promise<void>;
   onPtyData: (cb: (id: string, data: string) => void) => () => void;
   onPtyExit: (cb: (id: string, code: number) => void) => () => void;
   onPtyRestart: (cb: (id: string) => void) => () => void;
@@ -61,9 +56,6 @@ export interface OrchestraAPI {
   /** Apparent on-disk size (bytes) of every workspace's worktree, keyed by
    *  workspace id. Computed in one `du` pass; absent ids have no worktree. */
   getWorktreeSizes: () => Promise<Record<string, number>>;
-  commit: (id: string, message: string) => Promise<void>;
-  push: (id: string) => Promise<void>;
-  createPR: (id: string, title: string, body: string) => Promise<string>;
   findPR: (id: string) => Promise<PRsForBranch>;
   listBranches: (id: string) => Promise<string[]>;
   switchBranch: (id: string, branch: string) => Promise<Workspace>;

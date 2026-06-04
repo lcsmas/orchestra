@@ -38,9 +38,6 @@ import {
   detectRemoteUrl,
   getDiff,
   isGitRepo,
-  commitAll,
-  pushBranch,
-  createPullRequest,
   findPullRequest,
   listBranches,
   getDiffStats,
@@ -69,7 +66,6 @@ import {
   stopPty,
   writePty,
   readScrollback,
-  clearScrollback,
   isRunning,
 } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
@@ -222,10 +218,6 @@ ipcMain.handle('repos:add', async (_e, absPath: string) => {
   });
 });
 
-ipcMain.handle('repos:remove', async (_e, absPath: string) => {
-  await store.removeRepo(absPath);
-});
-
 ipcMain.handle('repos:listSyncStates', () => snapshotSyncStates());
 
 ipcMain.handle('repos:syncBase', async (_e, repoPath: string) => {
@@ -358,9 +350,6 @@ ipcMain.handle('pty:write', async (_e, id: string, data: string) => {
 ipcMain.handle('pty:resize', (_e, id: string, cols: number, rows: number) =>
   resizePty(id, cols, rows),
 );
-ipcMain.handle('pty:stop', (_e, id: string) => {
-  return stopPty(id);
-});
 ipcMain.handle('agent:restart', (_e, id: string) => {
   // Mirror the branch-switch path: stop the agent PTY here (the renderer's
   // xterm doesn't get torn down — it just resets) and tell the renderer to
@@ -371,8 +360,6 @@ ipcMain.handle('agent:restart', (_e, id: string) => {
   stopPty(id);
   getMainWindow().webContents.send('pty:restart', id);
 });
-ipcMain.handle('pty:scrollback', (_e, id: string) => readScrollback(id));
-ipcMain.handle('pty:clearScrollback', (_e, id: string) => clearScrollback(id));
 
 ipcMain.handle('git:diff', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
@@ -392,24 +379,6 @@ ipcMain.handle('git:stats', async (_e, id: string) => {
 });
 
 ipcMain.handle('workspaces:sizes', () => getWorktreeSizes());
-
-ipcMain.handle('git:commit', async (_e, id: string, message: string) => {
-  const ws = store.getWorkspace(id);
-  if (!ws) throw new Error('workspace not found');
-  await commitAll(ws.worktreePath, message);
-});
-
-ipcMain.handle('git:push', async (_e, id: string) => {
-  const ws = store.getWorkspace(id);
-  if (!ws) throw new Error('workspace not found');
-  await pushBranch(ws.worktreePath, ws.branch);
-});
-
-ipcMain.handle('git:pr', async (_e, id: string, title: string, body: string) => {
-  const ws = store.getWorkspace(id);
-  if (!ws) throw new Error('workspace not found');
-  return createPullRequest(ws.worktreePath, title, body, ws.baseBranch);
-});
 
 ipcMain.handle('git:findPR', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
@@ -442,10 +411,6 @@ ipcMain.handle('nvim:start', async (_e, id: string, cols: number, rows: number) 
     rows,
     window: getMainWindow(),
   });
-});
-
-ipcMain.handle('nvim:stop', async (_e, id: string) => {
-  stopPty(`${id}:nvim`);
 });
 
 ipcMain.handle(
