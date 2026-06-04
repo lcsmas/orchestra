@@ -54,7 +54,6 @@ import {
   ensureWorkspacePort,
   getWorktreeSizes,
   installOrchestraHooks,
-  openInEditor,
   pruneOrphanedWorkspaces,
   renameWorkspaceBranch,
   runSetupScript,
@@ -265,10 +264,6 @@ ipcMain.handle('workspaces:unarchive', async (_e, id: string) => {
 
 ipcMain.handle('workspaces:delete', async (_e, id: string) => {
   await deleteWorkspace(id, getMainWindow());
-});
-
-ipcMain.handle('workspaces:openInEditor', async (_e, id: string, editor: 'code' | 'cursor') => {
-  await openInEditor(id, editor);
 });
 
 ipcMain.handle('workspaces:markSeen', async (_e, id: string) => {

@@ -32,7 +32,6 @@ export interface OrchestraAPI {
   archiveWorkspace: (id: string) => Promise<void>;
   unarchiveWorkspace: (id: string) => Promise<void>;
   deleteWorkspace: (id: string) => Promise<void>;
-  openInEditor: (id: string, editor: 'code' | 'cursor') => Promise<void>;
   markSeen: (id: string) => Promise<void>;
   renameBranch: (id: string, newBranch: string) => Promise<Workspace>;
   /** Persist a new ordering of workspaces. Pass the full list of workspace

@@ -3,7 +3,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, chmod, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { BrowserWindow, shell } from 'electron';
+import { BrowserWindow } from 'electron';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { store } from './store';
@@ -568,17 +568,5 @@ export async function installOrchestraHooks(
     await writeFile(settingsFile, JSON.stringify(settings, null, 2));
   } catch {
     /* best-effort */
-  }
-}
-
-export async function openInEditor(id: string, editor: 'code' | 'cursor'): Promise<void> {
-  const ws = store.getWorkspace(id);
-  if (!ws) return;
-  try {
-    execFile(editor, [ws.worktreePath], (err) => {
-      if (err) shell.openPath(ws.worktreePath);
-    });
-  } catch {
-    shell.openPath(ws.worktreePath);
   }
 }

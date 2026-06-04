@@ -20,7 +20,6 @@ Running multiple coding agents at once usually means N terminal windows, N branc
 - **Live terminals** — real TTY per agent via `node-pty`, full color, resize, scrollback
 - **Diff-first review** — Monaco side-by-side diff per workspace, refreshes while the agent works
 - **One-click PR** — commit → `git push -u` → `gh pr create`, all from the dashboard
-- **Editor jump-in** — open any worktree in VS Code or Cursor with one click
 - **Activity tracking** — status flips running ↔ waiting from Claude Code's own `UserPromptSubmit` / `Stop` hooks (no polling, no PTY scraping)
 - **Agent-driven branch rename** — the agent picks a kebab-case branch name once it understands the work, via a one-time `SessionStart` instruction
 - **Per-repo setup scripts** — bootstrap dependencies, copy `.env` files, install hooks per workspace
