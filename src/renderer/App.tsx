@@ -83,11 +83,16 @@ export function App() {
   }, [loaded, workspaces.length, refreshAllStats]);
 
   // Worktree sizes are far heavier to compute than diff stats (a full `du`
-  // pass), so they ride their own effect — recomputed only on load and when a
-  // workspace is added/removed, never on the 8s stats interval.
+  // pass), so they ride their own effect on a slower cadence than the 8s stats
+  // poll. The first pass is cold (seconds over GiB trees); subsequent passes
+  // ride a warm page cache and are cheap, so a 30s interval keeps the number
+  // live as a worktree's contents grow/shrink (builds, installs) without
+  // freezing it between workspace add/remove like a load-only refresh would.
   useEffect(() => {
     if (!loaded) return;
     refreshSizes();
+    const timer = setInterval(refreshSizes, 30000);
+    return () => clearInterval(timer);
   }, [loaded, workspaces.length, refreshSizes]);
 
   useEffect(() => {

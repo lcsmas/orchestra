@@ -34,7 +34,8 @@ const execFileP = promisify(execFile);
  * number, not "how much you'd get back by deleting it".
  *
  * Off the hot stats poll by design: a cold pass over GiB-scale trees takes
- * seconds. Callers refresh on load / on workspace-set change, not every tick.
+ * seconds. Callers refresh on load and on a slow (30s) interval, not on the
+ * 8s stats tick — warm-cache passes are cheap but a cold one is not.
  */
 export async function getWorktreeSizes(): Promise<Record<string, number>> {
   let out = '';
