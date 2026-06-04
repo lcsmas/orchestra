@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, chmod, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { BrowserWindow, shell } from 'electron';
 import { execFile } from 'node:child_process';
@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { store } from './store';
 import {
   createWorktree,
+  listWorktreePaths,
   removeWorktree,
   renameWorktreeBranch,
   switchWorktreeBranch,
@@ -209,6 +210,68 @@ export async function deleteWorkspace(id: string, window: BrowserWindow): Promis
   }
   await store.removeWorkspace(id);
   window.webContents.send('workspace:removed', id);
+}
+
+/** Reconcile the store against git's worktree registry and drop any workspace
+ *  whose worktree was deleted out-of-band — `git worktree remove`, a manual
+ *  `rm`, or a post-merge cleanup. Each orchestra workspace owns exactly one
+ *  git worktree; once git no longer tracks that path the workspace is dead:
+ *  its terminal, diff, and merge views all operate on a directory that is no
+ *  longer a working tree, so the row just lingers showing a ~12 KB husk (the
+ *  injected `.claude`/`.orchestra` dirs survive `git worktree remove`) with no
+ *  working actions. We remove those records on startup so they stop showing.
+ *
+ *  False-positive guards:
+ *   - Skip a repo entirely if its `repoPath` is missing or its worktree list
+ *     can't be read. A temporarily-unmounted drive must never nuke records.
+ *   - Husk cleanup is confined to paths under ORCHESTRA_ROOT, so even a
+ *     corrupt `worktreePath` can't trigger an `rm` outside our own dir. */
+export async function pruneOrphanedWorkspaces(window: BrowserWindow): Promise<void> {
+  // Read each repo's worktree list once, not per workspace.
+  const byRepo = new Map<string, Workspace[]>();
+  for (const ws of store.workspaces) {
+    const list = byRepo.get(ws.repoPath) ?? [];
+    list.push(ws);
+    byRepo.set(ws.repoPath, list);
+  }
+
+  for (const [repoPath, list] of byRepo) {
+    if (!existsSync(repoPath)) continue; // repo gone/unmounted — can't verify
+    let tracked: Set<string>;
+    try {
+      tracked = new Set(await listWorktreePaths(repoPath));
+    } catch {
+      continue; // unreadable — skip the whole repo to be safe
+    }
+
+    for (const ws of list) {
+      if (tracked.has(ws.worktreePath)) continue; // still a live worktree
+
+      // Orphaned: git no longer tracks this worktree. Tear the record down.
+      stopPty(ws.id);
+      stopPty(`${ws.id}:run`);
+      stopPty(`${ws.id}:nvim`);
+      clearScrollback(ws.id);
+
+      // Remove the leftover husk (gitignored .claude/.orchestra survive a
+      // `git worktree remove`). Hard-confined to ORCHESTRA_ROOT.
+      if (
+        ws.worktreePath.startsWith(ORCHESTRA_ROOT + path.sep) &&
+        existsSync(ws.worktreePath)
+      ) {
+        try {
+          await rm(ws.worktreePath, { recursive: true, force: true });
+        } catch {
+          /* best-effort */
+        }
+      }
+
+      await store.removeWorkspace(ws.id);
+      if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+        window.webContents.send('workspace:removed', ws.id);
+      }
+    }
+  }
 }
 
 /** Run (or re-run) the repo's setup script for a workspace. Persists

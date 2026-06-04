@@ -55,6 +55,7 @@ import {
   getWorktreeSizes,
   installOrchestraHooks,
   openInEditor,
+  pruneOrphanedWorkspaces,
   renameWorkspaceBranch,
   runSetupScript,
   switchWorkspaceBranch,
@@ -142,6 +143,12 @@ async function createMainWindow() {
     event.preventDefault();
     void openUrlExternally(url);
   });
+
+  // Drop workspaces whose worktree was deleted out-of-band BEFORE the renderer
+  // fetches the list, so stale "ghost" rows (a ~12 KB husk, no working actions)
+  // never appear. Cheap (one `git worktree list` per repo); guarded against
+  // pruning when a repo is merely unmounted. Best-effort — never block startup.
+  await pruneOrphanedWorkspaces(mainWindow).catch(() => {});
 
   if (VITE_DEV_SERVER_URL) {
     await mainWindow.loadURL(VITE_DEV_SERVER_URL);
@@ -412,7 +419,7 @@ ipcMain.handle('git:pr', async (_e, id: string, title: string, body: string) => 
 ipcMain.handle('git:findPR', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
-  return findPullRequest(ws.worktreePath, ws.branch);
+  return findPullRequest(ws.repoPath, ws.branch);
 });
 
 ipcMain.handle('git:listBranches', async (_e, id: string) => {

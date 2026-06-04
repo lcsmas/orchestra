@@ -113,6 +113,20 @@ export async function createWorktree(
   await git.raw(['worktree', 'add', worktreePath, branch]);
 }
 
+/** Absolute paths of every worktree git currently tracks for `repoPath`,
+ *  including the repo's own main worktree. Parsed from `git worktree list
+ *  --porcelain` (one `worktree <path>` line per entry). Throws if the repo
+ *  can't be read — callers treat that as "unknown, don't act". */
+export async function listWorktreePaths(repoPath: string): Promise<string[]> {
+  const git = simpleGit(repoPath);
+  const out = await git.raw(['worktree', 'list', '--porcelain']);
+  const paths: string[] = [];
+  for (const line of out.split('\n')) {
+    if (line.startsWith('worktree ')) paths.push(line.slice('worktree '.length).trim());
+  }
+  return paths;
+}
+
 export async function removeWorktree(repoPath: string, worktreePath: string): Promise<void> {
   const git = simpleGit(repoPath);
   try {
@@ -373,10 +387,16 @@ async function computeUnpushedAhead(
 }
 
 export async function findPullRequest(
-  worktreePath: string,
+  repoPath: string,
   branch: string,
 ): Promise<import('../shared/types').PRsForBranch> {
   try {
+    // Run from `repoPath` (the canonical repo), NOT the workspace's worktree.
+    // `gh pr list --head` only needs to resolve the repo's remote — it doesn't
+    // need the branch checked out — and the worktree can be missing/broken
+    // (e.g. removed out-of-band), in which case `gh` would bail with "not a git
+    // repository" and we'd silently report zero PRs. The main repo is always a
+    // valid git dir, so PR state stays visible even for a stale worktree.
     const { stdout } = await pexec(
       'gh',
       [
@@ -391,7 +411,7 @@ export async function findPullRequest(
         '--limit',
         '50',
       ],
-      { cwd: worktreePath },
+      { cwd: repoPath },
     );
     const all = JSON.parse(stdout.trim() || '[]') as Array<{
       url: string;
