@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { store } from './store';
 import {
   createWorktree,
+  listBranches,
   listWorktreePaths,
   removeWorktree,
   renameWorktreeBranch,
@@ -389,10 +390,30 @@ export async function dispatchRenameRequest(
   if (!ws || ws.archived) return;
   if (ws.branchManuallySet) return;
   try {
-    await renameWorkspaceBranch(id, rawNewBranch, { manual: true }, window);
+    // Avoid the silent `git branch -m` failure when the agent picks a name that
+    // already exists as a branch: suffix it so a known-good subject still lands.
+    const target = await freeBranchName(ws.repoPath, sanitizeBranchName(rawNewBranch), ws.branch);
+    if (!target) return;
+    await renameWorkspaceBranch(id, target, { manual: true }, window);
   } catch {
     /* invalid name, branch conflict — silently ignore */
   }
+}
+
+/** Return a branch name not already taken in the repo. `desired` is returned
+ * as-is when free (or when it equals the workspace's own current branch, which
+ * is a no-op rather than a collision); otherwise a numeric suffix is appended
+ * (-2, -3, …). Empty string if `desired` is empty or no slot is found. */
+async function freeBranchName(repoPath: string, desired: string, current: string): Promise<string> {
+  if (!desired) return '';
+  const existing = new Set(await listBranches(repoPath));
+  existing.delete(current);
+  if (!existing.has(desired)) return desired;
+  for (let n = 2; n < 100; n++) {
+    const candidate = `${desired}-${n}`;
+    if (!existing.has(candidate)) return candidate;
+  }
+  return '';
 }
 
 function sanitizeBranchName(raw: string): string {
@@ -483,12 +504,21 @@ const HOOK_ACTIVITY_NOTIFY_CMD =
 const HOOK_SESSION_START_RENAME_CMD = 'bash .orchestra/rename-instruction.sh';
 
 const RENAME_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
-# Auto-installed by orchestra. Prints a one-time rename instruction into the
-# agent's session context when the workspace is still on its auto-generated
-# branch. Gated on ORCHESTRA_BRANCH_AUTO=1, which orchestra only sets when
-# the branch has not yet been renamed by the user or the agent.
+# Auto-installed by orchestra. Prints the rename instruction into the agent's
+# session context while the workspace is still on its auto-generated branch.
+# Runs on SessionStart AND on every UserPromptSubmit, so the nudge re-surfaces
+# the moment the work scope is clear — not just once at startup before any
+# context exists (the original SessionStart-only fire was routinely missed:
+# the agent is told to defer until it understands the work, but by then no
+# further SessionStart event re-shows the note).
+# Gated on ORCHESTRA_BRANCH_AUTO=1 (orchestra only sets it while the branch
+# has not been renamed by the user or agent) AND a live check that the current
+# git branch still equals the original auto name — so it self-disables the
+# instant a rename lands, even before the next pty restart clears the env.
 [ "\${ORCHESTRA_BRANCH_AUTO:-0}" = "1" ] || exit 0
 [ -n "\${ORCHESTRA_SOCK:-}" ] || exit 0
+current="\$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+[ -n "\$current" ] && [ "\$current" != "\${ORCHESTRA_BRANCH:-}" ] && exit 0
 cat <<EOF
 [orchestra] This workspace is on the auto-generated branch '\${ORCHESTRA_BRANCH:-unknown}'. Once you understand the specific work this conversation is about, rename the branch by running this exact command (do NOT use 'git branch -m'):
 
@@ -554,6 +584,10 @@ export async function installOrchestraHooks(
     let submitList = ((hooks.UserPromptSubmit as unknown[]) ??= []);
     submitList = removeHookCommand(submitList, (cmd) => cmd.includes('.orchestra/first-prompt.json'));
     upsertHookCommand(submitList, HOOK_ACTIVITY_SUBMIT_CMD);
+    // Re-surface the branch-rename nudge on every prompt while still on the
+    // auto branch (the script self-gates), so the agent gets reminded once the
+    // work scope is clear — not only at the context-free SessionStart.
+    upsertHookCommand(submitList, HOOK_SESSION_START_RENAME_CMD);
     hooks.UserPromptSubmit = submitList;
 
     const stopList = ((hooks.Stop as unknown[]) ??= []);
