@@ -1,6 +1,6 @@
 import { BrowserWindow, Notification } from 'electron';
 import { store } from './store';
-import { getBranchMergeState } from './git';
+import { getBranchMergeState, getReleaseState } from './git';
 import type { Workspace, WorkspaceStatus } from '../shared/types';
 
 // Hook-driven activity tracker.
@@ -132,6 +132,40 @@ export async function detectAndUpdateMergeState(
     mergedAt: nextMergedAt,
     divergedFromBase: nextDiverged,
     unpushedAhead: nextUnpushed,
+  };
+  await store.upsertWorkspace(updated);
+  if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+    window.webContents.send('workspace:update', updated);
+  }
+}
+
+/** Detect whether this branch's work has shipped in a published GitHub Release
+ *  and, if so, stamp `releasedAt`/`releasedVersion` once. Unlike merge state
+ *  this is monotonic — shipping is terminal, so we never clear it and, once
+ *  set, never re-check (the early-out below). It also short-circuits before
+ *  any `gh` call for branches that can't possibly be released yet:
+ *    - already released → nothing to do
+ *    - never merged → its work isn't on base, so no release can contain it
+ *  That keeps this off the network for all but the small set of merged-but-
+ *  not-yet-released branches, even though it's invoked on the PR poll cadence.
+ *  Deliberately NOT wired into `detectAndUpdateMergeState`, which runs on the
+ *  hot 8s stats poll and must stay network-free. */
+export async function detectAndUpdateReleaseState(
+  id: string,
+  window: BrowserWindow,
+): Promise<void> {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived) return;
+  if (ws.releasedAt) return; // terminal — already known shipped
+  if (!ws.mergedAt) return; // unmerged work can't be in a release yet
+  const { released, version, releasedAt } = await getReleaseState(ws.repoPath, ws.branch);
+  if (!released) return;
+  const fresh = store.getWorkspace(id);
+  if (!fresh || fresh.archived || fresh.releasedAt) return;
+  const updated: Workspace = {
+    ...fresh,
+    releasedAt: releasedAt ?? Date.now(),
+    releasedVersion: version,
   };
   await store.upsertWorkspace(updated);
   if (!window.isDestroyed() && !window.webContents.isDestroyed()) {

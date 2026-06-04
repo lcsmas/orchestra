@@ -35,6 +35,18 @@ export interface Workspace {
    * not-pushed work without leaving the workspace tab. Recomputed alongside
    * `divergedFromBase` on every Stop hook. */
   unpushedAhead?: number;
+  /** Tag of the first published GitHub Release whose build contains this
+   * branch's tip (e.g. `v0.1.11`). Drives the sidebar "released" pill. */
+  releasedVersion?: string;
+  /** Epoch ms the shipping release was published (GitHub `publishedAt`), or
+   * detection time as a fallback. Presence is the "released" signal — strictly
+   * stronger than `mergedAt`: merged-into-base isn't enough, a published
+   * release must have actually shipped past this branch's tip. Set once and
+   * never cleared (shipping is terminal), and only ever on a branch that has
+   * also been merged — so a fresh branch sitting on an already-shipped base
+   * commit doesn't false-fire. Recomputed lazily on the same gh-based cadence
+   * as PR state, never on the hot stats poll. */
+  releasedAt?: number;
   /** Auto-allocated dev-server port handed to setup/run scripts as
    * `$ORCHESTRA_PORT`. Lets multiple workspaces run dev servers in parallel
    * without colliding. Allocated at creation, freed on hard delete. */
