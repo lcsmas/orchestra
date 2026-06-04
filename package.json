@@ -23,7 +23,8 @@
     "dev": "vite",
     "build": "vite build && electron-builder",
     "start": "electron .",
-    "lint": "eslint src --ext .ts,.tsx"
+    "lint": "eslint src --ext .ts,.tsx",
+    "release": "bash scripts/release.sh"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
