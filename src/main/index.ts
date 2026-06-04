@@ -69,7 +69,7 @@ import {
   isRunning,
 } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
-import { detectAndUpdateMergeState } from './activity';
+import { detectAndUpdateMergeState, detectAndUpdateReleaseState } from './activity';
 import {
   primeLocalSyncStates,
   snapshotSyncStates,
@@ -383,6 +383,10 @@ ipcMain.handle('workspaces:sizes', () => getWorktreeSizes());
 ipcMain.handle('git:findPR', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
+  // Piggyback release detection on the PR poll: same gh-based, 12s + on-focus
+  // cadence, and never on the hot stats poll. Short-circuits before any gh
+  // call unless the branch is merged-but-not-yet-released, so it's nearly free.
+  void detectAndUpdateReleaseState(id, getMainWindow()).catch(() => {});
   return findPullRequest(ws.repoPath, ws.branch);
 });
 

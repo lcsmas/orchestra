@@ -682,6 +682,18 @@ export function Sidebar({ onNewFromRepo }: Props) {
                           merged
                         </span>
                       )}
+                      {w.releasedAt && (
+                        <span
+                          className="released-pill"
+                          title={
+                            w.releasedVersion
+                              ? `Shipped in release ${w.releasedVersion}`
+                              : 'Shipped in a published release'
+                          }
+                        >
+                          {w.releasedVersion ?? 'released'}
+                        </span>
+                      )}
                       {!!w.unpushedAhead && w.unpushedAhead > 0 && (
                         <span
                           className="unpushed-pill"

@@ -282,6 +282,23 @@ button.restart-btn:hover {
   background: rgba(179, 139, 255, 0.12);
   border: 1px solid rgba(179, 139, 255, 0.32);
 }
+/* "released" pill — branch's work has shipped in a published GitHub release.
+   Green so it reads as a terminal "done, in production" state, distinct from
+   the purple "merged" pill it sits beside. text-transform stays off so the
+   version tag (e.g. v0.1.11) renders verbatim rather than shouted. */
+.released-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  margin-left: 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: #7ee787;
+  background: rgba(126, 231, 135, 0.10);
+  border: 1px solid rgba(126, 231, 135, 0.32);
+}
 /* "↑N" badge — branch has commits not yet on origin. Amber so it reads as
    a soft "action available" cue, not an error. Sits next to the diff
    indicator in the sidebar row. */

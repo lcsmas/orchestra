@@ -444,6 +444,105 @@ export async function findPullRequest(
   }
 }
 
+interface ReleaseRef {
+  tag: string;
+  /** Commit the tag resolves to locally (peeled through annotated tags). */
+  sha: string;
+  /** Epoch ms of the GitHub `publishedAt`, or 0 if unparseable. */
+  publishedAt: number;
+}
+
+/** Per-repo cache of resolved published releases. A repo's release list is
+ *  identical for every workspace that shares it, so we fetch once and reuse
+ *  for a short TTL rather than firing one `gh` call per workspace each poll. */
+const releaseCache = new Map<string, { at: number; releases: ReleaseRef[] }>();
+const RELEASE_CACHE_TTL = 30_000;
+
+/** Published (non-draft, non-prerelease) GitHub releases for the repo, each
+ *  resolved to the local commit its tag points at. Releases whose tag isn't
+ *  present locally are dropped — without the commit we can't prove ancestry,
+ *  and Orchestra's own release flow creates tags locally before pushing, so
+ *  they're normally present. Cached per repo for `RELEASE_CACHE_TTL`. */
+async function getPublishedReleases(repoPath: string): Promise<ReleaseRef[]> {
+  const cached = releaseCache.get(repoPath);
+  if (cached && Date.now() - cached.at < RELEASE_CACHE_TTL) return cached.releases;
+  let releases: ReleaseRef[] = [];
+  try {
+    const { stdout } = await pexec(
+      'gh',
+      ['release', 'list', '--json', 'tagName,isDraft,isPrerelease,publishedAt', '--limit', '50'],
+      { cwd: repoPath },
+    );
+    const raw = JSON.parse(stdout.trim() || '[]') as Array<{
+      tagName: string;
+      isDraft: boolean;
+      isPrerelease: boolean;
+      publishedAt: string;
+    }>;
+    const git = simpleGit(repoPath);
+    const resolved = await Promise.all(
+      raw
+        .filter((r) => !r.isDraft && !r.isPrerelease)
+        .map(async (r): Promise<ReleaseRef | null> => {
+          try {
+            const sha = (await git.raw(['rev-parse', `${r.tagName}^{commit}`])).trim();
+            return { tag: r.tagName, sha, publishedAt: Date.parse(r.publishedAt) || 0 };
+          } catch {
+            return null; // tag not present locally → can't confirm ancestry
+          }
+        }),
+    );
+    releases = resolved.filter((r): r is ReleaseRef => r !== null);
+  } catch {
+    releases = []; // gh missing, not authed, no remote, etc.
+  }
+  releaseCache.set(repoPath, { at: Date.now(), releases });
+  return releases;
+}
+
+/** True when `ancestor` is an ancestor of (or equal to) `descendant`.
+ *  `git merge-base --is-ancestor` exits 0 for yes, 1 for no; execFile rejects
+ *  on any non-zero exit, so any throw is treated as "no". */
+async function isAncestor(
+  repoPath: string,
+  ancestor: string,
+  descendant: string,
+): Promise<boolean> {
+  try {
+    await pexec('git', ['merge-base', '--is-ancestor', ancestor, descendant], { cwd: repoPath });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether this branch's work has shipped: a published GitHub Release whose
+ *  build contains the branch tip (the tag commit has the tip as an ancestor —
+ *  the exact proxy for "the AppImage was built with this branch's commits").
+ *  Returns the EARLIEST such release so the version label reflects when the
+ *  work first shipped, not the latest release that happens to also contain it. */
+export async function getReleaseState(
+  repoPath: string,
+  branch: string,
+): Promise<{ released: boolean; version?: string; releasedAt?: number }> {
+  try {
+    const releases = await getPublishedReleases(repoPath);
+    if (releases.length === 0) return { released: false };
+    const git = simpleGit(repoPath);
+    const branchSha = (await git.raw(['rev-parse', branch])).trim();
+    // Oldest-first so the first match is the release that first shipped the tip.
+    const ordered = [...releases].sort((a, b) => a.publishedAt - b.publishedAt);
+    for (const rel of ordered) {
+      if (await isAncestor(repoPath, branchSha, rel.sha)) {
+        return { released: true, version: rel.tag, releasedAt: rel.publishedAt || undefined };
+      }
+    }
+    return { released: false };
+  } catch {
+    return { released: false };
+  }
+}
+
 /** Snapshot of how local `<baseBranch>` relates to `origin/<baseBranch>`,
  *  computed without any network access. The caller is responsible for
  *  running a fetch first when freshness is needed. Returns `hasUpstream:
