@@ -400,9 +400,9 @@ function sanitizeBranchName(raw: string): string {
 }
 
 /** Switch the workspace to an existing branch. The worktree dir stays put —
- * branch is just a property. Stops any running agent/nvim so they respawn
- * against the new branch's files (any in-memory state from the old branch
- * would be stale), then emits `pty:restart`. */
+ * branch is just a property. On success, stops any running agent/nvim so they
+ * respawn against the new branch's files (any in-memory state from the old
+ * branch would be stale), then emits `pty:restart`. */
 export async function switchWorkspaceBranch(
   id: string,
   branch: string,
@@ -411,14 +411,22 @@ export async function switchWorkspaceBranch(
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
   if (ws.branch === branch) return ws;
+
+  // Run the git switch FIRST, while the agent/nvim PTYs are still alive. If it
+  // fails — e.g. the branch is already checked out in another worktree, or the
+  // working tree would be clobbered — we throw without tearing anything down,
+  // so the live session keeps running and the BranchPicker surfaces the error.
+  // Stopping the PTYs before a switch that might fail leaves the pane attached
+  // to a dead process with no restart, which silently bricks terminal input.
+  await switchWorktreeBranch(ws.worktreePath, branch);
+
+  // Switch landed — now recycle the PTYs so they respawn against the new branch.
   const nvimId = `${id}:nvim`;
   const restartAgent = isRunning(id);
   const restartNvim = isRunning(nvimId);
   stopPty(id);
   stopPty(nvimId);
   clearScrollback(id);
-
-  await switchWorktreeBranch(ws.worktreePath, branch);
 
   const repoName = path.basename(ws.repoPath);
   const updated: Workspace = {

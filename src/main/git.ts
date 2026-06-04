@@ -78,7 +78,19 @@ export async function switchWorktreeBranch(
   branch: string,
 ): Promise<void> {
   const git = simpleGit(worktreePath);
-  await git.raw(['switch', branch]);
+  try {
+    await git.raw(['switch', branch]);
+  } catch (e) {
+    const msg = (e as Error).message ?? '';
+    // A branch can only be checked out in one worktree at a time. Translate
+    // git's raw "already used by worktree at <path>" into something readable.
+    if (/already used by worktree/i.test(msg)) {
+      throw new Error(
+        `Can't switch to '${branch}': it's already checked out in another worktree.`,
+      );
+    }
+    throw e;
+  }
 }
 
 /** Rename the branch checked out in `worktreePath`. The worktree directory
