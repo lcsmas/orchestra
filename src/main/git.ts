@@ -262,10 +262,18 @@ function truncate(s: string, max = 300_000): string {
  *    unpushed (`baseBranch..branch`) so the renderer can still surface the
  *    "ready to push" signal on a virgin branch.
  *
- *  `merged` and `diverged` are mutually exclusive. Fast-forward and rebase
- *  merges are indistinguishable from "branched and never advanced" or from
- *  "branch was rewritten" respectively, so they may yield a false-negative
- *  on `merged` — accepted trade-off for not flagging stale branch points. */
+ *  `merged` and `diverged` are mutually exclusive. A fast-forward or rebase
+ *  merge leaves no merge commit, so topology alone can't tell it apart from
+ *  "branched and never advanced" (both leave the branch tip reachable from
+ *  base with no merge commit) — and when the fast-forward lands base exactly
+ *  on the branch tip, it's also indistinguishable from a freshly-created
+ *  workspace whose branch still equals base. To resolve that ambiguity we
+ *  consult base's reflog: `git merge <branch>` (including the fast-forward
+ *  Orchestra's own Merge button performs) writes a `merge <branch>:` entry
+ *  to the base ref, which is the one durable record that the merge happened.
+ *  Reflog entries expire (~90 days), after which such a branch falls back to
+ *  `stalePointer` — acceptable, since merged workspaces are archived long
+ *  before then. */
 export async function getBranchMergeState(
   repoPath: string,
   branch: string,
@@ -286,17 +294,42 @@ export async function getBranchMergeState(
     const aheadStr = (await git.raw(['rev-list', '--count', `${baseBranch}..${branch}`])).trim();
     const ahead = Number(aheadStr) || 0;
     if (ahead > 0) return { merged: false, diverged: true, unpushedAhead, stalePointer: false };
+    // Branch is fully contained in base. It was merged if either a real merge
+    // commit folded the tip in, or base's reflog records a `merge <branch>`
+    // (the fast-forward / rebase case, which leaves no merge commit). The
+    // reflog check also disambiguates `branchSha === baseSha`: a fresh
+    // workspace has no such entry, a fast-forward-merged branch does.
     const [branchSha, baseSha] = await Promise.all([
       git.raw(['rev-parse', branch]).then((s) => s.trim()),
       git.raw(['rev-parse', baseBranch]).then((s) => s.trim()),
     ]);
-    if (branchSha === baseSha) {
-      return { merged: false, diverged: false, unpushedAhead, stalePointer: false };
-    }
-    const merged = await branchTipWasMergedInto(git, branchSha, baseSha);
-    return { merged, diverged: false, unpushedAhead, stalePointer: !merged };
+    const mergedViaCommit =
+      branchSha !== baseSha && (await branchTipWasMergedInto(git, branchSha, baseSha));
+    const merged = mergedViaCommit || (await baseReflogRecordsMerge(git, baseBranch, branch));
+    // Differing refs with no detectable merge means the tip is a stale old
+    // commit on base; equal refs with no merge is a fresh/never-merged branch.
+    return { merged, diverged: false, unpushedAhead, stalePointer: !merged && branchSha !== baseSha };
   } catch {
     return { merged: false, diverged: false, unpushedAhead: 0, stalePointer: false };
+  }
+}
+
+/** True when base's reflog records a `git merge <branch>` — the durable trace
+ *  a fast-forward or rebase merge leaves behind when no merge commit exists.
+ *  Matches the reflog subject exactly (`merge <branch>:`) so a branch named
+ *  `feat` doesn't match a `merge feature:` entry. Only meaningful for a branch
+ *  already known to be fully contained in base; the caller guarantees that. */
+async function baseReflogRecordsMerge(
+  git: ReturnType<typeof simpleGit>,
+  baseBranch: string,
+  branch: string,
+): Promise<boolean> {
+  try {
+    const out = await git.raw(['reflog', 'show', baseBranch, '--format=%gs']);
+    const needle = `merge ${branch}:`;
+    return out.split('\n').some((line) => line.trim().startsWith(needle));
+  } catch {
+    return false;
   }
 }
 
