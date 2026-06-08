@@ -500,8 +500,14 @@ const HOOK_ACTIVITY_NOTIFY_CMD =
 // SessionStart hook delegates to a small shell script we drop into the
 // worktree. Inlining the multi-line instruction in a single JSON-encoded
 // hook command requires brutal quote-escaping, and a script file is far
-// easier to read and modify. Path is relative to the agent's cwd (worktree).
-const HOOK_SESSION_START_RENAME_CMD = 'bash .orchestra/rename-instruction.sh';
+// easier to read and modify. Resolved against $ORCHESTRA_WORKTREE (the
+// absolute worktree root, set on the pty env) rather than a relative path, so
+// it still works after the agent `cd`s into a subdirectory — the relative form
+// raised "No such file or directory" on every prompt once cwd left the root.
+// The -f guard + `|| true` make a genuinely-missing script a silent no-op
+// instead of a hook error.
+const HOOK_SESSION_START_RENAME_CMD =
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/rename-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
 
 const RENAME_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
 # Auto-installed by orchestra. Prints the rename instruction into the agent's
@@ -579,10 +585,19 @@ export async function installOrchestraHooks(
     }
     const hooks = ((settings.hooks as Record<string, unknown>) ??= {});
 
+    // Pre-upgrade workspaces carry the old relative rename command
+    // (`bash .orchestra/rename-instruction.sh`), which errored once the agent
+    // cd'd out of the worktree root. Evict it (any rename command lacking the
+    // new $ORCHESTRA_WORKTREE resolution) before re-upserting the fixed one, or
+    // both would run and the stale one would keep erroring.
+    const isStaleRenameCmd = (cmd: string) =>
+      cmd.includes('.orchestra/rename-instruction.sh') && !cmd.includes('ORCHESTRA_WORKTREE');
+
     // Evict the legacy first-prompt.json writer from any pre-upgrade workspace
     // so prompts no longer get dumped to disk after this hook system landed.
     let submitList = ((hooks.UserPromptSubmit as unknown[]) ??= []);
     submitList = removeHookCommand(submitList, (cmd) => cmd.includes('.orchestra/first-prompt.json'));
+    submitList = removeHookCommand(submitList, isStaleRenameCmd);
     upsertHookCommand(submitList, HOOK_ACTIVITY_SUBMIT_CMD);
     // Re-surface the branch-rename nudge on every prompt while still on the
     // auto branch (the script self-gates), so the agent gets reminded once the
@@ -603,7 +618,8 @@ export async function installOrchestraHooks(
     upsertHookCommand(notifyList, HOOK_ACTIVITY_NOTIFY_CMD);
     hooks.Notification = notifyList;
 
-    const sessionStartList = ((hooks.SessionStart as unknown[]) ??= []);
+    let sessionStartList = ((hooks.SessionStart as unknown[]) ??= []);
+    sessionStartList = removeHookCommand(sessionStartList, isStaleRenameCmd);
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_RENAME_CMD);
     hooks.SessionStart = sessionStartList;
 

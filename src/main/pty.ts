@@ -157,6 +157,12 @@ export async function startPty(opts: {
     ...(opts.extraEnv ?? {}),
     TERM: 'xterm-256color',
   };
+  if (opts.workspaceId) {
+    // Absolute worktree root for hook commands — the rename hook resolves its
+    // script via this so it survives the agent `cd`-ing into a subdirectory
+    // (relative paths broke once cwd != worktree root).
+    env.ORCHESTRA_WORKTREE = opts.cwd;
+  }
   const sock = getHookSocketPath();
   if (sock && opts.workspaceId) {
     env.ORCHESTRA_SOCK = sock;
