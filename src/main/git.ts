@@ -345,10 +345,18 @@ async function baseReflogRecordsMerge(
   }
 }
 
-/** True when some commit reachable from `baseSha` has `branchSha` as a
- *  non-first parent — i.e., a merge commit folded the branch into base.
- *  Walks `branchSha..baseSha` with `--ancestry-path` so the scan is bounded
- *  by the work done since branchSha, not base's full history. */
+/** True when a merge commit on base's *first-parent mainline* has `branchSha`
+ *  as a non-first parent — i.e., base actually absorbed the branch.
+ *
+ *  The `--first-parent` restriction is the whole point: it scans only the
+ *  merges that landed *on* base (where base's prior tip is parent 1 and the
+ *  merged-in branch is parent 2+), and ignores merges in the opposite
+ *  direction — a feature branch running `git merge <base>` to sync makes base's
+ *  then-tip a *second* parent of an off-mainline merge. Without `--first-parent`
+ *  that sync-merge made any branch whose tip happened to be a base commit look
+ *  "merged" the moment some unrelated feature pulled base in and later landed
+ *  (the classic stale-pointer false positive). Bounded to commits since
+ *  branchSha so the scan is proportional to base's progress, not its history. */
 async function branchTipWasMergedInto(
   git: ReturnType<typeof simpleGit>,
   branchSha: string,
@@ -357,14 +365,15 @@ async function branchTipWasMergedInto(
   try {
     const out = await git.raw([
       'rev-list',
+      '--first-parent',
+      '--merges',
       '--parents',
-      '--ancestry-path',
       `${branchSha}..${baseSha}`,
     ]);
     for (const line of out.split('\n')) {
       const parts = line.trim().split(/\s+/);
       // parts[0] = commit, parts[1] = first parent, parts[2..] = merge parents.
-      // A non-first-parent match means a merge commit pulled branchSha in.
+      // A non-first-parent match means this mainline merge folded branchSha in.
       for (let i = 2; i < parts.length; i++) {
         if (parts[i] === branchSha) return true;
       }
