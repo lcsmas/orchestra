@@ -173,16 +173,67 @@ export async function detectAndUpdateReleaseState(
   }
 }
 
+// Workspaces with a real prompt in flight: armed on a non-empty submit (the
+// user pressing Enter, captured losslessly in pty.ts — independent of the hook
+// POST — or the hook's own `submit`), disarmed when the turn ends (`stop`/
+// `notify`) or the PTY dies. This is the gate the output-activity safety net
+// needs: it tells `reconcileRunningFromOutput` that streaming output is work,
+// not a spawn/`--continue` scrollback reprint (which happens with nothing
+// armed). Event-scoped, so it maps exactly to "a turn is currently running."
+const turnsInFlight = new Set<string>();
+
+export function armTurn(id: string): void {
+  turnsInFlight.add(id);
+}
+export function disarmTurn(id: string): void {
+  turnsInFlight.delete(id);
+}
+export function isTurnInFlight(id: string): boolean {
+  return turnsInFlight.has(id);
+}
+
+/** Out-of-band safety net for the otherwise purely hook-driven status. The
+ *  only thing that sets `running` is Claude's UserPromptSubmit POST, and that
+ *  single event can be lost — the 1s curl `--max-time` timing out, hooks not
+ *  yet reloaded by an already-running session, or a multi-instance socket
+ *  mismatch — stranding a genuinely-working agent on `idle`. pty.ts calls this
+ *  when a workspace streams output (the PTY stream can't be dropped the way the
+ *  hook POST can), and we reconcile `idle` → `running`.
+ *
+ *  Two gates keep this from firing on output that isn't work:
+ *   - `turnsInFlight`: a real prompt must be in flight. The killer false
+ *     positive — the multi-second, bursty `--continue` scrollback reprint —
+ *     happens with nothing armed, so it's ignored by construction.
+ *   - status must be `idle`. `waiting` (the unread "finished / needs input"
+ *     dot) is meaningful and user-cleared, and unlike a missed submit has no
+ *     follow-up event to undo an erroneous flip. The transition OUT of running
+ *     stays 100% hook-driven.
+ *  Gated to Claude: Codex has no Stop hook to ever clear a synthetic running. */
+export async function reconcileRunningFromOutput(
+  id: string,
+  window: BrowserWindow,
+): Promise<void> {
+  if (!turnsInFlight.has(id)) return;
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived) return;
+  if (ws.agent !== 'claude') return;
+  if (ws.status !== 'idle') return;
+  await setStatus(id, 'running', window);
+}
+
 export function dispatchHookEvent(
   id: string,
   event: string,
   window: BrowserWindow,
 ): void {
   if (event === 'submit') {
+    armTurn(id);
     void setStatus(id, 'running', window);
   } else if (event === 'stop') {
+    disarmTurn(id);
     fireFinished(id, window);
   } else if (event === 'notify') {
+    disarmTurn(id);
     fireNeedsInput(id, window);
   }
 }
