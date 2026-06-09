@@ -61,41 +61,59 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
       if (body.length > maxBytes) tooLarge = true;
     });
     req.on('end', () => {
-      if (tooLarge) {
-        res.writeHead(413, { 'Content-Type': 'application/json' });
-        res.end('{"error":"payload too large"}');
-        return;
-      }
-      try {
-        const msg = JSON.parse(body) as Record<string, unknown>;
-        if (route === '/rename') {
-          if (typeof msg.id === 'string' && typeof msg.branch === 'string') {
-            void dispatchRenameRequest(msg.id, msg.branch, window);
-          }
-        } else if (route === '/spawn') {
-          if (typeof msg.task === 'string') {
-            void dispatchSpawnRequest(
-              {
-                from: typeof msg.from === 'string' ? msg.from : undefined,
-                repoPath: typeof msg.repoPath === 'string' ? msg.repoPath : undefined,
-                baseBranch: typeof msg.baseBranch === 'string' ? msg.baseBranch : undefined,
-                task: msg.task,
-                agent: msg.agent === 'codex' ? 'codex' : msg.agent === 'claude' ? 'claude' : undefined,
-              },
-              window,
-            );
-          }
-        } else {
-          // Default route handles activity events: /event or anything else.
-          if (typeof msg.id === 'string' && typeof msg.event === 'string') {
-            dispatchHookEvent(msg.id, msg.event, window);
-          }
+      void (async () => {
+        const send = (code: number, obj: unknown): void => {
+          res.writeHead(code, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(obj));
+        };
+        if (tooLarge) {
+          send(413, { ok: false, error: 'payload too large' });
+          return;
         }
-      } catch {
-        /* invalid JSON — ignore */
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end('{}');
+        let msg: Record<string, unknown>;
+        try {
+          msg = JSON.parse(body) as Record<string, unknown>;
+        } catch {
+          send(400, { ok: false, error: 'invalid JSON' });
+          return;
+        }
+        try {
+          if (route === '/rename') {
+            if (typeof msg.id === 'string' && typeof msg.branch === 'string') {
+              send(200, await dispatchRenameRequest(msg.id, msg.branch, window));
+            } else {
+              send(200, { ok: false, error: 'missing id or branch' });
+            }
+          } else if (route === '/spawn') {
+            if (typeof msg.task === 'string') {
+              send(
+                200,
+                await dispatchSpawnRequest(
+                  {
+                    from: typeof msg.from === 'string' ? msg.from : undefined,
+                    repoPath: typeof msg.repoPath === 'string' ? msg.repoPath : undefined,
+                    baseBranch: typeof msg.baseBranch === 'string' ? msg.baseBranch : undefined,
+                    task: msg.task,
+                    agent:
+                      msg.agent === 'codex' ? 'codex' : msg.agent === 'claude' ? 'claude' : undefined,
+                  },
+                  window,
+                ),
+              );
+            } else {
+              send(200, { ok: false, error: 'missing task' });
+            }
+          } else {
+            // Default route handles activity events: /event or anything else.
+            if (typeof msg.id === 'string' && typeof msg.event === 'string') {
+              dispatchHookEvent(msg.id, msg.event, window);
+            }
+            send(200, {});
+          }
+        } catch (e) {
+          send(200, { ok: false, error: e instanceof Error ? e.message : 'internal error' });
+        }
+      })();
     });
     req.on('error', () => {
       /* noop */

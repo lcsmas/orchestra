@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { store } from './store';
 import {
   createWorktree,
+  getCurrentBranch,
   listBranches,
   listWorktreePaths,
   removeWorktree,
@@ -353,9 +354,15 @@ export async function renameWorkspaceBranch(
   if (!ws) throw new Error('workspace not found');
   const newBranch = sanitizeBranchName(rawNewBranch);
   if (!newBranch) throw new Error('invalid branch name');
-  if (newBranch === ws.branch) {
+  // The stored branch can drift from the worktree's real HEAD — renamed out of
+  // band, or a background-spawned workspace the stats-poll reconciler hasn't
+  // visited yet. `git branch -m <old> <new>` fails outright when <old> no
+  // longer exists, so rename FROM the live branch and fall back to the stored
+  // name only when HEAD is detached/unreadable.
+  const liveBranch = (await getCurrentBranch(ws.worktreePath)) || ws.branch;
+  if (newBranch === liveBranch) {
     if (opts.manual && !ws.branchManuallySet) {
-      const updated = { ...ws, branchManuallySet: true };
+      const updated = { ...ws, branch: liveBranch, branchManuallySet: true };
       await store.upsertWorkspace(updated);
       window.webContents.send('workspace:update', updated);
       return updated;
@@ -363,7 +370,7 @@ export async function renameWorkspaceBranch(
     return ws;
   }
   const repoName = path.basename(ws.repoPath);
-  await renameWorktreeBranch(ws.worktreePath, ws.branch, newBranch);
+  await renameWorktreeBranch(ws.worktreePath, liveBranch, newBranch);
 
   const updated: Workspace = {
     ...ws,
@@ -376,27 +383,37 @@ export async function renameWorkspaceBranch(
   return updated;
 }
 
+export interface RenameResult {
+  ok: boolean;
+  branch?: string;
+  error?: string;
+}
+
 /** Handle a rename request coming from the agent via the hooks-server socket.
  * Locks the branch after a successful rename so the SessionStart instruction
- * stops firing (one rename per workspace lifetime). Silent no-op if the
- * branch is already user-set or the requested name is invalid — the agent
- * doesn't get error feedback from the socket call, so we just refuse. */
+ * stops firing (one rename per workspace lifetime). Returns a structured
+ * result so the agent's socket call can tell success from refusal — the old
+ * always-`{}` reply left agents guessing and falling back to `git branch -m`. */
 export async function dispatchRenameRequest(
   id: string,
   rawNewBranch: string,
   window: BrowserWindow,
-): Promise<void> {
+): Promise<RenameResult> {
   const ws = store.getWorkspace(id);
-  if (!ws || ws.archived) return;
-  if (ws.branchManuallySet) return;
+  if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
+  if (ws.branchManuallySet) return { ok: false, error: 'branch already set manually' };
   try {
-    // Avoid the silent `git branch -m` failure when the agent picks a name that
-    // already exists as a branch: suffix it so a known-good subject still lands.
-    const target = await freeBranchName(ws.repoPath, sanitizeBranchName(rawNewBranch), ws.branch);
-    if (!target) return;
-    await renameWorkspaceBranch(id, target, { manual: true }, window);
-  } catch {
-    /* invalid name, branch conflict — silently ignore */
+    // Suffix against the live branch (not the possibly-stale stored name) so a
+    // name that collides with an existing branch still lands, and so a request
+    // matching the worktree's real current branch is treated as a no-op rather
+    // than getting needlessly suffixed.
+    const live = (await getCurrentBranch(ws.worktreePath)) || ws.branch;
+    const target = await freeBranchName(ws.repoPath, sanitizeBranchName(rawNewBranch), live);
+    if (!target) return { ok: false, error: 'invalid branch name' };
+    const updated = await renameWorkspaceBranch(id, target, { manual: true }, window);
+    return { ok: true, branch: updated.branch };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'rename failed' };
   }
 }
 
@@ -459,13 +476,21 @@ async function startWorkspaceAgentHeadless(id: string, window: BrowserWindow): P
   }, 1200);
 }
 
+export interface SpawnResult {
+  ok: boolean;
+  id?: string;
+  branch?: string;
+  error?: string;
+}
+
 /** Handle a spawn request from an agent via the hooks-server socket: create a
  * brand-new worktree+workspace and hand its agent an opening instruction, then
  * start it headless so it works autonomously. `from` is the caller's
  * workspace id (its ORCHESTRA_WS_ID) — when no explicit `repoPath` is given we
  * inherit the caller's repo. An explicit `repoPath` must be a repo orchestra
- * already knows about; an unknown path is refused (the agent gets no error
- * channel from the socket, so we just no-op). */
+ * already knows about; an unknown path is refused. Returns a structured result
+ * so the spawning agent learns the new workspace id/branch (or why it failed)
+ * instead of an opaque `{}`. */
 export async function dispatchSpawnRequest(
   input: {
     from?: string;
@@ -475,26 +500,27 @@ export async function dispatchSpawnRequest(
     agent?: 'claude' | 'codex';
   },
   window: BrowserWindow,
-): Promise<void> {
+): Promise<SpawnResult> {
   const task = input.task.trim();
-  if (!task) return;
+  if (!task) return { ok: false, error: 'empty task' };
   let repoPath = input.repoPath?.trim() || undefined;
   if (repoPath) {
     // Only repos the user has already added — never let an agent point a new
     // worktree at an arbitrary filesystem path.
-    if (!store.repos.some((r) => r.path === repoPath)) return;
+    if (!store.repos.some((r) => r.path === repoPath)) return { ok: false, error: 'unknown repoPath' };
   } else if (input.from) {
     repoPath = store.getWorkspace(input.from)?.repoPath;
   }
-  if (!repoPath) return;
+  if (!repoPath) return { ok: false, error: 'no repo: pass repoPath or call from a workspace' };
   try {
     const ws = await createWorkspace(
       { repoPath, baseBranch: input.baseBranch, task, agent: input.agent },
       window,
     );
     await startWorkspaceAgentHeadless(ws.id, window);
-  } catch {
-    /* worktree creation or spawn failed — silently refuse */
+    return { ok: true, id: ws.id, branch: ws.branch };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'spawn failed' };
   }
 }
 
@@ -632,9 +658,9 @@ current="\$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 cat <<EOF
 [orchestra] This workspace is on the auto-generated branch '\${ORCHESTRA_BRANCH:-unknown}'. Once you understand the specific work this conversation is about, rename the branch by running this exact command (do NOT use 'git branch -m'):
 
-  curl -s --max-time 2 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"id\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\",\\\\"branch\\\\":\\\\"<new-branch-name>\\\\"}" http://x/rename
+  curl -s --max-time 5 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"id\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\",\\\\"branch\\\\":\\\\"<new-branch-name>\\\\"}" http://x/rename
 
-Pick a short kebab-case name (3-6 words) that reflects the actual work, e.g. fix-checkout-typo, add-stripe-webhook-retry, route-demande-accessoire. Do this proactively the moment the scope is clear — not on the first prompt if the prompt is exploratory.
+The reply is JSON: {"ok":true,"branch":"<final-name>"} on success (orchestra renames the real git branch for you — do NOT also run 'git branch -m'), or {"ok":false,"error":"..."} if it refused. Pick a short kebab-case name (3-6 words) that reflects the actual work, e.g. fix-checkout-typo, add-stripe-webhook-retry, route-demande-accessoire. Do this proactively the moment the scope is clear — not on the first prompt if the prompt is exploratory.
 EOF
 `;
 
@@ -651,9 +677,9 @@ const SPAWN_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
 cat <<EOF
 [orchestra] You can delegate independent work to a NEW parallel worktree that gets its own agent. The new agent starts immediately and works on its own in a fresh branch cut from the base branch — so use this only for work that does NOT depend on your current uncommitted changes (the new worktree will not see them). Run this exact command:
 
-  curl -s --max-time 5 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"from\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\",\\\\"task\\\\":\\\\"<full self-contained instructions for the new agent>\\\\"}" http://x/spawn
+  curl -s --max-time 20 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"from\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\",\\\\"task\\\\":\\\\"<full self-contained instructions for the new agent>\\\\"}" http://x/spawn
 
-The "task" is the new agent's opening prompt — write it as a complete, standalone instruction (it shares none of this conversation's context). By default the worktree is created in THIS repo off its base branch. Optional JSON fields: "repoPath":"<abs path of another repo already added to orchestra>", "baseBranch":"<branch>", "agent":"claude"|"codex". Only spawn when the user asks you to parallelize or delegate work — do not do it unprompted.
+The reply is JSON: {"ok":true,"id":"<workspace-id>","branch":"<branch>"} once the new worktree exists and its agent has started, or {"ok":false,"error":"..."} on failure. The "task" is the new agent's opening prompt — write it as a complete, standalone instruction (it shares none of this conversation's context). By default the worktree is created in THIS repo off its base branch. Optional JSON fields: "repoPath":"<abs path of another repo already added to orchestra>", "baseBranch":"<branch>", "agent":"claude"|"codex". Only spawn when the user asks you to parallelize or delegate work — do not do it unprompted.
 EOF
 `;
 
