@@ -441,7 +441,12 @@ async function startWorkspaceAgentHeadless(id: string, window: BrowserWindow): P
   // Mirror the renderer-spawn timing: give the TUI a moment to initialize
   // before typing the opening prompt, or the first keystrokes get eaten.
   setTimeout(() => {
-    writePty(id, task + '\n');
+    // Type the prompt, then send a carriage return as a SEPARATE keystroke a
+    // beat later — same trick the renderer uses (App.tsx). A trailing newline
+    // written in the same chunk is treated by Claude's TUI as a pasted newline,
+    // so the task lands in the input box but is never submitted.
+    writePty(id, task);
+    setTimeout(() => writePty(id, '\r'), 80);
     const fresh = store.getWorkspace(id);
     if (fresh && !fresh.hasInput) {
       const updated: Workspace = { ...fresh, hasInput: true };
