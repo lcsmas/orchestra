@@ -104,7 +104,16 @@ export const useStore = create<State>((set, get) => ({
 
   createWorkspace: async (input) => {
     const ws = await window.orchestra.createWorkspace(input);
-    set((s) => ({ workspaces: [...s.workspaces, ws], activeId: ws.id }));
+    // Upsert: main also emits a `workspace:update` for the new ws during the
+    // create call, which now appends it too (so agent-spawned workspaces show
+    // up). Guard against adding it twice when this renderer-initiated path and
+    // that event race.
+    set((s) => ({
+      workspaces: s.workspaces.some((x) => x.id === ws.id)
+        ? s.workspaces.map((x) => (x.id === ws.id ? { ...x, ...ws } : x))
+        : [...s.workspaces, ws],
+      activeId: ws.id,
+    }));
   },
 
   quickCreateWorkspace: async () => {
@@ -239,9 +248,19 @@ export const useStore = create<State>((set, get) => ({
 
 // Live updates from main process.
 window.orchestra.onWorkspaceUpdate((w) => {
-  useStore.setState((s) => ({
-    workspaces: s.workspaces.map((x) => (x.id === w.id ? { ...x, ...w } : x)),
-  }));
+  useStore.setState((s) => {
+    // Upsert, not just patch: a workspace created by the main process — the
+    // agent-driven /spawn flow — is unknown to this renderer, so a pure map()
+    // would drop it on the floor until a full reload. Append when new (without
+    // touching activeId, so a background spawn never steals the user's focus);
+    // patch in place when already present.
+    const exists = s.workspaces.some((x) => x.id === w.id);
+    return {
+      workspaces: exists
+        ? s.workspaces.map((x) => (x.id === w.id ? { ...x, ...w } : x))
+        : [...s.workspaces, w],
+    };
+  });
 });
 window.orchestra.onWorkspaceRemoved((id) => {
   useStore.setState((s) => {

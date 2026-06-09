@@ -4,7 +4,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { BrowserWindow } from 'electron';
 import { dispatchHookEvent } from './activity';
-import { dispatchRenameRequest } from './workspaces';
+import { dispatchRenameRequest, dispatchSpawnRequest } from './workspaces';
 
 // Tiny HTTP server bound to a Unix socket. Each workspace's
 // .claude/settings.local.json registers Claude Code lifecycle hooks
@@ -58,6 +58,19 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
         if (route === '/rename') {
           if (typeof msg.id === 'string' && typeof msg.branch === 'string') {
             void dispatchRenameRequest(msg.id, msg.branch, window);
+          }
+        } else if (route === '/spawn') {
+          if (typeof msg.task === 'string') {
+            void dispatchSpawnRequest(
+              {
+                from: typeof msg.from === 'string' ? msg.from : undefined,
+                repoPath: typeof msg.repoPath === 'string' ? msg.repoPath : undefined,
+                baseBranch: typeof msg.baseBranch === 'string' ? msg.baseBranch : undefined,
+                task: msg.task,
+                agent: msg.agent === 'codex' ? 'codex' : msg.agent === 'claude' ? 'claude' : undefined,
+              },
+              window,
+            );
           }
         } else {
           // Default route handles activity events: /event or anything else.

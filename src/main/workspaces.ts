@@ -15,7 +15,7 @@ import {
   renameWorktreeBranch,
   switchWorktreeBranch,
 } from './git';
-import { isRunning, stopPty, clearScrollback } from './pty';
+import { isRunning, stopPty, clearScrollback, startPty, writePty } from './pty';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import type { CreateWorkspaceInput, Workspace } from '../shared/types';
 
@@ -400,6 +400,99 @@ export async function dispatchRenameRequest(
   }
 }
 
+// Default geometry for an agent PTY spawned headless (no visible terminal yet).
+// The renderer re-fits to the real pane size the first time the user opens the
+// workspace; until then the agent just needs a sane width to render its TUI.
+const HEADLESS_COLS = 120;
+const HEADLESS_ROWS = 32;
+
+/** Spawn a freshly-created workspace's agent straight from the main process,
+ * without waiting for the renderer's TerminalView to become visible. The
+ * renderer only kicks `pty:start` once a pane has real dimensions, so a
+ * workspace created in the background would otherwise sit idle until clicked.
+ * The agent-driven /spawn flow wants the delegated worktree working *now*, so
+ * we start it here and inject its task.
+ *
+ * Safe against the renderer's later `pty:start`: that handler early-returns on
+ * `isRunning(id)` (just resizing to the real geometry), so there's no
+ * double-spawn. We also flip `hasInput` after injecting the task so that if the
+ * agent's process later exits and the user reopens the pane, the renderer
+ * resumes with `--continue` instead of re-injecting the task into a fresh run. */
+async function startWorkspaceAgentHeadless(id: string, window: BrowserWindow): Promise<void> {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived || isRunning(id)) return;
+  const extraEnv: Record<string, string> = {
+    ORCHESTRA_BRANCH: ws.branch,
+    ORCHESTRA_BRANCH_AUTO: ws.branchManuallySet ? '0' : '1',
+  };
+  await startPty({
+    id,
+    cwd: ws.worktreePath,
+    command: ws.agent === 'claude' ? 'claude' : 'codex',
+    args: ws.agent === 'claude' ? ['--dangerously-skip-permissions'] : [],
+    cols: HEADLESS_COLS,
+    rows: HEADLESS_ROWS,
+    window,
+    workspaceId: id,
+    extraEnv,
+  });
+  if (!ws.lastTask) return;
+  const task = ws.lastTask;
+  // Mirror the renderer-spawn timing: give the TUI a moment to initialize
+  // before typing the opening prompt, or the first keystrokes get eaten.
+  setTimeout(() => {
+    writePty(id, task + '\n');
+    const fresh = store.getWorkspace(id);
+    if (fresh && !fresh.hasInput) {
+      const updated: Workspace = { ...fresh, hasInput: true };
+      void store.upsertWorkspace(updated).then(() => {
+        if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+          window.webContents.send('workspace:update', updated);
+        }
+      });
+    }
+  }, 1200);
+}
+
+/** Handle a spawn request from an agent via the hooks-server socket: create a
+ * brand-new worktree+workspace and hand its agent an opening instruction, then
+ * start it headless so it works autonomously. `from` is the caller's
+ * workspace id (its ORCHESTRA_WS_ID) — when no explicit `repoPath` is given we
+ * inherit the caller's repo. An explicit `repoPath` must be a repo orchestra
+ * already knows about; an unknown path is refused (the agent gets no error
+ * channel from the socket, so we just no-op). */
+export async function dispatchSpawnRequest(
+  input: {
+    from?: string;
+    repoPath?: string;
+    baseBranch?: string;
+    task: string;
+    agent?: 'claude' | 'codex';
+  },
+  window: BrowserWindow,
+): Promise<void> {
+  const task = input.task.trim();
+  if (!task) return;
+  let repoPath = input.repoPath?.trim() || undefined;
+  if (repoPath) {
+    // Only repos the user has already added — never let an agent point a new
+    // worktree at an arbitrary filesystem path.
+    if (!store.repos.some((r) => r.path === repoPath)) return;
+  } else if (input.from) {
+    repoPath = store.getWorkspace(input.from)?.repoPath;
+  }
+  if (!repoPath) return;
+  try {
+    const ws = await createWorkspace(
+      { repoPath, baseBranch: input.baseBranch, task, agent: input.agent },
+      window,
+    );
+    await startWorkspaceAgentHeadless(ws.id, window);
+  } catch {
+    /* worktree creation or spawn failed — silently refuse */
+  }
+}
+
 /** Return a branch name not already taken in the repo. `desired` is returned
  * as-is when free (or when it equals the workspace's own current branch, which
  * is a no-op rather than a collision); otherwise a numeric suffix is appended
@@ -509,6 +602,12 @@ const HOOK_ACTIVITY_NOTIFY_CMD =
 const HOOK_SESSION_START_RENAME_CMD =
   'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/rename-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
 
+// Same delegation pattern as the rename hook (script file, resolved via the
+// absolute worktree root). Advertises the agent-spawn capability once per
+// session.
+const HOOK_SESSION_START_SPAWN_CMD =
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/spawn-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
+
 const RENAME_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
 # Auto-installed by orchestra. Prints the rename instruction into the agent's
 # session context while the workspace is still on its auto-generated branch.
@@ -531,6 +630,25 @@ cat <<EOF
   curl -s --max-time 2 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"id\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\",\\\\"branch\\\\":\\\\"<new-branch-name>\\\\"}" http://x/rename
 
 Pick a short kebab-case name (3-6 words) that reflects the actual work, e.g. fix-checkout-typo, add-stripe-webhook-retry, route-demande-accessoire. Do this proactively the moment the scope is clear — not on the first prompt if the prompt is exploratory.
+EOF
+`;
+
+// Advertised to every Claude session on SessionStart (ungated, unlike the
+// rename nudge — spawning is a standing capability, not a one-time chore). The
+// heredoc is unquoted so the curl line prints with literal `$ORCHESTRA_SOCK`/
+// `$ORCHESTRA_WS_ID` for the agent to run as-is; the same `\$` / `\\"`
+// escaping as the rename script keeps the JSON intact through the heredoc. The
+// $ORCHESTRA_SOCK guard makes it a no-op outside orchestra.
+const SPAWN_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
+# Auto-installed by orchestra. Tells the agent it can spin up a fresh parallel
+# worktree (new branch off the base branch) with its own autonomous agent.
+[ -n "\${ORCHESTRA_SOCK:-}" ] || exit 0
+cat <<EOF
+[orchestra] You can delegate independent work to a NEW parallel worktree that gets its own agent. The new agent starts immediately and works on its own in a fresh branch cut from the base branch — so use this only for work that does NOT depend on your current uncommitted changes (the new worktree will not see them). Run this exact command:
+
+  curl -s --max-time 5 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"from\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\",\\\\"task\\\\":\\\\"<full self-contained instructions for the new agent>\\\\"}" http://x/spawn
+
+The "task" is the new agent's opening prompt — write it as a complete, standalone instruction (it shares none of this conversation's context). By default the worktree is created in THIS repo off its base branch. Optional JSON fields: "repoPath":"<abs path of another repo already added to orchestra>", "baseBranch":"<branch>", "agent":"claude"|"codex". Only spawn when the user asks you to parallelize or delegate work — do not do it unprompted.
 EOF
 `;
 
@@ -568,6 +686,14 @@ export async function installOrchestraHooks(
     await writeFile(renameScript, RENAME_INSTRUCTION_SCRIPT);
     try {
       await chmod(renameScript, 0o755);
+    } catch {
+      /* best-effort */
+    }
+
+    const spawnScript = path.join(dir, 'spawn-instruction.sh');
+    await writeFile(spawnScript, SPAWN_INSTRUCTION_SCRIPT);
+    try {
+      await chmod(spawnScript, 0o755);
     } catch {
       /* best-effort */
     }
@@ -621,6 +747,7 @@ export async function installOrchestraHooks(
     let sessionStartList = ((hooks.SessionStart as unknown[]) ??= []);
     sessionStartList = removeHookCommand(sessionStartList, isStaleRenameCmd);
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_RENAME_CMD);
+    upsertHookCommand(sessionStartList, HOOK_SESSION_START_SPAWN_CMD);
     hooks.SessionStart = sessionStartList;
 
     settings.hooks = hooks;
