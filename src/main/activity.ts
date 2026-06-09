@@ -1,6 +1,7 @@
+import path from 'node:path';
 import { BrowserWindow, Notification } from 'electron';
 import { store } from './store';
-import { getBranchMergeState, getReleaseState } from './git';
+import { getBranchMergeState, getCurrentBranch, getReleaseState } from './git';
 import type { Workspace, WorkspaceStatus } from '../shared/types';
 
 // Hook-driven activity tracker.
@@ -132,6 +133,42 @@ export async function detectAndUpdateMergeState(
     mergedAt: nextMergedAt,
     divergedFromBase: nextDiverged,
     unpushedAhead: nextUnpushed,
+  };
+  await store.upsertWorkspace(updated);
+  if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+    window.webContents.send('workspace:update', updated);
+  }
+}
+
+/** Reconcile the stored branch name with what's actually checked out in the
+ *  worktree. A branch renamed outside orchestra — `git branch -m` in a
+ *  terminal, an editor's VCS UI, a teammate's script — leaves `ws.branch`
+ *  stale, and that name is threaded into every downstream git call (merge
+ *  state, PR lookup, the rename instruction's env), so a stale value quietly
+ *  poisons all of them. We piggyback this on the hot 8s stats poll: one cheap
+ *  `rev-parse` per workspace. When the live HEAD differs from the stored
+ *  branch we adopt it, refresh the display name, and set `branchManuallySet` —
+ *  an out-of-band rename is a deliberate choice, so the auto-rename
+ *  instruction should stop firing. Detached HEAD (getCurrentBranch → '') is
+ *  ignored: there's no branch to adopt and the worktree is mid-rebase/bisect. */
+export async function detectAndUpdateBranchName(
+  id: string,
+  window: BrowserWindow,
+): Promise<void> {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived) return;
+  const live = await getCurrentBranch(ws.worktreePath);
+  if (!live || live === ws.branch) return;
+  // Re-read after the await — a concurrent orchestra-driven rename may have
+  // already adopted the same name, in which case there's nothing left to do.
+  const fresh = store.getWorkspace(id);
+  if (!fresh || fresh.archived || fresh.branch === live) return;
+  const repoName = path.basename(fresh.repoPath);
+  const updated: Workspace = {
+    ...fresh,
+    branch: live,
+    name: `${repoName} · ${live}`,
+    branchManuallySet: true,
   };
   await store.upsertWorkspace(updated);
   if (!window.isDestroyed() && !window.webContents.isDestroyed()) {

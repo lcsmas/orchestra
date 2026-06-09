@@ -606,6 +606,19 @@ const NON_INTERACTIVE_GIT_ENV = {
   GIT_CONFIG_VALUE_1: '!gh auth git-credential',
 } as NodeJS.ProcessEnv;
 
+/** The branch currently checked out in `worktreePath`. Returns '' when HEAD is
+ *  detached (`rev-parse --abbrev-ref` yields the literal "HEAD" mid-rebase /
+ *  -bisect / detached checkout) or the call fails — callers treat '' as "no
+ *  branch to track, leave the stored name alone". */
+export async function getCurrentBranch(worktreePath: string): Promise<string> {
+  try {
+    const head = (await runGit(worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+    return head === 'HEAD' ? '' : head;
+  } catch {
+    return '';
+  }
+}
+
 async function runGit(repoPath: string, args: string[]): Promise<string> {
   try {
     const { stdout } = await pexec('git', args, {

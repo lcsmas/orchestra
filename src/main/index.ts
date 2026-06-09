@@ -69,7 +69,11 @@ import {
   isRunning,
 } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
-import { detectAndUpdateMergeState, detectAndUpdateReleaseState } from './activity';
+import {
+  detectAndUpdateBranchName,
+  detectAndUpdateMergeState,
+  detectAndUpdateReleaseState,
+} from './activity';
 import {
   primeLocalSyncStates,
   snapshotSyncStates,
@@ -375,6 +379,10 @@ ipcMain.handle('git:stats', async (_e, id: string) => {
   // when the agent isn't running — which is exactly when the user finishes
   // a commit and wants to see "ready to push".
   void detectAndUpdateMergeState(id, getMainWindow()).catch(() => {});
+  // Same cadence: catch branches renamed outside orchestra (a terminal's
+  // `git branch -m`, an editor's VCS UI) so the stored branch name doesn't
+  // drift from what's actually checked out. One `rev-parse` per workspace.
+  void detectAndUpdateBranchName(id, getMainWindow()).catch(() => {});
   return getDiffStats(ws.worktreePath, ws.baseBranch);
 });
 
