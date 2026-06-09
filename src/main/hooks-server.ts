@@ -45,14 +45,27 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
       return;
     }
     const route = req.url ?? '/';
+    // Per-route body cap. Activity/rename payloads are tiny JSON; /spawn carries
+    // the new agent's full opening prompt, which routinely runs past a few KB.
+    // A too-small cap used to silently `req.destroy()` the connection — the
+    // caller saw an empty reply and had to guess that the payload was the
+    // culprit — so /spawn gets a generous ceiling while other routes stay
+    // locked down, and an over-cap request now answers with a clear 413.
+    const maxBytes = route === '/spawn' ? 1_048_576 : 4096;
     let body = '';
+    let tooLarge = false;
     req.setEncoding('utf8');
     req.on('data', (chunk) => {
+      if (tooLarge) return; // already over cap — discard the rest, don't buffer
       body += chunk;
-      // 4 KB cap — hook payload is tiny JSON, anything bigger is noise/abuse.
-      if (body.length > 4096) req.destroy();
+      if (body.length > maxBytes) tooLarge = true;
     });
     req.on('end', () => {
+      if (tooLarge) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end('{"error":"payload too large"}');
+        return;
+      }
       try {
         const msg = JSON.parse(body) as Record<string, unknown>;
         if (route === '/rename') {
