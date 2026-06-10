@@ -86,9 +86,12 @@ let mainWindow: BrowserWindow | null = null;
 
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 
-// Silence Linux/Wayland GPU vsync probe warnings.
+// Native Wayland support for sharp HiDPI rendering.
 if (process.platform === 'linux') {
-  app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
+  if (process.env.WAYLAND_DISPLAY) {
+    app.commandLine.appendSwitch('enable-features', 'UseOzonePlatform,WaylandWindowDecorations');
+    app.commandLine.appendSwitch('ozone-platform', 'wayland');
+  }
   app.commandLine.appendSwitch('disable-gpu-vsync');
 }
 
