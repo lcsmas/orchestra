@@ -1,6 +1,66 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { shellEnvSync } from 'shell-env';
+
+// Ozone platform selection. Chromium picks its windowing backend BEFORE this
+// script runs, so app.commandLine.appendSwitch('ozone-platform'/'ozone-
+// platform-hint', …) is too late to move the browser process off XWayland.
+// Worse, appendSwitch('ozone-platform', 'wayland') still propagates the flag
+// to the GPU/renderer children, which then target a Wayland surface the
+// browser never presents — that mismatch was the actual "white screen on
+// Wayland" bug (2d6cbdf), not a driver problem; native Wayland renders fine
+// here once selected early (verified on Asahi Fedora + sway, Electron 33).
+// And staying on XWayland is what makes HiDPI blurry: the compositor upscales
+// X11 buffers on scaled outputs.
+// The only channel that reaches Chromium early enough from inside the app is
+// ELECTRON_OZONE_PLATFORM_HINT in the parent environment — so decide which
+// platform we want, and if the hint inherited at launch disagrees, relaunch
+// once with the hint exported. The hint value must be the explicit 'wayland',
+// not 'auto': 'auto' resolves to x11 when XDG_SESSION_TYPE is unset (e.g. a
+// compositor started from a tty). ORCHESTRA_OZONE=x11|wayland overrides.
+// This must run BEFORE the shellEnvSync merge below: the user's rc may export
+// ELECTRON_OZONE_PLATFORM_HINT (making us think the hint was present at
+// launch when Chromium never saw it), and the decision must reflect the real
+// launch-time environment, which for GUI launches has no rc additions.
+if (process.platform === 'linux') {
+  const override = process.env.ORCHESTRA_OZONE;
+  const want =
+    override === 'x11' || override === 'wayland'
+      ? override
+      : process.env.WAYLAND_DISPLAY
+        ? 'wayland'
+        : 'x11';
+  const hint = process.env.ELECTRON_OZONE_PLATFORM_HINT;
+  // x11 is also the no-hint default, so only relaunch to force it when a
+  // conflicting hint (e.g. exported from the user's shell rc) would win.
+  const needsRelaunch = want === 'wayland' ? hint !== 'wayland' : hint === 'wayland';
+  if (needsRelaunch && !process.env.ORCHESTRA_OZONE_RELAUNCHED) {
+    process.env.ORCHESTRA_OZONE_RELAUNCHED = '1';
+    process.env.ELECTRON_OZONE_PLATFORM_HINT = want;
+    try {
+      if (process.env.APPIMAGE) {
+        // app.relaunch() can't be used here: its relauncher is forked from
+        // this process and execs only after we exit — by which point the
+        // AppImage's FUSE mount is gone and the relauncher dies (verified:
+        // the new instance never appears). Spawn the replacement AppImage
+        // ourselves while the mount is still alive, then exit. The brief
+        // two-instance overlap is safe — we exit before `ready`, so this
+        // instance never opened a window or touched the store.
+        spawn(process.env.APPIMAGE, [], {
+          detached: true,
+          stdio: 'ignore',
+          env: process.env as NodeJS.ProcessEnv,
+        }).unref();
+      } else {
+        app.relaunch();
+      }
+      app.exit(0);
+    } catch {
+      // Spawning failed — carry on in this process; worst case is XWayland.
+    }
+  }
+}
 
 // Desktop launchers (file manager, app grid, .desktop files, rofi/combi) start
 // Electron without sourcing the user's shell rc, so the process inherits only
@@ -86,22 +146,7 @@ let mainWindow: BrowserWindow | null = null;
 
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 
-// Ozone platform selection. Forcing native Wayland whenever WAYLAND_DISPLAY
-// is set white-screens on some systems: Electron's bundled Chromium fails to
-// present any frame on the wayland backend (reproduced on Asahi Fedora with
-// vanilla Electron 33 while the system Chromium handles native Wayland fine).
-// So default to the safe `auto` hint and let users opt into native Wayland
-// (sharper HiDPI) with ORCHESTRA_OZONE=wayland once they know it works.
 if (process.platform === 'linux') {
-  const ozone = process.env.ORCHESTRA_OZONE;
-  if (ozone === 'wayland' || ozone === 'x11') {
-    app.commandLine.appendSwitch('ozone-platform', ozone);
-    if (ozone === 'wayland') {
-      app.commandLine.appendSwitch('enable-features', 'UseOzonePlatform,WaylandWindowDecorations');
-    }
-  } else {
-    app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
-  }
   app.commandLine.appendSwitch('disable-gpu-vsync');
 }
 
