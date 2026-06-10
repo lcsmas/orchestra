@@ -9,7 +9,7 @@ export interface Workspace {
   baseBranch: string;
   createdAt: number;
   status: WorkspaceStatus;
-  agent: 'claude' | 'codex';
+  agent: 'claude';
   lastTask?: string;
   archived?: boolean;
   archivedAt?: number;
@@ -80,7 +80,7 @@ export interface CreateWorkspaceInput {
   repoPath: string;
   baseBranch?: string;
   task?: string;
-  agent?: 'claude' | 'codex';
+  agent?: 'claude';
 }
 
 export interface RepoScripts {

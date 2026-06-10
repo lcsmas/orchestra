@@ -244,8 +244,7 @@ export function isTurnInFlight(id: string): boolean {
  *   - status must be `idle`. `waiting` (the unread "finished / needs input"
  *     dot) is meaningful and user-cleared, and unlike a missed submit has no
  *     follow-up event to undo an erroneous flip. The transition OUT of running
- *     stays 100% hook-driven.
- *  Gated to Claude: Codex has no Stop hook to ever clear a synthetic running. */
+ *     stays 100% hook-driven. */
 export async function reconcileRunningFromOutput(
   id: string,
   window: BrowserWindow,
@@ -253,7 +252,6 @@ export async function reconcileRunningFromOutput(
   if (!turnsInFlight.has(id)) return;
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return;
-  if (ws.agent !== 'claude') return;
   if (ws.status !== 'idle') return;
   await setStatus(id, 'running', window);
 }

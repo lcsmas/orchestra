@@ -195,7 +195,7 @@ export function App() {
         {loaded && !active && (
           <div className="empty">
             <h2>Welcome to Orchestra</h2>
-            <div>Spawn a Claude Code or Codex agent in an isolated git worktree.</div>
+            <div>Spawn Claude Code agents in isolated git worktrees.</div>
             <button className="primary" onClick={createWorkspaceInNewRepo}>+ New workspace</button>
           </div>
         )}

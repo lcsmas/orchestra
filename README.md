@@ -2,7 +2,7 @@
 
 > **Run N coding agents in parallel, each in its own git worktree, watched from one dashboard.**
 
-Spawn a swarm of Claude Code or Codex agents, give each its own branch in an isolated git worktree, and review their work side-by-side in a diff-first UI. No more agents clobbering each other's files, no more juggling `git stash` while you switch contexts.
+Spawn Claude Code agents, give each its own branch in an isolated git worktree, and review their work side-by-side in a diff-first UI. No more agents clobbering each other's files, no more juggling `git stash` while you switch contexts.
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey)
@@ -48,7 +48,7 @@ Pre-built binaries aren't published yet — [build from source](#build-from-sour
 
 ## Build from source
 
-Requires Node 20+, plus the [`claude`](https://docs.anthropic.com/claude-code) CLI (and/or [`codex`](https://github.com/openai/codex)) and [`gh`](https://cli.github.com/) on `PATH`. On Linux you'll also need standard build tools for the `node-pty` native module (`build-essential` on Debian/Ubuntu, `gcc-c++ make` on Fedora).
+Requires Node 20+, plus the [`claude`](https://docs.anthropic.com/claude-code) CLI and [`gh`](https://cli.github.com/) on `PATH`. On Linux you'll also need standard build tools for the `node-pty` native module (`build-essential` on Debian/Ubuntu, `gcc-c++ make` on Fedora).
 
 ```bash
 git clone https://github.com/lcsmas/orchestra.git

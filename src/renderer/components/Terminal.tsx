@@ -158,12 +158,12 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       const rows = dims.rows;
       lastSentCols = cols;
       lastSentRows = rows;
-      // Do NOT replay the raw PTY scrollback log into xterm. Claude/Codex emit
+      // Do NOT replay the raw PTY scrollback log into xterm. Claude emits
       // escape sequences (synchronized-update queries, device attribute
       // requests, etc.) that xterm.js's parser can't handle and renders as
       // literal `^[[...` garbage when replayed. Agent context is preserved
-      // through the agent's own session store (claude --continue / codex
-      // resume --last), so we just spawn a fresh TUI that paints itself.
+      // through Claude's own session store (claude --continue), so we just
+      // spawn a fresh TUI that paints itself.
       window.orchestra.ptyStart(workspaceId, cols, rows).catch((e) => {
         term.writeln(`\r\n\x1b[31mFailed to start agent: ${e.message}\x1b[0m`);
       });

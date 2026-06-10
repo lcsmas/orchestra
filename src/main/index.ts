@@ -5,7 +5,7 @@ import { shellEnvSync } from 'shell-env';
 // Desktop launchers (file manager, app grid, .desktop files, rofi/combi) start
 // Electron without sourcing the user's shell rc, so the process inherits only
 // the bare graphical-session environment: PATH lacks agent binaries like
-// `claude`/`codex`/`nvim`, AND exported secrets (e.g. MCP DB creds sourced from
+// `claude`/`nvim`, AND exported secrets (e.g. MCP DB creds sourced from
 // ~/.zshrc) are missing. Since the agent pty execs `claude` directly (no shell,
 // see startPty), whatever is absent here never reaches the agent's MCP servers.
 // Capture the full login+interactive shell environment once, before anything
@@ -279,7 +279,7 @@ ipcMain.handle('pty:start', async (_e, id: string, cols: number, rows: number) =
   if (!ws) throw new Error('workspace not found');
   if (isRunning(id)) {
     // Renderer remounted (HMR / reload) but the PTY is still alive. The fresh
-    // xterm canvas is blank and Claude/Codex have no reason to repaint on
+    // xterm canvas is blank and Claude has no reason to repaint on
     // their own, so bounce the size to force a SIGWINCH-driven redraw.
     resizePty(id, Math.max(20, cols - 1), Math.max(5, rows));
     setTimeout(() => resizePty(id, cols, rows), 40);
@@ -294,9 +294,8 @@ ipcMain.handle('pty:start', async (_e, id: string, cols: number, rows: number) =
   const claudeArgs = resuming
     ? ['--continue', '--dangerously-skip-permissions']
     : ['--dangerously-skip-permissions'];
-  const codexArgs = resuming ? ['resume', '--last'] : [];
   // Idempotent: upgrades workspaces created before the activity hook landed.
-  await installOrchestraHooks(ws.worktreePath, ws.agent);
+  await installOrchestraHooks(ws.worktreePath);
   // Expose the current branch and auto-rename gate to hooks. The SessionStart
   // hook reads ORCHESTRA_BRANCH_AUTO=1 to decide whether to inject the
   // rename-instruction context — flipping `branchManuallySet` true (after a
@@ -309,8 +308,8 @@ ipcMain.handle('pty:start', async (_e, id: string, cols: number, rows: number) =
   await startPty({
     id,
     cwd: ws.worktreePath,
-    command: ws.agent === 'claude' ? 'claude' : 'codex',
-    args: ws.agent === 'claude' ? claudeArgs : codexArgs,
+    command: 'claude',
+    args: claudeArgs,
     cols,
     rows,
     window: getMainWindow(),
@@ -552,11 +551,11 @@ async function checkDependencies(): Promise<void> {
     });
   }
 
-  if (!checkCommand('claude') && !checkCommand('codex')) {
+  if (!checkCommand('claude')) {
     missing.push({
-      name: 'claude or codex',
-      desc: 'AI coding agent',
-      install: 'Claude: npm install -g @anthropic-ai/claude-code\nCodex: https://github.com/openai/codex',
+      name: 'claude',
+      desc: 'Claude Code CLI',
+      install: 'npm install -g @anthropic-ai/claude-code\nOr: https://docs.anthropic.com/claude-code',
     });
   }
 

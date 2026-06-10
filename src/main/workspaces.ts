@@ -445,8 +445,8 @@ async function startWorkspaceAgentHeadless(id: string, window: BrowserWindow): P
   await startPty({
     id,
     cwd: ws.worktreePath,
-    command: ws.agent === 'claude' ? 'claude' : 'codex',
-    args: ws.agent === 'claude' ? ['--dangerously-skip-permissions'] : [],
+    command: 'claude',
+    args: ['--dangerously-skip-permissions'],
     cols: HEADLESS_COLS,
     rows: HEADLESS_ROWS,
     window,
@@ -497,7 +497,7 @@ export async function dispatchSpawnRequest(
     repoPath?: string;
     baseBranch?: string;
     task: string;
-    agent?: 'claude' | 'codex';
+    agent?: 'claude';
   },
   window: BrowserWindow,
 ): Promise<SpawnResult> {
@@ -608,9 +608,6 @@ export async function switchWorkspaceBranch(
 //    commands are env-guarded with `[ -n "$ORCHESTRA_SOCK" ]` so they're a
 //    silent no-op when claude is run outside orchestra.
 //
-// Codex has no equivalent hook system, so its workspaces keep their
-// auto-generated random branch names and rely on the agent process exit for
-// status (currently unimplemented for codex).
 
 const HOOK_ACTIVITY_SUBMIT_CMD =
   '[ -n "$ORCHESTRA_SOCK" ] && curl -s --max-time 1 --unix-socket "$ORCHESTRA_SOCK" -d \'{"id":"\'"$ORCHESTRA_WS_ID"\'","event":"submit"}\' http://x/event > /dev/null 2>&1 || true';
@@ -679,7 +676,7 @@ cat <<EOF
 
   curl -s --max-time 20 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"from\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\",\\\\"task\\\\":\\\\"<full self-contained instructions for the new agent>\\\\"}" http://x/spawn
 
-The reply is JSON: {"ok":true,"id":"<workspace-id>","branch":"<branch>"} once the new worktree exists and its agent has started, or {"ok":false,"error":"..."} on failure. The "task" is the new agent's opening prompt — write it as a complete, standalone instruction (it shares none of this conversation's context). By default the worktree is created in THIS repo off its base branch. Optional JSON fields: "repoPath":"<abs path of another repo already added to orchestra>", "baseBranch":"<branch>", "agent":"claude"|"codex". Only spawn when the user asks you to parallelize or delegate work — do not do it unprompted.
+The reply is JSON: {"ok":true,"id":"<workspace-id>","branch":"<branch>"} once the new worktree exists and its agent has started, or {"ok":false,"error":"..."} on failure. The "task" is the new agent's opening prompt — write it as a complete, standalone instruction (it shares none of this conversation's context). By default the worktree is created in THIS repo off its base branch. Optional JSON fields: "repoPath":"<abs path of another repo already added to orchestra>", "baseBranch":"<branch>". Only spawn when the user asks you to parallelize or delegate work — do not do it unprompted.
 EOF
 `;
 
@@ -702,9 +699,7 @@ function removeHookCommand(list: unknown[], match: (cmd: string) => boolean): un
 
 export async function installOrchestraHooks(
   worktreePath: string,
-  agent: 'claude' | 'codex',
 ): Promise<void> {
-  if (agent !== 'claude') return;
   try {
     const dir = path.join(worktreePath, '.orchestra');
     await mkdir(dir, { recursive: true });

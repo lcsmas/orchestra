@@ -94,8 +94,7 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
                     repoPath: typeof msg.repoPath === 'string' ? msg.repoPath : undefined,
                     baseBranch: typeof msg.baseBranch === 'string' ? msg.baseBranch : undefined,
                     task: msg.task,
-                    agent:
-                      msg.agent === 'codex' ? 'codex' : msg.agent === 'claude' ? 'claude' : undefined,
+                    agent: 'claude',
                   },
                   window,
                 ),
