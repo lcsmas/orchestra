@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g., v0.1.17)'
+        required: true
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x64
+            artifact: Orchestra-x64.AppImage
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            artifact: Orchestra-arm64.AppImage
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libfuse2
+          npm ci
+
+      - name: Rebuild native modules
+        run: npx electron-rebuild
+
+      - name: Build AppImage
+        run: npm run build
+
+      - name: Rename artifact
+        run: mv release/Orchestra.AppImage release/${{ matrix.artifact }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: release/${{ matrix.artifact }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Creates release if it doesn't exist (--ci-only mode)
+          # Appends to existing release if it does (manual mode)
+          files: |
+            artifacts/Orchestra-x64.AppImage/Orchestra-x64.AppImage
+            artifacts/Orchestra-arm64.AppImage/Orchestra-arm64.AppImage
+          fail_on_unmatched_files: true
+          generate_release_notes: true
