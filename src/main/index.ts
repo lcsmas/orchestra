@@ -520,9 +520,72 @@ ipcMain.handle('scripts:runScrollback', (_e, id: string) => {
   return readScrollback(`${id}:run`);
 });
 
+// ---------- Dependency Check ----------
+
+import { execSync } from 'node:child_process';
+
+function checkCommand(cmd: string): boolean {
+  try {
+    execSync(`command -v ${cmd}`, { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function checkDependencies(): Promise<void> {
+  const missing: { name: string; desc: string; install: string }[] = [];
+
+  if (!checkCommand('git')) {
+    missing.push({
+      name: 'git',
+      desc: 'Git version control',
+      install: 'Fedora: sudo dnf install git\nUbuntu: sudo apt install git',
+    });
+  }
+
+  if (!checkCommand('gh')) {
+    missing.push({
+      name: 'gh',
+      desc: 'GitHub CLI (for PR creation)',
+      install: 'Fedora: sudo dnf install gh\nUbuntu: sudo apt install gh\nOr: https://cli.github.com/',
+    });
+  }
+
+  if (!checkCommand('claude') && !checkCommand('codex')) {
+    missing.push({
+      name: 'claude or codex',
+      desc: 'AI coding agent',
+      install: 'Claude: npm install -g @anthropic-ai/claude-code\nCodex: https://github.com/openai/codex',
+    });
+  }
+
+  if (missing.length > 0) {
+    const message = missing
+      .map((m) => `❌ ${m.name}\n   ${m.desc}\n   Install:\n   ${m.install}`)
+      .join('\n\n');
+
+    await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Missing Dependencies',
+      message: 'Orchestra requires the following tools:',
+      detail: message,
+      buttons: ['Continue Anyway', 'Quit'],
+      defaultId: 1,
+    }).then(({ response }) => {
+      if (response === 1) {
+        app.quit();
+      }
+    });
+  }
+}
+
 // ---------- Lifecycle ----------
 
-app.whenReady().then(createMainWindow);
+app.whenReady().then(async () => {
+  await checkDependencies();
+  await createMainWindow();
+});
 
 app.on('window-all-closed', () => {
   stopAll();
