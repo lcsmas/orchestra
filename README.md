@@ -1,8 +1,8 @@
 # Orchestra
 
-> **Run N coding agents in parallel, each in its own git worktree, watched from one dashboard.**
+> **A Conductor-like app for Linux: run parallel Claude Code agents in isolated git worktrees — and let agents spawn agents.**
 
-Spawn Claude Code agents, give each its own branch in an isolated git worktree, and review their work side-by-side in a diff-first UI. No more agents clobbering each other's files, no more juggling `git stash` while you switch contexts.
+If you've seen [Conductor](https://conductor.build) on macOS, Orchestra is that idea for Linux (it runs on macOS and Windows too, built from source). Each agent gets its own branch in its own git worktree, and you watch them all from one dashboard: live terminal, cumulative diff, one-click PR.
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey)
@@ -10,20 +10,19 @@ Spawn Claude Code agents, give each its own branch in an isolated git worktree, 
 
 ![Orchestra dashboard with three parallel workspaces in the sidebar and a live agent terminal](docs/screenshot.png)
 
-## Why Orchestra
+## What makes Orchestra different
 
-Running multiple coding agents at once usually means N terminal windows, N branches, and N opportunities for them to step on each other's working tree. Orchestra gives each agent a real git worktree (separate directory, separate `HEAD`, same shared `.git`), so they can edit, commit, and run scripts in parallel without conflict. Then it puts the live terminal, the cumulative diff, and a one-click "commit → push → open PR" flow behind a single dashboard.
+**Agents can spawn other agents.** Every Orchestra agent is told, at session start, that it can delegate independent work to a brand-new worktree with its own autonomous agent — one `curl` to Orchestra's local socket and the new workspace appears in the dashboard, branch cut from base, agent already working. Spawned agents get the same capability, so a worktree agent can spawn worktree agents that spawn worktree agents. Ask one agent to parallelize a refactor and watch the sidebar fill up.
 
-## Features
+Everything else you'd expect is there:
 
-- **Parallel worktrees** — each workspace is its own `git worktree`; no working-tree collisions
-- **Live terminals** — real TTY per agent via `node-pty`, full color, resize, scrollback
-- **Diff-first review** — Monaco side-by-side diff per workspace, refreshes while the agent works
-- **One-click PR** — commit → `git push -u` → `gh pr create`, all from the dashboard
-- **Activity tracking** — status flips running ↔ waiting from Claude Code's own `UserPromptSubmit` / `Stop` hooks (no polling, no PTY scraping)
-- **Agent-driven branch rename** — the agent picks a kebab-case branch name once it understands the work, via a one-time `SessionStart` instruction
-- **Per-repo setup scripts** — bootstrap dependencies, copy `.env` files, install hooks per workspace
-- **Clean archive** — archiving removes the worktree *and* the branch in one step
+- **Isolated worktrees** — each workspace is a real `git worktree` (own directory, own `HEAD`, shared `.git`); agents never clobber each other
+- **Live terminals** — real TTY per agent, full color, resize, scrollback
+- **Diff-first review** — side-by-side Monaco diff per workspace, refreshing while the agent works
+- **One-click PR** — commit → push → `gh pr create` from the dashboard
+- **Hook-based status** — running/waiting flips off Claude Code's own hooks, no polling or terminal scraping
+- **Self-naming branches** — the agent renames its branch once it understands the task
+- **Per-repo setup scripts** and **one-step archive** (worktree + branch removed together)
 
 ## Install
 
@@ -36,19 +35,17 @@ chmod +x Orchestra.AppImage
 ./Orchestra.AppImage
 ```
 
-> **Note:** The AppImage requires FUSE. If FUSE is not installed, you can run with `--appimage-extract-and-run` to bypass this requirement. When building from source, a launcher script (`scripts/orchestra-launcher.sh`) handles this automatically.
+> **Note:** Requires FUSE. Without it, run with `--appimage-extract-and-run`.
 
-### Linux (ARM64 / Asahi)
-
-Pre-built ARM64 AppImages are not available yet. [Build from source](#build-from-source) instead — the build will produce a native ARM64 AppImage with bundled dependencies.
+ARM64/Asahi: no pre-built AppImage yet — [build from source](#build-from-source) for a native build.
 
 ### macOS / Windows
 
-Pre-built binaries aren't published yet — [build from source](#build-from-source) below. Contributions to the release pipeline welcome.
+No pre-built binaries yet — [build from source](#build-from-source). Contributions to the release pipeline welcome.
 
 ## Build from source
 
-Requires Node 20+, plus the [`claude`](https://docs.anthropic.com/claude-code) CLI and [`gh`](https://cli.github.com/) on `PATH`. On Linux you'll also need standard build tools for the `node-pty` native module (`build-essential` on Debian/Ubuntu, `gcc-c++ make` on Fedora).
+Requires Node 20+, plus the [`claude`](https://docs.anthropic.com/claude-code) CLI and [`gh`](https://cli.github.com/) on `PATH`. On Linux you'll also need build tools for the `node-pty` native module (`build-essential` on Debian/Ubuntu, `gcc-c++ make` on Fedora).
 
 ```bash
 git clone https://github.com/lcsmas/orchestra.git
@@ -58,29 +55,14 @@ npx electron-rebuild   # rebuild node-pty for Electron's node ABI
 npm run dev            # vite + electron, hot reload
 ```
 
-To produce a distributable:
-
-```bash
-npm run build          # outputs to release/
-```
+`npm run build` produces a distributable in `release/`.
 
 ## How it works
 
-- **Worktrees** — each workspace gets `~/.orchestra/worktrees/<repo>-<branch>-<uid>/`, created with `git worktree add`. The branch is created off the configured base branch. Archiving removes the worktree with `git worktree remove --force` and deletes the branch.
-- **Agents** — spawned via `node-pty` in the worktree directory. stdin/stdout wired to an xterm.js instance in the renderer via Electron IPC.
-- **Diffs** — every 4s, Orchestra builds a `DiffFile[]` by combining `git diff --numstat` (committed + working) and `ls-files --others` (untracked), then renders contents in Monaco's `DiffEditor`.
+- **Worktrees** — each workspace lives at `~/.orchestra/worktrees/<repo>-<branch>-<uid>/`, created with `git worktree add` off the configured base branch. Archiving removes the worktree and deletes the branch.
+- **Agents** — spawned via `node-pty` in the worktree, wired to an xterm.js terminal in the UI.
+- **Hooks** — Orchestra installs Claude Code hooks into each worktree's `.claude/settings.local.json`. They talk to a Unix-socket HTTP server in the main process: activity status, agent-driven branch rename, and the `/spawn` endpoint that lets any agent create a new workspace + agent. All hooks are env-guarded, so running `claude` outside Orchestra is a silent no-op.
 - **PRs** — `commit → push -u origin <branch> → gh pr create --base <baseBranch>`.
-- **Hooks** — Orchestra installs `UserPromptSubmit`, `Stop`, and `SessionStart` hooks into each worktree's `.claude/settings.local.json`. They `POST` to a Unix-socket HTTP server in the main process so the UI knows when an agent starts working, finishes a turn, or should be asked to rename its branch. All hook commands are env-guarded (`[ -n "$ORCHESTRA_SOCK" ] || true`) so running `claude` outside Orchestra is a silent no-op.
-
-## Layout
-
-```
-src/
-  main/         Electron main process (git, pty, IPC, store, hooks-server)
-  preload/      contextBridge → window.orchestra
-  renderer/     React UI (sidebar, terminal, diff, modals)
-  shared/       Types and IPC surface shared between main + renderer
-```
 
 ## Storage
 
