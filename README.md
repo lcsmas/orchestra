@@ -36,6 +36,12 @@ chmod +x Orchestra.AppImage
 ./Orchestra.AppImage
 ```
 
+> **Note:** The AppImage requires FUSE. If FUSE is not installed, you can run with `--appimage-extract-and-run` to bypass this requirement. When building from source, a launcher script (`scripts/orchestra-launcher.sh`) handles this automatically.
+
+### Linux (ARM64 / Asahi)
+
+Pre-built ARM64 AppImages are not available yet. [Build from source](#build-from-source) instead — the build will produce a native ARM64 AppImage with bundled dependencies.
+
 ### macOS / Windows
 
 Pre-built binaries aren't published yet — [build from source](#build-from-source) below. Contributions to the release pipeline welcome.
