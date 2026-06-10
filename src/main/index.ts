@@ -86,11 +86,21 @@ let mainWindow: BrowserWindow | null = null;
 
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 
-// Native Wayland support for sharp HiDPI rendering.
+// Ozone platform selection. Forcing native Wayland whenever WAYLAND_DISPLAY
+// is set white-screens on some systems: Electron's bundled Chromium fails to
+// present any frame on the wayland backend (reproduced on Asahi Fedora with
+// vanilla Electron 33 while the system Chromium handles native Wayland fine).
+// So default to the safe `auto` hint and let users opt into native Wayland
+// (sharper HiDPI) with ORCHESTRA_OZONE=wayland once they know it works.
 if (process.platform === 'linux') {
-  if (process.env.WAYLAND_DISPLAY) {
-    app.commandLine.appendSwitch('enable-features', 'UseOzonePlatform,WaylandWindowDecorations');
-    app.commandLine.appendSwitch('ozone-platform', 'wayland');
+  const ozone = process.env.ORCHESTRA_OZONE;
+  if (ozone === 'wayland' || ozone === 'x11') {
+    app.commandLine.appendSwitch('ozone-platform', ozone);
+    if (ozone === 'wayland') {
+      app.commandLine.appendSwitch('enable-features', 'UseOzonePlatform,WaylandWindowDecorations');
+    }
+  } else {
+    app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
   }
   app.commandLine.appendSwitch('disable-gpu-vsync');
 }
