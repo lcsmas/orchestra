@@ -47,6 +47,9 @@ jobs:
 
       - name: Build AppImage
         run: npm run build
+        env:
+          # Prevent electron-builder from auto-publishing (we handle it ourselves)
+          PUBLISH: never
 
       - name: Rename artifact
         run: mv release/Orchestra.AppImage release/${{ matrix.artifact }}
