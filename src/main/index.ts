@@ -141,8 +141,26 @@ import {
   syncOneRepo,
 } from './repo-sync';
 import type { CreateWorkspaceInput } from '../shared/types';
+import { initLogger, log, revealLogs, getLogFile } from './logger';
 
 let mainWindow: BrowserWindow | null = null;
+
+// Wrap ipcMain.handle so any error thrown by a handler is logged with its
+// channel before being re-thrown back to the renderer. Without this, a failing
+// IPC call surfaces only as a rejected promise in the renderer with no
+// main-process trace — exactly the kind of bug that's impossible to diagnose
+// from a desktop-launched build.
+type IpcHandler = (event: Electron.IpcMainInvokeEvent, ...args: any[]) => unknown;
+function handle(channel: string, fn: IpcHandler): void {
+  ipcMain.handle(channel, async (event, ...args) => {
+    try {
+      return await fn(event, ...args);
+    } catch (err) {
+      log.error(`ipc ${channel} failed`, err);
+      throw err;
+    }
+  });
+}
 
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 
@@ -205,7 +223,7 @@ async function createMainWindow() {
   // fetches the list, so stale "ghost" rows (a ~12 KB husk, no working actions)
   // never appear. Cheap (one `git worktree list` per repo); guarded against
   // pruning when a repo is merely unmounted. Best-effort — never block startup.
-  await pruneOrphanedWorkspaces(mainWindow).catch(() => {});
+  await pruneOrphanedWorkspaces(mainWindow).catch((e) => log.warn('pruneOrphanedWorkspaces failed', e));
 
   if (VITE_DEV_SERVER_URL) {
     await mainWindow.loadURL(VITE_DEV_SERVER_URL);
@@ -220,12 +238,12 @@ async function createMainWindow() {
   // ahead of sync completion and clobbers the success state. Subsequent
   // fetches are driven by window focus.
   primeLocalSyncStates(mainWindow)
-    .catch(() => {})
+    .catch((e) => log.warn('primeLocalSyncStates failed', e))
     .then(() => syncAllRepos(mainWindow))
-    .catch(() => {});
+    .catch((e) => log.warn('syncAllRepos failed', e));
   mainWindow.on('focus', () => {
     if (!mainWindow) return;
-    void syncAllRepos(mainWindow).catch(() => {});
+    void syncAllRepos(mainWindow).catch((e) => log.warn('syncAllRepos (focus) failed', e));
   });
 }
 
@@ -252,11 +270,34 @@ async function openUrlExternally(url: string): Promise<void> {
   await shell.openExternal(url);
 }
 
-ipcMain.handle('app:openExternal', async (_e, url: string) => {
+handle('app:openExternal', async (_e, url: string) => {
   await openUrlExternally(url);
 });
 
-ipcMain.handle('repos:list', async () => {
+// ---------- Diagnostic logs ----------
+
+handle('logs:reveal', async () => {
+  await revealLogs();
+});
+
+handle('logs:path', () => getLogFile());
+
+// Forward renderer-side logs/errors into the same file so a single artifact
+// captures both processes. Level is clamped to the known set; anything else is
+// treated as info.
+handle('logs:write', (_e, level: string, message: string, meta?: unknown) => {
+  const fn =
+    level === 'error'
+      ? log.error
+      : level === 'warn'
+        ? log.warn
+        : level === 'debug'
+          ? log.debug
+          : log.info;
+  fn(`[renderer] ${message}`, meta);
+});
+
+handle('repos:list', async () => {
   // Lazy-backfill `remoteUrl` for any repo added before that field existed,
   // or whose origin URL changed since it was first mapped. Best-effort —
   // missing origin / unknown URL shape just leaves remoteUrl undefined.
@@ -268,7 +309,7 @@ ipcMain.handle('repos:list', async () => {
   return store.repos;
 });
 
-ipcMain.handle('repos:add', async (_e, absPath: string) => {
+handle('repos:add', async (_e, absPath: string) => {
   if (!(await isGitRepo(absPath))) throw new Error(`${absPath} is not a git repo`);
   const defaultBranch = await detectDefaultBranch(absPath);
   const remoteUrl = await detectRemoteUrl(absPath).catch(() => undefined);
@@ -280,17 +321,17 @@ ipcMain.handle('repos:add', async (_e, absPath: string) => {
   });
 });
 
-ipcMain.handle('repos:listSyncStates', () => snapshotSyncStates());
+handle('repos:listSyncStates', () => snapshotSyncStates());
 
-ipcMain.handle('repos:syncBase', async (_e, repoPath: string) => {
+handle('repos:syncBase', async (_e, repoPath: string) => {
   await syncOneRepo(repoPath, getMainWindow());
 });
 
-ipcMain.handle('repos:reorder', async (_e, orderedPaths: string[]) => {
+handle('repos:reorder', async (_e, orderedPaths: string[]) => {
   await store.reorderRepos(orderedPaths);
 });
 
-ipcMain.handle('dialog:pickDir', async () => {
+handle('dialog:pickDir', async () => {
   const res = await dialog.showOpenDialog(getMainWindow(), {
     properties: ['openDirectory'],
   });
@@ -298,29 +339,29 @@ ipcMain.handle('dialog:pickDir', async () => {
   return res.filePaths[0];
 });
 
-ipcMain.handle('workspaces:list', () => store.workspaces);
+handle('workspaces:list', () => store.workspaces);
 
-ipcMain.handle('workspaces:reorder', async (_e, orderedIds: string[]) => {
+handle('workspaces:reorder', async (_e, orderedIds: string[]) => {
   await store.reorderWorkspaces(orderedIds);
 });
 
-ipcMain.handle('workspaces:create', async (_e, input: CreateWorkspaceInput) => {
+handle('workspaces:create', async (_e, input: CreateWorkspaceInput) => {
   return createWorkspace(input, getMainWindow());
 });
 
-ipcMain.handle('workspaces:archive', async (_e, id: string) => {
+handle('workspaces:archive', async (_e, id: string) => {
   await archiveWorkspace(id, getMainWindow());
 });
 
-ipcMain.handle('workspaces:unarchive', async (_e, id: string) => {
+handle('workspaces:unarchive', async (_e, id: string) => {
   await unarchiveWorkspace(id, getMainWindow());
 });
 
-ipcMain.handle('workspaces:delete', async (_e, id: string) => {
+handle('workspaces:delete', async (_e, id: string) => {
   await deleteWorkspace(id, getMainWindow());
 });
 
-ipcMain.handle('workspaces:markSeen', async (_e, id: string) => {
+handle('workspaces:markSeen', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return;
   if (ws.status !== 'waiting') return;
@@ -329,7 +370,7 @@ ipcMain.handle('workspaces:markSeen', async (_e, id: string) => {
   getMainWindow().webContents.send('workspace:update', updated);
 });
 
-ipcMain.handle('pty:start', async (_e, id: string, cols: number, rows: number) => {
+handle('pty:start', async (_e, id: string, cols: number, rows: number) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
   if (isRunning(id)) {
@@ -391,7 +432,7 @@ ipcMain.handle('pty:start', async (_e, id: string, cols: number, rows: number) =
   }
 });
 
-ipcMain.handle('pty:write', async (_e, id: string, data: string) => {
+handle('pty:write', async (_e, id: string, data: string) => {
   // Flip hasInput the first time the user actually submits something (Enter
   // key / carriage return). This is what gates `claude --continue` on the
   // next PTY start, so we avoid "No conversation found" when the log is
@@ -408,10 +449,10 @@ ipcMain.handle('pty:write', async (_e, id: string, data: string) => {
   }
   return writePty(id, data);
 });
-ipcMain.handle('pty:resize', (_e, id: string, cols: number, rows: number) =>
+handle('pty:resize', (_e, id: string, cols: number, rows: number) =>
   resizePty(id, cols, rows),
 );
-ipcMain.handle('agent:restart', (_e, id: string) => {
+handle('agent:restart', (_e, id: string) => {
   // Mirror the branch-switch path: stop the agent PTY here (the renderer's
   // xterm doesn't get torn down — it just resets) and tell the renderer to
   // spawn a fresh PTY. `pty:start` will pick `claude --continue` since
@@ -422,13 +463,13 @@ ipcMain.handle('agent:restart', (_e, id: string) => {
   getMainWindow().webContents.send('pty:restart', id);
 });
 
-ipcMain.handle('git:diff', async (_e, id: string) => {
+handle('git:diff', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
   return getDiff(ws.worktreePath, ws.baseBranch);
 });
 
-ipcMain.handle('git:stats', async (_e, id: string) => {
+handle('git:stats', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
   // Piggyback merge/unpushed state refresh on the renderer's 8s stats poll.
@@ -443,9 +484,9 @@ ipcMain.handle('git:stats', async (_e, id: string) => {
   return getDiffStats(ws.worktreePath, ws.baseBranch);
 });
 
-ipcMain.handle('workspaces:sizes', () => getWorktreeSizes());
+handle('workspaces:sizes', () => getWorktreeSizes());
 
-ipcMain.handle('git:findPR', async (_e, id: string) => {
+handle('git:findPR', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
   // Piggyback release detection on the PR poll: same gh-based, 12s + on-focus
@@ -455,13 +496,13 @@ ipcMain.handle('git:findPR', async (_e, id: string) => {
   return findPullRequest(ws.repoPath, ws.branch);
 });
 
-ipcMain.handle('git:listBranches', async (_e, id: string) => {
+handle('git:listBranches', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
   return listBranches(ws.repoPath);
 });
 
-ipcMain.handle('nvim:start', async (_e, id: string, cols: number, rows: number) => {
+handle('nvim:start', async (_e, id: string, cols: number, rows: number) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
   const nvimId = `${id}:nvim`;
@@ -489,7 +530,7 @@ ipcMain.handle(
   },
 );
 
-ipcMain.handle('git:merge', async (_e, id: string) => {
+handle('git:merge', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
 
@@ -514,29 +555,29 @@ ipcMain.handle('git:merge', async (_e, id: string) => {
   return { status: 'requested' as const };
 });
 
-ipcMain.handle('git:switchBranch', async (_e, id: string, branch: string) => {
+handle('git:switchBranch', async (_e, id: string, branch: string) => {
   return switchWorkspaceBranch(id, branch, getMainWindow());
 });
 
 // ---------- Repo scripts (setup / run / archive) ----------
 
-ipcMain.handle('repos:getScripts', (_e, repoPath: string) => {
+handle('repos:getScripts', (_e, repoPath: string) => {
   return store.getRepoScripts(repoPath);
 });
 
-ipcMain.handle('repos:setScripts', async (_e, repoPath: string, scripts: RepoScripts) => {
+handle('repos:setScripts', async (_e, repoPath: string, scripts: RepoScripts) => {
   return store.setRepoScripts(repoPath, scripts);
 });
 
-ipcMain.handle('scripts:retrySetup', async (_e, id: string) => {
+handle('scripts:retrySetup', async (_e, id: string) => {
   await runSetupScript(id, getMainWindow());
 });
 
-ipcMain.handle('scripts:readSetupLog', (_e, id: string) => {
+handle('scripts:readSetupLog', (_e, id: string) => {
   return readScriptLog(setupLogPath(id));
 });
 
-ipcMain.handle('scripts:runStart', async (_e, id: string, cols: number, rows: number) => {
+handle('scripts:runStart', async (_e, id: string, cols: number, rows: number) => {
   const ws0 = store.getWorkspace(id);
   if (!ws0) throw new Error('workspace not found');
   const script = store.getRepoScripts(ws0.repoPath).run;
@@ -566,11 +607,11 @@ ipcMain.handle('scripts:runStart', async (_e, id: string, cols: number, rows: nu
   });
 });
 
-ipcMain.handle('scripts:runStop', (_e, id: string) => {
+handle('scripts:runStop', (_e, id: string) => {
   stopPty(`${id}:run`);
 });
 
-ipcMain.handle('scripts:runScrollback', (_e, id: string) => {
+handle('scripts:runScrollback', (_e, id: string) => {
   return readScrollback(`${id}:run`);
 });
 
@@ -637,11 +678,19 @@ async function checkDependencies(): Promise<void> {
 // ---------- Lifecycle ----------
 
 app.whenReady().then(async () => {
-  await checkDependencies();
-  await createMainWindow();
+  initLogger();
+  try {
+    await checkDependencies();
+    await createMainWindow();
+    log.info('main window ready');
+  } catch (e) {
+    log.error('startup failed', e);
+    throw e;
+  }
 });
 
 app.on('window-all-closed', () => {
+  log.info('window-all-closed — shutting down');
   stopAll();
   stopHooksServer();
   if (process.platform !== 'darwin') app.quit();

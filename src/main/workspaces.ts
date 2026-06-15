@@ -18,6 +18,7 @@ import {
 } from './git';
 import { isRunning, stopPty, clearScrollback, startPty, writePty } from './pty';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
+import { log } from './logger';
 import type { CreateWorkspaceInput, Workspace } from '../shared/types';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
@@ -104,6 +105,7 @@ export async function createWorkspace(
   const safeBranch = branch.replace(/[^a-zA-Z0-9._-]/g, '-');
   const worktreePath = path.join(ORCHESTRA_ROOT, `${repoName}-${safeBranch}-${id.slice(0, 8)}`);
 
+  log.info(`creating workspace ${branch} (repo=${repoName} base=${baseBranch})`);
   await createWorktree(input.repoPath, branch, baseBranch, worktreePath);
   await installOrchestraHooks(worktreePath, agent);
 
@@ -134,8 +136,9 @@ export async function createWorkspace(
   // sees `setupStatus: 'pending'` immediately and watches workspace:update for
   // the running → ok/failed transition.
   if (setupScript) {
-    void runSetupScript(id, window).catch(() => {
-      /* runSetupScript already persists `failed`; nothing to do here. */
+    void runSetupScript(id, window).catch((e) => {
+      /* runSetupScript already persists `failed`; just leave a trace. */
+      log.warn(`setup script failed for ${branch}`, e);
     });
   }
 
@@ -150,6 +153,7 @@ export async function createWorkspace(
 export async function archiveWorkspace(id: string, window: BrowserWindow): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws) return;
+  log.info(`archiving workspace ${ws.branch} (${id})`);
   // Soft archive: stop the agent but keep the workspace record (flagged
   // archived), the worktree, and the scrollback log. The sidebar hides
   // archived workspaces from the main list and surfaces them under a
@@ -183,6 +187,7 @@ export async function unarchiveWorkspace(id: string, window: BrowserWindow): Pro
 export async function deleteWorkspace(id: string, window: BrowserWindow): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws) return;
+  log.info(`deleting workspace ${ws.branch} (${id}) worktree=${ws.worktreePath}`);
   // Hard delete: stop agent, run user's archive script (best-effort), remove
   // the git worktree from disk, drop the scrollback log, and remove the store
   // record. Archive script runs BEFORE worktree removal so it can still see

@@ -25,6 +25,14 @@ export interface OrchestraAPI {
   pickDirectory: () => Promise<string | null>;
   openExternal: (url: string) => Promise<void>;
 
+  // Diagnostic logs
+  /** Reveal the main diagnostic log file in the OS file manager. */
+  revealLogs: () => Promise<void>;
+  /** Absolute path to the active diagnostic log file. */
+  logPath: () => Promise<string>;
+  /** Forward a renderer-side log line into the shared diagnostic log file. */
+  log: (level: 'debug' | 'info' | 'warn' | 'error', message: string, meta?: unknown) => Promise<void>;
+
   // Workspaces
   listWorkspaces: () => Promise<Workspace[]>;
   createWorkspace: (input: CreateWorkspaceInput) => Promise<Workspace>;
