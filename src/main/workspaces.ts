@@ -602,21 +602,32 @@ export async function switchWorkspaceBranch(
 //    stops appearing after the first successful rename (or after the user
 //    types a name in the UI).
 //
-// 2. Activity tracking. UserPromptSubmit + Stop + Notification hooks POST
-//    `{id, event}` to the orchestra hooks-server's Unix socket so workspace
-//    status flips running ↔ waiting from Claude's own lifecycle events. Hook
-//    commands are env-guarded with `[ -n "$ORCHESTRA_SOCK" ]` so they're a
-//    silent no-op when claude is run outside orchestra.
+// 2. Activity tracking. UserPromptSubmit + Stop + Notification + PreToolUse +
+//    PostToolUse hooks each append one JSON line to a durable per-workspace
+//    spool file (via `.orchestra/orchestra-hook.sh`) that orchestra tails, so
+//    workspace status flips running ↔ waiting from Claude's own lifecycle
+//    events. A local append is atomic and never blocks, which is why this
+//    replaced the old `curl --max-time 1` socket POST that silently dropped
+//    events whenever orchestra's event loop was busy. The helper self-gates on
+//    $ORCHESTRA_WS_ID so it's a no-op when claude is run outside orchestra.
 //
 
-const HOOK_ACTIVITY_SUBMIT_CMD =
-  '[ -n "$ORCHESTRA_SOCK" ] && curl -s --max-time 1 --unix-socket "$ORCHESTRA_SOCK" -d \'{"id":"\'"$ORCHESTRA_WS_ID"\'","event":"submit"}\' http://x/event > /dev/null 2>&1 || true';
+// All five activity hooks delegate to the same installed helper, passing the
+// event name as $1. The `-f` guard + `|| true` make a genuinely-missing script
+// (claude run outside a worktree orchestra manages) a silent no-op rather than
+// a hook error, mirroring the rename/spawn hooks.
+function activityHookCmd(event: string): string {
+  return (
+    'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestra-hook.sh"; ' +
+    `[ -f "$f" ] && bash "$f" ${event} || true`
+  );
+}
 
-const HOOK_ACTIVITY_STOP_CMD =
-  '[ -n "$ORCHESTRA_SOCK" ] && curl -s --max-time 1 --unix-socket "$ORCHESTRA_SOCK" -d \'{"id":"\'"$ORCHESTRA_WS_ID"\'","event":"stop"}\' http://x/event > /dev/null 2>&1 || true';
-
-const HOOK_ACTIVITY_NOTIFY_CMD =
-  '[ -n "$ORCHESTRA_SOCK" ] && curl -s --max-time 1 --unix-socket "$ORCHESTRA_SOCK" -d \'{"id":"\'"$ORCHESTRA_WS_ID"\'","event":"notify"}\' http://x/event > /dev/null 2>&1 || true';
+const HOOK_ACTIVITY_SUBMIT_CMD = activityHookCmd('submit');
+const HOOK_ACTIVITY_STOP_CMD = activityHookCmd('stop');
+const HOOK_ACTIVITY_NOTIFY_CMD = activityHookCmd('notify');
+const HOOK_ACTIVITY_PRETOOL_CMD = activityHookCmd('pretool');
+const HOOK_ACTIVITY_POSTTOOL_CMD = activityHookCmd('posttool');
 
 // SessionStart hook delegates to a small shell script we drop into the
 // worktree. Inlining the multi-line instruction in a single JSON-encoded
@@ -680,6 +691,41 @@ The reply is JSON: {"ok":true,"id":"<workspace-id>","branch":"<branch>"} once th
 EOF
 `;
 
+// Durable activity-event writer, dropped into every managed worktree and
+// invoked by the five activity hooks. Appends one JSON line per event to the
+// per-workspace spool file orchestra tails (events-spool.ts). A local append
+// is atomic and sub-millisecond — it can't be dropped the way the old
+// `curl --max-time 1` POST was, and it never blocks the agent on orchestra.
+// For pre/posttool it mines the active tool name out of the hook's stdin JSON
+// using pure bash parameter expansion (no jq/sed backrefs to keep it portable
+// and dependency-free); a parse miss just yields an empty tool, never an error.
+const ORCHESTRA_HOOK_SCRIPT = `#!/usr/bin/env bash
+# Auto-installed by orchestra. Do not edit — rewritten on every workspace start.
+dir="\${ORCHESTRA_EVENTS_DIR:-\$HOME/.orchestra/events}"
+[ -n "\${ORCHESTRA_WS_ID:-}" ] || exit 0
+event="\${1:-}"
+[ -n "\$event" ] || exit 0
+
+tool=""
+case "\$event" in
+  pretool|posttool)
+    payload="\$(cat)"
+    case "\$payload" in
+      *'"tool_name"'*)
+        rest="\${payload#*'"tool_name"'}"
+        rest="\${rest#*:}"
+        rest="\${rest#*'"'}"
+        tool="\${rest%%'"'*}"
+        ;;
+    esac
+    ;;
+esac
+
+mkdir -p "\$dir" 2>/dev/null || true
+printf '{"event":"%s","tool":"%s"}\\n' "\$event" "\$tool" >> "\$dir/\$ORCHESTRA_WS_ID.jsonl"
+exit 0
+`;
+
 function upsertHookCommand(list: unknown[], command: string): void {
   const present = list.some((entry) => {
     const inner = (entry as { hooks?: Array<{ command?: string }> })?.hooks ?? [];
@@ -724,6 +770,14 @@ export async function installOrchestraHooks(
       /* best-effort */
     }
 
+    const hookScript = path.join(dir, 'orchestra-hook.sh');
+    await writeFile(hookScript, ORCHESTRA_HOOK_SCRIPT);
+    try {
+      await chmod(hookScript, 0o755);
+    } catch {
+      /* best-effort */
+    }
+
     const settingsDir = path.join(worktreePath, '.claude');
     await mkdir(settingsDir, { recursive: true });
     const settingsFile = path.join(settingsDir, 'settings.local.json');
@@ -745,11 +799,17 @@ export async function installOrchestraHooks(
     const isStaleRenameCmd = (cmd: string) =>
       cmd.includes('.orchestra/rename-instruction.sh') && !cmd.includes('ORCHESTRA_WORKTREE');
 
+    // Evict the legacy `curl … http://x/event` activity POSTs from any
+    // pre-upgrade workspace — they're superseded by the durable spool helper,
+    // and leaving both wired would double-report every event.
+    const isLegacyActivityCurl = (cmd: string) => cmd.includes('http://x/event');
+
     // Evict the legacy first-prompt.json writer from any pre-upgrade workspace
     // so prompts no longer get dumped to disk after this hook system landed.
     let submitList = ((hooks.UserPromptSubmit as unknown[]) ??= []);
     submitList = removeHookCommand(submitList, (cmd) => cmd.includes('.orchestra/first-prompt.json'));
     submitList = removeHookCommand(submitList, isStaleRenameCmd);
+    submitList = removeHookCommand(submitList, isLegacyActivityCurl);
     upsertHookCommand(submitList, HOOK_ACTIVITY_SUBMIT_CMD);
     // Re-surface the branch-rename nudge on every prompt while still on the
     // auto branch (the script self-gates), so the agent gets reminded once the
@@ -757,7 +817,8 @@ export async function installOrchestraHooks(
     upsertHookCommand(submitList, HOOK_SESSION_START_RENAME_CMD);
     hooks.UserPromptSubmit = submitList;
 
-    const stopList = ((hooks.Stop as unknown[]) ??= []);
+    let stopList = ((hooks.Stop as unknown[]) ??= []);
+    stopList = removeHookCommand(stopList, isLegacyActivityCurl);
     upsertHookCommand(stopList, HOOK_ACTIVITY_STOP_CMD);
     hooks.Stop = stopList;
 
@@ -766,9 +827,21 @@ export async function installOrchestraHooks(
     // reminder, occasionally a tool-permission prompt (rare with
     // --dangerously-skip-permissions but possible). Drives a louder OS
     // notification than the gentle Stop chime.
-    const notifyList = ((hooks.Notification as unknown[]) ??= []);
+    let notifyList = ((hooks.Notification as unknown[]) ??= []);
+    notifyList = removeHookCommand(notifyList, isLegacyActivityCurl);
     upsertHookCommand(notifyList, HOOK_ACTIVITY_NOTIFY_CMD);
     hooks.Notification = notifyList;
+
+    // Per-tool granularity: PreToolUse surfaces which tool the agent is about
+    // to run (Bash, Edit, …) and PostToolUse clears it. Status stays `running`
+    // throughout — these only drive the ephemeral active-tool label.
+    const preToolList = ((hooks.PreToolUse as unknown[]) ??= []);
+    upsertHookCommand(preToolList, HOOK_ACTIVITY_PRETOOL_CMD);
+    hooks.PreToolUse = preToolList;
+
+    const postToolList = ((hooks.PostToolUse as unknown[]) ??= []);
+    upsertHookCommand(postToolList, HOOK_ACTIVITY_POSTTOOL_CMD);
+    hooks.PostToolUse = postToolList;
 
     let sessionStartList = ((hooks.SessionStart as unknown[]) ??= []);
     sessionStartList = removeHookCommand(sessionStartList, isStaleRenameCmd);

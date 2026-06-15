@@ -17,6 +17,10 @@ interface State {
    *  hot stats poll (on load / workspace-set change) since `du` is heavier. */
   sizes: Record<string, number>;
   prs: Record<string, PRsForBranch>;
+  /** Ephemeral name of the tool each agent is currently running (Bash, Edit,
+   *  …), keyed by workspace id. Driven by `agent:tool` events; absent when the
+   *  agent is between tools or idle. Never persisted. */
+  tools: Record<string, string>;
   /** Per-repo base-branch sync state (behind/ahead of origin/<base>),
    *  keyed by repoPath. Updated by `repo:syncState` events. */
   repoSync: Record<string, RepoSyncState>;
@@ -50,6 +54,7 @@ export const useStore = create<State>((set, get) => ({
   stats: {},
   sizes: {},
   prs: {},
+  tools: {},
   repoSync: {},
   activeId: null,
   view: 'terminal',
@@ -271,7 +276,16 @@ window.orchestra.onWorkspaceRemoved((id) => {
         : s.activeId;
     const { [id]: _gonePr, ...prs } = s.prs;
     const { [id]: _goneStat, ...stats } = s.stats;
-    return { workspaces, activeId, prs, stats };
+    const { [id]: _goneTool, ...tools } = s.tools;
+    return { workspaces, activeId, prs, stats, tools };
+  });
+});
+window.orchestra.onAgentTool((id, tool) => {
+  useStore.setState((s) => {
+    if (tool) return { tools: { ...s.tools, [id]: tool } };
+    if (!(id in s.tools)) return {};
+    const { [id]: _gone, ...tools } = s.tools;
+    return { tools };
   });
 });
 window.orchestra.onWorkspaceFocus((id) => {

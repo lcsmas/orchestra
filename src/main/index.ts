@@ -129,6 +129,7 @@ import {
   isRunning,
 } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
+import { startEventsSpool, stopEventsSpool } from './events-spool';
 import {
   detectAndUpdateBranchName,
   detectAndUpdateMergeState,
@@ -151,8 +152,10 @@ if (process.platform === 'linux') {
 }
 
 // Expose Chrome DevTools Protocol in dev so chrome-devtools-mcp can attach.
-if (VITE_DEV_SERVER_URL) {
-  app.commandLine.appendSwitch('remote-debugging-port', '9222');
+// Port is overridable via ORCHESTRA_DEBUG_PORT so a second instance can be
+// inspected without colliding with an already-running one already holding 9222.
+if (VITE_DEV_SERVER_URL || process.env.ORCHESTRA_DEBUG_PORT) {
+  app.commandLine.appendSwitch('remote-debugging-port', process.env.ORCHESTRA_DEBUG_PORT || '9222');
 }
 
 async function createMainWindow() {
@@ -187,6 +190,8 @@ async function createMainWindow() {
   mainWindow.setMenuBarVisibility(false);
 
   await startHooksServer(mainWindow);
+  // Primary activity path: tail the durable per-workspace hook event spools.
+  startEventsSpool(mainWindow);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void openUrlExternally(url);
@@ -643,12 +648,14 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   stopAll();
+  stopEventsSpool();
   stopHooksServer();
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
   stopAll();
+  stopEventsSpool();
   stopHooksServer();
 });
 

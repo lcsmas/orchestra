@@ -201,6 +201,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
     stats,
     sizes,
     prs,
+    tools,
     repoSync,
     setActive,
     archive,
@@ -640,7 +641,9 @@ export function Sidebar({ onNewFromRepo }: Props) {
                     className={`ws-dot ${w.status as WorkspaceStatus}`}
                     title={
                       w.status === 'running'
-                        ? 'Agent is working…'
+                        ? tools[w.id]
+                          ? `Agent is working… (${tools[w.id]})`
+                          : 'Agent is working…'
                         : w.status === 'idle'
                           ? 'Agent is idle'
                           : w.status

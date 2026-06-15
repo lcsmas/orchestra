@@ -6,17 +6,21 @@ import type { Workspace, WorkspaceStatus } from '../shared/types';
 
 // Hook-driven activity tracker.
 //
-// Claude Code's UserPromptSubmit + Stop + Notification hooks (installed
-// per-workspace in .claude/settings.local.json by workspaces.ts) POST
-// `{id, event}` JSON to the hooks-server's Unix socket. The hooks-server
-// forwards each event here.
+// Claude Code's lifecycle hooks (installed per-workspace in
+// .claude/settings.local.json by workspaces.ts) append one JSON line per event
+// to a durable per-workspace spool file; events-spool.ts tails it and calls
+// `applyAgentEvent` here. (A legacy Unix-socket path still feeds
+// `dispatchHookEvent` for any pre-upgrade session whose hooks were not yet
+// rewritten — same handling, minus the per-tool detail.)
 //
 // State is a clean function of those events:
-//   submit → running
-//   stop   → waiting (chime + finished-toast)
-//   notify → waiting (chime + needs-input-toast) — Claude fires this when the
-//            agent is prompting the user for an answer (permission prompts
-//            and the 60s idle reminder).
+//   submit   → running
+//   pretool  → running, with the active tool name surfaced to the renderer
+//   posttool → running, tool cleared
+//   stop     → waiting (chime + finished-toast)
+//   notify   → waiting (chime + needs-input-toast) — Claude fires this when the
+//              agent is prompting the user for an answer (permission prompts
+//              and the 60s idle reminder).
 
 async function setStatus(
   id: string,
@@ -210,65 +214,57 @@ export async function detectAndUpdateReleaseState(
   }
 }
 
-// Workspaces with a real prompt in flight: armed on a non-empty submit (the
-// user pressing Enter, captured losslessly in pty.ts — independent of the hook
-// POST — or the hook's own `submit`), disarmed when the turn ends (`stop`/
-// `notify`) or the PTY dies. This is the gate the output-activity safety net
-// needs: it tells `reconcileRunningFromOutput` that streaming output is work,
-// not a spawn/`--continue` scrollback reprint (which happens with nothing
-// armed). Event-scoped, so it maps exactly to "a turn is currently running."
-const turnsInFlight = new Set<string>();
-
-export function armTurn(id: string): void {
-  turnsInFlight.add(id);
-}
-export function disarmTurn(id: string): void {
-  turnsInFlight.delete(id);
-}
-export function isTurnInFlight(id: string): boolean {
-  return turnsInFlight.has(id);
+/** Push the agent's currently-running tool (or null to clear) to the renderer.
+ *  This is ephemeral UI state — it rides its own IPC channel rather than
+ *  `Workspace.status`/the store so per-tool churn never writes store.json. */
+function emitTool(id: string, tool: string | null, window: BrowserWindow): void {
+  if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+    window.webContents.send('agent:tool', id, tool);
+  }
 }
 
-/** Out-of-band safety net for the otherwise purely hook-driven status. The
- *  only thing that sets `running` is Claude's UserPromptSubmit POST, and that
- *  single event can be lost — the 1s curl `--max-time` timing out, hooks not
- *  yet reloaded by an already-running session, or a multi-instance socket
- *  mismatch — stranding a genuinely-working agent on `idle`. pty.ts calls this
- *  when a workspace streams output (the PTY stream can't be dropped the way the
- *  hook POST can), and we reconcile `idle` → `running`.
- *
- *  Two gates keep this from firing on output that isn't work:
- *   - `turnsInFlight`: a real prompt must be in flight. The killer false
- *     positive — the multi-second, bursty `--continue` scrollback reprint —
- *     happens with nothing armed, so it's ignored by construction.
- *   - status must be `idle`. `waiting` (the unread "finished / needs input"
- *     dot) is meaningful and user-cleared, and unlike a missed submit has no
- *     follow-up event to undo an erroneous flip. The transition OUT of running
- *     stays 100% hook-driven. */
-export async function reconcileRunningFromOutput(
+/** Apply one lifecycle event to a workspace's status. Fed by the durable spool
+ *  tailer (with the per-tool `tool` for pretool/posttool) and, for legacy
+ *  sessions, by the Unix-socket route via `dispatchHookEvent`. `setStatus`
+ *  only writes the store on a real transition, so the idempotent `running`
+ *  re-assertions on every pretool are free. */
+export function applyAgentEvent(
   id: string,
+  event: string,
+  tool: string | undefined,
   window: BrowserWindow,
-): Promise<void> {
-  if (!turnsInFlight.has(id)) return;
-  const ws = store.getWorkspace(id);
-  if (!ws || ws.archived) return;
-  if (ws.status !== 'idle') return;
-  await setStatus(id, 'running', window);
+): void {
+  switch (event) {
+    case 'submit':
+      emitTool(id, null, window);
+      void setStatus(id, 'running', window);
+      break;
+    case 'pretool':
+      emitTool(id, tool ?? null, window);
+      void setStatus(id, 'running', window);
+      break;
+    case 'posttool':
+      // Stay running between tools; just clear the active-tool label.
+      emitTool(id, null, window);
+      break;
+    case 'stop':
+      emitTool(id, null, window);
+      fireFinished(id, window);
+      break;
+    case 'notify':
+      emitTool(id, null, window);
+      fireNeedsInput(id, window);
+      break;
+  }
 }
 
+/** Legacy Unix-socket entry point (hooks-server `/event` route). Pre-upgrade
+ *  workspaces still POST bare `{id, event}` here until their hooks are
+ *  rewritten on the next pty:start; they carry no per-tool detail. */
 export function dispatchHookEvent(
   id: string,
   event: string,
   window: BrowserWindow,
 ): void {
-  if (event === 'submit') {
-    armTurn(id);
-    void setStatus(id, 'running', window);
-  } else if (event === 'stop') {
-    disarmTurn(id);
-    fireFinished(id, window);
-  } else if (event === 'notify') {
-    disarmTurn(id);
-    fireNeedsInput(id, window);
-  }
+  applyAgentEvent(id, event, undefined, window);
 }

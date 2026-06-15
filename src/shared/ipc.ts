@@ -83,6 +83,10 @@ export interface OrchestraAPI {
    * "waiting for your input" reminder. `focused` reflects the main-process
    * window focus state at hook-time. */
   onAgentNeedsInput: (cb: (id: string, focused: boolean) => void) => () => void;
+  /** Ephemeral per-tool activity. Fires with the tool name on Claude's
+   *  PreToolUse hook (the agent is about to run Bash/Edit/…) and with `null`
+   *  on PostToolUse / turn end. Not persisted — purely a live UI label. */
+  onAgentTool: (cb: (id: string, tool: string | null) => void) => () => void;
   /** Fires whenever a repo's base-branch sync state changes (started a
    *  fetch, finished a fetch, ahead/behind count moved). One event per
    *  state transition, keyed by repoPath. */

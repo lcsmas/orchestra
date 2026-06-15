@@ -5,7 +5,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { getHookSocketPath } from './hooks-server';
-import { reconcileRunningFromOutput, armTurn, disarmTurn, isTurnInFlight } from './activity';
+import { getEventsDir } from './events-spool';
 
 let ptyMod: typeof import('node-pty') | null = null;
 async function loadPty() {
@@ -24,55 +24,9 @@ interface Session {
   logStream: fs.WriteStream | null;
   logBytes: number;
   logPath: string;
-  /** Keystroke-scanner state (scanSubmit): whether any non-whitespace has been
-   *  typed since the last newline, and the ANSI-escape parse stage (0 = none,
-   *  1 = just saw ESC, 2 = inside a CSI/SS3 sequence awaiting its final byte). */
-  inputHasContent: boolean;
-  escState: 0 | 1 | 2;
-  /** Debounce handle for the output-activity reconcile (onData). */
-  reconcileTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const sessions = new Map<string, Session>();
-
-// Coalesce the output-activity reconcile to at most once per this interval —
-// the first chunk of a working turn flips status, the rest are no-ops.
-const RECONCILE_DEBOUNCE_MS = 150;
-
-// Scan user keystrokes for a *non-empty* prompt submission, so the output
-// safety net only treats output as work when a real prompt is in flight.
-// Terminal input arrives keystroke-by-keystroke, so content is tracked on the
-// session across calls. ANSI escape sequences (arrow keys, etc.) and whitespace
-// don't count — a bare Enter or pure navigation is not a submit. Returns true
-// on the newline that closes a line containing real content.
-function scanSubmit(session: Session, data: string): boolean {
-  let submitted = false;
-  for (let i = 0; i < data.length; i++) {
-    const c = data.charCodeAt(i);
-    if (session.escState === 2) {
-      // Inside CSI/SS3: params/intermediates are 0x20–0x3f, the final byte is
-      // 0x40–0x7e and ends the sequence (e.g. the 'A' of an up-arrow ESC[A).
-      if (c >= 0x40 && c <= 0x7e) session.escState = 0;
-      continue;
-    }
-    if (session.escState === 1) {
-      // Byte after ESC: '[' (CSI) or 'O' (SS3) introduce a multi-byte sequence;
-      // anything else is a 2-byte escape that ends right here.
-      session.escState = c === 0x5b || c === 0x4f ? 2 : 0;
-      continue;
-    }
-    if (c === 0x1b) {
-      session.escState = 1;
-    } else if (c === 0x0d || c === 0x0a) {
-      if (session.inputHasContent) submitted = true;
-      session.inputHasContent = false;
-    } else if ((c >= 0x21 && c <= 0x7e) || c >= 0x80) {
-      // Printable non-space, or any high byte (UTF-8 multibyte) → real content.
-      session.inputHasContent = true;
-    }
-  }
-  return submitted;
-}
 
 const LOG_DIR = path.join(os.homedir(), '.orchestra', 'logs');
 const MAX_LOG_BYTES = 2 * 1024 * 1024; // 2 MB cap per workspace
@@ -163,10 +117,19 @@ export async function startPty(opts: {
     // (relative paths broke once cwd != worktree root).
     env.ORCHESTRA_WORKTREE = opts.cwd;
   }
+  if (opts.workspaceId) {
+    // Surfaced to the activity hooks: the workspace id tags every appended
+    // event, and the spool dir is where the durable hook helper writes the
+    // JSONL that events-spool.ts tails. Independent of the socket below — the
+    // spool is the primary, can't-be-dropped activity path.
+    env.ORCHESTRA_WS_ID = opts.workspaceId;
+    env.ORCHESTRA_EVENTS_DIR = getEventsDir();
+  }
   const sock = getHookSocketPath();
   if (sock && opts.workspaceId) {
+    // Still needed for the agent-driven /rename and /spawn round-trips, which
+    // require a synchronous reply the socket gives and a spool file can't.
     env.ORCHESTRA_SOCK = sock;
-    env.ORCHESTRA_WS_ID = opts.workspaceId;
   }
 
   const proc = pty.spawn(opts.command, opts.args, {
@@ -185,9 +148,6 @@ export async function startPty(opts: {
     logStream,
     logBytes: initialSize,
     logPath,
-    inputHasContent: false,
-    escState: 0,
-    reconcileTimer: null,
   };
   sessions.set(opts.id, session);
 
@@ -202,17 +162,6 @@ export async function startPty(opts: {
           session.logBytes = trimLogIfNeeded(session.logPath);
           session.logStream = fs.createWriteStream(session.logPath, { flags: 'a' });
         }
-      }
-      // Output-activity safety net: while a real prompt is in flight (armed by
-      // a non-empty submit, disarmed on stop), streaming output is proof the
-      // agent is working even if its UserPromptSubmit POST was dropped. The
-      // reconcile gates on idle+armed, so this is a no-op once running or when
-      // nothing is armed (e.g. a `--continue` reprint). Debounced per session.
-      if (opts.workspaceId && !session.reconcileTimer && isTurnInFlight(opts.workspaceId)) {
-        session.reconcileTimer = setTimeout(() => {
-          session.reconcileTimer = null;
-          if (!session.stopped) void reconcileRunningFromOutput(opts.id, opts.window);
-        }, RECONCILE_DEBOUNCE_MS);
       }
       if (!canSend(opts.window)) return;
       opts.window.webContents.send('pty:data', opts.id, data);
@@ -231,12 +180,6 @@ export async function startPty(opts: {
 
 function disposeSession(s: Session) {
   s.stopped = true;
-  if (s.reconcileTimer) {
-    clearTimeout(s.reconcileTimer);
-    s.reconcileTimer = null;
-  }
-  // PTY death ends any turn — clear the gate so a leaked arm can't outlive it.
-  if (s.workspaceId) disarmTurn(s.workspaceId);
   for (const d of s.disposables) {
     try {
       d.dispose();
@@ -258,10 +201,6 @@ function disposeSession(s: Session) {
 export function writePty(id: string, data: string) {
   const s = sessions.get(id);
   if (!s || s.stopped) return;
-  // Arm the turn-in-flight gate on a non-empty submit (covers both user typing
-  // and the programmatic first-task injection, which both route through here).
-  // Lossless and hook-independent, so it rescues a dropped UserPromptSubmit.
-  if (s.workspaceId && scanSubmit(s, data)) armTurn(s.workspaceId);
   s.pty.write(data);
 }
 
