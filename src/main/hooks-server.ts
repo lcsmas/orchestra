@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import { BrowserWindow } from 'electron';
 import { dispatchHookEvent } from './activity';
 import { dispatchRenameRequest, dispatchSpawnRequest } from './workspaces';
+import { log } from './logger';
 
 // Tiny HTTP server bound to a Unix socket. Each workspace's
 // .claude/settings.local.json registers Claude Code lifecycle hooks
@@ -110,6 +111,7 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
             send(200, {});
           }
         } catch (e) {
+          log.error(`hook route ${route} failed`, e);
           send(200, { ok: false, error: e instanceof Error ? e.message : 'internal error' });
         }
       })();
@@ -119,8 +121,9 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
     });
   });
 
-  server.on('error', () => {
+  server.on('error', (err) => {
     /* keep alive — a single connection error must not tear down the server */
+    log.warn('hooks server connection error', err);
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -128,6 +131,7 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
     server!.listen(target, () => {
       server!.removeListener('error', reject);
       socketPath = target;
+      log.info(`hooks server listening on ${target}`);
       try {
         fs.chmodSync(target, 0o600);
       } catch {

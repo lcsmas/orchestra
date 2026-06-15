@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { getHookSocketPath } from './hooks-server';
 import { getEventsDir } from './events-spool';
+import { log } from './logger';
 
 let ptyMod: typeof import('node-pty') | null = null;
 async function loadPty() {
@@ -16,8 +17,8 @@ async function loadPty() {
 interface Session {
   pty: IPty;
   id: string;
-  /** Workspace id for agent PTYs (undefined for nvim/run PTYs). Drives the
-   *  turn-in-flight arming and the output-activity reconcile. */
+  /** Workspace id for agent PTYs (undefined for nvim/run PTYs). Surfaces the
+   *  $ORCHESTRA_WS_ID / $ORCHESTRA_EVENTS_DIR env the activity hooks write to. */
   workspaceId?: string;
   disposables: IDisposable[];
   stopped: boolean;
@@ -132,13 +133,25 @@ export async function startPty(opts: {
     env.ORCHESTRA_SOCK = sock;
   }
 
-  const proc = pty.spawn(opts.command, opts.args, {
-    name: 'xterm-256color',
-    cols: Math.max(20, opts.cols),
-    rows: Math.max(5, opts.rows),
-    cwd: opts.cwd,
-    env,
-  });
+  let proc: IPty;
+  try {
+    proc = pty.spawn(opts.command, opts.args, {
+      name: 'xterm-256color',
+      cols: Math.max(20, opts.cols),
+      rows: Math.max(5, opts.rows),
+      cwd: opts.cwd,
+      env,
+    });
+  } catch (e) {
+    log.error(`pty spawn failed id=${opts.id} cmd=${opts.command}`, e);
+    try {
+      logStream.end();
+    } catch {
+      /* ignore */
+    }
+    throw e;
+  }
+  log.info(`pty spawned id=${opts.id} cmd=${opts.command} pid=${proc.pid} cwd=${opts.cwd}`);
   const session: Session = {
     pty: proc,
     id: opts.id,
@@ -169,6 +182,7 @@ export async function startPty(opts: {
   );
   session.disposables.push(
     proc.onExit(({ exitCode }) => {
+      log.info(`pty exited id=${opts.id} code=${exitCode}${session.stopped ? ' (stopped)' : ''}`);
       if (!session.stopped && canSend(opts.window)) {
         opts.window.webContents.send('pty:exit', opts.id, exitCode);
       }

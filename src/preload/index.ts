@@ -10,6 +10,10 @@ const api: OrchestraAPI = {
   pickDirectory: () => ipcRenderer.invoke('dialog:pickDir'),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
 
+  revealLogs: () => ipcRenderer.invoke('logs:reveal'),
+  logPath: () => ipcRenderer.invoke('logs:path'),
+  log: (level, message, meta) => ipcRenderer.invoke('logs:write', level, message, meta),
+
   listWorkspaces: () => ipcRenderer.invoke('workspaces:list'),
   createWorkspace: (input) => ipcRenderer.invoke('workspaces:create', input),
   archiveWorkspace: (id) => ipcRenderer.invoke('workspaces:archive', id),

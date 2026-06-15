@@ -172,6 +172,21 @@ function GitHubIcon() {
   );
 }
 
+function LogsIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M3 2.25h7L13 5v8.75H3V2.25Z M9.5 2.5V5.5H13 M5.25 8h5.5 M5.25 10.5h5.5"
+      />
+    </svg>
+  );
+}
+
 function ExternalLinkIcon() {
   return (
     <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" focusable="false">
@@ -929,6 +944,15 @@ export function Sidebar({ onNewFromRepo }: Props) {
           <GitHubIcon />
           <span>lcsmas/orchestra</span>
           <ExternalLinkIcon />
+        </button>
+        <button
+          className="sidebar-footer-link"
+          onClick={() => void window.orchestra.revealLogs()}
+          title="Reveal Orchestra's diagnostic log file (for bug reports)"
+          aria-label="Open diagnostic logs"
+        >
+          <LogsIcon />
+          <span>Logs</span>
         </button>
       </div>
     </aside>
