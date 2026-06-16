@@ -19,7 +19,12 @@ export function DiffView({ workspaceId }: Props) {
         const diffs = await window.orchestra.getDiff(workspaceId);
         if (!alive) return;
         setFiles(diffs);
-        setActive(diffs[0]?.path ?? null);
+        // Preserve the user's current selection across polling refreshes;
+        // only fall back to the first file when nothing is selected or the
+        // selected file no longer appears in the diff.
+        setActive((prev) =>
+          prev && diffs.some((f) => f.path === prev) ? prev : diffs[0]?.path ?? null
+        );
       } finally {
         if (alive) setLoading(false);
       }
