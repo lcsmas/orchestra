@@ -9,6 +9,7 @@ const api: OrchestraAPI = {
   reorderRepos: (paths) => ipcRenderer.invoke('repos:reorder', paths),
   pickDirectory: () => ipcRenderer.invoke('dialog:pickDir'),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
+  getAppVersion: () => ipcRenderer.invoke('app:version'),
 
   revealLogs: () => ipcRenderer.invoke('logs:reveal'),
   logPath: () => ipcRenderer.invoke('logs:path'),

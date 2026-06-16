@@ -226,6 +226,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
     reorderWorkspaces,
     reorderRepos,
   } = useStore();
+  const [version, setVersion] = useState('');
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
   const [scriptsRepoPath, setScriptsRepoPath] = useState<string | null>(null);
@@ -244,6 +245,10 @@ export function Sidebar({ onNewFromRepo }: Props) {
   const [dropWs, setDropWs] = useState<{ id: string; pos: 'before' | 'after' } | null>(null);
   const [dragRepo, setDragRepo] = useState<string | null>(null);
   const [dropRepo, setDropRepo] = useState<{ path: string; pos: 'before' | 'after' } | null>(null);
+
+  useEffect(() => {
+    void window.orchestra.getAppVersion().then(setVersion);
+  }, []);
 
   const clearDnd = () => {
     setDragWs(null);
@@ -954,6 +959,11 @@ export function Sidebar({ onNewFromRepo }: Props) {
           <LogsIcon />
           <span>Logs</span>
         </button>
+        {version && (
+          <span className="sidebar-footer-version" title="Orchestra version">
+            v{version}
+          </span>
+        )}
       </div>
     </aside>
   );

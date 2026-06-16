@@ -24,6 +24,8 @@ export interface OrchestraAPI {
   reorderRepos: (orderedPaths: string[]) => Promise<void>;
   pickDirectory: () => Promise<string | null>;
   openExternal: (url: string) => Promise<void>;
+  /** The running app's version (from package.json). */
+  getAppVersion: () => Promise<string>;
 
   // Diagnostic logs
   /** Reveal the main diagnostic log file in the OS file manager. */

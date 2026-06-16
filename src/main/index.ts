@@ -281,6 +281,8 @@ handle('app:openExternal', async (_e, url: string) => {
   await openUrlExternally(url);
 });
 
+handle('app:version', () => app.getVersion());
+
 // ---------- Diagnostic logs ----------
 
 handle('logs:reveal', async () => {

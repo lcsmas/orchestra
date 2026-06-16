@@ -580,6 +580,14 @@ input:focus, textarea:focus, select:focus {
 .sidebar-footer-link svg:last-child {
   opacity: 0.6;
 }
+.sidebar-footer-version {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 11px;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+  user-select: text;
+}
 .ws-list {
   overflow-y: auto;
   flex: 1;
