@@ -49,6 +49,11 @@ export interface OrchestraAPI {
   ptyStart: (id: string, cols: number, rows: number) => Promise<void>;
   ptyWrite: (id: string, data: string) => Promise<void>;
   ptyResize: (id: string, cols: number, rows: number) => Promise<void>;
+  /** Spill clipboard image bytes (read in the renderer) to a temp file and
+   * return its absolute path, for injection into the agent prompt — which
+   * Claude Code auto-attaches. `mime` picks the file extension. Returns null
+   * for empty input. */
+  saveClipboardImage: (mime: string, bytes: Uint8Array) => Promise<string | null>;
   /** Restart the agent process while keeping the conversation: stops the
    * current PTY and triggers a fresh spawn that runs `claude --continue`,
    * picking up MCP server / settings.json changes without losing context. */

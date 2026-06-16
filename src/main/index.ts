@@ -1,5 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron';
 import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { shellEnvSync } from 'shell-env';
 
@@ -457,6 +459,43 @@ handle('pty:write', async (_e, id: string, data: string) => {
 handle('pty:resize', (_e, id: string, cols: number, rows: number) =>
   resizePty(id, cols, rows),
 );
+
+// Clipboard image paste. xterm.js + the renderer's `navigator.clipboard` only
+// pipes text to the PTY, so a pasted screenshot is dropped on the floor.
+// Claude Code has no stdin protocol for images, but it auto-attaches any
+// absolute image path that arrives via a bracketed paste. The renderer reads
+// the image bytes off the clipboard (same focused-document context that makes
+// text paste work — `clipboard.readImage()` in the main process can't, since
+// Wayland gates clipboard reads on surface focus the main process lacks) and
+// hands them here to spill to a temp file; we return the path to inject.
+handle('clipboard:saveImage', async (_e, mime: string, bytes: Uint8Array) => {
+  if (!bytes || bytes.byteLength === 0) return null;
+  const ext =
+    mime === 'image/jpeg'
+      ? 'jpg'
+      : mime === 'image/gif'
+        ? 'gif'
+        : mime === 'image/webp'
+          ? 'webp'
+          : 'png';
+  const dir = path.join(os.tmpdir(), 'orchestra-paste');
+  await fs.promises.mkdir(dir, { recursive: true });
+  // Prune stale spills so the temp dir doesn't grow unbounded. Best-effort —
+  // a file Claude is mid-read on is days younger than the cutoff anyway.
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  try {
+    for (const name of await fs.promises.readdir(dir)) {
+      const fp = path.join(dir, name);
+      const st = await fs.promises.stat(fp).catch(() => null);
+      if (st && st.mtimeMs < cutoff) await fs.promises.unlink(fp).catch(() => {});
+    }
+  } catch {
+    // ignore prune failures
+  }
+  const file = path.join(dir, `paste-${Date.now()}-${process.pid}.${ext}`);
+  await fs.promises.writeFile(file, Buffer.from(bytes));
+  return file;
+});
 handle('agent:restart', (_e, id: string) => {
   // Mirror the branch-switch path: stop the agent PTY here (the renderer's
   // xterm doesn't get torn down — it just resets) and tell the renderer to

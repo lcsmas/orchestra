@@ -9,6 +9,40 @@ interface Props {
   isActive: boolean;
 }
 
+// Handle Ctrl/Cmd+V. A pasted image (e.g. a screenshot) wins over text:
+// Claude Code has no image stdin protocol, but it auto-attaches an absolute
+// image path delivered as a bracketed paste. So we read the image bytes from
+// the clipboard in this focused document (the only context where the OS grants
+// a clipboard read on Wayland), have the main process spill them to a temp
+// file, and inject that path wrapped in bracketed-paste markers — typing the
+// path char-by-char would NOT trigger Claude's auto-attach. When there's no
+// image we fall back to the normal text paste.
+async function pasteClipboard(workspaceId: string): Promise<void> {
+  try {
+    const items = await navigator.clipboard.read();
+    for (const item of items) {
+      const imgType = item.types.find((t) => t.startsWith('image/'));
+      if (!imgType) continue;
+      const blob = await item.getType(imgType);
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const filePath = await window.orchestra.saveClipboardImage(imgType, bytes);
+      if (filePath) {
+        window.orchestra.ptyWrite(workspaceId, `\x1b[200~${filePath} \x1b[201~`);
+        return;
+      }
+    }
+  } catch {
+    // navigator.clipboard.read() can reject (no permission, no items, or an
+    // image type the renderer can't decode) — fall through to text paste.
+  }
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text) window.orchestra.ptyWrite(workspaceId, text);
+  } catch {
+    // nothing pasteable
+  }
+}
+
 export function TerminalView({ workspaceId, isActive }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLDivElement>(null);
@@ -218,13 +252,8 @@ export function TerminalView({ workspaceId, isActive }: Props) {
         return false;
       }
       if (key === 'v') {
-        navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text) window.orchestra.ptyWrite(workspaceId, text);
-          })
-          .catch(() => {});
         e.preventDefault();
+        void pasteClipboard(workspaceId);
         return false;
       }
       return true;
