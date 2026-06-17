@@ -808,12 +808,15 @@ input:focus, textarea:focus, select:focus {
 }
 .ws-name {
   font-weight: 500;
-  flex: 1;
+  /* Claim the full width of the (wrapping) name row so the branch name always
+   * gets its own line and the badges wrap to the line below. flex-basis: 100%
+   * is what forces the wrap — without it the name shares the row with the
+   * non-shrinking badges, collapses to near-zero width, and breaks one
+   * character per line. With a full line it wraps cleanly at the hyphen
+   * boundaries; `overflow-wrap: anywhere` still covers any single segment
+   * longer than the sidebar. */
+  flex: 1 1 100%;
   min-width: 0;
-  /* Wrap long branch names instead of truncating with ellipsis. Branch
-   * names are hyphen-separated and can exceed the sidebar width — full
-   * legibility wins over single-line uniformity. `overflow-wrap: anywhere`
-   * lets the browser break inside long unbroken segments too. */
   white-space: normal;
   overflow-wrap: anywhere;
   word-break: break-word;
