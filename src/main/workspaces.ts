@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, chmod, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, chmod, rm, appendFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { BrowserWindow } from 'electron';
 import { execFile } from 'node:child_process';
@@ -16,10 +16,10 @@ import {
   renameWorktreeBranch,
   switchWorktreeBranch,
 } from './git';
-import { isRunning, stopPty, clearScrollback, startPty, writePty } from './pty';
+import { isRunning, stopPty, clearScrollback, startPty, writePty, readScrollback } from './pty';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
-import type { CreateWorkspaceInput, Workspace } from '../shared/types';
+import type { CreateWorkspaceInput, Workspace, WorkspaceStatus } from '../shared/types';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
 
@@ -211,6 +211,7 @@ export async function deleteWorkspace(id: string, window: BrowserWindow): Promis
   }
 
   clearScrollback(id);
+  await clearInbox(id);
   try {
     await removeWorktree(ws.repoPath, ws.worktreePath);
   } catch {
@@ -529,6 +530,244 @@ export async function dispatchSpawnRequest(
   }
 }
 
+// ---------- Inter-agent communication ----------
+//
+// Agents already reach the main process over the same unix socket they use for
+// /spawn and /rename. These three routes let a running agent (a) discover the
+// other live agents, (b) read a peer's terminal transcript, and (c) hand a peer
+// a prompt. Delivery of a message is "live" when the target PTY is running (we
+// type it straight into the peer's Claude TUI, exactly like the spawn task
+// injection) and falls back to a durable per-workspace inbox file otherwise,
+// which the peer drains into context on its next SessionStart.
+
+const INBOX_ROOT = path.join(os.homedir(), '.orchestra', 'inbox');
+
+function inboxPathFor(id: string): string {
+  return path.join(INBOX_ROOT, `${id}.txt`);
+}
+
+// Strip ANSI/VT escape sequences (CSI, OSC, single-char escapes) so a peer
+// reading another agent's scrollback gets plain text instead of raw terminal
+// control bytes. Deliberately broad — a read is informational, not byte-exact.
+// Built from \u001b/\u009b string escapes so no raw control bytes live in source.
+const ANSI_RE = new RegExp(
+  // OSC: ESC ] ... terminated by BEL or ST (ESC \\)
+  '[\\u001b\\u009b]\\][^\\u0007\\u001b]*(?:\\u0007|\\u001b\\\\)' +
+    // CSI and other escape sequences
+    '|[\\u001b\\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-PRZcf-ntqry=><]',
+  'g',
+);
+
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, '').replace(/\r/g, '');
+}
+
+export interface PeerInfo {
+  id: string;
+  branch: string;
+  repo: string;
+  status: WorkspaceStatus;
+  running: boolean;
+  lastTask?: string;
+}
+
+export interface PeersResult {
+  ok: boolean;
+  peers?: PeerInfo[];
+  error?: string;
+}
+
+/** List the other live workspaces so an agent can discover who to talk to.
+ * Excludes the caller (`from`) and any archived workspace. */
+export function dispatchPeersRequest(input: { from?: string }): PeersResult {
+  const peers: PeerInfo[] = store.workspaces
+    .filter((w) => !w.archived && w.id !== input.from)
+    .map((w) => ({
+      id: w.id,
+      branch: w.branch,
+      repo: path.basename(w.repoPath),
+      status: w.status,
+      running: isRunning(w.id),
+      lastTask: w.lastTask ? w.lastTask.slice(0, 200) : undefined,
+    }));
+  return { ok: true, peers };
+}
+
+export interface ReadResult {
+  ok: boolean;
+  branch?: string;
+  transcript?: string;
+  error?: string;
+}
+
+// Cap how much of a peer's transcript a single read returns. The scrollback log
+// is itself capped at 2 MB; we tail the last N lines after stripping ANSI.
+const READ_DEFAULT_LINES = 80;
+const READ_MAX_LINES = 400;
+
+/** Return the tail of a peer agent's terminal transcript, ANSI-stripped. */
+export function dispatchReadRequest(input: { id: string; lines?: number }): ReadResult {
+  const ws = store.getWorkspace(input.id);
+  if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
+  const want = Math.max(1, Math.min(input.lines ?? READ_DEFAULT_LINES, READ_MAX_LINES));
+  const cleaned = stripAnsi(readScrollback(input.id));
+  // Drop trailing blank lines (TUI repaints leave a tail of them) so `lines`
+  // counts real content, then tail the last N and collapse blank runs.
+  const lines = cleaned.split('\n');
+  while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
+  const tail = lines.slice(-want).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return { ok: true, branch: ws.branch, transcript: tail };
+}
+
+export interface MessageResult {
+  ok: boolean;
+  // 'live' — target was running, typed straight into its TUI.
+  // 'started' — target was stopped, we woke it and handed it the message.
+  // 'inbox' — fallback when waking failed; drained on the target's next session.
+  delivery?: 'live' | 'started' | 'inbox';
+  branch?: string;
+  error?: string;
+}
+
+const MESSAGE_MAX_CHARS = 8000;
+
+function formatPeerMessage(fromBranch: string, fromId: string, text: string): string {
+  return `[message from agent '${fromBranch}' (${fromId})]\n${text}\n\nReply via the orchestra socket: curl -s --unix-socket "$ORCHESTRA_SOCK" --data-binary '{"from":"'$ORCHESTRA_WS_ID'","to":"${fromId}","text":"<reply>"}' http://x/message`;
+}
+
+/** Wake a stopped agent and hand it `prompt` as a live turn. Resumes the prior
+ * conversation with `--continue` when the workspace has run before (mirrors the
+ * renderer's resume path) so the woken agent keeps its context; otherwise it
+ * starts fresh and the prompt becomes its opening turn. Safe against the
+ * renderer's later `pty:start`, which early-returns on `isRunning`. Returns
+ * false when the agent can't be woken (missing / archived / already running) so
+ * the caller can fall back. Throws only if the PTY spawn itself fails. */
+async function wakeAgentWithPrompt(
+  id: string,
+  prompt: string,
+  window: BrowserWindow,
+): Promise<boolean> {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived || isRunning(id)) return false;
+  const resuming = ws.hasInput === true;
+  await startPty({
+    id,
+    cwd: ws.worktreePath,
+    command: 'claude',
+    args: resuming
+      ? ['--continue', '--dangerously-skip-permissions']
+      : ['--dangerously-skip-permissions'],
+    cols: HEADLESS_COLS,
+    rows: HEADLESS_ROWS,
+    window,
+    workspaceId: id,
+    extraEnv: { ORCHESTRA_BRANCH: ws.branch, ORCHESTRA_BRANCH_AUTO: ws.branchManuallySet ? '0' : '1' },
+  });
+  // Give the TUI a beat to initialize, then type the message and submit it as a
+  // SEPARATE carriage return — identical timing to the spawn/headless task
+  // inject (a trailing newline in the same chunk reads as a pasted line).
+  const task = prompt;
+  setTimeout(() => {
+    writePty(id, task);
+    setTimeout(() => writePty(id, '\r'), 80);
+  }, 1500);
+  if (!ws.hasInput) {
+    const updated: Workspace = { ...ws, hasInput: true };
+    void store.upsertWorkspace(updated).then(() => {
+      if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+        window.webContents.send('workspace:update', updated);
+      }
+    });
+  }
+  return true;
+}
+
+/** Deliver a prompt from one agent to another. If the target's PTY is running
+ * the message is typed straight into its Claude TUI (live). If the target is
+ * stopped we WAKE it — start its agent (resuming prior context) and hand it the
+ * message as a live turn — so a delegated peer acts on the message right away.
+ * Only if waking fails do we fall back to the durable inbox file, which the
+ * target drains into context on its next SessionStart. */
+export async function dispatchMessageRequest(
+  input: {
+    from?: string;
+    to: string;
+    text: string;
+  },
+  window: BrowserWindow,
+): Promise<MessageResult> {
+  const text = input.text.trim().slice(0, MESSAGE_MAX_CHARS);
+  if (!text) return { ok: false, error: 'empty text' };
+  const target = store.getWorkspace(input.to);
+  if (!target || target.archived) return { ok: false, error: 'unknown target workspace' };
+  if (input.to === input.from) return { ok: false, error: 'cannot message yourself' };
+
+  const fromWs = input.from ? store.getWorkspace(input.from) : undefined;
+  const fromBranch = fromWs?.branch ?? 'external';
+  const fromId = input.from ?? 'external';
+  // Normalize newlines: a bare \r submits Claude's TUI prematurely, so keep
+  // only \n inside the body and let the explicit carriage return below submit.
+  const body = formatPeerMessage(fromBranch, fromId, text).replace(/\r/g, '');
+
+  if (isRunning(input.to)) {
+    // Type the message, then a SEPARATE carriage return a beat later — same
+    // trick startWorkspaceAgentHeadless uses so the TUI submits it as one turn
+    // instead of treating the trailing newline as a pasted line.
+    writePty(input.to, body);
+    setTimeout(() => writePty(input.to, '\r'), 80);
+    return { ok: true, delivery: 'live', branch: target.branch };
+  }
+
+  // Target stopped — wake it and deliver the message as its next turn.
+  try {
+    if (await wakeAgentWithPrompt(input.to, body, window)) {
+      // Insurance: if the woken agent exits almost immediately (e.g. a resume
+      // with --continue that finds no session and bails), the live inject was
+      // lost. Park it so the next successful start still delivers it. A healthy
+      // woken agent keeps running, so this is a no-op in the normal case.
+      const to = input.to;
+      setTimeout(() => {
+        if (!isRunning(to)) void queueInbox(to, body);
+      }, 5000);
+      return { ok: true, delivery: 'started', branch: target.branch };
+    }
+  } catch (e) {
+    log.warn(`wake-on-message failed for ${input.to}`, e);
+  }
+
+  // Couldn't even start the agent — park the message. The inbox hook prints +
+  // clears this file the next time the target agent starts a session.
+  if (await queueInbox(input.to, body)) {
+    return { ok: true, delivery: 'inbox', branch: target.branch };
+  }
+  return { ok: false, error: 'inbox write failed' };
+}
+
+/** Append a formatted message block to a workspace's inbox file. Returns false
+ * on write failure. The inbox SessionStart/UserPromptSubmit hook prints + clears
+ * this file on the target's next session. */
+async function queueInbox(id: string, body: string): Promise<boolean> {
+  try {
+    await mkdir(INBOX_ROOT, { recursive: true });
+    const block = `\n========================================\n${body}\n========================================\n`;
+    await appendFile(inboxPathFor(id), block, 'utf8');
+    return true;
+  } catch (e) {
+    log.warn(`inbox write failed for ${id}`, e);
+    return false;
+  }
+}
+
+/** Remove a workspace's queued inbox on hard delete so a recycled id can't
+ * inherit stale messages. Best-effort. */
+async function clearInbox(id: string): Promise<void> {
+  try {
+    await rm(inboxPathFor(id), { force: true });
+  } catch {
+    /* best-effort */
+  }
+}
+
 /** Return a branch name not already taken in the repo. `desired` is returned
  * as-is when free (or when it equals the workspace's own current branch, which
  * is a no-op rather than a collision); otherwise a numeric suffix is appended
@@ -652,6 +891,17 @@ const HOOK_SESSION_START_RENAME_CMD =
 const HOOK_SESSION_START_SPAWN_CMD =
   'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/spawn-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
 
+// Advertises the inter-agent comms capability (peers/read/message) once per
+// session, same delegation pattern as the spawn hook.
+const HOOK_SESSION_START_COMMS_CMD =
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/comms-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
+
+// Drains any queued peer messages into context. Runs on SessionStart AND every
+// UserPromptSubmit so a message that landed in the inbox while the agent was
+// between turns surfaces promptly (the script self-clears the file once read).
+const HOOK_INBOX_DELIVER_CMD =
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/inbox-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
+
 const RENAME_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
 # Auto-installed by orchestra. Prints the rename instruction into the agent's
 # session context while the workspace is still on its auto-generated branch.
@@ -694,6 +944,51 @@ cat <<EOF
 
 The reply is JSON: {"ok":true,"id":"<workspace-id>","branch":"<branch>"} once the new worktree exists and its agent has started, or {"ok":false,"error":"..."} on failure. The "task" is the new agent's opening prompt — write it as a complete, standalone instruction (it shares none of this conversation's context). By default the worktree is created in THIS repo off its base branch. Optional JSON fields: "repoPath":"<abs path of another repo already added to orchestra>", "baseBranch":"<branch>". Only spawn when the user asks you to parallelize or delegate work — do not do it unprompted.
 EOF
+`;
+
+// Advertised on SessionStart (ungated like the spawn hook — talking to peers is
+// a standing capability). Tells the agent how to list other live agents, read a
+// peer's transcript, and hand a peer a prompt. Same `\$` / `\\"` escaping as the
+// spawn script so the curl lines print with literal $ORCHESTRA_SOCK /
+// $ORCHESTRA_WS_ID for the agent to run as-is.
+const COMMS_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
+# Auto-installed by orchestra. Tells the agent it can talk to the OTHER agents
+# running in sibling workspaces — discover them, read their work, prompt them.
+[ -n "\${ORCHESTRA_SOCK:-}" ] || exit 0
+cat <<EOF
+[orchestra] You can communicate with the OTHER agents running in sibling workspaces. Three commands, all over the orchestra socket:
+
+  1. List the other agents (their workspace id, branch, repo, status):
+       curl -s --max-time 10 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"from\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\"}" http://x/peers
+     Reply: {"ok":true,"peers":[{"id":"...","branch":"...","repo":"...","status":"running|waiting|idle","running":true}]}
+
+  2. Read a peer's recent terminal transcript (to see what it has been doing):
+       curl -s --max-time 10 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"from\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\",\\\\"id\\\\":\\\\"<peer-id>\\\\"}" http://x/read
+     Reply: {"ok":true,"branch":"...","transcript":"<last ~80 lines, plain text>"}. Optional "lines":<n> (max 400).
+
+  3. Send a prompt to a peer (it lands as a new turn in that agent's session):
+       curl -s --max-time 10 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"from\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\",\\\\"to\\\\":\\\\"<peer-id>\\\\",\\\\"text\\\\":\\\\"<your message>\\\\"}" http://x/message
+     Reply: {"ok":true,"delivery":"live"} if the peer was running, or "started" if the peer was stopped and got woken to handle it now. The peer sees who the message is from and can reply back to your workspace id.
+
+Use these to coordinate: ask a peer a question, hand off a sub-result, or check on delegated work. Keep messages self-contained — the peer does not share your conversation. Only do this when the user asks you to coordinate agents, or when you spawned a peer and need to follow up with it.
+EOF
+`;
+
+// Drains queued peer messages into the agent's context, then clears them. The
+// main process writes pre-formatted message blocks (which already name the
+// sender and show the reply curl) into this file; the hook just prints and
+// removes it. Self-gated on \$ORCHESTRA_WS_ID so it's a no-op outside orchestra,
+// and on a non-empty file so it adds nothing when there's no mail.
+const INBOX_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
+# Auto-installed by orchestra. Delivers messages other agents sent to this one
+# while it was not running. Reads + clears \$HOME/.orchestra/inbox/<wsid>.txt.
+[ -n "\${ORCHESTRA_WS_ID:-}" ] || exit 0
+f="\${HOME}/.orchestra/inbox/\${ORCHESTRA_WS_ID}.txt"
+[ -s "\$f" ] || exit 0
+echo "[orchestra] You have message(s) from other agents:"
+cat "\$f"
+rm -f "\$f"
+exit 0
 `;
 
 // Durable activity-event writer, dropped into every managed worktree and
@@ -783,6 +1078,22 @@ export async function installOrchestraHooks(
       /* best-effort */
     }
 
+    const commsScript = path.join(dir, 'comms-instruction.sh');
+    await writeFile(commsScript, COMMS_INSTRUCTION_SCRIPT);
+    try {
+      await chmod(commsScript, 0o755);
+    } catch {
+      /* best-effort */
+    }
+
+    const inboxScript = path.join(dir, 'inbox-instruction.sh');
+    await writeFile(inboxScript, INBOX_INSTRUCTION_SCRIPT);
+    try {
+      await chmod(inboxScript, 0o755);
+    } catch {
+      /* best-effort */
+    }
+
     const settingsDir = path.join(worktreePath, '.claude');
     await mkdir(settingsDir, { recursive: true });
     const settingsFile = path.join(settingsDir, 'settings.local.json');
@@ -820,6 +1131,8 @@ export async function installOrchestraHooks(
     // auto branch (the script self-gates), so the agent gets reminded once the
     // work scope is clear — not only at the context-free SessionStart.
     upsertHookCommand(submitList, HOOK_SESSION_START_RENAME_CMD);
+    // Surface any queued peer messages right before the agent's next turn.
+    upsertHookCommand(submitList, HOOK_INBOX_DELIVER_CMD);
     hooks.UserPromptSubmit = submitList;
 
     let stopList = ((hooks.Stop as unknown[]) ??= []);
@@ -852,6 +1165,8 @@ export async function installOrchestraHooks(
     sessionStartList = removeHookCommand(sessionStartList, isStaleRenameCmd);
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_RENAME_CMD);
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_SPAWN_CMD);
+    upsertHookCommand(sessionStartList, HOOK_SESSION_START_COMMS_CMD);
+    upsertHookCommand(sessionStartList, HOOK_INBOX_DELIVER_CMD);
     hooks.SessionStart = sessionStartList;
 
     settings.hooks = hooks;

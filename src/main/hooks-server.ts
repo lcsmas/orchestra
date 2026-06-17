@@ -4,7 +4,13 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { BrowserWindow } from 'electron';
 import { dispatchHookEvent } from './activity';
-import { dispatchRenameRequest, dispatchSpawnRequest } from './workspaces';
+import {
+  dispatchRenameRequest,
+  dispatchSpawnRequest,
+  dispatchPeersRequest,
+  dispatchReadRequest,
+  dispatchMessageRequest,
+} from './workspaces';
 import { log } from './logger';
 
 // Tiny HTTP server bound to a Unix socket. Each workspace's
@@ -52,7 +58,7 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
     // caller saw an empty reply and had to guess that the payload was the
     // culprit — so /spawn gets a generous ceiling while other routes stay
     // locked down, and an over-cap request now answers with a clear 413.
-    const maxBytes = route === '/spawn' ? 1_048_576 : 4096;
+    const maxBytes = route === '/spawn' || route === '/message' ? 1_048_576 : 4096;
     let body = '';
     let tooLarge = false;
     req.setEncoding('utf8');
@@ -102,6 +108,36 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
               );
             } else {
               send(200, { ok: false, error: 'missing task' });
+            }
+          } else if (route === '/peers') {
+            send(200, dispatchPeersRequest({ from: typeof msg.from === 'string' ? msg.from : undefined }));
+          } else if (route === '/read') {
+            if (typeof msg.id === 'string') {
+              send(
+                200,
+                dispatchReadRequest({
+                  id: msg.id,
+                  lines: typeof msg.lines === 'number' ? msg.lines : undefined,
+                }),
+              );
+            } else {
+              send(200, { ok: false, error: 'missing id' });
+            }
+          } else if (route === '/message') {
+            if (typeof msg.to === 'string' && typeof msg.text === 'string') {
+              send(
+                200,
+                await dispatchMessageRequest(
+                  {
+                    from: typeof msg.from === 'string' ? msg.from : undefined,
+                    to: msg.to,
+                    text: msg.text,
+                  },
+                  window,
+                ),
+              );
+            } else {
+              send(200, { ok: false, error: 'missing to or text' });
             }
           } else {
             // Default route handles activity events: /event or anything else.
