@@ -198,9 +198,28 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       // literal `^[[...` garbage when replayed. Agent context is preserved
       // through Claude's own session store (claude --continue), so we just
       // spawn a fresh TUI that paints itself.
-      window.orchestra.ptyStart(workspaceId, cols, rows).catch((e) => {
-        term.writeln(`\r\n\x1b[31mFailed to start agent: ${e.message}\x1b[0m`);
-      });
+      window.orchestra
+        .ptyStart(workspaceId, cols, rows)
+        .then(() => {
+          // The PTY does not exist in the main process until ptyStart resolves
+          // (it awaits installOrchestraHooks first). Any refit() that fired
+          // during that spawn window called ptyResize while the session was
+          // still absent, so resizePty silently dropped it — yet lastSentCols
+          // was advanced, so it is never retried. The PTY then keeps its
+          // spawn-time width while xterm settled narrower, and every line
+          // Claude draws at the wider width wraps in xterm. Ink erases its live
+          // region with cursor-up/erase-line counted at the wider width, moves
+          // up too few rows, and overwrites old text instead of clearing it.
+          // Re-assert xterm's current size now that the PTY is alive so the two
+          // can never diverge across the spawn boundary.
+          if (cancelled) return;
+          lastSentCols = term.cols;
+          lastSentRows = term.rows;
+          window.orchestra.ptyResize(workspaceId, term.cols, term.rows);
+        })
+        .catch((e) => {
+          term.writeln(`\r\n\x1b[31mFailed to start agent: ${e.message}\x1b[0m`);
+        });
     };
 
     const offData = window.orchestra.onPtyData((id, data) => {
