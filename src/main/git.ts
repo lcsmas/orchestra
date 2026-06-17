@@ -525,6 +525,27 @@ async function isAncestor(
   }
 }
 
+/** Cheap, network-free check: is the branch tip already contained in the build
+ *  of `tag` (i.e. the tip is an ancestor of the tag commit)? Lets callers decide
+ *  whether a previously-recorded `releasedVersion` is still accurate before
+ *  paying for the gh-backed `getReleaseState` recompute. Returns true on any
+ *  error (tag missing locally, transient git failure) so we never thrash or
+ *  drop a known-good version over a flaky read. */
+export async function branchTipShippedIn(
+  repoPath: string,
+  branch: string,
+  tag: string,
+): Promise<boolean> {
+  try {
+    const git = simpleGit(repoPath);
+    const branchSha = (await git.raw(['rev-parse', branch])).trim();
+    const tagSha = (await git.raw(['rev-parse', `${tag}^{commit}`])).trim();
+    return await isAncestor(repoPath, branchSha, tagSha);
+  } catch {
+    return true;
+  }
+}
+
 /** Whether this branch's work has shipped: a published GitHub Release whose
  *  build contains the branch tip (the tag commit has the tip as an ancestor —
  *  the exact proxy for "the AppImage was built with this branch's commits").

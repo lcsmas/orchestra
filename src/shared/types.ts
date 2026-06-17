@@ -36,16 +36,21 @@ export interface Workspace {
    * `divergedFromBase` on every Stop hook. */
   unpushedAhead?: number;
   /** Tag of the first published GitHub Release whose build contains this
-   * branch's tip (e.g. `v0.1.11`). Drives the sidebar "released" pill. */
+   * branch's tip (e.g. `v0.1.11`). Drives the sidebar "released" pill. Tracks
+   * the current tip: if the same workspace ships again with new commits, this
+   * is recomputed to the release that first contains the newer tip. */
   releasedVersion?: string;
   /** Epoch ms the shipping release was published (GitHub `publishedAt`), or
    * detection time as a fallback. Presence is the "released" signal — strictly
    * stronger than `mergedAt`: merged-into-base isn't enough, a published
-   * release must have actually shipped past this branch's tip. Set once and
-   * never cleared (shipping is terminal), and only ever on a branch that has
-   * also been merged — so a fresh branch sitting on an already-shipped base
-   * commit doesn't false-fire. Recomputed lazily on the same gh-based cadence
-   * as PR state, never on the hot stats poll. */
+   * release must have actually shipped past this branch's tip. Never cleared
+   * back to unset (a branch that shipped stays shipped), but the version it
+   * points at is refreshed when the tip advances past the recorded release.
+   * Only ever set on a branch that has also been merged — so a fresh branch
+   * sitting on an already-shipped base commit doesn't false-fire. Recomputed
+   * lazily on the same gh-based cadence as PR state, never on the hot stats
+   * poll, and only pays for a gh call once the cheap local ancestry check sees
+   * the recorded version no longer contains the tip. */
   releasedAt?: number;
   /** Auto-allocated dev-server port handed to setup/run scripts as
    * `$ORCHESTRA_PORT`. Lets multiple workspaces run dev servers in parallel
