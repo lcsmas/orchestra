@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 
 interface Props {
@@ -56,6 +57,8 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       cursorBlink: true,
       fontSize: 13,
       fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+      // Required so the unicode11 addon can register its width provider.
+      allowProposedApi: true,
       theme: {
         background: '#1a1f26',
         foreground: '#e6e9ef',
@@ -80,6 +83,17 @@ export function TerminalView({ workspaceId, isActive }: Props) {
         window.orchestra.openExternal(uri);
       }),
     );
+    // Match Claude's TUI character-width accounting. Claude (Ink) measures with
+    // string-width (Unicode 11+), so emoji like ✅/❌ are width 2. xterm.js
+    // defaults to a Unicode 6 table that counts them as width 1. The disagreement
+    // makes a line wrap in Claude's model but not in xterm's; Claude then erases
+    // its previous frame by the wrong number of rows (cursor-up counted at its
+    // own width) and overwrites text that xterm never wrapped — old text is left
+    // in place and new text lands on top. Activating Unicode 11 here aligns the
+    // two so wrap and erase counts agree.
+    const unicode11 = new Unicode11Addon();
+    term.loadAddon(unicode11);
+    term.unicode.activeVersion = '11';
     term.open(containerRef.current);
     termRef.current = term;
     fitRef.current = fit;
