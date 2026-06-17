@@ -612,6 +612,9 @@ export function Sidebar({ onNewFromRepo }: Props) {
               });
               const visiblePRs = orderedPRs.slice(0, 3);
               const hiddenPRs = orderedPRs.length - visiblePRs.length;
+              // The purple #N merged PR badge already conveys "merged", so
+              // suppress the standalone merged pill when one is visible.
+              const hasMergedPRBadge = visiblePRs.some((p) => p.state === 'MERGED');
               const wsDnd =
                 dragWs?.id === w.id
                   ? ' dragging'
@@ -700,7 +703,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
                           )}
                         </div>
                       )}
-                      {w.mergedAt && !w.divergedFromBase && (
+                      {w.mergedAt && !w.divergedFromBase && !hasMergedPRBadge && (
                         <span className="merged-pill" title={`Merged into ${w.baseBranch}`}>
                           merged
                         </span>
