@@ -31,7 +31,15 @@ async function setStatus(
   if (!ws || ws.archived) return null;
   if (ws.status === status) return ws;
   const updated: Workspace = { ...ws, status };
-  await store.upsertWorkspace(updated);
+  // Broadcast to the renderer first, then persist. upsertWorkspace mutates the
+  // in-memory store synchronously (before its first await), so state is already
+  // consistent here — but its disk flush is serialized through one write chain
+  // (tmp-write + atomic rename of the whole store.json). The 8s stats poll
+  // enqueues a save per workspace onto that same chain, so awaiting the flush
+  // would make the status dot wait behind a batch of unrelated full-file
+  // writes — the visible latency. The dot is ephemeral UI; it must not block on
+  // durability, so fire the persist and let it flush in the background.
+  void store.upsertWorkspace(updated).catch(() => {});
   if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
     window.webContents.send('workspace:update', updated);
   }
@@ -138,7 +146,9 @@ export async function detectAndUpdateMergeState(
     divergedFromBase: nextDiverged,
     unpushedAhead: nextUnpushed,
   };
-  await store.upsertWorkspace(updated);
+  // Broadcast before persisting — see setStatus: the renderer must not wait on
+  // the serialized store-write chain to reflect the merge pill / ↑N badge.
+  void store.upsertWorkspace(updated).catch(() => {});
   if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
     window.webContents.send('workspace:update', updated);
   }
@@ -174,7 +184,9 @@ export async function detectAndUpdateBranchName(
     name: `${repoName} · ${live}`,
     branchManuallySet: true,
   };
-  await store.upsertWorkspace(updated);
+  // Broadcast before persisting — see setStatus: don't gate the renamed-branch
+  // UI on the serialized store-write chain.
+  void store.upsertWorkspace(updated).catch(() => {});
   if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
     window.webContents.send('workspace:update', updated);
   }
@@ -217,7 +229,9 @@ export async function detectAndUpdateReleaseState(
     releasedAt: releasedAt ?? Date.now(),
     releasedVersion: version,
   };
-  await store.upsertWorkspace(updated);
+  // Broadcast before persisting — see setStatus: don't gate the released-version
+  // pill on the serialized store-write chain.
+  void store.upsertWorkspace(updated).catch(() => {});
   if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
     window.webContents.send('workspace:update', updated);
   }
