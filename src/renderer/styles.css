@@ -612,7 +612,13 @@ input:focus, textarea:focus, select:focus {
   letter-spacing: 0.8px;
   color: var(--text-dim);
 }
-.repo-collapse {
+/* Inherits the global <button> base, so explicitly strip every bit of button
+   chrome (background, border, shadow, padding, hover/focus/active states) — it
+   should read as the plain repo label it replaced, just with a caret. */
+.repo-collapse,
+.repo-collapse:hover,
+.repo-collapse:focus-visible,
+.repo-collapse:active {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -620,7 +626,11 @@ input:focus, textarea:focus, select:focus {
   flex: 1;
   padding: 0;
   border: none;
+  border-radius: 0;
   background: transparent;
+  box-shadow: none;
+  outline: none;
+  transform: none;
   color: inherit;
   font: inherit;
   text-transform: inherit;
