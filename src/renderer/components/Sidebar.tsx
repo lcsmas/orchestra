@@ -228,6 +228,16 @@ export function Sidebar({ onNewFromRepo }: Props) {
   } = useStore();
   const [version, setVersion] = useState('');
   const [archivedOpen, setArchivedOpen] = useState(false);
+  // Per-repo collapse state, persisted across sessions so a repo the user
+  // folded away stays folded next launch.
+  const [collapsedRepos, setCollapsedRepos] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('orchestra.collapsedRepos');
+      return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+    } catch {
+      return new Set();
+    }
+  });
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
   const [scriptsRepoPath, setScriptsRepoPath] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -285,6 +295,20 @@ export function Sidebar({ onNewFromRepo }: Props) {
     paths.splice(to, 0, dragRepo);
     void reorderRepos(paths);
     clearDnd();
+  };
+
+  const toggleRepoCollapsed = (repoPath: string) => {
+    setCollapsedRepos((prev) => {
+      const next = new Set(prev);
+      if (next.has(repoPath)) next.delete(repoPath);
+      else next.add(repoPath);
+      try {
+        localStorage.setItem('orchestra.collapsedRepos', JSON.stringify(Array.from(next)));
+      } catch {
+        /* persistence is best-effort — ignore quota/serialization failures */
+      }
+      return next;
+    });
   };
 
   const dropPosFromEvent = (e: React.DragEvent): 'before' | 'after' => {
@@ -480,6 +504,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
           // Only registered repos can be reordered — orphan repoPaths (entry
           // removed but workspaces remain) always trail and aren't draggable.
           const isRegisteredRepo = repos.some((r) => r.path === repoPath);
+          const collapsed = collapsedRepos.has(repoPath);
           const repoDnd =
             dragRepo === repoPath
               ? ' repo-dragging'
@@ -525,7 +550,18 @@ export function Sidebar({ onNewFromRepo }: Props) {
               }}
               onDragEnd={clearDnd}
             >
-              <span className="repo-name">{repoLabel(repoPath)}</span>
+              <button
+                className="repo-collapse"
+                aria-expanded={!collapsed}
+                aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${repoLabel(repoPath)}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleRepoCollapsed(repoPath);
+                }}
+              >
+                <span className={`caret ${collapsed ? '' : 'open'}`}>▸</span>
+                <span className="repo-name">{repoLabel(repoPath)}</span>
+              </button>
               <span className="repo-header-actions">
                 <span className="repo-count">{items.length}</span>
                 {repoRemoteUrl(repoPath) && (
@@ -563,7 +599,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
                 </button>
               </span>
             </div>
-            {(() => {
+            {!collapsed && (() => {
               const sync = repoSync[repoPath];
               if (!sync) return null;
               return (
@@ -598,7 +634,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
                 </div>
               );
             })()}
-            {items.map((w) => {
+            {!collapsed && items.map((w) => {
               const s = stats[w.id];
               const hasChanges = !!s && (s.additions > 0 || s.deletions > 0);
               const sizeBytes = sizes[w.id];
