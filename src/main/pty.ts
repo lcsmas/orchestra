@@ -30,12 +30,31 @@ interface Session {
    *  spamming SIGWINCH and forcing the TUI to repaint. */
   cols: number;
   rows: number;
+  /** Coalescing buffer for `pty:data`. node-pty emits many tiny chunks during
+   *  heavy output; we accumulate them and flush a few larger IPC messages on a
+   *  short timer instead. See FLUSH_* constants. */
+  outBuf: string;
+  flushTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const sessions = new Map<string, Session>();
 
 const LOG_DIR = path.join(os.homedir(), '.orchestra', 'logs');
 const MAX_LOG_BYTES = 2 * 1024 * 1024; // 2 MB cap per workspace
+
+// pty:data coalescing. All main→renderer IPC — terminal output AND the
+// latency-sensitive workspace:update (status dot), agent:tool, etc. — shares a
+// single ordered queue per renderer. Sending one IPC message per node-pty chunk
+// floods that queue with hundreds of tiny messages during a burst of agent
+// output, head-of-line-blocking the status events queued behind them (the
+// reported multi-second status-dot lag) and, with several agents streaming at
+// once, burning main-process time on per-message structured-clone + dispatch.
+// Buffering a frame's worth of output into one message collapses a burst of
+// chunks into a handful of sends. FLUSH_MS bounds the added terminal latency;
+// FLUSH_BYTES forces an early flush so a fast producer can't grow the buffer
+// unbounded or stall output behind the timer.
+const FLUSH_MS = 8;
+const FLUSH_BYTES = 64 * 1024;
 
 function logFileFor(id: string) {
   return path.join(LOG_DIR, `${id}.log`);
@@ -82,6 +101,35 @@ export function clearScrollback(id: string) {
 
 function canSend(window: BrowserWindow): boolean {
   return !window.isDestroyed() && !window.webContents.isDestroyed();
+}
+
+/** Send whatever output has accumulated for this session as one `pty:data`
+ *  message and clear the buffer + pending timer. Safe to call when empty. */
+function flushPtyData(s: Session, window: BrowserWindow): void {
+  if (s.flushTimer) {
+    clearTimeout(s.flushTimer);
+    s.flushTimer = null;
+  }
+  if (!s.outBuf) return;
+  const data = s.outBuf;
+  s.outBuf = '';
+  if (canSend(window)) window.webContents.send('pty:data', s.id, data);
+}
+
+/** Buffer a chunk and ensure a flush is scheduled. Flushes immediately once the
+ *  buffer crosses FLUSH_BYTES so a fast producer doesn't sit behind the timer. */
+function queuePtyData(s: Session, window: BrowserWindow, data: string): void {
+  s.outBuf += data;
+  if (s.outBuf.length >= FLUSH_BYTES) {
+    flushPtyData(s, window);
+    return;
+  }
+  if (!s.flushTimer) {
+    s.flushTimer = setTimeout(() => {
+      s.flushTimer = null;
+      flushPtyData(s, window);
+    }, FLUSH_MS);
+  }
 }
 
 export async function startPty(opts: {
@@ -168,12 +216,17 @@ export async function startPty(opts: {
     logPath,
     cols: Math.max(20, opts.cols),
     rows: Math.max(5, opts.rows),
+    outBuf: '',
+    flushTimer: null,
   };
   sessions.set(opts.id, session);
 
   session.disposables.push(
     proc.onData((data) => {
       if (session.stopped) return;
+      // Log every chunk as it arrives (the WriteStream is async + cheap) so the
+      // on-disk scrollback stays byte-exact and the trim/rotate accounting is
+      // unaffected by IPC coalescing below.
       if (session.logStream) {
         session.logStream.write(data);
         session.logBytes += Buffer.byteLength(data);
@@ -183,13 +236,18 @@ export async function startPty(opts: {
           session.logStream = fs.createWriteStream(session.logPath, { flags: 'a' });
         }
       }
-      if (!canSend(opts.window)) return;
-      opts.window.webContents.send('pty:data', opts.id, data);
+      // Coalesce the IPC send so a burst of tiny chunks doesn't flood the
+      // shared renderer queue and stall the status dot. Order is preserved:
+      // appends and flushes are FIFO on this single buffer.
+      queuePtyData(session, opts.window, data);
     }),
   );
   session.disposables.push(
     proc.onExit(({ exitCode }) => {
       log.info(`pty exited id=${opts.id} code=${exitCode}${session.stopped ? ' (stopped)' : ''}`);
+      // Flush any buffered tail before the exit notification so the terminal
+      // shows the process's final output, and so it can't arrive after exit.
+      flushPtyData(session, opts.window);
       if (!session.stopped && canSend(opts.window)) {
         opts.window.webContents.send('pty:exit', opts.id, exitCode);
       }
@@ -201,6 +259,13 @@ export async function startPty(opts: {
 
 function disposeSession(s: Session) {
   s.stopped = true;
+  // Drop any buffered output and its pending flush — the session is going away
+  // (process exited or was stopped), so there's no live terminal to send to.
+  if (s.flushTimer) {
+    clearTimeout(s.flushTimer);
+    s.flushTimer = null;
+  }
+  s.outBuf = '';
   for (const d of s.disposables) {
     try {
       d.dispose();
