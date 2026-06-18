@@ -612,6 +612,31 @@ input:focus, textarea:focus, select:focus {
   letter-spacing: 0.8px;
   color: var(--text-dim);
 }
+.repo-collapse {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.repo-collapse .caret {
+  flex: none;
+  font-size: 9px;
+  color: var(--text-dim);
+  transition: transform 0.12s ease;
+}
+.repo-collapse .caret.open { transform: rotate(90deg); }
+.repo-collapse:hover .repo-name,
+.repo-collapse:hover .caret { color: var(--text); }
 .repo-name {
   overflow: hidden;
   text-overflow: ellipsis;
