@@ -25,6 +25,11 @@ interface Session {
   logStream: fs.WriteStream | null;
   logBytes: number;
   logPath: string;
+  /** Last winsize applied to the pty. Lets resizePty drop no-op resizes so the
+   *  renderer can re-assert the size on focus/activate (to heal drift) without
+   *  spamming SIGWINCH and forcing the TUI to repaint. */
+  cols: number;
+  rows: number;
 }
 
 const sessions = new Map<string, Session>();
@@ -161,6 +166,8 @@ export async function startPty(opts: {
     logStream,
     logBytes: initialSize,
     logPath,
+    cols: Math.max(20, opts.cols),
+    rows: Math.max(5, opts.rows),
   };
   sessions.set(opts.id, session);
 
@@ -220,7 +227,13 @@ export function writePty(id: string, data: string) {
 
 export function resizePty(id: string, cols: number, rows: number) {
   const s = sessions.get(id);
-  if (s && !s.stopped) s.pty.resize(Math.max(20, cols), Math.max(5, rows));
+  if (!s || s.stopped) return;
+  const c = Math.max(20, cols);
+  const r = Math.max(5, rows);
+  if (s.cols === c && s.rows === r) return; // no-op — don't churn SIGWINCH/repaint
+  s.cols = c;
+  s.rows = r;
+  s.pty.resize(c, r);
 }
 
 export function stopPty(id: string) {
