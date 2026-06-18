@@ -49,6 +49,9 @@ export function TerminalView({ workspaceId, isActive }: Props) {
   const thumbRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  // Lets the isActive effect re-assert the PTY size when this tab is shown,
+  // healing any drift accrued while it was hidden. Set in the mount effect.
+  const forceRefitRef = useRef<(() => void) | null>(null);
 
   // Mount xterm once per workspaceId. Never unmounts while the workspace exists.
   useEffect(() => {
@@ -166,7 +169,12 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     let lastSentCols = 0;
     let lastSentRows = 0;
 
-    const refit = () => {
+    // force: re-send the size to the PTY even if it matches what we last sent.
+    // Used by the focus/visibility/activate reconcilers to heal any drift where
+    // the PTY's real winsize fell out of sync with xterm (a resize that never
+    // reached it). The main process suppresses no-op resizes, so re-asserting
+    // an unchanged size can't cause SIGWINCH churn.
+    const refit = (force = false) => {
       try {
         const dims = fit.proposeDimensions();
         if (!dims || !dims.cols || !dims.rows) return;
@@ -175,7 +183,7 @@ export function TerminalView({ workspaceId, isActive }: Props) {
         const rows = dims.rows;
         const xtermChanged = cols !== term.cols || rows !== term.rows;
         if (xtermChanged) term.resize(cols, rows);
-        if (started && (cols !== lastSentCols || rows !== lastSentRows)) {
+        if (started && (force || cols !== lastSentCols || rows !== lastSentRows)) {
           lastSentCols = cols;
           lastSentRows = rows;
           window.orchestra.ptyResize(workspaceId, cols, rows);
@@ -184,6 +192,7 @@ export function TerminalView({ workspaceId, isActive }: Props) {
         /* ignore */
       }
     };
+    forceRefitRef.current = () => refit(true);
 
     // Start the PTY only after we have real container dimensions. Inactive
     // workspace tabs render with display:none, which makes proposeDimensions
@@ -308,13 +317,16 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     // size doesn't change on window show, so ResizeObserver won't fire; xterm
     // can end up rendering smaller than the viewport if the canvas was
     // measured while occluded or at an intermediate layout size.
+    // force=true so these heal a PTY whose winsize has drifted out of sync with
+    // xterm even when our own bookkeeping thinks the size is unchanged (e.g. a
+    // resize whose ptyResize never reached the PTY). Cheap: main drops no-ops.
     const onVisible = () => {
       if (!started || document.visibilityState !== 'visible') return;
-      requestAnimationFrame(refit);
+      requestAnimationFrame(() => refit(true));
     };
     const onFocus = () => {
       if (!started) return;
-      requestAnimationFrame(refit);
+      requestAnimationFrame(() => refit(true));
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onFocus);
@@ -334,18 +346,22 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       offData();
       offExit();
       offRestart();
+      forceRefitRef.current = null;
       term.dispose();
       termRef.current = null;
     };
   }, [workspaceId]);
 
   // Focus xterm's input when this tab becomes active so typing goes straight
-  // to the agent without requiring a click.
+  // to the agent without requiring a click. Also re-assert the PTY size: a tab
+  // switch doesn't change window focus, so onFocus won't fire, and the pane may
+  // have drifted out of sync with the PTY while hidden.
   useEffect(() => {
     if (!isActive || !termRef.current) return;
     const raf = requestAnimationFrame(() => {
       try {
         termRef.current?.focus();
+        forceRefitRef.current?.();
       } catch {
         /* ignore */
       }
