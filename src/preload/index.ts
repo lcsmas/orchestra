@@ -17,6 +17,7 @@ const api: OrchestraAPI = {
 
   listWorkspaces: () => ipcRenderer.invoke('workspaces:list'),
   createWorkspace: (input) => ipcRenderer.invoke('workspaces:create', input),
+  createScratchWorkspace: () => ipcRenderer.invoke('workspaces:createScratch'),
   archiveWorkspace: (id) => ipcRenderer.invoke('workspaces:archive', id),
   unarchiveWorkspace: (id) => ipcRenderer.invoke('workspaces:unarchive', id),
   deleteWorkspace: (id) => ipcRenderer.invoke('workspaces:delete', id),

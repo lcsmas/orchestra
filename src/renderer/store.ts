@@ -34,6 +34,7 @@ interface State {
   refreshRepos: () => Promise<void>;
   addRepo: () => Promise<RepoEntry | null>;
   createWorkspace: (input: CreateWorkspaceInput) => Promise<void>;
+  createScratchWorkspace: () => Promise<void>;
   quickCreateWorkspace: () => Promise<void>;
   createWorkspaceInNewRepo: () => Promise<void>;
   archive: (id: string) => Promise<void>;
@@ -119,6 +120,20 @@ export const useStore = create<State>((set, get) => ({
         : [...s.workspaces, ws],
       activeId: ws.id,
     }));
+  },
+
+  createScratchWorkspace: async () => {
+    try {
+      const ws = await window.orchestra.createScratchWorkspace();
+      set((s) => ({
+        workspaces: s.workspaces.some((x) => x.id === ws.id)
+          ? s.workspaces.map((x) => (x.id === ws.id ? { ...x, ...ws } : x))
+          : [...s.workspaces, ws],
+        activeId: ws.id,
+      }));
+    } catch (e) {
+      void dialog.error('Could not create scratch session', (e as Error).message);
+    }
   },
 
   quickCreateWorkspace: async () => {
