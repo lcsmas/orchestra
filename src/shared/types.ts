@@ -3,6 +3,15 @@ export type WorkspaceStatus = 'idle' | 'running' | 'waiting' | 'error' | 'stoppe
 export interface Workspace {
   id: string;
   name: string;
+  /** Workspace kind. `'worktree'` (the default, and what every pre-existing
+   * record is treated as when this field is absent) is a git worktree cut from
+   * a repo's base branch — it has a branch, a diff against base, and can merge /
+   * open PRs. `'scratch'` is a throwaway, non-git working directory under
+   * `~/.orchestra/scratch`: Claude Code runs in it exactly the same way, but
+   * there is no repo, branch, diff, merge, or PR. For a scratch workspace
+   * `repoPath` and `baseBranch` are empty strings and `branch` is just a display
+   * label. */
+  kind?: 'worktree' | 'scratch';
   repoPath: string;
   worktreePath: string;
   branch: string;

@@ -7,6 +7,7 @@ import { dialog } from './Dialog';
 
 interface Props {
   onNewFromRepo: () => void;
+  onNewScratch: () => void;
 }
 
 /** Compact human size for a worktree, e.g. 1536 → "1.5 KB", 2.8e9 → "2.6 GB".
@@ -39,6 +40,16 @@ function BellIcon() {
     >
       <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
       <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+    </svg>
+  );
+}
+
+function ZapIcon() {
+  // Lucide `zap` — a quick, throwaway scratch session.
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor"
+      strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" />
     </svg>
   );
 }
@@ -208,7 +219,7 @@ function groupByRepo(list: Workspace[]): Map<string, Workspace[]> {
   return groups;
 }
 
-export function Sidebar({ onNewFromRepo }: Props) {
+export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
   const {
     workspaces,
     repos,
@@ -335,6 +346,9 @@ export function Sidebar({ onNewFromRepo }: Props) {
 
   const active = workspaces.filter((w) => !w.archived);
   const archived = workspaces.filter((w) => w.archived);
+  // Scratch sessions have no repo, so they're shown in their own pinned group
+  // at the top of the list rather than threaded through the repo sections.
+  const scratchSessions = active.filter((w) => w.kind === 'scratch');
 
   const allArchivedSelected =
     archived.length > 0 && archived.every((w) => selectedArchived.has(w.id));
@@ -439,6 +453,26 @@ export function Sidebar({ onNewFromRepo }: Props) {
     }
   };
 
+  const onDeleteScratch = async (e: React.MouseEvent, id: string, label: string) => {
+    e.stopPropagation();
+    const ok = await dialog.confirm({
+      title: 'Delete scratch session',
+      message: `Delete scratch session "${label}"?`,
+      detail: 'This removes its working directory and conversation from disk. Scratch sessions are not tracked by git, so this cannot be undone.',
+      tone: 'danger',
+      confirmLabel: 'Delete',
+    });
+    if (!ok) return;
+    markDeleting(id, true);
+    try {
+      await deleteWorkspace(id);
+    } catch (err) {
+      void dialog.error('Could not delete scratch session', (err as Error).message);
+    } finally {
+      markDeleting(id, false);
+    }
+  };
+
   const onAddToRepo = async (e: React.MouseEvent, repoPath: string) => {
     e.stopPropagation();
     try {
@@ -448,7 +482,7 @@ export function Sidebar({ onNewFromRepo }: Props) {
     }
   };
 
-  const activeGroups = groupByRepo(active);
+  const activeGroups = groupByRepo(active.filter((w) => w.kind !== 'scratch'));
   // Show every registered repo as a section, plus any orphan repoPaths that
   // still have workspaces (e.g. the repo entry was removed but workspaces
   // remain). This way a repo header stays visible — with a 0 count and an
@@ -484,6 +518,15 @@ export function Sidebar({ onNewFromRepo }: Props) {
           </button>
           <button
             className="header-repo-btn"
+            onClick={onNewScratch}
+            title="New scratch session — throwaway, no git repo needed"
+            aria-label="New scratch session"
+          >
+            <ZapIcon />
+            <span>Scratch</span>
+          </button>
+          <button
+            className="header-repo-btn"
             onClick={onNewFromRepo}
             title="New workspace from a git repo…"
             aria-label="New workspace from a git repo"
@@ -494,9 +537,75 @@ export function Sidebar({ onNewFromRepo }: Props) {
         </div>
       </div>
       <div className="ws-list">
-        {repoOrder.length === 0 && archived.length === 0 && (
+        {repoOrder.length === 0 && archived.length === 0 && scratchSessions.length === 0 && (
           <div style={{ padding: '20px', color: 'var(--text-dim)', fontSize: 12 }}>
-            No agents running. Click <strong>Repo</strong> to map a git repo and spawn one.
+            No agents running. Click <strong>Scratch</strong> for a quick throwaway session, or <strong>Repo</strong> to map a git repo.
+          </div>
+        )}
+        {scratchSessions.length > 0 && (
+          <div className="repo-section scratch-section">
+            <div className="repo-header">
+              <div className="repo-collapse" style={{ cursor: 'default' }}>
+                <span className="scratch-glyph" aria-hidden="true"><ZapIcon /></span>
+                <span className="repo-name">Scratch</span>
+              </div>
+              <span className="repo-header-actions">
+                <span className="repo-count">{scratchSessions.length}</span>
+                <button
+                  className="repo-add"
+                  title="New scratch session"
+                  aria-label="New scratch session"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onNewScratch();
+                  }}
+                >
+                  +
+                </button>
+              </span>
+            </div>
+            {scratchSessions.map((w) => {
+              const isDeleting = deletingIds.has(w.id);
+              return (
+                <div
+                  key={w.id}
+                  className={`ws-item ${activeId === w.id ? 'active' : ''}${isDeleting ? ' deleting' : ''}`}
+                  onClick={() => setActive(w.id)}
+                >
+                  <div
+                    className={`ws-dot ${w.status as WorkspaceStatus}`}
+                    title={
+                      w.status === 'running'
+                        ? tools[w.id]
+                          ? `Agent is working… (${tools[w.id]})`
+                          : 'Agent is working…'
+                        : w.status === 'idle'
+                          ? 'Agent is idle'
+                          : w.status
+                    }
+                  />
+                  <div className="ws-body">
+                    <div className="ws-name-row">
+                      <div className="ws-name" title={`${w.branch} — scratch session (not tracked by git)`}>
+                        {w.branch}
+                      </div>
+                    </div>
+                  </div>
+                  {isDeleting ? (
+                    <span className="ws-spinner" title="Deleting…" aria-label="Deleting" role="status" />
+                  ) : (
+                    <button
+                      className="ws-icon-btn danger"
+                      title="Delete scratch session"
+                      aria-label={`Delete scratch session ${w.branch}`}
+                      onClick={(e) => onDeleteScratch(e, w.id, w.branch)}
+                    >
+                      <TrashIcon />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
         {repoOrder.map((repoPath) => {

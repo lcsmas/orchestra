@@ -29,6 +29,7 @@ export function App() {
     load,
     loaded,
     createWorkspaceInNewRepo,
+    createScratchWorkspace,
     stats,
     refreshAllStats,
     refreshSizes,
@@ -152,7 +153,16 @@ export function App() {
 
   const liveWorkspaces = workspaces.filter((w) => !w.archived);
   const active = liveWorkspaces.find((w) => w.id === activeId);
+  const isScratch = active?.kind === 'scratch';
   const openPR = active ? prs[active.id]?.open ?? null : null;
+
+  // A scratch session is non-git and has no repo, so only the Terminal tab is
+  // shown (no Diff, no Run). If the user had one of those selected and then
+  // switches to a scratch session, fall back to the terminal so the pane isn't
+  // left blank.
+  useEffect(() => {
+    if (isScratch && view !== 'terminal') setView('terminal');
+  }, [isScratch, view, setView]);
   const [merging, setMerging] = useState(false);
   const onRestart = async () => {
     if (!active) return;
@@ -189,31 +199,43 @@ export function App() {
 
   return (
     <div className="app">
-      <Sidebar onNewFromRepo={createWorkspaceInNewRepo} />
+      <Sidebar onNewFromRepo={createWorkspaceInNewRepo} onNewScratch={createScratchWorkspace} />
       <main className="main">
         {!loaded && <div className="empty">Loading…</div>}
         {loaded && !active && (
           <div className="empty">
             <h2>Welcome to Orchestra</h2>
-            <div>Spawn Claude Code agents in isolated git worktrees.</div>
-            <button className="primary" onClick={createWorkspaceInNewRepo}>+ New workspace</button>
+            <div>Spawn Claude Code agents in isolated git worktrees — or a quick scratch session with no repo.</div>
+            <div className="empty-actions">
+              <button className="primary" onClick={createWorkspaceInNewRepo}>+ New workspace</button>
+              <button className="secondary" onClick={createScratchWorkspace}>⚡ Scratch session</button>
+            </div>
           </div>
         )}
         {loaded && active && (
           <>
             <div className="toolbar">
               <div className="title">
-                <span className="branch-chip base" title={`base branch: ${active.baseBranch}`}>
-                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-                    <path
-                      fill="currentColor"
-                      d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.492 2.492 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"
-                    />
-                  </svg>
-                  <span className="branch-chip-text">{active.baseBranch}</span>
-                </span>
-                <span className="branch-arrow" aria-hidden="true">→</span>
-                <BranchPicker workspaceId={active.id} currentBranch={active.branch} />
+                {isScratch ? (
+                  <span className="branch-chip scratch" title="Scratch session — not tracked by git">
+                    <span aria-hidden="true">⚡</span>
+                    <span className="branch-chip-text">{active.branch}</span>
+                  </span>
+                ) : (
+                  <>
+                    <span className="branch-chip base" title={`base branch: ${active.baseBranch}`}>
+                      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                        <path
+                          fill="currentColor"
+                          d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.492 2.492 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"
+                        />
+                      </svg>
+                      <span className="branch-chip-text">{active.baseBranch}</span>
+                    </span>
+                    <span className="branch-arrow" aria-hidden="true">→</span>
+                    <BranchPicker workspaceId={active.id} currentBranch={active.branch} />
+                  </>
+                )}
               </div>
               <div className="tabs">
                 <button
@@ -222,6 +244,7 @@ export function App() {
                 >
                   Terminal
                 </button>
+                {!isScratch && (
                 <button
                   className={`tab ${view === 'diff' ? 'active' : ''}`}
                   onClick={() => setView('diff')}
@@ -238,7 +261,8 @@ export function App() {
                     </span>
                   )}
                 </button>
-                {(() => {
+                )}
+                {!isScratch && (() => {
                   const repo = findRepo(active.repoPath);
                   const hasRun = !!repo?.scripts?.run;
                   // Tab stays visible without a run script so users notice the
@@ -281,7 +305,7 @@ export function App() {
                   <polyline points="21 4 21 9 16 9" />
                 </svg>
               </button>
-              {(() => {
+              {!isScratch && (() => {
                 // "In sync" = at least one merge has landed AND the branch
                 // hasn't diverged since. The button stays clickable in
                 // either state — agents handle re-merges fine, and the user
@@ -320,7 +344,7 @@ export function App() {
                   </button>
                 );
               })()}
-              {openPR ? (
+              {!isScratch && (openPR ? (
                 <button
                   className="primary pr-link"
                   onClick={() => window.orchestra.openExternal(openPR.url)}
@@ -354,7 +378,7 @@ export function App() {
                     {primed ? `Open PR · ↑${unpushed}` : 'Open PR'}
                   </button>
                 );
-              })()}
+              })())}
               <button
                 className={`pane-toggle ${nvimOpen ? 'active' : ''}`}
                 onClick={() => setNvimOpen((v) => !v)}

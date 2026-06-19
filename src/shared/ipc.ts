@@ -38,6 +38,10 @@ export interface OrchestraAPI {
   // Workspaces
   listWorkspaces: () => Promise<Workspace[]>;
   createWorkspace: (input: CreateWorkspaceInput) => Promise<Workspace>;
+  /** Create a scratch session: a throwaway, non-git working directory under
+   * `~/.orchestra/scratch` with Claude Code ready to run. No repo, branch,
+   * diff, merge, or PR — for starting something without wiring up a repo. */
+  createScratchWorkspace: () => Promise<Workspace>;
   archiveWorkspace: (id: string) => Promise<void>;
   unarchiveWorkspace: (id: string) => Promise<void>;
   deleteWorkspace: (id: string) => Promise<void>;

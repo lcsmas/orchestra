@@ -602,6 +602,15 @@ input:focus, textarea:focus, select:focus {
 .ws-list::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .repo-section { padding: 4px 0 8px; }
 .repo-section + .repo-section { border-top: 1px solid var(--border); }
+/* Pinned scratch group at the top of the list. The amber glyph echoes the
+   scratch chip in the toolbar so the two read as the same concept. */
+.scratch-section { border-bottom: 1px solid var(--border); }
+.scratch-section .repo-name { color: #e3b341; }
+.scratch-glyph {
+  display: inline-flex;
+  align-items: center;
+  color: #e3b341;
+}
 .repo-header {
   display: flex;
   justify-content: space-between;
@@ -1153,6 +1162,13 @@ input:focus, textarea:focus, select:focus {
   background: rgba(110, 168, 255, 0.1);
   border-color: rgba(110, 168, 255, 0.35);
 }
+/* Scratch session marker in the toolbar — amber, to read as "throwaway / not
+   git-tracked" rather than a normal branch. */
+.branch-chip.scratch {
+  color: #e3b341;
+  background: rgba(227, 179, 65, 0.1);
+  border-color: rgba(227, 179, 65, 0.35);
+}
 .branch-chip svg {
   flex-shrink: 0;
   opacity: 0.8;
@@ -1650,6 +1666,19 @@ button.active {
   gap: 12px;
 }
 .empty h2 { margin: 0; color: var(--text); font-weight: 600; }
+.empty-actions { display: flex; gap: 10px; align-items: center; margin-top: 4px; }
+/* Secondary CTA (e.g. "Scratch session") — quieter than button.primary, sits
+   next to it on the welcome screen. */
+button.secondary {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-weight: 600;
+}
+button.secondary:hover {
+  border-color: rgba(227, 179, 65, 0.5);
+  color: #e3b341;
+}
 
 /* Modal */
 .modal-backdrop {

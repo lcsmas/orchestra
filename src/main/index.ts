@@ -108,6 +108,7 @@ import type { Workspace } from '../shared/types';
 import {
   archiveWorkspace,
   createWorkspace,
+  createScratchWorkspace,
   deleteWorkspace,
   ensureRoot,
   ensureWorkspacePort,
@@ -358,6 +359,10 @@ handle('workspaces:create', async (_e, input: CreateWorkspaceInput) => {
   return createWorkspace(input, getMainWindow());
 });
 
+handle('workspaces:createScratch', async () => {
+  return createScratchWorkspace(getMainWindow());
+});
+
 handle('workspaces:archive', async (_e, id: string) => {
   await archiveWorkspace(id, getMainWindow());
 });
@@ -512,12 +517,16 @@ handle('agent:restart', (_e, id: string) => {
 handle('git:diff', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
+  if (ws.kind === 'scratch') return []; // non-git dir — no diff against a base
   return getDiff(ws.worktreePath, ws.baseBranch);
 });
 
 handle('git:stats', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
+  // Scratch sessions aren't git-backed: no diff stats, and none of the merge /
+  // branch reconciliation below applies.
+  if (ws.kind === 'scratch') return { additions: 0, deletions: 0, files: 0 };
   // Piggyback merge/unpushed state refresh on the renderer's 8s stats poll.
   // Cheap (two `rev-list --count` calls), and keeps the ↑N badge live even
   // when the agent isn't running — which is exactly when the user finishes
@@ -535,6 +544,7 @@ handle('workspaces:sizes', () => getWorktreeSizes());
 handle('git:findPR', async (_e, id: string) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
+  if (ws.kind === 'scratch') return { all: [], open: null, latest: null, mergedCount: 0 };
   // Piggyback release detection on the PR poll: same gh-based, 12s + on-focus
   // cadence, and never on the hot stats poll. Short-circuits before any gh
   // call unless the branch is merged-but-not-yet-released, so it's nearly free.

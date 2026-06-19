@@ -117,7 +117,7 @@ export async function detectAndUpdateMergeState(
   window: BrowserWindow,
 ): Promise<void> {
   const ws = store.getWorkspace(id);
-  if (!ws || ws.archived) return;
+  if (!ws || ws.archived || ws.kind === 'scratch') return;
   const { merged, diverged, unpushedAhead, stalePointer } = await getBranchMergeState(
     ws.repoPath,
     ws.branch,
@@ -170,7 +170,7 @@ export async function detectAndUpdateBranchName(
   window: BrowserWindow,
 ): Promise<void> {
   const ws = store.getWorkspace(id);
-  if (!ws || ws.archived) return;
+  if (!ws || ws.archived || ws.kind === 'scratch') return;
   const live = await getCurrentBranch(ws.worktreePath);
   if (!live || live === ws.branch) return;
   // Re-read after the await — a concurrent orchestra-driven rename may have
@@ -211,7 +211,7 @@ export async function detectAndUpdateReleaseState(
   window: BrowserWindow,
 ): Promise<void> {
   const ws = store.getWorkspace(id);
-  if (!ws || ws.archived) return;
+  if (!ws || ws.archived || ws.kind === 'scratch') return;
   if (!ws.mergedAt) return; // unmerged work can't be in a release yet
   if (ws.releasedAt) {
     // Already recorded a shipping version. Only recompute when the tip has

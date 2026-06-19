@@ -22,6 +22,10 @@ import { log } from './logger';
 import type { CreateWorkspaceInput, Workspace, WorkspaceStatus } from '../shared/types';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
+// Scratch sessions live OUTSIDE the worktrees root so the orphan-pruner (which
+// reconciles ORCHESTRA_ROOT against git's worktree registry) and the `du` size
+// pass never touch them — neither is git-backed.
+const SCRATCH_ROOT = path.join(os.homedir(), '.orchestra', 'scratch');
 
 const execFileP = promisify(execFile);
 
@@ -150,6 +154,54 @@ export async function createWorkspace(
   return ws;
 }
 
+/**
+ * Create a scratch session: a throwaway, non-git working directory under
+ * `~/.orchestra/scratch` with Claude Code's hooks installed, ready to spawn an
+ * agent in. There is no repo, branch, worktree, diff, merge, or PR — just a
+ * plain directory the agent works in. Used when the user wants to start coding
+ * something without first wiring up a git repo.
+ *
+ * Reuses the same infrastructure as a normal workspace from the PTY-spawn point
+ * on (the renderer's `pty:start` doesn't care whether the cwd is a git worktree).
+ * `repoPath`/`baseBranch` are deliberately empty and `branchManuallySet` is set
+ * so the auto-rename SessionStart nudge — which only makes sense for a real git
+ * branch — never fires.
+ */
+export async function createScratchWorkspace(window: BrowserWindow): Promise<Workspace> {
+  if (!existsSync(SCRATCH_ROOT)) await mkdir(SCRATCH_ROOT, { recursive: true });
+  const id = randomUUID();
+  const label = randomBranchName();
+  const worktreePath = path.join(SCRATCH_ROOT, `scratch-${label}-${id.slice(0, 8)}`);
+
+  log.info(`creating scratch session ${label} (${id})`);
+  await mkdir(worktreePath, { recursive: true });
+  await installOrchestraHooks(worktreePath);
+
+  const port = store.allocatePort();
+  const ws: Workspace = {
+    id,
+    name: `scratch · ${label}`,
+    kind: 'scratch',
+    repoPath: '',
+    worktreePath,
+    branch: label,
+    baseBranch: '',
+    createdAt: Date.now(),
+    status: 'idle',
+    agent: 'claude',
+    // No git branch to rename, so lock it: ORCHESTRA_BRANCH_AUTO stays 0 and the
+    // rename-instruction hook never surfaces.
+    branchManuallySet: true,
+    port,
+    // No repo → no setup script can be configured, so a scratch session is
+    // never "pending" setup.
+    setupStatus: 'ok',
+  };
+  await store.upsertWorkspace(ws);
+  window.webContents.send('workspace:update', ws);
+  return ws;
+}
+
 export async function archiveWorkspace(id: string, window: BrowserWindow): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws) return;
@@ -195,6 +247,27 @@ export async function deleteWorkspace(id: string, window: BrowserWindow): Promis
   stopPty(id);
   stopPty(`${id}:run`);
   stopPty(`${id}:nvim`);
+
+  // Scratch sessions are a plain directory with no git worktree and no repo
+  // (hence no archive script). Tear the directory down directly — confined to
+  // SCRATCH_ROOT so a corrupt path can't `rm` outside our own dir — and drop the
+  // record. The git-worktree path below would no-op anyway (removeWorktree on a
+  // non-worktree throws and is swallowed), but this also skips the dead archive-
+  // script lookup and makes the intent explicit.
+  if (ws.kind === 'scratch') {
+    clearScrollback(id);
+    await clearInbox(id);
+    if (ws.worktreePath.startsWith(SCRATCH_ROOT + path.sep) && existsSync(ws.worktreePath)) {
+      try {
+        await rm(ws.worktreePath, { recursive: true, force: true });
+      } catch {
+        /* best-effort */
+      }
+    }
+    await store.removeWorkspace(id);
+    window.webContents.send('workspace:removed', id);
+    return;
+  }
 
   const archiveScript = store.getRepoScripts(ws.repoPath).archive;
   if (archiveScript && existsSync(ws.worktreePath)) {
