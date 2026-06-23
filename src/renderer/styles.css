@@ -835,6 +835,15 @@ input:focus, textarea:focus, select:focus {
   background: transparent;
   border-color: var(--border);
 }
+/* Linear issue link — Linear's indigo brand color. */
+.pr-badge.linear {
+  color: #8b91f0;
+  border-color: rgba(94, 106, 210, 0.4);
+}
+.pr-badge.linear:hover {
+  background: rgba(94, 106, 210, 0.16);
+  border-color: rgba(94, 106, 210, 0.65);
+}
 .ws-body {
   flex: 1;
   min-width: 0;

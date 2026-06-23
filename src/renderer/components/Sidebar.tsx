@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import type { Workspace, WorkspaceStatus } from '../../shared/types';
+import { linearIssueUrl, parseLinearIssueKey } from '../../shared/linear';
 import { SoundSettings } from './SoundSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
 import { dialog } from './Dialog';
@@ -168,6 +169,15 @@ function PRClosedIcon() {
       <path d="m21 3-6 6" />
       <path d="m21 9-6-6" />
       <path d="M18 11.5V15" />
+    </svg>
+  );
+}
+
+// Linear's mark, simplified to a single tilted-square glyph at the icon size.
+function LinearIcon() {
+  return (
+    <svg {...ICON_PROPS}>
+      <rect x="5" y="5" width="14" height="14" rx="3" transform="rotate(45 12 12)" />
     </svg>
   );
 }
@@ -760,6 +770,10 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
               // The purple #N merged PR badge already conveys "merged", so
               // suppress the standalone merged pill when one is visible.
               const hasMergedPRBadge = visiblePRs.some((p) => p.state === 'MERGED');
+              // Linear issue link derived purely from the branch name (no IPC),
+              // shown next to the PR badges when the branch encodes an issue key.
+              const linearKey = w.kind === 'scratch' ? null : parseLinearIssueKey(w.branch);
+              const linearUrl = linearKey ? linearIssueUrl(w.branch) : null;
               const wsDnd =
                 dragWs?.id === w.id
                   ? ' dragging'
@@ -897,9 +911,22 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
                         </span>
                       )}
                     </div>
-                    {(visiblePRs.length > 0 || sizeBytes != null) && (
+                    {(visiblePRs.length > 0 || linearUrl || sizeBytes != null) && (
                       <div className="ws-meta-row">
                         <span className="pr-badges">
+                          {linearUrl && (
+                            <span
+                              className="pr-badge linear"
+                              title={`Linear issue ${linearKey} — open in Linear`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                window.orchestra.openExternal(linearUrl);
+                              }}
+                            >
+                              <LinearIcon />
+                              <span className="pr-badge-num">{linearKey}</span>
+                            </span>
+                          )}
                           {visiblePRs.map((p) => (
                             <span
                               key={p.number}

@@ -24,6 +24,7 @@
     "build": "vite build && electron-builder",
     "start": "electron .",
     "lint": "eslint src --ext .ts,.tsx",
+    "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",
     "release": "bash scripts/release.sh"
   },
   "devDependencies": {
