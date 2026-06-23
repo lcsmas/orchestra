@@ -35,8 +35,7 @@ interface State {
   addRepo: () => Promise<RepoEntry | null>;
   createWorkspace: (input: CreateWorkspaceInput) => Promise<void>;
   createScratchWorkspace: () => Promise<void>;
-  quickCreateWorkspace: () => Promise<void>;
-  createWorkspaceInNewRepo: () => Promise<void>;
+  addRepoOnly: () => Promise<void>;
   archive: (id: string) => Promise<void>;
   unarchive: (id: string) => Promise<void>;
   deleteWorkspace: (id: string) => Promise<void>;
@@ -136,27 +135,10 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  quickCreateWorkspace: async () => {
-    let repo = get().repos[0] ?? null;
-    if (!repo) {
-      repo = await get().addRepo();
-      if (!repo) return;
-    }
-    try {
-      await get().createWorkspace({ repoPath: repo.path });
-    } catch (e) {
-      void dialog.error('Could not create workspace', (e as Error).message);
-    }
-  },
-
-  createWorkspaceInNewRepo: async () => {
-    const repo = await get().addRepo();
-    if (!repo) return;
-    try {
-      await get().createWorkspace({ repoPath: repo.path });
-    } catch (e) {
-      void dialog.error('Could not create workspace', (e as Error).message);
-    }
+  addRepoOnly: async () => {
+    // Mapping a repo only registers it — the user creates workspaces explicitly
+    // via the per-repo "+" button. No workspace is spawned here.
+    await get().addRepo();
   },
 
   archive: async (id) => {

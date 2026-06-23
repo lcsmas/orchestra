@@ -28,7 +28,7 @@ export function App() {
     setView,
     load,
     loaded,
-    createWorkspaceInNewRepo,
+    addRepoOnly,
     createScratchWorkspace,
     stats,
     refreshAllStats,
@@ -199,7 +199,7 @@ export function App() {
 
   return (
     <div className="app">
-      <Sidebar onNewFromRepo={createWorkspaceInNewRepo} onNewScratch={createScratchWorkspace} />
+      <Sidebar onNewFromRepo={addRepoOnly} onNewScratch={createScratchWorkspace} />
       <main className="main">
         {!loaded && <div className="empty">Loading…</div>}
         {loaded && !active && (
@@ -207,7 +207,7 @@ export function App() {
             <h2>Welcome to Orchestra</h2>
             <div>Spawn Claude Code agents in isolated git worktrees — or a quick scratch session with no repo.</div>
             <div className="empty-actions">
-              <button className="primary" onClick={createWorkspaceInNewRepo}>+ New workspace</button>
+              <button className="primary" onClick={addRepoOnly}>+ New workspace</button>
               <button className="secondary" onClick={createScratchWorkspace}>⚡ Scratch session</button>
             </div>
           </div>
