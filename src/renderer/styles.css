@@ -350,7 +350,7 @@ input:focus, textarea:focus, select:focus {
 
 .app {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: 300px 1fr;
   height: 100vh;
 }
 
@@ -615,7 +615,7 @@ input:focus, textarea:focus, select:focus {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px 14px 6px;
+  padding: 6px 14px 5px;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.8px;
@@ -696,7 +696,7 @@ input:focus, textarea:focus, select:focus {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 14px 6px;
+  padding: 2px 14px 5px;
   font-size: 11px;
   color: var(--text-dim);
   cursor: pointer;
@@ -731,12 +731,12 @@ input:focus, textarea:focus, select:focus {
 }
 @keyframes repo-sync-spin { to { transform: rotate(360deg); } }
 .ws-item {
-  padding: 10px 14px;
+  padding: 6px 14px;
   border-left: 2px solid transparent;
   cursor: pointer;
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: 8px;
 }
 .ws-item:hover { background: var(--bg-3); }
 .ws-item.active {
@@ -852,6 +852,7 @@ input:focus, textarea:focus, select:focus {
 }
 .ws-name {
   font-weight: 500;
+  font-size: 12px;
   /* Claim the full width of the (wrapping) name row so the branch name always
    * gets its own line and the badges wrap to the line below. flex-basis: 100%
    * is what forces the wrap — without it the name shares the row with the
