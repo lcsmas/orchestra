@@ -329,8 +329,11 @@ export async function getBranchMergeState(
 /** True when base's reflog records a `git merge <branch>` — the durable trace
  *  a fast-forward or rebase merge leaves behind when no merge commit exists.
  *  Matches the reflog subject exactly (`merge <branch>:`) so a branch named
- *  `feat` doesn't match a `merge feature:` entry. Only meaningful for a branch
- *  already known to be fully contained in base; the caller guarantees that. */
+ *  `feat` doesn't match a `merge feature:` entry. Also matches a fast-forward
+ *  merged by the branch tip's SHA (`merge <sha>:`) — git abbreviates the SHA in
+ *  the subject, so a target token of >= 7 chars that prefixes the full tip SHA
+ *  counts. Only meaningful for a branch already known to be fully contained in
+ *  base; the caller guarantees that. */
 async function baseReflogRecordsMerge(
   git: ReturnType<typeof simpleGit>,
   baseBranch: string,
@@ -338,8 +341,13 @@ async function baseReflogRecordsMerge(
 ): Promise<boolean> {
   try {
     const out = await git.raw(['reflog', 'show', baseBranch, '--format=%gs']);
-    const needle = `merge ${branch}:`;
-    return out.split('\n').some((line) => line.trim().startsWith(needle));
+    const fullSha = (await git.raw(['rev-parse', branch])).trim();
+    return out.split('\n').some((line) => {
+      const m = line.trim().match(/^merge (\S+):/);
+      if (!m) return false;
+      const token = m[1];
+      return token === branch || (token.length >= 7 && fullSha.startsWith(token));
+    });
   } catch {
     return false;
   }
