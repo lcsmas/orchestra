@@ -105,6 +105,7 @@ import {
   getDiffStats,
 } from './git';
 import type { Workspace } from '../shared/types';
+import { SANDBOX_WORKSPACE_DIR } from '../shared/types';
 import {
   archiveWorkspace,
   createWorkspace,
@@ -133,6 +134,7 @@ import {
 } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
 import { startEventsSpool, stopEventsSpool } from './events-spool';
+import { setSandboxWindow, closeAllSandboxConnections } from './transport/sandbox-manager';
 import {
   detectAndUpdateBranchName,
   detectAndUpdateMergeState,
@@ -213,6 +215,9 @@ async function createMainWindow() {
   await startHooksServer(mainWindow);
   // Primary activity path: tail the durable per-workspace hook event spools.
   startEventsSpool(mainWindow);
+  // Remote (sandbox-hosted) workspaces route activity + hook RPCs through the
+  // sandbox connections; hand the manager the window they target.
+  setSandboxWindow(mainWindow);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void openUrlExternally(url);
@@ -404,8 +409,12 @@ handle('pty:start', async (_e, id: string, cols: number, rows: number) => {
   const claudeArgs = resuming
     ? ['--continue', '--dangerously-skip-permissions']
     : ['--dangerously-skip-permissions'];
-  // Idempotent: upgrades workspaces created before the activity hook landed.
-  await installOrchestraHooks(ws.worktreePath);
+  const remote = ws.host?.kind === 'sandbox';
+  // Hook installation writes into the worktree's .claude/. For a local
+  // workspace that's this machine's worktree; for a sandbox workspace the
+  // worktree lives in the container, so the hooks are installed sandbox-side
+  // (baked/installed when the workspace is provisioned there), not from here.
+  if (!remote) await installOrchestraHooks(ws.worktreePath);
   // Expose the current branch and auto-rename gate to hooks. The SessionStart
   // hook reads ORCHESTRA_BRANCH_AUTO=1 to decide whether to inject the
   // rename-instruction context — flipping `branchManuallySet` true (after a
@@ -417,7 +426,10 @@ handle('pty:start', async (_e, id: string, cols: number, rows: number) => {
   };
   await startPty({
     id,
-    cwd: ws.worktreePath,
+    // The sandbox mounts the worktree at the fixed /workspace path (the
+    // Dockerfile's WORKDIR); Claude keys its session by cwd, so this must match
+    // across runs. Local spawns use the real worktree path on this machine.
+    cwd: remote ? SANDBOX_WORKSPACE_DIR : ws.worktreePath,
     command: 'claude',
     args: claudeArgs,
     cols,
@@ -425,6 +437,7 @@ handle('pty:start', async (_e, id: string, cols: number, rows: number) => {
     window: getMainWindow(),
     workspaceId: id,
     extraEnv,
+    host: ws.host,
   });
   // Preserve the `waiting` yellow dot across restarts: if the previous session
   // ended with an unread "agent finished" state, the dot stays until the user
@@ -750,6 +763,7 @@ app.on('window-all-closed', () => {
   stopAll();
   stopEventsSpool();
   stopHooksServer();
+  closeAllSandboxConnections();
   if (process.platform !== 'darwin') app.quit();
 });
 
@@ -757,6 +771,7 @@ app.on('before-quit', () => {
   stopAll();
   stopEventsSpool();
   stopHooksServer();
+  closeAllSandboxConnections();
 });
 
 app.on('activate', () => {
