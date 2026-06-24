@@ -103,11 +103,30 @@ ENV PATH=/home/agent/.bun/bin:/home/agent/.local/bin:$PATH
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # ---------------------------------------------------------------------------
+# Orchestra sandbox shim — the sandbox-side terminator of the Orchestra↔sandbox
+# channel (P3). It owns the agent PTY, tails the activity spool, and serves the
+# hook control-plane unix socket, all over one WebSocket to the host client.
+# Built in-image so node-pty compiles for this platform. Lives at /opt/orchestra
+# (root-owned, world-readable) and runs as the agent user at container start.
+#
+# COPY the source, install deps (node-pty needs build-essential — present
+# above — and python; the uv-managed python3 is on PATH), and compile to dist/.
+# `build:image` runs tsc directly (no protocol re-sync: the vendored
+# sandbox-protocol.ts copy is committed and CI-checked against the source).
+# ---------------------------------------------------------------------------
+USER root
+COPY shim/ /opt/orchestra/shim/
+RUN cd /opt/orchestra/shim \
+    && npm ci --no-audit --no-fund 2>/dev/null || (cd /opt/orchestra/shim && npm install --no-audit --no-fund) \
+    && npm run build:image \
+    && npm prune --omit=dev \
+    && chown -R agent:agent /opt/orchestra
+
+# ---------------------------------------------------------------------------
 # Working directory convention: /workspace is where the host mounts the git
 # worktree. Claude Code keys its session/history by the absolute cwd path, so
 # this MUST be stable across runs for session resumption to work.
 # ---------------------------------------------------------------------------
-USER root
 RUN mkdir -p /workspace && chown agent:agent /workspace
 USER agent
 WORKDIR /workspace

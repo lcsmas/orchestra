@@ -1,5 +1,10 @@
-# The sandbox image's build context is just this directory (the Dockerfile and
-# README). Nothing else should ever be sent to the daemon — keep the context
-# tiny and guarantee no host files or secrets leak into the build.
+# The sandbox image's build context is this directory. Send the Dockerfile and
+# the shim *source* (including the vendored sandbox-protocol.ts copy), but
+# nothing else — no host files, no secrets, and never the shim's local build
+# artifacts or installed deps (they are reinstalled/rebuilt in-image for the
+# correct platform).
 *
 !Dockerfile
+!shim/
+shim/node_modules/
+shim/dist/

@@ -18,9 +18,50 @@ injects credentials at runtime, and streams the container's terminal.
 | PostgreSQL client (`psql`) | official PGDG apt repo (v17) | |
 | neovim | Debian bookworm | set as `$EDITOR` |
 | Claude Code (`claude`) | official `claude.ai/install.sh` native installer | in `~/.local/bin` |
+| Orchestra shim | built from `shim/` (this dir) | compiled to `/opt/orchestra/shim/dist`, see below |
 
 The image contains **no secrets**. All credentials are injected at container
 start (see below).
+
+## The shim
+
+`shim/` holds the **Orchestra sandbox shim** — the sandbox-side terminator of
+the single Orchestra↔sandbox connection (project phase P3). When the agent runs
+remotely instead of on the user's machine, three things the Orchestra app used
+to do locally have a network between them and the agent; the shim does all three
+*inside* the container and relays them home over one WebSocket:
+
+1. **Terminal** — on a `spawn` frame it starts `claude` as a PTY in `/workspace`
+   and relays `data`/`exit`, applying `write`/`resize`/`kill`. (Mirrors the
+   app's `pty.ts` + `local-pty.ts`.)
+2. **Activity** — it tails `$ORCHESTRA_EVENTS_DIR/<wsid>.jsonl` (the agent's
+   hooks append one event line per lifecycle event) and emits one `event` frame
+   per line. (Mirrors `events-spool.ts`.)
+3. **Hook control plane** — it serves the unix socket at `$ORCHESTRA_SOCK` that
+   the agent POSTs to, forwarding the five routes (`rename` `spawn` `peers`
+   `read` `message`) to the host as `rpc` frames and returning the host's
+   `rpcReply` as the HTTP response. (Mirrors `hooks-server.ts`.)
+
+The wire vocabulary and framing come from `src/shared/sandbox-protocol.ts`; a
+byte-identical copy is **vendored** into `shim/sandbox-protocol.ts` so the shim
+builds from this directory as a self-contained Docker context. Keep it in sync:
+
+```bash
+node sandbox/shim/sync-protocol.mjs          # regenerate the vendored copy
+node sandbox/shim/sync-protocol.mjs --check  # CI gate: fail if it has drifted
+```
+
+The image builds the shim in-place (so `node-pty` compiles for the image's
+platform) to `/opt/orchestra/shim/dist`. Build and run it standalone with:
+
+```bash
+cd sandbox/shim && npm install && npm run build && npm start
+```
+
+It listens on `ORCHESTRA_SHIM_PORT` (default `8787`); the host's transport
+(Tailscale to a home server, direct TLS to a VPS) terminates the outer TLS and
+connects to it. Local dev/test of the pure helpers: `npm run check-protocol` and
+`node --test --experimental-strip-types sandbox/shim/shim-core.test.ts`.
 
 ## Build
 
@@ -123,7 +164,8 @@ docker run --rm -it \
 
 > All secret values above are **placeholders**. Never bake real keys into the
 > image or commit them to a file that ends up in the build context (the
-> `.dockerignore` restricts the context to the `Dockerfile` only).
+> `.dockerignore` restricts the context to the `Dockerfile` and the shim
+> source — no host files or secrets).
 
 ### Persisting Claude state across runs
 
