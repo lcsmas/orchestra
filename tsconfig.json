@@ -3,6 +3,12 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    // Lets source files exercised by the `node --test` type-stripping runner
+    // import siblings with an explicit `.ts` extension (Node's ESM loader needs
+    // the extension; vite/esbuild resolve it regardless). Only *permits* the
+    // extension — existing extensionless imports are unaffected.
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
     "jsx": "react-jsx",
     "strict": true,
     "esModuleInterop": true,
