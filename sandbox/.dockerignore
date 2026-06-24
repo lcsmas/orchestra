@@ -1,0 +1,5 @@
+# The sandbox image's build context is just this directory (the Dockerfile and
+# README). Nothing else should ever be sent to the daemon — keep the context
+# tiny and guarantee no host files or secrets leak into the build.
+*
+!Dockerfile
