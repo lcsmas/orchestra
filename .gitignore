@@ -13,3 +13,4 @@ release/
 .claude/skills/*
 !.claude/skills/ship/
 .planning/
+.handoff/
