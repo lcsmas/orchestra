@@ -1,0 +1,6 @@
+# Build artifacts and installed deps — reinstalled/rebuilt in-image (and locally
+# via `npm install && npm run build`). The vendored sandbox-protocol.ts copy is
+# intentionally NOT ignored: it must be in the Docker build context, and the
+# check-protocol script guards it against drifting from src/shared/.
+node_modules/
+dist/
