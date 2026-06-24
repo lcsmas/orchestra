@@ -1,0 +1,19 @@
+{
+  // Compiles the shim (shim.ts + the protocol module copied in at build time)
+  // to ESM in dist/. Node 22 in the image runs the emitted JS directly.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "outDir": "dist",
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "lib": ["ES2022"],
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["shim.ts", "shim-core.ts", "sandbox-protocol.ts"]
+}

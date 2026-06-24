@@ -1,0 +1,27 @@
+{
+  "name": "orchestra-sandbox-shim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sandbox-side terminator for the Orchestra↔sandbox channel (P3). Runs inside the agent sandbox image: terminates one WS connection from an Orchestra client, spawns the agent PTY in /workspace, tails the activity spool, and serves the hook control-plane unix socket the agent POSTs to.",
+  "type": "module",
+  "bin": {
+    "orchestra-shim": "dist/shim.js"
+  },
+  "scripts": {
+    "sync-protocol": "node sync-protocol.mjs",
+    "check-protocol": "node sync-protocol.mjs --check",
+    "prebuild": "node sync-protocol.mjs",
+    "build": "tsc -p tsconfig.json",
+    "build:image": "tsc -p tsconfig.json",
+    "start": "node dist/shim.js"
+  },
+  "dependencies": {
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.5.0"
+  }
+}
