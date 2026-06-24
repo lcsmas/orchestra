@@ -8,12 +8,27 @@ import { agentCliBinDir } from './cli-shim';
 import { getEventsDir } from './events-spool';
 import { reconcileExited } from './activity';
 import { log } from './logger';
-import type { SessionTransport, TransportDisposable, TransportFactory } from './transport/types';
+import type { SessionTransport, TransportDisposable, TransportSpawnOptions } from './transport/types';
 import { createLocalPtyTransport } from './transport/local-pty';
+import { createRemoteTransport } from './transport/remote';
+import { getSandboxConnection } from './transport/sandbox-manager';
+import type { WorkspaceHost } from '../shared/types';
 
-/** Backend a session runs on. Swappable for a future remote transport; today
- *  the only wired-up factory is the local node-pty one. */
-const createTransport: TransportFactory = createLocalPtyTransport;
+/** Build the transport for a session given where its agent runs. Local is the
+ *  default and unchanged (node-pty); a sandbox-hosted workspace rides a
+ *  RemoteTransport over the shared connection to its endpoint. `session` is the
+ *  workspace id — the multiplexing key on the wire. */
+async function createTransport(
+  host: WorkspaceHost | undefined,
+  session: string,
+  opts: TransportSpawnOptions,
+): Promise<SessionTransport> {
+  if (host?.kind === 'sandbox') {
+    const conn = await getSandboxConnection(host.endpoint);
+    return createRemoteTransport(conn, session, opts);
+  }
+  return createLocalPtyTransport(opts);
+}
 
 interface Session {
   transport: SessionTransport;
@@ -166,9 +181,15 @@ export async function startPty(opts: {
    * before TERM and the hook vars). Used by the run-script PTY to expose
    * `ORCHESTRA_PORT`, `ORCHESTRA_ROOT_PATH`, etc. */
   extraEnv?: Record<string, string>;
+  /** Where the agent runs. Absent / `{kind:'local'}` → local node-pty (default).
+   * `{kind:'sandbox'}` → RemoteTransport over the connection to its endpoint;
+   * `cwd` is then a sandbox-side path and the local existence check is skipped. */
+  host?: WorkspaceHost;
 }) {
   if (sessions.has(opts.id)) return; // already running
-  if (!fs.existsSync(opts.cwd)) {
+  // The cwd lives in the sandbox for a remote session, so this local check only
+  // applies to local node-pty spawns.
+  if (opts.host?.kind !== 'sandbox' && !fs.existsSync(opts.cwd)) {
     throw new Error(
       `Workspace directory no longer exists: ${opts.cwd}. Delete this workspace from the sidebar or recreate the worktree.`,
     );
@@ -178,15 +199,30 @@ export async function startPty(opts: {
   const initialSize = trimLogIfNeeded(logPath);
   const logStream = fs.createWriteStream(logPath, { flags: 'a' });
 
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    ...(opts.extraEnv ?? {}),
-    TERM: 'xterm-256color',
-  };
+  const remote = opts.host?.kind === 'sandbox';
+  // For a local spawn the child inherits this machine's full environment and the
+  // host-local rendezvous paths (worktree root, spool dir, hook socket). For a
+  // remote spawn none of that applies: the host's process.env must NOT be
+  // shipped across the wire into the container (it would leak the host's
+  // environment/secrets), and the rendezvous paths are sandbox-side — the shim
+  // fills in ORCHESTRA_WS_ID / ORCHESTRA_EVENTS_DIR / ORCHESTRA_SOCK with the
+  // container's own paths. So we send only the workspace-specific extras the
+  // agent's hooks read (ORCHESTRA_BRANCH*, ORCHESTRA_WORKTREE = the sandbox cwd).
+  const env: Record<string, string> = remote
+    ? {
+        ...(opts.extraEnv ?? {}),
+        TERM: 'xterm-256color',
+      }
+    : {
+        ...(process.env as Record<string, string>),
+        ...(opts.extraEnv ?? {}),
+        TERM: 'xterm-256color',
+      };
   if (opts.workspaceId) {
     // Absolute worktree root for hook commands — the rename hook resolves its
     // script via this so it survives the agent `cd`-ing into a subdirectory
-    // (relative paths broke once cwd != worktree root).
+    // (relative paths broke once cwd != worktree root). For remote this is the
+    // sandbox-side cwd (/workspace), which is correct inside the container.
     env.ORCHESTRA_WORKTREE = opts.cwd;
     // Guarantee a bare `orchestra` resolves in the agent shell: the injected
     // skills/hooks invoke the CLI directly, and the GUI's inherited login PATH
@@ -196,18 +232,20 @@ export async function startPty(opts: {
     const binDir = agentCliBinDir();
     env.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir;
   }
-  if (opts.workspaceId) {
+  if (opts.workspaceId && !remote) {
     // Surfaced to the activity hooks: the workspace id tags every appended
     // event, and the spool dir is where the durable hook helper writes the
     // JSONL that events-spool.ts tails. Independent of the socket below — the
-    // spool is the primary, can't-be-dropped activity path.
+    // spool is the primary, can't-be-dropped activity path. (Remote: the shim
+    // sets these to the container's own paths.)
     env.ORCHESTRA_WS_ID = opts.workspaceId;
     env.ORCHESTRA_EVENTS_DIR = getEventsDir();
   }
   const sock = getHookSocketPath();
-  if (sock && opts.workspaceId) {
+  if (sock && opts.workspaceId && !remote) {
     // Still needed for the agent-driven /rename and /spawn round-trips, which
     // require a synchronous reply the socket gives and a spool file can't.
+    // (Remote: the shim serves the in-container socket and sets ORCHESTRA_SOCK.)
     env.ORCHESTRA_SOCK = sock;
   }
 
@@ -215,7 +253,7 @@ export async function startPty(opts: {
   const rows = Math.max(5, opts.rows);
   let transport: SessionTransport;
   try {
-    transport = await createTransport({
+    transport = await createTransport(opts.host, opts.id, {
       command: opts.command,
       args: opts.args,
       cwd: opts.cwd,

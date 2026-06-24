@@ -1,5 +1,24 @@
 export type WorkspaceStatus = 'idle' | 'running' | 'waiting' | 'error' | 'stopped';
 
+/** Where a workspace's agent actually runs. Absent (the default, and what every
+ * pre-existing record is treated as) means `{ kind: 'local' }`: the agent, its
+ * worktree, and its Claude session live on this machine, driven by the local
+ * node-pty transport. `{ kind: 'sandbox' }` means the agent runs in an always-on
+ * sandbox reached over the wire (the multi-machine path) — Orchestra is a thin
+ * client streaming the terminal via the RemoteTransport. `endpoint` is the
+ * WebSocket URL of that sandbox's shim (e.g. `ws://host:8787`); the outer
+ * transport detail (Tailscale, direct TLS) is baked into the URL and invisible
+ * above it. */
+export type WorkspaceHost =
+  | { kind: 'local' }
+  | { kind: 'sandbox'; endpoint: string };
+
+/** The fixed path a sandbox mounts the worktree at — the agent image's WORKDIR.
+ * Claude Code keys its session/history by the absolute cwd, so this MUST be
+ * stable across runs for `claude --continue` to resume the prior session, and it
+ * must match the container's `/workspace` convention (sandbox/Dockerfile). */
+export const SANDBOX_WORKSPACE_DIR = '/workspace';
+
 export interface Workspace {
   id: string;
   name: string;
@@ -32,6 +51,11 @@ export interface Workspace {
    * record predating this field. A dangling `parentId` (parent deleted) is
    * treated as no parent — the child falls back to its own repo section. */
   parentId?: string;
+  /** Where the agent runs — local machine (default when absent) or a sandbox
+   * reached over the wire. See {@link WorkspaceHost}. The local node-pty path is
+   * the default for every existing workspace; only an explicitly sandbox-hosted
+   * workspace uses the RemoteTransport. */
+  host?: WorkspaceHost;
   repoPath: string;
   worktreePath: string;
   branch: string;

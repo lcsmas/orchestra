@@ -205,6 +205,7 @@ import {
   syncAccountInheritance,
   syncAllAccountsInheritance,
 } from './account-inherit';
+import { setSandboxWindow, closeAllSandboxConnections } from './transport/sandbox-manager';
 import {
   detectAndUpdateBranchName,
   detectAndUpdateMergeState,
@@ -297,6 +298,9 @@ async function createMainWindow() {
   startUsagePolling(mainWindow);
   // Poll each *configured* account's usage for the per-workspace badges.
   startAccountUsagePolling(mainWindow);
+  // Remote (sandbox-hosted) workspaces route activity + hook RPCs through the
+  // sandbox connections; hand the manager the window they target.
+  setSandboxWindow(mainWindow);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void openUrlExternally(url);
@@ -1074,6 +1078,7 @@ if (!ORCHESTRA_CLI_MODE) {
     stopHooksServer();
     stopUsagePolling();
     stopAccountUsagePolling();
+    closeAllSandboxConnections();
     if (process.platform !== 'darwin') app.quit();
   });
 
@@ -1083,6 +1088,7 @@ if (!ORCHESTRA_CLI_MODE) {
     stopHooksServer();
     stopUsagePolling();
     stopAccountUsagePolling();
+    closeAllSandboxConnections();
   });
 
   app.on('activate', () => {

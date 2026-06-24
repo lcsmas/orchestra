@@ -13,6 +13,8 @@
     "prebuild": "node sync-protocol.mjs",
     "build": "tsc -p tsconfig.json",
     "build:image": "tsc -p tsconfig.json",
+    "test": "node --test --experimental-strip-types 'shim-core.test.ts'",
+    "test:integration": "node integration.test.mjs",
     "start": "node dist/shim.js"
   },
   "dependencies": {

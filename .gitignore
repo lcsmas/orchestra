@@ -14,3 +14,4 @@ release/
 !.claude/skills/ship/
 !.claude/skills/map-codebase/
 .planning/
+.handoff/

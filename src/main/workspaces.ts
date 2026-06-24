@@ -26,7 +26,7 @@ import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scri
 import { log } from './logger';
 import { forgetWorkspaceProbes } from './activity';
 import type { CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
-import { isScratchLike } from '../shared/types';
+import { isScratchLike, SANDBOX_WORKSPACE_DIR } from '../shared/types';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
 // Scratch sessions live OUTSIDE the worktrees root so the orphan-pruner (which
@@ -2327,8 +2327,13 @@ export async function startAgentPty(
   if (!resuming && ws.kind === 'orchestrator') {
     claudeArgs.push('--append-system-prompt', ORCHESTRATOR_BRIEF);
   }
+  // Hook installation writes into the worktree's .claude/. For a local
+  // workspace that's this machine's worktree; for a sandbox workspace the
+  // worktree lives in the container, so the hooks are installed sandbox-side
+  // (baked/installed when the workspace is provisioned there), not from here.
+  const remote = ws.host?.kind === 'sandbox';
   // Idempotent: upgrades workspaces created before the activity hook landed.
-  await installOrchestraHooks(ws.worktreePath);
+  if (!remote) await installOrchestraHooks(ws.worktreePath);
   // Materialize the pinned account's inherited global config into its login dir
   // right before spawn, so the agent sees the user's settings/skills/MCP. Pinned
   // account only (resolveRepoAgentEnv uses the same pin for CLAUDE_CONFIG_DIR).
@@ -2356,7 +2361,10 @@ export async function startAgentPty(
   };
   await startPty({
     id: ws.id,
-    cwd: ws.worktreePath,
+    // The sandbox mounts the worktree at the fixed /workspace path (the
+    // Dockerfile's WORKDIR); Claude keys its session by cwd, so this must match
+    // across runs. Local spawns use the real worktree path on this machine.
+    cwd: remote ? SANDBOX_WORKSPACE_DIR : ws.worktreePath,
     command: 'claude',
     args: claudeArgs,
     cols,
@@ -2364,6 +2372,7 @@ export async function startAgentPty(
     window,
     workspaceId: ws.id,
     extraEnv,
+    host: ws.host,
   });
 }
 
