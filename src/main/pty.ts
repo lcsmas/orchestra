@@ -1,4 +1,3 @@
-import type { IPty, IDisposable } from 'node-pty';
 import { BrowserWindow } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
@@ -9,20 +8,20 @@ import { agentCliBinDir } from './cli-shim';
 import { getEventsDir } from './events-spool';
 import { reconcileExited } from './activity';
 import { log } from './logger';
+import type { SessionTransport, TransportDisposable, TransportFactory } from './transport/types';
+import { createLocalPtyTransport } from './transport/local-pty';
 
-let ptyMod: typeof import('node-pty') | null = null;
-async function loadPty() {
-  if (!ptyMod) ptyMod = await import('node-pty');
-  return ptyMod;
-}
+/** Backend a session runs on. Swappable for a future remote transport; today
+ *  the only wired-up factory is the local node-pty one. */
+const createTransport: TransportFactory = createLocalPtyTransport;
 
 interface Session {
-  pty: IPty;
+  transport: SessionTransport;
   id: string;
   /** Workspace id for agent PTYs (undefined for nvim/run PTYs). Surfaces the
    *  $ORCHESTRA_WS_ID / $ORCHESTRA_EVENTS_DIR env the activity hooks write to. */
   workspaceId?: string;
-  disposables: IDisposable[];
+  disposables: TransportDisposable[];
   stopped: boolean;
   logStream: fs.WriteStream | null;
   logBytes: number;
@@ -174,7 +173,6 @@ export async function startPty(opts: {
       `Workspace directory no longer exists: ${opts.cwd}. Delete this workspace from the sidebar or recreate the worktree.`,
     );
   }
-  const pty = await loadPty();
   await ensureLogDir();
   const logPath = logFileFor(opts.id);
   const initialSize = trimLogIfNeeded(logPath);
@@ -213,14 +211,17 @@ export async function startPty(opts: {
     env.ORCHESTRA_SOCK = sock;
   }
 
-  let proc: IPty;
+  const cols = Math.max(20, opts.cols);
+  const rows = Math.max(5, opts.rows);
+  let transport: SessionTransport;
   try {
-    proc = pty.spawn(opts.command, opts.args, {
-      name: 'xterm-256color',
-      cols: Math.max(20, opts.cols),
-      rows: Math.max(5, opts.rows),
+    transport = await createTransport({
+      command: opts.command,
+      args: opts.args,
       cwd: opts.cwd,
       env,
+      cols,
+      rows,
     });
   } catch (e) {
     log.error(`pty spawn failed id=${opts.id} cmd=${opts.command}`, e);
@@ -231,9 +232,9 @@ export async function startPty(opts: {
     }
     throw e;
   }
-  log.info(`pty spawned id=${opts.id} cmd=${opts.command} pid=${proc.pid} cwd=${opts.cwd}`);
+  log.info(`pty spawned id=${opts.id} cmd=${opts.command} pid=${transport.pid} cwd=${opts.cwd}`);
   const session: Session = {
-    pty: proc,
+    transport,
     id: opts.id,
     workspaceId: opts.workspaceId,
     disposables: [],
@@ -241,15 +242,15 @@ export async function startPty(opts: {
     logStream,
     logBytes: initialSize,
     logPath,
-    cols: Math.max(20, opts.cols),
-    rows: Math.max(5, opts.rows),
+    cols,
+    rows,
     outBuf: '',
     flushTimer: null,
   };
   sessions.set(opts.id, session);
 
   session.disposables.push(
-    proc.onData((data) => {
+    transport.onData((data) => {
       if (session.stopped) return;
       // Log every chunk as it arrives (the WriteStream is async + cheap) so the
       // on-disk scrollback stays byte-exact and the trim/rotate accounting is
@@ -270,7 +271,7 @@ export async function startPty(opts: {
     }),
   );
   session.disposables.push(
-    proc.onExit(({ exitCode }) => {
+    transport.onExit(({ exitCode }) => {
       log.info(`pty exited id=${opts.id} code=${exitCode}${session.stopped ? ' (stopped)' : ''}`);
       // Flush any buffered tail before the exit notification so the terminal
       // shows the process's final output, and so it can't arrive after exit.
@@ -338,7 +339,7 @@ function disposeSession(s: Session) {
 export function writePty(id: string, data: string) {
   const s = sessions.get(id);
   if (!s || s.stopped) return;
-  s.pty.write(data);
+  s.transport.write(data);
 }
 
 export function resizePty(id: string, cols: number, rows: number) {
@@ -349,7 +350,7 @@ export function resizePty(id: string, cols: number, rows: number) {
   if (s.cols === c && s.rows === r) return; // no-op — don't churn SIGWINCH/repaint
   s.cols = c;
   s.rows = r;
-  s.pty.resize(c, r);
+  s.transport.resize(c, r);
 }
 
 export function stopPty(id: string) {
@@ -357,7 +358,7 @@ export function stopPty(id: string) {
   if (s) {
     disposeSession(s);
     try {
-      s.pty.kill();
+      s.transport.kill();
     } catch {
       /* ignore */
     }
