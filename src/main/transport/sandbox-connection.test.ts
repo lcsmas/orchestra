@@ -1,0 +1,234 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  SandboxConnection,
+  EXIT_CONNECTION_LOST,
+  type SandboxSocket,
+} from './sandbox-connection.ts';
+import { createRemoteTransport } from './remote.ts';
+import {
+  encodeFrame,
+  FrameDecoder,
+  type Frame,
+  type ClientFrame,
+  type SandboxFrame,
+} from '../../shared/sandbox-protocol.ts';
+
+// ─── A fake socket that records what the connection sends and lets a test
+//     inject inbound bytes, mirroring the ws message/close/error surface. ─────
+
+class FakeSocket implements SandboxSocket {
+  readyState = 1; // OPEN
+  sent: Frame[] = [];
+  private listeners: { message: Array<(d: Buffer) => void>; close: Array<() => void>; error: Array<(e: Error) => void> } = {
+    message: [],
+    close: [],
+    error: [],
+  };
+  private readonly decoder = new FrameDecoder();
+
+  send(data: Uint8Array): void {
+    // Decode what the connection wrote so tests assert on frames, not bytes.
+    for (const f of this.decoder.push(Buffer.from(data))) this.sent.push(f);
+  }
+  close(): void {
+    this.readyState = 3; // CLOSED
+    for (const l of this.listeners.close) l();
+  }
+  on(event: 'message' | 'close' | 'error', listener: never): void {
+    (this.listeners[event] as Array<typeof listener>).push(listener);
+  }
+  /** Test helper: deliver an inbound frame from the (fake) sandbox. */
+  inbound(frame: SandboxFrame): void {
+    const buf = encodeFrame(frame);
+    for (const l of this.listeners.message) l(buf);
+  }
+  /** Test helper: deliver raw bytes (for split/garbled-frame tests). */
+  inboundRaw(buf: Buffer): void {
+    for (const l of this.listeners.message) l(buf);
+  }
+  emitError(err: Error): void {
+    for (const l of this.listeners.error) l(err);
+  }
+}
+
+const lastSent = (s: FakeSocket): ClientFrame => s.sent[s.sent.length - 1] as ClientFrame;
+
+// ─── RemoteTransport ↔ SandboxConnection round-trips ────────────────────────
+
+test('spawn sends a spawn frame with the session id and options', async () => {
+  const sock = new FakeSocket();
+  const conn = new SandboxConnection(sock);
+  await createRemoteTransport(conn, 'ws-1', {
+    command: 'claude',
+    args: ['--dangerously-skip-permissions'],
+    cwd: '/workspace',
+    env: { TERM: 'xterm-256color' },
+    cols: 80,
+    rows: 24,
+  });
+  assert.deepEqual(sock.sent, [
+    {
+      t: 'spawn',
+      session: 'ws-1',
+      command: 'claude',
+      args: ['--dangerously-skip-permissions'],
+      cwd: '/workspace',
+      env: { TERM: 'xterm-256color' },
+      cols: 80,
+      rows: 24,
+    },
+  ]);
+});
+
+test('data frames for a session reach that transport, and only that one', async () => {
+  const sock = new FakeSocket();
+  const conn = new SandboxConnection(sock);
+  const opts = { command: 'claude', args: [], cwd: '/workspace', env: {}, cols: 80, rows: 24 };
+  const a = await createRemoteTransport(conn, 'ws-a', opts);
+  const b = await createRemoteTransport(conn, 'ws-b', opts);
+
+  const aData: string[] = [];
+  const bData: string[] = [];
+  a.onData((d) => aData.push(d));
+  b.onData((d) => bData.push(d));
+
+  sock.inbound({ t: 'data', session: 'ws-a', data: 'hello' });
+  sock.inbound({ t: 'data', session: 'ws-b', data: 'world' });
+  sock.inbound({ t: 'data', session: 'ws-a', data: '!' });
+
+  assert.deepEqual(aData, ['hello', '!']);
+  assert.deepEqual(bData, ['world']);
+});
+
+test('write/resize/kill emit the right per-session frames', async () => {
+  const sock = new FakeSocket();
+  const conn = new SandboxConnection(sock);
+  const t = await createRemoteTransport(conn, 'ws-1', {
+    command: 'claude', args: [], cwd: '/workspace', env: {}, cols: 80, rows: 24,
+  });
+  t.write('ls\n');
+  assert.deepEqual(lastSent(sock), { t: 'write', session: 'ws-1', data: 'ls\n' });
+  t.resize(120, 40);
+  assert.deepEqual(lastSent(sock), { t: 'resize', session: 'ws-1', cols: 120, rows: 40 });
+  t.kill();
+  assert.deepEqual(lastSent(sock), { t: 'kill', session: 'ws-1' });
+});
+
+test('exit fires exactly once and detaches the session', async () => {
+  const sock = new FakeSocket();
+  const conn = new SandboxConnection(sock);
+  const t = await createRemoteTransport(conn, 'ws-1', {
+    command: 'claude', args: [], cwd: '/workspace', env: {}, cols: 80, rows: 24,
+  });
+  let exits = 0;
+  let code = NaN;
+  t.onExit((e) => { exits++; code = e.exitCode; });
+
+  sock.inbound({ t: 'exit', session: 'ws-1', exitCode: 0 });
+  // A duplicate / late exit for the same id must not re-fire.
+  sock.inbound({ t: 'exit', session: 'ws-1', exitCode: 0 });
+  assert.equal(exits, 1);
+  assert.equal(code, 0);
+
+  // After exit, writes are dropped (no new frame past the spawn).
+  const before = sock.sent.length;
+  t.write('ignored');
+  assert.equal(sock.sent.length, before);
+});
+
+test('data after exit does not reach the transport', async () => {
+  const sock = new FakeSocket();
+  const conn = new SandboxConnection(sock);
+  const t = await createRemoteTransport(conn, 'ws-1', {
+    command: 'claude', args: [], cwd: '/workspace', env: {}, cols: 80, rows: 24,
+  });
+  const data: string[] = [];
+  t.onData((d) => data.push(d));
+  sock.inbound({ t: 'data', session: 'ws-1', data: 'before' });
+  sock.inbound({ t: 'exit', session: 'ws-1', exitCode: 0 });
+  sock.inbound({ t: 'data', session: 'ws-1', data: 'after' });
+  assert.deepEqual(data, ['before']);
+});
+
+// ─── event / rpc handlers ────────────────────────────────────────────────────
+
+test('event frames are handed to onEvent with tool normalized', () => {
+  const sock = new FakeSocket();
+  const seen: Array<[string, string, string | undefined]> = [];
+  const conn = new SandboxConnection(sock, {
+    onEvent: (s, e, tool) => seen.push([s, e, tool]),
+  });
+  conn.registerSession('ws-1', { handleData() {}, handleExit() {} });
+  sock.inbound({ t: 'event', session: 'ws-1', event: 'pretool', tool: 'Bash' });
+  sock.inbound({ t: 'event', session: 'ws-1', event: 'stop' });
+  assert.deepEqual(seen, [
+    ['ws-1', 'pretool', 'Bash'],
+    ['ws-1', 'stop', undefined],
+  ]);
+});
+
+test('rpc is dispatched and its reply is sent back as an rpcReply with the same id', () => {
+  const sock = new FakeSocket();
+  const conn = new SandboxConnection(sock, {
+    onRpc: (route, _payload, reply) => {
+      assert.equal(route, 'peers');
+      reply({ ok: true, peers: [] });
+    },
+  });
+  sock.inbound({ t: 'rpc', id: 7, route: 'peers', payload: { from: 'ws-1' } });
+  assert.deepEqual(lastSent(sock), { t: 'rpcReply', id: 7, payload: { ok: true, peers: [] } });
+});
+
+test('rpc with no handler is answered with ok:false so the agent does not hang', () => {
+  const sock = new FakeSocket();
+  const conn = new SandboxConnection(sock); // no onRpc
+  sock.inbound({ t: 'rpc', id: 3, route: 'rename', payload: { id: 'ws-1', branch: 'x' } });
+  const reply = lastSent(sock);
+  assert.equal(reply.t, 'rpcReply');
+  assert.equal((reply as { id: number }).id, 3);
+  assert.equal((reply as { payload: { ok: boolean } }).payload.ok, false);
+});
+
+// ─── connection lifecycle ────────────────────────────────────────────────────
+
+test('socket close synthesizes a connection-lost exit for live sessions', async () => {
+  const sock = new FakeSocket();
+  let closed = false;
+  const conn = new SandboxConnection(sock, { onClose: () => { closed = true; } });
+  const t = await createRemoteTransport(conn, 'ws-1', {
+    command: 'claude', args: [], cwd: '/workspace', env: {}, cols: 80, rows: 24,
+  });
+  let code = NaN;
+  t.onExit((e) => { code = e.exitCode; });
+  sock.close();
+  assert.equal(code, EXIT_CONNECTION_LOST);
+  assert.equal(closed, true);
+  assert.equal(conn.isClosed, true);
+});
+
+test('a corrupt inbound frame raises onError and tears down the stream', () => {
+  const sock = new FakeSocket();
+  let err: Error | null = null;
+  const conn = new SandboxConnection(sock, { onError: (e) => { err = e; } });
+  // A length header claiming more than the cap — decoder throws.
+  const bad = Buffer.alloc(4);
+  bad.writeUInt32BE(0xffffffff, 0);
+  sock.inboundRaw(bad);
+  assert.ok(err, 'onError should have fired');
+  assert.equal(conn.isClosed, true);
+});
+
+test('split inbound frames are reassembled across messages', async () => {
+  const sock = new FakeSocket();
+  const conn = new SandboxConnection(sock);
+  const t = await createRemoteTransport(conn, 'ws-1', {
+    command: 'claude', args: [], cwd: '/workspace', env: {}, cols: 80, rows: 24,
+  });
+  const data: string[] = [];
+  t.onData((d) => data.push(d));
+  const whole = encodeFrame({ t: 'data', session: 'ws-1', data: 'chunky' });
+  sock.inboundRaw(whole.subarray(0, 3)); // partial header
+  sock.inboundRaw(whole.subarray(3));    // the rest
+  assert.deepEqual(data, ['chunky']);
+});
