@@ -98,6 +98,11 @@ const api: OrchestraAPI = {
     ipcRenderer.on('repo:syncState', listener);
     return () => ipcRenderer.off('repo:syncState', listener);
   },
+  onReposUpdate: (cb) => {
+    const listener = (_e: unknown, repos: unknown) => cb(repos as never);
+    ipcRenderer.on('repos:update', listener);
+    return () => ipcRenderer.off('repos:update', listener);
+  },
 };
 
 contextBridge.exposeInMainWorld('orchestra', api);

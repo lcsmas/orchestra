@@ -96,16 +96,15 @@ try {
 }
 import { store } from './store';
 import {
-  detectDefaultBranch,
   detectRemoteUrl,
   getDiff,
-  isGitRepo,
   findPullRequest,
   listBranches,
   getDiffStats,
 } from './git';
 import type { Workspace } from '../shared/types';
 import {
+  addRepoByPath,
   archiveWorkspace,
   createWorkspace,
   createScratchWorkspace,
@@ -338,15 +337,7 @@ handle('repos:list', async () => {
 });
 
 handle('repos:add', async (_e, absPath: string) => {
-  if (!(await isGitRepo(absPath))) throw new Error(`${absPath} is not a git repo`);
-  const defaultBranch = await detectDefaultBranch(absPath);
-  const remoteUrl = await detectRemoteUrl(absPath).catch(() => undefined);
-  return store.addRepo({
-    path: absPath,
-    name: path.basename(absPath),
-    defaultBranch,
-    remoteUrl,
-  });
+  return addRepoByPath(absPath, getMainWindow());
 });
 
 handle('repos:listSyncStates', () => snapshotSyncStates());

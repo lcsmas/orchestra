@@ -294,3 +294,10 @@ window.orchestra.onRepoSyncState((s) => {
     repoSync: { ...state.repoSync, [s.repoPath]: s },
   }));
 });
+// A repo was added out-of-band (CLI or peer agent over the unix socket). Main
+// pushes the full refreshed list, so replace ours wholesale — the renderer's
+// own add flow already calls listRepos(), so this just covers the cases it
+// didn't initiate.
+window.orchestra.onReposUpdate((repos) => {
+  useStore.setState({ repos });
+});

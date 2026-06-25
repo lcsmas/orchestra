@@ -110,6 +110,10 @@ export interface OrchestraAPI {
    *  fetch, finished a fetch, ahead/behind count moved). One event per
    *  state transition, keyed by repoPath. */
   onRepoSyncState: (cb: (s: RepoSyncState) => void) => () => void;
+  /** Fires whenever the set of registered repos changes — e.g. a repo added
+   *  over the unix socket by the CLI or a peer agent. Carries the full,
+   *  refreshed repo list so the renderer can replace its state wholesale. */
+  onReposUpdate: (cb: (repos: RepoEntry[]) => void) => () => void;
 }
 
 declare global {

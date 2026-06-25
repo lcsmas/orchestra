@@ -10,6 +10,7 @@ import {
   dispatchPeersRequest,
   dispatchReadRequest,
   dispatchMessageRequest,
+  dispatchAddRepoRequest,
 } from './workspaces';
 import { log } from './logger';
 
@@ -29,6 +30,33 @@ let socketPath: string | null = null;
 function defaultSocketPath(): string {
   const dir = process.env.XDG_RUNTIME_DIR || os.tmpdir();
   return path.join(dir, `orchestra-${process.pid}.sock`);
+}
+
+// Stable, well-known pointer file whose contents are the absolute path of the
+// live socket. Agents/PTYs get the socket via $ORCHESTRA_SOCK, but a standalone
+// CLI launched from an ordinary terminal has no such env var — it reads this
+// file to discover where to connect. The socket itself is named per-PID (so a
+// crashed run can't collide), which is exactly why we need a fixed indirection.
+function pointerFilePath(): string {
+  return path.join(os.homedir(), '.orchestra', 'sock');
+}
+
+function writePointerFile(target: string): void {
+  try {
+    const p = pointerFilePath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, target, { mode: 0o600 });
+  } catch (e) {
+    log.warn('failed to write socket pointer file', e);
+  }
+}
+
+function removePointerFile(): void {
+  try {
+    fs.unlinkSync(pointerFilePath());
+  } catch {
+    /* missing is fine */
+  }
 }
 
 export function getHookSocketPath(): string | null {
@@ -139,6 +167,12 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
             } else {
               send(200, { ok: false, error: 'missing to or text' });
             }
+          } else if (route === '/addRepo') {
+            if (typeof msg.path === 'string') {
+              send(200, await dispatchAddRepoRequest({ path: msg.path }, window));
+            } else {
+              send(200, { ok: false, error: 'missing path' });
+            }
           } else {
             // Default route handles activity events: /event or anything else.
             if (typeof msg.id === 'string' && typeof msg.event === 'string') {
@@ -173,6 +207,7 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
       } catch {
         /* best-effort: socket file mode tightening */
       }
+      writePointerFile(target);
       resolve();
     });
   });
@@ -195,4 +230,5 @@ export function stopHooksServer(): void {
     }
     socketPath = null;
   }
+  removePointerFile();
 }
