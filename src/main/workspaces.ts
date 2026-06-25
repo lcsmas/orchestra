@@ -708,6 +708,38 @@ export async function dispatchAddRepoRequest(
   }
 }
 
+// ---------- Delete workspace ----------
+
+export interface DeleteWorkspaceResult {
+  ok: boolean;
+  id?: string;
+  branch?: string;
+  error?: string;
+}
+
+/** Socket entry point for `/deleteWorkspace`. Hard-deletes a workspace the same
+ * way the renderer's `workspaces:delete` IPC does — stop the agent, run the
+ * archive script, remove the git worktree, drop the store record, and emit
+ * `workspace:removed` so the UI updates live. Never throws; answers `{ ok }`.
+ * Unknown ids fail loudly here (rather than silently no-op like
+ * `deleteWorkspace`) so a CLI caller gets feedback on a bad id. */
+export async function dispatchDeleteWorkspaceRequest(
+  input: { id?: string },
+  window: BrowserWindow,
+): Promise<DeleteWorkspaceResult> {
+  const id = input.id?.trim();
+  if (!id) return { ok: false, error: 'missing id' };
+  const ws = store.getWorkspace(id);
+  if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
+  try {
+    const branch = ws.branch;
+    await deleteWorkspace(id, window);
+    return { ok: true, id, branch };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'delete failed' };
+  }
+}
+
 // ---------- Inter-agent communication ----------
 //
 // Agents already reach the main process over the same unix socket they use for

@@ -75,6 +75,7 @@ orchestra message <id> <text...>                      # send a prompt to a works
 orchestra spawn --task <text> [--repo <path>] [--base <branch>]   # spawn a new worktree + agent
 orchestra rename <id> <branch>                         # rename a workspace's branch
 orchestra add-repo <path>                              # register a repo (path is resolved to absolute)
+orchestra delete <id> --yes                            # delete a workspace (removes its worktree + branch)
 orchestra --help                                      # usage for all commands
 ```
 

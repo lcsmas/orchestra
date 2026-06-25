@@ -11,6 +11,7 @@ import {
   dispatchReadRequest,
   dispatchMessageRequest,
   dispatchAddRepoRequest,
+  dispatchDeleteWorkspaceRequest,
 } from './workspaces';
 import { log } from './logger';
 
@@ -172,6 +173,12 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
               send(200, await dispatchAddRepoRequest({ path: msg.path }, window));
             } else {
               send(200, { ok: false, error: 'missing path' });
+            }
+          } else if (route === '/deleteWorkspace') {
+            if (typeof msg.id === 'string') {
+              send(200, await dispatchDeleteWorkspaceRequest({ id: msg.id }, window));
+            } else {
+              send(200, { ok: false, error: 'missing id' });
             }
           } else {
             // Default route handles activity events: /event or anything else.

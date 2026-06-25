@@ -124,6 +124,7 @@ Usage:
                                                  Spawn a new worktree + agent
   orchestra rename <id> <branch>                 Rename a workspace's branch
   orchestra add-repo <path>                       Register a repo by path
+  orchestra delete <id> [--yes]                  Delete a workspace (worktree + branch)
   orchestra --help                               Show this help
 
 Socket discovery (in order):
@@ -240,6 +241,27 @@ async function main(): Promise<void> {
       const repoPath = (repo.path as string | undefined) ?? abs;
       const defaultBranch = (repo.defaultBranch as string | undefined) ?? '';
       process.stdout.write(`Added repo ${name} (${defaultBranch}) at ${repoPath}\n`);
+      return;
+    }
+
+    case 'delete': {
+      const yes = args.includes('--yes') || args.includes('-y');
+      const id = args.find((a) => a !== '--yes' && a !== '-y');
+      if (!id) fail('usage: orchestra delete <id> [--yes]');
+      // Deleting is destructive — it removes the git worktree and branch. Require
+      // an explicit --yes so a stray `delete <id>` can't tear down a workspace,
+      // while staying scriptable (no interactive prompt).
+      if (!yes) {
+        fail(
+          `Refusing to delete workspace ${id} without confirmation.\n` +
+            `This removes the git worktree and branch. Re-run with --yes to proceed:\n` +
+            `  orchestra delete ${id} --yes`,
+        );
+      }
+      const res = await request('/deleteWorkspace', { id });
+      if (!res.ok) fail(res.error ?? 'failed to delete workspace');
+      const branch = (res.branch as string | undefined) ?? '';
+      process.stdout.write(`Deleted workspace ${res.id as string}${branch ? ` (${branch})` : ''}\n`);
       return;
     }
 
