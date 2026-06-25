@@ -969,6 +969,20 @@ const HOOK_SESSION_START_SPAWN_CMD =
 const HOOK_SESSION_START_COMMS_CMD =
   'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/comms-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
 
+// Peer-gated comms reminder, fired on every UserPromptSubmit (the script
+// self-silences when no sibling agents exist), so the comms capability is never
+// missed once a peer actually shows up — not just at the context-free start.
+const HOOK_COMMS_RESURFACE_CMD =
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/comms-resurface.sh"; [ -f "$f" ] && bash "$f" || true';
+
+// Condensed spawn reminder, fired on every UserPromptSubmit. Spawning is
+// relevant even with zero peers (it's how you create them), so unlike the
+// comms re-surface this is ungated — but it prints a single line, not the full
+// curl block (that's shown at SessionStart), to keep the per-turn cost minimal
+// while ensuring the capability is never forgotten mid-conversation.
+const HOOK_SPAWN_RESURFACE_CMD =
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/spawn-resurface.sh"; [ -f "$f" ] && bash "$f" || true';
+
 // Drains any queued peer messages into context. Runs on SessionStart AND every
 // UserPromptSubmit so a message that landed in the inbox while the agent was
 // between turns surfaces promptly (the script self-clears the file once read).
@@ -982,7 +996,8 @@ const RENAME_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
 # the moment the work scope is clear — not just once at startup before any
 # context exists (the original SessionStart-only fire was routinely missed:
 # the agent is told to defer until it understands the work, but by then no
-# further SessionStart event re-shows the note).
+# further SessionStart event re-shows the note). The instruction now pushes for
+# renaming from the very first substantive prompt rather than deferring.
 # Gated on ORCHESTRA_BRANCH_AUTO=1 (orchestra only sets it while the branch
 # has not been renamed by the user or agent) AND a live check that the current
 # git branch still equals the original auto name — so it self-disables the
@@ -992,11 +1007,11 @@ const RENAME_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
 current="\$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 [ -n "\$current" ] && [ "\$current" != "\${ORCHESTRA_BRANCH:-}" ] && exit 0
 cat <<EOF
-[orchestra] This workspace is on the auto-generated branch '\${ORCHESTRA_BRANCH:-unknown}'. Once you understand the specific work this conversation is about, rename the branch by running this exact command (do NOT use 'git branch -m'):
+[orchestra] This workspace is on the auto-generated branch '\${ORCHESTRA_BRANCH:-unknown}'. Rename the branch as soon as the work this conversation is about becomes clear — including on the very first prompt. Only defer if the prompt is purely exploratory with no identifiable task yet. Run this exact command (do NOT use 'git branch -m'):
 
   curl -s --max-time 5 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"id\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\",\\\\"branch\\\\":\\\\"<new-branch-name>\\\\"}" http://x/rename
 
-The reply is JSON: {"ok":true,"branch":"<final-name>"} on success (orchestra renames the real git branch for you — do NOT also run 'git branch -m'), or {"ok":false,"error":"..."} if it refused. Pick a short kebab-case name (3-6 words) that reflects the actual work, e.g. fix-checkout-typo, add-stripe-webhook-retry, route-demande-accessoire. Do this proactively the moment the scope is clear — not on the first prompt if the prompt is exploratory.
+The reply is JSON: {"ok":true,"branch":"<final-name>"} on success (orchestra renames the real git branch for you — do NOT also run 'git branch -m'), or {"ok":false,"error":"..."} if it refused. Pick a short kebab-case name (3-6 words) that reflects the actual work, e.g. fix-checkout-typo, add-stripe-webhook-retry, route-demande-accessoire. Don't wait for a later turn — name it the moment you can.
 EOF
 `;
 
@@ -1045,6 +1060,50 @@ cat <<EOF
 
 Use these to coordinate: ask a peer a question, hand off a sub-result, or check on delegated work. Keep messages self-contained — the peer does not share your conversation. Only do this when the user asks you to coordinate agents, or when you spawned a peer and need to follow up with it.
 EOF
+`;
+
+// Peer-gated re-surface of the comms capability, fired on every
+// UserPromptSubmit. The full COMMS_INSTRUCTION_SCRIPT prints once at
+// SessionStart (before any work context exists, so it's routinely forgotten by
+// the time a sibling actually matters). This variant instead stays SILENT while
+// the agent is alone and re-surfaces a condensed reminder the moment a sibling
+// agent exists — so the capability lands in context exactly when it's relevant,
+// without spamming solo sessions. It live-queries /peers and counts the peer
+// entries with pure bash (no jq) — a query failure or empty list is a no-op.
+const COMMS_RESURFACE_SCRIPT = `#!/usr/bin/env bash
+# Auto-installed by orchestra. Re-surfaces the inter-agent comms reminder on
+# each prompt, but ONLY when sibling agents currently exist.
+[ -n "\${ORCHESTRA_SOCK:-}" ] || exit 0
+[ -n "\${ORCHESTRA_WS_ID:-}" ] || exit 0
+resp="\$(curl -s --max-time 5 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"from\\":\\"\$ORCHESTRA_WS_ID\\"}" http://x/peers 2>/dev/null)"
+# Count peer objects by their "id" keys; bash-only, no jq dependency. Strip up
+# to the "peers": key (NOT including the "[", which is a glob metachar in some
+# shells' pattern expansion); the "id"-key count below is unaffected by it.
+rest="\${resp#*\\"peers\\":}"
+[ "\$rest" = "\$resp" ] && exit 0
+n=0
+tmp="\$rest"
+while [ "\$tmp" != "\${tmp#*\\"id\\":}" ]; do
+  n=\$((n + 1))
+  tmp="\${tmp#*\\"id\\":}"
+done
+[ "\$n" -gt 0 ] || exit 0
+cat <<EOF
+[orchestra] \$n other agent(s) are running in sibling workspaces right now. You can coordinate with them over the orchestra socket: list them (http://x/peers), read a peer's transcript (http://x/read), or send a peer a prompt (http://x/message). The full command reference was printed at session start. Use this when the user asks you to coordinate agents, or to follow up on work you delegated.
+EOF
+exit 0
+`;
+
+// Condensed spawn reminder for every UserPromptSubmit. The full spawn reference
+// (with the curl payload) prints once at SessionStart; this just keeps the
+// capability top-of-mind on later turns with a single line, so a delegation
+// opportunity that arises mid-conversation isn't missed. Ungated (spawning is
+// useful even with no peers yet), but deliberately terse to stay cheap.
+const SPAWN_RESURFACE_SCRIPT = `#!/usr/bin/env bash
+# Auto-installed by orchestra. One-line spawn-capability reminder per prompt.
+[ -n "\${ORCHESTRA_SOCK:-}" ] || exit 0
+echo "[orchestra] Reminder: you can delegate independent work to a fresh parallel worktree+agent via http://x/spawn (full command shown at session start). Use it when the user asks you to parallelize or delegate."
+exit 0
 `;
 
 // Drains queued peer messages into the agent's context, then clears them. The
@@ -1159,6 +1218,22 @@ export async function installOrchestraHooks(
       /* best-effort */
     }
 
+    const commsResurfaceScript = path.join(dir, 'comms-resurface.sh');
+    await writeFile(commsResurfaceScript, COMMS_RESURFACE_SCRIPT);
+    try {
+      await chmod(commsResurfaceScript, 0o755);
+    } catch {
+      /* best-effort */
+    }
+
+    const spawnResurfaceScript = path.join(dir, 'spawn-resurface.sh');
+    await writeFile(spawnResurfaceScript, SPAWN_RESURFACE_SCRIPT);
+    try {
+      await chmod(spawnResurfaceScript, 0o755);
+    } catch {
+      /* best-effort */
+    }
+
     const inboxScript = path.join(dir, 'inbox-instruction.sh');
     await writeFile(inboxScript, INBOX_INSTRUCTION_SCRIPT);
     try {
@@ -1204,6 +1279,11 @@ export async function installOrchestraHooks(
     // auto branch (the script self-gates), so the agent gets reminded once the
     // work scope is clear — not only at the context-free SessionStart.
     upsertHookCommand(submitList, HOOK_SESSION_START_RENAME_CMD);
+    // Re-surface the spawn + comms capabilities each turn so they're never
+    // missed mid-conversation: spawn is a terse always-on reminder, comms
+    // self-silences unless a sibling agent currently exists.
+    upsertHookCommand(submitList, HOOK_SPAWN_RESURFACE_CMD);
+    upsertHookCommand(submitList, HOOK_COMMS_RESURFACE_CMD);
     // Surface any queued peer messages right before the agent's next turn.
     upsertHookCommand(submitList, HOOK_INBOX_DELIVER_CMD);
     hooks.UserPromptSubmit = submitList;
