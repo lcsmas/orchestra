@@ -163,9 +163,11 @@ export async function createWorkspace(
  *
  * Reuses the same infrastructure as a normal workspace from the PTY-spawn point
  * on (the renderer's `pty:start` doesn't care whether the cwd is a git worktree).
- * `repoPath`/`baseBranch` are deliberately empty and `branchManuallySet` is set
- * so the auto-rename SessionStart nudge — which only makes sense for a real git
- * branch — never fires.
+ * `repoPath`/`baseBranch` are deliberately empty. `branchManuallySet` starts
+ * false so the agent gets the auto-rename nudge and relabels the session to
+ * reflect the work — same as a git workspace, except the "rename" is a pure
+ * display relabel (see `renameWorkspaceBranch`'s scratch branch) since there's
+ * no git branch behind it.
  */
 export async function createScratchWorkspace(window: BrowserWindow): Promise<Workspace> {
   if (!existsSync(SCRATCH_ROOT)) await mkdir(SCRATCH_ROOT, { recursive: true });
@@ -189,9 +191,10 @@ export async function createScratchWorkspace(window: BrowserWindow): Promise<Wor
     createdAt: Date.now(),
     status: 'idle',
     agent: 'claude',
-    // No git branch to rename, so lock it: ORCHESTRA_BRANCH_AUTO stays 0 and the
-    // rename-instruction hook never surfaces.
-    branchManuallySet: true,
+    // Leave unlocked so ORCHESTRA_BRANCH_AUTO=1 and the rename nudge fires: the
+    // agent relabels the scratch session once the work scope is clear, then the
+    // /rename handler locks it (and drops the .branch-renamed sentinel).
+    branchManuallySet: false,
     port,
     // No repo → no setup script can be configured, so a scratch session is
     // never "pending" setup.
@@ -434,15 +437,25 @@ export async function renameWorkspaceBranch(
   const newBranch = sanitizeBranchName(rawNewBranch);
   if (!newBranch) throw new Error('invalid branch name');
   // A scratch session has no git branch — its "branch" is just a display label.
-  // Relabel it in place (no `git branch -m`, no name collisions to dodge) and
-  // skip the manual-lock dance entirely: there's no auto-rename instruction to
-  // suppress, so `branchManuallySet` stays meaningless for scratch.
+  // Relabel it in place (no `git branch -m`, no name collisions to dodge). A
+  // manual relabel (UI edit or the agent's auto-rename call) locks the branch
+  // via branchManuallySet, same as a git workspace, so the rename nudge stops
+  // firing on the next pty spawn.
   if (ws.kind === 'scratch') {
-    if (newBranch === ws.branch) return ws;
+    if (newBranch === ws.branch) {
+      if (opts.manual && !ws.branchManuallySet) {
+        const locked = { ...ws, branchManuallySet: true };
+        await store.upsertWorkspace(locked);
+        window.webContents.send('workspace:update', locked);
+        return locked;
+      }
+      return ws;
+    }
     const updated: Workspace = {
       ...ws,
       branch: newBranch,
       name: `scratch · ${newBranch}`,
+      branchManuallySet: opts.manual || ws.branchManuallySet,
     };
     await store.upsertWorkspace(updated);
     window.webContents.send('workspace:update', updated);
@@ -497,6 +510,17 @@ export async function dispatchRenameRequest(
   if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
   if (ws.branchManuallySet) return { ok: false, error: 'branch already set manually' };
   try {
+    // A scratch session has no branch namespace to dedupe against, so skip the
+    // freeBranchName collision pass and relabel straight through. renameWork-
+    // spaceBranch locks branchManuallySet; we also drop a sentinel so the
+    // in-session rename nudge self-disables before the next pty restart.
+    if (ws.kind === 'scratch') {
+      const target = sanitizeBranchName(rawNewBranch);
+      if (!target) return { ok: false, error: 'invalid branch name' };
+      const updated = await renameWorkspaceBranch(id, target, { manual: true }, window);
+      await markBranchRenamed(ws.worktreePath);
+      return { ok: true, branch: updated.branch };
+    }
     // Suffix against the live branch (not the possibly-stale stored name) so a
     // name that collides with an existing branch still lands, and so a request
     // matching the worktree's real current branch is treated as a no-op rather
@@ -508,6 +532,17 @@ export async function dispatchRenameRequest(
     return { ok: true, branch: updated.branch };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'rename failed' };
+  }
+}
+
+/** Drop a sentinel in the scratch worktree so the rename-instruction hook
+ * stops nudging mid-session (it has no git branch to diff against the original
+ * auto name). Best-effort: a write failure just means one more harmless nudge. */
+async function markBranchRenamed(worktreePath: string): Promise<void> {
+  try {
+    await writeFile(path.join(worktreePath, '.orchestra', '.branch-renamed'), '');
+  } catch {
+    /* best-effort */
   }
 }
 
@@ -1019,6 +1054,12 @@ const RENAME_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
 # instant a rename lands, even before the next pty restart clears the env.
 [ "\${ORCHESTRA_BRANCH_AUTO:-0}" = "1" ] || exit 0
 [ -n "\${ORCHESTRA_SOCK:-}" ] || exit 0
+# Self-disable the instant a rename lands, even before the next pty restart
+# clears ORCHESTRA_BRANCH_AUTO. For a real git worktree the live branch no
+# longer matches the original auto name; for a scratch session (no git) the
+# /rename handler drops a sentinel file instead, since there's no branch to
+# diff. Either signal stops the nudge mid-session.
+[ -f "\${ORCHESTRA_WORKTREE:-.}/.orchestra/.branch-renamed" ] && exit 0
 current="\$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 [ -n "\$current" ] && [ "\$current" != "\${ORCHESTRA_BRANCH:-}" ] && exit 0
 cat <<EOF
