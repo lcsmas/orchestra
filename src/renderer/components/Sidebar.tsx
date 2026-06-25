@@ -882,6 +882,15 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
                           )}
                         </div>
                       )}
+                      {sizeBytes != null && (
+                        <span
+                          className="ws-size"
+                          title="Worktree size on disk (apparent; btrfs reflinks are shared between worktrees, so this is not all reclaimable)"
+                        >
+                          {formatBytes(sizeBytes)}
+                        </span>
+                      )}
+                      <span className="ws-pills">
                       {w.mergedAt && !w.divergedFromBase && !hasMergedPRBadge && (
                         <span className="merged-pill" title={`Merged into ${w.baseBranch}`}>
                           merged
@@ -930,8 +939,9 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
                           setup…
                         </span>
                       )}
+                      </span>
                     </div>
-                    {(visiblePRs.length > 0 || linearUrl || sizeBytes != null) && (
+                    {(visiblePRs.length > 0 || linearUrl) && (
                       <div className="ws-meta-row">
                         <span className="pr-badges">
                           {linearUrl && (
@@ -976,14 +986,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
                             </span>
                           )}
                         </span>
-                        {sizeBytes != null && (
-                          <span
-                            className="ws-size"
-                            title="Worktree size on disk (apparent; btrfs reflinks are shared between worktrees, so this is not all reclaimable)"
-                          >
-                            {formatBytes(sizeBytes)}
-                          </span>
-                        )}
                       </div>
                     )}
                   </div>

@@ -271,10 +271,10 @@ button.restart-btn:hover {
 .merged-pill {
   display: inline-flex;
   align-items: center;
-  padding: 1px 6px;
+  padding: 0 5px;
   margin-left: 6px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.2px;
   text-transform: uppercase;
@@ -289,10 +289,10 @@ button.restart-btn:hover {
 .released-pill {
   display: inline-flex;
   align-items: center;
-  padding: 1px 6px;
+  padding: 0 5px;
   margin-left: 6px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.2px;
   color: #7ee787;
@@ -305,10 +305,10 @@ button.restart-btn:hover {
 .unpushed-pill {
   display: inline-flex;
   align-items: center;
-  padding: 1px 6px;
+  padding: 0 5px;
   margin-left: 6px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.2px;
   color: #f5c46b;
@@ -350,8 +350,41 @@ input:focus, textarea:focus, select:focus {
 
 .app {
   display: grid;
-  grid-template-columns: 300px 1fr;
+  /* Default column track; the live width is driven by an inline style that
+     reflects the user's dragged sidebar width (persisted in localStorage). */
+  grid-template-columns: 340px 1fr;
   height: 100vh;
+  position: relative;
+}
+
+/* Drag handle straddling the sidebar's right border. A thin visible line with
+   a wider invisible hit area, so it's easy to grab without a chunky gutter.
+   `left` is set inline to track the current sidebar width. */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  margin-left: -4px;
+  z-index: 20;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+.sidebar-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-0.5px);
+  background: transparent;
+  transition: background 0.12s ease;
+}
+.sidebar-resizer:hover::after,
+.sidebar-resizer:active::after {
+  background: var(--accent);
 }
 
 /* Sidebar */
@@ -643,7 +676,7 @@ input:focus, textarea:focus, select:focus {
   scrollbar-gutter: auto;
 }
 .ws-list::-webkit-scrollbar { width: 0; height: 0; display: none; }
-.repo-section { padding: 4px 0 8px; }
+.repo-section { padding: 3px 0 5px; }
 .repo-section + .repo-section { border-top: 1px solid var(--border); }
 /* Pinned scratch group at the top of the list. The amber glyph echoes the
    scratch chip in the toolbar so the two read as the same concept. */
@@ -658,7 +691,7 @@ input:focus, textarea:focus, select:focus {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 6px 14px 5px;
+  padding: 4px 14px 3px;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.8px;
@@ -739,7 +772,7 @@ input:focus, textarea:focus, select:focus {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 14px 5px;
+  padding: 1px 14px 3px;
   font-size: 11px;
   color: var(--text-dim);
   cursor: pointer;
@@ -774,7 +807,7 @@ input:focus, textarea:focus, select:focus {
 }
 @keyframes repo-sync-spin { to { transform: rotate(360deg); } }
 .ws-item {
-  padding: 6px 14px;
+  padding: 4px 14px;
   border-left: 2px solid transparent;
   cursor: pointer;
   display: flex;
@@ -799,7 +832,7 @@ input:focus, textarea:focus, select:focus {
 .ws-dot {
   width: 8px; height: 8px; border-radius: 50%;
   flex-shrink: 0;
-  margin-top: 6px;
+  margin-top: 4px;
 }
 .ws-dot.running {
   background: var(--green);
@@ -826,14 +859,14 @@ input:focus, textarea:focus, select:focus {
 .pr-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px 2px 6px;
-  height: 20px;
+  gap: 3px;
+  padding: 0 6px 0 4px;
+  height: 16px;
   border-radius: 999px;
   flex-shrink: 0;
   cursor: pointer;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.2px;
   color: var(--accent);
@@ -847,6 +880,8 @@ input:focus, textarea:focus, select:focus {
   border-color: rgba(110, 168, 255, 0.6);
 }
 .pr-badge svg {
+  width: 11px;
+  height: 11px;
   opacity: 0.95;
   flex-shrink: 0;
   shape-rendering: geometricPrecision;
@@ -892,7 +927,7 @@ input:focus, textarea:focus, select:focus {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 .ws-name-row {
   display: flex;
@@ -905,20 +940,33 @@ input:focus, textarea:focus, select:focus {
 .ws-name {
   font-weight: 500;
   font-size: 12px;
-  /* Claim the full width of the (wrapping) name row so the branch name always
-   * gets its own line and the badges wrap to the line below. flex-basis: 100%
-   * is what forces the wrap — without it the name shares the row with the
-   * non-shrinking badges, collapses to near-zero width, and breaks one
-   * character per line. With a full line it wraps cleanly at the hyphen
-   * boundaries; `overflow-wrap: anywhere` still covers any single segment
-   * longer than the sidebar. */
-  flex: 1 1 100%;
+  /* Single line, ellipsised. Long branch names truncate rather than wrapping to
+   * three ragged lines — the full name is always on the `title` tooltip. This
+   * keeps every row a uniform height and lets the trailing size label
+   * (`margin-left: auto`) stay pinned on the same line. */
+  flex: 1 1 0;
   min-width: 0;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   line-height: 1.3;
 }
+/* Status pills (merged / released / unpushed / diff / setup). Wrapped in their
+   own full-width flex line so they always drop below the name+size line rather
+   than crowding in beside the right-pinned size. Collapses to nothing when the
+   workspace has no pills, so a clean row stays a single line. */
+.ws-pills {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  flex-basis: 100%;
+  min-width: 0;
+}
+.ws-pills:empty { display: none; }
+/* The pills carry a `margin-left: 6px` for their legacy inline-in-toolbar use;
+   inside the sidebar flex row the `gap` does the spacing, so drop it here. */
+.ws-pills > * { margin-left: 0; }
 .ws-meta-row {
   display: flex;
   align-items: center;
@@ -931,10 +979,12 @@ input:focus, textarea:focus, select:focus {
 /* Worktree disk size — muted, pushed to the trailing edge of the meta row. */
 .ws-size {
   margin-left: auto;
+  align-self: baseline;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--text-dim);
   white-space: nowrap;
+  flex: none;
 }
 /* Per-row delete spinner (same look as the setup-banner spinner) and the
    dimmed/non-interactive state of a worktree being removed. */
@@ -1487,7 +1537,8 @@ input:focus, textarea:focus, select:focus {
 .diff-indicator.compact {
   flex-shrink: 0;
   margin-left: 0;
-  font-size: 10px;
+  gap: 4px;
+  font-size: 9px;
 }
 
 .pane-row { flex: 1; min-height: 0; display: flex; min-width: 0; }
@@ -2195,9 +2246,9 @@ button.danger-primary:active {
 
 /* ---------- Sidebar setup pill ---------- */
 .setup-pill {
-  font-size: 10.5px;
+  font-size: 9px;
   font-weight: 600;
-  padding: 1px 6px;
+  padding: 0 5px;
   border-radius: 9999px;
   letter-spacing: 0.3px;
   cursor: default;

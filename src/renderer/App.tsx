@@ -19,6 +19,17 @@ function loadNvimWidth(): number {
   return Number.isFinite(raw) && raw >= NVIM_WIDTH_MIN ? raw : NVIM_WIDTH_DEFAULT;
 }
 
+const SIDEBAR_WIDTH_KEY = 'orchestra.sidebarWidthPx';
+const SIDEBAR_WIDTH_DEFAULT = 340;
+const SIDEBAR_WIDTH_MIN = 240;
+const SIDEBAR_WIDTH_MAX = 560;
+function loadSidebarWidth(): number {
+  const raw = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+  return Number.isFinite(raw) && raw >= SIDEBAR_WIDTH_MIN && raw <= SIDEBAR_WIDTH_MAX
+    ? raw
+    : SIDEBAR_WIDTH_DEFAULT;
+}
+
 export function App() {
   const {
     workspaces,
@@ -39,7 +50,10 @@ export function App() {
   const findRepo = (path: string): RepoEntry | undefined => repos.find((r) => r.path === path);
   const [nvimOpen, setNvimOpen] = useState(false);
   const [nvimWidth, setNvimWidth] = useState<number>(() => loadNvimWidth());
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => loadSidebarWidth());
   const paneRowRef = useRef<HTMLDivElement>(null);
+  const appRef = useRef<HTMLDivElement>(null);
+  const sidebarResizerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     load();
@@ -74,6 +88,48 @@ export function App() {
     document.addEventListener('mouseup', onUp);
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
+  };
+
+  // Drag to resize the sidebar. During the drag we write the new width straight
+  // to the DOM (the grid track + the handle's `left`) on each rAF tick — calling
+  // setSidebarWidth on every mousemove would re-render the whole sidebar +
+  // terminal per pixel, which janks badly. React state is committed once on
+  // mouseup, where it also persists. Double-click the handle to reset.
+  const onSidebarResizerMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+    let latest = startWidth;
+    let raf = 0;
+    const paint = () => {
+      raf = 0;
+      if (appRef.current) appRef.current.style.gridTemplateColumns = `${latest}px 1fr`;
+      if (sidebarResizerRef.current) sidebarResizerRef.current.style.left = `${latest}px`;
+    };
+    const onMove = (ev: MouseEvent) => {
+      const delta = ev.clientX - startX;
+      latest = Math.max(SIDEBAR_WIDTH_MIN, Math.min(SIDEBAR_WIDTH_MAX, startWidth + delta));
+      if (!raf) raf = requestAnimationFrame(paint);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (raf) cancelAnimationFrame(raf);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      // Commit the final width to React state + storage exactly once.
+      setSidebarWidth(latest);
+      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(latest));
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
+
+  const resetSidebarWidth = () => {
+    setSidebarWidth(SIDEBAR_WIDTH_DEFAULT);
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(SIDEBAR_WIDTH_DEFAULT));
   };
 
   useEffect(() => {
@@ -198,8 +254,23 @@ export function App() {
   };
 
   return (
-    <div className="app">
+    <div
+      ref={appRef}
+      className="app"
+      style={{ gridTemplateColumns: `${sidebarWidth}px 1fr` }}
+    >
       <Sidebar onNewFromRepo={addRepoOnly} onNewScratch={createScratchWorkspace} />
+      <div
+        ref={sidebarResizerRef}
+        className="sidebar-resizer"
+        style={{ left: `${sidebarWidth}px` }}
+        onMouseDown={onSidebarResizerMouseDown}
+        onDoubleClick={resetSidebarWidth}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar (double-click to reset)"
+        title="Drag to resize · double-click to reset"
+      />
       <main className="main">
         {!loaded && <div className="empty">Loading…</div>}
         {loaded && !active && (
