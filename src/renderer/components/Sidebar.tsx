@@ -596,9 +596,28 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
                   />
                   <div className="ws-body">
                     <div className="ws-name-row">
-                      <div className="ws-name" title={`${w.branch} — scratch session (not tracked by git)`}>
-                        {w.branch}
-                      </div>
+                      {renamingId === w.id ? (
+                        <input
+                          className="ws-name-input"
+                          autoFocus
+                          value={renameDraft}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => setRenameDraft(e.target.value)}
+                          onBlur={() => commitRename(w)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') commitRename(w);
+                            else if (e.key === 'Escape') setRenamingId(null);
+                          }}
+                        />
+                      ) : (
+                        <div
+                          className="ws-name"
+                          title={`${w.branch} — scratch session (not tracked by git) · double-click to rename`}
+                          onDoubleClick={(e) => startRename(e, w)}
+                        >
+                          {w.branch}
+                        </div>
+                      )}
                     </div>
                   </div>
                   {isDeleting ? (

@@ -433,6 +433,21 @@ export async function renameWorkspaceBranch(
   if (!ws) throw new Error('workspace not found');
   const newBranch = sanitizeBranchName(rawNewBranch);
   if (!newBranch) throw new Error('invalid branch name');
+  // A scratch session has no git branch — its "branch" is just a display label.
+  // Relabel it in place (no `git branch -m`, no name collisions to dodge) and
+  // skip the manual-lock dance entirely: there's no auto-rename instruction to
+  // suppress, so `branchManuallySet` stays meaningless for scratch.
+  if (ws.kind === 'scratch') {
+    if (newBranch === ws.branch) return ws;
+    const updated: Workspace = {
+      ...ws,
+      branch: newBranch,
+      name: `scratch · ${newBranch}`,
+    };
+    await store.upsertWorkspace(updated);
+    window.webContents.send('workspace:update', updated);
+    return updated;
+  }
   // The stored branch can drift from the worktree's real HEAD — renamed out of
   // band, or a background-spawned workspace the stats-poll reconciler hasn't
   // visited yet. `git branch -m <old> <new>` fails outright when <old> no
