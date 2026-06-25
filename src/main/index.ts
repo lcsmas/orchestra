@@ -135,6 +135,7 @@ import {
 import type { Workspace } from '../shared/types';
 import {
   addRepoByPath,
+  removeRepoByPath,
   archiveWorkspace,
   createWorkspace,
   createScratchWorkspace,
@@ -376,6 +377,10 @@ handle('repos:list', async () => {
 
 handle('repos:add', async (_e, absPath: string) => {
   return addRepoByPath(absPath, getMainWindow());
+});
+
+handle('repos:remove', async (_e, absPath: string) => {
+  await removeRepoByPath(absPath, getMainWindow());
 });
 
 handle('repos:listSyncStates', () => snapshotSyncStates());

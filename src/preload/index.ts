@@ -3,6 +3,7 @@ import type { OrchestraAPI } from '../shared/ipc';
 
 const api: OrchestraAPI = {
   addRepo: (p) => ipcRenderer.invoke('repos:add', p),
+  removeRepo: (p) => ipcRenderer.invoke('repos:remove', p),
   listRepos: () => ipcRenderer.invoke('repos:list'),
   listRepoSyncStates: () => ipcRenderer.invoke('repos:listSyncStates'),
   syncRepoBase: (p) => ipcRenderer.invoke('repos:syncBase', p),

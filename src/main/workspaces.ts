@@ -691,6 +691,21 @@ export async function addRepoByPath(absPath: string, window: BrowserWindow): Pro
   return repo;
 }
 
+/** Un-register a repo by absolute path and broadcast the refreshed list. Refuses
+ * if any workspace (active or archived) still belongs to the repo — those must be
+ * deleted first so we never leave orphan worktrees pointing at a forgotten repo.
+ * Idempotent: removing an unknown path is a no-op that still re-broadcasts. */
+export async function removeRepoByPath(absPath: string, window: BrowserWindow): Promise<void> {
+  const attached = store.workspaces.filter((w) => w.repoPath === absPath);
+  if (attached.length > 0) {
+    throw new Error(
+      `repo still has ${attached.length} workspace${attached.length === 1 ? '' : 's'} — delete them first`,
+    );
+  }
+  await store.removeRepo(absPath);
+  window.webContents.send('repos:update', store.repos);
+}
+
 /** Socket entry point for `/addRepo`. Mirrors `dispatchSpawnRequest`: never
  * throws, always answers with an `{ ok }` envelope the caller can branch on. */
 export async function dispatchAddRepoRequest(
@@ -1106,6 +1121,11 @@ const HOOK_SESSION_START_SPAWN_CMD =
 const HOOK_SESSION_START_COMMS_CMD =
   'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/comms-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
 
+// Advertises the add-repo / delete-workspace socket routes once per session,
+// same delegation pattern as the spawn/comms hooks.
+const HOOK_SESSION_START_REPO_ROUTES_CMD =
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/repo-routes-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
+
 // Peer-gated comms reminder, fired on every UserPromptSubmit (the script
 // self-silences when no sibling agents exist), so the comms capability is never
 // missed once a peer actually shows up — not just at the context-free start.
@@ -1202,6 +1222,30 @@ cat <<EOF
      Reply: {"ok":true,"delivery":"live"} if the peer was running, or "started" if the peer was stopped and got woken to handle it now. The peer sees who the message is from and can reply back to your workspace id.
 
 Use these to coordinate: ask a peer a question, hand off a sub-result, or check on delegated work. Keep messages self-contained — the peer does not share your conversation. Only do this when the user asks you to coordinate agents, or when you spawned a peer and need to follow up with it.
+EOF
+`;
+
+// Advertised on SessionStart (ungated like spawn/comms — managing repos and
+// workspaces is a standing capability). Tells the agent it can register a new
+// repo with orchestra (which makes it spawnable via repoPath) and hard-delete a
+// workspace. Same `\$` / `\\"` escaping as the spawn/comms scripts so the curl
+// lines print with literal $ORCHESTRA_SOCK / $ORCHESTRA_WS_ID for the agent.
+const REPO_ROUTES_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
+# Auto-installed by orchestra. Tells the agent it can add a repo to orchestra
+# and delete a workspace, over the same socket as spawn/peers.
+[ -n "\${ORCHESTRA_SOCK:-}" ] || exit 0
+cat <<EOF
+[orchestra] You can also manage repos and workspaces over the orchestra socket:
+
+  1. Register a git repo with orchestra (so it appears in the app and can be a spawn target). Pass an ABSOLUTE path:
+       curl -s --max-time 10 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"path\\\\":\\\\"<absolute repo path>\\\\"}" http://x/addRepo
+     Reply: {"ok":true,"repo":{"path":"...","name":"...","defaultBranch":"..."}} — the app's repo list refreshes live. {"ok":false,"error":"..."} if the path isn't an absolute git repo.
+
+  2. Delete a workspace (stops its agent, runs its archive script, removes the git worktree + branch, drops it from the app):
+       curl -s --max-time 15 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"id\\\\":\\\\"<workspace-id>\\\\"}" http://x/deleteWorkspace
+     Reply: {"ok":true,"id":"...","branch":"..."} or {"ok":false,"error":"unknown workspace: <id>"}. Destructive and irreversible — only do this when the user explicitly asks to delete a workspace.
+
+(Outside an orchestra workspace, the same actions are available as 'orchestra add-repo <path>' and 'orchestra delete <id> --yes' once the app has been launched once.)
 EOF
 `;
 
@@ -1440,6 +1484,14 @@ export async function installOrchestraHooks(
       /* best-effort */
     }
 
+    const repoRoutesScript = path.join(dir, 'repo-routes-instruction.sh');
+    await writeFile(repoRoutesScript, REPO_ROUTES_INSTRUCTION_SCRIPT);
+    try {
+      await chmod(repoRoutesScript, 0o755);
+    } catch {
+      /* best-effort */
+    }
+
     const commsResurfaceScript = path.join(dir, 'comms-resurface.sh');
     await writeFile(commsResurfaceScript, COMMS_RESURFACE_SCRIPT);
     try {
@@ -1541,6 +1593,7 @@ export async function installOrchestraHooks(
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_RENAME_CMD);
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_SPAWN_CMD);
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_COMMS_CMD);
+    upsertHookCommand(sessionStartList, HOOK_SESSION_START_REPO_ROUTES_CMD);
     upsertHookCommand(sessionStartList, HOOK_INBOX_DELIVER_CMD);
     hooks.SessionStart = sessionStartList;
 
