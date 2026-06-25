@@ -8,6 +8,7 @@ import type {
   WorkspaceStatus,
 } from '../../shared/types';
 import { isScratchLike } from '../../shared/types';
+import { groupByHost, hostLabel } from '../host-grouping';
 import { SoundSettings } from './SoundSettings';
 import { LinearSettings } from './LinearSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
@@ -514,6 +515,18 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       return new Set();
     }
   });
+  // Per-node collapse state, keyed `<repoPath>::<hostKey>` so folding the
+  // sandbox node in one repo doesn't fold it in another. Persisted like
+  // collapsedRepos. Only ever populated for repos that actually have a remote
+  // node (the flat local-only case renders no node headers).
+  const [collapsedHosts, setCollapsedHosts] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('orchestra.collapsedHosts');
+      return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+    } catch {
+      return new Set();
+    }
+  });
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
   const [linearSettingsOpen, setLinearSettingsOpen] = useState(false);
   const [accountsSettingsOpen, setAccountsSettingsOpen] = useState(false);
@@ -617,6 +630,20 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         localStorage.setItem('orchestra.collapsedRepos', JSON.stringify(Array.from(next)));
       } catch {
         /* persistence is best-effort — ignore quota/serialization failures */
+      }
+      return next;
+    });
+  };
+
+  const toggleHostCollapsed = (hostId: string) => {
+    setCollapsedHosts((prev) => {
+      const next = new Set(prev);
+      if (next.has(hostId)) next.delete(hostId);
+      else next.add(hostId);
+      try {
+        localStorage.setItem('orchestra.collapsedHosts', JSON.stringify(Array.from(next)));
+      } catch {
+        /* best-effort */
       }
       return next;
     });
@@ -1282,7 +1309,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 </div>
               );
             })()}
-            {!collapsed && items.map(({ ws: w, depth }) => {
+            {!collapsed &&
+              (() => {
+                // Render one workspace row. Used flat (all-local repo, today's
+                // layout, unchanged) or under a per-node header when the repo
+                // also has sandbox-hosted workspaces. Carries the orchestrator
+                // tree depth so nested children keep their indentation in either
+                // layout.
+                const renderWs = ({ ws: w, depth }: TreeRow) => {
               const s = stats[w.id];
               const hasChanges = !!s && (s.additions > 0 || s.deletions > 0);
               const sizeBytes = sizes[w.id];
@@ -1495,7 +1529,46 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                   </button>
                 </div>
               );
-            })}
+                }; // end renderWs
+
+                // `items` are orchestrator-tree rows ({ ws, depth }); surface
+                // each row's host so groupByHost (which keys off `host`) can
+                // bucket the rows while renderWs still gets its depth.
+                const nodeGroups = groupByHost(
+                  items.map((r) => ({ ...r, host: r.ws.host })),
+                );
+                // All-local repo: flat list, byte-for-byte the previous layout.
+                if (!nodeGroups) return items.map(renderWs);
+                // Mixed repo: a collapsible header per node, rows beneath.
+                return nodeGroups.map(({ key, items: nodeItems }) => {
+                  const hostId = `${repoPath}::${key}`;
+                  const hostCollapsed = collapsedHosts.has(hostId);
+                  const remote = key !== 'local';
+                  return (
+                    <div key={hostId} className="host-group">
+                      <div className="host-group-header">
+                        <button
+                          className="host-collapse"
+                          aria-expanded={!hostCollapsed}
+                          aria-label={`${hostCollapsed ? 'Expand' : 'Collapse'} ${hostLabel(key)}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleHostCollapsed(hostId);
+                          }}
+                        >
+                          <span className={`caret ${hostCollapsed ? '' : 'open'}`}>▸</span>
+                          <span className={`host-dot ${remote ? 'remote' : 'local'}`} aria-hidden="true" />
+                          <span className="host-name" title={remote ? hostLabel(key) : 'Runs on this computer'}>
+                            {hostLabel(key)}
+                          </span>
+                        </button>
+                        <span className="host-count">{nodeItems.length}</span>
+                      </div>
+                      {!hostCollapsed && nodeItems.map(renderWs)}
+                    </div>
+                  );
+                });
+              })()}
           </div>
           );
         })}
