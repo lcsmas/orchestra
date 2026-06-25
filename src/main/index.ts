@@ -134,6 +134,7 @@ import {
 } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
 import { startEventsSpool, stopEventsSpool } from './events-spool';
+import { startUsagePolling, stopUsagePolling, getLastUsage } from './usage';
 import {
   detectAndUpdateBranchName,
   detectAndUpdateMergeState,
@@ -214,6 +215,8 @@ async function createMainWindow() {
   await startHooksServer(mainWindow);
   // Primary activity path: tail the durable per-workspace hook event spools.
   startEventsSpool(mainWindow);
+  // Poll the signed-in account's rolling 5h/7d usage windows for the sidebar bars.
+  startUsagePolling(mainWindow);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void openUrlExternally(url);
@@ -301,6 +304,10 @@ handle('app:openExternal', async (_e, url: string) => {
 });
 
 handle('app:version', () => app.getVersion());
+
+// Last fetched usage snapshot (or null before the first successful poll). The
+// renderer reads this once on mount; subsequent updates arrive via `usage:update`.
+handle('usage:get', () => getLastUsage());
 
 // ---------- Diagnostic logs ----------
 
@@ -742,6 +749,7 @@ app.on('window-all-closed', () => {
   stopAll();
   stopEventsSpool();
   stopHooksServer();
+  stopUsagePolling();
   if (process.platform !== 'darwin') app.quit();
 });
 
@@ -749,6 +757,7 @@ app.on('before-quit', () => {
   stopAll();
   stopEventsSpool();
   stopHooksServer();
+  stopUsagePolling();
 });
 
 app.on('activate', () => {

@@ -6,6 +6,7 @@ import type {
   RepoEntry,
   RepoScripts,
   RepoSyncState,
+  UsageSnapshot,
   Workspace,
 } from './types';
 
@@ -26,6 +27,11 @@ export interface OrchestraAPI {
   openExternal: (url: string) => Promise<void>;
   /** The running app's version (from package.json). */
   getAppVersion: () => Promise<string>;
+
+  /** Last fetched snapshot of the signed-in Claude account's rolling 5h/7d
+   *  usage windows, or null before the first successful poll (or if not signed
+   *  in via OAuth). Live updates flow via `onUsageUpdate`. */
+  getUsage: () => Promise<UsageSnapshot | null>;
 
   // Diagnostic logs
   /** Reveal the main diagnostic log file in the OS file manager. */
@@ -110,6 +116,9 @@ export interface OrchestraAPI {
    *  fetch, finished a fetch, ahead/behind count moved). One event per
    *  state transition, keyed by repoPath. */
   onRepoSyncState: (cb: (s: RepoSyncState) => void) => () => void;
+  /** Fires whenever the main process fetches a fresh usage snapshot (~every
+   *  60s). Carries the latest 5h/7d utilization and reset times. */
+  onUsageUpdate: (cb: (snap: UsageSnapshot) => void) => () => void;
 }
 
 declare global {

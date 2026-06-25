@@ -10,6 +10,7 @@ const api: OrchestraAPI = {
   pickDirectory: () => ipcRenderer.invoke('dialog:pickDir'),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   getAppVersion: () => ipcRenderer.invoke('app:version'),
+  getUsage: () => ipcRenderer.invoke('usage:get'),
 
   revealLogs: () => ipcRenderer.invoke('logs:reveal'),
   logPath: () => ipcRenderer.invoke('logs:path'),
@@ -97,6 +98,11 @@ const api: OrchestraAPI = {
     const listener = (_e: unknown, s: unknown) => cb(s as never);
     ipcRenderer.on('repo:syncState', listener);
     return () => ipcRenderer.off('repo:syncState', listener);
+  },
+  onUsageUpdate: (cb) => {
+    const listener = (_e: unknown, snap: unknown) => cb(snap as never);
+    ipcRenderer.on('usage:update', listener);
+    return () => ipcRenderer.off('usage:update', listener);
   },
 };
 

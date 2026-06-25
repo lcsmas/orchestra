@@ -4,6 +4,7 @@ import type { Workspace, WorkspaceStatus } from '../../shared/types';
 import { linearIssueUrl, parseLinearIssueKey } from '../../shared/linear';
 import { SoundSettings } from './SoundSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
+import { UsageBars } from './UsageBars';
 import { dialog } from './Dialog';
 
 interface Props {
@@ -1133,6 +1134,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
           </div>
         )}
       </div>
+      <UsageBars />
       <div className="sidebar-footer">
         <button
           className="sidebar-footer-link"

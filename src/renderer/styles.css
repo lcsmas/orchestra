@@ -551,6 +551,49 @@ input:focus, textarea:focus, select:focus {
   padding: 2px 6px;
   font-size: 11px;
 }
+.usage-bars {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px 6px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.usage-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.usage-bar-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.usage-bar-label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.usage-bar-pct {
+  font-variant-numeric: tabular-nums;
+}
+.usage-bar-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-4);
+  overflow: hidden;
+}
+.usage-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 240ms var(--ease), background-color 240ms var(--ease);
+}
+/* When the usage bars are present, they already carry the divider above the
+   footer block — drop the footer's own top border to avoid a doubled line. */
+.usage-bars + .sidebar-footer {
+  border-top: none;
+}
 .sidebar-footer {
   border-top: 1px solid var(--border);
   padding: 8px 12px;

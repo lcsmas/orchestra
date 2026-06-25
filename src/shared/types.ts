@@ -164,3 +164,24 @@ export interface RepoSyncState {
   /** Last fetch error, if any. Cleared on next successful fetch. */
   error?: string;
 }
+
+/** A single rolling Claude usage limit window (the 5-hour session window or
+ *  the 7-day weekly window). Mirrors the `five_hour` / `seven_day` objects
+ *  returned by Anthropic's `/api/oauth/usage` endpoint, which is what Claude
+ *  Code's own `/usage` view reads. */
+export interface UsageWindow {
+  /** Percent of the window's quota consumed, 0–100. */
+  utilization: number;
+  /** ISO-8601 timestamp at which this window's quota resets. */
+  resetsAt: string;
+}
+
+/** Snapshot of the signed-in Claude account's rolling usage limits. Fetched by
+ *  the main process from Anthropic's OAuth usage endpoint and broadcast to the
+ *  renderer for the sidebar progress bars. */
+export interface UsageSnapshot {
+  fiveHour: UsageWindow;
+  sevenDay: UsageWindow;
+  /** Epoch ms when this snapshot was fetched. */
+  fetchedAt: number;
+}
