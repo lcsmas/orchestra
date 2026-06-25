@@ -209,6 +209,9 @@ export interface CreateWorkspaceInput {
    * by `/spawn` from the caller's `ORCHESTRA_WS_ID`). Omitted for hand-created
    * workspaces. */
   parentId?: string;
+  /** Where the new workspace's agent should run. Omitted = local (the default).
+   * A sandbox host makes it stream over the wire via the RemoteTransport. */
+  host?: WorkspaceHost;
 }
 
 export interface RepoScripts {
