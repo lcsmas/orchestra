@@ -119,6 +119,9 @@ export interface CreateWorkspaceInput {
   baseBranch?: string;
   task?: string;
   agent?: 'claude';
+  /** Where the new workspace's agent should run. Omitted = local (the default).
+   * A sandbox host makes it stream over the wire via the RemoteTransport. */
+  host?: WorkspaceHost;
 }
 
 export interface RepoScripts {

@@ -23,7 +23,17 @@ export default defineConfig({
               fileName: () => 'main.js',
             },
             rollupOptions: {
-              external: ['electron', 'node-pty', 'simple-git'],
+              // `bufferutil` / `utf-8-validate` are OPTIONAL native speedups for
+              // `ws`; it works without them (pure-JS fallback). They aren't
+              // installed, so externalize them rather than letting rollup fail
+              // trying to bundle them. `ws` itself is pure JS and bundles fine.
+              external: [
+                'electron',
+                'node-pty',
+                'simple-git',
+                'bufferutil',
+                'utf-8-validate',
+              ],
             },
           },
         },

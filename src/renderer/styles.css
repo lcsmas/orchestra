@@ -666,6 +666,73 @@ input:focus, textarea:focus, select:focus {
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
 }
+
+/* Per-node (machine) sub-group inside a repo. Only rendered when a repo has
+ * sandbox-hosted workspaces alongside (or instead of) local ones — an all-local
+ * repo shows no node header and the flat list is unchanged. Indented one step
+ * under the repo header; the node rows keep their normal ws-item indent. */
+.host-group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 14px 3px 22px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-dim);
+}
+.host-collapse,
+.host-collapse:hover,
+.host-collapse:focus-visible,
+.host-collapse:active {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  transform: none;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.host-collapse .caret {
+  flex: none;
+  font-size: 8px;
+  color: var(--text-dim);
+  transition: transform 0.12s ease;
+}
+.host-collapse .caret.open { transform: rotate(90deg); }
+.host-collapse:hover .host-name,
+.host-collapse:hover .caret { color: var(--text); }
+/* A small status dot: dim grey for the local machine, accent blue for a
+ * sandbox node so a remote group reads at a glance. */
+.host-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+.host-dot.remote { background: var(--accent); }
+.host-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.host-count {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
 .repo-header-actions {
   display: flex;
   align-items: center;

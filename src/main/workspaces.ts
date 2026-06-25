@@ -132,6 +132,9 @@ export async function createWorkspace(
     branchManuallySet: false,
     port,
     setupStatus: setupScript ? 'pending' : 'ok',
+    // Persist where the agent runs. Absent input → local (field left unset, the
+    // default everywhere). Only a sandbox host is recorded explicitly.
+    ...(input.host && input.host.kind !== 'local' ? { host: input.host } : {}),
   };
   await store.upsertWorkspace(ws);
   window.webContents.send('workspace:update', ws);
