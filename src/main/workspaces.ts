@@ -1131,6 +1131,85 @@ function removeHookCommand(list: unknown[], match: (cmd: string) => boolean): un
   });
 }
 
+/** Spawn the Claude agent PTY for a workspace. Shared by the renderer-driven
+ *  `pty:start` IPC handler and the startup resume path so both build the same
+ *  env, install hooks, and pick `--continue` identically. Caller is responsible
+ *  for the already-running guard (`isRunning(id)`) — this just spawns.
+ *
+ *  `resuming` gates `claude --continue`: only true once the user has actually
+ *  submitted at least one prompt (`ws.hasInput`), since `--continue` fails with
+ *  "No conversation found to continue" against a session that only ever printed
+ *  its startup TUI. */
+export async function startAgentPty(
+  ws: Workspace,
+  cols: number,
+  rows: number,
+  window: BrowserWindow,
+): Promise<void> {
+  const resuming = ws.hasInput === true;
+  const claudeArgs = resuming
+    ? ['--continue', '--dangerously-skip-permissions']
+    : ['--dangerously-skip-permissions'];
+  // Idempotent: upgrades workspaces created before the activity hook landed.
+  await installOrchestraHooks(ws.worktreePath);
+  // Expose the current branch and auto-rename gate to hooks. The SessionStart
+  // hook reads ORCHESTRA_BRANCH_AUTO=1 to decide whether to inject the
+  // rename-instruction context — flipping `branchManuallySet` true (after a
+  // user or agent rename) clears the env on the next pty:start, so the
+  // instruction stops appearing.
+  const extraEnv: Record<string, string> = {
+    ORCHESTRA_BRANCH: ws.branch,
+    ORCHESTRA_BRANCH_AUTO: ws.branchManuallySet ? '0' : '1',
+  };
+  await startPty({
+    id: ws.id,
+    cwd: ws.worktreePath,
+    command: 'claude',
+    args: claudeArgs,
+    cols,
+    rows,
+    window,
+    workspaceId: ws.id,
+    extraEnv,
+  });
+}
+
+// Default PTY size for an agent resumed at startup, before any xterm has
+// mounted to measure real dimensions. The renderer re-fits (ptyResize) the
+// moment the user opens the tab, so this only governs how Claude's TUI wraps
+// while it runs unseen — 80×24 is the universal terminal fallback.
+const RESUME_COLS = 80;
+const RESUME_ROWS = 24;
+
+/** Relaunch the agent for every workspace that was `running` when Orchestra
+ *  last exited. Brings the conversation back live (`claude --continue`) so work
+ *  resumes after a restart instead of the workspace sitting idle until the user
+ *  re-opens it. Each PTY is spawned headlessly — output streams to the durable
+ *  on-disk log and a buffer exactly as it does for a backgrounded tab, and the
+ *  renderer reconnects (the `isRunning` branch in `pty:start`) when the user
+ *  later opens it. Status is driven by the resumed agent's real hook events, so
+ *  a workspace that comes back waiting-for-input correctly shows `waiting`, not
+ *  a fake `running`. Best-effort and per-workspace isolated: a worktree that
+ *  vanished or a spawn that throws is logged and skipped, never fatal. */
+export async function resumeRunningWorkspaces(window: BrowserWindow): Promise<void> {
+  const ids = store.takeResumeCandidates();
+  for (const id of ids) {
+    const ws = store.getWorkspace(id);
+    if (!ws || ws.archived) continue;
+    if (isRunning(id)) continue; // already live (shouldn't happen this early)
+    if (!existsSync(ws.worktreePath)) {
+      log.warn(`resume skipped: worktree missing id=${id} path=${ws.worktreePath}`);
+      continue;
+    }
+    try {
+      await startAgentPty(ws, RESUME_COLS, RESUME_ROWS, window);
+      log.info(`resumed agent id=${id} branch=${ws.branch}`);
+    } catch (e) {
+      log.warn(`resume failed id=${id}`, e);
+    }
+  }
+}
+
 export async function installOrchestraHooks(
   worktreePath: string,
 ): Promise<void> {
