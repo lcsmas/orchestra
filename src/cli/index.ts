@@ -1,4 +1,6 @@
-#!/usr/bin/env node
+// The published shebang (#!/usr/bin/env node) is injected by the build via the
+// rollup output banner in vite.cli.config.ts, not kept in source — esbuild's
+// transpile step errors on an in-source shebang once the banner is also added.
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';

@@ -18,11 +18,20 @@ export default defineConfig({
       fileName: () => 'cli.js',
     },
     rollupOptions: {
-      // Node built-ins only — keep them external so they aren't bundled.
-      external: ['http', 'fs', 'os', 'path', 'process', 'buffer'],
+      // Node built-ins only — keep them external so they aren't bundled. The
+      // source imports them with the `node:` prefix (import x from 'node:http'),
+      // so match both that and the bare form; otherwise vite's lib build, which
+      // targets the browser by default, replaces them with empty shims (e.g.
+      // `const process = {}`) and the CLI crashes at runtime.
+      external: [/^node:/, 'http', 'fs', 'os', 'path', 'process', 'buffer'],
       output: {
         banner: '#!/usr/bin/env node',
       },
     },
+  },
+  // Force Node resolution so built-ins resolve to the real modules instead of
+  // vite's browser polyfills/stubs.
+  resolve: {
+    conditions: ['node'],
   },
 });
