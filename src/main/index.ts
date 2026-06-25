@@ -113,10 +113,11 @@ import {
   ensureRoot,
   ensureWorkspacePort,
   getWorktreeSizes,
-  installOrchestraHooks,
   pruneOrphanedWorkspaces,
   renameWorkspaceBranch,
+  resumeRunningWorkspaces,
   runSetupScript,
+  startAgentPty,
   switchWorkspaceBranch,
   unarchiveWorkspace,
 } from './workspaces';
@@ -238,6 +239,17 @@ async function createMainWindow() {
   } else {
     await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
+
+  // Resume agents that were running when Orchestra last exited: relaunch
+  // `claude --continue` headlessly so the work picks back up across a restart
+  // rather than sitting idle until the user re-opens the tab. Runs after the
+  // renderer has loaded (so its pty:data / workspace:update listeners are wired
+  // and it reconnects cleanly when the user opens a resumed tab) and after the
+  // orphan prune (so we never try to resume a workspace whose worktree is gone
+  // and about to be dropped). Best-effort — never block startup on it.
+  void resumeRunningWorkspaces(mainWindow).catch((e) =>
+    log.warn('resumeRunningWorkspaces failed', e),
+  );
 
   // Base-branch sync: prime local state immediately (no network) so the
   // sidebar paints with whatever the on-disk refs say, then kick a real
@@ -395,37 +407,11 @@ handle('pty:start', async (_e, id: string, cols: number, rows: number) => {
     setTimeout(() => resizePty(id, cols, rows), 40);
     return;
   }
-  // Resume only if the user has actually submitted something. A scrollback log
-  // exists even when the agent just printed its startup TUI, so using it as
-  // the resume signal causes `claude --continue` to fail with "No conversation
-  // found to continue". The renderer flips ws.hasInput once the user presses
-  // Enter at least once.
+  // Spawn the agent PTY. The resume gate (`claude --continue` only when the
+  // user has actually submitted a prompt — ws.hasInput), hook install, and env
+  // setup all live in startAgentPty so the startup resume path stays identical.
   const resuming = ws.hasInput === true;
-  const claudeArgs = resuming
-    ? ['--continue', '--dangerously-skip-permissions']
-    : ['--dangerously-skip-permissions'];
-  // Idempotent: upgrades workspaces created before the activity hook landed.
-  await installOrchestraHooks(ws.worktreePath);
-  // Expose the current branch and auto-rename gate to hooks. The SessionStart
-  // hook reads ORCHESTRA_BRANCH_AUTO=1 to decide whether to inject the
-  // rename-instruction context — flipping `branchManuallySet` true (after a
-  // user or agent rename) clears the env on the next pty:start, so the
-  // instruction stops appearing.
-  const extraEnv: Record<string, string> = {
-    ORCHESTRA_BRANCH: ws.branch,
-    ORCHESTRA_BRANCH_AUTO: ws.branchManuallySet ? '0' : '1',
-  };
-  await startPty({
-    id,
-    cwd: ws.worktreePath,
-    command: 'claude',
-    args: claudeArgs,
-    cols,
-    rows,
-    window: getMainWindow(),
-    workspaceId: id,
-    extraEnv,
-  });
+  await startAgentPty(ws, cols, rows, getMainWindow());
   // Preserve the `waiting` yellow dot across restarts: if the previous session
   // ended with an unread "agent finished" state, the dot stays until the user
   // actually reads it (via markSeen from setActive). Only clear stale

@@ -21,6 +21,12 @@ class Store {
   // writing. Prevents concurrent writeFile calls from interleaving and
   // truncating each other, which was corrupting store.json.
   private writeChain: Promise<void> = Promise.resolve();
+  // Workspace ids that were `running` when the store was last loaded — i.e. an
+  // agent PTY was live when Orchestra previously exited. `load()` resets their
+  // persisted status to `idle` (a PTY can't survive a restart), but stashes the
+  // ids here so startup can relaunch `claude --continue` for them and bring the
+  // agent back. Read once via `takeResumeCandidates()`, which drains the list.
+  private resumeCandidates: string[] = [];
 
   constructor() {
     const dir = path.join(app.getPath('userData'), 'orchestra');
@@ -45,11 +51,20 @@ class Store {
     // that no longer exists — reset to idle. `waiting` is intentionally
     // preserved so an unread "agent finished" dot from the previous session
     // survives until the user actually views the workspace (markSeen).
+    // A workspace that was running with a real prior conversation
+    // (`hasInput`) is also queued for resume: startup relaunches its agent
+    // with `claude --continue` so the work picks back up where it left off.
+    // The reset-to-idle still stands so the UI never shows a stale `running`
+    // for a workspace whose resume fails (worktree gone, spawn error).
+    this.resumeCandidates = [];
     let mutated = false;
     for (const ws of this.data.workspaces) {
       // Migrate the obsolete 'stalled' status from older orchestra versions
       // (the PTY-quiescence watchdog has been removed) — treat as idle.
       if (ws.status === 'running' || (ws.status as string) === 'stalled') {
+        if (ws.status === 'running' && !ws.archived && ws.hasInput) {
+          this.resumeCandidates.push(ws.id);
+        }
         ws.status = 'idle';
         mutated = true;
       }
@@ -133,6 +148,15 @@ class Store {
 
   getWorkspace(id: string): Workspace | undefined {
     return this.data.workspaces.find((w) => w.id === id);
+  }
+
+  /** Workspace ids that were `running` at the last `load()` and had a real
+   *  prior conversation — candidates for `claude --continue` resume on startup.
+   *  Drains the list so a second call returns nothing (resume runs once). */
+  takeResumeCandidates(): string[] {
+    const ids = this.resumeCandidates;
+    this.resumeCandidates = [];
+    return ids;
   }
 
   /** Hand out the next free port in [PORT_RANGE_START, PORT_RANGE_END). Counts
