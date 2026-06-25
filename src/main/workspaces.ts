@@ -9,7 +9,10 @@ import { promisify } from 'node:util';
 import { store } from './store';
 import {
   createWorktree,
+  detectDefaultBranch,
+  detectRemoteUrl,
   getCurrentBranch,
+  isGitRepo,
   listBranches,
   listWorktreePaths,
   removeWorktree,
@@ -19,7 +22,7 @@ import {
 import { isRunning, stopPty, clearScrollback, startPty, writePty, readScrollback } from './pty';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
-import type { CreateWorkspaceInput, Workspace, WorkspaceStatus } from '../shared/types';
+import type { CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
 // Scratch sessions live OUTSIDE the worktrees root so the orphan-pruner (which
@@ -650,6 +653,90 @@ export async function dispatchSpawnRequest(
     return { ok: true, id: ws.id, branch: ws.branch };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'spawn failed' };
+  }
+}
+
+// ---------- Add repo ----------
+//
+// Adding a repo can come from two places: the renderer (IPC `repos:add`) or an
+// agent/CLI over the unix socket (`/addRepo`). Both funnel through
+// `addRepoByPath` so the validation, persistence, and — crucially — the
+// `repos:update` broadcast happen identically. Repos historically had no live
+// push event (the renderer only re-fetched right after it added one itself), so
+// a socket-side add would not have shown up until restart; the broadcast closes
+// that gap for every code path.
+
+export interface AddRepoResult {
+  ok: boolean;
+  repo?: RepoEntry;
+  error?: string;
+}
+
+/** Validate, persist, and register a git repo by absolute path, then broadcast
+ * the refreshed repo list to the renderer so the UI updates immediately.
+ * Idempotent: re-adding an existing path returns the existing entry. */
+export async function addRepoByPath(absPath: string, window: BrowserWindow): Promise<RepoEntry> {
+  if (!(await isGitRepo(absPath))) throw new Error(`${absPath} is not a git repo`);
+  const defaultBranch = await detectDefaultBranch(absPath);
+  const remoteUrl = await detectRemoteUrl(absPath).catch(() => undefined);
+  const repo = await store.addRepo({
+    path: absPath,
+    name: path.basename(absPath),
+    defaultBranch,
+    remoteUrl,
+  });
+  // Push the full list so the renderer can replace its state wholesale — same
+  // shape as `repos:list`, so no merge logic is needed on the other side.
+  window.webContents.send('repos:update', store.repos);
+  return repo;
+}
+
+/** Socket entry point for `/addRepo`. Mirrors `dispatchSpawnRequest`: never
+ * throws, always answers with an `{ ok }` envelope the caller can branch on. */
+export async function dispatchAddRepoRequest(
+  input: { path?: string },
+  window: BrowserWindow,
+): Promise<AddRepoResult> {
+  const raw = input.path?.trim();
+  if (!raw) return { ok: false, error: 'missing path' };
+  if (!path.isAbsolute(raw)) return { ok: false, error: 'path must be absolute' };
+  try {
+    const repo = await addRepoByPath(raw, window);
+    return { ok: true, repo };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'add repo failed' };
+  }
+}
+
+// ---------- Delete workspace ----------
+
+export interface DeleteWorkspaceResult {
+  ok: boolean;
+  id?: string;
+  branch?: string;
+  error?: string;
+}
+
+/** Socket entry point for `/deleteWorkspace`. Hard-deletes a workspace the same
+ * way the renderer's `workspaces:delete` IPC does — stop the agent, run the
+ * archive script, remove the git worktree, drop the store record, and emit
+ * `workspace:removed` so the UI updates live. Never throws; answers `{ ok }`.
+ * Unknown ids fail loudly here (rather than silently no-op like
+ * `deleteWorkspace`) so a CLI caller gets feedback on a bad id. */
+export async function dispatchDeleteWorkspaceRequest(
+  input: { id?: string },
+  window: BrowserWindow,
+): Promise<DeleteWorkspaceResult> {
+  const id = input.id?.trim();
+  if (!id) return { ok: false, error: 'missing id' };
+  const ws = store.getWorkspace(id);
+  if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
+  try {
+    const branch = ws.branch;
+    await deleteWorkspace(id, window);
+    return { ok: true, id, branch };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'delete failed' };
   }
 }
 

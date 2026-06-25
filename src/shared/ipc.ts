@@ -119,6 +119,10 @@ export interface OrchestraAPI {
   /** Fires whenever the main process fetches a fresh usage snapshot (~every
    *  60s). Carries the latest 5h/7d utilization and reset times. */
   onUsageUpdate: (cb: (snap: UsageSnapshot) => void) => () => void;
+  /** Fires whenever the set of registered repos changes — e.g. a repo added
+   *  over the unix socket by the CLI or a peer agent. Carries the full,
+   *  refreshed repo list so the renderer can replace its state wholesale. */
+  onReposUpdate: (cb: (repos: RepoEntry[]) => void) => () => void;
 }
 
 declare global {

@@ -13,6 +13,9 @@
     "url": "https://github.com/lcsmas/orchestra/issues"
   },
   "main": "dist-electron/main.js",
+  "bin": {
+    "orchestra": "dist-electron/cli.js"
+  },
   "pnpm": {
     "onlyBuiltDependencies": [
       "electron",
@@ -21,7 +24,8 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build && electron-builder",
+    "build:cli": "vite build --config vite.cli.config.ts",
+    "build": "vite build && npm run build:cli && electron-builder",
     "start": "electron .",
     "lint": "eslint src --ext .ts,.tsx",
     "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",

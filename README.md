@@ -64,6 +64,29 @@ npm run dev            # vite + electron, hot reload
 - **Hooks** — Orchestra installs Claude Code hooks into each worktree's `.claude/settings.local.json`. They talk to a Unix-socket HTTP server in the main process: activity status, agent-driven branch rename, and the `/spawn` endpoint that lets any agent create a new workspace + agent. All hooks are env-guarded, so running `claude` outside Orchestra is a silent no-op.
 - **PRs** — `commit → push -u origin <branch> → gh pr create --base <baseBranch>`.
 
+## CLI
+
+Orchestra ships a standalone `orchestra` command (a small Node program, no Electron) that talks to a running app over its Unix socket. It's installed alongside the app via the package `bin`.
+
+```bash
+orchestra peers                                       # list the other agent workspaces (id, branch, repo, status)
+orchestra read <id> [--lines N]                       # print a workspace's transcript (default 80 lines)
+orchestra message <id> <text...>                      # send a prompt to a workspace
+orchestra spawn --task <text> [--repo <path>] [--base <branch>]   # spawn a new worktree + agent
+orchestra rename <id> <branch>                         # rename a workspace's branch
+orchestra add-repo <path>                              # register a repo (path is resolved to absolute)
+orchestra delete <id> --yes                            # delete a workspace (removes its worktree + branch)
+orchestra --help                                      # usage for all commands
+```
+
+Every response is JSON of shape `{ ok: true, ... }` or `{ ok: false, error }`. On `ok: false` or a non-2xx status the CLI prints the error to stderr and exits 1; on success it exits 0.
+
+**Socket discovery** — the CLI finds the app's socket in this order:
+
+1. the `ORCHESTRA_SOCK` environment variable, if set;
+2. else the contents of the well-known pointer file `~/.orchestra/sock` (its body is the absolute socket path);
+3. else it prints `Orchestra does not appear to be running (no socket found)` and exits 1.
+
 ## Storage
 
 - Config + workspace list: `<userData>/orchestra/store.json`
