@@ -5,6 +5,34 @@ import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { shellEnvSync } from 'shell-env';
 
+// ---------------------------------------------------------------- CLI mode ---
+// The same binary doubles as the `orchestra` CLI: `Orchestra.AppImage cli …`
+// (and the ~/.local/bin/orchestra shim the GUI installs) routes here. When a
+// leading `cli` token is present among the user args we run the CLI against the
+// *already-running* app's unix socket and exit — never opening a window,
+// running the ozone relaunch, or merging the shell env (none of which the CLI
+// needs, and the relaunch would fork a second GUI). The flag is computed first
+// and every GUI-only top-level side-effect below is guarded by it. argv layout:
+// packaged = [exec, ...userArgs]; dev (`electron .`) = [electron, '.', ...args].
+const ORCHESTRA_CLI_MODE = (() => {
+  const argv = process.argv.slice(1);
+  const start = argv[0] === '.' ? 1 : 0;
+  return argv[start] === 'cli';
+})();
+
+if (ORCHESTRA_CLI_MODE) {
+  const argv = process.argv.slice(1);
+  const start = argv[0] === '.' ? 1 : 0;
+  // Dynamic import so the GUI path never loads the CLI module. runCli() prints
+  // and exits the process itself (0 on success, 1 via fail()).
+  void import('../cli')
+    .then(({ runCli }) => runCli(argv.slice(start + 1)))
+    .catch((err: unknown) => {
+      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    });
+}
+
 // Ozone platform selection. Chromium picks its windowing backend BEFORE this
 // script runs, so app.commandLine.appendSwitch('ozone-platform'/'ozone-
 // platform-hint', …) is too late to move the browser process off XWayland.
@@ -25,7 +53,7 @@ import { shellEnvSync } from 'shell-env';
 // ELECTRON_OZONE_PLATFORM_HINT (making us think the hint was present at
 // launch when Chromium never saw it), and the decision must reflect the real
 // launch-time environment, which for GUI launches has no rc additions.
-if (process.platform === 'linux') {
+if (!ORCHESTRA_CLI_MODE && process.platform === 'linux') {
   const override = process.env.ORCHESTRA_OZONE;
   const want =
     override === 'x11' || override === 'wayland'
@@ -86,13 +114,15 @@ if (process.platform === 'linux') {
 // process we later spawn see the clean environment a real GUI launch gets. A
 // user who genuinely exports an npm_* var from their rc gets it back via the
 // shellEnvSync merge, since that runs after this and re-sources their rc.
-for (const key of Object.keys(process.env)) {
-  if (key.startsWith('npm_')) delete process.env[key];
-}
-try {
-  Object.assign(process.env, shellEnvSync());
-} catch {
-  // shell-env already falls back internally; ignore any unexpected failure.
+if (!ORCHESTRA_CLI_MODE) {
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith('npm_')) delete process.env[key];
+  }
+  try {
+    Object.assign(process.env, shellEnvSync());
+  } catch {
+    // shell-env already falls back internally; ignore any unexpected failure.
+  }
 }
 import { store } from './store';
 import {
@@ -132,6 +162,7 @@ import {
   isRunning,
 } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
+import { installCliShim } from './cli-shim';
 import { startEventsSpool, stopEventsSpool } from './events-spool';
 import { startUsagePolling, stopUsagePolling, getLastUsage } from './usage';
 import {
@@ -722,35 +753,40 @@ async function checkDependencies(): Promise<void> {
 }
 
 // ---------- Lifecycle ----------
+// In CLI mode the GUI lifecycle is never wired up — the dynamic import at the
+// top of this module handles the command and exits the process.
 
-app.whenReady().then(async () => {
-  initLogger();
-  try {
-    await checkDependencies();
-    await createMainWindow();
-    log.info('main window ready');
-  } catch (e) {
-    log.error('startup failed', e);
-    throw e;
-  }
-});
+if (!ORCHESTRA_CLI_MODE) {
+  app.whenReady().then(async () => {
+    initLogger();
+    try {
+      await checkDependencies();
+      await createMainWindow();
+      installCliShim();
+      log.info('main window ready');
+    } catch (e) {
+      log.error('startup failed', e);
+      throw e;
+    }
+  });
 
-app.on('window-all-closed', () => {
-  log.info('window-all-closed — shutting down');
-  stopAll();
-  stopEventsSpool();
-  stopHooksServer();
-  stopUsagePolling();
-  if (process.platform !== 'darwin') app.quit();
-});
+  app.on('window-all-closed', () => {
+    log.info('window-all-closed — shutting down');
+    stopAll();
+    stopEventsSpool();
+    stopHooksServer();
+    stopUsagePolling();
+    if (process.platform !== 'darwin') app.quit();
+  });
 
-app.on('before-quit', () => {
-  stopAll();
-  stopEventsSpool();
-  stopHooksServer();
-  stopUsagePolling();
-});
+  app.on('before-quit', () => {
+    stopAll();
+    stopEventsSpool();
+    stopHooksServer();
+    stopUsagePolling();
+  });
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
-});
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+  });
+}

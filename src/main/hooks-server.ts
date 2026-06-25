@@ -29,6 +29,13 @@ let server: http.Server | null = null;
 let socketPath: string | null = null;
 
 function defaultSocketPath(): string {
+  // Windows has no filesystem unix sockets — Node's net/http layer instead
+  // listens on a named pipe addressed as \\.\pipe\<name>. Both server.listen()
+  // and http.request({ socketPath }) accept that string, so the rest of the
+  // plumbing (and the pointer file) is identical to the POSIX path.
+  if (process.platform === 'win32') {
+    return `\\\\.\\pipe\\orchestra-${process.pid}`;
+  }
   const dir = process.env.XDG_RUNTIME_DIR || os.tmpdir();
   return path.join(dir, `orchestra-${process.pid}.sock`);
 }
@@ -68,11 +75,15 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
   if (server) return;
   const target = defaultSocketPath();
   // Stale socket left over by a prior crashed run with the same PID — drop it
-  // before bind so listen() doesn't fail with EADDRINUSE.
-  try {
-    fs.unlinkSync(target);
-  } catch {
-    /* missing is fine */
+  // before bind so listen() doesn't fail with EADDRINUSE. Filesystem-socket
+  // only: Windows named pipes are not files (and auto-release when the owner
+  // dies), so there's nothing to unlink there.
+  if (process.platform !== 'win32') {
+    try {
+      fs.unlinkSync(target);
+    } catch {
+      /* missing is fine */
+    }
   }
 
   server = http.createServer((req, res) => {
@@ -209,10 +220,15 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
       server!.removeListener('error', reject);
       socketPath = target;
       log.info(`hooks server listening on ${target}`);
-      try {
-        fs.chmodSync(target, 0o600);
-      } catch {
-        /* best-effort: socket file mode tightening */
+      // Tighten the socket file's mode (owner-only) on POSIX. Named pipes on
+      // Windows have no file mode; their ACL is inherited and chmod is a no-op
+      // that would just throw, so skip it there.
+      if (process.platform !== 'win32') {
+        try {
+          fs.chmodSync(target, 0o600);
+        } catch {
+          /* best-effort: socket file mode tightening */
+        }
       }
       writePointerFile(target);
       resolve();
@@ -230,10 +246,13 @@ export function stopHooksServer(): void {
     server = null;
   }
   if (socketPath) {
-    try {
-      fs.unlinkSync(socketPath);
-    } catch {
-      /* ignore */
+    // POSIX socket files must be unlinked; Windows named pipes release on close.
+    if (process.platform !== 'win32') {
+      try {
+        fs.unlinkSync(socketPath);
+      } catch {
+        /* ignore */
+      }
     }
     socketPath = null;
   }
