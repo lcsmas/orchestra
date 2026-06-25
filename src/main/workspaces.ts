@@ -111,7 +111,7 @@ export async function createWorkspace(
 
   log.info(`creating workspace ${branch} (repo=${repoName} base=${baseBranch})`);
   await createWorktree(input.repoPath, branch, baseBranch, worktreePath);
-  await installOrchestraHooks(worktreePath, agent);
+  await installOrchestraHooks(worktreePath);
 
   // Allocate a port up-front so it survives setup-script failure (the worktree
   // stays around on failure; we want the same port across retries).

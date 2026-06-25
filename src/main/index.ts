@@ -240,6 +240,12 @@ async function createMainWindow() {
     await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
+  // Capture the non-null window: the awaits above widen the `mainWindow` let
+  // back to `BrowserWindow | null` (TS can't prove a concurrent reset didn't
+  // happen across the async gap), and the background dispatches below pass it
+  // by value rather than member-accessing it through the `?.` guard.
+  const win = mainWindow;
+
   // Resume agents that were running when Orchestra last exited: relaunch
   // `claude --continue` headlessly so the work picks back up across a restart
   // rather than sitting idle until the user re-opens the tab. Runs after the
@@ -247,7 +253,7 @@ async function createMainWindow() {
   // and it reconnects cleanly when the user opens a resumed tab) and after the
   // orphan prune (so we never try to resume a workspace whose worktree is gone
   // and about to be dropped). Best-effort — never block startup on it.
-  void resumeRunningWorkspaces(mainWindow).catch((e) =>
+  void resumeRunningWorkspaces(win).catch((e) =>
     log.warn('resumeRunningWorkspaces failed', e),
   );
 
@@ -257,9 +263,9 @@ async function createMainWindow() {
   // otherwise the prime's late `syncing:false, syncedAt:0` event races
   // ahead of sync completion and clobbers the success state. Subsequent
   // fetches are driven by window focus.
-  primeLocalSyncStates(mainWindow)
+  primeLocalSyncStates(win)
     .catch((e) => log.warn('primeLocalSyncStates failed', e))
-    .then(() => syncAllRepos(mainWindow))
+    .then(() => syncAllRepos(win))
     .catch((e) => log.warn('syncAllRepos failed', e));
   mainWindow.on('focus', () => {
     if (!mainWindow) return;
