@@ -66,7 +66,11 @@ npm run dev            # vite + electron, hot reload
 
 ## CLI
 
-Orchestra ships a standalone `orchestra` command (a small Node program, no Electron) that talks to a running app over its Unix socket. It's installed alongside the app via the package `bin`.
+Orchestra ships an `orchestra` command that talks to a running app over its local socket. The CLI is bundled inside the app itself — the same binary doubles as the CLI when invoked as `<app> cli …` — so there's no separate install:
+
+- **Linux (AppImage):** on first GUI launch the app writes a shim to `~/.local/bin/orchestra` (on most distros already on `PATH`) that re-invokes the AppImage in CLI mode. After launching the app once, just run `orchestra …`.
+- **Windows:** the app writes `orchestra.cmd` to `%LOCALAPPDATA%\Orchestra\bin`; add that dir to `PATH` (the installer can do this) and run `orchestra …`.
+- **Any platform / dev:** you can always invoke it directly — `<App> cli peers`, or in dev `node dist-electron/cli.js peers`.
 
 ```bash
 orchestra peers                                       # list the other agent workspaces (id, branch, repo, status)

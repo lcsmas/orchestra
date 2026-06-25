@@ -146,8 +146,8 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-async function main(): Promise<void> {
-  const [command, ...args] = process.argv.slice(2);
+async function main(argv: string[]): Promise<void> {
+  const [command, ...args] = argv;
 
   if (!command || command === '--help' || command === '-h' || command === 'help') {
     process.stdout.write(`${USAGE}\n`);
@@ -270,6 +270,26 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
-  fail(err instanceof Error ? err.message : String(err));
-});
+/**
+ * Run the CLI against `argv` (the command + its args, WITHOUT the node/script
+ * prefix). On success the process exits 0; `fail()` exits 1 on any error. This
+ * is the entry point both the standalone `bin` and the Electron main process
+ * (dual-mode: `Orchestra.AppImage cli …`) call, so the CLI logic lives in one
+ * place and the shipped AppImage and a raw `node cli.js` behave identically.
+ */
+export async function runCli(argv: string[]): Promise<void> {
+  try {
+    await main(argv);
+    process.exit(0);
+  } catch (err: unknown) {
+    fail(err instanceof Error ? err.message : String(err));
+  }
+}
+
+// Auto-run only as the standalone `bin` (plain Node, `node cli.js …`). When
+// this module is bundled into the Electron main process, `runCli()` is called
+// explicitly from there instead — and `process.versions.electron` is set, so we
+// must NOT also auto-run here (that would fire the CLI on every GUI launch).
+if (!process.versions.electron && require.main === module) {
+  void runCli(process.argv.slice(2));
+}
