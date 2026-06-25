@@ -931,18 +931,31 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
                           merged
                         </span>
                       )}
-                      {w.releasedAt && (
-                        <span
-                          className="released-pill"
-                          title={
-                            w.releasedVersion
-                              ? `Shipped in release ${w.releasedVersion}`
-                              : 'Shipped in a published release'
+                      {w.releasedAt &&
+                        (() => {
+                          // Show one pill per release that contains this
+                          // branch's work. Fall back to the single
+                          // releasedVersion for pre-upgrade records, then to a
+                          // bare "released" when no tag is known.
+                          const versions =
+                            w.releasedVersions && w.releasedVersions.length > 0
+                              ? w.releasedVersions
+                              : w.releasedVersion
+                                ? [w.releasedVersion]
+                                : [];
+                          if (versions.length === 0) {
+                            return (
+                              <span className="released-pill" title="Shipped in a published release">
+                                released
+                              </span>
+                            );
                           }
-                        >
-                          {w.releasedVersion ?? 'released'}
-                        </span>
-                      )}
+                          return versions.map((v) => (
+                            <span key={v} className="released-pill" title={`Shipped in release ${v}`}>
+                              {v}
+                            </span>
+                          ));
+                        })()}
                       {!!w.unpushedAhead && w.unpushedAhead > 0 && (
                         <span
                           className="unpushed-pill"

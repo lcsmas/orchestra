@@ -581,6 +581,36 @@ export async function getReleaseState(
   }
 }
 
+/** Every published release whose build contains the branch tip, oldest-first.
+ *  Where `getReleaseState` returns only the FIRST shipping release (the "when
+ *  did this first ship" signal), this returns ALL of them so the UI can show a
+ *  badge per version the workspace's work is part of (v0.2.0, v0.2.1, …).
+ *  `releasedAt` mirrors the earliest release's publish time, so the two helpers
+ *  agree on the "shipped at" timestamp. Empty list ⇒ not yet released. */
+export async function getReleaseVersionsContaining(
+  repoPath: string,
+  branch: string,
+): Promise<{ versions: string[]; releasedAt?: number }> {
+  try {
+    const releases = await getPublishedReleases(repoPath);
+    if (releases.length === 0) return { versions: [] };
+    const git = simpleGit(repoPath);
+    const branchSha = (await git.raw(['rev-parse', branch])).trim();
+    const ordered = [...releases].sort((a, b) => a.publishedAt - b.publishedAt);
+    const versions: string[] = [];
+    let releasedAt: number | undefined;
+    for (const rel of ordered) {
+      if (await isAncestor(repoPath, branchSha, rel.sha)) {
+        versions.push(rel.tag);
+        if (releasedAt === undefined) releasedAt = rel.publishedAt || undefined;
+      }
+    }
+    return { versions, releasedAt };
+  } catch {
+    return { versions: [] };
+  }
+}
+
 /** Snapshot of how local `<baseBranch>` relates to `origin/<baseBranch>`,
  *  computed without any network access. The caller is responsible for
  *  running a fetch first when freshness is needed. Returns `hasUpstream:

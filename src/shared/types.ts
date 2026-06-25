@@ -49,6 +49,15 @@ export interface Workspace {
    * the current tip: if the same workspace ships again with new commits, this
    * is recomputed to the release that first contains the newer tip. */
   releasedVersion?: string;
+  /** All published-release tags whose build contains this branch's tip,
+   * oldest-first (e.g. `['v0.2.0','v0.2.1','v0.2.2']`). The sidebar renders one
+   * "released" pill per entry; `releasedVersion` remains the first/earliest of
+   * these (the "shipped when" signal). Recomputed on the same cadence as
+   * `releasedVersion`, and additionally whenever a newer release that also
+   * contains the tip appears, so a workspace accrues badges as later versions
+   * ship. Absent on pre-upgrade records → the UI falls back to the single
+   * `releasedVersion` pill. */
+  releasedVersions?: string[];
   /** Epoch ms the shipping release was published (GitHub `publishedAt`), or
    * detection time as a fallback. Presence is the "released" signal — strictly
    * stronger than `mergedAt`: merged-into-base isn't enough, a published

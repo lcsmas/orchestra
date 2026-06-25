@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { BrowserWindow, Notification } from 'electron';
 import { store } from './store';
-import { branchTipShippedIn, getBranchMergeState, getCurrentBranch, getReleaseState } from './git';
+import { getBranchMergeState, getCurrentBranch, getReleaseVersionsContaining } from './git';
 import type { Workspace, WorkspaceStatus } from '../shared/types';
 
 // Hook-driven activity tracker.
@@ -192,18 +192,15 @@ export async function detectAndUpdateBranchName(
   }
 }
 
-/** Detect whether this branch's work has shipped in a published GitHub Release
- *  and stamp `releasedAt`/`releasedVersion`. Recorded once and then left alone
- *  while that release still contains the branch tip; if the tip later advances
- *  PAST it — the same workspace shipped again with new commits — the version is
- *  recomputed to the release that first contains the new tip. It short-circuits
- *  before any `gh` call for branches that can't have changed:
- *    - never merged → its work isn't on base, so no release can contain it
- *    - already released AND the recorded version still contains the tip, decided
- *      by a local, network-free ancestry check (`branchTipShippedIn`)
- *  That keeps this off the network for all but the small set of merged branches
- *  that are either not-yet-released or just shipped a newer version, even though
- *  it's invoked on the PR poll cadence. Deliberately NOT wired into
+/** Detect every published GitHub Release whose build contains this branch's
+ *  tip and stamp `releasedAt` + `releasedVersions` (and `releasedVersion`, the
+ *  earliest, for back-compat). Skips unmerged branches (their work isn't on
+ *  base, so no release can contain it). For merged branches it recomputes the
+ *  full version list each call so the workspace accrues a badge as each later
+ *  version ships — `getPublishedReleases` is cached per-repo (30s) and shared
+ *  across that repo's workspaces, so this stays at roughly one `gh` call per
+ *  repo per TTL even on the PR poll cadence. Writes/broadcasts only when the
+ *  version list actually changes. Deliberately NOT wired into
  *  `detectAndUpdateMergeState`, which runs on the hot 8s stats poll and must
  *  stay network-free. */
 export async function detectAndUpdateReleaseState(
@@ -213,21 +210,24 @@ export async function detectAndUpdateReleaseState(
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || ws.kind === 'scratch') return;
   if (!ws.mergedAt) return; // unmerged work can't be in a release yet
-  if (ws.releasedAt) {
-    // Already recorded a shipping version. Only recompute when the tip has
-    // moved beyond it; otherwise this is a cheap local no-op (no gh).
-    if (!ws.releasedVersion) return; // released but no tag to re-check against
-    if (await branchTipShippedIn(ws.repoPath, ws.branch, ws.releasedVersion)) return;
-  }
-  const { released, version, releasedAt } = await getReleaseState(ws.repoPath, ws.branch);
-  if (!released) return;
+  // Compute the FULL set of releases that contain the tip, so the workspace
+  // accrues a badge per shipping version (v0.2.0, v0.2.1, …) rather than only
+  // the first. getPublishedReleases is cached per-repo (30s), so re-running this
+  // on the PR-poll cadence costs at most one gh call per repo per TTL, shared
+  // across all its workspaces — cheap enough to drop the old tip-moved
+  // short-circuit (which by design never noticed newer releases).
+  const { versions, releasedAt } = await getReleaseVersionsContaining(ws.repoPath, ws.branch);
+  if (versions.length === 0) return;
   const fresh = store.getWorkspace(id);
   if (!fresh || fresh.archived) return;
-  if (fresh.releasedVersion === version) return; // unchanged — avoid redundant write/event
+  // No change → avoid a redundant write/broadcast.
+  const prev = fresh.releasedVersions ?? (fresh.releasedVersion ? [fresh.releasedVersion] : []);
+  if (prev.length === versions.length && prev.every((v, i) => v === versions[i])) return;
   const updated: Workspace = {
     ...fresh,
-    releasedAt: releasedAt ?? Date.now(),
-    releasedVersion: version,
+    releasedAt: fresh.releasedAt ?? releasedAt ?? Date.now(),
+    releasedVersion: versions[0], // earliest = the "shipped when" signal
+    releasedVersions: versions,
   };
   // Broadcast before persisting — see setStatus: don't gate the released-version
   // pill on the serialized store-write chain.
