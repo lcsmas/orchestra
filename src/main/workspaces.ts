@@ -691,6 +691,21 @@ export async function addRepoByPath(absPath: string, window: BrowserWindow): Pro
   return repo;
 }
 
+/** Un-register a repo by absolute path and broadcast the refreshed list. Refuses
+ * if any workspace (active or archived) still belongs to the repo — those must be
+ * deleted first so we never leave orphan worktrees pointing at a forgotten repo.
+ * Idempotent: removing an unknown path is a no-op that still re-broadcasts. */
+export async function removeRepoByPath(absPath: string, window: BrowserWindow): Promise<void> {
+  const attached = store.workspaces.filter((w) => w.repoPath === absPath);
+  if (attached.length > 0) {
+    throw new Error(
+      `repo still has ${attached.length} workspace${attached.length === 1 ? '' : 's'} — delete them first`,
+    );
+  }
+  await store.removeRepo(absPath);
+  window.webContents.send('repos:update', store.repos);
+}
+
 /** Socket entry point for `/addRepo`. Mirrors `dispatchSpawnRequest`: never
  * throws, always answers with an `{ ok }` envelope the caller can branch on. */
 export async function dispatchAddRepoRequest(

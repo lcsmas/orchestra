@@ -33,6 +33,7 @@ interface State {
   load: () => Promise<void>;
   refreshRepos: () => Promise<void>;
   addRepo: () => Promise<RepoEntry | null>;
+  removeRepo: (repoPath: string) => Promise<void>;
   createWorkspace: (input: CreateWorkspaceInput) => Promise<void>;
   createScratchWorkspace: () => Promise<void>;
   addRepoOnly: () => Promise<void>;
@@ -105,6 +106,14 @@ export const useStore = create<State>((set, get) => ({
       void dialog.error('Could not add repo', (e as Error).message);
       return null;
     }
+  },
+
+  removeRepo: async (repoPath) => {
+    // Main rejects if any workspace still belongs to the repo; let that error
+    // surface to the caller so the UI can explain why. On success main also
+    // broadcasts `repos:update`, but update locally too so it feels instant.
+    await window.orchestra.removeRepo(repoPath);
+    set((s) => ({ repos: s.repos.filter((r) => r.path !== repoPath) }));
   },
 
   createWorkspace: async (input) => {

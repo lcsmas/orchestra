@@ -103,6 +103,12 @@ class Store {
     return r;
   }
 
+  async removeRepo(absPath: string) {
+    const before = this.data.repos.length;
+    this.data.repos = this.data.repos.filter((r) => r.path !== absPath);
+    if (this.data.repos.length !== before) await this.save();
+  }
+
   async updateRepo(absPath: string, patch: Partial<RepoEntry>) {
     const i = this.data.repos.findIndex((r) => r.path === absPath);
     if (i < 0) return;

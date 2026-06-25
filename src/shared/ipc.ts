@@ -13,6 +13,9 @@ import type {
 export interface OrchestraAPI {
   // Repos
   addRepo: (absPath: string) => Promise<RepoEntry>;
+  /** Un-register a repo from Orchestra. Rejects if the repo still has any
+   *  workspaces (active or archived) — those must be deleted first. */
+  removeRepo: (absPath: string) => Promise<void>;
   listRepos: () => Promise<RepoEntry[]>;
   /** Snapshot of every known repo's base-branch sync state. Empty before
    *  the first sync completes; afterwards live updates flow via

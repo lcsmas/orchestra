@@ -2042,6 +2042,15 @@ button.danger-primary:active {
   opacity: 1;
   color: var(--text);
 }
+/* The remove-repo trash shares the flat icon-button look, but reads red on
+ * hover/focus instead of the default text colour. Override the global
+ * `button.danger:hover` box treatment so it stays a flat icon, not a pill. */
+.repo-scripts-btn.danger:hover,
+.repo-scripts-btn.danger:focus-visible {
+  background: transparent;
+  border-color: transparent;
+  color: var(--red);
+}
 
 /* ---------- Run tab content ---------- */
 .tab-dim {
