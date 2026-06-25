@@ -245,6 +245,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
     unarchive,
     deleteWorkspace,
     createWorkspace,
+    removeRepo,
     reorderWorkspaces,
     reorderRepos,
   } = useStore();
@@ -493,6 +494,24 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
     }
   };
 
+  const onRemoveRepo = async (e: React.MouseEvent, repoPath: string) => {
+    e.stopPropagation();
+    const name = repoLabel(repoPath);
+    const ok = await dialog.confirm({
+      title: 'Remove repo',
+      message: `Remove "${name}" from Orchestra?`,
+      detail: 'This only un-maps the repo from Orchestra — your git repository on disk is left untouched.',
+      tone: 'danger',
+      confirmLabel: 'Remove',
+    });
+    if (!ok) return;
+    try {
+      await removeRepo(repoPath);
+    } catch (err) {
+      void dialog.error('Could not remove repo', (err as Error).message);
+    }
+  };
+
   const activeGroups = groupByRepo(active.filter((w) => w.kind !== 'scratch'));
   // Show every registered repo as a section, plus any orphan repoPaths that
   // still have workspaces (e.g. the repo entry was removed but workspaces
@@ -643,6 +662,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
           // Only registered repos can be reordered — orphan repoPaths (entry
           // removed but workspaces remain) always trail and aren't draggable.
           const isRegisteredRepo = repos.some((r) => r.path === repoPath);
+          // A repo can only be removed once it holds no workspaces at all
+          // (active, archived, or scratch) — otherwise main rejects the call
+          // to avoid orphaning worktrees. Gate the button on the same rule so
+          // we never offer an action that's bound to fail.
+          const canRemoveRepo =
+            isRegisteredRepo && !workspaces.some((w) => w.repoPath === repoPath);
           const collapsed = collapsedRepos.has(repoPath);
           const repoDnd =
             dragRepo === repoPath
@@ -728,6 +753,16 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
                 >
                   <GearIcon />
                 </button>
+                {canRemoveRepo && (
+                  <button
+                    className="repo-scripts-btn danger"
+                    title={`Remove ${repoLabel(repoPath)} from Orchestra (your git repo is left untouched)`}
+                    aria-label={`Remove ${repoLabel(repoPath)} from Orchestra`}
+                    onClick={(e) => onRemoveRepo(e, repoPath)}
+                  >
+                    <TrashIcon />
+                  </button>
+                )}
                 <button
                   className="repo-add"
                   title={`New workspace in ${repoLabel(repoPath)}`}
