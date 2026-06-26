@@ -698,6 +698,14 @@ handle('repos:setScripts', async (_e, repoPath: string, scripts: RepoScripts) =>
   return store.setRepoScripts(repoPath, scripts);
 });
 
+handle('repos:getEnv', (_e, repoPath: string) => {
+  return store.getRepoEnv(repoPath);
+});
+
+handle('repos:setEnv', async (_e, repoPath: string, env: Record<string, string>) => {
+  return store.setRepoEnv(repoPath, env);
+});
+
 handle('scripts:retrySetup', async (_e, id: string) => {
   await runSetupScript(id, getMainWindow());
 });

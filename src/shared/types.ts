@@ -156,6 +156,14 @@ export interface RepoEntry {
   name: string;
   defaultBranch: string;
   scripts?: RepoScripts;
+  /** Extra environment variables injected into agent (`claude`) PTYs spawned
+   * for this repo's workspaces, merged over Orchestra's own env at spawn time.
+   * Values may reference Orchestra's own environment with `${VAR}` syntax —
+   * e.g. `{ "CLAUDE_CODE_OAUTH_TOKEN": "${CLAUDE_TOKEN_A}" }` keeps the secret
+   * in the environment and out of store.json. An entry whose `${VAR}` expands
+   * to nothing (referenced var unset) is dropped, so the agent falls back to
+   * its default login rather than getting an empty value. */
+  env?: Record<string, string>;
   /** Canonical web URL for the repo's `origin` remote (e.g.
    * `https://github.com/owner/repo`), normalized from whatever the remote
    * is set to (ssh, https, scp-style git@…). Undefined if no `origin` is

@@ -20,6 +20,7 @@ import {
   switchWorktreeBranch,
 } from './git';
 import { isRunning, stopPty, clearScrollback, startPty, writePty, readScrollback } from './pty';
+import { expandRepoEnv } from './repo-env';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
 import type { CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
@@ -32,6 +33,19 @@ const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
 const SCRATCH_ROOT = path.join(os.homedir(), '.orchestra', 'scratch');
 
 const execFileP = promisify(execFile);
+
+/** Resolve the extra environment variables an agent PTY should get for a
+ * workspace, from its source repo's configured `env` map. Values may reference
+ * Orchestra's own environment with `${VAR}` (also `$VAR`) syntax — this keeps
+ * secrets (e.g. a per-account `CLAUDE_CODE_OAUTH_TOKEN`) in Orchestra's env and
+ * out of store.json. An entry is DROPPED when its expansion is empty (a
+ * referenced var is unset/blank), so a misconfigured or absent token degrades
+ * gracefully to the agent's default login instead of an empty override. Returns
+ * `{}` when the repo has no `env` (today's behavior). */
+function resolveRepoAgentEnv(ws: Workspace): Record<string, string> {
+  const repo = store.repos.find((r) => r.path === ws.repoPath);
+  return expandRepoEnv(repo?.env, process.env);
+}
 
 /** Absolute path of the readiness sentinel for a workspace's agent. Orchestra
  * passes this path to the spawned `claude` as $ORCHESTRA_READY_FILE; a
@@ -683,6 +697,8 @@ async function startWorkspaceAgentHeadless(id: string, window: BrowserWindow): P
   // wait below can't be short-circuited by an old file.
   await clearReadyFile(id);
   const extraEnv: Record<string, string> = {
+    // Per-repo env first so Orchestra's own vars below always take precedence.
+    ...resolveRepoAgentEnv(ws),
     ORCHESTRA_BRANCH: ws.branch,
     ORCHESTRA_BRANCH_AUTO: ws.branchManuallySet ? '0' : '1',
     ORCHESTRA_READY_FILE: readyFile,
@@ -1071,6 +1087,8 @@ async function wakeAgentWithPrompt(
     window,
     workspaceId: id,
     extraEnv: {
+      // Per-repo env first so Orchestra's own vars below always take precedence.
+      ...resolveRepoAgentEnv(ws),
       ORCHESTRA_BRANCH: ws.branch,
       ORCHESTRA_BRANCH_AUTO: ws.branchManuallySet ? '0' : '1',
       ORCHESTRA_READY_FILE: readyFile,
@@ -1619,6 +1637,8 @@ export async function startAgentPty(
   // user or agent rename) clears the env on the next pty:start, so the
   // instruction stops appearing.
   const extraEnv: Record<string, string> = {
+    // Per-repo env first so Orchestra's own vars below always take precedence.
+    ...resolveRepoAgentEnv(ws),
     ORCHESTRA_BRANCH: ws.branch,
     ORCHESTRA_BRANCH_AUTO: ws.branchManuallySet ? '0' : '1',
   };
