@@ -170,12 +170,25 @@ export async function detectAndUpdateMergeState(
  *  an out-of-band rename is a deliberate choice, so the auto-rename
  *  instruction should stop firing. Detached HEAD (getCurrentBranch → '') is
  *  ignored: there's no branch to adopt and the worktree is mid-rebase/bisect. */
+// Throttle the per-workspace out-of-band-rename probe. The stats poll calls
+// this every 8s per workspace, but a `git branch -m` from a terminal is a rare,
+// deliberate event — there's no value in spawning a `git rev-parse` per
+// workspace 7-8 times a minute to catch it. Cap each workspace's probe to once
+// per BRANCH_PROBE_MS; the rename is still adopted within a minute. With N
+// workspaces this turns ~N·7.5 git spawns/min into ~N.
+const BRANCH_PROBE_MS = 60_000;
+const lastBranchProbe = new Map<string, number>();
+
 export async function detectAndUpdateBranchName(
   id: string,
   window: BrowserWindow,
 ): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || ws.kind === 'scratch') return;
+  const now = Date.now();
+  const last = lastBranchProbe.get(id) ?? 0;
+  if (now - last < BRANCH_PROBE_MS) return;
+  lastBranchProbe.set(id, now);
   const live = await getCurrentBranch(ws.worktreePath);
   if (!live || live === ws.branch) return;
   // Re-read after the await — a concurrent orchestra-driven rename may have

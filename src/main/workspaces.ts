@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, chmod, rm, appendFile } from 'node:fs/promises';
+import { randomUUID, createHash } from 'node:crypto';
+import { mkdir, readFile, writeFile, rm, appendFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { BrowserWindow } from 'electron';
 import { execFile } from 'node:child_process';
@@ -397,14 +397,26 @@ export async function pruneOrphanedWorkspaces(window: BrowserWindow): Promise<vo
     byRepo.set(ws.repoPath, list);
   }
 
+  // Read every repo's worktree list concurrently — one `git worktree list`
+  // subprocess per repo, all in flight at once rather than serialized on the
+  // boot path (this runs before first paint). A repo that's gone/unmounted or
+  // unreadable resolves to null and is skipped wholesale (never nuke records
+  // we can't verify).
+  const trackedByRepo = new Map<string, Set<string>>();
+  await Promise.all(
+    [...byRepo.keys()].map(async (repoPath) => {
+      if (!existsSync(repoPath)) return; // repo gone/unmounted — can't verify
+      try {
+        trackedByRepo.set(repoPath, new Set(await listWorktreePaths(repoPath)));
+      } catch {
+        /* unreadable — skip the whole repo to be safe */
+      }
+    }),
+  );
+
   for (const [repoPath, list] of byRepo) {
-    if (!existsSync(repoPath)) continue; // repo gone/unmounted — can't verify
-    let tracked: Set<string>;
-    try {
-      tracked = new Set(await listWorktreePaths(repoPath));
-    } catch {
-      continue; // unreadable — skip the whole repo to be safe
-    }
+    const tracked = trackedByRepo.get(repoPath);
+    if (!tracked) continue; // repo gone/unmounted/unreadable — skip safely
 
     for (const ws of list) {
       if (tracked.has(ws.worktreePath)) continue; // still a live worktree
@@ -1612,22 +1624,61 @@ const RESUME_ROWS = 24;
  *  vanished or a spawn that throws is logged and skipped, never fatal. */
 export async function resumeRunningWorkspaces(window: BrowserWindow): Promise<void> {
   const ids = store.takeResumeCandidates();
-  for (const id of ids) {
-    const ws = store.getWorkspace(id);
-    if (!ws || ws.archived) continue;
-    if (isRunning(id)) continue; // already live (shouldn't happen this early)
-    if (!existsSync(ws.worktreePath)) {
-      log.warn(`resume skipped: worktree missing id=${id} path=${ws.worktreePath}`);
-      continue;
-    }
-    try {
-      await startAgentPty(ws, RESUME_COLS, RESUME_ROWS, window);
-      log.info(`resumed agent id=${id} branch=${ws.branch}`);
-    } catch (e) {
-      log.warn(`resume failed id=${id}`, e);
-    }
-  }
+  // Resume agents concurrently rather than one-at-a-time. Each spawn awaits a
+  // full hook install + node-pty fork; serialized, N previously-running
+  // workspaces stacked their spawn latencies on the startup path. They're fully
+  // independent and already per-workspace isolated, so fan them out.
+  await Promise.all(
+    ids.map(async (id) => {
+      const ws = store.getWorkspace(id);
+      if (!ws || ws.archived) return;
+      if (isRunning(id)) return; // already live (shouldn't happen this early)
+      if (!existsSync(ws.worktreePath)) {
+        log.warn(`resume skipped: worktree missing id=${id} path=${ws.worktreePath}`);
+        return;
+      }
+      try {
+        await startAgentPty(ws, RESUME_COLS, RESUME_ROWS, window);
+        log.info(`resumed agent id=${id} branch=${ws.branch}`);
+      } catch (e) {
+        log.warn(`resume failed id=${id}`, e);
+      }
+    }),
+  );
 }
+
+// Version sentinel for the hook bundle: a hash over every script body and
+// every hook command the installer writes. When this matches the stamp a
+// workspace already carries, installOrchestraHooks short-circuits — turning the
+// ~17-syscall-per-spawn install into a single readFile. Any edit to the scripts
+// or commands below changes the digest and forces exactly one reinstall.
+const HOOKS_VERSION = createHash('sha256')
+  .update(
+    [
+      RENAME_INSTRUCTION_SCRIPT,
+      SPAWN_INSTRUCTION_SCRIPT,
+      ORCHESTRA_HOOK_SCRIPT,
+      COMMS_INSTRUCTION_SCRIPT,
+      REPO_ROUTES_INSTRUCTION_SCRIPT,
+      COMMS_RESURFACE_SCRIPT,
+      SPAWN_RESURFACE_SCRIPT,
+      INBOX_INSTRUCTION_SCRIPT,
+      HOOK_ACTIVITY_SUBMIT_CMD,
+      HOOK_ACTIVITY_STOP_CMD,
+      HOOK_ACTIVITY_NOTIFY_CMD,
+      HOOK_ACTIVITY_PRETOOL_CMD,
+      HOOK_ACTIVITY_POSTTOOL_CMD,
+      HOOK_SESSION_START_READY_CMD,
+      HOOK_SESSION_START_RENAME_CMD,
+      HOOK_SESSION_START_SPAWN_CMD,
+      HOOK_SESSION_START_COMMS_CMD,
+      HOOK_SESSION_START_REPO_ROUTES_CMD,
+      HOOK_COMMS_RESURFACE_CMD,
+      HOOK_SPAWN_RESURFACE_CMD,
+      HOOK_INBOX_DELIVER_CMD,
+    ].join(' '),
+  )
+  .digest('hex');
 
 export async function installOrchestraHooks(
   worktreePath: string,
@@ -1638,71 +1689,37 @@ export async function installOrchestraHooks(
     const gitignore = path.join(dir, '.gitignore');
     if (!existsSync(gitignore)) await writeFile(gitignore, '*\n');
 
-    // Idempotent: rewrite the script every install so updates to the
-    // instruction text propagate to existing workspaces on next pty:start.
-    const renameScript = path.join(dir, 'rename-instruction.sh');
-    await writeFile(renameScript, RENAME_INSTRUCTION_SCRIPT);
-    try {
-      await chmod(renameScript, 0o755);
-    } catch {
-      /* best-effort */
+    // The script bodies are compile-time constants, identical for every
+    // workspace, so re-writing all 8 files + merging settings.json on every
+    // single spawn/resume is pure waste. Stamp a version sentinel (a hash of
+    // the whole hook bundle) into .orchestra/ and skip the entire install when
+    // it already matches — the common case for an existing workspace. Any edit
+    // to the scripts or hook commands changes the hash and forces one rewrite.
+    const stamp = path.join(dir, '.hooks-version');
+    if (existsSync(stamp)) {
+      try {
+        if ((await readFile(stamp, 'utf8')).trim() === HOOKS_VERSION) return;
+      } catch {
+        /* unreadable stamp — fall through and reinstall */
+      }
     }
 
-    const spawnScript = path.join(dir, 'spawn-instruction.sh');
-    await writeFile(spawnScript, SPAWN_INSTRUCTION_SCRIPT);
-    try {
-      await chmod(spawnScript, 0o755);
-    } catch {
-      /* best-effort */
-    }
-
-    const hookScript = path.join(dir, 'orchestra-hook.sh');
-    await writeFile(hookScript, ORCHESTRA_HOOK_SCRIPT);
-    try {
-      await chmod(hookScript, 0o755);
-    } catch {
-      /* best-effort */
-    }
-
-    const commsScript = path.join(dir, 'comms-instruction.sh');
-    await writeFile(commsScript, COMMS_INSTRUCTION_SCRIPT);
-    try {
-      await chmod(commsScript, 0o755);
-    } catch {
-      /* best-effort */
-    }
-
-    const repoRoutesScript = path.join(dir, 'repo-routes-instruction.sh');
-    await writeFile(repoRoutesScript, REPO_ROUTES_INSTRUCTION_SCRIPT);
-    try {
-      await chmod(repoRoutesScript, 0o755);
-    } catch {
-      /* best-effort */
-    }
-
-    const commsResurfaceScript = path.join(dir, 'comms-resurface.sh');
-    await writeFile(commsResurfaceScript, COMMS_RESURFACE_SCRIPT);
-    try {
-      await chmod(commsResurfaceScript, 0o755);
-    } catch {
-      /* best-effort */
-    }
-
-    const spawnResurfaceScript = path.join(dir, 'spawn-resurface.sh');
-    await writeFile(spawnResurfaceScript, SPAWN_RESURFACE_SCRIPT);
-    try {
-      await chmod(spawnResurfaceScript, 0o755);
-    } catch {
-      /* best-effort */
-    }
-
-    const inboxScript = path.join(dir, 'inbox-instruction.sh');
-    await writeFile(inboxScript, INBOX_INSTRUCTION_SCRIPT);
-    try {
-      await chmod(inboxScript, 0o755);
-    } catch {
-      /* best-effort */
-    }
+    // Idempotent: rewrite the scripts every (real) install so updates to the
+    // instruction text propagate to existing workspaces. Write all 8 in
+    // parallel with the executable mode baked in — dropping the 8 separate
+    // chmod round-trips that doubled the syscall count here.
+    const w = (name: string, body: string) =>
+      writeFile(path.join(dir, name), body, { mode: 0o755 });
+    await Promise.all([
+      w('rename-instruction.sh', RENAME_INSTRUCTION_SCRIPT),
+      w('spawn-instruction.sh', SPAWN_INSTRUCTION_SCRIPT),
+      w('orchestra-hook.sh', ORCHESTRA_HOOK_SCRIPT),
+      w('comms-instruction.sh', COMMS_INSTRUCTION_SCRIPT),
+      w('repo-routes-instruction.sh', REPO_ROUTES_INSTRUCTION_SCRIPT),
+      w('comms-resurface.sh', COMMS_RESURFACE_SCRIPT),
+      w('spawn-resurface.sh', SPAWN_RESURFACE_SCRIPT),
+      w('inbox-instruction.sh', INBOX_INSTRUCTION_SCRIPT),
+    ]);
 
     const settingsDir = path.join(worktreePath, '.claude');
     await mkdir(settingsDir, { recursive: true });
@@ -1791,6 +1808,12 @@ export async function installOrchestraHooks(
 
     settings.hooks = hooks;
     await writeFile(settingsFile, JSON.stringify(settings, null, 2));
+
+    // Record the installed bundle version last, so a crash mid-install leaves
+    // a missing/stale stamp and the next spawn redoes the work.
+    await writeFile(path.join(worktreePath, '.orchestra', '.hooks-version'), HOOKS_VERSION).catch(
+      () => {},
+    );
   } catch {
     /* best-effort */
   }

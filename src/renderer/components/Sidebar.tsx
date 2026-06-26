@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import type { Workspace, WorkspaceStatus } from '../../shared/types';
 import { isScratchLike } from '../../shared/types';
@@ -458,24 +458,37 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     }
   };
 
-  const active = workspaces.filter((w) => !w.archived);
-  const archived = workspaces.filter((w) => w.archived);
-  // The spawn forest links every active workspace to the one that spawned it.
-  // Section membership is decided by a workspace's ROOT ancestor, so an agent
-  // spawned by an orchestrator nests under that orchestrator even if the agent
-  // itself is a git worktree in some repo.
-  const forest = buildSpawnForest(active);
-  const rootIsOrchestrator = (w: Workspace) => forest.rootOf.get(w.id)?.kind === 'orchestrator';
-  // Orchestrator sessions and everything they (transitively) spawned, threaded
-  // into trees and pinned at the very top.
-  const orchestratorRoots = forest.roots.filter((w) => w.kind === 'orchestrator');
-  const orchestratorTrees = orchestratorRoots.map((root) => ({
-    root,
-    rows: flattenSubtree(root, forest.childrenOf, new Set<string>()),
-  }));
-  // Plain scratch sessions that aren't part of an orchestrator's tree — their
-  // own pinned group below the orchestrators.
-  const scratchSessions = active.filter((w) => w.kind === 'scratch' && !rootIsOrchestrator(w));
+  // The whole workspace-tree derivation (filter → spawn forest → orchestrator
+  // trees → scratch list) is a pure function of `workspaces`, but the Sidebar
+  // re-renders on every `agent:tool` / stats / prs tick (it shows per-row tool
+  // labels and badges) — none of which change `workspaces`. Memoizing on
+  // `workspaces` identity skips rebuilding three Maps and walking the forest on
+  // each of those high-frequency ticks; it only recomputes when the workspace
+  // set actually changes.
+  const { active, archived, forest, orchestratorTrees, scratchSessions } = useMemo(() => {
+    const active = workspaces.filter((w) => !w.archived);
+    const archived = workspaces.filter((w) => w.archived);
+    // The spawn forest links every active workspace to the one that spawned it.
+    // Section membership is decided by a workspace's ROOT ancestor, so an agent
+    // spawned by an orchestrator nests under that orchestrator even if the agent
+    // itself is a git worktree in some repo.
+    const forest = buildSpawnForest(active);
+    const rootIsOrchestrator = (w: Workspace) =>
+      forest.rootOf.get(w.id)?.kind === 'orchestrator';
+    // Orchestrator sessions and everything they (transitively) spawned, threaded
+    // into trees and pinned at the very top.
+    const orchestratorRoots = forest.roots.filter((w) => w.kind === 'orchestrator');
+    const orchestratorTrees = orchestratorRoots.map((root) => ({
+      root,
+      rows: flattenSubtree(root, forest.childrenOf, new Set<string>()),
+    }));
+    // Plain scratch sessions that aren't part of an orchestrator's tree — their
+    // own pinned group below the orchestrators.
+    const scratchSessions = active.filter(
+      (w) => w.kind === 'scratch' && !rootIsOrchestrator(w),
+    );
+    return { active, archived, forest, orchestratorTrees, scratchSessions };
+  }, [workspaces]);
 
   const allArchivedSelected =
     archived.length > 0 && archived.every((w) => selectedArchived.has(w.id));
@@ -631,16 +644,19 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   // was spawned by an orchestrator has a live parent, so it isn't a root here —
   // it surfaces inside that orchestrator's tree instead (spawn beats repo). Its
   // subtree, flattened by groupRootsByRepo, still nests any further children.
-  const repoRoots = forest.roots.filter((w) => !isScratchLike(w));
-  const activeGroups = groupRootsByRepo(repoRoots, forest);
-  // Show every registered repo as a section, plus any orphan repoPaths that
-  // still have workspaces (e.g. the repo entry was removed but workspaces
-  // remain). This way a repo header stays visible — with a 0 count and an
-  // active "+" button — even after every workspace in it is archived.
-  const repoOrder: string[] = [
-    ...repos.map((r) => r.path),
-    ...Array.from(activeGroups.keys()).filter((p) => !repos.some((r) => r.path === p)),
-  ];
+  const { activeGroups, repoOrder } = useMemo(() => {
+    const repoRoots = forest.roots.filter((w) => !isScratchLike(w));
+    const activeGroups = groupRootsByRepo(repoRoots, forest);
+    // Show every registered repo as a section, plus any orphan repoPaths that
+    // still have workspaces (e.g. the repo entry was removed but workspaces
+    // remain). This way a repo header stays visible — with a 0 count and an
+    // active "+" button — even after every workspace in it is archived.
+    const repoOrder: string[] = [
+      ...repos.map((r) => r.path),
+      ...Array.from(activeGroups.keys()).filter((p) => !repos.some((r) => r.path === p)),
+    ];
+    return { activeGroups, repoOrder };
+  }, [forest, repos]);
 
   const repoLabel = (repoPath: string) => {
     const repo = repos.find((r) => r.path === repoPath);

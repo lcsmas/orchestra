@@ -80,11 +80,29 @@ function trimLogIfNeeded(logPath: string): number {
   }
 }
 
+// How much of the tail to return from readScrollback. Callers (the renderer's
+// scrollback restore, the peer `/read` socket route) only ever show the last
+// screenful-to-few-hundred lines, so loading the full 2 MB log just to slice
+// the end — and, for `/read`, ANSI-scrubbing all 2 MB of it — is wasted I/O and
+// CPU. 256 KB comfortably covers hundreds of lines of TUI output.
+const SCROLLBACK_TAIL_BYTES = 256 * 1024;
+
 export function readScrollback(id: string): string {
   const p = logFileFor(id);
   try {
-    if (!fs.existsSync(p)) return '';
-    return fs.readFileSync(p, 'utf8');
+    const stat = fs.statSync(p);
+    if (stat.size <= SCROLLBACK_TAIL_BYTES) return fs.readFileSync(p, 'utf8');
+    // Read only the trailing window. We may slice mid-UTF8-sequence at the
+    // start; decoding as utf8 yields at most one replacement char at the very
+    // front, harmless for terminal scrollback.
+    const fd = fs.openSync(p, 'r');
+    try {
+      const buf = Buffer.alloc(SCROLLBACK_TAIL_BYTES);
+      const read = fs.readSync(fd, buf, 0, SCROLLBACK_TAIL_BYTES, stat.size - SCROLLBACK_TAIL_BYTES);
+      return buf.subarray(0, read).toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch {
     return '';
   }

@@ -704,11 +704,14 @@ handle('scripts:runScrollback', (_e, id: string) => {
 
 // ---------- Dependency Check ----------
 
-import { execSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
-function checkCommand(cmd: string): boolean {
+const pExecFile = promisify(execFile);
+
+async function checkCommand(cmd: string): Promise<boolean> {
   try {
-    execSync(`command -v ${cmd}`, { stdio: 'ignore' });
+    await pExecFile('command', ['-v', cmd], { shell: '/bin/sh' });
     return true;
   } catch {
     return false;
@@ -716,9 +719,17 @@ function checkCommand(cmd: string): boolean {
 }
 
 async function checkDependencies(): Promise<void> {
+  // Probe all three in parallel rather than three serial subshell spawns. This
+  // is on the boot path (before the window), so the difference is real wall
+  // time the user waits at a blank screen.
+  const [hasGit, hasGh, hasClaude] = await Promise.all([
+    checkCommand('git'),
+    checkCommand('gh'),
+    checkCommand('claude'),
+  ]);
   const missing: { name: string; desc: string; install: string }[] = [];
 
-  if (!checkCommand('git')) {
+  if (!hasGit) {
     missing.push({
       name: 'git',
       desc: 'Git version control',
@@ -726,7 +737,7 @@ async function checkDependencies(): Promise<void> {
     });
   }
 
-  if (!checkCommand('gh')) {
+  if (!hasGh) {
     missing.push({
       name: 'gh',
       desc: 'GitHub CLI (for PR creation)',
@@ -734,7 +745,7 @@ async function checkDependencies(): Promise<void> {
     });
   }
 
-  if (!checkCommand('claude')) {
+  if (!hasClaude) {
     missing.push({
       name: 'claude',
       desc: 'Claude Code CLI',
@@ -770,7 +781,11 @@ if (!ORCHESTRA_CLI_MODE) {
   app.whenReady().then(async () => {
     initLogger();
     try {
-      await checkDependencies();
+      // Dependency probing spawns subshells; don't make the user wait at a
+      // blank screen for it. Run it concurrently with window creation — the
+      // only thing it does is pop a warning dialog when a tool is missing,
+      // which is fine to surface a beat after the window opens.
+      void checkDependencies().catch((e) => log.warn('checkDependencies failed', e));
       await createMainWindow();
       installCliShim();
       log.info('main window ready');

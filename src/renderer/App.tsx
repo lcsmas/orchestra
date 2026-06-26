@@ -31,24 +31,60 @@ function loadSidebarWidth(): number {
     : SIDEBAR_WIDTH_DEFAULT;
 }
 
+/** Run `fn` immediately and then every `ms` — but ONLY while the document is
+ *  visible. When the window is hidden (minimized, other workspace, screen
+ *  locked) the timer is torn down so Orchestra stops spawning N git/gh/du
+ *  subprocesses per tick in the background; on becoming visible again it fires
+ *  `fn` once to catch up and restarts the interval. Returns a cleanup that
+ *  removes both the timer and the visibility listener. */
+function startVisiblePoll(fn: () => void, ms: number): () => void {
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const stop = () => {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  };
+  const start = () => {
+    if (timer) return;
+    fn();
+    timer = setInterval(fn, ms);
+  };
+  const onVisibility = () => {
+    if (document.visibilityState === 'visible') start();
+    else stop();
+  };
+  if (document.visibilityState === 'visible') start();
+  document.addEventListener('visibilitychange', onVisibility);
+  return () => {
+    stop();
+    document.removeEventListener('visibilitychange', onVisibility);
+  };
+}
+
 export function App() {
-  const {
-    workspaces,
-    repos,
-    activeId,
-    view,
-    setView,
-    load,
-    loaded,
-    addRepoOnly,
-    createScratchWorkspace,
-    createOrchestratorWorkspace,
-    stats,
-    refreshAllStats,
-    refreshSizes,
-    prs,
-    refreshAllPRs,
-  } = useStore();
+  // Atomic selectors, not a whole-store `useStore()` destructure: the latter
+  // re-renders App (and with it every mounted TerminalView) on ANY state change
+  // — including the high-frequency `agent:tool` ticks and per-repo sync events
+  // App never reads. Each selector below subscribes to exactly one slice with
+  // Object.is equality, so App only re-renders when a slice it uses changes.
+  // `tools` and `repoSync` are deliberately not subscribed here — they're read
+  // by the Sidebar rows that need them.
+  const workspaces = useStore((s) => s.workspaces);
+  const repos = useStore((s) => s.repos);
+  const activeId = useStore((s) => s.activeId);
+  const view = useStore((s) => s.view);
+  const setView = useStore((s) => s.setView);
+  const load = useStore((s) => s.load);
+  const loaded = useStore((s) => s.loaded);
+  const addRepoOnly = useStore((s) => s.addRepoOnly);
+  const createScratchWorkspace = useStore((s) => s.createScratchWorkspace);
+  const createOrchestratorWorkspace = useStore((s) => s.createOrchestratorWorkspace);
+  const stats = useStore((s) => s.stats);
+  const refreshAllStats = useStore((s) => s.refreshAllStats);
+  const refreshSizes = useStore((s) => s.refreshSizes);
+  const prs = useStore((s) => s.prs);
+  const refreshAllPRs = useStore((s) => s.refreshAllPRs);
   const findRepo = (path: string): RepoEntry | undefined => repos.find((r) => r.path === path);
   const [nvimOpen, setNvimOpen] = useState(false);
   const [nvimWidth, setNvimWidth] = useState<number>(() => loadNvimWidth());
@@ -136,9 +172,7 @@ export function App() {
 
   useEffect(() => {
     if (!loaded) return;
-    refreshAllStats();
-    const timer = setInterval(refreshAllStats, 8000);
-    return () => clearInterval(timer);
+    return startVisiblePoll(refreshAllStats, 8000);
   }, [loaded, workspaces.length, refreshAllStats]);
 
   // Worktree sizes are far heavier to compute than diff stats (a full `du`
@@ -149,21 +183,14 @@ export function App() {
   // freezing it between workspace add/remove like a load-only refresh would.
   useEffect(() => {
     if (!loaded) return;
-    refreshSizes();
-    const timer = setInterval(refreshSizes, 30000);
-    return () => clearInterval(timer);
+    return startVisiblePoll(refreshSizes, 30000);
   }, [loaded, workspaces.length, refreshSizes]);
 
   useEffect(() => {
     if (!loaded) return;
-    refreshAllPRs();
-    const timer = setInterval(refreshAllPRs, 12000);
-    const onFocus = () => refreshAllPRs();
-    window.addEventListener('focus', onFocus);
-    return () => {
-      clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
-    };
+    // startVisiblePoll already refreshes on the visible→hidden→visible
+    // transition (which covers refocus), so no separate focus listener.
+    return startVisiblePoll(refreshAllPRs, 12000);
   }, [loaded, workspaces.length, refreshAllPRs]);
 
   useEffect(() => {
