@@ -3,7 +3,8 @@
 # Release Orchestra: bump version, tag, push, and optionally build locally.
 #
 # Tags and releases the CURRENT branch (worktree-safe — does NOT require or
-# checkout master). The v* tag drives CI; bring the code onto master separately.
+# checkout master). The v* tag drives CI; bring the code onto master separately,
+# or pass --to-master to fold that in (see below).
 #
 # Usage (run from any branch / orchestra worktree):
 #   npm run release                  # patch bump (default): 0.1.11 -> 0.1.12
@@ -12,6 +13,16 @@
 #   npm run release -- 1.2.3         # explicit version
 #   npm run release -- patch --dry-run   # print every step, change nothing
 #   npm run release -- patch --ci-only   # skip local build, let GitHub Actions handle it
+#   npm run release -- patch --to-master # also land the release on master (see below)
+#
+# --to-master: the script can't `git checkout master` (each orchestra workspace
+# is a worktree pinned to its own branch, and master is checked out elsewhere),
+# so instead it advances origin/master with non-checkout pushes:
+#   1. Before tagging, fast-forward origin/master up to HEAD (requires the
+#      current branch to be a clean fast-forward ahead of origin/master).
+#   2. After the bump commit, fast-forward origin/master again to include it.
+# The result: master, the released branch, and the v* tag all point at the same
+# commit. Refuses (before changing anything) if master can't be fast-forwarded.
 #
 # By default, this script:
 #   1. Bumps version, commits, tags
@@ -33,11 +44,13 @@ set -euo pipefail
 BUMP="patch"
 DRY_RUN=0
 CI_ONLY=0
+TO_MASTER=0
 for arg in "$@"; do
   case "$arg" in
     patch|minor|major) BUMP="$arg" ;;
     --dry-run|-n) DRY_RUN=1 ;;
     --ci-only|--ci) CI_ONLY=1 ;;
+    --to-master) TO_MASTER=1 ;;
     [0-9]*.[0-9]*.[0-9]*) BUMP="$arg" ;;
     *) echo "error: unknown argument '$arg'" >&2; exit 2 ;;
   esac
@@ -73,6 +86,22 @@ else
 fi
 echo "  ok: on '$BRANCH', clean, gh authed"
 
+# --to-master safety: verify origin/master can be fast-forwarded to HEAD before
+# we change anything, so a non-FF situation fails the whole release up front
+# rather than after we've already tagged and built.
+if [ "$TO_MASTER" = 1 ]; then
+  git fetch origin master --quiet 2>/dev/null || {
+    echo "error: --to-master: could not fetch origin/master" >&2; exit 1; }
+  if [ "$BRANCH" = "master" ]; then
+    echo "error: --to-master is meaningless on the master branch itself" >&2; exit 1
+  fi
+  git merge-base --is-ancestor origin/master HEAD || {
+    echo "error: --to-master: origin/master is not an ancestor of HEAD —" >&2
+    echo "       master can't be fast-forwarded. Rebase '$BRANCH' onto origin/master first." >&2
+    exit 1; }
+  echo "  ok: origin/master fast-forwards to HEAD (--to-master)"
+fi
+
 # ------------------------------------------------------------ next version ---
 CURRENT="$(node -p "require('./package.json').version")"
 case "$BUMP" in
@@ -92,6 +121,15 @@ if git rev-parse "$TAG" >/dev/null 2>&1; then
   echo "error: tag $TAG already exists" >&2; exit 1
 fi
 say "Releasing $CURRENT → $NEW  (tag $TAG)"
+
+# ------------------------------------------------- advance master (pre-bump) ---
+# Fast-forward origin/master up to HEAD without checking it out (safe inside a
+# worktree). FF-safety was already verified in preflight. The post-bump push
+# below carries the version-bump commit onto master too.
+if [ "$TO_MASTER" = 1 ]; then
+  say "Advance origin/master → HEAD (--to-master)"
+  run "git push origin HEAD:master"
+fi
 
 # ------------------------------------------------------- bump + commit + tag ---
 say "Bump version, commit, tag"
@@ -118,6 +156,15 @@ fi
 # ------------------------------------------------------ push commit + tag ---
 say "Push $BRANCH + $TAG"
 run "git push --follow-tags origin '$BRANCH'"
+
+# ----------------------------------------------- advance master (post-bump) ---
+# Carry the version-bump commit onto master so master, the released branch, and
+# the v* tag all point at the same commit. Still a fast-forward (HEAD is now the
+# bump commit, one ahead of where we left master pre-bump).
+if [ "$TO_MASTER" = 1 ]; then
+  say "Advance origin/master → $TAG bump commit (--to-master)"
+  run "git push origin HEAD:master"
+fi
 
 # ----------------------------------------------------- publish GitHub release ---
 if [ "$CI_ONLY" = 0 ]; then
