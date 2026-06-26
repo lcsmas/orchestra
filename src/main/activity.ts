@@ -27,14 +27,19 @@ import type { Workspace, WorkspaceStatus } from '../shared/types';
 //              agent is prompting the user for an answer (permission prompts
 //              and the 60s idle reminder).
 
+/** Update a workspace's status. Returns the workspace plus whether this call
+ *  was a real transition (`changed`) — callers that fire a one-shot side effect
+ *  on entering a state (a chime, an OS notification) gate on `changed` so a
+ *  redundant event (e.g. a `notify` right after a `stop`, both → `waiting`)
+ *  doesn't re-fire it. Returns null only when the workspace is gone/archived. */
 async function setStatus(
   id: string,
   status: WorkspaceStatus,
   window: BrowserWindow,
-): Promise<Workspace | null> {
+): Promise<{ ws: Workspace; changed: boolean } | null> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return null;
-  if (ws.status === status) return ws;
+  if (ws.status === status) return { ws, changed: false };
   const updated: Workspace = { ...ws, status };
   // Broadcast to the renderer first, then persist. upsertWorkspace mutates the
   // in-memory store synchronously (before its first await), so state is already
@@ -48,13 +53,14 @@ async function setStatus(
   if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
     window.webContents.send('workspace:update', updated);
   }
-  return updated;
+  return { ws: updated, changed: true };
 }
 
 function fireFinished(id: string, window: BrowserWindow): void {
   const focused = window.isFocused();
-  void setStatus(id, 'waiting', window).then((ws) => {
-    if (!ws) return;
+  void setStatus(id, 'waiting', window).then((res) => {
+    if (!res) return;
+    const { ws, changed } = res;
     if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
       // Ship the main-process focus state with the event. document.hasFocus()
       // is unreliable in the renderer (returns stale true on Wayland when the
@@ -68,7 +74,10 @@ function fireFinished(id: string, window: BrowserWindow): void {
     // on the branch afterward — so the pill cycles on/off with each merge
     // and re-divergence rather than being a one-shot terminal state.
     void detectAndUpdateMergeState(id, window);
-    if (focused) return;
+    // Only raise the OS notification on a real running→waiting transition. A
+    // redundant terminal event that didn't move the status (already waiting)
+    // must not pop a second toast.
+    if (focused || !changed) return;
     try {
       const n = new Notification({
         title: 'Agent finished',
@@ -91,12 +100,13 @@ function fireFinished(id: string, window: BrowserWindow): void {
 
 function fireNeedsInput(id: string, window: BrowserWindow): void {
   const focused = window.isFocused();
-  void setStatus(id, 'waiting', window).then((ws) => {
-    if (!ws) return;
+  void setStatus(id, 'waiting', window).then((res) => {
+    if (!res) return;
+    const { ws, changed } = res;
     if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
       window.webContents.send('agent:needs-input', id, focused);
     }
-    if (focused) return;
+    if (focused || !changed) return;
     try {
       const n = new Notification({
         title: 'Agent needs input',
@@ -265,6 +275,21 @@ export async function detectAndUpdateReleaseState(
   if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
     window.webContents.send('workspace:update', updated);
   }
+}
+
+/** Reconciliation floor for the status dot: the agent's process is gone, so it
+ *  cannot possibly still be `running`. Called from the PTY exit handler. This
+ *  is the durability backstop that makes a lost terminal event self-heal — even
+ *  if a `stop`/`notify` line were never delivered, the dot can never outlive the
+ *  process. We move to `waiting` (not `idle`) so the workspace still reads as
+ *  "has unreviewed output, go look" and keeps its yellow dot until the user
+ *  opens it; a clean idle is reserved for never-run / already-seen workspaces.
+ *  A no-op when the workspace already left `running` via a real stop/notify. */
+export function reconcileExited(id: string, window: BrowserWindow): void {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived) return;
+  if (ws.status !== 'running') return;
+  void setStatus(id, 'waiting', window);
 }
 
 /** Push the agent's currently-running tool (or null to clear) to the renderer.

@@ -17,8 +17,26 @@ import { applyAgentEvent } from './activity';
 // This module tails those files (a single directory watcher for low latency +
 // a slow poll as a safety net for any coalesced/missed inotify event) and
 // feeds each line to the activity tracker. Because the file is the source of
-// truth, ingestion latency no longer equals data loss — which is exactly why
-// the old PTY-output reconciliation safety net could be deleted.
+// truth, ingestion latency no longer equals data loss.
+//
+// Delivery is made robust by treating the spool as an append-only log with a
+// monotonic per-line `seq` (stamped by the writer hook under flock):
+//
+//   • Exactly-once, ordered apply. We remember the highest seq applied per
+//     workspace and skip any line at or below it. A duplicate drain (the
+//     watcher and the poll both firing for one append, or two overlapping
+//     polls) therefore can't re-apply an event — which is what used to re-fire
+//     the "agent finished" chime several times for one stop.
+//
+//   • No truncation under a live writer. The previous version truncated the
+//     file to zero the moment a drained batch ended in stop/notify, on the
+//     theory that "the agent is blocked after stop". It isn't: the next submit
+//     (or a sub-agent's events) can append between our statSync and truncate,
+//     and that write — or the stop itself, via an offset/size desync — was
+//     silently discarded, leaving the dot stuck on `running`. We never truncate
+//     now. Growth is bounded instead by rotation (rename-away + fresh start)
+//     that only happens when the file is large AND quiescent, a state the
+//     reader fully controls, so there is no write-vs-reset race.
 
 const EVENTS_DIR = path.join(os.homedir(), '.orchestra', 'events');
 
@@ -27,12 +45,26 @@ const EVENTS_DIR = path.join(os.homedir(), '.orchestra', 'events');
 // dropped under load. Kept slow so it's effectively free.
 const POLL_MS = 1000;
 
+// Rotate a spool once it crosses this size, to bound a long-lived workspace's
+// file. We only rotate after observing the file unchanged across two
+// consecutive drains (no new bytes, no buffered partial line) so the agent is
+// provably idle at that instant — never mid-write. seq keeps climbing across a
+// rotation, so a post-rotation replay still can't re-apply pre-rotation events.
+const ROTATE_BYTES = 256 * 1024;
+
 interface Cursor {
   /** Byte offset already consumed from the file. */
   offset: number;
   /** Trailing bytes past the last newline — an incompletely-written line held
    *  until its terminating newline arrives in a later append. */
   buffer: string;
+  /** Highest `seq` already applied. Lines at or below this are duplicates from
+   *  an overlapping watcher/poll drain and are skipped. 0 means "nothing
+   *  sequenced yet"; unsequenced lines (seq 0, flock-less writer) always apply. */
+  lastSeq: number;
+  /** File size seen at the previous drain, for the quiescence check that gates
+   *  rotation (size unchanged + no buffered partial ⇒ safe to rotate). */
+  prevSize: number;
 }
 
 let window: BrowserWindow | null = null;
@@ -51,15 +83,19 @@ export function getEventsDir(): string {
 }
 
 function idFromFilename(name: string): string | null {
+  // Only the live spool is a tail target. The sibling `.seq` counter and any
+  // rotated-away `.jsonl.old` must not be drained as if they were spools.
   if (!name.endsWith('.jsonl')) return null;
   return name.slice(0, -'.jsonl'.length) || null;
 }
 
 /** Read and dispatch any bytes appended since this file's last cursor. Reading
  *  is synchronous (the deltas are tiny) so two overlapping triggers — watcher
- *  and poll — can never interleave a half-read. Truncates the file back to
- *  empty at a turn boundary (stop/notify), the one moment the agent is
- *  guaranteed quiescent, to bound growth to a single turn's events. */
+ *  and poll — can never interleave a half-read. Each line's monotonic `seq`
+ *  makes apply exactly-once: a line at or below the highest seq already applied
+ *  is a duplicate from an overlapping drain and is dropped. We never truncate
+ *  the file under a writer; growth is bounded by `maybeRotate` at a quiescent
+ *  moment instead. */
 function drain(id: string): void {
   const p = spoolPathFor(id);
   let size: number;
@@ -70,16 +106,23 @@ function drain(id: string): void {
   }
   let cur = cursors.get(id);
   if (!cur) {
-    cur = { offset: 0, buffer: '' };
+    cur = { offset: 0, buffer: '', lastSeq: 0, prevSize: 0 };
     cursors.set(id, cur);
   }
-  // File shrank (we truncated it at a turn boundary, or it was recreated) —
-  // restart from the top so we don't skip the fresh content.
+  // File shrank — it was rotated away (by us) or recreated. Restart byte
+  // tracking from the top; `lastSeq` is deliberately preserved so any line
+  // that lingered through the rename can't be re-applied.
   if (size < cur.offset) {
     cur.offset = 0;
     cur.buffer = '';
   }
-  if (size === cur.offset) return;
+  if (size === cur.offset) {
+    // No new bytes. If the file is also big and has no buffered partial, it's
+    // quiescent — the one safe moment to rotate it away.
+    maybeRotate(id, cur, size);
+    cur.prevSize = size;
+    return;
+  }
 
   let chunk = '';
   try {
@@ -101,34 +144,51 @@ function drain(id: string): void {
   const parts = text.split('\n');
   cur.buffer = parts.pop() ?? ''; // trailing partial line (no newline yet)
 
-  let lastTerminal: 'stop' | 'notify' | null = null;
   for (const line of parts) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    let ev: { event?: unknown; tool?: unknown };
+    let ev: { seq?: unknown; event?: unknown; tool?: unknown };
     try {
-      ev = JSON.parse(trimmed) as { event?: unknown; tool?: unknown };
+      ev = JSON.parse(trimmed) as { seq?: unknown; event?: unknown; tool?: unknown };
     } catch {
       continue; // skip a corrupt/partial line rather than wedge the tail
     }
     if (typeof ev.event !== 'string') continue;
+    // Exactly-once: a sequenced line we've already applied (overlapping
+    // watcher+poll drain, or a re-read after rotation) is dropped. seq 0 is the
+    // flock-less writer's "unsequenced" marker — those always apply, matching
+    // the old at-least-once behavior on that degraded path.
+    const seq = typeof ev.seq === 'number' && Number.isFinite(ev.seq) ? ev.seq : 0;
+    if (seq > 0) {
+      if (seq <= cur.lastSeq) continue;
+      cur.lastSeq = seq;
+    }
     const tool = typeof ev.tool === 'string' && ev.tool.length ? ev.tool : undefined;
     if (window) applyAgentEvent(id, ev.event, tool, window);
-    if (ev.event === 'stop' || ev.event === 'notify') lastTerminal = ev.event;
-    else lastTerminal = null;
   }
+  cur.prevSize = size;
+}
 
-  // Turn ended and nothing is mid-write (no buffered partial): reset the spool
-  // so a long-lived workspace's file can't grow unbounded. Safe against a race
-  // with a concurrent append because after stop/notify the agent is blocked
-  // until the user's next prompt — there is nothing writing right now.
-  if (lastTerminal && !cur.buffer) {
-    try {
-      fs.truncateSync(p, 0);
-      cur.offset = 0;
-    } catch {
-      /* best-effort: next drain's shrink-detect recovers anyway */
-    }
+/** Bound a long-lived workspace's spool by renaming the current file aside and
+ *  letting the writer recreate it on its next append. Only fires when the file
+ *  is large AND has been observed unchanged across two consecutive drains with
+ *  no buffered partial line — i.e. provably no hook is mid-write — so there is
+ *  no truncate-vs-append race. `seq` keeps climbing in the sibling `.seq`
+ *  counter (untouched here), and `lastSeq` is preserved across the cursor
+ *  reset in `drain`, so a stray pre-rotation line can never be re-applied. */
+function maybeRotate(id: string, cur: Cursor, size: number): void {
+  if (size < ROTATE_BYTES) return;
+  if (cur.buffer) return; // a partial line is buffered ⇒ a write is in flight
+  if (size !== cur.prevSize) return; // changed since last drain ⇒ not yet quiescent
+  const p = spoolPathFor(id);
+  try {
+    fs.rmSync(`${p}.old`, { force: true });
+    fs.renameSync(p, `${p}.old`); // writer's next `>>` append recreates a fresh, empty file
+    cur.offset = 0;
+    cur.buffer = '';
+    cur.prevSize = 0;
+  } catch {
+    /* best-effort: a failed rotate just means the file keeps growing a bit longer */
   }
 }
 
@@ -155,16 +215,17 @@ export function startEventsSpool(win: BrowserWindow): void {
   }
   // No agent is running at startup (PTYs are spawned later, on the renderer's
   // pty:start), so any spool file on disk is stale from a previous run — and a
-  // dead session's last status lives in store.json, not here. Clear them for a
-  // clean slate; this is the one moment we can truncate with zero race risk.
+  // dead session's last status lives in store.json, not here. Clear the whole
+  // events dir (spools, the `.seq` counters, and any rotated `.old` files) for
+  // a clean slate; this is the one moment we can wipe with zero race risk. The
+  // counters reset to 0, so the new run's seq restarts from 1 against a fresh
+  // cursor whose lastSeq is also 0 — consistent on both ends.
   try {
     for (const name of fs.readdirSync(EVENTS_DIR)) {
-      if (idFromFilename(name)) {
-        try {
-          fs.unlinkSync(path.join(EVENTS_DIR, name));
-        } catch {
-          /* ignore */
-        }
+      try {
+        fs.unlinkSync(path.join(EVENTS_DIR, name));
+      } catch {
+        /* ignore */
       }
     }
   } catch {

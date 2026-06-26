@@ -1511,6 +1511,16 @@ exit 0
 // For pre/posttool it mines the active tool name out of the hook's stdin JSON
 // using pure bash parameter expansion (no jq/sed backrefs to keep it portable
 // and dependency-free); a parse miss just yields an empty tool, never an error.
+//
+// Every line carries a per-workspace MONOTONIC sequence number so the reader
+// can apply events exactly once and in order: it skips any line whose seq it
+// has already consumed (a duplicate inotify/poll race no longer re-fires the
+// "finished" chime) and it can detect a gap rather than silently reorder. The
+// counter lives in a sibling `<wsid>.seq` file bumped under `flock`, so the
+// pretool/posttool/stop hooks that can fire microseconds apart each get a
+// distinct, strictly-increasing value. If flock is unavailable we degrade to
+// seq=0 on every line and the reader treats 0 as "unsequenced" — apply always,
+// no dedup — i.e. exactly the old behavior, never worse.
 const ORCHESTRA_HOOK_SCRIPT = `#!/usr/bin/env bash
 # Auto-installed by orchestra. Do not edit — rewritten on every workspace start.
 dir="\${ORCHESTRA_EVENTS_DIR:-\$HOME/.orchestra/events}"
@@ -1534,7 +1544,27 @@ case "\$event" in
 esac
 
 mkdir -p "\$dir" 2>/dev/null || true
-printf '{"event":"%s","tool":"%s"}\\n' "\$event" "\$tool" >> "\$dir/\$ORCHESTRA_WS_ID.jsonl"
+spool="\$dir/\$ORCHESTRA_WS_ID.jsonl"
+seqf="\$dir/\$ORCHESTRA_WS_ID.seq"
+
+# Atomically allocate the next sequence number. flock serializes concurrent
+# hook processes so two events can't claim the same seq; the read-bump-write
+# runs while holding an exclusive lock on the counter file's own fd. A missing
+# flock leaves seq=0 — the reader applies unsequenced lines unconditionally, so
+# we never block the agent or lose an event over it.
+seq=0
+if command -v flock >/dev/null 2>&1; then
+  exec 9>>"\$seqf"
+  if flock -w 2 9; then
+    cur="\$(cat "\$seqf" 2>/dev/null)"
+    case "\$cur" in ''|*[!0-9]*) cur=0 ;; esac
+    seq=\$((cur + 1))
+    printf '%s' "\$seq" >"\$seqf"
+  fi
+  exec 9>&-
+fi
+
+printf '{"seq":%s,"event":"%s","tool":"%s"}\\n' "\$seq" "\$event" "\$tool" >> "\$spool"
 exit 0
 `;
 

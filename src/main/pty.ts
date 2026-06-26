@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { getHookSocketPath } from './hooks-server';
 import { getEventsDir } from './events-spool';
+import { reconcileExited } from './activity';
 import { log } from './logger';
 
 let ptyMod: typeof import('node-pty') | null = null;
@@ -268,6 +269,17 @@ export async function startPty(opts: {
       flushPtyData(session, opts.window);
       if (!session.stopped && canSend(opts.window)) {
         opts.window.webContents.send('pty:exit', opts.id, exitCode);
+      }
+      // Reconciliation floor: an agent process that exited on its OWN can't be
+      // `running`. This self-heals a lost terminal hook event (the stuck-green
+      // dot) — the status can never outlive the process even if the spool
+      // dropped a stop. Gated on `!session.stopped` so a deliberate stop/quit
+      // (which sets `stopped` via disposeSession before kill) does NOT rewrite
+      // the persisted `running` status — that status is what
+      // `resumeRunningWorkspaces` keys off to relaunch the agent on next start.
+      // Only agent PTYs carry a workspaceId; nvim/run PTYs have no status.
+      if (!session.stopped && session.workspaceId && canSend(opts.window)) {
+        reconcileExited(session.workspaceId, opts.window);
       }
       disposeSession(session);
       sessions.delete(opts.id);
