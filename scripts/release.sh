@@ -14,6 +14,7 @@
 #   npm run release -- patch --dry-run   # print every step, change nothing
 #   npm run release -- patch --ci-only   # skip local build, let GitHub Actions handle it
 #   npm run release -- patch --to-master # also land the release on master (see below)
+#   npm run release -- patch --install   # also install the local build to the launcher (see below)
 #
 # --to-master: the script can't `git checkout master` (each orchestra workspace
 # is a worktree pinned to its own branch, and master is checked out elsewhere),
@@ -23,6 +24,15 @@
 #   2. After the bump commit, fast-forward origin/master again to include it.
 # The result: master, the released branch, and the v* tag all point at the same
 # commit. Refuses (before changing anything) if master can't be fast-forwarded.
+#
+# --install: after the local build, atomically replace the AppImage that your
+# launcher runs with the freshly built one — so the app you start is the version
+# you just released, without a manual copy. The destination is resolved in order:
+#   1. $ORCHESTRA_INSTALL_PATH if set
+#   2. the Exec= target of ~/.local/share/applications/orchestra.desktop
+# The copy is temp-file + rename (atomic on the same filesystem), so a running
+# instance's mmap'd binary is never truncated mid-write. Relaunch to pick it up.
+# Incompatible with --ci-only (there is no local build to install).
 #
 # By default, this script:
 #   1. Bumps version, commits, tags
@@ -45,16 +55,23 @@ BUMP="patch"
 DRY_RUN=0
 CI_ONLY=0
 TO_MASTER=0
+INSTALL=0
 for arg in "$@"; do
   case "$arg" in
     patch|minor|major) BUMP="$arg" ;;
     --dry-run|-n) DRY_RUN=1 ;;
     --ci-only|--ci) CI_ONLY=1 ;;
     --to-master) TO_MASTER=1 ;;
+    --install) INSTALL=1 ;;
     [0-9]*.[0-9]*.[0-9]*) BUMP="$arg" ;;
     *) echo "error: unknown argument '$arg'" >&2; exit 2 ;;
   esac
 done
+
+if [ "$INSTALL" = 1 ] && [ "$CI_ONLY" = 1 ]; then
+  echo "error: --install needs the local build, so it can't be combined with --ci-only" >&2
+  exit 2
+fi
 
 cd "$(git rev-parse --show-toplevel)"
 
@@ -100,6 +117,29 @@ if [ "$TO_MASTER" = 1 ]; then
     echo "       master can't be fast-forwarded. Rebase '$BRANCH' onto origin/master first." >&2
     exit 1; }
   echo "  ok: origin/master fast-forwards to HEAD (--to-master)"
+fi
+
+# --install: resolve (and sanity-check) the destination up front, so a missing
+# launcher target fails before we tag/build rather than after.
+INSTALL_PATH=""
+if [ "$INSTALL" = 1 ]; then
+  if [ -n "${ORCHESTRA_INSTALL_PATH:-}" ]; then
+    INSTALL_PATH="$ORCHESTRA_INSTALL_PATH"
+  else
+    DESKTOP="$HOME/.local/share/applications/orchestra.desktop"
+    if [ -f "$DESKTOP" ]; then
+      # Take the binary from the Exec= line (first token, strip any %-field args).
+      INSTALL_PATH="$(grep -m1 '^Exec=' "$DESKTOP" | sed 's/^Exec=//' | awk '{print $1}')"
+    fi
+  fi
+  [ -n "$INSTALL_PATH" ] || {
+    echo "error: --install: could not resolve a destination. Set ORCHESTRA_INSTALL_PATH" >&2
+    echo "       or add an Exec= path to ~/.local/share/applications/orchestra.desktop." >&2
+    exit 1; }
+  INSTALL_DIR="$(dirname "$INSTALL_PATH")"
+  [ -d "$INSTALL_DIR" ] || {
+    echo "error: --install: destination dir does not exist: $INSTALL_DIR" >&2; exit 1; }
+  echo "  ok: --install target is $INSTALL_PATH"
 fi
 
 # ------------------------------------------------------------ next version ---
@@ -148,6 +188,18 @@ if [ "$CI_ONLY" = 0 ]; then
     echo "error: build did not produce $APPIMAGE" >&2
     echo "  undo the bump with: git tag -d $TAG && git reset --hard HEAD~1" >&2
     exit 1
+  fi
+
+  # --install: atomically swap the launcher's AppImage with the fresh build.
+  # cp to a temp file in the destination dir (same filesystem → rename is
+  # atomic), then mv over the target, so a running instance is never left
+  # reading a half-written binary.
+  if [ "$INSTALL" = 1 ]; then
+    say "Install local build → $INSTALL_PATH"
+    run "cp '$APPIMAGE' '$INSTALL_PATH.tmp'"
+    run "chmod +x '$INSTALL_PATH.tmp'"
+    run "mv -f '$INSTALL_PATH.tmp' '$INSTALL_PATH'"
+    [ "$DRY_RUN" = "1" ] || echo "  installed — relaunch Orchestra to pick up $NEW"
   fi
 else
   say "Skipping local build (--ci-only mode)"
