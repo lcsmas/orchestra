@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type {
   CreateWorkspaceInput,
   DiffStats,
+  LinearIssue,
   PRsForBranch,
   RepoEntry,
   RepoSyncState,
@@ -17,6 +18,10 @@ interface State {
    *  hot stats poll (on load / workspace-set change) since `du` is heavier. */
   sizes: Record<string, number>;
   prs: Record<string, PRsForBranch>;
+  /** Linear issue confirmed to exist for a workspace's branch, keyed by
+   *  workspace id. Absent until verified; explicit null means "checked, no real
+   *  issue" — so the sidebar shows a badge only on a present, non-null value. */
+  linear: Record<string, LinearIssue | null>;
   /** Ephemeral name of the tool each agent is currently running (Bash, Edit,
    *  …), keyed by workspace id. Driven by `agent:tool` events; absent when the
    *  agent is between tools or idle. Never persisted. */
@@ -48,6 +53,8 @@ interface State {
   refreshSizes: () => Promise<void>;
   refreshPR: (id: string) => Promise<void>;
   refreshAllPRs: () => Promise<void>;
+  refreshLinear: (id: string) => Promise<void>;
+  refreshAllLinear: () => Promise<void>;
 }
 
 export const useStore = create<State>((set, get) => ({
@@ -56,6 +63,7 @@ export const useStore = create<State>((set, get) => ({
   stats: {},
   sizes: {},
   prs: {},
+  linear: {},
   tools: {},
   repoSync: {},
   activeId: null,
@@ -270,6 +278,20 @@ export const useStore = create<State>((set, get) => ({
     const ids = get().workspaces.filter((w) => !w.archived).map((w) => w.id);
     await Promise.all(ids.map((id) => get().refreshPR(id)));
   },
+
+  refreshLinear: async (id) => {
+    try {
+      const issue = await window.orchestra.verifyLinear(id);
+      set((s) => ({ linear: { ...s.linear, [id]: issue } }));
+    } catch {
+      /* no API key / unauthenticated / offline — leave as-is */
+    }
+  },
+
+  refreshAllLinear: async () => {
+    const ids = get().workspaces.filter((w) => !w.archived).map((w) => w.id);
+    await Promise.all(ids.map((id) => get().refreshLinear(id)));
+  },
 }));
 
 // Live updates from main process.
@@ -296,9 +318,10 @@ window.orchestra.onWorkspaceRemoved((id) => {
         ? workspaces.find((w) => !w.archived)?.id ?? null
         : s.activeId;
     const { [id]: _gonePr, ...prs } = s.prs;
+    const { [id]: _goneLinear, ...linear } = s.linear;
     const { [id]: _goneStat, ...stats } = s.stats;
     const { [id]: _goneTool, ...tools } = s.tools;
-    return { workspaces, activeId, prs, stats, tools };
+    return { workspaces, activeId, prs, linear, stats, tools };
   });
 });
 window.orchestra.onAgentTool((id, tool) => {

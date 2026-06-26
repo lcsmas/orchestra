@@ -85,6 +85,7 @@ export function App() {
   const refreshSizes = useStore((s) => s.refreshSizes);
   const prs = useStore((s) => s.prs);
   const refreshAllPRs = useStore((s) => s.refreshAllPRs);
+  const refreshAllLinear = useStore((s) => s.refreshAllLinear);
   const findRepo = (path: string): RepoEntry | undefined => repos.find((r) => r.path === path);
   const [nvimOpen, setNvimOpen] = useState(false);
   const [nvimWidth, setNvimWidth] = useState<number>(() => loadNvimWidth());
@@ -192,6 +193,15 @@ export function App() {
     // transition (which covers refocus), so no separate focus listener.
     return startVisiblePoll(refreshAllPRs, 12000);
   }, [loaded, workspaces.length, refreshAllPRs]);
+
+  // Linear verification rides its own slow poll. The main process caches each
+  // key's existence for the session (it can't change), so steady-state ticks
+  // are nearly free — this cadence exists only to pick up workspaces added or
+  // renamed since the last pass. Re-runs when the workspace set changes.
+  useEffect(() => {
+    if (!loaded) return;
+    return startVisiblePoll(refreshAllLinear, 60000);
+  }, [loaded, workspaces.length, refreshAllLinear]);
 
   useEffect(() => {
     return window.orchestra.onAgentFinished((finishedId, focused) => {

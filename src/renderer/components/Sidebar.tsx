@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
-import type { Workspace, WorkspaceStatus } from '../../shared/types';
+import type { EnvStatusItem, Workspace, WorkspaceStatus } from '../../shared/types';
 import { isScratchLike } from '../../shared/types';
-import { linearIssueUrl, parseLinearIssueKey } from '../../shared/linear';
 import { SoundSettings } from './SoundSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
 import { UsageBars } from './UsageBars';
@@ -124,6 +123,17 @@ function GearIcon() {
     >
       <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z" />
       <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function SetupIcon() {
+  // Lucide `info` — a calm "heads up, optional setup" marker, not an alarm.
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+      strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 16v-4M12 8h.01" />
     </svg>
   );
 }
@@ -340,6 +350,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     stats,
     sizes,
     prs,
+    linear,
     tools,
     repoSync,
     setActive,
@@ -358,6 +369,19 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const [collapsedRepos, setCollapsedRepos] = useState<Set<string>>(() => {
     try {
       const raw = localStorage.getItem('orchestra.collapsedRepos');
+      return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+    } catch {
+      return new Set();
+    }
+  });
+  // Optional-setup status (e.g. Linear API key missing) plus the set of items
+  // the user has dismissed. Dismissals persist so a notice the user waved away
+  // stays gone across launches — until they fix it (an item that flips to `ok`
+  // is dropped from the notice regardless of dismissal).
+  const [envStatus, setEnvStatus] = useState<EnvStatusItem[]>([]);
+  const [dismissedEnv, setDismissedEnv] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('orchestra.dismissedEnvNotices');
       return new Set(raw ? (JSON.parse(raw) as string[]) : []);
     } catch {
       return new Set();
@@ -384,6 +408,34 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   useEffect(() => {
     void window.orchestra.getAppVersion().then(setVersion);
   }, []);
+
+  // Pull optional-setup status on mount and re-check on a slow cadence — config
+  // (env vars) only changes on relaunch, but a periodic re-read is cheap and
+  // keeps the notice honest if anything resolves it mid-session.
+  useEffect(() => {
+    const load = () => void window.orchestra.getEnvStatus().then(setEnvStatus).catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const dismissEnvNotice = (id: string) => {
+    setDismissedEnv((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      try {
+        localStorage.setItem('orchestra.dismissedEnvNotices', JSON.stringify(Array.from(next)));
+      } catch {
+        /* persistence is best-effort */
+      }
+      return next;
+    });
+  };
+
+  // Notices to show: not-ok items the user hasn't dismissed. A resolved item
+  // never shows (even if previously dismissed); we don't bother un-dismissing
+  // it in storage since the `ok` filter already hides it.
+  const envNotices = envStatus.filter((it) => !it.ok && !dismissedEnv.has(it.id));
 
   const clearDnd = () => {
     setDragWs(null);
@@ -1094,10 +1146,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               // The purple #N merged PR badge already conveys "merged", so
               // suppress the standalone merged pill when one is visible.
               const hasMergedPRBadge = visiblePRs.some((p) => p.state === 'MERGED');
-              // Linear issue link derived purely from the branch name (no IPC),
-              // shown next to the PR badges when the branch encodes an issue key.
-              const linearKey = w.kind === 'scratch' ? null : parseLinearIssueKey(w.branch);
-              const linearUrl = linearKey ? linearIssueUrl(w.branch) : null;
+              // Linear issue badge — shown ONLY for an issue the main process
+              // verified to exist via Linear's GraphQL API. A branch whose name
+              // merely looks like it carries a key (`usage-poll-429`) resolves to
+              // null and shows nothing. URL/identifier come straight from Linear,
+              // so they're never fabricated.
+              const linearIssue = linear[w.id] ?? null;
               const wsDnd =
                 dragWs?.id === w.id
                   ? ' dragging'
@@ -1283,20 +1337,20 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       )}
                       </span>
                     </div>
-                    {(visiblePRs.length > 0 || linearUrl) && (
+                    {(visiblePRs.length > 0 || linearIssue) && (
                       <div className="ws-meta-row">
                         <span className="pr-badges">
-                          {linearUrl && (
+                          {linearIssue && (
                             <span
                               className="pr-badge linear"
-                              title={`Linear issue ${linearKey} — open in Linear`}
+                              title={`Linear ${linearIssue.identifier}: ${linearIssue.title} — open in Linear`}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                window.orchestra.openExternal(linearUrl);
+                                window.orchestra.openExternal(linearIssue.url);
                               }}
                             >
                               <LinearIcon />
-                              <span className="pr-badge-num">{linearKey}</span>
+                              <span className="pr-badge-num">{linearIssue.identifier}</span>
                             </span>
                           )}
                           {visiblePRs.map((p) => (
@@ -1478,6 +1532,42 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           </div>
         )}
       </div>
+      {envNotices.length > 0 && (
+        <div className="env-notices">
+          {envNotices.map((it) => (
+            <div key={it.id} className="env-notice" role="status">
+              <span className="env-notice-icon" aria-hidden="true">
+                <SetupIcon />
+              </span>
+              <div className="env-notice-body">
+                <div className="env-notice-title">{it.label} not configured</div>
+                <div className="env-notice-detail">
+                  {it.detail}
+                  {it.docsUrl && (
+                    <>
+                      {' '}
+                      <button
+                        className="env-notice-link"
+                        onClick={() => it.docsUrl && window.orchestra.openExternal(it.docsUrl)}
+                      >
+                        Get a key
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+              <button
+                className="env-notice-dismiss"
+                title="Dismiss"
+                aria-label={`Dismiss ${it.label} setup notice`}
+                onClick={() => dismissEnvNotice(it.id)}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <UsageBars />
       <div className="sidebar-footer">
         <button

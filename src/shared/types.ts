@@ -181,6 +181,38 @@ export interface PRsForBranch {
   mergedCount: number;
 }
 
+/** A Linear issue confirmed to exist, resolved by querying Linear for the
+ *  candidate key parsed from a branch name. The renderer only ever renders a
+ *  Linear badge from one of these — a branch whose candidate key doesn't
+ *  resolve to a real issue yields `null` and shows nothing. */
+export interface LinearIssue {
+  /** Canonical issue identifier as Linear returns it, e.g. `NMC-261`. */
+  identifier: string;
+  /** Canonical Linear URL for the issue (authoritative — not string-built). */
+  url: string;
+  /** Issue title, for the badge tooltip. */
+  title: string;
+}
+
+/** One optional-setup check surfaced to the user — e.g. "Linear badges need an
+ *  API key". The sidebar shows a small notice for any item whose `ok` is false.
+ *  Kept generic so future checks (other integrations, missing tools) can be
+ *  added to {@link import('../main/env-status').getEnvStatus} without touching
+ *  the renderer. */
+export interface EnvStatusItem {
+  /** Stable id, also used as the per-item dismissal key in the renderer. */
+  id: string;
+  /** Short human label, e.g. `Linear`. */
+  label: string;
+  /** Whether the feature is configured and usable. */
+  ok: boolean;
+  /** One-line explanation shown when `ok` is false (what's missing + how to
+   *  fix). Empty when `ok`. */
+  detail: string;
+  /** Optional docs/help URL opened from the notice. */
+  docsUrl?: string;
+}
+
 /** Sync status of a repo's base branch (e.g. `develop`/`main`) against its
  *  `origin/<base>` remote-tracking ref. Produced by the main process on app
  *  focus and after manual sync, broadcast to the renderer for display in

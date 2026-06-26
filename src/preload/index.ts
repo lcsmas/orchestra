@@ -11,6 +11,7 @@ const api: OrchestraAPI = {
   pickDirectory: () => ipcRenderer.invoke('dialog:pickDir'),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   getAppVersion: () => ipcRenderer.invoke('app:version'),
+  getEnvStatus: () => ipcRenderer.invoke('app:envStatus'),
   getUsage: () => ipcRenderer.invoke('usage:get'),
 
   revealLogs: () => ipcRenderer.invoke('logs:reveal'),
@@ -62,6 +63,7 @@ const api: OrchestraAPI = {
   getDiffStats: (id) => ipcRenderer.invoke('git:stats', id),
   getWorktreeSizes: () => ipcRenderer.invoke('workspaces:sizes'),
   findPR: (id) => ipcRenderer.invoke('git:findPR', id),
+  verifyLinear: (id) => ipcRenderer.invoke('linear:verify', id),
   listBranches: (id) => ipcRenderer.invoke('git:listBranches', id),
   switchBranch: (id, branch) => ipcRenderer.invoke('git:switchBranch', id, branch),
   mergeWorktree: (id) => ipcRenderer.invoke('git:merge', id),

@@ -1,41 +1,32 @@
 // Deriving a Linear issue link from a git branch name. Branches here are often
 // named after the Linear issue they implement, e.g. `nmc-261-diagnosis-pictures`
-// or `NMC-8-foo`, so we surface a clickable Linear link alongside the GitHub PR.
-
-/** Linear org/workspace slug. Linear redirects `linear.app/<slug>/issue/<KEY>`
- *  to the canonical URL, so the user's org short slug works. The app has no
- *  general settings store to hang this on, so it's a documented const — change
- *  it here if the Linear workspace ever changes. */
-export const LINEAR_ORG_SLUG = 'mobile-club';
+// or `NMC-8-foo`. We pull a *candidate* key out of the branch name syntactically
+// here, but a candidate is never trusted on its own — the main process verifies
+// it against Linear (see src/main/linear.ts) and only a confirmed issue is ever
+// shown. That makes the link robust: `usage-poll-429-backoff` yields a candidate
+// `POLL-429`, Linear reports no such issue, and no badge appears.
 
 /**
- * Extract a Linear issue key of the form `<TEAM>-<NUMBER>` from a branch name.
- * TEAM is an alphabetic team prefix (case-insensitive, ≥2 letters — teams here
- * are like `NMC`, `MC`), NUMBER is a run of digits. The first match wins, and
- * the team is upper-cased to match Linear's canonical key form.
+ * Extract a *candidate* Linear issue key of the form `<TEAM>-<NUMBER>` from a
+ * branch name. TEAM is an alphabetic run (≥2 letters), NUMBER a digit run; the
+ * match is case-insensitive and normalized to Linear's upper-case key form.
+ * The first candidate wins. The token must sit on segment boundaries (start/end
+ * or one of `-_/.`) so a key is recognized as a standalone segment and not
+ * spliced out of a longer word.
  *
- * The ≥2-letter guard avoids mis-matching version-y prefixes such as `v1-2`
- * (single-letter team) as issue keys.
+ * This is intentionally permissive — it is NOT the source of truth for whether
+ * an issue exists. It only narrows a branch name to at most one thing worth
+ * asking Linear about. {@link import('../main/linear').verifyLinearIssue} does
+ * the actual existence check.
  *
- *   parseLinearIssueKey('nmc-261-diagnosis-pictures') -> 'NMC-261'
- *   parseLinearIssueKey('mc-2227-foo')                -> 'MC-2227'
- *   parseLinearIssueKey('NMC-8-bar')                  -> 'NMC-8'
- *   parseLinearIssueKey('v1-2-bump')                  -> null
- *   parseLinearIssueKey('feature/cleanup')            -> null
- *
- * Returns null when no issue key is present.
+ *   parseLinearIssueCandidate('nmc-261-diagnosis-pictures') -> 'NMC-261'
+ *   parseLinearIssueCandidate('feature/mc-12-x')            -> 'MC-12'
+ *   parseLinearIssueCandidate('usage-poll-429-backoff')     -> 'POLL-429'  (candidate only)
+ *   parseLinearIssueCandidate('v1-2-bump')                  -> null        (single-letter team)
+ *   parseLinearIssueCandidate('feature/cleanup')            -> null        (no digit run)
  */
-export function parseLinearIssueKey(branch: string): string | null {
-  // `\b` anchors the team to a word boundary so we don't match the tail of a
-  // longer token; `[a-z]{2,}` enforces the ≥2-letter team guard.
-  const m = branch.match(/\b([a-z]{2,})-(\d+)\b/i);
+export function parseLinearIssueCandidate(branch: string): string | null {
+  const m = branch.match(/(?:^|[-_/.])([a-z]{2,})-(\d+)(?=$|[-_/.])/i);
   if (!m) return null;
   return `${m[1].toUpperCase()}-${m[2]}`;
-}
-
-/** Full Linear issue URL for a branch, or null if the branch encodes no key. */
-export function linearIssueUrl(branch: string): string | null {
-  const key = parseLinearIssueKey(branch);
-  if (!key) return null;
-  return `https://linear.app/${LINEAR_ORG_SLUG}/issue/${key}`;
 }

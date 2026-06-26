@@ -2,6 +2,8 @@ import type {
   CreateWorkspaceInput,
   DiffFile,
   DiffStats,
+  EnvStatusItem,
+  LinearIssue,
   PRsForBranch,
   RepoEntry,
   RepoScripts,
@@ -30,6 +32,10 @@ export interface OrchestraAPI {
   openExternal: (url: string) => Promise<void>;
   /** The running app's version (from package.json). */
   getAppVersion: () => Promise<string>;
+
+  /** Optional-setup status (e.g. is a Linear API key configured?). Drives the
+   *  sidebar's "needs setup" notice. */
+  getEnvStatus: () => Promise<EnvStatusItem[]>;
 
   /** Last fetched snapshot of the signed-in Claude account's rolling 5h/7d
    *  usage windows, or null before the first successful poll (or if not signed
@@ -90,6 +96,10 @@ export interface OrchestraAPI {
    *  workspace id. Computed in one `du` pass; absent ids have no worktree. */
   getWorktreeSizes: () => Promise<Record<string, number>>;
   findPR: (id: string) => Promise<PRsForBranch>;
+  /** Verify the branch's candidate Linear key against Linear's GraphQL API.
+   *  Resolves the real issue, or null if the branch encodes no issue, the issue
+   *  doesn't exist, or there's no/invalid LINEAR_API_KEY. */
+  verifyLinear: (id: string) => Promise<LinearIssue | null>;
   listBranches: (id: string) => Promise<string[]>;
   switchBranch: (id: string, branch: string) => Promise<Workspace>;
   mergeWorktree: (id: string) => Promise<{ status: 'requested' }>;

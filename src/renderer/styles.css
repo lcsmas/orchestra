@@ -634,6 +634,73 @@ input:focus, textarea:focus, select:focus {
 .usage-bars + .sidebar-footer {
   border-top: none;
 }
+.env-notices {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+.env-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 12px;
+  background: rgba(255, 200, 87, 0.06);
+}
+.env-notice + .env-notice {
+  border-top: 1px solid var(--border);
+}
+.env-notice-icon {
+  color: var(--yellow);
+  flex-shrink: 0;
+  margin-top: 1px;
+  display: inline-flex;
+}
+.env-notice-body {
+  flex: 1;
+  min-width: 0;
+}
+.env-notice-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.env-notice-detail {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.env-notice-link {
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.env-notice-link:hover {
+  color: var(--accent-strong);
+}
+.env-notice-dismiss {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 140ms var(--ease), background-color 140ms var(--ease);
+}
+.env-notice-dismiss:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .sidebar-footer {
   border-top: 1px solid var(--border);
   padding: 8px 12px;

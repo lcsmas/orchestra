@@ -132,6 +132,8 @@ import {
   listBranches,
   getDiffStats,
 } from './git';
+import { verifyLinearIssue } from './linear';
+import { getEnvStatus } from './env-status';
 import type { Workspace } from '../shared/types';
 import {
   addRepoByPath,
@@ -336,6 +338,10 @@ handle('app:openExternal', async (_e, url: string) => {
 });
 
 handle('app:version', () => app.getVersion());
+
+// Optional-setup status (e.g. Linear API key present?). The renderer reads this
+// on load and on a slow poll to surface a small "needs setup" notice.
+handle('app:envStatus', () => getEnvStatus());
 
 // Last fetched usage snapshot (or null before the first successful poll). The
 // renderer reads this once on mount; subsequent updates arrive via `usage:update`.
@@ -581,6 +587,14 @@ handle('git:findPR', async (_e, id: string) => {
   // call unless the branch is merged-but-not-yet-released, so it's nearly free.
   void detectAndUpdateReleaseState(id, getMainWindow()).catch(() => {});
   return findPullRequest(ws.repoPath, ws.branch);
+});
+
+handle('linear:verify', async (_e, id: string) => {
+  const ws = store.getWorkspace(id);
+  if (!ws) throw new Error('workspace not found');
+  // Scratch sessions have no git branch encoding an issue; skip the CLI spawn.
+  if (ws.kind === 'scratch') return null;
+  return verifyLinearIssue(ws.branch);
 });
 
 handle('git:listBranches', async (_e, id: string) => {
