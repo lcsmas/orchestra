@@ -646,7 +646,7 @@ export async function getReleaseState(
 export async function getReleaseVersionsContaining(
   repoPath: string,
   branch: string,
-  baseBranch?: string,
+  _baseBranch?: string,
 ): Promise<{ versions: string[]; releasedAt?: number }> {
   try {
     const releases = await getPublishedReleases(repoPath);
@@ -654,44 +654,48 @@ export async function getReleaseVersionsContaining(
     const git = simpleGit(repoPath);
     const branchSha = (await git.raw(['rev-parse', branch])).trim();
 
-    // The set of commits authored on this branch — not just the tip. A branch
-    // can ship incrementally: commit B goes out in v1.0, then C–D in v1.1, so a
-    // release "contains the branch's work" if it contains ANY of these commits,
-    // not only the tip (which v1.0, cut before D existed, would never contain).
-    // Range is forkPoint..branch, where forkPoint = merge-base(base, branch):
-    //  - covers a still-open branch ahead of base, and
-    //  - survives a fast-forward/rebase that put the branch's commits ON base
-    //    (plain base..branch would be empty there and miss everything).
-    // Falls back to the tip alone if we can't establish the range (no base
-    // given, unrelated histories, squash-merge that left no shared fork point).
-    let branchCommits: string[] = [branchSha];
-    if (baseBranch) {
-      try {
-        const forkPoint = (await git.raw(['merge-base', baseBranch, branch])).trim();
-        const range = forkPoint ? `${forkPoint}..${branch}` : branch;
-        const out = (await git.raw(['rev-list', range])).trim();
-        const list = out ? out.split('\n').map((s) => s.trim()).filter(Boolean) : [];
-        // Empty range (tip == forkPoint, e.g. fresh branch) → keep the tip so a
-        // branch that shipped exactly at the fork still resolves.
-        if (list.length > 0) branchCommits = list;
-      } catch {
-        /* keep tip-only fallback */
-      }
-    }
-    const commitSet = new Set(branchCommits);
-
+    // Credit the branch for a release iff one of the commits that FIRST SHIPPED
+    // in that release is part of the branch's history. The commits a release
+    // first introduced are `prevTag..thisTag` — i.e. what landed between the
+    // previous published release and this one. A branch "is part of" such a
+    // commit when the commit is an ancestor of the branch tip.
+    //
+    // Why per-release ranges rather than "tip reachable from tag" (the old
+    // approach): a tag's commit is reachable from EVERY later release too, so
+    // the old test lit up a branch for its shipping release AND all subsequent
+    // ones. Ranges pin each branch to exactly the release(s) its own work first
+    // went out in — robust-workspace-status authored the v0.3.4 bump, so it gets
+    // v0.3.4 only, never the later v0.3.5 it had no commit in.
+    //
+    // This intentionally ignores the stale branch *pointer* (a merged branch
+    // whose ref still sits at an old commit while base advanced): we walk the
+    // tag→tag ranges in true history, not `base..branch`, so a fully-merged
+    // branch keeps the badge for what it shipped. The fresh-branch false
+    // positive (a branch cut from an old release commit it never authored) is
+    // filtered by the caller's `didBranchAuthorItsTip` reflog guard, not here.
     const ordered = [...releases].sort((a, b) => a.publishedAt - b.publishedAt);
     const versions: string[] = [];
     let releasedAt: number | undefined;
+    let prevSha: string | null = null;
     for (const rel of ordered) {
-      // A release contains branch work iff at least one branch commit is
-      // reachable from the release tag. `rev-list <commits> ^<release>` drops
-      // every branch commit the release already contains; if anything is
-      // dropped (filtered count < total), the release shipped some of the work.
-      if (await releaseContainsAnyOf(git, branchCommits, rel.sha, commitSet)) {
+      let credit: boolean;
+      if (prevSha === null) {
+        // Earliest release we can see: its predecessor is off the edge of the
+        // fetched list, so `..thisTag` would be the tag's whole ancestry and
+        // would credit EVERY branch built on top of it. We can't tell which of
+        // those commits this release first introduced, so credit the branch
+        // only when its tip IS exactly this release point.
+        credit = branchSha === rel.sha;
+      } else {
+        // Commits this release first introduced: prevTag..thisTag. Credit the
+        // branch iff one of them is in its history (ancestor of the tip).
+        credit = await branchTipReachesAnyIn(git, `${prevSha}..${rel.sha}`, branchSha);
+      }
+      if (credit) {
         versions.push(rel.tag);
         if (releasedAt === undefined) releasedAt = rel.publishedAt || undefined;
       }
+      prevSha = rel.sha;
     }
     return { versions, releasedAt };
   } catch {
@@ -699,24 +703,26 @@ export async function getReleaseVersionsContaining(
   }
 }
 
-/** True when at least one of `branchCommits` is reachable from `releaseSha`.
- *  Single `rev-list` per release: list the branch commits NOT contained in the
- *  release (`branchCommits... ^releaseSha`); if fewer than all are excluded,
- *  the release contains the rest. `commitSet` is the same commits as a Set, used
- *  to ignore unrelated commits `rev-list` might surface. */
-async function releaseContainsAnyOf(
+/** True when at least one commit in `range` is an ancestor of `branchSha`.
+ *  Single `rev-list`: the commits in `range` that are also reachable from the
+ *  branch tip (`<range> <branchSha>` would over-list, so we intersect by asking
+ *  for `range` commits NOT excluded by `^branchSha`'s complement). We list the
+ *  range and stop at the first one the branch contains. */
+async function branchTipReachesAnyIn(
   git: ReturnType<typeof simpleGit>,
-  branchCommits: string[],
-  releaseSha: string,
-  commitSet: Set<string>,
+  range: string,
+  branchSha: string,
 ): Promise<boolean> {
   try {
-    const out = (await git.raw(['rev-list', ...branchCommits, `^${releaseSha}`])).trim();
-    const notContained = out
-      ? out.split('\n').map((s) => s.trim()).filter((s) => commitSet.has(s))
-      : [];
-    // Some branch commit was excluded by ^releaseSha ⇒ it's in the release.
-    return notContained.length < branchCommits.length;
+    // `rev-list <range> ^<branchSha>` = range commits the branch does NOT have.
+    // If that's fewer than the full range, the branch contains the difference,
+    // so it shares at least one commit the release first shipped.
+    const fullOut = (await git.raw(['rev-list', range])).trim();
+    const full = fullOut ? fullOut.split('\n').filter(Boolean).length : 0;
+    if (full === 0) return false;
+    const notInBranchOut = (await git.raw(['rev-list', range, `^${branchSha}`])).trim();
+    const notInBranch = notInBranchOut ? notInBranchOut.split('\n').filter(Boolean).length : 0;
+    return notInBranch < full;
   } catch {
     return false;
   }
