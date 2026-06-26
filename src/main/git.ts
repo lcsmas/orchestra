@@ -306,29 +306,37 @@ export async function getBranchMergeState(
     const aheadStr = (await git.raw(['rev-list', '--count', `${baseBranch}..${branch}`])).trim();
     const ahead = Number(aheadStr) || 0;
     if (ahead > 0) return { merged: false, diverged: true, unpushedAhead, stalePointer: false };
-    // Branch is fully contained in base. It was merged if either a real merge
-    // commit folded the tip in, or base's reflog records a `merge <branch>`
-    // (the fast-forward / rebase case, which leaves no merge commit). The
-    // reflog check also disambiguates `branchSha === baseSha`: a fresh
-    // workspace has no such entry, a fast-forward-merged branch does.
+    // Branch is fully contained in base (nothing ahead) — so any work it did is
+    // now reachable from base. The question is whether that's because the branch
+    // was *merged*, or because the tip is a stale pointer at an old base commit
+    // the branch was cut from and never advanced past. Three positive signals,
+    // any of which proves a merge:
+    //
+    //  1. A real merge commit on base's mainline folded the tip in
+    //     (`branchTipWasMergedInto`). Only possible when refs differ.
+    //  2. base's reflog records a `merge <branch>` — the durable trace a
+    //     fast-forward / rebase merge via the Merge button leaves behind.
+    //  3. The branch authored the commit it points at (`branchAuthoredItsTip`):
+    //     its own reflog shows a `commit`/`rebase`/`cherry-pick`/… entry, not
+    //     just a `branch: Created from …`. Since the tip is fully contained in
+    //     base, work the branch authored now living on base *is* a merge — by
+    //     fast-forward, `update-ref`, or `push base:base`, none of which leave a
+    //     `merge` reflog subject. This is the one signal that survives base
+    //     advancing PAST the merged tip (the bug this replaces only checked it
+    //     when `branchSha === baseSha`, so a branch lost its merged badge the
+    //     moment one more commit landed on base) AND still rejects the
+    //     stale-pointer case, whose reflog shows only its creation entry.
     const [branchSha, baseSha] = await Promise.all([
       git.raw(['rev-parse', branch]).then((s) => s.trim()),
       git.raw(['rev-parse', baseBranch]).then((s) => s.trim()),
     ]);
-    const mergedViaCommit =
-      branchSha !== baseSha && (await branchTipWasMergedInto(git, branchSha, baseSha));
     const merged =
-      mergedViaCommit ||
+      (branchSha !== baseSha && (await branchTipWasMergedInto(git, branchSha, baseSha))) ||
       (await baseReflogRecordsMerge(git, baseBranch, branch)) ||
-      // base == branch tip and base was fast-forwarded to it (e.g. `git
-      // update-ref` / `git push base:base` instead of `git merge`, which leaves
-      // no `merge <branch>` reflog subject). Equal refs alone can't tell this
-      // from a fresh branch just cut from base, so the deciding question is
-      // whether THIS branch authored the work now sitting on base — answered by
-      // the branch's own reflog, not base's.
-      (branchSha === baseSha && (await branchAuthoredItsTip(git, branch)));
-    // Differing refs with no detectable merge means the tip is a stale old
-    // commit on base; equal refs with no merge is a fresh/never-merged branch.
+      (await branchAuthoredItsTip(git, branch));
+    // Not merged + refs differ → the tip is a stale old commit on base's
+    // history; clears any false-positive `mergedAt`. Not merged + equal refs →
+    // a fresh branch still pointing at base, nothing to clear.
     return { merged, diverged: false, unpushedAhead, stalePointer: !merged && branchSha !== baseSha };
   } catch {
     return { merged: false, diverged: false, unpushedAhead: 0, stalePointer: false };
@@ -364,12 +372,14 @@ async function baseReflogRecordsMerge(
 
 /** True when this branch authored the commit it currently points at — i.e. its
  *  reflog shows the tip arrived via a `commit`/`merge`/`rebase`/`cherry-pick` ON
- *  this branch, not solely a `branch:`/`Branch:` creation entry. Used only when
- *  the branch tip already equals base's tip (refs equal, nothing ahead): in that
- *  state a branch that DID work which base then fast-forwarded to looks
- *  identical, by ref, to a branch freshly cut from base. The branch's own reflog
- *  is the disambiguator — a fresh branch's newest reflog entry is its creation;
- *  a branch that committed has `commit:`-style entries above it.
+ *  this branch, not solely a `branch:`/`Branch:` creation entry. This is the
+ *  disambiguator for any branch fully contained in base (nothing ahead) that has
+ *  no merge commit and no `merge <branch>` reflog trace: a branch that did work
+ *  base then fast-forwarded/`update-ref`'d in looks, by topology, identical to a
+ *  branch freshly cut from base — but their reflogs differ. A fresh branch's
+ *  newest entry is its creation; a branch that committed has `commit:`-style
+ *  entries above it. Works whether or not the branch tip still equals base's tip,
+ *  so a merged branch keeps reading as merged after base advances past it.
  *
  *  Reads the reflog subjects (`%gs`) newest-first and asks whether any entry is
  *  a work-producing action rather than a branch create/reset/checkout. Robust to
