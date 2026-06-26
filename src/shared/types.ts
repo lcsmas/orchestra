@@ -213,6 +213,19 @@ export interface EnvStatusItem {
   docsUrl?: string;
 }
 
+/** Where the active Linear API key comes from: a key saved in Orchestra,
+ *  the LINEAR_API_KEY env var, or none configured. */
+export type LinearKeySource = 'stored' | 'env' | 'none';
+
+/** Result of testing a candidate Linear API key against the API. */
+export interface LinearKeyCheck {
+  ok: boolean;
+  /** Authenticated user's display name when ok. */
+  name?: string;
+  /** Human-readable reason when not ok. */
+  error?: string;
+}
+
 /** Sync status of a repo's base branch (e.g. `develop`/`main`) against its
  *  `origin/<base>` remote-tracking ref. Produced by the main process on app
  *  focus and after manual sync, broadcast to the renderer for display in

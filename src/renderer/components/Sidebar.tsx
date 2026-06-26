@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import type { EnvStatusItem, Workspace, WorkspaceStatus } from '../../shared/types';
 import { isScratchLike } from '../../shared/types';
 import { SoundSettings } from './SoundSettings';
+import { LinearSettings } from './LinearSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
 import { UsageBars } from './UsageBars';
 import { dialog } from './Dialog';
@@ -388,6 +389,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     }
   });
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
+  const [linearSettingsOpen, setLinearSettingsOpen] = useState(false);
   const [scriptsRepoPath, setScriptsRepoPath] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
@@ -409,15 +411,20 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     void window.orchestra.getAppVersion().then(setVersion);
   }, []);
 
+  const refreshEnvStatus = useCallback(
+    () => void window.orchestra.getEnvStatus().then(setEnvStatus).catch(() => {}),
+    [],
+  );
+
   // Pull optional-setup status on mount and re-check on a slow cadence — config
-  // (env vars) only changes on relaunch, but a periodic re-read is cheap and
+  // changes mostly on relaunch (env var) or via the in-app Linear settings
+  // (which calls refreshEnvStatus directly), but a periodic re-read is cheap and
   // keeps the notice honest if anything resolves it mid-session.
   useEffect(() => {
-    const load = () => void window.orchestra.getEnvStatus().then(setEnvStatus).catch(() => {});
-    load();
-    const t = setInterval(load, 60_000);
+    refreshEnvStatus();
+    const t = setInterval(refreshEnvStatus, 60_000);
     return () => clearInterval(t);
-  }, []);
+  }, [refreshEnvStatus]);
 
   const dismissEnvNotice = (id: string) => {
     setDismissedEnv((prev) => {
@@ -1401,6 +1408,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         })}
 
         {soundSettingsOpen && <SoundSettings onClose={() => setSoundSettingsOpen(false)} />}
+        {linearSettingsOpen && (
+          <LinearSettings
+            onClose={() => setLinearSettingsOpen(false)}
+            onChanged={refreshEnvStatus}
+          />
+        )}
         {scriptsRepoPath && (
           <RepoScriptsModal
             repoPath={scriptsRepoPath}
@@ -1543,16 +1556,28 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 <div className="env-notice-title">{it.label} not configured</div>
                 <div className="env-notice-detail">
                   {it.detail}
-                  {it.docsUrl && (
+                  {it.id === 'linear' ? (
                     <>
                       {' '}
                       <button
                         className="env-notice-link"
-                        onClick={() => it.docsUrl && window.orchestra.openExternal(it.docsUrl)}
+                        onClick={() => setLinearSettingsOpen(true)}
                       >
-                        Get a key
+                        Set API key…
                       </button>
                     </>
+                  ) : (
+                    it.docsUrl && (
+                      <>
+                        {' '}
+                        <button
+                          className="env-notice-link"
+                          onClick={() => it.docsUrl && window.orchestra.openExternal(it.docsUrl)}
+                        >
+                          Get a key
+                        </button>
+                      </>
+                    )
                   )}
                 </div>
               </div>
@@ -1588,6 +1613,15 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         >
           <LogsIcon />
           <span>Logs</span>
+        </button>
+        <button
+          className="sidebar-footer-link"
+          onClick={() => setLinearSettingsOpen(true)}
+          title="Linear API key — verify branch issue keys against Linear"
+          aria-label="Linear settings"
+        >
+          <LinearIcon />
+          <span>Linear</span>
         </button>
         {version && (
           <span className="sidebar-footer-version" title="Orchestra version">

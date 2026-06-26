@@ -2,13 +2,13 @@
 // sidebar only ever shows a Linear badge for an issue that actually exists.
 //
 // We call Linear's official GraphQL API directly (one fetch, no third-party
-// dependency). Auth is a personal API key read from the LINEAR_API_KEY env var
-// — mirroring how the rest of Orchestra leans on the environment (gh
-// credentials, ORCHESTRA_* vars) rather than storing secrets of its own. With
-// no key set, verification fails closed and no badge is shown.
+// dependency). Auth is a personal API key, resolved from (in order) the key the
+// user saved in Orchestra's settings, then the LINEAR_API_KEY env var. With no
+// key from either source, verification fails closed and no badge is shown.
 
 import { parseLinearIssueCandidate } from '../shared/linear';
-import type { LinearIssue } from '../shared/types';
+import type { LinearIssue, LinearKeyCheck, LinearKeySource } from '../shared/types';
+import { getLinearApiKey } from './secrets';
 import { log } from './logger';
 
 const LINEAR_GRAPHQL_ENDPOINT = 'https://api.linear.app/graphql';
@@ -25,16 +25,33 @@ const ISSUE_QUERY =
  *  hitting the API for every workspace on every tick. */
 const cache = new Map<string, LinearIssue | null>();
 
-/** Latches true once we've seen there's no API key, so we stop attempting (and
- *  stop logging) on every poll for every workspace. Reset only on app restart —
- *  setting the key then requires a relaunch, which is fine for a dev tool. */
+/** Latches true once we've seen there's no usable API key (absent, or rejected
+ *  with 401/403), so we stop attempting on every poll for every workspace.
+ *  Cleared by `resetLinearAuthState()` when the user changes the key in-app, so
+ *  a freshly-saved key takes effect without an app restart. */
 let noApiKey = false;
 
-/** Whether a Linear API key is configured in the environment. Drives the
- *  app's setup-status notice — separate from the internal `noApiKey` latch,
- *  which also flips on an auth rejection. */
-export function linearApiKeyPresent(): boolean {
-  return !!process.env.LINEAR_API_KEY?.trim();
+/** Resolve the active API key and its source. Stored (in-app) key wins over the
+ *  env var, so the settings UI is authoritative once used; env stays as a
+ *  zero-config / CI fallback. */
+async function resolveApiKey(): Promise<{ key: string | null; source: LinearKeySource }> {
+  const stored = (await getLinearApiKey())?.trim();
+  if (stored) return { key: stored, source: 'stored' };
+  const env = process.env.LINEAR_API_KEY?.trim();
+  if (env) return { key: env, source: 'env' };
+  return { key: null, source: 'none' };
+}
+
+/** Source of the configured Linear key (or 'none'). Drives the setup notice. */
+export async function getLinearKeySource(): Promise<LinearKeySource> {
+  return (await resolveApiKey()).source;
+}
+
+/** Forget cached lookups and the no-key latch. Call after the user saves or
+ *  clears the key so the next poll re-resolves auth and re-verifies branches. */
+export function resetLinearAuthState(): void {
+  cache.clear();
+  noApiKey = false;
 }
 
 interface GraphQlIssue {
@@ -57,6 +74,31 @@ function coerceIssue(raw: GraphQlIssue | null | undefined): LinearIssue | null {
   };
 }
 
+/** POST a GraphQL query to Linear with the given key. Returns the parsed JSON,
+ *  or throws on transport/timeout/non-OK. Shared by issue verification and the
+ *  settings "test this key" check. */
+async function linearGraphql(
+  apiKey: string,
+  query: string,
+  variables: Record<string, unknown>,
+): Promise<{ status: number; ok: boolean; json: unknown }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    // Linear wants the raw key in Authorization with NO "Bearer " prefix.
+    const res = await fetch(LINEAR_GRAPHQL_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: apiKey },
+      body: JSON.stringify({ query, variables }),
+      signal: controller.signal,
+    });
+    const json = res.ok ? await res.json() : undefined;
+    return { status: res.status, ok: res.ok, json };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Resolve the Linear issue a branch refers to, or null if it refers to none.
  *
@@ -73,45 +115,28 @@ export async function verifyLinearIssue(branch: string): Promise<LinearIssue | n
   if (cache.has(key)) return cache.get(key)!;
   if (noApiKey) return null;
 
-  const apiKey = process.env.LINEAR_API_KEY?.trim();
+  const { key: apiKey } = await resolveApiKey();
   if (!apiKey) {
     noApiKey = true;
-    log.info('LINEAR_API_KEY not set — Linear badges disabled', {
-      hint: 'create a personal API key at linear.app → Settings → Security & access, then export LINEAR_API_KEY',
+    log.info('No Linear API key configured — Linear badges disabled', {
+      hint: 'set one in Orchestra (Linear settings) or via the LINEAR_API_KEY env var',
     });
     return null;
   }
 
   let result: LinearIssue | null = null;
   try {
-    // 10s ceiling so a hung request can't wedge the poll. Linear wants the raw
-    // key in Authorization with NO "Bearer " prefix — a prefix makes it 400.
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
-    let res: Response;
-    try {
-      res = await fetch(LINEAR_GRAPHQL_ENDPOINT, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: apiKey },
-        body: JSON.stringify({ query: ISSUE_QUERY, variables: { id: key } }),
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (res.ok) {
-      const json = (await res.json()) as GraphQlResponse;
+    const { ok, status, json } = await linearGraphql(apiKey, ISSUE_QUERY, { id: key });
+    if (ok) {
       // A non-existent key comes back as `data.issue === null` (sometimes via an
       // `errors` array). Both fall through coerceIssue → null. Guard that the
       // returned identifier matches what we asked for before trusting it.
-      const issue = coerceIssue(json.data?.issue);
+      const issue = coerceIssue((json as GraphQlResponse)?.data?.issue);
       if (issue && issue.identifier.toUpperCase() === key) result = issue;
-    } else if (res.status === 401 || res.status === 403) {
+    } else if (status === 401 || status === 403) {
       // Bad/expired key — no point retrying every poll this session.
       noApiKey = true;
-      log.warn('Linear API rejected LINEAR_API_KEY — Linear badges disabled', {
-        status: res.status,
-      });
+      log.warn('Linear API rejected the API key — Linear badges disabled', { status });
     }
     // Other non-OK statuses (429/5xx) → fail closed for this key but don't
     // latch: a later poll can retry.
@@ -122,4 +147,28 @@ export async function verifyLinearIssue(branch: string): Promise<LinearIssue | n
 
   cache.set(key, result);
   return result;
+}
+
+interface ViewerResponse {
+  data?: { viewer?: { name?: unknown } | null } | null;
+}
+
+/** Validate an API key by querying the current viewer. Used by the settings
+ *  modal to give immediate "✓ connected as <name>" / "✗ invalid key" feedback.
+ *  Does NOT touch stored state — purely a probe of the passed-in key. */
+export async function verifyLinearApiKey(key: string): Promise<LinearKeyCheck> {
+  const trimmed = key.trim();
+  if (!trimmed) return { ok: false, error: 'Enter an API key.' };
+  try {
+    const { ok, status, json } = await linearGraphql(trimmed, '{ viewer { name } }', {});
+    if (ok) {
+      const name = (json as ViewerResponse)?.data?.viewer?.name;
+      if (typeof name === 'string') return { ok: true, name };
+      return { ok: false, error: 'Unexpected response from Linear.' };
+    }
+    if (status === 401 || status === 403) return { ok: false, error: 'Invalid API key.' };
+    return { ok: false, error: `Linear returned HTTP ${status}.` };
+  } catch {
+    return { ok: false, error: 'Could not reach Linear (network error).' };
+  }
 }

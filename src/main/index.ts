@@ -132,7 +132,13 @@ import {
   listBranches,
   getDiffStats,
 } from './git';
-import { verifyLinearIssue } from './linear';
+import {
+  verifyLinearIssue,
+  verifyLinearApiKey,
+  getLinearKeySource,
+  resetLinearAuthState,
+} from './linear';
+import { setLinearApiKey, clearLinearApiKey } from './secrets';
 import { getEnvStatus } from './env-status';
 import type { Workspace } from '../shared/types';
 import {
@@ -342,6 +348,28 @@ handle('app:version', () => app.getVersion());
 // Optional-setup status (e.g. Linear API key present?). The renderer reads this
 // on load and on a slow poll to surface a small "needs setup" notice.
 handle('app:envStatus', () => getEnvStatus());
+
+// ---------- Linear API key (set in-app, stored encrypted) ----------
+
+// Current key source ('stored' | 'env' | 'none') — lets the settings UI show
+// whether a key is configured and where it came from.
+handle('linear:keySource', () => getLinearKeySource());
+
+// Validate a candidate key against Linear without saving it (live feedback).
+handle('linear:checkKey', (_e, key: string) => verifyLinearApiKey(key));
+
+// Save the key (encrypted via safeStorage). Clears verification caches so the
+// new key takes effect immediately, and re-broadcasts env status.
+handle('linear:saveKey', async (_e, key: string) => {
+  await setLinearApiKey(key);
+  resetLinearAuthState();
+});
+
+// Remove the stored key (env-var fallback, if any, still applies afterward).
+handle('linear:clearKey', async () => {
+  await clearLinearApiKey();
+  resetLinearAuthState();
+});
 
 // Last fetched usage snapshot (or null before the first successful poll). The
 // renderer reads this once on mount; subsequent updates arrive via `usage:update`.

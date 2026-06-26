@@ -4,6 +4,8 @@ import type {
   DiffStats,
   EnvStatusItem,
   LinearIssue,
+  LinearKeyCheck,
+  LinearKeySource,
   PRsForBranch,
   RepoEntry,
   RepoScripts,
@@ -36,6 +38,15 @@ export interface OrchestraAPI {
   /** Optional-setup status (e.g. is a Linear API key configured?). Drives the
    *  sidebar's "needs setup" notice. */
   getEnvStatus: () => Promise<EnvStatusItem[]>;
+
+  /** Where the active Linear API key comes from ('stored' | 'env' | 'none'). */
+  getLinearKeySource: () => Promise<LinearKeySource>;
+  /** Test a candidate Linear API key against the API without saving it. */
+  checkLinearKey: (key: string) => Promise<LinearKeyCheck>;
+  /** Persist a Linear API key (encrypted at rest). Empty clears it. */
+  saveLinearKey: (key: string) => Promise<void>;
+  /** Remove the stored Linear API key. */
+  clearLinearKey: () => Promise<void>;
 
   /** Last fetched snapshot of the signed-in Claude account's rolling 5h/7d
    *  usage windows, or null before the first successful poll (or if not signed

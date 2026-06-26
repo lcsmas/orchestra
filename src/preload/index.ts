@@ -12,6 +12,10 @@ const api: OrchestraAPI = {
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   getAppVersion: () => ipcRenderer.invoke('app:version'),
   getEnvStatus: () => ipcRenderer.invoke('app:envStatus'),
+  getLinearKeySource: () => ipcRenderer.invoke('linear:keySource'),
+  checkLinearKey: (key) => ipcRenderer.invoke('linear:checkKey', key),
+  saveLinearKey: (key) => ipcRenderer.invoke('linear:saveKey', key),
+  clearLinearKey: () => ipcRenderer.invoke('linear:clearKey'),
   getUsage: () => ipcRenderer.invoke('usage:get'),
 
   revealLogs: () => ipcRenderer.invoke('logs:reveal'),
