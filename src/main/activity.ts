@@ -2,7 +2,6 @@ import path from 'node:path';
 import { BrowserWindow, Notification } from 'electron';
 import { store } from './store';
 import {
-  didBranchAuthorItsTip,
   getBranchMergeState,
   getCurrentBranch,
   getReleaseVersionsContaining,
@@ -237,35 +236,47 @@ export async function detectAndUpdateReleaseState(
 ): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || ws.kind === 'scratch') return;
-  // "Released" is pure reachability: does a published release tag contain this
-  // branch's tip? It does NOT depend on orchestra's merge detection — a branch
-  // shipped via a fast-forward / `update-ref` advance of base (which leaves no
-  // `merge` reflog trace, so `mergedAt` may be unset) is still released. The one
-  // false positive to avoid is a branch freshly cut from a base commit that's
-  // already inside an old release: its tip is reachable from that release but it
-  // did no work. Guard with "did this branch author its tip" instead of the old
-  // `mergedAt` gate — the branch's own reflog answers that cheaply.
-  if (!(await didBranchAuthorItsTip(ws.repoPath, ws.branch))) return;
-  // Compute the FULL set of releases that contain the tip, so the workspace
-  // accrues a badge per shipping version (v0.2.0, v0.2.1, …) rather than only
-  // the first. getPublishedReleases is cached per-repo (30s), so re-running this
-  // on the PR-poll cadence costs at most one gh call per repo per TTL, shared
-  // across all its workspaces — cheap enough to drop the old tip-moved
-  // short-circuit (which by design never noticed newer releases).
+  // Which published releases did THIS branch's own work first ship in? One badge
+  // per such release (v0.2.0, v0.2.1, …). getReleaseVersionsContaining derives
+  // the branch's authored commit set (from its reflog, falling back to the
+  // base..branch range) and maps each to its first containing release, so a
+  // fresh branch cut from an old release commit it never authored gets nothing,
+  // and a merged/stale-pointer branch still gets exactly what it shipped. No
+  // separate "did the branch author its tip" gate is needed — an empty authored
+  // set already yields no versions. getPublishedReleases is cached per-repo
+  // (30s), so this costs at most one gh call per repo per TTL.
   const { versions, releasedAt } = await getReleaseVersionsContaining(
     ws.repoPath,
     ws.branch,
     ws.baseBranch,
   );
-  if (versions.length === 0) return;
   const fresh = store.getWorkspace(id);
   if (!fresh || fresh.archived) return;
-  // No change → avoid a redundant write/broadcast.
   const prev = fresh.releasedVersions ?? (fresh.releasedVersion ? [fresh.releasedVersion] : []);
+  // No change → avoid a redundant write/broadcast. (Covers both staying empty
+  // and staying identical.)
   if (prev.length === versions.length && prev.every((v, i) => v === versions[i])) return;
+  if (versions.length === 0) {
+    // The branch shipped nothing (or a prior over-eager computation left stale
+    // pills): clear the release fields so the badges disappear.
+    const cleared: Workspace = {
+      ...fresh,
+      releasedAt: undefined,
+      releasedVersion: undefined,
+      releasedVersions: undefined,
+    };
+    void store.upsertWorkspace(cleared).catch(() => {});
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+      window.webContents.send('workspace:update', cleared);
+    }
+    return;
+  }
   const updated: Workspace = {
     ...fresh,
-    releasedAt: fresh.releasedAt ?? releasedAt ?? Date.now(),
+    // Recompute releasedAt from the fresh result rather than preserving a stale
+    // one — the version list itself just changed, so the "shipped when" anchor
+    // should track it.
+    releasedAt: releasedAt ?? fresh.releasedAt ?? Date.now(),
     releasedVersion: versions[0], // earliest = the "shipped when" signal
     releasedVersions: versions,
   };

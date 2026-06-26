@@ -637,92 +637,137 @@ export async function getReleaseState(
   }
 }
 
-/** Every published release whose build contains the branch tip, oldest-first.
- *  Where `getReleaseState` returns only the FIRST shipping release (the "when
- *  did this first ship" signal), this returns ALL of them so the UI can show a
- *  badge per version the workspace's work is part of (v0.2.0, v0.2.1, …).
- *  `releasedAt` mirrors the earliest release's publish time, so the two helpers
- *  agree on the "shipped at" timestamp. Empty list ⇒ not yet released. */
+/** Every published release a branch's OWN work first shipped in, oldest-first —
+ *  one badge per such release (v0.2.0, v0.2.1, …). `releasedAt` mirrors the
+ *  earliest one's publish time. Empty list ⇒ the branch's work hasn't shipped
+ *  (or the branch authored nothing).
+ *
+ *  The whole problem is attribution on a LINEAR history. "Is release X's commit
+ *  an ancestor of the branch tip?" is true for EVERY release older than the tip,
+ *  so reachability alone credits a branch for the entire release history behind
+ *  it — the bug this function used to have. We need the commits the branch
+ *  *authored*, not merely the commits it descends from.
+ *
+ *  The reflog is the source of truth for that: its `commit`/`rebase`/`cherry-pick`
+ *  /`am` entries name exactly the commits this branch produced, independent of
+ *  where base moved or whether the branch pointer went stale after a merge.
+ *  Intersect those with "still an ancestor of the tip" (drops commits a later
+ *  rebase replaced) and you have the branch's real authored set. Each authored
+ *  commit's FIRST containing release is one this branch shipped in; the union of
+ *  those is the badge list. A branch with no authored commits (fresh cut, or a
+ *  worktree whose reflog was pruned) falls back to the topological range
+ *  `merge-base(base, branch)..branch`, which is correct whenever the pointer is
+ *  not stale (and when it IS stale, the reflog is present, so we never get here). */
 export async function getReleaseVersionsContaining(
   repoPath: string,
   branch: string,
-  _baseBranch?: string,
+  baseBranch?: string,
 ): Promise<{ versions: string[]; releasedAt?: number }> {
   try {
     const releases = await getPublishedReleases(repoPath);
     if (releases.length === 0) return { versions: [] };
     const git = simpleGit(repoPath);
-    const branchSha = (await git.raw(['rev-parse', branch])).trim();
 
-    // Credit the branch for a release iff one of the commits that FIRST SHIPPED
-    // in that release is part of the branch's history. The commits a release
-    // first introduced are `prevTag..thisTag` — i.e. what landed between the
-    // previous published release and this one. A branch "is part of" such a
-    // commit when the commit is an ancestor of the branch tip.
-    //
-    // Why per-release ranges rather than "tip reachable from tag" (the old
-    // approach): a tag's commit is reachable from EVERY later release too, so
-    // the old test lit up a branch for its shipping release AND all subsequent
-    // ones. Ranges pin each branch to exactly the release(s) its own work first
-    // went out in — robust-workspace-status authored the v0.3.4 bump, so it gets
-    // v0.3.4 only, never the later v0.3.5 it had no commit in.
-    //
-    // This intentionally ignores the stale branch *pointer* (a merged branch
-    // whose ref still sits at an old commit while base advanced): we walk the
-    // tag→tag ranges in true history, not `base..branch`, so a fully-merged
-    // branch keeps the badge for what it shipped. The fresh-branch false
-    // positive (a branch cut from an old release commit it never authored) is
-    // filtered by the caller's `didBranchAuthorItsTip` reflog guard, not here.
+    const authored = await authoredCommits(git, branch, baseBranch);
+    if (authored.length === 0) return { versions: [] };
+
+    // Releases oldest-first so the first one containing a given authored commit
+    // is the release that commit FIRST shipped in.
     const ordered = [...releases].sort((a, b) => a.publishedAt - b.publishedAt);
+
     const versions: string[] = [];
-    let releasedAt: number | undefined;
-    let prevSha: string | null = null;
-    for (const rel of ordered) {
-      let credit: boolean;
-      if (prevSha === null) {
-        // Earliest release we can see: its predecessor is off the edge of the
-        // fetched list, so `..thisTag` would be the tag's whole ancestry and
-        // would credit EVERY branch built on top of it. We can't tell which of
-        // those commits this release first introduced, so credit the branch
-        // only when its tip IS exactly this release point.
-        credit = branchSha === rel.sha;
-      } else {
-        // Commits this release first introduced: prevTag..thisTag. Credit the
-        // branch iff one of them is in its history (ancestor of the tip).
-        credit = await branchTipReachesAnyIn(git, `${prevSha}..${rel.sha}`, branchSha);
+    const releasedAtByTag = new Map<string, number | undefined>();
+    for (const commit of authored) {
+      for (const rel of ordered) {
+        if (await isAncestor(repoPath, commit, rel.sha)) {
+          if (!versions.includes(rel.tag)) {
+            versions.push(rel.tag);
+            releasedAtByTag.set(rel.tag, rel.publishedAt || undefined);
+          }
+          break; // earliest containing release for this commit — done
+        }
       }
-      if (credit) {
-        versions.push(rel.tag);
-        if (releasedAt === undefined) releasedAt = rel.publishedAt || undefined;
-      }
-      prevSha = rel.sha;
     }
+    if (versions.length === 0) return { versions: [] };
+
+    // Present oldest-first and report the earliest publish time as releasedAt.
+    versions.sort(
+      (a, b) => ordered.findIndex((r) => r.tag === a) - ordered.findIndex((r) => r.tag === b),
+    );
+    const releasedAt = releasedAtByTag.get(versions[0]);
     return { versions, releasedAt };
   } catch {
     return { versions: [] };
   }
 }
 
-/** True when at least one commit in `range` is an ancestor of `branchSha`.
- *  Single `rev-list`: the commits in `range` that are also reachable from the
- *  branch tip (`<range> <branchSha>` would over-list, so we intersect by asking
- *  for `range` commits NOT excluded by `^branchSha`'s complement). We list the
- *  range and stop at the first one the branch contains. */
-async function branchTipReachesAnyIn(
+/** The commits a branch actually AUTHORED (newest-first), as commit SHAs.
+ *
+ *  Primary signal: the branch reflog. Entries whose action is a work-producing
+ *  one (`commit`, `commit (amend)`, `rebase`, `cherry-pick`, `am`) name the
+ *  commits this branch made; `branch:`/`reset:`/`checkout:` entries do not. We
+ *  keep only those still reachable from the current tip, so a commit a later
+ *  rebase superseded drops out and we don't double-count its replacement's
+ *  origin. This survives a stale pointer (a merged branch whose ref still sits
+ *  at an old commit) because it reads what the branch DID, not where it points.
+ *
+ *  Fallback (empty reflog — fresh branch, or a worktree whose per-branch reflog
+ *  was pruned): the topological range `merge-base(base, branch)..branch`. With a
+ *  live pointer this is the authored set; a fresh branch yields an empty range
+ *  (tip == fork point) and thus no commits, which is exactly right. */
+async function authoredCommits(
   git: ReturnType<typeof simpleGit>,
-  range: string,
-  branchSha: string,
+  branch: string,
+  baseBranch?: string,
+): Promise<string[]> {
+  const tip = (await git.raw(['rev-parse', branch])).trim();
+
+  let reflog = '';
+  try {
+    reflog = (await git.raw(['reflog', 'show', branch, '--format=%H %gs'])).trim();
+  } catch {
+    /* no reflog → fall through to the range fallback */
+  }
+  if (reflog) {
+    const seen = new Set<string>();
+    const authored: string[] = [];
+    for (const line of reflog.split('\n')) {
+      const sp = line.indexOf(' ');
+      if (sp < 0) continue;
+      const sha = line.slice(0, sp).trim();
+      const subject = line.slice(sp + 1).trim();
+      if (!/^(commit|commit \(amend\)|rebase|cherry-pick|am)\b/i.test(subject)) continue;
+      if (seen.has(sha)) continue;
+      seen.add(sha);
+      // Drop entries no longer on the branch (superseded by a later rebase/reset).
+      if (await isAncestorRaw(git, sha, tip)) authored.push(sha);
+    }
+    if (authored.length > 0) return authored;
+  }
+
+  // Fallback: commits ahead of the fork point with base.
+  if (!baseBranch) return [];
+  try {
+    const forkPoint = (await git.raw(['merge-base', baseBranch, branch])).trim();
+    if (!forkPoint) return [];
+    const out = (await git.raw(['rev-list', `${forkPoint}..${branch}`])).trim();
+    return out ? out.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** `git merge-base --is-ancestor` against a simpleGit handle (vs the repoPath
+ *  overload `isAncestor`). True when `ancestor` is an ancestor of/equal to
+ *  `descendant`; any error (e.g. unrelated histories) reads as false. */
+async function isAncestorRaw(
+  git: ReturnType<typeof simpleGit>,
+  ancestor: string,
+  descendant: string,
 ): Promise<boolean> {
   try {
-    // `rev-list <range> ^<branchSha>` = range commits the branch does NOT have.
-    // If that's fewer than the full range, the branch contains the difference,
-    // so it shares at least one commit the release first shipped.
-    const fullOut = (await git.raw(['rev-list', range])).trim();
-    const full = fullOut ? fullOut.split('\n').filter(Boolean).length : 0;
-    if (full === 0) return false;
-    const notInBranchOut = (await git.raw(['rev-list', range, `^${branchSha}`])).trim();
-    const notInBranch = notInBranchOut ? notInBranchOut.split('\n').filter(Boolean).length : 0;
-    return notInBranch < full;
+    await git.raw(['merge-base', '--is-ancestor', ancestor, descendant]);
+    return true;
   } catch {
     return false;
   }
