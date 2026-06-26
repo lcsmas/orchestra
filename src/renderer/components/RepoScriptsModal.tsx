@@ -25,10 +25,39 @@ const ARCHIVE_PLACEHOLDER = `# Best-effort cleanup before the worktree is delete
 
 # dropdb "myapp_$ORCHESTRA_BRANCH" 2>/dev/null || true`;
 
+const ENV_PLACEHOLDER = `# KEY=value per line, injected into this repo's agents.
+# Values may reference Orchestra's own env with \${VAR} — the secret stays
+# out of store.json. An entry whose \${VAR} is unset is dropped (agent keeps
+# its default login).
+
+CLAUDE_CODE_OAUTH_TOKEN=\${CLAUDE_TOKEN_A}`;
+
+/** Parse a KEY=value textarea (one per line, # comments, blank lines ignored)
+ * into an env record. The first `=` splits; later `=` stay in the value. */
+function parseEnvText(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (key) out[key] = trimmed.slice(eq + 1).trim();
+  }
+  return out;
+}
+
+function envToText(env: Record<string, string>): string {
+  return Object.entries(env)
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n');
+}
+
 export function RepoScriptsModal({ repoPath, repoName, onClose }: Props) {
   const [setup, setSetup] = useState('');
   const [runScript, setRunScript] = useState('');
   const [archive, setArchive] = useState('');
+  const [envText, setEnvText] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,13 +65,16 @@ export function RepoScriptsModal({ repoPath, repoName, onClose }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    void window.orchestra
-      .getRepoScripts(repoPath)
-      .then((scripts: RepoScripts) => {
+    void Promise.all([
+      window.orchestra.getRepoScripts(repoPath),
+      window.orchestra.getRepoEnv(repoPath),
+    ])
+      .then(([scripts, env]: [RepoScripts, Record<string, string>]) => {
         if (cancelled) return;
         setSetup(scripts.setup ?? '');
         setRunScript(scripts.run ?? '');
         setArchive(scripts.archive ?? '');
+        setEnvText(envToText(env));
         setLoaded(true);
       })
       .catch((e) => {
@@ -72,6 +104,7 @@ export function RepoScriptsModal({ repoPath, repoName, onClose }: Props) {
         run: runScript.trim() || undefined,
         archive: archive.trim() || undefined,
       });
+      await window.orchestra.setRepoEnv(repoPath, parseEnvText(envText));
       // Refresh local repo cache so the Run tab's `hasRunScript` derivation
       // sees the change immediately, without waiting for a reload.
       await refreshRepos();
@@ -143,6 +176,13 @@ export function RepoScriptsModal({ repoPath, repoName, onClose }: Props) {
               value={archive}
               onChange={setArchive}
               placeholder={ARCHIVE_PLACEHOLDER}
+            />
+            <Field
+              label="Agent env"
+              hint="KEY=value per line, injected into this repo's agents. Use ${VAR} to pull a value from Orchestra's own env (keeps secrets out of disk). E.g. select which Claude account this repo's agents log in as."
+              value={envText}
+              onChange={setEnvText}
+              placeholder={ENV_PLACEHOLDER}
             />
             {error && <div className="modal-error">{error}</div>}
           </div>

@@ -201,6 +201,28 @@ class Store {
     const repo = this.data.repos.find((r) => r.path === absPath);
     return repo?.scripts ?? {};
   }
+
+  async setRepoEnv(absPath: string, env: Record<string, string>) {
+    const repo = this.data.repos.find((r) => r.path === absPath);
+    if (!repo) throw new Error(`repo not found: ${absPath}`);
+    // Drop blank keys/values so we don't persist junk like {"": ""}.
+    const cleaned: Record<string, string> = {};
+    for (const [k, v] of Object.entries(env)) {
+      if (k.trim() && typeof v === 'string') cleaned[k.trim()] = v;
+    }
+    if (Object.keys(cleaned).length === 0) {
+      delete repo.env;
+    } else {
+      repo.env = cleaned;
+    }
+    await this.save();
+    return repo;
+  }
+
+  getRepoEnv(absPath: string): Record<string, string> {
+    const repo = this.data.repos.find((r) => r.path === absPath);
+    return repo?.env ?? {};
+  }
 }
 
 export const store = new Store();
