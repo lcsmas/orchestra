@@ -317,7 +317,16 @@ export async function getBranchMergeState(
     ]);
     const mergedViaCommit =
       branchSha !== baseSha && (await branchTipWasMergedInto(git, branchSha, baseSha));
-    const merged = mergedViaCommit || (await baseReflogRecordsMerge(git, baseBranch, branch));
+    const merged =
+      mergedViaCommit ||
+      (await baseReflogRecordsMerge(git, baseBranch, branch)) ||
+      // base == branch tip and base was fast-forwarded to it (e.g. `git
+      // update-ref` / `git push base:base` instead of `git merge`, which leaves
+      // no `merge <branch>` reflog subject). Equal refs alone can't tell this
+      // from a fresh branch just cut from base, so the deciding question is
+      // whether THIS branch authored the work now sitting on base — answered by
+      // the branch's own reflog, not base's.
+      (branchSha === baseSha && (await branchAuthoredItsTip(git, branch)));
     // Differing refs with no detectable merge means the tip is a stale old
     // commit on base; equal refs with no merge is a fresh/never-merged branch.
     return { merged, diverged: false, unpushedAhead, stalePointer: !merged && branchSha !== baseSha };
@@ -351,6 +360,43 @@ async function baseReflogRecordsMerge(
   } catch {
     return false;
   }
+}
+
+/** True when this branch authored the commit it currently points at — i.e. its
+ *  reflog shows the tip arrived via a `commit`/`merge`/`rebase`/`cherry-pick` ON
+ *  this branch, not solely a `branch:`/`Branch:` creation entry. Used only when
+ *  the branch tip already equals base's tip (refs equal, nothing ahead): in that
+ *  state a branch that DID work which base then fast-forwarded to looks
+ *  identical, by ref, to a branch freshly cut from base. The branch's own reflog
+ *  is the disambiguator — a fresh branch's newest reflog entry is its creation;
+ *  a branch that committed has `commit:`-style entries above it.
+ *
+ *  Reads the reflog subjects (`%gs`) newest-first and asks whether any entry is
+ *  a work-producing action rather than a branch create/reset/checkout. Robust to
+ *  base being advanced by `update-ref`/`push` (which leave no trace on the
+ *  branch side) because we look at what the BRANCH did, not how base moved. */
+async function branchAuthoredItsTip(
+  git: ReturnType<typeof simpleGit>,
+  branch: string,
+): Promise<boolean> {
+  try {
+    const out = await git.raw(['reflog', 'show', branch, '--format=%gs']);
+    return out
+      .split('\n')
+      .map((s) => s.trim())
+      .some((subject) => /^(commit|merge|rebase|cherry-pick|am|pull)\b/i.test(subject));
+  } catch {
+    return false;
+  }
+}
+
+/** Did `branch` author the commit it currently points at — i.e. is its tip the
+ *  product of work done on this branch, not merely the commit it was cut from?
+ *  Wraps {@link branchAuthoredItsTip} for callers outside this module (e.g. the
+ *  release-badge detector, which uses it to avoid lighting up a fresh branch
+ *  whose base-point happens to already sit inside a shipped release). */
+export async function didBranchAuthorItsTip(repoPath: string, branch: string): Promise<boolean> {
+  return branchAuthoredItsTip(simpleGit(repoPath), branch);
 }
 
 /** True when a merge commit on base's *first-parent mainline* has `branchSha`
@@ -590,17 +636,49 @@ export async function getReleaseState(
 export async function getReleaseVersionsContaining(
   repoPath: string,
   branch: string,
+  baseBranch?: string,
 ): Promise<{ versions: string[]; releasedAt?: number }> {
   try {
     const releases = await getPublishedReleases(repoPath);
     if (releases.length === 0) return { versions: [] };
     const git = simpleGit(repoPath);
     const branchSha = (await git.raw(['rev-parse', branch])).trim();
+
+    // The set of commits authored on this branch — not just the tip. A branch
+    // can ship incrementally: commit B goes out in v1.0, then C–D in v1.1, so a
+    // release "contains the branch's work" if it contains ANY of these commits,
+    // not only the tip (which v1.0, cut before D existed, would never contain).
+    // Range is forkPoint..branch, where forkPoint = merge-base(base, branch):
+    //  - covers a still-open branch ahead of base, and
+    //  - survives a fast-forward/rebase that put the branch's commits ON base
+    //    (plain base..branch would be empty there and miss everything).
+    // Falls back to the tip alone if we can't establish the range (no base
+    // given, unrelated histories, squash-merge that left no shared fork point).
+    let branchCommits: string[] = [branchSha];
+    if (baseBranch) {
+      try {
+        const forkPoint = (await git.raw(['merge-base', baseBranch, branch])).trim();
+        const range = forkPoint ? `${forkPoint}..${branch}` : branch;
+        const out = (await git.raw(['rev-list', range])).trim();
+        const list = out ? out.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+        // Empty range (tip == forkPoint, e.g. fresh branch) → keep the tip so a
+        // branch that shipped exactly at the fork still resolves.
+        if (list.length > 0) branchCommits = list;
+      } catch {
+        /* keep tip-only fallback */
+      }
+    }
+    const commitSet = new Set(branchCommits);
+
     const ordered = [...releases].sort((a, b) => a.publishedAt - b.publishedAt);
     const versions: string[] = [];
     let releasedAt: number | undefined;
     for (const rel of ordered) {
-      if (await isAncestor(repoPath, branchSha, rel.sha)) {
+      // A release contains branch work iff at least one branch commit is
+      // reachable from the release tag. `rev-list <commits> ^<release>` drops
+      // every branch commit the release already contains; if anything is
+      // dropped (filtered count < total), the release shipped some of the work.
+      if (await releaseContainsAnyOf(git, branchCommits, rel.sha, commitSet)) {
         versions.push(rel.tag);
         if (releasedAt === undefined) releasedAt = rel.publishedAt || undefined;
       }
@@ -608,6 +686,29 @@ export async function getReleaseVersionsContaining(
     return { versions, releasedAt };
   } catch {
     return { versions: [] };
+  }
+}
+
+/** True when at least one of `branchCommits` is reachable from `releaseSha`.
+ *  Single `rev-list` per release: list the branch commits NOT contained in the
+ *  release (`branchCommits... ^releaseSha`); if fewer than all are excluded,
+ *  the release contains the rest. `commitSet` is the same commits as a Set, used
+ *  to ignore unrelated commits `rev-list` might surface. */
+async function releaseContainsAnyOf(
+  git: ReturnType<typeof simpleGit>,
+  branchCommits: string[],
+  releaseSha: string,
+  commitSet: Set<string>,
+): Promise<boolean> {
+  try {
+    const out = (await git.raw(['rev-list', ...branchCommits, `^${releaseSha}`])).trim();
+    const notContained = out
+      ? out.split('\n').map((s) => s.trim()).filter((s) => commitSet.has(s))
+      : [];
+    // Some branch commit was excluded by ^releaseSha ⇒ it's in the release.
+    return notContained.length < branchCommits.length;
+  } catch {
+    return false;
   }
 }
 

@@ -1,7 +1,12 @@
 import path from 'node:path';
 import { BrowserWindow, Notification } from 'electron';
 import { store } from './store';
-import { getBranchMergeState, getCurrentBranch, getReleaseVersionsContaining } from './git';
+import {
+  didBranchAuthorItsTip,
+  getBranchMergeState,
+  getCurrentBranch,
+  getReleaseVersionsContaining,
+} from './git';
 import type { Workspace, WorkspaceStatus } from '../shared/types';
 
 // Hook-driven activity tracker.
@@ -209,14 +214,26 @@ export async function detectAndUpdateReleaseState(
 ): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || ws.kind === 'scratch') return;
-  if (!ws.mergedAt) return; // unmerged work can't be in a release yet
+  // "Released" is pure reachability: does a published release tag contain this
+  // branch's tip? It does NOT depend on orchestra's merge detection — a branch
+  // shipped via a fast-forward / `update-ref` advance of base (which leaves no
+  // `merge` reflog trace, so `mergedAt` may be unset) is still released. The one
+  // false positive to avoid is a branch freshly cut from a base commit that's
+  // already inside an old release: its tip is reachable from that release but it
+  // did no work. Guard with "did this branch author its tip" instead of the old
+  // `mergedAt` gate — the branch's own reflog answers that cheaply.
+  if (!(await didBranchAuthorItsTip(ws.repoPath, ws.branch))) return;
   // Compute the FULL set of releases that contain the tip, so the workspace
   // accrues a badge per shipping version (v0.2.0, v0.2.1, …) rather than only
   // the first. getPublishedReleases is cached per-repo (30s), so re-running this
   // on the PR-poll cadence costs at most one gh call per repo per TTL, shared
   // across all its workspaces — cheap enough to drop the old tip-moved
   // short-circuit (which by design never noticed newer releases).
-  const { versions, releasedAt } = await getReleaseVersionsContaining(ws.repoPath, ws.branch);
+  const { versions, releasedAt } = await getReleaseVersionsContaining(
+    ws.repoPath,
+    ws.branch,
+    ws.baseBranch,
+  );
   if (versions.length === 0) return;
   const fresh = store.getWorkspace(id);
   if (!fresh || fresh.archived) return;
