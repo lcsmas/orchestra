@@ -16,14 +16,17 @@
 # By default, this script:
 #   1. Bumps version, commits, tags
 #   2. Builds AppImage locally (for current arch)
-#   3. Pushes tag (triggers GitHub Actions for multi-arch builds)
-#   4. Creates GitHub release with local build
-#   5. GitHub Actions adds x64 and arm64 AppImages to the release
+#   3. Installs that build over the launcher's AppImage (the path your
+#      orchestra.desktop / rofi entry runs) so your daily driver updates
+#   4. Pushes tag (triggers GitHub Actions for multi-arch builds)
+#   5. Creates GitHub release with local build
+#   6. GitHub Actions adds x64 and arm64 AppImages to the release
 #
-# With --ci-only:
+# With --ci-only (faster, but does NOT refresh your local launcher):
 #   1. Bumps version, commits, tags
 #   2. Pushes tag (triggers GitHub Actions)
 #   3. GitHub Actions creates release with x64 and arm64 AppImages
+#   Run WITHOUT --ci-only when you want the rofi-launched binary updated.
 #
 # Requirements: a clean working tree on a non-detached branch, up to date with
 # its own remote, and an authenticated gh CLI.
@@ -110,6 +113,26 @@ if [ "$CI_ONLY" = 0 ]; then
     echo "error: build did not produce $APPIMAGE" >&2
     echo "  undo the bump with: git tag -d $TAG && git reset --hard HEAD~1" >&2
     exit 1
+  fi
+
+  # Install the fresh build over the AppImage your launcher (rofi/.desktop)
+  # actually runs. Releasing from a worktree builds into THAT worktree's
+  # release/ dir, but the desktop entry points at a fixed path (typically the
+  # main clone's release/), so without this step a worktree release never
+  # updates the binary you launch. Target is read from the .desktop Exec line so
+  # it tracks wherever the launcher points; skipped only if that resolves back
+  # to the file we just built. Atomic (temp + mv) so an interrupted copy can't
+  # leave a half-written, unlaunchable AppImage.
+  DESKTOP="$HOME/.local/share/applications/orchestra.desktop"
+  LAUNCH_TARGET=""
+  [ -f "$DESKTOP" ] && LAUNCH_TARGET="$(sed -n 's/^Exec=\([^ ]*\).*/\1/p' "$DESKTOP" | head -n1)"
+  if [ -n "$LAUNCH_TARGET" ] && [ "$(readlink -f "$LAUNCH_TARGET" 2>/dev/null)" != "$(readlink -f "$APPIMAGE" 2>/dev/null)" ]; then
+    say "Install build into launcher target ($LAUNCH_TARGET)"
+    run "mkdir -p \"\$(dirname '$LAUNCH_TARGET')\""
+    run "cp '$APPIMAGE' '$LAUNCH_TARGET.new' && chmod +x '$LAUNCH_TARGET.new' && mv -f '$LAUNCH_TARGET.new' '$LAUNCH_TARGET'"
+    echo "  launcher now runs $NEW — quit and relaunch Orchestra to pick it up"
+  else
+    echo "  launcher target is the build itself (or no .desktop) — nothing to install"
   fi
 else
   say "Skipping local build (--ci-only mode)"
