@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import type { Workspace, WorkspaceStatus } from '../../shared/types';
+import { isScratchLike } from '../../shared/types';
 import { linearIssueUrl, parseLinearIssueKey } from '../../shared/linear';
 import { SoundSettings } from './SoundSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
@@ -10,6 +11,7 @@ import { dialog } from './Dialog';
 interface Props {
   onNewFromRepo: () => void;
   onNewScratch: () => void;
+  onNewOrchestrator: () => void;
 }
 
 /** Compact human size for a worktree, e.g. 1536 → "1.5 KB", 2.8e9 → "2.6 GB".
@@ -52,6 +54,20 @@ function ZapIcon() {
     <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor"
       strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
       <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" />
+    </svg>
+  );
+}
+
+function OrchestratorIcon() {
+  // Lucide `network` — a node branching to two children, evoking an
+  // orchestrator delegating to the agents it spawns.
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor"
+      strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <rect x="9" y="2" width="6" height="6" rx="1" />
+      <rect x="2" y="16" width="6" height="6" rx="1" />
+      <rect x="16" y="16" width="6" height="6" rx="1" />
+      <path d="M12 8v4M12 12H5v4M12 12h7v4" />
     </svg>
   );
 }
@@ -220,17 +236,103 @@ function ExternalLinkIcon() {
   );
 }
 
-function groupByRepo(list: Workspace[]): Map<string, Workspace[]> {
-  const groups = new Map<string, Workspace[]>();
+/** A workspace paired with its depth in the orchestrator→children tree. Depth 0
+ * is a root (no live parent); each spawned child sits one level deeper than the
+ * orchestrator that spawned it. */
+interface TreeRow {
+  ws: Workspace;
+  depth: number;
+}
+
+/** Spawn forest derived from the active workspace set. A workspace spawned via
+ * `/spawn` carries the `parentId` of the workspace that spawned it; this links
+ * them into trees. A "root" is any workspace whose `parentId` is absent or
+ * points outside the set (parent deleted/archived) — dangling parents degrade
+ * gracefully to roots. */
+interface SpawnForest {
+  /** parentId → its direct children, in store order. */
+  childrenOf: Map<string, Workspace[]>;
+  /** Workspaces with no live parent, in store order. */
+  roots: Workspace[];
+  /** id → its root ancestor (walking parentId up). A node maps to itself when
+   * it is a root. Cycles (which should never occur) resolve to the node where
+   * the walk first repeats, so the lookup always terminates. */
+  rootOf: Map<string, Workspace>;
+}
+
+function buildSpawnForest(list: Workspace[]): SpawnForest {
+  const byId = new Map(list.map((w) => [w.id, w]));
+  const childrenOf = new Map<string, Workspace[]>();
+  const roots: Workspace[] = [];
   for (const ws of list) {
-    const existing = groups.get(ws.repoPath);
-    if (existing) existing.push(ws);
-    else groups.set(ws.repoPath, [ws]);
+    const parent = ws.parentId ? byId.get(ws.parentId) : undefined;
+    if (parent) {
+      const sibs = childrenOf.get(parent.id);
+      if (sibs) sibs.push(ws);
+      else childrenOf.set(parent.id, [ws]);
+    } else {
+      roots.push(ws);
+    }
+  }
+  const rootOf = new Map<string, Workspace>();
+  for (const ws of list) {
+    let cur = ws;
+    const seen = new Set<string>([cur.id]);
+    for (;;) {
+      const parent = cur.parentId ? byId.get(cur.parentId) : undefined;
+      if (!parent || seen.has(parent.id)) break;
+      seen.add(parent.id);
+      cur = parent;
+    }
+    rootOf.set(ws.id, cur);
+  }
+  return { childrenOf, roots, rootOf };
+}
+
+/** Flatten one root's subtree into depth-first rows carrying each node's depth,
+ * so children render indented under the workspace that spawned them. Uses an
+ * iterative walk (deep trees can't blow the stack) and a visited set (a corrupt
+ * cycle can't loop forever). */
+function flattenSubtree(
+  root: Workspace,
+  childrenOf: Map<string, Workspace[]>,
+  visited: Set<string>,
+): TreeRow[] {
+  const rows: TreeRow[] = [];
+  const stack: TreeRow[] = [{ ws: root, depth: 0 }];
+  while (stack.length) {
+    const row = stack.pop()!;
+    if (visited.has(row.ws.id)) continue;
+    visited.add(row.ws.id);
+    rows.push(row);
+    const kids = childrenOf.get(row.ws.id) ?? [];
+    // Push reversed so children are visited in their natural order.
+    for (let i = kids.length - 1; i >= 0; i--) {
+      stack.push({ ws: kids[i], depth: row.depth + 1 });
+    }
+  }
+  return rows;
+}
+
+/** Group git workspaces into repo sections, threaded as spawn trees. Each root
+ * is filed under its own `repoPath`; its descendants follow it depth-first in
+ * the SAME section, so a child in repo B still appears under its parent in repo
+ * A — the spawn relationship wins over repo grouping. Roots whose tree belongs
+ * to the Orchestrators section are passed in pre-filtered, so they never appear
+ * here. */
+function groupRootsByRepo(roots: Workspace[], forest: SpawnForest): Map<string, TreeRow[]> {
+  const groups = new Map<string, TreeRow[]>();
+  const visited = new Set<string>();
+  for (const root of roots) {
+    const rows = flattenSubtree(root, forest.childrenOf, visited);
+    const existing = groups.get(root.repoPath);
+    if (existing) existing.push(...rows);
+    else groups.set(root.repoPath, rows);
   }
   return groups;
 }
 
-export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
+export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Props) {
   const {
     workspaces,
     repos,
@@ -358,9 +460,22 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
 
   const active = workspaces.filter((w) => !w.archived);
   const archived = workspaces.filter((w) => w.archived);
-  // Scratch sessions have no repo, so they're shown in their own pinned group
-  // at the top of the list rather than threaded through the repo sections.
-  const scratchSessions = active.filter((w) => w.kind === 'scratch');
+  // The spawn forest links every active workspace to the one that spawned it.
+  // Section membership is decided by a workspace's ROOT ancestor, so an agent
+  // spawned by an orchestrator nests under that orchestrator even if the agent
+  // itself is a git worktree in some repo.
+  const forest = buildSpawnForest(active);
+  const rootIsOrchestrator = (w: Workspace) => forest.rootOf.get(w.id)?.kind === 'orchestrator';
+  // Orchestrator sessions and everything they (transitively) spawned, threaded
+  // into trees and pinned at the very top.
+  const orchestratorRoots = forest.roots.filter((w) => w.kind === 'orchestrator');
+  const orchestratorTrees = orchestratorRoots.map((root) => ({
+    root,
+    rows: flattenSubtree(root, forest.childrenOf, new Set<string>()),
+  }));
+  // Plain scratch sessions that aren't part of an orchestrator's tree — their
+  // own pinned group below the orchestrators.
+  const scratchSessions = active.filter((w) => w.kind === 'scratch' && !rootIsOrchestrator(w));
 
   const allArchivedSelected =
     archived.length > 0 && archived.every((w) => selectedArchived.has(w.id));
@@ -512,7 +627,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
     }
   };
 
-  const activeGroups = groupByRepo(active.filter((w) => w.kind !== 'scratch'));
+  // Repo sections are built from git-worktree ROOTS only. A git workspace that
+  // was spawned by an orchestrator has a live parent, so it isn't a root here —
+  // it surfaces inside that orchestrator's tree instead (spawn beats repo). Its
+  // subtree, flattened by groupRootsByRepo, still nests any further children.
+  const repoRoots = forest.roots.filter((w) => !isScratchLike(w));
+  const activeGroups = groupRootsByRepo(repoRoots, forest);
   // Show every registered repo as a section, plus any orphan repoPaths that
   // still have workspaces (e.g. the repo entry was removed but workspaces
   // remain). This way a repo header stays visible — with a 0 count and an
@@ -557,6 +677,15 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
           </button>
           <button
             className="header-repo-btn"
+            onClick={onNewOrchestrator}
+            title="New orchestrator — an agent that delegates work by spawning child agents"
+            aria-label="New orchestrator session"
+          >
+            <OrchestratorIcon />
+            <span>Orchestrator</span>
+          </button>
+          <button
+            className="header-repo-btn"
             onClick={onNewFromRepo}
             title="New workspace from a git repo…"
             aria-label="New workspace from a git repo"
@@ -567,9 +696,133 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
         </div>
       </div>
       <div className="ws-list">
-        {repoOrder.length === 0 && archived.length === 0 && scratchSessions.length === 0 && (
+        {repoOrder.length === 0 &&
+          archived.length === 0 &&
+          scratchSessions.length === 0 &&
+          orchestratorTrees.length === 0 && (
           <div style={{ padding: '20px', color: 'var(--text-dim)', fontSize: 12 }}>
             No agents running. Click <strong>Scratch</strong> for a quick throwaway session, or <strong>Repo</strong> to map a git repo.
+          </div>
+        )}
+        {orchestratorTrees.length > 0 && (
+          <div className="repo-section orchestrator-section">
+            <div className="repo-header">
+              <div className="repo-collapse" style={{ cursor: 'default' }}>
+                <span className="scratch-glyph" aria-hidden="true"><OrchestratorIcon /></span>
+                <span className="repo-name">Orchestrators</span>
+              </div>
+              <span className="repo-header-actions">
+                <span className="repo-count">{orchestratorTrees.length}</span>
+                <button
+                  className="repo-add"
+                  title="New orchestrator"
+                  aria-label="New orchestrator"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onNewOrchestrator();
+                  }}
+                >
+                  +
+                </button>
+              </span>
+            </div>
+            {orchestratorTrees.flatMap(({ rows }) =>
+              rows.map(({ ws: w, depth }) => {
+                const isDeleting = deletingIds.has(w.id);
+                const isChild = depth > 0;
+                // The orchestrator root is scratch-like (deletable, no git); a
+                // child can be a real git worktree (archivable) or a nested
+                // scratch/orchestrator. Show the repo it lives in for git kids.
+                const childIsGit = isChild && !isScratchLike(w);
+                return (
+                  <div
+                    key={w.id}
+                    className={`ws-item ${activeId === w.id ? 'active' : ''}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}`}
+                    style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
+                    onClick={() => setActive(w.id)}
+                  >
+                    {isChild && (
+                      <span className="ws-tree-connector" aria-hidden="true">
+                        ╰─
+                      </span>
+                    )}
+                    <div
+                      className={`ws-dot ${w.status as WorkspaceStatus}`}
+                      title={
+                        w.status === 'running'
+                          ? tools[w.id]
+                            ? `Agent is working… (${tools[w.id]})`
+                            : 'Agent is working…'
+                          : w.status === 'idle'
+                            ? 'Agent is idle'
+                            : w.status
+                      }
+                    />
+                    <div className="ws-body">
+                      <div className="ws-name-row">
+                        {renamingId === w.id ? (
+                          <input
+                            className="ws-name-input"
+                            autoFocus
+                            value={renameDraft}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => setRenameDraft(e.target.value)}
+                            onBlur={() => commitRename(w)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') commitRename(w);
+                              else if (e.key === 'Escape') setRenamingId(null);
+                            }}
+                          />
+                        ) : (
+                          <div
+                            className="ws-name"
+                            title={
+                              depth === 0
+                                ? `${w.branch} — orchestrator · double-click to rename`
+                                : `${w.branch} — spawned by this orchestrator · double-click to rename`
+                            }
+                            onDoubleClick={(e) => startRename(e, w)}
+                          >
+                            {w.branch}
+                          </div>
+                        )}
+                        {childIsGit && (
+                          <span className="ws-pills">
+                            <span
+                              className="repo-tag-pill"
+                              title={`Spawned into ${repoLabel(w.repoPath)}`}
+                            >
+                              {repoLabel(w.repoPath)}
+                            </span>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {isDeleting ? (
+                      <span className="ws-spinner" title="Removing…" aria-label="Removing" role="status" />
+                    ) : childIsGit ? (
+                      <button
+                        className="ws-icon-btn"
+                        title="Archive workspace"
+                        aria-label={`Archive workspace ${w.name}`}
+                        onClick={(e) => onArchive(e, w.id)}
+                      >
+                        <ArchiveIcon />
+                      </button>
+                    ) : (
+                      <button
+                        className="ws-icon-btn danger"
+                        title={depth === 0 ? 'Delete orchestrator' : 'Delete session'}
+                        aria-label={`Delete ${w.branch}`}
+                        onClick={(e) => onDeleteScratch(e, w.id, w.branch)}
+                      >
+                        <TrashIcon />
+                      </button>
+                    )}
+                  </div>
+                );
+              }),
+            )}
           </div>
         )}
         {scratchSessions.length > 0 && (
@@ -808,7 +1061,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
                 </div>
               );
             })()}
-            {!collapsed && items.map((w) => {
+            {!collapsed && items.map(({ ws: w, depth }) => {
               const s = stats[w.id];
               const hasChanges = !!s && (s.additions > 0 || s.deletions > 0);
               const sizeBytes = sizes[w.id];
@@ -835,13 +1088,24 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
                   : dropWs?.id === w.id
                     ? ` drop-${dropWs.pos}`
                     : '';
+              // Spawned children are positioned by the orchestrator tree, not by
+              // manual order, so they are not drag-reorderable (only depth-0
+              // roots are). Indent each level; a child in a different repo than
+              // its orchestrator gets a small repo tag so the nesting reads.
+              const isChild = depth > 0;
+              const crossRepoChild = isChild && w.repoPath !== repoPath;
               return (
                 <div
                   key={w.id}
-                  className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}${wsDnd}`}
+                  className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}${isChild ? ' ws-child' : ''}${wsDnd}`}
+                  style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
                   onClick={() => setActive(w.id)}
-                  draggable={renamingId !== w.id}
+                  draggable={!isChild && renamingId !== w.id}
                   onDragStart={(e) => {
+                    if (isChild) {
+                      e.preventDefault();
+                      return;
+                    }
                     if ((e.target as HTMLElement).closest('button, input')) {
                       e.preventDefault();
                       return;
@@ -857,8 +1121,9 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
                     }
                   }}
                   onDragOver={(e) => {
-                    // Same-repo reordering only — cross-repo drops are a no-op.
-                    if (!dragWs || dragWs.repoPath !== w.repoPath || dragWs.id === w.id) return;
+                    // Same-repo reordering only — cross-repo drops are a no-op,
+                    // and tree-nested children are not reorder targets.
+                    if (isChild || !dragWs || dragWs.repoPath !== w.repoPath || dragWs.id === w.id) return;
                     e.preventDefault();
                     e.dataTransfer.dropEffect = 'move';
                     const pos = dropPosFromEvent(e);
@@ -874,6 +1139,11 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
                   }}
                   onDragEnd={clearDnd}
                 >
+                  {isChild && (
+                    <span className="ws-tree-connector" aria-hidden="true">
+                      ╰─
+                    </span>
+                  )}
                   <div
                     className={`ws-dot ${w.status as WorkspaceStatus}`}
                     title={
@@ -926,6 +1196,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch }: Props) {
                         </span>
                       )}
                       <span className="ws-pills">
+                      {crossRepoChild && (
+                        <span
+                          className="repo-tag-pill"
+                          title={`Spawned into ${repoLabel(w.repoPath)} (different repo than its orchestrator)`}
+                        >
+                          {repoLabel(w.repoPath)}
+                        </span>
+                      )}
                       {w.mergedAt && !w.divergedFromBase && !hasMergedPRBadge && (
                         <span className="merged-pill" title={`Merged into ${w.baseBranch}`}>
                           merged

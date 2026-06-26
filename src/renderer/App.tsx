@@ -10,6 +10,7 @@ import { SetupBanner } from './components/SetupBanner';
 import { DialogHost, dialog } from './components/Dialog';
 import { playFinishedChime } from './chime';
 import type { RepoEntry } from '../shared/types';
+import { isScratchLike } from '../shared/types';
 
 const NVIM_WIDTH_KEY = 'orchestra.nvimPaneWidthPx';
 const NVIM_WIDTH_DEFAULT = 520;
@@ -41,6 +42,7 @@ export function App() {
     loaded,
     addRepoOnly,
     createScratchWorkspace,
+    createOrchestratorWorkspace,
     stats,
     refreshAllStats,
     refreshSizes,
@@ -209,12 +211,15 @@ export function App() {
 
   const liveWorkspaces = workspaces.filter((w) => !w.archived);
   const active = liveWorkspaces.find((w) => w.id === activeId);
-  const isScratch = active?.kind === 'scratch';
+  // Both scratch and orchestrator sessions are non-git and repo-less, so they
+  // get the same terminal-only treatment (no Diff/Run/Merge/PR). `isScratch`
+  // here means "scratch-like", covering both kinds.
+  const isScratch = !!active && isScratchLike(active);
   const openPR = active ? prs[active.id]?.open ?? null : null;
 
-  // A scratch session is non-git and has no repo, so only the Terminal tab is
-  // shown (no Diff, no Run). If the user had one of those selected and then
-  // switches to a scratch session, fall back to the terminal so the pane isn't
+  // A scratch-like session is non-git and has no repo, so only the Terminal tab
+  // is shown (no Diff, no Run). If the user had one of those selected and then
+  // switches to such a session, fall back to the terminal so the pane isn't
   // left blank.
   useEffect(() => {
     if (isScratch && view !== 'terminal') setView('terminal');
@@ -259,7 +264,11 @@ export function App() {
       className="app"
       style={{ gridTemplateColumns: `${sidebarWidth}px 1fr` }}
     >
-      <Sidebar onNewFromRepo={addRepoOnly} onNewScratch={createScratchWorkspace} />
+      <Sidebar
+        onNewFromRepo={addRepoOnly}
+        onNewScratch={createScratchWorkspace}
+        onNewOrchestrator={createOrchestratorWorkspace}
+      />
       <div
         ref={sidebarResizerRef}
         className="sidebar-resizer"
@@ -280,6 +289,7 @@ export function App() {
             <div className="empty-actions">
               <button className="primary" onClick={addRepoOnly}>+ New workspace</button>
               <button className="secondary" onClick={createScratchWorkspace}>⚡ Scratch session</button>
+              <button className="secondary" onClick={createOrchestratorWorkspace}>🌿 Orchestrator</button>
             </div>
           </div>
         )}

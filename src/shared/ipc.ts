@@ -51,6 +51,11 @@ export interface OrchestraAPI {
    * `~/.orchestra/scratch` with Claude Code ready to run. No repo, branch,
    * diff, merge, or PR — for starting something without wiring up a repo. */
   createScratchWorkspace: () => Promise<Workspace>;
+  /** Create an orchestrator session: like a scratch session (throwaway, non-git,
+   * under `~/.orchestra/scratch`), but its agent launches with a brief to
+   * delegate work by spawning child workspaces. Those children nest under it in
+   * the sidebar's "Orchestrators" section. */
+  createOrchestratorWorkspace: () => Promise<Workspace>;
   archiveWorkspace: (id: string) => Promise<void>;
   unarchiveWorkspace: (id: string) => Promise<void>;
   deleteWorkspace: (id: string) => Promise<void>;

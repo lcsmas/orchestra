@@ -36,6 +36,7 @@ interface State {
   removeRepo: (repoPath: string) => Promise<void>;
   createWorkspace: (input: CreateWorkspaceInput) => Promise<void>;
   createScratchWorkspace: () => Promise<void>;
+  createOrchestratorWorkspace: () => Promise<void>;
   addRepoOnly: () => Promise<void>;
   archive: (id: string) => Promise<void>;
   unarchive: (id: string) => Promise<void>;
@@ -141,6 +142,20 @@ export const useStore = create<State>((set, get) => ({
       }));
     } catch (e) {
       void dialog.error('Could not create scratch session', (e as Error).message);
+    }
+  },
+
+  createOrchestratorWorkspace: async () => {
+    try {
+      const ws = await window.orchestra.createOrchestratorWorkspace();
+      set((s) => ({
+        workspaces: s.workspaces.some((x) => x.id === ws.id)
+          ? s.workspaces.map((x) => (x.id === ws.id ? { ...x, ...ws } : x))
+          : [...s.workspaces, ws],
+        activeId: ws.id,
+      }));
+    } catch (e) {
+      void dialog.error('Could not create orchestrator session', (e as Error).message);
     }
   },
 

@@ -139,6 +139,7 @@ import {
   archiveWorkspace,
   createWorkspace,
   createScratchWorkspace,
+  createOrchestratorWorkspace,
   deleteWorkspace,
   ensureRoot,
   ensureWorkspacePort,
@@ -413,6 +414,10 @@ handle('workspaces:create', async (_e, input: CreateWorkspaceInput) => {
 
 handle('workspaces:createScratch', async () => {
   return createScratchWorkspace(getMainWindow());
+});
+
+handle('workspaces:createOrchestrator', async () => {
+  return createOrchestratorWorkspace(getMainWindow());
 });
 
 handle('workspaces:archive', async (_e, id: string) => {

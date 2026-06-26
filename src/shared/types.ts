@@ -10,8 +10,25 @@ export interface Workspace {
    * `~/.orchestra/scratch`: Claude Code runs in it exactly the same way, but
    * there is no repo, branch, diff, merge, or PR. For a scratch workspace
    * `repoPath` and `baseBranch` are empty strings and `branch` is just a display
-   * label. */
-  kind?: 'worktree' | 'scratch';
+   * label.
+   *
+   * `'orchestrator'` is a scratch session with a purpose: it is non-git in
+   * exactly the same way (empty `repoPath`/`baseBranch`, label-only `branch`,
+   * lives under `~/.orchestra/scratch`), but its agent is seeded with an
+   * opening brief telling it to delegate work by spawning child workspaces over
+   * the `/spawn` socket. Children it spawns carry its id as their `parentId`
+   * and nest beneath it in the sidebar's "Orchestrators" section. Treat
+   * `'orchestrator'` exactly like `'scratch'` for every git/diff/merge/delete
+   * decision — use the `isScratchLike` helper rather than `=== 'scratch'`. */
+  kind?: 'worktree' | 'scratch' | 'orchestrator';
+  /** Workspace id of the orchestrator that spawned this one over the `/spawn`
+   * socket (the caller's `ORCHESTRA_WS_ID`). Set once at creation and never
+   * changed. Drives the sidebar's orchestrator→children tree: a workspace with
+   * a `parentId` renders indented under its parent regardless of which repo it
+   * lives in. Absent for workspaces created by hand from the UI, and on every
+   * record predating this field. A dangling `parentId` (parent deleted) is
+   * treated as no parent — the child falls back to its own repo section. */
+  parentId?: string;
   repoPath: string;
   worktreePath: string;
   branch: string;
@@ -84,6 +101,15 @@ export interface Workspace {
   setupError?: string;
 }
 
+/** True for the non-git workspace kinds — `'scratch'` and `'orchestrator'`.
+ * Both live under `~/.orchestra/scratch`, have no repo/branch/diff/merge/PR, and
+ * are torn down by plain directory removal. Use this everywhere a code path
+ * needs "is this a real git worktree?" instead of comparing `kind` to a single
+ * literal, so a new non-git kind stays correctly handled in one place. */
+export function isScratchLike(ws: Pick<Workspace, 'kind'>): boolean {
+  return ws.kind === 'scratch' || ws.kind === 'orchestrator';
+}
+
 export interface DiffFile {
   path: string;
   status: 'added' | 'modified' | 'deleted' | 'renamed';
@@ -104,6 +130,10 @@ export interface CreateWorkspaceInput {
   baseBranch?: string;
   task?: string;
   agent?: 'claude';
+  /** Orchestrator workspace id to record as this workspace's `parentId` (set
+   * by `/spawn` from the caller's `ORCHESTRA_WS_ID`). Omitted for hand-created
+   * workspaces. */
+  parentId?: string;
 }
 
 export interface RepoScripts {

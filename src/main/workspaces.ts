@@ -23,6 +23,7 @@ import { isRunning, stopPty, clearScrollback, startPty, writePty, readScrollback
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
 import type { CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
+import { isScratchLike } from '../shared/types';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
 // Scratch sessions live OUTSIDE the worktrees root so the orphan-pruner (which
@@ -31,6 +32,42 @@ const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
 const SCRATCH_ROOT = path.join(os.homedir(), '.orchestra', 'scratch');
 
 const execFileP = promisify(execFile);
+
+/** Absolute path of the readiness sentinel for a workspace's agent. Orchestra
+ * passes this path to the spawned `claude` as $ORCHESTRA_READY_FILE; a
+ * SessionStart hook (HOOK_SESSION_START_READY_CMD) touches it the instant the
+ * TUI is live. The injector waits for this file to appear before typing the
+ * opening prompt, replacing a fragile fixed delay that dropped the submit
+ * keystroke on concurrent spawns (two TUIs booting at once, one timer firing
+ * before its input was ready). Keyed by workspace id, which is unique and
+ * known on both sides without needing claude's own --session-id. */
+function readyFilePath(workspaceId: string): string {
+  return path.join(os.tmpdir(), `orchestra-ready-${workspaceId}`);
+}
+
+/** Poll for the readiness sentinel up to `timeoutMs`. Resolves true once the
+ * file exists (TUI is up and accepting keystrokes), false on timeout so the
+ * caller can fall back to the old fixed delay rather than hang forever. The
+ * sentinel is removed before the agent starts (see startPty call sites), so a
+ * stale file from a prior run can't short-circuit the wait. */
+async function waitForAgentReady(readyFile: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(readyFile)) return true;
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  return false;
+}
+
+/** Remove a workspace's readiness sentinel — best-effort. Called before start
+ * (clear any stale file) and after the prompt is submitted (tidy up). */
+async function clearReadyFile(workspaceId: string): Promise<void> {
+  try {
+    await rm(readyFilePath(workspaceId), { force: true });
+  } catch {
+    /* best-effort */
+  }
+}
 
 /**
  * Apparent on-disk size of every workspace's worktree, keyed by workspace id
@@ -133,6 +170,11 @@ export async function createWorkspace(
     agent,
     lastTask: input.task,
     branchManuallySet: false,
+    // Record the spawning orchestrator only when it still exists — a stale id
+    // would render a child orphaned under a phantom parent in the sidebar.
+    ...(input.parentId && store.getWorkspace(input.parentId)
+      ? { parentId: input.parentId }
+      : {}),
     port,
     setupStatus: setupScript ? 'pending' : 'ok',
   };
@@ -172,21 +214,42 @@ export async function createWorkspace(
  * display relabel (see `renameWorkspaceBranch`'s scratch branch) since there's
  * no git branch behind it.
  */
-export async function createScratchWorkspace(window: BrowserWindow): Promise<Workspace> {
+/** Standing brief for an orchestrator session, injected on first launch as a
+ * `--append-system-prompt` (silently — never a typed user turn, so the prompt
+ * box stays clean). It frames the agent's job as delegation — every workspace
+ * it spawns over the `/spawn` socket records this session as its `parentId`, so
+ * the children nest under it in the sidebar. Kept short on purpose: the
+ * spawn/peers/message command reference is already injected by the
+ * session-start hooks. */
+const ORCHESTRATOR_BRIEF =
+  "You are an orchestrator. Your job is to coordinate work across other agents rather than edit code yourself. " +
+  "Break the user's goal into independent pieces and delegate each to a fresh worktree+agent using the /spawn socket command shown above. " +
+  'You have no repo of your own, so every /spawn MUST include an explicit "repoPath" naming a repo orchestra already knows about (and optionally a "baseBranch"). ' +
+  'Track the agents you spawn with /peers, read their progress with /read, and follow up with /message. ' +
+  'Start by asking the user what they want orchestrated and which repo(s) the work belongs in.';
+
+/** Create a non-git session under `~/.orchestra/scratch`. `kind` selects the
+ * flavour: `'scratch'` is a blank throwaway; `'orchestrator'` is the same shell
+ * but its agent is seeded with {@link ORCHESTRATOR_BRIEF} so it delegates. */
+async function createScratchLikeWorkspace(
+  kind: 'scratch' | 'orchestrator',
+  window: BrowserWindow,
+): Promise<Workspace> {
   if (!existsSync(SCRATCH_ROOT)) await mkdir(SCRATCH_ROOT, { recursive: true });
   const id = randomUUID();
   const label = randomBranchName();
-  const worktreePath = path.join(SCRATCH_ROOT, `scratch-${label}-${id.slice(0, 8)}`);
+  const prefix = kind === 'orchestrator' ? 'orchestrator' : 'scratch';
+  const worktreePath = path.join(SCRATCH_ROOT, `${prefix}-${label}-${id.slice(0, 8)}`);
 
-  log.info(`creating scratch session ${label} (${id})`);
+  log.info(`creating ${kind} session ${label} (${id})`);
   await mkdir(worktreePath, { recursive: true });
   await installOrchestraHooks(worktreePath);
 
   const port = store.allocatePort();
   const ws: Workspace = {
     id,
-    name: `scratch · ${label}`,
-    kind: 'scratch',
+    name: `${prefix} · ${label}`,
+    kind,
     repoPath: '',
     worktreePath,
     branch: label,
@@ -194,18 +257,28 @@ export async function createScratchWorkspace(window: BrowserWindow): Promise<Wor
     createdAt: Date.now(),
     status: 'idle',
     agent: 'claude',
+    // An orchestrator's brief is injected silently as an appended system prompt
+    // by startAgentPty — NOT as a typed `lastTask` turn — so the session opens
+    // with a clean prompt instead of a wall of pasted instructions.
     // Leave unlocked so ORCHESTRA_BRANCH_AUTO=1 and the rename nudge fires: the
-    // agent relabels the scratch session once the work scope is clear, then the
+    // agent relabels the session once the work scope is clear, then the
     // /rename handler locks it (and drops the .branch-renamed sentinel).
     branchManuallySet: false,
     port,
-    // No repo → no setup script can be configured, so a scratch session is
-    // never "pending" setup.
+    // No repo → no setup script can be configured, so it is never "pending".
     setupStatus: 'ok',
   };
   await store.upsertWorkspace(ws);
   window.webContents.send('workspace:update', ws);
   return ws;
+}
+
+export function createScratchWorkspace(window: BrowserWindow): Promise<Workspace> {
+  return createScratchLikeWorkspace('scratch', window);
+}
+
+export function createOrchestratorWorkspace(window: BrowserWindow): Promise<Workspace> {
+  return createScratchLikeWorkspace('orchestrator', window);
 }
 
 export async function archiveWorkspace(id: string, window: BrowserWindow): Promise<void> {
@@ -259,8 +332,9 @@ export async function deleteWorkspace(id: string, window: BrowserWindow): Promis
   // SCRATCH_ROOT so a corrupt path can't `rm` outside our own dir — and drop the
   // record. The git-worktree path below would no-op anyway (removeWorktree on a
   // non-worktree throws and is swallowed), but this also skips the dead archive-
-  // script lookup and makes the intent explicit.
-  if (ws.kind === 'scratch') {
+  // script lookup and makes the intent explicit. Orchestrators are scratch
+  // sessions under the hood, so they tear down the same way.
+  if (isScratchLike(ws)) {
     clearScrollback(id);
     await clearInbox(id);
     if (ws.worktreePath.startsWith(SCRATCH_ROOT + path.sep) && existsSync(ws.worktreePath)) {
@@ -443,8 +517,8 @@ export async function renameWorkspaceBranch(
   // Relabel it in place (no `git branch -m`, no name collisions to dodge). A
   // manual relabel (UI edit or the agent's auto-rename call) locks the branch
   // via branchManuallySet, same as a git workspace, so the rename nudge stops
-  // firing on the next pty spawn.
-  if (ws.kind === 'scratch') {
+  // firing on the next pty spawn. Orchestrators relabel the same way.
+  if (isScratchLike(ws)) {
     if (newBranch === ws.branch) {
       if (opts.manual && !ws.branchManuallySet) {
         const locked = { ...ws, branchManuallySet: true };
@@ -517,7 +591,7 @@ export async function dispatchRenameRequest(
     // freeBranchName collision pass and relabel straight through. renameWork-
     // spaceBranch locks branchManuallySet; we also drop a sentinel so the
     // in-session rename nudge self-disables before the next pty restart.
-    if (ws.kind === 'scratch') {
+    if (isScratchLike(ws)) {
       const target = sanitizeBranchName(rawNewBranch);
       if (!target) return { ok: false, error: 'invalid branch name' };
       const updated = await renameWorkspaceBranch(id, target, { manual: true }, window);
@@ -555,6 +629,28 @@ async function markBranchRenamed(worktreePath: string): Promise<void> {
 const HEADLESS_COLS = 120;
 const HEADLESS_ROWS = 32;
 
+// How long to wait for an agent's SessionStart readiness sentinel before giving
+// up and submitting the opening prompt anyway. Generous — a cold `claude` boot
+// can take several seconds, and waiting costs nothing once the sentinel lands.
+const READY_TIMEOUT_MS = 15_000;
+// Fallback delay used only when the sentinel never appears (e.g. a session not
+// started by orchestra, or a hook that failed to fire). Matches the proven
+// fixed-timer value the readiness signal replaces.
+const READY_FALLBACK_MS = 1_200;
+// Gap between writing the prompt text and the submit carriage return. A newline
+// in the same chunk reads as a pasted newline (never submits), so it must be a
+// separate write — and far enough behind the text that the TUI has committed
+// the paste to its input buffer first.
+const SUBMIT_CR_DELAY_MS = 150;
+// Submit confirmation: after sending '\r' we watch the workspace status, which
+// flips off `idle` the instant the agent's UserPromptSubmit hook fires. If it
+// hasn't flipped within this window the '\r' was dropped (a real failure mode
+// when several agents spawn at once and the main loop is saturated) — so we
+// re-send. Poll interval and max attempts bound the retry.
+const SUBMIT_CONFIRM_MS = 2_500;
+const SUBMIT_POLL_MS = 100;
+const SUBMIT_MAX_ATTEMPTS = 4;
+
 /** Spawn a freshly-created workspace's agent straight from the main process,
  * without waiting for the renderer's TerminalView to become visible. The
  * renderer only kicks `pty:start` once a pane has real dimensions, so a
@@ -570,9 +666,14 @@ const HEADLESS_ROWS = 32;
 async function startWorkspaceAgentHeadless(id: string, window: BrowserWindow): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || isRunning(id)) return;
+  const readyFile = readyFilePath(id);
+  // Drop any stale sentinel from a prior run before the agent starts, so the
+  // wait below can't be short-circuited by an old file.
+  await clearReadyFile(id);
   const extraEnv: Record<string, string> = {
     ORCHESTRA_BRANCH: ws.branch,
     ORCHESTRA_BRANCH_AUTO: ws.branchManuallySet ? '0' : '1',
+    ORCHESTRA_READY_FILE: readyFile,
   };
   await startPty({
     id,
@@ -587,25 +688,87 @@ async function startWorkspaceAgentHeadless(id: string, window: BrowserWindow): P
   });
   if (!ws.lastTask) return;
   const task = ws.lastTask;
-  // Mirror the renderer-spawn timing: give the TUI a moment to initialize
-  // before typing the opening prompt, or the first keystrokes get eaten.
-  setTimeout(() => {
-    // Type the prompt, then send a carriage return as a SEPARATE keystroke a
-    // beat later — same trick the renderer uses (App.tsx). A trailing newline
-    // written in the same chunk is treated by Claude's TUI as a pasted newline,
-    // so the task lands in the input box but is never submitted.
-    writePty(id, task);
-    setTimeout(() => writePty(id, '\r'), 80);
-    const fresh = store.getWorkspace(id);
-    if (fresh && !fresh.hasInput) {
-      const updated: Workspace = { ...fresh, hasInput: true };
-      void store.upsertWorkspace(updated).then(() => {
-        if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-          window.webContents.send('workspace:update', updated);
-        }
-      });
+  // Submit the opening prompt once the TUI is actually live — signalled by the
+  // SessionStart readiness sentinel rather than a fixed delay — then confirm the
+  // submit '\r' actually registered and resend it if not. The old path was
+  // fire-and-forget: under concurrent spawns the saturated main loop could drop
+  // the submit keystroke (text present in the box, never sent — exactly the
+  // "third agent didn't start" symptom), with nothing to catch it. Now the task
+  // text lands on readiness, and the '\r' is retried until the agent's own
+  // UserPromptSubmit hook flips the status off `idle`.
+  void submitTaskWhenReady(id, task, readyFile, window);
+}
+
+/** Submit `task` into a freshly-started agent's TUI once it signals readiness,
+ * then flip `hasInput`. Waits for the readiness sentinel (deterministic), and
+ * only if it never appears falls back to the proven fixed delay. The two-write
+ * submit (text, then a SEPARATE '\r' a beat later) is unchanged: a trailing
+ * newline in the same chunk is treated by Claude's TUI as a pasted newline and
+ * never submits. */
+async function submitTaskWhenReady(
+  id: string,
+  task: string,
+  readyFile: string,
+  window: BrowserWindow,
+): Promise<void> {
+  const ready = await waitForAgentReady(readyFile, READY_TIMEOUT_MS);
+  if (!ready) {
+    log.warn(`agent ${id} readiness sentinel timed out — falling back to fixed delay`);
+    await new Promise((r) => setTimeout(r, READY_FALLBACK_MS));
+  }
+  // The PTY may have died (agent quit, workspace deleted) while we waited.
+  if (!isRunning(id)) {
+    await clearReadyFile(id);
+    return;
+  }
+  // Type the prompt once, then submit with a confirmed, retrying carriage
+  // return. The text itself reliably lands once the readiness sentinel is up;
+  // it's the submit '\r' that used to get dropped under concurrent spawns, so
+  // only the '\r' is retried (re-typing the task would duplicate it in the
+  // input). We treat "status left idle" as proof the submit registered.
+  writePty(id, task);
+  await new Promise((r) => setTimeout(r, SUBMIT_CR_DELAY_MS));
+  let submitted = false;
+  for (let attempt = 0; attempt < SUBMIT_MAX_ATTEMPTS; attempt++) {
+    if (!isRunning(id)) break;
+    writePty(id, '\r');
+    if (await waitForSubmitConfirmed(id, SUBMIT_CONFIRM_MS)) {
+      submitted = true;
+      break;
     }
-  }, 1200);
+    log.warn(`agent ${id} submit '\\r' not confirmed (attempt ${attempt + 1}) — resending`);
+  }
+  if (!submitted) {
+    log.warn(`agent ${id} opening prompt may not have submitted after ${SUBMIT_MAX_ATTEMPTS} attempts`);
+  }
+  await clearReadyFile(id);
+  const fresh = store.getWorkspace(id);
+  if (fresh && !fresh.hasInput) {
+    const updated: Workspace = { ...fresh, hasInput: true };
+    void store.upsertWorkspace(updated).then(() => {
+      if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+        window.webContents.send('workspace:update', updated);
+      }
+    });
+  }
+}
+
+/** Wait until the agent's status leaves `idle` — set by its own
+ * UserPromptSubmit hook (`submit` → `running`) the instant it accepts the
+ * prompt. This is the authoritative "the '\r' registered" signal: a dropped
+ * submit keystroke leaves the status at `idle`, so the caller knows to resend.
+ * Resolves true on the transition, false on timeout. */
+async function waitForSubmitConfirmed(id: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const status = store.getWorkspace(id)?.status;
+    // Anything other than idle means the prompt was accepted and the turn
+    // started (running), already produced output (waiting), or errored — all of
+    // which prove the '\r' landed. A vanished workspace also ends the wait.
+    if (!status || status !== 'idle') return true;
+    await new Promise((r) => setTimeout(r, SUBMIT_POLL_MS));
+  }
+  return false;
 }
 
 export interface SpawnResult {
@@ -641,12 +804,19 @@ export async function dispatchSpawnRequest(
     // worktree at an arbitrary filesystem path.
     if (!store.repos.some((r) => r.path === repoPath)) return { ok: false, error: 'unknown repoPath' };
   } else if (input.from) {
-    repoPath = store.getWorkspace(input.from)?.repoPath;
+    // Inherit the caller's repo — but a scratch/orchestrator caller has none
+    // (repoPath is ''), so it must always name the target repo explicitly.
+    repoPath = store.getWorkspace(input.from)?.repoPath || undefined;
   }
-  if (!repoPath) return { ok: false, error: 'no repo: pass repoPath or call from a workspace' };
+  if (!repoPath)
+    return {
+      ok: false,
+      error:
+        'no repo: pass an explicit repoPath (an orchestrator/scratch session has no repo of its own to inherit)',
+    };
   try {
     const ws = await createWorkspace(
-      { repoPath, baseBranch: input.baseBranch, task, agent: input.agent },
+      { repoPath, baseBranch: input.baseBranch, task, agent: input.agent, parentId: input.from },
       window,
     );
     await startWorkspaceAgentHeadless(ws.id, window);
@@ -875,6 +1045,8 @@ async function wakeAgentWithPrompt(
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || isRunning(id)) return false;
   const resuming = ws.hasInput === true;
+  const readyFile = readyFilePath(id);
+  await clearReadyFile(id);
   await startPty({
     id,
     cwd: ws.worktreePath,
@@ -886,16 +1058,17 @@ async function wakeAgentWithPrompt(
     rows: HEADLESS_ROWS,
     window,
     workspaceId: id,
-    extraEnv: { ORCHESTRA_BRANCH: ws.branch, ORCHESTRA_BRANCH_AUTO: ws.branchManuallySet ? '0' : '1' },
+    extraEnv: {
+      ORCHESTRA_BRANCH: ws.branch,
+      ORCHESTRA_BRANCH_AUTO: ws.branchManuallySet ? '0' : '1',
+      ORCHESTRA_READY_FILE: readyFile,
+    },
   });
-  // Give the TUI a beat to initialize, then type the message and submit it as a
-  // SEPARATE carriage return — identical timing to the spawn/headless task
-  // inject (a trailing newline in the same chunk reads as a pasted line).
-  const task = prompt;
-  setTimeout(() => {
-    writePty(id, task);
-    setTimeout(() => writePty(id, '\r'), 80);
-  }, 1500);
+  // Submit the message once the TUI signals readiness (sentinel), not on a
+  // fixed delay — same concurrency fix as the headless spawn path. submitTask-
+  // WhenReady handles the wait, fallback, two-write submit, and dead-PTY guard;
+  // hasInput is flipped here since this turn is always a real submitted prompt.
+  void submitTaskWhenReady(id, prompt, readyFile, window);
   if (!ws.hasInput) {
     const updated: Workspace = { ...ws, hasInput: true };
     void store.upsertWorkspace(updated).then(() => {
@@ -1146,6 +1319,14 @@ const HOOK_SPAWN_RESURFACE_CMD =
 const HOOK_INBOX_DELIVER_CMD =
   'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/inbox-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
 
+// Touches the readiness sentinel the instant the TUI fires SessionStart, so the
+// task injector knows the prompt box is live and can submit deterministically
+// instead of guessing with a fixed delay. $ORCHESTRA_READY_FILE is set per-PTY
+// by orchestra; the guard makes it a no-op when absent (e.g. a session not
+// started by orchestra). `: >` truncates/creates the file atomically.
+const HOOK_SESSION_START_READY_CMD =
+  '[ -n "${ORCHESTRA_READY_FILE:-}" ] && : > "$ORCHESTRA_READY_FILE" || true';
+
 const RENAME_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
 # Auto-installed by orchestra. Prints the rename instruction into the agent's
 # session context while the workspace is still on its auto-generated branch.
@@ -1381,6 +1562,13 @@ export async function startAgentPty(
   const claudeArgs = resuming
     ? ['--continue', '--dangerously-skip-permissions']
     : ['--dangerously-skip-permissions'];
+  // An orchestrator's standing brief shapes its behaviour without ever showing
+  // up as a typed user turn: inject it as an appended system prompt on the
+  // first launch only. On resume, Claude Code restores the original session's
+  // system prompt, so re-appending would duplicate it.
+  if (!resuming && ws.kind === 'orchestrator') {
+    claudeArgs.push('--append-system-prompt', ORCHESTRATOR_BRIEF);
+  }
   // Idempotent: upgrades workspaces created before the activity hook landed.
   await installOrchestraHooks(ws.worktreePath);
   // Expose the current branch and auto-rename gate to hooks. The SessionStart
@@ -1590,6 +1778,10 @@ export async function installOrchestraHooks(
 
     let sessionStartList = ((hooks.SessionStart as unknown[]) ??= []);
     sessionStartList = removeHookCommand(sessionStartList, isStaleRenameCmd);
+    // Readiness sentinel first, so the "TUI is live" signal fires as early as
+    // possible in the SessionStart fan-out rather than after the instruction
+    // prints.
+    upsertHookCommand(sessionStartList, HOOK_SESSION_START_READY_CMD);
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_RENAME_CMD);
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_SPAWN_CMD);
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_COMMS_CMD);
