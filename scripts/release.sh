@@ -2,7 +2,10 @@
 #
 # Release Orchestra: bump version, tag, push, and optionally build locally.
 #
-# Usage (run from the main repo on `master`):
+# Tags and releases the CURRENT branch (worktree-safe — does NOT require or
+# checkout master). The v* tag drives CI; bring the code onto master separately.
+#
+# Usage (run from any branch / orchestra worktree):
 #   npm run release                  # patch bump (default): 0.1.11 -> 0.1.12
 #   npm run release -- minor         # minor bump:            0.1.11 -> 0.2.0
 #   npm run release -- major         # major bump:            0.1.11 -> 1.0.0
@@ -22,7 +25,8 @@
 #   2. Pushes tag (triggers GitHub Actions)
 #   3. GitHub Actions creates release with x64 and arm64 AppImages
 #
-# Requirements: a clean working tree on `master`, and an authenticated gh CLI.
+# Requirements: a clean working tree on a non-detached branch, up to date with
+# its own remote, and an authenticated gh CLI.
 
 set -euo pipefail
 
@@ -49,18 +53,25 @@ run()  { if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] %s\n' "$*"; else eval "
 say "Preflight"
 gh auth status >/dev/null 2>&1 || { echo "error: gh CLI not authenticated — run 'gh auth login'" >&2; exit 1; }
 
+# Release the CURRENT branch — not necessarily master. Orchestra runs each
+# workspace as a git worktree pinned to its own branch, and checking out master
+# inside a worktree would corrupt that workspace's branch tracking. The release
+# is driven by the v* tag (CI builds from the tag, branch-agnostic), so we tag
+# wherever HEAD is. Get the released code onto master afterward with a separate
+# fast-forward push (no worktree checkout) if needed.
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-[ "$BRANCH" = "master" ] || { echo "error: must be on 'master' (currently on '$BRANCH')" >&2; exit 1; }
+[ "$BRANCH" != "HEAD" ] || { echo "error: detached HEAD — checkout a branch first" >&2; exit 1; }
 
 git diff-index --quiet HEAD -- || { echo "error: working tree is dirty — commit or stash first" >&2; exit 1; }
 
-if git fetch origin master --quiet 2>/dev/null; then
-  BEHIND="$(git rev-list --count HEAD..origin/master)"
-  [ "$BEHIND" = "0" ] || { echo "error: local master is $BEHIND commit(s) behind origin/master — pull first" >&2; exit 1; }
+# Don't tag a branch that's behind its own remote — you'd ship stale code.
+if git fetch origin "$BRANCH" --quiet 2>/dev/null; then
+  BEHIND="$(git rev-list --count "HEAD..origin/$BRANCH")"
+  [ "$BEHIND" = "0" ] || { echo "error: local $BRANCH is $BEHIND commit(s) behind origin/$BRANCH — pull first" >&2; exit 1; }
 else
-  echo "  warn: could not fetch origin/master (offline?) — skipping behind-check"
+  echo "  warn: could not fetch origin/$BRANCH (new branch or offline?) — skipping behind-check"
 fi
-echo "  ok: on master, clean, gh authed"
+echo "  ok: on '$BRANCH', clean, gh authed"
 
 # ------------------------------------------------------------ next version ---
 CURRENT="$(node -p "require('./package.json').version")"
@@ -105,8 +116,8 @@ else
 fi
 
 # ------------------------------------------------------ push commit + tag ---
-say "Push master + $TAG"
-run "git push --follow-tags origin master"
+say "Push $BRANCH + $TAG"
+run "git push --follow-tags origin '$BRANCH'"
 
 # ----------------------------------------------------- publish GitHub release ---
 if [ "$CI_ONLY" = 0 ]; then
