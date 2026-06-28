@@ -234,21 +234,44 @@ class Store {
   }
 
   /** Replace the whole accounts list. Drops entries missing an id or label,
-   *  trims fields, and keeps only `id`/`label`/`token` so no stray secret-ish
-   *  field can sneak into store.json. The `token` is persisted verbatim — it is
-   *  a template (`${VAR}` reference or literal label), which callers are
-   *  responsible for keeping secret-free; expansion happens at use time. */
+   *  trims fields, and keeps only `id`/`label`/`configDir`. `configDir` is a
+   *  path (optionally with `~`/`${VAR}`) — never a secret; the credentials live
+   *  in that dir's `.credentials.json`, which Orchestra never persists here. */
   async setAccounts(accounts: Account[]): Promise<Account[]> {
     const cleaned: Account[] = [];
     for (const a of accounts) {
       const id = (a?.id ?? '').trim();
       const label = (a?.label ?? '').trim();
       if (!id || !label) continue;
-      cleaned.push({ id, label, token: typeof a.token === 'string' ? a.token.trim() : '' });
+      cleaned.push({ id, label, configDir: typeof a.configDir === 'string' ? a.configDir.trim() : '' });
     }
     this.data.accounts = cleaned;
+    // Clear any repo's accountId that now points at a removed account, so a
+    // dangling reference can't linger in store.json.
+    const liveIds = new Set(cleaned.map((a) => a.id));
+    for (const repo of this.data.repos) {
+      if (repo.accountId && !liveIds.has(repo.accountId)) delete repo.accountId;
+    }
     await this.save();
     return cleaned;
+  }
+
+  /** Assign (or clear, with `null`/'') the account a repo's workspaces log in
+   *  as. Unknown account ids are rejected so we never store a dangling ref. */
+  async setRepoAccount(absPath: string, accountId: string | null): Promise<RepoEntry> {
+    const repo = this.data.repos.find((r) => r.path === absPath);
+    if (!repo) throw new Error(`repo not found: ${absPath}`);
+    const id = (accountId ?? '').trim();
+    if (!id) {
+      delete repo.accountId;
+    } else {
+      if (!(this.data.accounts ?? []).some((a) => a.id === id)) {
+        throw new Error(`unknown account: ${id}`);
+      }
+      repo.accountId = id;
+    }
+    await this.save();
+    return repo;
   }
 }
 

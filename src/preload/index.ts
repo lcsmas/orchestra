@@ -20,9 +20,13 @@ const api: OrchestraAPI = {
 
   listAccounts: () => ipcRenderer.invoke('accounts:list'),
   setAccounts: (accounts) => ipcRenderer.invoke('accounts:set', accounts),
+  setRepoAccount: (repoPath, accountId) => ipcRenderer.invoke('repos:setAccount', repoPath, accountId),
   getAccountUsage: (accountId) => ipcRenderer.invoke('accounts:usage', accountId),
   getAllAccountUsage: () => ipcRenderer.invoke('accounts:usageAll'),
   getWorkspaceAccounts: () => ipcRenderer.invoke('accounts:workspaceAccounts'),
+  accountLoginStart: (accountId, cols, rows) => ipcRenderer.invoke('accounts:loginStart', accountId, cols, rows),
+  accountLoginStop: (accountId) => ipcRenderer.invoke('accounts:loginStop', accountId),
+  refreshAccounts: () => ipcRenderer.invoke('accounts:refresh'),
 
   revealLogs: () => ipcRenderer.invoke('logs:reveal'),
   logPath: () => ipcRenderer.invoke('logs:path'),

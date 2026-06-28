@@ -158,12 +158,15 @@ export interface RepoEntry {
   scripts?: RepoScripts;
   /** Extra environment variables injected into agent (`claude`) PTYs spawned
    * for this repo's workspaces, merged over Orchestra's own env at spawn time.
-   * Values may reference Orchestra's own environment with `${VAR}` syntax —
-   * e.g. `{ "CLAUDE_CODE_OAUTH_TOKEN": "${CLAUDE_TOKEN_A}" }` keeps the secret
-   * in the environment and out of store.json. An entry whose `${VAR}` expands
-   * to nothing (referenced var unset) is dropped, so the agent falls back to
-   * its default login rather than getting an empty value. */
+   * Values may reference Orchestra's own environment with `${VAR}` syntax. An
+   * entry whose `${VAR}` expands to nothing (referenced var unset) is dropped. */
   env?: Record<string, string>;
+  /** Id of the {@link Account} this repo's workspaces log in as. Orchestra
+   * injects that account's `CLAUDE_CONFIG_DIR` into the spawned `claude` PTY so
+   * it authenticates as that account (Claude Code manages/refreshes the token
+   * in that dir). Absent / dangling → the agent uses Orchestra's default login.
+   * Takes precedence over any `CLAUDE_CONFIG_DIR` the user also put in `env`. */
+  accountId?: string;
   /** Canonical web URL for the repo's `origin` remote (e.g.
    * `https://github.com/owner/repo`), normalized from whatever the remote
    * is set to (ssh, https, scp-style git@…). Undefined if no `origin` is
@@ -290,12 +293,12 @@ export type {
   UsageErrorKind,
 } from './accounts';
 
-/** A workspace's resolved account mapping, computed in the main process (which
- *  alone can expand `${VAR}` tokens against its env). Carries only the account
- *  *identity* — never a token — so the renderer can show which account a
- *  workspace uses and look up that account's usage. `accountId` is the matched
- *  account's id, or null when the workspace falls back to the default/stored
- *  login (no per-repo token override, or no configured account matches it). */
+/** A workspace's resolved account mapping, computed in the main process from
+ *  its repo's assigned `accountId`. Carries only the account *identity* — never
+ *  a token or path — so the renderer can show which account a workspace uses
+ *  and look up that account's usage. `accountId` is the repo's account, or null
+ *  when the workspace falls back to the default/stored login (repo has no
+ *  account, the account was deleted, or it's a scratch/orchestrator session). */
 export interface WorkspaceAccount {
   workspaceId: string;
   accountId: string | null;

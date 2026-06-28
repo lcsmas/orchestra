@@ -56,26 +56,35 @@ export interface OrchestraAPI {
    *  in via OAuth). Live updates flow via `onUsageUpdate`. */
   getUsage: () => Promise<UsageSnapshot | null>;
 
-  // ---- Accounts (explicit list of Claude accounts, for the per-workspace
-  //      usage badge). Tokens are stored as templates (`${VAR}` references or
-  //      labels) — never expanded secrets — and the renderer never receives a
-  //      token value, only labels, ids, and usage numbers.
-  /** The configured accounts (token templates included — the renderer needs to
-   *  echo them back into the editor; they're `${VAR}` references, not secrets,
-   *  by convention). */
+  // ---- Accounts. Each account is a Claude Code config dir (CLAUDE_CONFIG_DIR)
+  //      with its own login. store.json holds only {id, label, configDir} —
+  //      never a token. The renderer receives labels, ids, config-dir paths,
+  //      and usage numbers; never a token.
+  /** The configured accounts (label + config-dir path). */
   listAccounts: () => Promise<Account[]>;
   /** Replace the whole accounts list (add/edit/remove in one save). Returns the
-   *  cleaned, persisted list. */
+   *  cleaned, persisted list. Also clears any repo's accountId that pointed at a
+   *  now-removed account. */
   setAccounts: (accounts: Account[]) => Promise<Account[]>;
+  /** Assign (or clear, with null/'') the account a repo's workspaces log in as.
+   *  Rejects an unknown account id. Returns the updated repo. */
+  setRepoAccount: (repoPath: string, accountId: string | null) => Promise<RepoEntry>;
   /** Current usage status for one account by id (cached >=180s in main). */
   getAccountUsage: (accountId: string) => Promise<AccountUsageStatus | null>;
   /** Usage status for every configured account, keyed by account id. */
   getAllAccountUsage: () => Promise<Record<string, AccountUsageStatus>>;
-  /** The account each non-archived workspace logs in as (identity only, no
-   *  tokens). Computed in main by matching each workspace's resolved
-   *  CLAUDE_CODE_OAUTH_TOKEN against the configured accounts. Keyed by
-   *  workspace id. */
+  /** The account each non-archived workspace logs in as (identity only),
+   *  derived from each workspace's repo `accountId`. Keyed by workspace id. */
   getWorkspaceAccounts: () => Promise<Record<string, WorkspaceAccount>>;
+  /** Start an interactive `claude /login` in an account's config dir, under the
+   *  pty id `account-login:<accountId>`. Drive it with ptyWrite/ptyResize and
+   *  read it via onPtyData/onPtyExit (all keyed by that pty id). */
+  accountLoginStart: (accountId: string, cols: number, rows: number) => Promise<void>;
+  /** Stop an account's login PTY (e.g. the modal was closed). */
+  accountLoginStop: (accountId: string) => Promise<void>;
+  /** Recompute the workspace→account map and refetch usage now (called after a
+   *  login PTY exits so the badge updates immediately). */
+  refreshAccounts: () => Promise<void>;
 
   // Diagnostic logs
   /** Reveal the main diagnostic log file in the OS file manager. */

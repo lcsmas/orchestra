@@ -20,8 +20,10 @@ function errorText(kind: UsageErrorKind | null): string {
       return 'no usage scope';
     case 'rate-limited':
       return 'rate limited';
-    case 'no-token':
-      return 'no token';
+    case 'not-logged-in':
+      return 'not logged in';
+    case 'no-dir':
+      return 'no config dir';
     default:
       return 'usage unavailable';
   }
@@ -30,11 +32,13 @@ function errorText(kind: UsageErrorKind | null): string {
 function errorTitle(label: string, kind: UsageErrorKind | null): string {
   switch (kind) {
     case 'no-scope':
-      return `${label}: this token lacks the user:profile OAuth scope, so usage can't be read`;
+      return `${label}: this account's token lacks the user:profile OAuth scope, so usage can't be read`;
     case 'rate-limited':
       return `${label}: usage endpoint is rate-limiting us — will retry`;
-    case 'no-token':
-      return `${label}: the account's \${VAR} token isn't set in Orchestra's environment`;
+    case 'not-logged-in':
+      return `${label}: no login found in this account's config dir — use the Login button in account settings`;
+    case 'no-dir':
+      return `${label}: the account's config dir doesn't exist — check the path in account settings`;
     default:
       return `${label}: usage temporarily unavailable`;
   }

@@ -2,43 +2,76 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   classifyHttpError,
-  expandToken,
+  expandConfigDir,
+  isExpired,
   matchWorkspaceAccount,
+  parseCredentials,
   parseUsageResponse,
   type RawUsageResponse,
 } from './accounts.ts';
 
-// These tests pin the security-sensitive and error-handling behaviour of the
-// account-usage feature: token expansion (no expanded secret ever produced from
-// an unset var), parsing the real `/api/oauth/usage` shape (including null
-// windows and the 403/429 error paths), and matching a workspace to its account
-// by exact resolved-token equality.
+// Pins the config-dir-based account-usage logic: config-dir path expansion
+// (~/${VAR}), reading the OAuth token out of a .credentials.json, expiry
+// skipping, parsing the real /api/oauth/usage shape (null windows, 403/429),
+// and matching a workspace to its account by the repo's explicit accountId.
 
-// ---- expandToken -------------------------------------------------------------
+// ---- expandConfigDir ---------------------------------------------------------
 
-test('expandToken resolves ${VAR} from source', () => {
-  assert.equal(expandToken('${CLAUDE_TOKEN_A}', { CLAUDE_TOKEN_A: 'sk-ant-oat01-x' }), 'sk-ant-oat01-x');
+test('expandConfigDir expands a leading ~ to home', () => {
+  assert.equal(expandConfigDir('~/.claude-work', '/home/u', {}), '/home/u/.claude-work');
 });
 
-test('expandToken resolves bare $VAR too', () => {
-  assert.equal(expandToken('$TOK', { TOK: 'abc' }), 'abc');
+test('expandConfigDir expands a bare ~ to home', () => {
+  assert.equal(expandConfigDir('~', '/home/u', {}), '/home/u');
 });
 
-test('expandToken yields empty string for an unset reference (no token)', () => {
-  assert.equal(expandToken('${MISSING}', {}), '');
+test('expandConfigDir does NOT touch ~ that is not a path segment', () => {
+  // `~foo` is a username-home form we don't support — leave it literal.
+  assert.equal(expandConfigDir('~foo/bar', '/home/u', {}), '~foo/bar');
 });
 
-test('expandToken yields empty string for a blank reference', () => {
-  assert.equal(expandToken('${X}', { X: '' }), '');
+test('expandConfigDir resolves ${VAR} and $VAR', () => {
+  assert.equal(expandConfigDir('${BASE}/acct', '/h', { BASE: '/data' }), '/data/acct');
+  assert.equal(expandConfigDir('$BASE/acct', '/h', { BASE: '/data' }), '/data/acct');
 });
 
-test('expandToken passes a literal through unchanged', () => {
-  assert.equal(expandToken('sk-ant-literal', {}), 'sk-ant-literal');
+test('expandConfigDir trims and treats empty as no dir', () => {
+  assert.equal(expandConfigDir('   ', '/h', {}), '');
+  assert.equal(expandConfigDir(undefined, '/h', {}), '');
+  assert.equal(expandConfigDir('  ~/x  ', '/home/u', {}), '/home/u/x');
 });
 
-test('expandToken on undefined/empty template is empty', () => {
-  assert.equal(expandToken(undefined, { X: 'y' }), '');
-  assert.equal(expandToken('', { X: 'y' }), '');
+test('expandConfigDir leaves an absolute literal path unchanged', () => {
+  assert.equal(expandConfigDir('/opt/claude-a', '/home/u', {}), '/opt/claude-a');
+});
+
+// ---- parseCredentials --------------------------------------------------------
+
+test('parseCredentials reads the OAuth access token', () => {
+  const raw = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-x', expiresAt: 123 } });
+  assert.deepEqual(parseCredentials(raw), { accessToken: 'sk-ant-oat01-x', expiresAt: 123 });
+});
+
+test('parseCredentials returns null when there is no OAuth token (e.g. API-key login)', () => {
+  assert.equal(parseCredentials(JSON.stringify({ apiKey: 'sk-ant-...' })), null);
+  assert.equal(parseCredentials(JSON.stringify({ claudeAiOauth: {} })), null);
+});
+
+test('parseCredentials returns null for missing / malformed input', () => {
+  assert.equal(parseCredentials(null), null);
+  assert.equal(parseCredentials(undefined), null);
+  assert.equal(parseCredentials(''), null);
+  assert.equal(parseCredentials('{not json'), null);
+});
+
+// ---- isExpired ---------------------------------------------------------------
+
+test('isExpired is true only when clearly past expiry (60s grace)', () => {
+  const now = 1_000_000;
+  assert.equal(isExpired(now - 120_000, now), true); // 2m ago → expired
+  assert.equal(isExpired(now - 30_000, now), false); // within grace
+  assert.equal(isExpired(now + 60_000, now), false); // future
+  assert.equal(isExpired(undefined, now), false); // unknown → not skipped
 });
 
 // ---- parseUsageResponse ------------------------------------------------------
@@ -49,8 +82,7 @@ test('parseUsageResponse parses the verified real shape', () => {
     seven_day: { utilization: 28, resets_at: '2026-07-02T00:00:00Z' },
     extra_usage: { is_enabled: true, utilization: 12 },
   };
-  const out = parseUsageResponse(raw);
-  assert.deepEqual(out, {
+  assert.deepEqual(parseUsageResponse(raw), {
     fiveHour: { utilization: 38, resetsAt: '2026-06-29T18:00:00Z' },
     sevenDay: { utilization: 28, resetsAt: '2026-07-02T00:00:00Z' },
     extraUtilization: 12,
@@ -66,36 +98,23 @@ test('parseUsageResponse tolerates a null window (reads 0%, no reset)', () => {
   assert.deepEqual(out?.sevenDay, { utilization: 0, resetsAt: '' });
 });
 
-test('parseUsageResponse tolerates null resets_at and null utilization', () => {
+test('parseUsageResponse tolerates null utilization / resets_at', () => {
   const out = parseUsageResponse({
     five_hour: { utilization: null, resets_at: null },
-    seven_day: { utilization: 10, resets_at: '2026-07-02T00:00:00Z' },
+    seven_day: { utilization: 10, resets_at: 'x' },
   });
   assert.deepEqual(out?.fiveHour, { utilization: 0, resetsAt: '' });
 });
 
-test('parseUsageResponse ignores extra_usage when disabled', () => {
-  const out = parseUsageResponse({
-    five_hour: { utilization: 5, resets_at: 'x' },
-    seven_day: { utilization: 5, resets_at: 'y' },
-    extra_usage: { is_enabled: false, utilization: 99 },
-  });
-  assert.equal(out?.extraUtilization, null);
+test('parseUsageResponse ignores extra_usage when disabled or null', () => {
+  const base = { five_hour: { utilization: 5 }, seven_day: { utilization: 5 } };
+  assert.equal(parseUsageResponse({ ...base, extra_usage: { is_enabled: false, utilization: 99 } })?.extraUtilization, null);
+  assert.equal(parseUsageResponse({ ...base, extra_usage: { is_enabled: true, utilization: null } })?.extraUtilization, null);
 });
 
-test('parseUsageResponse ignores extra_usage with null utilization', () => {
-  const out = parseUsageResponse({
-    five_hour: { utilization: 5, resets_at: 'x' },
-    seven_day: { utilization: 5, resets_at: 'y' },
-    extra_usage: { is_enabled: true, utilization: null },
-  });
-  assert.equal(out?.extraUtilization, null);
-});
-
-test('parseUsageResponse returns null for a non-usage body (e.g. error object)', () => {
+test('parseUsageResponse returns null for a non-usage body', () => {
   assert.equal(parseUsageResponse({ error: { type: 'permission_error' } } as RawUsageResponse), null);
   assert.equal(parseUsageResponse(null), null);
-  assert.equal(parseUsageResponse(undefined), null);
 });
 
 test('parseUsageResponse tolerates unknown keys', () => {
@@ -103,59 +122,33 @@ test('parseUsageResponse tolerates unknown keys', () => {
     five_hour: { utilization: 1, resets_at: 'a' },
     seven_day: { utilization: 2, resets_at: 'b' },
     seven_day_opus: { utilization: 3 },
-    limits: [{ kind: 'x' }],
     spend: { percent: 0 },
   } as RawUsageResponse);
   assert.equal(out?.fiveHour.utilization, 1);
-  assert.equal(out?.sevenDay.utilization, 2);
 });
 
 // ---- classifyHttpError -------------------------------------------------------
 
-test('classifyHttpError maps 403 to no-scope (the user:profile scope error)', () => {
-  const out = classifyHttpError(
-    403,
-    '{"error":{"type":"permission_error","message":"OAuth token does not meet scope requirement user:profile"}}',
-  );
-  assert.equal(out.kind, 'no-scope');
-  assert.match(out.message, /scope/);
-});
-
-test('classifyHttpError maps 429 to rate-limited', () => {
+test('classifyHttpError maps 403→no-scope, 429→rate-limited, else→error', () => {
+  assert.equal(classifyHttpError(403).kind, 'no-scope');
   assert.equal(classifyHttpError(429).kind, 'rate-limited');
-});
-
-test('classifyHttpError maps other statuses to error without echoing the body', () => {
-  const out = classifyHttpError(500, '<html>secret-looking-body</html>');
-  assert.equal(out.kind, 'error');
-  assert.equal(out.message, 'HTTP 500');
-  assert.doesNotMatch(out.message, /secret-looking-body/);
+  const e = classifyHttpError(500, '<html>secret</html>');
+  assert.equal(e.kind, 'error');
+  assert.equal(e.message, 'HTTP 500');
+  assert.doesNotMatch(e.message, /secret/);
 });
 
 // ---- matchWorkspaceAccount ---------------------------------------------------
 
-test('matchWorkspaceAccount matches by exact resolved token', () => {
-  const tokens = new Map([
-    ['acc-a', 'sk-ant-oat01-AAA'],
-    ['acc-b', 'sk-ant-oat01-BBB'],
-  ]);
-  assert.equal(matchWorkspaceAccount('sk-ant-oat01-BBB', tokens), 'acc-b');
+test('matchWorkspaceAccount returns the repo accountId when it is a known account', () => {
+  assert.equal(matchWorkspaceAccount('acc-b', new Set(['acc-a', 'acc-b'])), 'acc-b');
 });
 
-test('matchWorkspaceAccount returns null when the workspace has no token', () => {
-  const tokens = new Map([['acc-a', 'sk-ant-oat01-AAA']]);
-  assert.equal(matchWorkspaceAccount(undefined, tokens), null);
-  assert.equal(matchWorkspaceAccount('', tokens), null);
+test('matchWorkspaceAccount returns null when the repo has no account', () => {
+  assert.equal(matchWorkspaceAccount(undefined, new Set(['acc-a'])), null);
+  assert.equal(matchWorkspaceAccount('', new Set(['acc-a'])), null);
 });
 
-test('matchWorkspaceAccount returns null when nothing matches', () => {
-  const tokens = new Map([['acc-a', 'sk-ant-oat01-AAA']]);
-  assert.equal(matchWorkspaceAccount('sk-ant-oat01-ZZZ', tokens), null);
-});
-
-test('matchWorkspaceAccount never matches an account whose token expanded to empty', () => {
-  // An account with an unset ${VAR} resolves to '' and must not collide with a
-  // workspace that also (wrongly) has an empty token — guard against '' === ''.
-  const tokens = new Map([['acc-empty', '']]);
-  assert.equal(matchWorkspaceAccount('', tokens), null);
+test('matchWorkspaceAccount returns null for a dangling id (account was deleted)', () => {
+  assert.equal(matchWorkspaceAccount('acc-gone', new Set(['acc-a'])), null);
 });

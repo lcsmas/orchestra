@@ -1,22 +1,19 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Account } from '../../shared/types';
+import { AccountLoginModal } from './AccountLoginModal';
 
 interface Props {
   onClose: () => void;
 }
 
-// Editable row state mirrors an Account but always has a stable id (generated
-// client-side for brand-new rows so React keys are stable while editing).
 interface Row {
   id: string;
   label: string;
-  token: string;
+  configDir: string;
 }
 
 function newId(): string {
-  // crypto.randomUUID is available in the Electron renderer; fall back just in
-  // case (e.g. an unusual sandbox) so adding a row never throws.
   try {
     return crypto.randomUUID();
   } catch {
@@ -24,11 +21,24 @@ function newId(): string {
   }
 }
 
+// Turn a label into a sensible default config dir, e.g. "work" → ~/.claude-work.
+// Keeps it filesystem-safe; blank label → just ~/.claude- (user edits it).
+function defaultDirFor(label: string): string {
+  const slug = label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `~/.claude-${slug}`;
+}
+
 export function AccountsSettings({ onClose }: Props) {
   const [rows, setRows] = useState<Row[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The account currently being logged in (drives the login terminal modal).
+  const [loginFor, setLoginFor] = useState<{ id: string; label: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -36,7 +46,7 @@ export function AccountsSettings({ onClose }: Props) {
       .listAccounts()
       .then((accounts: Account[]) => {
         if (cancelled) return;
-        setRows(accounts.map((a) => ({ id: a.id, label: a.label, token: a.token })));
+        setRows(accounts.map((a) => ({ id: a.id, label: a.label, configDir: a.configDir })));
         setLoaded(true);
       })
       .catch((e) => {
@@ -51,40 +61,79 @@ export function AccountsSettings({ onClose }: Props) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      // Don't close the settings modal on Escape while the login terminal is up
+      // — Escape there belongs to the terminal.
+      if (e.key === 'Escape' && !loginFor) onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, loginFor]);
 
   const update = (id: string, patch: Partial<Row>) =>
-    setRows((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+    setRows((rs) =>
+      rs.map((r) => {
+        if (r.id !== id) return r;
+        const next = { ...r, ...patch };
+        // If the dir is still the auto-suggested one (or empty) and the label
+        // changed, keep the suggestion in sync so it doesn't go stale.
+        if (patch.label !== undefined && (!r.configDir || r.configDir === defaultDirFor(r.label))) {
+          next.configDir = defaultDirFor(next.label);
+        }
+        return next;
+      }),
+    );
   const remove = (id: string) => setRows((rs) => rs.filter((r) => r.id !== id));
-  const add = () => setRows((rs) => [...rs, { id: newId(), label: '', token: '' }]);
+  const add = () => setRows((rs) => [...rs, { id: newId(), label: '', configDir: '' }]);
+
+  const pickDir = async (id: string) => {
+    const dir = await window.orchestra.pickDirectory();
+    if (dir) update(id, { configDir: dir });
+  };
+
+  // Persist current edits, returning the saved list (so a Login click can save
+  // first — main needs the account to exist before it can spawn its login).
+  const persist = async (): Promise<Account[] | null> => {
+    const accounts: Account[] = rows
+      .map((r) => ({ id: r.id, label: r.label.trim(), configDir: r.configDir.trim() }))
+      .filter((r) => r.label);
+    try {
+      const saved = await window.orchestra.setAccounts(accounts);
+      setRows(saved.map((a) => ({ id: a.id, label: a.label, configDir: a.configDir })));
+      return saved;
+    } catch (e) {
+      setError((e as Error).message);
+      return null;
+    }
+  };
 
   const onSave = async () => {
     setSaving(true);
     setError(null);
-    try {
-      // Drop rows with no label; trim. Main re-validates and persists.
-      const accounts: Account[] = rows
-        .map((r) => ({ id: r.id, label: r.label.trim(), token: r.token.trim() }))
-        .filter((r) => r.label);
-      const saved = await window.orchestra.setAccounts(accounts);
-      setRows(saved.map((a) => ({ id: a.id, label: a.label, token: a.token })));
-      onClose();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSaving(false);
+    const saved = await persist();
+    setSaving(false);
+    if (saved) onClose();
+  };
+
+  const onLogin = async (row: Row) => {
+    if (!row.label.trim()) {
+      setError('Give the account a label before logging in.');
+      return;
     }
+    setError(null);
+    setSaving(true);
+    const saved = await persist();
+    setSaving(false);
+    if (!saved) return;
+    // Use the persisted row (its id is stable) so the login PTY targets it.
+    const acc = saved.find((a) => a.id === row.id);
+    if (acc) setLoginFor({ id: acc.id, label: acc.label });
   };
 
   return createPortal(
     <div
       className="modal-backdrop"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget && !loginFor) onClose();
       }}
     >
       <div className="modal accounts-settings" role="dialog" aria-label="Claude accounts">
@@ -102,20 +151,18 @@ export function AccountsSettings({ onClose }: Props) {
         ) : (
           <div className="modal-body">
             <p className="modal-hint">
-              List the Claude accounts you spawn agents with. A workspace's badge shows the account it
-              logs in as (matched by its <code>CLAUDE_CODE_OAUTH_TOKEN</code> agent env) and that
-              account's rolling 5-hour / 7-day usage. Put the token as a{' '}
-              <code>${'{VAR}'}</code> reference to Orchestra's environment so the secret stays out of{' '}
-              <code>store.json</code> — exactly like a repo's Agent env.
+              Each account is a separate Claude Code config directory
+              (<code>CLAUDE_CONFIG_DIR</code>) with its own login. Assign an account to a repo in its
+              Workspace scripts settings; that repo's agents then run as that account, and the
+              workspace badge shows its rolling 5h / 7d usage. Claude Code manages and refreshes the
+              token in the dir — Orchestra only reads it to show usage and never copies it anywhere.
             </p>
             <p className="modal-hint">
-              The usage endpoint needs a token with the <code>user:profile</code> scope; a token
-              without it shows “no usage scope” on the badge.
+              Use <strong>Login</strong> to authenticate an account's dir (runs <code>claude /login</code>{' '}
+              there). The usage endpoint needs a login with the <code>user:profile</code> scope.
             </p>
 
-            {rows.length === 0 && (
-              <div className="accounts-empty">No accounts yet. Add one below.</div>
-            )}
+            {rows.length === 0 && <div className="accounts-empty">No accounts yet. Add one below.</div>}
 
             <div className="accounts-rows">
               {rows.map((r) => (
@@ -128,14 +175,30 @@ export function AccountsSettings({ onClose }: Props) {
                     onChange={(e) => update(r.id, { label: e.target.value })}
                   />
                   <input
-                    className="accounts-input token"
-                    placeholder="${CLAUDE_TOKEN_A}"
-                    value={r.token}
+                    className="accounts-input dir"
+                    placeholder="~/.claude-work"
+                    value={r.configDir}
                     spellCheck={false}
                     autoCorrect="off"
                     autoCapitalize="off"
-                    onChange={(e) => update(r.id, { token: e.target.value })}
+                    onChange={(e) => update(r.id, { configDir: e.target.value })}
                   />
+                  <button
+                    className="accounts-pick"
+                    title="Choose directory…"
+                    aria-label="Choose config directory"
+                    onClick={() => pickDir(r.id)}
+                  >
+                    …
+                  </button>
+                  <button
+                    className="accounts-login"
+                    title="Run `claude /login` in this account's config dir"
+                    onClick={() => onLogin(r)}
+                    disabled={saving}
+                  >
+                    Login
+                  </button>
                   <button
                     className="accounts-remove"
                     title="Remove account"
@@ -164,6 +227,13 @@ export function AccountsSettings({ onClose }: Props) {
           </button>
         </div>
       </div>
+      {loginFor && (
+        <AccountLoginModal
+          accountId={loginFor.id}
+          label={loginFor.label}
+          onClose={() => setLoginFor(null)}
+        />
+      )}
     </div>,
     document.body,
   );

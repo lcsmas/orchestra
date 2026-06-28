@@ -1,25 +1,26 @@
-// Pure, dependency-free logic for the per-account usage feature: the account
-// list shape, token expansion, parsing Anthropic's `/api/oauth/usage` response,
-// and matching a workspace to the account it logs in as. Kept free of electron
-// and of any `store`/`fs` import so it can be unit-tested in isolation (see
-// accounts.test.ts) and imported cheaply by both processes.
+// Pure, dependency-free logic for the per-account usage feature. Accounts are
+// identified by a Claude Code CONFIG DIRECTORY (`CLAUDE_CONFIG_DIR`): each
+// account is a separate config dir with its own `.credentials.json`, so Claude
+// Code logs in as that account when spawned with `CLAUDE_CONFIG_DIR=<dir>`, and
+// the OAuth token in that dir auto-refreshes (Claude Code manages it) — no
+// long-lived token to inject or expire. Orchestra never reads or moves the
+// token except transiently to query the usage endpoint.
 //
-// SECURITY: nothing here ever stores an expanded token. An `Account.token` is
-// the *template* the user typed (a literal label or a `${VAR}` reference);
-// expansion against a source env happens only transiently at use time, and the
-// expanded value never leaves the main process — the renderer only ever sees an
-// account's `id`/`label` and its usage numbers.
+// Kept free of electron and of any `store`/`fs` import so it can be unit-tested
+// in isolation (see accounts.test.ts) and imported cheaply by both processes.
 
-/** One configured Claude account. `token` is a template — either a literal
- *  token or, preferably, a `${VAR}` reference resolved from Orchestra's own
- *  environment at use time (so the secret stays out of store.json, exactly like
- *  a repo's `env`). `label` is the human name shown on the badge. */
+/** One configured Claude account: a label plus the Claude Code config
+ *  directory it logs in through. `configDir` is a path template — it may
+ *  contain a leading `~` (home) and/or `${VAR}` references, expanded against the
+ *  home dir + environment at use time, so the stored value stays portable and
+ *  holds no secret (the secret lives in `<configDir>/.credentials.json`, which
+ *  Orchestra never copies into store.json). */
 export interface Account {
   id: string;
   label: string;
-  /** Token template: a literal, or `${VAR}` / `$VAR` resolved from process.env
-   *  at use time. NEVER persisted in expanded form. */
-  token: string;
+  /** Path to this account's Claude config dir (the `CLAUDE_CONFIG_DIR` value).
+   *  May use `~` and `${VAR}`. */
+  configDir: string;
 }
 
 /** A rolling usage window (5-hour session or 7-day weekly). Mirrors the
@@ -41,13 +42,17 @@ export interface UsageData {
 }
 
 /** Why an account has no usable usage right now — surfaced on the badge instead
- *  of crashing. `no-scope` = the token lacks the `user:profile` OAuth scope
- *  (HTTP 403); `rate-limited` = HTTP 429; `no-token` = the account's `${VAR}`
- *  expanded to nothing; `error` = network/other failure. */
-export type UsageErrorKind = 'no-token' | 'no-scope' | 'rate-limited' | 'error';
+ *  of crashing.
+ *  `no-dir`        = the account's config dir doesn't exist / isn't readable;
+ *  `not-logged-in` = the dir has no `.credentials.json` with an OAuth token
+ *                    (run the account's Login flow);
+ *  `no-scope`      = the token lacks the `user:profile` OAuth scope (HTTP 403);
+ *  `rate-limited`  = HTTP 429;
+ *  `error`         = network/other failure. */
+export type UsageErrorKind = 'no-dir' | 'not-logged-in' | 'no-scope' | 'rate-limited' | 'error';
 
-/** The IPC-facing status for one account. Exactly one of `data` / `error` is
- *  meaningful per `ok`. Carries `fetchedAt` (epoch ms) for staleness display. */
+/** The IPC-facing status for one account. Carries `fetchedAt` (epoch ms) for
+ *  staleness display. */
 export interface AccountUsageStatus {
   accountId: string;
   ok: boolean;
@@ -58,23 +63,66 @@ export interface AccountUsageStatus {
   fetchedAt: number;
 }
 
-// ---- token expansion ---------------------------------------------------------
+// ---- config-dir expansion ----------------------------------------------------
 
-/** Expand a token template against a source environment, mirroring
- *  {@link import('../main/repo-env').expandRepoEnv} for a single value. A
- *  `${VAR}` / `$VAR` reference pulls from `source`; an unset/blank reference (or
- *  a template that expands to nothing) yields '' so the caller treats the
- *  account as having no usable token rather than sending an empty bearer. A
- *  literal (no reference) passes through unchanged. */
-export function expandToken(template: string | undefined, source: Record<string, string | undefined>): string {
+/** Expand a config-dir path template: a leading `~` (or `~/`) becomes `home`,
+ *  and `${VAR}` / `$VAR` references resolve from `source`. Returns '' for an
+ *  empty template or one whose references all resolve to nothing AND yields an
+ *  empty string, so callers treat the account as having no usable dir rather
+ *  than pointing Claude at the filesystem root. Trailing whitespace is trimmed.
+ *  No secret is involved — this is just a path. */
+export function expandConfigDir(
+  template: string | undefined,
+  home: string,
+  source: Record<string, string | undefined>,
+): string {
   if (!template) return '';
-  return template.replace(
+  let out = template.trim();
+  if (!out) return '';
+  // Leading ~ → home (only as a path segment: `~` or `~/...`, not `~foo`).
+  if (out === '~') out = home;
+  else if (out.startsWith('~/')) out = home + out.slice(1);
+  out = out.replace(
     /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
     (_m, braced, bare) => source[braced ?? bare] ?? '',
   );
+  return out;
 }
 
-// ---- usage-response parsing ---------------------------------------------------
+// ---- credentials parsing -----------------------------------------------------
+
+/** The OAuth credentials we read out of an account's `.credentials.json`. */
+export interface OAuthCreds {
+  accessToken: string;
+  expiresAt?: number;
+}
+
+/** Parse the JSON text of a Claude Code `.credentials.json` into the OAuth
+ *  access token, or null when the file isn't OAuth-shaped (e.g. an API-key
+ *  login, or a malformed/empty file). Mirrors what src/main/usage.ts reads. */
+export function parseCredentials(raw: string | null | undefined): OAuthCreds | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as {
+      claudeAiOauth?: { accessToken?: string; expiresAt?: number };
+    };
+    const oauth = parsed.claudeAiOauth;
+    if (!oauth?.accessToken) return null;
+    return { accessToken: oauth.accessToken, expiresAt: oauth.expiresAt };
+  } catch {
+    return null;
+  }
+}
+
+/** True when a token with this `expiresAt` (epoch ms, optional) is clearly
+ *  expired as of `now` — used to skip a guaranteed-401 round-trip. A 60s grace
+ *  matches usage.ts: the server is the real authority, we only skip the
+ *  obviously-dead. */
+export function isExpired(expiresAt: number | undefined, now: number): boolean {
+  return typeof expiresAt === 'number' && expiresAt < now - 60_000;
+}
+
+// ---- usage-response parsing --------------------------------------------------
 
 interface RawWindow {
   utilization?: number | null;
@@ -119,43 +167,27 @@ export function parseUsageResponse(raw: RawUsageResponse | null | undefined): Us
 }
 
 /** Classify a non-OK HTTP status from the usage endpoint into a typed error.
- *  403 with the scope message → `no-scope`; any 403 → `no-scope` (the only 403
- *  this endpoint returns is the scope error); 429 → `rate-limited`; everything
- *  else → `error`. */
-export function classifyHttpError(status: number, body?: string): { kind: UsageErrorKind; message: string } {
-  if (status === 403) {
-    return { kind: 'no-scope', message: 'token lacks user:profile scope' };
-  }
-  if (status === 429) {
-    return { kind: 'rate-limited', message: 'rate limited' };
-  }
+ *  403 → `no-scope` (the only 403 this endpoint returns is the scope error);
+ *  429 → `rate-limited`; everything else → `error`. */
+export function classifyHttpError(status: number, _body?: string): { kind: UsageErrorKind; message: string } {
+  if (status === 403) return { kind: 'no-scope', message: 'token lacks user:profile scope' };
+  if (status === 429) return { kind: 'rate-limited', message: 'rate limited' };
   // Don't echo arbitrary bodies (could be large/HTML); keep it to the status.
   return { kind: 'error', message: `HTTP ${status}` };
 }
 
-// ---- workspace → account matching ---------------------------------------------
+// ---- workspace → account matching --------------------------------------------
 
-/** The OAuth-token env var Claude Code reads to pick which account to log in
- *  as. A workspace's resolved value of this var is what we match against the
- *  configured accounts' tokens. */
-export const OAUTH_TOKEN_ENV = 'CLAUDE_CODE_OAUTH_TOKEN';
-
-/** Match a workspace to the account it uses, by comparing the workspace's
- *  resolved `CLAUDE_CODE_OAUTH_TOKEN` (already expanded against process.env by
- *  the caller — never pass a raw `${VAR}` here) against each account's resolved
- *  token. Returns the matching account's id, or null when the workspace has no
- *  token override (it uses the default/stored login) or no account matches.
- *
- *  `resolvedAccountTokens` maps accountId → its expanded token; accounts whose
- *  token expanded to '' are simply absent / never match. Comparison is exact:
- *  these are opaque secrets, so any normalization would risk a false match. */
+/** Match a workspace to its account purely by the repo's assigned `accountId`.
+ *  Under the config-dir model there is no token comparison: a repo carries an
+ *  explicit `accountId` chosen in repo settings. Returns that id if it names a
+ *  configured account, else null (→ default login). `repoAccountId` is the
+ *  repo's stored choice; `knownAccountIds` guards against a dangling id whose
+ *  account was deleted. */
 export function matchWorkspaceAccount(
-  workspaceToken: string | undefined,
-  resolvedAccountTokens: ReadonlyMap<string, string>,
+  repoAccountId: string | undefined,
+  knownAccountIds: ReadonlySet<string>,
 ): string | null {
-  if (!workspaceToken) return null;
-  for (const [accountId, token] of resolvedAccountTokens) {
-    if (token && token === workspaceToken) return accountId;
-  }
-  return null;
+  if (!repoAccountId) return null;
+  return knownAccountIds.has(repoAccountId) ? repoAccountId : null;
 }

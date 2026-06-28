@@ -2504,12 +2504,27 @@ button.danger-primary:active {
   font-family: inherit;
 }
 .accounts-input:focus { outline: none; border-color: var(--accent); }
-.accounts-input.label { flex: 0 0 120px; }
-.accounts-input.token {
+.accounts-input.label { flex: 0 0 110px; }
+.accounts-input.dir {
   flex: 1 1 auto;
   min-width: 0;
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
+.accounts-pick,
+.accounts-login {
+  flex: 0 0 auto;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+.accounts-pick { width: 26px; height: 26px; line-height: 1; }
+.accounts-login { padding: 5px 10px; }
+.accounts-pick:hover,
+.accounts-login:hover:not(:disabled) { border-color: var(--accent); }
+.accounts-login:disabled { opacity: 0.5; cursor: default; }
 .accounts-remove {
   flex: 0 0 auto;
   width: 26px;
@@ -2534,3 +2549,31 @@ button.danger-primary:active {
   cursor: pointer;
 }
 .accounts-add:hover { color: var(--text); border-color: var(--accent); }
+
+/* Repo settings: Claude account dropdown */
+.field-select {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.field-select:focus { outline: none; border-color: var(--accent); }
+
+/* Account login terminal modal */
+.account-login-modal {
+  width: min(820px, 92vw);
+  max-width: 92vw;
+}
+.account-login-term {
+  height: 420px;
+  max-height: 60vh;
+  margin: 4px 0 12px;
+  padding: 8px;
+  border-radius: 8px;
+  background: #1a1f26;
+  overflow: hidden;
+}
+.account-login-term .xterm { height: 100%; }

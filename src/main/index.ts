@@ -182,6 +182,7 @@ import {
   snapshotAccountUsage,
   computeWorkspaceAccounts,
   refreshAccountsNow,
+  accountConfigDir,
 } from './account-usage';
 import {
   detectAndUpdateBranchName,
@@ -386,9 +387,11 @@ handle('linear:clearKey', async () => {
 handle('usage:get', () => getLastUsage());
 
 // ---------- Accounts (per-workspace usage badges) ----------
+//
+// An account is a Claude Code config dir (CLAUDE_CONFIG_DIR) with its own
+// login. store.json holds only {id, label, configDir} — never a token.
 
-// The configured accounts (with their token *templates* — `${VAR}` references,
-// not expanded secrets — so the settings editor can echo them back).
+// The configured accounts (label + config-dir path, no secrets).
 handle('accounts:list', () => store.accounts);
 
 // Replace the whole list, then immediately recompute the workspace→account map
@@ -406,6 +409,59 @@ handle('accounts:usageAll', () => snapshotAccountUsage());
 
 // Which account each non-archived workspace logs in as (identity only).
 handle('accounts:workspaceAccounts', () => computeWorkspaceAccounts());
+
+// Assign (or clear, with empty string) the account a repo's workspaces log in
+// as. Recompute the mapping + usage so badges update immediately.
+handle('repos:setAccount', async (_e, repoPath: string, accountId: string | null) => {
+  const repo = await store.setRepoAccount(repoPath, accountId);
+  void refreshAccountsNow(getMainWindow());
+  return repo;
+});
+
+// Interactive `claude /login` in an account's config dir, so the user can
+// authenticate that account from within Orchestra. Spawns under a synthetic pty
+// id (`account-login:<accountId>`) that carries NO workspaceId — it's not an
+// agent, so no status reconciliation. The renderer hosts it in a terminal and
+// uses the normal pty:write/pty:resize/onPtyData/onPtyExit channels (all keyed
+// by pty id). On exit we refresh usage so the freshly-logged-in account's badge
+// fills in without waiting for the poll.
+handle('accounts:loginStart', async (_e, accountId: string, cols: number, rows: number) => {
+  const account = store.accounts.find((a) => a.id === accountId);
+  if (!account) throw new Error('account not found');
+  const dir = accountConfigDir(account);
+  if (!dir) throw new Error('account has no config dir');
+  const ptyId = `account-login:${accountId}`;
+  if (isRunning(ptyId)) {
+    resizePty(ptyId, Math.max(20, cols - 1), Math.max(5, rows));
+    setTimeout(() => resizePty(ptyId, cols, rows), 40);
+    return;
+  }
+  // Ensure the dir exists so Claude Code can write its credentials there.
+  await fs.promises.mkdir(dir, { recursive: true });
+  const { command, args } = loginShellArgv('claude /login');
+  await startPty({
+    id: ptyId,
+    cwd: dir,
+    command,
+    args,
+    cols,
+    rows,
+    window: getMainWindow(),
+    extraEnv: { CLAUDE_CONFIG_DIR: dir },
+  });
+});
+
+handle('accounts:loginStop', (_e, accountId: string) => {
+  const ptyId = `account-login:${accountId}`;
+  if (isRunning(ptyId)) stopPty(ptyId);
+});
+
+// Recompute the mapping + refetch usage now. The login modal calls this when
+// its `claude /login` PTY exits, so a freshly-authenticated account's badge
+// fills in immediately rather than on the next 30s poll.
+handle('accounts:refresh', async () => {
+  await refreshAccountsNow(getMainWindow());
+});
 
 // ---------- Diagnostic logs ----------
 

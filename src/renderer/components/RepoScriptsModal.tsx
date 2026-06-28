@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { RepoScripts } from '../../shared/types';
+import type { Account, RepoScripts } from '../../shared/types';
 import { useStore } from '../store';
 
 interface Props {
@@ -27,10 +27,9 @@ const ARCHIVE_PLACEHOLDER = `# Best-effort cleanup before the worktree is delete
 
 const ENV_PLACEHOLDER = `# KEY=value per line, injected into this repo's agents.
 # Values may reference Orchestra's own env with \${VAR} — the secret stays
-# out of store.json. An entry whose \${VAR} is unset is dropped (agent keeps
-# its default login).
+# out of store.json. An entry whose \${VAR} is unset is dropped.
 
-CLAUDE_CODE_OAUTH_TOKEN=\${CLAUDE_TOKEN_A}`;
+MY_VAR=\${SOME_ENV}`;
 
 /** Parse a KEY=value textarea (one per line, # comments, blank lines ignored)
  * into an env record. The first `=` splits; later `=` stay in the value. */
@@ -58,23 +57,30 @@ export function RepoScriptsModal({ repoPath, repoName, onClose }: Props) {
   const [runScript, setRunScript] = useState('');
   const [archive, setArchive] = useState('');
   const [envText, setEnvText] = useState('');
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [accountId, setAccountId] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const refreshRepos = useStore((s) => s.refreshRepos);
+  const repos = useStore((s) => s.repos);
 
   useEffect(() => {
     let cancelled = false;
     void Promise.all([
       window.orchestra.getRepoScripts(repoPath),
       window.orchestra.getRepoEnv(repoPath),
+      window.orchestra.listAccounts(),
     ])
-      .then(([scripts, env]: [RepoScripts, Record<string, string>]) => {
+      .then(([scripts, env, accs]: [RepoScripts, Record<string, string>, Account[]]) => {
         if (cancelled) return;
         setSetup(scripts.setup ?? '');
         setRunScript(scripts.run ?? '');
         setArchive(scripts.archive ?? '');
         setEnvText(envToText(env));
+        setAccounts(accs);
+        // Current assignment from the already-loaded repo list (no extra IPC).
+        setAccountId(repos.find((r) => r.path === repoPath)?.accountId ?? '');
         setLoaded(true);
       })
       .catch((e) => {
@@ -105,6 +111,7 @@ export function RepoScriptsModal({ repoPath, repoName, onClose }: Props) {
         archive: archive.trim() || undefined,
       });
       await window.orchestra.setRepoEnv(repoPath, parseEnvText(envText));
+      await window.orchestra.setRepoAccount(repoPath, accountId || null);
       // Refresh local repo cache so the Run tab's `hasRunScript` derivation
       // sees the change immediately, without waiting for a reload.
       await refreshRepos();
@@ -177,9 +184,31 @@ export function RepoScriptsModal({ repoPath, repoName, onClose }: Props) {
               onChange={setArchive}
               placeholder={ARCHIVE_PLACEHOLDER}
             />
+            <label className="field">
+              <div className="field-head">
+                <span className="field-label">Claude account</span>
+                <span className="field-hint">
+                  Which Claude account this repo's agents log in as. Orchestra injects the account's
+                  CLAUDE_CONFIG_DIR so the agent runs under that login, and the workspace badge shows
+                  its usage. Manage accounts from the Accounts button in the sidebar header.
+                </span>
+              </div>
+              <select
+                className="field-select"
+                value={accountId}
+                onChange={(e) => setAccountId(e.target.value)}
+              >
+                <option value="">Default login</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <Field
               label="Agent env"
-              hint="KEY=value per line, injected into this repo's agents. Use ${VAR} to pull a value from Orchestra's own env (keeps secrets out of disk). E.g. select which Claude account this repo's agents log in as."
+              hint="KEY=value per line, injected into this repo's agents. Use ${VAR} to pull a value from Orchestra's own env (keeps secrets out of disk)."
               value={envText}
               onChange={setEnvText}
               placeholder={ENV_PLACEHOLDER}
