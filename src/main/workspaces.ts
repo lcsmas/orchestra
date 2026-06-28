@@ -1313,35 +1313,19 @@ const HOOK_ACTIVITY_POSTTOOL_CMD = activityHookCmd('posttool');
 const HOOK_SESSION_START_RENAME_CMD =
   'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/rename-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
 
-// Same delegation pattern as the rename hook (script file, resolved via the
-// absolute worktree root). Advertises the agent-spawn capability once per
-// session.
-const HOOK_SESSION_START_SPAWN_CMD =
-  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/spawn-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
-
-// Advertises the inter-agent comms capability (peers/read/message) once per
-// session, same delegation pattern as the spawn hook.
-const HOOK_SESSION_START_COMMS_CMD =
-  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/comms-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
-
-// Advertises the add-repo / delete-workspace socket routes once per session,
-// same delegation pattern as the spawn/comms hooks.
-const HOOK_SESSION_START_REPO_ROUTES_CMD =
-  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/repo-routes-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
+// The spawn / comms / repo-routes capabilities are no longer advertised by
+// SessionStart hooks. They moved to Claude Code project skills
+// (orchestra-spawn / orchestra-comms / orchestra-repos), so only each skill's
+// one-sentence description loads up front and the full curl payload loads on
+// demand — instead of ~1k tokens of prose re-billed as transcript every turn.
 
 // Peer-gated comms reminder, fired on every UserPromptSubmit (the script
 // self-silences when no sibling agents exist), so the comms capability is never
 // missed once a peer actually shows up — not just at the context-free start.
+// Now a single line pointing at the `orchestra-comms` skill, not the full
+// command block (that lives in the skill body).
 const HOOK_COMMS_RESURFACE_CMD =
   'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/comms-resurface.sh"; [ -f "$f" ] && bash "$f" || true';
-
-// Condensed spawn reminder, fired on every UserPromptSubmit. Spawning is
-// relevant even with zero peers (it's how you create them), so unlike the
-// comms re-surface this is ungated — but it prints a single line, not the full
-// curl block (that's shown at SessionStart), to keep the per-turn cost minimal
-// while ensuring the capability is never forgotten mid-conversation.
-const HOOK_SPAWN_RESURFACE_CMD =
-  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/spawn-resurface.sh"; [ -f "$f" ] && bash "$f" || true';
 
 // Drains any queued peer messages into context. Runs on SessionStart AND every
 // UserPromptSubmit so a message that landed in the inbox while the agent was
@@ -1389,85 +1373,146 @@ The reply is JSON: {"ok":true,"branch":"<final-name>"} on success (orchestra ren
 EOF
 `;
 
-// Advertised to every Claude session on SessionStart (ungated, unlike the
-// rename nudge — spawning is a standing capability, not a one-time chore). The
-// heredoc is unquoted so the curl line prints with literal `$ORCHESTRA_SOCK`/
-// `$ORCHESTRA_WS_ID` for the agent to run as-is; the same `\$` / `\\"`
-// escaping as the rename script keeps the JSON intact through the heredoc. The
-// $ORCHESTRA_SOCK guard makes it a no-op outside orchestra.
-const SPAWN_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
-# Auto-installed by orchestra. Tells the agent it can spin up a fresh parallel
-# worktree (new branch off the base branch) with its own autonomous agent.
-[ -n "\${ORCHESTRA_SOCK:-}" ] || exit 0
-cat <<EOF
-[orchestra] You can delegate independent work to a NEW parallel worktree that gets its own agent. The new agent starts immediately and works on its own in a fresh branch cut from the base branch — so use this only for work that does NOT depend on your current uncommitted changes (the new worktree will not see them). Run this exact command:
+// ---------- Capability skills ----------
+//
+// Orchestra's standing capabilities — spawn a parallel agent, talk to peers,
+// register repos / delete workspaces — used to be advertised in full prose
+// (with embedded curl payloads) on every SessionStart. That text then lived in
+// the conversation transcript and was reprocessed as INPUT on every subsequent
+// turn, so a ~1k-token one-time fact silently became a per-turn tax that grows
+// with conversation length.
+//
+// They are now packaged as Claude Code project skills under
+// `<worktree>/.claude/skills/<name>/SKILL.md`. Only each skill's `description`
+// (a single tight sentence, ~30 tokens) is ever loaded up front; the full body
+// — including the exact curl payload the agent can't reconstruct — loads only
+// when the agent actually invokes the skill. The advertisement shrinks ~30x and
+// the payloads cost nothing until used. Skills are auto-discovered from
+// `.claude/skills/` with no settings.json registration; left model-invocable
+// (default) so the agent pulls them when a task calls for delegation /
+// coordination, and `/orchestra-spawn` etc. also work as manual commands.
+//
+// The bodies are plain Markdown (no bash heredoc), so the curl lines are
+// written literally — no `\$` / `\\"` escaping gymnastics. The agent reads
+// $ORCHESTRA_SOCK / $ORCHESTRA_WS_ID from its own env when it runs the command.
 
-  curl -s --max-time 20 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"from\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\",\\\\"task\\\\":\\\\"<full self-contained instructions for the new agent>\\\\"}" http://x/spawn
+const SPAWN_SKILL = `---
+name: orchestra-spawn
+description: Delegate independent work to a NEW parallel agent in a fresh git worktree. Use when the user asks to parallelize, delegate, or fan out a self-contained task that does not depend on the current uncommitted changes.
+---
 
-The reply is JSON: {"ok":true,"id":"<workspace-id>","branch":"<branch>"} once the new worktree exists and its agent has started, or {"ok":false,"error":"..."} on failure. The "task" is the new agent's opening prompt — write it as a complete, standalone instruction (it shares none of this conversation's context). By default the worktree is created in THIS repo off its base branch. Optional JSON fields: "repoPath":"<abs path of another repo already added to orchestra>", "baseBranch":"<branch>". Only spawn when the user asks you to parallelize or delegate work — do not do it unprompted.
-EOF
+# Spawn a parallel agent
+
+You can start a brand-new agent in its own git worktree, on a fresh branch cut
+from the base branch. It begins working immediately and shares none of this
+conversation's context, so the task must be a complete, standalone instruction.
+
+Use this only for work that does NOT depend on your current uncommitted changes
+— the new worktree is cut from the base branch and will not see them. Only spawn
+when the user asks you to parallelize or delegate; do not do it unprompted.
+
+Run this exact command (it reads \$ORCHESTRA_SOCK / \$ORCHESTRA_WS_ID from your env):
+
+\`\`\`bash
+curl -s --max-time 20 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"from\\":\\"\$ORCHESTRA_WS_ID\\",\\"task\\":\\"<full self-contained instructions for the new agent>\\"}" http://x/spawn
+\`\`\`
+
+Reply: \`{"ok":true,"id":"<workspace-id>","branch":"<branch>"}\` once the worktree
+exists and its agent has started, or \`{"ok":false,"error":"..."}\` on failure.
+
+Optional JSON fields:
+- \`"repoPath":"<abs path of another repo already added to orchestra>"\` — spawn in a different repo.
+- \`"baseBranch":"<branch>"\` — cut the new branch from a specific base.
 `;
 
-// Advertised on SessionStart (ungated like the spawn hook — talking to peers is
-// a standing capability). Tells the agent how to list other live agents, read a
-// peer's transcript, and hand a peer a prompt. Same `\$` / `\\"` escaping as the
-// spawn script so the curl lines print with literal $ORCHESTRA_SOCK /
-// $ORCHESTRA_WS_ID for the agent to run as-is.
-const COMMS_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
-# Auto-installed by orchestra. Tells the agent it can talk to the OTHER agents
-# running in sibling workspaces — discover them, read their work, prompt them.
-[ -n "\${ORCHESTRA_SOCK:-}" ] || exit 0
-cat <<EOF
-[orchestra] You can communicate with the OTHER agents running in sibling workspaces. Three commands, all over the orchestra socket:
+const COMMS_SKILL = `---
+name: orchestra-comms
+description: Coordinate with the OTHER agents running in sibling Orchestra workspaces — list them, read a peer's transcript, or send a peer a prompt. Use when the user asks you to coordinate agents, or to follow up on work you delegated to a spawned agent.
+---
 
-  1. List the other agents (their workspace id, branch, repo, status):
-       curl -s --max-time 10 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"from\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\"}" http://x/peers
-     Reply: {"ok":true,"peers":[{"id":"...","branch":"...","repo":"...","status":"running|waiting|idle","running":true}]}
+# Talk to sibling agents
 
-  2. Read a peer's recent terminal transcript (to see what it has been doing):
-       curl -s --max-time 10 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"from\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\",\\\\"id\\\\":\\\\"<peer-id>\\\\"}" http://x/read
-     Reply: {"ok":true,"branch":"...","transcript":"<last ~80 lines, plain text>"}. Optional "lines":<n> (max 400).
+Other agents may be running in sibling workspaces. You can discover them, read
+what they have been doing, and hand one a prompt. Three commands, all over the
+orchestra socket (each reads \$ORCHESTRA_SOCK / \$ORCHESTRA_WS_ID from your env).
+Keep any message self-contained — the peer does not share your conversation.
 
-  3. Send a prompt to a peer (it lands as a new turn in that agent's session):
-       curl -s --max-time 10 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"from\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\",\\\\"to\\\\":\\\\"<peer-id>\\\\",\\\\"text\\\\":\\\\"<your message>\\\\"}" http://x/message
-     Reply: {"ok":true,"delivery":"live"} if the peer was running, or "started" if the peer was stopped and got woken to handle it now. The peer sees who the message is from and can reply back to your workspace id.
+## 1. List the other agents
 
-Use these to coordinate: ask a peer a question, hand off a sub-result, or check on delegated work. Keep messages self-contained — the peer does not share your conversation. Only do this when the user asks you to coordinate agents, or when you spawned a peer and need to follow up with it.
-EOF
+\`\`\`bash
+curl -s --max-time 10 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"from\\":\\"\$ORCHESTRA_WS_ID\\"}" http://x/peers
+\`\`\`
+
+Reply: \`{"ok":true,"peers":[{"id":"...","branch":"...","repo":"...","status":"running|waiting|idle","running":true}]}\`
+
+## 2. Read a peer's recent transcript
+
+\`\`\`bash
+curl -s --max-time 10 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"from\\":\\"\$ORCHESTRA_WS_ID\\",\\"id\\":\\"<peer-id>\\"}" http://x/read
+\`\`\`
+
+Reply: \`{"ok":true,"branch":"...","transcript":"<last ~80 lines, plain text>"}\`. Optional \`"lines":<n>\` (max 400).
+
+## 3. Send a peer a prompt
+
+\`\`\`bash
+curl -s --max-time 10 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"from\\":\\"\$ORCHESTRA_WS_ID\\",\\"to\\":\\"<peer-id>\\",\\"text\\":\\"<your message>\\"}" http://x/message
+\`\`\`
+
+Reply: \`{"ok":true,"delivery":"live"}\` if the peer was running, or \`"started"\` if
+it was stopped and got woken to handle it now. The peer sees who the message is
+from and can reply back to your workspace id.
 `;
 
-// Advertised on SessionStart (ungated like spawn/comms — managing repos and
-// workspaces is a standing capability). Tells the agent it can register a new
-// repo with orchestra (which makes it spawnable via repoPath) and hard-delete a
-// workspace. Same `\$` / `\\"` escaping as the spawn/comms scripts so the curl
-// lines print with literal $ORCHESTRA_SOCK / $ORCHESTRA_WS_ID for the agent.
-const REPO_ROUTES_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
-# Auto-installed by orchestra. Tells the agent it can add a repo to orchestra
-# and delete a workspace, over the same socket as spawn/peers.
-[ -n "\${ORCHESTRA_SOCK:-}" ] || exit 0
-cat <<EOF
-[orchestra] You can also manage repos and workspaces over the orchestra socket:
+const REPO_ROUTES_SKILL = `---
+name: orchestra-repos
+description: Manage Orchestra repos and workspaces over the socket — register a git repo so it becomes a spawn target, or hard-delete a workspace. Use when the user asks to add/register a repo to Orchestra or to delete a workspace.
+---
 
-  1. Register a git repo with orchestra (so it appears in the app and can be a spawn target). Pass an ABSOLUTE path:
-       curl -s --max-time 10 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"path\\\\":\\\\"<absolute repo path>\\\\"}" http://x/addRepo
-     Reply: {"ok":true,"repo":{"path":"...","name":"...","defaultBranch":"..."}} — the app's repo list refreshes live. {"ok":false,"error":"..."} if the path isn't an absolute git repo.
+# Manage repos and workspaces
 
-  2. Delete a workspace (stops its agent, runs its archive script, removes the git worktree + branch, drops it from the app):
-       curl -s --max-time 15 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"id\\\\":\\\\"<workspace-id>\\\\"}" http://x/deleteWorkspace
-     Reply: {"ok":true,"id":"...","branch":"..."} or {"ok":false,"error":"unknown workspace: <id>"}. Destructive and irreversible — only do this when the user explicitly asks to delete a workspace.
+Two socket routes let you change what Orchestra tracks. Each reads
+\$ORCHESTRA_SOCK from your env.
 
-(Outside an orchestra workspace, the same actions are available as 'orchestra add-repo <path>' and 'orchestra delete <id> --yes' once the app has been launched once.)
-EOF
+## Register a git repo
+
+Makes it appear in the app and become a spawn target (\`repoPath\`). Pass an
+ABSOLUTE path:
+
+\`\`\`bash
+curl -s --max-time 10 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"path\\":\\"<absolute repo path>\\"}" http://x/addRepo
+\`\`\`
+
+Reply: \`{"ok":true,"repo":{"path":"...","name":"...","defaultBranch":"..."}}\` — the
+app's repo list refreshes live. \`{"ok":false,"error":"..."}\` if the path isn't an
+absolute git repo.
+
+## Delete a workspace
+
+Stops its agent, runs its archive script, removes the git worktree + branch, and
+drops it from the app. **Destructive and irreversible** — only do this when the
+user explicitly asks to delete a workspace.
+
+\`\`\`bash
+curl -s --max-time 15 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"id\\":\\"<workspace-id>\\"}" http://x/deleteWorkspace
+\`\`\`
+
+Reply: \`{"ok":true,"id":"...","branch":"..."}\` or \`{"ok":false,"error":"unknown workspace: <id>"}\`.
+
+Outside an orchestra workspace, the same actions are available as
+\`orchestra add-repo <path>\` and \`orchestra delete <id> --yes\` once the app has
+been launched once.
 `;
 
-// Peer-gated re-surface of the comms capability, fired on every
-// UserPromptSubmit. The full COMMS_INSTRUCTION_SCRIPT prints once at
-// SessionStart (before any work context exists, so it's routinely forgotten by
-// the time a sibling actually matters). This variant instead stays SILENT while
-// the agent is alone and re-surfaces a condensed reminder the moment a sibling
-// agent exists — so the capability lands in context exactly when it's relevant,
-// without spamming solo sessions. It live-queries /peers and counts the peer
-// entries with pure bash (no jq) — a query failure or empty list is a no-op.
+// Peer-gated, one-line re-surface of the comms capability on every
+// UserPromptSubmit. The `orchestra-comms` skill's description is always in
+// context, but skill descriptions are easy to overlook mid-conversation — so
+// this fires a single terse pointer the moment a sibling agent actually exists,
+// landing the capability in attention exactly when it becomes relevant. It
+// stays SILENT while the agent is alone (no spam in solo sessions). The full
+// command reference lives in the skill body, not here, so this costs ~1 line
+// even when it does fire. It live-queries /peers and counts the peer entries
+// with pure bash (no jq) — a query failure or empty list is a no-op.
 const COMMS_RESURFACE_SCRIPT = `#!/usr/bin/env bash
 # Auto-installed by orchestra. Re-surfaces the inter-agent comms reminder on
 # each prompt, but ONLY when sibling agents currently exist.
@@ -1486,21 +1531,7 @@ while [ "\$tmp" != "\${tmp#*\\"id\\":}" ]; do
   tmp="\${tmp#*\\"id\\":}"
 done
 [ "\$n" -gt 0 ] || exit 0
-cat <<EOF
-[orchestra] \$n other agent(s) are running in sibling workspaces right now. You can coordinate with them over the orchestra socket: list them (http://x/peers), read a peer's transcript (http://x/read), or send a peer a prompt (http://x/message). The full command reference was printed at session start. Use this when the user asks you to coordinate agents, or to follow up on work you delegated.
-EOF
-exit 0
-`;
-
-// Condensed spawn reminder for every UserPromptSubmit. The full spawn reference
-// (with the curl payload) prints once at SessionStart; this just keeps the
-// capability top-of-mind on later turns with a single line, so a delegation
-// opportunity that arises mid-conversation isn't missed. Ungated (spawning is
-// useful even with no peers yet), but deliberately terse to stay cheap.
-const SPAWN_RESURFACE_SCRIPT = `#!/usr/bin/env bash
-# Auto-installed by orchestra. One-line spawn-capability reminder per prompt.
-[ -n "\${ORCHESTRA_SOCK:-}" ] || exit 0
-echo "[orchestra] Reminder: you can delegate independent work to a fresh parallel worktree+agent via http://x/spawn (full command shown at session start). Use it when the user asks you to parallelize or delegate."
+echo "[orchestra] \$n other agent(s) are running in sibling workspaces. Use the \\\`orchestra-comms\\\` skill to list them, read a peer's transcript, or send one a prompt — when the user asks you to coordinate agents or to follow up on delegated work."
 exit 0
 `;
 
@@ -1706,13 +1737,12 @@ const HOOKS_VERSION = createHash('sha256')
   .update(
     [
       RENAME_INSTRUCTION_SCRIPT,
-      SPAWN_INSTRUCTION_SCRIPT,
       ORCHESTRA_HOOK_SCRIPT,
-      COMMS_INSTRUCTION_SCRIPT,
-      REPO_ROUTES_INSTRUCTION_SCRIPT,
       COMMS_RESURFACE_SCRIPT,
-      SPAWN_RESURFACE_SCRIPT,
       INBOX_INSTRUCTION_SCRIPT,
+      SPAWN_SKILL,
+      COMMS_SKILL,
+      REPO_ROUTES_SKILL,
       HOOK_ACTIVITY_SUBMIT_CMD,
       HOOK_ACTIVITY_STOP_CMD,
       HOOK_ACTIVITY_NOTIFY_CMD,
@@ -1720,11 +1750,7 @@ const HOOKS_VERSION = createHash('sha256')
       HOOK_ACTIVITY_POSTTOOL_CMD,
       HOOK_SESSION_START_READY_CMD,
       HOOK_SESSION_START_RENAME_CMD,
-      HOOK_SESSION_START_SPAWN_CMD,
-      HOOK_SESSION_START_COMMS_CMD,
-      HOOK_SESSION_START_REPO_ROUTES_CMD,
       HOOK_COMMS_RESURFACE_CMD,
-      HOOK_SPAWN_RESURFACE_CMD,
       HOOK_INBOX_DELIVER_CMD,
     ].join(' '),
   )
@@ -1762,13 +1788,33 @@ export async function installOrchestraHooks(
       writeFile(path.join(dir, name), body, { mode: 0o755 });
     await Promise.all([
       w('rename-instruction.sh', RENAME_INSTRUCTION_SCRIPT),
-      w('spawn-instruction.sh', SPAWN_INSTRUCTION_SCRIPT),
       w('orchestra-hook.sh', ORCHESTRA_HOOK_SCRIPT),
-      w('comms-instruction.sh', COMMS_INSTRUCTION_SCRIPT),
-      w('repo-routes-instruction.sh', REPO_ROUTES_INSTRUCTION_SCRIPT),
       w('comms-resurface.sh', COMMS_RESURFACE_SCRIPT),
-      w('spawn-resurface.sh', SPAWN_RESURFACE_SCRIPT),
       w('inbox-instruction.sh', INBOX_INSTRUCTION_SCRIPT),
+    ]);
+
+    // Evict the per-session capability instruction scripts + the ungated spawn
+    // resurface — superseded by the capability skills below. Best-effort: a
+    // missing file is fine (fresh workspace or already cleaned).
+    await Promise.all(
+      ['spawn-instruction.sh', 'comms-instruction.sh', 'repo-routes-instruction.sh', 'spawn-resurface.sh'].map(
+        (f) => rm(path.join(dir, f), { force: true }),
+      ),
+    );
+
+    // Capability skills. Each lands at <worktree>/.claude/skills/<name>/SKILL.md
+    // and is auto-discovered by Claude Code — only the one-line description
+    // loads up front; the body (with the exact curl payload) loads on demand.
+    const skillsDir = path.join(worktreePath, '.claude', 'skills');
+    const writeSkill = async (name: string, body: string) => {
+      const d = path.join(skillsDir, name);
+      await mkdir(d, { recursive: true });
+      await writeFile(path.join(d, 'SKILL.md'), body);
+    };
+    await Promise.all([
+      writeSkill('orchestra-spawn', SPAWN_SKILL),
+      writeSkill('orchestra-comms', COMMS_SKILL),
+      writeSkill('orchestra-repos', REPO_ROUTES_SKILL),
     ]);
 
     const settingsDir = path.join(worktreePath, '.claude');
@@ -1797,21 +1843,33 @@ export async function installOrchestraHooks(
     // and leaving both wired would double-report every event.
     const isLegacyActivityCurl = (cmd: string) => cmd.includes('http://x/event');
 
+    // Evict the retired capability hooks from any pre-upgrade workspace: the
+    // three full-prose SessionStart instruction scripts and the ungated
+    // per-turn spawn resurface, all superseded by the capability skills. Their
+    // .sh files are removed above; this drops their hook wiring so they stop
+    // firing on already-installed worktrees.
+    const isRetiredCapabilityCmd = (cmd: string) =>
+      cmd.includes('.orchestra/spawn-instruction.sh') ||
+      cmd.includes('.orchestra/comms-instruction.sh') ||
+      cmd.includes('.orchestra/repo-routes-instruction.sh') ||
+      cmd.includes('.orchestra/spawn-resurface.sh');
+
     // Evict the legacy first-prompt.json writer from any pre-upgrade workspace
     // so prompts no longer get dumped to disk after this hook system landed.
     let submitList = ((hooks.UserPromptSubmit as unknown[]) ??= []);
     submitList = removeHookCommand(submitList, (cmd) => cmd.includes('.orchestra/first-prompt.json'));
     submitList = removeHookCommand(submitList, isStaleRenameCmd);
     submitList = removeHookCommand(submitList, isLegacyActivityCurl);
+    submitList = removeHookCommand(submitList, isRetiredCapabilityCmd);
     upsertHookCommand(submitList, HOOK_ACTIVITY_SUBMIT_CMD);
     // Re-surface the branch-rename nudge on every prompt while still on the
     // auto branch (the script self-gates), so the agent gets reminded once the
     // work scope is clear — not only at the context-free SessionStart.
     upsertHookCommand(submitList, HOOK_SESSION_START_RENAME_CMD);
-    // Re-surface the spawn + comms capabilities each turn so they're never
-    // missed mid-conversation: spawn is a terse always-on reminder, comms
-    // self-silences unless a sibling agent currently exists.
-    upsertHookCommand(submitList, HOOK_SPAWN_RESURFACE_CMD);
+    // Re-surface the comms capability each turn, but only when a sibling agent
+    // actually exists (the script self-silences otherwise). Spawn no longer has
+    // a per-turn reminder: its skill description is always in context, and an
+    // ungated every-turn line was pure compounding cost in solo sessions.
     upsertHookCommand(submitList, HOOK_COMMS_RESURFACE_CMD);
     // Surface any queued peer messages right before the agent's next turn.
     upsertHookCommand(submitList, HOOK_INBOX_DELIVER_CMD);
@@ -1845,14 +1903,13 @@ export async function installOrchestraHooks(
 
     let sessionStartList = ((hooks.SessionStart as unknown[]) ??= []);
     sessionStartList = removeHookCommand(sessionStartList, isStaleRenameCmd);
+    // Evict the retired full-prose capability advertisements (now skills).
+    sessionStartList = removeHookCommand(sessionStartList, isRetiredCapabilityCmd);
     // Readiness sentinel first, so the "TUI is live" signal fires as early as
     // possible in the SessionStart fan-out rather than after the instruction
     // prints.
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_READY_CMD);
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_RENAME_CMD);
-    upsertHookCommand(sessionStartList, HOOK_SESSION_START_SPAWN_CMD);
-    upsertHookCommand(sessionStartList, HOOK_SESSION_START_COMMS_CMD);
-    upsertHookCommand(sessionStartList, HOOK_SESSION_START_REPO_ROUTES_CMD);
     upsertHookCommand(sessionStartList, HOOK_INBOX_DELIVER_CMD);
     hooks.SessionStart = sessionStartList;
 
