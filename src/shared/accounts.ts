@@ -178,16 +178,18 @@ export function classifyHttpError(status: number, _body?: string): { kind: Usage
 
 // ---- workspace → account matching --------------------------------------------
 
-/** Match a workspace to its account purely by the repo's assigned `accountId`.
- *  Under the config-dir model there is no token comparison: a repo carries an
- *  explicit `accountId` chosen in repo settings. Returns that id if it names a
- *  configured account, else null (→ default login). `repoAccountId` is the
- *  repo's stored choice; `knownAccountIds` guards against a dangling id whose
- *  account was deleted. */
-export function matchWorkspaceAccount(
-  repoAccountId: string | undefined,
+/** The account id a workspace logs in as: its PINNED `accountId` (snapshotted
+ *  at creation) if that names a still-configured account, else null (→ default
+ *  login). Driven solely by the pin, never the repo's current account — Claude
+ *  Code keeps a workspace's conversation inside the account's config dir, so an
+ *  existing workspace must keep using the account it started under (reassigning
+ *  the repo's account only affects NEW workspaces). A null/empty pin, or a pin
+ *  to a deleted account, both resolve to null. `knownAccountIds` guards the
+ *  dangling case. */
+export function resolveWorkspaceAccountId(
+  pinnedAccountId: string | undefined,
   knownAccountIds: ReadonlySet<string>,
 ): string | null {
-  if (!repoAccountId) return null;
-  return knownAccountIds.has(repoAccountId) ? repoAccountId : null;
+  if (!pinnedAccountId) return null;
+  return knownAccountIds.has(pinnedAccountId) ? pinnedAccountId : null;
 }

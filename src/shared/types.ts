@@ -43,6 +43,16 @@ export interface Workspace {
   /** True once the user has manually set the branch name. Auto-rename from
    * Claude's `.orchestra/branch-name` file is disabled when this is true. */
   branchManuallySet?: boolean;
+  /** Id of the {@link Account} this workspace's agent logs in as, snapshotted
+   * from its repo's `accountId` at creation. Pinned for the workspace's life:
+   * Claude Code stores conversation history inside the account's
+   * `CLAUDE_CONFIG_DIR`, so a workspace must keep using the account it started
+   * under or `claude --continue` would find no session ("No conversation found
+   * to continue"). Changing the repo's account therefore only affects NEW
+   * workspaces. Absent on scratch/orchestrator sessions and on records created
+   * before this field — those fall back to the repo's current account (or the
+   * default login). */
+  accountId?: string;
   /** Timestamp of the most recent merge of this branch into its base branch.
    * Updated on each successful merge cycle (a branch can be merged, diverge
    * again as work continues, and be merged again — `mergedAt` always holds

@@ -51,17 +51,23 @@ const execFileP = promisify(execFile);
 function resolveRepoAgentEnv(ws: Workspace): Record<string, string> {
   const repo = store.repos.find((r) => r.path === ws.repoPath);
   const env = expandRepoEnv(repo?.env, process.env);
-  const configDir = repoAccountConfigDir(repo);
+  const configDir = workspaceAccountConfigDir(ws, repo);
   if (configDir) env.CLAUDE_CONFIG_DIR = configDir;
   return env;
 }
 
-/** The expanded `CLAUDE_CONFIG_DIR` for a repo's assigned account, or '' when
- * the repo has no (live) account or the account's dir template expands to
- * nothing. Pure path expansion — no secret involved. */
-function repoAccountConfigDir(repo: RepoEntry | undefined): string {
-  if (!repo?.accountId) return '';
-  const account = store.accounts.find((a) => a.id === repo.accountId);
+/** The expanded `CLAUDE_CONFIG_DIR` for the account a workspace logs in as, or
+ * '' when there is none (→ Orchestra's default login). Driven SOLELY by the
+ * workspace's PINNED `accountId` (snapshotted at creation), never the repo's
+ * current account: Claude Code keeps a workspace's conversation inside the dir
+ * it was born in, so reassigning the repo's account must not redirect an
+ * existing workspace to a different dir (that yields "No conversation found to
+ * continue"). A workspace created before pinning has no `accountId`, so it
+ * correctly resolves to '' → the default `~/.claude`, which is exactly where
+ * its conversation already lives. Pure path expansion — no secret involved. */
+function workspaceAccountConfigDir(ws: Workspace, _repo: RepoEntry | undefined): string {
+  if (!ws.accountId) return '';
+  const account = store.accounts.find((a) => a.id === ws.accountId);
   if (!account) return '';
   return expandConfigDir(account.configDir, os.homedir(), process.env);
 }
@@ -203,6 +209,12 @@ export async function createWorkspace(
     agent,
     lastTask: input.task,
     branchManuallySet: false,
+    // Pin the repo's currently-assigned account at creation. The agent's
+    // conversation will live in that account's CLAUDE_CONFIG_DIR, so the
+    // workspace must keep using it even if the repo's account changes later.
+    ...(store.repos.find((r) => r.path === input.repoPath)?.accountId
+      ? { accountId: store.repos.find((r) => r.path === input.repoPath)!.accountId }
+      : {}),
     // Record the spawning orchestrator only when it still exists — a stale id
     // would render a child orphaned under a phantom parent in the sidebar.
     ...(input.parentId && store.getWorkspace(input.parentId)

@@ -10,10 +10,11 @@ import {
   isExpired,
   parseCredentials,
   parseUsageResponse,
+  resolveWorkspaceAccountId,
   type AccountUsageStatus,
   type RawUsageResponse,
 } from '../shared/accounts';
-import type { Account, RepoEntry, WorkspaceAccount } from '../shared/types';
+import type { Account, WorkspaceAccount } from '../shared/types';
 
 // Per-account usage poller, config-dir model. Each configured account is a
 // Claude Code config directory with its own `.credentials.json`; we read the
@@ -72,6 +73,74 @@ function readAccountCreds(
   const creds = parseCredentials(raw);
   if (!creds) return { dir, error: 'not-logged-in' };
   return { dir, token: creds.accessToken, expiresAt: creds.expiresAt };
+}
+
+/** The OAuth access token currently in a config dir's `.credentials.json`, or
+ *  '' if none/unreadable. Used to snapshot pre-login state and detect when a
+ *  login writes a (new) token. */
+function tokenInDir(dir: string): string {
+  try {
+    const creds = parseCredentials(fs.readFileSync(path.join(dir, '.credentials.json'), 'utf8'));
+    return creds?.accessToken ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/** Watch a config dir for an interactive `claude /login` completing. `claude
+ *  /login` does not exit on success — it drops into a normal session — and
+ *  Claude Code exposes no completion signal, so the robust cross-version
+ *  approach is to watch the dir until a (new) OAuth token lands in
+ *  `.credentials.json`, then fire `onLoggedIn` once. Uses fs.watch with a slow
+ *  poll fallback (fs.watch is unreliable on some platforms / for atomic
+ *  rename-into-place writes). Returns a disposer that stops watching.
+ *
+ *  `baselineToken` is the token present before login started; we only fire when
+ *  the on-disk token is non-empty AND differs from it, so a re-login (token
+ *  rotates) is detected too, and a stale pre-existing token doesn't false-fire. */
+function watchForLogin(dir: string, baselineToken: string, onLoggedIn: () => void): () => void {
+  let done = false;
+  let fsWatcher: fs.FSWatcher | null = null;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  const check = () => {
+    if (done) return;
+    const token = tokenInDir(dir);
+    if (token && token !== baselineToken) {
+      done = true;
+      stop();
+      onLoggedIn();
+    }
+  };
+
+  const stop = () => {
+    if (fsWatcher) {
+      fsWatcher.close();
+      fsWatcher = null;
+    }
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  };
+
+  try {
+    // Watch the directory (not the file): the file may not exist yet, and
+    // Claude Code writes it via a temp-file + rename, which fires events on the
+    // directory entry rather than a watched file path.
+    fsWatcher = fs.watch(dir, { persistent: false }, (_evt, name) => {
+      if (!name || name === '.credentials.json' || String(name).startsWith('.credentials')) check();
+    });
+  } catch {
+    // dir missing or fs.watch unsupported — the poll below covers it.
+  }
+  // Poll fallback: cheap (read one small file every 1.5s) and bounded by the
+  // disposer, which the modal calls on close / on the PTY exit.
+  pollTimer = setInterval(check, 1500);
+  // One immediate check in case the token already changed between spawn and
+  // watcher setup.
+  check();
+  return stop;
 }
 
 interface CacheEntry {
@@ -190,17 +259,49 @@ export function getAccountUsage(accountId: string): AccountUsageStatus | null {
   return cache.get(accountId)?.status ?? null;
 }
 
+// One active login watcher per account id, so a second loginStart (or a stop)
+// replaces/cancels the first cleanly.
+const loginWatchers = new Map<string, () => void>();
+
+/** Arm a watcher that fires `onLoggedIn` once an interactive login writes a
+ *  fresh OAuth token into `account`'s config dir. Cancels any prior watcher for
+ *  the same account. Returns immediately; call {@link cancelLoginWatch} to stop
+ *  (the modal does this on close, and we auto-stop after firing). */
+export function armLoginWatch(account: Account, onLoggedIn: () => void): void {
+  cancelLoginWatch(account.id);
+  const dir = accountConfigDir(account);
+  if (!dir) return;
+  const baseline = tokenInDir(dir);
+  const stop = watchForLogin(dir, baseline, () => {
+    loginWatchers.delete(account.id);
+    onLoggedIn();
+  });
+  loginWatchers.set(account.id, stop);
+}
+
+/** Stop watching an account's config dir for login completion, if armed. */
+export function cancelLoginWatch(accountId: string): void {
+  const stop = loginWatchers.get(accountId);
+  if (stop) {
+    stop();
+    loginWatchers.delete(accountId);
+  }
+}
+
 /** Compute which account each non-archived workspace logs in as, from its
  *  repo's `accountId`. Identity only (id + label) — never a path or token. A
  *  workspace whose repo has no (live) account — including every scratch/
  *  orchestrator session — falls back to a 'default login' label. */
 export function computeWorkspaceAccounts(): Record<string, WorkspaceAccount> {
   const labelById = new Map(store.accounts.map((a) => [a.id, a.label] as const));
+  const knownIds = new Set(labelById.keys());
   const out: Record<string, WorkspaceAccount> = {};
   for (const ws of store.workspaces) {
     if (ws.archived) continue;
-    const repo: RepoEntry | undefined = store.repos.find((r) => r.path === ws.repoPath);
-    const accountId = repo?.accountId && labelById.has(repo.accountId) ? repo.accountId : null;
+    // Driven solely by the workspace's PINNED account — the one its agent
+    // actually logs in as (see workspaceAccountConfigDir). A workspace with no
+    // pin (scratch/orchestrator, or created before pinning) shows default login.
+    const accountId = resolveWorkspaceAccountId(ws.accountId, knownIds);
     out[ws.id] = {
       workspaceId: ws.id,
       accountId,

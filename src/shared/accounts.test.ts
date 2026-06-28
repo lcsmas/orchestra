@@ -4,7 +4,7 @@ import {
   classifyHttpError,
   expandConfigDir,
   isExpired,
-  matchWorkspaceAccount,
+  resolveWorkspaceAccountId,
   parseCredentials,
   parseUsageResponse,
   type RawUsageResponse,
@@ -138,17 +138,26 @@ test('classifyHttpError maps 403→no-scope, 429→rate-limited, else→error', 
   assert.doesNotMatch(e.message, /secret/);
 });
 
-// ---- matchWorkspaceAccount ---------------------------------------------------
+// ---- resolveWorkspaceAccountId (pinning) -------------------------------------
 
-test('matchWorkspaceAccount returns the repo accountId when it is a known account', () => {
-  assert.equal(matchWorkspaceAccount('acc-b', new Set(['acc-a', 'acc-b'])), 'acc-b');
+test('resolveWorkspaceAccountId returns the pinned id when it is a known account', () => {
+  assert.equal(resolveWorkspaceAccountId('acc-b', new Set(['acc-a', 'acc-b'])), 'acc-b');
 });
 
-test('matchWorkspaceAccount returns null when the repo has no account', () => {
-  assert.equal(matchWorkspaceAccount(undefined, new Set(['acc-a'])), null);
-  assert.equal(matchWorkspaceAccount('', new Set(['acc-a'])), null);
+test('resolveWorkspaceAccountId returns null for an unpinned workspace (→ default login)', () => {
+  // Scratch/orchestrator, or a workspace created before pinning existed — it
+  // must NOT adopt the repo's current account (its conversation lives in the
+  // dir it ran under, i.e. the default ~/.claude).
+  assert.equal(resolveWorkspaceAccountId(undefined, new Set(['acc-a'])), null);
+  assert.equal(resolveWorkspaceAccountId('', new Set(['acc-a'])), null);
 });
 
-test('matchWorkspaceAccount returns null for a dangling id (account was deleted)', () => {
-  assert.equal(matchWorkspaceAccount('acc-gone', new Set(['acc-a'])), null);
+test('resolveWorkspaceAccountId returns null for a pin to a deleted account', () => {
+  assert.equal(resolveWorkspaceAccountId('acc-gone', new Set(['acc-a'])), null);
+});
+
+test('resolveWorkspaceAccountId keeps the pin even after the repo would point elsewhere', () => {
+  // The repo may now be assigned acc-b, but a workspace pinned to acc-a stays
+  // on acc-a — the whole point of pinning (no "No conversation found").
+  assert.equal(resolveWorkspaceAccountId('acc-a', new Set(['acc-a', 'acc-b'])), 'acc-a');
 });

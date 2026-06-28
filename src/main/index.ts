@@ -183,6 +183,8 @@ import {
   computeWorkspaceAccounts,
   refreshAccountsNow,
   accountConfigDir,
+  armLoginWatch,
+  cancelLoginWatch,
 } from './account-usage';
 import {
   detectAndUpdateBranchName,
@@ -438,6 +440,18 @@ handle('accounts:loginStart', async (_e, accountId: string, cols: number, rows: 
   }
   // Ensure the dir exists so Claude Code can write its credentials there.
   await fs.promises.mkdir(dir, { recursive: true });
+  // `claude /login` does NOT exit after authenticating — it drops into a normal
+  // session — and Claude Code exposes no completion signal. So watch the config
+  // dir: once a fresh OAuth token lands in .credentials.json, kill the PTY
+  // (which fires pty:exit) and tell the renderer login is done so it can close.
+  armLoginWatch(account, () => {
+    const win = getMainWindow();
+    if (isRunning(ptyId)) stopPty(ptyId);
+    if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+      win.webContents.send('accounts:loginDone', accountId);
+    }
+    void refreshAccountsNow(win);
+  });
   const { command, args } = loginShellArgv('claude /login');
   await startPty({
     id: ptyId,
@@ -452,6 +466,7 @@ handle('accounts:loginStart', async (_e, accountId: string, cols: number, rows: 
 });
 
 handle('accounts:loginStop', (_e, accountId: string) => {
+  cancelLoginWatch(accountId);
   const ptyId = `account-login:${accountId}`;
   if (isRunning(ptyId)) stopPty(ptyId);
 });
