@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type {
+  AccountUsageStatus,
   CreateWorkspaceInput,
   DiffStats,
   LinearIssue,
@@ -7,6 +8,7 @@ import type {
   RepoEntry,
   RepoSyncState,
   Workspace,
+  WorkspaceAccount,
 } from '../shared/types';
 import { dialog } from './components/Dialog';
 
@@ -29,6 +31,12 @@ interface State {
   /** Per-repo base-branch sync state (behind/ahead of origin/<base>),
    *  keyed by repoPath. Updated by `repo:syncState` events. */
   repoSync: Record<string, RepoSyncState>;
+  /** Usage status per configured account, keyed by account id. Hydrated on
+   *  load and updated via `accounts:usageUpdate` events. */
+  accountUsage: Record<string, AccountUsageStatus>;
+  /** Which account each workspace logs in as (identity only — no tokens),
+   *  keyed by workspace id. Drives the per-workspace usage badge. */
+  workspaceAccounts: Record<string, WorkspaceAccount>;
   activeId: string | null;
   view: 'terminal' | 'diff' | 'run';
   loaded: boolean;
@@ -66,6 +74,8 @@ export const useStore = create<State>((set, get) => ({
   linear: {},
   tools: {},
   repoSync: {},
+  accountUsage: {},
+  workspaceAccounts: {},
   activeId: null,
   view: 'terminal',
   loaded: false,
@@ -82,10 +92,12 @@ export const useStore = create<State>((set, get) => ({
   setView: (v) => set({ view: v }),
 
   load: async () => {
-    const [repos, workspaces, syncStates] = await Promise.all([
+    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts] = await Promise.all([
       window.orchestra.listRepos(),
       window.orchestra.listWorkspaces(),
       window.orchestra.listRepoSyncStates().catch(() => []),
+      window.orchestra.getAllAccountUsage().catch(() => ({})),
+      window.orchestra.getWorkspaceAccounts().catch(() => ({})),
     ]);
     const repoSync: Record<string, RepoSyncState> = {};
     for (const s of syncStates) repoSync[s.repoPath] = s;
@@ -93,6 +105,8 @@ export const useStore = create<State>((set, get) => ({
       repos,
       workspaces,
       repoSync,
+      accountUsage,
+      workspaceAccounts,
       loaded: true,
       activeId: workspaces[0]?.id ?? null,
     });
@@ -347,4 +361,13 @@ window.orchestra.onRepoSyncState((s) => {
 // didn't initiate.
 window.orchestra.onReposUpdate((repos) => {
   useStore.setState({ repos });
+});
+// Per-account usage refreshed (>=180s-cached poll in main). Replace wholesale.
+window.orchestra.onAccountUsageUpdate((byId) => {
+  useStore.setState({ accountUsage: byId });
+});
+// The workspace→account mapping changed (accounts edited / repo env changed /
+// workspaces added/removed). Replace wholesale.
+window.orchestra.onWorkspaceAccountsUpdate((byId) => {
+  useStore.setState({ workspaceAccounts: byId });
 });

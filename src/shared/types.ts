@@ -277,3 +277,29 @@ export interface UsageSnapshot {
   /** Epoch ms when this snapshot was fetched. */
   fetchedAt: number;
 }
+
+// Re-export the account-usage types so the renderer and IPC can import them
+// from the usual `shared/types` barrel alongside everything else. The shapes
+// themselves live in `shared/accounts.ts` next to their pure logic so that
+// module stays self-contained and unit-testable without electron.
+export type {
+  Account,
+  AccountUsageStatus,
+  UsageData,
+  UsageWindowDetail,
+  UsageErrorKind,
+} from './accounts';
+
+/** A workspace's resolved account mapping, computed in the main process (which
+ *  alone can expand `${VAR}` tokens against its env). Carries only the account
+ *  *identity* — never a token — so the renderer can show which account a
+ *  workspace uses and look up that account's usage. `accountId` is the matched
+ *  account's id, or null when the workspace falls back to the default/stored
+ *  login (no per-repo token override, or no configured account matches it). */
+export interface WorkspaceAccount {
+  workspaceId: string;
+  accountId: string | null;
+  /** Label to show on the badge: the matched account's label, or a short
+   *  fallback like 'default login' when `accountId` is null. */
+  label: string;
+}

@@ -18,6 +18,12 @@ const api: OrchestraAPI = {
   clearLinearKey: () => ipcRenderer.invoke('linear:clearKey'),
   getUsage: () => ipcRenderer.invoke('usage:get'),
 
+  listAccounts: () => ipcRenderer.invoke('accounts:list'),
+  setAccounts: (accounts) => ipcRenderer.invoke('accounts:set', accounts),
+  getAccountUsage: (accountId) => ipcRenderer.invoke('accounts:usage', accountId),
+  getAllAccountUsage: () => ipcRenderer.invoke('accounts:usageAll'),
+  getWorkspaceAccounts: () => ipcRenderer.invoke('accounts:workspaceAccounts'),
+
   revealLogs: () => ipcRenderer.invoke('logs:reveal'),
   logPath: () => ipcRenderer.invoke('logs:path'),
   log: (level, message, meta) => ipcRenderer.invoke('logs:write', level, message, meta),
@@ -113,6 +119,16 @@ const api: OrchestraAPI = {
     const listener = (_e: unknown, snap: unknown) => cb(snap as never);
     ipcRenderer.on('usage:update', listener);
     return () => ipcRenderer.off('usage:update', listener);
+  },
+  onAccountUsageUpdate: (cb) => {
+    const listener = (_e: unknown, byId: unknown) => cb(byId as never);
+    ipcRenderer.on('accounts:usageUpdate', listener);
+    return () => ipcRenderer.off('accounts:usageUpdate', listener);
+  },
+  onWorkspaceAccountsUpdate: (cb) => {
+    const listener = (_e: unknown, byId: unknown) => cb(byId as never);
+    ipcRenderer.on('accounts:workspaceAccounts', listener);
+    return () => ipcRenderer.off('accounts:workspaceAccounts', listener);
   },
   onReposUpdate: (cb) => {
     const listener = (_e: unknown, repos: unknown) => cb(repos as never);

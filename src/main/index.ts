@@ -161,7 +161,7 @@ import {
   unarchiveWorkspace,
 } from './workspaces';
 import { buildScriptEnv, loginShellArgv, readScriptLog, setupLogPath } from './scripts';
-import type { RepoScripts } from '../shared/types';
+import type { Account, RepoScripts } from '../shared/types';
 import {
   resizePty,
   startPty,
@@ -175,6 +175,14 @@ import { startHooksServer, stopHooksServer } from './hooks-server';
 import { installCliShim } from './cli-shim';
 import { startEventsSpool, stopEventsSpool } from './events-spool';
 import { startUsagePolling, stopUsagePolling, getLastUsage } from './usage';
+import {
+  startAccountUsagePolling,
+  stopAccountUsagePolling,
+  getAccountUsage,
+  snapshotAccountUsage,
+  computeWorkspaceAccounts,
+  refreshAccountsNow,
+} from './account-usage';
 import {
   detectAndUpdateBranchName,
   detectAndUpdateMergeState,
@@ -257,6 +265,8 @@ async function createMainWindow() {
   startEventsSpool(mainWindow);
   // Poll the signed-in account's rolling 5h/7d usage windows for the sidebar bars.
   startUsagePolling(mainWindow);
+  // Poll each *configured* account's usage for the per-workspace badges.
+  startAccountUsagePolling(mainWindow);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void openUrlExternally(url);
@@ -374,6 +384,28 @@ handle('linear:clearKey', async () => {
 // Last fetched usage snapshot (or null before the first successful poll). The
 // renderer reads this once on mount; subsequent updates arrive via `usage:update`.
 handle('usage:get', () => getLastUsage());
+
+// ---------- Accounts (per-workspace usage badges) ----------
+
+// The configured accounts (with their token *templates* — `${VAR}` references,
+// not expanded secrets — so the settings editor can echo them back).
+handle('accounts:list', () => store.accounts);
+
+// Replace the whole list, then immediately recompute the workspace→account map
+// and refresh usage so the badges react without waiting for the next poll tick.
+handle('accounts:set', async (_e, accounts: Account[]) => {
+  const saved = await store.setAccounts(accounts);
+  void refreshAccountsNow(getMainWindow());
+  return saved;
+});
+
+// Cached usage for one account / all accounts (never triggers a fetch — the
+// poller keeps the cache warm within the 180s window).
+handle('accounts:usage', (_e, accountId: string) => getAccountUsage(accountId));
+handle('accounts:usageAll', () => snapshotAccountUsage());
+
+// Which account each non-archived workspace logs in as (identity only).
+handle('accounts:workspaceAccounts', () => computeWorkspaceAccounts());
 
 // ---------- Diagnostic logs ----------
 
@@ -703,7 +735,11 @@ handle('repos:getEnv', (_e, repoPath: string) => {
 });
 
 handle('repos:setEnv', async (_e, repoPath: string, env: Record<string, string>) => {
-  return store.setRepoEnv(repoPath, env);
+  const repo = await store.setRepoEnv(repoPath, env);
+  // A repo's agent env decides which account its workspaces log in as, so the
+  // workspace→account badges may have changed — recompute and refresh usage.
+  void refreshAccountsNow(getMainWindow());
+  return repo;
 });
 
 handle('scripts:retrySetup', async (_e, id: string) => {
@@ -851,6 +887,7 @@ if (!ORCHESTRA_CLI_MODE) {
     stopEventsSpool();
     stopHooksServer();
     stopUsagePolling();
+    stopAccountUsagePolling();
     if (process.platform !== 'darwin') app.quit();
   });
 
@@ -859,6 +896,7 @@ if (!ORCHESTRA_CLI_MODE) {
     stopEventsSpool();
     stopHooksServer();
     stopUsagePolling();
+    stopAccountUsagePolling();
   });
 
   app.on('activate', () => {

@@ -1,4 +1,6 @@
 import type {
+  Account,
+  AccountUsageStatus,
   CreateWorkspaceInput,
   DiffFile,
   DiffStats,
@@ -12,6 +14,7 @@ import type {
   RepoSyncState,
   UsageSnapshot,
   Workspace,
+  WorkspaceAccount,
 } from './types';
 
 export interface OrchestraAPI {
@@ -52,6 +55,27 @@ export interface OrchestraAPI {
    *  usage windows, or null before the first successful poll (or if not signed
    *  in via OAuth). Live updates flow via `onUsageUpdate`. */
   getUsage: () => Promise<UsageSnapshot | null>;
+
+  // ---- Accounts (explicit list of Claude accounts, for the per-workspace
+  //      usage badge). Tokens are stored as templates (`${VAR}` references or
+  //      labels) — never expanded secrets — and the renderer never receives a
+  //      token value, only labels, ids, and usage numbers.
+  /** The configured accounts (token templates included — the renderer needs to
+   *  echo them back into the editor; they're `${VAR}` references, not secrets,
+   *  by convention). */
+  listAccounts: () => Promise<Account[]>;
+  /** Replace the whole accounts list (add/edit/remove in one save). Returns the
+   *  cleaned, persisted list. */
+  setAccounts: (accounts: Account[]) => Promise<Account[]>;
+  /** Current usage status for one account by id (cached >=180s in main). */
+  getAccountUsage: (accountId: string) => Promise<AccountUsageStatus | null>;
+  /** Usage status for every configured account, keyed by account id. */
+  getAllAccountUsage: () => Promise<Record<string, AccountUsageStatus>>;
+  /** The account each non-archived workspace logs in as (identity only, no
+   *  tokens). Computed in main by matching each workspace's resolved
+   *  CLAUDE_CODE_OAUTH_TOKEN against the configured accounts. Keyed by
+   *  workspace id. */
+  getWorkspaceAccounts: () => Promise<Record<string, WorkspaceAccount>>;
 
   // Diagnostic logs
   /** Reveal the main diagnostic log file in the OS file manager. */
@@ -151,6 +175,13 @@ export interface OrchestraAPI {
   /** Fires whenever the main process fetches a fresh usage snapshot (~every
    *  60s). Carries the latest 5h/7d utilization and reset times. */
   onUsageUpdate: (cb: (snap: UsageSnapshot) => void) => () => void;
+  /** Fires whenever the main process refreshes any account's usage (driven by
+   *  the >=180s-cached poller). Carries the full per-account status map so the
+   *  renderer can replace its account-usage state wholesale. */
+  onAccountUsageUpdate: (cb: (byId: Record<string, AccountUsageStatus>) => void) => () => void;
+  /** Fires when the workspace→account mapping changes (accounts edited, a repo
+   *  env changed, or workspaces added/removed). Carries the full map. */
+  onWorkspaceAccountsUpdate: (cb: (byId: Record<string, WorkspaceAccount>) => void) => () => void;
   /** Fires whenever the set of registered repos changes — e.g. a repo added
    *  over the unix socket by the CLI or a peer agent. Carries the full,
    *  refreshed repo list so the renderer can replace its state wholesale. */

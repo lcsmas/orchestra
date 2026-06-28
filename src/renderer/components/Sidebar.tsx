@@ -6,6 +6,8 @@ import { SoundSettings } from './SoundSettings';
 import { LinearSettings } from './LinearSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
 import { UsageBars } from './UsageBars';
+import { AccountsSettings } from './AccountsSettings';
+import { AccountBadge } from './AccountBadge';
 import { dialog } from './Dialog';
 
 interface Props {
@@ -124,6 +126,29 @@ function GearIcon() {
     >
       <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z" />
       <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function UsersIcon() {
+  // Lucide `users` — accounts. Same stroke family as the gear/setup icons.
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
     </svg>
   );
 }
@@ -354,6 +379,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     linear,
     tools,
     repoSync,
+    workspaceAccounts,
     setActive,
     archive,
     unarchive,
@@ -390,6 +416,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   });
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
   const [linearSettingsOpen, setLinearSettingsOpen] = useState(false);
+  const [accountsSettingsOpen, setAccountsSettingsOpen] = useState(false);
   const [scriptsRepoPath, setScriptsRepoPath] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
@@ -740,6 +767,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
             aria-label="Notification sound settings"
           >
             <BellIcon />
+          </button>
+          <button
+            className="header-icon-btn"
+            onClick={() => setAccountsSettingsOpen(true)}
+            title="Claude accounts — usage badges per workspace"
+            aria-label="Claude accounts settings"
+          >
+            <UsersIcon />
           </button>
           <button
             className="header-repo-btn"
@@ -1344,8 +1379,9 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       )}
                       </span>
                     </div>
-                    {(visiblePRs.length > 0 || linearIssue) && (
+                    {(visiblePRs.length > 0 || linearIssue || workspaceAccounts[w.id]) && (
                       <div className="ws-meta-row">
+                        <AccountBadge workspaceId={w.id} />
                         <span className="pr-badges">
                           {linearIssue && (
                             <span
@@ -1408,6 +1444,9 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         })}
 
         {soundSettingsOpen && <SoundSettings onClose={() => setSoundSettingsOpen(false)} />}
+        {accountsSettingsOpen && (
+          <AccountsSettings onClose={() => setAccountsSettingsOpen(false)} />
+        )}
         {linearSettingsOpen && (
           <LinearSettings
             onClose={() => setLinearSettingsOpen(false)}
