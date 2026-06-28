@@ -907,6 +907,11 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           </span>
                         )}
                       </div>
+                      {workspaceAccounts[w.id] && (
+                        <div className="ws-meta-row">
+                          <AccountBadge workspaceId={w.id} />
+                        </div>
+                      )}
                     </div>
                     {isDeleting ? (
                       <span className="ws-spinner" title="Removing…" aria-label="Removing" role="status" />
@@ -1002,6 +1007,11 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         </div>
                       )}
                     </div>
+                    {workspaceAccounts[w.id] && (
+                      <div className="ws-meta-row">
+                        <AccountBadge workspaceId={w.id} />
+                      </div>
+                    )}
                   </div>
                   {isDeleting ? (
                     <span className="ws-spinner" title="Deleting…" aria-label="Deleting" role="status" />
