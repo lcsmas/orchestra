@@ -676,6 +676,88 @@ input:focus, textarea:focus, select:focus {
   white-space: nowrap;
   padding: 0 4px;
 }
+/* The strip is the anchor for the hover panel, which floats above it. */
+.usage-bars {
+  position: relative;
+}
+.usage-bars.expandable {
+  cursor: default;
+  outline: none;
+}
+/* All-accounts popover: lifted above the strip so it never reflows the sidebar
+   footer. Scrolls when there are more accounts than fit. */
+.usage-bars-panel {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 9px 11px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.38);
+}
+.usage-bars-panel-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+.usage-bars-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.usage-bars-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text);
+}
+.usage-bars-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-bars-row.active .usage-bars-row-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+.usage-bars-row-status {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.usage-bars-row.err .usage-bars-row-status {
+  color: #e09a9a;
+}
+.usage-row-bar {
+  display: grid;
+  grid-template-columns: 16px 1fr 30px;
+  align-items: center;
+  gap: 6px;
+}
+.usage-row-bar-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.usage-row-pct {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  text-align: right;
+}
 /* When the usage bars are present, they already carry the divider above the
    footer block — drop the footer's own top border to avoid a doubled line. */
 .usage-bars + .sidebar-footer {
