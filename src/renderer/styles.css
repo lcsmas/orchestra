@@ -665,6 +665,17 @@ input:focus, textarea:focus, select:focus {
   border-radius: 2px;
   transition: width 240ms var(--ease), background-color 240ms var(--ease);
 }
+.usage-bars-account {
+  flex: 1;
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.6;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+}
 /* When the usage bars are present, they already carry the divider above the
    footer block — drop the footer's own top border to avoid a doubled line. */
 .usage-bars + .sidebar-footer {
