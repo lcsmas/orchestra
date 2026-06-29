@@ -43,8 +43,12 @@ function getSocketPath(): string {
   if (fromEnv && fromEnv.trim()) {
     return fromEnv.trim();
   }
-  // (2) Well-known pointer file: its *contents* are the socket path.
-  const pointer = path.join(os.homedir(), '.orchestra', 'sock');
+  // (2) Well-known pointer file: its *contents* are the socket path. Honor
+  // ORCHESTRA_HOME so a dev terminal reaches the dev app — same override the
+  // app's hooks-server applies when writing this file.
+  const pointer = process.env.ORCHESTRA_HOME
+    ? path.join(process.env.ORCHESTRA_HOME, 'sock')
+    : path.join(os.homedir(), '.orchestra', 'sock');
   try {
     const contents = fs.readFileSync(pointer, 'utf8').trim();
     if (contents) return contents;

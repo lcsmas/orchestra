@@ -48,6 +48,11 @@ function defaultSocketPath(): string {
 // file to discover where to connect. The socket itself is named per-PID (so a
 // crashed run can't collide), which is exactly why we need a fixed indirection.
 function pointerFilePath(): string {
+  // Relocated under ORCHESTRA_HOME for the dev build so a dev terminal's CLI
+  // discovers the dev app's socket, not the packaged app's. Packaged default is
+  // the canonical ~/.orchestra/sock. Keep in sync with the CLI's reader
+  // (src/cli/index.ts), which applies the same override.
+  if (process.env.ORCHESTRA_HOME) return path.join(process.env.ORCHESTRA_HOME, 'sock');
   return path.join(os.homedir(), '.orchestra', 'sock');
 }
 

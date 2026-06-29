@@ -124,6 +124,18 @@ if (!ORCHESTRA_CLI_MODE) {
     // shell-env already falls back internally; ignore any unexpected failure.
   }
 }
+
+// ORCHESTRA_HOME relocates ALL of this instance's mutable state — userData
+// (store.json, login dirs) and, via getEventsDir(), the activity event spool
+// dir — under one root. Set it for a dev build (`vite` → `electron .`) so dev
+// and a packaged app run fully isolated: separate stores, separate spools, and
+// separate single-instance locks (the lock is keyed by userData). MUST run
+// before `import { store }` below — Store's constructor reads userData at module
+// load — and before any events-spool access. A no-op when unset (the packaged
+// default). The CLI path returned above never reaches here.
+if (!ORCHESTRA_CLI_MODE && process.env.ORCHESTRA_HOME) {
+  app.setPath('userData', path.join(process.env.ORCHESTRA_HOME, 'userData'));
+}
 import { store } from './store';
 import {
   detectRemoteUrl,
@@ -953,6 +965,40 @@ async function checkDependencies(): Promise<void> {
 // top of this module handles the command and exits the process.
 
 if (!ORCHESTRA_CLI_MODE) {
+  // Single-instance guard. Two GUI instances would share the same global event
+  // spool dir (~/.orchestra/events) and the same store.json (both keyed off a
+  // fixed userData), and each one wipes the events dir on startup and tails
+  // every spool. A second launch landing on a live agent's spool resets its
+  // `.seq` counter under the first instance's cursor, so the next `stop` arrives
+  // with seq=1, is treated as an already-seen duplicate, and is dropped — the
+  // status dot then sticks on its last `running`/`idle` value. Refuse to run a
+  // second instance: hand our argv to the primary (which focuses its window)
+  // and quit before `ready`, so we never open a window or touch shared state.
+  //
+  // Keyed by userData, so a dev build pointed at a separate userData (and thus a
+  // separate events dir) via ORCHESTRA_HOME can still run alongside a packaged
+  // app — they take different locks. The CLI path returned above never reaches
+  // here; it talks to the running app over the socket and must not take a lock.
+  if (!app.requestSingleInstanceLock()) {
+    // We lost the race: a primary instance already holds the lock and will get
+    // our launch via its `second-instance` handler (focusing its window). Exit
+    // immediately — `app.exit(0)`, not `app.quit()` — so the lifecycle wiring
+    // below never runs and we never reach `ready`, touch the shared store, or
+    // wipe the events dir. Mirrors the ozone-relaunch bail above.
+    log.info('another Orchestra instance is already running — focusing it and exiting');
+    app.exit(0);
+  }
+
+  app.on('second-instance', () => {
+    // A second launch was attempted against this (primary) instance; surface
+    // the existing window instead of opening another.
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+
   app.whenReady().then(async () => {
     initLogger();
     try {

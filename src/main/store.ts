@@ -21,7 +21,20 @@ interface StoreShape {
 const DEFAULT: StoreShape = { repos: [], workspaces: [], accounts: [] };
 
 class Store {
-  private file: string;
+  // Resolved lazily on first use, not in the constructor. `app.getPath('userData')`
+  // must be read AFTER index.ts has had its chance to relocate userData via
+  // ORCHESTRA_HOME (app.setPath) — but the bundler runs this module's top-level
+  // code (including the `export const store = new Store()` singleton) before
+  // index.ts's own top-level statements, so a constructor read would capture the
+  // pre-override path. Deferring to the first `file` access (always inside an
+  // async method that runs well after `ready`) sidesteps the ordering entirely.
+  private _file: string | null = null;
+  private get file(): string {
+    if (this._file === null) {
+      this._file = path.join(app.getPath('userData'), 'orchestra', 'store.json');
+    }
+    return this._file;
+  }
   private data: StoreShape = DEFAULT;
   // Chain of pending saves — each save waits for the previous to finish before
   // writing. Prevents concurrent writeFile calls from interleaving and
@@ -33,11 +46,6 @@ class Store {
   // ids here so startup can relaunch `claude --continue` for them and bring the
   // agent back. Read once via `takeResumeCandidates()`, which drains the list.
   private resumeCandidates: string[] = [];
-
-  constructor() {
-    const dir = path.join(app.getPath('userData'), 'orchestra');
-    this.file = path.join(dir, 'store.json');
-  }
 
   async load() {
     const dir = path.dirname(this.file);

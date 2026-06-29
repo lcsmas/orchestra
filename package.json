@@ -24,7 +24,7 @@
     ]
   },
   "scripts": {
-    "dev": "vite",
+    "dev": "ORCHESTRA_HOME=\"${ORCHESTRA_HOME:-$HOME/.orchestra-dev}\" vite",
     "build:cli": "vite build --config vite.cli.config.ts",
     "build": "vite build && pnpm run build:cli && electron-builder",
     "start": "electron .",

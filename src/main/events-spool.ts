@@ -39,7 +39,13 @@ import { log } from './logger';
 //     that only happens when the file is large AND quiescent, a state the
 //     reader fully controls, so there is no write-vs-reset race.
 
-const EVENTS_DIR = path.join(os.homedir(), '.orchestra', 'events');
+// ORCHESTRA_HOME (set for the dev build) relocates the spool dir so a dev and a
+// packaged instance never share it — sharing is what let a second instance's
+// startup wipe + seq reset strand the first instance's status dot. Unset in the
+// packaged default, where it falls back to the canonical ~/.orchestra/events.
+const EVENTS_DIR = process.env.ORCHESTRA_HOME
+  ? path.join(process.env.ORCHESTRA_HOME, 'events')
+  : path.join(os.homedir(), '.orchestra', 'events');
 
 // Safety-net rescan cadence. The directory watcher handles the common case in
 // near-real-time; this only catches inotify events that got coalesced or
