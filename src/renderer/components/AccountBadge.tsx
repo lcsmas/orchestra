@@ -61,15 +61,35 @@ export function RepoAccountBadge({ repoPath }: { repoPath: string }) {
   const accountId = useStore(
     (s) => s.repos.find((r) => r.path === repoPath)?.accountId ?? null,
   );
+  return <AccountUsageBadge accountId={accountId} />;
+}
+
+// The login a workspace's agent logs in as, shown discreetly next to the branch
+// name in the sidebar for orchestrators, their spawned children, and scratch
+// sessions — the cases where the login isn't otherwise visible. Non-git sessions
+// (orchestrators/scratch) have no pinned account, so they fall back to the
+// default-login badge; a git child carries its repo's pinned account. The
+// resolved accountId comes from the main-process `computeWorkspaceAccounts`
+// mapping (null = default login) via the renderer store.
+export function WorkspaceAccountBadge({ workspaceId }: { workspaceId: string }) {
+  const accountId = useStore(
+    (s) => s.workspaceAccounts[workspaceId]?.accountId ?? null,
+  );
+  return <AccountUsageBadge accountId={accountId} />;
+}
+
+// Shared core: render an account's label tinted by its rolling usage, or the
+// default-login badge when there's no pinned account.
+function AccountUsageBadge({ accountId }: { accountId: string | null }) {
   const label = useStore((s) =>
     accountId ? (s.accounts.find((a) => a.id === accountId)?.label ?? null) : null,
   );
   const usage = useStore((s) => (accountId ? s.accountUsage[accountId] : undefined));
   const globalUsage = useStore((s) => s.globalUsage);
 
-  // Repo has no account override (or it points at a deleted account) → its
-  // workspaces use Orchestra's default login. Show it the same way a pinned
-  // account is shown, tinted by the default login's own rolling usage.
+  // No pinned account (or it points at a deleted account) → Orchestra's default
+  // login. Show it the same way a pinned account is shown, tinted by the default
+  // login's own rolling usage.
   if (!accountId || !label) return <DefaultLoginBadge usage={globalUsage} />;
 
   // First poll still in flight.
@@ -100,7 +120,7 @@ export function RepoAccountBadge({ repoPath }: { repoPath: string }) {
   const sev = severityClass(Math.max(five, seven));
   const extra = data.extraUtilization;
   const title =
-    `${label} — Claude usage (repo-wide login)\n` +
+    `${label} — Claude usage\n` +
     `5-hour window: ${five}%\n` +
     `7-day window: ${seven}%` +
     (extra != null ? `\nextra usage: ${Math.round(extra)}%` : '') +

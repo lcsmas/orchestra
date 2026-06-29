@@ -13,7 +13,7 @@ import { LinearSettings } from './LinearSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
 import { UsageBars } from './UsageBars';
 import { AccountsSettings } from './AccountsSettings';
-import { RepoAccountBadge } from './AccountBadge';
+import { RepoAccountBadge, WorkspaceAccountBadge } from './AccountBadge';
 import { dialog } from './Dialog';
 
 interface Props {
@@ -969,7 +969,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       }
                     />
                     <div className="ws-body">
-                      <div className="ws-name-row">
+                      <div className="ws-name-row ws-name-row-login">
                         {renamingId === w.id ? (
                           <input
                             className="ws-name-input"
@@ -985,7 +985,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           />
                         ) : (
                           <div
-                            className="ws-name"
+                            className="ws-name ws-name-tight"
                             title={
                               depth === 0
                                 ? `${w.branch} — orchestrator · double-click to rename`
@@ -996,6 +996,9 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                             {w.branch}
                           </div>
                         )}
+                        <span className="ws-login">
+                          <WorkspaceAccountBadge workspaceId={w.id} />
+                        </span>
                         {childIsGit && (
                           <span className="ws-pills mini">
                             <span
@@ -1082,7 +1085,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     }
                   />
                   <div className="ws-body">
-                    <div className="ws-name-row">
+                    <div className="ws-name-row ws-name-row-login">
                       {renamingId === w.id ? (
                         <input
                           className="ws-name-input"
@@ -1098,13 +1101,16 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         />
                       ) : (
                         <div
-                          className="ws-name"
+                          className="ws-name ws-name-tight"
                           title={`${w.branch} — scratch session (not tracked by git) · double-click to rename`}
                           onDoubleClick={(e) => startRename(e, w)}
                         >
                           {w.branch}
                         </div>
                       )}
+                      <span className="ws-login">
+                        <WorkspaceAccountBadge workspaceId={w.id} />
+                      </span>
                     </div>
                   </div>
                   {isDeleting ? (

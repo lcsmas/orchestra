@@ -1244,6 +1244,38 @@ input:focus, textarea:focus, select:focus {
   white-space: nowrap;
   flex: none;
 }
+/* Login badge for orchestrator/scratch rows, sitting directly after the branch
+   name on the same line so showing which login the session uses costs no extra
+   vertical space. The inner .account-badge.inline owns the text style; the row's
+   own gap spaces it from the name. */
+/* Orchestrator/scratch rows that carry a login badge baseline-align their items
+   so the badge's text sits on the branch name's baseline. The default row uses
+   flex-start (tops), which gives no shared baseline for the two differently-sized
+   texts. The pills strip wraps to its own line (flex-basis:100%), unaffected. */
+.ws-name-row-login {
+  align-items: baseline;
+}
+.ws-login {
+  /* Baseline-align the badge with the branch name so their text bottoms match.
+     The inner .account-badge.inline normally has overflow:hidden, which makes an
+     inline-block report its bottom edge as the baseline (floating it above the
+     name) — so we clear that overflow below to restore a real text baseline. */
+  align-self: baseline;
+  align-items: baseline;
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+}
+.ws-login .account-badge.inline {
+  overflow: visible;
+  max-width: none;
+}
+/* On these rows the name yields to the badge instead of growing to fill the row
+   (the default .ws-name flex:1 would push the badge to the far right). It still
+   ellipsises when long because it can shrink. */
+.ws-name.ws-name-tight {
+  flex: 0 1 auto;
+}
 /* Per-row delete spinner (same look as the setup-banner spinner) and the
    dimmed/non-interactive state of a worktree being removed. */
 .ws-item.deleting { opacity: 0.55; pointer-events: none; }
