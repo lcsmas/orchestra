@@ -166,47 +166,59 @@ export function AccountsSettings({ onClose }: Props) {
 
             <div className="accounts-rows">
               {rows.map((r) => (
-                <div className="accounts-row" key={r.id}>
-                  <input
-                    className="accounts-input label"
-                    placeholder="Label (e.g. work)"
-                    value={r.label}
-                    spellCheck={false}
-                    onChange={(e) => update(r.id, { label: e.target.value })}
-                  />
-                  <input
-                    className="accounts-input dir"
-                    placeholder="~/.claude-work"
-                    value={r.configDir}
-                    spellCheck={false}
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                    onChange={(e) => update(r.id, { configDir: e.target.value })}
-                  />
-                  <button
-                    className="accounts-pick"
-                    title="Choose directory…"
-                    aria-label="Choose config directory"
-                    onClick={() => pickDir(r.id)}
-                  >
-                    …
-                  </button>
-                  <button
-                    className="accounts-login"
-                    title="Run `claude /login` in this account's config dir"
-                    onClick={() => onLogin(r)}
-                    disabled={saving}
-                  >
-                    Login
-                  </button>
-                  <button
-                    className="accounts-remove"
-                    title="Remove account"
-                    aria-label={`Remove account ${r.label || 'unnamed'}`}
-                    onClick={() => remove(r.id)}
-                  >
-                    ×
-                  </button>
+                <div className="account-card" key={r.id}>
+                  <div className="account-card-row">
+                    <label className="account-field">
+                      <span className="account-field-label">Label</span>
+                      <input
+                        className="accounts-input label"
+                        placeholder="e.g. work"
+                        value={r.label}
+                        spellCheck={false}
+                        onChange={(e) => update(r.id, { label: e.target.value })}
+                      />
+                    </label>
+                    <div className="account-card-actions">
+                      <button
+                        className="accounts-login"
+                        title="Run `claude /login` in this account's config dir"
+                        onClick={() => onLogin(r)}
+                        disabled={saving}
+                      >
+                        Login
+                      </button>
+                      <button
+                        className="accounts-remove"
+                        title="Remove account"
+                        aria-label={`Remove account ${r.label || 'unnamed'}`}
+                        onClick={() => remove(r.id)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                  <label className="account-field">
+                    <span className="account-field-label">Config directory</span>
+                    <div className="account-dir-row">
+                      <input
+                        className="accounts-input dir"
+                        placeholder="~/.claude-work"
+                        value={r.configDir}
+                        spellCheck={false}
+                        autoCorrect="off"
+                        autoCapitalize="off"
+                        onChange={(e) => update(r.id, { configDir: e.target.value })}
+                      />
+                      <button
+                        className="accounts-pick"
+                        title="Choose directory…"
+                        aria-label="Choose config directory"
+                        onClick={() => pickDir(r.id)}
+                      >
+                        …
+                      </button>
+                    </div>
+                  </label>
                 </div>
               ))}
             </div>
