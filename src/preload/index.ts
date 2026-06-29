@@ -27,6 +27,11 @@ const api: OrchestraAPI = {
   accountLoginStart: (accountId, cols, rows) => ipcRenderer.invoke('accounts:loginStart', accountId, cols, rows),
   accountLoginStop: (accountId) => ipcRenderer.invoke('accounts:loginStop', accountId),
   refreshAccounts: () => ipcRenderer.invoke('accounts:refresh'),
+  onAccountLoginDone: (cb) => {
+    const listener = (_e: unknown, accountId: string) => cb(accountId);
+    ipcRenderer.on('accounts:loginDone', listener);
+    return () => ipcRenderer.off('accounts:loginDone', listener);
+  },
 
   revealLogs: () => ipcRenderer.invoke('logs:reveal'),
   logPath: () => ipcRenderer.invoke('logs:path'),

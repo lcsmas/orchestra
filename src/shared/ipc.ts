@@ -85,6 +85,9 @@ export interface OrchestraAPI {
   /** Recompute the workspace→account map and refetch usage now (called after a
    *  login PTY exits so the badge updates immediately). */
   refreshAccounts: () => Promise<void>;
+  /** Fires when the login watcher detects a fresh OAuth token for the given
+   *  account — the PTY is already dead at this point. */
+  onAccountLoginDone: (cb: (accountId: string) => void) => () => void;
 
   // Diagnostic logs
   /** Reveal the main diagnostic log file in the OS file manager. */

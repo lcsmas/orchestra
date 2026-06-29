@@ -97,8 +97,12 @@ export function AccountLoginModal({ accountId, label, onClose }: Props) {
       if (id !== ptyId) return;
       term.writeln(`\r\n\x1b[33m[login session ended (code ${code}) — you can close this]\x1b[0m`);
       setExited(true);
-      // Recompute usage so the badge reflects the new login right away.
       void window.orchestra.refreshAccounts().catch(() => {});
+    });
+    const offLoginDone = window.orchestra.onAccountLoginDone((id) => {
+      if (id !== accountId) return;
+      // Token detected — PTY is already dead; close the modal automatically.
+      onClose();
     });
     term.onData((data) => window.orchestra.ptyWrite(ptyId, data));
 
@@ -117,6 +121,7 @@ export function AccountLoginModal({ accountId, label, onClose }: Props) {
       ro.disconnect();
       offData();
       offExit();
+      offLoginDone();
       // Stop the login PTY if it's still alive (modal closed mid-login).
       void window.orchestra.accountLoginStop(accountId).catch(() => {});
       term.dispose();
