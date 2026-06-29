@@ -270,15 +270,28 @@ export async function startPty(opts: {
       if (!session.stopped && canSend(opts.window)) {
         opts.window.webContents.send('pty:exit', opts.id, exitCode);
       }
-      // Reconciliation floor: an agent process that exited on its OWN can't be
-      // `running`. This self-heals a lost terminal hook event (the stuck-green
-      // dot) — the status can never outlive the process even if the spool
-      // dropped a stop. Gated on `!session.stopped` so a deliberate stop/quit
-      // (which sets `stopped` via disposeSession before kill) does NOT rewrite
-      // the persisted `running` status — that status is what
-      // `resumeRunningWorkspaces` keys off to relaunch the agent on next start.
-      // Only agent PTYs carry a workspaceId; nvim/run PTYs have no status.
-      if (!session.stopped && session.workspaceId && canSend(opts.window)) {
+      // Reconciliation floor: once the agent process is gone it can't be
+      // `running`, so self-heal the status (the stuck-green "working" dot) to
+      // `waiting` — the status can never outlive the process even if the spool
+      // dropped a stop. This fires for a natural exit AND for an in-session
+      // deliberate stop (agent:restart, branch-switch, manual stop): in both
+      // cases there is no live agent, so the dot must not keep reading as
+      // "working". The ONE exception is app shutdown (`shuttingDown`): there we
+      // deliberately leave a `running` status untouched, because that persisted
+      // status is the resume marker `resumeRunningWorkspaces` keys off to
+      // relaunch the agent with `--continue` on the next launch. Only agent
+      // PTYs carry a workspaceId; nvim/run PTYs have no status.
+      //
+      // `replacedByLive` guards the restart/branch-switch path: those stop the
+      // PTY and immediately re-spawn a fresh agent under the same id. If this
+      // (stale) exit handler runs after that re-spawn, the map already holds a
+      // DIFFERENT, live session — reconciling then would wrongly knock the new
+      // agent back to `waiting`. A natural exit still has this very session in
+      // the map (it's deleted just below), and a stopped-and-gone agent has no
+      // entry at all; both correctly reconcile.
+      const taken = sessions.get(opts.id);
+      const replacedByLive = taken !== undefined && taken !== session;
+      if (!shuttingDown && !replacedByLive && session.workspaceId && canSend(opts.window)) {
         reconcileExited(session.workspaceId, opts.window);
       }
       disposeSession(session);
@@ -344,7 +357,16 @@ export function stopPty(id: string) {
   }
 }
 
+// Set once the app is tearing down (before-quit / window-all-closed). It flips
+// the exit handler from "self-heal the status dot" to "preserve `running` as a
+// resume marker": an agent that was working when the app closed should come
+// back live on the next launch, so its `running` status must survive to disk
+// untouched. An in-session stop leaves this false, so the dot reconciles
+// normally and never sticks on green.
+let shuttingDown = false;
+
 export function stopAll() {
+  shuttingDown = true;
   for (const id of sessions.keys()) stopPty(id);
 }
 
