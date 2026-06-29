@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
-import type { EnvStatusItem, Workspace, WorkspaceStatus } from '../../shared/types';
+import type {
+  EnvStatusItem,
+  LinearIssue,
+  PRsForBranch,
+  Workspace,
+  WorkspaceStatus,
+} from '../../shared/types';
 import { isScratchLike } from '../../shared/types';
 import { SoundSettings } from './SoundSettings';
 import { LinearSettings } from './LinearSettings';
@@ -269,6 +275,101 @@ function ExternalLinkIcon() {
         d="M9 1a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0V2.207L7.354 8.854a.5.5 0 1 1-.708-.708L13.293 1.5H9.5A.5.5 0 0 1 9 1zM2.5 3A1.5 1.5 0 0 0 1 4.5v9A1.5 1.5 0 0 0 2.5 15h9a1.5 1.5 0 0 0 1.5-1.5v-5a.5.5 0 0 0-1 0v5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5h5a.5.5 0 0 0 0-1h-5z"
       />
     </svg>
+  );
+}
+
+/** PRs for a branch, ordered open-first then gh's newest-first, capped at the
+ * three we surface. Shared so the row and its merged-pill suppression agree on
+ * which PRs are "visible". */
+function orderedVisiblePRs(prRecord?: PRsForBranch): {
+  visible: PRsForBranch['all'];
+  hidden: number;
+} {
+  const all = (prRecord?.all ?? []).slice().sort((a, b) => {
+    if (a.state === 'OPEN' && b.state !== 'OPEN') return -1;
+    if (b.state === 'OPEN' && a.state !== 'OPEN') return 1;
+    return 0;
+  });
+  return { visible: all.slice(0, 3), hidden: Math.max(0, all.length - 3) };
+}
+
+/** The Linear-issue and PR-link badge spans for a workspace — a bare fragment
+ * with no row/container wrapper, so it can drop into the name-row pill strip
+ * (inline, beside the repo tag) or into a standalone `ws-meta-row`. Returns null
+ * when the workspace has neither a verified Linear issue nor any PR. */
+function PrLinearBadges({
+  prRecord,
+  linearIssue,
+}: {
+  prRecord?: PRsForBranch;
+  linearIssue: LinearIssue | null;
+}) {
+  const { visible: visiblePRs, hidden: hiddenPRs } = orderedVisiblePRs(prRecord);
+  if (visiblePRs.length === 0 && !linearIssue) return null;
+  return (
+    <>
+      {linearIssue && (
+        <span
+          className="pr-badge linear"
+          title={`Linear ${linearIssue.identifier}: ${linearIssue.title} — open in Linear`}
+          onClick={(e) => {
+            e.stopPropagation();
+            window.orchestra.openExternal(linearIssue.url);
+          }}
+        >
+          <LinearIcon />
+          <span className="pr-badge-num">{linearIssue.identifier}</span>
+        </span>
+      )}
+      {visiblePRs.map((p) => (
+        <span
+          key={p.number}
+          className={`pr-badge ${p.state.toLowerCase()}`}
+          title={`PR #${p.number} · ${p.state.toLowerCase()} · ${p.title}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            window.orchestra.openExternal(p.url);
+          }}
+        >
+          {p.state === 'MERGED' ? (
+            <PRMergedIcon />
+          ) : p.state === 'CLOSED' ? (
+            <PRClosedIcon />
+          ) : (
+            <PROpenIcon />
+          )}
+          <span className="pr-badge-num">#{p.number}</span>
+        </span>
+      ))}
+      {hiddenPRs > 0 && (
+        <span
+          className="pr-badge more"
+          title={`${hiddenPRs} more PR${hiddenPRs === 1 ? '' : 's'} from this branch`}
+        >
+          +{hiddenPRs}
+        </span>
+      )}
+    </>
+  );
+}
+
+/** PR/Linear badges in their own `ws-meta-row` below the branch name — the
+ * layout used by regular workspace rows, which have the vertical room. */
+function WsMetaBadges({
+  prRecord,
+  linearIssue,
+}: {
+  prRecord?: PRsForBranch;
+  linearIssue: LinearIssue | null;
+}) {
+  const { visible: visiblePRs } = orderedVisiblePRs(prRecord);
+  if (visiblePRs.length === 0 && !linearIssue) return null;
+  return (
+    <div className="ws-meta-row">
+      <span className="pr-badges">
+        <PrLinearBadges prRecord={prRecord} linearIssue={linearIssue} />
+      </span>
+    </div>
   );
 }
 
@@ -896,13 +997,17 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           </div>
                         )}
                         {childIsGit && (
-                          <span className="ws-pills">
+                          <span className="ws-pills mini">
                             <span
                               className="repo-tag-pill"
                               title={`Spawned into ${repoLabel(w.repoPath)}`}
                             >
                               {repoLabel(w.repoPath)}
                             </span>
+                            <PrLinearBadges
+                              prRecord={prs[w.id]}
+                              linearIssue={linear[w.id] ?? null}
+                            />
                           </span>
                         )}
                       </div>
@@ -1176,18 +1281,11 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               const hasChanges = !!s && (s.additions > 0 || s.deletions > 0);
               const sizeBytes = sizes[w.id];
               const prRecord = prs[w.id];
-              const allPRs = prRecord?.all ?? [];
-              // Show open first, then the rest in gh's newest-first order.
-              const orderedPRs = allPRs.slice().sort((a, b) => {
-                if (a.state === 'OPEN' && b.state !== 'OPEN') return -1;
-                if (b.state === 'OPEN' && a.state !== 'OPEN') return 1;
-                return 0;
-              });
-              const visiblePRs = orderedPRs.slice(0, 3);
-              const hiddenPRs = orderedPRs.length - visiblePRs.length;
               // The purple #N merged PR badge already conveys "merged", so
               // suppress the standalone merged pill when one is visible.
-              const hasMergedPRBadge = visiblePRs.some((p) => p.state === 'MERGED');
+              const hasMergedPRBadge = orderedVisiblePRs(prRecord).visible.some(
+                (p) => p.state === 'MERGED',
+              );
               // Linear issue badge — shown ONLY for an issue the main process
               // verified to exist via Linear's GraphQL API. A branch whose name
               // merely looks like it carries a key (`usage-poll-429`) resolves to
@@ -1379,53 +1477,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       )}
                       </span>
                     </div>
-                    {(visiblePRs.length > 0 || linearIssue) && (
-                      <div className="ws-meta-row">
-                        <span className="pr-badges">
-                          {linearIssue && (
-                            <span
-                              className="pr-badge linear"
-                              title={`Linear ${linearIssue.identifier}: ${linearIssue.title} — open in Linear`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                window.orchestra.openExternal(linearIssue.url);
-                              }}
-                            >
-                              <LinearIcon />
-                              <span className="pr-badge-num">{linearIssue.identifier}</span>
-                            </span>
-                          )}
-                          {visiblePRs.map((p) => (
-                            <span
-                              key={p.number}
-                              className={`pr-badge ${p.state.toLowerCase()}`}
-                              title={`PR #${p.number} · ${p.state.toLowerCase()} · ${p.title}`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                window.orchestra.openExternal(p.url);
-                              }}
-                            >
-                              {p.state === 'MERGED' ? (
-                                <PRMergedIcon />
-                              ) : p.state === 'CLOSED' ? (
-                                <PRClosedIcon />
-                              ) : (
-                                <PROpenIcon />
-                              )}
-                              <span className="pr-badge-num">#{p.number}</span>
-                            </span>
-                          ))}
-                          {hiddenPRs > 0 && (
-                            <span
-                              className="pr-badge more"
-                              title={`${hiddenPRs} more PR${hiddenPRs === 1 ? '' : 's'} from this branch`}
-                            >
-                              +{hiddenPRs}
-                            </span>
-                          )}
-                        </span>
-                      </div>
-                    )}
+                    <WsMetaBadges prRecord={prRecord} linearIssue={linearIssue} />
                   </div>
                   <button
                     className="ws-icon-btn"

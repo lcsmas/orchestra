@@ -1160,6 +1160,27 @@ input:focus, textarea:focus, select:focus {
   background: rgba(94, 106, 210, 0.16);
   border-color: rgba(94, 106, 210, 0.65);
 }
+/* Orchestrator-tree children carry their repo tag and PR/Linear links inline on
+ * the name row. Space is tight there (rows are indented), so shrink every pill
+ * in the strip to match — smaller text, just the issue/PR number. */
+.ws-pills.mini {
+  gap: 4px;
+}
+.ws-pills.mini .repo-tag-pill {
+  font-size: 8px;
+  padding: 0 4px;
+}
+.ws-pills.mini .pr-badge {
+  height: 13px;
+  padding: 0 5px 0 3px;
+  gap: 2px;
+  font-size: 8px;
+  border-radius: 999px;
+}
+.ws-pills.mini .pr-badge svg {
+  width: 9px;
+  height: 9px;
+}
 .ws-body {
   flex: 1;
   min-width: 0;
