@@ -2676,7 +2676,17 @@ button.danger-primary:active {
 /* Full-bleed: the header/footer dividers and body padding are owned by the
    shared .modal-header/.modal-body/.modal-footer, so zero the base .modal pad
    (otherwise those 1px dividers float inset 22px from the modal edge). */
-.accounts-settings { padding: 0; width: 560px; }
+/* Height-cap the modal and make it a flex column so the body (flex:1,
+   overflow:auto) scrolls between a pinned header and footer. Without this the
+   modal grows past the viewport and its content is unreachable once the
+   per-account list + inheritance controls get tall. */
+.accounts-settings {
+  padding: 0;
+  width: 560px;
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
+}
 .accounts-settings .modal-body { gap: 12px; }
 .accounts-empty {
   color: var(--text-dim);
