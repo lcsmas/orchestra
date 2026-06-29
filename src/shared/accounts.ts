@@ -111,6 +111,12 @@ export interface AccountUsageStatus {
   /** Short human reason when `!ok` (never contains a token). */
   errorMessage: string | null;
   fetchedAt: number;
+  /** True when the account's token has expired. The token must be refreshed
+   *  (re-login), but `data` may still carry the last good usage so the UI can
+   *  show cached consumption alongside a "not logged in" marker. `fetchedAt`
+   *  then refers to when that cached data was fetched, not when expiry was
+   *  detected. */
+  expired?: boolean;
 }
 
 // ---- config-dir expansion ----------------------------------------------------

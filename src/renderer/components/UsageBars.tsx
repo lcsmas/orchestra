@@ -124,7 +124,7 @@ function MiniBar({
 
 // State of one account in the all-accounts panel, derived from its usage slice.
 type RowState =
-  | { kind: 'ok'; fiveHour: UsageWindowDetail; sevenDay: UsageWindowDetail }
+  | { kind: 'ok'; fiveHour: UsageWindowDetail; sevenDay: UsageWindowDetail; expired?: boolean }
   | { kind: 'pending' }
   | { kind: 'error'; errorKind: UsageErrorKind | null };
 
@@ -151,6 +151,9 @@ function UsageRowView({ row, now }: { row: UsageRow; now: number }) {
         )}
         {row.state.kind === 'error' && (
           <span className="usage-bars-row-status">{errorText(row.state.errorKind)}</span>
+        )}
+        {row.state.kind === 'ok' && row.state.expired && (
+          <span className="usage-bars-row-status">token expired</span>
         )}
       </div>
       {row.state.kind === 'ok' && (
@@ -213,7 +216,10 @@ export function UsageBars() {
   let accountLabel: string | null = null;
 
   if (accountId !== null) {
-    if (perAccountStatus?.ok && perAccountStatus.data) {
+    // Show bars whenever we have data — including a cached snapshot kept across
+    // an expired token (perAccountStatus.expired). The hover panel row carries
+    // the "token expired" note; the strip just shows the last-known consumption.
+    if (perAccountStatus?.data) {
       fiveHour = perAccountStatus.data.fiveHour;
       sevenDay = perAccountStatus.data.sevenDay;
       accountLabel = activeAccount?.label ?? null;
@@ -239,7 +245,10 @@ export function UsageBars() {
     const isActive = accountId === a.id;
     if (!u) {
       rows.push({ key: a.id, label: a.label, isActive, hotness: -1, state: { kind: 'pending' } });
-    } else if (!u.ok || !u.data) {
+    } else if (!u.data) {
+      // No cached usage to show → a hard error (no dir / scope / login). An
+      // expired token keeps its last-good data, so it renders as an 'ok' row
+      // with the 'token expired' note instead of hiding the bars.
       rows.push({
         key: a.id,
         label: a.label,
@@ -253,7 +262,7 @@ export function UsageBars() {
         label: a.label,
         isActive,
         hotness: Math.max(u.data.fiveHour.utilization, u.data.sevenDay.utilization),
-        state: { kind: 'ok', fiveHour: u.data.fiveHour, sevenDay: u.data.sevenDay },
+        state: { kind: 'ok', fiveHour: u.data.fiveHour, sevenDay: u.data.sevenDay, expired: u.expired },
       });
     }
   }

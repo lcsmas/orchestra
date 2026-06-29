@@ -222,11 +222,25 @@ async function refreshStale(now: number): Promise<{ byId: Record<string, Account
       continue;
     }
     // Clearly-expired token → surface 'not logged in' rather than a guaranteed
-    // 401 round-trip. The next agent run in that dir refreshes it.
+    // 401 round-trip. The next agent run in that dir refreshes it. Keep the last
+    // good usage data (if any) so the badge/bars still show the cached
+    // consumption — only the `expired` flag changes how it's labelled.
     if (isExpired(creds.expiresAt, now)) {
       const prev = cache.get(acc.id);
-      if (!prev || prev.status.errorKind !== 'not-logged-in') {
-        cache.set(acc.id, { status: fail(acc.id, 'not-logged-in', 'token expired', now), dir: creds.dir });
+      const lastData = prev?.dir === creds.dir ? prev.status.data : null;
+      if (!prev || !prev.status.expired || prev.status.data !== lastData) {
+        cache.set(acc.id, {
+          status: {
+            accountId: acc.id,
+            ok: false,
+            data: lastData,
+            errorKind: 'not-logged-in',
+            errorMessage: 'token expired',
+            fetchedAt: lastData ? prev!.status.fetchedAt : now,
+            expired: true,
+          },
+          dir: creds.dir,
+        });
         changed = true;
       }
       continue;

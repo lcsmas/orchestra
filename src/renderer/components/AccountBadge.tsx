@@ -101,7 +101,10 @@ function AccountUsageBadge({ accountId }: { accountId: string | null }) {
     );
   }
 
-  if (!usage.ok || !usage.data) {
+  // No data to show: a hard error (no dir, no scope, never logged in, …).
+  // An expired token keeps its last-good `data`, so it falls through to the
+  // usage render below with an "expired" note rather than hiding consumption.
+  if (!usage.data) {
     return (
       <span
         className={`account-badge inline err ${usage.errorKind ?? 'error'}`}
@@ -116,7 +119,8 @@ function AccountUsageBadge({ accountId }: { accountId: string | null }) {
   const five = clampPct(data.fiveHour.utilization);
   const seven = clampPct(data.sevenDay.utilization);
   // Tint by the hotter window so a near-limit account reads hot even if only one
-  // window is high.
+  // window is high. Per design, an expired login does NOT dim the badge — the
+  // cached consumption stays normally tinted; only the tooltip flags expiry.
   const sev = severityClass(Math.max(five, seven));
   const extra = data.extraUtilization;
   const title =
@@ -124,6 +128,7 @@ function AccountUsageBadge({ accountId }: { accountId: string | null }) {
     `5-hour window: ${five}%\n` +
     `7-day window: ${seven}%` +
     (extra != null ? `\nextra usage: ${Math.round(extra)}%` : '') +
+    (usage.expired ? `\n⚠ token expired — re-login (showing cached usage)` : '') +
     `\nas of ${ageText(usage.fetchedAt)}`;
   return (
     <span className={`account-badge inline usage ${sev}`} title={title}>
