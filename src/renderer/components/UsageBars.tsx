@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import type { UsageSnapshot } from '../../shared/types';
 import { useStore } from '../store';
 
 // Two slim progress bars showing the active workspace's account rolling usage
@@ -68,19 +67,11 @@ function UsageBar({
 }
 
 export function UsageBars() {
-  const { activeId, workspaceAccounts, accountUsage } = useStore();
   // Fallback: global usage for workspaces using the default login (no pinned
-  // account). Kept alive so switching from a pinned workspace to an unset one
-  // shows the right data immediately without waiting for a new fetch.
-  const [globalUsage, setGlobalUsage] = useState<UsageSnapshot | null>(null);
+  // account). Lives in the store (hydrated on load, kept fresh by `usage:update`)
+  // so the repo-header default-login badge shares the same source.
+  const { activeId, workspaceAccounts, accountUsage, globalUsage } = useStore();
   const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    void window.orchestra.getUsage().then((u) => {
-      if (u) setGlobalUsage(u);
-    });
-    return window.orchestra.onUsageUpdate((u) => setGlobalUsage(u));
-  }, []);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 60_000);
@@ -105,6 +96,9 @@ export function UsageBars() {
   } else if (globalUsage) {
     fiveHour = globalUsage.fiveHour;
     sevenDay = globalUsage.sevenDay;
+    // Surface the default login by name too, the same as a pinned account, so
+    // the bars always say which login they're measuring.
+    accountLabel = activeAccount?.label ?? 'default login';
   }
 
   if (!fiveHour || !sevenDay) return null;

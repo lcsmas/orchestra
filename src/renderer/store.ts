@@ -8,6 +8,7 @@ import type {
   PRsForBranch,
   RepoEntry,
   RepoSyncState,
+  UsageSnapshot,
   Workspace,
   WorkspaceAccount,
 } from '../shared/types';
@@ -41,6 +42,11 @@ interface State {
   /** Configured Claude accounts (id → label/configDir). Drives the repo
    *  header's account name. Refreshed whenever the account mapping changes. */
   accounts: Account[];
+  /** Usage of Orchestra's default login (the global `~/.claude` poller), or
+   *  null until the first fetch lands. Drives the "default login" badge/bars for
+   *  workspaces and repos with no pinned account. Hydrated on load and updated
+   *  via `usage:update` events. */
+  globalUsage: UsageSnapshot | null;
   activeId: string | null;
   view: 'terminal' | 'diff' | 'run';
   loaded: boolean;
@@ -81,6 +87,7 @@ export const useStore = create<State>((set, get) => ({
   accountUsage: {},
   workspaceAccounts: {},
   accounts: [],
+  globalUsage: null,
   activeId: null,
   view: 'terminal',
   loaded: false,
@@ -97,7 +104,7 @@ export const useStore = create<State>((set, get) => ({
   setView: (v) => set({ view: v }),
 
   load: async () => {
-    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts] =
+    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage] =
       await Promise.all([
         window.orchestra.listRepos(),
         window.orchestra.listWorkspaces(),
@@ -105,6 +112,7 @@ export const useStore = create<State>((set, get) => ({
         window.orchestra.getAllAccountUsage().catch(() => ({})),
         window.orchestra.getWorkspaceAccounts().catch(() => ({})),
         window.orchestra.listAccounts().catch(() => []),
+        window.orchestra.getUsage().catch(() => null),
       ]);
     const repoSync: Record<string, RepoSyncState> = {};
     for (const s of syncStates) repoSync[s.repoPath] = s;
@@ -115,6 +123,7 @@ export const useStore = create<State>((set, get) => ({
       accountUsage,
       workspaceAccounts,
       accounts,
+      globalUsage: globalUsage ?? null,
       loaded: true,
       activeId: workspaces[0]?.id ?? null,
     });
@@ -373,6 +382,10 @@ window.orchestra.onReposUpdate((repos) => {
 // Per-account usage refreshed (>=180s-cached poll in main). Replace wholesale.
 window.orchestra.onAccountUsageUpdate((byId) => {
   useStore.setState({ accountUsage: byId });
+});
+// Default-login usage refreshed (global `~/.claude` poller in main).
+window.orchestra.onUsageUpdate((u) => {
+  useStore.setState({ globalUsage: u });
 });
 // The workspace→account mapping changed (accounts edited / repo account changed /
 // workspaces added/removed). Replace wholesale, and re-pull the accounts list
