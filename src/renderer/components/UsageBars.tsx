@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react';
 import type { UsageSnapshot } from '../../shared/types';
+import { useStore } from '../store';
 
-// Two slim progress bars showing the signed-in Claude account's rolling usage
-// limits: the 5-hour session window and the 7-day weekly window. The data is
-// the same one Claude Code's own `/usage` view reads, polled by the main
-// process (see src/main/usage.ts) and pushed here over `usage:update`.
+// Two slim progress bars showing the active workspace's account rolling usage
+// limits: the 5-hour session window and the 7-day weekly window. When the
+// active workspace has a pinned account, the data comes from the per-account
+// poller (src/main/account-usage.ts, pushed via accounts:usageUpdate). When
+// the workspace uses the default login (no pinned account), it falls back to
+// the global poller (src/main/usage.ts, pushed via usage:update).
 
 // Color the fill by how close the window is to its limit. Mirrors the
 // "normal / warning / critical" severity Claude's usage endpoint reports, but
@@ -37,11 +40,13 @@ function UsageBar({
   title,
   window,
   now,
+  accountLabel,
 }: {
   label: string;
   title: string;
   window: { utilization: number; resetsAt: string };
   now: number;
+  accountLabel?: string;
 }) {
   const pct = Math.max(0, Math.min(100, Math.round(window.utilization)));
   const resets = formatResetsIn(window.resetsAt, now);
@@ -49,6 +54,7 @@ function UsageBar({
     <div className="usage-bar" title={`${title}${resets ? ` — ${resets}` : ''}`}>
       <div className="usage-bar-head">
         <span className="usage-bar-label">{label}</span>
+        {accountLabel && <span className="usage-bars-account">{accountLabel}</span>}
         <span className="usage-bar-pct">{pct}%</span>
       </div>
       <div className="usage-bar-track">
@@ -62,16 +68,18 @@ function UsageBar({
 }
 
 export function UsageBars() {
-  const [usage, setUsage] = useState<UsageSnapshot | null>(null);
-  // Tick once a minute so the "resets in …" countdown stays roughly current
-  // between the main process's 60s usage polls.
+  const { activeId, workspaceAccounts, accountUsage } = useStore();
+  // Fallback: global usage for workspaces using the default login (no pinned
+  // account). Kept alive so switching from a pinned workspace to an unset one
+  // shows the right data immediately without waiting for a new fetch.
+  const [globalUsage, setGlobalUsage] = useState<UsageSnapshot | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     void window.orchestra.getUsage().then((u) => {
-      if (u) setUsage(u);
+      if (u) setGlobalUsage(u);
     });
-    return window.orchestra.onUsageUpdate((u) => setUsage(u));
+    return window.orchestra.onUsageUpdate((u) => setGlobalUsage(u));
   }, []);
 
   useEffect(() => {
@@ -79,22 +87,41 @@ export function UsageBars() {
     return () => clearInterval(t);
   }, []);
 
-  // Hidden entirely until the first successful fetch — e.g. for users signed in
-  // with a raw API key, where the OAuth usage endpoint isn't available.
-  if (!usage) return null;
+  const activeAccount = activeId ? workspaceAccounts[activeId] : null;
+  const accountId = activeAccount?.accountId ?? null;
+  const perAccountStatus = accountId ? accountUsage[accountId] : null;
+
+  let fiveHour: { utilization: number; resetsAt: string } | null = null;
+  let sevenDay: { utilization: number; resetsAt: string } | null = null;
+  let accountLabel: string | null = null;
+
+  if (accountId !== null) {
+    if (perAccountStatus?.ok && perAccountStatus.data) {
+      fiveHour = perAccountStatus.data.fiveHour;
+      sevenDay = perAccountStatus.data.sevenDay;
+      accountLabel = activeAccount?.label ?? null;
+    }
+    // No data yet for this account → hide bars rather than show the wrong account.
+  } else if (globalUsage) {
+    fiveHour = globalUsage.fiveHour;
+    sevenDay = globalUsage.sevenDay;
+  }
+
+  if (!fiveHour || !sevenDay) return null;
 
   return (
     <div className="usage-bars">
       <UsageBar
         label="5h"
-        title="Claude usage — 5-hour session window"
-        window={usage.fiveHour}
+        title={`Claude usage${accountLabel ? ` (${accountLabel})` : ''} — 5-hour session window`}
+        window={fiveHour}
         now={now}
+        accountLabel={accountLabel ?? undefined}
       />
       <UsageBar
         label="7d"
-        title="Claude usage — 7-day weekly window"
-        window={usage.sevenDay}
+        title={`Claude usage${accountLabel ? ` (${accountLabel})` : ''} — 7-day weekly window`}
+        window={sevenDay}
         now={now}
       />
     </div>
