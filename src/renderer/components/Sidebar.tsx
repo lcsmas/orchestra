@@ -7,7 +7,7 @@ import { LinearSettings } from './LinearSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
 import { UsageBars } from './UsageBars';
 import { AccountsSettings } from './AccountsSettings';
-import { AccountBadge } from './AccountBadge';
+import { RepoAccountBadge } from './AccountBadge';
 import { dialog } from './Dialog';
 
 interface Props {
@@ -379,7 +379,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     linear,
     tools,
     repoSync,
-    workspaceAccounts,
     setActive,
     archive,
     unarchive,
@@ -907,11 +906,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           </span>
                         )}
                       </div>
-                      {workspaceAccounts[w.id] && (
-                        <div className="ws-meta-row">
-                          <AccountBadge workspaceId={w.id} />
-                        </div>
-                      )}
                     </div>
                     {isDeleting ? (
                       <span className="ws-spinner" title="Removing…" aria-label="Removing" role="status" />
@@ -1007,11 +1001,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         </div>
                       )}
                     </div>
-                    {workspaceAccounts[w.id] && (
-                      <div className="ws-meta-row">
-                        <AccountBadge workspaceId={w.id} />
-                      </div>
-                    )}
                   </div>
                   {isDeleting ? (
                     <span className="ws-spinner" title="Deleting…" aria-label="Deleting" role="status" />
@@ -1098,6 +1087,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               >
                 <span className={`caret ${collapsed ? '' : 'open'}`}>▸</span>
                 <span className="repo-name">{repoLabel(repoPath)}</span>
+                <RepoAccountBadge repoPath={repoPath} />
               </button>
               <span className="repo-header-actions">
                 <span className="repo-count">{items.length}</span>
@@ -1389,9 +1379,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       )}
                       </span>
                     </div>
-                    {(visiblePRs.length > 0 || linearIssue || workspaceAccounts[w.id]) && (
+                    {(visiblePRs.length > 0 || linearIssue) && (
                       <div className="ws-meta-row">
-                        <AccountBadge workspaceId={w.id} />
                         <span className="pr-badges">
                           {linearIssue && (
                             <span

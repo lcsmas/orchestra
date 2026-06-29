@@ -2490,6 +2490,45 @@ button.danger-primary:active {
   border-color: rgba(255, 200, 87, 0.26);
   color: #ffdf9c;
 }
+/* Inline variant: not a chip — just the account name set quietly beside the
+   branch, matching the muted weight of the 5h/7d usage labels. No background or
+   border; the metrics live in the title. Severity only nudges the text color so
+   a hot/broken account still catches the eye without shouting. */
+.account-badge.inline {
+  padding: 0;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.3;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  flex: 0 1 auto;
+  align-self: center;
+  /* Sits inside the uppercase, letter-spaced repo header — render the account
+     name in its own case so it reads as a name, not a heading. */
+  text-transform: none;
+  letter-spacing: normal;
+}
+/* Strip the chip and neutralize the tint for every state. Listed at 3-class
+   specificity so these beat the `.account-badge.usage.ok {…}` severity chips
+   defined above (which are also 3 classes). */
+.account-badge.inline.usage,
+.account-badge.inline.err,
+.account-badge.inline.default,
+.account-badge.inline.pending {
+  background: none;
+  border: none;
+  border-radius: 0;
+  color: var(--text-dim);
+}
+/* Re-apply a discreet, text-only tint so a hot or broken account still reads. */
+.account-badge.inline.usage.warn,
+.account-badge.inline.err.no-scope,
+.account-badge.inline.err.rate-limited { color: #d9b772; }
+.account-badge.inline.usage.crit,
+.account-badge.inline.err { color: #e09a9a; }
 
 /* ---- Accounts settings modal ---- */
 /* Full-bleed: the header/footer dividers and body padding are owned by the
