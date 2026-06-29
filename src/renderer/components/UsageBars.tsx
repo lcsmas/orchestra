@@ -67,10 +67,19 @@ function UsageBar({
 }
 
 export function UsageBars() {
-  // Fallback: global usage for workspaces using the default login (no pinned
-  // account). Lives in the store (hydrated on load, kept fresh by `usage:update`)
-  // so the repo-header default-login badge shares the same source.
-  const { activeId, workspaceAccounts, accountUsage, globalUsage } = useStore();
+  // Atomic selectors, not `useStore()`: subscribing to the whole store would
+  // re-render this component on every store mutation — including the very high
+  // frequency `agent:tool` tick and the stats/PR polls — even though it only
+  // reads these four slices. Each selector re-renders only when its slice
+  // changes by Object.is.
+  //
+  // globalUsage is the fallback for workspaces on the default login (no pinned
+  // account). It lives in the store (hydrated on load, kept fresh by
+  // `usage:update`) so the repo-header default-login badge shares the source.
+  const activeId = useStore((s) => s.activeId);
+  const workspaceAccounts = useStore((s) => s.workspaceAccounts);
+  const accountUsage = useStore((s) => s.accountUsage);
+  const globalUsage = useStore((s) => s.globalUsage);
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {

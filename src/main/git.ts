@@ -286,6 +286,26 @@ function truncate(s: string, max = 300_000): string {
  *  Reflog entries expire (~90 days), after which such a branch falls back to
  *  `stalePointer` — acceptable, since merged workspaces are archived long
  *  before then. */
+/** Resolve `branch` and `baseBranch` to their current commit SHAs in a single
+ *  `git rev-parse` (one process). Returns null if either ref can't be resolved
+ *  (detached HEAD, missing base, mid-rebase). Used to short-circuit the much
+ *  heavier `getBranchMergeState` when neither ref has moved since the last
+ *  probe — merge state is a pure function of these two SHAs. */
+export async function getRefShas(
+  repoPath: string,
+  branch: string,
+  baseBranch: string,
+): Promise<{ branchSha: string; baseSha: string } | null> {
+  try {
+    const out = (await simpleGit(repoPath).raw(['rev-parse', branch, baseBranch])).trim();
+    const [branchSha, baseSha] = out.split('\n').map((s) => s.trim());
+    if (!branchSha || !baseSha) return null;
+    return { branchSha, baseSha };
+  } catch {
+    return null;
+  }
+}
+
 export async function getBranchMergeState(
   repoPath: string,
   branch: string,
@@ -510,10 +530,23 @@ async function computeUnpushedAhead(
   }
 }
 
+/** Per-(repo, branch) cache of resolved PR state. The renderer polls
+ *  `git:findPR` for every workspace every 12s (plus an on-focus refresh), and
+ *  each miss spawns a `gh pr list` — a child process *and* a network round-trip.
+ *  PR state changes on human timescales (opening/merging a PR), so a short TTL
+ *  collapses the poll + focus bursts (and any branch shared across workspaces)
+ *  into roughly one `gh` call per branch per TTL while keeping the badge fresh
+ *  within seconds. Mirrors `releaseCache` right below. */
+const prCache = new Map<string, { at: number; prs: import('../shared/types').PRsForBranch }>();
+const PR_CACHE_TTL = 20_000;
+
 export async function findPullRequest(
   repoPath: string,
   branch: string,
 ): Promise<import('../shared/types').PRsForBranch> {
+  const cacheKey = `${repoPath} ${branch}`;
+  const cached = prCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < PR_CACHE_TTL) return cached.prs;
   try {
     // Run from `repoPath` (the canonical repo), NOT the workspace's worktree.
     // `gh pr list --head` only needs to resolve the repo's remote — it doesn't
@@ -547,8 +580,12 @@ export async function findPullRequest(
     const open = all.find((p) => p.state === 'OPEN') ?? null;
     const latest = all[0] ?? null;
     const mergedCount = all.filter((p) => p.state === 'MERGED').length;
-    return { all, open, latest, mergedCount };
+    const prs = { all, open, latest, mergedCount };
+    prCache.set(cacheKey, { at: Date.now(), prs });
+    return prs;
   } catch {
+    // Don't cache failures (gh missing, transient network) — let the next poll
+    // retry rather than serving an empty result for the whole TTL.
     return { all: [], open: null, latest: null, mergedCount: 0 };
   }
 }

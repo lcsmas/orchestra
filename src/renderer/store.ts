@@ -283,8 +283,22 @@ export const useStore = create<State>((set, get) => ({
   },
 
   refreshAllStats: async () => {
+    // Fetch every workspace's stats in parallel, then commit ONE store update.
+    // The per-id refreshStats does its own set(), so fanning out over it fired N
+    // separate notifications per poll (every 8s) — an N× re-render burst for
+    // whole-store subscribers. Gather first, set once.
     const ids = get().workspaces.filter((w) => !w.archived).map((w) => w.id);
-    await Promise.all(ids.map((id) => get().refreshStats(id)));
+    const entries = await Promise.all(
+      ids.map(async (id) => {
+        try {
+          return [id, await window.orchestra.getDiffStats(id)] as const;
+        } catch {
+          return null; // worktree may be stale or git busy — drop this one
+        }
+      }),
+    );
+    const next = Object.fromEntries(entries.filter((e) => e !== null));
+    if (Object.keys(next).length) set((s) => ({ stats: { ...s.stats, ...next } }));
   },
 
   refreshSizes: async () => {
@@ -306,8 +320,19 @@ export const useStore = create<State>((set, get) => ({
   },
 
   refreshAllPRs: async () => {
+    // Gather all PR lookups, then commit once — see refreshAllStats.
     const ids = get().workspaces.filter((w) => !w.archived).map((w) => w.id);
-    await Promise.all(ids.map((id) => get().refreshPR(id)));
+    const entries = await Promise.all(
+      ids.map(async (id) => {
+        try {
+          return [id, await window.orchestra.findPR(id)] as const;
+        } catch {
+          return null; // gh missing, no remote, etc. — ignore
+        }
+      }),
+    );
+    const next = Object.fromEntries(entries.filter((e) => e !== null));
+    if (Object.keys(next).length) set((s) => ({ prs: { ...s.prs, ...next } }));
   },
 
   refreshLinear: async (id) => {
@@ -320,8 +345,19 @@ export const useStore = create<State>((set, get) => ({
   },
 
   refreshAllLinear: async () => {
+    // Gather all Linear lookups, then commit once — see refreshAllStats.
     const ids = get().workspaces.filter((w) => !w.archived).map((w) => w.id);
-    await Promise.all(ids.map((id) => get().refreshLinear(id)));
+    const entries = await Promise.all(
+      ids.map(async (id) => {
+        try {
+          return [id, await window.orchestra.verifyLinear(id)] as const;
+        } catch {
+          return null; // no API key / unauthenticated / offline — leave as-is
+        }
+      }),
+    );
+    const next = Object.fromEntries(entries.filter((e) => e !== null));
+    if (Object.keys(next).length) set((s) => ({ linear: { ...s.linear, ...next } }));
   },
 }));
 
@@ -356,12 +392,20 @@ window.orchestra.onWorkspaceRemoved((id) => {
   });
 });
 window.orchestra.onAgentTool((id, tool) => {
-  useStore.setState((s) => {
-    if (tool) return { tools: { ...s.tools, [id]: tool } };
-    if (!(id in s.tools)) return {};
-    const { [id]: _gone, ...tools } = s.tools;
-    return { tools };
-  });
+  // This is the highest-frequency event in the app — it fires on every
+  // PreToolUse/PostToolUse hook of every running agent. zustand notifies all
+  // subscribers on ANY setState, even one that merges an empty/unchanged
+  // object, so guard BEFORE calling setState: skip identical-tool repeats and
+  // clears of an already-absent id so no-op ticks don't trigger re-renders.
+  const s = useStore.getState();
+  if (tool) {
+    if (s.tools[id] === tool) return;
+    useStore.setState({ tools: { ...s.tools, [id]: tool } });
+    return;
+  }
+  if (!(id in s.tools)) return;
+  const { [id]: _gone, ...tools } = s.tools;
+  useStore.setState({ tools });
 });
 window.orchestra.onWorkspaceFocus((id) => {
   const s = useStore.getState();

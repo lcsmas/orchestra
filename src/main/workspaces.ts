@@ -23,6 +23,7 @@ import { isRunning, stopPty, clearScrollback, startPty, writePty, readScrollback
 import { expandConfigDir } from '../shared/accounts';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
+import { forgetWorkspaceProbes } from './activity';
 import type { CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
 import { isScratchLike } from '../shared/types';
 
@@ -322,6 +323,7 @@ export function createOrchestratorWorkspace(window: BrowserWindow): Promise<Work
 export async function archiveWorkspace(id: string, window: BrowserWindow): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws) return;
+  forgetWorkspaceProbes(id);
   log.info(`archiving workspace ${ws.branch} (${id})`);
   // Soft archive: stop the agent but keep the workspace record (flagged
   // archived), the worktree, and the scrollback log. The sidebar hides
@@ -356,6 +358,7 @@ export async function unarchiveWorkspace(id: string, window: BrowserWindow): Pro
 export async function deleteWorkspace(id: string, window: BrowserWindow): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws) return;
+  forgetWorkspaceProbes(id);
   log.info(`deleting workspace ${ws.branch} (${id}) worktree=${ws.worktreePath}`);
   // Hard delete: stop agent, run user's archive script (best-effort), remove
   // the git worktree from disk, drop the scrollback log, and remove the store

@@ -4,6 +4,7 @@ import { store } from './store';
 import {
   getBranchMergeState,
   getCurrentBranch,
+  getRefShas,
   getReleaseVersionsContaining,
 } from './git';
 import type { Workspace, WorkspaceStatus } from '../shared/types';
@@ -126,17 +127,37 @@ function fireNeedsInput(id: string, window: BrowserWindow): void {
   });
 }
 
+// Cache the (branchSha, baseSha) pair from each workspace's last full merge
+// probe. The 8s stats poll calls this for every workspace, and
+// getBranchMergeState spawns 2-9 git processes per call — the expensive reflog
+// branch is precisely the idle steady state (branch tip == base, nothing
+// ahead) that idle/fresh workspaces sit in. Merge state is a pure function of
+// the branch and base SHAs, so when neither has moved since the last probe the
+// result cannot have changed: one cheap `rev-parse` (one process) short-
+// circuits the whole computation. Any ref movement (a commit, a merge, base
+// advancing) busts the cache and forces a recompute, so the merge pill / ↑N
+// badge stays live without the per-poll subprocess churn.
+const lastMergeProbe = new Map<string, { branchSha: string; baseSha: string }>();
+
 export async function detectAndUpdateMergeState(
   id: string,
   window: BrowserWindow,
 ): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || ws.kind === 'scratch') return;
+  const heads = await getRefShas(ws.repoPath, ws.branch, ws.baseBranch);
+  if (heads) {
+    const prev = lastMergeProbe.get(id);
+    if (prev && prev.branchSha === heads.branchSha && prev.baseSha === heads.baseSha) return;
+  }
   const { merged, diverged, unpushedAhead, stalePointer } = await getBranchMergeState(
     ws.repoPath,
     ws.branch,
     ws.baseBranch,
   );
+  // Record the probed SHAs so the next poll can skip recomputation while the
+  // refs hold still. Set even when the derived state is unchanged below.
+  if (heads) lastMergeProbe.set(id, heads);
   // mergedAt is "timestamp of most recent merge" — set/refresh on every
   // merge cycle. `divergedFromBase` is what tells the renderer whether the
   // branch is currently in sync with that merge (pill visible) or has new
@@ -187,6 +208,14 @@ export async function detectAndUpdateMergeState(
 // workspaces this turns ~N·7.5 git spawns/min into ~N.
 const BRANCH_PROBE_MS = 60_000;
 const lastBranchProbe = new Map<string, number>();
+
+/** Drop a workspace's cached probe state. Called when a workspace is deleted or
+ *  archived: the renderer stops polling it, so its entries would otherwise
+ *  linger as dead ids accumulating over a long session. */
+export function forgetWorkspaceProbes(id: string): void {
+  lastBranchProbe.delete(id);
+  lastMergeProbe.delete(id);
+}
 
 export async function detectAndUpdateBranchName(
   id: string,
