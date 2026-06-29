@@ -101,3 +101,56 @@ export function installCliShim(): void {
     log.warn('failed to install orchestra CLI shim', e);
   }
 }
+
+// ---------- Agent-facing shim ----------
+//
+// installCliShim() above is for a HUMAN typing `orchestra` in their own
+// terminal: it lands in a conventional user bin dir that may or may not be on
+// PATH (and is skipped entirely on macOS). That's too unreliable for the agent
+// PTYs, where the injected skills/hooks now invoke `orchestra <subcommand>`
+// directly and the GUI's inherited login PATH can't be trusted to contain any
+// shim dir. So we ALSO drop a shim into a dir orchestra fully controls and then
+// prepend that dir to every agent PTY's PATH (see main/pty.ts) — guaranteeing a
+// bare `orchestra` resolves in the agent shell on every platform.
+
+/**
+ * The orchestra-owned bin dir that main/pty.ts prepends to each agent PTY's
+ * PATH. Kept separate from the user-facing shim location so we never depend on
+ * the user's login PATH for agent-driven CLI calls.
+ */
+export function agentCliBinDir(): string {
+  return path.join(os.homedir(), '.orchestra', 'bin');
+}
+
+/**
+ * Best-effort install/refresh of the agent-facing `orchestra` shim in
+ * agentCliBinDir(). Unlike installCliShim() this covers every platform
+ * (including macOS) because we force its dir onto the PTY PATH rather than
+ * hoping the user already has one. Rewritten on each GUI startup so the
+ * re-invocation target stays fresh (an AppImage's mount path changes per run).
+ * Never throws.
+ */
+export function installAgentCliShim(): void {
+  try {
+    const dir = agentCliBinDir();
+    fs.mkdirSync(dir, { recursive: true });
+    // Prefer the stable AppImage path when present; otherwise re-invoke this
+    // exact executable. Both dispatch to CLI mode via the `cli` arg handled at
+    // the top of main/index.ts, so no second GUI window is ever opened.
+    const target = process.env.APPIMAGE || process.execPath;
+    if (process.platform === 'win32') {
+      const body = ['@echo off', `rem ${SHIM_MARKER}. Safe to delete.`, `"${target}" cli %*`, ''].join(
+        '\r\n',
+      );
+      fs.writeFileSync(path.join(dir, 'orchestra.cmd'), body);
+    } else {
+      // exec replaces the shell so the CLI's exit code propagates unchanged.
+      const body = ['#!/bin/sh', `# ${SHIM_MARKER}. Safe to delete.`, `exec "${target}" cli "$@"`, ''].join(
+        '\n',
+      );
+      fs.writeFileSync(path.join(dir, 'orchestra'), body, { mode: 0o755 });
+    }
+  } catch (e) {
+    log.warn('failed to install agent orchestra CLI shim', e);
+  }
+}

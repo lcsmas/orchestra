@@ -1201,7 +1201,7 @@ export interface MessageResult {
 const MESSAGE_MAX_CHARS = 8000;
 
 function formatPeerMessage(fromBranch: string, fromId: string, text: string): string {
-  return `[message from agent '${fromBranch}' (${fromId})]\n${text}\n\nReply via the orchestra socket: curl -s --unix-socket "$ORCHESTRA_SOCK" --data-binary '{"from":"'$ORCHESTRA_WS_ID'","to":"${fromId}","text":"<reply>"}' http://x/message`;
+  return `[message from agent '${fromBranch}' (${fromId})]\n${text}\n\nReply with: orchestra message ${fromId} "<reply>"`;
 }
 
 /** Wake a stopped agent and hand it `prompt` as a live turn. Resumes the prior
@@ -1462,7 +1462,7 @@ const HOOK_SESSION_START_RENAME_CMD =
 // The spawn / comms / repo-routes capabilities are no longer advertised by
 // SessionStart hooks. They moved to Claude Code project skills
 // (orchestra-spawn / orchestra-comms / orchestra-repos), so only each skill's
-// one-sentence description loads up front and the full curl payload loads on
+// one-sentence description loads up front and the full CLI reference loads on
 // demand — instead of ~1k tokens of prose re-billed as transcript every turn.
 
 // Peer-gated comms reminder, fired on every UserPromptSubmit (the script
@@ -1513,9 +1513,9 @@ current="\$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 cat <<EOF
 [orchestra] This workspace is on the auto-generated branch '\${ORCHESTRA_BRANCH:-unknown}'. Rename the branch as soon as the work this conversation is about becomes clear — including on the very first prompt. Only defer if the prompt is purely exploratory with no identifiable task yet. Run this exact command (do NOT use 'git branch -m'):
 
-  curl -s --max-time 5 --unix-socket "\\\$ORCHESTRA_SOCK" --data-binary "{\\\\"id\\\\":\\\\"\\\$ORCHESTRA_WS_ID\\\\",\\\\"branch\\\\":\\\\"<new-branch-name>\\\\"}" http://x/rename
+  orchestra rename "\\\$ORCHESTRA_WS_ID" "<new-branch-name>"
 
-The reply is JSON: {"ok":true,"branch":"<final-name>"} on success (orchestra renames the real git branch for you — do NOT also run 'git branch -m'), or {"ok":false,"error":"..."} if it refused. Pick a short kebab-case name (3-6 words) that reflects the actual work, e.g. fix-checkout-typo, add-stripe-webhook-retry, route-demande-accessoire. Don't wait for a later turn — name it the moment you can.
+On success it prints "Renamed to <final-name>" (orchestra renames the real git branch for you — do NOT also run 'git branch -m'); on refusal it prints an error. Pick a short kebab-case name (3-6 words) that reflects the actual work, e.g. fix-checkout-typo, add-stripe-webhook-retry, route-demande-accessoire. Don't wait for a later turn — name it the moment you can.
 EOF
 `;
 
@@ -1531,16 +1531,18 @@ EOF
 // They are now packaged as Claude Code project skills under
 // `<worktree>/.claude/skills/<name>/SKILL.md`. Only each skill's `description`
 // (a single tight sentence, ~30 tokens) is ever loaded up front; the full body
-// — including the exact curl payload the agent can't reconstruct — loads only
-// when the agent actually invokes the skill. The advertisement shrinks ~30x and
-// the payloads cost nothing until used. Skills are auto-discovered from
+// — including the exact `orchestra <subcommand>` invocation — loads only when
+// the agent actually invokes the skill. The advertisement shrinks ~30x and the
+// bodies cost nothing until used. Skills are auto-discovered from
 // `.claude/skills/` with no settings.json registration; left model-invocable
 // (default) so the agent pulls them when a task calls for delegation /
 // coordination, and `/orchestra-spawn` etc. also work as manual commands.
 //
-// The bodies are plain Markdown (no bash heredoc), so the curl lines are
-// written literally — no `\$` / `\\"` escaping gymnastics. The agent reads
-// $ORCHESTRA_SOCK / $ORCHESTRA_WS_ID from its own env when it runs the command.
+// The bodies invoke the `orchestra` CLI rather than raw `curl --unix-socket`,
+// so the IPC interface is uniform with the rename hook and human terminal use.
+// The CLI resolves in the agent shell because main/pty.ts prepends the
+// orchestra-owned bin dir (installAgentCliShim) to PATH, and it reads
+// $ORCHESTRA_SOCK / $ORCHESTRA_WS_ID from the env to find the socket + identity.
 
 const SPAWN_SKILL = `---
 name: orchestra-spawn
@@ -1557,18 +1559,20 @@ Use this only for work that does NOT depend on your current uncommitted changes
 — the new worktree is cut from the base branch and will not see them. Only spawn
 when the user asks you to parallelize or delegate; do not do it unprompted.
 
-Run this exact command (it reads \$ORCHESTRA_SOCK / \$ORCHESTRA_WS_ID from your env):
+Run this exact command (the \`orchestra\` CLI reads \$ORCHESTRA_SOCK /
+\$ORCHESTRA_WS_ID from your env, and nests the new worktree under you):
 
 \`\`\`bash
-curl -s --max-time 20 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"from\\":\\"\$ORCHESTRA_WS_ID\\",\\"task\\":\\"<full self-contained instructions for the new agent>\\"}" http://x/spawn
+orchestra spawn --task "<full self-contained instructions for the new agent>"
 \`\`\`
 
-Reply: \`{"ok":true,"id":"<workspace-id>","branch":"<branch>"}\` once the worktree
-exists and its agent has started, or \`{"ok":false,"error":"..."}\` on failure.
+On success it prints \`Spawned <workspace-id> on branch <branch>\` once the
+worktree exists and its agent has started; otherwise it prints an error and
+exits non-zero.
 
-Optional JSON fields:
-- \`"repoPath":"<abs path of another repo already added to orchestra>"\` — spawn in a different repo.
-- \`"baseBranch":"<branch>"\` — cut the new branch from a specific base.
+Optional flags:
+- \`--repo <abs path of another repo already added to orchestra>\` — spawn in a different repo.
+- \`--base <branch>\` — cut the new branch from a specific base.
 `;
 
 const COMMS_SKILL = `---
@@ -1579,35 +1583,38 @@ description: Coordinate with the OTHER agents running in sibling Orchestra works
 # Talk to sibling agents
 
 Other agents may be running in sibling workspaces. You can discover them, read
-what they have been doing, and hand one a prompt. Three commands, all over the
-orchestra socket (each reads \$ORCHESTRA_SOCK / \$ORCHESTRA_WS_ID from your env).
-Keep any message self-contained — the peer does not share your conversation.
+what they have been doing, and hand one a prompt. Three \`orchestra\` CLI
+commands (each reads \$ORCHESTRA_SOCK / \$ORCHESTRA_WS_ID from your env, so they
+already know who you are). Keep any message self-contained — the peer does not
+share your conversation.
 
 ## 1. List the other agents
 
 \`\`\`bash
-curl -s --max-time 10 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"from\\":\\"\$ORCHESTRA_WS_ID\\"}" http://x/peers
+orchestra peers
 \`\`\`
 
-Reply: \`{"ok":true,"peers":[{"id":"...","branch":"...","repo":"...","status":"running|waiting|idle","running":true}]}\`
+Prints a table of \`id  branch  repo  status\` (yourself excluded), or
+\`No peer workspaces.\` when you are alone.
 
 ## 2. Read a peer's recent transcript
 
 \`\`\`bash
-curl -s --max-time 10 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"from\\":\\"\$ORCHESTRA_WS_ID\\",\\"id\\":\\"<peer-id>\\"}" http://x/read
+orchestra read <peer-id>
 \`\`\`
 
-Reply: \`{"ok":true,"branch":"...","transcript":"<last ~80 lines, plain text>"}\`. Optional \`"lines":<n>\` (max 400).
+Prints the peer's branch then its last ~80 lines of transcript. Pass
+\`--lines <n>\` (max 400) for more.
 
 ## 3. Send a peer a prompt
 
 \`\`\`bash
-curl -s --max-time 10 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"from\\":\\"\$ORCHESTRA_WS_ID\\",\\"to\\":\\"<peer-id>\\",\\"text\\":\\"<your message>\\"}" http://x/message
+orchestra message <peer-id> <your message...>
 \`\`\`
 
-Reply: \`{"ok":true,"delivery":"live"}\` if the peer was running, or \`"started"\` if
-it was stopped and got woken to handle it now. The peer sees who the message is
-from and can reply back to your workspace id.
+Prints \`Delivered (live).\` if the peer was running, or \`Delivered (started).\`
+if it was stopped and got woken to handle it now. The peer sees the message came
+from you and can reply back to your workspace.
 `;
 
 const REPO_ROUTES_SKILL = `---
@@ -1617,37 +1624,34 @@ description: Manage Orchestra repos and workspaces over the socket — register 
 
 # Manage repos and workspaces
 
-Two socket routes let you change what Orchestra tracks. Each reads
-\$ORCHESTRA_SOCK from your env.
+Two \`orchestra\` CLI commands let you change what Orchestra tracks (each reads
+\$ORCHESTRA_SOCK from your env).
 
 ## Register a git repo
 
-Makes it appear in the app and become a spawn target (\`repoPath\`). Pass an
-ABSOLUTE path:
+Makes it appear in the app and become a spawn target. Pass an ABSOLUTE path (the
+CLI resolves relative paths against your cwd):
 
 \`\`\`bash
-curl -s --max-time 10 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"path\\":\\"<absolute repo path>\\"}" http://x/addRepo
+orchestra add-repo <absolute repo path>
 \`\`\`
 
-Reply: \`{"ok":true,"repo":{"path":"...","name":"...","defaultBranch":"..."}}\` — the
-app's repo list refreshes live. \`{"ok":false,"error":"..."}\` if the path isn't an
-absolute git repo.
+Prints \`Added repo <name> (<defaultBranch>) at <path>\` and the app's repo list
+refreshes live; it errors if the path isn't a git repo.
 
 ## Delete a workspace
 
 Stops its agent, runs its archive script, removes the git worktree + branch, and
 drops it from the app. **Destructive and irreversible** — only do this when the
-user explicitly asks to delete a workspace.
+user explicitly asks to delete a workspace. The \`--yes\` flag is required (the
+CLI refuses to delete without it):
 
 \`\`\`bash
-curl -s --max-time 15 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"id\\":\\"<workspace-id>\\"}" http://x/deleteWorkspace
+orchestra delete <workspace-id> --yes
 \`\`\`
 
-Reply: \`{"ok":true,"id":"...","branch":"..."}\` or \`{"ok":false,"error":"unknown workspace: <id>"}\`.
-
-Outside an orchestra workspace, the same actions are available as
-\`orchestra add-repo <path>\` and \`orchestra delete <id> --yes\` once the app has
-been launched once.
+Prints \`Deleted workspace <id> (<branch>)\`, or errors with \`unknown workspace:
+<id>\`.
 `;
 
 const PROMOTE_SKILL = `---
@@ -1662,15 +1666,16 @@ it to an *orchestrator*: the app moves it into the sidebar's "Orchestrators"
 section and nests every worktree you later spawn beneath it, so a whole fleet of
 child agents is visible at a glance under this session.
 
-Run this exact command (it reads \$ORCHESTRA_SOCK / \$ORCHESTRA_WS_ID from your env):
+Run this exact command (the \`orchestra\` CLI reads \$ORCHESTRA_SOCK /
+\$ORCHESTRA_WS_ID from your env, so it promotes THIS session):
 
 \`\`\`bash
-curl -s --max-time 10 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"id\\":\\"\$ORCHESTRA_WS_ID\\"}" http://x/promote
+orchestra promote "\$ORCHESTRA_WS_ID"
 \`\`\`
 
-Reply: \`{"ok":true,"id":"...","branch":"...","kind":"orchestrator"}\` on success
-(an already-promoted session also answers ok), or \`{"ok":false,"error":"..."}\` —
-e.g. if this is a git worktree, which can't be an orchestrator.
+Prints \`Promoted <id> (<branch>) to orchestrator\` on success (an
+already-promoted session also succeeds), or errors — e.g. if this is a git
+worktree, which can't be an orchestrator.
 
 Once promoted, adopt the orchestrator role for the rest of this session:
 
@@ -1689,35 +1694,54 @@ description: Nest an EXISTING workspace under an orchestrator (or detach it back
 
 An orchestrator already groups the worktrees it spawns beneath itself. You can
 ALSO pull an existing workspace — one that wasn't spawned by this orchestrator —
-under it after the fact, or pop one back out to its own repo section. Both go
-over the orchestra socket (reads \$ORCHESTRA_SOCK from your env).
+under it after the fact, or pop one back out to its own repo section. Both use
+the \`orchestra\` CLI (reads \$ORCHESTRA_SOCK from your env).
 
 The parent MUST be an orchestrator. If you don't have one yet, promote a scratch
-session first with the \`orchestra-promote\` skill. Use \`orchestra-comms\` (the
-\`/peers\` route) to discover the ids of existing workspaces.
+session first with the \`orchestra-promote\` skill. Use \`orchestra-comms\`
+(\`orchestra peers\`) to discover the ids of existing workspaces.
 
 ## Attach a workspace under an orchestrator
 
 \`\`\`bash
-curl -s --max-time 10 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"id\\":\\"<workspace-id>\\",\\"parentId\\":\\"<orchestrator-id>\\"}" http://x/attach
+orchestra attach <workspace-id> <orchestrator-id>
 \`\`\`
 
-Reply: \`{"ok":true,"id":"...","parentId":"..."}\` — the sidebar re-nests it live.
-\`{"ok":false,"error":"..."}\` if an id is unknown, the parent isn't an
-orchestrator, or you tried to parent a workspace under itself.
+Prints \`Attached <id> under orchestrator <parentId>\` and the sidebar re-nests it
+live; it errors if an id is unknown, the parent isn't an orchestrator, or you
+tried to parent a workspace under itself.
 
 ## Detach a workspace (back to its own section)
 
-Omit \`parentId\` (or send it empty):
-
 \`\`\`bash
-curl -s --max-time 10 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"id\\":\\"<workspace-id>\\"}" http://x/attach
+orchestra detach <workspace-id>
 \`\`\`
 
-Reply: \`{"ok":true,"id":"...","parentId":null}\`.
+Prints \`Detached <id>\`.
+`;
 
-Outside an orchestra workspace the same actions are \`orchestra attach <id> <parentId>\`
-and \`orchestra detach <id>\`.
+const RENAME_SKILL = `---
+name: orchestra-rename
+description: Rename THIS workspace's auto-generated git branch to a meaningful name. Use as soon as the work the conversation is about becomes clear, so the branch reflects the actual task.
+---
+
+# Rename this workspace's branch
+
+A fresh Orchestra workspace starts on an auto-generated branch name (e.g.
+\`radiant-fox\`). Rename it to a short kebab-case name (3-6 words) that reflects
+the actual work, the moment that work is clear. Orchestra renames the real git
+branch for you — do NOT run \`git branch -m\` yourself.
+
+Run this exact command (the \`orchestra\` CLI reads \$ORCHESTRA_SOCK /
+\$ORCHESTRA_WS_ID from your env, so it renames THIS workspace):
+
+\`\`\`bash
+orchestra rename "\$ORCHESTRA_WS_ID" "<new-branch-name>"
+\`\`\`
+
+Prints \`Renamed to <final-name>\` on success, or an error if the name was refused
+(e.g. already taken). Examples: fix-checkout-typo, add-stripe-webhook-retry,
+route-demande-accessoire.
 `;
 
 // Peer-gated, one-line re-surface of the comms capability on every
@@ -1753,7 +1777,7 @@ exit 0
 
 // Drains queued peer messages into the agent's context, then clears them. The
 // main process writes pre-formatted message blocks (which already name the
-// sender and show the reply curl) into this file; the hook just prints and
+// sender and show the reply command) into this file; the hook just prints and
 // removes it. Self-gated on \$ORCHESTRA_WS_ID so it's a no-op outside orchestra,
 // and on a non-empty file so it adds nothing when there's no mail.
 const INBOX_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
@@ -1961,6 +1985,7 @@ const HOOKS_VERSION = createHash('sha256')
       REPO_ROUTES_SKILL,
       PROMOTE_SKILL,
       ATTACH_SKILL,
+      RENAME_SKILL,
       HOOK_ACTIVITY_SUBMIT_CMD,
       HOOK_ACTIVITY_STOP_CMD,
       HOOK_ACTIVITY_NOTIFY_CMD,
@@ -2022,7 +2047,7 @@ export async function installOrchestraHooks(
 
     // Capability skills. Each lands at <worktree>/.claude/skills/<name>/SKILL.md
     // and is auto-discovered by Claude Code — only the one-line description
-    // loads up front; the body (with the exact curl payload) loads on demand.
+    // loads up front; the body (with the exact CLI invocation) loads on demand.
     const skillsDir = path.join(worktreePath, '.claude', 'skills');
     const writeSkill = async (name: string, body: string) => {
       const d = path.join(skillsDir, name);
@@ -2035,6 +2060,7 @@ export async function installOrchestraHooks(
       writeSkill('orchestra-repos', REPO_ROUTES_SKILL),
       writeSkill('orchestra-promote', PROMOTE_SKILL),
       writeSkill('orchestra-attach', ATTACH_SKILL),
+      writeSkill('orchestra-rename', RENAME_SKILL),
     ]);
 
     const settingsDir = path.join(worktreePath, '.claude');

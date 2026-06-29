@@ -135,6 +135,19 @@ Socket discovery (in order):
   2. else the contents of ~/.orchestra/sock (the absolute socket path);
   3. else the command fails — Orchestra is not running.`;
 
+/**
+ * The caller's own workspace id, when the CLI runs inside an Orchestra agent
+ * PTY (orchestra sets $ORCHESTRA_WS_ID there). Routes use it as `from` to
+ * exclude yourself from `peers`, attribute a `message` so the peer can reply
+ * back, and nest a `spawn`ed worktree under its spawner. A plain human shell
+ * has no such env var, so `from` is simply omitted — unchanged behaviour. The
+ * route layer (hooks-server) treats a missing `from` as "no caller identity".
+ */
+function selfWorkspaceId(): string | undefined {
+  const id = process.env.ORCHESTRA_WS_ID;
+  return id && id.trim() ? id.trim() : undefined;
+}
+
 /** Pull `--flag value` out of args, returning the value and the leftover args. */
 function takeFlag(args: string[], flag: string): { value?: string; rest: string[] } {
   const idx = args.indexOf(flag);
@@ -159,7 +172,7 @@ async function main(argv: string[]): Promise<void> {
 
   switch (command) {
     case 'peers': {
-      const res = await request('/peers', {});
+      const res = await request('/peers', { from: selfWorkspaceId() });
       if (!res.ok) fail(res.error ?? 'failed to list peers');
       const peers = (res.peers as PeerInfo[] | undefined) ?? [];
       if (peers.length === 0) {
@@ -197,7 +210,7 @@ async function main(argv: string[]): Promise<void> {
       const id = args[0];
       const text = args.slice(1).join(' ');
       if (!id || !text) fail('usage: orchestra message <id> <text...>');
-      const res = await request('/message', { to: id, text });
+      const res = await request('/message', { from: selfWorkspaceId(), to: id, text });
       if (!res.ok) fail(res.error ?? 'failed to deliver message');
       const delivery = (res.delivery as string | undefined) ?? 'ok';
       process.stdout.write(`Delivered (${delivery}).\n`);
@@ -210,7 +223,7 @@ async function main(argv: string[]): Promise<void> {
       const { value: base, rest: r3 } = takeFlag(r2, '--base');
       void r3;
       if (!task) fail('usage: orchestra spawn --task <text> [--repo <path>] [--base <branch>]');
-      const body: Record<string, unknown> = { task };
+      const body: Record<string, unknown> = { task, from: selfWorkspaceId() };
       if (repo !== undefined) body.repoPath = path.resolve(repo);
       if (base !== undefined) body.baseBranch = base;
       const res = await request('/spawn', body);

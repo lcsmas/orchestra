@@ -172,7 +172,7 @@ import {
   isRunning,
 } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
-import { installCliShim } from './cli-shim';
+import { installCliShim, installAgentCliShim } from './cli-shim';
 import { startEventsSpool, stopEventsSpool } from './events-spool';
 import { startUsagePolling, stopUsagePolling, getLastUsage } from './usage';
 import {
@@ -935,6 +935,14 @@ if (!ORCHESTRA_CLI_MODE) {
       // only thing it does is pop a warning dialog when a tool is missing,
       // which is fine to surface a beat after the window opens.
       void checkDependencies().catch((e) => log.warn('checkDependencies failed', e));
+      // Agent-facing shim: written to a dir we prepend to every agent PTY's
+      // PATH (see main/pty.ts), so the CLI the injected skills/hooks call
+      // resolves regardless of the user's login PATH or platform. MUST run
+      // before createMainWindow(), which kicks off resumeRunningWorkspaces()
+      // and thus spawns agent PTYs — otherwise a resumed agent could get the
+      // PATH entry before the shim file exists and fall through to the raw
+      // binary (which launches the GUI on a bare `orchestra <subcmd>`).
+      installAgentCliShim();
       await createMainWindow();
       installCliShim();
       log.info('main window ready');

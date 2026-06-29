@@ -5,6 +5,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { getHookSocketPath } from './hooks-server';
+import { agentCliBinDir } from './cli-shim';
 import { getEventsDir } from './events-spool';
 import { reconcileExited } from './activity';
 import { log } from './logger';
@@ -189,6 +190,13 @@ export async function startPty(opts: {
     // script via this so it survives the agent `cd`-ing into a subdirectory
     // (relative paths broke once cwd != worktree root).
     env.ORCHESTRA_WORKTREE = opts.cwd;
+    // Guarantee a bare `orchestra` resolves in the agent shell: the injected
+    // skills/hooks invoke the CLI directly, and the GUI's inherited login PATH
+    // can't be trusted to contain any shim dir (and has none at all on macOS).
+    // Prepend the orchestra-owned bin dir written by installAgentCliShim().
+    // On Windows the shim is orchestra.cmd, resolved via PATHEXT (default).
+    const binDir = agentCliBinDir();
+    env.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir;
   }
   if (opts.workspaceId) {
     // Surfaced to the activity hooks: the workspace id tags every appended
