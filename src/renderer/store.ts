@@ -13,6 +13,7 @@ import type {
   WorkspaceAccount,
 } from '../shared/types';
 import { dialog } from './components/Dialog';
+import { dlog, debugEnabled } from './debug';
 
 interface State {
   repos: RepoEntry[];
@@ -363,6 +364,15 @@ export const useStore = create<State>((set, get) => ({
 
 // Live updates from main process.
 window.orchestra.onWorkspaceUpdate((w) => {
+  // Debug: trace what status the renderer actually receives. A dot stuck on the
+  // wrong colour is either a transition that never arrived (main-side) or one
+  // that arrived and was overwritten (renderer-side) — this line shows which.
+  if (debugEnabled()) {
+    const prev = useStore.getState().workspaces.find((x) => x.id === w.id);
+    if (!prev) dlog('ws+', `${w.id.slice(0, 8)} status=${w.status} (${w.name})`);
+    else if (prev.status !== w.status)
+      dlog('status', `${w.id.slice(0, 8)} ${prev.status} → ${w.status} (${w.name})`);
+  }
   useStore.setState((s) => {
     // Upsert, not just patch: a workspace created by the main process — the
     // agent-driven /spawn flow — is unknown to this renderer, so a pure map()
@@ -392,6 +402,7 @@ window.orchestra.onWorkspaceRemoved((id) => {
   });
 });
 window.orchestra.onAgentTool((id, tool) => {
+  dlog('tool', `${id.slice(0, 8)} ${tool ?? '(cleared)'}`);
   // This is the highest-frequency event in the app — it fires on every
   // PreToolUse/PostToolUse hook of every running agent. zustand notifies all
   // subscribers on ANY setState, even one that merges an empty/unchanged

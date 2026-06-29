@@ -57,7 +57,13 @@ async function setStatus(
 }
 
 function fireFinished(id: string, window: BrowserWindow): void {
-  const focused = window.isFocused();
+  // Guard isFocused: on a transiently destroyed/unavailable window it throws
+  // ("Object has been destroyed"), and since this runs INSIDE the spool drain
+  // loop, an uncaught throw here aborts the whole batch — stranding the `stop`
+  // (and any events behind it) permanently, which left the dot stuck on
+  // `running` after the turn ended. `stop`/`notify` are the only apply paths
+  // that call isFocused, which is exactly why only turn-ends were lost.
+  const focused = !window.isDestroyed() && window.isFocused();
   void setStatus(id, 'waiting', window).then((res) => {
     if (!res) return;
     const { ws, changed } = res;
@@ -99,7 +105,9 @@ function fireFinished(id: string, window: BrowserWindow): void {
 }
 
 function fireNeedsInput(id: string, window: BrowserWindow): void {
-  const focused = window.isFocused();
+  // See fireFinished: guard isFocused so a destroyed window can't throw and
+  // abort the drain batch, stranding this `notify`.
+  const focused = !window.isDestroyed() && window.isFocused();
   void setStatus(id, 'waiting', window).then((res) => {
     if (!res) return;
     const { ws, changed } = res;
@@ -366,6 +374,11 @@ export function applyAgentEvent(
       emitTool(id, null, window);
       break;
     case 'stop':
+    // Claude's `StopFailure` hook (turn ended on an API error) maps here too:
+    // an error-terminated turn is still a turn-end, so the dot must leave
+    // `running`. Without this the dot stuck on `running` after every rate-limit
+    // / overload turn-end.
+    case 'stopfail':
       emitTool(id, null, window);
       fireFinished(id, window);
       break;

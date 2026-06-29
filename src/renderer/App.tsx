@@ -9,6 +9,7 @@ import { RunTerminal } from './components/RunTerminal';
 import { SetupBanner } from './components/SetupBanner';
 import { DialogHost, dialog } from './components/Dialog';
 import { playFinishedChime } from './chime';
+import { dlog } from './debug';
 import type { RepoEntry } from '../shared/types';
 import { isScratchLike } from '../shared/types';
 
@@ -210,6 +211,7 @@ export function App() {
 
   useEffect(() => {
     return window.orchestra.onAgentFinished((finishedId, focused) => {
+      dlog('finished', `${finishedId.slice(0, 8)} focused=${focused} active=${useStore.getState().activeId === finishedId}`);
       // User is actively on this workspace: no chime, no yellow dot blip.
       // Trust the main-process focus flag — `document.hasFocus()` is unreliable
       // on Wayland/CDP and returns stale `true` when the window is hidden.
@@ -223,6 +225,7 @@ export function App() {
 
   useEffect(() => {
     return window.orchestra.onAgentNeedsInput((id, focused) => {
+      dlog('needs-input', `${id.slice(0, 8)} focused=${focused} active=${useStore.getState().activeId === id}`);
       // Same focus heuristic as agent:finished — don't chime if the user is
       // already looking at the workspace. The dot itself is cleared by the
       // state-watcher effect below, which also covers the cases where main

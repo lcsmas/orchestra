@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { BrowserWindow } from 'electron';
 import { applyAgentEvent } from './activity';
+import { log } from './logger';
 
 // Durable activity-event spool tailer.
 //
@@ -97,6 +98,10 @@ function idFromFilename(name: string): string | null {
  *  the file under a writer; growth is bounded by `maybeRotate` at a quiescent
  *  moment instead. */
 function drain(id: string): void {
+  // No renderer target yet (or torn down): don't consume events we can't apply.
+  // Advancing the cursor here would strand whatever we read until the next
+  // append, since a re-drain would early-return on `size === offset`.
+  if (!window) return;
   const p = spoolPathFor(id);
   let size: number;
   try {
@@ -164,7 +169,16 @@ function drain(id: string): void {
       cur.lastSeq = seq;
     }
     const tool = typeof ev.tool === 'string' && ev.tool.length ? ev.tool : undefined;
-    if (window) applyAgentEvent(id, ev.event, tool, window);
+    // Isolate each apply: a throw here used to abort the whole loop, and since
+    // the cursor (offset + lastSeq) has already advanced past these lines, the
+    // unapplied tail — typically the turn-ending `stop`/`notify` — was lost for
+    // good (the dot stuck on `running`). Swallow per-line so one bad event can
+    // never strand the events behind it.
+    try {
+      applyAgentEvent(id, ev.event, tool, window);
+    } catch (e) {
+      log.error(`events-spool: applyAgentEvent failed for ${id} seq=${seq} event=${ev.event}`, e);
+    }
   }
   cur.prevSize = size;
 }
