@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from './store';
-import { Sidebar } from './components/Sidebar';
+import { Sidebar, OrchestratorIcon } from './components/Sidebar';
 import { TerminalView } from './components/Terminal';
 import { DiffView } from './components/DiffView';
 import { BranchPicker } from './components/BranchPicker';
@@ -257,6 +257,7 @@ export function App() {
   // get the same terminal-only treatment (no Diff/Run/Merge/PR). `isScratch`
   // here means "scratch-like", covering both kinds.
   const isScratch = !!active && isScratchLike(active);
+  const isOrchestrator = active?.kind === 'orchestrator';
   const openPR = active ? prs[active.id]?.open ?? null : null;
 
   // A scratch-like session is non-git and has no repo, so only the Terminal tab
@@ -364,7 +365,12 @@ export function App() {
           <>
             <div className="toolbar">
               <div className="title">
-                {isScratch ? (
+                {isOrchestrator ? (
+                  <span className="branch-chip orchestrator" title="Orchestrator session — coordinates spawned agents">
+                    <OrchestratorIcon />
+                    <span className="branch-chip-text">{active.branch}</span>
+                  </span>
+                ) : isScratch ? (
                   <span className="branch-chip scratch" title="Scratch session — not tracked by git">
                     <span aria-hidden="true">⚡</span>
                     <span className="branch-chip-text">{active.branch}</span>

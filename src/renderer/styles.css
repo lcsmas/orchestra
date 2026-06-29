@@ -1530,6 +1530,14 @@ input:focus, textarea:focus, select:focus {
   background: rgba(227, 179, 65, 0.1);
   border-color: rgba(227, 179, 65, 0.35);
 }
+/* Orchestrator marker in the toolbar — green, matching the sidebar's
+   Orchestrators section, to read as "coordinator" rather than a throwaway
+   scratch session. */
+.branch-chip.orchestrator {
+  color: #7ee787;
+  background: rgba(126, 231, 135, 0.1);
+  border-color: rgba(126, 231, 135, 0.35);
+}
 .branch-chip svg {
   flex-shrink: 0;
   opacity: 0.8;

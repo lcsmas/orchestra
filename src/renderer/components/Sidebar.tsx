@@ -66,7 +66,7 @@ function ZapIcon() {
   );
 }
 
-function OrchestratorIcon() {
+export function OrchestratorIcon() {
   // Lucide `network` — a node branching to two children, evoking an
   // orchestrator delegating to the agents it spawns.
   return (
