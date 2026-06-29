@@ -21,6 +21,7 @@ import {
 } from './git';
 import { isRunning, stopPty, clearScrollback, startPty, writePty, readScrollback } from './pty';
 import { expandConfigDir } from '../shared/accounts';
+import { syncAccountInheritance } from './account-inherit';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
 import { forgetWorkspaceProbes } from './activity';
@@ -1902,6 +1903,17 @@ export async function startAgentPty(
   }
   // Idempotent: upgrades workspaces created before the activity hook landed.
   await installOrchestraHooks(ws.worktreePath);
+  // Materialize the pinned account's inherited global config into its login dir
+  // right before spawn, so the agent sees the user's settings/skills/MCP. Pinned
+  // account only (resolveRepoAgentEnv uses the same pin for CLAUDE_CONFIG_DIR).
+  if (ws.accountId) {
+    const account = store.accounts.find((a) => a.id === ws.accountId);
+    if (account) {
+      await syncAccountInheritance(account).catch((err) =>
+        log.warn(`account-inherit: spawn-time sync failed for ${ws.id}`, err),
+      );
+    }
+  }
   // Expose the current branch and auto-rename gate to hooks. The SessionStart
   // hook reads ORCHESTRA_BRANCH_AUTO=1 to decide whether to inject the
   // rename-instruction context — flipping `branchManuallySet` true (after a

@@ -187,6 +187,12 @@ import {
   cancelLoginWatch,
 } from './account-usage';
 import {
+  listInheritables,
+  seedAccountInheritDefaults,
+  syncAccountInheritance,
+  syncAllAccountsInheritance,
+} from './account-inherit';
+import {
   detectAndUpdateBranchName,
   detectAndUpdateMergeState,
   detectAndUpdateReleaseState,
@@ -234,6 +240,14 @@ if (VITE_DEV_SERVER_URL || process.env.ORCHESTRA_DEBUG_PORT) {
 
 async function createMainWindow() {
   await store.load();
+  // Seed default inheritance for any account that has none, then materialize
+  // every account's selection into its login dir (symlinks + MCP merge) so an
+  // alternate login starts with the user's global config in place. Best-effort:
+  // never block startup on it.
+  await seedAccountInheritDefaults().catch((err) =>
+    log.warn('account-inherit: seeding failed', err),
+  );
+  void syncAllAccountsInheritance();
   await ensureRoot();
   // Hook server must be ready before any PTY spawns: spawned claude inherits
   // ORCHESTRA_SOCK from the env we'll set on the pty.spawn call, and that
@@ -400,9 +414,16 @@ handle('accounts:list', () => store.accounts);
 // and refresh usage so the badges react without waiting for the next poll tick.
 handle('accounts:set', async (_e, accounts: Account[]) => {
   const saved = await store.setAccounts(accounts);
+  // Re-materialize each account's inheritance so edited selections take effect
+  // immediately (symlinks added/removed, MCP servers merged/pruned).
+  void syncAllAccountsInheritance();
   void refreshAccountsNow(getMainWindow());
   return saved;
 });
+
+// What the global ~/.claude currently offers to inherit (skill dir names + MCP
+// server keys). Drives the per-account inheritance checkboxes in the UI.
+handle('accounts:listGlobalInheritables', () => listInheritables());
 
 // Cached usage for one account / all accounts (never triggers a fetch — the
 // poller keeps the cache warm within the 180s window).
@@ -438,8 +459,13 @@ handle('accounts:loginStart', async (_e, accountId: string, cols: number, rows: 
     setTimeout(() => resizePty(ptyId, cols, rows), 40);
     return;
   }
-  // Ensure the dir exists so Claude Code can write its credentials there.
+  // Ensure the dir exists so Claude Code can write its credentials there, and
+  // materialize the account's inherited config so the login session itself has
+  // the user's settings/skills/MCP (not just a bare credentials dir).
   await fs.promises.mkdir(dir, { recursive: true });
+  await syncAccountInheritance(account).catch((err) =>
+    log.warn('account-inherit: login-time sync failed', err),
+  );
   // `claude /login` does NOT exit after authenticating — it drops into a normal
   // session — and Claude Code exposes no completion signal. So watch the config
   // dir: once a fresh OAuth token lands in .credentials.json, kill the PTY

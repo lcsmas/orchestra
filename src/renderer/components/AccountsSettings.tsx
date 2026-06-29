@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { Account } from '../../shared/types';
+import type { Account, AccountInherit } from '../../shared/types';
 import { AccountLoginModal } from './AccountLoginModal';
 
 interface Props {
@@ -11,6 +11,42 @@ interface Row {
   id: string;
   label: string;
   configDir: string;
+  /** Inherit settings.json from the global ~/.claude. */
+  inheritSettings: boolean;
+  /** Inherit statusline-command.sh from the global ~/.claude. */
+  inheritStatusline: boolean;
+  /** Skill dir names inherited from ~/.claude/skills. */
+  inheritSkills: string[];
+  /** MCP server keys inherited from ~/.claude.json. */
+  inheritMcp: string[];
+}
+
+/** Map a stored Account into the editable Row shape. */
+function rowFromAccount(a: Account): Row {
+  return {
+    id: a.id,
+    label: a.label,
+    configDir: a.configDir,
+    inheritSettings: a.inherit?.settings ?? false,
+    inheritStatusline: a.inherit?.statusline ?? false,
+    inheritSkills: a.inherit?.skills ?? [],
+    inheritMcp: a.inherit?.mcpServers ?? [],
+  };
+}
+
+/** Build the (possibly undefined) inherit spec for a Row. */
+function inheritFromRow(r: Row): AccountInherit | undefined {
+  const out: AccountInherit = {};
+  if (r.inheritSettings) out.settings = true;
+  if (r.inheritStatusline) out.statusline = true;
+  if (r.inheritSkills.length) out.skills = r.inheritSkills;
+  if (r.inheritMcp.length) out.mcpServers = r.inheritMcp;
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** Add/remove `name` from a string-list field on one row. */
+function toggleInList(list: string[], name: string): string[] {
+  return list.includes(name) ? list.filter((n) => n !== name) : [...list, name];
 }
 
 function newId(): string {
@@ -39,14 +75,22 @@ export function AccountsSettings({ onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   // The account currently being logged in (drives the login terminal modal).
   const [loginFor, setLoginFor] = useState<{ id: string; label: string } | null>(null);
+  // What the global ~/.claude offers to inherit (populates the checkbox lists).
+  const [inheritables, setInheritables] = useState<{ skills: string[]; mcpServers: string[] }>({
+    skills: [],
+    mcpServers: [],
+  });
 
   useEffect(() => {
     let cancelled = false;
-    void window.orchestra
-      .listAccounts()
-      .then((accounts: Account[]) => {
+    void Promise.all([
+      window.orchestra.listAccounts(),
+      window.orchestra.listGlobalInheritables().catch(() => ({ skills: [], mcpServers: [] })),
+    ])
+      .then(([accounts, available]) => {
         if (cancelled) return;
-        setRows(accounts.map((a) => ({ id: a.id, label: a.label, configDir: a.configDir })));
+        setRows(accounts.map(rowFromAccount));
+        setInheritables(available);
         setLoaded(true);
       })
       .catch((e) => {
@@ -83,22 +127,53 @@ export function AccountsSettings({ onClose }: Props) {
       }),
     );
   const remove = (id: string) => setRows((rs) => rs.filter((r) => r.id !== id));
-  const add = () => setRows((rs) => [...rs, { id: newId(), label: '', configDir: '' }]);
+  // New accounts default to inheriting the shared global config (settings +
+  // statusline); skills/MCP start empty for the user to pick.
+  const add = () =>
+    setRows((rs) => [
+      ...rs,
+      {
+        id: newId(),
+        label: '',
+        configDir: '',
+        inheritSettings: true,
+        inheritStatusline: true,
+        inheritSkills: [],
+        inheritMcp: [],
+      },
+    ]);
 
   const pickDir = async (id: string) => {
     const dir = await window.orchestra.pickDirectory();
     if (dir) update(id, { configDir: dir });
   };
 
+  const toggleSkill = (id: string, name: string) =>
+    setRows((rs) =>
+      rs.map((r) => (r.id === id ? { ...r, inheritSkills: toggleInList(r.inheritSkills, name) } : r)),
+    );
+  const toggleMcp = (id: string, name: string) =>
+    setRows((rs) =>
+      rs.map((r) => (r.id === id ? { ...r, inheritMcp: toggleInList(r.inheritMcp, name) } : r)),
+    );
+
   // Persist current edits, returning the saved list (so a Login click can save
   // first — main needs the account to exist before it can spawn its login).
   const persist = async (): Promise<Account[] | null> => {
     const accounts: Account[] = rows
-      .map((r) => ({ id: r.id, label: r.label.trim(), configDir: r.configDir.trim() }))
+      .map((r) => {
+        const inherit = inheritFromRow(r);
+        return {
+          id: r.id,
+          label: r.label.trim(),
+          configDir: r.configDir.trim(),
+          ...(inherit ? { inherit } : {}),
+        };
+      })
       .filter((r) => r.label);
     try {
       const saved = await window.orchestra.setAccounts(accounts);
-      setRows(saved.map((a) => ({ id: a.id, label: a.label, configDir: a.configDir })));
+      setRows(saved.map(rowFromAccount));
       return saved;
     } catch (e) {
       setError((e as Error).message);
@@ -219,6 +294,73 @@ export function AccountsSettings({ onClose }: Props) {
                       </button>
                     </div>
                   </label>
+
+                  <div className="account-inherit">
+                    <span className="account-field-label">Inherit from global ~/.claude</span>
+                    <div className="account-inherit-toggles">
+                      <label className="account-inherit-check">
+                        <input
+                          type="checkbox"
+                          checked={r.inheritSettings}
+                          onChange={(e) => update(r.id, { inheritSettings: e.target.checked })}
+                        />
+                        <span>
+                          <code>settings.json</code>
+                          <em> model, hooks, statusline, editor mode</em>
+                        </span>
+                      </label>
+                      <label className="account-inherit-check">
+                        <input
+                          type="checkbox"
+                          checked={r.inheritStatusline}
+                          onChange={(e) => update(r.id, { inheritStatusline: e.target.checked })}
+                        />
+                        <span>
+                          <code>statusline-command.sh</code>
+                        </span>
+                      </label>
+                    </div>
+
+                    <div className="account-inherit-group">
+                      <span className="account-inherit-group-label">Skills</span>
+                      {inheritables.skills.length === 0 ? (
+                        <span className="account-inherit-empty">None in ~/.claude/skills</span>
+                      ) : (
+                        <div className="account-inherit-chips">
+                          {inheritables.skills.map((name) => (
+                            <label key={name} className="account-inherit-chip">
+                              <input
+                                type="checkbox"
+                                checked={r.inheritSkills.includes(name)}
+                                onChange={() => toggleSkill(r.id, name)}
+                              />
+                              <span>{name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="account-inherit-group">
+                      <span className="account-inherit-group-label">MCP servers</span>
+                      {inheritables.mcpServers.length === 0 ? (
+                        <span className="account-inherit-empty">None in ~/.claude.json</span>
+                      ) : (
+                        <div className="account-inherit-chips">
+                          {inheritables.mcpServers.map((name) => (
+                            <label key={name} className="account-inherit-chip">
+                              <input
+                                type="checkbox"
+                                checked={r.inheritMcp.includes(name)}
+                                onChange={() => toggleMcp(r.id, name)}
+                              />
+                              <span>{name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>

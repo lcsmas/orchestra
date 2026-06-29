@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { Account, RepoEntry, RepoScripts, Workspace } from '../shared/types';
+import { sanitizeAccountInherit } from '../shared/accounts';
 
 const PORT_RANGE_START = 55100;
 const PORT_RANGE_END = 55600; // exclusive — keeps 500 slots, well above realistic concurrency
@@ -212,16 +213,24 @@ class Store {
   }
 
   /** Replace the whole accounts list. Drops entries missing an id or label,
-   *  trims fields, and keeps only `id`/`label`/`configDir`. `configDir` is a
-   *  path (optionally with `~`/`${VAR}`) — never a secret; the credentials live
-   *  in that dir's `.credentials.json`, which Orchestra never persists here. */
+   *  trims fields, and keeps `id`/`label`/`configDir`/`inherit`. `configDir` is
+   *  a path (optionally with `~`/`${VAR}`) — never a secret; the credentials
+   *  live in that dir's `.credentials.json`, which Orchestra never persists here.
+   *  `inherit` is normalized via {@link sanitizeAccountInherit} and omitted when
+   *  empty. */
   async setAccounts(accounts: Account[]): Promise<Account[]> {
     const cleaned: Account[] = [];
     for (const a of accounts) {
       const id = (a?.id ?? '').trim();
       const label = (a?.label ?? '').trim();
       if (!id || !label) continue;
-      cleaned.push({ id, label, configDir: typeof a.configDir === 'string' ? a.configDir.trim() : '' });
+      const inherit = sanitizeAccountInherit(a?.inherit);
+      cleaned.push({
+        id,
+        label,
+        configDir: typeof a.configDir === 'string' ? a.configDir.trim() : '',
+        ...(inherit ? { inherit } : {}),
+      });
     }
     this.data.accounts = cleaned;
     // Clear any repo's accountId that now points at a removed account, so a

@@ -21,6 +21,56 @@ export interface Account {
   /** Path to this account's Claude config dir (the `CLAUDE_CONFIG_DIR` value).
    *  May use `~` and `${VAR}`. */
   configDir: string;
+  /** Which pieces of the GLOBAL `~/.claude` config this account's dir inherits.
+   *  A login dir holds only `.credentials.json` by default, so an agent running
+   *  as this account would otherwise lose the user's settings/skills/MCP. The
+   *  selected items are materialized into the login dir on agent spawn (symlinks
+   *  for files/skills, a selective merge for MCP servers — see
+   *  src/main/account-inherit.ts). Absent → nothing inherited. */
+  inherit?: AccountInherit;
+}
+
+/** Per-account selection of what to inherit from the global `~/.claude`.
+ *  All fields optional; an omitted/false field inherits nothing for that item.
+ *  `skills` / `mcpServers` are names (skill dir names under `~/.claude/skills`,
+ *  mcpServer keys in `~/.claude.json`). The list is intentionally narrow — add
+ *  fields here as more of `~/.claude` becomes inheritable. */
+export interface AccountInherit {
+  /** Symlink `~/.claude/settings.json` (model, hooks, statusline, editor mode). */
+  settings?: boolean;
+  /** Symlink `~/.claude/statusline-command.sh`. */
+  statusline?: boolean;
+  /** Skill dir names to symlink from `~/.claude/skills/<name>`. */
+  skills?: string[];
+  /** mcpServer keys to merge from `~/.claude.json` into the login dir's. */
+  mcpServers?: string[];
+}
+
+/** Normalize an untrusted `inherit` value (e.g. from store.json or IPC) into a
+ *  clean {@link AccountInherit}, or `undefined` when nothing is selected. Drops
+ *  non-string / empty / duplicate names and coerces the booleans. Pure — no fs,
+ *  so both processes can call it. */
+export function sanitizeAccountInherit(v: unknown): AccountInherit | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const src = v as Record<string, unknown>;
+  const names = (x: unknown): string[] => {
+    if (!Array.isArray(x)) return [];
+    const out: string[] = [];
+    for (const item of x) {
+      if (typeof item !== 'string') continue;
+      const name = item.trim();
+      if (name && !out.includes(name)) out.push(name);
+    }
+    return out;
+  };
+  const out: AccountInherit = {};
+  if (src.settings === true) out.settings = true;
+  if (src.statusline === true) out.statusline = true;
+  const skills = names(src.skills);
+  if (skills.length) out.skills = skills;
+  const mcpServers = names(src.mcpServers);
+  if (mcpServers.length) out.mcpServers = mcpServers;
+  return Object.keys(out).length ? out : undefined;
 }
 
 /** A rolling usage window (5-hour session or 7-day weekly). Mirrors the

@@ -294,6 +294,7 @@ export interface UsageSnapshot {
 // module stays self-contained and unit-testable without electron.
 export type {
   Account,
+  AccountInherit,
   AccountUsageStatus,
   UsageData,
   UsageWindowDetail,

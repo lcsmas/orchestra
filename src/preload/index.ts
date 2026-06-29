@@ -27,6 +27,7 @@ const api: OrchestraAPI = {
   accountLoginStart: (accountId, cols, rows) => ipcRenderer.invoke('accounts:loginStart', accountId, cols, rows),
   accountLoginStop: (accountId) => ipcRenderer.invoke('accounts:loginStop', accountId),
   refreshAccounts: () => ipcRenderer.invoke('accounts:refresh'),
+  listGlobalInheritables: () => ipcRenderer.invoke('accounts:listGlobalInheritables'),
   onAccountLoginDone: (cb) => {
     const listener = (_e: unknown, accountId: string) => cb(accountId);
     ipcRenderer.on('accounts:loginDone', listener);

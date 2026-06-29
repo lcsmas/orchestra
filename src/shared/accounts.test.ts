@@ -7,6 +7,7 @@ import {
   resolveWorkspaceAccountId,
   parseCredentials,
   parseUsageResponse,
+  sanitizeAccountInherit,
   type RawUsageResponse,
 } from './accounts.ts';
 
@@ -160,4 +161,39 @@ test('resolveWorkspaceAccountId keeps the pin even after the repo would point el
   // The repo may now be assigned acc-b, but a workspace pinned to acc-a stays
   // on acc-a — the whole point of pinning (no "No conversation found").
   assert.equal(resolveWorkspaceAccountId('acc-a', new Set(['acc-a', 'acc-b'])), 'acc-a');
+});
+
+// ---- sanitizeAccountInherit (per-account inheritance spec) -------------------
+
+test('sanitizeAccountInherit returns undefined for empty / non-object / nothing-selected', () => {
+  assert.equal(sanitizeAccountInherit(undefined), undefined);
+  assert.equal(sanitizeAccountInherit(null), undefined);
+  assert.equal(sanitizeAccountInherit('x'), undefined);
+  assert.equal(sanitizeAccountInherit({}), undefined);
+  // false booleans + empty lists collapse to "nothing selected".
+  assert.equal(sanitizeAccountInherit({ settings: false, skills: [], mcpServers: [] }), undefined);
+});
+
+test('sanitizeAccountInherit keeps only true booleans and clean name lists', () => {
+  assert.deepEqual(
+    sanitizeAccountInherit({
+      settings: true,
+      statusline: true,
+      skills: ['frontend-design', 'handoff'],
+      mcpServers: ['github'],
+    }),
+    { settings: true, statusline: true, skills: ['frontend-design', 'handoff'], mcpServers: ['github'] },
+  );
+});
+
+test('sanitizeAccountInherit drops blanks, non-strings, and de-dupes names; coerces booleans', () => {
+  assert.deepEqual(
+    sanitizeAccountInherit({
+      settings: 'yes', // not strictly true → dropped
+      statusline: true,
+      skills: ['  handoff  ', 'handoff', '', 42, 'frontend-design'],
+      mcpServers: ['github', 'github'],
+    }),
+    { statusline: true, skills: ['handoff', 'frontend-design'], mcpServers: ['github'] },
+  );
 });
