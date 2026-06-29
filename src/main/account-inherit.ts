@@ -178,10 +178,19 @@ function isSymlink(p: string): boolean {
   }
 }
 
-/** Ensure `loginDir/rel` is a symlink to `target`, non-destructively.
+/** Ensure `loginDir/rel` is a symlink to `target`.
  *  Returns true if the link is present afterwards (created/already-correct),
- *  false if it was skipped (missing source, or a real file is in the way). */
-function ensureSymlink(loginDir: string, rel: string, target: string): boolean {
+ *  false if it was skipped (missing source, or a real file is in the way and
+ *  `replaceReal` is false).
+ *
+ *  `replaceReal` governs what happens when a REAL (non-symlink) file already
+ *  sits at `linkPath`: when false we leave it untouched (skills — a real dir is
+ *  the user's own skill, never destroy it); when true we back it up ONCE to
+ *  `<linkPath>.orchestra-bak` then replace it with the symlink. The replace path
+ *  is for the config FILES the user explicitly opted to inherit (settings.json,
+ *  statusline) — an auto-generated stale copy in the login dir must not silently
+ *  shadow the global one, but we still keep a recoverable backup. */
+function ensureSymlink(loginDir: string, rel: string, target: string, replaceReal: boolean): boolean {
   const linkPath = path.join(loginDir, rel);
   if (!fs.existsSync(target)) {
     // Source gone — drop a stale link if we have one, then skip.
@@ -199,6 +208,18 @@ function ensureSymlink(loginDir: string, rel: string, target: string): boolean {
     if (stat.isSymbolicLink()) {
       if (fs.readlinkSync(linkPath) === target) return true; // already correct
       fs.unlinkSync(linkPath); // repoint
+    } else if (replaceReal) {
+      // Back up the real file once (never clobber an existing backup), then
+      // replace it with the symlink so the inherited config actually wins.
+      const backup = `${linkPath}.orchestra-bak`;
+      try {
+        if (!fs.existsSync(backup)) fs.renameSync(linkPath, backup);
+        else fs.rmSync(linkPath, { recursive: true, force: true });
+        log.info(`account-inherit: replaced real ${linkPath} with inherited symlink (backup: ${backup})`);
+      } catch (err) {
+        log.warn(`account-inherit: could not back up ${linkPath}, leaving it as-is`, err);
+        return false;
+      }
     } else {
       // A REAL file/dir the user owns — never clobber it.
       log.warn(`account-inherit: ${linkPath} is a real file, not inheriting (left as-is)`);
@@ -295,22 +316,32 @@ export async function syncAccountInheritance(account: Account): Promise<void> {
 
   const prev = readManifest(loginDir);
 
-  // Build the desired symlink set (relative path -> target).
-  const wantLinks = new Map<string, string>();
-  if (inherit?.settings) wantLinks.set('settings.json', path.join(globalDir, 'settings.json'));
+  // Build the desired symlink set (relative path -> {target, replaceReal}).
+  // Config FILES the user opted into replace a stale real copy (with backup);
+  // skill DIRS never clobber a real dir (could be the user's own skill).
+  const wantLinks = new Map<string, { target: string; replaceReal: boolean }>();
+  if (inherit?.settings) {
+    wantLinks.set('settings.json', { target: path.join(globalDir, 'settings.json'), replaceReal: true });
+  }
   if (inherit?.statusline) {
-    wantLinks.set('statusline-command.sh', path.join(globalDir, 'statusline-command.sh'));
+    wantLinks.set('statusline-command.sh', {
+      target: path.join(globalDir, 'statusline-command.sh'),
+      replaceReal: true,
+    });
   }
   for (const name of inherit?.skills ?? []) {
     // Guard against path traversal in stored names — skills are single segments.
     if (name.includes('/') || name.includes('\\') || name === '..') continue;
-    wantLinks.set(path.join('skills', name), path.join(globalDir, 'skills', name));
+    wantLinks.set(path.join('skills', name), {
+      target: path.join(globalDir, 'skills', name),
+      replaceReal: false,
+    });
   }
 
   // Apply desired links; collect the ones actually present afterwards.
   const liveLinks: string[] = [];
-  for (const [rel, target] of wantLinks) {
-    if (ensureSymlink(loginDir, rel, target)) liveLinks.push(rel);
+  for (const [rel, { target, replaceReal }] of wantLinks) {
+    if (ensureSymlink(loginDir, rel, target, replaceReal)) liveLinks.push(rel);
   }
   // Remove links we created before that are no longer desired.
   for (const rel of prev.symlinks) {
