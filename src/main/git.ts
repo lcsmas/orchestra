@@ -370,31 +370,67 @@ async function baseReflogRecordsMerge(
   }
 }
 
-/** True when this branch authored the commit it currently points at — i.e. its
- *  reflog shows the tip arrived via a `commit`/`merge`/`rebase`/`cherry-pick` ON
- *  this branch, not solely a `branch:`/`Branch:` creation entry. This is the
- *  disambiguator for any branch fully contained in base (nothing ahead) that has
- *  no merge commit and no `merge <branch>` reflog trace: a branch that did work
- *  base then fast-forwarded/`update-ref`'d in looks, by topology, identical to a
- *  branch freshly cut from base — but their reflogs differ. A fresh branch's
- *  newest entry is its creation; a branch that committed has `commit:`-style
- *  entries above it. Works whether or not the branch tip still equals base's tip,
- *  so a merged branch keeps reading as merged after base advances past it.
+/** Does one branch reflog entry prove the branch *authored a commit*?
  *
- *  Reads the reflog subjects (`%gs`) newest-first and asks whether any entry is
- *  a work-producing action rather than a branch create/reset/checkout. Robust to
- *  base being advanced by `update-ref`/`push` (which leave no trace on the
- *  branch side) because we look at what the BRANCH did, not how base moved. */
+ *  A `%H %gs` reflog line (sha + subject). The subject's action word decides:
+ *
+ *   - `commit` / `commit (amend)` / `cherry-pick` / `am` — always create a new
+ *     commit object that is the branch's own work → authored.
+ *   - `rebase` — replays commits, so usually authored. BUT a rebase's boundary
+ *     entry (`rebase (start): checkout <X>` / `rebase (finish): … onto <X>`)
+ *     points at the commit the rebase landed *on*, not one the branch wrote. An
+ *     empty branch rebased onto base lands exactly on base's tip — its entry sha
+ *     equals that onto/checkout target — and must NOT count as authored. A real
+ *     replayed tip sits *past* the target, so its sha differs and it counts.
+ *   - `merge` / `pull` — excluded: a fast-forward leaves an entry pointing at a
+ *     commit the branch didn't author (same false-positive shape as the rebase
+ *     boundary, but with no `onto`/`checkout` target to disambiguate, so we
+ *     never trust them as an authorship signal).
+ *
+ *  Exported for unit testing — it's the pure crux of merged/released detection. */
+export function reflogEntryAuthored(sha: string, subject: string): boolean {
+  if (/^(commit|commit \(amend\)|cherry-pick|am)\b/i.test(subject)) return true;
+  if (/^rebase\b/i.test(subject)) {
+    // The commit this rebase entry landed on (its `onto`/`checkout` target).
+    const target = subject.match(/\b(?:onto|checkout) ([0-9a-f]{7,40})\b/i);
+    if (target) {
+      const t = target[1];
+      // Boundary landing on its own target → the branch authored nothing here.
+      if (sha === t || sha.startsWith(t) || t.startsWith(sha)) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+/** True when this branch authored the commit it currently points at — i.e. its
+ *  reflog shows the tip arrived via a real commit-producing action ON this
+ *  branch (see {@link reflogEntryAuthored}), not solely a `branch:`/`Branch:`
+ *  creation entry — nor a no-op rebase that merely re-pointed an empty branch at
+ *  a newer base. This is the disambiguator for any branch fully contained in
+ *  base (nothing ahead) that has no merge commit and no `merge <branch>` reflog
+ *  trace: a branch that did work then fast-forwarded/`update-ref`'d in looks, by
+ *  topology, identical to a branch freshly cut from (or rebased onto) base — but
+ *  their reflogs differ. A fresh/rebased-empty branch's only entries are its
+ *  creation and rebase boundaries; a branch that committed has `commit:`-style
+ *  entries above them. Works whether or not the branch tip still equals base's
+ *  tip, so a merged branch keeps reading as merged after base advances past it.
+ *
+ *  Reads `%H %gs` newest-first and asks whether any entry is a work-producing
+ *  action. Robust to base being advanced by `update-ref`/`push` (which leave no
+ *  trace on the branch side) because we look at what the BRANCH did, not how
+ *  base moved. */
 async function branchAuthoredItsTip(
   git: ReturnType<typeof simpleGit>,
   branch: string,
 ): Promise<boolean> {
   try {
-    const out = await git.raw(['reflog', 'show', branch, '--format=%gs']);
-    return out
-      .split('\n')
-      .map((s) => s.trim())
-      .some((subject) => /^(commit|merge|rebase|cherry-pick|am|pull)\b/i.test(subject));
+    const out = await git.raw(['reflog', 'show', branch, '--format=%H %gs']);
+    return out.split('\n').some((line) => {
+      const sp = line.indexOf(' ');
+      if (sp < 0) return false;
+      return reflogEntryAuthored(line.slice(0, sp).trim(), line.slice(sp + 1).trim());
+    });
   } catch {
     return false;
   }
@@ -703,13 +739,15 @@ export async function getReleaseVersionsContaining(
 
 /** The commits a branch actually AUTHORED (newest-first), as commit SHAs.
  *
- *  Primary signal: the branch reflog. Entries whose action is a work-producing
- *  one (`commit`, `commit (amend)`, `rebase`, `cherry-pick`, `am`) name the
- *  commits this branch made; `branch:`/`reset:`/`checkout:` entries do not. We
- *  keep only those still reachable from the current tip, so a commit a later
- *  rebase superseded drops out and we don't double-count its replacement's
- *  origin. This survives a stale pointer (a merged branch whose ref still sits
- *  at an old commit) because it reads what the branch DID, not where it points.
+ *  Primary signal: the branch reflog. Entries whose action authored a commit
+ *  (see {@link reflogEntryAuthored} — `commit`, `cherry-pick`, `am`, or a rebase
+ *  that replayed past its onto target) name the commits this branch made;
+ *  `branch:`/`reset:`/`checkout:` entries, and the no-op rebase boundary of an
+ *  empty branch re-pointed at base, do not. We keep only those still reachable
+ *  from the current tip, so a commit a later rebase superseded drops out and we
+ *  don't double-count its replacement's origin. This survives a stale pointer (a
+ *  merged branch whose ref still sits at an old commit) because it reads what the
+ *  branch DID, not where it points.
  *
  *  Fallback (empty reflog — fresh branch, or a worktree whose per-branch reflog
  *  was pruned): the topological range `merge-base(base, branch)..branch`. With a
@@ -736,7 +774,7 @@ async function authoredCommits(
       if (sp < 0) continue;
       const sha = line.slice(0, sp).trim();
       const subject = line.slice(sp + 1).trim();
-      if (!/^(commit|commit \(amend\)|rebase|cherry-pick|am)\b/i.test(subject)) continue;
+      if (!reflogEntryAuthored(sha, subject)) continue;
       if (seen.has(sha)) continue;
       seen.add(sha);
       // Drop entries no longer on the branch (superseded by a later rebase/reset).
