@@ -21,9 +21,12 @@ export interface Workspace {
    * `'orchestrator'` exactly like `'scratch'` for every git/diff/merge/delete
    * decision — use the `isScratchLike` helper rather than `=== 'scratch'`. */
   kind?: 'worktree' | 'scratch' | 'orchestrator';
-  /** Workspace id of the orchestrator that spawned this one over the `/spawn`
-   * socket (the caller's `ORCHESTRA_WS_ID`). Set once at creation and never
-   * changed. Drives the sidebar's orchestrator→children tree: a workspace with
+  /** Workspace id of the orchestrator this workspace nests under. Set at creation
+   * by `/spawn` (the spawning orchestrator's `ORCHESTRA_WS_ID`), and afterwards
+   * mutable via the `/attach` socket route, which re-parents an existing
+   * workspace under an orchestrator (or clears this to detach it). The parent is
+   * always an orchestrator. Drives the sidebar's orchestrator→children tree: a
+   * workspace with
    * a `parentId` renders indented under its parent regardless of which repo it
    * lives in. Absent for workspaces created by hand from the UI, and on every
    * record predating this field. A dangling `parentId` (parent deleted) is

@@ -123,6 +123,9 @@ Usage:
   orchestra spawn --task <text> [--repo <path>] [--base <branch>]
                                                  Spawn a new worktree + agent
   orchestra rename <id> <branch>                 Rename a workspace's branch
+  orchestra promote <id>                         Promote a scratch session into an orchestrator
+  orchestra attach <id> <parentId>               Nest an existing workspace under an orchestrator
+  orchestra detach <id>                          Pop a workspace back out to its own section
   orchestra add-repo <path>                       Register a repo by path
   orchestra delete <id> [--yes]                  Delete a workspace (worktree + branch)
   orchestra --help                               Show this help
@@ -223,6 +226,39 @@ async function main(argv: string[]): Promise<void> {
       const res = await request('/rename', { id, branch });
       if (!res.ok) fail(res.error ?? 'failed to rename workspace');
       process.stdout.write(`Renamed to ${res.branch as string}\n`);
+      return;
+    }
+
+    case 'promote': {
+      const id = args[0];
+      if (!id) fail('usage: orchestra promote <id>');
+      const res = await request('/promote', { id });
+      if (!res.ok) fail(res.error ?? 'failed to promote workspace');
+      process.stdout.write(
+        `Promoted ${res.id as string}${res.branch ? ` (${res.branch as string})` : ''} to orchestrator\n`,
+      );
+      return;
+    }
+
+    case 'attach': {
+      const id = args[0];
+      const parentId = args[1];
+      if (!id || !parentId) fail('usage: orchestra attach <id> <parentId>');
+      const res = await request('/attach', { id, parentId });
+      if (!res.ok) fail(res.error ?? 'failed to attach workspace');
+      process.stdout.write(
+        `Attached ${res.id as string} under orchestrator ${res.parentId as string}\n`,
+      );
+      return;
+    }
+
+    case 'detach': {
+      const id = args[0];
+      if (!id) fail('usage: orchestra detach <id>');
+      // Omitting parentId tells /attach to clear it (detach to own section).
+      const res = await request('/attach', { id });
+      if (!res.ok) fail(res.error ?? 'failed to detach workspace');
+      process.stdout.write(`Detached ${res.id as string}\n`);
       return;
     }
 

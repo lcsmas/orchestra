@@ -12,6 +12,8 @@ import {
   dispatchMessageRequest,
   dispatchAddRepoRequest,
   dispatchDeleteWorkspaceRequest,
+  dispatchPromoteRequest,
+  dispatchAttachRequest,
 } from './workspaces';
 import { log } from './logger';
 
@@ -188,6 +190,24 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
           } else if (route === '/deleteWorkspace') {
             if (typeof msg.id === 'string') {
               send(200, await dispatchDeleteWorkspaceRequest({ id: msg.id }, window));
+            } else {
+              send(200, { ok: false, error: 'missing id' });
+            }
+          } else if (route === '/promote') {
+            if (typeof msg.id === 'string') {
+              send(200, await dispatchPromoteRequest({ id: msg.id }, window));
+            } else {
+              send(200, { ok: false, error: 'missing id' });
+            }
+          } else if (route === '/attach') {
+            if (typeof msg.id === 'string') {
+              send(
+                200,
+                await dispatchAttachRequest(
+                  { id: msg.id, parentId: typeof msg.parentId === 'string' ? msg.parentId : null },
+                  window,
+                ),
+              );
             } else {
               send(200, { ok: false, error: 'missing id' });
             }

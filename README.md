@@ -78,6 +78,9 @@ orchestra read <id> [--lines N]                       # print a workspace's tran
 orchestra message <id> <text...>                      # send a prompt to a workspace
 orchestra spawn --task <text> [--repo <path>] [--base <branch>]   # spawn a new worktree + agent
 orchestra rename <id> <branch>                         # rename a workspace's branch
+orchestra promote <id>                                 # promote a scratch session into an orchestrator
+orchestra attach <id> <parentId>                       # nest an existing workspace under an orchestrator
+orchestra detach <id>                                  # pop a workspace back out to its own section
 orchestra add-repo <path>                              # register a repo (path is resolved to absolute)
 orchestra delete <id> --yes                            # delete a workspace (removes its worktree + branch)
 orchestra --help                                      # usage for all commands

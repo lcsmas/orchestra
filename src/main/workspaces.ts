@@ -977,6 +977,125 @@ export async function dispatchDeleteWorkspaceRequest(
   }
 }
 
+// ---------- Promote scratch → orchestrator ----------
+
+export interface PromoteResult {
+  ok: boolean;
+  id?: string;
+  branch?: string;
+  kind?: Workspace['kind'];
+  error?: string;
+}
+
+/** Socket entry point for `/promote`. Turns a plain `'scratch'` session into an
+ * `'orchestrator'` in place: the record keeps its id, worktree, branch label and
+ * already-running agent — only its `kind` (and the display-name prefix) change.
+ * That single flip moves it into the sidebar's "Orchestrators" section and makes
+ * every worktree it subsequently spawns nest beneath it (children carry its id
+ * as `parentId`). Idempotent — re-promoting an orchestrator is a no-op success.
+ * Only a scratch session qualifies: a git worktree has a repo/branch/diff and
+ * can't be repurposed as a repo-less coordinator. Never throws; answers `{ ok }`. */
+export async function dispatchPromoteRequest(
+  input: { id?: string },
+  window: BrowserWindow,
+): Promise<PromoteResult> {
+  const id = input.id?.trim();
+  if (!id) return { ok: false, error: 'missing id' };
+  const ws = store.getWorkspace(id);
+  if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
+  // Already an orchestrator — succeed idempotently so a double-invoke (or the
+  // skill re-firing) doesn't error.
+  if (ws.kind === 'orchestrator') return { ok: true, id, branch: ws.branch, kind: 'orchestrator' };
+  if (ws.kind !== 'scratch') {
+    return {
+      ok: false,
+      error: 'only a scratch session can be promoted to an orchestrator (a git worktree has a repo and branch)',
+    };
+  }
+  try {
+    // Swap the display-name prefix `scratch · ` → `orchestrator · ` to match how
+    // createScratchLikeWorkspace builds the name. The worktree directory keeps
+    // its `scratch-` prefix — a live agent runs there, so renaming the path
+    // mid-session is needless risk; only the record's kind/name move.
+    const name = ws.name.startsWith('scratch · ')
+      ? `orchestrator · ${ws.name.slice('scratch · '.length)}`
+      : ws.name;
+    const updated: Workspace = { ...ws, kind: 'orchestrator', name };
+    await store.upsertWorkspace(updated);
+    window.webContents.send('workspace:update', updated);
+    log.info(`promoted scratch ${ws.branch} (${id}) to orchestrator`);
+    return { ok: true, id, branch: updated.branch, kind: 'orchestrator' };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'promote failed' };
+  }
+}
+
+// ---------- Re-parent (attach / detach) ----------
+
+export interface AttachResult {
+  ok: boolean;
+  id?: string;
+  /** The new parent after the call: an orchestrator id on attach, `null` on detach. */
+  parentId?: string | null;
+  branch?: string;
+  error?: string;
+}
+
+/** Socket entry point for `/attach`. Re-parents an EXISTING workspace so it nests
+ * under an orchestrator in the sidebar, or detaches it back to its own repo
+ * section. This is the after-the-fact counterpart to `/spawn`, which sets
+ * `parentId` only at creation: an `id` WITH a `parentId` attaches; an `id` with
+ * no/empty `parentId` detaches.
+ *
+ * Attach guards: the child must exist; the parent must exist AND be an
+ * orchestrator (only the sidebar's orchestrator section renders an arbitrary
+ * child subtree — parenting under anything else would bury the child in a branch
+ * that never renders); and a workspace can't be its own parent. Orchestrators
+ * never carry a `parentId` of their own (they're always tree roots), so an
+ * orchestrator-only parent rule also makes any deeper cycle impossible — the
+ * self-check is the only one needed. Idempotent. Never throws; answers `{ ok }`. */
+export async function dispatchAttachRequest(
+  input: { id?: string; parentId?: string | null },
+  window: BrowserWindow,
+): Promise<AttachResult> {
+  const id = input.id?.trim();
+  if (!id) return { ok: false, error: 'missing id' };
+  const ws = store.getWorkspace(id);
+  if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
+
+  const rawParent = typeof input.parentId === 'string' ? input.parentId.trim() : '';
+
+  // Detach: no parent given → clear `parentId`. A dangling parent (deleted
+  // orchestrator) still clears here; only an already-rootless workspace is a
+  // pure no-op success.
+  if (!rawParent) {
+    if (ws.parentId === undefined) return { ok: true, id, parentId: null, branch: ws.branch };
+    const updated: Workspace = { ...ws, parentId: undefined };
+    await store.upsertWorkspace(updated);
+    window.webContents.send('workspace:update', updated);
+    log.info(`detached ${ws.branch} (${id}) from its parent`);
+    return { ok: true, id, parentId: null, branch: ws.branch };
+  }
+
+  if (rawParent === id) return { ok: false, error: 'a workspace cannot be its own parent' };
+  const parent = store.getWorkspace(rawParent);
+  if (!parent) return { ok: false, error: `unknown parent workspace: ${rawParent}` };
+  if (parent.kind !== 'orchestrator') {
+    return {
+      ok: false,
+      error: 'parent must be an orchestrator (promote a scratch session into one first)',
+    };
+  }
+  // Idempotent re-attach to the same parent.
+  if (ws.parentId === rawParent) return { ok: true, id, parentId: rawParent, branch: ws.branch };
+
+  const updated: Workspace = { ...ws, parentId: rawParent };
+  await store.upsertWorkspace(updated);
+  window.webContents.send('workspace:update', updated);
+  log.info(`attached ${ws.branch} (${id}) under orchestrator ${parent.branch} (${rawParent})`);
+  return { ok: true, id, parentId: rawParent, branch: ws.branch };
+}
+
 // ---------- Inter-agent communication ----------
 //
 // Agents already reach the main process over the same unix socket they use for
@@ -1528,6 +1647,76 @@ Outside an orchestra workspace, the same actions are available as
 been launched once.
 `;
 
+const PROMOTE_SKILL = `---
+name: orchestra-promote
+description: Promote THIS scratch session into an orchestrator — a coordinator that delegates work to child agents it spawns instead of editing code itself. Use when the user wants this repo-less scratch session to start orchestrating parallel agents.
+---
+
+# Promote this scratch session to an orchestrator
+
+This applies ONLY to a **scratch** session (no repo, no branch). Promoting flips
+it to an *orchestrator*: the app moves it into the sidebar's "Orchestrators"
+section and nests every worktree you later spawn beneath it, so a whole fleet of
+child agents is visible at a glance under this session.
+
+Run this exact command (it reads \$ORCHESTRA_SOCK / \$ORCHESTRA_WS_ID from your env):
+
+\`\`\`bash
+curl -s --max-time 10 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"id\\":\\"\$ORCHESTRA_WS_ID\\"}" http://x/promote
+\`\`\`
+
+Reply: \`{"ok":true,"id":"...","branch":"...","kind":"orchestrator"}\` on success
+(an already-promoted session also answers ok), or \`{"ok":false,"error":"..."}\` —
+e.g. if this is a git worktree, which can't be an orchestrator.
+
+Once promoted, adopt the orchestrator role for the rest of this session:
+
+${ORCHESTRATOR_BRIEF}
+
+Use the \`orchestra-spawn\` skill for each \`/spawn\`, and \`orchestra-comms\` to
+track and follow up with the agents you spawn.
+`;
+
+const ATTACH_SKILL = `---
+name: orchestra-attach
+description: Nest an EXISTING workspace under an orchestrator (or detach it back out). Use to pull a repo branch you did NOT spawn — one you or another agent created earlier — under this orchestrator so it groups beneath it in the sidebar.
+---
+
+# Attach / detach a workspace to an orchestrator
+
+An orchestrator already groups the worktrees it spawns beneath itself. You can
+ALSO pull an existing workspace — one that wasn't spawned by this orchestrator —
+under it after the fact, or pop one back out to its own repo section. Both go
+over the orchestra socket (reads \$ORCHESTRA_SOCK from your env).
+
+The parent MUST be an orchestrator. If you don't have one yet, promote a scratch
+session first with the \`orchestra-promote\` skill. Use \`orchestra-comms\` (the
+\`/peers\` route) to discover the ids of existing workspaces.
+
+## Attach a workspace under an orchestrator
+
+\`\`\`bash
+curl -s --max-time 10 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"id\\":\\"<workspace-id>\\",\\"parentId\\":\\"<orchestrator-id>\\"}" http://x/attach
+\`\`\`
+
+Reply: \`{"ok":true,"id":"...","parentId":"..."}\` — the sidebar re-nests it live.
+\`{"ok":false,"error":"..."}\` if an id is unknown, the parent isn't an
+orchestrator, or you tried to parent a workspace under itself.
+
+## Detach a workspace (back to its own section)
+
+Omit \`parentId\` (or send it empty):
+
+\`\`\`bash
+curl -s --max-time 10 --unix-socket "\$ORCHESTRA_SOCK" --data-binary "{\\"id\\":\\"<workspace-id>\\"}" http://x/attach
+\`\`\`
+
+Reply: \`{"ok":true,"id":"...","parentId":null}\`.
+
+Outside an orchestra workspace the same actions are \`orchestra attach <id> <parentId>\`
+and \`orchestra detach <id>\`.
+`;
+
 // Peer-gated, one-line re-surface of the comms capability on every
 // UserPromptSubmit. The `orchestra-comms` skill's description is always in
 // context, but skill descriptions are easy to overlook mid-conversation — so
@@ -1767,6 +1956,8 @@ const HOOKS_VERSION = createHash('sha256')
       SPAWN_SKILL,
       COMMS_SKILL,
       REPO_ROUTES_SKILL,
+      PROMOTE_SKILL,
+      ATTACH_SKILL,
       HOOK_ACTIVITY_SUBMIT_CMD,
       HOOK_ACTIVITY_STOP_CMD,
       HOOK_ACTIVITY_NOTIFY_CMD,
@@ -1839,6 +2030,8 @@ export async function installOrchestraHooks(
       writeSkill('orchestra-spawn', SPAWN_SKILL),
       writeSkill('orchestra-comms', COMMS_SKILL),
       writeSkill('orchestra-repos', REPO_ROUTES_SKILL),
+      writeSkill('orchestra-promote', PROMOTE_SKILL),
+      writeSkill('orchestra-attach', ATTACH_SKILL),
     ]);
 
     const settingsDir = path.join(worktreePath, '.claude');
