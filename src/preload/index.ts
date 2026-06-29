@@ -62,6 +62,7 @@ const api: OrchestraAPI = {
   runScriptStart: (id, cols, rows) => ipcRenderer.invoke('scripts:runStart', id, cols, rows),
   runScriptStop: (id) => ipcRenderer.invoke('scripts:runStop', id),
   runScriptScrollback: (id) => ipcRenderer.invoke('scripts:runScrollback', id),
+  runScriptStatus: (id) => ipcRenderer.invoke('scripts:runStatus', id),
   onPtyData: (cb) => {
     const listener = (_e: unknown, id: string, data: string) => cb(id, data);
     ipcRenderer.on('pty:data', listener);

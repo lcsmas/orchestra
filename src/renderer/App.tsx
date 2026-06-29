@@ -87,6 +87,11 @@ export function App() {
   const refreshAllPRs = useStore((s) => s.refreshAllPRs);
   const refreshAllLinear = useStore((s) => s.refreshAllLinear);
   const findRepo = (path: string): RepoEntry | undefined => repos.find((r) => r.path === path);
+  // Whether the active workspace's `run` script PTY is live. Drives the
+  // toolbar Play/Stop button so the app can be launched without opening the
+  // Run panel. Kept in sync via `scripts:runStatus` (on workspace switch) and
+  // the global pty exit event.
+  const [runLive, setRunLive] = useState(false);
   const [nvimOpen, setNvimOpen] = useState(false);
   const [nvimWidth, setNvimWidth] = useState<number>(() => loadNvimWidth());
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => loadSidebarWidth());
@@ -278,6 +283,48 @@ export function App() {
       void dialog.error(`Could not restart agent: ${(e as Error).message}`);
     }
   };
+  // Keep the toolbar Play/Stop button in sync with the actual run-script PTY.
+  // Re-query on workspace switch (the pty may have been started elsewhere —
+  // e.g. from the Run panel) and clear when it exits.
+  useEffect(() => {
+    if (!activeId) {
+      setRunLive(false);
+      return;
+    }
+    let cancelled = false;
+    void window.orchestra
+      .runScriptStatus(activeId)
+      .then((live) => {
+        if (!cancelled) setRunLive(live);
+      })
+      .catch(() => {});
+    const offExit = window.orchestra.onPtyExit((id) => {
+      if (id === `${activeId}:run`) setRunLive(false);
+    });
+    return () => {
+      cancelled = true;
+      offExit();
+    };
+  }, [activeId]);
+
+  const onToggleRun = async () => {
+    if (!active) return;
+    try {
+      if (runLive) {
+        await window.orchestra.runScriptStop(active.id);
+        setRunLive(false);
+      } else {
+        // The Run panel may not be mounted, so there's no xterm to measure.
+        // Start with sane default dims; the panel resizes the pty (idempotently)
+        // when the user later opens it.
+        await window.orchestra.runScriptStart(active.id, 80, 24);
+        setRunLive(true);
+      }
+    } catch (e) {
+      void dialog.error(`Could not ${runLive ? 'stop' : 'start'} run script: ${(e as Error).message}`);
+    }
+  };
+
   return (
     <div
       ref={appRef}
@@ -406,6 +453,25 @@ export function App() {
                   <polyline points="21 4 21 9 16 9" />
                 </svg>
               </button>
+              {!isScratch && !!findRepo(active.repoPath)?.scripts?.run && (
+                <button
+                  className={`run-toggle-btn ${runLive ? 'running' : ''}`}
+                  onClick={() => void onToggleRun()}
+                  title={runLive ? 'Stop the run script' : 'Run the app (run script)'}
+                  aria-label={runLive ? 'Stop the run script' : 'Run the app'}
+                  aria-pressed={runLive}
+                >
+                  {runLive ? (
+                    <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" focusable="false">
+                      <rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" focusable="false">
+                      <path fill="currentColor" d="M8 5v14l11-7z" />
+                    </svg>
+                  )}
+                </button>
+              )}
               {!isScratch && (openPR ? (
                 <button
                   className="primary pr-link"

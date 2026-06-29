@@ -843,6 +843,10 @@ handle('scripts:runStop', (_e, id: string) => {
   stopPty(`${id}:run`);
 });
 
+handle('scripts:runStatus', (_e, id: string) => {
+  return isRunning(`${id}:run`);
+});
+
 handle('scripts:runScrollback', (_e, id: string) => {
   return readScrollback(`${id}:run`);
 });

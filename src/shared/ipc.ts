@@ -163,6 +163,7 @@ export interface OrchestraAPI {
   runScriptStart: (id: string, cols: number, rows: number) => Promise<void>;
   runScriptStop: (id: string) => Promise<void>;
   runScriptScrollback: (id: string) => Promise<string>;
+  runScriptStatus: (id: string) => Promise<boolean>;
 
   // Events
   onWorkspaceUpdate: (cb: (w: Workspace) => void) => () => void;
