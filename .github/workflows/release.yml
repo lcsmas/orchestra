@@ -33,23 +33,26 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
+          cache: 'pnpm'
 
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential libfuse2
-          npm ci
+          pnpm install --frozen-lockfile
 
       - name: Rebuild native modules
-        run: npx electron-rebuild
+        run: pnpm exec electron-rebuild
 
       - name: Build AppImage
-        run: npx vite build && npx electron-builder --publish never
+        run: pnpm exec vite build && pnpm exec electron-builder --publish never
 
       - name: Rename artifact
         run: mv release/Orchestra.AppImage release/${{ matrix.artifact }}

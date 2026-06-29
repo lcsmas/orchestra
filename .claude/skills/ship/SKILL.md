@@ -39,7 +39,7 @@ launcher's AppImage with the local build.
    the master fast-forward, the tag/build, and the local install:
 
    ```bash
-   npm run release -- patch --to-master --install
+   pnpm run release patch --to-master --install
    ```
 
    Use `minor`/`major` or an explicit `X.Y.Z` instead of `patch` only if the

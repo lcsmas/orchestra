@@ -45,17 +45,17 @@ No pre-built binaries yet — [build from source](#build-from-source). Contribut
 
 ## Build from source
 
-Requires Node 20+, plus the [`claude`](https://docs.anthropic.com/claude-code) CLI and [`gh`](https://cli.github.com/) on `PATH`. On Linux you'll also need build tools for the `node-pty` native module (`build-essential` on Debian/Ubuntu, `gcc-c++ make` on Fedora).
+Requires Node 20+ and [pnpm](https://pnpm.io/), plus the [`claude`](https://docs.anthropic.com/claude-code) CLI and [`gh`](https://cli.github.com/) on `PATH`. On Linux you'll also need build tools for the `node-pty` native module (`build-essential` on Debian/Ubuntu, `gcc-c++ make` on Fedora).
 
 ```bash
 git clone https://github.com/lcsmas/orchestra.git
 cd orchestra
-npm install
-npx electron-rebuild   # rebuild node-pty for Electron's node ABI
-npm run dev            # vite + electron, hot reload
+pnpm install
+pnpm exec electron-rebuild   # rebuild node-pty for Electron's node ABI
+pnpm run dev                 # vite + electron, hot reload
 ```
 
-`npm run build` produces a distributable in `release/`.
+`pnpm run build` produces a distributable in `release/`.
 
 ## How it works
 

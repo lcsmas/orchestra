@@ -7,14 +7,14 @@
 # or pass --to-master to fold that in (see below).
 #
 # Usage (run from any branch / orchestra worktree):
-#   npm run release                  # patch bump (default): 0.1.11 -> 0.1.12
-#   npm run release -- minor         # minor bump:            0.1.11 -> 0.2.0
-#   npm run release -- major         # major bump:            0.1.11 -> 1.0.0
-#   npm run release -- 1.2.3         # explicit version
-#   npm run release -- patch --dry-run   # print every step, change nothing
-#   npm run release -- patch --ci-only   # skip local build, let GitHub Actions handle it
-#   npm run release -- patch --to-master # also land the release on master (see below)
-#   npm run release -- patch --install   # also install the local build to the launcher (see below)
+#   pnpm run release                  # patch bump (default): 0.1.11 -> 0.1.12
+#   pnpm run release minor            # minor bump:            0.1.11 -> 0.2.0
+#   pnpm run release major            # major bump:            0.1.11 -> 1.0.0
+#   pnpm run release 1.2.3            # explicit version
+#   pnpm run release patch --dry-run   # print every step, change nothing
+#   pnpm run release patch --ci-only   # skip local build, let GitHub Actions handle it
+#   pnpm run release patch --to-master # also land the release on master (see below)
+#   pnpm run release patch --install   # also install the local build to the launcher (see below)
 #
 # --to-master: the script can't `git checkout master` (each orchestra workspace
 # is a worktree pinned to its own branch, and master is checked out elsewhere),
@@ -173,13 +173,13 @@ fi
 
 # ------------------------------------------------------- bump + commit + tag ---
 say "Bump version, commit, tag"
-run "npm version '$NEW' -m 'chore: bump version to %s'"
+run "pnpm version '$NEW' --message 'chore: bump version to %s'"
 
 # ------------------------------------------------------------ build AppImage ---
 if [ "$CI_ONLY" = 0 ]; then
   say "Build AppImage (local)"
   APPIMAGE="release/Orchestra.AppImage"
-  if ! run "npm run build"; then
+  if ! run "pnpm run build"; then
     echo "error: build failed. Undo the local bump with:" >&2
     echo "    git tag -d $TAG && git reset --hard HEAD~1" >&2
     exit 1

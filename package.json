@@ -13,6 +13,7 @@
     "url": "https://github.com/lcsmas/orchestra/issues"
   },
   "main": "dist-electron/main.js",
+  "packageManager": "pnpm@10.9.0",
   "bin": {
     "orchestra": "dist-electron/cli.js"
   },
@@ -25,13 +26,14 @@
   "scripts": {
     "dev": "vite",
     "build:cli": "vite build --config vite.cli.config.ts",
-    "build": "vite build && npm run build:cli && electron-builder",
+    "build": "vite build && pnpm run build:cli && electron-builder",
     "start": "electron .",
     "lint": "eslint src --ext .ts,.tsx",
     "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",
     "release": "bash scripts/release.sh"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.6",
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
