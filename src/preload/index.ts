@@ -57,8 +57,6 @@ const api: OrchestraAPI = {
 
   getRepoScripts: (repoPath) => ipcRenderer.invoke('repos:getScripts', repoPath),
   setRepoScripts: (repoPath, scripts) => ipcRenderer.invoke('repos:setScripts', repoPath, scripts),
-  getRepoEnv: (repoPath) => ipcRenderer.invoke('repos:getEnv', repoPath),
-  setRepoEnv: (repoPath, env) => ipcRenderer.invoke('repos:setEnv', repoPath, env),
   retrySetup: (id) => ipcRenderer.invoke('scripts:retrySetup', id),
   readSetupLog: (id) => ipcRenderer.invoke('scripts:readSetupLog', id),
   runScriptStart: (id, cols, rows) => ipcRenderer.invoke('scripts:runStart', id, cols, rows),

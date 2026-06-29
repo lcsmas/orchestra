@@ -166,16 +166,10 @@ export interface RepoEntry {
   name: string;
   defaultBranch: string;
   scripts?: RepoScripts;
-  /** Extra environment variables injected into agent (`claude`) PTYs spawned
-   * for this repo's workspaces, merged over Orchestra's own env at spawn time.
-   * Values may reference Orchestra's own environment with `${VAR}` syntax. An
-   * entry whose `${VAR}` expands to nothing (referenced var unset) is dropped. */
-  env?: Record<string, string>;
   /** Id of the {@link Account} this repo's workspaces log in as. Orchestra
    * injects that account's `CLAUDE_CONFIG_DIR` into the spawned `claude` PTY so
    * it authenticates as that account (Claude Code manages/refreshes the token
-   * in that dir). Absent / dangling → the agent uses Orchestra's default login.
-   * Takes precedence over any `CLAUDE_CONFIG_DIR` the user also put in `env`. */
+   * in that dir). Absent / dangling → the agent uses Orchestra's default login. */
   accountId?: string;
   /** Canonical web URL for the repo's `origin` remote (e.g.
    * `https://github.com/owner/repo`), normalized from whatever the remote

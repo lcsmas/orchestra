@@ -801,18 +801,6 @@ handle('repos:setScripts', async (_e, repoPath: string, scripts: RepoScripts) =>
   return store.setRepoScripts(repoPath, scripts);
 });
 
-handle('repos:getEnv', (_e, repoPath: string) => {
-  return store.getRepoEnv(repoPath);
-});
-
-handle('repos:setEnv', async (_e, repoPath: string, env: Record<string, string>) => {
-  const repo = await store.setRepoEnv(repoPath, env);
-  // A repo's agent env decides which account its workspaces log in as, so the
-  // workspace→account badges may have changed — recompute and refresh usage.
-  void refreshAccountsNow(getMainWindow());
-  return repo;
-});
-
 handle('scripts:retrySetup', async (_e, id: string) => {
   await runSetupScript(id, getMainWindow());
 });

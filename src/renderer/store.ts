@@ -374,7 +374,7 @@ window.orchestra.onReposUpdate((repos) => {
 window.orchestra.onAccountUsageUpdate((byId) => {
   useStore.setState({ accountUsage: byId });
 });
-// The workspace→account mapping changed (accounts edited / repo env changed /
+// The workspace→account mapping changed (accounts edited / repo account changed /
 // workspaces added/removed). Replace wholesale, and re-pull the accounts list
 // since an account's label may have been edited alongside it (drives the repo
 // header's account name).

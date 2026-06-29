@@ -154,9 +154,6 @@ export interface OrchestraAPI {
   // Repo scripts (setup / run / archive)
   getRepoScripts: (repoPath: string) => Promise<RepoScripts>;
   setRepoScripts: (repoPath: string, scripts: RepoScripts) => Promise<RepoEntry>;
-  // Per-repo agent environment variables (injected into spawned `claude` PTYs).
-  getRepoEnv: (repoPath: string) => Promise<Record<string, string>>;
-  setRepoEnv: (repoPath: string, env: Record<string, string>) => Promise<RepoEntry>;
   retrySetup: (id: string) => Promise<void>;
   /** Returns the captured stdout+stderr of the most recent setup-script run
    * for this workspace, or `''` if none has run. */

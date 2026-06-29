@@ -20,7 +20,6 @@ import {
   switchWorktreeBranch,
 } from './git';
 import { isRunning, stopPty, clearScrollback, startPty, writePty, readScrollback } from './pty';
-import { expandRepoEnv } from './repo-env';
 import { expandConfigDir } from '../shared/accounts';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
@@ -36,24 +35,18 @@ const SCRATCH_ROOT = path.join(os.homedir(), '.orchestra', 'scratch');
 const execFileP = promisify(execFile);
 
 /** Resolve the extra environment variables an agent PTY should get for a
- * workspace, from its source repo. Two sources, merged:
+ * workspace, from its source repo. The repo's assigned account
+ * (`repo.accountId`) supplies a `CLAUDE_CONFIG_DIR`, injected so the spawned
+ * `claude` logs in as that account (Claude Code reads & refreshes the OAuth
+ * token in that dir). A missing/empty/dangling account, or a dir whose
+ * template expands to nothing, injects nothing — the agent falls back to
+ * Orchestra's default login.
  *
- *  1. The repo's `env` map (with `${VAR}`/`$VAR` references expanded against
- *     Orchestra's own env; empty expansions dropped).
- *  2. The repo's assigned account (`repo.accountId`): its `CLAUDE_CONFIG_DIR` is
- *     injected so the spawned `claude` logs in as that account (Claude Code
- *     reads & refreshes the OAuth token in that dir). This takes precedence over
- *     any `CLAUDE_CONFIG_DIR` the user also put in `env`. A missing/empty/
- *     dangling account, or a dir whose template expands to nothing, injects
- *     nothing — the agent falls back to Orchestra's default login.
- *
- * Returns `{}` when the repo has neither `env` nor an account. */
+ * Returns `{}` when the repo has no account. */
 function resolveRepoAgentEnv(ws: Workspace): Record<string, string> {
   const repo = store.repos.find((r) => r.path === ws.repoPath);
-  const env = expandRepoEnv(repo?.env, process.env);
   const configDir = workspaceAccountConfigDir(ws, repo);
-  if (configDir) env.CLAUDE_CONFIG_DIR = configDir;
-  return env;
+  return configDir ? { CLAUDE_CONFIG_DIR: configDir } : {};
 }
 
 /** The expanded `CLAUDE_CONFIG_DIR` for the account a workspace logs in as, or
