@@ -261,7 +261,6 @@ export function App() {
   useEffect(() => {
     if (isScratch && view !== 'terminal') setView('terminal');
   }, [isScratch, view, setView]);
-  const [merging, setMerging] = useState(false);
   const onRestart = async () => {
     if (!active) return;
     if (active.status === 'running') {
@@ -279,22 +278,6 @@ export function App() {
       void dialog.error(`Could not restart agent: ${(e as Error).message}`);
     }
   };
-  const onMerge = async () => {
-    if (!active || merging) return;
-    setMerging(true);
-    try {
-      // The merge button now just hands a structured prompt to the agent —
-      // the agent has full work context and writes a better commit message
-      // than we could synthesise. No success/failure UI here; the agent
-      // reports back in its own terminal output.
-      await window.orchestra.mergeWorktree(active.id);
-    } catch (e) {
-      alert(`Could not request merge: ${(e as Error).message}`);
-    } finally {
-      setMerging(false);
-    }
-  };
-
   return (
     <div
       ref={appRef}
@@ -423,45 +406,6 @@ export function App() {
                   <polyline points="21 4 21 9 16 9" />
                 </svg>
               </button>
-              {!isScratch && (() => {
-                // "In sync" = at least one merge has landed AND the branch
-                // hasn't diverged since. The button stays clickable in
-                // either state — agents handle re-merges fine, and the user
-                // may want to ship a follow-up commit on a previously
-                // merged branch. Disable only while a merge request is
-                // in flight to prevent double-fire.
-                const inSync = !!active.mergedAt && !active.divergedFromBase;
-                const tip = inSync
-                  ? `Already merged into ${active.baseBranch} — click to re-merge follow-up work`
-                  : `Merge ${active.branch} into ${active.baseBranch} and push`;
-                return (
-                  <button
-                    className={`merge-btn ${inSync ? 'done' : ''}`}
-                    onClick={onMerge}
-                    disabled={merging}
-                    title={tip}
-                  >
-                <svg
-                  viewBox="0 0 24 24"
-                  width="13"
-                  height="13"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={1.6}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  shapeRendering="geometricPrecision"
-                  aria-hidden="true"
-                  focusable="false"
-                >
-                  <circle cx="18" cy="18" r="3" />
-                  <circle cx="6" cy="6" r="3" />
-                  <path d="M6 21V9a9 9 0 0 0 9 9" />
-                </svg>
-                    {merging ? 'Merging…' : inSync ? 'Merged' : 'Merge'}
-                  </button>
-                );
-              })()}
               {!isScratch && (openPR ? (
                 <button
                   className="primary pr-link"

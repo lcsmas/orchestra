@@ -216,37 +216,6 @@ button.pr-link .pr-state {
   text-transform: capitalize;
 }
 
-button.merge-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(91, 214, 139, 0.10);
-  border: 1px solid rgba(91, 214, 139, 0.32);
-  color: var(--green);
-  padding: 6px 12px;
-  font-weight: 600;
-  box-shadow: none;
-  transition: background 140ms var(--ease), border-color 140ms var(--ease),
-    color 140ms var(--ease), box-shadow 140ms var(--ease), transform 140ms var(--ease);
-}
-button.merge-btn:hover:not(:disabled) {
-  background: rgba(91, 214, 139, 0.20);
-  border-color: rgba(91, 214, 139, 0.60);
-  transform: translateY(-0.5px);
-  box-shadow: 0 4px 14px rgba(91, 214, 139, 0.18);
-}
-button.merge-btn:disabled {
-  cursor: default;
-  opacity: 0.55;
-  transform: none;
-  box-shadow: none;
-}
-button.merge-btn.done {
-  color: #c4a8ff;
-  background: rgba(179, 139, 255, 0.10);
-  border-color: rgba(179, 139, 255, 0.35);
-}
-
 button.restart-btn {
   display: inline-flex;
   align-items: center;
