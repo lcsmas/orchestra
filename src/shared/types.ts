@@ -43,6 +43,17 @@ export interface Workspace {
   archived?: boolean;
   archivedAt?: number;
   hasInput?: boolean;
+  /** Set at spawn when `claude --continue` is about to resume a session whose
+   * most-recent transcript exceeds {@link HEAVY_RESUME_TOKEN_THRESHOLD} tokens.
+   * Claude Code shows an interactive "resume from summary / full / don't ask"
+   * menu for such sessions, but typing a normal task proceeds the FULL resume
+   * (loading the whole huge context, draining the usage pool). While this is
+   * true the `pty:write` handler suppresses submit keystrokes (Enter/newline)
+   * so a typed task can't blow past CC's menu; the flag clears the instant the
+   * user sends a navigation key (arrow/Esc) — i.e. they're consciously driving
+   * CC's own menu — or after a safety timeout. Purely a guard around CC's
+   * native gate; Orchestra never auto-answers the menu. */
+  heavyResumePending?: boolean;
   /** True once the user has manually set the branch name. Auto-rename from
    * Claude's `.orchestra/branch-name` file is disabled when this is true. */
   branchManuallySet?: boolean;

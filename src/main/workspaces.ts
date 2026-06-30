@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, rm, appendFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, appendFile, readdir, stat, open } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { BrowserWindow } from 'electron';
 import { execFile } from 'node:child_process';
@@ -65,6 +65,93 @@ function workspaceAccountConfigDir(ws: Workspace, _repo: RepoEntry | undefined):
   const account = store.accounts.find((a) => a.id === ws.accountId);
   if (!account) return '';
   return expandConfigDir(account.configDir, os.homedir(), process.env);
+}
+
+/** Token count at/above which a `claude --continue` resume is treated as
+ * "heavy" — i.e. Claude Code will show its compaction menu and a typed task
+ * could blow past it into a full-context resume. Set below CC's own ~140k
+ * trigger so we never miss a session that will prompt. Env-overridable for
+ * tuning without a rebuild. */
+const HEAVY_RESUME_TOKEN_THRESHOLD = (() => {
+  const n = Number(process.env.ORCHESTRA_HEAVY_RESUME_THRESHOLD);
+  return Number.isFinite(n) && n > 0 ? n : 100_000;
+})();
+
+/** Claude Code stores each conversation under
+ * `<configDir>/projects/<mangled-cwd>/<sessionId>.jsonl`, where the cwd is
+ * mangled by replacing every non-alphanumeric character with '-'. */
+function mangleProjectDir(cwd: string): string {
+  return cwd.replace(/[^A-Za-z0-9]/g, '-');
+}
+
+/** Token count of the session that `claude --continue` will resume for this
+ * workspace, or `null` if it can't be determined (→ caller treats as non-heavy
+ * and does nothing — fail OPEN, never block a normal resume).
+ *
+ * `--continue` resumes the most-recently-modified transcript `.jsonl` in the
+ * workspace's project dir (under its PINNED account config dir, NOT always
+ * `~/.claude`). The count is the last assistant message's usage; trailing
+ * `system`/summary lines can follow it, so we scan backwards. Files reach 10MB+,
+ * so we tail-read the last chunk rather than loading the whole file. */
+async function newestResumeTokenCount(ws: Workspace): Promise<number | null> {
+  try {
+    const base = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
+    const dir = path.join(base, 'projects', mangleProjectDir(ws.worktreePath));
+    let entries: string[];
+    try {
+      entries = (await readdir(dir)).filter((f) => f.endsWith('.jsonl'));
+    } catch {
+      return null; // no project dir yet (fresh) → not heavy
+    }
+    if (entries.length === 0) return null;
+    // newest by mtime = what `--continue` resumes
+    let newest: { file: string; mtime: number } | null = null;
+    for (const f of entries) {
+      try {
+        const s = await stat(path.join(dir, f));
+        if (!newest || s.mtimeMs > newest.mtime) newest = { file: f, mtime: s.mtimeMs };
+      } catch {
+        /* skip unreadable */
+      }
+    }
+    if (!newest) return null;
+    const fp = path.join(dir, newest.file);
+    const fh = await open(fp, 'r');
+    try {
+      const { size } = await fh.stat();
+      // Read up to the last 512KB — enough to contain the final assistant turn
+      // in any normal transcript without loading a multi-MB file.
+      const chunk = Math.min(size, 512 * 1024);
+      const buf = Buffer.alloc(chunk);
+      await fh.read(buf, 0, chunk, size - chunk);
+      const lines = buf.toString('utf8').split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (!line || line[0] !== '{') continue;
+        let e: unknown;
+        try {
+          e = JSON.parse(line);
+        } catch {
+          continue; // a partial first line from the chunk boundary
+        }
+        const obj = e as { type?: string; message?: { usage?: Record<string, number> } };
+        const u = obj?.message?.usage;
+        if (obj?.type === 'assistant' && u) {
+          return (
+            (u.input_tokens || 0) +
+            (u.cache_read_input_tokens || 0) +
+            (u.cache_creation_input_tokens || 0)
+          );
+        }
+      }
+      return null; // final assistant turn not in the tail → fail open
+    } finally {
+      await fh.close();
+    }
+  } catch (err) {
+    log.warn(`heavy-resume detection failed for ${ws.id}`, err);
+    return null; // fail open
+  }
 }
 
 /** Absolute path of the readiness sentinel for a workspace's agent. Orchestra
@@ -1914,6 +2001,41 @@ export async function startAgentPty(
   const claudeArgs = resuming
     ? ['--continue', '--dangerously-skip-permissions']
     : ['--dangerously-skip-permissions'];
+  // Heavy-resume gate: if `claude --continue` is about to reload a large
+  // session, Claude Code shows its compaction menu — but a typed task would
+  // proceed the FULL resume and drain the usage pool. Flag the workspace so
+  // the `pty:write` handler suppresses submit keystrokes until the user
+  // consciously drives CC's menu (a nav key clears it). Fail-open: detection
+  // returning null leaves the flag unset, so normal resumes are untouched.
+  if (resuming) {
+    const tokens = await newestResumeTokenCount(ws);
+    if (tokens != null && tokens >= HEAVY_RESUME_TOKEN_THRESHOLD) {
+      ws = { ...ws, heavyResumePending: true };
+      await store.upsertWorkspace(ws);
+      if (!window.isDestroyed()) window.webContents.send('workspace:update', ws);
+      log.info(`heavy-resume gate armed for ${ws.id}: ~${tokens} tokens`);
+      // Safety auto-disarm: if our (deliberately low) threshold flagged a
+      // session that CC does NOT actually prompt for, submits must not be
+      // blocked forever. Clear the flag after a grace period; by then the menu
+      // (if any) has been answered, or there was none. The nav-key path in
+      // pty:write disarms sooner when the user does engage the menu.
+      const gateId = ws.id;
+      setTimeout(() => {
+        const cur = store.getWorkspace(gateId);
+        if (cur?.heavyResumePending) {
+          const cleared = { ...cur, heavyResumePending: false };
+          void store.upsertWorkspace(cleared);
+          if (!window.isDestroyed()) window.webContents.send('workspace:update', cleared);
+        }
+      }, 90_000);
+    } else if (ws.heavyResumePending) {
+      // Clear a stale flag left over from a prior heavy resume that is no
+      // longer heavy (e.g. the session was compacted/cleared since).
+      ws = { ...ws, heavyResumePending: false };
+      await store.upsertWorkspace(ws);
+      if (!window.isDestroyed()) window.webContents.send('workspace:update', ws);
+    }
+  }
   // An orchestrator's standing brief shapes its behaviour without ever showing
   // up as a typed user turn: inject it as an appended system prompt on the
   // first launch only. On resume, Claude Code restores the original session's

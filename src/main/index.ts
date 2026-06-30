@@ -653,12 +653,41 @@ handle('pty:start', async (_e, id: string, cols: number, rows: number) => {
 });
 
 handle('pty:write', async (_e, id: string, data: string) => {
+  const submitted = data.includes('\r') || data.includes('\n');
+  // Heavy-resume gate (armed in startAgentPty when `claude --continue` is about
+  // to reload a large session). While armed, Claude Code is showing its
+  // compaction menu; a typed task + Enter would proceed the FULL resume and
+  // drain the usage pool. So:
+  //  - a navigation key (arrow / Esc) means the user is consciously driving
+  //    CC's menu → disarm and let their input through (this very keystroke and
+  //    the Enter that follows reach CC normally).
+  //  - a bare submit (Enter/newline) while still armed is the dangerous
+  //    blind-proceed → swallow it. The user must touch the menu first.
+  //  - everything else (typing into the menu's filter, etc.) passes through.
+  const wsGate = store.getWorkspace(id);
+  if (wsGate?.heavyResumePending) {
+    // ESC is '\x1b'; arrows are '\x1b[A'/'\x1b[B'/'\x1b[C'/'\x1b[D'. Any escape
+    // sequence here = deliberate menu navigation → disarm.
+    if (data.includes('\x1b')) {
+      const updated = { ...wsGate, heavyResumePending: false };
+      await store.upsertWorkspace(updated);
+      getMainWindow().webContents.send('workspace:update', updated);
+      return writePty(id, data);
+    }
+    if (submitted) {
+      // Blind submit into a heavy resume — suppress so it can't proceed the
+      // full-context resume. The user navigates CC's menu (arrow/Esc) to
+      // disarm, then their Enter answers the menu for real.
+      return;
+    }
+    // non-submit, non-escape keystroke (typing) — pass through harmlessly.
+    return writePty(id, data);
+  }
   // Flip hasInput the first time the user actually submits something (Enter
   // key / carriage return). This is what gates `claude --continue` on the
   // next PTY start, so we avoid "No conversation found" when the log is
   // only startup TUI noise. Activity status itself flips from Claude's own
   // UserPromptSubmit hook, not from this handler.
-  const submitted = data.includes('\r') || data.includes('\n');
   if (submitted) {
     const ws = store.getWorkspace(id);
     if (ws && !ws.hasInput) {
