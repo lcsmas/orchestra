@@ -233,7 +233,7 @@ export function UsageBars() {
     sevenDay = globalUsage.sevenDay;
     // Surface the default login by name too, the same as a pinned account, so
     // the bars always say which login they're measuring.
-    accountLabel = activeAccount?.label ?? 'default login';
+    accountLabel = activeAccount?.label ?? 'default';
   }
 
   if (!fiveHour || !sevenDay) return null;
@@ -273,7 +273,7 @@ export function UsageBars() {
   if (!globalUsage) {
     rows.push({
       key: '__default__',
-      label: 'default login',
+      label: 'default',
       isActive: defaultActive,
       hotness: -1,
       state: { kind: 'pending' },
@@ -281,7 +281,7 @@ export function UsageBars() {
   } else {
     rows.push({
       key: '__default__',
-      label: 'default login',
+      label: 'default',
       isActive: defaultActive,
       hotness: Math.max(globalUsage.fiveHour.utilization, globalUsage.sevenDay.utilization),
       state: { kind: 'ok', fiveHour: globalUsage.fiveHour, sevenDay: globalUsage.sevenDay },

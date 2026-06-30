@@ -194,7 +194,7 @@ function AccountUsageBadge({ accountId }: { accountId: string | null }) {
 // account badge but reads the global `~/.claude` usage poller (a bare
 // UsageSnapshot — no error/extra fields). Null usage means the first global
 // fetch hasn't landed yet.
-const DEFAULT_LOGIN_LABEL = 'default login';
+const DEFAULT_LOGIN_LABEL = 'default';
 
 function DefaultLoginBadge({ usage }: { usage: UsageSnapshot | null }) {
   if (!usage) {

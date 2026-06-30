@@ -319,7 +319,7 @@ export function computeWorkspaceAccounts(): Record<string, WorkspaceAccount> {
     out[ws.id] = {
       workspaceId: ws.id,
       accountId,
-      label: accountId ? labelById.get(accountId) ?? 'account' : 'default login',
+      label: accountId ? labelById.get(accountId) ?? 'account' : 'default',
     };
   }
   return out;
