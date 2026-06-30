@@ -3,6 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 
 interface Props {
@@ -98,6 +99,29 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     term.loadAddon(unicode11);
     term.unicode.activeVersion = '11';
     term.open(containerRef.current);
+
+    // GPU-accelerated rendering. xterm's default DOM renderer repaints heavy
+    // output entirely on the main thread, which is the dominant source of the
+    // multi-second jank that delays the status dot (see the RAF-batched write
+    // below). The WebGL renderer offloads glyph rasterization to the GPU —
+    // typically several times faster on a burst — shrinking every jank window.
+    // Must be loaded after open() (it needs the attached canvas). On GPU context
+    // loss (driver reset, some compositors when occluded) we dispose it so xterm
+    // transparently falls back to the DOM renderer rather than rendering nothing.
+    let webgl: WebglAddon | null = null;
+    try {
+      webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        webgl?.dispose();
+        webgl = null;
+      });
+      term.loadAddon(webgl);
+    } catch {
+      // WebGL unavailable (headless, blocklisted GPU, software GL) — the DOM
+      // renderer stays active. Functionally identical, just slower on bursts.
+      webgl = null;
+    }
+
     termRef.current = term;
     fitRef.current = fit;
 
@@ -245,8 +269,41 @@ export function TerminalView({ workspaceId, isActive }: Props) {
         });
     };
 
+    // Feed PTY output to xterm in requestAnimationFrame-paced batches rather
+    // than calling term.write() synchronously inside the IPC callback. A big
+    // tool-result dump (the main process coalesces PTY chunks into large
+    // `pty:data` messages) used to enter xterm's parser in one synchronous
+    // tick, janking the renderer's main thread for seconds. Because ALL
+    // main→renderer IPC shares one ordered channel, a `workspace:update` (the
+    // status dot) queued around that blob couldn't be applied until the parse
+    // finished — the visible "dot takes ~10s to turn the right colour" lag.
+    // Draining at most WRITE_BUDGET_BYTES per frame yields the thread back
+    // between frames, so the dot's IPC gets a turn and paints promptly. xterm
+    // keeps the bytes ordered; we only throttle how much we hand it per frame.
+    const WRITE_BUDGET_BYTES = 64 * 1024;
+    // Single rolling buffer rather than a queue of chunks: one coalesced
+    // `pty:data` message can itself exceed the budget (the main side flushes the
+    // WHOLE accumulated buffer once it crosses its own 64 KiB threshold, so a
+    // single message can be larger), and slicing within the string lets an
+    // oversized message be spread across frames too — a per-chunk queue would
+    // still hand one giant chunk to term.write() in a single frame.
+    let pending = '';
+    let drainRaf: number | null = null;
+    const drainPending = () => {
+      drainRaf = null;
+      if (!pending) return;
+      // Hand xterm at most one frame's budget, then yield to the event loop so
+      // queued IPC (the status-dot `workspace:update`) gets a turn before the
+      // next slice. The remainder drains on the following frame.
+      const slice = pending.slice(0, WRITE_BUDGET_BYTES);
+      pending = pending.slice(WRITE_BUDGET_BYTES);
+      term.write(slice);
+      if (pending) drainRaf = requestAnimationFrame(drainPending);
+    };
     const offData = window.orchestra.onPtyData((id, data) => {
-      if (id === workspaceId) term.write(data);
+      if (id !== workspaceId) return;
+      pending += data;
+      if (drainRaf === null) drainRaf = requestAnimationFrame(drainPending);
     });
     const offExit = window.orchestra.onPtyExit((id, code) => {
       if (id === workspaceId) {
@@ -258,6 +315,13 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     // instead of running with stale in-memory context from the old one.
     const offRestart = window.orchestra.onPtyRestart((id) => {
       if (id !== workspaceId) return;
+      // Drop any output still buffered from the old pty so it can't land after
+      // the reset and corrupt the fresh session's first frame.
+      pending = '';
+      if (drainRaf !== null) {
+        cancelAnimationFrame(drainRaf);
+        drainRaf = null;
+      }
       term.reset();
       started = false;
       lastSentCols = 0;
@@ -343,10 +407,12 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onFocus);
       ro.disconnect();
+      if (drainRaf !== null) cancelAnimationFrame(drainRaf);
       offData();
       offExit();
       offRestart();
       forceRefitRef.current = null;
+      webgl?.dispose();
       term.dispose();
       termRef.current = null;
     };
