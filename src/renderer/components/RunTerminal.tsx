@@ -31,7 +31,7 @@ export function RunTerminal({ workspaceId, isActive, hasRunScript }: Props) {
     const term = new XTerm({
       cursorBlink: false,
       fontSize: 13,
-      fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+      fontFamily: '"Orchestra Symbols", ui-monospace, "SF Mono", Menlo, monospace',
       theme: {
         background: '#1a1f26',
         foreground: '#e6e9ef',

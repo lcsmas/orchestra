@@ -60,7 +60,13 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     const term = new XTerm({
       cursorBlink: true,
       fontSize: 13,
-      fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+      // "Orchestra Symbols" is a bundled, unicode-range-scoped subset of Adwaita
+      // Mono (see @font-face in styles.css). It only owns the circled-number /
+      // dingbat symbol codepoints Claude emits; listing it first makes the
+      // terminal draw those at the monospace cell width instead of falling back
+      // to a proportional symbol font that gets squished. All other glyphs fall
+      // through to the normal monospace stack.
+      fontFamily: '"Orchestra Symbols", ui-monospace, "SF Mono", Menlo, monospace',
       // Required so the unicode11 addon can register its width provider.
       allowProposedApi: true,
       theme: {
@@ -124,6 +130,22 @@ export function TerminalView({ workspaceId, isActive }: Props) {
 
     termRef.current = term;
     fitRef.current = fit;
+
+    // The WebGL renderer rasterizes each glyph into a texture atlas on first
+    // sight. If "Orchestra Symbols" (our bundled circled-number face) hasn't
+    // finished loading when the first frame paints, xterm caches the fallback
+    // glyph and never re-measures it. Force a one-time atlas clear once the font
+    // resolves so the bundled glyphs replace any fallback that got cached.
+    if (document.fonts) {
+      document.fonts.load('13px "Orchestra Symbols"').then(() => {
+        if (cancelled) return;
+        try {
+          term.clearTextureAtlas();
+        } catch {
+          /* ignore */
+        }
+      });
+    }
 
     // Custom overlay scrollbar. The native xterm-viewport scrollbar is hidden
     // via CSS (no reserved gutter), and this thumb floats over the terminal

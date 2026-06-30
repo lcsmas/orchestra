@@ -1,3 +1,22 @@
+/* Bundled symbol face for the terminal. The circled numbers Claude emits in
+ * its TUI (①②③, ❶❷❸) are not in any monospace font installed by default, so
+ * they fall back to Noto Sans Symbols — whose glyphs have a full 1em advance
+ * (~1.67× the terminal cell). xterm's WebGL renderer then squishes them to fit
+ * one cell (rescaleOverlappingGlyphs), producing the cramped, mismatched look.
+ * This is a subset of Adwaita Mono (OFL-1.1) whose symbol glyphs share the
+ * monospace 0.6em advance, so they render at natural proportions, no rescale.
+ * unicode-range scopes it to symbol codepoints only — letters still come from
+ * the primary monospace stack. Referenced first in the xterm fontFamily option. */
+@font-face {
+  font-family: "Orchestra Symbols";
+  src: url("./assets/fonts/orchestra-symbols.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+  unicode-range: U+2022, U+2026, U+2192, U+2713, U+2717, U+25B8,
+    U+2460-24FF, U+2776-2793, U+2780-27BF;
+}
+
 * { box-sizing: border-box; }
 
 /* Hide scrollbars app-wide while preserving scroll behavior. */
