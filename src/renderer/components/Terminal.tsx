@@ -302,7 +302,18 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     // Draining at most WRITE_BUDGET_BYTES per frame yields the thread back
     // between frames, so the dot's IPC gets a turn and paints promptly. xterm
     // keeps the bytes ordered; we only throttle how much we hand it per frame.
-    const WRITE_BUDGET_BYTES = 64 * 1024;
+    //
+    // 256 KiB, not 64 KiB. Benchmarking the installed xterm 5.5 + WebGL showed a
+    // big dump's wall-clock is dominated by this throttle, NOT xterm's parser
+    // (which does ~35-50 MB/s — 5-10x faster than the slice cadence). 2 MB of
+    // output flushed at 64 KiB takes ~31 frames (~530 ms); at 256 KiB it's ~3.5x
+    // faster (~150 ms). The original 64 KiB was tuned for the old synchronous
+    // write path; now that writes are RAF-batched AND xterm chunks its parser
+    // into ~4 KiB sub-tasks that yield internally, a 256 KiB slice costs only
+    // ~18 ms of cooperatively-yielded parse work — small enough that the
+    // status-dot IPC still gets its turn. 512 KiB starts to regress (~36 ms), so
+    // 256 KiB is the sweet spot between flush speed and dot latency.
+    const WRITE_BUDGET_BYTES = 256 * 1024;
     // Single rolling buffer rather than a queue of chunks: one coalesced
     // `pty:data` message can itself exceed the budget (the main side flushes the
     // WHOLE accumulated buffer once it crosses its own 64 KiB threshold, so a
