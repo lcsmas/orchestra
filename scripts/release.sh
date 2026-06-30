@@ -15,6 +15,12 @@
 #   pnpm run release patch --ci-only   # skip local build, let GitHub Actions handle it
 #   pnpm run release patch --to-master # also land the release on master (see below)
 #   pnpm run release patch --install   # also install the local build to the launcher (see below)
+#   pnpm run release patch --notes-file NOTES.md  # use NOTES.md as the release description (see below)
+#
+# --notes-file FILE: use FILE's contents as the GitHub release description (body)
+# instead of gh's auto-generated commit list. The release title stays the tag.
+# Without it, the release falls back to `gh release create --generate-notes`.
+# Ignored under --ci-only (CI generates the release).
 #
 # --to-master: the script can't `git checkout master` (each orchestra workspace
 # is a worktree pinned to its own branch, and master is checked out elsewhere),
@@ -56,21 +62,37 @@ DRY_RUN=0
 CI_ONLY=0
 TO_MASTER=0
 INSTALL=0
+NOTES_FILE=""
+expect_notes_file=0
 for arg in "$@"; do
+  if [ "$expect_notes_file" = 1 ]; then
+    NOTES_FILE="$arg"; expect_notes_file=0; continue
+  fi
   case "$arg" in
     patch|minor|major) BUMP="$arg" ;;
     --dry-run|-n) DRY_RUN=1 ;;
     --ci-only|--ci) CI_ONLY=1 ;;
     --to-master) TO_MASTER=1 ;;
     --install) INSTALL=1 ;;
+    --notes-file) expect_notes_file=1 ;;
+    --notes-file=*) NOTES_FILE="${arg#--notes-file=}" ;;
     [0-9]*.[0-9]*.[0-9]*) BUMP="$arg" ;;
     *) echo "error: unknown argument '$arg'" >&2; exit 2 ;;
   esac
 done
+[ "$expect_notes_file" = 0 ] || { echo "error: --notes-file requires a path argument" >&2; exit 2; }
 
 if [ "$INSTALL" = 1 ] && [ "$CI_ONLY" = 1 ]; then
   echo "error: --install needs the local build, so it can't be combined with --ci-only" >&2
   exit 2
+fi
+
+if [ -n "$NOTES_FILE" ]; then
+  [ -f "$NOTES_FILE" ] || { echo "error: --notes-file: file not found: $NOTES_FILE" >&2; exit 2; }
+  if [ "$CI_ONLY" = 1 ]; then
+    echo "error: --notes-file can't be combined with --ci-only (CI generates the release notes)" >&2
+    exit 2
+  fi
 fi
 
 cd "$(git rev-parse --show-toplevel)"
@@ -225,7 +247,13 @@ if [ "$CI_ONLY" = 0 ]; then
   ASSETS="$APPIMAGE"
   # electron-builder also emits the auto-update manifest; ship it if present.
   [ -f release/latest-linux.yml ] && ASSETS="$ASSETS release/latest-linux.yml"
-  run "gh release create '$TAG' --title '$TAG' --generate-notes $ASSETS"
+  # Use a hand-written description if given, else fall back to gh's commit list.
+  if [ -n "$NOTES_FILE" ]; then
+    NOTES_OPT="--notes-file '$NOTES_FILE'"
+  else
+    NOTES_OPT="--generate-notes"
+  fi
+  run "gh release create '$TAG' --title '$TAG' $NOTES_OPT $ASSETS"
   say "Released $TAG ✅"
   echo "  GitHub Actions will add x64 and arm64 AppImages shortly."
 else
