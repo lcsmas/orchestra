@@ -60,13 +60,13 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     const term = new XTerm({
       cursorBlink: true,
       fontSize: 13,
-      // "Orchestra Symbols" is a bundled, unicode-range-scoped subset of Adwaita
-      // Mono (see @font-face in styles.css). It only owns the circled-number /
-      // dingbat symbol codepoints Claude emits; listing it first makes the
-      // terminal draw those at the monospace cell width instead of falling back
-      // to a proportional symbol font that gets squished. All other glyphs fall
-      // through to the normal monospace stack.
-      fontFamily: '"Orchestra Symbols", ui-monospace, "SF Mono", Menlo, monospace',
+      // Bundled fonts (see @font-face in styles.css). "Orchestra Symbols" is a
+      // unicode-range-scoped subset that owns only the circled-number / dingbat
+      // codepoints Claude emits, so it's reached first for those; "JetBrains
+      // Mono" is the primary monospace face we ship so the terminal looks the
+      // same on every machine. ui-monospace/Menlo remain as last-resort fallback.
+      fontFamily:
+        '"Orchestra Symbols", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace',
       // Required so the unicode11 addon can register its width provider.
       allowProposedApi: true,
       theme: {
@@ -131,20 +131,36 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     termRef.current = term;
     fitRef.current = fit;
 
-    // The WebGL renderer rasterizes each glyph into a texture atlas on first
-    // sight. If "Orchestra Symbols" (our bundled circled-number face) hasn't
-    // finished loading when the first frame paints, xterm caches the fallback
-    // glyph and never re-measures it. Force a one-time atlas clear once the font
-    // resolves so the bundled glyphs replace any fallback that got cached.
+    // The WebGL renderer bakes each glyph into a GPU texture atlas the first
+    // time it paints. If a bundled font hasn't finished loading by then, the
+    // atlas caches the fallback (or tofu) glyph and never re-measures it — this
+    // is why circled numbers showed as "@" boxes once WebGL was enabled.
+    //
+    // Two things matter here:
+    //  1. "Orchestra Symbols" is unicode-range-scoped, so the browser only
+    //     fetches its woff2 when a glyph IN that range is actually requested.
+    //     document.fonts.load() with no sample text does NOT trigger that fetch
+    //     — we must pass representative glyphs (the circled numbers) so the file
+    //     is genuinely downloaded before we clear the atlas.
+    //  2. We clear the atlas only after BOTH faces resolve, so the re-raster
+    //     picks up JetBrains Mono and the symbols together.
     if (document.fonts) {
-      document.fonts.load('13px "Orchestra Symbols"').then(() => {
-        if (cancelled) return;
-        try {
-          term.clearTextureAtlas();
-        } catch {
-          /* ignore */
-        }
-      });
+      Promise.all([
+        document.fonts.load('13px "JetBrains Mono"'),
+        document.fonts.load('bold 13px "JetBrains Mono"'),
+        document.fonts.load('13px "Orchestra Symbols"', '①②③⓪❶❷☐✻'),
+      ])
+        .then(() => {
+          if (cancelled) return;
+          try {
+            term.clearTextureAtlas();
+          } catch {
+            /* ignore — DOM renderer has no atlas to clear */
+          }
+        })
+        .catch(() => {
+          /* font load failed — fall back stack still renders */
+        });
     }
 
     // Custom overlay scrollbar. The native xterm-viewport scrollbar is hidden

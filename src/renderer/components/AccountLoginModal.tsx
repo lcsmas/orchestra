@@ -30,7 +30,8 @@ export function AccountLoginModal({ accountId, label, onClose }: Props) {
     const term = new XTerm({
       cursorBlink: true,
       fontSize: 13,
-      fontFamily: '"Orchestra Symbols", ui-monospace, "SF Mono", Menlo, monospace',
+      fontFamily:
+        '"Orchestra Symbols", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace',
       convertEol: true,
       scrollback: 5000,
       theme: { background: '#1a1f26', foreground: '#e6e9ef', cursor: '#6ea8ff' },

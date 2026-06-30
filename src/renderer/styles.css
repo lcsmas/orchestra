@@ -1,20 +1,37 @@
-/* Bundled symbol face for the terminal. The circled numbers Claude emits in
- * its TUI (①②③, ❶❷❸) are not in any monospace font installed by default, so
- * they fall back to Noto Sans Symbols — whose glyphs have a full 1em advance
- * (~1.67× the terminal cell). xterm's WebGL renderer then squishes them to fit
- * one cell (rescaleOverlappingGlyphs), producing the cramped, mismatched look.
+/* Bundled terminal fonts. We ship the primary monospace face (JetBrains Mono)
+ * rather than relying on the OS, so the terminal looks identical everywhere.
+ * Both weights are loaded; xterm uses the bold face for bold cells. */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/jetbrains-mono-regular.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/jetbrains-mono-bold.woff2") format("woff2");
+  font-weight: bold;
+  font-style: normal;
+  font-display: block;
+}
+
+/* Symbol face for codepoints JetBrains Mono lacks — the circled numbers and
+ * dingbats Claude emits in its TUI (①②③, ❶❷❸, ☐, ✻). Without this they fall
+ * back to a proportional symbol font (Noto Sans Symbols, ~1.67× the cell) that
+ * xterm's WebGL renderer squishes into one cell — the cramped, @-looking glyphs.
  * This is a subset of Adwaita Mono (OFL-1.1) whose symbol glyphs share the
- * monospace 0.6em advance, so they render at natural proportions, no rescale.
- * unicode-range scopes it to symbol codepoints only — letters still come from
- * the primary monospace stack. Referenced first in the xterm fontFamily option. */
+ * monospace cell advance, so they line up with JetBrains Mono. unicode-range
+ * scopes it to those codepoints only; it's listed first in the fontFamily so
+ * the terminal reaches for it before any system fallback. */
 @font-face {
   font-family: "Orchestra Symbols";
   src: url("./assets/fonts/orchestra-symbols.woff2") format("woff2");
   font-weight: normal;
   font-style: normal;
   font-display: block;
-  unicode-range: U+2022, U+2026, U+2192, U+2713, U+2717, U+25B8,
-    U+2460-24FF, U+2776-2793, U+2780-27BF;
+  unicode-range: U+2022, U+2026, U+2190-2193, U+2380-23BF, U+23F4-23F7,
+    U+2460-24FF, U+25A0-25FF, U+2610-2612, U+2700-27BF;
 }
 
 * { box-sizing: border-box; }
