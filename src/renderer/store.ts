@@ -31,9 +31,12 @@ interface State {
    *  …), keyed by workspace id. Driven by `agent:tool` events; absent when the
    *  agent is between tools or idle. Never persisted. */
   tools: Record<string, string>;
-  /** Live context-window size (tokens) of each agent's session, keyed by
-   *  workspace id. Driven by `agent:context` events; absent until the first
-   *  turn lands a usage figure. Never persisted. */
+  /** Context-window size (tokens) of each agent's session, keyed by workspace
+   *  id. Seeded on load from each workspace's persisted `contextTokens` (the
+   *  last turn-end figure) so the sidebar badge shows immediately at startup,
+   *  before any agent has run. Thereafter driven live by `agent:context` events,
+   *  which overwrite the seed the moment the agent next takes a turn. Absent for
+   *  a workspace that has never completed a turn. */
   contextTokens: Record<string, number>;
   /** Per-repo base-branch sync state (behind/ahead of origin/<base>),
    *  keyed by repoPath. Updated by `repo:syncState` events. */
@@ -122,10 +125,17 @@ export const useStore = create<State>((set, get) => ({
       ]);
     const repoSync: Record<string, RepoSyncState> = {};
     for (const s of syncStates) repoSync[s.repoPath] = s;
+    // Seed the context badge from each workspace's persisted turn-end figure so
+    // it paints at startup, before any live `agent:context` event has fired.
+    const contextTokens: Record<string, number> = {};
+    for (const w of workspaces) {
+      if (typeof w.contextTokens === 'number') contextTokens[w.id] = w.contextTokens;
+    }
     set({
       repos,
       workspaces,
       repoSync,
+      contextTokens,
       accountUsage,
       workspaceAccounts,
       accounts,

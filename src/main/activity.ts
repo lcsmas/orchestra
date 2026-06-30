@@ -422,14 +422,19 @@ async function computeContextTokens(transcriptPath: string): Promise<number | nu
 const lastContext = new Map<string, number>();
 
 /** Recompute a workspace's context size from its transcript and push it to the
- *  renderer if it changed. Like {@link emitTool}, this is ephemeral UI state on
- *  its own IPC channel — never persisted, so per-turn growth doesn't write
- *  store.json. No-ops when the hook carried no transcript path (legacy
- *  sessions). */
+ *  renderer if it changed. Like {@link emitTool}, the live figure is ephemeral UI
+ *  state on its own IPC channel — so per-turn growth (every posttool) never
+ *  writes store.json. The exception is `persist: true`, passed only at turn-end
+ *  (`stop`/`notify`), which also stamps `Workspace.contextTokens` so the badge
+ *  can be seeded at startup before any live event fires. That write is free: the
+ *  turn-end status→`waiting` transition already saves the store, so we fold the
+ *  token number into that same record rather than adding a write. No-ops when the
+ *  hook carried no transcript path (legacy sessions). */
 async function emitContext(
   id: string,
   transcriptPath: string | undefined,
   window: BrowserWindow,
+  persist = false,
 ): Promise<void> {
   if (!transcriptPath) return;
   let tokens: number | null;
@@ -440,6 +445,17 @@ async function emitContext(
     return;
   }
   if (tokens == null) return;
+  // Persist the turn-end figure onto the workspace record so the sidebar badge
+  // survives a restart. Only when it actually changed from what's stored, to keep
+  // this a no-op when the cached value already matches (and so a `notify` right
+  // after a `stop`, both turn-ends, doesn't double-write). `upsertWorkspace`
+  // already runs on the status transition; this just carries one more field.
+  if (persist) {
+    const ws = store.getWorkspace(id);
+    if (ws && !ws.archived && ws.contextTokens !== tokens) {
+      void store.upsertWorkspace({ ...ws, contextTokens: tokens }).catch(() => {});
+    }
+  }
   if (lastContext.get(id) === tokens) return;
   lastContext.set(id, tokens);
   if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
@@ -482,12 +498,14 @@ export function applyAgentEvent(
     // / overload turn-end.
     case 'stopfail':
       emitTool(id, null, window);
-      void emitContext(id, transcript, window);
+      // Turn-end: persist the figure (piggybacks the status write fireFinished
+      // is about to make) so the badge can be restored at next startup.
+      void emitContext(id, transcript, window, true);
       fireFinished(id, window);
       break;
     case 'notify':
       emitTool(id, null, window);
-      void emitContext(id, transcript, window);
+      void emitContext(id, transcript, window, true);
       fireNeedsInput(id, window);
       break;
   }

@@ -123,6 +123,16 @@ export interface Workspace {
   /** Last line of stderr (or the spawn error) when `setupStatus === 'failed'`.
    * Full output lives in `~/.orchestra/scripts/<id>-setup.log`. */
   setupError?: string;
+  /** The agent session's context-window size in tokens at the end of its most
+   * recent turn — the figure the TUI `/context` view shows as "used" (sum of the
+   * three input components on the last main-chain assistant message). Persisted
+   * ONLY at turn-end (`stop`/`notify`), piggybacking the store write that the
+   * status→`waiting` transition already performs, so it adds no extra write and
+   * avoids the per-posttool churn that keeps the live figure on the ephemeral
+   * `agent:context` IPC channel instead. Used solely to seed the sidebar badge at
+   * startup before any live event has fired; the live channel overwrites it the
+   * moment the agent next runs in Orchestra. Absent until the first turn ends. */
+  contextTokens?: number;
 }
 
 /** True for the non-git workspace kinds — `'scratch'` and `'orchestrator'`.
