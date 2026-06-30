@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
+import { loginColor } from './AccountBadge';
 import type { UsageErrorKind, UsageWindowDetail } from '../../shared/types';
 
 // Two slim progress bars showing the active workspace's account rolling usage
@@ -145,7 +146,9 @@ function UsageRowView({ row, now }: { row: UsageRow; now: number }) {
   return (
     <div className={cls}>
       <div className="usage-bars-row-head">
-        <span className="usage-bars-row-name">{row.label}</span>
+        <span className="usage-bars-row-name" style={{ color: loginColor(row.label) }}>
+          {row.label}
+        </span>
         {row.state.kind === 'pending' && (
           <span className="usage-bars-row-status">fetching usage…</span>
         )}

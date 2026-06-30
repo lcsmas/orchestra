@@ -1210,6 +1210,9 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               >
                 <span className={`caret ${collapsed ? '' : 'open'}`}>▸</span>
                 <span className="repo-name">{repoLabel(repoPath)}</span>
+                <span className="ws-context-sep" aria-hidden="true">
+                  ·
+                </span>
                 <RepoAccountBadge repoPath={repoPath} />
               </button>
               <span className="repo-header-actions">

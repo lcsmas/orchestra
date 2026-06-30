@@ -27,6 +27,21 @@ function severityClass(pct: number): string {
   return 'ok';
 }
 
+// A stable, distinct color per login so two accounts side by side read as
+// different at a glance. Derived deterministically from the login's name (the
+// account label, or DEFAULT_LOGIN_LABEL) so the same login always gets the same
+// color across sidebar rows and the repo header. We pick the hue from a string
+// hash and keep saturation/lightness fixed in a muted, dark-theme-friendly band
+// so every color stays legible against the sidebar without one shouting.
+export function loginColor(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) | 0;
+  }
+  const hue = ((hash % 360) + 360) % 360;
+  return `hsl(${hue}, 55%, 68%)`;
+}
+
 function errorText(kind: UsageErrorKind | null): string {
   switch (kind) {
     case 'no-scope':
@@ -125,7 +140,11 @@ function AccountUsageBadge({ accountId }: { accountId: string | null }) {
   // First poll still in flight.
   if (!usage) {
     return (
-      <span className="account-badge inline pending" title={`${label}: fetching usage…`}>
+      <span
+        className="account-badge inline pending"
+        style={{ color: loginColor(label) }}
+        title={`${label}: fetching usage…`}
+      >
         {label}
       </span>
     );
@@ -161,7 +180,11 @@ function AccountUsageBadge({ accountId }: { accountId: string | null }) {
     (usage.expired ? `\n⚠ token expired — re-login (showing cached usage)` : '') +
     `\nas of ${ageText(usage.fetchedAt)}`;
   return (
-    <span className={`account-badge inline usage ${sev}`} title={title}>
+    <span
+      className={`account-badge inline usage ${sev}`}
+      style={{ color: loginColor(label) }}
+      title={title}
+    >
       {label}
     </span>
   );
@@ -178,6 +201,7 @@ function DefaultLoginBadge({ usage }: { usage: UsageSnapshot | null }) {
     return (
       <span
         className="account-badge inline pending"
+        style={{ color: loginColor(DEFAULT_LOGIN_LABEL) }}
         title={`${DEFAULT_LOGIN_LABEL}: fetching usage…`}
       >
         {DEFAULT_LOGIN_LABEL}
@@ -194,7 +218,11 @@ function DefaultLoginBadge({ usage }: { usage: UsageSnapshot | null }) {
     `7-day window: ${seven}%` +
     `\nas of ${ageText(usage.fetchedAt)}`;
   return (
-    <span className={`account-badge inline usage ${sev}`} title={title}>
+    <span
+      className={`account-badge inline usage ${sev}`}
+      style={{ color: loginColor(DEFAULT_LOGIN_LABEL) }}
+      title={title}
+    >
       {DEFAULT_LOGIN_LABEL}
     </span>
   );
