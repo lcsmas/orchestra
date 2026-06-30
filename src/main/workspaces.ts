@@ -1818,9 +1818,15 @@ dir="\${ORCHESTRA_EVENTS_DIR:-\$HOME/.orchestra/events}"
 event="\${1:-}"
 [ -n "\$event" ] || exit 0
 
+# Claude Code delivers the hook's event payload as JSON on stdin. We read it
+# once (when present) and pull two values out with pure bash parameter
+# expansion — no jq dependency: the active tool name (for the per-tool label)
+# and the transcript path (so orchestra can compute the session's context size
+# in TypeScript rather than parsing JSONL here, which would be fragile).
 tool=""
+transcript=""
 case "\$event" in
-  pretool|posttool)
+  pretool|posttool|stop|notify)
     payload="\$(cat)"
     case "\$payload" in
       *'"tool_name"'*)
@@ -1828,6 +1834,14 @@ case "\$event" in
         rest="\${rest#*:}"
         rest="\${rest#*'"'}"
         tool="\${rest%%'"'*}"
+        ;;
+    esac
+    case "\$payload" in
+      *'"transcript_path"'*)
+        rest="\${payload#*'"transcript_path"'}"
+        rest="\${rest#*:}"
+        rest="\${rest#*'"'}"
+        transcript="\${rest%%'"'*}"
         ;;
     esac
     ;;
@@ -1854,7 +1868,13 @@ if command -v flock >/dev/null 2>&1; then
   exec 9>&-
 fi
 
-printf '{"seq":%s,"event":"%s","tool":"%s"}\\n' "\$seq" "\$event" "\$tool" >> "\$spool"
+# JSON-escape the transcript path's two structurally-significant characters
+# (backslash, then double-quote) so an unusual path can't corrupt the line the
+# reader JSON.parses. Tool names are identifiers and need no escaping.
+transcript="\${transcript//\\\\/\\\\\\\\}"
+transcript="\${transcript//\\"/\\\\\\"}"
+
+printf '{"seq":%s,"event":"%s","tool":"%s","transcript":"%s"}\\n' "\$seq" "\$event" "\$tool" "\$transcript" >> "\$spool"
 exit 0
 `;
 

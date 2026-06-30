@@ -31,6 +31,10 @@ interface State {
    *  …), keyed by workspace id. Driven by `agent:tool` events; absent when the
    *  agent is between tools or idle. Never persisted. */
   tools: Record<string, string>;
+  /** Live context-window size (tokens) of each agent's session, keyed by
+   *  workspace id. Driven by `agent:context` events; absent until the first
+   *  turn lands a usage figure. Never persisted. */
+  contextTokens: Record<string, number>;
   /** Per-repo base-branch sync state (behind/ahead of origin/<base>),
    *  keyed by repoPath. Updated by `repo:syncState` events. */
   repoSync: Record<string, RepoSyncState>;
@@ -84,6 +88,7 @@ export const useStore = create<State>((set, get) => ({
   prs: {},
   linear: {},
   tools: {},
+  contextTokens: {},
   repoSync: {},
   accountUsage: {},
   workspaceAccounts: {},
@@ -398,7 +403,8 @@ window.orchestra.onWorkspaceRemoved((id) => {
     const { [id]: _goneLinear, ...linear } = s.linear;
     const { [id]: _goneStat, ...stats } = s.stats;
     const { [id]: _goneTool, ...tools } = s.tools;
-    return { workspaces, activeId, prs, linear, stats, tools };
+    const { [id]: _goneCtx, ...contextTokens } = s.contextTokens;
+    return { workspaces, activeId, prs, linear, stats, tools, contextTokens };
   });
 });
 window.orchestra.onAgentTool((id, tool) => {
@@ -417,6 +423,14 @@ window.orchestra.onAgentTool((id, tool) => {
   if (!(id in s.tools)) return;
   const { [id]: _gone, ...tools } = s.tools;
   useStore.setState({ tools });
+});
+window.orchestra.onAgentContext((id, tokens) => {
+  // Fires after each tool and at turn end. Guard before setState so an
+  // unchanged figure (a posttool that didn't move the model) doesn't churn
+  // subscribers — same discipline as onAgentTool above.
+  const s = useStore.getState();
+  if (s.contextTokens[id] === tokens) return;
+  useStore.setState({ contextTokens: { ...s.contextTokens, [id]: tokens } });
 });
 window.orchestra.onWorkspaceFocus((id) => {
   const s = useStore.getState();

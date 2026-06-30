@@ -13,7 +13,11 @@ import { LinearSettings } from './LinearSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
 import { UsageBars } from './UsageBars';
 import { AccountsSettings } from './AccountsSettings';
-import { RepoAccountBadge, WorkspaceAccountBadge } from './AccountBadge';
+import {
+  RepoAccountBadge,
+  WorkspaceAccountBadge,
+  WorkspaceContextBadge,
+} from './AccountBadge';
 import { dialog } from './Dialog';
 
 interface Props {
@@ -996,7 +1000,11 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                             {w.branch}
                           </div>
                         )}
+                        <WorkspaceContextBadge workspaceId={w.id} />
                         <span className="ws-login">
+                          <span className="ws-context-sep" aria-hidden="true">
+                            ·
+                          </span>
                           <WorkspaceAccountBadge workspaceId={w.id} />
                         </span>
                         {childIsGit && (
@@ -1108,7 +1116,11 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           {w.branch}
                         </div>
                       )}
+                      <WorkspaceContextBadge workspaceId={w.id} />
                       <span className="ws-login">
+                        <span className="ws-context-sep" aria-hidden="true">
+                          ·
+                        </span>
                         <WorkspaceAccountBadge workspaceId={w.id} />
                       </span>
                     </div>
@@ -1403,6 +1415,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           )}
                         </div>
                       )}
+                      <WorkspaceContextBadge workspaceId={w.id} />
                       {sizeBytes != null && (
                         <span
                           className="ws-size"

@@ -1,5 +1,7 @@
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { BrowserWindow, Notification } from 'electron';
+import { log } from './logger';
 import { store } from './store';
 import {
   getBranchMergeState,
@@ -223,6 +225,7 @@ const lastBranchProbe = new Map<string, number>();
 export function forgetWorkspaceProbes(id: string): void {
   lastBranchProbe.delete(id);
   lastMergeProbe.delete(id);
+  lastContext.delete(id);
 }
 
 export async function detectAndUpdateBranchName(
@@ -349,6 +352,101 @@ function emitTool(id: string, tool: string | null, window: BrowserWindow): void 
   }
 }
 
+// Cap how much of a transcript we read. The context figure lives on the LAST
+// assistant turn, which is at the file's tail, so we read the trailing slice
+// rather than the whole JSONL — a long session's transcript is multi-MB and
+// re-reading it on every posttool would be wasteful. 512 KiB comfortably holds
+// the final few turns even when one carries a large tool result.
+const TRANSCRIPT_TAIL_BYTES = 512 * 1024;
+
+/** The size of a Claude Code session's context window, in tokens, derived from
+ *  its transcript. This is the figure the TUI's `/context` view shows as
+ *  "used": on the most recent MAIN-CHAIN assistant message (sub-agent /
+ *  sidechain turns don't count toward the parent's context), the sum of the
+ *  three input components — fresh input, cache writes, and cache reads. Output
+ *  tokens are excluded: they're what the model produced, not what's fed back in.
+ *  Returns null when the transcript is missing/unreadable or has no usable
+ *  assistant turn yet (e.g. the very first event of a brand-new session). */
+async function computeContextTokens(transcriptPath: string): Promise<number | null> {
+  let text: string;
+  try {
+    const handle = await fs.open(transcriptPath, 'r');
+    try {
+      const { size } = await handle.stat();
+      const start = Math.max(0, size - TRANSCRIPT_TAIL_BYTES);
+      const len = size - start;
+      const buf = Buffer.alloc(len);
+      await handle.read(buf, 0, len, start);
+      text = buf.toString('utf8');
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return null; // transcript not created yet, removed, or unreadable
+  }
+  // Walk lines newest-first; the first main-chain assistant turn we hit carries
+  // the live context size. Reading from the tail means we stop almost
+  // immediately. A leading partial line (we sliced mid-file) just fails to
+  // parse and is skipped.
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    let entry: {
+      type?: unknown;
+      isSidechain?: unknown;
+      message?: { usage?: Record<string, unknown> };
+    };
+    try {
+      entry = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (entry.type !== 'assistant' || entry.isSidechain === true) continue;
+    const usage = entry.message?.usage;
+    if (!usage) continue;
+    const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    const tokens =
+      num(usage.input_tokens) +
+      num(usage.cache_creation_input_tokens) +
+      num(usage.cache_read_input_tokens);
+    return tokens > 0 ? tokens : null;
+  }
+  return null;
+}
+
+// The last context size pushed per workspace, so a recompute that lands on the
+// same number (common on a posttool that didn't move the model) doesn't spam a
+// redundant IPC message. Cleared lazily — a stale entry only costs one skipped
+// no-op send.
+const lastContext = new Map<string, number>();
+
+/** Recompute a workspace's context size from its transcript and push it to the
+ *  renderer if it changed. Like {@link emitTool}, this is ephemeral UI state on
+ *  its own IPC channel — never persisted, so per-turn growth doesn't write
+ *  store.json. No-ops when the hook carried no transcript path (legacy
+ *  sessions). */
+async function emitContext(
+  id: string,
+  transcriptPath: string | undefined,
+  window: BrowserWindow,
+): Promise<void> {
+  if (!transcriptPath) return;
+  let tokens: number | null;
+  try {
+    tokens = await computeContextTokens(transcriptPath);
+  } catch (e) {
+    log.error(`activity: computeContextTokens failed for ${id}`, e);
+    return;
+  }
+  if (tokens == null) return;
+  if (lastContext.get(id) === tokens) return;
+  lastContext.set(id, tokens);
+  if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+    window.webContents.send('agent:context', id, tokens);
+  }
+}
+
 /** Apply one lifecycle event to a workspace's status. Fed by the durable spool
  *  tailer (with the per-tool `tool` for pretool/posttool) and, for legacy
  *  sessions, by the Unix-socket route via `dispatchHookEvent`. `setStatus`
@@ -359,6 +457,7 @@ export function applyAgentEvent(
   event: string,
   tool: string | undefined,
   window: BrowserWindow,
+  transcript?: string,
 ): void {
   switch (event) {
     case 'submit':
@@ -370,8 +469,11 @@ export function applyAgentEvent(
       void setStatus(id, 'running', window);
       break;
     case 'posttool':
-      // Stay running between tools; just clear the active-tool label.
+      // Stay running between tools; just clear the active-tool label. Refresh
+      // the context-size badge here so it climbs live through a long turn, not
+      // only at turn-end.
       emitTool(id, null, window);
+      void emitContext(id, transcript, window);
       break;
     case 'stop':
     // Claude's `StopFailure` hook (turn ended on an API error) maps here too:
@@ -380,10 +482,12 @@ export function applyAgentEvent(
     // / overload turn-end.
     case 'stopfail':
       emitTool(id, null, window);
+      void emitContext(id, transcript, window);
       fireFinished(id, window);
       break;
     case 'notify':
       emitTool(id, null, window);
+      void emitContext(id, transcript, window);
       fireNeedsInput(id, window);
       break;
   }

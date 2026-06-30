@@ -181,6 +181,11 @@ export interface OrchestraAPI {
    *  PreToolUse hook (the agent is about to run Bash/Edit/…) and with `null`
    *  on PostToolUse / turn end. Not persisted — purely a live UI label. */
   onAgentTool: (cb: (id: string, tool: string | null) => void) => () => void;
+  /** Ephemeral context-window size, in tokens, of the agent's session. Fires
+   *  after each tool and at turn end, derived from the session transcript's
+   *  latest main-chain assistant usage (the `/context` "used" figure). Not
+   *  persisted — purely a live UI label. */
+  onAgentContext: (cb: (id: string, tokens: number) => void) => () => void;
   /** Fires whenever a repo's base-branch sync state changes (started a
    *  fetch, finished a fetch, ahead/behind count moved). One event per
    *  state transition, keyed by repoPath. */

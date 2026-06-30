@@ -57,6 +57,36 @@ function errorTitle(label: string, kind: UsageErrorKind | null): string {
   }
 }
 
+// Compact token count for the context badge: 41679 → "42k", 1240000 → "1.2M".
+// Whole-thousands below 100k so the figure stays narrow next to the branch.
+function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) {
+    const k = n / 1000;
+    return `${k < 10 ? k.toFixed(1) : Math.round(k)}k`;
+  }
+  const m = n / 1_000_000;
+  return `${m < 10 ? m.toFixed(1) : Math.round(m)}M`;
+}
+
+// The live context-window size of a workspace's agent session, shown next to
+// the branch name with a leading dot separator, in the same discreet yellow as
+// the login badge. Ephemeral (store.contextTokens, fed by `agent:context`):
+// nothing renders until the agent's first turn lands a usage figure, so a
+// never-run workspace shows only its branch.
+export function WorkspaceContextBadge({ workspaceId }: { workspaceId: string }) {
+  const tokens = useStore((s) => s.contextTokens[workspaceId]);
+  if (tokens == null) return null;
+  return (
+    <span className="ws-context" title={`Context size: ${tokens.toLocaleString()} tokens`}>
+      <span className="ws-context-sep" aria-hidden="true">
+        ·
+      </span>
+      {formatTokens(tokens)}
+    </span>
+  );
+}
+
 export function RepoAccountBadge({ repoPath }: { repoPath: string }) {
   const accountId = useStore(
     (s) => s.repos.find((r) => r.path === repoPath)?.accountId ?? null,

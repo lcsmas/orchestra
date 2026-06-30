@@ -119,6 +119,11 @@ const api: OrchestraAPI = {
     ipcRenderer.on('agent:tool', listener);
     return () => ipcRenderer.off('agent:tool', listener);
   },
+  onAgentContext: (cb) => {
+    const listener = (_e: unknown, id: string, tokens: number) => cb(id, tokens);
+    ipcRenderer.on('agent:context', listener);
+    return () => ipcRenderer.off('agent:context', listener);
+  },
   onRepoSyncState: (cb) => {
     const listener = (_e: unknown, s: unknown) => cb(s as never);
     ipcRenderer.on('repo:syncState', listener);
