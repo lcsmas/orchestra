@@ -1379,11 +1379,9 @@ input:focus, textarea:focus, select:focus {
   all: unset;
   display: inline-flex;
   align-items: center;
+  /* Just the pointer signals it's clickable — no hover background, so the badge
+     looks identical to a read-only one until clicked. */
   cursor: pointer;
-  border-radius: var(--radius-sm);
-}
-.ws-account-trigger:hover {
-  background: var(--bg-4);
 }
 .ws-account-trigger:disabled {
   cursor: default;
