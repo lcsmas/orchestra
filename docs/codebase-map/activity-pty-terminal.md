@@ -89,6 +89,16 @@ KiB regresses). Also: custom floating scrollbar (no gutter), Ctrl+C→copy,
 Ctrl+V image-paste (spill to temp file, bracketed-paste the path),
 Shift+Enter→ESC+CR, lazy PTY start + size re-assert on visibility/focus.
 
+**Repaint-on-show (the garbled-frame fix):** a hidden tab is `visibility:hidden`
+(not unmounted), so the PTY keeps streaming and `drainPending` keeps writing into
+xterm while its WebGL canvas is offscreen/occluded — on some GPUs that leaves the
+glyph texture atlas + composited canvas half-updated, so returning to the tab
+shows scrambled glyph soup. The `isActive` effect (and `onVisible` for the active
+pane) calls `repaint()` after the refit: `webgl.clearTextureAtlas()` +
+`term.refresh(0, rows-1)` redraws every row from xterm's (always-correct) buffer.
+`repaintRef`/`isActiveRef` bridge the value into the mount effect's long-lived
+closures without stale captures.
+
 ## RunTerminal.tsx (run-script view, ~227 lines)
 Simpler xterm (no Unicode11/WebGL/custom scrollbar, 5k scrollback). Start/Stop
 buttons drive a `<wsId>:run` PTY (`bash -lc <script>` with `$ORCHESTRA_PORT`);

@@ -53,6 +53,13 @@ export function TerminalView({ workspaceId, isActive }: Props) {
   // Lets the isActive effect re-assert the PTY size when this tab is shown,
   // healing any drift accrued while it was hidden. Set in the mount effect.
   const forceRefitRef = useRef<(() => void) | null>(null);
+  // Lets the isActive effect force a full repaint when this tab is shown. Set
+  // in the mount effect (it needs the term + webgl addon in scope).
+  const repaintRef = useRef<(() => void) | null>(null);
+  // Current isActive, readable from the mount effect's long-lived closures
+  // (onVisible/onFocus) without them capturing a stale value.
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
 
   // Mount xterm once per workspaceId. Never unmounts while the workspace exists.
   useEffect(() => {
@@ -256,6 +263,30 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     };
     forceRefitRef.current = () => refit(true);
 
+    // Force a full, correct repaint of the visible screen from xterm's buffer.
+    // Called when the tab becomes active again. While a workspace tab is hidden
+    // (visibility:hidden) the PTY keeps streaming and drainPending keeps writing
+    // into xterm, but the WebGL renderer is painting onto an offscreen/occluded
+    // canvas. On some GPUs/compositors that leaves the glyph texture atlas — and
+    // the composited canvas — in a stale, half-updated state: on return you get
+    // the scrambled glyph soup (fragmented characters, wrong colours) instead of
+    // the real TUI frame. xterm's buffer is always authoritative, so we drop the
+    // WebGL atlas (rebuilt lazily on the next paint) and ask xterm to redraw
+    // every row from that buffer. Cheap: one full-screen redraw, only on show.
+    const repaint = () => {
+      try {
+        webgl?.clearTextureAtlas();
+      } catch {
+        /* DOM renderer / no atlas — nothing to clear */
+      }
+      try {
+        term.refresh(0, term.rows - 1);
+      } catch {
+        /* ignore */
+      }
+    };
+    repaintRef.current = repaint;
+
     // Start the PTY only after we have real container dimensions. Inactive
     // workspace tabs render with display:none, which makes proposeDimensions
     // return null/zero and would otherwise spawn the PTY at default 80×24
@@ -435,7 +466,13 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     // resize whose ptyResize never reached the PTY). Cheap: main drops no-ops.
     const onVisible = () => {
       if (!started || document.visibilityState !== 'visible') return;
-      requestAnimationFrame(() => refit(true));
+      requestAnimationFrame(() => {
+        refit(true);
+        // Only the active pane's canvas is composited; the others repaint when
+        // they next become active. Repainting the visible one here heals a
+        // garbled WebGL frame after the whole window was occluded/minimized.
+        if (isActiveRef.current) repaint();
+      });
     };
     const onFocus = () => {
       if (!started) return;
@@ -461,6 +498,7 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       offExit();
       offRestart();
       forceRefitRef.current = null;
+      repaintRef.current = null;
       webgl?.dispose();
       term.dispose();
       termRef.current = null;
@@ -477,6 +515,10 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       try {
         termRef.current?.focus();
         forceRefitRef.current?.();
+        // Repaint AFTER the refit so we redraw at the final size. Heals the
+        // garbled WebGL frame that can result from writing to xterm while the
+        // pane was hidden (visibility:hidden / occluded canvas).
+        repaintRef.current?.();
       } catch {
         /* ignore */
       }
