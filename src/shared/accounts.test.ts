@@ -4,6 +4,7 @@ import {
   classifyHttpError,
   expandConfigDir,
   isExpired,
+  planAccountMigration,
   resolveWorkspaceAccountId,
   parseCredentials,
   parseUsageResponse,
@@ -161,6 +162,65 @@ test('resolveWorkspaceAccountId keeps the pin even after the repo would point el
   // The repo may now be assigned acc-b, but a workspace pinned to acc-a stays
   // on acc-a — the whole point of pinning (no "No conversation found").
   assert.equal(resolveWorkspaceAccountId('acc-a', new Set(['acc-a', 'acc-b'])), 'acc-a');
+});
+
+// ---- planAccountMigration (migrate a workspace's pinned account) -------------
+
+test('planAccountMigration migrates default → a known account', () => {
+  assert.deepEqual(planAccountMigration(undefined, 'mc', new Set(['mc', 'other'])), {
+    kind: 'migrate',
+    targetAccountId: 'mc',
+  });
+});
+
+test('planAccountMigration migrates one account → another', () => {
+  assert.deepEqual(planAccountMigration('other', 'mc', new Set(['mc', 'other'])), {
+    kind: 'migrate',
+    targetAccountId: 'mc',
+  });
+});
+
+test('planAccountMigration migrates a pinned account → default login (null/empty target)', () => {
+  const known = new Set(['mc']);
+  for (const target of [null, undefined, '', '   ']) {
+    assert.deepEqual(planAccountMigration('mc', target, known), {
+      kind: 'migrate',
+      targetAccountId: undefined,
+    });
+  }
+});
+
+test('planAccountMigration is a no-op when already on the target account', () => {
+  assert.deepEqual(planAccountMigration('mc', 'mc', new Set(['mc'])), {
+    kind: 'noop',
+    targetAccountId: 'mc',
+  });
+});
+
+test('planAccountMigration is a no-op when already on default login and clearing', () => {
+  // undefined current + empty target both mean the default login → nothing to move.
+  assert.deepEqual(planAccountMigration(undefined, '', new Set(['mc'])), {
+    kind: 'noop',
+    targetAccountId: undefined,
+  });
+  assert.deepEqual(planAccountMigration('', null, new Set(['mc'])), {
+    kind: 'noop',
+    targetAccountId: undefined,
+  });
+});
+
+test('planAccountMigration errors on an unknown target account', () => {
+  assert.deepEqual(planAccountMigration('mc', 'ghost', new Set(['mc'])), {
+    kind: 'error',
+    error: 'unknown account: ghost',
+  });
+});
+
+test('planAccountMigration trims whitespace around a real target id', () => {
+  assert.deepEqual(planAccountMigration(undefined, '  mc  ', new Set(['mc'])), {
+    kind: 'migrate',
+    targetAccountId: 'mc',
+  });
 });
 
 // ---- sanitizeAccountInherit (per-account inheritance spec) -------------------

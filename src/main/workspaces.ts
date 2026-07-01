@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, rm, appendFile, readdir, stat, open } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, appendFile, readdir, stat, open, rename, copyFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { BrowserWindow } from 'electron';
 import { execFile } from 'node:child_process';
@@ -20,7 +20,7 @@ import {
   switchWorktreeBranch,
 } from './git';
 import { isRunning, stopPty, clearScrollback, startPty, writePty, readScrollback } from './pty';
-import { expandConfigDir } from '../shared/accounts';
+import { expandConfigDir, planAccountMigration } from '../shared/accounts';
 import { syncAccountInheritance } from './account-inherit';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
@@ -1187,6 +1187,183 @@ export async function dispatchAttachRequest(
   return { ok: true, id, parentId: rawParent, branch: ws.branch };
 }
 
+// ---------- Migrate a workspace to a different account ----------
+
+export interface MigrateAccountResult {
+  ok: boolean;
+  id?: string;
+  branch?: string;
+  /** The account id the workspace is now pinned to, or null for default login. */
+  accountId?: string | null;
+  /** True when the agent was running and was auto-resumed after the move. */
+  resumed?: boolean;
+  error?: string;
+}
+
+/** Default PTY geometry for an agent auto-resumed after an account migration.
+ * Mirrors the startup-resume geometry (RESUME_COLS/ROWS): the renderer re-fits
+ * the moment the user opens the tab, so this only governs unseen TUI wrapping. */
+const MIGRATE_RESUME_COLS = 80;
+const MIGRATE_RESUME_ROWS = 24;
+
+/** Move a workspace's Claude Code conversation transcripts from one account's
+ * config dir to another's, so `claude --continue` still resolves the session
+ * after the pin changes. Claude keys the session off the worktree cwd
+ * (`projects/<mangled-cwd>/*.jsonl`), which never changes, so relocating those
+ * files under `dstConfigDir` is what preserves continuity. Best-effort per file;
+ * a genuine fs error propagates so a half-move surfaces instead of silently
+ * losing history. A missing source project dir is fine (nothing recorded yet).
+ * No-ops when src and dst resolve to the same dir. */
+async function moveWorkspaceTranscripts(
+  worktreePath: string,
+  srcConfigDir: string,
+  dstConfigDir: string,
+): Promise<void> {
+  if (srcConfigDir === dstConfigDir) return;
+  const mangled = mangleProjectDir(worktreePath);
+  const srcDir = path.join(srcConfigDir, 'projects', mangled);
+  const dstDir = path.join(dstConfigDir, 'projects', mangled);
+  let entries: string[];
+  try {
+    entries = await readdir(srcDir);
+  } catch {
+    return; // no project dir under the source account → nothing to move
+  }
+  if (entries.length === 0) return;
+  await mkdir(dstDir, { recursive: true });
+  for (const name of entries) {
+    const from = path.join(srcDir, name);
+    const to = path.join(dstDir, name);
+    try {
+      await rename(from, to);
+    } catch (err) {
+      // Cross-device rename (EXDEV) — the two config dirs live on different
+      // filesystems. Fall back to copy + unlink so the move still completes.
+      if ((err as NodeJS.ErrnoException)?.code === 'EXDEV') {
+        await copyFile(from, to);
+        await rm(from, { force: true });
+      } else {
+        throw err;
+      }
+    }
+  }
+  // Drop the now-empty source project dir (best-effort — leftover files, e.g. a
+  // concurrently-written transcript, just leave it in place).
+  await rm(srcDir, { recursive: true, force: true }).catch(() => undefined);
+}
+
+/** Socket/IPC entry point for migrating a workspace to a different account (or
+ * back to the default login with a null/empty `accountId`). Per the pinning
+ * model, this must relocate the conversation, not just re-label: stop the agent
+ * if it's running, move its transcripts into the target account's config dir,
+ * re-pin `accountId`, sync the target account's inherited config, and — if the
+ * agent was running — resume it with `--continue` under the new account.
+ *
+ * Refuses scratch/orchestrator sessions (no repo account to migrate). A no-op
+ * success when already on the target account. Never throws; answers `{ ok }`. */
+export async function dispatchMigrateAccountRequest(
+  input: { id?: string; accountId?: string | null },
+  window: BrowserWindow,
+): Promise<MigrateAccountResult> {
+  const id = input.id?.trim();
+  if (!id) return { ok: false, error: 'missing id' };
+  const ws = store.getWorkspace(id);
+  if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
+  if (ws.archived) return { ok: false, error: 'cannot migrate an archived workspace' };
+  if (isScratchLike(ws)) {
+    return { ok: false, error: 'scratch/orchestrator sessions have no repo account to migrate' };
+  }
+
+  // Resolve the target account and decide whether a move is even needed. A
+  // null/empty accountId clears the pin → default login. Shared pure logic so
+  // the decision is unit-tested (accounts.test.ts) rather than living inline.
+  const knownAccountIds = new Set(store.accounts.map((a) => a.id));
+  const plan = planAccountMigration(ws.accountId, input.accountId, knownAccountIds);
+  if (plan.kind === 'error') return { ok: false, error: plan.error };
+  const targetAccountId = plan.targetAccountId;
+  if (plan.kind === 'noop') {
+    // Already on the target (both a real id or both default login) — no-op.
+    return { ok: true, id, branch: ws.branch, accountId: targetAccountId ?? null, resumed: false };
+  }
+  const currentAccountId = ws.accountId ?? undefined;
+
+  // Resolve source and destination config dirs. A workspace on the default
+  // login (no pin) reads/writes its session under `~/.claude`; the same holds
+  // for the destination when clearing the pin.
+  const defaultDir = path.join(os.homedir(), '.claude');
+  const srcConfigDir = workspaceAccountConfigDir(ws, undefined) || defaultDir;
+  const targetAccount = targetAccountId
+    ? store.accounts.find((a) => a.id === targetAccountId)
+    : undefined;
+  const dstConfigDir = targetAccount
+    ? expandConfigDir(targetAccount.configDir, os.homedir(), process.env) || defaultDir
+    : defaultDir;
+
+  try {
+    const wasRunning = isRunning(id);
+    if (wasRunning) stopPty(id);
+
+    // Move the conversation before re-pinning so a failure leaves the workspace
+    // on its original account (with its history intact) rather than pinned to an
+    // account whose config dir has no transcript.
+    await moveWorkspaceTranscripts(ws.worktreePath, srcConfigDir, dstConfigDir);
+
+    const updated: Workspace = { ...ws };
+    if (targetAccountId) updated.accountId = targetAccountId;
+    else delete updated.accountId;
+    await store.upsertWorkspace(updated);
+    window.webContents.send('workspace:update', updated);
+
+    // Materialize the target account's inherited global config into its login
+    // dir so a non-resumed workspace is ready for its next manual launch (the
+    // resume path below also does this, but a stopped workspace won't hit it).
+    if (targetAccount) {
+      await syncAccountInheritance(targetAccount).catch((err) =>
+        log.warn(`account-inherit: migrate-time sync failed for ${id}`, err),
+      );
+    }
+
+    log.info(
+      `migrated ${ws.branch} (${id}) from account ${currentAccountId ?? 'default'} to ${targetAccountId ?? 'default'}`,
+    );
+
+    // Resume only if the agent was live when we stepped in — a workspace that
+    // was idle stays idle (the user/agent resumes it when ready), matching the
+    // "auto-stop → migrate → resume" contract without force-waking a cold one.
+    let resumed = false;
+    if (wasRunning) {
+      try {
+        await startAgentPty(updated, MIGRATE_RESUME_COLS, MIGRATE_RESUME_ROWS, window);
+        resumed = true;
+      } catch (err) {
+        log.warn(`migrate: resume failed for ${id}`, err);
+      }
+    }
+
+    return { ok: true, id, branch: ws.branch, accountId: targetAccountId ?? null, resumed };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'migrate failed' };
+  }
+}
+
+export interface AccountsListResult {
+  ok: boolean;
+  accounts?: Array<{ id: string; label: string; configDir: string }>;
+  error?: string;
+}
+
+/** Socket entry point for `/accounts`: a read-only list of the configured
+ * accounts (id + label + config-dir template — never a token) so a CLI or LLM
+ * caller can discover the account id to pass to `/migrateAccount`. */
+export function dispatchAccountsListRequest(): AccountsListResult {
+  const accounts = store.accounts.map((a) => ({
+    id: a.id,
+    label: a.label,
+    configDir: a.configDir,
+  }));
+  return { ok: true, accounts };
+}
+
 // ---------- Inter-agent communication ----------
 //
 // Agents already reach the main process over the same unix socket they use for
@@ -1832,6 +2009,50 @@ Prints \`Renamed to <final-name>\` on success, or an error if the name was refus
 route-demande-accessoire.
 `;
 
+const MIGRATE_ACCOUNT_SKILL = `---
+name: orchestra-migrate-account
+description: Migrate an EXISTING Orchestra workspace to a different Claude account (login), or back to the default login. Use when the user wants a workspace's agent to run under another account — e.g. "move next-api to the mc login".
+---
+
+# Migrate a workspace to another account
+
+Each Orchestra workspace runs its Claude agent under a pinned account (a separate
+Claude Code config dir / login). This skill moves an EXISTING workspace to a
+different account: Orchestra stops the agent, relocates its conversation into the
+target account's config dir, re-pins it, and resumes the agent where it left off
+(so \`claude --continue\` keeps working). It applies only to git workspaces, not
+scratch/orchestrator sessions.
+
+## 1. Find the account id and the workspace id
+
+List the configured accounts to get the target account's \`id\`:
+
+\`\`\`bash
+orchestra accounts
+\`\`\`
+
+Prints a table of \`id  label  configDir\`, or a note that none are configured
+(everything is on the default login). Use \`orchestra peers\` (the
+\`orchestra-comms\` skill) to find a workspace id if you don't have it.
+
+## 2. Migrate the workspace
+
+\`\`\`bash
+orchestra migrate-account <workspace-id> <account-id>
+\`\`\`
+
+Prints \`Migrated <id> to <label> (resumed)\` on success — \`(resumed)\` appears
+when the agent was running and was auto-resumed. To move a workspace back to the
+default login instead, pass \`--default\`:
+
+\`\`\`bash
+orchestra migrate-account <workspace-id> --default
+\`\`\`
+
+Errors with \`unknown account: <id>\` or \`unknown workspace: <id>\` on a bad id,
+or if the target is a scratch/orchestrator session (no repo account to migrate).
+`;
+
 // Peer-gated, one-line re-surface of the comms capability on every
 // UserPromptSubmit. The `orchestra-comms` skill's description is always in
 // context, but skill descriptions are easy to overlook mid-conversation — so
@@ -2140,6 +2361,7 @@ const HOOKS_VERSION = createHash('sha256')
       PROMOTE_SKILL,
       ATTACH_SKILL,
       RENAME_SKILL,
+      MIGRATE_ACCOUNT_SKILL,
       HOOK_ACTIVITY_SUBMIT_CMD,
       HOOK_ACTIVITY_STOP_CMD,
       HOOK_ACTIVITY_NOTIFY_CMD,
@@ -2215,6 +2437,7 @@ export async function installOrchestraHooks(
       writeSkill('orchestra-promote', PROMOTE_SKILL),
       writeSkill('orchestra-attach', ATTACH_SKILL),
       writeSkill('orchestra-rename', RENAME_SKILL),
+      writeSkill('orchestra-migrate-account', MIGRATE_ACCOUNT_SKILL),
     ]);
 
     const settingsDir = path.join(worktreePath, '.claude');

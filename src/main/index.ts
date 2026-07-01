@@ -161,6 +161,7 @@ import {
   createScratchWorkspace,
   createOrchestratorWorkspace,
   deleteWorkspace,
+  dispatchMigrateAccountRequest,
   ensureRoot,
   ensureWorkspacePort,
   getWorktreeSizes,
@@ -451,6 +452,19 @@ handle('repos:setAccount', async (_e, repoPath: string, accountId: string | null
   const repo = await store.setRepoAccount(repoPath, accountId);
   void refreshAccountsNow(getMainWindow());
   return repo;
+});
+
+// Migrate an EXISTING workspace to a different account (or back to the default
+// login with a null accountId). Unlike repos:setAccount — which only affects
+// NEW workspaces — this relocates the pinned workspace's conversation into the
+// target account's config dir, re-pins it, and auto-resumes if it was running,
+// so `claude --continue` keeps working. Recompute the workspace→account mapping
+// + usage afterwards so the badge repaints immediately.
+handle('workspaces:migrateAccount', async (_e, id: string, accountId: string | null) => {
+  const res = await dispatchMigrateAccountRequest({ id, accountId }, getMainWindow());
+  if (!res.ok) throw new Error(res.error ?? 'migrate failed');
+  void refreshAccountsNow(getMainWindow());
+  return res;
 });
 
 // Interactive `claude /login` in an account's config dir, so the user can

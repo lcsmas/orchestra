@@ -21,6 +21,22 @@ source)` `:130`.
   it for life (else `claude --continue` finds no session). `resolveWorkspaceAccountId(pinned,
   known)` `:245` → `null` falls back to the default `~/.claude` login. Changing a
   repo's account only affects *new* workspaces.
+- **Migration** (existing workspace → another account): re-pinning alone breaks
+  `--continue` (its transcript lives in the *old* config dir), so migration
+  relocates the conversation too. `dispatchMigrateAccountRequest` (`workspaces.ts`)
+  auto-stops the agent, `moveWorkspaceTranscripts` moves
+  `<old>/projects/<mangled-worktree>/*.jsonl` → the new account's config dir
+  (per-file `rename`, EXDEV→copy+unlink), re-pins `ws.accountId`,
+  `syncAccountInheritance(target)`, then resumes via `startAgentPty` if it was
+  running. Pure decision `planAccountMigration(current, rawTarget, known)`
+  (`accounts.ts`) returns `error`/`noop`/`migrate` (empty target = default login).
+  Refuses scratch/orchestrator (no repo account). Reached from the socket
+  `/migrateAccount` route, the `workspaces:migrateAccount` IPC, and the CLI
+  `orchestra migrate-account`. UI: clicking the sidebar `WorkspaceAccountBadge`
+  (`migratable` prop) opens `WorkspaceAccountMenu` — pick an account or "default
+  login" to migrate that one workspace. The menu popover is `createPortal`'d to
+  `document.body` and fixed-positioned from the trigger's rect (clamped to the
+  viewport) so the sidebar's `overflow:hidden` can't clip it.
 - **Inheritance** (`account-inherit.ts`): alternate logins inherit selected
   pieces of global `~/.claude` so they behave like the default. Files & skills →
   **symlink**; MCP servers → **merge** into the login dir's `.claude.json`
@@ -91,5 +107,6 @@ Turns a branch name into a verified issue badge.
 ## Tests
 `accounts.test.ts` covers `expandConfigDir`, `parseCredentials`, `isExpired`,
 `parseUsageResponse`, `classifyHttpError`, `resolveWorkspaceAccountId`,
+`planAccountMigration` (migrate/noop/error, default-login clear, trimming),
 `sanitizeAccountInherit`. `linear.test.ts` covers `parseLinearIssueCandidate`
 (normalization, path-style, whole-token, permissiveness).

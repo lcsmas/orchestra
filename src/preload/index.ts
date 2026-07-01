@@ -21,6 +21,8 @@ const api: OrchestraAPI = {
   listAccounts: () => ipcRenderer.invoke('accounts:list'),
   setAccounts: (accounts) => ipcRenderer.invoke('accounts:set', accounts),
   setRepoAccount: (repoPath, accountId) => ipcRenderer.invoke('repos:setAccount', repoPath, accountId),
+  migrateWorkspaceAccount: (id, accountId) =>
+    ipcRenderer.invoke('workspaces:migrateAccount', id, accountId),
   getAccountUsage: (accountId) => ipcRenderer.invoke('accounts:usage', accountId),
   getAllAccountUsage: () => ipcRenderer.invoke('accounts:usageAll'),
   getWorkspaceAccounts: () => ipcRenderer.invoke('accounts:workspaceAccounts'),

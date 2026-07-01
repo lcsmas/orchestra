@@ -31,6 +31,8 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | `/deleteWorkspace` | `id` | `{ ok, id?, branch? }` |
 | `/promote` | `id` | `{ ok, id?, branch?, kind? }` |
 | `/attach` | `id` (+ `parentId?`) | `{ ok, id?, parentId? }` |
+| `/migrateAccount` | `id` (+ `accountId?` — null/'' = default login) | `{ ok, id?, branch?, accountId?, resumed? }` |
+| `/accounts` | — | `{ ok, accounts?: {id,label,configDir}[] }` |
 | default (no match) | `id`, `event` | `{}` 200 — legacy activity-event path |
 
 ## Hooks installed into each worktree
@@ -55,9 +57,9 @@ Scripts and the Claude Code events they fire on:
 - **`inbox-instruction.sh`** (~`:1871`) — SessionStart + UserPromptSubmit. Prints
   and drains `~/.orchestra/inbox/<wsid>.txt` (inter-agent messages).
 
-Also installs 6 **capability skills** as `<worktree>/.claude/skills/<name>/SKILL.md`
-(orchestra-spawn / -comms / -repos / -promote / -attach / -rename) so the agent
-discovers them. A SessionStart readiness hook touches `$ORCHESTRA_READY_FILE` so
+Also installs 7 **capability skills** as `<worktree>/.claude/skills/<name>/SKILL.md`
+(orchestra-spawn / -comms / -repos / -promote / -attach / -rename /
+-migrate-account) so the agent discovers them. A SessionStart readiness hook touches `$ORCHESTRA_READY_FILE` so
 spawn task-injection knows the TUI is live.
 
 PTY env that makes it all work (set in `pty.ts`): `ORCHESTRA_WS_ID`,
@@ -72,7 +74,9 @@ Standalone Node HTTP client (no npm deps) that POSTs to the socket. Reads
 Subcommands: `peers`, `read <id> [--lines N]`, `message <id> <text…>`, `spawn
 --task <text> [--repo <path>] [--base <branch>]`, `rename <id> <branch>`,
 `promote <id>`, `attach <id> <parentId>`, `detach <id>`, `add-repo <path>`,
-`delete <id> --yes`. Fully non-interactive (destructive `delete` needs `--yes`).
+`delete <id> --yes`, `accounts` (list configured accounts), `migrate-account <id>
+<accountId|--default>` (migrate a workspace to another login / back to default).
+Fully non-interactive (destructive `delete` needs `--yes`).
 
 ## CLI shims (cli-shim.ts, ~157 lines)
 - **User-facing** — Linux `~/.local/bin/orchestra` (`exec "$APPIMAGE" cli "$@"`),

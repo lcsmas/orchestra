@@ -14,6 +14,8 @@ import {
   dispatchDeleteWorkspaceRequest,
   dispatchPromoteRequest,
   dispatchAttachRequest,
+  dispatchMigrateAccountRequest,
+  dispatchAccountsListRequest,
 } from './workspaces';
 import { log } from './logger';
 
@@ -216,6 +218,24 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
             } else {
               send(200, { ok: false, error: 'missing id' });
             }
+          } else if (route === '/migrateAccount') {
+            if (typeof msg.id === 'string') {
+              send(
+                200,
+                await dispatchMigrateAccountRequest(
+                  {
+                    id: msg.id,
+                    // A null/empty accountId migrates back to the default login.
+                    accountId: typeof msg.accountId === 'string' ? msg.accountId : null,
+                  },
+                  window,
+                ),
+              );
+            } else {
+              send(200, { ok: false, error: 'missing id' });
+            }
+          } else if (route === '/accounts') {
+            send(200, dispatchAccountsListRequest());
           } else {
             // Default route handles activity events: /event or anything else.
             if (typeof msg.id === 'string' && typeof msg.event === 'string') {

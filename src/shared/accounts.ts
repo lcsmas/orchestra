@@ -249,3 +249,36 @@ export function resolveWorkspaceAccountId(
   if (!pinnedAccountId) return null;
   return knownAccountIds.has(pinnedAccountId) ? pinnedAccountId : null;
 }
+
+// ---- account migration planning ----------------------------------------------
+
+/** The decision for migrating a workspace's pinned account, computed purely from
+ *  the request so it can be unit-tested without fs/electron. `kind`:
+ *  - `error`     — the target names an account that isn't configured;
+ *  - `noop`      — the workspace is already on the requested account (or already
+ *                  on the default login when clearing) — nothing to move;
+ *  - `migrate`   — proceed: re-pin to `targetAccountId` (undefined = default
+ *                  login → clear the pin) and relocate the conversation. */
+export type MigrationPlan =
+  | { kind: 'error'; error: string }
+  | { kind: 'noop'; targetAccountId: string | undefined }
+  | { kind: 'migrate'; targetAccountId: string | undefined };
+
+/** Decide what migrating a workspace from `currentAccountId` to `rawTarget`
+ *  entails. A null/empty/whitespace `rawTarget` means "back to the default
+ *  login" (clear the pin). Both `currentAccountId` and the resolved target are
+ *  normalized so that undefined and '' compare equal (both = default login).
+ *  `knownAccountIds` guards a request to an account that no longer exists. */
+export function planAccountMigration(
+  currentAccountId: string | undefined,
+  rawTarget: string | null | undefined,
+  knownAccountIds: ReadonlySet<string>,
+): MigrationPlan {
+  const targetAccountId = (rawTarget ?? '').trim() || undefined;
+  if (targetAccountId && !knownAccountIds.has(targetAccountId)) {
+    return { kind: 'error', error: `unknown account: ${targetAccountId}` };
+  }
+  const current = (currentAccountId ?? '').trim() || undefined;
+  if (current === targetAccountId) return { kind: 'noop', targetAccountId };
+  return { kind: 'migrate', targetAccountId };
+}

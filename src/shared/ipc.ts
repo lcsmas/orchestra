@@ -17,6 +17,18 @@ import type {
   WorkspaceAccount,
 } from './types';
 
+/** Outcome of {@link OrchestraAPI.migrateWorkspaceAccount}. */
+export interface MigrateAccountResult {
+  ok: boolean;
+  id?: string;
+  branch?: string;
+  /** The account id the workspace is now pinned to, or null for default login. */
+  accountId?: string | null;
+  /** True when the agent was running and was auto-resumed after the move. */
+  resumed?: boolean;
+  error?: string;
+}
+
 export interface OrchestraAPI {
   // Repos
   addRepo: (absPath: string) => Promise<RepoEntry>;
@@ -69,6 +81,17 @@ export interface OrchestraAPI {
   /** Assign (or clear, with null/'') the account a repo's workspaces log in as.
    *  Rejects an unknown account id. Returns the updated repo. */
   setRepoAccount: (repoPath: string, accountId: string | null) => Promise<RepoEntry>;
+  /** Migrate an EXISTING workspace to a different account (or back to the default
+   *  login with a null/'' accountId). Unlike {@link setRepoAccount} — which only
+   *  affects NEW workspaces — this relocates the pinned workspace's conversation
+   *  transcript into the target account's config dir and re-pins it, auto-stopping
+   *  and (if it was running) resuming the agent so `claude --continue` still works.
+   *  Rejects an unknown account id, an archived workspace, or a scratch/orchestrator
+   *  session (no repo account). Resolves with the outcome. */
+  migrateWorkspaceAccount: (
+    id: string,
+    accountId: string | null,
+  ) => Promise<MigrateAccountResult>;
   /** Current usage status for one account by id (cached >=180s in main). */
   getAccountUsage: (accountId: string) => Promise<AccountUsageStatus | null>;
   /** Usage status for every configured account, keyed by account id. */

@@ -132,6 +132,9 @@ Usage:
   orchestra detach <id>                          Pop a workspace back out to its own section
   orchestra add-repo <path>                       Register a repo by path
   orchestra delete <id> [--yes]                  Delete a workspace (worktree + branch)
+  orchestra accounts                              List configured Claude accounts (id + label)
+  orchestra migrate-account <id> <accountId>     Migrate a workspace to another account
+  orchestra migrate-account <id> --default       Migrate a workspace back to the default login
   orchestra --help                               Show this help
 
 Socket discovery (in order):
@@ -315,6 +318,38 @@ async function main(argv: string[]): Promise<void> {
       if (!res.ok) fail(res.error ?? 'failed to delete workspace');
       const branch = (res.branch as string | undefined) ?? '';
       process.stdout.write(`Deleted workspace ${res.id as string}${branch ? ` (${branch})` : ''}\n`);
+      return;
+    }
+
+    case 'accounts': {
+      const res = await request('/accounts', {});
+      if (!res.ok) fail(res.error ?? 'failed to list accounts');
+      const accounts =
+        (res.accounts as Array<{ id: string; label: string; configDir: string }> | undefined) ?? [];
+      if (accounts.length === 0) {
+        process.stdout.write('No accounts configured (all workspaces use the default login).\n');
+        return;
+      }
+      const rows = accounts.map((a) => ({ id: a.id, label: a.label, configDir: a.configDir }));
+      process.stdout.write(`${table(rows, ['id', 'label', 'configDir'])}\n`);
+      return;
+    }
+
+    case 'migrate-account': {
+      const id = args[0];
+      // `--default` (or a bare `-`) clears the pin → default login. Otherwise the
+      // second positional is the target account id.
+      const toDefault = args.includes('--default');
+      const accountId = toDefault ? '' : args[1];
+      if (!id || (!toDefault && !accountId)) {
+        fail('usage: orchestra migrate-account <id> <accountId> | orchestra migrate-account <id> --default');
+      }
+      const res = await request('/migrateAccount', { id, accountId: accountId ?? '' });
+      if (!res.ok) fail(res.error ?? 'failed to migrate account');
+      const target = (res.accountId as string | null | undefined) ?? null;
+      const label = target ?? 'default login';
+      const resumed = res.resumed === true ? ' (resumed)' : '';
+      process.stdout.write(`Migrated ${res.id as string} to ${label}${resumed}\n`);
       return;
     }
 

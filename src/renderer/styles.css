@@ -1367,6 +1367,83 @@ input:focus, textarea:focus, select:focus {
   font-size: 10px;
   color: var(--text-dim);
 }
+
+/* Per-workspace account migrate control: the account badge is wrapped in a bare
+   trigger button that, on click, drops a small menu of accounts to migrate to.
+   The trigger is styled to disappear — only the inner .account-badge shows —
+   so a workspace row looks identical to a read-only badge until hovered. */
+.ws-account-menu {
+  display: inline-flex;
+}
+.ws-account-trigger {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.ws-account-trigger:hover {
+  background: var(--bg-4);
+}
+.ws-account-trigger:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+/* Portalled onto <body> and positioned by inline top/left computed from the
+   trigger's viewport rect (see WorkspaceAccountMenu), so it escapes the
+   sidebar's overflow clip instead of being cut off at the sidebar edge. */
+.ws-account-popover {
+  position: fixed;
+  z-index: 1000;
+  min-width: 160px;
+  max-width: min(280px, calc(100vw - 16px));
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+}
+.ws-account-option {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  font-size: 12px;
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  /* Long account labels stay on one line and ellipsise rather than widening the
+     menu past its max-width or wrapping. The label wraps in .ws-account-label
+     (min-width:0) so text-overflow actually engages inside the flex row. */
+  overflow: hidden;
+}
+.ws-account-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.ws-account-option:hover {
+  background: var(--bg-4);
+}
+.ws-account-option.current {
+  font-weight: 600;
+}
+.ws-account-option.current::after {
+  content: '✓';
+  margin-left: auto;
+  padding-left: 10px;
+  color: var(--text-dim);
+}
+.ws-account-option .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
 /* On the main worktree row the branch name is `flex: 1` so it fills the row and
    would shove the context badge to the far edge, away from the name. When a
    context badge follows, let the name take only its natural width (still

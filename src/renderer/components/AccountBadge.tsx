@@ -1,4 +1,7 @@
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useStore } from '../store';
+import { dialog } from './Dialog';
 import type { UsageErrorKind, UsageSnapshot } from '../../shared/types';
 
 // The account a repo's workspaces log in as, shown discreetly next to the repo
@@ -116,11 +119,170 @@ export function RepoAccountBadge({ repoPath }: { repoPath: string }) {
 // default-login badge; a git child carries its repo's pinned account. The
 // resolved accountId comes from the main-process `computeWorkspaceAccounts`
 // mapping (null = default login) via the renderer store.
-export function WorkspaceAccountBadge({ workspaceId }: { workspaceId: string }) {
+export function WorkspaceAccountBadge({
+  workspaceId,
+  migratable = false,
+}: {
+  workspaceId: string;
+  /** When true, clicking the badge opens a menu to migrate this workspace to a
+   *  different account (moves its conversation + re-pins). Only meaningful for
+   *  git workspaces — scratch/orchestrator sessions have no repo account. */
+  migratable?: boolean;
+}) {
   const accountId = useStore(
     (s) => s.workspaceAccounts[workspaceId]?.accountId ?? null,
   );
-  return <AccountUsageBadge accountId={accountId} />;
+  if (!migratable) return <AccountUsageBadge accountId={accountId} />;
+  return <WorkspaceAccountMenu workspaceId={workspaceId} accountId={accountId} />;
+}
+
+// The clickable per-workspace account control: renders the usage badge, and on
+// click drops a small menu of every configured account plus the default login.
+// Picking one migrates THIS workspace — the main process auto-stops the agent,
+// relocates its conversation into the target account's config dir, re-pins it,
+// and resumes if it was running. Confirmed first (the agent restarts). The
+// badge repaints itself once the `accounts:workspaceAccounts` broadcast lands.
+function WorkspaceAccountMenu({
+  workspaceId,
+  accountId,
+}: {
+  workspaceId: string;
+  accountId: string | null;
+}) {
+  const accounts = useStore((s) => s.accounts);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  // Fixed viewport coords for the portalled popover, measured from the trigger.
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
+  // The popover is rendered in a portal on <body> (not inside the row) so the
+  // sidebar's `overflow: hidden` — which clips the scrolling workspace list —
+  // can't cut it off. That means we position it manually against the trigger's
+  // viewport rect. Measure on open (and on scroll/resize) so it tracks the
+  // badge. Left-align to the trigger, but clamp within the viewport so a
+  // near-edge badge doesn't push the menu off-screen.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const t = triggerRef.current?.getBoundingClientRect();
+      if (!t) return;
+      const width = popoverRef.current?.offsetWidth ?? 160;
+      const margin = 8;
+      const left = Math.min(t.left, window.innerWidth - width - margin);
+      setPos({ top: t.bottom + 4, left: Math.max(margin, left) });
+    };
+    place();
+    // A scroll inside the sidebar or a window resize moves the trigger — keep up,
+    // and close on scroll of the list to avoid a detached floating menu.
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [open]);
+
+  // Close on an outside click or Escape. The trigger and the portalled popover
+  // are in different DOM subtrees, so an outside click is one that hits neither.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (triggerRef.current?.contains(target)) return;
+      if (popoverRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const migrate = async (targetId: string | null, targetLabel: string) => {
+    setOpen(false);
+    // Same account → nothing to do.
+    if ((accountId ?? null) === (targetId ?? null)) return;
+    const ok = await dialog.confirm({
+      title: 'Migrate account',
+      message:
+        `Migrate this workspace to “${targetLabel}”?\n\n` +
+        `Its Claude conversation moves into that account and the agent restarts ` +
+        `(resuming where it left off if it was running).`,
+      confirmLabel: 'Migrate',
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const res = await window.orchestra.migrateWorkspaceAccount(workspaceId, targetId);
+      if (!res.ok) throw new Error(res.error ?? 'migrate failed');
+    } catch (err) {
+      void dialog.error('Could not migrate account', (err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <span className="ws-account-menu">
+      <button
+        ref={triggerRef}
+        type="button"
+        className="ws-account-trigger"
+        title="Click to migrate this workspace to another account"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={busy}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        <AccountUsageBadge accountId={accountId} />
+      </button>
+      {open &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            className="ws-account-popover"
+            role="menu"
+            style={{ top: pos?.top ?? -9999, left: pos?.left ?? -9999 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              role="menuitemradio"
+              aria-checked={accountId === null}
+              className={`ws-account-option${accountId === null ? ' current' : ''}`}
+              onClick={() => void migrate(null, DEFAULT_LOGIN_LABEL)}
+            >
+              <span className="dot" style={{ background: loginColor(DEFAULT_LOGIN_LABEL) }} />
+              <span className="ws-account-label">{DEFAULT_LOGIN_LABEL} login</span>
+            </button>
+            {accounts.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                role="menuitemradio"
+                aria-checked={accountId === a.id}
+                className={`ws-account-option${accountId === a.id ? ' current' : ''}`}
+                onClick={() => void migrate(a.id, a.label)}
+              >
+                <span className="dot" style={{ background: loginColor(a.label) }} />
+                <span className="ws-account-label">{a.label}</span>
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
+    </span>
+  );
 }
 
 // Shared core: render an account's label tinted by its rolling usage, or the
