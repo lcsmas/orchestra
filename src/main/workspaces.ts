@@ -388,8 +388,9 @@ async function createScratchLikeWorkspace(
     // by startAgentPty — NOT as a typed `lastTask` turn — so the session opens
     // with a clean prompt instead of a wall of pasted instructions.
     // Leave unlocked so ORCHESTRA_BRANCH_AUTO=1 and the rename nudge fires: the
-    // agent relabels the session once the work scope is clear, then the
-    // /rename handler locks it (and drops the .branch-renamed sentinel).
+    // agent relabels the session early, then refines the name once the work
+    // scope is clear; after those two progressive auto-renames the nudge retires
+    // (tracked via autoRenameCount + the .branch-renamed sentinel).
     branchManuallySet: false,
     port,
     // No repo → no setup script can be configured, so it is never "pending".
@@ -637,35 +638,62 @@ export async function ensureWorkspacePort(
 
 // ---------- Branch rename ----------
 
+/** The agent may auto-rename its own branch this many times before the nudge
+ * self-retires: once for an early provisional name, once to refine it after the
+ * work is well-defined. See {@link Workspace.autoRenameCount}. */
+export const MAX_AUTO_RENAMES = 2;
+
+/** Whether orchestra should still nudge the agent to auto-rename this workspace.
+ * True only while a human hasn't pinned the name AND the agent hasn't used up
+ * its two progressive auto-renames. This is the single source of truth for the
+ * `ORCHESTRA_BRANCH_AUTO` env flag and for `dispatchRenameRequest`'s decision to
+ * bump the counter (vs. treat the rename as an on-demand, user-asked one). */
+export function autoRenameActive(ws: Workspace): boolean {
+  return !ws.branchManuallySet && (ws.autoRenameCount ?? 0) < MAX_AUTO_RENAMES;
+}
+
 /** Rename the branch on a workspace. The worktree dir stays put and the
  * agent keeps running — `git branch -m` is purely a ref rename, so HEAD,
  * CWD, and open files are unaffected. The agent's TUI banner may show a
  * stale branch name until it next repaints, but that's cosmetic.
- * `manual` is true when the rename came from a user action (typing in the
- * UI) or from the agent itself; both lock the branch via `branchManuallySet`
- * so the auto-rename instruction stops firing on subsequent sessions. */
+ *
+ * `manual` marks a *human*-driven rename (typing in the sidebar UI, an
+ * out-of-band branch change): it sets `branchManuallySet` and hard-stops the
+ * nudge. An agent renaming itself via the socket passes `manual:false` and
+ * instead bumps `autoRenameCount` in `dispatchRenameRequest`, so it can keep
+ * progressively refining its own name up to {@link MAX_AUTO_RENAMES}. */
 export async function renameWorkspaceBranch(
   id: string,
   rawNewBranch: string,
-  opts: { manual: boolean },
+  opts: { manual: boolean; bumpAutoCount?: boolean },
   window: BrowserWindow,
 ): Promise<Workspace> {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
   const newBranch = sanitizeBranchName(rawNewBranch);
   if (!newBranch) throw new Error('invalid branch name');
+  // Fields that change how the rename nudge behaves next time. A human rename
+  // (`manual`) pins the branch via branchManuallySet and stops the nudge for
+  // good. An agent auto-rename (`bumpAutoCount`) instead advances the
+  // progressive-rename counter, so the agent keeps getting nudged until it has
+  // used up its MAX_AUTO_RENAMES refinements. The two are mutually exclusive in
+  // practice (manual renames come from the UI; auto from the socket).
+  const gateFields = {
+    branchManuallySet: opts.manual || ws.branchManuallySet,
+    ...(opts.bumpAutoCount ? { autoRenameCount: (ws.autoRenameCount ?? 0) + 1 } : {}),
+  };
   // A scratch session has no git branch — its "branch" is just a display label.
-  // Relabel it in place (no `git branch -m`, no name collisions to dodge). A
-  // manual relabel (UI edit or the agent's auto-rename call) locks the branch
-  // via branchManuallySet, same as a git workspace, so the rename nudge stops
-  // firing on the next pty spawn. Orchestrators relabel the same way.
+  // Relabel it in place (no `git branch -m`, no name collisions to dodge).
+  // Orchestrators relabel the same way.
   if (isScratchLike(ws)) {
     if (newBranch === ws.branch) {
-      if (opts.manual && !ws.branchManuallySet) {
-        const locked = { ...ws, branchManuallySet: true };
-        await store.upsertWorkspace(locked);
-        window.webContents.send('workspace:update', locked);
-        return locked;
+      // No name change, but a manual/auto action may still need to advance the
+      // gate (e.g. a UI relabel to the same name, or an idempotent auto-rename).
+      if ((opts.manual && !ws.branchManuallySet) || opts.bumpAutoCount) {
+        const updated = { ...ws, ...gateFields };
+        await store.upsertWorkspace(updated);
+        window.webContents.send('workspace:update', updated);
+        return updated;
       }
       return ws;
     }
@@ -673,7 +701,7 @@ export async function renameWorkspaceBranch(
       ...ws,
       branch: newBranch,
       name: `scratch · ${newBranch}`,
-      branchManuallySet: opts.manual || ws.branchManuallySet,
+      ...gateFields,
     };
     await store.upsertWorkspace(updated);
     window.webContents.send('workspace:update', updated);
@@ -686,8 +714,8 @@ export async function renameWorkspaceBranch(
   // name only when HEAD is detached/unreadable.
   const liveBranch = (await getCurrentBranch(ws.worktreePath)) || ws.branch;
   if (newBranch === liveBranch) {
-    if (opts.manual && !ws.branchManuallySet) {
-      const updated = { ...ws, branch: liveBranch, branchManuallySet: true };
+    if ((opts.manual && !ws.branchManuallySet) || opts.bumpAutoCount) {
+      const updated = { ...ws, branch: liveBranch, ...gateFields };
       await store.upsertWorkspace(updated);
       window.webContents.send('workspace:update', updated);
       return updated;
@@ -701,7 +729,7 @@ export async function renameWorkspaceBranch(
     ...ws,
     branch: newBranch,
     name: `${repoName} · ${newBranch}`,
-    branchManuallySet: opts.manual || ws.branchManuallySet,
+    ...gateFields,
   };
   await store.upsertWorkspace(updated);
   window.webContents.send('workspace:update', updated);
@@ -715,10 +743,15 @@ export interface RenameResult {
 }
 
 /** Handle a rename request coming from the agent via the hooks-server socket.
- * Locks the branch after a successful rename so the SessionStart instruction
- * stops firing (one rename per workspace lifetime). Returns a structured
- * result so the agent's socket call can tell success from refusal — the old
- * always-`{}` reply left agents guessing and falling back to `git branch -m`. */
+ *
+ * Unlike a UI rename this never pins `branchManuallySet`; instead each agent
+ * rename advances `autoRenameCount` while the progressive-rename nudge is still
+ * active, giving the agent two staged auto-renames (early provisional name →
+ * refined name once the work is well-defined) before the nudge retires. Renames
+ * are *never* refused for being "already set": once the nudge has retired the
+ * agent can still rename on demand (e.g. the user explicitly asks) — it just
+ * stops being prompted to. Returns a structured result so the agent's socket
+ * call can tell success from failure. */
 export async function dispatchRenameRequest(
   id: string,
   rawNewBranch: string,
@@ -726,39 +759,50 @@ export async function dispatchRenameRequest(
 ): Promise<RenameResult> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
-  if (ws.branchManuallySet) return { ok: false, error: 'branch already set manually' };
+  // Only count this rename against the progressive-rename budget while the nudge
+  // is still active. An on-demand rename after the budget is spent (or after a
+  // human pinned the name) still lands, but doesn't advance the counter.
+  const bumpAutoCount = autoRenameActive(ws);
   try {
+    let updated: Workspace;
     // A scratch session has no branch namespace to dedupe against, so skip the
-    // freeBranchName collision pass and relabel straight through. renameWork-
-    // spaceBranch locks branchManuallySet; we also drop a sentinel so the
-    // in-session rename nudge self-disables before the next pty restart.
+    // freeBranchName collision pass and relabel straight through.
     if (isScratchLike(ws)) {
       const target = sanitizeBranchName(rawNewBranch);
       if (!target) return { ok: false, error: 'invalid branch name' };
-      const updated = await renameWorkspaceBranch(id, target, { manual: true }, window);
-      await markBranchRenamed(ws.worktreePath);
-      return { ok: true, branch: updated.branch };
+      updated = await renameWorkspaceBranch(id, target, { manual: false, bumpAutoCount }, window);
+    } else {
+      // Suffix against the live branch (not the possibly-stale stored name) so a
+      // name that collides with an existing branch still lands, and so a request
+      // matching the worktree's real current branch is treated as a no-op rather
+      // than getting needlessly suffixed.
+      const live = (await getCurrentBranch(ws.worktreePath)) || ws.branch;
+      const target = await freeBranchName(ws.repoPath, sanitizeBranchName(rawNewBranch), live);
+      if (!target) return { ok: false, error: 'invalid branch name' };
+      updated = await renameWorkspaceBranch(id, target, { manual: false, bumpAutoCount }, window);
     }
-    // Suffix against the live branch (not the possibly-stale stored name) so a
-    // name that collides with an existing branch still lands, and so a request
-    // matching the worktree's real current branch is treated as a no-op rather
-    // than getting needlessly suffixed.
-    const live = (await getCurrentBranch(ws.worktreePath)) || ws.branch;
-    const target = await freeBranchName(ws.repoPath, sanitizeBranchName(rawNewBranch), live);
-    if (!target) return { ok: false, error: 'invalid branch name' };
-    const updated = await renameWorkspaceBranch(id, target, { manual: true }, window);
+    // Record the new auto-rename count in a worktree sentinel so the in-session
+    // nudge picks up the fresh stage immediately — before the next pty restart
+    // refreshes ORCHESTRA_AUTO_RENAME_COUNT in the env. The hook reads this to
+    // pick stage-appropriate wording and to self-disable once the budget is
+    // spent. Only meaningful for counted (auto) renames.
+    if (bumpAutoCount) await writeRenameProgress(ws.worktreePath, updated.autoRenameCount ?? 0);
     return { ok: true, branch: updated.branch };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'rename failed' };
   }
 }
 
-/** Drop a sentinel in the scratch worktree so the rename-instruction hook
- * stops nudging mid-session (it has no git branch to diff against the original
- * auto name). Best-effort: a write failure just means one more harmless nudge. */
-async function markBranchRenamed(worktreePath: string): Promise<void> {
+/** Record how many times the agent has auto-renamed, in a worktree sentinel the
+ * rename-instruction hook reads. Fresher than the per-pty env var, so the nudge
+ * advances to the next stage (or self-disables) the instant a rename lands —
+ * without waiting for a pty restart. The file body is the current count; the
+ * hook self-disables once it reaches MAX_AUTO_RENAMES. Works for scratch (no git
+ * branch to diff) and git worktrees alike. Best-effort: a write failure just
+ * means the nudge falls back to the (slightly stale) env count. */
+async function writeRenameProgress(worktreePath: string, count: number): Promise<void> {
   try {
-    await writeFile(path.join(worktreePath, '.orchestra', '.branch-renamed'), '');
+    await writeFile(path.join(worktreePath, '.orchestra', '.branch-renamed'), String(count));
   } catch {
     /* best-effort */
   }
@@ -815,7 +859,8 @@ async function startWorkspaceAgentHeadless(id: string, window: BrowserWindow): P
     // Per-repo env first so Orchestra's own vars below always take precedence.
     ...resolveRepoAgentEnv(ws),
     ORCHESTRA_BRANCH: ws.branch,
-    ORCHESTRA_BRANCH_AUTO: ws.branchManuallySet ? '0' : '1',
+    ORCHESTRA_BRANCH_AUTO: autoRenameActive(ws) ? '1' : '0',
+    ORCHESTRA_AUTO_RENAME_COUNT: String(ws.autoRenameCount ?? 0),
     ORCHESTRA_READY_FILE: readyFile,
   };
   await startPty({
@@ -1505,7 +1550,8 @@ async function wakeAgentWithPrompt(
       // Per-repo env first so Orchestra's own vars below always take precedence.
       ...resolveRepoAgentEnv(ws),
       ORCHESTRA_BRANCH: ws.branch,
-      ORCHESTRA_BRANCH_AUTO: ws.branchManuallySet ? '0' : '1',
+      ORCHESTRA_BRANCH_AUTO: autoRenameActive(ws) ? '1' : '0',
+      ORCHESTRA_AUTO_RENAME_COUNT: String(ws.autoRenameCount ?? 0),
       ORCHESTRA_READY_FILE: readyFile,
     },
   });
@@ -1757,35 +1803,48 @@ const HOOK_SESSION_START_READY_CMD =
   '[ -n "${ORCHESTRA_READY_FILE:-}" ] && : > "$ORCHESTRA_READY_FILE" || true';
 
 const RENAME_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
-# Auto-installed by orchestra. Prints the rename instruction into the agent's
-# session context while the workspace is still on its auto-generated branch.
-# Runs on SessionStart AND on every UserPromptSubmit, so the nudge re-surfaces
-# the moment the work scope is clear — not just once at startup before any
-# context exists (the original SessionStart-only fire was routinely missed:
-# the agent is told to defer until it understands the work, but by then no
-# further SessionStart event re-shows the note). The instruction now pushes for
-# renaming from the very first substantive prompt rather than deferring.
-# Gated on ORCHESTRA_BRANCH_AUTO=1 (orchestra only sets it while the branch
-# has not been renamed by the user or agent) AND a live check that the current
-# git branch still equals the original auto name — so it self-disables the
-# instant a rename lands, even before the next pty restart clears the env.
+# Auto-installed by orchestra. Nudges the agent to progressively rename its
+# auto-generated branch, in two stages:
+#   stage 0 → push HARD for an early provisional name on the very first prompt.
+#   stage 1 → once the work is well-defined, push to REFINE the name to match.
+# After the second rename the nudge retires (further renames are on-demand only,
+# e.g. when the user explicitly asks). Runs on SessionStart AND every
+# UserPromptSubmit so the nudge re-surfaces the moment the work scope sharpens.
+#
+# Gated on ORCHESTRA_BRANCH_AUTO=1 (orchestra sets it only while a human hasn't
+# pinned the name and auto-renames remain). The live stage comes from the
+# .branch-renamed sentinel (written by the /rename handler, fresher than the
+# per-pty env) when present, else ORCHESTRA_AUTO_RENAME_COUNT — so the wording
+# advances and the nudge self-disables the instant a rename lands, before any
+# pty restart.
 [ "\${ORCHESTRA_BRANCH_AUTO:-0}" = "1" ] || exit 0
 [ -n "\${ORCHESTRA_SOCK:-}" ] || exit 0
-# Self-disable the instant a rename lands, even before the next pty restart
-# clears ORCHESTRA_BRANCH_AUTO. For a real git worktree the live branch no
-# longer matches the original auto name; for a scratch session (no git) the
-# /rename handler drops a sentinel file instead, since there's no branch to
-# diff. Either signal stops the nudge mid-session.
-[ -f "\${ORCHESTRA_WORKTREE:-.}/.orchestra/.branch-renamed" ] && exit 0
-current="\$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
-[ -n "\$current" ] && [ "\$current" != "\${ORCHESTRA_BRANCH:-}" ] && exit 0
+sentinel="\${ORCHESTRA_WORKTREE:-.}/.orchestra/.branch-renamed"
+count="\${ORCHESTRA_AUTO_RENAME_COUNT:-0}"
+if [ -f "\$sentinel" ]; then
+  s="\$(cat "\$sentinel" 2>/dev/null)"
+  case "\$s" in ''|*[!0-9]*) : ;; *) count="\$s" ;; esac
+fi
+# Budget spent → retire the nudge mid-session (belt-and-braces; the env gate
+# also flips off on the next pty restart).
+[ "\$count" -ge ${MAX_AUTO_RENAMES} ] 2>/dev/null && exit 0
+if [ "\$count" -ge 1 ]; then
 cat <<EOF
-[orchestra] This workspace is on the auto-generated branch '\${ORCHESTRA_BRANCH:-unknown}'. Rename the branch as soon as the work this conversation is about becomes clear — including on the very first prompt. Only defer if the prompt is purely exploratory with no identifiable task yet. Run this exact command (do NOT use 'git branch -m'):
+[orchestra] The work for this workspace should now be coming into focus. Its branch is '\${ORCHESTRA_BRANCH:-unknown}', named early before the task was fully defined. Now that the work to implement is well-defined, REFINE the branch name to match it precisely. Run this exact command (do NOT use 'git branch -m'):
+
+  orchestra rename "\\\$ORCHESTRA_WS_ID" "<refined-branch-name>"
+
+On success it prints "Renamed to <final-name>". Pick a short kebab-case name (3-6 words) reflecting the concrete task, e.g. fix-checkout-double-charge, add-stripe-webhook-retry. This is the final auto-rename — after it, only rename again if the user explicitly asks.
+EOF
+else
+cat <<EOF
+[orchestra] This workspace is on the auto-generated branch '\${ORCHESTRA_BRANCH:-unknown}'. Rename it NOW, on this very first prompt, to a provisional name reflecting your best current understanding of the work — do not wait until the task is fully specified. You'll get one more chance to refine the name once the work is well-defined. Run this exact command (do NOT use 'git branch -m'):
 
   orchestra rename "\\\$ORCHESTRA_WS_ID" "<new-branch-name>"
 
-On success it prints "Renamed to <final-name>" (orchestra renames the real git branch for you — do NOT also run 'git branch -m'); on refusal it prints an error. Pick a short kebab-case name (3-6 words) that reflects the actual work, e.g. fix-checkout-typo, add-stripe-webhook-retry, route-demande-accessoire. Don't wait for a later turn — name it the moment you can.
+On success it prints "Renamed to <final-name>" (orchestra renames the real git branch for you — do NOT also run 'git branch -m'); on failure it prints an error. Pick a short kebab-case name (3-6 words), e.g. fix-checkout-typo, add-stripe-webhook-retry, route-demande-accessoire. Name it the moment you can — an approximate name now beats a perfect name later.
 EOF
+fi
 `;
 
 // ---------- Capability skills ----------
@@ -2283,14 +2342,17 @@ export async function startAgentPty(
   }
   // Expose the current branch and auto-rename gate to hooks. The SessionStart
   // hook reads ORCHESTRA_BRANCH_AUTO=1 to decide whether to inject the
-  // rename-instruction context — flipping `branchManuallySet` true (after a
-  // user or agent rename) clears the env on the next pty:start, so the
-  // instruction stops appearing.
+  // rename-instruction context, and ORCHESTRA_AUTO_RENAME_COUNT to pick the
+  // stage-appropriate wording. The gate stays on while a human hasn't pinned
+  // the name and the agent has auto-renames left (see `autoRenameActive`), so
+  // the instruction keeps re-surfacing across the two progressive renames and
+  // clears on the next pty:start once the budget is spent.
   const extraEnv: Record<string, string> = {
     // Per-repo env first so Orchestra's own vars below always take precedence.
     ...resolveRepoAgentEnv(ws),
     ORCHESTRA_BRANCH: ws.branch,
-    ORCHESTRA_BRANCH_AUTO: ws.branchManuallySet ? '0' : '1',
+    ORCHESTRA_BRANCH_AUTO: autoRenameActive(ws) ? '1' : '0',
+    ORCHESTRA_AUTO_RENAME_COUNT: String(ws.autoRenameCount ?? 0),
   };
   await startPty({
     id: ws.id,

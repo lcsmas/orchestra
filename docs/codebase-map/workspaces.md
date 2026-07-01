@@ -103,12 +103,22 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 
 ## Branch management
 - `randomBranchName` ~`:249` (1024 adjective-noun combos).
-- **`renameWorkspaceBranch(id, newBranch, {manual}, window)`** `:647` — scratch:
-  relabel only; worktree: `git branch -m` (via git.ts `renameWorktreeBranch`),
-  then set `branchManuallySet` to lock auto-rename. `freeBranchName` (~`:1437`)
-  dedupes collisions with `-2..-99`.
-- **`branchManuallySet`** gates the auto-rename nudge: the SessionStart/Prompt
-  hook only fires when `ORCHESTRA_BRANCH_AUTO=1` (set `'0'` once locked).
+- **`renameWorkspaceBranch(id, newBranch, {manual, bumpAutoCount}, window)`**
+  `:664` — scratch: relabel only; worktree: `git branch -m` (via git.ts
+  `renameWorktreeBranch`). `manual` (human UI edit / out-of-band) pins
+  `branchManuallySet`; `bumpAutoCount` (agent auto-rename) instead increments
+  `autoRenameCount`. `freeBranchName` dedupes collisions with `-2..-99`.
+- **Progressive auto-rename** — the agent gets **two** staged auto-renames
+  (`MAX_AUTO_RENAMES`, `:730`): an early provisional name, then a refined name
+  once the work is well-defined. `autoRenameActive(ws)` (`:738`) — `!branch­ManuallySet && autoRenameCount < 2` — is the single gate for the
+  `ORCHESTRA_BRANCH_AUTO` env flag and for whether `dispatchRenameRequest`
+  (`:754`) counts a rename. After the budget is spent the nudge retires, but the
+  agent can still rename on demand (no more hard "already set" refusal).
+- **`branchManuallySet`** = human-pinned (UI edit, out-of-band `git branch -m`
+  adopted by activity.ts, `switchWorkspaceBranch`); hard-stops the nudge for
+  good. **`autoRenameCount`** tracks the agent's own progressive renames.
+  `.orchestra/.branch-renamed` sentinel holds the live count so the hook advances
+  stage / self-disables mid-session before a pty restart refreshes the env.
 - **`switchWorkspaceBranch(id, branch, window)`** `:1454` — `git switch`, stop
   agent+nvim PTYs, clear scrollback, set `hasInput:false` + `branchManuallySet`,
   emit `pty:restart`.

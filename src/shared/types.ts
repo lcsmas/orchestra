@@ -54,9 +54,26 @@ export interface Workspace {
    * CC's own menu — or after a safety timeout. Purely a guard around CC's
    * native gate; Orchestra never auto-answers the menu. */
   heavyResumePending?: boolean;
-  /** True once the user has manually set the branch name. Auto-rename from
-   * Claude's `.orchestra/branch-name` file is disabled when this is true. */
+  /** True once the branch has been pinned by a *human* action — the user typing
+   * a name in the sidebar, an out-of-band `git branch -m`, or an explicit branch
+   * switch. Hard-disables the agent-facing auto-rename nudge regardless of
+   * {@link autoRenameCount}: once a person has chosen a name, orchestra never
+   * nudges the agent to change it again. (An agent renaming itself via
+   * `orchestra rename` does NOT set this — that flows through
+   * {@link autoRenameCount} instead, so the agent can still progressively
+   * refine its own branch name.) */
   branchManuallySet?: boolean;
+  /** How many times the agent has auto-renamed its own branch via the
+   * `orchestra rename` socket call. Drives a two-stage progressive rename:
+   *   0 → fresh auto branch; nudge pushes for an early provisional name on the
+   *       very first prompt.
+   *   1 → provisional name landed; nudge pushes for a refined name once the
+   *       work to implement is well-defined.
+   *   ≥2 → done; the nudge stops firing. The agent can still rename on demand
+   *       (e.g. when the user explicitly asks), it just isn't prompted to.
+   * The env var `ORCHESTRA_BRANCH_AUTO` is `1` only while this is < 2 AND
+   * `branchManuallySet` is false. Absent on pre-upgrade records → treated as 0. */
+  autoRenameCount?: number;
   /** Id of the {@link Account} this workspace's agent logs in as, snapshotted
    * from its repo's `accountId` at creation. Pinned for the workspace's life:
    * Claude Code stores conversation history inside the account's

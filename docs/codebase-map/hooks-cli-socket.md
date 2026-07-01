@@ -49,9 +49,13 @@ Scripts and the Claude Code events they fire on:
   monotonic `seq` under `flock` on `<wsid>.seq` (2s timeout; falls back to
   `seq=0` without flock). Pure bash (no jq/sed); JSON-escapes the transcript
   path. Line: `{"seq":N,"event":"…","tool":"…","transcript":"…"}`.
-- **`rename-instruction.sh`** (~`:1578`) — UserPromptSubmit + SessionStart. Nudges
-  the agent to `orchestra rename` while `ORCHESTRA_BRANCH_AUTO=1`; self-disables
-  once the branch was renamed (live git check / sentinel).
+- **`rename-instruction.sh`** — UserPromptSubmit + SessionStart. **Two-stage**
+  progressive nudge while `ORCHESTRA_BRANCH_AUTO=1`: stage 0 pushes hard for an
+  early provisional name on the first prompt; stage 1 (after one auto-rename)
+  pushes to refine it once the work is well-defined. Stage comes from the
+  `.branch-renamed` sentinel count (fresher than `ORCHESTRA_AUTO_RENAME_COUNT`
+  env); self-disables once the count hits `MAX_AUTO_RENAMES` (=2). See
+  [workspaces.md](workspaces.md) "Branch management".
 - **`comms-resurface.sh`** (~`:1844`) — UserPromptSubmit. Queries `/peers`; prints
   the one-line `orchestra-comms` reminder only if peers exist (silent when solo).
 - **`inbox-instruction.sh`** (~`:1871`) — SessionStart + UserPromptSubmit. Prints
