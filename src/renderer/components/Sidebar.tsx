@@ -1005,7 +1005,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           <span className="ws-context-sep" aria-hidden="true">
                             ·
                           </span>
-                          <WorkspaceAccountBadge workspaceId={w.id} migratable={childIsGit} />
+                          <WorkspaceAccountBadge workspaceId={w.id} migratable />
                         </span>
                         {childIsGit && (
                           <span className="ws-pills mini">
@@ -1121,7 +1121,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         <span className="ws-context-sep" aria-hidden="true">
                           ·
                         </span>
-                        <WorkspaceAccountBadge workspaceId={w.id} />
+                        <WorkspaceAccountBadge workspaceId={w.id} migratable />
                       </span>
                     </div>
                   </div>
@@ -1423,7 +1423,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         <span className="ws-context-sep" aria-hidden="true">
                           ·
                         </span>
-                        <WorkspaceAccountBadge workspaceId={w.id} migratable={!isScratchLike(w)} />
+                        <WorkspaceAccountBadge workspaceId={w.id} migratable />
                       </span>
                       {sizeBytes != null && (
                         <span

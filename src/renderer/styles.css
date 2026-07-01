@@ -1445,10 +1445,14 @@ input:focus, textarea:focus, select:focus {
   flex: 0 0 auto;
 }
 /* On the main worktree row the branch name is `flex: 1` so it fills the row and
-   would shove the context badge to the far edge, away from the name. When a
-   context badge follows, let the name take only its natural width (still
-   shrinkable, so it ellipsises when long) so the badge hugs the branch. */
-.ws-name:has(+ .ws-context) {
+   would shove whatever follows (the context badge or the login badge) to the far
+   edge, away from the name — leaving a wide empty gap. When a context OR login
+   badge follows, let the name take only its natural width (still shrinkable, so
+   it ellipsises when long) so the badge hugs the branch. The context badge
+   renders null until the agent's first turn, so `+ .ws-login` covers the common
+   case where only the login badge is present. */
+.ws-name:has(+ .ws-context),
+.ws-name:has(+ .ws-login) {
   flex: 0 1 auto;
 }
 .ws-name-input {

@@ -1259,8 +1259,10 @@ async function moveWorkspaceTranscripts(
  * re-pin `accountId`, sync the target account's inherited config, and — if the
  * agent was running — resume it with `--continue` under the new account.
  *
- * Refuses scratch/orchestrator sessions (no repo account to migrate). A no-op
- * success when already on the target account. Never throws; answers `{ ok }`. */
+ * Works for git workspaces AND scratch/orchestrator sessions (their pin drives
+ * CLAUDE_CONFIG_DIR the same way; a never-run session simply has no transcript
+ * to move). Refuses only an archived workspace. A no-op success when already on
+ * the target account. Never throws; answers `{ ok }`. */
 export async function dispatchMigrateAccountRequest(
   input: { id?: string; accountId?: string | null },
   window: BrowserWindow,
@@ -1270,9 +1272,11 @@ export async function dispatchMigrateAccountRequest(
   const ws = store.getWorkspace(id);
   if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
   if (ws.archived) return { ok: false, error: 'cannot migrate an archived workspace' };
-  if (isScratchLike(ws)) {
-    return { ok: false, error: 'scratch/orchestrator sessions have no repo account to migrate' };
-  }
+  // Scratch/orchestrator sessions are migratable too: they have no repo to
+  // snapshot an account from at creation, but the pin (`ws.accountId`) drives
+  // their CLAUDE_CONFIG_DIR just like a git workspace, and their conversation
+  // lives at `<configDir>/projects/<mangled-scratch-path>/*.jsonl` — so the same
+  // stop → move-transcript → re-pin → resume flow applies unchanged.
 
   // Resolve the target account and decide whether a move is even needed. A
   // null/empty accountId clears the pin → default login. Shared pure logic so
@@ -2020,8 +2024,8 @@ Each Orchestra workspace runs its Claude agent under a pinned account (a separat
 Claude Code config dir / login). This skill moves an EXISTING workspace to a
 different account: Orchestra stops the agent, relocates its conversation into the
 target account's config dir, re-pins it, and resumes the agent where it left off
-(so \`claude --continue\` keeps working). It applies only to git workspaces, not
-scratch/orchestrator sessions.
+(so \`claude --continue\` keeps working). It works for git workspaces as well as
+scratch and orchestrator sessions.
 
 ## 1. Find the account id and the workspace id
 
@@ -2050,7 +2054,7 @@ orchestra migrate-account <workspace-id> --default
 \`\`\`
 
 Errors with \`unknown account: <id>\` or \`unknown workspace: <id>\` on a bad id,
-or if the target is a scratch/orchestrator session (no repo account to migrate).
+or \`cannot migrate an archived workspace\` for an archived one.
 `;
 
 // Peer-gated, one-line re-surface of the comms capability on every

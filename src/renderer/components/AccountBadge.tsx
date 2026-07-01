@@ -125,8 +125,9 @@ export function WorkspaceAccountBadge({
 }: {
   workspaceId: string;
   /** When true, clicking the badge opens a menu to migrate this workspace to a
-   *  different account (moves its conversation + re-pins). Only meaningful for
-   *  git workspaces — scratch/orchestrator sessions have no repo account. */
+   *  different account (moves its conversation + re-pins). Valid for git
+   *  workspaces AND scratch/orchestrator sessions — the pin drives
+   *  CLAUDE_CONFIG_DIR the same way for both. */
   migratable?: boolean;
 }) {
   const accountId = useStore(

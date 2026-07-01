@@ -30,7 +30,9 @@ source)` `:130`.
   `syncAccountInheritance(target)`, then resumes via `startAgentPty` if it was
   running. Pure decision `planAccountMigration(current, rawTarget, known)`
   (`accounts.ts`) returns `error`/`noop`/`migrate` (empty target = default login).
-  Refuses scratch/orchestrator (no repo account). Reached from the socket
+  Works for git workspaces AND scratch/orchestrator sessions (the pin drives
+  `CLAUDE_CONFIG_DIR` identically; a never-run session just has no transcript to
+  move); refuses only an archived workspace. Reached from the socket
   `/migrateAccount` route, the `workspaces:migrateAccount` IPC, and the CLI
   `orchestra migrate-account`. UI: clicking the sidebar `WorkspaceAccountBadge`
   (`migratable` prop) opens `WorkspaceAccountMenu` — pick an account or "default
