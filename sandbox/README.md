@@ -1,9 +1,11 @@
 # Orchestra agent sandbox
 
-A reproducible Docker image that serves as the execution environment for a
-Claude Code (`claude`) agent running inside a git worktree. The Orchestra
-Electron app `docker run`s this image, mounts a worktree at `/workspace`,
-injects credentials at runtime, and streams the container's terminal.
+A reproducible Docker image that serves as the **always-on execution
+environment** for a Claude Code (`claude`) agent. The container boots straight
+into the Orchestra shim (WS + admin HTTP on `:8787`); the Orchestra app then
+**imports** a workspace into it once — shipping the git checkout to a
+container-owned `/workspace` — and thin clients on any machine attach and
+stream the terminal. Credentials are injected at runtime.
 
 ## What's inside
 
@@ -41,6 +43,13 @@ to do locally have a network between them and the agent; the shim does all three
    the agent POSTs to, forwarding the five routes (`rename` `spawn` `peers`
    `read` `message`) to the host as `rpc` frames and returning the host's
    `rpcReply` as the HTTP response. (Mirrors `hooks-server.ts`.)
+4. **Provisioning (admin HTTP, same port)** — `GET /healthz` reports liveness +
+   whether `/workspace` is provisioned; `POST /import` receives the one-way
+   "import to sandbox" payload (a tgz of `meta.json` + `repo.bundle` +
+   `worktree/` overlay), clones the bundle into `/workspace`, checks out the
+   branch, repoints `origin`, and lays the overlay (uncommitted changes + the
+   `.orchestra`/`.claude` hook dirs) on top. One container owns ONE workspace —
+   a second import is refused with 409. (`shim/shim-import.ts`.)
 
 The wire vocabulary and framing come from `src/shared/sandbox-protocol.ts`; a
 byte-identical copy is **vendored** into `shim/sandbox-protocol.ts` so the shim
@@ -75,22 +84,34 @@ python → user → bun → claude) so rebuilds cache well.
 ## Run
 
 The image runs as a non-root user `agent` (UID 1001) with home `/home/agent`.
-The working directory is `/workspace`.
+The working directory is `/workspace`. The **default command is the shim** —
+an unadorned `docker run` gives you an always-on sandbox waiting for an
+Orchestra client:
+
+```bash
+docker run -d --restart unless-stopped \
+  -p 8787:8787 \
+  -v "$HOME/.claude/.credentials.json:/home/agent/.claude/.credentials.json:ro" \
+  -e GH_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx \
+  --name my-sandbox \
+  orchestra-sandbox
+```
+
+Then in Orchestra, use a workspace row's **Import to sandbox** action and give
+it the endpoint (`ws://sandbox-host:8787`). The app ships the checkout to the
+container (`POST /import`), retires the local worktree, and streams the
+terminal from the sandbox from then on. Check a sandbox from the shell with
+`curl http://sandbox-host:8787/healthz`.
 
 ### The `/workspace` cwd convention (important)
 
 Claude Code keys its session state and conversation history by the **absolute
-path of its current working directory**. The host must therefore always mount
-the worktree at the **same** path inside the container — `/workspace` — so that
-session resumption (`claude --continue` / `--resume`) finds the prior session.
-If you mount the worktree at a different path between runs, Claude treats it as
-a brand-new project and you lose continuity. Always:
-
-```
--v /host/path/to/worktree:/workspace
-```
-
-and let the container's `WORKDIR /workspace` stand.
+path of its current working directory**. The container-owned checkout therefore
+always lives at the **same** path — `/workspace` (created by the import) — so
+that session resumption (`claude --continue` / `--resume`) finds prior
+sessions started in the container. In the legacy manual flow you can instead
+mount a host worktree there (`-v /host/path/to/worktree:/workspace`), but never
+change the in-container path between runs.
 
 ### Authentication: two mutually-exclusive options
 

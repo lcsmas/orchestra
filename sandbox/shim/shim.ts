@@ -59,6 +59,7 @@ import {
   maxBodyBytesFor,
   isForwarded,
 } from './shim-core.js';
+import { createImportHandler, isProvisioned } from './shim-import.js';
 
 // ─── Config (env-driven, with sane sandbox defaults) ────────────────────────
 
@@ -76,6 +77,10 @@ const SOCK_PATH = process.env.ORCHESTRA_SOCK || '/home/agent/.orchestra/hooks.so
 
 /** Safety-net rescan cadence for the spool tail, mirroring events-spool.ts. */
 const SPOOL_POLL_MS = 1000;
+
+/** The container-owned checkout. /workspace in the image (Dockerfile WORKDIR);
+ *  overridable so tests can provision into a temp dir. */
+const WORKSPACE_DIR = process.env.ORCHESTRA_WORKSPACE_DIR || '/workspace';
 
 // ─── Logging ────────────────────────────────────────────────────────────────
 
@@ -449,11 +454,40 @@ function onFrame(frame: Frame): void {
   }
 }
 
-// ─── WS server ──────────────────────────────────────────────────────────────
+// ─── WS + HTTP server ───────────────────────────────────────────────────────
+//
+// One TCP port serves both planes: WS upgrades carry the session protocol
+// (frames), and two plain-HTTP routes carry the container admin plane —
+// GET /healthz (is the shim up / is a workspace provisioned) and POST /import
+// (one-way provisioning: bundle + overlay → container-owned /workspace
+// checkout; see shim-import.ts). HTTP avoids the 16 MiB frame cap and needs no
+// host→shim RPC correlation machinery.
 
 function startWsServer(): void {
-  const wss = new WebSocketServer({ port: WS_PORT });
-  wss.on('listening', () => log(`shim WS listening on :${WS_PORT}`));
+  const handleImport = createImportHandler({ workspaceDir: WORKSPACE_DIR, log });
+
+  const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/healthz') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          provisioned: isProvisioned(WORKSPACE_DIR),
+          sessions: [...sessions.keys()],
+        }),
+      );
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/import') {
+      handleImport(req, res);
+      return;
+    }
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'not found' }));
+  });
+  server.on('error', (err) => log('HTTP server error:', err));
+
+  const wss = new WebSocketServer({ server });
   wss.on('error', (err) => log('WS server error:', err));
 
   wss.on('connection', (ws) => {
@@ -517,6 +551,8 @@ function startWsServer(): void {
 
     ws.on('error', (err) => log('client socket error:', err));
   });
+
+  server.listen(WS_PORT, () => log(`shim WS+HTTP listening on :${WS_PORT}`));
 }
 
 // ─── Boot ───────────────────────────────────────────────────────────────────

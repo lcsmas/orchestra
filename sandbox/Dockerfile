@@ -1,9 +1,11 @@
 # Orchestra agent sandbox
 #
 # Reproducible execution environment for running the Claude Code (`claude`) CLI
-# inside a git worktree. The host (Orchestra Electron app) does `docker run` this
-# image, mounts the worktree at /workspace, injects secrets at runtime, and streams
-# the terminal.
+# inside a git worktree. Run always-on: the default command starts the shim,
+# which serves the Orchestra↔sandbox WebSocket + admin HTTP on :8787. The
+# container OWNS its checkout — Orchestra provisions /workspace once via
+# POST /import (bundle + overlay; see shim/shim-import.ts), then thin clients
+# attach and stream the terminal. Secrets are injected at runtime.
 #
 # Contains NO secrets. ANTHROPIC_API_KEY / Claude OAuth creds / git+gh credentials
 # are all injected at container start (see README.md).
@@ -123,9 +125,10 @@ RUN cd /opt/orchestra/shim \
     && chown -R agent:agent /opt/orchestra
 
 # ---------------------------------------------------------------------------
-# Working directory convention: /workspace is where the host mounts the git
-# worktree. Claude Code keys its session/history by the absolute cwd path, so
-# this MUST be stable across runs for session resumption to work.
+# Working directory convention: /workspace is the container-owned checkout,
+# provisioned by Orchestra's one-way import (or a -v mount in the legacy
+# manual flow). Claude Code keys its session/history by the absolute cwd path,
+# so this MUST be stable across runs for session resumption to work.
 # ---------------------------------------------------------------------------
 RUN mkdir -p /workspace && chown agent:agent /workspace
 USER agent
@@ -134,6 +137,11 @@ WORKDIR /workspace
 # $EDITOR is nvim to match the user's local toolchain.
 ENV EDITOR=nvim
 
-# Default to an interactive login shell; the host typically overrides the
-# command (e.g. to launch `claude`) at `docker run` time.
-CMD ["bash", "-l"]
+# The shim's WS + admin-HTTP port (ORCHESTRA_SHIM_PORT to change).
+EXPOSE 8787
+
+# Always-on sandbox: boot straight into the shim. It accepts one Orchestra
+# client over WS, provisions /workspace on POST /import, and spawns the agent
+# PTY on demand. Override the command for a manual interactive shell
+# (`docker run … bash -l`).
+CMD ["node", "/opt/orchestra/shim/dist/shim.js"]
