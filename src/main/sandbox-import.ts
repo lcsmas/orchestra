@@ -20,16 +20,16 @@ import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
 import https from 'node:https';
-import { createReadStream, existsSync } from 'node:fs';
-import { mkdtemp, mkdir, rm, cp, stat, writeFile, rename } from 'node:fs/promises';
+import { createReadStream, createWriteStream, existsSync } from 'node:fs';
+import { mkdtemp, mkdir, rm, cp, stat, writeFile, rename, readdir, readFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { BrowserWindow } from 'electron';
 import { store } from './store';
 import { stopPty } from './pty';
-import { removeWorktree, detectRemoteUrl } from './git';
+import { removeWorktree, detectRemoteUrl, createWorktree } from './git';
 import { log } from './logger';
-import { workspaceAccountConfigDir } from './workspaces';
+import { workspaceAccountConfigDir, installOrchestraHooks } from './workspaces';
 import { syncAccountInheritance } from './account-inherit';
 import { isScratchLike, type Workspace, type WorkspaceHost } from '../shared/types';
 import {
@@ -263,5 +263,211 @@ export async function importWorkspaceToSandbox(
   await store.upsertWorkspace(updated);
   window.webContents.send('workspace:update', updated);
   log.info(`workspace ${ws.branch} (${id}) is now sandbox-hosted at ${endpoint}`);
+
+  // First safety snapshot immediately: proves the container's /export works
+  // for this workspace while the local trash copy still exists, so BOTH
+  // recovery paths are live from minute one. Failure is loud in the logs but
+  // must not fail the import (the sandbox is already canonical).
+  try {
+    await backupSandboxWorkspace(id);
+  } catch (e) {
+    log.warn(`sandbox import: initial backup failed for ${id}: ${String(e)}`);
+  }
   return updated;
+}
+
+// ─── Backup + eject: the fail-safe half of the one-way import ───────────────
+//
+// After an import, the container holds the ONLY copy of unpushed work — the
+// scariest property of the central-sandbox model. Two mitigations, both built
+// on the shim's GET /export (the exact inverse payload of import):
+//
+//  * BACKUP — snapshot the container's bundle+overlay to
+//    ~/.orchestra/backups/<wsid>/, right after import (which also proves the
+//    export path works for this workspace) and periodically afterwards. A
+//    dead sandbox costs at most one backup interval of work.
+//  * EJECT — "return to this machine": restore the workspace to a local
+//    worktree from a live export and flip the record back to local. Makes
+//    the import reversible.
+
+const BACKUP_ROOT = path.join(os.homedir(), '.orchestra', 'backups');
+/** Snapshots kept per workspace (oldest pruned). */
+const BACKUPS_KEPT = 5;
+/** Periodic backup cadence. */
+const BACKUP_INTERVAL_MS = (() => {
+  const min = Number(process.env.ORCHESTRA_SANDBOX_BACKUP_MINUTES);
+  return (Number.isFinite(min) && min > 0 ? min : 30) * 60_000;
+})();
+
+/** GET a URL to a file on disk. Rejects on transport error or non-200 (the
+ *  error body is read for the message). */
+function fetchToFile(url: string, destPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https:') ? https : http;
+    const req = mod.request(url, { method: 'GET' });
+    req.on('error', (e) => reject(new Error(`sandbox unreachable: ${e.message}`)));
+    req.on('response', (res) => {
+      if (res.statusCode !== 200) {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => (body += c));
+        res.on('end', () => {
+          let msg = `sandbox replied ${res.statusCode}`;
+          try {
+            const parsed = JSON.parse(body) as { error?: string };
+            if (parsed.error) msg = parsed.error;
+          } catch {
+            /* keep the status message */
+          }
+          reject(new Error(msg));
+        });
+        return;
+      }
+      const out = createWriteStream(destPath);
+      res.pipe(out);
+      out.on('finish', () => resolve());
+      out.on('error', reject);
+      res.on('error', reject);
+    });
+    req.end();
+  });
+}
+
+/** Snapshot a sandbox-hosted workspace's container state into the local
+ *  backups dir. Returns the snapshot path. Throws when the workspace is not
+ *  sandbox-hosted or the sandbox is unreachable. */
+export async function backupSandboxWorkspace(id: string): Promise<string> {
+  const ws = store.getWorkspace(id);
+  if (!ws) throw new Error('workspace not found');
+  if (ws.host?.kind !== 'sandbox') throw new Error('workspace is not sandbox-hosted');
+  const url = endpointToHttpUrl(ws.host.endpoint, '/export');
+
+  const dir = path.join(BACKUP_ROOT, id);
+  await mkdir(dir, { recursive: true });
+  const dest = path.join(dir, `backup-${Date.now()}.tgz`);
+  const partial = `${dest}.partial`;
+  try {
+    await fetchToFile(url, partial);
+    await rename(partial, dest);
+  } finally {
+    await rm(partial, { force: true }).catch(() => {});
+  }
+
+  // Prune to the newest BACKUPS_KEPT (names sort chronologically by design).
+  const entries = (await readdir(dir)).filter((n) => /^backup-\d+\.tgz$/.test(n)).sort();
+  for (const stale of entries.slice(0, Math.max(0, entries.length - BACKUPS_KEPT))) {
+    await rm(path.join(dir, stale), { force: true }).catch(() => {});
+  }
+  log.info(`sandbox backup for ${ws.branch} (${id}) → ${dest}`);
+  return dest;
+}
+
+let backupTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Start the periodic backup loop for every sandbox-hosted workspace. Runs
+ *  for the app's lifetime; failures are logged, never fatal (an unreachable
+ *  sandbox will be retried next tick). */
+export function startSandboxAutoBackup(): void {
+  if (backupTimer) return;
+  backupTimer = setInterval(() => {
+    void (async () => {
+      for (const ws of store.workspaces) {
+        if (ws.host?.kind !== 'sandbox' || ws.archived) continue;
+        try {
+          await backupSandboxWorkspace(ws.id);
+        } catch (e) {
+          log.warn(`sandbox auto-backup failed for ${ws.id}: ${String(e)}`);
+        }
+      }
+    })();
+  }, BACKUP_INTERVAL_MS);
+  if (typeof backupTimer.unref === 'function') backupTimer.unref();
+}
+
+/**
+ * Eject: restore a sandbox-hosted workspace to a LOCAL worktree from a live
+ * export, then flip the record back to local. The container's copy is left
+ * in place (it doubles as one more backup) but its agent session is stopped;
+ * the sandbox can host another import only after being reprovisioned.
+ *
+ * Restores to the ORIGINAL worktreePath when free — Claude keys conversation
+ * history by cwd, so the pre-import local conversation becomes resumable
+ * again.
+ */
+export async function ejectWorkspaceFromSandbox(
+  id: string,
+  window: BrowserWindow,
+): Promise<Workspace> {
+  const ws = store.getWorkspace(id);
+  if (!ws) throw new Error('workspace not found');
+  if (ws.host?.kind !== 'sandbox') throw new Error('workspace is not sandbox-hosted');
+  const exportUrl = endpointToHttpUrl(ws.host.endpoint, '/export');
+
+  // Quiesce the remote session first — a mid-turn agent would tear the export.
+  stopPty(id);
+  stopPty(`${id}:run`);
+  stopPty(`${id}:nvim`);
+
+  log.info(`ejecting workspace ${ws.branch} (${id}) from sandbox ${ws.host.endpoint}`);
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'orchestra-eject-'));
+  try {
+    const tgz = path.join(tmp, 'export.tgz');
+    await fetchToFile(exportUrl, tgz);
+    // The export doubles as a final safety snapshot before we touch anything.
+    const snapDir = path.join(BACKUP_ROOT, id);
+    await mkdir(snapDir, { recursive: true });
+    await cp(tgz, path.join(snapDir, `backup-${Date.now()}.tgz`)).catch(() => {});
+
+    await execFileP('tar', ['-xzf', tgz, '-C', tmp]);
+    const bundle = path.join(tmp, 'repo.bundle');
+    if (!existsSync(bundle)) throw new Error('export payload missing repo.bundle');
+    let meta: { branch?: string; head?: string } = {};
+    try {
+      meta = JSON.parse(await readFile(path.join(tmp, 'meta.json'), 'utf8')) as {
+        branch?: string;
+        head?: string;
+      };
+    } catch {
+      /* meta is advisory; fall back to the record's branch */
+    }
+    const branch = meta.branch && !meta.branch.startsWith('-') ? meta.branch : ws.branch;
+
+    // The container's history is canonical — force the local branch to it.
+    // The branch is not checked out anywhere locally (the worktree was
+    // retired at import), so a forced ref update is safe.
+    await execFileP('git', ['-C', ws.repoPath, 'fetch', bundle, `+${branch}:${branch}`]);
+
+    // Recreate the worktree — at the original path when free (conversation
+    // continuity), else alongside it.
+    let worktreePath = ws.worktreePath;
+    if (existsSync(worktreePath)) worktreePath = `${ws.worktreePath}-restored-${Date.now()}`;
+    await createWorktree(ws.repoPath, branch, ws.baseBranch, worktreePath);
+
+    // Overlay: uncommitted changes + hook dirs from the container.
+    const overlay = path.join(tmp, 'worktree');
+    if (existsSync(overlay)) {
+      await execFileP('cp', ['-a', `${overlay}/.`, `${worktreePath}/`]);
+    }
+    await installOrchestraHooks(worktreePath);
+
+    const updated: Workspace = {
+      ...ws,
+      host: undefined,
+      worktreePath,
+      branch,
+      status: 'idle',
+      // The container's conversation stays in the container; the LOCAL
+      // conversation (keyed by the original cwd) is resumable again only when
+      // the original path was reused, so let the next spawn decide from disk
+      // rather than promising a resume.
+      hasInput: false,
+      heavyResumePending: false,
+    };
+    await store.upsertWorkspace(updated);
+    window.webContents.send('workspace:update', updated);
+    log.info(`workspace ${branch} (${id}) restored to local at ${worktreePath}`);
+    return updated;
+  } finally {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
 }

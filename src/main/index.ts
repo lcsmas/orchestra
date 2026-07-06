@@ -211,7 +211,12 @@ import {
   getSandboxControlState,
   takeSandboxControl,
 } from './transport/sandbox-manager';
-import { importWorkspaceToSandbox } from './sandbox-import';
+import {
+  importWorkspaceToSandbox,
+  ejectWorkspaceFromSandbox,
+  backupSandboxWorkspace,
+  startSandboxAutoBackup,
+} from './sandbox-import';
 import {
   detectAndUpdateBranchName,
   detectAndUpdateMergeState,
@@ -307,6 +312,10 @@ async function createMainWindow() {
   // Remote (sandbox-hosted) workspaces route activity + hook RPCs through the
   // sandbox connections; hand the manager the window they target.
   setSandboxWindow(mainWindow);
+  // Periodic fail-safe snapshots of every sandbox-hosted workspace — the
+  // container is the only copy of unpushed work, so a dead sandbox must cost
+  // at most one backup interval.
+  startSandboxAutoBackup();
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void openUrlExternally(url);
@@ -633,6 +642,14 @@ handle('workspaces:delete', async (_e, id: string) => {
 
 handle('workspaces:importToSandbox', async (_e, id: string, endpoint: string) => {
   return importWorkspaceToSandbox(id, endpoint, getMainWindow());
+});
+
+handle('workspaces:ejectFromSandbox', async (_e, id: string) => {
+  return ejectWorkspaceFromSandbox(id, getMainWindow());
+});
+
+handle('sandbox:backup', async (_e, id: string) => {
+  return backupSandboxWorkspace(id);
 });
 
 handle('sandbox:controlState', (_e, id: string) => {

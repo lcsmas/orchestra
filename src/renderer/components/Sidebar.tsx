@@ -119,6 +119,18 @@ function SandboxUploadIcon() {
   );
 }
 
+function SandboxDownloadIcon() {
+  // Cloud with a down arrow — "return this workspace to this machine" (eject).
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+      <path
+        fill="currentColor"
+        d="M4.5 13a3.5 3.5 0 0 1-.46-6.97 4.5 4.5 0 0 1 8.83.96A3 3 0 0 1 12 13h-1.5v-1H12a2 2 0 0 0 .32-3.97l-.72-.12-.06-.73a3.5 3.5 0 0 0-6.87-.74l-.17.6-.62.04A2.5 2.5 0 0 0 4.5 12h1v1h-1Zm3.5 1-2.5-2.6.7-.72L7.5 12V7h1v5l1.3-1.32.7.72L8 14Z"
+      />
+    </svg>
+  );
+}
+
 function RestoreIcon() {
   return (
     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
@@ -483,6 +495,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     unarchive,
     deleteWorkspace,
     importToSandbox,
+    ejectFromSandbox,
     createWorkspace,
     removeRepo,
     reorderWorkspaces,
@@ -802,6 +815,26 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       localStorage.setItem('orchestra.lastSandboxEndpoint', endpoint);
     } catch (err) {
       void dialog.error('Could not import to sandbox', (err as Error).message);
+    } finally {
+      markDeleting(id, false);
+    }
+  };
+
+  const onEjectFromSandbox = async (e: React.MouseEvent, id: string, name: string) => {
+    e.stopPropagation();
+    const ok = await dialog.confirm({
+      title: 'Return to this machine',
+      message: `Move "${name}" back from its sandbox?`,
+      detail:
+        'A live export (history + uncommitted changes) is pulled from the container — and saved as a backup — then the workspace becomes a local worktree again. The container keeps its copy but its agent is stopped.',
+      confirmLabel: 'Return here',
+    });
+    if (!ok) return;
+    markDeleting(id, true);
+    try {
+      await ejectFromSandbox(id);
+    } catch (err) {
+      void dialog.error('Could not return workspace from sandbox', (err as Error).message);
     } finally {
       markDeleting(id, false);
     }
@@ -1580,7 +1613,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       </span>
                     </div>
                   </div>
-                  {!w.host && (
+                  {!w.host ? (
                     <button
                       className="ws-icon-btn"
                       title="Import to sandbox — move this workspace into an always-on sandbox container"
@@ -1588,6 +1621,15 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       onClick={(e) => onImportToSandbox(e, w.id, w.name)}
                     >
                       <SandboxUploadIcon />
+                    </button>
+                  ) : (
+                    <button
+                      className="ws-icon-btn"
+                      title="Return to this machine — restore the workspace from its sandbox to a local worktree"
+                      aria-label={`Return workspace ${w.name} from sandbox`}
+                      onClick={(e) => onEjectFromSandbox(e, w.id, w.name)}
+                    >
+                      <SandboxDownloadIcon />
                     </button>
                   )}
                   <button

@@ -61,7 +61,7 @@ import {
   isForwarded,
   DriveBroker,
 } from './shim-core.js';
-import { createImportHandler, isProvisioned } from './shim-import.js';
+import { createImportHandler, createExportHandler, isProvisioned } from './shim-import.js';
 
 // ─── Config (env-driven, with sane sandbox defaults) ────────────────────────
 
@@ -542,6 +542,11 @@ function startWsServer(): void {
     metaPath: IMPORT_META_PATH,
     log,
   });
+  const handleExport = createExportHandler({
+    workspaceDir: WORKSPACE_DIR,
+    metaPath: IMPORT_META_PATH,
+    log,
+  });
 
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/healthz') {
@@ -557,6 +562,10 @@ function startWsServer(): void {
     }
     if (req.method === 'POST' && req.url === '/import') {
       handleImport(req, res);
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/export') {
+      handleExport(req, res);
       return;
     }
     res.writeHead(404, { 'Content-Type': 'application/json' });

@@ -73,6 +73,7 @@ interface State {
   unarchive: (id: string) => Promise<void>;
   deleteWorkspace: (id: string) => Promise<void>;
   importToSandbox: (id: string, endpoint: string) => Promise<void>;
+  ejectFromSandbox: (id: string) => Promise<void>;
   reorderWorkspaces: (orderedIds: string[]) => Promise<void>;
   reorderRepos: (orderedPaths: string[]) => Promise<void>;
   refreshStats: (id: string) => Promise<void>;
@@ -251,6 +252,13 @@ export const useStore = create<State>((set, get) => ({
     const ws = await window.orchestra.importToSandbox(id, endpoint);
     set((s) => ({
       workspaces: s.workspaces.map((w) => (w.id === id ? { ...w, ...ws } : w)),
+    }));
+  },
+
+  ejectFromSandbox: async (id) => {
+    const ws = await window.orchestra.ejectFromSandbox(id);
+    set((s) => ({
+      workspaces: s.workspaces.map((w) => (w.id === id ? { ...w, ...ws, host: ws.host } : w)),
     }));
   },
 

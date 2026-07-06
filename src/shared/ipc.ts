@@ -144,6 +144,14 @@ export interface OrchestraAPI {
    * retire the local worktree, and flip the record to sandbox-hosted. From
    * then on the terminal streams to the container. */
   importToSandbox: (id: string, endpoint: string) => Promise<Workspace>;
+  /** Eject ("return to this machine"): restore a sandbox-hosted workspace to
+   * a local worktree from a live container export — history, uncommitted
+   * changes and hooks included — and flip the record back to local. */
+  ejectFromSandbox: (id: string) => Promise<Workspace>;
+  /** Snapshot a sandbox workspace's container state (bundle + dirty overlay)
+   * into ~/.orchestra/backups/<id>/. Returns the snapshot path. Also runs
+   * automatically right after import and on a periodic timer. */
+  backupSandbox: (id: string) => Promise<string>;
   markSeen: (id: string) => Promise<void>;
   renameBranch: (id: string, newBranch: string) => Promise<Workspace>;
   /** Persist a new ordering of workspaces. Pass the full list of workspace

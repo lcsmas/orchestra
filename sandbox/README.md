@@ -116,10 +116,31 @@ required (it still works and takes precedence if you prefer it). Check a
 sandbox from the shell with `curl http://sandbox-host:8787/healthz`.
 
 > **Security:** the shim has **no authentication** — anyone who can reach the
-> port can attach, take control, or import (the import payload also carries
-> your Claude OAuth credentials in transit). Only expose it on a private
-> network you trust end-to-end (Tailscale/WireGuard) or behind TLS with access
-> control. Never publish the port to the open internet.
+> port can attach, take control, import, or **export** (the payloads carry your
+> code and, for import, your Claude OAuth credentials in transit). Only expose
+> it on a private network you trust end-to-end (Tailscale/WireGuard) or behind
+> TLS with access control. Never publish the port to the open internet.
+
+### Backups and returning work to a machine (fail-safe)
+
+After import the container holds the only copy of unpushed work. Two safety
+nets, both built on the shim's `GET /export` (the inverse of import — a bundle
++ dirty-file overlay of `/workspace`):
+
+- **Automatic backups.** Orchestra snapshots each sandbox workspace to
+  `~/.orchestra/backups/<workspace-id>/` right after import and every 30 min
+  after (`ORCHESTRA_SANDBOX_BACKUP_MINUTES` to change), keeping the last 5. A
+  lost sandbox costs at most one interval of work. The named `/workspace`
+  volume above is the first line of defense; these backups are the second, and
+  live on your own machine.
+- **Return to this machine (eject).** A sandbox workspace's **⬇ Return to this
+  machine** action pulls a live export, saves it as a backup, and restores the
+  workspace to a local worktree (history + uncommitted changes + hooks) — the
+  import is fully reversible. The container keeps its copy; its agent is
+  stopped.
+
+You can also `curl http://sandbox-host:8787/export -o backup.tgz` for a manual
+snapshot from any machine that can reach the shim.
 
 ### The `/workspace` cwd convention (important)
 

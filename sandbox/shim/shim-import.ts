@@ -234,6 +234,105 @@ export async function runImport(
   }
 }
 
+// ─── Export (backup / eject) — the exact inverse of import ──────────────────
+//
+// GET /export streams a tgz of everything needed to reconstruct the workspace
+// elsewhere: repo.bundle (full history of the container clone) + worktree/
+// overlay (uncommitted modifications, untracked files, hook dirs) + meta.json
+// {session, branch, head}. The host uses it for periodic BACKUPS (the
+// container being the only copy of unpushed work is the scariest property of
+// the central-sandbox model) and for EJECT (restore the workspace to a local
+// worktree). Same payload grammar as import, so the two flows mirror.
+
+const EXPORT_HOOK_DIRS = ['.orchestra', '.claude'];
+
+/** Stage an export tgz for the provisioned workspace. Returns the tgz path;
+ *  the caller removes its containing temp dir when done. */
+export async function runExport(
+  workspaceDir: string,
+  metaPath?: string,
+): Promise<{ tmpDir: string; tgzPath: string }> {
+  if (!isProvisioned(workspaceDir)) throw new Error('workspace not provisioned');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-export-'));
+  const stage = path.join(tmpDir, 'stage');
+  const overlayRoot = path.join(stage, 'worktree');
+  fs.mkdirSync(overlayRoot, { recursive: true });
+
+  await run('git', ['bundle', 'create', path.join(stage, 'repo.bundle'), '--all'], workspaceDir);
+
+  const listZ = async (args: string[]): Promise<string[]> =>
+    (await run('git', args, workspaceDir)).split('\0').filter((p) => p.length > 0);
+  const untracked = await listZ(['ls-files', '--others', '--exclude-standard', '-z']);
+  const modified = await listZ(['diff', '--name-only', '-z', 'HEAD']);
+  const hookDirs = EXPORT_HOOK_DIRS.filter((d) => fs.existsSync(path.join(workspaceDir, d)));
+  const seen = new Set<string>();
+  for (const rel of [...untracked, ...modified, ...hookDirs]) {
+    if (!rel || seen.has(rel)) continue;
+    seen.add(rel);
+    const src = path.join(workspaceDir, rel);
+    try {
+      fs.statSync(src); // uncommitted deletions list in diff but have no file
+      const dest = path.join(overlayRoot, rel);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.cpSync(src, dest, { recursive: true });
+    } catch {
+      /* skip unreadable/deleted entries */
+    }
+  }
+
+  const branch = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], workspaceDir);
+  const head = await run('git', ['rev-parse', 'HEAD'], workspaceDir);
+  const record = metaPath ? readImportRecord(metaPath) : null;
+  fs.writeFileSync(
+    path.join(stage, 'meta.json'),
+    JSON.stringify({ session: record?.session ?? 'unknown', branch, head }),
+  );
+
+  const tgzPath = path.join(tmpDir, 'export.tgz');
+  await run('tar', ['-czf', tgzPath, '-C', stage, 'meta.json', 'repo.bundle', 'worktree']);
+  return { tmpDir, tgzPath };
+}
+
+/** Build the GET /export handler: stage the tgz and stream it out. */
+export function createExportHandler(opts: {
+  workspaceDir: string;
+  metaPath?: string;
+  log?: (...args: unknown[]) => void;
+}) {
+  const log = opts.log ?? (() => {});
+  return (_req: http.IncomingMessage, res: http.ServerResponse): void => {
+    void (async () => {
+      let tmpDir: string | null = null;
+      try {
+        const staged = await runExport(opts.workspaceDir, opts.metaPath);
+        tmpDir = staged.tmpDir;
+        const size = fs.statSync(staged.tgzPath).size;
+        res.writeHead(200, { 'Content-Type': 'application/gzip', 'Content-Length': size });
+        const stream = fs.createReadStream(staged.tgzPath);
+        stream.pipe(res);
+        await new Promise<void>((resolve) => {
+          stream.on('close', () => resolve());
+          stream.on('error', () => resolve());
+        });
+        log(`exported workspace (${size} bytes)`);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        log('export failed:', msg);
+        if (!res.headersSent) {
+          res.writeHead(msg.includes('not provisioned') ? 404 : 500, {
+            'Content-Type': 'application/json',
+          });
+          res.end(JSON.stringify({ ok: false, error: msg }));
+        } else {
+          res.destroy();
+        }
+      } finally {
+        if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    })();
+  };
+}
+
 /** Default cap on the import payload — a repo bundle plus overlay; imports
  *  bigger than this are almost certainly a mistake (node_modules in the
  *  overlay, …) and would fill the container disk. */
