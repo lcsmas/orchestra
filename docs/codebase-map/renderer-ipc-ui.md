@@ -1,7 +1,7 @@
 # Main bootstrap, IPC & renderer UI
 
 The Electron main entrypoint, the IPC contract, and the React/Zustand UI.
-Files: `src/main/index.ts` (~1077 lines), `src/preload/index.ts`,
+Files: `src/main/index.ts` (~1136 lines), `src/preload/index.ts`,
 `src/shared/ipc.ts`, `src/renderer/` (`App.tsx`, `store.ts`, `chime.ts`,
 `debug.ts`, and `components/`).
 
@@ -25,13 +25,18 @@ Bootstrap order matters; several steps run *before* the window:
 - **IPC wrapper** `handle()` `:228` — logs every handler failure with its channel
   name before re-throwing.
 
-IPC handlers (all via `handle`): repos `:542`, workspaces CRUD `:580`, PTY
-`:619` (`pty:start` idempotent + heavy-resume gate; `pty:write` flips `hasInput`
-and applies the heavy-resume keystroke suppression), git `:752`
+IPC handlers (all via `handle`): repos, workspaces CRUD `:598+`, sandbox
+(`workspaces:importToSandbox` `:643`, `workspaces:ejectFromSandbox` `:647`,
+`sandbox:backup` `:651`, `sandbox:controlState`/`takeControl` `:655`/`:661` —
+see [sandbox-transport.md](sandbox-transport.md)), PTY
+(`pty:start` idempotent + heavy-resume gate; `pty:write` flips `hasInput`
+and applies the heavy-resume keystroke suppression), git
 (`git:diff`/`stats`/`findPR`/`merge`/`switchBranch` — stats poll piggybacks
-merge+branch refresh; findPR piggybacks release detection), scripts `:863`,
-linear `:395`, accounts `:422` (incl. `accounts:loginStart` `:463`), usage `:415`,
-dependency checks `:923` (probes git/gh/claude, warns if missing).
+merge+branch refresh; findPR piggybacks release detection), scripts,
+linear, accounts (incl. `accounts:loginStart`), usage,
+dependency checks (probes git/gh/claude, warns if missing). Startup also wires
+`setSandboxWindow` + `startSandboxAutoBackup` (`:314`/`:318`) and closes all
+sandbox connections on quit.
 
 ## IPC contract — preload + ipc.ts
 `src/shared/ipc.ts` defines the `OrchestraAPI` interface (the full renderer↔main
@@ -41,7 +46,8 @@ and exposes it as `window.orchestra` via `contextBridge`. Event listeners return
 an unsubscribe fn and adapt Electron's `(event, …args)` to `(…args)`. Push
 channels include `workspace:update`, `agent:finished`, `agent:needsInput`,
 `agent:tool`, `agent:context`, `repo:syncState`, `usage:update`,
-`accounts:usageUpdate`, `accounts:workspaceAccounts`, `repos:update`.
+`accounts:usageUpdate`, `accounts:workspaceAccounts`, `repos:update`, and
+`sandbox:control` (cross-machine ownership broadcasts).
 
 ## Renderer state — store.ts (Zustand, ~479 lines)
 Single source of truth; **atomic selectors** so high-frequency events
@@ -63,17 +69,23 @@ branch chip (with `BranchPicker`), Terminal/Diff/Run tabs, restart-agent, run
 toggle, PR button, nvim toggle. Each `TerminalView` is kept mounted per workspace
 (preserves xterm scrollback across switches); Diff/Run mount only when selected.
 
-## Sidebar.tsx (~1746 lines — the big one)
+## Sidebar.tsx (~1894 lines — the big one)
 Workspace list with orchestrator nesting, drag-reorder, archive, delete.
-- **SpawnForest** `:393` models orchestrator→children (`childrenOf`, `roots`,
+- **SpawnForest** models orchestrator→children (`childrenOf`, `roots`,
   `rootOf`); `TreeRow = {ws, depth}`.
 - Sections: orchestrator trees (top) → scratch sessions → repo groups (git
   workspaces threaded as spawn trees) → archived (collapsible, multi-select
   delete). Collapse + dismissed env-notices persist to localStorage.
+- **Host grouping**: within a repo, rows bucket per machine/sandbox node via
+  `host-grouping.ts` `groupByHost` (returns null when all-local → flat list
+  byte-identical to pre-sandbox); collapsible `.host-group-header` per node.
 - Drag-reorder for workspaces and repos (`reorderWorkspaces`/`reorderRepos`).
 - Row actions: rename branch (inline), archive/unarchive, delete (confirm +
-  bulk progress), switch branch (`BranchPicker`), setup gear (`RepoScriptsModal`).
-- Env notices come from `getEnvStatus` (`EnvStatusItem`, `types.ts:241`) —
+  bulk progress), switch branch (`BranchPicker`), setup gear
+  (`RepoScriptsModal`), ☁↑ import-to-sandbox (`onImportToSandbox` `:800`,
+  endpoint prompt) / ☁↓ eject (`onEjectFromSandbox` `:823`) — one or the other
+  by `w.host`.
+- Env notices come from `getEnvStatus` (`EnvStatusItem`) —
   generic so new integration checks need no renderer change.
 
 ## Other components
@@ -84,7 +96,13 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
 - **NvimView.tsx** — same xterm pattern for a `<wsId>:nvim` PTY (`nvim .`),
   resizable pane.
 - **Dialog.tsx** — Zustand-backed modal: `dialog.alert/confirm/error/success`
-  (Promise<boolean>), tone info/success/warning/danger, Enter/Esc.
+  (Promise<boolean>) plus `dialog.prompt` (single-line text input →
+  Promise<string|null>; used for the sandbox endpoint), tone
+  info/success/warning/danger, Enter/Esc.
+- **SandboxControlBar.tsx** — amber read-only bar above the terminal when
+  another machine drives the workspace's sandbox, with a Take-control button
+  (mounted in App.tsx beside SetupBanner; see
+  [sandbox-transport.md](sandbox-transport.md)).
 - **RepoScriptsModal.tsx** — edit setup/run/archive scripts + account assignment.
 - **SetupBanner.tsx** — overlay while `setupStatus` running/failed, with log +
   retry.

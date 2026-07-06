@@ -56,19 +56,25 @@ sub-ms); the file is the source of truth.
   `waiting`; mid-batch throw no longer strands `stop`; events seen while window
   absent replay once it returns; real hook under concurrency drops nothing.
 
-## PTY — pty.ts (~383 lines)
-Manages node-pty sessions. PTY id = `<wsId>` (agent), `<wsId>:run`, or
-`<wsId>:nvim`. `startPty(opts)` `:155` validates the worktree, builds env
+## PTY — pty.ts (~422 lines)
+Manages agent sessions over a **transport seam**. PTY id = `<wsId>` (agent),
+`<wsId>:run`, or `<wsId>:nvim`. `createTransport(host, …)` `:21` picks the
+backend per session: absent/local host → node-pty
+(`transport/local-pty.ts`); `host.kind==='sandbox'` → a shared WebSocket to
+the container's shim (`transport/remote.ts` + `sandbox-manager.ts` — see
+[sandbox-transport.md](sandbox-transport.md)). Remote spawns skip the local
+cwd check and ship only `extraEnv` (never the host's `process.env`).
+`startPty(opts)` `:169` validates the worktree (local only), builds env
 (`TERM=xterm-256color`, the `ORCHESTRA_*` vars, PATH-prepended bin), spawns
 (min 20×5), logs every chunk to `~/.orchestra/logs/<id>.log` (≤2 MB, trimmed),
-and **coalesces output** before IPC: `queuePtyData` `:141` buffers into the
-`outBuf`, flushing at 8 ms or 64 KiB (`FLUSH_MS`/`FLUSH_BYTES` `:58`) — one tiny
+and **coalesces output** before IPC: `queuePtyData` buffers into the
+`outBuf`, flushing at 8 ms or 64 KiB (`FLUSH_MS`/`FLUSH_BYTES`) — one tiny
 IPC per pty chunk would head-of-line-block the status-dot updates on the shared
-renderer channel. The `onExit` handler `:272` flushes the tail, emits `pty:exit`,
-and calls `reconcileExited` (guarded against a live replacement). `stopAll` `:376`
+renderer channel. The `onExit` handler flushes the tail, emits `pty:exit`,
+and calls `reconcileExited` (guarded against a live replacement). `stopAll`
 sets `shuttingDown` so exit handlers preserve `running` as a resume marker.
-Other exports: `writePty`, `resizePty` `:344` (drops no-op resizes to avoid
-SIGWINCH churn), `stopPty`, `readScrollback` `:92` (last 256 KiB only),
+Other exports: `writePty`, `resizePty` (drops no-op resizes to avoid
+SIGWINCH churn), `stopPty` `:394`, `readScrollback` (last 256 KiB only),
 `clearScrollback`, `isRunning`.
 
 ## Terminal.tsx (agent view, ~479 lines)

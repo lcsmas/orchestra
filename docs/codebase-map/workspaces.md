@@ -1,9 +1,11 @@
 # Workspaces subsystem
 
-The core of Orchestra. `src/main/workspaces.ts` (~2327 lines) owns the full
+The core of Orchestra. `src/main/workspaces.ts` (~2650 lines) owns the full
 workspace lifecycle, worktree mechanics, hook installation, agent spawning, and
 inter-agent orchestration. Supporting files: `store.ts`, `scripts.ts`,
-`secrets.ts`, `repo-sync.ts`. Domain types: `src/shared/types.ts`.
+`secrets.ts`, `repo-sync.ts`, and `sandbox-import.ts` (import/eject/backup —
+see [sandbox-transport.md](sandbox-transport.md)). Domain types:
+`src/shared/types.ts`.
 
 ## What a workspace is
 
@@ -28,7 +30,10 @@ preserves `claude --continue` history), `parentId` (nesting), `port`
 (auto-allocated dev-server port), `setupStatus`, `branchManuallySet` (rename
 lock), `divergedFromBase`/`mergedAt`/`unpushedAhead`/`releasedVersions`
 (sidebar pills), `contextTokens` (badge seed), `heavyResumePending` (suppresses
-blind Enter during a heavy `claude --continue` resume).
+blind Enter during a heavy `claude --continue` resume), and **`host`**
+(`WorkspaceHost`, `types.ts:69` — absent = local node-pty; `{kind:'sandbox',
+endpoint}` = agent lives in an always-on container, see
+[sandbox-transport.md](sandbox-transport.md)).
 
 ## Lifecycle
 
@@ -50,12 +55,16 @@ blind Enter during a heavy `claude --continue` resume).
   Failure never blocks creation; UI offers retry.
 
 ### Start agent
-- **`startAgentPty(ws, cols, rows, window)`** — `workspaces.ts:1994`. Heavy-resume
-  gate (~`:2010`, sets `heavyResumePending` when resuming a >100k-token session),
-  orchestrator brief on first launch only (~`:2043`), idempotent hook
+- **`startAgentPty(ws, cols, rows, window)`** — `workspaces.ts:2299`. Heavy-resume
+  gate (sets `heavyResumePending` when resuming a >100k-token session),
+  orchestrator brief on first launch only, idempotent hook
   reinstall, account-config sync, env build (`ORCHESTRA_BRANCH`,
   `ORCHESTRA_BRANCH_AUTO`, per-repo `CLAUDE_CONFIG_DIR`), then `startPty` with
   `claude --dangerously-skip-permissions` (or `--continue` if `hasInput`).
+  **Sandbox-hosted** (`ws.host?.kind==='sandbox'`): skips the local hook
+  install, uses cwd `SANDBOX_WORKSPACE_DIR` (`/workspace`), and **strips
+  `CLAUDE_CONFIG_DIR`** (a host path would shadow the container's seeded
+  login); `startPty` routes to the remote transport via `ws.host`.
 - **`startWorkspaceAgentHeadless(id, window)`** — `workspaces.ts:807`. Used by
   spawn: starts the agent with no UI terminal (default 120×32), injects
   `lastTask` once the TUI is ready.
@@ -64,15 +73,22 @@ blind Enter during a heavy `claude --continue` resume).
   the task, submits with `\r`, retries up to 4× confirming status left `idle`.
 
 ### Archive / unarchive / delete
-- **`archiveWorkspace`** `:411` (soft: stop PTYs, keep worktree+logs),
-  **`unarchiveWorkspace`** `:433`, **`deleteWorkspace`** `:446` (hard: runs the
+- **`archiveWorkspace`** `:415` (soft: stop PTYs, keep worktree+logs),
+  **`unarchiveWorkspace`** `:437`, **`deleteWorkspace`** `:450` (hard: runs the
   per-repo archive script best-effort, clears scrollback+inbox, `removeWorktree`,
   removes record, broadcasts `workspace:removed`). Directory removal is
-  hard-confined to `ORCHESTRA_ROOT`/`SCRATCH_ROOT`.
-- **`pruneOrphanedWorkspaces(window)`** `:520` — startup reconcile: `git worktree
+  hard-confined to `ORCHESTRA_ROOT`/`SCRATCH_ROOT`. **Sandbox-hosted** records
+  (`:491`) just detach — the container keeps its copy; nothing local to reap.
+- **`pruneOrphanedWorkspaces(window)`** `:544` — startup reconcile: `git worktree
   list` per repo (parallel); a workspace whose path git no longer tracks is
   removed. Skips repos it can't verify (missing/unmounted) so it never nukes
-  unverifiable records.
+  unverifiable records, and **skips sandbox-hosted records** (`:572` — their
+  worktree was retired to trash at import by design).
+- **Import / eject / backups** — a workspace moves INTO a container via
+  `importWorkspaceToSandbox` (`sandbox-import.ts:188`; local worktree retired
+  to `~/.orchestra/trash/`) and back via `ejectWorkspaceFromSandbox` (`:397`),
+  with automatic snapshots in `~/.orchestra/backups/<id>/`. Full flow in
+  [sandbox-transport.md](sandbox-transport.md).
 
 ### Resume on app start
 - **`resumeRunningWorkspaces(window)`** `:2100` — drains
