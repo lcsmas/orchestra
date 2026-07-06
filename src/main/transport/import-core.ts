@@ -60,3 +60,25 @@ export function overlayPaths(untracked: string[], modified: string[], hookDirs: 
 /** The gitignored dirs that must ride the overlay for the sandbox agent to
  *  work: Orchestra's hook scripts and Claude's per-worktree settings. */
 export const HOOK_DIRS = ['.orchestra', '.claude'] as const;
+
+/** What of the user's Claude config dir rides the payload's claude-config/
+ *  entry — the pieces that make the sandbox agent run as the SAME account
+ *  with the same MCP servers/settings/skills. Deliberately an include-list:
+ *  projects/ (host-path-keyed conversation history), todos/, statsig/, caches
+ *  etc. are meaningless or huge in the container. `.claude.json` carries the
+ *  user-scope MCP server registry; `.credentials.json` the OAuth login
+ *  (Claude Code refreshes it in place container-side after the seed). */
+export const CLAUDE_CONFIG_ENTRIES = [
+  '.credentials.json',
+  '.claude.json',
+  'settings.json',
+  'CLAUDE.md',
+  'skills',
+  'agents',
+  'commands',
+] as const;
+
+/** Header the host stamps its workspace id on when POSTing /import, letting a
+ *  provisioned shim recognize a retry of the SAME import (lost response) and
+ *  replay success instead of 409ing. Mirrored in sandbox/shim/shim-import.ts. */
+export const IMPORT_SESSION_HEADER = 'x-orchestra-session';

@@ -5,20 +5,29 @@
  * the container OWN the checkout (the central-sandbox model — the work moves in
  * once and never syncs back out):
  *
- *   meta.json     { session, branch, baseBranch?, originUrl? }
- *   repo.bundle   `git bundle create --all` of the host repo (full history)
- *   worktree/     overlay of files git doesn't carry: uncommitted changes,
- *                 untracked files, and the .orchestra/.claude hook dirs the
- *                 host installed into its local worktree
+ *   meta.json      { session, branch, baseBranch?, originUrl? }
+ *   repo.bundle    `git bundle create --all` of the host repo (full history)
+ *   worktree/      overlay of files git doesn't carry: uncommitted changes,
+ *                  untracked files, and the .orchestra/.claude hook dirs the
+ *                  host installed into its local worktree
+ *   claude-config/ (optional) the workspace's effective Claude login/config —
+ *                  .credentials.json, .claude.json (MCP servers), settings,
+ *                  CLAUDE.md, skills/agents/commands — packed from the pinned
+ *                  account's config dir (or ~/.claude) on the host
  *
  * We clone the bundle into the (empty) workspace dir, check out the branch,
- * repoint origin at the real remote (the bundle path would dangle), then lay
- * the overlay on top. After this the shim's normal `spawn` path finds a live
- * checkout with hooks at /workspace, exactly like the local case.
+ * repoint origin at the real remote (the bundle path would dangle), lay the
+ * overlay on top, and seed the container's ~/.claude from claude-config/ so
+ * the agent runs as the RIGHT account with the user's MCP/settings. Claude
+ * Code refreshes OAuth tokens in place, so the one-time seed stays valid.
+ * After this the shim's normal `spawn` path finds a live checkout with hooks
+ * at /workspace, exactly like the local case.
  *
  * Everything is deliberately transactional-ish: a failed import wipes the
- * workspace dir back to empty so the host can retry; a second import (or one
- * racing another) is refused with 409 — one container owns ONE workspace.
+ * workspace dir back to empty so the host can retry; a second import for a
+ * DIFFERENT workspace is refused with 409 (one container owns ONE workspace),
+ * while a retry of the SAME workspace — the lost-response case — replays the
+ * recorded success from the meta state file instead of wedging on 409.
  */
 
 import { execFile } from 'node:child_process';
@@ -76,9 +85,81 @@ function emptyDir(dir: string): void {
   }
 }
 
+/** What a completed import recorded, persisted to the state file so a retry
+ *  of the same workspace (lost HTTP response) can replay success. */
+export interface ImportRecord {
+  session: string;
+  branch: string;
+  head: string;
+}
+
+/** Read the recorded import, or null when none/unreadable. */
+export function readImportRecord(metaPath: string): ImportRecord | null {
+  try {
+    const rec = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as ImportRecord;
+    return typeof rec.session === 'string' && typeof rec.head === 'string' ? rec : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface RunImportOptions {
+  /** Where claude-config/ is installed (~/.claude's parent). Default: homedir. */
+  claudeHome?: string;
+  /** Where the success record is persisted for idempotent retries. */
+  metaPath?: string;
+  log?: (...args: unknown[]) => void;
+}
+
+/** Seed the agent's Claude login/config from the payload's claude-config/
+ *  entry: everything lands in <home>/.claude, and .claude.json (the state
+ *  file carrying user-scope MCP servers) ALSO lands at <home>/.claude.json —
+ *  the container runs claude with no CLAUDE_CONFIG_DIR, so both default
+ *  locations must be right. Copies per top-level entry, each best-effort: a
+ *  file the operator chose to bind-mount read-only (e.g. the legacy
+ *  .credentials.json mount) must not abort the whole import — the mount
+ *  simply wins over the payload copy. Never touches anything else already in
+ *  ~/.claude. */
+async function installClaudeConfig(
+  srcDir: string,
+  home: string,
+  log: (...args: unknown[]) => void = () => {},
+): Promise<void> {
+  const claudeDir = path.join(home, '.claude');
+  fs.mkdirSync(claudeDir, { recursive: true });
+  for (const entry of fs.readdirSync(srcDir)) {
+    try {
+      // -T: dest is the exact target path, so a re-seed overwrites
+      // ~/.claude/skills instead of nesting a second skills/ inside it.
+      await run('cp', ['-aT', path.join(srcDir, entry), path.join(claudeDir, entry)]);
+    } catch (e) {
+      log(`claude-config: skipped ${entry}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  const stateJson = path.join(claudeDir, '.claude.json');
+  if (fs.existsSync(stateJson)) {
+    try {
+      fs.copyFileSync(stateJson, path.join(home, '.claude.json'));
+    } catch {
+      /* read-only mount wins */
+    }
+  }
+  // Credentials are secrets — clamp to owner-only regardless of tar modes.
+  const creds = path.join(claudeDir, '.credentials.json');
+  try {
+    if (fs.existsSync(creds)) fs.chmodSync(creds, 0o600);
+  } catch {
+    /* read-only mount — mode is the mount's concern */
+  }
+}
+
 /** Run one import from an already-received payload tarball. Throws on any
  *  failure after wiping the workspace dir back to empty (retryable). */
-export async function runImport(tgzPath: string, workspaceDir: string): Promise<{ head: string; branch: string }> {
+export async function runImport(
+  tgzPath: string,
+  workspaceDir: string,
+  opts: RunImportOptions = {},
+): Promise<ImportRecord> {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-import-'));
   try {
     await run('tar', ['-xzf', tgzPath, '-C', tmp]);
@@ -120,8 +201,25 @@ export async function runImport(tgzPath: string, workspaceDir: string): Promise<
         await run('cp', ['-a', `${overlay}/.`, `${workspaceDir}/`]);
       }
 
+      // Seed the agent's login/config (account credentials, MCP servers,
+      // settings, skills) so the sandbox agent runs as the same account the
+      // workspace used on the host.
+      const claudeConfig = path.join(tmp, 'claude-config');
+      if (fs.existsSync(claudeConfig)) {
+        await installClaudeConfig(claudeConfig, opts.claudeHome ?? os.homedir(), opts.log);
+      }
+
       const head = await run('git', ['rev-parse', 'HEAD'], workspaceDir);
-      return { head, branch: meta.branch };
+      const record: ImportRecord = { session: meta.session, branch: meta.branch, head };
+      if (opts.metaPath) {
+        try {
+          fs.mkdirSync(path.dirname(opts.metaPath), { recursive: true });
+          fs.writeFileSync(opts.metaPath, JSON.stringify(record));
+        } catch {
+          /* best-effort — without it a lost-response retry 409s, nothing worse */
+        }
+      }
+      return record;
     } catch (e) {
       // Leave the dir empty so a corrected retry starts clean.
       try {
@@ -143,15 +241,24 @@ const DEFAULT_MAX_IMPORT_BYTES = 2 * 1024 * 1024 * 1024; // 2 GiB
 
 export interface ImportHandlerOptions {
   workspaceDir: string;
+  /** Home dir the claude-config payload entry seeds (~/.claude). */
+  claudeHome?: string;
+  /** State file recording the last successful import, for idempotent retries. */
+  metaPath?: string;
   maxBytes?: number;
   log?: (...args: unknown[]) => void;
 }
 
+/** Header the host stamps its workspace id on, letting a provisioned shim
+ *  recognize a RETRY of the same import (lost HTTP response) vs. a rival. */
+export const IMPORT_SESSION_HEADER = 'x-orchestra-session';
+
 /**
  * Build the POST /import HTTP handler. Streams the request body to a temp
  * file (payloads exceed any sane in-memory cap), then runs the import.
- * Responses: 200 {ok:true,head,branch} | 400 bad payload | 409 already
- * provisioned or import in flight | 413 too large | 500 provisioning failed.
+ * Responses: 200 {ok:true,head,branch} (incl. an idempotent replay with
+ * alreadyProvisioned:true) | 400 bad payload | 409 already provisioned for a
+ * DIFFERENT workspace or import in flight | 413 too large | 500 failed.
  */
 export function createImportHandler(opts: ImportHandlerOptions) {
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_IMPORT_BYTES;
@@ -169,6 +276,17 @@ export function createImportHandler(opts: ImportHandlerOptions) {
       return;
     }
     if (isProvisioned(opts.workspaceDir)) {
+      // Idempotency: a retry of the SAME workspace (the success response was
+      // lost on the wire) replays the recorded result instead of wedging the
+      // host on 409. Anything else really is a rival import — refuse.
+      const requested = req.headers[IMPORT_SESSION_HEADER];
+      const record = opts.metaPath ? readImportRecord(opts.metaPath) : null;
+      if (record && typeof requested === 'string' && requested === record.session) {
+        log(`import retry for session=${record.session} — replaying recorded success`);
+        req.resume(); // drain the (discarded) payload so the socket closes cleanly
+        req.on('end', () => sendJson(200, { ok: true, alreadyProvisioned: true, ...record }));
+        return;
+      }
       sendJson(409, { ok: false, error: 'workspace already provisioned' });
       return;
     }
@@ -210,7 +328,11 @@ export function createImportHandler(opts: ImportHandlerOptions) {
       if (aborted) return;
       void (async () => {
         try {
-          const result = await runImport(tgzPath, opts.workspaceDir);
+          const result = await runImport(tgzPath, opts.workspaceDir, {
+            claudeHome: opts.claudeHome,
+            metaPath: opts.metaPath,
+            log,
+          });
           log(`imported branch=${result.branch} head=${result.head}`);
           finish(200, { ok: true, ...result });
         } catch (e) {

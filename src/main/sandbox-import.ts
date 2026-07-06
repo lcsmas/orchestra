@@ -21,7 +21,7 @@ import os from 'node:os';
 import http from 'node:http';
 import https from 'node:https';
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdtemp, mkdir, rm, cp, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, cp, stat, writeFile, rename } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { BrowserWindow } from 'electron';
@@ -29,12 +29,16 @@ import { store } from './store';
 import { stopPty } from './pty';
 import { removeWorktree, detectRemoteUrl } from './git';
 import { log } from './logger';
+import { workspaceAccountConfigDir } from './workspaces';
+import { syncAccountInheritance } from './account-inherit';
 import { isScratchLike, type Workspace, type WorkspaceHost } from '../shared/types';
 import {
   endpointToHttpUrl,
   parseZList,
   overlayPaths,
   HOOK_DIRS,
+  CLAUDE_CONFIG_ENTRIES,
+  IMPORT_SESSION_HEADER,
   type ImportMeta,
 } from './transport/import-core';
 
@@ -79,6 +83,29 @@ export async function stageImportPayload(
     }
   }
 
+  // Claude login/config: the sandbox agent must run as the SAME account with
+  // the user's MCP servers/settings/skills. Pack the workspace's effective
+  // config — the pinned account's dir, or the default ~/.claude — into
+  // claude-config/; the shim seeds the container's ~/.claude from it. For the
+  // default login, `.claude.json` (user-scope MCP registry) lives NEXT TO
+  // ~/.claude, not inside it, so it is sourced separately.
+  const configDir = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
+  const stateJson = ws.accountId
+    ? path.join(configDir, '.claude.json')
+    : path.join(os.homedir(), '.claude.json');
+  const configRoot = path.join(stageDir, 'claude-config');
+  await mkdir(configRoot, { recursive: true });
+  for (const entry of CLAUDE_CONFIG_ENTRIES) {
+    const src = entry === '.claude.json' ? stateJson : path.join(configDir, entry);
+    if (!existsSync(src)) continue;
+    await cp(src, path.join(configRoot, entry), { recursive: true }).catch(() => {});
+  }
+  if (!existsSync(path.join(configRoot, '.credentials.json'))) {
+    log.warn(
+      `sandbox import: no .credentials.json found in ${configDir} — the sandbox agent will need credentials mounted or a manual login`,
+    );
+  }
+
   const meta: ImportMeta = {
     session: ws.id,
     branch: ws.branch,
@@ -99,6 +126,7 @@ export async function stageImportPayload(
     'meta.json',
     'repo.bundle',
     'worktree',
+    'claude-config',
   ]);
   return { stageDir, tgzPath };
 }
@@ -106,12 +134,21 @@ export async function stageImportPayload(
 /** POST a file to the shim's admin HTTP plane, streaming from disk (payloads
  *  are far past any sane in-memory size). Resolves with the parsed JSON body;
  *  rejects on transport errors or a non-ok reply. */
-function postPayload(url: string, filePath: string): Promise<{ ok: boolean; [k: string]: unknown }> {
+function postPayload(
+  url: string,
+  filePath: string,
+  session: string,
+): Promise<{ ok: boolean; [k: string]: unknown }> {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https:') ? https : http;
     const req = mod.request(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/gzip' },
+      headers: {
+        'Content-Type': 'application/gzip',
+        // Lets a provisioned shim recognize a RETRY of this same import (our
+        // copy of the success response was lost) and replay it instead of 409.
+        [IMPORT_SESSION_HEADER]: session,
+      },
     });
     req.on('error', (e) => reject(new Error(`sandbox unreachable: ${e.message}`)));
     req.on('response', (res) => {
@@ -166,21 +203,49 @@ export async function importWorkspaceToSandbox(
   stopPty(`${id}:run`);
   stopPty(`${id}:nvim`);
 
+  // A pinned account inherits global config (skills/MCP) into its dir at
+  // spawn time locally — materialize it now so the packed config is complete.
+  if (ws.accountId) {
+    const account = store.accounts.find((a) => a.id === ws.accountId);
+    if (account) {
+      await syncAccountInheritance(account).catch((err) =>
+        log.warn(`sandbox import: account-inherit sync failed for ${id}`, err),
+      );
+    }
+  }
+
   log.info(`importing workspace ${ws.branch} (${id}) to sandbox ${endpoint}`);
   const { stageDir, tgzPath } = await stageImportPayload(ws);
   try {
-    await postPayload(importUrl, tgzPath);
+    await postPayload(importUrl, tgzPath, ws.id);
   } finally {
     await rm(stageDir, { recursive: true, force: true }).catch(() => {});
   }
 
-  // The container owns the checkout now — retire the local worktree. Best-
-  // effort: a failure here leaves a husk but must not roll back the import
-  // (the sandbox copy is already canonical).
+  // The container owns the checkout now — retire the local copy. NOT deleted:
+  // gitignored files that never ride the overlay (.env, local DBs, scratch
+  // notes) would be destroyed. Move the whole dir to a trash folder instead,
+  // then let git prune the dangling worktree registration. Best-effort: a
+  // failure here leaves a husk but must not roll back the import (the sandbox
+  // copy is already canonical).
+  const trashDir = path.join(
+    os.homedir(),
+    '.orchestra',
+    'trash',
+    `${path.basename(ws.worktreePath)}-${Date.now()}`,
+  );
   try {
-    await removeWorktree(ws.repoPath, ws.worktreePath);
+    await mkdir(path.dirname(trashDir), { recursive: true });
+    await rename(ws.worktreePath, trashDir);
+    await execFileP('git', ['-C', ws.repoPath, 'worktree', 'prune']);
+    log.info(`local worktree retired to trash: ${trashDir}`);
   } catch (e) {
-    log.warn(`local worktree retire failed for ${id}: ${String(e)}`);
+    log.warn(`trash retire failed for ${id}, falling back to worktree remove: ${String(e)}`);
+    try {
+      await removeWorktree(ws.repoPath, ws.worktreePath);
+    } catch (e2) {
+      log.warn(`local worktree retire failed for ${id}: ${String(e2)}`);
+    }
   }
 
   const host: WorkspaceHost = { kind: 'sandbox', endpoint };

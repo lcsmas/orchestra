@@ -54,9 +54,9 @@ function sh(cmd, args, cwd) {
 }
 
 /** GET/POST helper returning {status, body(json)}. */
-function request(method, route, filePath) {
+function request(method, route, filePath, headers = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port: PORT, method, path: route }, (res) => {
+    const req = http.request({ host: '127.0.0.1', port: PORT, method, path: route, headers }, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (c) => (body += c));
@@ -104,6 +104,10 @@ function stagePayload() {
   sh('git', ['bundle', 'create', path.join(stage, 'repo.bundle'), '--all'], repo);
   fs.writeFileSync(path.join(stage, 'worktree', 'notes.md'), 'uncommitted overlay\n');
   fs.writeFileSync(path.join(stage, 'worktree', '.orchestra', 'orchestra-hook.sh'), '#!/bin/sh\n');
+  // The login/config seed the host packs (account creds + MCP + settings).
+  fs.mkdirSync(path.join(stage, 'claude-config'), { recursive: true });
+  fs.writeFileSync(path.join(stage, 'claude-config', '.credentials.json'), '{"oauth":"it-secret"}');
+  fs.writeFileSync(path.join(stage, 'claude-config', '.claude.json'), '{"mcpServers":{"it":{}}}');
   fs.writeFileSync(
     path.join(stage, 'meta.json'),
     JSON.stringify({
@@ -114,7 +118,7 @@ function stagePayload() {
     }),
   );
   const tgz = path.join(tmp, 'payload.tgz');
-  sh('tar', ['-czf', tgz, '-C', stage, 'meta.json', 'repo.bundle', 'worktree']);
+  sh('tar', ['-czf', tgz, '-C', stage, 'meta.json', 'repo.bundle', 'worktree', 'claude-config']);
   return tgz;
 }
 
@@ -128,6 +132,8 @@ async function main() {
       ORCHESTRA_EVENTS_DIR: EVENTS_DIR,
       ORCHESTRA_SOCK: SOCK,
       ORCHESTRA_WORKSPACE_DIR: WORKSPACE,
+      ORCHESTRA_CLAUDE_HOME: path.join(tmp, 'home'),
+      ORCHESTRA_IMPORT_META: path.join(tmp, 'state', 'import-meta.json'),
     },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
@@ -167,15 +173,33 @@ async function main() {
   assert.ok(fs.existsSync(path.join(WORKSPACE, '.orchestra', 'orchestra-hook.sh')));
   log('✓ import provisioned checkout + overlay + origin');
 
+  // Claude login/config seeded into the (overridden) home dir.
+  const home = path.join(tmp, 'home');
+  assert.equal(
+    fs.readFileSync(path.join(home, '.claude', '.credentials.json'), 'utf8'),
+    '{"oauth":"it-secret"}',
+  );
+  assert.equal(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'), '{"mcpServers":{"it":{}}}');
+  log('✓ claude-config seeded (~/.claude + ~/.claude.json)');
+
   health = await request('GET', '/healthz');
   assert.equal(health.body.provisioned, true);
   log('✓ healthz reports provisioned after import');
 
-  // 3. second import refused
-  const again = await request('POST', '/import', tgz);
-  assert.equal(again.status, 409);
-  assert.equal(again.body.ok, false);
-  log('✓ second import refused with 409');
+  // 3a. retry of the SAME workspace (lost-response case) replays success
+  const retry = await request('POST', '/import', tgz, { 'x-orchestra-session': 'ws-import-it' });
+  assert.equal(retry.status, 200, JSON.stringify(retry.body));
+  assert.equal(retry.body.ok, true);
+  assert.equal(retry.body.alreadyProvisioned, true);
+  assert.equal(retry.body.head, imp.body.head);
+  log('✓ same-workspace retry replays recorded success (idempotent)');
+
+  // 3b. a RIVAL import (different/absent session) is refused
+  const rival = await request('POST', '/import', tgz, { 'x-orchestra-session': 'ws-other' });
+  assert.equal(rival.status, 409);
+  const anonymous = await request('POST', '/import', tgz);
+  assert.equal(anonymous.status, 409);
+  log('✓ rival import refused with 409');
 
   log('ALL IMPORT INTEGRATION CHECKS PASSED');
   cleanup();

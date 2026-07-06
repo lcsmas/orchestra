@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { validateImportMeta, runImport, isProvisioned } from './shim-import.ts';
+import { validateImportMeta, runImport, isProvisioned, readImportRecord } from './shim-import.ts';
 
 // ─── validateImportMeta ──────────────────────────────────────────────────────
 
@@ -137,6 +137,63 @@ test('a failed import leaves the workspace dir empty for retry', async () => {
     await assert.rejects(runImport(tgz, wsDir));
     assert.equal(isProvisioned(wsDir), false);
     assert.deepEqual(fs.readdirSync(wsDir), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('claude-config is seeded into the home dir with clamped credentials', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shim-import-test-'));
+  try {
+    const tgz = makePayload(root);
+    // Add a claude-config entry to the staged payload and re-tar.
+    const stage = path.join(root, 'stage');
+    const cfg = path.join(stage, 'claude-config');
+    fs.mkdirSync(path.join(cfg, 'skills', 'my-skill'), { recursive: true });
+    fs.writeFileSync(path.join(cfg, '.credentials.json'), '{"oauth":"secret"}');
+    fs.writeFileSync(path.join(cfg, '.claude.json'), '{"mcpServers":{"linear":{}}}');
+    fs.writeFileSync(path.join(cfg, 'settings.json'), '{"model":"opus"}');
+    fs.writeFileSync(path.join(cfg, 'skills', 'my-skill', 'SKILL.md'), '# skill\n');
+    sh('tar', ['-czf', tgz, '-C', stage, 'meta.json', 'repo.bundle', 'worktree', 'claude-config']);
+
+    const home = path.join(root, 'home');
+    await runImport(tgz, path.join(root, 'workspace'), { claudeHome: home });
+
+    // Everything lands in ~/.claude; .claude.json ALSO at ~/.claude.json (the
+    // default-location state file carrying user-scope MCP servers).
+    assert.equal(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'), '{"model":"opus"}');
+    assert.equal(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'), '{"mcpServers":{"linear":{}}}');
+    assert.ok(fs.existsSync(path.join(home, '.claude', 'skills', 'my-skill', 'SKILL.md')));
+    const creds = path.join(home, '.claude', '.credentials.json');
+    assert.equal(fs.readFileSync(creds, 'utf8'), '{"oauth":"secret"}');
+    assert.equal(fs.statSync(creds).mode & 0o777, 0o600);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a payload without claude-config leaves the home dir untouched', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shim-import-test-'));
+  try {
+    const tgz = makePayload(root);
+    const home = path.join(root, 'home');
+    await runImport(tgz, path.join(root, 'workspace'), { claudeHome: home });
+    assert.equal(fs.existsSync(path.join(home, '.claude')), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a successful import persists the record for idempotent retries', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shim-import-test-'));
+  try {
+    const tgz = makePayload(root);
+    const metaPath = path.join(root, 'state', 'import-meta.json');
+    assert.equal(readImportRecord(metaPath), null);
+
+    const result = await runImport(tgz, path.join(root, 'workspace'), { metaPath });
+    const record = readImportRecord(metaPath);
+    assert.deepEqual(record, { session: 'ws1', branch: 'feature', head: result.head });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

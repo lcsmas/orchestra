@@ -59,8 +59,10 @@ function resolveRepoAgentEnv(ws: Workspace): Record<string, string> {
  * existing workspace to a different dir (that yields "No conversation found to
  * continue"). A workspace created before pinning has no `accountId`, so it
  * correctly resolves to '' → the default `~/.claude`, which is exactly where
- * its conversation already lives. Pure path expansion — no secret involved. */
-function workspaceAccountConfigDir(ws: Workspace, _repo: RepoEntry | undefined): string {
+ * its conversation already lives. Pure path expansion — no secret involved.
+ * Exported for the sandbox import (it packs this dir's login/config into the
+ * payload so the container agent runs as the same account). */
+export function workspaceAccountConfigDir(ws: Workspace, _repo: RepoEntry | undefined): string {
   if (!ws.accountId) return '';
   const account = store.accounts.find((a) => a.id === ws.accountId);
   if (!account) return '';
@@ -2378,6 +2380,12 @@ export async function startAgentPty(
     ORCHESTRA_BRANCH_AUTO: autoRenameActive(ws) ? '1' : '0',
     ORCHESTRA_AUTO_RENAME_COUNT: String(ws.autoRenameCount ?? 0),
   };
+  // A pinned account's CLAUDE_CONFIG_DIR is a HOST path; shipped to a sandbox
+  // it points at nothing and would shadow the container's seeded ~/.claude
+  // (leaving the agent logged out). The import already packed the account's
+  // login/config INTO that ~/.claude, so remote agents always use the default
+  // location.
+  if (remote) delete extraEnv.CLAUDE_CONFIG_DIR;
   await startPty({
     id: ws.id,
     // The sandbox mounts the worktree at the fixed /workspace path (the

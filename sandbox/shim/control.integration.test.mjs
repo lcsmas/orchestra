@@ -137,6 +137,32 @@ async function main() {
   await waitFor(() => laptop.dataFor(SESSION).includes('drv-42'), 5000, 'observer sees output');
   log('✓ observers receive live session data');
 
+  // ── 2b. observer spawn of a NOT-running session gets targeted feedback ────
+  laptop.send({
+    t: 'spawn',
+    session: 'ws-ctl-dead',
+    command: 'bash',
+    args: [],
+    cwd: tmp,
+    env: {},
+    cols: 80,
+    rows: 24,
+  });
+  await waitFor(
+    () => laptop.inbound.some((f) => f.t === 'exit' && f.session === 'ws-ctl-dead'),
+    3000,
+    'observer spawn answered with exit',
+  );
+  assert.ok(
+    laptop.dataFor('ws-ctl-dead').includes('read-only'),
+    'observer gets an explanation line',
+  );
+  assert.ok(
+    !desktop.inbound.some((f) => f.session === 'ws-ctl-dead'),
+    'feedback is targeted, not broadcast',
+  );
+  log('✓ observer spawn of a dead session gets explanation + exit (no black hole)');
+
   // ── 3. observer writes are dropped ────────────────────────────────────────
   laptop.send({ t: 'write', session: SESSION, data: 'echo obs-$((20+23))\r' });
   await waitFor(() => false, 600, 'grace').catch(() => {});

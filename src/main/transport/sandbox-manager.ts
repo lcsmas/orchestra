@@ -29,7 +29,10 @@
 
 import { WebSocket } from 'ws';
 import os from 'node:os';
-import type { BrowserWindow } from 'electron';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { app, type BrowserWindow } from 'electron';
 import { SandboxConnection, type SandboxSocket } from './sandbox-connection';
 import { backoffDelayMs, shouldGiveUp } from './reconnect-policy';
 import type { SandboxControlState } from '../../shared/types';
@@ -155,8 +158,32 @@ let mainWindow: BrowserWindow | null = null;
 // and mirror the latest `control` broadcast per endpoint so the renderer can
 // show "read-only — X is driving" and offer take-over.
 
-/** Stable identity for THIS Orchestra install, shown to other machines. */
-const CLIENT_ID = os.hostname();
+/** Stable identity for THIS Orchestra install: a persisted per-install UUID.
+ *  NOT the hostname — two machines with identical hostnames (cloned images,
+ *  default "localhost") would each `hello` with the same id and silently
+ *  steal the drive from one another on every reconnect. The hostname stays as
+ *  the human-facing display name. Lazily created on first use (app paths are
+ *  not available at module load). */
+let clientId: string | null = null;
+function getClientId(): string {
+  if (clientId) return clientId;
+  const file = path.join(app.getPath('userData'), 'orchestra', 'client-id');
+  try {
+    const existing = readFileSync(file, 'utf8').trim();
+    if (existing) return (clientId = existing);
+  } catch {
+    /* first run */
+  }
+  clientId = randomUUID();
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, clientId);
+  } catch {
+    // Unpersistable → a fresh id per launch. Ownership still works; only the
+    // reconnect-resumes-drive nicety degrades.
+  }
+  return clientId;
+}
 const CLIENT_NAME = os.hostname();
 
 const controlStates = new Map<string, SandboxControlState>();
@@ -176,7 +203,7 @@ export function takeSandboxControl(endpoint: string): void {
 /** Identify ourselves to the shim — first hello wins the (vacant) drive, and
  *  a hello bearing the current driver's id resumes it after a reconnect. */
 function sendHello(conn: SandboxConnection): void {
-  conn.send({ t: 'hello', clientId: CLIENT_ID, name: CLIENT_NAME });
+  conn.send({ t: 'hello', clientId: getClientId(), name: CLIENT_NAME });
 }
 
 /** Cap on a single WS dial. Without it a black-holed host (drop, no RST) pins

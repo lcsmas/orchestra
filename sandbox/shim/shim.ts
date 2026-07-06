@@ -37,6 +37,7 @@ import { spawn as ptySpawn, type IPty } from 'node-pty';
 import { WebSocketServer, type WebSocket } from 'ws';
 import http from 'node:http';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import {
@@ -82,6 +83,12 @@ const SPOOL_POLL_MS = 1000;
 /** The container-owned checkout. /workspace in the image (Dockerfile WORKDIR);
  *  overridable so tests can provision into a temp dir. */
 const WORKSPACE_DIR = process.env.ORCHESTRA_WORKSPACE_DIR || '/workspace';
+
+/** Where a successful import is recorded (for idempotent retries) and where
+ *  the payload's claude-config is seeded. Both test-overridable. */
+const IMPORT_META_PATH =
+  process.env.ORCHESTRA_IMPORT_META || path.join(os.homedir(), '.orchestra', 'import-meta.json');
+const CLAUDE_HOME = process.env.ORCHESTRA_CLAUDE_HOME || os.homedir();
 
 // ─── Logging ────────────────────────────────────────────────────────────────
 
@@ -479,9 +486,29 @@ function onFrame(ws: WebSocket, frame: Frame): void {
       log('take-over requested');
       if (broker.takeControl(ws)) broadcastControl();
       break;
-    case 'spawn':
-      if (mayDrive(ws, 'spawn')) startSession(frame as SpawnFrame);
+    case 'spawn': {
+      const f = frame as SpawnFrame;
+      // An observer "spawning" an ALREADY-running session is the reattach
+      // flow: its transport is registered, data frames are broadcast, so it
+      // just watches. startSession's dup guard makes this a no-op either way.
+      if (sessions.has(f.session)) break;
+      if (mayDrive(ws, 'spawn')) {
+        startSession(f);
+      } else if (ws.readyState === ws.OPEN) {
+        // A dropped spawn for a NOT-running session would leave the observer
+        // staring at a dead terminal forever — answer it (targeted, not
+        // broadcast: only this client asked) with an explanation and an exit.
+        ws.send(
+          encodeFrame({
+            t: 'data',
+            session: f.session,
+            data: '\r\n\x1b[33m[orchestra] read-only — another machine drives this sandbox; take control to start the agent\x1b[0m\r\n',
+          }),
+        );
+        ws.send(encodeFrame({ t: 'exit', session: f.session, exitCode: 0 }));
+      }
       break;
+    }
     case 'write':
       if (mayDrive(ws, 'write')) handleWrite(frame as WriteFrame);
       break;
@@ -509,7 +536,12 @@ function onFrame(ws: WebSocket, frame: Frame): void {
 // host→shim RPC correlation machinery.
 
 function startWsServer(): void {
-  const handleImport = createImportHandler({ workspaceDir: WORKSPACE_DIR, log });
+  const handleImport = createImportHandler({
+    workspaceDir: WORKSPACE_DIR,
+    claudeHome: CLAUDE_HOME,
+    metaPath: IMPORT_META_PATH,
+    log,
+  });
 
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/healthz') {

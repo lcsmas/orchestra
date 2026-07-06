@@ -91,17 +91,35 @@ Orchestra client:
 ```bash
 docker run -d --restart unless-stopped \
   -p 8787:8787 \
-  -v "$HOME/.claude/.credentials.json:/home/agent/.claude/.credentials.json:ro" \
+  -v sandbox-workspace:/workspace \
+  -v sandbox-home:/home/agent \
   -e GH_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx \
   --name my-sandbox \
   orchestra-sandbox
 ```
 
+**Use named volumes for `/workspace` and `/home/agent`** (as above). The
+container-owned checkout and the agent's Claude state live there; without
+volumes, *recreating the container — e.g. to upgrade the image — destroys the
+checkout and any unpushed work*. With volumes, a new container picks up right
+where the old one left off.
+
 Then in Orchestra, use a workspace row's **Import to sandbox** action and give
 it the endpoint (`ws://sandbox-host:8787`). The app ships the checkout to the
-container (`POST /import`), retires the local worktree, and streams the
-terminal from the sandbox from then on. Check a sandbox from the shell with
-`curl http://sandbox-host:8787/healthz`.
+container (`POST /import`), **seeds the container's `~/.claude` with the
+workspace's login/config** — the pinned account's OAuth credentials,
+`.claude.json` (your MCP servers), `settings.json`, `CLAUDE.md`, skills,
+agents and commands — retires the local worktree (moved to
+`~/.orchestra/trash/`, not deleted), and streams the terminal from the sandbox
+from then on. The manual credentials mount of older setups is no longer
+required (it still works and takes precedence if you prefer it). Check a
+sandbox from the shell with `curl http://sandbox-host:8787/healthz`.
+
+> **Security:** the shim has **no authentication** — anyone who can reach the
+> port can attach, take control, or import (the import payload also carries
+> your Claude OAuth credentials in transit). Only expose it on a private
+> network you trust end-to-end (Tailscale/WireGuard) or behind TLS with access
+> control. Never publish the port to the open internet.
 
 ### The `/workspace` cwd convention (important)
 
