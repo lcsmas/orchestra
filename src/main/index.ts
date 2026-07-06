@@ -206,6 +206,7 @@ import {
   syncAllAccountsInheritance,
 } from './account-inherit';
 import { setSandboxWindow, closeAllSandboxConnections } from './transport/sandbox-manager';
+import { importWorkspaceToSandbox } from './sandbox-import';
 import {
   detectAndUpdateBranchName,
   detectAndUpdateMergeState,
@@ -623,6 +624,10 @@ handle('workspaces:unarchive', async (_e, id: string) => {
 
 handle('workspaces:delete', async (_e, id: string) => {
   await deleteWorkspace(id, getMainWindow());
+});
+
+handle('workspaces:importToSandbox', async (_e, id: string, endpoint: string) => {
+  return importWorkspaceToSandbox(id, endpoint, getMainWindow());
 });
 
 handle('workspaces:markSeen', async (_e, id: string) => {

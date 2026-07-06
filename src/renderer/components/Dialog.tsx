@@ -1,8 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { create } from 'zustand';
 
 type Tone = 'info' | 'success' | 'warning' | 'danger';
-type Kind = 'alert' | 'confirm';
+type Kind = 'alert' | 'confirm' | 'prompt';
 
 interface DialogOptions {
   title?: string;
@@ -11,11 +11,16 @@ interface DialogOptions {
   tone?: Tone;
   confirmLabel?: string;
   cancelLabel?: string;
+  /** prompt only: input placeholder + prefilled value. */
+  placeholder?: string;
+  initialValue?: string;
 }
 
 interface DialogState extends DialogOptions {
   kind: Kind;
   resolve: (value: boolean) => void;
+  /** prompt only: called with the input's live value before resolve(true). */
+  onInput?: (value: string) => void;
 }
 
 interface DialogStore {
@@ -56,6 +61,19 @@ export const dialog = {
     open('alert', { title: 'Something went wrong', message, detail, tone: 'danger' }),
   success: (message: string, detail?: string) =>
     open('alert', { title: 'Done', message, detail, tone: 'success' }),
+  /** Single-line text prompt. Resolves the entered string, or null when
+   *  cancelled/empty. */
+  prompt: (opts: DialogOptions | string): Promise<string | null> => {
+    let value = normalize(opts).initialValue ?? '';
+    return new Promise((resolvePrompt) => {
+      useDialogStore.getState().show({
+        ...normalize(opts),
+        kind: 'prompt',
+        onInput: (v) => (value = v),
+        resolve: (ok) => resolvePrompt(ok && value.trim() ? value.trim() : null),
+      });
+    });
+  },
 };
 
 export function DialogHost() {
@@ -65,7 +83,7 @@ export function DialogHost() {
 
   useEffect(() => {
     if (!current) return;
-    primaryRef.current?.focus();
+    if (current.kind !== 'prompt') primaryRef.current?.focus(); // prompt: the input autofocuses
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -106,8 +124,9 @@ export function DialogHost() {
         <h2 id="dialog-title" className="dialog-title">{title}</h2>
         <p id="dialog-message" className="dialog-message">{current.message}</p>
         {current.detail && <p className="dialog-detail">{current.detail}</p>}
+        {current.kind === 'prompt' && <PromptInput state={current} />}
         <div className="dialog-actions">
-          {current.kind === 'confirm' && (
+          {(current.kind === 'confirm' || current.kind === 'prompt') && (
             <button onClick={() => resolve(false)}>{cancelLabel}</button>
           )}
           <button ref={primaryRef} className={primaryClass} onClick={() => resolve(true)}>
@@ -116,6 +135,27 @@ export function DialogHost() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** The prompt kind's text input. Local state for the value; every change is
+ *  pushed to the dialog's onInput so resolve(true) (button or Enter) sees the
+ *  latest text without threading state through the zustand store. */
+function PromptInput({ state }: { state: DialogState }) {
+  const [value, setValue] = useState(state.initialValue ?? '');
+  return (
+    <input
+      className="dialog-input"
+      type="text"
+      autoFocus
+      spellCheck={false}
+      placeholder={state.placeholder}
+      value={value}
+      onChange={(e) => {
+        setValue(e.target.value);
+        state.onInput?.(e.target.value);
+      }}
+    />
   );
 }
 

@@ -482,6 +482,18 @@ export async function deleteWorkspace(id: string, window: BrowserWindow): Promis
     return;
   }
 
+  // Sandbox-hosted: the checkout lives in the container (the local worktree
+  // was retired at import time). There is nothing local to archive-script or
+  // remove; the container keeps its copy — deleting the record here only
+  // detaches this Orchestra from it.
+  if (ws.host?.kind === 'sandbox') {
+    clearScrollback(id);
+    await clearInbox(id);
+    await store.removeWorkspace(id);
+    window.webContents.send('workspace:removed', id);
+    return;
+  }
+
   const archiveScript = store.getRepoScripts(ws.repoPath).archive;
   if (archiveScript && existsSync(ws.worktreePath)) {
     try {
@@ -552,6 +564,10 @@ export async function pruneOrphanedWorkspaces(window: BrowserWindow): Promise<vo
     if (!tracked) continue; // repo gone/unmounted/unreadable — skip safely
 
     for (const ws of list) {
+      // Sandbox-hosted workspaces own no local worktree (it was retired by the
+      // import) — the checkout lives in the container, so the local registry
+      // never tracks it. Never prune these.
+      if (ws.host?.kind === 'sandbox') continue;
       if (tracked.has(ws.worktreePath)) continue; // still a live worktree
 
       // Orphaned: git no longer tracks this worktree. Tear the record down.

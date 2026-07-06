@@ -72,6 +72,7 @@ interface State {
   archive: (id: string) => Promise<void>;
   unarchive: (id: string) => Promise<void>;
   deleteWorkspace: (id: string) => Promise<void>;
+  importToSandbox: (id: string, endpoint: string) => Promise<void>;
   reorderWorkspaces: (orderedIds: string[]) => Promise<void>;
   reorderRepos: (orderedPaths: string[]) => Promise<void>;
   refreshStats: (id: string) => Promise<void>;
@@ -240,6 +241,16 @@ export const useStore = create<State>((set, get) => ({
         w.id === id ? { ...w, archived: false, archivedAt: undefined, status: 'idle' as const } : w,
       ),
       activeId: s.activeId ?? id,
+    }));
+  },
+
+  importToSandbox: async (id, endpoint) => {
+    // Main does the heavy lifting (bundle + POST + local retire) and returns
+    // the updated record; it also broadcasts workspace:update, but upsert
+    // locally too so the row regroups under its node immediately.
+    const ws = await window.orchestra.importToSandbox(id, endpoint);
+    set((s) => ({
+      workspaces: s.workspaces.map((w) => (w.id === id ? { ...w, ...ws } : w)),
     }));
   },
 

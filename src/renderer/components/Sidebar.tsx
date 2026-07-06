@@ -107,6 +107,18 @@ function ArchiveIcon() {
   );
 }
 
+function SandboxUploadIcon() {
+  // Cloud with an up arrow — "ship this workspace to the always-on sandbox".
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+      <path
+        fill="currentColor"
+        d="M4.5 13a3.5 3.5 0 0 1-.46-6.97 4.5 4.5 0 0 1 8.83.96A3 3 0 0 1 12 13h-1.5v-1H12a2 2 0 0 0 .32-3.97l-.72-.12-.06-.73a3.5 3.5 0 0 0-6.87-.74l-.17.6-.62.04A2.5 2.5 0 0 0 4.5 12h1v1h-1Zm3.5-6 2.5 2.6-.7.72L8.5 9v5h-1V9L6.2 10.32l-.7-.72L8 7Z"
+      />
+    </svg>
+  );
+}
+
 function RestoreIcon() {
   return (
     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
@@ -470,6 +482,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     archive,
     unarchive,
     deleteWorkspace,
+    importToSandbox,
     createWorkspace,
     removeRepo,
     reorderWorkspaces,
@@ -768,6 +781,29 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       await unarchive(id);
     } catch (err) {
       void dialog.error('Could not restore workspace', (err as Error).message);
+    }
+  };
+
+  const onImportToSandbox = async (e: React.MouseEvent, id: string, name: string) => {
+    e.stopPropagation();
+    const endpoint = await dialog.prompt({
+      title: 'Import to sandbox',
+      message: `Move "${name}" into an always-on sandbox?`,
+      detail:
+        'The checkout (including uncommitted changes) is shipped to the sandbox container, and the local worktree is retired. The terminal then streams from the sandbox.',
+      placeholder: 'ws://sandbox-host:8787',
+      initialValue: localStorage.getItem('orchestra.lastSandboxEndpoint') ?? '',
+      confirmLabel: 'Import',
+    });
+    if (!endpoint) return;
+    markDeleting(id, true); // reuse the row spinner while the payload ships
+    try {
+      await importToSandbox(id, endpoint);
+      localStorage.setItem('orchestra.lastSandboxEndpoint', endpoint);
+    } catch (err) {
+      void dialog.error('Could not import to sandbox', (err as Error).message);
+    } finally {
+      markDeleting(id, false);
     }
   };
 
@@ -1544,6 +1580,16 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       </span>
                     </div>
                   </div>
+                  {!w.host && (
+                    <button
+                      className="ws-icon-btn"
+                      title="Import to sandbox — move this workspace into an always-on sandbox container"
+                      aria-label={`Import workspace ${w.name} to sandbox`}
+                      onClick={(e) => onImportToSandbox(e, w.id, w.name)}
+                    >
+                      <SandboxUploadIcon />
+                    </button>
+                  )}
                   <button
                     className="ws-icon-btn"
                     title="Archive workspace"

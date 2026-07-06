@@ -138,6 +138,11 @@ export interface OrchestraAPI {
   archiveWorkspace: (id: string) => Promise<void>;
   unarchiveWorkspace: (id: string) => Promise<void>;
   deleteWorkspace: (id: string) => Promise<void>;
+  /** One-way "import to sandbox": ship the workspace's checkout (bundle +
+   * uncommitted overlay + hook dirs) to the always-on sandbox at `endpoint`,
+   * retire the local worktree, and flip the record to sandbox-hosted. From
+   * then on the terminal streams to the container. */
+  importToSandbox: (id: string, endpoint: string) => Promise<Workspace>;
   markSeen: (id: string) => Promise<void>;
   renameBranch: (id: string, newBranch: string) => Promise<Workspace>;
   /** Persist a new ordering of workspaces. Pass the full list of workspace
