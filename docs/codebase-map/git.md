@@ -47,9 +47,12 @@ independent proof-of-merge signals** (any one suffices, only when not diverged):
    This is what `git-merge-state.test.ts` exercises against real temp repos.
 
 `unpushedAhead` (`:507`): `rev-list --count origin/<branch>..<branch>` if pushed,
-else `base..branch` (virgin-branch signal). `getRefShas` `:294` returns both
-branch+base SHAs in one call — `activity.ts` caches the pair and **skips** the
-expensive (2–9 subprocess) merge-state recompute when refs haven't moved.
+else `base..branch` (virgin-branch signal). `getRefShas` `:294` returns branch +
+base **+ `origin/<branch>`** SHAs (remote `null` if never pushed) in one call —
+`activity.ts` caches the **triple** and **skips** the expensive (2–9 subprocess)
+merge-state recompute when none has moved. The remote-tracking SHA is in the key
+because a `git push` moves only `origin/<branch>` (branch/base tips stay put);
+keying on just (branch, base) pinned a stale `↑N` badge across a push.
 
 ## PRs & releases (gh CLI, cached)
 - **`findPullRequest(repoPath, branch)`** `:543` — `gh pr list --head <branch>

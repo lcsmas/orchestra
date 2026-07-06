@@ -287,20 +287,35 @@ function truncate(s: string, max = 300_000): string {
  *  `stalePointer` — acceptable, since merged workspaces are archived long
  *  before then. */
 /** Resolve `branch` and `baseBranch` to their current commit SHAs in a single
- *  `git rev-parse` (one process). Returns null if either ref can't be resolved
- *  (detached HEAD, missing base, mid-rebase). Used to short-circuit the much
- *  heavier `getBranchMergeState` when neither ref has moved since the last
- *  probe — merge state is a pure function of these two SHAs. */
+ *  `git rev-parse` (one process), plus the branch's remote-tracking SHA
+ *  (`origin/<branch>`, `null` when never pushed). Returns null if either local
+ *  ref can't be resolved (detached HEAD, missing base, mid-rebase). Used to
+ *  short-circuit the much heavier `getBranchMergeState` when nothing has moved
+ *  since the last probe — merge state and `unpushedAhead` are a pure function of
+ *  these three SHAs. The remote-tracking ref matters because a `git push` moves
+ *  ONLY `origin/<branch>` (the branch tip and base tip stay put), so a cache key
+ *  of just (branchSha, baseSha) would never notice a push and would pin a stale
+ *  ↑N badge until the branch or base tip happened to move. */
 export async function getRefShas(
   repoPath: string,
   branch: string,
   baseBranch: string,
-): Promise<{ branchSha: string; baseSha: string } | null> {
+): Promise<{ branchSha: string; baseSha: string; remoteSha: string | null } | null> {
   try {
-    const out = (await simpleGit(repoPath).raw(['rev-parse', branch, baseBranch])).trim();
+    const git = simpleGit(repoPath);
+    const out = (await git.raw(['rev-parse', branch, baseBranch])).trim();
     const [branchSha, baseSha] = out.split('\n').map((s) => s.trim());
     if (!branchSha || !baseSha) return null;
-    return { branchSha, baseSha };
+    // `--verify` (not the plain form above) so a missing remote-tracking ref
+    // throws rather than being echoed back as a literal — never-pushed branches
+    // legitimately have no `origin/<branch>`, which we record as null.
+    let remoteSha: string | null = null;
+    try {
+      remoteSha = (await git.raw(['rev-parse', '--verify', `origin/${branch}`])).trim() || null;
+    } catch {
+      remoteSha = null;
+    }
+    return { branchSha, baseSha, remoteSha };
   } catch {
     return null;
   }

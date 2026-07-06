@@ -137,17 +137,22 @@ function fireNeedsInput(id: string, window: BrowserWindow): void {
   });
 }
 
-// Cache the (branchSha, baseSha) pair from each workspace's last full merge
-// probe. The 8s stats poll calls this for every workspace, and
+// Cache the (branchSha, baseSha, remoteSha) triple from each workspace's last
+// full merge probe. The 8s stats poll calls this for every workspace, and
 // getBranchMergeState spawns 2-9 git processes per call — the expensive reflog
 // branch is precisely the idle steady state (branch tip == base, nothing
-// ahead) that idle/fresh workspaces sit in. Merge state is a pure function of
-// the branch and base SHAs, so when neither has moved since the last probe the
-// result cannot have changed: one cheap `rev-parse` (one process) short-
-// circuits the whole computation. Any ref movement (a commit, a merge, base
-// advancing) busts the cache and forces a recompute, so the merge pill / ↑N
-// badge stays live without the per-poll subprocess churn.
-const lastMergeProbe = new Map<string, { branchSha: string; baseSha: string }>();
+// ahead) that idle/fresh workspaces sit in. Merge state AND `unpushedAhead` are
+// a pure function of these three SHAs, so when none has moved since the last
+// probe the result cannot have changed: one cheap `rev-parse` (one process)
+// short-circuits the whole computation. Any ref movement busts the cache and
+// forces a recompute. The remote-tracking SHA (`origin/<branch>`) MUST be in
+// the key: a `git push` moves only that ref — the branch tip and base tip stay
+// put — so keying on just (branchSha, baseSha) would never notice the push and
+// would pin a stale ↑N badge until the branch or base tip later moved.
+const lastMergeProbe = new Map<
+  string,
+  { branchSha: string; baseSha: string; remoteSha: string | null }
+>();
 
 export async function detectAndUpdateMergeState(
   id: string,
@@ -158,7 +163,13 @@ export async function detectAndUpdateMergeState(
   const heads = await getRefShas(ws.repoPath, ws.branch, ws.baseBranch);
   if (heads) {
     const prev = lastMergeProbe.get(id);
-    if (prev && prev.branchSha === heads.branchSha && prev.baseSha === heads.baseSha) return;
+    if (
+      prev &&
+      prev.branchSha === heads.branchSha &&
+      prev.baseSha === heads.baseSha &&
+      prev.remoteSha === heads.remoteSha
+    )
+      return;
   }
   const { merged, diverged, unpushedAhead, stalePointer } = await getBranchMergeState(
     ws.repoPath,
