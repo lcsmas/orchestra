@@ -207,6 +207,192 @@ test('socket close synthesizes a connection-lost exit for live sessions', async 
   assert.equal(conn.isClosed, true);
 });
 
+// ─── disconnect / reconnect lifecycle (P4 item D) ────────────────────────────
+
+const OPTS = { command: 'claude', args: [], cwd: '/workspace', env: {}, cols: 80, rows: 24 };
+
+test('an unexpected drop with onDisconnect retains sessions instead of tearing down', async () => {
+  const sock = new FakeSocket();
+  let disconnects = 0;
+  let closed = false;
+  const conn = new SandboxConnection(sock, {
+    onDisconnect: () => disconnects++,
+    onClose: () => {
+      closed = true;
+    },
+  });
+  const t = await createRemoteTransport(conn, 'ws-1', OPTS);
+  let exited = false;
+  t.onExit(() => {
+    exited = true;
+  });
+
+  sock.close(); // remote drop, not conn.close()
+
+  assert.equal(disconnects, 1);
+  assert.equal(exited, false, 'session must be held, not unwound');
+  assert.equal(closed, false);
+  assert.equal(conn.isClosed, false);
+  assert.equal(conn.isDisconnected, true);
+  assert.equal(conn.sessionCount, 1);
+});
+
+test('sends are dropped while disconnected', async () => {
+  const sock = new FakeSocket();
+  const conn = new SandboxConnection(sock, { onDisconnect: () => {} });
+  const t = await createRemoteTransport(conn, 'ws-1', OPTS);
+  sock.close();
+  const before = sock.sent.length;
+  t.write('lost to the void');
+  assert.equal(sock.sent.length, before);
+});
+
+test('attachSocket resumes the SAME transports on a fresh socket', async () => {
+  const sock1 = new FakeSocket();
+  const conn = new SandboxConnection(sock1, { onDisconnect: () => {} });
+  const t = await createRemoteTransport(conn, 'ws-1', OPTS);
+  const data: string[] = [];
+  t.onData((d) => data.push(d));
+
+  sock1.inbound({ t: 'data', session: 'ws-1', data: 'before-drop' });
+  sock1.close();
+
+  const sock2 = new FakeSocket();
+  conn.attachSocket(sock2);
+  assert.equal(conn.isDisconnected, false);
+
+  // Inbound resumes to the transport created before the drop…
+  sock2.inbound({ t: 'data', session: 'ws-1', data: 'after-reattach' });
+  assert.deepEqual(data, ['before-drop', 'after-reattach']);
+
+  // …and outbound rides the new socket.
+  t.write('hello again');
+  assert.deepEqual(lastSent(sock2), { t: 'write', session: 'ws-1', data: 'hello again' });
+  assert.equal(sock1.sent.length, 1); // still just the original spawn
+});
+
+test('late events from the replaced socket are ignored', async () => {
+  const sock1 = new FakeSocket();
+  const conn = new SandboxConnection(sock1, { onDisconnect: () => {} });
+  const t = await createRemoteTransport(conn, 'ws-1', OPTS);
+  const data: string[] = [];
+  let exited = false;
+  t.onData((d) => data.push(d));
+  t.onExit(() => {
+    exited = true;
+  });
+
+  sock1.close();
+  conn.attachSocket(new FakeSocket());
+
+  // A zombie delivery from the old socket must not reach the session, and a
+  // second close from it must not disconnect the fresh stream.
+  sock1.inbound({ t: 'data', session: 'ws-1', data: 'zombie' });
+  sock1.close();
+
+  assert.deepEqual(data, []);
+  assert.equal(exited, false);
+  assert.equal(conn.isDisconnected, false);
+  assert.equal(conn.isClosed, false);
+});
+
+test('abandon unwinds held sessions with EXIT_CONNECTION_LOST and closes', async () => {
+  const sock = new FakeSocket();
+  let closed = false;
+  const conn = new SandboxConnection(sock, {
+    onDisconnect: () => {},
+    onClose: () => {
+      closed = true;
+    },
+  });
+  const t = await createRemoteTransport(conn, 'ws-1', OPTS);
+  let code = NaN;
+  t.onExit((e) => {
+    code = e.exitCode;
+  });
+
+  sock.close();
+  conn.abandon();
+
+  assert.equal(code, EXIT_CONNECTION_LOST);
+  assert.equal(closed, true);
+  assert.equal(conn.isClosed, true);
+  assert.throws(() => conn.attachSocket(new FakeSocket()), /closed/);
+});
+
+test('a deliberate close tears down even when onDisconnect is wired', async () => {
+  const sock = new FakeSocket();
+  let disconnects = 0;
+  let closed = false;
+  const conn = new SandboxConnection(sock, {
+    onDisconnect: () => disconnects++,
+    onClose: () => {
+      closed = true;
+    },
+  });
+  const t = await createRemoteTransport(conn, 'ws-1', OPTS);
+  let code = NaN;
+  t.onExit((e) => {
+    code = e.exitCode;
+  });
+
+  conn.close(1000, 'app shutdown');
+
+  assert.equal(disconnects, 0, 'deliberate close must never look like an outage');
+  assert.equal(code, EXIT_CONNECTION_LOST);
+  assert.equal(closed, true);
+});
+
+test('close while disconnected tears down without a socket close event', async () => {
+  const sock = new FakeSocket();
+  let closed = false;
+  const conn = new SandboxConnection(sock, {
+    onDisconnect: () => {},
+    onClose: () => {
+      closed = true;
+    },
+  });
+  await createRemoteTransport(conn, 'ws-1', OPTS);
+  sock.close(); // now disconnected; the dead socket will emit nothing more
+  conn.close(1000, 'app shutdown');
+  assert.equal(closed, true);
+  assert.equal(conn.isClosed, true);
+});
+
+test('notifySessions pushes host text into every live terminal', async () => {
+  const sock = new FakeSocket();
+  const conn = new SandboxConnection(sock, { onDisconnect: () => {} });
+  const a = await createRemoteTransport(conn, 'ws-a', OPTS);
+  const b = await createRemoteTransport(conn, 'ws-b', OPTS);
+  const aData: string[] = [];
+  const bData: string[] = [];
+  a.onData((d) => aData.push(d));
+  b.onData((d) => bData.push(d));
+
+  conn.notifySessions('[banner]');
+  assert.deepEqual(aData, ['[banner]']);
+  assert.deepEqual(bData, ['[banner]']);
+});
+
+test('a partial frame from the old socket does not corrupt the new stream', async () => {
+  const sock1 = new FakeSocket();
+  const conn = new SandboxConnection(sock1, { onDisconnect: () => {} });
+  const t = await createRemoteTransport(conn, 'ws-1', OPTS);
+  const data: string[] = [];
+  t.onData((d) => data.push(d));
+
+  // Half a frame arrives, then the link dies mid-delivery.
+  const whole = encodeFrame({ t: 'data', session: 'ws-1', data: 'torn' });
+  sock1.inboundRaw(whole.subarray(0, 5));
+  sock1.close();
+
+  // Fresh socket: the decoder must start clean, so a complete frame parses.
+  const sock2 = new FakeSocket();
+  conn.attachSocket(sock2);
+  sock2.inbound({ t: 'data', session: 'ws-1', data: 'clean' });
+  assert.deepEqual(data, ['clean']);
+});
+
 test('a corrupt inbound frame raises onError and tears down the stream', () => {
   const sock = new FakeSocket();
   let err: Error | null = null;
