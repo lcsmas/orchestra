@@ -44,12 +44,12 @@ import {
   encodeFrame,
   isFrame,
   type Frame,
-  type ClientFrame,
   type SpawnFrame,
   type WriteFrame,
   type ResizeFrame,
   type KillFrame,
   type RpcReplyFrame,
+  type HelloFrame,
   type RpcRoute,
   type RpcReplyPayload,
 } from './sandbox-protocol.js';
@@ -58,6 +58,7 @@ import {
   routeFromUrl,
   maxBodyBytesFor,
   isForwarded,
+  DriveBroker,
 } from './shim-core.js';
 import { createImportHandler, isProvisioned } from './shim-import.js';
 
@@ -90,21 +91,37 @@ function log(...args: unknown[]): void {
   console.error('[shim]', ...args);
 }
 
-// ─── The single client connection ───────────────────────────────────────────
+// ─── Attached clients + the drive lock (P4 item C) ──────────────────────────
 //
-// The host attaches exactly one WS connection at a time (one Orchestra app
-// drives a sandbox). If a second connects, the previous is dropped — last
-// writer wins, matching "one machine drives a thread at a time". All
-// sandbox→client frames go through `send`, which no-ops when nobody is attached
-// (the agent keeps running; output is recovered from scrollback on reattach —
-// a P4 concern, not lost here because the PTY itself is unaffected).
+// A sandbox accepts MANY simultaneous Orchestra clients (one per machine), all
+// receiving every data/exit/event frame — but exactly ONE, the driver, may
+// write. The DriveBroker (shim-core.ts) owns the election: first client to
+// `hello` drives, `takeControl` is an explicit take-over, a reconnect bearing
+// the driver's clientId resumes its drive, and when the driver detaches the
+// longest-attached identified client is promoted. Ownership changes are
+// broadcast to everyone as `control` frames (isDriver computed per recipient).
+//
+// Broadcasts no-op when nobody is attached (the agent keeps running; output is
+// recovered from scrollback on reattach — the PTY itself is unaffected).
 
-let client: WebSocket | null = null;
+const broker = new DriveBroker<WebSocket>();
 
+/** Broadcast a sandbox→client frame to every attached client. */
 function send(frame: Frame): void {
-  const ws = client;
-  if (!ws || ws.readyState !== ws.OPEN) return;
-  ws.send(encodeFrame(frame));
+  const encoded = encodeFrame(frame);
+  for (const ws of broker.connections()) {
+    if (ws.readyState === ws.OPEN) ws.send(encoded);
+  }
+}
+
+/** Send one client its current ownership state. */
+function sendControl(ws: WebSocket): void {
+  if (ws.readyState === ws.OPEN) ws.send(encodeFrame(broker.stateFor(ws)));
+}
+
+/** Ownership changed — tell every client where the drive now sits. */
+function broadcastControl(): void {
+  for (const ws of broker.connections()) sendControl(ws);
 }
 
 // ─── Sessions (agent PTYs) ──────────────────────────────────────────────────
@@ -317,12 +334,15 @@ function drainSpool(id: string): void {
 let rpcSeq = 0;
 const pendingRpc = new Map<number, (reply: RpcReplyPayload) => void>();
 
-/** Forward one request to the host and resolve with its reply. Rejects (so the
- *  caller can 502) if the host is not attached or never answers. */
+/** Forward one request to the DRIVER and resolve with its reply. Only the
+ *  driving machine runs the dispatchers (it owns the workspace store the
+ *  routes act on); observers never see rpc frames. Rejects (so the caller can
+ *  502) if nobody drives or the driver never answers. */
 function forwardRpc(route: RpcRoute, payload: unknown): Promise<RpcReplyPayload> {
   return new Promise((resolve, reject) => {
-    if (!client || client.readyState !== client.OPEN) {
-      reject(new Error('no Orchestra client attached'));
+    const driver = broker.connections().find((ws) => broker.isDriver(ws));
+    if (!driver || driver.readyState !== driver.OPEN) {
+      reject(new Error('no driving Orchestra client attached'));
       return;
     }
     const id = ++rpcSeq;
@@ -339,7 +359,7 @@ function forwardRpc(route: RpcRoute, payload: unknown): Promise<RpcReplyPayload>
     // payload is the agent's POST body, shaped per RpcRequestPayloads[route]; the
     // host's dispatcher applies the same field guards hooks-server.ts does, so we
     // forward it as-is rather than re-validating here.
-    send({ t: 'rpc', id, route, payload: payload as never });
+    driver.send(encodeFrame({ t: 'rpc', id, route, payload: payload as never }));
   });
 }
 
@@ -429,22 +449,47 @@ function startHookSocket(): void {
 
 // ─── Frame dispatch ─────────────────────────────────────────────────────────
 
-function onFrame(frame: Frame): void {
+/** May this client's session-mutating frame (spawn/write/resize/kill) be
+ *  honored? Driver: yes. No driver at all: adopt the sender (grandfathers a
+ *  pre-ownership Orchestra build attached alone). Observer: dropped. */
+function mayDrive(ws: WebSocket, what: string): boolean {
+  if (broker.isDriver(ws)) return true;
+  if (broker.adoptIfVacant(ws)) {
+    log(`vacant drive adopted by a writing client (${what})`);
+    broadcastControl();
+    return true;
+  }
+  log(`dropping ${what} from a read-only observer`);
+  return false;
+}
+
+function onFrame(ws: WebSocket, frame: Frame): void {
   // Only client→sandbox frames are valid here; a sandbox→client frame arriving
   // from the host is a protocol error we ignore (the host never sends data/exit/
   // event/rpc to us — those originate here).
   switch (frame.t) {
+    case 'hello': {
+      const f = frame as HelloFrame;
+      log(`client hello id=${f.clientId} name=${f.name}`);
+      if (broker.hello(ws, f.clientId, f.name)) broadcastControl();
+      else sendControl(ws); // no change, but the newcomer needs its state
+      break;
+    }
+    case 'takeControl':
+      log('take-over requested');
+      if (broker.takeControl(ws)) broadcastControl();
+      break;
     case 'spawn':
-      startSession(frame as SpawnFrame);
+      if (mayDrive(ws, 'spawn')) startSession(frame as SpawnFrame);
       break;
     case 'write':
-      handleWrite(frame as WriteFrame);
+      if (mayDrive(ws, 'write')) handleWrite(frame as WriteFrame);
       break;
     case 'resize':
-      handleResize(frame as ResizeFrame);
+      if (mayDrive(ws, 'resize')) handleResize(frame as ResizeFrame);
       break;
     case 'kill':
-      handleKill(frame as KillFrame);
+      if (mayDrive(ws, 'kill')) handleKill(frame as KillFrame);
       break;
     case 'rpcReply':
       handleRpcReply(frame as RpcReplyFrame);
@@ -491,17 +536,11 @@ function startWsServer(): void {
   wss.on('error', (err) => log('WS server error:', err));
 
   wss.on('connection', (ws) => {
-    if (client && client.readyState === client.OPEN) {
-      // Last writer wins: a new client takes over, the old one is closed.
-      log('new client connected — replacing previous attachment');
-      try {
-        client.close(1000, 'replaced by new client');
-      } catch {
-        /* ignore */
-      }
-    }
-    client = ws;
-    log('client attached');
+    broker.attach(ws);
+    log(`client attached (${broker.clientCount} total)`);
+    // Tell the newcomer who currently drives; its own role may change when it
+    // says hello (or takes control).
+    sendControl(ws);
     const decoder = new FrameDecoder();
 
     ws.on('message', (data: Buffer | ArrayBuffer | Buffer[]) => {
@@ -531,20 +570,23 @@ function startWsServer(): void {
           log('dropping non-frame object on wire');
           continue;
         }
-        onFrame(frame);
+        onFrame(ws, frame);
       }
     });
 
     ws.on('close', () => {
-      if (client === ws) {
-        client = null;
-        log('client detached');
-        // Fail any in-flight rpc so the agent's curl doesn't hang.
+      const wasDriver = broker.isDriver(ws);
+      const changed = broker.detach(ws);
+      log(`client detached (${broker.clientCount} remain${wasDriver ? ', was driver' : ''})`);
+      if (wasDriver) {
+        // The driver owned any in-flight rpc dispatch — fail them so the
+        // agent's curl doesn't hang for the full timeout.
         for (const [id, resolver] of pendingRpc) {
           pendingRpc.delete(id);
-          resolver({ ok: false, error: 'client detached' });
+          resolver({ ok: false, error: 'driving client detached' });
         }
       }
+      if (changed) broadcastControl();
       // Sessions are intentionally left running — they survive a detach and are
       // reattached later (the whole point of the always-on sandbox).
     });

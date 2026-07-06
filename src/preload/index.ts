@@ -83,6 +83,14 @@ const api: OrchestraAPI = {
     return () => ipcRenderer.off('pty:restart', listener);
   },
 
+  sandboxControlState: (id) => ipcRenderer.invoke('sandbox:controlState', id),
+  takeSandboxControl: (id) => ipcRenderer.invoke('sandbox:takeControl', id),
+  onSandboxControl: (cb) => {
+    const listener = (_e: unknown, state: unknown) => cb(state as never);
+    ipcRenderer.on('sandbox:control', listener);
+    return () => ipcRenderer.off('sandbox:control', listener);
+  },
+
   getDiff: (id) => ipcRenderer.invoke('git:diff', id),
   getDiffStats: (id) => ipcRenderer.invoke('git:stats', id),
   getWorktreeSizes: () => ipcRenderer.invoke('workspaces:sizes'),

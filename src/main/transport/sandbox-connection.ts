@@ -35,6 +35,7 @@ import {
   type ExitFrame,
   type EventFrame,
   type RpcFrame,
+  type ControlFrame,
   type ClientFrame,
   type SandboxFrame,
   type RpcReplyPayload,
@@ -62,6 +63,9 @@ export interface SessionSink {
 export interface SandboxConnectionHandlers {
   /** An activity event arrived from the sandbox (replaces the spool tail). */
   onEvent?: (session: string, event: string, tool: string | undefined) => void;
+  /** The sandbox broadcast its ownership state (who drives; are we it). Fired
+   *  on attach and on every change — the P4 layer surfaces it to the UI. */
+  onControl?: (state: ControlFrame) => void;
   /** A hook control-plane call arrived from the sandbox. Dispatch it and call
    *  `reply` exactly once with the dispatcher's `{ok, ...}` object. */
   onRpc?: (
@@ -236,6 +240,10 @@ export class SandboxConnection {
       case 'event': {
         const f = frame as EventFrame;
         this.handlers.onEvent?.(f.session, f.event, f.tool);
+        break;
+      }
+      case 'control': {
+        this.handlers.onControl?.(frame as ControlFrame);
         break;
       }
       case 'rpc': {

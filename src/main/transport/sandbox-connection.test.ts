@@ -190,6 +190,32 @@ test('rpc with no handler is answered with ok:false so the agent does not hang',
   assert.equal((reply as { payload: { ok: boolean } }).payload.ok, false);
 });
 
+test('control frames are handed to onControl (ownership broadcasts)', () => {
+  const sock = new FakeSocket();
+  const seen: Array<{ driverId: string | null; isDriver: boolean }> = [];
+  const conn = new SandboxConnection(sock, {
+    onControl: (s) => seen.push({ driverId: s.driverId, isDriver: s.isDriver }),
+  });
+  sock.inbound({ t: 'control', driverId: 'machine-a', driverName: 'Desktop', isDriver: true });
+  sock.inbound({ t: 'control', driverId: 'machine-b', driverName: 'Laptop', isDriver: false });
+  assert.deepEqual(seen, [
+    { driverId: 'machine-a', isDriver: true },
+    { driverId: 'machine-b', isDriver: false },
+  ]);
+  assert.equal(conn.isClosed, false);
+});
+
+test('hello and takeControl ride send() as client frames', () => {
+  const sock = new FakeSocket();
+  const conn = new SandboxConnection(sock);
+  conn.send({ t: 'hello', clientId: 'machine-a', name: 'Desktop' });
+  conn.send({ t: 'takeControl' });
+  assert.deepEqual(sock.sent, [
+    { t: 'hello', clientId: 'machine-a', name: 'Desktop' },
+    { t: 'takeControl' },
+  ]);
+});
+
 // ─── connection lifecycle ────────────────────────────────────────────────────
 
 test('socket close synthesizes a connection-lost exit for live sessions', async () => {

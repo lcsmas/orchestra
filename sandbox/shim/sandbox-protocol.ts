@@ -152,11 +152,58 @@ export interface RpcReplyFrame {
   payload: RpcReplyPayload;
 }
 
-/** Client→sandbox frames (drive a session / answer an rpc). */
-export type ClientFrame = SpawnFrame | WriteFrame | ResizeFrame | KillFrame | RpcReplyFrame;
+// ─── Cross-machine ownership (P4 item C) ────────────────────────────────────
+//
+// A sandbox accepts MANY simultaneous clients (one per machine), but exactly
+// one — the DRIVER — may write. The shim brokers the lock: it elects the first
+// client to say `hello` as driver, honors `takeControl` as an explicit
+// take-over, and broadcasts a `control` frame to every client whenever
+// ownership changes. Observers still receive all data/exit/event frames (they
+// watch live); their write/resize/kill/spawn frames are dropped, and hook
+// `rpc`s are forwarded to the driver only.
 
-/** Sandbox→client frames (session output, activity, control-plane calls). */
-export type SandboxFrame = DataFrame | ExitFrame | EventFrame | RpcFrame;
+/** A client identifies itself right after connecting. Ownership is keyed by
+ *  `clientId` (stable per Orchestra install) so a reconnect from the same
+ *  machine resumes its role rather than counting as a rival. */
+export interface HelloFrame {
+  t: 'hello';
+  /** Stable machine identity (e.g. hostname). */
+  clientId: string;
+  /** Human label shown to other machines ("lucas-laptop"). */
+  name: string;
+}
+
+/** Explicit take-over request: make the sender the driver. Always honored —
+ *  the polite version of the old last-writer-wins. */
+export interface TakeControlFrame {
+  t: 'takeControl';
+}
+
+/** Ownership state, broadcast by the shim to every attached client on attach
+ *  and on every change. `isDriver` is computed per recipient. */
+export interface ControlFrame {
+  t: 'control';
+  /** Current driver's clientId, or null when nobody holds the drive. */
+  driverId: string | null;
+  /** Current driver's display name, or null. */
+  driverName: string | null;
+  /** True on the copy sent to the driver itself. */
+  isDriver: boolean;
+}
+
+/** Client→sandbox frames (identify, drive a session, answer an rpc). */
+export type ClientFrame =
+  | HelloFrame
+  | TakeControlFrame
+  | SpawnFrame
+  | WriteFrame
+  | ResizeFrame
+  | KillFrame
+  | RpcReplyFrame;
+
+/** Sandbox→client frames (session output, activity, control-plane calls,
+ *  ownership broadcasts). */
+export type SandboxFrame = DataFrame | ExitFrame | EventFrame | RpcFrame | ControlFrame;
 
 /** Any frame on the wire. */
 export type Frame = ClientFrame | SandboxFrame;
@@ -250,6 +297,8 @@ export class FrameDecoder {
 // ─── Validation ────────────────────────────────────────────────────────────────
 
 const FRAME_TYPES: ReadonlySet<string> = new Set<FrameType>([
+  'hello',
+  'takeControl',
   'spawn',
   'write',
   'resize',
@@ -259,6 +308,7 @@ const FRAME_TYPES: ReadonlySet<string> = new Set<FrameType>([
   'event',
   'rpc',
   'rpcReply',
+  'control',
 ]);
 
 /** Narrow an arbitrary decoded value to a {@link Frame} by checking its

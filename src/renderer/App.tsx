@@ -7,6 +7,7 @@ import { BranchPicker } from './components/BranchPicker';
 import { NvimView } from './components/NvimView';
 import { RunTerminal } from './components/RunTerminal';
 import { SetupBanner } from './components/SetupBanner';
+import { SandboxControlBar } from './components/SandboxControlBar';
 import { DialogHost, dialog } from './components/Dialog';
 import { playFinishedChime } from './chime';
 import { dlog } from './debug';
@@ -549,6 +550,10 @@ export function App() {
                 colliding with sibling keys (RunTerminal also keys by
                 `active.id`). */}
             <SetupBanner key={`setup-${active.id}`} workspace={active} />
+            {/* Same above-the-row placement as SetupBanner, same reason: the
+                read-only ownership bar must not be eclipsed by the absolutely-
+                positioned TerminalView. Renders null for local workspaces. */}
+            <SandboxControlBar key={`sandbox-${active.id}`} workspace={active} />
             {/* Render a TerminalView for every workspace but only show the active one.
                 This keeps each xterm.js instance alive (preserving its scrollback buffer)
                 even when the user switches to a different workspace tab. */}

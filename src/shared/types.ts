@@ -19,6 +19,17 @@ export type WorkspaceHost =
  * must match the container's `/workspace` convention (sandbox/Dockerfile). */
 export const SANDBOX_WORKSPACE_DIR = '/workspace';
 
+/** Cross-machine ownership state for one sandbox endpoint, as last broadcast
+ * by its shim: several machines may be attached, exactly one — the driver —
+ * may type. `isDriver` is from THIS machine's perspective; the renderer shows
+ * a read-only bar (with take-over) on sandbox terminals when it is false. */
+export interface SandboxControlState {
+  endpoint: string;
+  driverId: string | null;
+  driverName: string | null;
+  isDriver: boolean;
+}
+
 export interface Workspace {
   id: string;
   name: string;

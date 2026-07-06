@@ -4,7 +4,7 @@
  * into the live file tail / HTTP server; everything here is plain data → data.
  */
 
-import type { RpcRoute } from './sandbox-protocol.js';
+import type { RpcRoute, ControlFrame } from './sandbox-protocol.js';
 
 /** An activity event extracted from one spool line: the {event, tool?} pair the
  *  agent's hooks append and the host feeds to applyAgentEvent. */
@@ -89,4 +89,114 @@ export function maxBodyBytesFor(route: string): number {
 /** True iff a route should be forwarded to the host (vs. answered locally). */
 export function isForwarded(route: string): boolean {
   return FORWARDED_ROUTES.has(route as RpcRoute);
+}
+
+// ─── Cross-machine drive broker (P4 item C) ─────────────────────────────────
+//
+// Pure ownership bookkeeping for "many machines attached, one drives". The
+// shim holds one broker and feeds it attach/hello/takeControl/detach; every
+// method returns whether ownership changed so the shim knows when to broadcast
+// a `control` frame. Generic over the connection handle (a WebSocket in the
+// shim, anything in tests) — the broker never touches it, only identity-maps.
+
+interface ClientRecord {
+  /** From `hello`; null until the client identifies itself. */
+  id: string | null;
+  name: string | null;
+  /** Attach order, for deterministic promotion when the driver leaves. */
+  order: number;
+}
+
+export class DriveBroker<C> {
+  private readonly clients = new Map<C, ClientRecord>();
+  private driver: C | null = null;
+  private seq = 0;
+
+  /** A new connection attached. Never grants the drive by itself. */
+  attach(conn: C): void {
+    this.clients.set(conn, { id: null, name: null, order: this.seq++ });
+  }
+
+  /** A client identified itself. First identified client wins the drive; a
+   *  reconnect bearing the CURRENT DRIVER's clientId resumes the drive on the
+   *  new connection (same machine, fresh socket — not a rival). */
+  hello(conn: C, id: string, name: string): boolean {
+    const rec = this.clients.get(conn);
+    if (!rec) return false;
+    rec.id = id;
+    rec.name = name;
+    if (this.driver === null) {
+      this.driver = conn;
+      return true;
+    }
+    const driverRec = this.driver === conn ? rec : this.clients.get(this.driver);
+    if (driverRec?.id === id && this.driver !== conn) {
+      this.driver = conn;
+      return true;
+    }
+    return false;
+  }
+
+  /** Explicit take-over — always honored for an attached client. */
+  takeControl(conn: C): boolean {
+    if (!this.clients.has(conn) || this.driver === conn) return false;
+    this.driver = conn;
+    return true;
+  }
+
+  /** Legacy grandfathering: a client that never said hello but is the only
+   *  candidate (no driver at all) adopts the drive on its first write, so an
+   *  old Orchestra build attached alone still works. */
+  adoptIfVacant(conn: C): boolean {
+    if (this.driver !== null || !this.clients.has(conn)) return false;
+    this.driver = conn;
+    return true;
+  }
+
+  /** A connection went away. If it held the drive, promote the longest-
+   *  attached IDENTIFIED client (deterministic, observers stay observers only
+   *  until someone who said hello exists). Returns true if ownership changed. */
+  detach(conn: C): boolean {
+    const wasDriver = this.driver === conn;
+    this.clients.delete(conn);
+    if (!wasDriver) return false;
+    let heir: C | null = null;
+    let heirOrder = Infinity;
+    for (const [c, rec] of this.clients) {
+      if (rec.id !== null && rec.order < heirOrder) {
+        heir = c;
+        heirOrder = rec.order;
+      }
+    }
+    this.driver = heir;
+    return true;
+  }
+
+  isDriver(conn: C): boolean {
+    return this.driver !== null && this.driver === conn;
+  }
+
+  /** The `control` frame to send to one client — `isDriver` is per-recipient. */
+  stateFor(conn: C): ControlFrame {
+    const driverRec = this.driver === null ? undefined : this.clients.get(this.driver);
+    return {
+      t: 'control',
+      driverId: driverRec?.id ?? null,
+      driverName: driverRec?.name ?? null,
+      isDriver: this.isDriver(conn),
+    };
+  }
+
+  /** Every attached connection, for broadcasts. */
+  connections(): C[] {
+    return [...this.clients.keys()];
+  }
+
+  get clientCount(): number {
+    return this.clients.size;
+  }
+
+  get hasDriver(): boolean {
+    return this.driver !== null;
+  }
 }

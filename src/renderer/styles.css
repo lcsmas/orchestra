@@ -2438,6 +2438,51 @@ button.secondary:hover {
   border-color: var(--accent, #7aa2f7);
 }
 
+/* ── Sandbox cross-machine ownership bar ─────────────────────────────────────
+   Shown above the terminal when another machine drives the sandbox this
+   workspace lives in. Amber = attention without alarm; the terminal below
+   still streams live output. */
+.sandbox-control-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  color: #e8c47a;
+  background: rgba(232, 196, 122, 0.08);
+  border-bottom: 1px solid rgba(232, 196, 122, 0.25);
+}
+.sandbox-control-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e8c47a;
+  flex: none;
+}
+.sandbox-control-text {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sandbox-control-text strong {
+  font-weight: 600;
+}
+.sandbox-control-take {
+  flex: none;
+  padding: 2px 10px;
+  font-size: 11.5px;
+  border-radius: 5px;
+  border: 1px solid rgba(232, 196, 122, 0.4);
+  background: rgba(232, 196, 122, 0.12);
+  color: #e8c47a;
+  cursor: pointer;
+}
+.sandbox-control-take:hover {
+  background: rgba(232, 196, 122, 0.22);
+}
+
 button.danger-primary {
   background: linear-gradient(180deg, #ff8585 0%, #ff5a5a 100%);
   border-color: rgba(255, 255, 255, 0.1);

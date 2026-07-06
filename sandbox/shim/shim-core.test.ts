@@ -6,6 +6,7 @@ import {
   maxBodyBytesFor,
   isForwarded,
   FORWARDED_ROUTES,
+  DriveBroker,
 } from './shim-core.ts';
 
 // ─── parseSpoolChunk ─────────────────────────────────────────────────────────
@@ -97,4 +98,131 @@ test('body caps match hooks-server.ts (1 MiB for spawn/message, 4 KiB otherwise)
   assert.equal(maxBodyBytesFor('rename'), 4096);
   assert.equal(maxBodyBytesFor('peers'), 4096);
   assert.equal(maxBodyBytesFor('event'), 4096);
+});
+
+// ─── DriveBroker (P4 item C) ─────────────────────────────────────────────────
+
+test('first client to hello wins the drive; attach alone grants nothing', () => {
+  const b = new DriveBroker<string>();
+  b.attach('a');
+  b.attach('b');
+  assert.equal(b.hasDriver, false);
+  assert.equal(b.isDriver('a'), false);
+
+  assert.equal(b.hello('a', 'machine-a', 'Desktop'), true);
+  assert.equal(b.isDriver('a'), true);
+  assert.equal(b.hello('b', 'machine-b', 'Laptop'), false); // a still drives
+  assert.equal(b.isDriver('b'), false);
+});
+
+test('takeControl transfers the drive explicitly', () => {
+  const b = new DriveBroker<string>();
+  b.attach('a');
+  b.attach('b');
+  b.hello('a', 'machine-a', 'Desktop');
+  b.hello('b', 'machine-b', 'Laptop');
+
+  assert.equal(b.takeControl('b'), true);
+  assert.equal(b.isDriver('b'), true);
+  assert.equal(b.isDriver('a'), false);
+  assert.equal(b.takeControl('b'), false); // already driving — no change
+  assert.equal(b.takeControl('nobody'), false); // unknown connection
+});
+
+test('a reconnect bearing the driver clientId resumes the drive', () => {
+  const b = new DriveBroker<string>();
+  b.attach('a1');
+  b.hello('a1', 'machine-a', 'Desktop');
+  b.attach('b');
+  b.hello('b', 'machine-b', 'Laptop');
+
+  // Same machine dials again on a fresh socket (old one not yet closed).
+  b.attach('a2');
+  assert.equal(b.hello('a2', 'machine-a', 'Desktop'), true);
+  assert.equal(b.isDriver('a2'), true);
+  assert.equal(b.isDriver('a1'), false);
+});
+
+test('driver detach promotes the longest-attached identified client', () => {
+  const b = new DriveBroker<string>();
+  b.attach('a');
+  b.attach('anon'); // never says hello — not eligible
+  b.attach('b');
+  b.attach('c');
+  b.hello('a', 'ma', 'A');
+  b.hello('c', 'mc', 'C');
+  b.hello('b', 'mb', 'B'); // hello order ≠ attach order; attach order wins
+
+  assert.equal(b.detach('a'), true);
+  assert.equal(b.isDriver('b'), true); // attached before c, identified
+
+  assert.equal(b.detach('b'), true);
+  assert.equal(b.isDriver('c'), true);
+
+  assert.equal(b.detach('c'), true);
+  assert.equal(b.hasDriver, false); // only the anonymous client remains
+});
+
+test('observer detach changes nothing', () => {
+  const b = new DriveBroker<string>();
+  b.attach('a');
+  b.attach('b');
+  b.hello('a', 'ma', 'A');
+  b.hello('b', 'mb', 'B');
+  assert.equal(b.detach('b'), false);
+  assert.equal(b.isDriver('a'), true);
+});
+
+test('adoptIfVacant grandfathers a lone legacy client, never steals', () => {
+  const b = new DriveBroker<string>();
+  b.attach('legacy');
+  assert.equal(b.adoptIfVacant('legacy'), true); // vacant → adopt
+  assert.equal(b.isDriver('legacy'), true);
+
+  b.attach('other');
+  assert.equal(b.adoptIfVacant('other'), false); // occupied → no steal
+});
+
+test('stateFor computes isDriver per recipient and names the driver', () => {
+  const b = new DriveBroker<string>();
+  b.attach('a');
+  b.attach('b');
+  b.hello('a', 'machine-a', 'Desktop');
+  b.hello('b', 'machine-b', 'Laptop');
+
+  assert.deepEqual(b.stateFor('a'), {
+    t: 'control',
+    driverId: 'machine-a',
+    driverName: 'Desktop',
+    isDriver: true,
+  });
+  assert.deepEqual(b.stateFor('b'), {
+    t: 'control',
+    driverId: 'machine-a',
+    driverName: 'Desktop',
+    isDriver: false,
+  });
+
+  b.detach('a');
+  b.detach('b');
+  const empty = new DriveBroker<string>();
+  empty.attach('x');
+  assert.deepEqual(empty.stateFor('x'), {
+    t: 'control',
+    driverId: null,
+    driverName: null,
+    isDriver: false,
+  });
+});
+
+test('an anonymous driver (adopted legacy) reports null ids but isDriver true', () => {
+  const b = new DriveBroker<string>();
+  b.attach('legacy');
+  b.adoptIfVacant('legacy');
+  assert.deepEqual(b.stateFor('legacy'), {
+    t: 'control',
+    driverId: null,
+    driverName: null,
+    isDriver: true,
+  });
 });

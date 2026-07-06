@@ -14,7 +14,7 @@
     "build": "tsc -p tsconfig.json",
     "build:image": "tsc -p tsconfig.json",
     "test": "node --test --experimental-strip-types 'shim-core.test.ts' 'shim-import.test.ts'",
-    "test:integration": "node integration.test.mjs && node import.integration.test.mjs",
+    "test:integration": "node integration.test.mjs && node import.integration.test.mjs && node control.integration.test.mjs",
     "start": "node dist/shim.js"
   },
   "dependencies": {

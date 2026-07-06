@@ -205,7 +205,12 @@ import {
   syncAccountInheritance,
   syncAllAccountsInheritance,
 } from './account-inherit';
-import { setSandboxWindow, closeAllSandboxConnections } from './transport/sandbox-manager';
+import {
+  setSandboxWindow,
+  closeAllSandboxConnections,
+  getSandboxControlState,
+  takeSandboxControl,
+} from './transport/sandbox-manager';
 import { importWorkspaceToSandbox } from './sandbox-import';
 import {
   detectAndUpdateBranchName,
@@ -628,6 +633,18 @@ handle('workspaces:delete', async (_e, id: string) => {
 
 handle('workspaces:importToSandbox', async (_e, id: string, endpoint: string) => {
   return importWorkspaceToSandbox(id, endpoint, getMainWindow());
+});
+
+handle('sandbox:controlState', (_e, id: string) => {
+  const ws = store.getWorkspace(id);
+  if (ws?.host?.kind !== 'sandbox') return null;
+  return getSandboxControlState(ws.host.endpoint);
+});
+
+handle('sandbox:takeControl', (_e, id: string) => {
+  const ws = store.getWorkspace(id);
+  if (ws?.host?.kind !== 'sandbox') return;
+  takeSandboxControl(ws.host.endpoint);
 });
 
 handle('workspaces:markSeen', async (_e, id: string) => {

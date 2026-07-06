@@ -136,6 +136,9 @@ test('decoder rejects a non-JSON payload', () => {
 test('isFrame accepts every known frame type and rejects others', () => {
   assert.ok(isFrame({ t: 'spawn' }));
   assert.ok(isFrame({ t: 'rpcReply' }));
+  assert.ok(isFrame({ t: 'hello' }));
+  assert.ok(isFrame({ t: 'takeControl' }));
+  assert.ok(isFrame({ t: 'control' }));
   assert.equal(isFrame({ t: 'unknown' }), false);
   assert.equal(isFrame({ noT: true }), false);
   assert.equal(isFrame(null), false);

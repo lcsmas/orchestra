@@ -28,9 +28,11 @@
  */
 
 import { WebSocket } from 'ws';
+import os from 'node:os';
 import type { BrowserWindow } from 'electron';
 import { SandboxConnection, type SandboxSocket } from './sandbox-connection';
 import { backoffDelayMs, shouldGiveUp } from './reconnect-policy';
+import type { SandboxControlState } from '../../shared/types';
 import type { RpcRoute, RpcRequestPayloads, RpcReplyPayload } from '../../shared/sandbox-protocol';
 import { applyAgentEvent } from '../activity';
 import {
@@ -147,6 +149,36 @@ interface Entry {
 const connections = new Map<string, Entry>();
 let mainWindow: BrowserWindow | null = null;
 
+// ─── Cross-machine ownership (item C, host side) ────────────────────────────
+//
+// The shim brokers who drives; we identify this machine on every (re)connect
+// and mirror the latest `control` broadcast per endpoint so the renderer can
+// show "read-only — X is driving" and offer take-over.
+
+/** Stable identity for THIS Orchestra install, shown to other machines. */
+const CLIENT_ID = os.hostname();
+const CLIENT_NAME = os.hostname();
+
+const controlStates = new Map<string, SandboxControlState>();
+
+/** Latest known ownership state for an endpoint (null before the first
+ *  broadcast or when no connection exists). */
+export function getSandboxControlState(endpoint: string): SandboxControlState | null {
+  return controlStates.get(endpoint) ?? null;
+}
+
+/** Ask the sandbox to make THIS machine the driver. No-op without a live
+ *  connection (the button only shows on a connected read-only terminal). */
+export function takeSandboxControl(endpoint: string): void {
+  connections.get(endpoint)?.conn.send({ t: 'takeControl' });
+}
+
+/** Identify ourselves to the shim — first hello wins the (vacant) drive, and
+ *  a hello bearing the current driver's id resumes it after a reconnect. */
+function sendHello(conn: SandboxConnection): void {
+  conn.send({ t: 'hello', clientId: CLIENT_ID, name: CLIENT_NAME });
+}
+
 /** Cap on a single WS dial. Without it a black-holed host (drop, no RST) pins
  *  an attempt on the OS connect timeout, stalling the whole backoff ladder. */
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -236,6 +268,7 @@ async function reconnectLoop(endpoint: string, entry: Entry): Promise<void> {
       entry.conn.attachSocket(adaptSocket(ws));
       entry.ws = ws;
       entry.reconnectAbort = null;
+      sendHello(entry.conn); // resume our driver role (same clientId)
       entry.conn.notifySessions(BANNER_RESTORED);
       log.info(`sandbox connection restored after ${attempt + 1} attempt(s): ${endpoint}`);
       resolveReady();
@@ -284,6 +317,18 @@ export async function getSandboxConnection(endpoint: string): Promise<SandboxCon
 
   const conn = new SandboxConnection(adaptSocket(ws), {
     onEvent: (session, event, tool) => applyAgentEvent(session, event, tool, window),
+    onControl: (state) => {
+      const s: SandboxControlState = {
+        endpoint,
+        driverId: state.driverId,
+        driverName: state.driverName,
+        isDriver: state.isDriver,
+      };
+      controlStates.set(endpoint, s);
+      if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+        window.webContents.send('sandbox:control', s);
+      }
+    },
     onRpc: (route, payload, reply) => {
       void dispatchRpc(route, payload, window)
         .then(reply)
@@ -308,6 +353,7 @@ export async function getSandboxConnection(endpoint: string): Promise<SandboxCon
     onClose: () => {
       log.info(`sandbox connection closed: ${endpoint}`);
       connections.delete(endpoint); // next spawn reconnects
+      controlStates.delete(endpoint);
     },
     onError: (err) => log.warn(`sandbox connection error (${endpoint})`, err),
   });
@@ -319,6 +365,7 @@ export async function getSandboxConnection(endpoint: string): Promise<SandboxCon
     connections.delete(endpoint);
     throw e;
   }
+  sendHello(conn);
   return conn;
 }
 

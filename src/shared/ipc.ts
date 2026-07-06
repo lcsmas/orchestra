@@ -12,6 +12,7 @@ import type {
   RepoEntry,
   RepoScripts,
   RepoSyncState,
+  SandboxControlState,
   UsageSnapshot,
   Workspace,
   WorkspaceAccount,
@@ -166,6 +167,17 @@ export interface OrchestraAPI {
   onPtyData: (cb: (id: string, data: string) => void) => () => void;
   onPtyExit: (cb: (id: string, code: number) => void) => () => void;
   onPtyRestart: (cb: (id: string) => void) => () => void;
+
+  // Sandbox cross-machine ownership (one driver, other machines read-only).
+  /** Latest ownership state for a sandbox-hosted workspace's endpoint, or null
+   * for local workspaces / before the shim's first broadcast. */
+  sandboxControlState: (id: string) => Promise<SandboxControlState | null>;
+  /** Ask the sandbox to make THIS machine the driver for the workspace's
+   * endpoint (explicit take-over; the previous driver drops to read-only). */
+  takeSandboxControl: (id: string) => Promise<void>;
+  /** Ownership broadcasts, pushed on attach and every change. Keyed by
+   * endpoint — one sandbox's state covers every workspace it hosts. */
+  onSandboxControl: (cb: (state: SandboxControlState) => void) => () => void;
 
   // Git / Diff
   getDiff: (id: string) => Promise<DiffFile[]>;
