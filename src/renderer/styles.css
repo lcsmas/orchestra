@@ -1261,14 +1261,6 @@ input:focus, textarea:focus, select:focus {
 /* The pills carry a `margin-left: 6px` for their legacy inline-in-toolbar use;
    inside the sidebar flex row the `gap` does the spacing, so drop it here. */
 .ws-pills > * { margin-left: 0; }
-.ws-meta-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  row-gap: 4px;
-  min-width: 0;
-}
 .ws-meta { flex: 1; min-width: 0; }
 /* Worktree disk size — muted, pushed to the trailing edge of the meta row. */
 .ws-size {

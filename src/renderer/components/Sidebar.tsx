@@ -298,9 +298,10 @@ function orderedVisiblePRs(prRecord?: PRsForBranch): {
 }
 
 /** The Linear-issue and PR-link badge spans for a workspace — a bare fragment
- * with no row/container wrapper, so it can drop into the name-row pill strip
- * (inline, beside the repo tag) or into a standalone `ws-meta-row`. Returns null
- * when the workspace has neither a verified Linear issue nor any PR. */
+ * with no row/container wrapper, so it drops straight into the `.ws-pills` strip
+ * alongside the other status pills, keeping the PR/Linear badges inline with
+ * `↑ahead`, merged, released, etc. Returns null when the workspace has neither a
+ * verified Linear issue nor any PR. */
 function PrLinearBadges({
   prRecord,
   linearIssue,
@@ -354,26 +355,6 @@ function PrLinearBadges({
         </span>
       )}
     </>
-  );
-}
-
-/** PR/Linear badges in their own `ws-meta-row` below the branch name — the
- * layout used by regular workspace rows, which have the vertical room. */
-function WsMetaBadges({
-  prRecord,
-  linearIssue,
-}: {
-  prRecord?: PRsForBranch;
-  linearIssue: LinearIssue | null;
-}) {
-  const { visible: visiblePRs } = orderedVisiblePRs(prRecord);
-  if (visiblePRs.length === 0 && !linearIssue) return null;
-  return (
-    <div className="ws-meta-row">
-      <span className="pr-badges">
-        <PrLinearBadges prRecord={prRecord} linearIssue={linearIssue} />
-      </span>
-    </div>
   );
 }
 
@@ -1503,9 +1484,9 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           setup…
                         </span>
                       )}
+                      <PrLinearBadges prRecord={prRecord} linearIssue={linearIssue} />
                       </span>
                     </div>
-                    <WsMetaBadges prRecord={prRecord} linearIssue={linearIssue} />
                   </div>
                   <button
                     className="ws-icon-btn"
