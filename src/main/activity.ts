@@ -270,12 +270,12 @@ export async function detectAndUpdateBranchName(
   }
 }
 
-/** Detect every published GitHub Release whose build contains this branch's
- *  tip and stamp `releasedAt` + `releasedVersions` (and `releasedVersion`, the
+/** Detect the published GitHub Releases this branch's work shipped in and
+ *  stamp `releasedAt` + `releasedVersions` (and `releasedVersion`, the
  *  earliest, for back-compat). Skips unmerged branches (their work isn't on
  *  base, so no release can contain it). For merged branches it recomputes the
- *  full version list each call so the workspace accrues a badge as each later
- *  version ships — `getPublishedReleases` is cached per-repo (30s) and shared
+ *  full version list each call so the pills track later ships and policy
+ *  changes — `getPublishedReleases` is cached per-repo (30s) and shared
  *  across that repo's workspaces, so this stays at roughly one `gh` call per
  *  repo per TTL even on the PR poll cadence. Writes/broadcasts only when the
  *  version list actually changes. Deliberately NOT wired into
@@ -287,15 +287,16 @@ export async function detectAndUpdateReleaseState(
 ): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || ws.kind === 'scratch') return;
-  // Which published releases did THIS branch's own work first ship in? One badge
-  // per such release (v0.2.0, v0.2.1, …). getReleaseVersionsContaining derives
-  // the branch's authored commit set (from its reflog, falling back to the
-  // base..branch range) and maps each to its first containing release, so a
-  // fresh branch cut from an old release commit it never authored gets nothing,
-  // and a merged/stale-pointer branch still gets exactly what it shipped. No
-  // separate "did the branch author its tip" gate is needed — an empty authored
-  // set already yields no versions. getPublishedReleases is cached per-repo
-  // (30s), so this costs at most one gh call per repo per TTL.
+  // One pill for the release that FIRST shipped this branch's own work, plus
+  // one per release this branch itself cut (it authored the version-bump tag
+  // commit). getReleaseVersionsContaining derives the branch's authored commit
+  // set (from its reflog, falling back to the base..branch range), so a fresh
+  // branch cut from an old release commit it never authored gets nothing, a
+  // merged/stale-pointer branch still gets exactly what it shipped, and a
+  // stray follow-up commit riding along in another branch's release earns no
+  // extra pill. An empty authored set already yields no versions.
+  // getPublishedReleases is cached per-repo (30s), so this costs at most one
+  // gh call per repo per TTL.
   const { versions, releasedAt } = await getReleaseVersionsContaining(
     ws.repoPath,
     ws.branch,

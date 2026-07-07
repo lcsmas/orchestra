@@ -59,10 +59,13 @@ keying on just (branch, base) pinned a stale `↑N` badge across a push.
   --state all --json …`, returns `PRsForBranch` (`all/open/latest/mergedCount`,
   `types.ts:212`). 20s cache; runs from repo root so PR state survives a missing
   worktree. Misses aren't cached (retry immediately).
-- **`getReleaseState`** `:691` / **`getReleaseVersionsContaining`** `:734` — map a
-  branch's *authored* commits (`authoredCommits` `:793`, reflog-derived) to the
-  earliest published GitHub release that contains them, so badges don't
-  false-credit the whole ancestry. `gh release list` cached 30s per repo.
+- **`getReleaseState`** `:691` / **`getReleaseVersionsContaining`** `:734` — pill
+  policy: the earliest published release containing the branch's *authored*
+  commits (`authoredCommits` `:793`, reflog-derived) **plus** each release the
+  branch itself cut (it authored the tag's version-bump commit). Ancestry alone
+  would credit the whole history; per-commit first-containing-release would let a
+  stray follow-up commit earn another branch's release pill (both were prior
+  bugs). `gh release list` cached 30s per repo.
 
 ## Base-branch sync & credentials
 - `getBaseSyncState` `:856` (local `<base>` vs `origin/<base>`, no network).

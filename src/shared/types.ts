@@ -137,19 +137,18 @@ export interface Workspace {
    * not-pushed work without leaving the workspace tab. Recomputed alongside
    * `divergedFromBase` on every Stop hook. */
   unpushedAhead?: number;
-  /** Tag of the first published GitHub Release whose build contains this
-   * branch's tip (e.g. `v0.1.11`). Drives the sidebar "released" pill. Tracks
-   * the current tip: if the same workspace ships again with new commits, this
-   * is recomputed to the release that first contains the newer tip. */
+  /** Tag of the published GitHub Release that first shipped this branch's own
+   * (authored) work (e.g. `v0.1.11`). Drives the sidebar "released" pill.
+   * Always the earliest entry of `releasedVersions`. */
   releasedVersion?: string;
-  /** All published-release tags whose build contains this branch's tip,
-   * oldest-first (e.g. `['v0.2.0','v0.2.1','v0.2.2']`). The sidebar renders one
-   * "released" pill per entry; `releasedVersion` remains the first/earliest of
-   * these (the "shipped when" signal). Recomputed on the same cadence as
-   * `releasedVersion`, and additionally whenever a newer release that also
-   * contains the tip appears, so a workspace accrues badges as later versions
-   * ship. Absent on pre-upgrade records → the UI falls back to the single
-   * `releasedVersion` pill. */
+  /** Published-release tags this workspace wears as pills, oldest-first: the
+   * release that first shipped the branch's authored work, plus every release
+   * the branch itself cut (it authored the version-bump tag commit) — so a
+   * branch that ships in phases gets one pill per phase, while a stray
+   * follow-up commit riding along in another branch's release earns none.
+   * Recomputed each poll while merged, so the list tracks later ships. Absent
+   * on pre-upgrade records → the UI falls back to the single `releasedVersion`
+   * pill. */
   releasedVersions?: string[];
   /** Epoch ms the shipping release was published (GitHub `publishedAt`), or
    * detection time as a fallback. Presence is the "released" signal — strictly

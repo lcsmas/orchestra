@@ -725,27 +725,29 @@ export async function getReleaseState(
   }
 }
 
-/** Every published release a branch's OWN work first shipped in, oldest-first —
- *  one badge per such release (v0.2.0, v0.2.1, …). `releasedAt` mirrors the
- *  earliest one's publish time. Empty list ⇒ the branch's work hasn't shipped
+/** The release pills for a branch, oldest-first: the EARLIEST published release
+ *  containing any commit the branch authored (where its work first shipped),
+ *  plus every release the branch itself DROVE — one whose tag commit (the
+ *  version bump) is in the branch's authored set. `releasedAt` mirrors the
+ *  earliest pill's publish time. Empty list ⇒ the branch's work hasn't shipped
  *  (or the branch authored nothing).
  *
- *  The whole problem is attribution on a LINEAR history. "Is release X's commit
- *  an ancestor of the branch tip?" is true for EVERY release older than the tip,
- *  so reachability alone credits a branch for the entire release history behind
- *  it — the bug this function used to have. We need the commits the branch
- *  *authored*, not merely the commits it descends from.
+ *  Attribution needs the commits the branch *authored*, not merely the commits
+ *  it descends from: "is release X's commit an ancestor of the branch tip?" is
+ *  true for EVERY release older than the tip on a linear history, so
+ *  reachability alone credits a branch for the entire release history behind
+ *  it — a bug this function used to have. See {@link authoredCommits} for how
+ *  the reflog provides the authored set.
  *
- *  The reflog is the source of truth for that: its `commit`/`rebase`/`cherry-pick`
- *  /`am` entries name exactly the commits this branch produced, independent of
- *  where base moved or whether the branch pointer went stale after a merge.
- *  Intersect those with "still an ancestor of the tip" (drops commits a later
- *  rebase replaced) and you have the branch's real authored set. Each authored
- *  commit's FIRST containing release is one this branch shipped in; the union of
- *  those is the badge list. A branch with no authored commits (fresh cut, or a
- *  worktree whose reflog was pruned) falls back to the topological range
- *  `merge-base(base, branch)..branch`, which is correct whenever the pointer is
- *  not stale (and when it IS stale, the reflog is present, so we never get here). */
+ *  Why not one pill per release that first shipped ANY authored commit (the
+ *  previous policy)? Releases are cumulative snapshots of base, so a stray
+ *  follow-up commit made in a worktree after its work shipped (e.g. a
+ *  release-script fix) rides along in the NEXT release — which is otherwise
+ *  another branch's — and both workspaces end up wearing the same version
+ *  pill. Pills should read as "the release that first shipped this work" plus
+ *  "releases this workspace cut", so ride-alongs don't earn one. A branch that
+ *  genuinely ships in phases keeps one pill per phase, because it authors each
+ *  phase's bump commit. */
 export async function getReleaseVersionsContaining(
   repoPath: string,
   branch: string,
@@ -759,31 +761,34 @@ export async function getReleaseVersionsContaining(
     const authored = await authoredCommits(git, branch, baseBranch);
     if (authored.length === 0) return { versions: [] };
 
-    // Releases oldest-first so the first one containing a given authored commit
-    // is the release that commit FIRST shipped in.
+    // Oldest-first so the first release containing an authored commit is the
+    // one the branch's work FIRST shipped in.
     const ordered = [...releases].sort((a, b) => a.publishedAt - b.publishedAt);
 
-    const versions: string[] = [];
-    const releasedAtByTag = new Map<string, number | undefined>();
-    for (const commit of authored) {
-      for (const rel of ordered) {
+    let earliest: ReleaseRef | undefined;
+    for (const rel of ordered) {
+      let contains = false;
+      for (const commit of authored) {
         if (await isAncestor(repoPath, commit, rel.sha)) {
-          if (!versions.includes(rel.tag)) {
-            versions.push(rel.tag);
-            releasedAtByTag.set(rel.tag, rel.publishedAt || undefined);
-          }
-          break; // earliest containing release for this commit — done
+          contains = true;
+          break;
         }
       }
+      if (contains) {
+        earliest = rel;
+        break;
+      }
     }
-    if (versions.length === 0) return { versions: [] };
+    if (!earliest) return { versions: [] };
 
-    // Present oldest-first and report the earliest publish time as releasedAt.
-    versions.sort(
-      (a, b) => ordered.findIndex((r) => r.tag === a) - ordered.findIndex((r) => r.tag === b),
-    );
-    const releasedAt = releasedAtByTag.get(versions[0]);
-    return { versions, releasedAt };
+    // Releases this branch drove: their tag commit is one the branch authored.
+    // `earliest` always sorts first among the pills — an authored tag commit is
+    // contained in its own release, so no driven release predates `earliest`.
+    const authoredSet = new Set(authored);
+    const versions = ordered
+      .filter((rel) => rel === earliest || authoredSet.has(rel.sha))
+      .map((rel) => rel.tag);
+    return { versions, releasedAt: earliest.publishedAt || undefined };
   } catch {
     return { versions: [] };
   }
