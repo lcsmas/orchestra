@@ -150,8 +150,11 @@ if [ "$INSTALL" = 1 ]; then
   else
     DESKTOP="$HOME/.local/share/applications/orchestra.desktop"
     if [ -f "$DESKTOP" ]; then
-      # Take the binary from the Exec= line (first token, strip any %-field args).
-      INSTALL_PATH="$(grep -m1 '^Exec=' "$DESKTOP" | sed 's/^Exec=//' | awk '{print $1}')"
+      # Take the AppImage from the Exec= line: the first absolute-path token.
+      # The launcher may wrap it (e.g. `env ORCHESTRA_OZONE=x11 /path %U`), so
+      # picking `$1` would grab `env`/a `VAR=val` assignment — skip to the first
+      # token starting with `/` and drop any trailing %-field args.
+      INSTALL_PATH="$(grep -m1 '^Exec=' "$DESKTOP" | sed 's/^Exec=//' | tr ' ' '\n' | grep -m1 '^/')"
     fi
   fi
   [ -n "$INSTALL_PATH" ] || {
