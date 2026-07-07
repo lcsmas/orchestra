@@ -264,4 +264,4 @@ else
   echo "  Monitor: https://github.com/lcsmas/orchestra/actions"
 fi
 
-[ "$DRY_RUN" = "1" ] && echo "(dry run — nothing was changed)"
+if [ "$DRY_RUN" = "1" ]; then echo "(dry run — nothing was changed)"; fi
