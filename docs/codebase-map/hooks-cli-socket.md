@@ -36,7 +36,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | default (no match) | `id`, `event` | `{}` 200 — legacy activity-event path |
 
 ## Hooks installed into each worktree
-`installOrchestraHooks(worktreePath)` writes into `<worktree>/.orchestra/` (4
+`installOrchestraHooks(worktreePath)` writes into `<worktree>/.orchestra/` (6
 shell scripts, mode 0755) and merges commands into
 `<worktree>/.claude/settings.local.json`. Idempotent via a `HOOKS_VERSION` hash.
 **Every script guards on `[ -n "${ORCHESTRA_WS_ID:-}" ] || exit 0`** — running
@@ -60,6 +60,25 @@ Scripts and the Claude Code events they fire on:
   the one-line `orchestra-comms` reminder only if peers exist (silent when solo).
 - **`inbox-instruction.sh`** (~`:1871`) — SessionStart + UserPromptSubmit. Prints
   and drains `~/.orchestra/inbox/<wsid>.txt` (inter-agent messages).
+- **`orchestrator-instruction.sh`** — SessionStart ONLY (which fires on
+  startup, resume, clear and **post-compaction** — exactly when role text gets
+  lost). Standing delegation reminder for **orchestrator** sessions: the
+  one-time `--append-system-prompt` brief and the promote skill's role text
+  live in conversation state that compaction summarizes away, so this
+  re-injects the contract at every context reset. Deliberately NOT per-prompt
+  (a per-turn injection compounds in the transcript). Self-silences unless
+  `ORCHESTRA_KIND=orchestrator` (pty env) OR the `.orchestra/.orchestrator`
+  sentinel exists (written at creation and by `/promote`, so a mid-session
+  promotion is picked up before any pty restart).
+- **`orchestrator-guard.sh`** — PreToolUse with matcher
+  `Edit|MultiEdit|Write|NotebookEdit` (via `upsertMatcherHookCommand`). Hard
+  enforcement between context resets, at zero token cost until it fires: for
+  orchestrator sessions (same env/sentinel gate as above) it parses
+  `tool_input.file_path` from the hook's stdin JSON and **denies (exit 2)**
+  edits targeting another workspace's files (`~/.orchestra{,-dev}/worktrees/*`
+  or `scratch/*` outside its own worktree), with a stderr message that
+  redirects the agent to `orchestra message` / spawn. Own-worktree writes
+  (notes, plans), relative paths, and parse misses fail open.
 
 Also installs 7 **capability skills** as `<worktree>/.claude/skills/<name>/SKILL.md`
 (orchestra-spawn / -comms / -repos / -promote / -attach / -rename /
@@ -68,7 +87,8 @@ spawn task-injection knows the TUI is live.
 
 PTY env that makes it all work (set in `pty.ts`): `ORCHESTRA_WS_ID`,
 `ORCHESTRA_SOCK`, `ORCHESTRA_EVENTS_DIR`, `ORCHESTRA_WORKTREE`,
-`ORCHESTRA_BRANCH`, `ORCHESTRA_BRANCH_AUTO`, `ORCHESTRA_READY_FILE`; PATH is
+`ORCHESTRA_BRANCH`, `ORCHESTRA_BRANCH_AUTO`, `ORCHESTRA_KIND`,
+`ORCHESTRA_READY_FILE`; PATH is
 prepended with `~/.orchestra/bin` so bare `orchestra` resolves.
 
 ## The `orchestra` CLI (src/cli/index.ts, ~349 lines)

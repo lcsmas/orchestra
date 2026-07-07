@@ -358,6 +358,7 @@ const ORCHESTRATOR_BRIEF =
   "Break the user's goal into independent pieces and delegate each to a fresh worktree+agent using the /spawn socket command shown above. " +
   'You have no repo of your own, so every /spawn MUST include an explicit "repoPath" naming a repo orchestra already knows about (and optionally a "baseBranch"). ' +
   'Track the agents you spawn with /peers, read their progress with /read, and follow up with /message. ' +
+  "Follow-up work in an area a child agent already owns goes back to THAT child via /message — never take it over yourself, however small. " +
   'Start by asking the user what they want orchestrated and which repo(s) the work belongs in.';
 
 /** Create a non-git session under `~/.orchestra/scratch`. `kind` selects the
@@ -376,6 +377,9 @@ async function createScratchLikeWorkspace(
   log.info(`creating ${kind} session ${label} (${id})`);
   await mkdir(worktreePath, { recursive: true });
   await installOrchestraHooks(worktreePath);
+  // Sentinel for the orchestrator-instruction hook, so the standing delegation
+  // reminder fires from the very first prompt (the env var lands at pty start).
+  if (kind === 'orchestrator') await markOrchestratorWorktree(worktreePath);
 
   const port = store.allocatePort();
   const ws: Workspace = {
@@ -829,6 +833,22 @@ async function writeRenameProgress(worktreePath: string, count: number): Promise
   }
 }
 
+/** Mark a worktree as belonging to an orchestrator, in a sentinel the
+ * orchestrator-instruction hook reads. Same fresher-than-env pattern as
+ * `.branch-renamed`: written at creation AND the instant a scratch session is
+ * promoted mid-session, so the standing delegation reminder starts firing on
+ * the very next prompt — before any pty restart refreshes ORCHESTRA_KIND in
+ * the env. Best-effort: on write failure the hook falls back to the env var,
+ * which catches up on the next pty start. */
+async function markOrchestratorWorktree(worktreePath: string): Promise<void> {
+  try {
+    await mkdir(path.join(worktreePath, '.orchestra'), { recursive: true });
+    await writeFile(path.join(worktreePath, '.orchestra', '.orchestrator'), '1');
+  } catch {
+    /* best-effort */
+  }
+}
+
 // Default geometry for an agent PTY spawned headless (no visible terminal yet).
 // The renderer re-fits to the real pane size the first time the user opens the
 // workspace; until then the agent just needs a sane width to render its TUI.
@@ -882,6 +902,7 @@ async function startWorkspaceAgentHeadless(id: string, window: BrowserWindow): P
     ORCHESTRA_BRANCH: ws.branch,
     ORCHESTRA_BRANCH_AUTO: autoRenameActive(ws) ? '1' : '0',
     ORCHESTRA_AUTO_RENAME_COUNT: String(ws.autoRenameCount ?? 0),
+    ORCHESTRA_KIND: ws.kind ?? 'worktree',
     ORCHESTRA_READY_FILE: readyFile,
   };
   await startPty({
@@ -1179,6 +1200,10 @@ export async function dispatchPromoteRequest(
       : ws.name;
     const updated: Workspace = { ...ws, kind: 'orchestrator', name };
     await store.upsertWorkspace(updated);
+    // The promoting agent's pty was spawned with ORCHESTRA_KIND=scratch, so the
+    // sentinel is what makes the standing delegation reminder kick in on its
+    // very next prompt — no pty restart required.
+    await markOrchestratorWorktree(ws.worktreePath);
     window.webContents.send('workspace:update', updated);
     log.info(`promoted scratch ${ws.branch} (${id}) to orchestrator`);
     return { ok: true, id, branch: updated.branch, kind: 'orchestrator' };
@@ -1573,6 +1598,7 @@ async function wakeAgentWithPrompt(
       ORCHESTRA_BRANCH: ws.branch,
       ORCHESTRA_BRANCH_AUTO: autoRenameActive(ws) ? '1' : '0',
       ORCHESTRA_AUTO_RENAME_COUNT: String(ws.autoRenameCount ?? 0),
+      ORCHESTRA_KIND: ws.kind ?? 'worktree',
       ORCHESTRA_READY_FILE: readyFile,
     },
   });
@@ -1814,6 +1840,34 @@ const HOOK_COMMS_RESURFACE_CMD =
 // between turns surfaces promptly (the script self-clears the file once read).
 const HOOK_INBOX_DELIVER_CMD =
   'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/inbox-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
+
+// Standing delegation reminder for orchestrator sessions, fired on
+// SessionStart ONLY (the script self-silences on non-orchestrator workspaces).
+// SessionStart covers startup, resume, clear AND post-compaction — exactly the
+// moments where the one-time --append-system-prompt brief (or the promote
+// skill's role text) gets summarized away and an orchestrator starts doing
+// child-sized work itself. Deliberately NOT wired to UserPromptSubmit: a
+// per-turn injection accumulates one copy per turn in the transcript and is
+// re-billed as input on every later turn — the same compounding tax that
+// pushed the capability prose into skills. Hard enforcement between
+// SessionStarts is the zero-token orchestrator-guard PreToolUse hook below.
+const HOOK_ORCHESTRATOR_INSTRUCTION_CMD =
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestrator-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
+
+// Hard enforcement of the orchestrator contract: a PreToolUse hook on the
+// file-editing tools that DENIES the call (exit 2 → the agent sees the stderr
+// and must change course) when an orchestrator edits files belonging to
+// another workspace. Unlike an injected reminder this costs zero tokens until
+// the agent actually drifts, and the deny message re-teaches delegation at
+// the exact moment of the violation — the cheapest, most effective channel.
+const HOOK_ORCHESTRATOR_GUARD_CMD =
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestrator-guard.sh"; [ -f "$f" ] && bash "$f" || true';
+
+// Tools the orchestrator guard intercepts: the file-mutation tools only
+// (MultiEdit is retired but kept for older Claude Code versions). Everything
+// else — including Bash, which the orchestrator needs for the `orchestra`
+// CLI — stays unguarded.
+const ORCHESTRATOR_GUARD_MATCHER = 'Edit|MultiEdit|Write|NotebookEdit';
 
 // Touches the readiness sentinel the instant the TUI fires SessionStart, so the
 // task injector knows the prompt box is live and can submit deterministically
@@ -2168,6 +2222,81 @@ echo "[orchestra] \$n other agent(s) are running in sibling workspaces. Use the 
 exit 0
 `;
 
+// Standing role reminder for orchestrator sessions. The orchestrator brief is
+// injected once as an appended system prompt (and, on mid-session promotion,
+// only ever existed as skill text inside the transcript) — both get summarized
+// away by context compaction, after which the orchestrator starts editing code
+// and "just handling" follow-ups itself instead of driving its children. This
+// hook re-injects a compact version of the contract on every SessionStart —
+// which fires on startup, resume, clear AND post-compaction, i.e. exactly when
+// the role text was lost — so it survives indefinitely at a cost of one
+// injection per context reset rather than one per turn.
+// Gated two ways, mirroring the rename nudge's env+sentinel design: the
+// ORCHESTRA_KIND env var (set per-pty at spawn — covers every orchestrator,
+// including ones created before the sentinel existed) OR the .orchestrator
+// worktree sentinel (written at creation and the instant /promote lands, so a
+// just-promoted session picks the reminder up mid-session, before any pty
+// restart refreshes its env).
+const ORCHESTRATOR_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
+# Auto-installed by orchestra. Re-asserts the orchestrator delegation contract
+# on SessionStart (startup / resume / clear / post-compaction) so it survives
+# context compaction. Self-silences unless this workspace is an orchestrator
+# (env var from pty spawn, or the sentinel written when the session was
+# created as / promoted to an orchestrator).
+sentinel="\${ORCHESTRA_WORKTREE:-.}/.orchestra/.orchestrator"
+[ "\${ORCHESTRA_KIND:-}" = "orchestrator" ] || [ -f "\$sentinel" ] || exit 0
+cat <<'EOF'
+[orchestra] Standing role reminder — you are an ORCHESTRATOR. You coordinate child agents; you do not implement. Do NOT edit code, fix bugs, or take over follow-up work yourself — not even a "quick" fix, and regardless of what earlier (possibly compacted-away) context said: delegate it. Route work in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra message <id> "<task>"\`); spawn a NEW agent for independent work (orchestra-spawn skill). Reserve your own turns for planning, delegating, tracking children (\`orchestra peers\`, \`orchestra read <id>\`), reviewing their results, and reporting to the user.
+EOF
+exit 0
+`;
+
+// Hard-enforcement companion to the reminder above, wired as a PreToolUse
+// hook on the file-mutation tools (ORCHESTRATOR_GUARD_MATCHER). An
+// orchestrator legitimately writes inside its own scratch worktree (plans,
+// notes, handoffs) — what it must never do is edit files that belong to a
+// CHILD workspace instead of delegating. So the guard denies (exit 2, stderr
+// fed back to the agent) only when the target path is another workspace's
+// worktree or scratch dir under ~/.orchestra, and allows everything else.
+// Precision over reach: an allow-list approach (own worktree + tmp) would
+// false-positive on memory writes, scratchpads, etc., and every false block
+// teaches the agent to distrust the guard. Fail-open on any parse miss —
+// enforcement is best-effort, never a brick.
+const ORCHESTRATOR_GUARD_SCRIPT = `#!/usr/bin/env bash
+# Auto-installed by orchestra. Blocks an orchestrator from editing another
+# workspace's files (it must delegate instead). No-op on non-orchestrator
+# workspaces and outside orchestra.
+sentinel="\${ORCHESTRA_WORKTREE:-.}/.orchestra/.orchestrator"
+[ "\${ORCHESTRA_KIND:-}" = "orchestrator" ] || [ -f "\$sentinel" ] || exit 0
+
+# Claude Code delivers the tool call as JSON on stdin; pull tool_input's
+# file_path out with pure bash parameter expansion (no jq), same technique as
+# orchestra-hook.sh. A parse miss yields an empty path → allow (fail-open).
+input="\$(cat 2>/dev/null || true)"
+fp=""
+rest="\${input#*\\"file_path\\":}"
+if [ "\$rest" != "\$input" ]; then
+  rest="\${rest#*\\"}"
+  fp="\${rest%%\\"*}"
+fi
+[ -n "\$fp" ] || exit 0
+# Only judge absolute paths; a relative path resolves against an unknown cwd.
+case "\$fp" in /*) : ;; *) exit 0 ;; esac
+# The orchestrator's own worktree is always fine (notes, plans, handoffs).
+own="\${ORCHESTRA_WORKTREE:-}"
+if [ -n "\$own" ]; then
+  case "\$fp" in "\$own"|"\$own"/*) exit 0 ;; esac
+fi
+# Another workspace's files → block and point back at delegation.
+case "\$fp" in
+  "\$HOME/.orchestra/worktrees/"*|"\$HOME/.orchestra/scratch/"*|"\$HOME/.orchestra-dev/worktrees/"*|"\$HOME/.orchestra-dev/scratch/"*)
+    echo "[orchestra] BLOCKED: you are an ORCHESTRATOR and '\$fp' belongs to another workspace. Never edit a child's files directly — delegate: send the change to the child agent that owns that worktree (\\\`orchestra message <id> \\"<task>\\"\\\`, see orchestra-comms skill) or spawn a new agent for it (orchestra-spawn skill)." >&2
+    exit 2
+    ;;
+esac
+exit 0
+`;
+
 // Drains queued peer messages into the agent's context, then clears them. The
 // main process writes pre-formatted message blocks (which already name the
 // sender and show the reply command) into this file; the hook just prints and
@@ -2278,6 +2407,19 @@ function upsertHookCommand(list: unknown[], command: string): void {
   if (!present) list.push({ hooks: [{ type: 'command', command }] });
 }
 
+/** Like {@link upsertHookCommand} but scopes the hook to specific tools via a
+ * Claude Code `matcher` (e.g. `'Edit|Write'` on PreToolUse). Presence is keyed
+ * on the command alone, so reinstalls never duplicate the entry — but that
+ * also means changing the matcher later requires evicting the old entry
+ * (removeHookCommand) before upserting. */
+function upsertMatcherHookCommand(list: unknown[], matcher: string, command: string): void {
+  const present = list.some((entry) => {
+    const inner = (entry as { hooks?: Array<{ command?: string }> })?.hooks ?? [];
+    return inner.some((h) => h?.command === command);
+  });
+  if (!present) list.push({ matcher, hooks: [{ type: 'command', command }] });
+}
+
 /** Drop any hook entry whose command matches the predicate. Used to evict
  * legacy hook commands installed by older orchestra versions. */
 function removeHookCommand(list: unknown[], match: (cmd: string) => boolean): unknown[] {
@@ -2344,7 +2486,10 @@ export async function startAgentPty(
   // An orchestrator's standing brief shapes its behaviour without ever showing
   // up as a typed user turn: inject it as an appended system prompt on the
   // first launch only. On resume, Claude Code restores the original session's
-  // system prompt, so re-appending would duplicate it.
+  // system prompt, so re-appending would duplicate it. Durable enforcement of
+  // the role (surviving compaction, resume, and mid-session promotion) is the
+  // orchestrator-instruction hook, re-fired on every prompt — this one-time
+  // brief is just the richer onboarding.
   if (!resuming && ws.kind === 'orchestrator') {
     claudeArgs.push('--append-system-prompt', ORCHESTRATOR_BRIEF);
   }
@@ -2379,6 +2524,10 @@ export async function startAgentPty(
     ORCHESTRA_BRANCH: ws.branch,
     ORCHESTRA_BRANCH_AUTO: autoRenameActive(ws) ? '1' : '0',
     ORCHESTRA_AUTO_RENAME_COUNT: String(ws.autoRenameCount ?? 0),
+    // Read by the orchestrator-instruction hook (with the .orchestrator
+    // sentinel as the mid-session-promotion fallback) to gate the standing
+    // delegation reminder to orchestrator sessions only.
+    ORCHESTRA_KIND: ws.kind ?? 'worktree',
   };
   // A pinned account's CLAUDE_CONFIG_DIR is a HOST path; shipped to a sandbox
   // it points at nothing and would shadow the container's seeded ~/.claude
@@ -2457,6 +2606,8 @@ const HOOKS_VERSION = createHash('sha256')
       ORCHESTRA_HOOK_SCRIPT,
       COMMS_RESURFACE_SCRIPT,
       INBOX_INSTRUCTION_SCRIPT,
+      ORCHESTRATOR_INSTRUCTION_SCRIPT,
+      ORCHESTRATOR_GUARD_SCRIPT,
       SPAWN_SKILL,
       COMMS_SKILL,
       REPO_ROUTES_SKILL,
@@ -2473,6 +2624,9 @@ const HOOKS_VERSION = createHash('sha256')
       HOOK_SESSION_START_RENAME_CMD,
       HOOK_COMMS_RESURFACE_CMD,
       HOOK_INBOX_DELIVER_CMD,
+      HOOK_ORCHESTRATOR_INSTRUCTION_CMD,
+      HOOK_ORCHESTRATOR_GUARD_CMD,
+      ORCHESTRATOR_GUARD_MATCHER,
     ].join(' '),
   )
   .digest('hex');
@@ -2512,6 +2666,8 @@ export async function installOrchestraHooks(
       w('orchestra-hook.sh', ORCHESTRA_HOOK_SCRIPT),
       w('comms-resurface.sh', COMMS_RESURFACE_SCRIPT),
       w('inbox-instruction.sh', INBOX_INSTRUCTION_SCRIPT),
+      w('orchestrator-instruction.sh', ORCHESTRATOR_INSTRUCTION_SCRIPT),
+      w('orchestrator-guard.sh', ORCHESTRATOR_GUARD_SCRIPT),
     ]);
 
     // Evict the per-session capability instruction scripts + the ungated spawn
@@ -2598,6 +2754,13 @@ export async function installOrchestraHooks(
     upsertHookCommand(submitList, HOOK_COMMS_RESURFACE_CMD);
     // Surface any queued peer messages right before the agent's next turn.
     upsertHookCommand(submitList, HOOK_INBOX_DELIVER_CMD);
+    // The orchestrator reminder is deliberately NOT on UserPromptSubmit (a
+    // per-turn injection compounds in the transcript); it lives on
+    // SessionStart, and the PreToolUse guard enforces between resets. Evict
+    // the per-turn wiring from any workspace that got it from a dev build.
+    submitList = removeHookCommand(submitList, (cmd) =>
+      cmd.includes('.orchestra/orchestrator-instruction.sh'),
+    );
     hooks.UserPromptSubmit = submitList;
 
     let stopList = ((hooks.Stop as unknown[]) ??= []);
@@ -2620,6 +2783,10 @@ export async function installOrchestraHooks(
     // throughout — these only drive the ephemeral active-tool label.
     const preToolList = ((hooks.PreToolUse as unknown[]) ??= []);
     upsertHookCommand(preToolList, HOOK_ACTIVITY_PRETOOL_CMD);
+    // Orchestrator hard-guard: deny file edits that reach into another
+    // workspace (the script self-silences on non-orchestrator workspaces).
+    // Zero token cost until it fires, unlike an injected reminder.
+    upsertMatcherHookCommand(preToolList, ORCHESTRATOR_GUARD_MATCHER, HOOK_ORCHESTRATOR_GUARD_CMD);
     hooks.PreToolUse = preToolList;
 
     const postToolList = ((hooks.PostToolUse as unknown[]) ??= []);
@@ -2636,6 +2803,7 @@ export async function installOrchestraHooks(
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_READY_CMD);
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_RENAME_CMD);
     upsertHookCommand(sessionStartList, HOOK_INBOX_DELIVER_CMD);
+    upsertHookCommand(sessionStartList, HOOK_ORCHESTRATOR_INSTRUCTION_CMD);
     hooks.SessionStart = sessionStartList;
 
     settings.hooks = hooks;

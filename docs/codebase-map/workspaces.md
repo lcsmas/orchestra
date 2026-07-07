@@ -20,7 +20,14 @@ A workspace is an isolated execution environment for one Claude Code agent.
   `repoPath`/`baseBranch` are `''`; `branch` is a display label only.
 - **`orchestrator`** — a scratch session seeded with a coordinator brief
   (`ORCHESTRATOR_BRIEF`, ~`workspaces.ts:351`); children it spawns carry its id
-  as `parentId` and nest under it in the sidebar.
+  as `parentId` and nest under it in the sidebar. The brief is one-time
+  onboarding only — durable role enforcement is the SessionStart-injected
+  `orchestrator-instruction.sh` reminder (re-fired post-compaction) plus the
+  `orchestrator-guard.sh` PreToolUse deny hook (see
+  [hooks-cli-socket.md](hooks-cli-socket.md)), both gated on `ORCHESTRA_KIND`
+  env or the `.orchestra/.orchestrator` sentinel (`markOrchestratorWorktree`,
+  written at creation and by `/promote` so a mid-session promotion picks it up
+  without a pty restart).
 
 Use the helper **`isScratchLike(ws)`** (`types.ts:143`) instead of comparing
 `kind` to a literal — it covers both non-git kinds in one place.
@@ -59,7 +66,7 @@ endpoint}` = agent lives in an always-on container, see
   gate (sets `heavyResumePending` when resuming a >100k-token session),
   orchestrator brief on first launch only, idempotent hook
   reinstall, account-config sync, env build (`ORCHESTRA_BRANCH`,
-  `ORCHESTRA_BRANCH_AUTO`, per-repo `CLAUDE_CONFIG_DIR`), then `startPty` with
+  `ORCHESTRA_BRANCH_AUTO`, `ORCHESTRA_KIND`, per-repo `CLAUDE_CONFIG_DIR`), then `startPty` with
   `claude --dangerously-skip-permissions` (or `--continue` if `hasInput`).
   **Sandbox-hosted** (`ws.host?.kind==='sandbox'`): skips the local hook
   install, uses cwd `SANDBOX_WORKSPACE_DIR` (`/workspace`), and **strips
