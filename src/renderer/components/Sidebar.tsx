@@ -1306,6 +1306,20 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               // its orchestrator gets a small repo tag so the nesting reads.
               const isChild = depth > 0;
               const crossRepoChild = isChild && w.repoPath !== repoPath;
+              // Whether the `.ws-pills` strip will render anything. When it does,
+              // the disk size rides along at the strip's right edge so a long
+              // branch name doesn't strand the size on its own line above the
+              // badges; when it doesn't, the size stays inline on the name row.
+              const hasPills =
+                crossRepoChild ||
+                (!!w.mergedAt && !w.divergedFromBase && !hasMergedPRBadge) ||
+                !!w.releasedAt ||
+                (!!w.unpushedAhead && w.unpushedAhead > 0) ||
+                hasChanges ||
+                w.setupStatus === 'failed' ||
+                w.setupStatus === 'running' ||
+                orderedVisiblePRs(prRecord).visible.length > 0 ||
+                !!linearIssue;
               return (
                 <div
                   key={w.id}
@@ -1406,7 +1420,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         </span>
                         <WorkspaceAccountBadge workspaceId={w.id} migratable />
                       </span>
-                      {sizeBytes != null && (
+                      {sizeBytes != null && !hasPills && (
                         <span
                           className="ws-size"
                           title="Worktree size on disk (apparent; btrfs reflinks are shared between worktrees, so this is not all reclaimable)"
@@ -1485,6 +1499,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         </span>
                       )}
                       <PrLinearBadges prRecord={prRecord} linearIssue={linearIssue} />
+                      {sizeBytes != null && hasPills && (
+                        <span
+                          className="ws-size ws-size-pills"
+                          title="Worktree size on disk (apparent; btrfs reflinks are shared between worktrees, so this is not all reclaimable)"
+                        >
+                          {formatBytes(sizeBytes)}
+                        </span>
+                      )}
                       </span>
                     </div>
                   </div>

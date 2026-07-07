@@ -1272,6 +1272,13 @@ input:focus, textarea:focus, select:focus {
   white-space: nowrap;
   flex: none;
 }
+/* When the size rides inside the pills strip (any workspace that has badges),
+   pin it to the strip's trailing edge and center it against the pills, which
+   sit on the baseline-less `align-items: center` row. This puts the size on the
+   same line as the badges instead of stranding it above them. */
+.ws-size.ws-size-pills {
+  align-self: center;
+}
 /* Login badge for orchestrator/scratch rows, sitting directly after the branch
    name on the same line so showing which login the session uses costs no extra
    vertical space. The inner .account-badge.inline owns the text style; the row's
