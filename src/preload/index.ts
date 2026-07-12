@@ -54,6 +54,10 @@ const api: OrchestraAPI = {
   renameBranch: (id, newBranch) => ipcRenderer.invoke('workspaces:renameBranch', id, newBranch),
   reorderWorkspaces: (ids) => ipcRenderer.invoke('workspaces:reorder', ids),
 
+  queuePrompt: (id, text) => ipcRenderer.invoke('queue:add', id, text),
+  removeQueuedPrompt: (id, promptId) => ipcRenderer.invoke('queue:remove', id, promptId),
+  flushQueuedPrompts: (id) => ipcRenderer.invoke('queue:flush', id),
+
   ptyStart: (id, cols, rows) => ipcRenderer.invoke('pty:start', id, cols, rows),
   ptyWrite: (id, data) => ipcRenderer.invoke('pty:write', id, data),
   ptyResize: (id, cols, rows) => ipcRenderer.invoke('pty:resize', id, cols, rows),

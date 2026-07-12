@@ -32,8 +32,9 @@ function clampPct(util: number): number {
 
 // "resets in 3h 12m" / "resets in 2d 4h" — a compact relative countdown. We
 // keep it coarse (two units max) since the windows are long and the bars are
-// glanceable, not precise timers.
-function formatResetsIn(resetsAt: string, now: number): string {
+// glanceable, not precise timers. Exported for the PromptQueueBanner, which
+// shows the same countdown for a limit-blocked account.
+export function formatResetsIn(resetsAt: string, now: number): string {
   const target = Date.parse(resetsAt);
   if (!Number.isFinite(target)) return '';
   const ms = target - now;

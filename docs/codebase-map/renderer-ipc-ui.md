@@ -106,6 +106,13 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
 - **RepoScriptsModal.tsx** — edit setup/run/archive scripts + account assignment.
 - **SetupBanner.tsx** — overlay while `setupStatus` running/failed, with log +
   retry.
+- **PromptQueueBanner.tsx** — shown above the pane row while the active
+  workspace's account is over its usage limit (or prompts are still queued):
+  composer parks prompts on `ws.queuedPrompts` via `queue:add`, list with
+  per-item remove (`queue:remove`) and "Send now" (`queue:flush`). Limit state
+  computed renderer-side with the shared `usageLimitedUntil`; delivery/auto-
+  flush live in main (see
+  [accounts-usage-linear.md](accounts-usage-linear.md) "Prompt queue").
 
 ## chime.ts (~517 lines) & debug.ts
 **chime.ts** synthesizes ~20 notification sounds with the Web Audio API (no

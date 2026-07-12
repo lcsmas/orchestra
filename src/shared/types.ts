@@ -30,6 +30,20 @@ export interface SandboxControlState {
   isDriver: boolean;
 }
 
+/** One prompt parked while a workspace's account is over its usage limit,
+ * waiting for the window to reset. See {@link Workspace.queuedPrompts}. */
+export interface QueuedPrompt {
+  /** Random id so the UI can remove one entry without index races. */
+  id: string;
+  /** The prompt text, verbatim (newlines allowed; carriage returns are
+   * stripped at delivery so the TUI doesn't submit early). */
+  text: string;
+  /** Epoch ms when the prompt was queued. Auto-flush requires a usage snapshot
+   * FETCHED AFTER this instant that shows the account un-limited — so a stale
+   * pre-limit snapshot can't flush a prompt straight into the wall. */
+  queuedAt: number;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -174,6 +188,16 @@ export interface Workspace {
   /** Last line of stderr (or the spawn error) when `setupStatus === 'failed'`.
    * Full output lives in `~/.orchestra/scripts/<id>-setup.log`. */
   setupError?: string;
+  /** Prompts parked while the workspace's account is at its usage limit,
+   * oldest-first. Queued from the workspace's limit banner (the terminal is
+   * useless while Claude is rate-limited — a typed prompt would just error the
+   * turn away). The main-process flusher (src/main/prompt-queue.ts) watches the
+   * account's usage windows and auto-delivers the whole queue as one turn once
+   * a post-queue usage snapshot shows the limit has reset — typing it into the
+   * live TUI, or waking the agent (`claude --continue`) when it's stopped.
+   * Persisted in store.json so a queue survives app restarts. Absent/empty on
+   * every record predating this field. */
+  queuedPrompts?: QueuedPrompt[];
   /** The agent session's context-window size in tokens at the end of its most
    * recent turn — the figure the TUI `/context` view shows as "used" (sum of the
    * three input components on the last main-chain assistant message). Persisted

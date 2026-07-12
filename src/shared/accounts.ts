@@ -232,6 +232,55 @@ export function classifyHttpError(status: number, _body?: string): { kind: Usage
   return { kind: 'error', message: `HTTP ${status}` };
 }
 
+// ---- usage-limit detection -----------------------------------------------------
+
+/** The slice of usage data the limit check needs. Both {@link UsageData}
+ *  (per-account poller) and the global poller's UsageSnapshot satisfy it —
+ *  the snapshot simply has no `extraUtilization` field. */
+export interface UsageWindows {
+  fiveHour: UsageWindowDetail;
+  sevenDay: UsageWindowDetail;
+  /** Pay-as-you-go utilization 0–100, or null/absent when not enabled. */
+  extraUtilization?: number | null;
+}
+
+/** When `data` says the account is blocked by a usage limit, the epoch ms at
+ *  which the LAST blocked window resets (both windows must clear before Claude
+ *  answers again); null when the account is usable. A window blocks at
+ *  utilization ≥ 100. Extra usage (pay-as-you-go) absorbs the overflow: while
+ *  it's enabled and itself under 100%, a maxed 5h/7d window does NOT block.
+ *  A blocked window whose `resetsAt` is missing/unparsable contributes
+ *  `now` — i.e. "limited, reset time unknown, re-check on fresh data". */
+export function usageLimitedUntil(data: UsageWindows, now: number): number | null {
+  const extra = data.extraUtilization;
+  if (typeof extra === 'number' && extra < 100) return null;
+  let until: number | null = null;
+  for (const w of [data.fiveHour, data.sevenDay]) {
+    if (w.utilization < 100) continue;
+    const reset = Date.parse(w.resetsAt);
+    const at = Number.isFinite(reset) ? reset : now;
+    until = until === null ? at : Math.max(until, at);
+  }
+  return until;
+}
+
+/** Whether a workspace's queued prompts may be auto-delivered, given the
+ *  freshest usage reading for its account. Deliberately conservative:
+ *  - `usage` null (no reading at all) → false; the user can still "Send now".
+ *  - the reading must have been FETCHED AFTER the newest prompt was queued —
+ *    the user queued because they watched Claude hit the wall, so any older
+ *    snapshot predates the limit and would flush straight into it;
+ *  - and it must show the account un-limited. */
+export function canAutoFlushQueue(
+  newestQueuedAt: number,
+  usage: { fetchedAt: number; data: UsageWindows | null } | null,
+  now: number,
+): boolean {
+  if (!usage?.data) return false;
+  if (usage.fetchedAt <= newestQueuedAt) return false;
+  return usageLimitedUntil(usage.data, now) === null;
+}
+
 // ---- workspace → account matching --------------------------------------------
 
 /** The account id a workspace logs in as: its PINNED `accountId` (snapshotted

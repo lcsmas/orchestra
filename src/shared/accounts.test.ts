@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  canAutoFlushQueue,
   classifyHttpError,
   expandConfigDir,
   isExpired,
@@ -9,6 +10,7 @@ import {
   parseCredentials,
   parseUsageResponse,
   sanitizeAccountInherit,
+  usageLimitedUntil,
   type RawUsageResponse,
 } from './accounts.ts';
 
@@ -255,5 +257,72 @@ test('sanitizeAccountInherit drops blanks, non-strings, and de-dupes names; coer
       mcpServers: ['github', 'github'],
     }),
     { statusline: true, skills: ['handoff', 'frontend-design'], mcpServers: ['github'] },
+  );
+});
+
+// ---- usageLimitedUntil / canAutoFlushQueue ------------------------------------
+
+const NOW = Date.parse('2026-07-12T12:00:00Z');
+const RESET_5H = '2026-07-12T14:00:00Z';
+const RESET_7D = '2026-07-15T00:00:00Z';
+
+function windows(fiveUtil: number, sevenUtil: number, extra?: number | null) {
+  return {
+    fiveHour: { utilization: fiveUtil, resetsAt: RESET_5H },
+    sevenDay: { utilization: sevenUtil, resetsAt: RESET_7D },
+    extraUtilization: extra ?? null,
+  };
+}
+
+test('usageLimitedUntil is null while both windows are under 100', () => {
+  assert.equal(usageLimitedUntil(windows(97, 42), NOW), null);
+  assert.equal(usageLimitedUntil(windows(0, 0), NOW), null);
+});
+
+test('usageLimitedUntil returns the blocked window reset time', () => {
+  assert.equal(usageLimitedUntil(windows(100, 42), NOW), Date.parse(RESET_5H));
+  assert.equal(usageLimitedUntil(windows(12, 100), NOW), Date.parse(RESET_7D));
+});
+
+test('usageLimitedUntil takes the LATER reset when both windows are blocked', () => {
+  assert.equal(usageLimitedUntil(windows(100, 100), NOW), Date.parse(RESET_7D));
+});
+
+test('usageLimitedUntil: enabled extra usage under 100 absorbs a maxed window', () => {
+  assert.equal(usageLimitedUntil(windows(100, 100, 3), NOW), null);
+});
+
+test('usageLimitedUntil: maxed extra usage no longer absorbs', () => {
+  assert.equal(usageLimitedUntil(windows(100, 42, 100), NOW), Date.parse(RESET_5H));
+});
+
+test('usageLimitedUntil falls back to `now` for a blocked window without a parsable reset', () => {
+  const data = {
+    fiveHour: { utilization: 100, resetsAt: '' },
+    sevenDay: { utilization: 10, resetsAt: RESET_7D },
+  };
+  assert.equal(usageLimitedUntil(data, NOW), NOW);
+});
+
+test('canAutoFlushQueue requires a post-queue, un-limited reading', () => {
+  const queuedAt = NOW;
+  // No reading at all, or no data on it → hold.
+  assert.equal(canAutoFlushQueue(queuedAt, null, NOW), false);
+  assert.equal(canAutoFlushQueue(queuedAt, { fetchedAt: NOW + 60_000, data: null }, NOW), false);
+  // Reading predates (or ties) the queue instant → it can't prove the reset.
+  assert.equal(
+    canAutoFlushQueue(queuedAt, { fetchedAt: NOW - 60_000, data: windows(3, 3) }, NOW),
+    false,
+  );
+  assert.equal(canAutoFlushQueue(queuedAt, { fetchedAt: NOW, data: windows(3, 3) }, NOW), false);
+  // Fresh reading but still limited → hold.
+  assert.equal(
+    canAutoFlushQueue(queuedAt, { fetchedAt: NOW + 60_000, data: windows(100, 3) }, NOW),
+    false,
+  );
+  // Fresh reading, un-limited → flush.
+  assert.equal(
+    canAutoFlushQueue(queuedAt, { fetchedAt: NOW + 60_000, data: windows(3, 3) }, NOW),
+    true,
   );
 });

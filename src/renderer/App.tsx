@@ -7,6 +7,7 @@ import { BranchPicker } from './components/BranchPicker';
 import { NvimView } from './components/NvimView';
 import { RunTerminal } from './components/RunTerminal';
 import { SetupBanner } from './components/SetupBanner';
+import { PromptQueueBanner } from './components/PromptQueueBanner';
 import { SandboxControlBar } from './components/SandboxControlBar';
 import { DialogHost, dialog } from './components/Dialog';
 import { playFinishedChime } from './chime';
@@ -554,6 +555,10 @@ export function App() {
                 read-only ownership bar must not be eclipsed by the absolutely-
                 positioned TerminalView. Renders null for local workspaces. */}
             <SandboxControlBar key={`sandbox-${active.id}`} workspace={active} />
+            {/* Usage-limit prompt queue — same above-the-row placement as the
+                banners above. Shows only while the active workspace's account
+                is over its usage limit or prompts are still queued. */}
+            <PromptQueueBanner key={`queue-${active.id}`} workspace={active} />
             {/* Render a TerminalView for every workspace but only show the active one.
                 This keeps each xterm.js instance alive (preserving its scrollback buffer)
                 even when the user switches to a different workspace tab. */}

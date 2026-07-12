@@ -1570,8 +1570,10 @@ function formatPeerMessage(fromBranch: string, fromId: string, text: string): st
  * starts fresh and the prompt becomes its opening turn. Safe against the
  * renderer's later `pty:start`, which early-returns on `isRunning`. Returns
  * false when the agent can't be woken (missing / archived / already running) so
- * the caller can fall back. Throws only if the PTY spawn itself fails. */
-async function wakeAgentWithPrompt(
+ * the caller can fall back. Throws only if the PTY spawn itself fails.
+ * Exported for the prompt-queue flusher, which delivers usage-limit-parked
+ * prompts through the exact same live-or-wake path as peer messages. */
+export async function wakeAgentWithPrompt(
   id: string,
   prompt: string,
   window: BrowserWindow,

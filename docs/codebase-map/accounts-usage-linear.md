@@ -82,6 +82,32 @@ ok, data, errorKind, errorMessage, fetchedAt, expired?}`; `UsageErrorKind =
 **Security:** tokens never leave the main process — the renderer sees only
 account identity (id/label) and usage numbers.
 
+## Prompt queue on usage limit — prompt-queue.ts
+While a workspace's account is over its 5h/7d limit, prompts can be parked on
+the workspace record (`Workspace.queuedPrompts`, `types.ts` — persisted, so a
+queue survives restarts) instead of burning turns on "limit reached" errors.
+
+- **Pure logic** (`accounts.ts`): `usageLimitedUntil(data, now)` — a window
+  blocks at utilization ≥ 100; enabled extra-usage under 100% absorbs it;
+  returns the LATER blocked reset (or null = usable). `canAutoFlushQueue`
+  — auto-delivery requires a reading **fetched after** the newest queued
+  prompt that shows the account un-limited (a stale pre-limit snapshot must
+  not flush straight into the wall). Both covered in `accounts.test.ts`.
+- **Main** (`src/main/prompt-queue.ts`): `addQueuedPrompt` / `removeQueuedPrompt`
+  / `flushQueuedPrompts` (clears the queue *before* delivery so a tick +
+  "Send now" race can't double-send; failure paths re-queue). Delivery joins
+  the queue into ONE turn and reuses the peer-message path: `writePty` + `\r`
+  into a live TUI, else the exported `wakeAgentWithPrompt` (`workspaces.ts`)
+  with the same 5s died-immediately insurance. `startPromptQueueFlusher`
+  ticks every 20s over pure cache reads (`getAccountUsage` / `getLastUsage` —
+  no network of its own) and, once a blocked reset time passes, nudges
+  `refreshAccountsNow` (throttled 120s per workspace) so the ≥180s account
+  cache proves the reset promptly.
+- **IPC**: `queue:add` / `queue:remove` / `queue:flush` (force — skips the
+  limit check); queue state travels on the normal `workspace:update` events.
+- **UI**: `PromptQueueBanner.tsx` above the pane row (see
+  [renderer-ipc-ui.md](renderer-ipc-ui.md)).
+
 ## Linear integration
 Turns a branch name into a verified issue badge.
 - `parseLinearIssueCandidate(branch)` (`shared/linear.ts:28`) — extracts a

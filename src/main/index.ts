@@ -228,6 +228,13 @@ import {
   syncAllRepos,
   syncOneRepo,
 } from './repo-sync';
+import {
+  addQueuedPrompt,
+  removeQueuedPrompt,
+  flushQueuedPrompts,
+  startPromptQueueFlusher,
+  stopPromptQueueFlusher,
+} from './prompt-queue';
 import type { CreateWorkspaceInput } from '../shared/types';
 import { initLogger, log, revealLogs, getLogFile } from './logger';
 
@@ -309,6 +316,8 @@ async function createMainWindow() {
   startUsagePolling(mainWindow);
   // Poll each *configured* account's usage for the per-workspace badges.
   startAccountUsagePolling(mainWindow);
+  // Deliver usage-limit-parked prompts once their account's window resets.
+  startPromptQueueFlusher(mainWindow);
   // Remote (sandbox-hosted) workspaces route activity + hook RPCs through the
   // sandbox connections; hand the manager the window they target.
   setSandboxWindow(mainWindow);
@@ -795,6 +804,19 @@ handle('clipboard:saveImage', async (_e, mime: string, bytes: Uint8Array) => {
   await fs.promises.writeFile(file, Buffer.from(bytes));
   return file;
 });
+// ---------- Prompt queue (usage-limited accounts) ----------
+
+handle('queue:add', (_e, id: string, text: string) =>
+  addQueuedPrompt(id, text, getMainWindow()),
+);
+handle('queue:remove', (_e, id: string, promptId: string) =>
+  removeQueuedPrompt(id, promptId, getMainWindow()),
+);
+// The UI's "Send now" — deliver regardless of what the usage cache says.
+handle('queue:flush', (_e, id: string) =>
+  flushQueuedPrompts(id, getMainWindow(), { force: true }),
+);
+
 handle('agent:restart', (_e, id: string) => {
   // Mirror the branch-switch path: stop the agent PTY here (the renderer's
   // xterm doesn't get torn down — it just resets) and tell the renderer to
@@ -1117,6 +1139,7 @@ if (!ORCHESTRA_CLI_MODE) {
     stopHooksServer();
     stopUsagePolling();
     stopAccountUsagePolling();
+    stopPromptQueueFlusher();
     closeAllSandboxConnections();
     if (process.platform !== 'darwin') app.quit();
   });
@@ -1127,6 +1150,7 @@ if (!ORCHESTRA_CLI_MODE) {
     stopHooksServer();
     stopUsagePolling();
     stopAccountUsagePolling();
+    stopPromptQueueFlusher();
     closeAllSandboxConnections();
   });
 

@@ -158,6 +158,18 @@ export interface OrchestraAPI {
    *  ids in the desired order; any unknown id is ignored. */
   reorderWorkspaces: (orderedIds: string[]) => Promise<void>;
 
+  // ---- Prompt queue (usage-limited accounts). Prompts parked while the
+  //      workspace's account is over its usage limit; the main-process flusher
+  //      auto-delivers them once the limit resets. Queue state lives on the
+  //      Workspace record (`queuedPrompts`) and updates arrive via
+  //      `onWorkspaceUpdate`.
+  /** Park a prompt on the workspace's queue. Returns the updated workspace. */
+  queuePrompt: (id: string, text: string) => Promise<Workspace>;
+  /** Drop one queued prompt by its entry id. */
+  removeQueuedPrompt: (id: string, promptId: string) => Promise<Workspace>;
+  /** Deliver the whole queue to the agent NOW, skipping the limit check. */
+  flushQueuedPrompts: (id: string) => Promise<{ ok: boolean; delivered: number; error?: string }>;
+
   // Terminal (pty)
   ptyStart: (id: string, cols: number, rows: number) => Promise<void>;
   ptyWrite: (id: string, data: string) => Promise<void>;
