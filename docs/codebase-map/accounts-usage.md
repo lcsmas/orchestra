@@ -1,10 +1,11 @@
-# Accounts, usage metering & Linear
+# Accounts & usage metering
 
-Multi-account Claude login, usage bars, and Linear issue badges. Files:
-`src/shared/accounts.ts` (+ `.test.ts`, pure logic), `src/main/account-inherit.ts`,
-`account-usage.ts`, `usage.ts`, `src/main/linear.ts` + `src/shared/linear.ts`
-(+ `.test.ts`). UI: `AccountBadge.tsx`, `AccountsSettings.tsx`,
-`AccountLoginModal.tsx`, `UsageBars.tsx`, `LinearSettings.tsx`.
+Multi-account Claude login, usage bars, and the usage-limit prompt queue.
+Files: `src/shared/accounts.ts` (+ `.test.ts`, pure logic),
+`src/main/account-inherit.ts`, `account-usage.ts`, `usage.ts`,
+`prompt-queue.ts`. UI: `AccountBadge.tsx`, `AccountsSettings.tsx`,
+`AccountLoginModal.tsx`, `UsageBars.tsx`, `PromptQueueBanner.tsx`.
+(Linear issue badges live in [linear.md](linear.md).)
 
 ## Accounts model
 An "account" is a separate Claude Code **`CLAUDE_CONFIG_DIR`** with its own
@@ -108,21 +109,6 @@ queue survives restarts) instead of burning turns on "limit reached" errors.
 - **UI**: `PromptQueueBanner.tsx` above the pane row (see
   [renderer-ipc-ui.md](renderer-ipc-ui.md)).
 
-## Linear integration
-Turns a branch name into a verified issue badge.
-- `parseLinearIssueCandidate(branch)` (`shared/linear.ts:28`) — extracts a
-  `TEAM-NUMBER` token (whole-token regex; `nmc-261-…`→`NMC-261`; permissive, may
-  yield false candidates like `POLL-429`).
-- `verifyLinearIssue(branch)` (`main/linear.ts:112`) — queries Linear GraphQL
-  (`https://api.linear.app/graphql`, `Authorization: <key>` no Bearer) and only
-  returns a `LinearIssue` (`types.ts:227`) if the returned `identifier` matches.
-  Caches hits *and* misses; `noApiKey` latch (`:32`) stops retrying after 401/403
-  until the user saves a new key (`resetLinearAuthState` `:52`).
-- Key resolution (`:37`): stored key → `LINEAR_API_KEY` env → none.
-  `getLinearKeySource` `:46`. Stored via `secrets.ts` (encrypted). UI:
-  `LinearSettings.tsx` (test/save/clear). IPC: `linear:keySource`/`checkKey`/
-  `saveKey`/`clearKey`.
-
 ## UI components
 - **AccountBadge.tsx** — `RepoAccountBadge` `:105`, `WorkspaceAccountBadge` `:119`,
   `WorkspaceContextBadge` `:92`. Colour tint by the hotter window
@@ -136,5 +122,4 @@ Turns a branch name into a verified issue badge.
 `accounts.test.ts` covers `expandConfigDir`, `parseCredentials`, `isExpired`,
 `parseUsageResponse`, `classifyHttpError`, `resolveWorkspaceAccountId`,
 `planAccountMigration` (migrate/noop/error, default-login clear, trimming),
-`sanitizeAccountInherit`. `linear.test.ts` covers `parseLinearIssueCandidate`
-(normalization, path-style, whole-token, permissiveness).
+`sanitizeAccountInherit`, `usageLimitedUntil`, and `canAutoFlushQueue`.

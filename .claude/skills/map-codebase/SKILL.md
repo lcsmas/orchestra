@@ -40,7 +40,8 @@ points future work at the right doc. This skill is the *producer* of those docs.
    | `git.md` | `src/main/git.ts`, `git-merge-state.test.ts` |
    | `hooks-cli-socket.md` | `src/main/hooks-server.ts`, `cli-shim.ts`, `env-status.ts`, `src/cli/index.ts`, `orchestra-hook.test.ts`, hook scripts in `workspaces.ts` |
    | `activity-pty-terminal.md` | `src/main/activity.ts`, `events-spool.ts`, `pty.ts`, `logger.ts`, `Terminal.tsx`, `RunTerminal.tsx` |
-   | `accounts-usage-linear.md` | `src/shared/accounts.ts`, `src/main/account-inherit.ts`, `account-usage.ts`, `usage.ts`, `linear.ts`, `src/shared/linear.ts`, account/usage/linear UI components |
+   | `accounts-usage.md` | `src/shared/accounts.ts`, `src/main/account-inherit.ts`, `account-usage.ts`, `usage.ts`, `prompt-queue.ts`, account/usage UI components |
+   | `linear.md` | `src/main/linear.ts`, `src/shared/linear.ts` (+ `.test.ts`), `LinearSettings.tsx` |
    | `renderer-ipc-ui.md` | `src/main/index.ts`, `src/preload/index.ts`, `src/shared/ipc.ts`, `App.tsx`, `store.ts`, `chime.ts`, `Sidebar.tsx`, dialog/diff/branch components |
    | `build-release.md` | `package.json`, `vite.config.ts`, `vite.cli.config.ts`, `tsconfig.json`, `scripts/release.sh`, `.github/workflows/`, `.claude/skills/` |
 

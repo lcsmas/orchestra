@@ -112,7 +112,7 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   per-item remove (`queue:remove`) and "Send now" (`queue:flush`). Limit state
   computed renderer-side with the shared `usageLimitedUntil`; delivery/auto-
   flush live in main (see
-  [accounts-usage-linear.md](accounts-usage-linear.md) "Prompt queue").
+  [accounts-usage.md](accounts-usage.md) "Prompt queue").
 
 ## chime.ts (~517 lines) & debug.ts
 **chime.ts** synthesizes ~20 notification sounds with the Web Audio API (no
