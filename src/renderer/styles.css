@@ -1409,13 +1409,6 @@ input:focus, textarea:focus, select:focus {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ws-name-auto {
-  color: var(--text-dim);
-  font-weight: 400;
-  font-size: 11px;
-  margin-left: 4px;
-  opacity: 0.75;
-}
 /* Live context-window size, sitting right after the branch name in the same
    discreet yellow as the login badge, set off by a middle-dot separator. Shares
    the login badge's 10px/500 type so the two read as one family of inline

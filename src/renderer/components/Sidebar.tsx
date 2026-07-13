@@ -1511,9 +1511,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           onDoubleClick={(e) => startRename(e, w)}
                         >
                           {w.branch}
-                          {!w.branchManuallySet && (
-                            <span className="ws-name-auto"> · auto</span>
-                          )}
                         </div>
                       )}
                       <WorkspaceContextBadge workspaceId={w.id} />
