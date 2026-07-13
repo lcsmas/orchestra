@@ -114,7 +114,10 @@ queue survives restarts) instead of burning turns on "limit reached" errors.
   `WorkspaceContextBadge` `:92`. Colour tint by the hotter window
   (≥90% crit/≥75% warn); `loginColor` `:36` hashes the name to a stable HSL.
 - **UsageBars.tsx** — slim 5h/7d bars for the active workspace's account, plus a
-  hover panel of all accounts sorted hottest-first.
+  hover panel of all accounts sorted hottest-first. An "updated Xm ago" stamp
+  (from the snapshot's `fetchedAt`) sits directly on the strip — centered in
+  the 7d bar's head, mirroring the account name on the 5h bar — and on each
+  panel row, so staleness is visible without hovering.
 - **AccountsSettings.tsx** — manage accounts + inheritance checkboxes/chips
   (populated from `listGlobalInheritables`); saves via `setAccounts` then syncs.
 

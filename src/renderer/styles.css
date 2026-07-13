@@ -700,7 +700,7 @@ input:focus, textarea:focus, select:focus {
   border-radius: 2px;
   transition: width 240ms var(--ease), background-color 240ms var(--ease);
 }
-.usage-bars-account {
+.usage-bar-note {
   flex: 1;
   font-size: 10px;
   color: var(--text-dim);
@@ -759,9 +759,17 @@ input:focus, textarea:focus, select:focus {
   color: var(--text);
 }
 .usage-bars-row-name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.usage-bars-row-updated {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.7;
 }
 .usage-bars-row.active .usage-bars-row-name {
   color: var(--accent);

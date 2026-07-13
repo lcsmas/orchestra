@@ -48,6 +48,20 @@ export function formatResetsIn(resetsAt: string, now: number): string {
   return `resets in ${m}m`;
 }
 
+// "updated 3m ago" — age of the snapshot behind the bars. The pollers refresh
+// every 60–180s, so minute granularity matches the data's actual freshness.
+function formatUpdatedAgo(fetchedAt: number, now: number): string {
+  if (!Number.isFinite(fetchedAt) || fetchedAt <= 0) return '';
+  const mins = Math.floor(Math.max(0, now - fetchedAt) / 60_000);
+  if (mins < 1) return 'updated just now';
+  const days = Math.floor(mins / 1440);
+  const hours = Math.floor((mins % 1440) / 60);
+  const m = mins % 60;
+  if (days > 0) return `updated ${days}d ${hours}h ago`;
+  if (hours > 0) return `updated ${hours}h ${m}m ago`;
+  return `updated ${m}m ago`;
+}
+
 // Short reason text for an account whose usage can't be read — mirrors the
 // vocabulary used on the sidebar AccountBadge so the two stay consistent.
 function errorText(kind: UsageErrorKind | null): string {
@@ -70,13 +84,15 @@ function UsageBar({
   title,
   window,
   now,
-  accountLabel,
+  note,
 }: {
   label: string;
   title: string;
   window: { utilization: number; resetsAt: string };
   now: number;
-  accountLabel?: string;
+  /** Muted text centered between the window label and the percent — the 5h bar
+   *  shows the account name here, the 7d bar the "updated Xm ago" stamp. */
+  note?: string;
 }) {
   const pct = clampPct(window.utilization);
   const resets = formatResetsIn(window.resetsAt, now);
@@ -84,7 +100,7 @@ function UsageBar({
     <div className="usage-bar" title={`${title}${resets ? ` — ${resets}` : ''}`}>
       <div className="usage-bar-head">
         <span className="usage-bar-label">{label}</span>
-        {accountLabel && <span className="usage-bars-account">{accountLabel}</span>}
+        {note && <span className="usage-bar-note">{note}</span>}
         <span className="usage-bar-pct">{pct}%</span>
       </div>
       <div className="usage-bar-track">
@@ -126,7 +142,14 @@ function MiniBar({
 
 // State of one account in the all-accounts panel, derived from its usage slice.
 type RowState =
-  | { kind: 'ok'; fiveHour: UsageWindowDetail; sevenDay: UsageWindowDetail; expired?: boolean }
+  | {
+      kind: 'ok';
+      fiveHour: UsageWindowDetail;
+      sevenDay: UsageWindowDetail;
+      expired?: boolean;
+      /** Epoch ms of the snapshot the bars render — shows as "updated Xm ago". */
+      fetchedAt: number;
+    }
   | { kind: 'pending' }
   | { kind: 'error'; errorKind: UsageErrorKind | null };
 
@@ -158,6 +181,11 @@ function UsageRowView({ row, now }: { row: UsageRow; now: number }) {
         )}
         {row.state.kind === 'ok' && row.state.expired && (
           <span className="usage-bars-row-status">token expired</span>
+        )}
+        {row.state.kind === 'ok' && (
+          <span className="usage-bars-row-updated">
+            {formatUpdatedAgo(row.state.fetchedAt, now)}
+          </span>
         )}
       </div>
       {row.state.kind === 'ok' && (
@@ -218,6 +246,7 @@ export function UsageBars() {
   let fiveHour: { utilization: number; resetsAt: string } | null = null;
   let sevenDay: { utilization: number; resetsAt: string } | null = null;
   let accountLabel: string | null = null;
+  let fetchedAt = 0;
 
   if (accountId !== null) {
     // Show bars whenever we have data — including a cached snapshot kept across
@@ -227,6 +256,7 @@ export function UsageBars() {
       fiveHour = perAccountStatus.data.fiveHour;
       sevenDay = perAccountStatus.data.sevenDay;
       accountLabel = activeAccount?.label ?? null;
+      fetchedAt = perAccountStatus.fetchedAt;
     }
     // No data yet for this account → hide bars rather than show the wrong account.
   } else if (globalUsage) {
@@ -235,6 +265,7 @@ export function UsageBars() {
     // Surface the default login by name too, the same as a pinned account, so
     // the bars always say which login they're measuring.
     accountLabel = activeAccount?.label ?? 'default';
+    fetchedAt = globalUsage.fetchedAt;
   }
 
   if (!fiveHour || !sevenDay) return null;
@@ -266,7 +297,13 @@ export function UsageBars() {
         label: a.label,
         isActive,
         hotness: Math.max(u.data.fiveHour.utilization, u.data.sevenDay.utilization),
-        state: { kind: 'ok', fiveHour: u.data.fiveHour, sevenDay: u.data.sevenDay, expired: u.expired },
+        state: {
+          kind: 'ok',
+          fiveHour: u.data.fiveHour,
+          sevenDay: u.data.sevenDay,
+          expired: u.expired,
+          fetchedAt: u.fetchedAt,
+        },
       });
     }
   }
@@ -285,7 +322,12 @@ export function UsageBars() {
       label: 'default',
       isActive: defaultActive,
       hotness: Math.max(globalUsage.fiveHour.utilization, globalUsage.sevenDay.utilization),
-      state: { kind: 'ok', fiveHour: globalUsage.fiveHour, sevenDay: globalUsage.sevenDay },
+      state: {
+        kind: 'ok',
+        fiveHour: globalUsage.fiveHour,
+        sevenDay: globalUsage.sevenDay,
+        fetchedAt: globalUsage.fetchedAt,
+      },
     });
   }
   rows.sort(
@@ -319,13 +361,14 @@ export function UsageBars() {
         title={`Claude usage${accountLabel ? ` (${accountLabel})` : ''} — 5-hour session window`}
         window={fiveHour}
         now={now}
-        accountLabel={accountLabel ?? undefined}
+        note={accountLabel ?? undefined}
       />
       <UsageBar
         label="7d"
         title={`Claude usage${accountLabel ? ` (${accountLabel})` : ''} — 7-day weekly window`}
         window={sevenDay}
         now={now}
+        note={formatUpdatedAgo(fetchedAt, now)}
       />
     </div>
   );
