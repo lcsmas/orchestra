@@ -1988,9 +1988,11 @@ Optional flags:
 - \`--repo <abs path of another repo already added to orchestra>\` — spawn in a different repo.
 - \`--base <branch>\` — cut the new branch from a specific base.
 - \`--detached\` — create the workspace with NO parent, so it appears as its own
-  top-level section grouped under its repo instead of nesting under you. Use
-  when the user asks for an independent / standalone workspace; default (no
-  flag) nests the new workspace under you.
+  top-level section grouped under its repo instead of nesting under you.
+  Default to nesting (no flag). Pass \`--detached\` only when the user's request
+  implies the new workspace is not yours to track — they asked for an
+  "independent", "standalone", or "separate top-level" workspace. If genuinely
+  ambiguous, ask.
 `;
 
 const COMMS_SKILL = `---
