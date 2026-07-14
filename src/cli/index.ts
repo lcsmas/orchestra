@@ -124,8 +124,9 @@ Usage:
   orchestra peers                                List the other agent workspaces
   orchestra read <id> [--lines N]                Print a workspace's transcript
   orchestra message <id> <text...>               Send a prompt to a workspace
-  orchestra spawn --task <text> [--repo <path>] [--base <branch>]
+  orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--detached]
                                                  Spawn a new worktree + agent
+                                                 (--detached: top-level, not nested under the caller)
   orchestra rename <id> <branch>                 Rename a workspace's branch
   orchestra promote <id>                         Promote a scratch session into an orchestrator
   orchestra attach <id> <parentId>               Nest an existing workspace under an orchestrator
@@ -162,6 +163,13 @@ function takeFlag(args: string[], flag: string): { value?: string; rest: string[
   const value = args[idx + 1];
   const rest = [...args.slice(0, idx), ...args.slice(idx + 2)];
   return { value, rest };
+}
+
+/** Pull a valueless `--flag` out of args, returning its presence and the leftover args. */
+function takeBoolFlag(args: string[], flag: string): { present: boolean; rest: string[] } {
+  const idx = args.indexOf(flag);
+  if (idx === -1) return { present: false, rest: args };
+  return { present: true, rest: [...args.slice(0, idx), ...args.slice(idx + 1)] };
 }
 
 function fail(message: string): never {
@@ -228,11 +236,16 @@ async function main(argv: string[]): Promise<void> {
       const { value: task, rest: r1 } = takeFlag(args, '--task');
       const { value: repo, rest: r2 } = takeFlag(r1, '--repo');
       const { value: base, rest: r3 } = takeFlag(r2, '--base');
-      void r3;
-      if (!task) fail('usage: orchestra spawn --task <text> [--repo <path>] [--base <branch>]');
+      const { present: detached, rest: r4 } = takeBoolFlag(r3, '--detached');
+      void r4;
+      if (!task)
+        fail('usage: orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--detached]');
+      // `from` is always sent (it also drives repo inheritance server-side);
+      // `detached` tells the server to skip only the parent nesting.
       const body: Record<string, unknown> = { task, from: selfWorkspaceId() };
       if (repo !== undefined) body.repoPath = path.resolve(repo);
       if (base !== undefined) body.baseBranch = base;
+      if (detached) body.detached = true;
       const res = await request('/spawn', body);
       if (!res.ok) fail(res.error ?? 'failed to spawn workspace');
       process.stdout.write(`Spawned ${res.id as string} on branch ${res.branch as string}\n`);

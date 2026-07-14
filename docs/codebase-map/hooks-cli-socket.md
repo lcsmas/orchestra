@@ -23,7 +23,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | Route | Required body | Response |
 |---|---|---|
 | `/rename` | `id`, `branch` | `{ ok, branch? }` |
-| `/spawn` | `task` (+ optional `repoPath`,`baseBranch`,`from`) | `{ ok, id?, branch? }` |
+| `/spawn` | `task` (+ optional `repoPath`,`baseBranch`,`from`,`detached` — `detached:true` skips parent nesting; `from` still drives repo inheritance) | `{ ok, id?, branch? }` |
 | `/peers` | — | `{ ok, peers?: PeerInfo[] }` |
 | `/read` | `id` (+ `lines?`) | `{ ok, branch?, transcript? }` |
 | `/message` | `to`, `text` (+ `from`) | `{ ok, delivery?: 'live'|'started'|'inbox' }` |
@@ -96,7 +96,8 @@ Standalone Node HTTP client (no npm deps) that POSTs to the socket. Reads
 `$ORCHESTRA_SOCK`/pointer for the socket and `$ORCHESTRA_WS_ID` for self-identity
 (sent as `from`). Exit 0 on `{ok:true}`, 1 otherwise (error to stderr).
 Subcommands: `peers`, `read <id> [--lines N]`, `message <id> <text…>`, `spawn
---task <text> [--repo <path>] [--base <branch>]`, `rename <id> <branch>`,
+--task <text> [--repo <path>] [--base <branch>] [--detached]` (`--detached`
+creates the workspace parentless — its own top-level section), `rename <id> <branch>`,
 `promote <id>`, `attach <id> <parentId>`, `detach <id>`, `add-repo <path>`,
 `delete <id> --yes`, `accounts` (list configured accounts), `migrate-account <id>
 <accountId|--default>` (migrate a workspace to another login / back to default).

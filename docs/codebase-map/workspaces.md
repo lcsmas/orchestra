@@ -114,7 +114,7 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 
 | Handler | Line | Route | Purpose |
 |---|---|---|---|
-| `dispatchSpawnRequest` | `:932` | `/spawn` | Create child workspace + start headless. Inherits caller's repo (worktree callers) or requires explicit `repoPath` (scratch/orchestrator callers). Records `parentId` = caller. |
+| `dispatchSpawnRequest` | `:932` | `/spawn` | Create child workspace + start headless. Inherits caller's repo (worktree callers) or requires explicit `repoPath` (scratch/orchestrator callers). Records `parentId` = caller, unless `detached:true` (parentless top-level workspace; repo inheritance from `from` still applies). |
 | `dispatchPromoteRequest` | `:1089` | `/promote` | scratch → orchestrator (idempotent; rejects worktrees). |
 | `dispatchAttachRequest` | `:1148` | `/attach` | Re-parent under an orchestrator, or clear `parentId` to detach. Cycle-checked. |
 | `dispatchPeersRequest` | `:1239` | `/peers` | List other live workspaces (`PeerInfo[]`). |

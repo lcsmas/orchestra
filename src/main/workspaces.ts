@@ -1023,6 +1023,7 @@ export async function dispatchSpawnRequest(
     baseBranch?: string;
     task: string;
     agent?: 'claude';
+    detached?: boolean;
   },
   window: BrowserWindow,
 ): Promise<SpawnResult> {
@@ -1045,8 +1046,16 @@ export async function dispatchSpawnRequest(
         'no repo: pass an explicit repoPath (an orchestrator/scratch session has no repo of its own to inherit)',
     };
   try {
+    // `detached` skips only the parent nesting — `from` above still drives
+    // repo inheritance, so a detached spawn need not name --repo explicitly.
     const ws = await createWorkspace(
-      { repoPath, baseBranch: input.baseBranch, task, agent: input.agent, parentId: input.from },
+      {
+        repoPath,
+        baseBranch: input.baseBranch,
+        task,
+        agent: input.agent,
+        parentId: input.detached ? undefined : input.from,
+      },
       window,
     );
     await startWorkspaceAgentHeadless(ws.id, window);
@@ -1978,6 +1987,10 @@ exits non-zero.
 Optional flags:
 - \`--repo <abs path of another repo already added to orchestra>\` — spawn in a different repo.
 - \`--base <branch>\` — cut the new branch from a specific base.
+- \`--detached\` — create the workspace with NO parent, so it appears as its own
+  top-level section grouped under its repo instead of nesting under you. Use
+  when the user asks for an independent / standalone workspace; default (no
+  flag) nests the new workspace under you.
 `;
 
 const COMMS_SKILL = `---

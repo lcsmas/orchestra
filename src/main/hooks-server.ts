@@ -151,6 +151,7 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
                     baseBranch: typeof msg.baseBranch === 'string' ? msg.baseBranch : undefined,
                     task: msg.task,
                     agent: 'claude',
+                    detached: msg.detached === true,
                   },
                   window,
                 ),
