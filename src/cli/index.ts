@@ -136,6 +136,8 @@ Usage:
   orchestra accounts                              List configured Claude accounts (id + label)
   orchestra migrate-account <id> <accountId>     Migrate a workspace to another account
   orchestra migrate-account <id> --default       Migrate a workspace back to the default login
+  orchestra login-url <url>                      (internal) route an account-login browser-open
+                                                 to the app's isolated login window
   orchestra --help                               Show this help
 
 Socket discovery (in order):
@@ -363,6 +365,21 @@ async function main(argv: string[]): Promise<void> {
       const label = target ?? 'default login';
       const resumed = res.resumed === true ? ' (resumed)' : '';
       process.stdout.write(`Migrated ${res.id as string} to ${label}${resumed}\n`);
+      return;
+    }
+
+    case 'login-url': {
+      // Internal: invoked by the xdg-open/open shim inside an account login
+      // PTY (see main/cli-shim.ts installLoginBrowserShim). The account id
+      // rides on the env the login PTY was spawned with.
+      const url = args[0];
+      const accountId = process.env.ORCHESTRA_LOGIN_ACCOUNT;
+      if (!url) fail('usage: orchestra login-url <url>');
+      if (!accountId) fail('ORCHESTRA_LOGIN_ACCOUNT is not set (not inside an account login PTY)');
+      const res = await request('/loginUrl', { accountId, url });
+      if (!res.ok) fail(res.error ?? 'failed to route login url');
+      // Silent on success — this runs behind claude's browser-open, where any
+      // stdout would leak into the login TUI.
       return;
     }
 

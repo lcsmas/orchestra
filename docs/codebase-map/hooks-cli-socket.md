@@ -33,6 +33,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | `/attach` | `id` (+ `parentId?`) | `{ ok, id?, parentId? }` |
 | `/migrateAccount` | `id` (+ `accountId?` — null/'' = default login) | `{ ok, id?, branch?, accountId?, resumed? }` |
 | `/accounts` | — | `{ ok, accounts?: {id,label,configDir}[] }` |
+| `/loginUrl` | `accountId`, `url` | `{ ok, mode?: 'window'\|'external' }` — routes a login PTY's browser-open into the account's isolated OAuth window (`main/login-browser.ts`) |
 | default (no match) | `id`, `event` | `{}` 200 — legacy activity-event path |
 
 ## Hooks installed into each worktree
@@ -104,15 +105,23 @@ Subcommands: `peers`, `read <id> [--lines N]`, `message <id> <text…>`, `spawn
 creates the workspace parentless — its own top-level section), `rename <id> <branch>`,
 `promote <id>`, `attach <id> <parentId>`, `detach <id>`, `add-repo <path>`,
 `delete <id> --yes`, `accounts` (list configured accounts), `migrate-account <id>
-<accountId|--default>` (migrate a workspace to another login / back to default).
+<accountId|--default>` (migrate a workspace to another login / back to default),
+`login-url <url>` (internal — invoked by the login-browser shim below; account id
+rides on `$ORCHESTRA_LOGIN_ACCOUNT`).
 Fully non-interactive (destructive `delete` needs `--yes`).
 
-## CLI shims (cli-shim.ts, ~157 lines)
+## CLI shims (cli-shim.ts)
 - **User-facing** — Linux `~/.local/bin/orchestra` (`exec "$APPIMAGE" cli "$@"`),
   Windows `%LOCALAPPDATA%\Orchestra\bin\orchestra.cmd`. Only overwritten if it
   carries the orchestra marker or is absent. macOS skipped (no agreed location).
 - **Agent-facing** — `~/.orchestra/bin/orchestra`, re-installed every GUI startup
   (the AppImage mount path changes per run) and prepended to every agent PTY's PATH.
+- **Login-browser** — `installLoginBrowserShim()` writes fake `xdg-open`/`open`
+  scripts into `~/.orchestra/bin/login-shim/`; the account-login PTY (only)
+  gets that dir prepended to PATH so `claude /login`'s automatic browser-open
+  is forwarded (`orchestra login-url` → `/loginUrl`) into the account's
+  isolated OAuth window instead of the system browser. POSIX only (returns
+  null on Windows). See [accounts-usage.md](accounts-usage.md).
 
 ## Tests (orchestra-hook.test.ts, ~121 lines)
 Validates `seq` allocation: sequential `[1,2,3,4]` with flock (`[0,0,0,0]`

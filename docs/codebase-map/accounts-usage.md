@@ -53,6 +53,22 @@ source)` `:130`.
   `watchForLogin` `:101` watch `.credentials.json` for a new token via `fs.watch`
   + 1.5s poll, then fire `onLoggedIn` → refresh. UI: `AccountLoginModal.tsx`
   hosts the xterm; on PTY exit it calls `refreshAccounts()`.
+- **Per-account OAuth browser** (`src/main/login-browser.ts`): the browser half
+  of `/login` must NOT land in the system browser — its one claude.ai cookie
+  jar is already the user's main account, so a secondary account's login would
+  silently authorize the wrong account. Each account instead gets a
+  `BrowserWindow` on its own persistent session partition
+  (`persist:claude-login-<id>`), UA stripped of Electron/Orchestra tokens so
+  Google's embedded-webview OAuth block doesn't trip. URLs reach it two ways,
+  both via `dispatchLoginUrlRequest` (host-anchored `isClaudeAuthUrl` in
+  `accounts.ts` gates which URLs get the partition; others → `openExternal`):
+  (1) claude's auto-open, intercepted by the `xdg-open`/`open` PATH shim
+  (`installLoginBrowserShim`, `cli-shim.ts`) → `orchestra login-url` →
+  `/loginUrl` socket route (the login PTY carries `ORCHESTRA_LOGIN_ACCOUNT` +
+  `ORCHESTRA_SOCK` + shimmed PATH/`BROWSER`); (2) the modal's link handler →
+  `accounts:loginOpenUrl` IPC. Token detection and `accounts:loginStop` both
+  `closeLoginBrowser`. Right-click menu offers a system-browser escape hatch.
+  Windows has no shim (powershell opener) — link-click routing still applies.
 
 ## Usage metering — two pollers
 The endpoint is `https://api.anthropic.com/api/oauth/usage` (headers:

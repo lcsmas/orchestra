@@ -18,8 +18,13 @@ interface Props {
 //
 // On exit we ask main to recompute account usage so the freshly-authenticated
 // account's badge fills in immediately. The login link Claude prints is an
-// OSC-8 / plain URL; WebLinksAddon + the OSC handler route clicks to the OS
-// browser via openExternal, so the OAuth flow opens normally.
+// OSC-8 / plain URL; WebLinksAddon + the OSC handler route clicks through
+// accountLoginOpenUrl, which opens Claude OAuth pages in this account's
+// ISOLATED login browser window (its own session partition) — never the system
+// browser, whose existing claude.ai session would silently authorize the
+// user's main account instead of this one. Claude's automatic browser-open is
+// intercepted the same way via a PATH shim in the login PTY (see
+// main/cli-shim.ts installLoginBrowserShim).
 export function AccountLoginModal({ accountId, label, onClose }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const ptyId = `account-login:${accountId}`;
@@ -35,11 +40,11 @@ export function AccountLoginModal({ accountId, label, onClose }: Props) {
       convertEol: true,
       scrollback: 5000,
       theme: { background: '#1a1f26', foreground: '#e6e9ef', cursor: '#6ea8ff' },
-      linkHandler: { activate: (_e, uri) => window.orchestra.openExternal(uri) },
+      linkHandler: { activate: (_e, uri) => window.orchestra.accountLoginOpenUrl(accountId, uri) },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon((_e, uri) => window.orchestra.openExternal(uri)));
+    term.loadAddon(new WebLinksAddon((_e, uri) => window.orchestra.accountLoginOpenUrl(accountId, uri)));
     term.open(containerRef.current);
 
     let cancelled = false;
@@ -133,14 +138,21 @@ export function AccountLoginModal({ accountId, label, onClose }: Props) {
     <div
       className="modal-backdrop account-login-backdrop"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        // A stray backdrop click while the login PTY is alive would kill an
+        // in-flight OAuth dance (the user is typically off in the sign-in
+        // window at that moment) — require the explicit Close button instead.
+        if (e.target === e.currentTarget && exited) onClose();
       }}
     >
       <div className="modal account-login-modal" role="dialog" aria-label={`Log in account ${label}`}>
         <div className="modal-header">
           <div>
             <h2>Log in — {label}</h2>
-            <div className="modal-sub">Running <code>claude /login</code> in this account's config dir</div>
+            <div className="modal-sub">
+              Running <code>claude /login</code> in this account's config dir — the sign-in page opens
+              in an isolated window with its own session, so it won't reuse your browser's claude.ai
+              login
+            </div>
           </div>
           <button className="modal-close" onClick={onClose} aria-label="Close">
             ×

@@ -184,8 +184,9 @@ import {
   readScrollback,
   isRunning,
 } from './pty';
-import { startHooksServer, stopHooksServer } from './hooks-server';
-import { installCliShim, installAgentCliShim } from './cli-shim';
+import { startHooksServer, stopHooksServer, getHookSocketPath } from './hooks-server';
+import { installCliShim, installAgentCliShim, installLoginBrowserShim } from './cli-shim';
+import { closeLoginBrowser, dispatchLoginUrlRequest } from './login-browser';
 import { startEventsSpool, stopEventsSpool } from './events-spool';
 import { startUsagePolling, stopUsagePolling, getLastUsage } from './usage';
 import {
@@ -523,16 +524,36 @@ handle('accounts:loginStart', async (_e, accountId: string, cols: number, rows: 
   // `claude /login` does NOT exit after authenticating — it drops into a normal
   // session — and Claude Code exposes no completion signal. So watch the config
   // dir: once a fresh OAuth token lands in .credentials.json, kill the PTY
-  // (which fires pty:exit) and tell the renderer login is done so it can close.
+  // (which fires pty:exit), close the account's OAuth window, and tell the
+  // renderer login is done so it can close.
   armLoginWatch(account, () => {
     const win = getMainWindow();
     if (isRunning(ptyId)) stopPty(ptyId);
+    closeLoginBrowser(accountId);
     if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
       win.webContents.send('accounts:loginDone', accountId);
     }
     void refreshAccountsNow(win);
   });
-  const { command, args } = loginShellArgv('claude /login');
+  // Intercept claude's automatic browser-open so the OAuth page lands in this
+  // account's ISOLATED login window, not the system browser whose claude.ai
+  // session is the user's main account (see main/login-browser.ts). The shim
+  // dir shadows xdg-open/open on PATH for this PTY only; ORCHESTRA_SOCK +
+  // ORCHESTRA_LOGIN_ACCOUNT let the shim's `orchestra login-url` phone home.
+  const shimDir = installLoginBrowserShim();
+  const sock = getHookSocketPath();
+  // The PATH we set below goes through the user's LOGIN shell, whose profile
+  // (or macOS path_helper) may rebuild PATH and push the shim behind the real
+  // /usr/bin openers — so re-prepend it in the command itself. POSIX prefix
+  // assignment: the shell still resolves `claude` normally, while claude's
+  // children (the browser opener) see the shim first. Skipped for fish, which
+  // doesn't parse it — fish keeps the env-level PATH best-effort instead.
+  const shell = path.basename(process.env.SHELL || 'bash');
+  const loginScript =
+    shimDir && shell !== 'fish'
+      ? `PATH=${JSON.stringify(shimDir)}:"$PATH" claude /login`
+      : 'claude /login';
+  const { command, args } = loginShellArgv(loginScript);
   await startPty({
     id: ptyId,
     cwd: dir,
@@ -541,14 +562,34 @@ handle('accounts:loginStart', async (_e, accountId: string, cols: number, rows: 
     cols,
     rows,
     window: getMainWindow(),
-    extraEnv: { CLAUDE_CONFIG_DIR: dir },
+    extraEnv: {
+      CLAUDE_CONFIG_DIR: dir,
+      ORCHESTRA_LOGIN_ACCOUNT: accountId,
+      ...(sock ? { ORCHESTRA_SOCK: sock } : {}),
+      ...(shimDir
+        ? {
+            PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ''}`,
+            // Belt-and-braces for openers that honor $BROWSER over PATH lookup.
+            BROWSER: path.join(shimDir, 'xdg-open'),
+          }
+        : {}),
+    },
   });
 });
 
 handle('accounts:loginStop', (_e, accountId: string) => {
   cancelLoginWatch(accountId);
+  closeLoginBrowser(accountId);
   const ptyId = `account-login:${accountId}`;
   if (isRunning(ptyId)) stopPty(ptyId);
+});
+
+// Link clicked inside the login modal's terminal (the printed "Browser didn't
+// open? Visit:" fallback URL). Same routing as the shim path: Claude OAuth
+// pages open in the account's isolated window, anything else externally.
+handle('accounts:loginOpenUrl', (_e, accountId: string, url: string) => {
+  const res = dispatchLoginUrlRequest({ accountId, url });
+  if (!res.ok) throw new Error(res.error ?? 'failed to open url');
 });
 
 // Recompute the mapping + refetch usage now. The login modal calls this when

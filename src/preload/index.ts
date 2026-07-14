@@ -28,6 +28,7 @@ const api: OrchestraAPI = {
   getWorkspaceAccounts: () => ipcRenderer.invoke('accounts:workspaceAccounts'),
   accountLoginStart: (accountId, cols, rows) => ipcRenderer.invoke('accounts:loginStart', accountId, cols, rows),
   accountLoginStop: (accountId) => ipcRenderer.invoke('accounts:loginStop', accountId),
+  accountLoginOpenUrl: (accountId, url) => ipcRenderer.invoke('accounts:loginOpenUrl', accountId, url),
   refreshAccounts: () => ipcRenderer.invoke('accounts:refresh'),
   listGlobalInheritables: () => ipcRenderer.invoke('accounts:listGlobalInheritables'),
   onAccountLoginDone: (cb) => {

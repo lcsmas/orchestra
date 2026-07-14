@@ -17,6 +17,7 @@ import {
   dispatchMigrateAccountRequest,
   dispatchAccountsListRequest,
 } from './workspaces';
+import { dispatchLoginUrlRequest } from './login-browser';
 import { log } from './logger';
 
 // Tiny HTTP server bound to a Unix socket. Each workspace's
@@ -234,6 +235,15 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
               );
             } else {
               send(200, { ok: false, error: 'missing id' });
+            }
+          } else if (route === '/loginUrl') {
+            // Browser-open intercepted inside an account login PTY (via the
+            // xdg-open/open shim → `orchestra login-url`): open it in that
+            // account's isolated login window instead of the system browser.
+            if (typeof msg.accountId === 'string' && typeof msg.url === 'string') {
+              send(200, dispatchLoginUrlRequest({ accountId: msg.accountId, url: msg.url }));
+            } else {
+              send(200, { ok: false, error: 'missing accountId or url' });
             }
           } else if (route === '/accounts') {
             send(200, dispatchAccountsListRequest());

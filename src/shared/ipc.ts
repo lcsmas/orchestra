@@ -106,6 +106,11 @@ export interface OrchestraAPI {
   accountLoginStart: (accountId: string, cols: number, rows: number) => Promise<void>;
   /** Stop an account's login PTY (e.g. the modal was closed). */
   accountLoginStop: (accountId: string) => Promise<void>;
+  /** Open a URL clicked in the login modal's terminal. Claude OAuth pages open
+   *  in the account's isolated login browser window (own session partition, so
+   *  it can't reuse the system browser's claude.ai login); other URLs open
+   *  externally. */
+  accountLoginOpenUrl: (accountId: string, url: string) => Promise<void>;
   /** Recompute the workspace→account map and refetch usage now (called after a
    *  login PTY exits so the badge updates immediately). */
   refreshAccounts: () => Promise<void>;

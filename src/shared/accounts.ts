@@ -331,3 +331,29 @@ export function planAccountMigration(
   if (current === targetAccountId) return { kind: 'noop', targetAccountId };
   return { kind: 'migrate', targetAccountId };
 }
+
+// ---- account login browser routing ----------------------------------------------
+
+/** Whether `url` is a Claude/Anthropic OAuth page that the per-account login
+ *  browser window should host. The interactive `claude /login` opens exactly
+ *  one of `https://claude.ai/oauth/authorize` or
+ *  `https://console.anthropic.com/oauth/authorize`; anything else an account
+ *  login PTY tries to open (docs links, non-https schemes) belongs in the
+ *  system browser instead. Deliberately host-anchored — a lookalike such as
+ *  `claude.ai.evil.com` must not be granted the account's session partition. */
+export function isClaudeAuthUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'https:') return false;
+  const host = parsed.hostname.toLowerCase();
+  return (
+    host === 'claude.ai' ||
+    host === 'anthropic.com' ||
+    host.endsWith('.claude.ai') ||
+    host.endsWith('.anthropic.com')
+  );
+}

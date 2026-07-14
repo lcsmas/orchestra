@@ -4,6 +4,7 @@ import {
   canAutoFlushQueue,
   classifyHttpError,
   expandConfigDir,
+  isClaudeAuthUrl,
   isExpired,
   planAccountMigration,
   resolveWorkspaceAccountId,
@@ -325,4 +326,17 @@ test('canAutoFlushQueue requires a post-queue, un-limited reading', () => {
     canAutoFlushQueue(queuedAt, { fetchedAt: NOW + 60_000, data: windows(3, 3) }, NOW),
     true,
   );
+});
+
+test('isClaudeAuthUrl accepts Claude/Anthropic https pages only', () => {
+  assert.equal(isClaudeAuthUrl('https://claude.ai/oauth/authorize?code=true'), true);
+  assert.equal(isClaudeAuthUrl('https://console.anthropic.com/oauth/authorize'), true);
+  assert.equal(isClaudeAuthUrl('https://anthropic.com/'), true);
+  // Host-anchored: lookalike domains must not get the account's session.
+  assert.equal(isClaudeAuthUrl('https://claude.ai.evil.com/oauth/authorize'), false);
+  assert.equal(isClaudeAuthUrl('https://notclaude.ai/oauth/authorize'), false);
+  // https only, and it must parse as a URL at all.
+  assert.equal(isClaudeAuthUrl('http://claude.ai/oauth/authorize'), false);
+  assert.equal(isClaudeAuthUrl('not a url'), false);
+  assert.equal(isClaudeAuthUrl('file:///etc/passwd'), false);
 });

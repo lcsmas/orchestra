@@ -154,3 +154,54 @@ export function installAgentCliShim(): void {
     log.warn('failed to install agent orchestra CLI shim', e);
   }
 }
+
+// ---------- Login-browser shim ----------
+//
+// The interactive `claude /login` auto-opens the OAuth URL via the `open`
+// package, which on Linux execs `xdg-open` (and on macOS `open`) from PATH.
+// Left alone, that lands in the system browser — whose claude.ai session is
+// the user's MAIN account, so a secondary account's login silently authorizes
+// the wrong account. The login PTY (and only it) gets this shim dir prepended
+// to PATH: fake `xdg-open`/`open` scripts forward the URL to the running app
+// (`orchestra login-url` → the /loginUrl socket route), which opens it in the
+// account's isolated browser window instead (see main/login-browser.ts).
+
+/**
+ * Best-effort install of the `xdg-open`/`open` interceptors, returning the
+ * shim dir to prepend to the login PTY's PATH — or null on Windows (the `open`
+ * package launches the browser through powershell there, which we don't shim;
+ * the login modal's link routing still covers the printed fallback URL) or on
+ * any write failure (login then degrades to the old system-browser behaviour).
+ */
+export function installLoginBrowserShim(): string | null {
+  if (process.platform === 'win32') return null;
+  try {
+    const dir = path.join(agentCliBinDir(), 'login-shim');
+    fs.mkdirSync(dir, { recursive: true });
+    // Absolute path to the agent shim so this works even if claude launches
+    // the opener with a sanitized PATH. Forward only the first web URL among
+    // the args (`open` may pass flags like -a first); swallow anything else so
+    // a stray non-URL open can't error the login TUI.
+    const orchestra = path.join(agentCliBinDir(), 'orchestra');
+    const body = [
+      '#!/bin/sh',
+      `# ${SHIM_MARKER}. Safe to delete.`,
+      '# Routes an account-login browser-open into the Orchestra app so the',
+      '# OAuth page opens in that account\'s isolated login window.',
+      'for a in "$@"; do',
+      '  case "$a" in',
+      `    http://*|https://*) exec "${orchestra}" login-url "$a" ;;`,
+      '  esac',
+      'done',
+      'exit 0',
+      '',
+    ].join('\n');
+    for (const name of ['xdg-open', 'open']) {
+      fs.writeFileSync(path.join(dir, name), body, { mode: 0o755 });
+    }
+    return dir;
+  } catch (e) {
+    log.warn('failed to install login-browser shim', e);
+    return null;
+  }
+}
