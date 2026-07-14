@@ -17,6 +17,10 @@ Event → status (`applyAgentEvent` `:471`):
 - `stop`/`stopfail` → `waiting` via `fireFinished` `:61` (chime + "finished"
   toast if window unfocused; recomputes merge state; persists context tokens).
 - `notify` → `waiting` via `fireNeedsInput` `:109` ("needs input" toast).
+- `session` (SessionStart; `tool` slot carries the payload `source`) →
+  `source=clear|compact` resets the context badge via `resetContext` (0
+  sentinel over `agent:context` + drops persisted `contextTokens`), else
+  (startup/resume) recomputes it from the transcript.
 
 `setStatus` `:37` **broadcasts the IPC before** the (fire-and-forget) store
 write — the dot must never wait on the serialized store. The `changed` flag
@@ -30,7 +34,8 @@ Also here (piggybacked on polls, cached by ref-SHA): `detectAndUpdateMergeState`
 throttled 60s), `detectAndUpdateReleaseState` `:273` (PR cadence, not the hot
 poll). Context tokens: `emitContext` `:433` / `computeContextTokens` `:370` reads
 the transcript tail and sums `input + cache_creation + cache_read` on the last
-non-sidechain assistant message.
+non-sidechain assistant message; a `compact_boundary` system entry newer than
+any assistant turn returns the 0 reset sentinel (pre-compact usage is stale).
 
 ### Events spool — events-spool.ts (~297 lines)
 **Why a file, not a socket POST:** old curl-to-socket hooks blocked/dropped

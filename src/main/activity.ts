@@ -377,6 +377,11 @@ const TRANSCRIPT_TAIL_BYTES = 512 * 1024;
  *  sidechain turns don't count toward the parent's context), the sum of the
  *  three input components — fresh input, cache writes, and cache reads. Output
  *  tokens are excluded: they're what the model produced, not what's fed back in.
+ *  Returns 0 when the newest relevant entry is a compaction boundary: the
+ *  pre-compact assistant usage behind it is stale (compaction just shrank the
+ *  live context), and the true post-compact size is unknown until the next
+ *  assistant turn — 0 tells the caller "reset the badge" rather than
+ *  resurfacing the pre-compact figure.
  *  Returns null when the transcript is missing/unreadable or has no usable
  *  assistant turn yet (e.g. the very first event of a brand-new session). */
 async function computeContextTokens(transcriptPath: string): Promise<number | null> {
@@ -406,6 +411,7 @@ async function computeContextTokens(transcriptPath: string): Promise<number | nu
     if (!trimmed) continue;
     let entry: {
       type?: unknown;
+      subtype?: unknown;
       isSidechain?: unknown;
       message?: { usage?: Record<string, unknown> };
     };
@@ -414,6 +420,9 @@ async function computeContextTokens(transcriptPath: string): Promise<number | nu
     } catch {
       continue;
     }
+    // A compaction boundary newer than any assistant turn means the context
+    // was just rewritten: everything behind it is pre-compact and stale.
+    if (entry.type === 'system' && entry.subtype === 'compact_boundary') return 0;
     if (entry.type !== 'assistant' || entry.isSidechain === true) continue;
     const usage = entry.message?.usage;
     if (!usage) continue;
@@ -462,16 +471,37 @@ async function emitContext(
   // this a no-op when the cached value already matches (and so a `notify` right
   // after a `stop`, both turn-ends, doesn't double-write). `upsertWorkspace`
   // already runs on the status transition; this just carries one more field.
+  // 0 is the "context reset by compaction" signal — drop the persisted figure
+  // rather than storing a literal zero, so the startup seed shows no badge.
   if (persist) {
     const ws = store.getWorkspace(id);
-    if (ws && !ws.archived && ws.contextTokens !== tokens) {
-      void store.upsertWorkspace({ ...ws, contextTokens: tokens }).catch(() => {});
+    const persisted = tokens > 0 ? tokens : undefined;
+    if (ws && !ws.archived && ws.contextTokens !== persisted) {
+      void store.upsertWorkspace({ ...ws, contextTokens: persisted }).catch(() => {});
     }
   }
   if (lastContext.get(id) === tokens) return;
   lastContext.set(id, tokens);
   if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
     window.webContents.send('agent:context', id, tokens);
+  }
+}
+
+/** Force-clear a workspace's context badge without consulting the transcript.
+ *  Used at SessionStart when the hook's `source` says the context was just
+ *  discarded (`clear`) or rewritten (`compact`): the true new size is unknown
+ *  until the next assistant turn, and for `clear` the fresh transcript may not
+ *  even exist yet — so a recompute can't be trusted to notice the reset. Sends
+ *  the 0 sentinel (renderer drops the badge) and drops the persisted figure. */
+function resetContext(id: string, window: BrowserWindow): void {
+  const ws = store.getWorkspace(id);
+  if (ws && !ws.archived && ws.contextTokens != null) {
+    void store.upsertWorkspace({ ...ws, contextTokens: undefined }).catch(() => {});
+  }
+  if (lastContext.get(id) === 0) return;
+  lastContext.set(id, 0);
+  if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+    window.webContents.send('agent:context', id, 0);
   }
 }
 
@@ -519,6 +549,19 @@ export function applyAgentEvent(
       emitTool(id, null, window);
       void emitContext(id, transcript, window, true);
       fireNeedsInput(id, window);
+      break;
+    case 'session':
+      // SessionStart. The `tool` slot carries the hook payload's `source`
+      // (startup | resume | clear | compact). clear/compact just invalidated
+      // the persisted context figure — without this the badge kept showing the
+      // pre-compact size (e.g. 288k) while the TUI statusline showed ~0% until
+      // the next turn ended. startup/resume instead refresh the badge from the
+      // (existing) transcript, which still carries a valid last-turn figure.
+      if (tool === 'clear' || tool === 'compact') {
+        resetContext(id, window);
+      } else {
+        void emitContext(id, transcript, window, true);
+      }
       break;
   }
 }

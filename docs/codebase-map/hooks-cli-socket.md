@@ -44,11 +44,15 @@ shell scripts, mode 0755) and merges commands into
 
 Scripts and the Claude Code events they fire on:
 - **`orchestra-hook.sh`** (~`workspaces.ts:1901`) — UserPromptSubmit, Stop,
-  Notification, PreToolUse, PostToolUse. The **durable activity writer**: appends
-  one JSON line per event to `~/.orchestra/events/<wsid>.jsonl`, allocating a
-  monotonic `seq` under `flock` on `<wsid>.seq` (2s timeout; falls back to
-  `seq=0` without flock). Pure bash (no jq/sed); JSON-escapes the transcript
-  path. Line: `{"seq":N,"event":"…","tool":"…","transcript":"…"}`.
+  Notification, PreToolUse, PostToolUse, SessionStart. The **durable activity
+  writer**: appends one JSON line per event to
+  `~/.orchestra/events/<wsid>.jsonl`, allocating a monotonic `seq` under `flock`
+  on `<wsid>.seq` (2s timeout; falls back to `seq=0` without flock). Pure bash
+  (no jq/sed); JSON-escapes the transcript path. Line:
+  `{"seq":N,"event":"…","tool":"…","transcript":"…"}`. For the `session` event
+  the `tool` slot carries the SessionStart `source`
+  (startup|resume|clear|compact) so main can reset the context badge on
+  clear/compact.
 - **`rename-instruction.sh`** — UserPromptSubmit + SessionStart. **Two-stage**
   progressive nudge while `ORCHESTRA_BRANCH_AUTO=1`: stage 0 pushes hard for an
   early provisional name on the first prompt; stage 1 (after one auto-rename)

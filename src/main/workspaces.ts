@@ -1819,6 +1819,10 @@ const HOOK_ACTIVITY_STOP_CMD = activityHookCmd('stop');
 const HOOK_ACTIVITY_NOTIFY_CMD = activityHookCmd('notify');
 const HOOK_ACTIVITY_PRETOOL_CMD = activityHookCmd('pretool');
 const HOOK_ACTIVITY_POSTTOOL_CMD = activityHookCmd('posttool');
+// SessionStart, whose payload `source` distinguishes startup/resume from
+// clear/compact — the two moments the persisted context-size badge goes stale
+// (compaction/clearing rewrites the context without any turn-end hook firing).
+const HOOK_ACTIVITY_SESSION_CMD = activityHookCmd('session');
 
 // SessionStart hook delegates to a small shell script we drop into the
 // worktree. Inlining the multi-line instruction in a single JSON-encoded
@@ -2364,7 +2368,7 @@ event="\${1:-}"
 tool=""
 transcript=""
 case "\$event" in
-  pretool|posttool|stop|notify)
+  pretool|posttool|stop|notify|session)
     payload="\$(cat)"
     case "\$payload" in
       *'"tool_name"'*)
@@ -2374,6 +2378,19 @@ case "\$event" in
         tool="\${rest%%'"'*}"
         ;;
     esac
+    # SessionStart carries no tool; reuse the tool slot for its "source"
+    # (startup|resume|clear|compact) so orchestra can tell a context-resetting
+    # clear/compact apart from a plain startup without a new line format.
+    if [ "\$event" = "session" ]; then
+      case "\$payload" in
+        *'"source"'*)
+          rest="\${payload#*'"source"'}"
+          rest="\${rest#*:}"
+          rest="\${rest#*'"'}"
+          tool="\${rest%%'"'*}"
+          ;;
+      esac
+    fi
     case "\$payload" in
       *'"transcript_path"'*)
         rest="\${payload#*'"transcript_path"'}"
@@ -2637,6 +2654,7 @@ const HOOKS_VERSION = createHash('sha256')
       HOOK_ACTIVITY_NOTIFY_CMD,
       HOOK_ACTIVITY_PRETOOL_CMD,
       HOOK_ACTIVITY_POSTTOOL_CMD,
+      HOOK_ACTIVITY_SESSION_CMD,
       HOOK_SESSION_START_READY_CMD,
       HOOK_SESSION_START_RENAME_CMD,
       HOOK_COMMS_RESURFACE_CMD,
@@ -2818,6 +2836,9 @@ export async function installOrchestraHooks(
     // possible in the SessionStart fan-out rather than after the instruction
     // prints.
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_READY_CMD);
+    // Activity spool line for session starts: a clear/compact source resets
+    // the context-size badge that would otherwise stay stale until turn-end.
+    upsertHookCommand(sessionStartList, HOOK_ACTIVITY_SESSION_CMD);
     upsertHookCommand(sessionStartList, HOOK_SESSION_START_RENAME_CMD);
     upsertHookCommand(sessionStartList, HOOK_INBOX_DELIVER_CMD);
     upsertHookCommand(sessionStartList, HOOK_ORCHESTRATOR_INSTRUCTION_CMD);

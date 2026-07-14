@@ -94,7 +94,8 @@ function formatTokens(n: number): string {
 // never-run workspace shows only its branch.
 export function WorkspaceContextBadge({ workspaceId }: { workspaceId: string }) {
   const tokens = useStore((s) => s.contextTokens[workspaceId]);
-  if (tokens == null) return null;
+  // Falsy also covers a 0 that slipped through (the reset sentinel): no badge.
+  if (!tokens) return null;
   return (
     <span className="ws-context" title={`Context size: ${tokens.toLocaleString()} tokens`}>
       <span className="ws-context-sep" aria-hidden="true">

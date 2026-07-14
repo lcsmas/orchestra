@@ -458,6 +458,15 @@ window.orchestra.onAgentContext((id, tokens) => {
   // unchanged figure (a posttool that didn't move the model) doesn't churn
   // subscribers — same discipline as onAgentTool above.
   const s = useStore.getState();
+  // 0 is main's "context reset" sentinel (session cleared or compacted): the
+  // real size is unknown until the next turn, so drop the badge rather than
+  // keeping the stale pre-reset figure (or showing a literal "0").
+  if (tokens === 0) {
+    if (!(id in s.contextTokens)) return;
+    const { [id]: _gone, ...contextTokens } = s.contextTokens;
+    useStore.setState({ contextTokens });
+    return;
+  }
   if (s.contextTokens[id] === tokens) return;
   useStore.setState({ contextTokens: { ...s.contextTokens, [id]: tokens } });
 });
