@@ -75,8 +75,11 @@ The endpoint is `https://api.anthropic.com/api/oauth/usage` (headers:
 `Authorization: Bearer`, `anthropic-beta: oauth-2025-04-20`, CC user-agent) —
 the same source Claude Code's `/usage` reads. Pure parsers in `accounts.ts`:
 `parseCredentials` `:159`, `isExpired` `:177` (60s grace), `parseUsageResponse`
-`:210` (tolerates null windows), `classifyHttpError` `:228` (403→`no-scope`,
-429→`rate-limited`).
+`:210` (tolerates null windows; an **enabled** `extra_usage` pool with
+null/absent `utilization` parses as `extraUtilization: 0`, not null — a freshly
+enabled pay-as-you-go pool must read as "0% used, absorbing overflow", else a
+maxed 5h/7d account stays limited and the queue banner never clears),
+`classifyHttpError` `:228` (403→`no-scope`, 429→`rate-limited`).
 
 - **Global poller — usage.ts** (default login): one snapshot every ~60s,
   persisted to disk (bars paint immediately next launch), exponential backoff to

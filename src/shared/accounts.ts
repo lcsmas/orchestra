@@ -210,11 +210,18 @@ function parseWindow(w: RawWindow | null | undefined): UsageWindowDetail {
 export function parseUsageResponse(raw: RawUsageResponse | null | undefined): UsageData | null {
   if (!raw || typeof raw !== 'object') return null;
   if (raw.five_hour == null && raw.seven_day == null) return null;
+  // `extra_usage` reports a pay-as-you-go pool. `extraUtilization` is null ONLY
+  // when the pool is disabled/absent; an *enabled* pool always yields a number,
+  // even freshly enabled with no spend yet — the endpoint then omits/nulls
+  // `utilization`, which means "0% used", NOT "not enabled". Collapsing that
+  // case to null would leave a maxed 5h/7d account looking limited even though
+  // extra usage is absorbing the overflow (the queue banner would never clear).
   const extra = raw.extra_usage;
-  const extraUtilization =
-    extra && extra.is_enabled && typeof extra.utilization === 'number' && Number.isFinite(extra.utilization)
+  const extraUtilization = extra && extra.is_enabled
+    ? typeof extra.utilization === 'number' && Number.isFinite(extra.utilization)
       ? extra.utilization
-      : null;
+      : 0
+    : null;
   return {
     fiveHour: parseWindow(raw.five_hour),
     sevenDay: parseWindow(raw.seven_day),

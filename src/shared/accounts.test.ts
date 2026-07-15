@@ -111,10 +111,19 @@ test('parseUsageResponse tolerates null utilization / resets_at', () => {
   assert.deepEqual(out?.fiveHour, { utilization: 0, resetsAt: '' });
 });
 
-test('parseUsageResponse ignores extra_usage when disabled or null', () => {
+test('parseUsageResponse ignores extra_usage when disabled', () => {
   const base = { five_hour: { utilization: 5 }, seven_day: { utilization: 5 } };
   assert.equal(parseUsageResponse({ ...base, extra_usage: { is_enabled: false, utilization: 99 } })?.extraUtilization, null);
-  assert.equal(parseUsageResponse({ ...base, extra_usage: { is_enabled: true, utilization: null } })?.extraUtilization, null);
+  assert.equal(parseUsageResponse({ ...base })?.extraUtilization, null);
+});
+
+test('parseUsageResponse treats enabled extra_usage with null utilization as 0%', () => {
+  // Freshly enabled pay-as-you-go: the endpoint omits/nulls utilization but the
+  // pool IS enabled and absorbing overflow. Collapsing to null would leave a
+  // maxed 5h/7d account looking limited (queue banner never clears).
+  const base = { five_hour: { utilization: 100 }, seven_day: { utilization: 5 } };
+  assert.equal(parseUsageResponse({ ...base, extra_usage: { is_enabled: true, utilization: null } })?.extraUtilization, 0);
+  assert.equal(parseUsageResponse({ ...base, extra_usage: { is_enabled: true } })?.extraUtilization, 0);
 });
 
 test('parseUsageResponse returns null for a non-usage body', () => {
