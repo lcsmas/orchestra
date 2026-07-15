@@ -494,6 +494,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     archive,
     unarchive,
     deleteWorkspace,
+    deleteWorkspaces,
     importToSandbox,
     ejectFromSandbox,
     createWorkspace,
@@ -762,21 +763,25 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     });
     if (!ok) return;
     setSelectedArchived(new Set());
-    // Sequential so the bar advances one worktree at a time and disk I/O stays
-    // gentle. Each row spins while its own deletion is in flight.
+    // One main-process call reaps every worktree (sequentially, so disk I/O
+    // stays gentle) then drops all records in a single store write + a single
+    // renderer prune — versus the old loop that paid a full store.json rewrite
+    // and two re-renders per workspace, which jammed the app when clearing
+    // dozens. The bar advances off main's per-worktree progress ticks.
     setBulkDelete({ done: 0, total: ids.length });
-    for (const id of ids) {
-      markDeleting(id, true);
-      try {
-        await deleteWorkspace(id);
-      } catch (err) {
-        void dialog.error('Could not delete workspace', (err as Error).message);
-      } finally {
-        markDeleting(id, false);
-        setBulkDelete((prev) => (prev ? { ...prev, done: prev.done + 1 } : prev));
-      }
+    ids.forEach((id) => markDeleting(id, true));
+    const off = window.orchestra.onWorkspacesDeleteProgress((done, total) => {
+      setBulkDelete({ done, total });
+    });
+    try {
+      await deleteWorkspaces(ids);
+    } catch (err) {
+      void dialog.error('Could not delete workspaces', (err as Error).message);
+    } finally {
+      off();
+      ids.forEach((id) => markDeleting(id, false));
+      setBulkDelete(null);
     }
-    setBulkDelete(null);
   };
 
   const onArchive = async (e: React.MouseEvent, id: string) => {

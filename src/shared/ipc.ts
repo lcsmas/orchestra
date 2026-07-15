@@ -144,6 +144,11 @@ export interface OrchestraAPI {
   archiveWorkspace: (id: string) => Promise<void>;
   unarchiveWorkspace: (id: string) => Promise<void>;
   deleteWorkspace: (id: string) => Promise<void>;
+  /** Hard-delete many workspaces in one call: reaps each worktree/dir
+   * sequentially, then drops all records in a single store write and emits a
+   * single `onWorkspacesRemoved` batch. Progress streams via
+   * `onWorkspacesDeleteProgress`. Used by the archived-section bulk delete. */
+  deleteWorkspaces: (ids: string[]) => Promise<void>;
   /** One-way "import to sandbox": ship the workspace's checkout (bundle +
    * uncommitted overlay + hook dirs) to the always-on sandbox at `endpoint`,
    * retire the local worktree, and flip the record to sandbox-hosted. From
@@ -236,6 +241,12 @@ export interface OrchestraAPI {
   // Events
   onWorkspaceUpdate: (cb: (w: Workspace) => void) => () => void;
   onWorkspaceRemoved: (cb: (id: string) => void) => () => void;
+  /** Batched removal: fires once with all ids from a `deleteWorkspaces` call so
+   * the renderer prunes them in a single store update instead of one per id. */
+  onWorkspacesRemoved: (cb: (ids: string[]) => void) => () => void;
+  /** Progress ticks during a `deleteWorkspaces` run, so the UI can advance its
+   * "Deleting N of M" bar as each worktree is reaped. */
+  onWorkspacesDeleteProgress: (cb: (done: number, total: number) => void) => () => void;
   onWorkspaceFocus: (cb: (id: string) => void) => () => void;
   onAgentFinished: (cb: (id: string, focused: boolean) => void) => () => void;
   /** Fires when Claude's Notification hook fires — typically the 60s idle

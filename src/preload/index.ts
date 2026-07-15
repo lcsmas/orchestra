@@ -48,6 +48,7 @@ const api: OrchestraAPI = {
   archiveWorkspace: (id) => ipcRenderer.invoke('workspaces:archive', id),
   unarchiveWorkspace: (id) => ipcRenderer.invoke('workspaces:unarchive', id),
   deleteWorkspace: (id) => ipcRenderer.invoke('workspaces:delete', id),
+  deleteWorkspaces: (ids) => ipcRenderer.invoke('workspaces:deleteMany', ids),
   importToSandbox: (id, endpoint) => ipcRenderer.invoke('workspaces:importToSandbox', id, endpoint),
   ejectFromSandbox: (id) => ipcRenderer.invoke('workspaces:ejectFromSandbox', id),
   backupSandbox: (id) => ipcRenderer.invoke('sandbox:backup', id),
@@ -116,6 +117,16 @@ const api: OrchestraAPI = {
     const listener = (_e: unknown, id: string) => cb(id);
     ipcRenderer.on('workspace:removed', listener);
     return () => ipcRenderer.off('workspace:removed', listener);
+  },
+  onWorkspacesRemoved: (cb) => {
+    const listener = (_e: unknown, ids: string[]) => cb(ids);
+    ipcRenderer.on('workspaces:removed', listener);
+    return () => ipcRenderer.off('workspaces:removed', listener);
+  },
+  onWorkspacesDeleteProgress: (cb) => {
+    const listener = (_e: unknown, done: number, total: number) => cb(done, total);
+    ipcRenderer.on('workspaces:deleteProgress', listener);
+    return () => ipcRenderer.off('workspaces:deleteProgress', listener);
   },
   onWorkspaceFocus: (cb) => {
     const listener = (_e: unknown, id: string) => cb(id);

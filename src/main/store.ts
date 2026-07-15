@@ -142,6 +142,15 @@ class Store {
     await this.save();
   }
 
+  /** Remove many workspaces in one filter + one atomic save. Bulk delete uses
+   *  this so tearing down N workspaces costs a single store.json rewrite rather
+   *  than N serialized rewrites. */
+  async removeWorkspaces(ids: string[]) {
+    const drop = new Set(ids);
+    this.data.workspaces = this.data.workspaces.filter((w) => !drop.has(w.id));
+    await this.save();
+  }
+
   /** Reorder workspaces to match `orderedIds`. Any workspace whose id is not
    *  in the list keeps its relative order and trails the listed ones. */
   async reorderWorkspaces(orderedIds: string[]) {

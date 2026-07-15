@@ -15,6 +15,29 @@ import type {
 import { dialog } from './components/Dialog';
 import { dlog, debugEnabled } from './debug';
 
+// How many workspace probes (each an IPC → git/gh subprocess in main) a poll
+// fans out at once. The polls used to `Promise.all` over every workspace, so a
+// user with many workspaces fired a burst of N concurrent subprocesses every
+// 8s — a periodic main-process spike felt as a hitch (e.g. while typing).
+// Bounding the fan-out flattens that spike; the poll just takes a couple extra
+// ticks to walk the tail, which is invisible at these cadences.
+const POLL_CONCURRENCY = 4;
+
+/** Map `items` through `fn` with at most `POLL_CONCURRENCY` in flight, in the
+ *  order the pool drains them (order-independent — callers key results by id). */
+async function mapBounded<T, R>(items: T[], fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(POLL_CONCURRENCY, items.length) }, worker));
+  return out;
+}
+
 interface State {
   repos: RepoEntry[];
   workspaces: Workspace[];
@@ -72,6 +95,7 @@ interface State {
   archive: (id: string) => Promise<void>;
   unarchive: (id: string) => Promise<void>;
   deleteWorkspace: (id: string) => Promise<void>;
+  deleteWorkspaces: (ids: string[]) => Promise<void>;
   importToSandbox: (id: string, endpoint: string) => Promise<void>;
   ejectFromSandbox: (id: string) => Promise<void>;
   reorderWorkspaces: (orderedIds: string[]) => Promise<void>;
@@ -274,6 +298,13 @@ export const useStore = create<State>((set, get) => ({
     set({ workspaces, activeId, stats: rest });
   },
 
+  // Bulk delete: main reaps every worktree then emits ONE `workspaces:removed`
+  // batch, so the store prune happens in the `onWorkspacesRemoved` handler
+  // (below) as a single set() — not one per id. Nothing to do here but wait.
+  deleteWorkspaces: async (ids) => {
+    await window.orchestra.deleteWorkspaces(ids);
+  },
+
   reorderWorkspaces: async (orderedIds) => {
     set((s) => {
       const rank = new Map(orderedIds.map((id, i) => [id, i] as const));
@@ -323,15 +354,13 @@ export const useStore = create<State>((set, get) => ({
     // separate notifications per poll (every 8s) — an N× re-render burst for
     // whole-store subscribers. Gather first, set once.
     const ids = get().workspaces.filter((w) => !w.archived).map((w) => w.id);
-    const entries = await Promise.all(
-      ids.map(async (id) => {
-        try {
-          return [id, await window.orchestra.getDiffStats(id)] as const;
-        } catch {
-          return null; // worktree may be stale or git busy — drop this one
-        }
-      }),
-    );
+    const entries = await mapBounded(ids, async (id) => {
+      try {
+        return [id, await window.orchestra.getDiffStats(id)] as const;
+      } catch {
+        return null; // worktree may be stale or git busy — drop this one
+      }
+    });
     const next = Object.fromEntries(entries.filter((e) => e !== null));
     if (Object.keys(next).length) set((s) => ({ stats: { ...s.stats, ...next } }));
   },
@@ -357,15 +386,13 @@ export const useStore = create<State>((set, get) => ({
   refreshAllPRs: async () => {
     // Gather all PR lookups, then commit once — see refreshAllStats.
     const ids = get().workspaces.filter((w) => !w.archived).map((w) => w.id);
-    const entries = await Promise.all(
-      ids.map(async (id) => {
-        try {
-          return [id, await window.orchestra.findPR(id)] as const;
-        } catch {
-          return null; // gh missing, no remote, etc. — ignore
-        }
-      }),
-    );
+    const entries = await mapBounded(ids, async (id) => {
+      try {
+        return [id, await window.orchestra.findPR(id)] as const;
+      } catch {
+        return null; // gh missing, no remote, etc. — ignore
+      }
+    });
     const next = Object.fromEntries(entries.filter((e) => e !== null));
     if (Object.keys(next).length) set((s) => ({ prs: { ...s.prs, ...next } }));
   },
@@ -382,15 +409,13 @@ export const useStore = create<State>((set, get) => ({
   refreshAllLinear: async () => {
     // Gather all Linear lookups, then commit once — see refreshAllStats.
     const ids = get().workspaces.filter((w) => !w.archived).map((w) => w.id);
-    const entries = await Promise.all(
-      ids.map(async (id) => {
-        try {
-          return [id, await window.orchestra.verifyLinear(id)] as const;
-        } catch {
-          return null; // no API key / unauthenticated / offline — leave as-is
-        }
-      }),
-    );
+    const entries = await mapBounded(ids, async (id) => {
+      try {
+        return [id, await window.orchestra.verifyLinear(id)] as const;
+      } catch {
+        return null; // no API key / unauthenticated / offline — leave as-is
+      }
+    });
     const next = Object.fromEntries(entries.filter((e) => e !== null));
     if (Object.keys(next).length) set((s) => ({ linear: { ...s.linear, ...next } }));
   },
@@ -434,6 +459,27 @@ window.orchestra.onWorkspaceRemoved((id) => {
     const { [id]: _goneTool, ...tools } = s.tools;
     const { [id]: _goneCtx, ...contextTokens } = s.contextTokens;
     return { workspaces, activeId, prs, linear, stats, tools, contextTokens };
+  });
+});
+window.orchestra.onWorkspacesRemoved((ids) => {
+  const drop = new Set(ids);
+  useStore.setState((s) => {
+    const workspaces = s.workspaces.filter((w) => !drop.has(w.id));
+    const activeId =
+      s.activeId && drop.has(s.activeId)
+        ? workspaces.find((w) => !w.archived)?.id ?? null
+        : s.activeId;
+    const prune = <T,>(m: Record<string, T>): Record<string, T> =>
+      Object.fromEntries(Object.entries(m).filter(([k]) => !drop.has(k)));
+    return {
+      workspaces,
+      activeId,
+      prs: prune(s.prs),
+      linear: prune(s.linear),
+      stats: prune(s.stats),
+      tools: prune(s.tools),
+      contextTokens: prune(s.contextTokens),
+    };
   });
 });
 window.orchestra.onAgentTool((id, tool) => {

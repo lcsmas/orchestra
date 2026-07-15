@@ -161,6 +161,7 @@ import {
   createScratchWorkspace,
   createOrchestratorWorkspace,
   deleteWorkspace,
+  deleteWorkspaces,
   dispatchMigrateAccountRequest,
   ensureRoot,
   ensureWorkspacePort,
@@ -688,6 +689,13 @@ handle('workspaces:unarchive', async (_e, id: string) => {
 
 handle('workspaces:delete', async (_e, id: string) => {
   await deleteWorkspace(id, getMainWindow());
+});
+
+handle('workspaces:deleteMany', async (_e, ids: string[]) => {
+  const window = getMainWindow();
+  await deleteWorkspaces(ids, window, (done, total) => {
+    window.webContents.send('workspaces:deleteProgress', done, total);
+  });
 });
 
 handle('workspaces:importToSandbox', async (_e, id: string, endpoint: string) => {

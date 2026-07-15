@@ -75,7 +75,11 @@ cwd check and ship only `extraEnv` (never the host's `process.env`).
 and **coalesces output** before IPC: `queuePtyData` buffers into the
 `outBuf`, flushing at 8 ms or 64 KiB (`FLUSH_MS`/`FLUSH_BYTES`) — one tiny
 IPC per pty chunk would head-of-line-block the status-dot updates on the shared
-renderer channel. The `onExit` handler flushes the tail, emits `pty:exit`,
+renderer channel. **Echo fast-path:** every `writePty` stamps `echoUntil =
+now + ECHO_WINDOW_MS` (150 ms); while inside that window flushes use
+`FLUSH_MS_ECHO` (2 ms) instead of 8 ms, so a keystroke's redraw isn't held the
+full throughput window (the "small freeze while typing" fix). Sustained output
+with no recent input falls straight back to `FLUSH_MS`. The `onExit` handler flushes the tail, emits `pty:exit`,
 and calls `reconcileExited` (guarded against a live replacement). `stopAll`
 sets `shuttingDown` so exit handlers preserve `running` as a resume marker.
 Other exports: `writePty`, `resizePty` (drops no-op resizes to avoid

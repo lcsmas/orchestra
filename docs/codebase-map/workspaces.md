@@ -86,6 +86,19 @@ endpoint}` = agent lives in an always-on container, see
   removes record, broadcasts `workspace:removed`). Directory removal is
   hard-confined to `ORCHESTRA_ROOT`/`SCRATCH_ROOT`. **Sandbox-hosted** records
   (`:491`) just detach — the container keeps its copy; nothing local to reap.
+  The reap steps are factored into **`teardownWorkspace(ws)`** (everything
+  except the store-remove + broadcast) so both `deleteWorkspace` and the bulk
+  path share them.
+- **`deleteWorkspaces(ids, window, onProgress?)`** — bulk hard-delete. Reaps
+  every worktree sequentially (gentle disk I/O; archive scripts + `git worktree
+  remove` per id), then **one** `store.removeWorkspaces(ids)` write + **one**
+  `workspaces:removed` broadcast — versus the old renderer loop that paid a full
+  serialized `store.json` rewrite and two re-renders *per* workspace, the source
+  of the app-wide jam when clearing dozens of archived workspaces. Progress ticks
+  stream via `workspaces:deleteProgress`. Wired from the archived-section bulk
+  delete (`Sidebar.tsx` `onDeleteSelectedArchived`) through IPC
+  `workspaces:deleteMany`; the renderer prunes all ids in a single `set()` in the
+  `onWorkspacesRemoved` handler.
 - **`pruneOrphanedWorkspaces(window)`** `:544` — startup reconcile: `git worktree
   list` per repo (parallel); a workspace whose path git no longer tracks is
   removed. Skips repos it can't verify (missing/unmounted) so it never nukes

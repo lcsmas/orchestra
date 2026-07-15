@@ -51,6 +51,12 @@ interface Session {
    *  short timer instead. See FLUSH_* constants. */
   outBuf: string;
   flushTimer: ReturnType<typeof setTimeout> | null;
+  /** Timestamp (ms) until which this session's flushes use the short echo delay
+   *  instead of FLUSH_MS. Bumped on every writePty so a keystroke's echo — which
+   *  arrives from the TUI a millisecond or two later — isn't held the full
+   *  throughput-coalescing window. Bulk streaming with no recent input still
+   *  coalesces at FLUSH_MS. */
+  echoUntil: number;
 }
 
 const sessions = new Map<string, Session>();
@@ -71,6 +77,12 @@ const MAX_LOG_BYTES = 2 * 1024 * 1024; // 2 MB cap per workspace
 // unbounded or stall output behind the timer.
 const FLUSH_MS = 8;
 const FLUSH_BYTES = 64 * 1024;
+// After a keystroke we briefly flush on a much shorter timer so the echo isn't
+// held behind the throughput window. The window is short — just long enough to
+// cover the TUI's redraw round-trip — so sustained output with no typing falls
+// straight back to FLUSH_MS coalescing.
+const FLUSH_MS_ECHO = 2;
+const ECHO_WINDOW_MS = 150;
 
 function logFileFor(id: string) {
   return path.join(LOG_DIR, `${id}.log`);
@@ -159,10 +171,11 @@ function queuePtyData(s: Session, window: BrowserWindow, data: string): void {
     return;
   }
   if (!s.flushTimer) {
+    const delay = Date.now() < s.echoUntil ? FLUSH_MS_ECHO : FLUSH_MS;
     s.flushTimer = setTimeout(() => {
       s.flushTimer = null;
       flushPtyData(s, window);
-    }, FLUSH_MS);
+    }, delay);
   }
 }
 
@@ -284,6 +297,7 @@ export async function startPty(opts: {
     rows,
     outBuf: '',
     flushTimer: null,
+    echoUntil: 0,
   };
   sessions.set(opts.id, session);
 
@@ -377,6 +391,8 @@ function disposeSession(s: Session) {
 export function writePty(id: string, data: string) {
   const s = sessions.get(id);
   if (!s || s.stopped) return;
+  // Enter the echo window so the redraw this write provokes flushes promptly.
+  s.echoUntil = Date.now() + ECHO_WINDOW_MS;
   s.transport.write(data);
 }
 

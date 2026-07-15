@@ -207,7 +207,21 @@ async function clearReadyFile(workspaceId: string): Promise<void> {
  * seconds. Callers refresh on load and on a slow (30s) interval, not on the
  * 8s stats tick — warm-cache passes are cheap but a cold one is not.
  */
-export async function getWorktreeSizes(): Promise<Record<string, number>> {
+// In-flight `du` scan, if any. A cold pass takes seconds; without this guard a
+// burst of size refreshes (e.g. many workspaces added/removed in quick
+// succession) could stack several overlapping full-tree scans, each thrashing
+// the disk and starving everything else. Concurrent callers share one scan.
+let sizesInFlight: Promise<Record<string, number>> | null = null;
+
+export function getWorktreeSizes(): Promise<Record<string, number>> {
+  if (sizesInFlight) return sizesInFlight;
+  sizesInFlight = computeWorktreeSizes().finally(() => {
+    sizesInFlight = null;
+  });
+  return sizesInFlight;
+}
+
+async function computeWorktreeSizes(): Promise<Record<string, number>> {
   let out = '';
   try {
     // `-s` conflicts with `--max-depth`, so list children with `-k` (KiB).
@@ -453,23 +467,26 @@ export async function unarchiveWorkspace(id: string, window: BrowserWindow): Pro
   window.webContents.send('workspace:update', updated);
 }
 
-export async function deleteWorkspace(id: string, window: BrowserWindow): Promise<void> {
-  const ws = store.getWorkspace(id);
-  if (!ws) return;
+/** Tear down everything a delete owns EXCEPT the store record and the renderer
+ *  broadcast: stop PTYs, run the archive script, remove the worktree/dir, drop
+ *  scrollback + inbox. Split out so bulk delete can reap N worktrees and then
+ *  do a SINGLE store write + a SINGLE broadcast, instead of paying a full
+ *  serialized store.json rewrite and a renderer re-render per workspace. */
+async function teardownWorkspace(ws: Workspace): Promise<void> {
+  const id = ws.id;
   forgetWorkspaceProbes(id);
   log.info(`deleting workspace ${ws.branch} (${id}) worktree=${ws.worktreePath}`);
   // Hard delete: stop agent, run user's archive script (best-effort), remove
-  // the git worktree from disk, drop the scrollback log, and remove the store
-  // record. Archive script runs BEFORE worktree removal so it can still see
-  // the files / cwd.
+  // the git worktree from disk, drop the scrollback log. Archive script runs
+  // BEFORE worktree removal so it can still see the files / cwd.
   stopPty(id);
   stopPty(`${id}:run`);
   stopPty(`${id}:nvim`);
 
   // Scratch sessions are a plain directory with no git worktree and no repo
   // (hence no archive script). Tear the directory down directly — confined to
-  // SCRATCH_ROOT so a corrupt path can't `rm` outside our own dir — and drop the
-  // record. The git-worktree path below would no-op anyway (removeWorktree on a
+  // SCRATCH_ROOT so a corrupt path can't `rm` outside our own dir. The
+  // git-worktree path below would no-op anyway (removeWorktree on a
   // non-worktree throws and is swallowed), but this also skips the dead archive-
   // script lookup and makes the intent explicit. Orchestrators are scratch
   // sessions under the hood, so they tear down the same way.
@@ -483,20 +500,16 @@ export async function deleteWorkspace(id: string, window: BrowserWindow): Promis
         /* best-effort */
       }
     }
-    await store.removeWorkspace(id);
-    window.webContents.send('workspace:removed', id);
     return;
   }
 
   // Sandbox-hosted: the checkout lives in the container (the local worktree
   // was retired at import time). There is nothing local to archive-script or
-  // remove; the container keeps its copy — deleting the record here only
-  // detaches this Orchestra from it.
+  // remove; the container keeps its copy — deleting the record only detaches
+  // this Orchestra from it.
   if (ws.host?.kind === 'sandbox') {
     clearScrollback(id);
     await clearInbox(id);
-    await store.removeWorkspace(id);
-    window.webContents.send('workspace:removed', id);
     return;
   }
 
@@ -521,8 +534,39 @@ export async function deleteWorkspace(id: string, window: BrowserWindow): Promis
   } catch {
     /* best-effort */
   }
+}
+
+export async function deleteWorkspace(id: string, window: BrowserWindow): Promise<void> {
+  const ws = store.getWorkspace(id);
+  if (!ws) return;
+  await teardownWorkspace(ws);
   await store.removeWorkspace(id);
   window.webContents.send('workspace:removed', id);
+}
+
+/** Bulk hard-delete. Reaps every worktree/dir up front (archive scripts and
+ *  `git worktree remove` run per workspace, sequentially so disk I/O stays
+ *  gentle), then collapses the bookkeeping into ONE store write and ONE
+ *  renderer broadcast. Deleting N one-by-one otherwise cost N full serialized
+ *  store.json rewrites and 2N renderer re-renders — the source of the app-wide
+ *  jam when clearing dozens of archived workspaces at once. `onProgress` fires
+ *  after each teardown so the UI can advance its bar. */
+export async function deleteWorkspaces(
+  ids: string[],
+  window: BrowserWindow,
+  onProgress?: (done: number, total: number) => void,
+): Promise<void> {
+  const targets = ids.map((id) => store.getWorkspace(id)).filter((w): w is Workspace => !!w);
+  const removed: string[] = [];
+  let done = 0;
+  for (const ws of targets) {
+    await teardownWorkspace(ws);
+    removed.push(ws.id);
+    onProgress?.(++done, targets.length);
+  }
+  if (removed.length === 0) return;
+  await store.removeWorkspaces(removed);
+  window.webContents.send('workspaces:removed', removed);
 }
 
 /** Reconcile the store against git's worktree registry and drop any workspace

@@ -95,6 +95,20 @@ export function App() {
   // Run panel. Kept in sync via `scripts:runStatus` (on workspace switch) and
   // the global pty exit event.
   const [runLive, setRunLive] = useState(false);
+  // Debounced signal that the *set* of workspaces changed (add/remove), used to
+  // re-seed the stats/size/PR/Linear polls so a freshly-added workspace gets its
+  // first fetch promptly instead of waiting a whole interval. Debounced because a
+  // bulk mutation (e.g. deleting dozens of archived workspaces one-by-one) would
+  // otherwise restart every poll on every single delete — and each restart fires
+  // its `fn()` immediately, including the cold full-tree `du` — turning one bulk
+  // action into dozens of overlapping cold scans that jam the app. Coalescing to
+  // one restart after the churn settles keeps prompt-on-add without the storm.
+  const wsSetKey = workspaces.length;
+  const [wsSetRev, setWsSetRev] = useState(0);
+  useEffect(() => {
+    const t = setTimeout(() => setWsSetRev((r) => r + 1), 400);
+    return () => clearTimeout(t);
+  }, [wsSetKey]);
   const [nvimOpen, setNvimOpen] = useState(false);
   const [nvimWidth, setNvimWidth] = useState<number>(() => loadNvimWidth());
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => loadSidebarWidth());
@@ -182,7 +196,7 @@ export function App() {
   useEffect(() => {
     if (!loaded) return;
     return startVisiblePoll(refreshAllStats, 8000);
-  }, [loaded, workspaces.length, refreshAllStats]);
+  }, [loaded, wsSetRev, refreshAllStats]);
 
   // Worktree sizes are far heavier to compute than diff stats (a full `du`
   // pass), so they ride their own effect on a slower cadence than the 8s stats
@@ -193,14 +207,14 @@ export function App() {
   useEffect(() => {
     if (!loaded) return;
     return startVisiblePoll(refreshSizes, 30000);
-  }, [loaded, workspaces.length, refreshSizes]);
+  }, [loaded, wsSetRev, refreshSizes]);
 
   useEffect(() => {
     if (!loaded) return;
     // startVisiblePoll already refreshes on the visible→hidden→visible
     // transition (which covers refocus), so no separate focus listener.
     return startVisiblePoll(refreshAllPRs, 12000);
-  }, [loaded, workspaces.length, refreshAllPRs]);
+  }, [loaded, wsSetRev, refreshAllPRs]);
 
   // Linear verification rides its own slow poll. The main process caches each
   // key's existence for the session (it can't change), so steady-state ticks
@@ -209,7 +223,7 @@ export function App() {
   useEffect(() => {
     if (!loaded) return;
     return startVisiblePoll(refreshAllLinear, 60000);
-  }, [loaded, workspaces.length, refreshAllLinear]);
+  }, [loaded, wsSetRev, refreshAllLinear]);
 
   useEffect(() => {
     return window.orchestra.onAgentFinished((finishedId, focused) => {
