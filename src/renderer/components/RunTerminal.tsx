@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 
 interface Props {
@@ -55,6 +56,29 @@ export function RunTerminal({ workspaceId, isActive, hasRunScript }: Props) {
       }),
     );
     term.open(containerRef.current);
+
+    // GPU-accelerated rendering, same as the agent terminal (see Terminal.tsx).
+    // The default DOM renderer repaints heavy output entirely on the main
+    // thread; a noisy dev server (bundler spew, a stack trace) can jank the
+    // renderer and — because all main→renderer IPC shares one ordered channel —
+    // delay unrelated updates like the status dot. WebGL offloads glyph
+    // rasterization to the GPU. Must be loaded after open() (it needs the
+    // attached canvas). On GPU context loss we dispose it so xterm falls back to
+    // the DOM renderer rather than rendering nothing.
+    let webgl: WebglAddon | null = null;
+    try {
+      webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        webgl?.dispose();
+        webgl = null;
+      });
+      term.loadAddon(webgl);
+    } catch {
+      // WebGL unavailable (headless, blocklisted GPU, software GL) — the DOM
+      // renderer stays active. Functionally identical, just slower on bursts.
+      webgl = null;
+    }
+
     termRef.current = term;
     fitRef.current = fit;
 
@@ -80,11 +104,42 @@ export function RunTerminal({ workspaceId, isActive, hasRunScript }: Props) {
       }
     };
 
+    // Feed PTY output to xterm in requestAnimationFrame-paced batches rather
+    // than calling term.write() synchronously inside the IPC callback. A big
+    // burst (bundler output, a stack trace) used to enter xterm's parser in one
+    // synchronous tick, janking the renderer's main thread. Because ALL
+    // main→renderer IPC shares one ordered channel, that stall also delays
+    // unrelated updates (the status dot, the agent terminal's echo). Draining at
+    // most WRITE_BUDGET_BYTES per frame yields the thread back between frames.
+    // See Terminal.tsx for the benchmarking behind the 256 KiB budget.
+    const WRITE_BUDGET_BYTES = 256 * 1024;
+    let pending = '';
+    let drainRaf: number | null = null;
+    const drainPending = () => {
+      drainRaf = null;
+      if (!pending) return;
+      const slice = pending.slice(0, WRITE_BUDGET_BYTES);
+      pending = pending.slice(WRITE_BUDGET_BYTES);
+      term.write(slice);
+      if (pending) drainRaf = requestAnimationFrame(drainPending);
+    };
+    const enqueue = (data: string) => {
+      pending += data;
+      if (drainRaf === null) drainRaf = requestAnimationFrame(drainPending);
+    };
+
     const offData = window.orchestra.onPtyData((id, data) => {
-      if (id === runId) term.write(data);
+      if (id === runId) enqueue(data);
     });
     const offExit = window.orchestra.onPtyExit((id, code) => {
       if (id !== runId) return;
+      // Drop any output still buffered from this run so it can't drain into a
+      // fresh session started via the Run button after the exit message.
+      pending = '';
+      if (drainRaf !== null) {
+        cancelAnimationFrame(drainRaf);
+        drainRaf = null;
+      }
       term.writeln(`\r\n\x1b[33m[run script exited with code ${code}]\x1b[0m`);
       startedRef.current = false;
       setRunning(false);
@@ -98,7 +153,7 @@ export function RunTerminal({ workspaceId, isActive, hasRunScript }: Props) {
     // shows what already scrolled by.
     void window.orchestra.runScriptScrollback(workspaceId).then((sb) => {
       if (cancelled) return;
-      if (sb) term.write(sb);
+      if (sb) enqueue(sb);
     });
 
     const ro = new ResizeObserver(() => refit());
@@ -136,8 +191,10 @@ export function RunTerminal({ workspaceId, isActive, hasRunScript }: Props) {
     return () => {
       cancelled = true;
       ro.disconnect();
+      if (drainRaf !== null) cancelAnimationFrame(drainRaf);
       offData();
       offExit();
+      webgl?.dispose();
       term.dispose();
       termRef.current = null;
       fitRef.current = null;

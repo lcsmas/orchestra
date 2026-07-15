@@ -114,10 +114,16 @@ pane) calls `repaint()` after the refit: `webgl.clearTextureAtlas()` +
 `repaintRef`/`isActiveRef` bridge the value into the mount effect's long-lived
 closures without stale captures.
 
-## RunTerminal.tsx (run-script view, ~227 lines)
-Simpler xterm (no Unicode11/WebGL/custom scrollbar, 5k scrollback). Start/Stop
-buttons drive a `<wsId>:run` PTY (`bash -lc <script>` with `$ORCHESTRA_PORT`);
-writes inline (no budget); restores prior scrollback on mount; Ctrl+C copies if
+## RunTerminal.tsx (run-script view, ~250 lines)
+Simpler xterm than the agent view (no Unicode11/custom scrollbar, 5k
+scrollback), but shares its performance path: WebGL renderer (same
+context-loss→DOM-fallback guard) and the same RAF-batched write drain
+(`WRITE_BUDGET_BYTES = 256 KiB`, `drainPending`/`enqueue`) — a noisy dev server
+can no longer jank the shared IPC channel. Scrollback replay on mount goes
+through the same `enqueue` so a big replay is spread across frames too;
+`onPtyExit` clears `pending` + cancels the drain RAF so stale output can't bleed
+into a session restarted via the Run button. Start/Stop buttons drive a
+`<wsId>:run` PTY (`bash -lc <script>` with `$ORCHESTRA_PORT`); Ctrl+C copies if
 there's a selection else forwards to the script.
 
 ## logger.ts (~163 lines)

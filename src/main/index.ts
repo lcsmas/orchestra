@@ -270,6 +270,10 @@ if (process.platform === 'linux') {
 // inspected without colliding with an already-running one already holding 9222.
 if (VITE_DEV_SERVER_URL || process.env.ORCHESTRA_DEBUG_PORT) {
   app.commandLine.appendSwitch('remote-debugging-port', process.env.ORCHESTRA_DEBUG_PORT || '9222');
+  // Electron ≥ rejects CDP websocket handshakes whose Origin isn't allowlisted
+  // (403), so chrome-devtools-mcp / any external inspector can't attach without
+  // this. Dev-only, gated by the same condition as the port above.
+  app.commandLine.appendSwitch('remote-allow-origins', '*');
 }
 
 async function createMainWindow() {
