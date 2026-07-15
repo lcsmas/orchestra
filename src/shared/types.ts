@@ -383,6 +383,11 @@ export interface UsageWindow {
 export interface UsageSnapshot {
   fiveHour: UsageWindow;
   sevenDay: UsageWindow;
+  /** Pay-as-you-go extra-usage utilization (0–100), or null/absent when the
+   *  pool is disabled. Lets the default login's usage-limit check honour extra
+   *  credits the same way the per-account poller does — without it a maxed
+   *  5h/7d default account would read as limited even with extra usage on. */
+  extraUtilization?: number | null;
   /** Epoch ms when this snapshot was fetched. */
   fetchedAt: number;
 }

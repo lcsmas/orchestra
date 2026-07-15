@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { app, BrowserWindow } from 'electron';
 import { log } from './logger';
+import { parseUsageResponse, type RawUsageResponse } from '../shared/accounts';
 import type { UsageSnapshot } from '../shared/types';
 
 // Reads the signed-in Claude account's rolling usage limits and broadcasts them
@@ -19,15 +20,6 @@ import type { UsageSnapshot } from '../shared/types';
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 // The OAuth-app beta header Claude Code sends; the endpoint 404s without it.
 const OAUTH_BETA = 'oauth-2025-04-20';
-
-interface RawWindow {
-  utilization?: number | null;
-  resets_at?: string | null;
-}
-interface RawUsage {
-  five_hour?: RawWindow | null;
-  seven_day?: RawWindow | null;
-}
 
 function credentialsPath(): string {
   // CLAUDE_CONFIG_DIR overrides the default ~/.claude location (Claude Code
@@ -56,15 +48,17 @@ function readOAuth(): OAuthCreds | null {
   }
 }
 
-function parseSnapshot(raw: RawUsage, fetchedAt: number): UsageSnapshot | null {
-  const five = raw.five_hour;
-  const seven = raw.seven_day;
-  if (!five || !seven) return null;
-  const num = (v: number | null | undefined): number =>
-    typeof v === 'number' && Number.isFinite(v) ? v : 0;
+// Delegate to the shared parser (src/shared/accounts.ts) so the default login
+// reads `extra_usage` identically to the per-account poller — including an
+// enabled-but-null pool as 0% — then stamp the fetch time. Keeps one source of
+// truth for what the usage endpoint means.
+function parseSnapshot(raw: RawUsageResponse, fetchedAt: number): UsageSnapshot | null {
+  const data = parseUsageResponse(raw);
+  if (!data) return null;
   return {
-    fiveHour: { utilization: num(five.utilization), resetsAt: five.resets_at ?? '' },
-    sevenDay: { utilization: num(seven.utilization), resetsAt: seven.resets_at ?? '' },
+    fiveHour: data.fiveHour,
+    sevenDay: data.sevenDay,
+    extraUtilization: data.extraUtilization,
     fetchedAt,
   };
 }
@@ -155,7 +149,7 @@ async function fetchUsage(fetchedAt: number): Promise<FetchResult> {
       if (res.status !== 401) log.warn(`usage fetch HTTP ${res.status}`);
       return SKIP;
     }
-    const json = (await res.json()) as RawUsage;
+    const json = (await res.json()) as RawUsageResponse;
     return { snapshot: parseSnapshot(json, fetchedAt), rateLimited: false };
   } catch (err) {
     log.warn('usage fetch failed', err);

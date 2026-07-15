@@ -84,7 +84,11 @@ maxed 5h/7d account stays limited and the queue banner never clears),
 - **Global poller — usage.ts** (default login): one snapshot every ~60s,
   persisted to disk (bars paint immediately next launch), exponential backoff to
   10 min on 429. `getLastUsage` `:109`, `startUsagePolling(window)` `:210`. IPC
-  `usage:update`/`usage:get`. Feeds workspaces with no pinned account.
+  `usage:update`/`usage:get`. Feeds workspaces with no pinned account. Its
+  `parseSnapshot` delegates to the shared `parseUsageResponse` so the default
+  login carries `extraUtilization` too (`UsageSnapshot.extraUtilization`,
+  optional) — without it a maxed default account would ignore extra credits and
+  stay "limited" in the queue banner.
 - **Per-account poller — account-usage.ts**: each configured account, **≥180s
   cache per account** (API hard floor), 30s wake loop refreshing stale accounts.
   Detects expired tokens (keeps showing cached data, flags expiry).
