@@ -22,6 +22,7 @@ import {
 import { isRunning, stopPty, clearScrollback, startPty, writePty, readScrollback } from './pty';
 import { expandConfigDir, planAccountMigration } from '../shared/accounts';
 import { syncAccountInheritance } from './account-inherit';
+import { refreshAccountsNow } from './account-usage';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
 import { forgetWorkspaceProbes } from './activity';
@@ -326,6 +327,10 @@ export async function createWorkspace(
   };
   await store.upsertWorkspace(ws);
   window.webContents.send('workspace:update', ws);
+  // Push the workspace→account map right away — otherwise the new workspace's
+  // account badge and usage bars read "default" until the next 30s poll tick,
+  // even though the pin above is already in place.
+  void refreshAccountsNow(window).catch(() => {});
 
   // Fire setup script asynchronously — don't block the create call. Renderer
   // sees `setupStatus: 'pending'` immediately and watches workspace:update for
@@ -421,6 +426,9 @@ async function createScratchLikeWorkspace(
   };
   await store.upsertWorkspace(ws);
   window.webContents.send('workspace:update', ws);
+  // Same prompt map push as createWorkspace: without it the session's account
+  // badge sits on stale data until the next poll tick.
+  void refreshAccountsNow(window).catch(() => {});
   return ws;
 }
 
@@ -1461,6 +1469,10 @@ export async function dispatchMigrateAccountRequest(
     else delete updated.accountId;
     await store.upsertWorkspace(updated);
     window.webContents.send('workspace:update', updated);
+    // Re-broadcast the workspace→account map here rather than only in the IPC
+    // handler: the socket route (`orchestra migrate-account`) reaches this
+    // function too, and without the push its badge lags until the next poll.
+    void refreshAccountsNow(window).catch(() => {});
 
     // Materialize the target account's inherited global config into its login
     // dir so a non-resumed workspace is ready for its next manual launch (the

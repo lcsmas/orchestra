@@ -101,7 +101,12 @@ Fable window only blocks Fable requests while other models keep answering.
   `computeWorkspaceAccounts` `:309` (workspace→account *identity* map — never
   paths/tokens), `startAccountUsagePolling` `:356`, `refreshAccountsNow` `:373`.
   IPC `accounts:usageUpdate`/`accounts:usage`/`accounts:usageAll`/
-  `accounts:workspaceAccounts`.
+  `accounts:workspaceAccounts`. The workspace→account map is re-broadcast each
+  30s tick, but creation and migration don't wait for it: `createWorkspace`,
+  `createScratchLikeWorkspace`, and `dispatchMigrateAccountRequest`
+  (`workspaces.ts`) each call `refreshAccountsNow` so the new/changed
+  workspace's badge and usage bars show the pinned account immediately instead
+  of "default" for up to 30s.
 
 Shapes (`accounts.ts`): `UsageData = {fiveHour, sevenDay, extraUtilization}`
 (each window `{utilization 0–100, resetsAt}`); `AccountUsageStatus = {accountId,
