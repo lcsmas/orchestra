@@ -12,6 +12,7 @@ import type {
   Workspace,
   WorkspaceAccount,
 } from '../shared/types';
+import type { SelfTuneRun } from '../shared/self-tune';
 import { dialog } from './components/Dialog';
 import { dlog, debugEnabled } from './debug';
 
@@ -78,12 +79,19 @@ interface State {
    *  workspaces and repos with no pinned account. Hydrated on load and updated
    *  via `usage:update` events. */
   globalUsage: UsageSnapshot | null;
+  /** Self-tune run history, newest first (in-flight run included). Hydrated on
+   *  load and patched live by `selfTune:update` events. */
+  selfTuneRuns: SelfTuneRun[];
+  /** Whether the Insights & Improvements pane is shown over the main pane.
+   *  Selecting a workspace closes it. */
+  insightsOpen: boolean;
   activeId: string | null;
   view: 'terminal' | 'diff' | 'run';
   loaded: boolean;
 
   setActive: (id: string | null) => void;
   setView: (v: 'terminal' | 'diff' | 'run') => void;
+  setInsightsOpen: (open: boolean) => void;
   load: () => Promise<void>;
   refreshRepos: () => Promise<void>;
   addRepo: () => Promise<RepoEntry | null>;
@@ -123,12 +131,16 @@ export const useStore = create<State>((set, get) => ({
   workspaceAccounts: {},
   accounts: [],
   globalUsage: null,
+  selfTuneRuns: [],
+  insightsOpen: false,
   activeId: null,
   view: 'terminal',
   loaded: false,
 
   setActive: (id) => {
-    set({ activeId: id });
+    // Picking a workspace dismisses the Insights pane — it overlays the main
+    // pane, so leaving it up would eclipse the terminal the user just chose.
+    set({ activeId: id, insightsOpen: false });
     if (id) {
       const ws = get().workspaces.find((w) => w.id === id);
       if (ws && ws.status === 'waiting') {
@@ -137,9 +149,10 @@ export const useStore = create<State>((set, get) => ({
     }
   },
   setView: (v) => set({ view: v }),
+  setInsightsOpen: (open) => set({ insightsOpen: open }),
 
   load: async () => {
-    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage] =
+    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns] =
       await Promise.all([
         window.orchestra.listRepos(),
         window.orchestra.listWorkspaces(),
@@ -148,6 +161,7 @@ export const useStore = create<State>((set, get) => ({
         window.orchestra.getWorkspaceAccounts().catch(() => ({})),
         window.orchestra.listAccounts().catch(() => []),
         window.orchestra.getUsage().catch(() => null),
+        window.orchestra.listSelfTuneRuns().catch(() => []),
       ]);
     const repoSync: Record<string, RepoSyncState> = {};
     for (const s of syncStates) repoSync[s.repoPath] = s;
@@ -166,6 +180,7 @@ export const useStore = create<State>((set, get) => ({
       workspaceAccounts,
       accounts,
       globalUsage: globalUsage ?? null,
+      selfTuneRuns,
       loaded: true,
       activeId: workspaces[0]?.id ?? null,
     });
@@ -531,6 +546,15 @@ window.orchestra.onRepoSyncState((s) => {
 // didn't initiate.
 window.orchestra.onReposUpdate((repos) => {
   useStore.setState({ repos });
+});
+// A self-tune run advanced (step started/finished, run completed). Upsert by
+// id, keeping newest-first order — a brand-new run is always the newest.
+window.orchestra.onSelfTuneUpdate((run) => {
+  useStore.setState((s) => ({
+    selfTuneRuns: s.selfTuneRuns.some((r) => r.id === run.id)
+      ? s.selfTuneRuns.map((r) => (r.id === run.id ? run : r))
+      : [run, ...s.selfTuneRuns],
+  }));
 });
 // Per-account usage refreshed (>=180s-cached poll in main). Replace wholesale.
 window.orchestra.onAccountUsageUpdate((byId) => {

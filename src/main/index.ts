@@ -238,6 +238,16 @@ import {
   stopPromptQueueFlusher,
 } from './prompt-queue';
 import type { CreateWorkspaceInput } from '../shared/types';
+import {
+  getSelfTuneOutput,
+  getSelfTuneRuns,
+  listSelfTuneReports,
+  openSelfTuneReport,
+  readSelfTuneLessons,
+  startSelfTuneRun,
+  startSelfTuneScheduler,
+  stopSelfTuneScheduler,
+} from './self-tune';
 import { initLogger, log, revealLogs, getLogFile } from './logger';
 
 let mainWindow: BrowserWindow | null = null;
@@ -324,6 +334,9 @@ async function createMainWindow() {
   startAccountUsagePolling(mainWindow);
   // Deliver usage-limit-parked prompts once their account's window resets.
   startPromptQueueFlusher(mainWindow);
+  // Monthly Insights & Improvements: auto-run the self-tune pipeline once per
+  // calendar month (checked shortly after startup and every ~6h).
+  startSelfTuneScheduler(mainWindow);
   // Remote (sandbox-hosted) workspaces route activity + hook RPCs through the
   // sandbox connections; hand the manager the window they target.
   setSandboxWindow(mainWindow);
@@ -448,6 +461,17 @@ handle('linear:clearKey', async () => {
 // Last fetched usage snapshot (or null before the first successful poll). The
 // renderer reads this once on mount; subsequent updates arrive via `usage:update`.
 handle('usage:get', () => getLastUsage());
+
+// ---------- Insights & Improvements (monthly self-tune) ----------
+//
+// Run records + transcript chunks flow to the renderer; the pipeline itself
+// (headless `claude -p` per login, then one fold pass) runs entirely in main.
+handle('selfTune:list', () => getSelfTuneRuns());
+handle('selfTune:run', () => startSelfTuneRun('manual'));
+handle('selfTune:output', (_e, runId: string) => getSelfTuneOutput(runId));
+handle('selfTune:reports', () => listSelfTuneReports());
+handle('selfTune:openReport', (_e, loginId: string) => openSelfTuneReport(loginId));
+handle('selfTune:lessons', () => readSelfTuneLessons());
 
 // ---------- Accounts (per-workspace usage badges) ----------
 //
@@ -1193,6 +1217,7 @@ if (!ORCHESTRA_CLI_MODE) {
     stopUsagePolling();
     stopAccountUsagePolling();
     stopPromptQueueFlusher();
+    stopSelfTuneScheduler();
     closeAllSandboxConnections();
     if (process.platform !== 'darwin') app.quit();
   });
@@ -1204,6 +1229,7 @@ if (!ORCHESTRA_CLI_MODE) {
     stopUsagePolling();
     stopAccountUsagePolling();
     stopPromptQueueFlusher();
+    stopSelfTuneScheduler();
     closeAllSandboxConnections();
   });
 

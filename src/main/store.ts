@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { Account, RepoEntry, RepoScripts, Workspace } from '../shared/types';
 import { sanitizeAccountInherit } from '../shared/accounts';
+import type { SelfTuneRun } from '../shared/self-tune';
 
 const PORT_RANGE_START = 55100;
 const PORT_RANGE_END = 55600; // exclusive — keeps 500 slots, well above realistic concurrency
@@ -16,9 +17,17 @@ interface StoreShape {
    *  NEVER an expanded secret — secrets stay in Orchestra's env, out of
    *  store.json. Absent on stores predating the feature → treated as `[]`. */
   accounts?: Account[];
+  /** History of monthly self-tune runs (per-step statuses/timestamps — never
+   *  transcripts, those live in files). Bounded; newest last. Absent on stores
+   *  predating the feature → treated as `[]`. */
+  selfTuneRuns?: SelfTuneRun[];
 }
 
 const DEFAULT: StoreShape = { repos: [], workspaces: [], accounts: [] };
+
+/** How many self-tune runs to keep in store.json. One run per month plus
+ *  manual triggers — 24 is years of history at trivial size. */
+const SELF_TUNE_HISTORY_MAX = 24;
 
 class Store {
   // Resolved lazily on first use, not in the constructor. `app.getPath('userData')`
@@ -258,6 +267,21 @@ class Store {
     }
     await this.save();
     return cleaned;
+  }
+
+  get selfTuneRuns(): SelfTuneRun[] {
+    return this.data.selfTuneRuns ?? [];
+  }
+
+  /** Upsert one self-tune run by id (runs mutate step-by-step as the pipeline
+   *  advances) and trim the history to the newest SELF_TUNE_HISTORY_MAX. */
+  async saveSelfTuneRun(run: SelfTuneRun) {
+    const runs = this.data.selfTuneRuns ?? [];
+    const i = runs.findIndex((r) => r.id === run.id);
+    if (i >= 0) runs[i] = run;
+    else runs.push(run);
+    this.data.selfTuneRuns = runs.slice(-SELF_TUNE_HISTORY_MAX);
+    await this.save();
   }
 
   /** Assign (or clear, with `null`/'') the account a repo's workspaces log in

@@ -108,6 +108,23 @@ const api: OrchestraAPI = {
   switchBranch: (id, branch) => ipcRenderer.invoke('git:switchBranch', id, branch),
   mergeWorktree: (id) => ipcRenderer.invoke('git:merge', id),
 
+  listSelfTuneRuns: () => ipcRenderer.invoke('selfTune:list'),
+  startSelfTune: () => ipcRenderer.invoke('selfTune:run'),
+  getSelfTuneOutput: (runId) => ipcRenderer.invoke('selfTune:output', runId),
+  listSelfTuneReports: () => ipcRenderer.invoke('selfTune:reports'),
+  openSelfTuneReport: (loginId) => ipcRenderer.invoke('selfTune:openReport', loginId),
+  readSelfTuneLessons: () => ipcRenderer.invoke('selfTune:lessons'),
+  onSelfTuneUpdate: (cb) => {
+    const listener = (_e: unknown, run: unknown) => cb(run as never);
+    ipcRenderer.on('selfTune:update', listener);
+    return () => ipcRenderer.off('selfTune:update', listener);
+  },
+  onSelfTuneOutput: (cb) => {
+    const listener = (_e: unknown, runId: string, chunk: string) => cb(runId, chunk);
+    ipcRenderer.on('selfTune:output', listener);
+    return () => ipcRenderer.off('selfTune:output', listener);
+  },
+
   onWorkspaceUpdate: (cb) => {
     const listener = (_e: unknown, w: unknown) => cb(w as never);
     ipcRenderer.on('workspace:update', listener);

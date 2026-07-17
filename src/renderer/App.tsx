@@ -9,6 +9,7 @@ import { RunTerminal } from './components/RunTerminal';
 import { SetupBanner } from './components/SetupBanner';
 import { PromptQueueBanner } from './components/PromptQueueBanner';
 import { SandboxControlBar } from './components/SandboxControlBar';
+import { InsightsView } from './components/Insights';
 import { DialogHost, dialog } from './components/Dialog';
 import { playFinishedChime } from './chime';
 import { dlog } from './debug';
@@ -76,6 +77,7 @@ export function App() {
   const workspaces = useStore((s) => s.workspaces);
   const repos = useStore((s) => s.repos);
   const activeId = useStore((s) => s.activeId);
+  const insightsOpen = useStore((s) => s.insightsOpen);
   const view = useStore((s) => s.view);
   const setView = useStore((s) => s.setView);
   const load = useStore((s) => s.load);
@@ -623,6 +625,10 @@ export function App() {
             </div>
           </>
         )}
+        {/* Insights & Improvements pane. An overlay (absolute, above the pane
+            row) rather than a route swap: unmounting the workspace tree would
+            kill every kept-alive TerminalView's xterm scrollback. */}
+        {loaded && insightsOpen && <InsightsView />}
       </main>
       <DialogHost />
     </div>

@@ -13,6 +13,7 @@ import { SoundSettings } from './SoundSettings';
 import { LinearSettings } from './LinearSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
 import { UsageBars } from './UsageBars';
+import { InsightsSection } from './Insights';
 import { AccountsSettings } from './AccountsSettings';
 import {
   RepoAccountBadge,
@@ -1975,6 +1976,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           ))}
         </div>
       )}
+      <InsightsSection />
       <UsageBars />
       <div className="sidebar-footer">
         <button

@@ -1,3 +1,4 @@
+import type { SelfTuneReport, SelfTuneRun } from './self-tune';
 import type {
   Account,
   AccountUsageStatus,
@@ -237,6 +238,29 @@ export interface OrchestraAPI {
   runScriptStop: (id: string) => Promise<void>;
   runScriptScrollback: (id: string) => Promise<string>;
   runScriptStatus: (id: string) => Promise<boolean>;
+
+  // ---- Insights & Improvements (monthly self-tune). Pipeline runs in main
+  //      (src/main/self-tune.ts); the renderer sees run records, streamed
+  //      transcript chunks, and report paths — never spawns anything itself.
+  /** Self-tune run history, newest first (the in-flight run included). */
+  listSelfTuneRuns: () => Promise<SelfTuneRun[]>;
+  /** Start a manual run NOW. Resolves with the new run record as soon as the
+   *  pipeline starts; rejects if a run is already in flight. */
+  startSelfTune: () => Promise<SelfTuneRun>;
+  /** The buffered transcript of a run (live buffer, or the mirrored file for
+   *  runs from a previous session). */
+  getSelfTuneOutput: (runId: string) => Promise<string>;
+  /** Newest insights report per login, for the "open report" buttons. */
+  listSelfTuneReports: () => Promise<SelfTuneReport[]>;
+  /** Open a login's newest report HTML in the default browser. Resolves false
+   *  when that login has no report yet. */
+  openSelfTuneReport: (loginId: string) => Promise<boolean>;
+  /** Current ~/.claude/LESSONS.md content for the read-only view ('' if absent). */
+  readSelfTuneLessons: () => Promise<string>;
+  /** Fires on every run/step state transition with the full updated run. */
+  onSelfTuneUpdate: (cb: (run: SelfTuneRun) => void) => () => void;
+  /** Live transcript chunks of the in-flight run. */
+  onSelfTuneOutput: (cb: (runId: string, chunk: string) => void) => () => void;
 
   // Events
   onWorkspaceUpdate: (cb: (w: Workspace) => void) => () => void;
