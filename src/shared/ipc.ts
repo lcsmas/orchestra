@@ -165,6 +165,10 @@ export interface OrchestraAPI {
    * automatically right after import and on a periodic timer. */
   backupSandbox: (id: string) => Promise<string>;
   markSeen: (id: string) => Promise<void>;
+  /** Manually tag a workspace as unread (or clear the tag). An unread
+   *  workspace wears a persistent "come back to this later" indicator in the
+   *  sidebar until the user selects it again or clears the tag by hand. */
+  setUnread: (id: string, unread: boolean) => Promise<void>;
   renameBranch: (id: string, newBranch: string) => Promise<Workspace>;
   /** Persist a new ordering of workspaces. Pass the full list of workspace
    *  ids in the desired order; any unknown id is ignored. */

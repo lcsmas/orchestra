@@ -1235,6 +1235,26 @@ input:focus, textarea:focus, select:focus {
 .ws-dot.error { background: var(--red); box-shadow: 0 0 8px rgba(255, 107, 107, 0.5); }
 .ws-dot.stopped { background: #555; opacity: 0.6; }
 
+/* Manual "unread" tag — a come-back-later bookmark the user sets by hand.
+   The row reads like unread mail: an always-visible accent dot right after the
+   branch name plus a brighter, bolder name. Cleared when the row is selected. */
+.ws-unread-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  align-self: center;
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(110, 168, 255, 0.6);
+}
+.ws-item.unread .ws-name {
+  color: var(--text);
+  font-weight: 700;
+}
+/* Bookmark toggle stays tinted while the tag is on, so the hover strip shows
+   which button un-tags the row. */
+.ws-icon-btn.unread-on { color: var(--accent); }
+
 @keyframes ws-dot-pulse {
   0% { box-shadow: 0 0 0 0 rgba(91, 214, 139, 0.55), 0 0 6px rgba(91, 214, 139, 0.8); }
   70% { box-shadow: 0 0 0 6px rgba(91, 214, 139, 0), 0 0 10px rgba(91, 214, 139, 0.5); }

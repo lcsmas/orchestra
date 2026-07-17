@@ -92,6 +92,14 @@ export interface Workspace {
   archived?: boolean;
   archivedAt?: number;
   hasInput?: boolean;
+  /** True while the user has manually tagged this workspace "unread" — a
+   * come-back-to-this-later bookmark. Purely user-driven, unlike the yellow
+   * `waiting` status dot which the agent lifecycle sets: toggled from the
+   * sidebar row's bookmark button, rendered as an accent dot beside the branch
+   * name, and cleared automatically the next time the user selects the
+   * workspace (or by toggling the button again). Persisted so the reminder
+   * survives an app restart. */
+  markedUnread?: boolean;
   /** Set at spawn when `claude --continue` is about to resume a session whose
    * most-recent transcript exceeds {@link HEAVY_RESUME_TOKEN_THRESHOLD} tokens.
    * Claude Code shows an interactive "resume from summary / full / don't ask"

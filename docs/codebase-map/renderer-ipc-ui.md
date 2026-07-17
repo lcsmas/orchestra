@@ -93,8 +93,11 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   `host-grouping.ts` `groupByHost` (returns null when all-local → flat list
   byte-identical to pre-sandbox); collapsible `.host-group-header` per node.
 - Drag-reorder for workspaces and repos (`reorderWorkspaces`/`reorderRepos`).
-- Row actions: rename branch (inline), archive/unarchive, delete (confirm +
-  bulk progress), switch branch (`BranchPicker`), setup gear
+- Row actions: rename branch (inline), unread bookmark toggle (`UnreadToggle`
+  → store `setUnread` → IPC `workspaces:setUnread`; sets `ws.markedUnread`,
+  shown as an accent `.ws-unread-dot` + bold name, auto-cleared by the store's
+  `setActive` when the user next selects the row), archive/unarchive, delete
+  (confirm + bulk progress), switch branch (`BranchPicker`), setup gear
   (`RepoScriptsModal`), ☁↑ import-to-sandbox (`onImportToSandbox` `:800`,
   endpoint prompt) / ☁↓ eject (`onEjectFromSandbox` `:823`) — one or the other
   by `w.host`.

@@ -108,6 +108,8 @@ interface State {
   addRepoOnly: () => Promise<void>;
   archive: (id: string) => Promise<void>;
   unarchive: (id: string) => Promise<void>;
+  /** Toggle the manual "unread" tag (come-back-later bookmark) on a workspace. */
+  setUnread: (id: string, unread: boolean) => Promise<void>;
   deleteWorkspace: (id: string) => Promise<void>;
   deleteWorkspaces: (ids: string[]) => Promise<void>;
   importToSandbox: (id: string, endpoint: string) => Promise<void>;
@@ -153,6 +155,9 @@ export const useStore = create<State>((set, get) => ({
       if (ws && ws.status === 'waiting') {
         void window.orchestra.markSeen(id).catch(() => {});
       }
+      // Coming back to a manually-tagged workspace is the "read" moment —
+      // clear the unread bookmark the user left for themselves.
+      if (ws?.markedUnread) void get().setUnread(id, false);
     }
   },
   setView: (v) => set({ view: v }),
@@ -293,6 +298,17 @@ export const useStore = create<State>((set, get) => ({
       ),
       activeId: s.activeId ?? id,
     }));
+  },
+
+  setUnread: async (id, unread) => {
+    // Optimistic flip so the dot paints instantly; main persists and
+    // re-broadcasts the record via workspace:update.
+    set((s) => ({
+      workspaces: s.workspaces.map((w) =>
+        w.id === id ? { ...w, markedUnread: unread || undefined } : w,
+      ),
+    }));
+    await window.orchestra.setUnread(id, unread).catch(() => {});
   },
 
   importToSandbox: async (id, endpoint) => {

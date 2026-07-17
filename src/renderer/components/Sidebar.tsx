@@ -108,6 +108,45 @@ function ArchiveIcon() {
   );
 }
 
+function BookmarkIcon({ filled }: { filled: boolean }) {
+  // Lucide `bookmark` — the manual "come back to this later" unread tag.
+  // Filled while the tag is on so the toggle reads at a glance.
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" fill={filled ? 'currentColor' : 'none'}
+      stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true" focusable="false">
+      <path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z" />
+    </svg>
+  );
+}
+
+/** Hover toggle for the manual unread tag. Rendered on every non-archived
+ * row's action strip; the always-visible indicator (accent dot by the name)
+ * is rendered separately so it shows without hovering. */
+function UnreadToggle({
+  w,
+  onToggle,
+}: {
+  w: Workspace;
+  onToggle: (e: React.MouseEvent, w: Workspace) => void;
+}) {
+  return (
+    <button
+      className={`ws-icon-btn${w.markedUnread ? ' unread-on' : ''}`}
+      title={
+        w.markedUnread
+          ? 'Clear the unread tag'
+          : 'Tag as unread — leave a come-back-to-this-later marker'
+      }
+      aria-label={w.markedUnread ? `Clear unread tag on ${w.branch}` : `Tag ${w.branch} as unread`}
+      aria-pressed={!!w.markedUnread}
+      onClick={(e) => onToggle(e, w)}
+    >
+      <BookmarkIcon filled={!!w.markedUnread} />
+    </button>
+  );
+}
+
 function SandboxUploadIcon() {
   // Cloud with an up arrow — "ship this workspace to the always-on sandbox".
   return (
@@ -530,6 +569,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     setActive,
     archive,
     unarchive,
+    setUnread,
     deleteWorkspace,
     deleteWorkspaces,
     importToSandbox,
@@ -860,6 +900,11 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     }
   };
 
+  const onToggleUnread = (e: React.MouseEvent, w: Workspace) => {
+    e.stopPropagation();
+    void setUnread(w.id, !w.markedUnread);
+  };
+
   const onUnarchive = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     try {
@@ -1051,7 +1096,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         return (
           <div
             key={w.id}
-            className={`ws-item ${activeId === w.id ? 'active' : ''}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}`}
+            className={`ws-item ${activeId === w.id ? 'active' : ''}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}${w.markedUnread ? ' unread' : ''}`}
             style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
             onClick={() => setActive(w.id)}
           >
@@ -1122,6 +1167,13 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     {w.branch}
                   </div>
                 )}
+                {w.markedUnread && (
+                  <span
+                    className="ws-unread-dot"
+                    title="Tagged unread — come back to this workspace"
+                    aria-label="Unread"
+                  />
+                )}
                 {isCollapsed && (
                   <span
                     className={`ws-hidden-count${hiddenUrgency ? ` ${hiddenUrgency}` : ''}`}
@@ -1155,6 +1207,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 )}
               </div>
             </div>
+            {!isDeleting && <UnreadToggle w={w} onToggle={onToggleUnread} />}
             {isDeleting ? (
               <span className="ws-spinner" title="Removing…" aria-label="Removing" role="status" />
             ) : childIsGit ? (
@@ -1497,7 +1550,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               return (
                 <div
                   key={w.id}
-                  className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}${isChild ? ' ws-child' : ''}${wsDnd}`}
+                  className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}${isChild ? ' ws-child' : ''}${w.markedUnread ? ' unread' : ''}${wsDnd}`}
                   style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
                   onClick={() => setActive(w.id)}
                   draggable={!isChild && renamingId !== w.id}
@@ -1583,6 +1636,13 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         >
                           {w.branch}
                         </div>
+                      )}
+                      {w.markedUnread && (
+                        <span
+                          className="ws-unread-dot"
+                          title="Tagged unread — come back to this workspace"
+                          aria-label="Unread"
+                        />
                       )}
                       <WorkspaceContextBadge workspaceId={w.id} />
                       <span className="ws-login">
@@ -1681,6 +1741,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       </span>
                     </div>
                   </div>
+                  <UnreadToggle w={w} onToggle={onToggleUnread} />
                   {!w.host ? (
                     <button
                       className="ws-icon-btn"

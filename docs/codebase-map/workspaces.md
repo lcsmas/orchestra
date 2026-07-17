@@ -40,7 +40,9 @@ preserves `claude --continue` history), `parentId` (nesting), `port`
 (auto-allocated dev-server port), `setupStatus`, `branchManuallySet` (rename
 lock), `divergedFromBase`/`mergedAt`/`unpushedAhead`/`releasedVersions`
 (sidebar pills), `contextTokens` (badge seed), `heavyResumePending` (suppresses
-blind Enter during a heavy `claude --continue` resume), and **`host`**
+blind Enter during a heavy `claude --continue` resume), `markedUnread`
+(manual come-back-later bookmark, toggled from the sidebar via
+`workspaces:setUnread`, auto-cleared on next selection), and **`host`**
 (`WorkspaceHost`, `types.ts:69` — absent = local node-pty; `{kind:'sandbox',
 endpoint}` = agent lives in an always-on container, see
 [sandbox-transport.md](sandbox-transport.md)).

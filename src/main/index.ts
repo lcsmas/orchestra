@@ -760,6 +760,16 @@ handle('workspaces:markSeen', async (_e, id: string) => {
   getMainWindow().webContents.send('workspace:update', updated);
 });
 
+handle('workspaces:setUnread', async (_e, id: string, unread: boolean) => {
+  const ws = store.getWorkspace(id);
+  if (!ws || !!ws.markedUnread === !!unread) return;
+  // Drop the key entirely when clearing so store.json doesn't accumulate
+  // `markedUnread: false` on every workspace that was ever tagged.
+  const updated: Workspace = { ...ws, markedUnread: unread || undefined };
+  await store.upsertWorkspace(updated);
+  getMainWindow().webContents.send('workspace:update', updated);
+});
+
 handle('pty:start', async (_e, id: string, cols: number, rows: number) => {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
