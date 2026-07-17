@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
+import { createTermWriteQueue } from '../term-write-queue';
 
 interface Props {
   workspaceId: string;
@@ -338,52 +339,18 @@ export function TerminalView({ workspaceId, isActive }: Props) {
         });
     };
 
-    // Feed PTY output to xterm in requestAnimationFrame-paced batches rather
-    // than calling term.write() synchronously inside the IPC callback. A big
-    // tool-result dump (the main process coalesces PTY chunks into large
-    // `pty:data` messages) used to enter xterm's parser in one synchronous
-    // tick, janking the renderer's main thread for seconds. Because ALL
-    // main→renderer IPC shares one ordered channel, a `workspace:update` (the
-    // status dot) queued around that blob couldn't be applied until the parse
-    // finished — the visible "dot takes ~10s to turn the right colour" lag.
-    // Draining at most WRITE_BUDGET_BYTES per frame yields the thread back
-    // between frames, so the dot's IPC gets a turn and paints promptly. xterm
-    // keeps the bytes ordered; we only throttle how much we hand it per frame.
-    //
-    // 256 KiB, not 64 KiB. Benchmarking the installed xterm 5.5 + WebGL showed a
-    // big dump's wall-clock is dominated by this throttle, NOT xterm's parser
-    // (which does ~35-50 MB/s — 5-10x faster than the slice cadence). 2 MB of
-    // output flushed at 64 KiB takes ~31 frames (~530 ms); at 256 KiB it's ~3.5x
-    // faster (~150 ms). The original 64 KiB was tuned for the old synchronous
-    // write path; now that writes are RAF-batched AND xterm chunks its parser
-    // into ~4 KiB sub-tasks that yield internally, a 256 KiB slice costs only
-    // ~18 ms of cooperatively-yielded parse work — small enough that the
-    // status-dot IPC still gets its turn. 512 KiB starts to regress (~36 ms), so
-    // 256 KiB is the sweet spot between flush speed and dot latency.
-    const WRITE_BUDGET_BYTES = 256 * 1024;
-    // Single rolling buffer rather than a queue of chunks: one coalesced
-    // `pty:data` message can itself exceed the budget (the main side flushes the
-    // WHOLE accumulated buffer once it crosses its own 64 KiB threshold, so a
-    // single message can be larger), and slicing within the string lets an
-    // oversized message be spread across frames too — a per-chunk queue would
-    // still hand one giant chunk to term.write() in a single frame.
-    let pending = '';
-    let drainRaf: number | null = null;
-    const drainPending = () => {
-      drainRaf = null;
-      if (!pending) return;
-      // Hand xterm at most one frame's budget, then yield to the event loop so
-      // queued IPC (the status-dot `workspace:update`) gets a turn before the
-      // next slice. The remainder drains on the following frame.
-      const slice = pending.slice(0, WRITE_BUDGET_BYTES);
-      pending = pending.slice(WRITE_BUDGET_BYTES);
-      term.write(slice);
-      if (pending) drainRaf = requestAnimationFrame(drainPending);
-    };
+    // Feed PTY output to xterm through the shared write queue instead of
+    // calling term.write() synchronously inside the IPC callback. The queue
+    // frame-paces big bursts (so a tool-result dump can't jank the renderer
+    // and stall the status dot's IPC — the old "dot takes ~10s" lag), applies
+    // Claude's ?2026 synchronized-output frames atomically (the anti-flicker
+    // path; xterm.js itself ignores mode 2026), and fast-paths small idle
+    // chunks like keystroke echoes past the RAF wait. Budget tuning and frame
+    // semantics are documented in term-write-queue.ts.
+    const queue = createTermWriteQueue((data) => term.write(data));
     const offData = window.orchestra.onPtyData((id, data) => {
       if (id !== workspaceId) return;
-      pending += data;
-      if (drainRaf === null) drainRaf = requestAnimationFrame(drainPending);
+      queue.push(data);
     });
     const offExit = window.orchestra.onPtyExit((id, code) => {
       if (id === workspaceId) {
@@ -397,11 +364,7 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       if (id !== workspaceId) return;
       // Drop any output still buffered from the old pty so it can't land after
       // the reset and corrupt the fresh session's first frame.
-      pending = '';
-      if (drainRaf !== null) {
-        cancelAnimationFrame(drainRaf);
-        drainRaf = null;
-      }
+      queue.reset();
       term.reset();
       started = false;
       lastSentCols = 0;
@@ -493,7 +456,7 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onFocus);
       ro.disconnect();
-      if (drainRaf !== null) cancelAnimationFrame(drainRaf);
+      queue.reset();
       offData();
       offExit();
       offRestart();

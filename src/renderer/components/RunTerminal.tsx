@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
+import { createTermWriteQueue } from '../term-write-queue';
 
 interface Props {
   workspaceId: string;
@@ -104,42 +105,24 @@ export function RunTerminal({ workspaceId, isActive, hasRunScript }: Props) {
       }
     };
 
-    // Feed PTY output to xterm in requestAnimationFrame-paced batches rather
-    // than calling term.write() synchronously inside the IPC callback. A big
-    // burst (bundler output, a stack trace) used to enter xterm's parser in one
-    // synchronous tick, janking the renderer's main thread. Because ALL
-    // main→renderer IPC shares one ordered channel, that stall also delays
-    // unrelated updates (the status dot, the agent terminal's echo). Draining at
-    // most WRITE_BUDGET_BYTES per frame yields the thread back between frames.
-    // See Terminal.tsx for the benchmarking behind the 256 KiB budget.
-    const WRITE_BUDGET_BYTES = 256 * 1024;
-    let pending = '';
-    let drainRaf: number | null = null;
-    const drainPending = () => {
-      drainRaf = null;
-      if (!pending) return;
-      const slice = pending.slice(0, WRITE_BUDGET_BYTES);
-      pending = pending.slice(WRITE_BUDGET_BYTES);
-      term.write(slice);
-      if (pending) drainRaf = requestAnimationFrame(drainPending);
-    };
-    const enqueue = (data: string) => {
-      pending += data;
-      if (drainRaf === null) drainRaf = requestAnimationFrame(drainPending);
-    };
+    // Feed PTY output to xterm through the shared write queue instead of
+    // calling term.write() synchronously inside the IPC callback. A big burst
+    // (bundler output, a stack trace) used to enter xterm's parser in one
+    // synchronous tick, janking the renderer's main thread — and because ALL
+    // main→renderer IPC shares one ordered channel, delaying unrelated updates
+    // (the status dot, the agent terminal's echo). The queue frame-paces
+    // bursts; budget tuning and its sync-frame handling are documented in
+    // term-write-queue.ts.
+    const queue = createTermWriteQueue((data) => term.write(data));
 
     const offData = window.orchestra.onPtyData((id, data) => {
-      if (id === runId) enqueue(data);
+      if (id === runId) queue.push(data);
     });
     const offExit = window.orchestra.onPtyExit((id, code) => {
       if (id !== runId) return;
       // Drop any output still buffered from this run so it can't drain into a
       // fresh session started via the Run button after the exit message.
-      pending = '';
-      if (drainRaf !== null) {
-        cancelAnimationFrame(drainRaf);
-        drainRaf = null;
-      }
+      queue.reset();
       term.writeln(`\r\n\x1b[33m[run script exited with code ${code}]\x1b[0m`);
       startedRef.current = false;
       setRunning(false);
@@ -153,7 +136,7 @@ export function RunTerminal({ workspaceId, isActive, hasRunScript }: Props) {
     // shows what already scrolled by.
     void window.orchestra.runScriptScrollback(workspaceId).then((sb) => {
       if (cancelled) return;
-      if (sb) enqueue(sb);
+      if (sb) queue.push(sb);
     });
 
     const ro = new ResizeObserver(() => refit());
@@ -191,7 +174,7 @@ export function RunTerminal({ workspaceId, isActive, hasRunScript }: Props) {
     return () => {
       cancelled = true;
       ro.disconnect();
-      if (drainRaf !== null) cancelAnimationFrame(drainRaf);
+      queue.reset();
       offData();
       offExit();
       webgl?.dispose();

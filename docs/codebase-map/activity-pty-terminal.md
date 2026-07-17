@@ -2,7 +2,8 @@
 
 How Orchestra knows an agent's status (the sidebar dot) and how terminal I/O
 flows. Files: `src/main/activity.ts`, `events-spool.ts` (+ `.test.ts`),
-`pty.ts`, `logger.ts`; renderer `Terminal.tsx`, `RunTerminal.tsx`.
+`pty.ts`, `logger.ts`; renderer `Terminal.tsx`, `RunTerminal.tsx`,
+`term-write-queue.ts` (+ `.test.ts`).
 
 ## Activity is event-sourced, not polled
 Claude Code lifecycle hooks append events to a durable JSONL spool; the spool
@@ -70,7 +71,12 @@ the container's shim (`transport/remote.ts` + `sandbox-manager.ts` — see
 [sandbox-transport.md](sandbox-transport.md)). Remote spawns skip the local
 cwd check and ship only `extraEnv` (never the host's `process.env`).
 `startPty(opts)` `:169` validates the worktree (local only), builds env
-(`TERM=xterm-256color`, the `ORCHESTRA_*` vars, PATH-prepended bin), spawns
+(`TERM=xterm-256color` plus the terminal-capability vars `COLORTERM=truecolor`
+and `CLAUDE_CODE_FORCE_SYNC_OUTPUT=1` — Claude Code enables truecolor and
+?2026 synchronized-output frames from a terminal-identity allowlist that a
+bare xterm-256color doesn't match, so without these it renders 256-colour and
+flickers; the renderer's write queue is what makes 2026 frames actually
+atomic — plus the `ORCHESTRA_*` vars, PATH-prepended bin), spawns
 (min 20×5), logs every chunk to `~/.orchestra/logs/<id>.log` (≤2 MB, trimmed),
 and **coalesces output** before IPC: `queuePtyData` buffers into the
 `outBuf`, flushing at 8 ms or 64 KiB (`FLUSH_MS`/`FLUSH_BYTES`) — one tiny
@@ -95,12 +101,28 @@ symbol-font subset) so circled-number/dingbat glyphs render at cell width — an
 the texture atlas is cleared once the font loads (`:139`) to evict any cached
 proportional fallback. (This is the "cramped ①②③" fix.)
 
-**RAF-batched writes (the latency fix):** a big tool-dump entering xterm in one
-sync tick janks the renderer and stalls the shared IPC channel → the famous
-"~10s dot lag". `drainPending` (`:323`) hands xterm at most
-`WRITE_BUDGET_BYTES = 256 KiB` per `requestAnimationFrame`, then yields. 256 KiB
-is tuned (xterm 5.5 + WebGL parses ~35–50 MB/s; 64 KiB is slower per-byte, 512
-KiB regresses). Also: custom floating scrollbar (no gutter), Ctrl+C→copy,
+**Shared write queue — term-write-queue.ts (`src/renderer/`, ~180 lines):**
+PTY data reaches xterm through `createTermWriteQueue`, a dependency-free
+module (node-testable; seams for RAF/clock injected in tests) used by both
+Terminal.tsx and RunTerminal.tsx. It does three things:
+- **RAF-batched writes (the dot-latency fix):** hands xterm at most
+  `WRITE_BUDGET_BYTES = 256 KiB` per animation frame, then yields — a big
+  tool-dump parsed in one sync tick used to jank the renderer and stall the
+  shared IPC channel (the "~10s dot lag"). 256 KiB is tuned (xterm 5.5 +
+  WebGL parses ~35–50 MB/s; 64 KiB is slower per-byte, 512 KiB regresses).
+- **Atomic ?2026 sync frames (the flicker fix):** pty.ts advertises
+  `CLAUDE_CODE_FORCE_SYNC_OUTPUT`, so Claude wraps every TUI redraw in
+  `\x1b[?2026h…l`. xterm.js ignores mode 2026, so the queue supplies the
+  atomicity: a drain slice never ends inside an open frame — it extends to
+  the frame's close, or holds the frame until the close arrives (bounded by
+  `SYNC_HOLD_MS = 150` so a lost close can't stall output). Split markers at
+  chunk boundaries are held too, so tracking can't be defeated by IPC
+  chunking.
+- **Small-chunk fast path (input latency):** a chunk ≤ `FAST_PATH_BYTES = 4
+  KiB` arriving with nothing scheduled (a keystroke echo) is written
+  immediately instead of waiting up to a frame for the next RAF.
+
+Terminal.tsx also has: custom floating scrollbar (no gutter), Ctrl+C→copy,
 Ctrl+V image-paste (spill to temp file, bracketed-paste the path),
 Shift+Enter→ESC+CR, lazy PTY start + size re-assert on visibility/focus.
 
@@ -117,12 +139,12 @@ closures without stale captures.
 ## RunTerminal.tsx (run-script view, ~250 lines)
 Simpler xterm than the agent view (no Unicode11/custom scrollbar, 5k
 scrollback), but shares its performance path: WebGL renderer (same
-context-loss→DOM-fallback guard) and the same RAF-batched write drain
-(`WRITE_BUDGET_BYTES = 256 KiB`, `drainPending`/`enqueue`) — a noisy dev server
+context-loss→DOM-fallback guard) and the same shared write queue
+(`createTermWriteQueue` from `term-write-queue.ts`) — a noisy dev server
 can no longer jank the shared IPC channel. Scrollback replay on mount goes
-through the same `enqueue` so a big replay is spread across frames too;
-`onPtyExit` clears `pending` + cancels the drain RAF so stale output can't bleed
-into a session restarted via the Run button. Start/Stop buttons drive a
+through the same `queue.push` so a big replay is spread across frames too;
+`onPtyExit` calls `queue.reset()` so stale output can't bleed into a session
+restarted via the Run button. Start/Stop buttons drive a
 `<wsId>:run` PTY (`bash -lc <script>` with `$ORCHESTRA_PORT`); Ctrl+C copies if
 there's a selection else forwards to the script.
 

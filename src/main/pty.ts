@@ -221,15 +221,29 @@ export async function startPty(opts: {
   // fills in ORCHESTRA_WS_ID / ORCHESTRA_EVENTS_DIR / ORCHESTRA_SOCK with the
   // container's own paths. So we send only the workspace-specific extras the
   // agent's hooks read (ORCHESTRA_BRANCH*, ORCHESTRA_WORKTREE = the sandbox cwd).
+  // Advertise the renderer terminal's real capabilities. xterm.js renders
+  // 24-bit colour and — via the renderer's sync-aware write queue
+  // (term-write-queue.ts) — applies ?2026 synchronized-output frames
+  // atomically, but Claude Code enables both from a terminal-identity
+  // allowlist that TERM=xterm-256color doesn't match, so without these it
+  // falls back to 256-colour output and unsynchronized (visibly flickering)
+  // redraws. COLORTERM is the standard truecolor signal;
+  // CLAUDE_CODE_FORCE_SYNC_OUTPUT is Claude's documented override (v2.1.129+)
+  // for sync-capable terminals its auto-detection misses.
+  const termCaps = {
+    TERM: 'xterm-256color',
+    COLORTERM: 'truecolor',
+    CLAUDE_CODE_FORCE_SYNC_OUTPUT: '1',
+  };
   const env: Record<string, string> = remote
     ? {
         ...(opts.extraEnv ?? {}),
-        TERM: 'xterm-256color',
+        ...termCaps,
       }
     : {
         ...(process.env as Record<string, string>),
         ...(opts.extraEnv ?? {}),
-        TERM: 'xterm-256color',
+        ...termCaps,
       };
   if (opts.workspaceId) {
     // Absolute worktree root for hook commands — the rename hook resolves its
