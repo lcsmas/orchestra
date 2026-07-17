@@ -14,14 +14,20 @@ under different accounts by injecting that dir into the spawned `claude` PTY.
 **Orchestra never mints/refreshes tokens** — Claude Code does; Orchestra only
 reads them transiently to query usage.
 
-`Account = {id, label, configDir, inherit?}` (`accounts.ts:18`). `configDir`
-supports templates (`~`, `${VAR}`) expanded by `expandConfigDir(template, home,
-source)` `:130`.
+`Account = {id, label, configDir, scratchDefault?, inherit?}` (`accounts.ts:18`).
+`configDir` supports templates (`~`, `${VAR}`) expanded by
+`expandConfigDir(template, home, source)` `:130`.
 
 - **Pinning:** a workspace snapshots its repo's `accountId` at creation and keeps
   it for life (else `claude --continue` finds no session). `resolveWorkspaceAccountId(pinned,
   known)` `:245` → `null` falls back to the default `~/.claude` login. Changing a
   repo's account only affects *new* workspaces.
+- **Scratch default:** scratch/orchestrator sessions have no repo to take an
+  account from, so creation pins the one account flagged `scratchDefault: true`
+  (`scratchDefaultAccountId(accounts)`, pure; `createScratchLikeWorkspace` in
+  `workspaces.ts`). `store.setAccounts` keeps the flag on at most one account
+  (first wins); the AccountsSettings checkbox ("Default for scratch sessions")
+  behaves radio-like. No flag → default login, as before.
 - **Migration** (existing workspace → another account): re-pinning alone breaks
   `--continue` (its transcript lives in the *old* config dir), so migration
   relocates the conversation too. `dispatchMigrateAccountRequest` (`workspaces.ts`)

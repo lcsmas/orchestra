@@ -3184,6 +3184,10 @@ button.danger-primary:active {
   gap: 8px;
   align-items: stretch;
 }
+/* The account new scratch/orchestrator sessions pin (at most one row checked). */
+.account-scratch-default {
+  margin-top: 2px;
+}
 /* Per-account inheritance: what this login dir pulls from the global ~/.claude.
    Two file toggles up top, then wrapped chip-lists for skills and MCP servers. */
 .account-inherit {

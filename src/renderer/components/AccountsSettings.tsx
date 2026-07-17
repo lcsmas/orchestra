@@ -19,6 +19,8 @@ interface Row {
   inheritSkills: string[];
   /** MCP server keys inherited from ~/.claude.json. */
   inheritMcp: string[];
+  /** New scratch/orchestrator sessions pin this account (at most one row). */
+  scratchDefault: boolean;
 }
 
 /** Map a stored Account into the editable Row shape. */
@@ -31,6 +33,7 @@ function rowFromAccount(a: Account): Row {
     inheritStatusline: a.inherit?.statusline ?? false,
     inheritSkills: a.inherit?.skills ?? [],
     inheritMcp: a.inherit?.mcpServers ?? [],
+    scratchDefault: a.scratchDefault ?? false,
   };
 }
 
@@ -140,6 +143,7 @@ export function AccountsSettings({ onClose }: Props) {
         inheritStatusline: true,
         inheritSkills: [],
         inheritMcp: [],
+        scratchDefault: false,
       },
     ]);
 
@@ -156,6 +160,10 @@ export function AccountsSettings({ onClose }: Props) {
     setRows((rs) =>
       rs.map((r) => (r.id === id ? { ...r, inheritMcp: toggleInList(r.inheritMcp, name) } : r)),
     );
+  // Radio-like: at most one account is the scratch default, so checking a row
+  // unchecks every other.
+  const setScratchDefault = (id: string, on: boolean) =>
+    setRows((rs) => rs.map((r) => ({ ...r, scratchDefault: r.id === id ? on : on ? false : r.scratchDefault })));
 
   // Persist current edits, returning the saved list (so a Login click can save
   // first — main needs the account to exist before it can spawn its login).
@@ -167,6 +175,7 @@ export function AccountsSettings({ onClose }: Props) {
           id: r.id,
           label: r.label.trim(),
           configDir: r.configDir.trim(),
+          ...(r.scratchDefault ? { scratchDefault: true } : {}),
           ...(inherit ? { inherit } : {}),
         };
       })
@@ -293,6 +302,18 @@ export function AccountsSettings({ onClose }: Props) {
                         …
                       </button>
                     </div>
+                  </label>
+
+                  <label className="account-inherit-check account-scratch-default">
+                    <input
+                      type="checkbox"
+                      checked={r.scratchDefault}
+                      onChange={(e) => setScratchDefault(r.id, e.target.checked)}
+                    />
+                    <span>
+                      Default for scratch sessions
+                      <em> new scratch / orchestrator sessions run as this account</em>
+                    </span>
                   </label>
 
                   <div className="account-inherit">

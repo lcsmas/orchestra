@@ -17,7 +17,10 @@ A workspace is an isolated execution environment for one Claude Code agent.
   base branch. Has `repoPath`, `worktreePath`, `branch`, `baseBranch`; supports
   diff/merge/PR/release tracking.
 - **`scratch`** — throwaway non-git dir under `~/.orchestra/scratch/`.
-  `repoPath`/`baseBranch` are `''`; `branch` is a display label only.
+  `repoPath`/`baseBranch` are `''`; `branch` is a display label only. Creation
+  pins `accountId` to the account flagged `scratchDefault` (if any —
+  `scratchDefaultAccountId`, `accounts.ts`), since there's no repo to take an
+  account from; the checkbox lives in the Accounts settings.
 - **`orchestrator`** — a scratch session seeded with a coordinator brief
   (`ORCHESTRATOR_BRIEF`, ~`workspaces.ts:351`); children it spawns carry its id
   as `parentId` and nest under it in the sidebar. The brief is one-time

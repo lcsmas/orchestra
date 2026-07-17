@@ -8,6 +8,7 @@ import {
   isExpired,
   planAccountMigration,
   resolveWorkspaceAccountId,
+  scratchDefaultAccountId,
   parseCredentials,
   parseUsageResponse,
   sanitizeAccountInherit,
@@ -223,6 +224,29 @@ test('resolveWorkspaceAccountId keeps the pin even after the repo would point el
   // The repo may now be assigned acc-b, but a workspace pinned to acc-a stays
   // on acc-a — the whole point of pinning (no "No conversation found").
   assert.equal(resolveWorkspaceAccountId('acc-a', new Set(['acc-a', 'acc-b'])), 'acc-a');
+});
+
+// ---- scratchDefaultAccountId (default login for scratch sessions) ------------
+
+test('scratchDefaultAccountId returns the flagged account id', () => {
+  const accounts = [
+    { id: 'acc-a', label: 'a', configDir: '~/.claude-a' },
+    { id: 'acc-b', label: 'b', configDir: '~/.claude-b', scratchDefault: true },
+  ];
+  assert.equal(scratchDefaultAccountId(accounts), 'acc-b');
+});
+
+test('scratchDefaultAccountId returns null when no account is flagged (→ default login)', () => {
+  assert.equal(scratchDefaultAccountId([]), null);
+  assert.equal(scratchDefaultAccountId([{ id: 'acc-a', label: 'a', configDir: '' }]), null);
+});
+
+test('scratchDefaultAccountId picks the first when a stale store has several flagged', () => {
+  const accounts = [
+    { id: 'acc-a', label: 'a', configDir: '', scratchDefault: true },
+    { id: 'acc-b', label: 'b', configDir: '', scratchDefault: true },
+  ];
+  assert.equal(scratchDefaultAccountId(accounts), 'acc-a');
 });
 
 // ---- planAccountMigration (migrate a workspace's pinned account) -------------

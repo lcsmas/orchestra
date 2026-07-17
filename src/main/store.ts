@@ -246,15 +246,20 @@ class Store {
    *  empty. */
   async setAccounts(accounts: Account[]): Promise<Account[]> {
     const cleaned: Account[] = [];
+    // At most one account may be the scratch-session default — keep the first.
+    let scratchDefaultSeen = false;
     for (const a of accounts) {
       const id = (a?.id ?? '').trim();
       const label = (a?.label ?? '').trim();
       if (!id || !label) continue;
       const inherit = sanitizeAccountInherit(a?.inherit);
+      const scratchDefault = a?.scratchDefault === true && !scratchDefaultSeen;
+      if (scratchDefault) scratchDefaultSeen = true;
       cleaned.push({
         id,
         label,
         configDir: typeof a.configDir === 'string' ? a.configDir.trim() : '',
+        ...(scratchDefault ? { scratchDefault: true } : {}),
         ...(inherit ? { inherit } : {}),
       });
     }

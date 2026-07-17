@@ -20,7 +20,7 @@ import {
   switchWorktreeBranch,
 } from './git';
 import { isRunning, stopPty, clearScrollback, startPty, writePty, readScrollback } from './pty';
-import { expandConfigDir, planAccountMigration } from '../shared/accounts';
+import { expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { syncAccountInheritance } from './account-inherit';
 import { refreshAccountsNow } from './account-usage';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
@@ -420,6 +420,13 @@ async function createScratchLikeWorkspace(
     // scope is clear; after those two progressive auto-renames the nudge retires
     // (tracked via autoRenameCount + the .branch-renamed sentinel).
     branchManuallySet: false,
+    // No repo to take an account from — pin the account flagged as the scratch
+    // default (if any) at creation, same lifetime rule as a repo workspace's
+    // pin: the conversation lives in that account's CLAUDE_CONFIG_DIR, so the
+    // session keeps it even if the flag moves later.
+    ...(scratchDefaultAccountId(store.accounts)
+      ? { accountId: scratchDefaultAccountId(store.accounts)! }
+      : {}),
     port,
     // No repo → no setup script can be configured, so it is never "pending".
     setupStatus: 'ok',

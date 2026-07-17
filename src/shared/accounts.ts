@@ -21,6 +21,12 @@ export interface Account {
   /** Path to this account's Claude config dir (the `CLAUDE_CONFIG_DIR` value).
    *  May use `~` and `${VAR}`. */
   configDir: string;
+  /** When true, NEW scratch/orchestrator sessions pin this account at creation
+   *  (they have no repo to take an account from, so without this they always
+   *  fall back to the default `~/.claude` login). At most one account carries
+   *  the flag — `setAccounts` keeps only the first. Existing sessions keep
+   *  their pin (same lifetime rule as a repo's `accountId`). */
+  scratchDefault?: boolean;
   /** Which pieces of the GLOBAL `~/.claude` config this account's dir inherits.
    *  A login dir holds only `.credentials.json` by default, so an agent running
    *  as this account would otherwise lose the user's settings/skills/MCP. The
@@ -336,6 +342,13 @@ export function resolveWorkspaceAccountId(
 ): string | null {
   if (!pinnedAccountId) return null;
   return knownAccountIds.has(pinnedAccountId) ? pinnedAccountId : null;
+}
+
+/** The account id a NEW scratch/orchestrator session should pin, or null when
+ *  none is flagged (→ default login). First flagged account wins — `setAccounts`
+ *  enforces at-most-one, this just tolerates a store that predates it. */
+export function scratchDefaultAccountId(accounts: readonly Account[]): string | null {
+  return accounts.find((a) => a.scratchDefault === true)?.id ?? null;
 }
 
 // ---- account migration planning ----------------------------------------------
