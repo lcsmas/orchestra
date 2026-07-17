@@ -562,6 +562,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     activeId,
     stats,
     sizes,
+    sizesExclusive,
     prs,
     linear,
     tools,
@@ -581,6 +582,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     page,
     setPage,
   } = useStore();
+  // On btrfs the main process reports EXCLUSIVE bytes (what deleting the
+  // worktree would reclaim — reflink-shared node_modules isn't counted); the
+  // non-btrfs fallback reports apparent size. Same badge, honest tooltip.
+  const sizeTitle = sizesExclusive
+    ? 'Worktree size on disk — exclusive bytes, i.e. what deleting it would reclaim (data shared with other worktrees via btrfs reflinks is not counted)'
+    : 'Worktree size on disk (apparent; btrfs reflinks are shared between worktrees, so this is not all reclaimable)';
   const [version, setVersion] = useState('');
   const [archivedOpen, setArchivedOpen] = useState(false);
   // Per-repo collapse state, persisted across sessions so a repo the user
@@ -1654,7 +1661,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       {sizeBytes != null && !hasPills && (
                         <span
                           className="ws-size"
-                          title="Worktree size on disk (apparent; btrfs reflinks are shared between worktrees, so this is not all reclaimable)"
+                          title={sizeTitle}
                         >
                           {formatBytes(sizeBytes)}
                         </span>
@@ -1733,7 +1740,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       {sizeBytes != null && hasPills && (
                         <span
                           className="ws-size ws-size-pills"
-                          title="Worktree size on disk (apparent; btrfs reflinks are shared between worktrees, so this is not all reclaimable)"
+                          title={sizeTitle}
                         >
                           {formatBytes(sizeBytes)}
                         </span>
@@ -1916,7 +1923,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       {sizeBytes != null && (
                         <span
                           className="ws-size"
-                          title="Worktree size on disk (apparent; btrfs reflinks are shared between worktrees, so this is not all reclaimable)"
+                          title={sizeTitle}
                         >
                           {formatBytes(sizeBytes)}
                         </span>

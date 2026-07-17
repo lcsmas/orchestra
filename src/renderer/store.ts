@@ -43,9 +43,12 @@ interface State {
   repos: RepoEntry[];
   workspaces: Workspace[];
   stats: Record<string, DiffStats>;
-  /** Apparent worktree size in bytes, keyed by workspace id. Refreshed off the
-   *  hot stats poll (on load / workspace-set change) since `du` is heavier. */
+  /** Worktree size in bytes, keyed by workspace id. Refreshed off the hot
+   *  stats poll (on load / workspace-set change) since the scan is heavier. */
   sizes: Record<string, number>;
+  /** True when `sizes` are btrfs exclusive (reclaimable) bytes; false when
+   *  they're apparent `du` sizes (non-btrfs fallback). Drives tooltip copy. */
+  sizesExclusive: boolean;
   prs: Record<string, PRsForBranch>;
   /** Linear issue confirmed to exist for a workspace's branch, keyed by
    *  workspace id. Absent until verified; explicit null means "checked, no real
@@ -130,6 +133,7 @@ export const useStore = create<State>((set, get) => ({
   workspaces: [],
   stats: {},
   sizes: {},
+  sizesExclusive: false,
   prs: {},
   linear: {},
   tools: {},
@@ -409,8 +413,8 @@ export const useStore = create<State>((set, get) => ({
 
   refreshSizes: async () => {
     try {
-      const sizes = await window.orchestra.getWorktreeSizes();
-      set({ sizes });
+      const { sizes, exclusive } = await window.orchestra.getWorktreeSizes();
+      set({ sizes, sizesExclusive: exclusive });
     } catch {
       /* du unavailable (e.g. non-unix) or root missing — leave sizes as-is */
     }

@@ -53,7 +53,8 @@ channels include `workspace:update`, `agent:finished`, `agent:needsInput`,
 Single source of truth; **atomic selectors** so high-frequency events
 (`agent:tool`, `repo:syncState`) don't re-render unrelated components. State:
 `repos`, `workspaces`, `accounts`, `globalUsage`, and per-workspace derived maps
-`stats`/`sizes`/`prs`/`linear`/`tools`/`contextTokens`/`repoSync`/`accountUsage`/
+`stats`/`sizes` (+`sizesExclusive`: btrfs reclaimable-bytes vs apparent-`du`
+flag, drives the size-badge tooltip)/`prs`/`linear`/`tools`/`contextTokens`/`repoSync`/`accountUsage`/
 `workspaceAccounts`, plus UI (`activeId`, `view`, `loaded`). `load()` `:115`
 hydrates in parallel and seeds context badges from persisted `contextTokens`.
 Refreshers (`refreshAllStats`/`Sizes`/`AllPRs`/`AllLinear`, `:292+`) are driven

@@ -202,12 +202,13 @@ export function App() {
     return startVisiblePoll(refreshAllStats, 8000);
   }, [loaded, wsSetRev, refreshAllStats]);
 
-  // Worktree sizes are far heavier to compute than diff stats (a full `du`
-  // pass), so they ride their own effect on a slower cadence than the 8s stats
-  // poll. The first pass is cold (seconds over GiB trees); subsequent passes
-  // ride a warm page cache and are cheap, so a 30s interval keeps the number
-  // live as a worktree's contents grow/shrink (builds, installs) without
-  // freezing it between workspace add/remove like a load-only refresh would.
+  // Worktree sizes are far heavier to compute than diff stats (a full
+  // `btrfs fi du` / `du` pass), so they ride their own effect on a slower
+  // cadence than the 8s stats poll. The 30s interval keeps the number live as
+  // a worktree's contents grow/shrink (builds, installs) without freezing it
+  // between workspace add/remove like a load-only refresh would; the btrfs
+  // scanner gets no page-cache discount, so the main process additionally
+  // TTL-caches its result and most of these polls are served from that cache.
   useEffect(() => {
     if (!loaded) return;
     return startVisiblePoll(refreshSizes, 30000);

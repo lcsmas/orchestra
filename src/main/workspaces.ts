@@ -28,6 +28,7 @@ import { log } from './logger';
 import { forgetWorkspaceProbes } from './activity';
 import type { CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
 import { isScratchLike, SANDBOX_WORKSPACE_DIR } from '../shared/types';
+import { parseBtrfsDuSizes, parseDuSizes, type WorktreeSizes } from '../shared/worktree-sizes';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
 // Scratch sessions live OUTSIDE the worktrees root so the orphan-pruner (which
@@ -194,35 +195,94 @@ async function clearReadyFile(workspaceId: string): Promise<void> {
 }
 
 /**
- * Apparent on-disk size of every workspace's worktree, keyed by workspace id
- * (bytes). Computed with a SINGLE `du` pass over the whole worktrees root —
- * `--max-depth=1` reports each immediate child dir, so one process + one warm
- * page cache covers all worktrees, versus spawning `du` per workspace.
+ * On-disk size of every workspace's worktree, keyed by workspace id (bytes).
+ * Two scanners, probed at runtime:
  *
- * NOTE: `du` reports apparent size. On btrfs (the typical setup) worktrees
- * share `node_modules` via reflinked extents, so summing these does NOT equal
- * reclaimable space — most of it is shared. This is a "how big does this look"
- * number, not "how much you'd get back by deleting it".
+ *  - btrfs (the typical Linux setup): one `btrfs filesystem du -s --raw` pass
+ *    over every worktree under ORCHESTRA_ROOT, reporting EXCLUSIVE bytes —
+ *    what deleting the worktree would actually reclaim. pnpm reflink-clones
+ *    packages from its store on btrfs, so worktrees share nearly all of
+ *    `node_modules` at the extent level: a worktree that *looks* like 580 MB
+ *    is typically ~2 MB exclusive. Apparent size wildly overstates usage and
+ *    scared users; exclusive is the honest number.
+ *  - fallback (non-btrfs fs, missing btrfs-progs, macOS): a single
+ *    `du -k --max-depth=1` pass over the root — apparent size, as before.
  *
- * Off the hot stats poll by design: a cold pass over GiB-scale trees takes
- * seconds. Callers refresh on load and on a slow (30s) interval, not on the
- * 8s stats tick — warm-cache passes are cheap but a cold one is not.
+ * Off the hot stats poll by design, and TTL-cached on top: `du` gets a warm
+ * page-cache discount but the btrfs pass walks extent info via ioctls and
+ * costs ~7s EVERY time, so exclusive results are served from cache for
+ * SIZES_TTL_MS. The cache keys on the worktree-path set, so workspace
+ * add/remove invalidates it immediately.
  */
-// In-flight `du` scan, if any. A cold pass takes seconds; without this guard a
-// burst of size refreshes (e.g. many workspaces added/removed in quick
-// succession) could stack several overlapping full-tree scans, each thrashing
-// the disk and starving everything else. Concurrent callers share one scan.
-let sizesInFlight: Promise<Record<string, number>> | null = null;
+const SIZES_TTL_MS = 120_000;
 
-export function getWorktreeSizes(): Promise<Record<string, number>> {
+// In-flight scan, if any. A pass takes seconds; without this guard a burst of
+// size refreshes (e.g. many workspaces added/removed in quick succession)
+// could stack several overlapping full-tree scans, each thrashing the disk
+// and starving everything else. Concurrent callers share one scan.
+let sizesInFlight: Promise<WorktreeSizes> | null = null;
+// null = not probed yet; false = the btrfs scanner is unusable this session
+// (non-btrfs filesystem or no btrfs binary) — don't re-pay a failed probe on
+// every poll.
+let btrfsUsable: boolean | null = null;
+let sizesCache: { at: number; key: string; result: WorktreeSizes } | null = null;
+
+export function getWorktreeSizes(): Promise<WorktreeSizes> {
+  const key = store.workspaces.map((w) => w.worktreePath).sort().join('\n');
+  // Only exclusive (btrfs) results are worth caching — the `du` fallback rides
+  // the page cache and keeps its original recompute-every-call behavior.
+  if (
+    sizesCache &&
+    sizesCache.result.exclusive &&
+    sizesCache.key === key &&
+    Date.now() - sizesCache.at < SIZES_TTL_MS
+  ) {
+    return Promise.resolve(sizesCache.result);
+  }
   if (sizesInFlight) return sizesInFlight;
-  sizesInFlight = computeWorktreeSizes().finally(() => {
-    sizesInFlight = null;
-  });
+  sizesInFlight = computeWorktreeSizes()
+    .then((result) => {
+      sizesCache = { at: Date.now(), key, result };
+      return result;
+    })
+    .finally(() => {
+      sizesInFlight = null;
+    });
   return sizesInFlight;
 }
 
-async function computeWorktreeSizes(): Promise<Record<string, number>> {
+async function computeWorktreeSizes(): Promise<WorktreeSizes> {
+  if (btrfsUsable !== false) {
+    // Scan every child of the worktrees root — same coverage as the du pass
+    // (orphaned/untracked worktrees included, scratch dirs excluded since they
+    // live outside ORCHESTRA_ROOT). Exclusive bytes are backref-global, so a
+    // narrower set would report the same numbers; matching du's coverage just
+    // keeps the two scanners interchangeable.
+    let targets: string[] = [];
+    try {
+      targets = (await readdir(ORCHESTRA_ROOT, { withFileTypes: true }))
+        .filter((e) => e.isDirectory())
+        .map((e) => path.join(ORCHESTRA_ROOT, e.name));
+    } catch {
+      /* root missing (fresh install) — fall through to du, which no-ops too */
+    }
+    if (targets.length > 0) {
+      let out = '';
+      try {
+        ({ stdout: out } = await execFileP('btrfs', ['filesystem', 'du', '-s', '--raw', ...targets]));
+      } catch (e) {
+        // Non-zero exit still prints the surviving entries (a path can vanish
+        // mid-scan) — salvage stdout; on ENOENT/non-btrfs it stays empty.
+        out = (e as { stdout?: string }).stdout ?? '';
+      }
+      const byPath = parseBtrfsDuSizes(out);
+      if (byPath.size > 0) {
+        btrfsUsable = true;
+        return { sizes: mapToWorkspaceIds(byPath), exclusive: true };
+      }
+      btrfsUsable = false;
+    }
+  }
   let out = '';
   try {
     // `-s` conflicts with `--max-depth`, so list children with `-k` (KiB).
@@ -232,16 +292,10 @@ async function computeWorktreeSizes(): Promise<Record<string, number>> {
     // rest on stdout — salvage whatever it managed to emit.
     out = (e as { stdout?: string }).stdout ?? '';
   }
-  // Parse "<KiB>\t<absolute path>" lines into a path → bytes map. The root's
-  // own total line is present too but is simply never matched to a worktree.
-  const byPath = new Map<string, number>();
-  for (const line of out.split('\n')) {
-    const tab = line.indexOf('\t');
-    if (tab < 0) continue;
-    const kib = Number(line.slice(0, tab));
-    if (!Number.isFinite(kib)) continue;
-    byPath.set(line.slice(tab + 1), kib * 1024);
-  }
+  return { sizes: mapToWorkspaceIds(parseDuSizes(out)), exclusive: false };
+}
+
+function mapToWorkspaceIds(byPath: Map<string, number>): Record<string, number> {
   const sizes: Record<string, number> = {};
   for (const ws of store.workspaces) {
     const bytes = byPath.get(ws.worktreePath);

@@ -200,6 +200,19 @@ Linear API key: `getLinearApiKey`/`setLinearApiKey`/`clearLinearApiKey`.
 `getBaseSyncState` (behind/ahead vs `origin/<base>`), broadcast as
 `repo:syncState`. Fires on focus, startup, and the refresh button.
 
+## Worktree sizes — workspaces.ts `getWorktreeSizes`
+Sidebar size badges come from one scan over `ORCHESTRA_ROOT`
+(`src/main/workspaces.ts:~230`), returning `WorktreeSizes { sizes, exclusive }`
+(`src/shared/worktree-sizes.ts`, which also holds the pure output parsers +
+tests). Two scanners: `btrfs filesystem du -s --raw` reporting **exclusive
+(reclaimable) bytes** — pnpm reflink-clones packages on btrfs, so a ~580 MB-
+looking worktree is often ~2 MB exclusive — with a plain `du -k` apparent-size
+fallback (non-btrfs/macOS; `exclusive: false` switches the renderer tooltip).
+The btrfs pass gets no page-cache discount (~7 s of extent ioctls every time),
+so results are TTL-cached 120 s in main, keyed on the worktree-path set so
+add/delete invalidates; renderer polls every 30 s (`App.tsx`) and mostly hits
+that cache. Scratch dirs live outside `ORCHESTRA_ROOT` and are never scanned.
+
 ## Key invariants
 One worktree per workspace · `accountId` pinned for life · `parentId` only
 persisted if parent exists (dangling → child floats to repo section) · setup is

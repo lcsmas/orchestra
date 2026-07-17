@@ -1,4 +1,5 @@
 import type { SelfTuneReport, SelfTuneRun } from './self-tune';
+import type { WorktreeSizes } from './worktree-sizes';
 import type {
   Account,
   AccountUsageStatus,
@@ -218,9 +219,11 @@ export interface OrchestraAPI {
   // Git / Diff
   getDiff: (id: string) => Promise<DiffFile[]>;
   getDiffStats: (id: string) => Promise<DiffStats>;
-  /** Apparent on-disk size (bytes) of every workspace's worktree, keyed by
-   *  workspace id. Computed in one `du` pass; absent ids have no worktree. */
-  getWorktreeSizes: () => Promise<Record<string, number>>;
+  /** On-disk size (bytes) of every workspace's worktree, keyed by workspace
+   *  id; absent ids have no worktree. One `btrfs filesystem du` pass reporting
+   *  exclusive (reclaimable) bytes where available, else one apparent-size
+   *  `du` pass — `exclusive` says which the numbers are. */
+  getWorktreeSizes: () => Promise<WorktreeSizes>;
   /** One live sample of Orchestra's local footprint: CPU/memory per PTY
    *  session's process tree, Electron's own processes, and a cached `du` pass
    *  over the data dirs. The Resources page polls this every ~2s while open;
