@@ -467,14 +467,16 @@ function flattenSubtree(
  * like flattenSubtree does. */
 function collectDescendants(id: string, childrenOf: Map<string, Workspace[]>): Workspace[] {
   const out: Workspace[] = [];
-  const stack = [...(childrenOf.get(id) ?? [])];
+  const stack = [...(childrenOf.get(id) ?? [])].reverse();
   const seen = new Set<string>();
   while (stack.length) {
     const w = stack.pop()!;
     if (seen.has(w.id)) continue;
     seen.add(w.id);
     out.push(w);
-    stack.push(...(childrenOf.get(w.id) ?? []));
+    // Push reversed so descendants list in their natural sidebar order.
+    const kids = childrenOf.get(w.id) ?? [];
+    for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
   }
   return out;
 }
