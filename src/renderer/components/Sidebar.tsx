@@ -43,6 +43,14 @@ function formatBytes(bytes: number): string {
   return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
 }
 
+/** Active rows only surface the size badge above this threshold. The name row
+ *  wraps (`flex-wrap`), so on a busy row the badge costs a whole extra line —
+ *  and with btrfs exclusive sizes most worktrees sit at a few MB of noise.
+ *  Hiding those keeps rows single-line and makes a visible badge mean "this
+ *  one is actually worth cleaning up". The archived list always shows sizes
+ *  (it's the delete-candidates view and has room). */
+const SIZE_BADGE_MIN_BYTES = 50 * 1024 * 1024;
+
 function BellIcon() {
   return (
     <svg
@@ -1668,7 +1676,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         </span>
                         <WorkspaceAccountBadge workspaceId={w.id} migratable />
                       </span>
-                      {sizeBytes != null && !hasPills && (
+                      {sizeBytes != null && sizeBytes >= SIZE_BADGE_MIN_BYTES && !hasPills && (
                         <span
                           className="ws-size"
                           title={sizeTitle}
@@ -1747,7 +1755,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         </span>
                       )}
                       <PrLinearBadges prRecord={prRecord} linearIssue={linearIssue} />
-                      {sizeBytes != null && hasPills && (
+                      {sizeBytes != null && sizeBytes >= SIZE_BADGE_MIN_BYTES && hasPills && (
                         <span
                           className="ws-size ws-size-pills"
                           title={sizeTitle}

@@ -54,7 +54,9 @@ Single source of truth; **atomic selectors** so high-frequency events
 (`agent:tool`, `repo:syncState`) don't re-render unrelated components. State:
 `repos`, `workspaces`, `accounts`, `globalUsage`, and per-workspace derived maps
 `stats`/`sizes` (+`sizesExclusive`: btrfs reclaimable-bytes vs apparent-`du`
-flag, drives the size-badge tooltip)/`prs`/`linear`/`tools`/`contextTokens`/`repoSync`/`accountUsage`/
+flag, drives the size-badge tooltip; active rows hide the badge below
+`SIZE_BADGE_MIN_BYTES` (50 MB) so the wrapping badge doesn't add a line of
+noise per row)/`prs`/`linear`/`tools`/`contextTokens`/`repoSync`/`accountUsage`/
 `workspaceAccounts`, plus UI (`activeId`, `view`, `loaded`). `load()` `:115`
 hydrates in parallel and seeds context badges from persisted `contextTokens`.
 Refreshers (`refreshAllStats`/`Sizes`/`AllPRs`/`AllLinear`, `:292+`) are driven
