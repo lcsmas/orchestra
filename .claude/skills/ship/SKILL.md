@@ -35,7 +35,20 @@ launcher's AppImage with the local build.
    Resolve any conflicts before continuing. If the rebase can't complete
    cleanly, stop and surface it to the user rather than forcing.
 
-3. **Write the release description.** Compose a short, human-readable changelog
+3. **Verify the build before releasing.** The release script runs the real
+   build, but only *after* the version bump — and it never runs typecheck or
+   tests. Catch failures now, while they're free to fix:
+
+   ```bash
+   [ -d node_modules ] || pnpm install
+   npx tsc --noEmit && pnpm test
+   ```
+
+   If either fails, stop and report the failures instead of releasing — never
+   tag unverified code. (No separate `pnpm run build` needed here: the release
+   script builds the AppImage itself and aborts if that fails.)
+
+4. **Write the release description.** Compose a short, human-readable changelog
    of what's in this release and write it to a temp file. Base it on the commits
    that this release adds on top of `origin/master`:
 
@@ -60,7 +73,7 @@ launcher's AppImage with the local build.
    Keep it concise and skip noise (chore/version-bump commits). If the branch has
    only trivial commits, a one-line summary is fine.
 
-4. **Release + land on master + install locally.** One command does the push,
+5. **Release + land on master + install locally.** One command does the push,
    the master fast-forward, the tag/build, the local install, and attaches your
    description to the GitHub release:
 
@@ -72,7 +85,7 @@ launcher's AppImage with the local build.
    user asks for a different bump. Omit `--notes-file` to fall back to
    auto-generated notes (gh's commit list).
 
-5. **Report back.** Show the new version/tag. The local AppImage is already
+6. **Report back.** Show the new version/tag. The local AppImage is already
    swapped — tell the user to **relaunch Orchestra** to pick it up. CI then adds
    the x64/arm64 AppImages to the GitHub release a few minutes later.
 
