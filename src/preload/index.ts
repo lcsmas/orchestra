@@ -102,6 +102,7 @@ const api: OrchestraAPI = {
   getDiff: (id) => ipcRenderer.invoke('git:diff', id),
   getDiffStats: (id) => ipcRenderer.invoke('git:stats', id),
   getWorktreeSizes: () => ipcRenderer.invoke('workspaces:sizes'),
+  sampleResources: () => ipcRenderer.invoke('resources:sample'),
   findPR: (id) => ipcRenderer.invoke('git:findPR', id),
   verifyLinear: (id) => ipcRenderer.invoke('linear:verify', id),
   listBranches: (id) => ipcRenderer.invoke('git:listBranches', id),

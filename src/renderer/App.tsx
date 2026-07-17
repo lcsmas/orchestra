@@ -10,6 +10,7 @@ import { SetupBanner } from './components/SetupBanner';
 import { PromptQueueBanner } from './components/PromptQueueBanner';
 import { SandboxControlBar } from './components/SandboxControlBar';
 import { InsightsView } from './components/Insights';
+import { ResourcesView } from './components/ResourcesView';
 import { DialogHost, dialog } from './components/Dialog';
 import { playFinishedChime } from './chime';
 import { dlog } from './debug';
@@ -80,6 +81,7 @@ export function App() {
   const insightsOpen = useStore((s) => s.insightsOpen);
   const view = useStore((s) => s.view);
   const setView = useStore((s) => s.setView);
+  const page = useStore((s) => s.page);
   const load = useStore((s) => s.load);
   const loaded = useStore((s) => s.loaded);
   const addRepoOnly = useStore((s) => s.addRepoOnly);
@@ -625,10 +627,13 @@ export function App() {
             </div>
           </>
         )}
-        {/* Insights & Improvements pane. An overlay (absolute, above the pane
-            row) rather than a route swap: unmounting the workspace tree would
-            kill every kept-alive TerminalView's xterm scrollback. */}
+        {/* Insights & Improvements pane and the full-page Resources view are
+            both overlays (absolute, above the pane row) rather than route
+            swaps: unmounting the workspace tree would kill every kept-alive
+            TerminalView's xterm scrollback. The store keeps them mutually
+            exclusive, so at most one renders. */}
         {loaded && insightsOpen && <InsightsView />}
+        {loaded && page === 'resources' && <ResourcesView />}
       </main>
       <DialogHost />
     </div>

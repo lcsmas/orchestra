@@ -297,6 +297,22 @@ function LogsIcon() {
   );
 }
 
+function ResourcesIcon() {
+  // A pulse/heartbeat trace — the Resources page is a live monitor.
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M1.5 8.5h3l1.5-4 3 7 1.5-3h4"
+      />
+    </svg>
+  );
+}
+
 function ExternalLinkIcon() {
   return (
     <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" focusable="false">
@@ -522,6 +538,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     removeRepo,
     reorderWorkspaces,
     reorderRepos,
+    page,
+    setPage,
   } = useStore();
   const [version, setVersion] = useState('');
   const [archivedOpen, setArchivedOpen] = useState(false);
@@ -1979,6 +1997,16 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       <InsightsSection />
       <UsageBars />
       <div className="sidebar-footer">
+        <button
+          className={`sidebar-footer-link${page === 'resources' ? ' active' : ''}`}
+          onClick={() => setPage(page === 'resources' ? 'workspaces' : 'resources')}
+          title="Live CPU, memory, disk and token usage of every agent"
+          aria-label="Open the Resources page"
+          aria-pressed={page === 'resources'}
+        >
+          <ResourcesIcon />
+          <span>Resources</span>
+        </button>
         <button
           className="sidebar-footer-link"
           onClick={() => window.orchestra.openExternal('https://github.com/lcsmas/orchestra')}

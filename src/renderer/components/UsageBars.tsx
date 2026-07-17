@@ -51,7 +51,8 @@ export function formatResetsIn(resetsAt: string, now: number): string {
 
 // "updated 3m ago" — age of the snapshot behind the bars. The pollers refresh
 // every 60–180s, so minute granularity matches the data's actual freshness.
-function formatUpdatedAgo(fetchedAt: number, now: number): string {
+// Exported for the Resources page, which stamps its account cards the same way.
+export function formatUpdatedAgo(fetchedAt: number, now: number): string {
   if (!Number.isFinite(fetchedAt) || fetchedAt <= 0) return '';
   const mins = Math.floor(Math.max(0, now - fetchedAt) / 60_000);
   if (mins < 1) return 'updated just now';

@@ -36,6 +36,10 @@ interface Session {
   /** Workspace id for agent PTYs (undefined for nvim/run PTYs). Surfaces the
    *  $ORCHESTRA_WS_ID / $ORCHESTRA_EVENTS_DIR env the activity hooks write to. */
   workspaceId?: string;
+  /** True for sandbox-hosted sessions. The transport pid (if any) is then a
+   *  container-side pid, so the resource sampler must not look it up in the
+   *  local process table — it could match an unrelated local process. */
+  remote: boolean;
   disposables: TransportDisposable[];
   stopped: boolean;
   logStream: fs.WriteStream | null;
@@ -302,6 +306,7 @@ export async function startPty(opts: {
     transport,
     id: opts.id,
     workspaceId: opts.workspaceId,
+    remote,
     disposables: [],
     stopped: false,
     logStream,
@@ -449,4 +454,16 @@ export function stopAll() {
 
 export function isRunning(id: string) {
   return sessions.has(id);
+}
+
+/** Snapshot of every live PTY session for the resource sampler: the pty id,
+ *  the spawned process's pid (local sessions only — a remote session's pid is
+ *  container-side and must not be resolved against the local process table),
+ *  and whether the session is sandbox-hosted. */
+export function listPtySessions(): Array<{ id: string; pid: number | undefined; remote: boolean }> {
+  return Array.from(sessions.values(), (s) => ({
+    id: s.id,
+    pid: s.transport.pid,
+    remote: s.remote,
+  }));
 }

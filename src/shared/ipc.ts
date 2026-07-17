@@ -18,6 +18,7 @@ import type {
   Workspace,
   WorkspaceAccount,
 } from './types';
+import type { ResourceSnapshot } from './resources';
 
 /** Outcome of {@link OrchestraAPI.migrateWorkspaceAccount}. */
 export interface MigrateAccountResult {
@@ -216,6 +217,11 @@ export interface OrchestraAPI {
   /** Apparent on-disk size (bytes) of every workspace's worktree, keyed by
    *  workspace id. Computed in one `du` pass; absent ids have no worktree. */
   getWorktreeSizes: () => Promise<Record<string, number>>;
+  /** One live sample of Orchestra's local footprint: CPU/memory per PTY
+   *  session's process tree, Electron's own processes, and a cached `du` pass
+   *  over the data dirs. The Resources page polls this every ~2s while open;
+   *  there is no push channel — sampling only happens on demand. */
+  sampleResources: () => Promise<ResourceSnapshot>;
   findPR: (id: string) => Promise<PRsForBranch>;
   /** Verify the branch's candidate Linear key against Linear's GraphQL API.
    *  Resolves the real issue, or null if the branch encodes no issue, the issue

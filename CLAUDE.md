@@ -21,6 +21,7 @@ design decisions, so you get accurate context without grepping the tree first.
 | Status dot, events spool, PTYs, xterm terminals, logging | `docs/codebase-map/activity-pty-terminal.md` |
 | Multi-account login/inheritance, usage bars, usage-limit prompt queue | `docs/codebase-map/accounts-usage.md` |
 | Insights & Improvements: monthly self-tune pipeline, Insights sidebar/pane | `docs/codebase-map/self-tune.md` |
+| Resources page: live CPU/memory/disk sampling, process trees, token-usage dashboard | `docs/codebase-map/resources.md` |
 | Linear issue badges, Linear API key | `docs/codebase-map/linear.md` |
 | Main bootstrap, IPC, React UI, Zustand store, Sidebar, dialogs, chime | `docs/codebase-map/renderer-ipc-ui.md` |
 | Sandbox/remote agents: wire protocol, shim, Docker image, transports, reconnect, ownership lock, import/eject/backups | `docs/codebase-map/sandbox-transport.md` |

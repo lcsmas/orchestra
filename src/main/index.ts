@@ -185,6 +185,7 @@ import {
   readScrollback,
   isRunning,
 } from './pty';
+import { sampleResources } from './resources';
 import { startHooksServer, stopHooksServer, getHookSocketPath } from './hooks-server';
 import { installCliShim, installAgentCliShim, installLoginBrowserShim } from './cli-shim';
 import { closeLoginBrowser, dispatchLoginUrlRequest } from './login-browser';
@@ -931,6 +932,11 @@ handle('git:stats', async (_e, id: string) => {
 });
 
 handle('workspaces:sizes', () => getWorktreeSizes());
+
+// One live resource sample (PTY process trees, Electron processes, cached
+// disk stats). Pulled by the Resources page on its own 2s visible poll — no
+// standing poller in main, so a closed page costs nothing.
+handle('resources:sample', () => sampleResources());
 
 handle('git:findPR', async (_e, id: string) => {
   const ws = store.getWorkspace(id);

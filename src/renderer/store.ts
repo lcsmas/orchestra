@@ -87,11 +87,17 @@ interface State {
   insightsOpen: boolean;
   activeId: string | null;
   view: 'terminal' | 'diff' | 'run';
+  /** Which top-level surface fills the main pane: the normal workspace panes,
+   *  or the full-page Resources view (opened from the sidebar footer). The
+   *  workspace panes stay mounted underneath so xterm scrollback survives a
+   *  visit to the Resources page. */
+  page: 'workspaces' | 'resources';
   loaded: boolean;
 
   setActive: (id: string | null) => void;
   setView: (v: 'terminal' | 'diff' | 'run') => void;
   setInsightsOpen: (open: boolean) => void;
+  setPage: (p: 'workspaces' | 'resources') => void;
   load: () => Promise<void>;
   refreshRepos: () => Promise<void>;
   addRepo: () => Promise<RepoEntry | null>;
@@ -135,6 +141,7 @@ export const useStore = create<State>((set, get) => ({
   insightsOpen: false,
   activeId: null,
   view: 'terminal',
+  page: 'workspaces',
   loaded: false,
 
   setActive: (id) => {
@@ -149,7 +156,11 @@ export const useStore = create<State>((set, get) => ({
     }
   },
   setView: (v) => set({ view: v }),
-  setInsightsOpen: (open) => set({ insightsOpen: open }),
+  // The Insights pane and the Resources page are both full-pane overlays —
+  // opening either one dismisses the other so they can never stack.
+  setInsightsOpen: (open) =>
+    set(open ? { insightsOpen: true, page: 'workspaces' } : { insightsOpen: false }),
+  setPage: (p) => set(p === 'resources' ? { page: p, insightsOpen: false } : { page: p }),
 
   load: async () => {
     const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns] =
