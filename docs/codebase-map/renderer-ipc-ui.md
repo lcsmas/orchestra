@@ -73,16 +73,22 @@ toggle, PR button, nvim toggle. Each `TerminalView` is kept mounted per workspac
 Workspace list with orchestrator nesting, drag-reorder, archive, delete.
 - **SpawnForest** models orchestrator→children (`childrenOf`, `roots`,
   `rootOf`); `TreeRow = {ws, depth}`.
-- Sections: orchestrator trees (top) → scratch sessions → repo groups (git
+- Sections: orchestrator trees (top) → scratch trees → repo groups (git
   workspaces threaded as spawn trees) → archived (collapsible, multi-select
-  delete). Collapse + dismissed env-notices persist to localStorage.
-- **Orchestrator collapse**: any orchestrator-section row with spawned children
-  gets a per-row caret (`.ws-collapse`) that folds its subtree — the depth-first
-  rows are filtered at render time (skip rows deeper than a collapsed node until
-  the walk climbs back). Persists as `orchestra.collapsedOrchestrators`
-  (workspace ids). A collapsed row shows a `.ws-hidden-count` pill (hidden
-  descendant count via `collectDescendants`) tinted by the most urgent hidden
-  status (error > waiting > running).
+  delete). Collapse + dismissed env-notices persist to localStorage. The
+  Orchestrators and Scratch sections are both spawn trees of their ROOTS
+  (orchestrator-kind / scratch-kind forest roots + `flattenSubtree`), rendered
+  by the shared `renderSpawnTreeRows` helper — so an agent spawned FROM a plain
+  scratch session nests indented under it (it has a live parent, so it's not a
+  forest root and repo sections never see it). Both section count badges show
+  root count, not total rows.
+- **Subtree collapse** (orchestrator + scratch sections): any row with spawned
+  children gets a per-row caret (`.ws-collapse`) that folds its subtree — the
+  depth-first rows are filtered at render time (skip rows deeper than a
+  collapsed node until the walk climbs back). Persists as
+  `orchestra.collapsedOrchestrators` (workspace ids). A collapsed row shows a
+  `.ws-hidden-count` pill (hidden descendant count via `collectDescendants`)
+  tinted by the most urgent hidden status (error > waiting > running).
 - **Host grouping**: within a repo, rows bucket per machine/sandbox node via
   `host-grouping.ts` `groupByHost` (returns null when all-local → flat list
   byte-identical to pre-sandbox); collapsible `.host-group-header` per node.

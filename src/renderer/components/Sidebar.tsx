@@ -754,7 +754,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   // `workspaces` identity skips rebuilding three Maps and walking the forest on
   // each of those high-frequency ticks; it only recomputes when the workspace
   // set actually changes.
-  const { active, archived, forest, orchestratorTrees, scratchSessions } = useMemo(() => {
+  const { active, archived, forest, orchestratorTrees, scratchTrees } = useMemo(() => {
     const active = workspaces.filter((w) => !w.archived);
     const archived = workspaces.filter((w) => w.archived);
     // The spawn forest links every active workspace to the one that spawned it.
@@ -762,8 +762,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     // spawned by an orchestrator nests under that orchestrator even if the agent
     // itself is a git worktree in some repo.
     const forest = buildSpawnForest(active);
-    const rootIsOrchestrator = (w: Workspace) =>
-      forest.rootOf.get(w.id)?.kind === 'orchestrator';
     // Orchestrator sessions and everything they (transitively) spawned, threaded
     // into trees and pinned at the very top.
     const orchestratorRoots = forest.roots.filter((w) => w.kind === 'orchestrator');
@@ -771,12 +769,17 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       root,
       rows: flattenSubtree(root, forest.childrenOf, new Set<string>()),
     }));
-    // Plain scratch sessions that aren't part of an orchestrator's tree — their
-    // own pinned group below the orchestrators.
-    const scratchSessions = active.filter(
-      (w) => w.kind === 'scratch' && !rootIsOrchestrator(w),
-    );
-    return { active, archived, forest, orchestratorTrees, scratchSessions };
+    // Plain scratch ROOTS — their own pinned group below the orchestrators,
+    // threaded into spawn trees exactly like orchestrators. A workspace spawned
+    // FROM a scratch session (git worktree or nested scratch) has a live parent,
+    // so it is neither a forest root (repo sections only surface roots) nor a
+    // scratch root — it renders here, nested under the scratch that spawned it.
+    const scratchRoots = forest.roots.filter((w) => w.kind === 'scratch');
+    const scratchTrees = scratchRoots.map((root) => ({
+      root,
+      rows: flattenSubtree(root, forest.childrenOf, new Set<string>()),
+    }));
+    return { active, archived, forest, orchestratorTrees, scratchTrees };
   }, [workspaces]);
 
   const allArchivedSelected =
@@ -1005,6 +1008,179 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     return repos.find((r) => r.path === repoPath)?.remoteUrl;
   };
 
+  /** Rows for the pinned spawn-tree sections (Orchestrators, Scratch): each
+   * root's subtree depth-first, children indented under their spawner, with
+   * collapse, status dot, rename, badges, and archive/delete — identical row
+   * chrome for both sections, only the hover-title wording differs. */
+  const renderSpawnTreeRows = (
+    trees: { root: Workspace; rows: TreeRow[] }[],
+    variant: 'orchestrator' | 'scratch',
+  ) =>
+    trees.flatMap(({ rows }) => {
+      const rootNoun = variant === 'orchestrator' ? 'orchestrator' : 'scratch session';
+      // Rows are depth-first, so a collapsed node hides every deeper
+      // row that follows it until the walk climbs back to its depth.
+      const visibleRows: TreeRow[] = [];
+      let skipBelow: number | null = null;
+      for (const row of rows) {
+        if (skipBelow !== null && row.depth > skipBelow) continue;
+        skipBelow = null;
+        visibleRows.push(row);
+        if (collapsedOrch.has(row.ws.id)) skipBelow = row.depth;
+      }
+      return visibleRows.map(({ ws: w, depth }) => {
+        const isDeleting = deletingIds.has(w.id);
+        const isChild = depth > 0;
+        const collapsible = (forest.childrenOf.get(w.id)?.length ?? 0) > 0;
+        const isCollapsed = collapsible && collapsedOrch.has(w.id);
+        const hidden = isCollapsed ? collectDescendants(w.id, forest.childrenOf) : [];
+        // Most urgent status among the hidden subtree, so a folded
+        // subtree can't silently swallow an agent that errored or
+        // is waiting for input.
+        const hiddenUrgency = hidden.some((h) => h.status === 'error')
+          ? 'error'
+          : hidden.some((h) => h.status === 'waiting')
+            ? 'waiting'
+            : hidden.some((h) => h.status === 'running')
+              ? 'running'
+              : '';
+        // The root is scratch-like (deletable, no git); a child can be a real
+        // git worktree (archivable) or a nested scratch/orchestrator. Show the
+        // repo it lives in for git kids.
+        const childIsGit = isChild && !isScratchLike(w);
+        return (
+          <div
+            key={w.id}
+            className={`ws-item ${activeId === w.id ? 'active' : ''}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}`}
+            style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
+            onClick={() => setActive(w.id)}
+          >
+            {isChild && (
+              <span className="ws-tree-connector" aria-hidden="true">
+                ╰─
+              </span>
+            )}
+            {collapsible ? (
+              <button
+                className="ws-collapse"
+                aria-expanded={!isCollapsed}
+                aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} agents spawned by ${w.branch}`}
+                title={
+                  isCollapsed
+                    ? `Show ${hidden.length} spawned agent${hidden.length === 1 ? '' : 's'}`
+                    : 'Hide spawned agents'
+                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleOrchCollapsed(w.id);
+                }}
+              >
+                <span className={`caret ${isCollapsed ? '' : 'open'}`}>▸</span>
+              </button>
+            ) : (
+              <span className="ws-collapse spacer" aria-hidden="true" />
+            )}
+            <div
+              className={`ws-dot ${w.status as WorkspaceStatus}`}
+              title={
+                w.status === 'running'
+                  ? tools[w.id]
+                    ? `Agent is working… (${tools[w.id]})`
+                    : 'Agent is working…'
+                  : w.status === 'idle'
+                    ? 'Agent is idle'
+                    : w.status
+              }
+            />
+            <div className="ws-body">
+              <div className="ws-name-row ws-name-row-login">
+                {renamingId === w.id ? (
+                  <input
+                    className="ws-name-input"
+                    autoFocus
+                    value={renameDraft}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => setRenameDraft(e.target.value)}
+                    onBlur={() => commitRename(w)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitRename(w);
+                      else if (e.key === 'Escape') setRenamingId(null);
+                    }}
+                  />
+                ) : (
+                  <div
+                    className="ws-name ws-name-tight"
+                    title={
+                      depth === 0
+                        ? variant === 'orchestrator'
+                          ? `${w.branch} — orchestrator · double-click to rename`
+                          : `${w.branch} — scratch session (not tracked by git) · double-click to rename`
+                        : `${w.branch} — spawned by this ${rootNoun} · double-click to rename`
+                    }
+                    onDoubleClick={(e) => startRename(e, w)}
+                  >
+                    {w.branch}
+                  </div>
+                )}
+                {isCollapsed && (
+                  <span
+                    className={`ws-hidden-count${hiddenUrgency ? ` ${hiddenUrgency}` : ''}`}
+                    title={`${hidden.length} hidden agent${hidden.length === 1 ? '' : 's'}: ${hidden
+                      .map((h) => h.branch)
+                      .join(', ')}`}
+                  >
+                    {hidden.length}
+                  </span>
+                )}
+                <WorkspaceContextBadge workspaceId={w.id} />
+                <span className="ws-login">
+                  <span className="ws-context-sep" aria-hidden="true">
+                    ·
+                  </span>
+                  <WorkspaceAccountBadge workspaceId={w.id} migratable />
+                </span>
+                {childIsGit && (
+                  <span className="ws-pills mini">
+                    <span
+                      className="repo-tag-pill"
+                      title={`Spawned into ${repoLabel(w.repoPath)}`}
+                    >
+                      {repoLabel(w.repoPath)}
+                    </span>
+                    <PrLinearBadges
+                      prRecord={prs[w.id]}
+                      linearIssue={linear[w.id] ?? null}
+                    />
+                  </span>
+                )}
+              </div>
+            </div>
+            {isDeleting ? (
+              <span className="ws-spinner" title="Removing…" aria-label="Removing" role="status" />
+            ) : childIsGit ? (
+              <button
+                className="ws-icon-btn"
+                title="Archive workspace"
+                aria-label={`Archive workspace ${w.name}`}
+                onClick={(e) => onArchive(e, w.id)}
+              >
+                <ArchiveIcon />
+              </button>
+            ) : (
+              <button
+                className="ws-icon-btn danger"
+                title={depth === 0 ? `Delete ${rootNoun}` : 'Delete session'}
+                aria-label={`Delete ${w.branch}`}
+                onClick={(e) => onDeleteScratch(e, w.id, w.branch)}
+              >
+                <TrashIcon />
+              </button>
+            )}
+          </div>
+        );
+      });
+    });
+
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -1058,7 +1234,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       <div className="ws-list">
         {repoOrder.length === 0 &&
           archived.length === 0 &&
-          scratchSessions.length === 0 &&
+          scratchTrees.length === 0 &&
           orchestratorTrees.length === 0 && (
           <div style={{ padding: '20px', color: 'var(--text-dim)', fontSize: 12 }}>
             No agents running. Click <strong>Scratch</strong> for a quick throwaway session, or <strong>Repo</strong> to map a git repo.
@@ -1086,170 +1262,10 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 </button>
               </span>
             </div>
-            {orchestratorTrees.flatMap(({ rows }) => {
-              // Rows are depth-first, so a collapsed node hides every deeper
-              // row that follows it until the walk climbs back to its depth.
-              const visibleRows: TreeRow[] = [];
-              let skipBelow: number | null = null;
-              for (const row of rows) {
-                if (skipBelow !== null && row.depth > skipBelow) continue;
-                skipBelow = null;
-                visibleRows.push(row);
-                if (collapsedOrch.has(row.ws.id)) skipBelow = row.depth;
-              }
-              return visibleRows.map(({ ws: w, depth }) => {
-                const isDeleting = deletingIds.has(w.id);
-                const isChild = depth > 0;
-                const collapsible = (forest.childrenOf.get(w.id)?.length ?? 0) > 0;
-                const isCollapsed = collapsible && collapsedOrch.has(w.id);
-                const hidden = isCollapsed ? collectDescendants(w.id, forest.childrenOf) : [];
-                // Most urgent status among the hidden subtree, so a folded
-                // orchestrator can't silently swallow an agent that errored or
-                // is waiting for input.
-                const hiddenUrgency = hidden.some((h) => h.status === 'error')
-                  ? 'error'
-                  : hidden.some((h) => h.status === 'waiting')
-                    ? 'waiting'
-                    : hidden.some((h) => h.status === 'running')
-                      ? 'running'
-                      : '';
-                // The orchestrator root is scratch-like (deletable, no git); a
-                // child can be a real git worktree (archivable) or a nested
-                // scratch/orchestrator. Show the repo it lives in for git kids.
-                const childIsGit = isChild && !isScratchLike(w);
-                return (
-                  <div
-                    key={w.id}
-                    className={`ws-item ${activeId === w.id ? 'active' : ''}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}`}
-                    style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
-                    onClick={() => setActive(w.id)}
-                  >
-                    {isChild && (
-                      <span className="ws-tree-connector" aria-hidden="true">
-                        ╰─
-                      </span>
-                    )}
-                    {collapsible ? (
-                      <button
-                        className="ws-collapse"
-                        aria-expanded={!isCollapsed}
-                        aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} agents spawned by ${w.branch}`}
-                        title={
-                          isCollapsed
-                            ? `Show ${hidden.length} spawned agent${hidden.length === 1 ? '' : 's'}`
-                            : 'Hide spawned agents'
-                        }
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleOrchCollapsed(w.id);
-                        }}
-                      >
-                        <span className={`caret ${isCollapsed ? '' : 'open'}`}>▸</span>
-                      </button>
-                    ) : (
-                      <span className="ws-collapse spacer" aria-hidden="true" />
-                    )}
-                    <div
-                      className={`ws-dot ${w.status as WorkspaceStatus}`}
-                      title={
-                        w.status === 'running'
-                          ? tools[w.id]
-                            ? `Agent is working… (${tools[w.id]})`
-                            : 'Agent is working…'
-                          : w.status === 'idle'
-                            ? 'Agent is idle'
-                            : w.status
-                      }
-                    />
-                    <div className="ws-body">
-                      <div className="ws-name-row ws-name-row-login">
-                        {renamingId === w.id ? (
-                          <input
-                            className="ws-name-input"
-                            autoFocus
-                            value={renameDraft}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) => setRenameDraft(e.target.value)}
-                            onBlur={() => commitRename(w)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') commitRename(w);
-                              else if (e.key === 'Escape') setRenamingId(null);
-                            }}
-                          />
-                        ) : (
-                          <div
-                            className="ws-name ws-name-tight"
-                            title={
-                              depth === 0
-                                ? `${w.branch} — orchestrator · double-click to rename`
-                                : `${w.branch} — spawned by this orchestrator · double-click to rename`
-                            }
-                            onDoubleClick={(e) => startRename(e, w)}
-                          >
-                            {w.branch}
-                          </div>
-                        )}
-                        {isCollapsed && (
-                          <span
-                            className={`ws-hidden-count${hiddenUrgency ? ` ${hiddenUrgency}` : ''}`}
-                            title={`${hidden.length} hidden agent${hidden.length === 1 ? '' : 's'}: ${hidden
-                              .map((h) => h.branch)
-                              .join(', ')}`}
-                          >
-                            {hidden.length}
-                          </span>
-                        )}
-                        <WorkspaceContextBadge workspaceId={w.id} />
-                        <span className="ws-login">
-                          <span className="ws-context-sep" aria-hidden="true">
-                            ·
-                          </span>
-                          <WorkspaceAccountBadge workspaceId={w.id} migratable />
-                        </span>
-                        {childIsGit && (
-                          <span className="ws-pills mini">
-                            <span
-                              className="repo-tag-pill"
-                              title={`Spawned into ${repoLabel(w.repoPath)}`}
-                            >
-                              {repoLabel(w.repoPath)}
-                            </span>
-                            <PrLinearBadges
-                              prRecord={prs[w.id]}
-                              linearIssue={linear[w.id] ?? null}
-                            />
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    {isDeleting ? (
-                      <span className="ws-spinner" title="Removing…" aria-label="Removing" role="status" />
-                    ) : childIsGit ? (
-                      <button
-                        className="ws-icon-btn"
-                        title="Archive workspace"
-                        aria-label={`Archive workspace ${w.name}`}
-                        onClick={(e) => onArchive(e, w.id)}
-                      >
-                        <ArchiveIcon />
-                      </button>
-                    ) : (
-                      <button
-                        className="ws-icon-btn danger"
-                        title={depth === 0 ? 'Delete orchestrator' : 'Delete session'}
-                        aria-label={`Delete ${w.branch}`}
-                        onClick={(e) => onDeleteScratch(e, w.id, w.branch)}
-                      >
-                        <TrashIcon />
-                      </button>
-                    )}
-                  </div>
-                );
-              });
-            })}
+            {renderSpawnTreeRows(orchestratorTrees, 'orchestrator')}
           </div>
         )}
-        {scratchSessions.length > 0 && (
+        {scratchTrees.length > 0 && (
           <div className="repo-section scratch-section">
             <div className="repo-header">
               <div className="repo-collapse" style={{ cursor: 'default' }}>
@@ -1257,7 +1273,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 <span className="repo-name">Scratch</span>
               </div>
               <span className="repo-header-actions">
-                <span className="repo-count">{scratchSessions.length}</span>
+                <span className="repo-count">{scratchTrees.length}</span>
                 <button
                   className="repo-add"
                   title="New scratch session"
@@ -1271,74 +1287,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 </button>
               </span>
             </div>
-            {scratchSessions.map((w) => {
-              const isDeleting = deletingIds.has(w.id);
-              return (
-                <div
-                  key={w.id}
-                  className={`ws-item ${activeId === w.id ? 'active' : ''}${isDeleting ? ' deleting' : ''}`}
-                  onClick={() => setActive(w.id)}
-                >
-                  <div
-                    className={`ws-dot ${w.status as WorkspaceStatus}`}
-                    title={
-                      w.status === 'running'
-                        ? tools[w.id]
-                          ? `Agent is working… (${tools[w.id]})`
-                          : 'Agent is working…'
-                        : w.status === 'idle'
-                          ? 'Agent is idle'
-                          : w.status
-                    }
-                  />
-                  <div className="ws-body">
-                    <div className="ws-name-row ws-name-row-login">
-                      {renamingId === w.id ? (
-                        <input
-                          className="ws-name-input"
-                          autoFocus
-                          value={renameDraft}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={(e) => setRenameDraft(e.target.value)}
-                          onBlur={() => commitRename(w)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') commitRename(w);
-                            else if (e.key === 'Escape') setRenamingId(null);
-                          }}
-                        />
-                      ) : (
-                        <div
-                          className="ws-name ws-name-tight"
-                          title={`${w.branch} — scratch session (not tracked by git) · double-click to rename`}
-                          onDoubleClick={(e) => startRename(e, w)}
-                        >
-                          {w.branch}
-                        </div>
-                      )}
-                      <WorkspaceContextBadge workspaceId={w.id} />
-                      <span className="ws-login">
-                        <span className="ws-context-sep" aria-hidden="true">
-                          ·
-                        </span>
-                        <WorkspaceAccountBadge workspaceId={w.id} migratable />
-                      </span>
-                    </div>
-                  </div>
-                  {isDeleting ? (
-                    <span className="ws-spinner" title="Deleting…" aria-label="Deleting" role="status" />
-                  ) : (
-                    <button
-                      className="ws-icon-btn danger"
-                      title="Delete scratch session"
-                      aria-label={`Delete scratch session ${w.branch}`}
-                      onClick={(e) => onDeleteScratch(e, w.id, w.branch)}
-                    >
-                      <TrashIcon />
-                    </button>
-                  )}
-                </div>
-              );
-            })}
+            {renderSpawnTreeRows(scratchTrees, 'scratch')}
           </div>
         )}
         {repoOrder.map((repoPath) => {
