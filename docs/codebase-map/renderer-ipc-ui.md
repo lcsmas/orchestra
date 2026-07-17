@@ -76,6 +76,13 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
 - Sections: orchestrator trees (top) → scratch sessions → repo groups (git
   workspaces threaded as spawn trees) → archived (collapsible, multi-select
   delete). Collapse + dismissed env-notices persist to localStorage.
+- **Orchestrator collapse**: any orchestrator-section row with spawned children
+  gets a per-row caret (`.ws-collapse`) that folds its subtree — the depth-first
+  rows are filtered at render time (skip rows deeper than a collapsed node until
+  the walk climbs back). Persists as `orchestra.collapsedOrchestrators`
+  (workspace ids). A collapsed row shows a `.ws-hidden-count` pill (hidden
+  descendant count via `collectDescendants`) tinted by the most urgent hidden
+  status (error > waiting > running).
 - **Host grouping**: within a repo, rows bucket per machine/sandbox node via
   `host-grouping.ts` `groupByHost` (returns null when all-local → flat list
   byte-identical to pre-sandbox); collapsible `.host-group-header` per node.

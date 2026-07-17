@@ -1162,6 +1162,48 @@ input:focus, textarea:focus, select:focus {
   opacity: 0.55;
   user-select: none;
 }
+/* Per-row collapse caret in the orchestrator section. Every row renders one
+   (a spacer when the row has no children) so the status dots stay aligned. */
+.ws-collapse {
+  flex-shrink: 0;
+  width: 10px;
+  margin: 3px 0 0 -4px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+}
+.ws-collapse .caret {
+  display: inline-block;
+  transition: transform 0.12s ease;
+}
+.ws-collapse .caret.open { transform: rotate(90deg); }
+.ws-collapse:hover .caret { color: var(--text); }
+.ws-collapse.spacer { cursor: inherit; }
+/* Count pill on a collapsed orchestrator row: how many spawned agents are
+   folded away. Tinted by the most urgent hidden status so a hidden agent that
+   errored or is waiting for input still shows through the fold. */
+.ws-hidden-count {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  margin-left: 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+}
+.ws-hidden-count.running { color: var(--green); border-color: var(--green); }
+.ws-hidden-count.waiting { color: var(--yellow); border-color: var(--yellow); }
+.ws-hidden-count.error { color: var(--red); border-color: var(--red); }
 /* Small pill on a spawned child whose own repo differs from the orchestrator's,
    so a cross-repo nesting doesn't look misfiled. */
 .repo-tag-pill {

@@ -461,6 +461,24 @@ function flattenSubtree(
   return rows;
 }
 
+/** All descendants of a node in the spawn forest, depth-first. Used to
+ * summarize a collapsed orchestrator subtree: how many rows are hidden and
+ * whether any of them still demands attention. Guards against corrupt cycles
+ * like flattenSubtree does. */
+function collectDescendants(id: string, childrenOf: Map<string, Workspace[]>): Workspace[] {
+  const out: Workspace[] = [];
+  const stack = [...(childrenOf.get(id) ?? [])];
+  const seen = new Set<string>();
+  while (stack.length) {
+    const w = stack.pop()!;
+    if (seen.has(w.id)) continue;
+    seen.add(w.id);
+    out.push(w);
+    stack.push(...(childrenOf.get(w.id) ?? []));
+  }
+  return out;
+}
+
 /** Group git workspaces into repo sections, threaded as spawn trees. Each root
  * is filed under its own `repoPath`; its descendants follow it depth-first in
  * the SAME section, so a child in repo B still appears under its parent in repo
@@ -534,6 +552,17 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const [collapsedHosts, setCollapsedHosts] = useState<Set<string>>(() => {
     try {
       const raw = localStorage.getItem('orchestra.collapsedHosts');
+      return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+    } catch {
+      return new Set();
+    }
+  });
+  // Per-orchestrator collapse state (ids of rows whose spawned subtree is
+  // folded away), persisted like collapsedRepos. Keyed by workspace id — stale
+  // ids of deleted workspaces are harmless (they simply never match a row).
+  const [collapsedOrch, setCollapsedOrch] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('orchestra.collapsedOrchestrators');
       return new Set(raw ? (JSON.parse(raw) as string[]) : []);
     } catch {
       return new Set();
@@ -654,6 +683,20 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       else next.add(hostId);
       try {
         localStorage.setItem('orchestra.collapsedHosts', JSON.stringify(Array.from(next)));
+      } catch {
+        /* best-effort */
+      }
+      return next;
+    });
+  };
+
+  const toggleOrchCollapsed = (wsId: string) => {
+    setCollapsedOrch((prev) => {
+      const next = new Set(prev);
+      if (next.has(wsId)) next.delete(wsId);
+      else next.add(wsId);
+      try {
+        localStorage.setItem('orchestra.collapsedOrchestrators', JSON.stringify(Array.from(next)));
       } catch {
         /* best-effort */
       }
@@ -1022,10 +1065,33 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 </button>
               </span>
             </div>
-            {orchestratorTrees.flatMap(({ rows }) =>
-              rows.map(({ ws: w, depth }) => {
+            {orchestratorTrees.flatMap(({ rows }) => {
+              // Rows are depth-first, so a collapsed node hides every deeper
+              // row that follows it until the walk climbs back to its depth.
+              const visibleRows: TreeRow[] = [];
+              let skipBelow: number | null = null;
+              for (const row of rows) {
+                if (skipBelow !== null && row.depth > skipBelow) continue;
+                skipBelow = null;
+                visibleRows.push(row);
+                if (collapsedOrch.has(row.ws.id)) skipBelow = row.depth;
+              }
+              return visibleRows.map(({ ws: w, depth }) => {
                 const isDeleting = deletingIds.has(w.id);
                 const isChild = depth > 0;
+                const collapsible = (forest.childrenOf.get(w.id)?.length ?? 0) > 0;
+                const isCollapsed = collapsible && collapsedOrch.has(w.id);
+                const hidden = isCollapsed ? collectDescendants(w.id, forest.childrenOf) : [];
+                // Most urgent status among the hidden subtree, so a folded
+                // orchestrator can't silently swallow an agent that errored or
+                // is waiting for input.
+                const hiddenUrgency = hidden.some((h) => h.status === 'error')
+                  ? 'error'
+                  : hidden.some((h) => h.status === 'waiting')
+                    ? 'waiting'
+                    : hidden.some((h) => h.status === 'running')
+                      ? 'running'
+                      : '';
                 // The orchestrator root is scratch-like (deletable, no git); a
                 // child can be a real git worktree (archivable) or a nested
                 // scratch/orchestrator. Show the repo it lives in for git kids.
@@ -1041,6 +1107,26 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       <span className="ws-tree-connector" aria-hidden="true">
                         ╰─
                       </span>
+                    )}
+                    {collapsible ? (
+                      <button
+                        className="ws-collapse"
+                        aria-expanded={!isCollapsed}
+                        aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} agents spawned by ${w.branch}`}
+                        title={
+                          isCollapsed
+                            ? `Show ${hidden.length} spawned agent${hidden.length === 1 ? '' : 's'}`
+                            : 'Hide spawned agents'
+                        }
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleOrchCollapsed(w.id);
+                        }}
+                      >
+                        <span className={`caret ${isCollapsed ? '' : 'open'}`}>▸</span>
+                      </button>
+                    ) : (
+                      <span className="ws-collapse spacer" aria-hidden="true" />
                     )}
                     <div
                       className={`ws-dot ${w.status as WorkspaceStatus}`}
@@ -1081,6 +1167,16 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           >
                             {w.branch}
                           </div>
+                        )}
+                        {isCollapsed && (
+                          <span
+                            className={`ws-hidden-count${hiddenUrgency ? ` ${hiddenUrgency}` : ''}`}
+                            title={`${hidden.length} hidden agent${hidden.length === 1 ? '' : 's'}: ${hidden
+                              .map((h) => h.branch)
+                              .join(', ')}`}
+                          >
+                            {hidden.length}
+                          </span>
                         )}
                         <WorkspaceContextBadge workspaceId={w.id} />
                         <span className="ws-login">
@@ -1128,8 +1224,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     )}
                   </div>
                 );
-              }),
-            )}
+              });
+            })}
           </div>
         )}
         {scratchSessions.length > 0 && (
