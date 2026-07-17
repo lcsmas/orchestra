@@ -3,7 +3,8 @@
 //
 // Why: each account is an isolated config dir that, by default, contains only
 // `.credentials.json`. An agent spawned as that account therefore loses the
-// user's global settings, statusline, skills, and MCP servers. This module
+// user's global settings, statusline, skills, MCP servers, and memory
+// (CLAUDE.md and its @-imports). This module
 // "inherits" the user-chosen subset (see {@link Account.inherit}) so an
 // alternate login behaves like the default one for the things that should be
 // shared, while keeping per-account state (credentials, conversation history,
@@ -24,6 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { store } from './store';
 import { expandConfigDir, type Account, type AccountInherit } from '../shared/accounts';
+import { parseClaudeMdImports } from '../shared/claude-md-imports';
 import { log } from './logger';
 
 /** The user's real global Claude config dir — the inheritance SOURCE. Always
@@ -322,6 +324,20 @@ export async function syncAccountInheritance(account: Account): Promise<void> {
   const wantLinks = new Map<string, { target: string; replaceReal: boolean }>();
   if (inherit?.settings) {
     wantLinks.set('settings.json', { target: path.join(globalDir, 'settings.json'), replaceReal: true });
+    // Global memory travels with settings: CLAUDE.md plus every file it
+    // @-imports (RTK.md, LESSONS.md, …). Without these an alternate login runs
+    // with no user instructions at all. replaceReal like settings.json — a
+    // stale real copy must not shadow the global one (backed up once).
+    wantLinks.set('CLAUDE.md', { target: path.join(globalDir, 'CLAUDE.md'), replaceReal: true });
+    let importNames: string[] = [];
+    try {
+      importNames = parseClaudeMdImports(fs.readFileSync(path.join(globalDir, 'CLAUDE.md'), 'utf8'));
+    } catch {
+      /* no global CLAUDE.md → nothing to import */
+    }
+    for (const name of importNames) {
+      wantLinks.set(name, { target: path.join(globalDir, name), replaceReal: true });
+    }
   }
   if (inherit?.statusline) {
     wantLinks.set('statusline-command.sh', {
