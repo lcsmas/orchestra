@@ -14,6 +14,7 @@ import { LinearSettings } from './LinearSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
 import { UsageBars } from './UsageBars';
 import { InsightsSection } from './Insights';
+import { HelpIcon } from './Help';
 import { AccountsSettings } from './AccountsSettings';
 import {
   RepoAccountBadge,
@@ -637,6 +638,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     }
   });
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
+  const setHelpOpen = useStore((s) => s.setHelpOpen);
   const [linearSettingsOpen, setLinearSettingsOpen] = useState(false);
   const [accountsSettingsOpen, setAccountsSettingsOpen] = useState(false);
   const [scriptsRepoPath, setScriptsRepoPath] = useState<string | null>(null);
@@ -1246,6 +1248,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       <div className="sidebar-header">
         <h1>Orchestra</h1>
         <div className="sidebar-header-actions">
+          <button
+            className="header-icon-btn"
+            onClick={() => setHelpOpen(true)}
+            title="Help — what Orchestra can do"
+            aria-label="Help — feature guide"
+          >
+            <HelpIcon />
+          </button>
           <button
             className="header-icon-btn"
             onClick={() => setSoundSettingsOpen(true)}

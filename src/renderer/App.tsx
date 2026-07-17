@@ -11,6 +11,7 @@ import { PromptQueueBanner } from './components/PromptQueueBanner';
 import { SandboxControlBar } from './components/SandboxControlBar';
 import { InsightsView } from './components/Insights';
 import { ResourcesView } from './components/ResourcesView';
+import { HelpView, HelpIcon } from './components/Help';
 import { DialogHost, dialog } from './components/Dialog';
 import { playFinishedChime } from './chime';
 import { dlog } from './debug';
@@ -79,6 +80,8 @@ export function App() {
   const repos = useStore((s) => s.repos);
   const activeId = useStore((s) => s.activeId);
   const insightsOpen = useStore((s) => s.insightsOpen);
+  const helpOpen = useStore((s) => s.helpOpen);
+  const setHelpOpen = useStore((s) => s.setHelpOpen);
   const view = useStore((s) => s.view);
   const setView = useStore((s) => s.setView);
   const page = useStore((s) => s.page);
@@ -377,12 +380,41 @@ export function App() {
         {loaded && !active && (
           <div className="empty">
             <h2>Welcome to Orchestra</h2>
-            <div>Spawn Claude Code agents in isolated git worktrees — or a quick scratch session with no repo.</div>
+            <div>Run parallel Claude Code agents in isolated git worktrees — each on its own branch, all in one dashboard.</div>
             <div className="empty-actions">
               <button className="primary" onClick={addRepoOnly}>+ New workspace</button>
               <button className="secondary" onClick={createScratchWorkspace}>⚡ Scratch session</button>
               <button className="secondary" onClick={createOrchestratorWorkspace}>🌿 Orchestrator</button>
             </div>
+            <div className="welcome-features">
+              <div className="welcome-feature">
+                <span className="welcome-feature-name">Isolated worktrees</span>
+                <span className="welcome-feature-desc">Each agent gets its own branch and directory — no clobbering</span>
+              </div>
+              <div className="welcome-feature">
+                <span className="welcome-feature-name">Agents spawn agents</span>
+                <span className="welcome-feature-desc">Ask one agent to parallelize; the sidebar fills up</span>
+              </div>
+              <div className="welcome-feature">
+                <span className="welcome-feature-name">Diff-first review</span>
+                <span className="welcome-feature-desc">Live side-by-side diff, then a one-click PR</span>
+              </div>
+              <div className="welcome-feature">
+                <span className="welcome-feature-name">Accounts &amp; usage</span>
+                <span className="welcome-feature-desc">Multiple Claude logins with live usage bars</span>
+              </div>
+              <div className="welcome-feature">
+                <span className="welcome-feature-name">Remote sandbox</span>
+                <span className="welcome-feature-desc">Agents keep working in Docker with the laptop closed</span>
+              </div>
+              <div className="welcome-feature">
+                <span className="welcome-feature-name">Improves itself</span>
+                <span className="welcome-feature-desc">Point agents at Orchestra&rsquo;s own repo and ship the change</span>
+              </div>
+            </div>
+            <button className="welcome-help-btn" onClick={() => setHelpOpen(true)}>
+              <HelpIcon size={14} /> Everything Orchestra can do
+            </button>
           </div>
         )}
         {loaded && active && (
@@ -635,6 +667,8 @@ export function App() {
             exclusive, so at most one renders. */}
         {loaded && insightsOpen && <InsightsView />}
         {loaded && page === 'resources' && <ResourcesView />}
+        {/* Help / feature guide pane — same overlay contract as Insights. */}
+        {loaded && helpOpen && <HelpView />}
       </main>
       <DialogHost />
     </div>

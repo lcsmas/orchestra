@@ -37,7 +37,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | default (no match) | `id`, `event` | `{}` 200 — legacy activity-event path |
 
 ## Hooks installed into each worktree
-`installOrchestraHooks(worktreePath)` writes into `<worktree>/.orchestra/` (6
+`installOrchestraHooks(worktreePath)` writes into `<worktree>/.orchestra/` (7
 shell scripts, mode 0755) and merges commands into
 `<worktree>/.claude/settings.local.json`. Idempotent via a `HOOKS_VERSION` hash.
 **Every script guards on `[ -n "${ORCHESTRA_WS_ID:-}" ] || exit 0`** — running
@@ -84,6 +84,16 @@ Scripts and the Claude Code events they fire on:
   or `scratch/*` outside its own worktree), with a stderr message that
   redirects the agent to `orchestra message` / spawn. Own-worktree writes
   (notes, plans), relative paths, and parse misses fail open.
+- **`self-modify-instruction.sh`** — SessionStart ONLY. Self-modification
+  notice for agents working on **Orchestra's own repo**: tells the agent this
+  repo is the app currently running it, that changes only land after a
+  release+install (ship skill), and that the generated worktree files
+  (`.orchestra/*.sh`, hooks, skills) must be changed at their source in
+  `src/main/workspaces.ts`. Installed unconditionally like every other hook;
+  self-gates at runtime on the worktree actually being Orchestra (double gate:
+  `"name": "orchestra"` in `package.json` AND `docs/codebase-map/` exists, so
+  an unrelated repo named "orchestra" stays silent). Exception to the
+  `$ORCHESTRA_WS_ID` guard note above — its gate is repo identity, not env.
 
 Also installs 7 **capability skills** as `<worktree>/.claude/skills/<name>/SKILL.md`
 (orchestra-spawn / -comms / -repos / -promote / -attach / -rename /

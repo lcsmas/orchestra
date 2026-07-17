@@ -13,5 +13,6 @@ release/
 .claude/skills/*
 !.claude/skills/ship/
 !.claude/skills/map-codebase/
+!.claude/skills/verify/
 .planning/
 .handoff/

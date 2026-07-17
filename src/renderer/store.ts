@@ -88,6 +88,10 @@ interface State {
   /** Whether the Insights & Improvements pane is shown over the main pane.
    *  Selecting a workspace closes it. */
   insightsOpen: boolean;
+  /** Whether the Help / feature-guide pane is shown over the main pane.
+   *  Same overlay contract as Insights: selecting a workspace closes it, and
+   *  the two panes are mutually exclusive. */
+  helpOpen: boolean;
   activeId: string | null;
   view: 'terminal' | 'diff' | 'run';
   /** Which top-level surface fills the main pane: the normal workspace panes,
@@ -101,6 +105,7 @@ interface State {
   setView: (v: 'terminal' | 'diff' | 'run') => void;
   setInsightsOpen: (open: boolean) => void;
   setPage: (p: 'workspaces' | 'resources') => void;
+  setHelpOpen: (open: boolean) => void;
   load: () => Promise<void>;
   refreshRepos: () => Promise<void>;
   addRepo: () => Promise<RepoEntry | null>;
@@ -145,15 +150,17 @@ export const useStore = create<State>((set, get) => ({
   globalUsage: null,
   selfTuneRuns: [],
   insightsOpen: false,
+  helpOpen: false,
   activeId: null,
   view: 'terminal',
   page: 'workspaces',
   loaded: false,
 
   setActive: (id) => {
-    // Picking a workspace dismisses the Insights pane — it overlays the main
-    // pane, so leaving it up would eclipse the terminal the user just chose.
-    set({ activeId: id, insightsOpen: false });
+    // Picking a workspace dismisses the overlay panes (Insights, Help) — they
+    // cover the main pane, so leaving one up would eclipse the terminal the
+    // user just chose.
+    set({ activeId: id, insightsOpen: false, helpOpen: false });
     if (id) {
       const ws = get().workspaces.find((w) => w.id === id);
       if (ws && ws.status === 'waiting') {
@@ -165,11 +172,14 @@ export const useStore = create<State>((set, get) => ({
     }
   },
   setView: (v) => set({ view: v }),
-  // The Insights pane and the Resources page are both full-pane overlays —
-  // opening either one dismisses the other so they can never stack.
+  // The Insights/Help panes and the Resources page are all full-pane surfaces —
+  // opening any one dismisses the others so they can never stack.
   setInsightsOpen: (open) =>
-    set(open ? { insightsOpen: true, page: 'workspaces' } : { insightsOpen: false }),
-  setPage: (p) => set(p === 'resources' ? { page: p, insightsOpen: false } : { page: p }),
+    set(open ? { insightsOpen: true, helpOpen: false, page: 'workspaces' } : { insightsOpen: false }),
+  setHelpOpen: (open) =>
+    set(open ? { helpOpen: true, insightsOpen: false, page: 'workspaces' } : { helpOpen: false }),
+  setPage: (p) =>
+    set(p === 'resources' ? { page: p, insightsOpen: false, helpOpen: false } : { page: p }),
 
   load: async () => {
     const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns] =

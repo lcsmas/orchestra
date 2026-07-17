@@ -120,6 +120,14 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   another machine drives the workspace's sandbox, with a Take-control button
   (mounted in App.tsx beside SetupBanner; see
   [sandbox-transport.md](sandbox-transport.md)).
+- **Help.tsx** — `HelpView`, the in-app feature guide: a main-pane overlay
+  (same absolute-overlay contract as `InsightsView`, so kept-alive terminals
+  never unmount) with static per-feature-area content and an external link to
+  `docs/guide/`. Opened via the sidebar header's `?` button or the welcome
+  screen's "Everything Orchestra can do" button; state is the store's
+  `helpOpen` flag — mutually exclusive with `insightsOpen` (opening one closes
+  the other; `setActive` closes both). The welcome empty state in `App.tsx`
+  also renders a `welcome-features` highlight grid.
 - **RepoScriptsModal.tsx** — edit setup/run/archive scripts + account assignment.
 - **SetupBanner.tsx** — overlay while `setupStatus` running/failed, with log +
   retry.
