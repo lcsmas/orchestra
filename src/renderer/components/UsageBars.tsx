@@ -3,8 +3,9 @@ import { useStore } from '../store';
 import { loginColor } from './AccountBadge';
 import type { UsageErrorKind, UsageWindowDetail } from '../../shared/types';
 
-// Two slim progress bars showing the active workspace's account rolling usage
-// limits: the 5-hour session window and the 7-day weekly window. When the
+// Slim progress bars showing the active workspace's account rolling usage
+// limits: the 5-hour session window, the 7-day weekly window, and — when the
+// plan has one — the Fable-scoped 7-day window. When the
 // active workspace has a pinned account, the data comes from the per-account
 // poller (src/main/account-usage.ts, pushed via accounts:usageUpdate). When
 // the workspace uses the default login (no pinned account), it falls back to
@@ -146,6 +147,8 @@ type RowState =
       kind: 'ok';
       fiveHour: UsageWindowDetail;
       sevenDay: UsageWindowDetail;
+      /** Fable-scoped weekly window; null when the account's plan has none. */
+      fable: UsageWindowDetail | null;
       expired?: boolean;
       /** Epoch ms of the snapshot the bars render — shows as "updated Xm ago". */
       fetchedAt: number;
@@ -192,6 +195,7 @@ function UsageRowView({ row, now }: { row: UsageRow; now: number }) {
         <>
           <MiniBar label="5h" window={row.state.fiveHour} now={now} />
           <MiniBar label="7d" window={row.state.sevenDay} now={now} />
+          {row.state.fable && <MiniBar label="f7d" window={row.state.fable} now={now} />}
         </>
       )}
     </div>
@@ -245,6 +249,7 @@ export function UsageBars() {
 
   let fiveHour: { utilization: number; resetsAt: string } | null = null;
   let sevenDay: { utilization: number; resetsAt: string } | null = null;
+  let fable: { utilization: number; resetsAt: string } | null = null;
   let accountLabel: string | null = null;
   let fetchedAt = 0;
 
@@ -255,6 +260,7 @@ export function UsageBars() {
     if (perAccountStatus?.data) {
       fiveHour = perAccountStatus.data.fiveHour;
       sevenDay = perAccountStatus.data.sevenDay;
+      fable = perAccountStatus.data.fable ?? null;
       accountLabel = activeAccount?.label ?? null;
       fetchedAt = perAccountStatus.fetchedAt;
     }
@@ -262,6 +268,7 @@ export function UsageBars() {
   } else if (globalUsage) {
     fiveHour = globalUsage.fiveHour;
     sevenDay = globalUsage.sevenDay;
+    fable = globalUsage.fable ?? null;
     // Surface the default login by name too, the same as a pinned account, so
     // the bars always say which login they're measuring.
     accountLabel = activeAccount?.label ?? 'default';
@@ -296,11 +303,16 @@ export function UsageBars() {
         key: a.id,
         label: a.label,
         isActive,
-        hotness: Math.max(u.data.fiveHour.utilization, u.data.sevenDay.utilization),
+        hotness: Math.max(
+          u.data.fiveHour.utilization,
+          u.data.sevenDay.utilization,
+          u.data.fable?.utilization ?? 0,
+        ),
         state: {
           kind: 'ok',
           fiveHour: u.data.fiveHour,
           sevenDay: u.data.sevenDay,
+          fable: u.data.fable ?? null,
           expired: u.expired,
           fetchedAt: u.fetchedAt,
         },
@@ -321,11 +333,16 @@ export function UsageBars() {
       key: '__default__',
       label: 'default',
       isActive: defaultActive,
-      hotness: Math.max(globalUsage.fiveHour.utilization, globalUsage.sevenDay.utilization),
+      hotness: Math.max(
+        globalUsage.fiveHour.utilization,
+        globalUsage.sevenDay.utilization,
+        globalUsage.fable?.utilization ?? 0,
+      ),
       state: {
         kind: 'ok',
         fiveHour: globalUsage.fiveHour,
         sevenDay: globalUsage.sevenDay,
+        fable: globalUsage.fable ?? null,
         fetchedAt: globalUsage.fetchedAt,
       },
     });
@@ -370,6 +387,14 @@ export function UsageBars() {
         now={now}
         note={formatUpdatedAgo(fetchedAt, now)}
       />
+      {fable && (
+        <UsageBar
+          label="Fable"
+          title={`Claude usage${accountLabel ? ` (${accountLabel})` : ''} — Fable 7-day weekly window`}
+          window={fable}
+          now={now}
+        />
+      )}
     </div>
   );
 }

@@ -785,7 +785,8 @@ input:focus, textarea:focus, select:focus {
 }
 .usage-row-bar {
   display: grid;
-  grid-template-columns: 16px 1fr 30px;
+  /* 22px label column fits the widest window label ("F7D" — Fable weekly). */
+  grid-template-columns: 22px 1fr 30px;
   align-items: center;
   gap: 6px;
 }

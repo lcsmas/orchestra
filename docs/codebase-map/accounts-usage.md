@@ -79,7 +79,12 @@ the same source Claude Code's `/usage` reads. Pure parsers in `accounts.ts`:
 null/absent `utilization` parses as `extraUtilization: 0`, not null — a freshly
 enabled pay-as-you-go pool must read as "0% used, absorbing overflow", else a
 maxed 5h/7d account stays limited and the queue banner never clears),
-`classifyHttpError` `:228` (403→`no-scope`, 429→`rate-limited`).
+`classifyHttpError` (403→`no-scope`, 429→`rate-limited`). The Fable-scoped
+weekly cap has NO top-level window — it's a `weekly_scoped` entry in the
+response's `limits[]` whose `scope.model.display_name` is "Fable";
+`parseFableWindow` maps it to `UsageData.fable` (null when the plan has none).
+It is display-only: `usageLimitedUntil` deliberately ignores it, since a maxed
+Fable window only blocks Fable requests while other models keep answering.
 
 - **Global poller — usage.ts** (default login): one snapshot every ~60s,
   persisted to disk (bars paint immediately next launch), exponential backoff to
@@ -136,7 +141,9 @@ queue survives restarts) instead of burning turns on "limit reached" errors.
 - **AccountBadge.tsx** — `RepoAccountBadge` `:105`, `WorkspaceAccountBadge` `:119`,
   `WorkspaceContextBadge` `:92`. Colour tint by the hotter window
   (≥90% crit/≥75% warn); `loginColor` `:36` hashes the name to a stable HSL.
-- **UsageBars.tsx** — slim 5h/7d bars for the active workspace's account, plus a
+- **UsageBars.tsx** — slim 5h/7d bars (plus a "Fable" bar when the account has
+  a Fable-scoped weekly limit; panel rows show it as "F7D") for the active
+  workspace's account, plus a
   hover panel of all accounts sorted hottest-first. An "updated Xm ago" stamp
   (from the snapshot's `fetchedAt`) sits directly on the strip — centered in
   the 7d bar's head, mirroring the account name on the 5h bar — and on each

@@ -89,6 +89,12 @@ export interface UsageData {
   /** Extra-usage (pay-as-you-go) utilization 0–100 if the account has it
    *  enabled and the endpoint reported a number; otherwise null. */
   extraUtilization: number | null;
+  /** The Fable-scoped weekly window (Claude Fable 5 has its own 7-day cap on
+   *  top of the general one), or null when the plan has none. Comes from the
+   *  endpoint's `limits[]` array, not a top-level window. Display-only: it
+   *  deliberately does NOT feed {@link usageLimitedUntil} — a maxed Fable
+   *  window only blocks Fable requests, every other model keeps answering. */
+  fable: UsageWindowDetail | null;
 }
 
 /** Why an account has no usable usage right now — surfaced on the badge instead
@@ -188,11 +194,21 @@ interface RawExtra {
   is_enabled?: boolean | null;
   utilization?: number | null;
 }
+/** One entry of the endpoint's `limits[]` array. Model-scoped windows (the
+ *  Fable weekly cap) only appear here — there is no top-level
+ *  `seven_day_fable`; the scope's `display_name` says which model. */
+interface RawLimit {
+  kind?: string | null;
+  percent?: number | null;
+  resets_at?: string | null;
+  scope?: { model?: { display_name?: string | null } | null } | null;
+}
 /** The subset of `/api/oauth/usage` we read. Unknown keys are tolerated. */
 export interface RawUsageResponse {
   five_hour?: RawWindow | null;
   seven_day?: RawWindow | null;
   extra_usage?: RawExtra | null;
+  limits?: RawLimit[] | null;
 }
 
 function num(v: number | null | undefined): number {
@@ -201,6 +217,21 @@ function num(v: number | null | undefined): number {
 
 function parseWindow(w: RawWindow | null | undefined): UsageWindowDetail {
   return { utilization: num(w?.utilization), resetsAt: w?.resets_at ?? '' };
+}
+
+// The Fable weekly cap is a `weekly_scoped` entry in `limits[]` whose scope
+// names the model; match on the display name (case-insensitively — it's a
+// human label, not an id) so an unrelated scoped limit is never misread as
+// Fable usage. Absent/null percent reads as 0, mirroring parseWindow.
+function parseFableWindow(limits: RawLimit[] | null | undefined): UsageWindowDetail | null {
+  if (!Array.isArray(limits)) return null;
+  const entry = limits.find(
+    (l) =>
+      l?.kind === 'weekly_scoped' &&
+      l.scope?.model?.display_name?.toLowerCase() === 'fable',
+  );
+  if (!entry) return null;
+  return { utilization: num(entry.percent), resetsAt: entry.resets_at ?? '' };
 }
 
 /** Parse a raw `/api/oauth/usage` body into renderer-safe {@link UsageData}.
@@ -226,6 +257,7 @@ export function parseUsageResponse(raw: RawUsageResponse | null | undefined): Us
     fiveHour: parseWindow(raw.five_hour),
     sevenDay: parseWindow(raw.seven_day),
     extraUtilization,
+    fable: parseFableWindow(raw.limits),
   };
 }
 

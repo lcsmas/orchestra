@@ -59,6 +59,7 @@ function parseSnapshot(raw: RawUsageResponse, fetchedAt: number): UsageSnapshot 
     fiveHour: data.fiveHour,
     sevenDay: data.sevenDay,
     extraUtilization: data.extraUtilization,
+    fable: data.fable,
     fetchedAt,
   };
 }

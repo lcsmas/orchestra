@@ -91,7 +91,56 @@ test('parseUsageResponse parses the verified real shape', () => {
     fiveHour: { utilization: 38, resetsAt: '2026-06-29T18:00:00Z' },
     sevenDay: { utilization: 28, resetsAt: '2026-07-02T00:00:00Z' },
     extraUtilization: 12,
+    fable: null,
   });
+});
+
+test('parseUsageResponse reads the Fable weekly window from limits[]', () => {
+  // Verified real shape (2026-07): the Fable cap is a `weekly_scoped` entry in
+  // `limits[]` — there is no top-level seven_day_fable window.
+  const out = parseUsageResponse({
+    five_hour: { utilization: 22, resets_at: '2026-07-18T02:30:00Z' },
+    seven_day: { utilization: 5, resets_at: '2026-07-24T10:00:00Z' },
+    limits: [
+      { kind: 'session', percent: 22, resets_at: '2026-07-18T02:30:00Z', scope: null },
+      { kind: 'weekly_all', percent: 5, resets_at: '2026-07-24T10:00:00Z', scope: null },
+      {
+        kind: 'weekly_scoped',
+        percent: 10,
+        resets_at: '2026-07-24T10:00:00Z',
+        scope: { model: { display_name: 'Fable' } },
+      },
+    ],
+  } as RawUsageResponse);
+  assert.deepEqual(out?.fable, { utilization: 10, resetsAt: '2026-07-24T10:00:00Z' });
+});
+
+test('parseUsageResponse fable is null without a Fable-scoped limit', () => {
+  const base = { five_hour: { utilization: 5 }, seven_day: { utilization: 5 } };
+  // No limits array at all (older plans / older responses).
+  assert.equal(parseUsageResponse({ ...base })?.fable, null);
+  // A scoped limit for another model must not be misread as Fable.
+  assert.equal(
+    parseUsageResponse({
+      ...base,
+      limits: [
+        { kind: 'weekly_scoped', percent: 60, scope: { model: { display_name: 'Opus' } } },
+        { kind: 'weekly_all', percent: 90, scope: null },
+      ],
+    } as RawUsageResponse)?.fable,
+    null,
+  );
+});
+
+test('parseUsageResponse tolerates a Fable limit with null percent/reset', () => {
+  const out = parseUsageResponse({
+    five_hour: { utilization: 5 },
+    seven_day: { utilization: 5 },
+    limits: [
+      { kind: 'weekly_scoped', percent: null, resets_at: null, scope: { model: { display_name: 'Fable' } } },
+    ],
+  } as RawUsageResponse);
+  assert.deepEqual(out?.fable, { utilization: 0, resetsAt: '' });
 });
 
 test('parseUsageResponse tolerates a null window (reads 0%, no reset)', () => {

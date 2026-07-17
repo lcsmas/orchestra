@@ -388,6 +388,9 @@ export interface UsageSnapshot {
    *  credits the same way the per-account poller does — without it a maxed
    *  5h/7d default account would read as limited even with extra usage on. */
   extraUtilization?: number | null;
+  /** The Fable-scoped weekly window, or null/absent when the plan has none.
+   *  Display-only (see UsageData.fable in shared/accounts.ts). */
+  fable?: UsageWindow | null;
   /** Epoch ms when this snapshot was fetched. */
   fetchedAt: number;
 }
