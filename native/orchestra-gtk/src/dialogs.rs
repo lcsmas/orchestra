@@ -39,6 +39,13 @@ thread_local! {
     static OPEN: RefCell<Vec<gtk::Window>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The topmost open dialog window, if any. The remote-control harness uses
+/// this as the default screenshot target: dialogs are separate toplevels, so
+/// a main-window capture can never show a modal.
+pub fn topmost() -> Option<gtk::Window> {
+    OPEN.with_borrow(|open| open.last().cloned())
+}
+
 /// Cancel (Esc) the topmost open dialog. Returns false when none is open.
 pub fn cancel_topmost() -> bool {
     activate_on_topmost("dlg.cancel")
@@ -50,8 +57,7 @@ pub fn confirm_topmost() -> bool {
 }
 
 fn activate_on_topmost(action: &str) -> bool {
-    let top = OPEN.with_borrow(|open| open.last().cloned());
-    match top {
+    match topmost() {
         Some(win) => win.activate_action(action, None).is_ok(),
         None => false,
     }

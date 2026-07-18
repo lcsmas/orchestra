@@ -46,9 +46,10 @@ pub enum Op {
         name: String,
         prop: Prop,
     },
-    /// Render the named widget (default: the main window) offscreen via
-    /// WidgetPaintable → GSK render_texture → PNG. Works without a visible
-    /// frame, which is exactly what headless CI needs.
+    /// Render the named widget offscreen via WidgetPaintable → GSK
+    /// render_texture → PNG (no name: the topmost open dialog, else the main
+    /// window). Works without a visible frame, which is exactly what
+    /// headless CI needs.
     Screenshot {
         path: String,
         #[serde(default)]
@@ -319,9 +320,16 @@ fn handle_op(op: Op) -> Value {
             ok(serde_json::Map::from_iter([("value".into(), value)]))
         }
         Op::Screenshot { path, name } => {
+            // Named targets resolve across ALL toplevels (dialogs included).
+            // With no name, prefer the topmost open dialog: dialogs are their
+            // own toplevel surfaces, so a main-window capture never shows a
+            // modal — "screenshot what I just opened" must work without the
+            // caller knowing the dialog's widget name.
             let target: Option<gtk::Widget> = match &name {
                 Some(n) => find_widget(n),
-                None => main_window().map(|w| w.upcast()),
+                None => crate::dialogs::topmost()
+                    .map(|w| w.upcast())
+                    .or_else(|| main_window().map(|w| w.upcast())),
             };
             let Some(target) = target else {
                 return err("no widget to screenshot");

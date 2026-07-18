@@ -67,7 +67,7 @@ input never reaches the client.
 | `{"op":"type","text":"hi","name":"dialog-entry"}` | insert into named editable (name optional → focus widget) |
 | `{"op":"key","name":"Escape"}` | `Escape` cancels / `Return` confirms the topmost dialog |
 | `{"op":"get","name":"status-text","prop":"label"}` | prop ∈ label \| visible \| css (label = window title / label text / entry text) |
-| `{"op":"screenshot","path":"/tmp/x.png"}` | offscreen render via WidgetPaintable → PNG (optional `name`) |
+| `{"op":"screenshot","path":"/tmp/x.png"}` | offscreen render via WidgetPaintable → PNG; optional `name` targets any toplevel/widget, default = topmost open dialog, else main window |
 
 Widget names: every meaningful widget has a `widget_name` (`main-window`,
 `sidebar-list`, `ws-row-<id>`, `status-text`, `debug-menu`, `backend-banner`,
