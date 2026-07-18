@@ -8,6 +8,7 @@ import { store } from './store';
 import { log } from './logger';
 import {
   buildFoldPrompt,
+  diffLessons,
   ensureLessonsImport,
   enumerateSelfTuneLogins,
   isSelfTuneDue,
@@ -15,6 +16,7 @@ import {
   LESSONS_BOOTSTRAP,
   newestReport,
   parseFoldSummary,
+  summarizeLessonsDiff,
   type SelfTuneLogin,
   type SelfTuneReport,
   type SelfTuneRun,
@@ -258,12 +260,17 @@ async function executeRun(run: SelfTuneRun, logins: SelfTuneLogin[]): Promise<vo
     for (const action of ensureFoldTargets(os.homedir())) {
       appendOutput(run.id, `${action}\n`);
     }
+    // Snapshot LESSONS.md around the fold so the run records what actually
+    // changed (ground truth for the UI's "new since last run" view) — after
+    // ensureFoldTargets, so a fresh bootstrap doesn't count as a change.
+    const lessonsBefore = readSelfTuneLessons();
     const reports = logins.map(resolveReport);
     const prompt = buildFoldPrompt(reports, os.homedir());
     const code = await runStep(run, fold, ['-p', prompt, '--dangerously-skip-permissions'], null);
     fold.exitCode = code;
     fold.finishedAt = Date.now();
     fold.status = code === 0 ? 'ok' : 'failed';
+    run.lessons = diffLessons(lessonsBefore, readSelfTuneLessons());
   }
 
   // The fold pass is the run's point: insights failures are per-login noise,
@@ -272,6 +279,7 @@ async function executeRun(run: SelfTuneRun, logins: SelfTuneLogin[]): Promise<vo
   run.finishedAt = Date.now();
   const summary = parseFoldSummary(getSelfTuneOutput(run.id));
   if (summary) run.summary = summary;
+  else if (run.lessons && run.status === 'ok') run.summary = summarizeLessonsDiff(run.lessons);
   await persistAndBroadcast(run);
 }
 

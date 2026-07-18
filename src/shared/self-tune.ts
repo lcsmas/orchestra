@@ -39,6 +39,19 @@ export interface SelfTuneStep {
   error?: string;
 }
 
+/** What a run actually did to LESSONS.md, computed in main by diffing the
+ *  file's bullets around the fold pass — ground truth, independent of what the
+ *  fold agent claims in its marker line. A bullet the fold *sharpened* shows
+ *  up as one removed + one added. */
+export interface LessonsDiff {
+  /** Bullet texts (without the `- ` marker) present after the fold but not before. */
+  added: string[];
+  /** Bullet texts present before the fold but not after (deleted or reworded). */
+  removed: string[];
+  /** Bullet count after the run — the size of the current lesson set. */
+  total: number;
+}
+
 /** A whole pipeline run. Persisted in store.json (bounded history) so the last
  *  outcome survives restarts; the step transcripts live outside the store. */
 export interface SelfTuneRun {
@@ -51,6 +64,9 @@ export interface SelfTuneRun {
   /** Short human outcome parsed from the fold pass's marker line, e.g.
    *  "2 lessons added" — drives the sidebar's idle row. */
   summary?: string;
+  /** LESSONS.md diff around this run's fold pass (absent on runs from before
+   *  this field existed, or when the fold never ran). */
+  lessons?: LessonsDiff;
 }
 
 /** Newest report per login, for the fold prompt and the UI's "open report"
@@ -143,6 +159,41 @@ export function ensureLessonsImport(claudeMd: string | null): string | null {
   if (/(^|\s)@LESSONS\.md(\s|$)/.test(claudeMd)) return null;
   const sep = claudeMd.endsWith('\n') ? '' : '\n';
   return `${claudeMd}${sep}${LESSONS_IMPORT}\n`;
+}
+
+/** The lesson bullets of a LESSONS.md content: top-level `- ` lines with the
+ *  marker stripped. Header/prose lines don't count. */
+export function parseLessonBullets(content: string): string[] {
+  const out: string[] = [];
+  for (const line of content.split('\n')) {
+    const t = line.trim();
+    if (t.startsWith('- ')) out.push(t.slice(2).trim());
+  }
+  return out;
+}
+
+/** Diff two LESSONS.md contents (before/after a fold pass) into the run's
+ *  {@link LessonsDiff}. Bullet identity is exact text — order changes don't
+ *  register, a reworded bullet registers as removed + added. */
+export function diffLessons(before: string, after: string): LessonsDiff {
+  const beforeBullets = parseLessonBullets(before);
+  const afterBullets = parseLessonBullets(after);
+  const beforeSet = new Set(beforeBullets);
+  const afterSet = new Set(afterBullets);
+  return {
+    added: afterBullets.filter((b) => !beforeSet.has(b)),
+    removed: beforeBullets.filter((b) => !afterSet.has(b)),
+    total: afterBullets.length,
+  };
+}
+
+/** A "2 lessons added · 1 removed" style outcome derived from the diff — the
+ *  fallback summary when the fold pass never printed its marker line. */
+export function summarizeLessonsDiff(diff: LessonsDiff): string {
+  const parts: string[] = [];
+  if (diff.added.length > 0) parts.push(`${diff.added.length} lesson${diff.added.length === 1 ? '' : 's'} added`);
+  if (diff.removed.length > 0) parts.push(`${diff.removed.length} removed`);
+  return parts.length > 0 ? parts.join(' · ') : 'no changes needed';
 }
 
 /** Extract the fold pass's outcome from its streamed output — the text after

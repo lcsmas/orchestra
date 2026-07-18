@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildFoldPrompt,
+  diffLessons,
   ensureLessonsImport,
   enumerateSelfTuneLogins,
   FOLD_RESULT_MARKER,
@@ -10,6 +11,8 @@ import {
   LESSONS_IMPORT,
   newestReport,
   parseFoldSummary,
+  parseLessonBullets,
+  summarizeLessonsDiff,
   type SelfTuneRun,
 } from './self-tune.ts';
 import type { Account } from './accounts.ts';
@@ -155,6 +158,59 @@ test('ensureLessonsImport: content without the import → import appended', () =
   assert.equal(ensureLessonsImport('## My rules'), '## My rules\n@LESSONS.md\n');
   // A near-miss token is not a match.
   assert.equal(ensureLessonsImport('see @LESSONS.mdx for details\n'), 'see @LESSONS.mdx for details\n@LESSONS.md\n');
+});
+
+// ---- lessons diff ------------------------------------------------------------
+
+const LESSONS_V1 = [
+  '# Lessons (auto-curated by /retro — keep under ~30 bullets, one line each)',
+  '',
+  '- [2026-06-01] Always fetch before rebasing.',
+  '- [2026-06-15] Use absolute paths in Bash.',
+].join('\n');
+
+test('parseLessonBullets: only `- ` lines count, marker stripped', () => {
+  assert.deepEqual(parseLessonBullets(LESSONS_V1), [
+    '[2026-06-01] Always fetch before rebasing.',
+    '[2026-06-15] Use absolute paths in Bash.',
+  ]);
+  assert.deepEqual(parseLessonBullets(''), []);
+  assert.deepEqual(parseLessonBullets('# header only\nprose\n'), []);
+});
+
+test('diffLessons: added and removed bullets, total from the after side', () => {
+  const after = [
+    '# Lessons (auto-curated by /retro — keep under ~30 bullets, one line each)',
+    '',
+    '- [2026-06-15] Use absolute paths in Bash.',
+    '- [2026-07-18] Snapshot files around a fold pass to record ground truth.',
+  ].join('\n');
+  const diff = diffLessons(LESSONS_V1, after);
+  assert.deepEqual(diff.added, ['[2026-07-18] Snapshot files around a fold pass to record ground truth.']);
+  assert.deepEqual(diff.removed, ['[2026-06-01] Always fetch before rebasing.']);
+  assert.equal(diff.total, 2);
+});
+
+test('diffLessons: unchanged content (even reordered) → empty diff', () => {
+  assert.deepEqual(diffLessons(LESSONS_V1, LESSONS_V1), {
+    added: [],
+    removed: [],
+    total: 2,
+  });
+  const reordered = [
+    '- [2026-06-15] Use absolute paths in Bash.',
+    '- [2026-06-01] Always fetch before rebasing.',
+  ].join('\n');
+  const diff = diffLessons(LESSONS_V1, reordered);
+  assert.deepEqual(diff.added, []);
+  assert.deepEqual(diff.removed, []);
+});
+
+test('summarizeLessonsDiff: counts with pluralization, else "no changes needed"', () => {
+  assert.equal(summarizeLessonsDiff({ added: ['a'], removed: [], total: 3 }), '1 lesson added');
+  assert.equal(summarizeLessonsDiff({ added: ['a', 'b'], removed: ['c'], total: 4 }), '2 lessons added · 1 removed');
+  assert.equal(summarizeLessonsDiff({ added: [], removed: ['c'], total: 1 }), '1 removed');
+  assert.equal(summarizeLessonsDiff({ added: [], removed: [], total: 2 }), 'no changes needed');
 });
 
 test('parseFoldSummary: last marker line wins; absent → null', () => {

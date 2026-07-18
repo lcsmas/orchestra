@@ -23,6 +23,12 @@ Dependency-free (testable under `node --test`):
   LESSONS.md's own rules, and asks for a final `SELF-TUNE-RESULT: <outcome>`
   marker line; `parseFoldSummary(output)` `:129` extracts it (last marker wins)
   for the UI's "Jul 18 · 2 lessons added" row.
+- Lessons diff: `parseLessonBullets(content)` / `diffLessons(before, after)`
+  `:224` — bullet-set diff of LESSONS.md around the fold (exact-text identity:
+  a reworded bullet = removed + added), stored on the run as
+  `SelfTuneRun.lessons` (`LessonsDiff` `:48`: added/removed/total);
+  `summarizeLessonsDiff(diff)` is the run-summary fallback when the fold never
+  printed its marker line.
 - `ensureLessonsImport(claudeMd)` `:203` — returns the global CLAUDE.md content
   to write so it `@LESSONS.md`-imports lessons (creates-from-scratch on null,
   appends when missing), or null when already present. `LESSONS_BOOTSTRAP`
@@ -39,6 +45,10 @@ Dependency-free (testable under `node --test`):
   login dir for alternate accounts (`runStep` `:158`). A failed insights step
   is tolerated (fold reads the newest *existing* report); the run's status is
   the fold's status.
+- After the fold: LESSONS.md is snapshotted just before the fold spawn (post
+  `ensureFoldTargets` so a fresh bootstrap isn't a "change") and re-read after;
+  `diffLessons` fills `run.lessons`, and `summarizeLessonsDiff` supplies
+  `run.summary` when no `SELF-TUNE-RESULT:` marker was printed on an ok run.
 - **Bootstrap on bare machines**: `ensureFoldTargets(home)` `:161` runs just
   before the fold spawn — creates `~/.claude/LESSONS.md` (canonical header),
   the `usage-data/` dir, and ensures the global `~/.claude/CLAUDE.md`
@@ -72,6 +82,10 @@ Dependency-free (testable under `node --test`):
   run's steps + live transcript (seed via `getSelfTuneOutput`, then
   `onSelfTuneOutput` appends), a Run-now button, per-login "open report"
   buttons, click-to-select run history, and a read-only LESSONS.md panel.
+  The shown run's `lessons` diff renders as a "LESSONS.md changes" block
+  (+added / −removed bullets); the LESSONS.md panel header counts bullets and
+  flags "N new since the last run", highlighting those bullets in the text
+  (matched by exact bullet text against the newest run's `lessons.added`).
 - Store: `selfTuneRuns` (hydrated on load, upserted by `selfTune:update`,
   newest first) + `insightsOpen`; `setActive` closes the pane.
 
@@ -79,4 +93,5 @@ Dependency-free (testable under `node --test`):
 `shared/self-tune.test.ts` covers due-date math (same/different month & year),
 `lastSuccessAt`, login enumeration (expansion, dedupe, empty skip),
 `newestReport` ordering + fallbacks, the fold prompt contract (report list,
-cross-login dedupe wording, marker), and `parseFoldSummary`.
+cross-login dedupe wording, marker), `parseFoldSummary`, and the lessons diff
+(`parseLessonBullets`, `diffLessons`, `summarizeLessonsDiff`).

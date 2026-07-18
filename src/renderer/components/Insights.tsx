@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
-import type { SelfTuneReport, SelfTuneRun, SelfTuneStep } from '../../shared/self-tune';
+import { parseLessonBullets, type SelfTuneReport, type SelfTuneRun, type SelfTuneStep } from '../../shared/self-tune';
 import { dialog } from './Dialog';
 
 // Insights & Improvements — orchestra-native monthly Claude Code self-tuning.
@@ -149,6 +149,12 @@ export function InsightsView() {
     void window.orchestra.readSelfTuneLessons().then(setLessons).catch(() => {});
   }, [lastFinishedAt]);
 
+  // The newest run that recorded a LESSONS.md diff supplies "what's new since
+  // the last self-tune": its added bullets get highlighted in the panel below.
+  const latestDiff = runs.find((r) => r.lessons)?.lessons ?? null;
+  const newLessons = new Set(latestDiff?.added ?? []);
+  const lessonCount = parseLessonBullets(lessons).length;
+
   const onRunNow = async () => {
     setStarting(true);
     try {
@@ -227,6 +233,23 @@ export function InsightsView() {
                 </div>
               ))}
             </div>
+            {shownRun.lessons && (shownRun.lessons.added.length > 0 || shownRun.lessons.removed.length > 0) && (
+              <div className="insights-diff">
+                <div className="insights-diff-title">LESSONS.md changes</div>
+                {shownRun.lessons.added.map((b) => (
+                  <div key={`+${b}`} className="insights-diff-line added">
+                    <span className="insights-diff-sign" aria-label="Added">+</span>
+                    <span>{b}</span>
+                  </div>
+                ))}
+                {shownRun.lessons.removed.map((b) => (
+                  <div key={`-${b}`} className="insights-diff-line removed">
+                    <span className="insights-diff-sign" aria-label="Removed">−</span>
+                    <span>{b}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <pre className="insights-transcript" ref={transcriptRef}>
               {transcript || (shownRun.status === 'running' ? 'Waiting for output…' : 'No transcript available for this run.')}
             </pre>
@@ -287,9 +310,27 @@ export function InsightsView() {
         <section className="insights-panel">
           <div className="insights-panel-title">
             LESSONS.md
-            <span className="insights-panel-meta">~/.claude/LESSONS.md · read-only, @-imported into every session</span>
+            <span className="insights-panel-meta">
+              ~/.claude/LESSONS.md · {lessonCount} lesson{lessonCount === 1 ? '' : 's'}
+              {latestDiff && latestDiff.added.length > 0
+                ? ` · ${latestDiff.added.length} new since the last run`
+                : ''}
+              {' · @-imported into every session'}
+            </span>
           </div>
-          <pre className="insights-lessons">{lessons || 'No LESSONS.md found.'}</pre>
+          <pre className="insights-lessons">
+            {lessons
+              ? lessons.split('\n').map((line, i) => {
+                  const t = line.trim();
+                  const isNew = t.startsWith('- ') && newLessons.has(t.slice(2).trim());
+                  return isNew ? (
+                    <span key={i} className="insights-lesson-new">{`${line}\n`}</span>
+                  ) : (
+                    `${line}\n`
+                  );
+                })
+              : 'No LESSONS.md found.'}
+          </pre>
         </section>
       </div>
     </div>

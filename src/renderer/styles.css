@@ -3731,6 +3731,33 @@ button.danger-primary:active {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.insights-diff {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.insights-diff-title {
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.insights-diff-line {
+  display: flex;
+  gap: 6px;
+  font-family: var(--font-mono);
+  word-break: break-word;
+}
+.insights-diff-line.added { color: var(--green); }
+.insights-diff-line.removed { color: var(--text-dim); text-decoration: line-through; }
+.insights-diff-sign { flex: 0 0 auto; user-select: none; }
+.insights-lesson-new {
+  background: rgba(91, 214, 139, 0.12);
+  border-radius: 3px;
+}
 
 /* ---- Resources page ------------------------------------------------------ */
 /* Full-page overlay pinned over .main (which is position:relative) so every
