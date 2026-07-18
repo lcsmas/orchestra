@@ -510,6 +510,14 @@ Write `docs/ui-rpc-protocol.md` (from §2), scaffold `native/` workspace with
   sway); every merge = tsc + vite build + node tests + cargo build/clippy/
   test + smoke screenshot + Electron regression suite.
 
+M2 cleanup backlog (pre-existing issues surfaced by M1 verification, fix
+deliberately, not smuggled in): `logger.ts` primary sink hardcodes
+`~/.orchestra/logs` even when `ORCHESTRA_HOME` overrides the home — an
+isolated daemon/dev instance writes the user's real log file — and
+`app:info.logPath` reports that out-of-home path. Fix = derive the primary
+sink from `ORCHESTRA_HOME`, with its own regression note (affects Electron
+dev instances too).
+
 ### M2 — feature workstreams (6 agents + same verifier; spawn as M1 merges)
 - **B1 sidebar** (§5.1 ledger)
 - **B2 terminals** (§5.2; includes the VTE feed spike as task 1)
