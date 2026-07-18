@@ -30,11 +30,18 @@ DEPS=(gtk4-devel vte291-gtk4 vte291-gtk4-devel glib2-devel cairo-devel
       harfbuzz-devel vulkan-loader-devel
       gtksourceview5 gtksourceview5-devel
       webkitgtk6.0 webkitgtk6.0-devel libsoup3-devel
+      javascriptcoregtk6.0 javascriptcoregtk6.0-devel
       gstreamer1-devel gstreamer1-plugins-base-devel)
 
 mkdir -p .localdeps/rpms .localdeps/prefix
-if ! ls .localdeps/rpms/*.rpm >/dev/null 2>&1; then
-  (cd .localdeps/rpms && dnf download "${DEPS[@]}")
+# Per-package presence check: a whole-dir guard would skip every package
+# added to DEPS after the first run (stale-cache trap when DEPS grows).
+missing=()
+for dep in "${DEPS[@]}"; do
+  ls .localdeps/rpms/"$dep"-[0-9]*.rpm >/dev/null 2>&1 || missing+=("$dep")
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+  (cd .localdeps/rpms && dnf download "${missing[@]}")
 fi
 
 for rpm in .localdeps/rpms/*.rpm; do
