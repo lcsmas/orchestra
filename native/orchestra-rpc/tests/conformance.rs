@@ -317,12 +317,49 @@ fn check_fixture(v: &Value, file: &str, errors: &mut Vec<String>) -> usize {
             errors.push(format!("{file}: {e}"));
         }
         1
+    } else if v.get("dataBase64").is_some() {
+        // Binary ptyData capture (`binary.ptyData.json`): `{id, dataBase64}` —
+        // the dump script's stand-in for a raw `ptyData` frame. Prove the id
+        // is a string and the payload decodes.
+        if tag("id").is_none() {
+            errors.push(format!("{file}: binary capture without a string id"));
+        } else if tag("dataBase64")
+            .and_then(orchestra_rpc_b64_check)
+            .is_none()
+        {
+            errors.push(format!(
+                "{file}: binary capture dataBase64 is not valid base64"
+            ));
+        }
+        1
     } else {
         errors.push(format!(
             "{file}: fixture is neither a {{method, params, result}} nor a {{channel, args}} capture"
         ));
         0
     }
+}
+
+/// Standalone base64 sanity check (the crate keeps its codec private).
+#[allow(clippy::manual_map)]
+fn orchestra_rpc_b64_check(s: &str) -> Option<usize> {
+    let mut bits = 0u32;
+    let mut count = 0usize;
+    for &c in s.as_bytes() {
+        match c {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' => {
+                bits += 6;
+                if bits >= 8 {
+                    bits -= 8;
+                    count += 1;
+                }
+            }
+            b'=' => {}
+            c if c.is_ascii_whitespace() => {}
+            _ => return None,
+        }
+    }
+    Some(count)
 }
 
 #[test]
@@ -332,10 +369,27 @@ fn fixtures_conform() {
         Ok(rd) => rd
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            // manifest.json is dump-run metadata (method list + skip reasons),
+            // not a capture. Skipped methods have no fixture by design — their
+            // types are coded straight from ipc.ts/types.ts.
+            .filter(|p| p.file_name().is_none_or(|n| n != "manifest.json"))
             .collect(),
         Err(_) => Vec::new(),
     };
     files.sort();
+    if let Ok(raw) = std::fs::read_to_string(dir.join("manifest.json")) {
+        if let Ok(m) = serde_json::from_str::<Value>(&raw) {
+            let skipped = m
+                .get("skipped")
+                .and_then(Value::as_object)
+                .map(|o| o.len())
+                .unwrap_or(0);
+            eprintln!(
+                "conformance: manifest lists {skipped} method(s) skipped by the dump \
+                 script (no capture — typed from ipc.ts/types.ts directly)"
+            );
+        }
+    }
     if files.is_empty() {
         eprintln!(
             "NOTICE: no fixtures in {} — conformance skipped. \
