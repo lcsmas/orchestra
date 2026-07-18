@@ -5,8 +5,24 @@
 //! `src/shared/types.ts` and friends. Conformance fixtures live in
 //! `fixtures/` and are the drift gate — see the plan §2.
 //!
-//! M0 scaffold: frame codec is implemented and tested; typed API surface and
-//! the connection actor are M1/A2 deliverables.
+//! Layers, bottom-up:
+//! - [`frame`] — length-prefixed codec (JSON + binary PTY frames);
+//! - [`protocol`] — the `t`-tagged JSON frame vocabulary + handshake types;
+//! - [`types`] — serde mirrors of every wire shape;
+//! - [`events`] — the event channels and their typed decoding;
+//! - [`client`] — the blocking [`client::RpcClient`] (reader thread,
+//!   ping/pong, reconnect-with-backoff, typed method wrappers).
 
+mod base64;
+pub mod client;
+pub mod events;
 pub mod frame;
+pub mod protocol;
 pub mod types;
+
+pub use client::{
+    discover_socket_path, BackoffPolicy, ClientOptions, ConnectionState, Receivers, RpcClient,
+    RpcError, ServerInfo,
+};
+pub use events::{Event, UiEvent};
+pub use protocol::{BackendKind, ClientKind, PROTO_VERSION};
