@@ -35,7 +35,10 @@ reads them transiently to query usage.
   `<old>/projects/<mangled-worktree>/*.jsonl` → the new account's config dir
   (per-file `rename`, EXDEV→copy+unlink), re-pins `ws.accountId`,
   `syncAccountInheritance(target)`, then resumes via `startAgentPty` if it was
-  running. Pure decision `planAccountMigration(current, rawTarget, known)`
+  running — at the winsize the PTY had before the stop (`getPtySize`, pty.ts),
+  not a blind 80×24: an already-visible terminal never re-asserts its size
+  after a main-initiated respawn, so a default geometry would leave Claude's
+  TUI drawing at half the pane width. Pure decision `planAccountMigration(current, rawTarget, known)`
   (`accounts.ts`) returns `error`/`noop`/`migrate` (empty target = default login).
   Works for git workspaces AND scratch/orchestrator sessions (the pin drives
   `CLAUDE_CONFIG_DIR` identically; a never-run session just has no transcript to

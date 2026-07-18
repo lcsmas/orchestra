@@ -90,7 +90,12 @@ and calls `reconcileExited` (guarded against a live replacement). `stopAll`
 sets `shuttingDown` so exit handlers preserve `running` as a resume marker.
 Other exports: `writePty`, `resizePty` (drops no-op resizes to avoid
 SIGWINCH churn), `stopPty` `:394`, `readScrollback` (last 256 KiB only),
-`clearScrollback`, `isRunning`.
+`clearScrollback`, `isRunning`, `getPtySize` (live session's winsize, falling
+back to a `lastSizes` map that survives `stopPty` — main-initiated respawns of
+a stopped session, i.e. account-migration resume and `wakeAgentWithPrompt`,
+reuse it so an open terminal keeps its real width instead of snapping to a
+default 80×24 / 120×32; the renderer only re-asserts size on container/focus
+changes, never on an out-of-band respawn).
 
 ## Terminal.tsx (agent view, ~479 lines)
 xterm.js with addons: **FitAddon**, **WebLinksAddon** (opens via IPC),

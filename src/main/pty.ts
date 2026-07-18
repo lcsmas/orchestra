@@ -64,6 +64,12 @@ interface Session {
 }
 
 const sessions = new Map<string, Session>();
+// Last winsize each session had, surviving stopPty. Main-initiated respawns of
+// a stopped session (account migration's resume, wakeAgentWithPrompt) reuse it
+// so an already-visible terminal — whose renderer only re-asserts size on
+// container/focus changes, never on an out-of-band respawn — keeps its real
+// width instead of snapping to a default geometry.
+const lastSizes = new Map<string, { cols: number; rows: number }>();
 
 const LOG_DIR = path.join(os.homedir(), '.orchestra', 'logs');
 const MAX_LOG_BYTES = 2 * 1024 * 1024; // 2 MB cap per workspace
@@ -319,6 +325,7 @@ export async function startPty(opts: {
     echoUntil: 0,
   };
   sessions.set(opts.id, session);
+  lastSizes.set(opts.id, { cols, rows });
 
   session.disposables.push(
     transport.onData((data) => {
@@ -423,6 +430,7 @@ export function resizePty(id: string, cols: number, rows: number) {
   if (s.cols === c && s.rows === r) return; // no-op — don't churn SIGWINCH/repaint
   s.cols = c;
   s.rows = r;
+  lastSizes.set(id, { cols: c, rows: r });
   s.transport.resize(c, r);
 }
 
@@ -454,6 +462,18 @@ export function stopAll() {
 
 export function isRunning(id: string) {
   return sessions.has(id);
+}
+
+/** Winsize for the session: the live session's if running, else the last size
+ *  it had before stopping (the renderer keeps live sizes in sync with its
+ *  xterm via resizePty). Null only for a session never started this app run.
+ *  Lets a main-initiated (re)spawn — account migration's resume, waking a
+ *  stopped agent — use the size the terminal actually has instead of a blind
+ *  default. */
+export function getPtySize(id: string): { cols: number; rows: number } | null {
+  const s = sessions.get(id);
+  if (s) return { cols: s.cols, rows: s.rows };
+  return lastSizes.get(id) ?? null;
 }
 
 /** Snapshot of every live PTY session for the resource sampler: the pty id,

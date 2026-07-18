@@ -19,7 +19,15 @@ import {
   renameWorktreeBranch,
   switchWorktreeBranch,
 } from './git';
-import { isRunning, stopPty, clearScrollback, startPty, writePty, readScrollback } from './pty';
+import {
+  isRunning,
+  stopPty,
+  clearScrollback,
+  startPty,
+  writePty,
+  readScrollback,
+  getPtySize,
+} from './pty';
 import { expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { syncAccountInheritance } from './account-inherit';
 import { refreshAccountsNow } from './account-usage';
@@ -1413,10 +1421,12 @@ export interface MigrateAccountResult {
   error?: string;
 }
 
-/** Default PTY geometry for an agent auto-resumed after an account migration,
- * before any xterm has measured real dimensions (80×24 is the universal
- * fallback): the renderer re-fits the moment the user opens the tab, so this
- * only governs unseen TUI wrapping. */
+/** Fallback PTY geometry for an agent auto-resumed after an account migration
+ * (80×24 is the universal default). Only reached when the pre-stop size could
+ * not be captured — normally the resume reuses the live session's winsize, so
+ * an open terminal keeps its real width instead of snapping to 80 cols (the
+ * renderer's refit only re-sends on container/focus changes, so it would not
+ * heal a main-initiated respawn on an already-visible tab). */
 const MIGRATE_RESUME_COLS = 80;
 const MIGRATE_RESUME_ROWS = 24;
 
@@ -1519,6 +1529,11 @@ export async function dispatchMigrateAccountRequest(
 
   try {
     const wasRunning = isRunning(id);
+    // Capture the live winsize before the stop: the resume below happens
+    // main-side (no renderer round-trip), and an already-visible terminal
+    // won't re-assert its size, so respawning at the old size is what keeps
+    // Claude's TUI drawing at the pane's real width.
+    const priorSize = wasRunning ? getPtySize(id) : null;
     if (wasRunning) stopPty(id);
 
     // Move the conversation before re-pinning so a failure leaves the workspace
@@ -1555,7 +1570,12 @@ export async function dispatchMigrateAccountRequest(
     let resumed = false;
     if (wasRunning) {
       try {
-        await startAgentPty(updated, MIGRATE_RESUME_COLS, MIGRATE_RESUME_ROWS, window);
+        await startAgentPty(
+          updated,
+          priorSize?.cols ?? MIGRATE_RESUME_COLS,
+          priorSize?.rows ?? MIGRATE_RESUME_ROWS,
+          window,
+        );
         resumed = true;
       } catch (err) {
         log.warn(`migrate: resume failed for ${id}`, err);
@@ -1710,6 +1730,10 @@ export async function wakeAgentWithPrompt(
   const resuming = ws.hasInput === true;
   const readyFile = readyFilePath(id);
   await clearReadyFile(id);
+  // Reuse the size the terminal had before the agent stopped: if the pane is
+  // open, the renderer won't re-assert its size after this out-of-band spawn,
+  // so a default geometry would leave Claude's TUI drawing at the wrong width.
+  const priorSize = getPtySize(id);
   await startPty({
     id,
     cwd: ws.worktreePath,
@@ -1717,8 +1741,8 @@ export async function wakeAgentWithPrompt(
     args: resuming
       ? ['--continue', '--dangerously-skip-permissions']
       : ['--dangerously-skip-permissions'],
-    cols: HEADLESS_COLS,
-    rows: HEADLESS_ROWS,
+    cols: priorSize?.cols ?? HEADLESS_COLS,
+    rows: priorSize?.rows ?? HEADLESS_ROWS,
     window,
     workspaceId: id,
     extraEnv: {
