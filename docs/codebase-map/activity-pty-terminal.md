@@ -85,11 +85,20 @@ renderer channel. **Echo fast-path:** every `writePty` stamps `echoUntil =
 now + ECHO_WINDOW_MS` (150 ms); while inside that window flushes use
 `FLUSH_MS_ECHO` (2 ms) instead of 8 ms, so a keystroke's redraw isn't held the
 full throughput window (the "small freeze while typing" fix). Sustained output
-with no recent input falls straight back to `FLUSH_MS`. The `onExit` handler flushes the tail, emits `pty:exit`,
+with no recent input falls straight back to `FLUSH_MS`. If the window can't
+receive (`canSend` false — destroyed/being recreated), `flushPtyData` RETAINS
+`outBuf` for the next flush instead of dropping it (capped at 8 MiB, oldest
+half trimmed) — a silent drop permanently desyncs the renderer's xterm from
+the child's diff-render model. The `onExit` handler flushes the tail, emits `pty:exit`,
 and calls `reconcileExited` (guarded against a live replacement). `stopAll`
 sets `shuttingDown` so exit handlers preserve `running` as a resume marker.
 Other exports: `writePty`, `resizePty` (drops no-op resizes to avoid
-SIGWINCH churn), `stopPty` `:394`, `readScrollback` (last 256 KiB only),
+SIGWINCH churn), `repaintPty` (SIGWINCH bounce: cols−1 then back, restore
+guarded so a real resize landing inside the 40 ms window wins — the only
+reliable heal when xterm's buffer diverges from Claude's per-cell diff-render
+model, the "scattered words" garble; used by the `pty:start`/`nvim:start`/
+`accounts:loginStart` already-running remount paths and the renderer-invoked
+`pty:repaint` IPC), `stopPty`, `readScrollback` (last 256 KiB only),
 `clearScrollback`, `isRunning`, `getPtySize` (live session's winsize, falling
 back to a `lastSizes` map that survives `stopPty` — main-initiated respawns of
 a stopped session, i.e. account-migration resume and `wakeAgentWithPrompt`,
@@ -162,7 +171,20 @@ shows scrambled glyph soup. The `isActive` effect (and `onVisible` for the activ
 pane) calls `repaint()` after the refit: `webgl.clearTextureAtlas()` +
 `term.refresh(0, rows-1)` redraws every row from xterm's (always-correct) buffer.
 `repaintRef`/`isActiveRef` bridge the value into the mount effect's long-lived
-closures without stale captures.
+closures without stale captures. Both sites ALSO call
+`window.orchestra.ptyRepaint` (→ `repaintPty` SIGWINCH bounce): `repaint()`
+only redraws xterm's buffer, but when the buffer ITSELF has diverged from
+Claude's per-cell diff-render model (diffs hop over "unchanged" cells, so
+divergence accumulates as scattered-word fragments and never self-heals — the
+2026-07-18 garbled-terminal bug; the byte stream and parser were proven clean
+via @xterm/headless replay of the PTY log), only a child repaint reconverges
+the two. Human-paced (window-shown / window-FOCUS / tab activation) and a
+no-op resize when nothing diverged. The `onFocus` copy is load-bearing on
+Linux: Chromium has NO window-occlusion detection on Wayland, so a window on
+a hidden sway workspace keeps `visibilityState === 'visible'` and
+visibilitychange never fires (verified via CDP against a headless-sway
+instance) — window `focus` is the only return signal that actually fires
+there.
 
 ## RunTerminal.tsx (run-script view, ~250 lines)
 Simpler xterm than the agent view (no Unicode11/custom scrollbar, 5k

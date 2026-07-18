@@ -198,6 +198,12 @@ export interface OrchestraAPI {
   ptyStart: (id: string, cols: number, rows: number) => Promise<void>;
   ptyWrite: (id: string, data: string) => Promise<void>;
   ptyResize: (id: string, cols: number, rows: number) => Promise<void>;
+  /** Force the child TUI to fully repaint via a SIGWINCH bounce (cols−1, then
+   * back to the given dims). Heals a terminal whose xterm state diverged from
+   * the child's diff-render model — the scattered-words garble that per-cell
+   * diff painting can never repair on its own. No-op if the PTY isn't running
+   * or another resize lands inside the bounce window. */
+  ptyRepaint: (id: string, cols: number, rows: number) => Promise<void>;
   /** Spill clipboard image bytes (read in the renderer) to a temp file and
    * return its absolute path, for injection into the agent prompt — which
    * Claude Code auto-attaches. `mime` picks the file extension. Returns null

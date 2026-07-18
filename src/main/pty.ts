@@ -159,17 +159,32 @@ function canSend(window: BrowserWindow): boolean {
   return !window.isDestroyed() && !window.webContents.isDestroyed();
 }
 
+/** Ceiling on output retained while the window can't receive it. Beyond this,
+ *  keep only the newest half: the screen is desynced either way at that point,
+ *  and the remount path's repaint bounce (pty:repaint / pty:start on a live
+ *  session) is what heals it — unbounded growth against a dead window is the
+ *  only truly unrecoverable outcome. */
+const MAX_PENDING_BYTES = 8 * 1024 * 1024;
+
 /** Send whatever output has accumulated for this session as one `pty:data`
- *  message and clear the buffer + pending timer. Safe to call when empty. */
+ *  message and clear the buffer + pending timer. Safe to call when empty.
+ *  If the window can't receive right now (destroyed/being recreated), RETAIN
+ *  the buffer instead of dropping it — a drop desyncs the renderer's xterm
+ *  from the child's diff-render model permanently (scattered-fragment garble);
+ *  the next flush retries delivery. */
 function flushPtyData(s: Session, window: BrowserWindow): void {
   if (s.flushTimer) {
     clearTimeout(s.flushTimer);
     s.flushTimer = null;
   }
   if (!s.outBuf) return;
+  if (!canSend(window)) {
+    if (s.outBuf.length > MAX_PENDING_BYTES) s.outBuf = s.outBuf.slice(-(MAX_PENDING_BYTES / 2));
+    return;
+  }
   const data = s.outBuf;
   s.outBuf = '';
-  if (canSend(window)) window.webContents.send('pty:data', s.id, data);
+  window.webContents.send('pty:data', s.id, data);
 }
 
 /** Buffer a chunk and ensure a flush is scheduled. Flushes immediately once the
@@ -432,6 +447,31 @@ export function resizePty(id: string, cols: number, rows: number) {
   s.rows = r;
   lastSizes.set(id, { cols: c, rows: r });
   s.transport.resize(c, r);
+}
+
+/** Force the child TUI to fully repaint by bouncing the pty winsize (cols−1,
+ *  then back) — two SIGWINCHes that make Claude Code redraw its whole frame.
+ *  This is the only reliable heal when the renderer's xterm state has diverged
+ *  from the child's diff-render model (fresh xterm after a remount, or a
+ *  garbled buffer): the child paints per-cell diffs and skips cells it believes
+ *  unchanged, so nothing short of a real repaint converges the two again. */
+export function repaintPty(id: string, cols?: number, rows?: number) {
+  const s = sessions.get(id);
+  if (!s || s.stopped) return;
+  // Settle at the caller's dims when given (a remounted renderer's fresh xterm
+  // may differ from the pty's current size — adopt it in the same motion), else
+  // at the pty's own current size.
+  const c = Math.max(20, cols ?? s.cols);
+  const r = Math.max(5, rows ?? s.rows);
+  const bounced = Math.max(20, c - 1);
+  resizePty(id, bounced, r);
+  setTimeout(() => {
+    // Restore only if nothing else resized meanwhile — a real refit landing
+    // inside the 40 ms window must win, or we'd re-desync the very sizes the
+    // bounce exists to reconverge (renderer bookkeeping vs pty winsize).
+    const cur = sessions.get(id);
+    if (cur && !cur.stopped && cur.cols === bounced && cur.rows === r) resizePty(id, c, r);
+  }, 40);
 }
 
 export function stopPty(id: string) {

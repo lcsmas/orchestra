@@ -538,12 +538,33 @@ export function TerminalView({ workspaceId, isActive }: Props) {
         // Only the active pane's canvas is composited; the others repaint when
         // they next become active. Repainting the visible one here heals a
         // garbled WebGL frame after the whole window was occluded/minimized.
-        if (isActiveRef.current) repaint();
+        if (isActiveRef.current) {
+          repaint();
+          // Also make the CHILD repaint (SIGWINCH bounce in main). While the
+          // window was hidden the pane kept streaming with paint/RAF suspended;
+          // if xterm's buffer diverged from Claude's diff-render model in that
+          // gap, per-cell diffs never heal it (scattered-words garble) — only
+          // a real child repaint reconverges the two. Human-paced + no-op when
+          // nothing diverged, so the cost is one extra TUI frame.
+          window.orchestra.ptyRepaint(workspaceId, term.cols, term.rows);
+        }
       });
     };
+    // On Wayland, Chromium has no window-occlusion detection: a window on a
+    // hidden sway workspace keeps visibilityState 'visible' and visibilitychange
+    // NEVER fires (verified via CDP against a headless-sway instance). Window
+    // focus is the signal that actually fires when the user comes back, so the
+    // canvas repaint + child repaint-bounce must live here too, not just in
+    // onVisible.
     const onFocus = () => {
       if (!started) return;
-      requestAnimationFrame(() => refit(true));
+      requestAnimationFrame(() => {
+        refit(true);
+        if (isActiveRef.current) {
+          repaint();
+          window.orchestra.ptyRepaint(workspaceId, term.cols, term.rows);
+        }
+      });
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onFocus);
@@ -593,6 +614,12 @@ export function TerminalView({ workspaceId, isActive }: Props) {
         // garbled WebGL frame that can result from writing to xterm while the
         // pane was hidden (visibility:hidden / occluded canvas).
         repaintRef.current?.();
+        // And ask the CHILD to repaint too (SIGWINCH bounce; no-op if the PTY
+        // isn't running). The canvas repaint above redraws xterm's buffer, but
+        // if the buffer itself diverged from Claude's diff-render model while
+        // this pane was backgrounded, only a child repaint reconverges it.
+        const t = termRef.current;
+        if (t) window.orchestra.ptyRepaint(workspaceId, t.cols, t.rows);
       } catch {
         /* ignore */
       }

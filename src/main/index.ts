@@ -176,6 +176,7 @@ import {
 import { buildScriptEnv, loginShellArgv, readScriptLog, setupLogPath } from './scripts';
 import type { Account, RepoScripts } from '../shared/types';
 import {
+  repaintPty,
   resizePty,
   startPty,
   stopAll,
@@ -538,8 +539,7 @@ handle('accounts:loginStart', async (_e, accountId: string, cols: number, rows: 
   if (!dir) throw new Error('account has no config dir');
   const ptyId = `account-login:${accountId}`;
   if (isRunning(ptyId)) {
-    resizePty(ptyId, Math.max(20, cols - 1), Math.max(5, rows));
-    setTimeout(() => resizePty(ptyId, cols, rows), 40);
+    repaintPty(ptyId, cols, rows);
     return;
   }
   // Ensure the dir exists so Claude Code can write its credentials there, and
@@ -800,8 +800,7 @@ handle('pty:start', async (_e, id: string, cols: number, rows: number) => {
     // Renderer remounted (HMR / reload) but the PTY is still alive. The fresh
     // xterm canvas is blank and Claude has no reason to repaint on
     // their own, so bounce the size to force a SIGWINCH-driven redraw.
-    resizePty(id, Math.max(20, cols - 1), Math.max(5, rows));
-    setTimeout(() => resizePty(id, cols, rows), 40);
+    repaintPty(id, cols, rows);
     return;
   }
   // Spawn the agent PTY. The resume gate (`claude --continue` only when the
@@ -879,6 +878,15 @@ handle('pty:write', async (_e, id: string, data: string) => {
 });
 handle('pty:resize', (_e, id: string, cols: number, rows: number) =>
   resizePty(id, cols, rows),
+);
+// Force a full child repaint via a SIGWINCH bounce. The renderer calls this
+// when its xterm may have diverged from the child TUI's diff-render model —
+// today: the window coming back from hidden (RAF/paint suspension) with a
+// pane whose PTY streamed the whole time. Claude Code paints per-cell diffs
+// and skips cells it believes unchanged, so a diverged screen never heals on
+// its own (the "scattered words" garble) — only a real repaint converges it.
+handle('pty:repaint', (_e, id: string, cols: number, rows: number) =>
+  repaintPty(id, cols, rows),
 );
 
 // Clipboard image paste. xterm.js + the renderer's `navigator.clipboard` only
@@ -1019,8 +1027,7 @@ handle('nvim:start', async (_e, id: string, cols: number, rows: number) => {
   const nvimId = `${id}:nvim`;
   if (isRunning(nvimId)) {
     // Renderer remounted — nudge a repaint.
-    resizePty(nvimId, Math.max(20, cols - 1), Math.max(5, rows));
-    setTimeout(() => resizePty(nvimId, cols, rows), 40);
+    repaintPty(nvimId, cols, rows);
     return;
   }
   await startPty({
