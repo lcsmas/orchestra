@@ -527,6 +527,15 @@ One agent walks every ☐ in §5 against the live app pair (Electron vs GTK,
 same seeded home), files gaps, orchestrator triages, B-agents fix. Release
 gate: ledger 100 %, coexistence tests green, docs done.
 
+Fixture-corpus extension (from the M1 A1 report — diff/branch shapes are
+already captured off a seeded dirty repo; `fixtures/manifest.json` lists the
+rest with reasons): the uncaptured result shapes are create* (random branch
+labels), sandbox ops (need a live endpoint), PTY-spawning methods,
+startSelfTune, findPR/verifyLinear with real remote data, worktree
+sizes/resources (machine state), syncRepoBase (network). Close the two
+highest-drift-risk ones in M3: a recorded-gh-response seam for `findPR`, and
+a fake-sandbox endpoint for the import/eject/control shapes.
+
 Estimated effort (from prototype calibration): M0 ≈ a session; M1 ≈ 1–2 weeks
 of agent-time; M2 ≈ 3–6 weeks wall-clock with 6 parallel agents (Sidebar and
 Accounts are the long poles); M3 ≈ 1 week. Consistent with the 2–3 month
