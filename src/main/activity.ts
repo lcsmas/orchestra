@@ -272,15 +272,16 @@ export async function detectAndUpdateBranchName(
 
 /** Detect the published GitHub Releases this branch's work shipped in and
  *  stamp `releasedAt` + `releasedVersions` (and `releasedVersion`, the
- *  earliest, for back-compat). Skips unmerged branches (their work isn't on
- *  base, so no release can contain it). For merged branches it recomputes the
- *  full version list each call so the pills track later ships and policy
- *  changes — `getPublishedReleases` is cached per-repo (30s) and shared
- *  across that repo's workspaces, so this stays at roughly one `gh` call per
- *  repo per TTL even on the PR poll cadence. Writes/broadcasts only when the
- *  version list actually changes. Deliberately NOT wired into
- *  `detectAndUpdateMergeState`, which runs on the hot 8s stats poll and must
- *  stay network-free. */
+ *  earliest, for back-compat). An unmerged branch naturally yields no pills —
+ *  its authored commits are in no release. The version list still tracks later
+ *  ships and policy changes because `getReleaseVersionsContaining` recomputes
+ *  whenever the branch tip or the release list moves — and serves a memoized
+ *  result (one `rev-parse`) on every poll in between. `getPublishedReleases`
+ *  is cached per-repo (30s) and shared across that repo's workspaces, so this
+ *  stays at roughly one `gh` call per repo per TTL even on the PR poll
+ *  cadence. Writes/broadcasts only when the version list actually changes.
+ *  Deliberately NOT wired into `detectAndUpdateMergeState`, which runs on the
+ *  hot 8s stats poll and must stay network-free. */
 export async function detectAndUpdateReleaseState(
   id: string,
   window: BrowserWindow,

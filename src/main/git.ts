@@ -619,6 +619,13 @@ interface ReleaseRef {
 const releaseCache = new Map<string, { at: number; releases: ReleaseRef[] }>();
 const RELEASE_CACHE_TTL = 30_000;
 
+/** Per-repo memo of tag → commit sha. A published release's tag never moves
+ *  in Orchestra's flow, so a resolution holds for the process lifetime — this
+ *  keeps the per-TTL release refresh at one `gh` spawn instead of one `gh`
+ *  plus a `rev-parse` per release. Failed resolutions are NOT cached, so a
+ *  tag that arrives later (e.g. after a fetch) resolves on the next pass. */
+const tagShaCache = new Map<string, Map<string, string>>();
+
 /** Published (non-draft, non-prerelease) GitHub releases for the repo, each
  *  resolved to the local commit its tag points at. Releases whose tag isn't
  *  present locally are dropped — without the commit we can't prove ancestry,
@@ -641,16 +648,25 @@ async function getPublishedReleases(repoPath: string): Promise<ReleaseRef[]> {
       publishedAt: string;
     }>;
     const git = simpleGit(repoPath);
+    let shaByTag = tagShaCache.get(repoPath);
+    if (!shaByTag) {
+      shaByTag = new Map();
+      tagShaCache.set(repoPath, shaByTag);
+    }
     const resolved = await Promise.all(
       raw
         .filter((r) => !r.isDraft && !r.isPrerelease)
         .map(async (r): Promise<ReleaseRef | null> => {
-          try {
-            const sha = (await git.raw(['rev-parse', `${r.tagName}^{commit}`])).trim();
-            return { tag: r.tagName, sha, publishedAt: Date.parse(r.publishedAt) || 0 };
-          } catch {
-            return null; // tag not present locally → can't confirm ancestry
+          let sha = shaByTag.get(r.tagName);
+          if (!sha) {
+            try {
+              sha = (await git.raw(['rev-parse', `${r.tagName}^{commit}`])).trim();
+              shaByTag.set(r.tagName, sha);
+            } catch {
+              return null; // tag not present locally → can't confirm ancestry
+            }
           }
+          return { tag: r.tagName, sha, publishedAt: Date.parse(r.publishedAt) || 0 };
         }),
     );
     releases = resolved.filter((r): r is ReleaseRef => r !== null);
@@ -725,6 +741,36 @@ export async function getReleaseState(
   }
 }
 
+/** Tags containing `sha` (its releases among them), via a single
+ *  `git tag --contains` — git walks the history internally, so checking one
+ *  commit against every release costs one spawn, not one per release. An
+ *  unknown/unresolvable sha reads as "contained by nothing". */
+async function tagsContaining(
+  git: ReturnType<typeof simpleGit>,
+  sha: string,
+): Promise<string[]> {
+  try {
+    const out = (await git.raw(['tag', '--contains', sha])).trim();
+    return out ? out.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Per-(repo, branch) memo of the last release-pill computation. Ancestry is
+ *  a pure function of the branch tip and the release tags, both captured in
+ *  the key: a new commit/rebase moves the tip, a new release changes the
+ *  list (via the 30s `getPublishedReleases` refresh), and either recomputes.
+ *  Everything else — the common case, every 12s PR poll where nothing moved —
+ *  is served from here for the cost of one `rev-parse`. (Known staleness: a
+ *  reflog-less branch whose authored set comes from the base..branch fallback
+ *  isn't re-derived when base alone moves; the next release or commit
+ *  catches it up.) */
+const versionsCache = new Map<
+  string,
+  { tipSha: string; releasesKey: string; result: { versions: string[]; releasedAt?: number } }
+>();
+
 /** The release pills for a branch, oldest-first: the EARLIEST published release
  *  containing any commit the branch authored (where its work first shipped),
  *  plus every release the branch itself DROVE — one whose tag commit (the
@@ -758,28 +804,37 @@ export async function getReleaseVersionsContaining(
     if (releases.length === 0) return { versions: [] };
     const git = simpleGit(repoPath);
 
+    // Memo check: same tip + same release list ⇒ same pills.
+    const tipSha = (await git.raw(['rev-parse', branch])).trim();
+    const releasesKey = releases.map((r) => `${r.tag}@${r.sha}`).sort().join(' ');
+    const cacheKey = `${repoPath}\0${branch}`;
+    const cached = versionsCache.get(cacheKey);
+    if (cached && cached.tipSha === tipSha && cached.releasesKey === releasesKey) {
+      return cached.result;
+    }
+
+    const memoize = (result: { versions: string[]; releasedAt?: number }) => {
+      versionsCache.set(cacheKey, { tipSha, releasesKey, result });
+      return result;
+    };
+
     const authored = await authoredCommits(git, branch, baseBranch);
-    if (authored.length === 0) return { versions: [] };
+    if (authored.length === 0) return memoize({ versions: [] });
 
     // Oldest-first so the first release containing an authored commit is the
     // one the branch's work FIRST shipped in.
     const ordered = [...releases].sort((a, b) => a.publishedAt - b.publishedAt);
 
-    let earliest: ReleaseRef | undefined;
-    for (const rel of ordered) {
-      let contains = false;
-      for (const commit of authored) {
-        if (await isAncestor(repoPath, commit, rel.sha)) {
-          contains = true;
-          break;
-        }
-      }
-      if (contains) {
-        earliest = rel;
-        break;
-      }
+    // Tags containing any authored commit — one `tag --contains` per commit
+    // (git walks history once per commit) instead of the old per-(release ×
+    // commit) `merge-base --is-ancestor` spawn storm.
+    const containing = new Set<string>();
+    for (const commit of authored) {
+      for (const tag of await tagsContaining(git, commit)) containing.add(tag);
     }
-    if (!earliest) return { versions: [] };
+
+    const earliest = ordered.find((rel) => containing.has(rel.tag));
+    if (!earliest) return memoize({ versions: [] });
 
     // Releases this branch drove: their tag commit is one the branch authored.
     // `earliest` always sorts first among the pills — an authored tag commit is
@@ -788,8 +843,10 @@ export async function getReleaseVersionsContaining(
     const versions = ordered
       .filter((rel) => rel === earliest || authoredSet.has(rel.sha))
       .map((rel) => rel.tag);
-    return { versions, releasedAt: earliest.publishedAt || undefined };
+    return memoize({ versions, releasedAt: earliest.publishedAt || undefined });
   } catch {
+    // Deliberately not memoized: a transient git failure should retry on the
+    // next poll rather than pinning an empty result until the tip moves.
     return { versions: [] };
   }
 }

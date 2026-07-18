@@ -59,13 +59,21 @@ keying on just (branch, base) pinned a stale `↑N` badge across a push.
   --state all --json …`, returns `PRsForBranch` (`all/open/latest/mergedCount`,
   `types.ts:212`). 20s cache; runs from repo root so PR state survives a missing
   worktree. Misses aren't cached (retry immediately).
-- **`getReleaseState`** `:691` / **`getReleaseVersionsContaining`** `:734` — pill
+- **`getReleaseState`** `:722` / **`getReleaseVersionsContaining`** `:797` — pill
   policy: the earliest published release containing the branch's *authored*
-  commits (`authoredCommits` `:793`, reflog-derived) **plus** each release the
+  commits (`authoredCommits` `:870`, reflog-derived) **plus** each release the
   branch itself cut (it authored the tag's version-bump commit). Ancestry alone
   would credit the whole history; per-commit first-containing-release would let a
   stray follow-up commit earn another branch's release pill (both were prior
   bugs). `gh release list` cached 30s per repo.
+- **Release-pill cost model** (a per-(release × commit) `merge-base
+  --is-ancestor` storm here once pegged the main process at 70% CPU): ancestry
+  is asked per authored commit via one `git tag --contains` (`tagsContaining`
+  `:748`), the whole result is memoized per (repo, branch) keyed on (tip sha,
+  release list) (`versionsCache` `:769`) so an unchanged branch costs one
+  `rev-parse` per poll, and tag→sha resolutions are memoized per repo
+  (`tagShaCache` `:627`, tags are immutable). Transient failures are not
+  memoized — the next poll retries.
 
 ## Base-branch sync & credentials
 - `getBaseSyncState` `:856` (local `<base>` vs `origin/<base>`, no network).

@@ -953,8 +953,9 @@ handle('git:findPR', async (_e, id: string) => {
   if (!ws) throw new Error('workspace not found');
   if (ws.kind === 'scratch') return { all: [], open: null, latest: null, mergedCount: 0 };
   // Piggyback release detection on the PR poll: same gh-based, 12s + on-focus
-  // cadence, and never on the hot stats poll. Short-circuits before any gh
-  // call unless the branch is merged-but-not-yet-released, so it's nearly free.
+  // cadence, and never on the hot stats poll. The underlying computation is
+  // memoized on (branch tip, release list), so a poll where nothing moved
+  // costs one `rev-parse` — not the full ancestry walk.
   void detectAndUpdateReleaseState(id, getMainWindow()).catch(() => {});
   return findPullRequest(ws.repoPath, ws.branch);
 });
