@@ -1,6 +1,6 @@
 {
   "name": "orchestra",
-  "version": "0.5.79",
+  "version": "0.5.80",
   "description": "Run parallel Claude Code agents in isolated git worktrees",
   "license": "Apache-2.0",
   "author": "Lucas Mas",
