@@ -6,6 +6,10 @@ import { useStore } from '../store';
 interface Props {
   repoPath: string;
   repoName: string;
+  /** Whether the repo can be removed from Orchestra (no workspaces left). */
+  canRemove: boolean;
+  /** Confirms and removes the repo; closes the modal on success. */
+  onRemove: () => Promise<void>;
   onClose: () => void;
 }
 
@@ -25,7 +29,7 @@ const ARCHIVE_PLACEHOLDER = `# Best-effort cleanup before the worktree is delete
 
 # dropdb "myapp_$ORCHESTRA_BRANCH" 2>/dev/null || true`;
 
-export function RepoScriptsModal({ repoPath, repoName, onClose }: Props) {
+export function RepoScriptsModal({ repoPath, repoName, canRemove, onRemove, onClose }: Props) {
   const [setup, setSetup] = useState('');
   const [runScript, setRunScript] = useState('');
   const [archive, setArchive] = useState('');
@@ -214,6 +218,22 @@ export function RepoScriptsModal({ repoPath, repoName, onClose }: Props) {
                 ))}
               </select>
             </label>
+            <div className="field danger-zone">
+              <div className="field-head">
+                <span className="field-label">Remove repo</span>
+                <span className="field-hint">
+                  Un-maps {repoName} from Orchestra — your git repository on disk is left
+                  untouched.{!canRemove && ' Archive and delete all of its workspaces first.'}
+                </span>
+              </div>
+              <button
+                className="danger danger-zone-btn"
+                disabled={!canRemove}
+                onClick={() => void onRemove()}
+              >
+                Remove from Orchestra
+              </button>
+            </div>
             {error && <div className="modal-error">{error}</div>}
           </div>
         )}

@@ -51,10 +51,30 @@
   --text-dim: #8b95a7;
   --accent: #6ea8ff;
   --accent-strong: #4a8cff;
+  --accent-bright: #7ab4ff;
+  /* Ink color for text sitting on an accent-filled surface. */
+  --accent-ink: #081022;
   --accent-2: #8b7cff;
   --green: #5bd68b;
   --red: #ff6b6b;
   --yellow: #ffc857;
+  /* Session-kind accents — scratch (amber) and orchestrator (green) tint the
+     sidebar sections, toolbar chips, and glyphs so the same concept always
+     wears the same color. */
+  --scratch: #e3b341;
+  --orchestrator: #7ee787;
+  /* Shared subtle hover wash for quiet (borderless) controls. */
+  --hover-bg: rgba(255, 255, 255, 0.05);
+  /* Focus treatment derived from the accent — one pair of values for every
+     focus-visible ring in the app. */
+  --focus-border: rgba(110, 168, 255, 0.75);
+  --focus-ring: rgba(110, 168, 255, 0.2);
+  /* Spacing scale. New/reworked rules use these; legacy px values migrate as
+     their rules get touched. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
   --radius-sm: 6px;
   --radius: 8px;
   --radius-lg: 12px;
@@ -126,8 +146,8 @@ button:hover {
 button:active { transform: translateY(0.5px); }
 button:focus-visible {
   outline: none;
-  border-color: rgba(110, 168, 255, 0.75);
-  box-shadow: 0 0 0 3px rgba(110, 168, 255, 0.2), var(--shadow-sm);
+  border-color: var(--focus-border);
+  box-shadow: 0 0 0 3px var(--focus-ring), var(--shadow-sm);
 }
 button:disabled {
   opacity: 0.5;
@@ -136,9 +156,9 @@ button:disabled {
 }
 
 button.primary {
-  background: linear-gradient(180deg, #7ab4ff 0%, #4a8cff 100%);
+  background: linear-gradient(180deg, var(--accent-bright) 0%, var(--accent-strong) 100%);
   border-color: rgba(255, 255, 255, 0.1);
-  color: #081022;
+  color: var(--accent-ink);
   font-weight: 600;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.25),
@@ -182,6 +202,73 @@ button.ghost:hover {
   background: var(--bg-3);
   border-color: transparent;
   color: var(--text);
+}
+
+/* Quiet icon button — the single base recipe for every borderless glyph
+   button in the chrome: sidebar header icons, workspace-row actions, the repo
+   gear, footer links' icon siblings, and the overlay close ×'s. Surfaces add
+   only a size or visibility modifier below; the look lives here once. */
+.icon-btn,
+.header-icon-btn,
+.ws-icon-btn,
+.repo-scripts-btn,
+.env-notice-dismiss,
+.insights-close,
+.res-close,
+.help-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+  cursor: pointer;
+  transition: background 140ms var(--ease), color 140ms var(--ease),
+    border-color 140ms var(--ease), opacity 140ms var(--ease);
+}
+.icon-btn:hover,
+.header-icon-btn:hover,
+.ws-icon-btn:hover,
+.repo-scripts-btn:hover,
+.env-notice-dismiss:hover,
+.insights-close:hover,
+.res-close:hover,
+.help-close:hover {
+  background: var(--hover-bg);
+  color: var(--text);
+  border-color: transparent;
+  box-shadow: none;
+}
+.icon-btn:focus-visible,
+.header-icon-btn:focus-visible,
+.ws-icon-btn:focus-visible,
+.repo-scripts-btn:focus-visible,
+.env-notice-dismiss:focus-visible,
+.insights-close:focus-visible,
+.res-close:focus-visible,
+.help-close:focus-visible {
+  outline: none;
+  color: var(--text);
+  border-color: var(--focus-border);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+/* Destructive icon buttons announce themselves only on interaction. */
+.icon-btn.danger:hover,
+.icon-btn.danger:focus-visible,
+.ws-icon-btn.danger:hover,
+.ws-icon-btn.danger:focus-visible,
+.repo-scripts-btn.danger:hover,
+.repo-scripts-btn.danger:focus-visible {
+  background: var(--red);
+  border-color: transparent;
+  color: #fff;
 }
 
 button.pr-link {
@@ -267,7 +354,7 @@ button.restart-btn {
     color 140ms var(--ease), transform 140ms var(--ease);
 }
 button.restart-btn:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--hover-bg);
   border-color: rgba(255, 255, 255, 0.22);
   color: var(--text, #e5e9f0);
   transform: rotate(-15deg);
@@ -288,7 +375,7 @@ button.run-toggle-btn {
     color 140ms var(--ease);
 }
 button.run-toggle-btn:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--hover-bg);
   border-color: rgba(255, 255, 255, 0.22);
   color: var(--text, #e5e9f0);
 }
@@ -379,8 +466,8 @@ input, textarea, select {
 }
 input:hover, textarea:hover, select:hover { border-color: var(--border-strong); }
 input:focus, textarea:focus, select:focus {
-  border-color: rgba(110, 168, 255, 0.75);
-  box-shadow: 0 0 0 3px rgba(110, 168, 255, 0.18);
+  border-color: var(--focus-border);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .app {
@@ -450,43 +537,97 @@ input:focus, textarea:focus, select:focus {
   justify-content: flex-end;
   gap: 6px;
 }
-.header-repo-btn {
+/* "+ New" — the single create entry point in the header. Accent-tinted so it
+   reads as the sidebar's one primary action; the three session kinds live in
+   its dropdown, each carrying its kind color. */
+.new-menu {
+  position: relative;
+  display: inline-flex;
+}
+.new-menu-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 5px 8px;
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  border-radius: 6px;
+  gap: 5px;
+  padding: 5px 10px;
+  background: rgba(110, 168, 255, 0.08);
+  border: 1px solid rgba(110, 168, 255, 0.28);
+  color: var(--accent);
+  border-radius: var(--radius-sm);
   font-size: 12px;
+  font-weight: 600;
   white-space: nowrap;
-  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  box-shadow: none;
+  transition: background 140ms var(--ease), border-color 140ms var(--ease),
+    color 140ms var(--ease);
 }
-.header-repo-btn:hover {
+.new-menu-btn:hover {
+  background: rgba(110, 168, 255, 0.16);
+  border-color: rgba(110, 168, 255, 0.55);
+  color: var(--accent);
+}
+.new-menu-plus {
+  font-size: 14px;
+  line-height: 1;
+  font-weight: 600;
+}
+.new-menu-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  width: 246px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-1);
   background: var(--bg-3);
-  color: var(--text);
-  border-color: var(--accent);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
 }
-.header-icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
+.new-menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 7px 9px;
   background: transparent;
   border: 1px solid transparent;
-  color: var(--text-dim);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   box-shadow: none;
-  transition: background 140ms var(--ease), color 140ms var(--ease),
-    border-color 140ms var(--ease);
+  text-align: left;
+  cursor: pointer;
 }
-.header-icon-btn:hover {
-  background: var(--bg-3);
-  color: var(--text);
+.new-menu-item:hover {
+  background: var(--bg-4);
   border-color: transparent;
+}
+.new-menu-item-icon {
+  display: inline-flex;
+  margin-top: 1px;
+  flex: 0 0 auto;
+}
+.new-menu-item-icon.repo { color: var(--accent); }
+.new-menu-item-icon.scratch { color: var(--scratch); }
+.new-menu-item-icon.orchestrator { color: var(--orchestrator); }
+.new-menu-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.new-menu-item-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.new-menu-item-sub {
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+.header-icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius);
 }
 
 /* Notification sound settings modal */
@@ -517,7 +658,7 @@ input:focus, textarea:focus, select:focus {
   background: var(--bg-2);
   color: var(--text);
   font: inherit;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12.5px;
 }
 .linear-key-input:focus { outline: none; border-color: var(--accent); }
@@ -648,46 +789,53 @@ input:focus, textarea:focus, select:focus {
   color: transparent;
   letter-spacing: 0.2px;
 }
-.sidebar-section {
-  padding: 10px 12px 6px;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  color: var(--text-dim);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.sidebar-section button {
-  padding: 2px 6px;
-  font-size: 11px;
-}
+/* Compact usage strip: all windows (5h / 7d / Fable) share ONE footer row —
+   `login  5h ▂▂▂ 42%  7d ▂ 24%  F ▂ 42%` — instead of three stacked bars.
+   Per-window details (window name, reset countdown) ride each cell's tooltip;
+   the per-account breakdown lives on the hover panel. */
 .usage-bars {
   border-top: 1px solid var(--border);
-  padding: 8px 12px 6px;
+  padding: 6px 12px;
   flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
-.usage-bar {
+.usage-strip {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
-.usage-bar-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+.usage-strip-account {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 76px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 10px;
   color: var(--text-dim);
 }
-.usage-bar-label {
+.usage-strip-cell {
+  flex: 1 1 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 5px;
+}
+.usage-strip-cell .usage-bar-track,
+.usage-strip-cell .usage-bar-fill {
+  display: block;
+}
+.usage-strip-label {
+  font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  color: var(--text-dim);
 }
-.usage-bar-pct {
+.usage-strip-pct {
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
 }
 .usage-bar-track {
   height: 4px;
@@ -699,17 +847,6 @@ input:focus, textarea:focus, select:focus {
   height: 100%;
   border-radius: 2px;
   transition: width 240ms var(--ease), background-color 240ms var(--ease);
-}
-.usage-bar-note {
-  flex: 1;
-  font-size: 10px;
-  color: var(--text-dim);
-  opacity: 0.6;
-  text-align: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 0 4px;
 }
 /* The strip is the anchor for the hover panel, which floats above it. */
 .usage-bars {
@@ -858,50 +995,47 @@ input:focus, textarea:focus, select:focus {
   color: var(--accent-strong);
 }
 .env-notice-dismiss {
-  flex-shrink: 0;
-  border: none;
-  background: transparent;
-  color: var(--text-dim);
+  width: 20px;
+  height: 20px;
   font-size: 16px;
   line-height: 1;
-  padding: 0 2px;
-  cursor: pointer;
   border-radius: 4px;
-  transition: color 140ms var(--ease), background-color 140ms var(--ease);
-}
-.env-notice-dismiss:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.06);
 }
 
 .sidebar-footer {
   border-top: 1px solid var(--border);
-  padding: 8px 12px;
+  padding: 5px 10px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  justify-content: flex-start;
+  gap: 2px;
 }
+/* Icon-only footer buttons — same quiet recipe as .icon-btn, with an active
+   (pressed) state for the Resources page toggle. */
 .sidebar-footer-link {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  border: none;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
   background: transparent;
+  box-shadow: none;
   color: var(--text-dim);
-  font-size: 11px;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   transition: color 140ms var(--ease), background-color 140ms var(--ease);
 }
 .sidebar-footer-link:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--hover-bg);
+  border-color: transparent;
 }
-.sidebar-footer-link svg:last-child {
-  opacity: 0.6;
+.sidebar-footer-link.active {
+  color: var(--accent);
+  background: rgba(110, 168, 255, 0.12);
 }
 .sidebar-footer-version {
   margin-left: auto;
@@ -928,17 +1062,17 @@ input:focus, textarea:focus, select:focus {
 /* Pinned scratch group at the top of the list. The amber glyph echoes the
    scratch chip in the toolbar so the two read as the same concept. */
 .scratch-section { border-bottom: 1px solid var(--border); }
-.scratch-section .repo-name { color: #e3b341; }
+.scratch-section .repo-name { color: var(--scratch); }
 .scratch-glyph {
   display: inline-flex;
   align-items: center;
-  color: #e3b341;
+  color: var(--scratch);
 }
 /* Orchestrators get their own pinned section above scratch, tinted green (the
    🌿 leaf / spawn-tree cue) to set them apart from the gold scratch group. */
 .orchestrator-section { border-bottom: 1px solid var(--border); }
-.orchestrator-section .repo-name { color: #7ee787; }
-.orchestrator-section .scratch-glyph { color: #7ee787; }
+.orchestrator-section .repo-name { color: var(--orchestrator); }
+.orchestrator-section .scratch-glyph { color: var(--orchestrator); }
 .repo-header {
   display: flex;
   justify-content: space-between;
@@ -1593,33 +1727,18 @@ input:focus, textarea:focus, select:focus {
   border-radius: 3px;
   outline: none;
 }
+/* Row actions stay invisible until the row is hovered — or until one of them
+   holds keyboard focus, so tabbing through a row reveals its actions too. */
 .ws-icon-btn {
-  flex-shrink: 0;
   width: 22px;
   height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--text-dim);
-  cursor: pointer;
   border-radius: 4px;
   opacity: 0;
-  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
-  padding: 0;
 }
 .ws-item:hover .ws-icon-btn,
+.ws-item:focus-within .ws-icon-btn,
 .ws-item.archived .ws-icon-btn {
   opacity: 1;
-}
-.ws-icon-btn:hover {
-  background: var(--bg-3);
-  color: var(--text);
-}
-.ws-icon-btn.danger:hover {
-  background: var(--red);
-  color: #fff;
 }
 
 .archived-section {
@@ -1806,13 +1925,34 @@ input:focus, textarea:focus, select:focus {
   gap: 8px;
   min-width: 0;
 }
+/* Toolbar control groups. Views = what fills the pane (tabs + file-pane
+   toggle); actions = what does something to the workspace (restart, run,
+   PR). A hairline separator keeps the two families visually distinct. */
+.toolbar-views {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+.toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+.toolbar-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border-strong);
+  flex-shrink: 0;
+}
 .branch-chip {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   padding: 3px 9px;
   border-radius: 999px;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 500;
   border: 1px solid var(--border);
@@ -1838,7 +1978,7 @@ input:focus, textarea:focus, select:focus {
 /* Scratch session marker in the toolbar — amber, to read as "throwaway / not
    git-tracked" rather than a normal branch. */
 .branch-chip.scratch {
-  color: #e3b341;
+  color: var(--scratch);
   background: rgba(227, 179, 65, 0.1);
   border-color: rgba(227, 179, 65, 0.35);
 }
@@ -1846,7 +1986,7 @@ input:focus, textarea:focus, select:focus {
    Orchestrators section, to read as "coordinator" rather than a throwaway
    scratch session. */
 .branch-chip.orchestrator {
-  color: #7ee787;
+  color: var(--orchestrator);
   background: rgba(126, 231, 135, 0.1);
   border-color: rgba(126, 231, 135, 0.35);
 }
@@ -1991,7 +2131,7 @@ input:focus, textarea:focus, select:focus {
   align-items: center;
   gap: 9px;
   padding: 7px 10px;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text);
   border-radius: 6px;
@@ -2051,7 +2191,7 @@ input:focus, textarea:focus, select:focus {
 }
 .branch-empty-q {
   color: var(--text);
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-family: var(--font-mono);
 }
 
 .branch-error {
@@ -2129,7 +2269,7 @@ input:focus, textarea:focus, select:focus {
   align-items: center;
   gap: 5px;
   margin-left: 6px;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.2px;
@@ -2420,6 +2560,9 @@ button.active {
 /* Secondary CTA (e.g. "Scratch session") — quieter than button.primary, sits
    next to it on the welcome screen. */
 button.secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: var(--bg-3);
   border: 1px solid var(--border);
   color: var(--text);
@@ -2427,7 +2570,7 @@ button.secondary {
 }
 button.secondary:hover {
   border-color: rgba(227, 179, 65, 0.5);
-  color: #e3b341;
+  color: var(--scratch);
 }
 
 /* Modal */
@@ -2455,9 +2598,19 @@ button.secondary:hover {
 }
 .modal h2 { margin: 0 0 16px; font-size: 16px; }
 .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+/* Destructive repo actions live at the modal's tail behind a divider, away
+   from the routine fields — the button stays quiet until it's reachable. */
+.danger-zone {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+}
+.danger-zone-btn {
+  align-self: flex-start;
+  font-size: 12px;
+}
 .field label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.6px; }
 .field input, .field textarea, .field select { width: 100%; }
-.field textarea { min-height: 80px; resize: vertical; font-family: ui-monospace, Menlo, monospace; }
+.field textarea { min-height: 80px; resize: vertical; font-family: var(--font-mono); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 
 /* In-app dialog (replaces native alert/confirm). Tighter and more
@@ -2650,7 +2803,7 @@ button.danger-primary:active {
   border-bottom: 1px solid var(--border);
   background: var(--bg-2);
 }
-.diff-header .path { flex: 1; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.diff-header .path { flex: 1; font-family: var(--font-mono); font-size: 12px; }
 
 /* ---------- Repo scripts modal ---------- */
 .repo-scripts-modal {
@@ -2675,7 +2828,7 @@ button.danger-primary:active {
   margin-top: 4px;
   font-size: 12px;
   color: var(--text-dim);
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2731,7 +2884,7 @@ button.danger-primary:active {
 }
 .field-textarea {
   width: 100%;
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12.5px;
   background: rgba(0, 0, 0, 0.25);
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -2768,50 +2921,18 @@ button.danger-primary:active {
 }
 
 /* ---------- Repo scripts gear (sidebar) ---------- */
-/* Pure icon — no chrome. Sits in the .repo-header flex row alongside the
-   count and the bordered + button; we deliberately don't echo the + button's
-   border so the gear reads as a tertiary affordance, not a peer action. */
+/* Tertiary affordances in the repo header: hidden until the header is hovered
+   (or one of them is keyboard-focused), so a resting header shows only the
+   count and the + — the gear/GitHub icons appear when you reach for them. */
 .repo-scripts-btn {
-  background: transparent;
-  border: 0;
-  /* Global `button {}` applies box-shadow: var(--shadow-sm); zero it here
-   * so the gear reads as a flat icon, not a raised control. Same for the
-   * focus-visible glow further down. */
-  box-shadow: none;
-  padding: 0;
-  margin: 0;
   width: 18px;
   height: 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-dim);
-  opacity: 0.6;
-  cursor: pointer;
-  transition: opacity 120ms var(--ease), color 120ms var(--ease);
+  border-radius: 4px;
+  opacity: 0;
 }
-.repo-scripts-btn:hover {
-  background: transparent;
-  box-shadow: none;
-  border-color: transparent;
+.repo-header:hover .repo-scripts-btn,
+.repo-header:focus-within .repo-scripts-btn {
   opacity: 1;
-  color: var(--text);
-}
-.repo-scripts-btn:focus-visible {
-  outline: none;
-  box-shadow: none;
-  border-color: transparent;
-  opacity: 1;
-  color: var(--text);
-}
-/* The remove-repo trash shares the flat icon-button look, but reads red on
- * hover/focus instead of the default text colour. Override the global
- * `button.danger:hover` box treatment so it stays a flat icon, not a pill. */
-.repo-scripts-btn.danger:hover,
-.repo-scripts-btn.danger:focus-visible {
-  background: transparent;
-  border-color: transparent;
-  color: var(--red);
 }
 
 /* ---------- Run tab content ---------- */
@@ -2956,7 +3077,7 @@ button.danger-primary:active {
   padding: 8px 10px;
   background: rgba(0, 0, 0, 0.35);
   border-radius: var(--radius);
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
   white-space: pre-wrap;
   max-height: 240px;
@@ -3041,7 +3162,7 @@ button.danger-primary:active {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
   color: #cbd1d8;
 }
@@ -3488,14 +3609,14 @@ button.danger-primary:active {
 .insights-section {
   border-top: 1px solid var(--border);
   flex-shrink: 0;
-  padding: 4px 8px;
+  padding: 2px 6px;
 }
 .insights-row {
   display: flex;
   align-items: center;
   gap: 7px;
   width: 100%;
-  padding: 6px 8px;
+  padding: 5px 8px;
   border: none;
   background: transparent;
   box-shadow: none;
@@ -3503,7 +3624,7 @@ button.danger-primary:active {
   text-align: left;
   transition: background 140ms var(--ease), color 140ms var(--ease);
 }
-.insights-row:hover { background: rgba(255, 255, 255, 0.04); border: none; }
+.insights-row:hover { background: var(--hover-bg); border: none; }
 .insights-row.active { background: var(--bg-3); }
 .insights-row-icon {
   display: inline-flex;
@@ -3605,16 +3726,11 @@ button.danger-primary:active {
 }
 .insights-run-btn { flex: 0 0 auto; }
 .insights-close {
-  flex: 0 0 auto;
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  color: var(--text-dim);
+  width: 26px;
+  height: 26px;
   font-size: 18px;
   line-height: 1;
-  padding: 2px 6px;
 }
-.insights-close:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
 .insights-view-body {
   flex: 1;
   min-height: 0;
@@ -3700,7 +3816,7 @@ button.danger-primary:active {
   text-align: left;
   font-size: 12px;
 }
-.insights-history-row:hover { background: rgba(255, 255, 255, 0.04); border: none; }
+.insights-history-row:hover { background: var(--hover-bg); border: none; }
 .insights-history-row.selected { background: var(--bg-3); }
 .insights-history-status {
   width: 7px;
@@ -3808,15 +3924,11 @@ button.danger-primary:active {
 }
 .res-close {
   margin-left: auto;
-  background: transparent;
-  border: none;
-  box-shadow: none;
-  font-size: 20px;
+  width: 26px;
+  height: 26px;
+  font-size: 18px;
   line-height: 1;
-  padding: 4px 8px;
-  color: var(--text-dim);
 }
-.res-close:hover { color: var(--text); background: var(--bg-3); }
 .res-scroll {
   flex: 1;
   min-height: 0;
@@ -4210,16 +4322,11 @@ button.danger-primary:active {
   white-space: nowrap;
 }
 .help-close {
-  flex: 0 0 auto;
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  color: var(--text-dim);
+  width: 26px;
+  height: 26px;
   font-size: 18px;
   line-height: 1;
-  padding: 2px 6px;
 }
-.help-close:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
 .help-view-body {
   flex: 1;
   min-height: 0;

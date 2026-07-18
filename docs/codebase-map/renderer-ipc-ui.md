@@ -67,13 +67,29 @@ patch state (note `onWorkspaceUpdate` merges to avoid clobbering a local create)
 Grid layout `[sidebar | resizer | main]` + `DialogHost`. Persists sidebar/nvim
 widths to localStorage; resizes via rAF. `startVisiblePoll` runs a fn on an
 interval but **stops when the document is hidden** (re-fires on visible) — this
-is what pauses git/gh/du/Linear polling when minimized. Toolbar: base→feature
-branch chip (with `BranchPicker`), Terminal/Diff/Run tabs, restart-agent, run
-toggle, PR button, nvim toggle. Each `TerminalView` is kept mounted per workspace
-(preserves xterm scrollback across switches); Diff/Run mount only when selected.
+is what pauses git/gh/du/Linear polling when minimized. Toolbar is grouped by
+function: the base→feature branch chip (with `BranchPicker`) on the left, then
+a **views group** (`.toolbar-views`: Terminal/Diff/Run tabs + the nvim
+pane-toggle), a hairline `.toolbar-sep`, and an **actions group**
+(`.toolbar-actions`: restart-agent, run play/stop, PR button as the rightmost
+CTA). Each `TerminalView` is kept mounted per workspace (preserves xterm
+scrollback across switches); Diff/Run mount only when selected.
 
-## Sidebar.tsx (~1894 lines — the big one)
+## Sidebar.tsx (~2100 lines — the big one)
 Workspace list with orchestrator nesting, drag-reorder, archive, delete.
+- **Header**: title + three quiet icon buttons (help / sound / accounts) and a
+  single accent-tinted **“+ New” menu** (`.new-menu`) holding the three session
+  kinds (repo workspace / scratch / orchestrator) — replaces the old trio of
+  labeled header buttons; closes on outside click or Escape. Section headers
+  keep per-kind `+` shortcuts.
+- **Footer strip** (bottom of the aside, in order): env notices →
+  `InsightsSection` row → `UsageBars` (a single compact `.usage-strip` row —
+  login label + 5h/7d/Fable cells, per-account breakdown on the hover panel) →
+  an icon-only `.sidebar-footer` (Resources toggle, GitHub, Logs, Linear behind
+  tooltips) + version.
+- **Styling**: quiet glyph buttons all share one `.icon-btn` recipe in
+  styles.css (header icons, `.ws-icon-btn` row actions, `.repo-scripts-btn`,
+  overlay close ×'s); repo-header gear/GitHub icons are hover/focus-revealed.
 - **SpawnForest** models orchestrator→children (`childrenOf`, `roots`,
   `rootOf`); `TreeRow = {ws, depth}`.
 - Sections: orchestrator trees (top) → scratch trees → repo groups (git
@@ -141,7 +157,10 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
 - **RepoScriptsModal.tsx** — edit setup/run/archive scripts, account assignment,
   and the repo's default base branch (select fed by `repos:listBranches`, saved
   via `repos:setDefaultBranch` — main validates the branch exists, rebroadcasts
-  `repos:update`, and re-syncs the repo's sync pill).
+  `repos:update`, and re-syncs the repo's sync pill). Also hosts the repo's
+  **danger zone**: “Remove from Orchestra” (enabled only when the repo has no
+  workspaces; Sidebar passes `canRemove`/`onRemove`) — the destructive action
+  moved here from the repo header's inline trash button.
 - **SetupBanner.tsx** — overlay while `setupStatus` running/failed, with log +
   retry.
 - **PromptQueueBanner.tsx** — shown above the pane row while the active

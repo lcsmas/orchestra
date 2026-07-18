@@ -81,37 +81,34 @@ function errorText(kind: UsageErrorKind | null): string {
   }
 }
 
-function UsageBar({
+/* One window inside the compact strip: label · track · percent on a single
+   line, so all three windows (5h / 7d / Fable) share one row of footer
+   height. The reset countdown and window name live on the cell's tooltip;
+   the per-account breakdown stays on the hover panel. */
+function StripCell({
   label,
   title,
   window,
   now,
-  note,
 }: {
   label: string;
   title: string;
   window: { utilization: number; resetsAt: string };
   now: number;
-  /** Muted text centered between the window label and the percent — the 5h bar
-   *  shows the account name here, the 7d bar the "updated Xm ago" stamp. */
-  note?: string;
 }) {
   const pct = clampPct(window.utilization);
   const resets = formatResetsIn(window.resetsAt, now);
   return (
-    <div className="usage-bar" title={`${title}${resets ? ` — ${resets}` : ''}`}>
-      <div className="usage-bar-head">
-        <span className="usage-bar-label">{label}</span>
-        {note && <span className="usage-bar-note">{note}</span>}
-        <span className="usage-bar-pct">{pct}%</span>
-      </div>
-      <div className="usage-bar-track">
-        <div
+    <span className="usage-strip-cell" title={`${title} — ${pct}%${resets ? ` · ${resets}` : ''}`}>
+      <span className="usage-strip-label">{label}</span>
+      <span className="usage-bar-track">
+        <span
           className="usage-bar-fill"
           style={{ width: `${pct}%`, background: severityVar(pct) }}
         />
-      </div>
-    </div>
+      </span>
+      <span className="usage-strip-pct">{pct}%</span>
+    </span>
   );
 }
 
@@ -374,28 +371,23 @@ export function UsageBars() {
           ))}
         </div>
       )}
-      <UsageBar
-        label="5h"
-        title={`Claude usage${accountLabel ? ` (${accountLabel})` : ''} — 5-hour session window`}
-        window={fiveHour}
-        now={now}
-        note={accountLabel ?? undefined}
-      />
-      <UsageBar
-        label="7d"
-        title={`Claude usage${accountLabel ? ` (${accountLabel})` : ''} — 7-day weekly window`}
-        window={sevenDay}
-        now={now}
-        note={formatUpdatedAgo(fetchedAt, now)}
-      />
-      {fable && (
-        <UsageBar
-          label="Fable"
-          title={`Claude usage${accountLabel ? ` (${accountLabel})` : ''} — Fable 7-day weekly window`}
-          window={fable}
-          now={now}
-        />
-      )}
+      <div
+        className="usage-strip"
+        role="group"
+        aria-label={`Claude usage${accountLabel ? ` — ${accountLabel}` : ''}`}
+      >
+        {accountLabel && (
+          <span
+            className="usage-strip-account"
+            title={`Usage for ${accountLabel} — ${formatUpdatedAgo(fetchedAt, now)}`}
+          >
+            {accountLabel}
+          </span>
+        )}
+        <StripCell label="5h" title="5-hour session window" window={fiveHour} now={now} />
+        <StripCell label="7d" title="7-day weekly window" window={sevenDay} now={now} />
+        {fable && <StripCell label="F" title="Fable 7-day weekly window" window={fable} now={now} />}
+      </div>
     </div>
   );
 }
