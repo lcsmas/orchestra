@@ -15,8 +15,10 @@
 # On a machine with sudo, `dnf install gtk4-devel vte291-gtk4-devel` replaces
 # all of this (env.sh then becomes a harmless no-op prefix).
 #
-# Scope: gtk4 + vte4 for now. M2 workstreams extend DEPS with
-# gtksourceview5-devel / webkitgtk6.0-devel / gstreamer1-devel.
+# Scope: the full M2 surface — gtk4 + vte4 (terminals), gtksourceview5 (diff),
+# webkitgtk6.0 (per-account OAuth window), gstreamer1 (chime playback).
+# gtksourceview5 and webkitgtk6.0 have no system runtime on this box, so their
+# runtime RPMs are extracted alongside the -devel ones (vte pattern).
 #
 # Usage:  ./setup-localdeps.sh          # download + extract + fix symlinks
 # Then:   source ./env.sh && cargo build
@@ -25,7 +27,10 @@ cd "$(dirname "$0")"
 
 DEPS=(gtk4-devel vte291-gtk4 vte291-gtk4-devel glib2-devel cairo-devel
       cairo-gobject-devel pango-devel gdk-pixbuf2-devel graphene-devel
-      harfbuzz-devel vulkan-loader-devel)
+      harfbuzz-devel vulkan-loader-devel
+      gtksourceview5 gtksourceview5-devel
+      webkitgtk6.0 webkitgtk6.0-devel libsoup3-devel
+      gstreamer1-devel gstreamer1-plugins-base-devel)
 
 mkdir -p .localdeps/rpms .localdeps/prefix
 if ! ls .localdeps/rpms/*.rpm >/dev/null 2>&1; then

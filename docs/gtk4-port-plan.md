@@ -510,6 +510,12 @@ Write `docs/ui-rpc-protocol.md` (from §2), scaffold `native/` workspace with
   sway); every merge = tsc + vite build + node tests + cargo build/clippy/
   test + smoke screenshot + Electron regression suite.
 
+M2 CI watch: one unreproducible 206/207 TS-test run was observed under heavy
+parallel load during the M1 sign-off (identity lost; 14 clean runs
+otherwise). Prime suspect: timing-sensitive ui-rpc/client reconnect tests.
+If it recurs, capture the failing test's identity with raw (unfiltered)
+output and de-flake before shipping.
+
 M2 cleanup backlog (pre-existing issues surfaced by M1 verification, fix
 deliberately, not smuggled in): `logger.ts` primary sink hardcodes
 `~/.orchestra/logs` even when `ORCHESTRA_HOME` overrides the home — an
