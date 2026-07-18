@@ -157,10 +157,10 @@ export const useStore = create<State>((set, get) => ({
   loaded: false,
 
   setActive: (id) => {
-    // Picking a workspace dismisses the overlay panes (Insights, Help) — they
-    // cover the main pane, so leaving one up would eclipse the terminal the
-    // user just chose.
-    set({ activeId: id, insightsOpen: false, helpOpen: false });
+    // Picking a workspace dismisses the full-pane surfaces (Insights, Help,
+    // Resources) — they cover the main pane, so leaving one up would eclipse
+    // the terminal the user just chose.
+    set({ activeId: id, insightsOpen: false, helpOpen: false, page: 'workspaces' });
     if (id) {
       const ws = get().workspaces.find((w) => w.id === id);
       if (ws && ws.status === 'waiting') {
