@@ -95,8 +95,9 @@ export interface Workspace {
   /** True while the user has manually tagged this workspace "unread" — a
    * come-back-to-this-later bookmark. Purely user-driven, unlike the yellow
    * `waiting` status dot which the agent lifecycle sets: toggled from the
-   * sidebar row's bookmark button, rendered as an accent dot beside the branch
-   * name, and cleared automatically the next time the user selects the
+   * sidebar row's bookmark button, rendered by turning the row's leading
+   * activity dot accent-blue (overriding the status color), and cleared
+   * automatically the next time the user selects the
    * workspace (or by toggling the button again). Persisted so the reminder
    * survives an app restart. */
   markedUnread?: boolean;

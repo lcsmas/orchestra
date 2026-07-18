@@ -1236,16 +1236,14 @@ input:focus, textarea:focus, select:focus {
 .ws-dot.stopped { background: #555; opacity: 0.6; }
 
 /* Manual "unread" tag — a come-back-later bookmark the user sets by hand.
-   The row reads like unread mail: an always-visible accent dot right after the
-   branch name plus a brighter, bolder name. Cleared when the row is selected. */
-.ws-unread-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  align-self: center;
+   The row reads like unread mail: the leading activity dot turns accent-blue
+   (overriding the status color) plus a brighter, bolder name. Cleared when
+   the row is selected. */
+.ws-dot.unread {
   background: var(--accent);
   box-shadow: 0 0 6px rgba(110, 168, 255, 0.6);
+  opacity: 1;
+  animation: none;
 }
 .ws-item.unread .ws-name {
   color: var(--text);

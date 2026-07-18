@@ -98,7 +98,8 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
 - Drag-reorder for workspaces and repos (`reorderWorkspaces`/`reorderRepos`).
 - Row actions: rename branch (inline), unread bookmark toggle (`UnreadToggle`
   → store `setUnread` → IPC `workspaces:setUnread`; sets `ws.markedUnread`,
-  shown as an accent `.ws-unread-dot` + bold name, auto-cleared by the store's
+  shown by turning the leading activity dot accent-blue (`.ws-dot.unread`,
+  overrides the status color) + bold name, auto-cleared by the store's
   `setActive` when the user next selects the row), archive/unarchive, delete
   (confirm + bulk progress), switch branch (`BranchPicker`), setup gear
   (`RepoScriptsModal`), ☁↑ import-to-sandbox (`onImportToSandbox` `:800`,

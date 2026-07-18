@@ -1152,15 +1152,17 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               <span className="ws-collapse spacer" aria-hidden="true" />
             )}
             <div
-              className={`ws-dot ${w.status as WorkspaceStatus}`}
+              className={`ws-dot ${w.status as WorkspaceStatus}${w.markedUnread ? ' unread' : ''}`}
               title={
-                w.status === 'running'
-                  ? tools[w.id]
-                    ? `Agent is working… (${tools[w.id]})`
-                    : 'Agent is working…'
-                  : w.status === 'idle'
-                    ? 'Agent is idle'
-                    : w.status
+                w.markedUnread
+                  ? 'Tagged unread — come back to this workspace'
+                  : w.status === 'running'
+                    ? tools[w.id]
+                      ? `Agent is working… (${tools[w.id]})`
+                      : 'Agent is working…'
+                    : w.status === 'idle'
+                      ? 'Agent is idle'
+                      : w.status
               }
             />
             <div className="ws-body">
@@ -1192,13 +1194,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                   >
                     {w.branch}
                   </div>
-                )}
-                {w.markedUnread && (
-                  <span
-                    className="ws-unread-dot"
-                    title="Tagged unread — come back to this workspace"
-                    aria-label="Unread"
-                  />
                 )}
                 {isCollapsed && (
                   <span
@@ -1637,15 +1632,17 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     </span>
                   )}
                   <div
-                    className={`ws-dot ${w.status as WorkspaceStatus}`}
+                    className={`ws-dot ${w.status as WorkspaceStatus}${w.markedUnread ? ' unread' : ''}`}
                     title={
-                      w.status === 'running'
-                        ? tools[w.id]
-                          ? `Agent is working… (${tools[w.id]})`
-                          : 'Agent is working…'
-                        : w.status === 'idle'
-                          ? 'Agent is idle'
-                          : w.status
+                      w.markedUnread
+                        ? 'Tagged unread — come back to this workspace'
+                        : w.status === 'running'
+                          ? tools[w.id]
+                            ? `Agent is working… (${tools[w.id]})`
+                            : 'Agent is working…'
+                          : w.status === 'idle'
+                            ? 'Agent is idle'
+                            : w.status
                     }
                   />
                   <div className="ws-body">
@@ -1675,13 +1672,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         >
                           {w.branch}
                         </div>
-                      )}
-                      {w.markedUnread && (
-                        <span
-                          className="ws-unread-dot"
-                          title="Tagged unread — come back to this workspace"
-                          aria-label="Unread"
-                        />
                       )}
                       <WorkspaceContextBadge workspaceId={w.id} />
                       <span className="ws-login">
