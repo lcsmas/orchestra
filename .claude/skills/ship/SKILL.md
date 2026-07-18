@@ -48,7 +48,31 @@ launcher's AppImage with the local build.
    tag unverified code. (No separate `pnpm run build` needed here: the release
    script builds the AppImage itself and aborts if that fails.)
 
-4. **Write the release description.** Compose a short, human-readable changelog
+4. **Stress-test performance before releasing.** A change can pass typecheck
+   and tests and still melt the app at scale — work that runs per workspace ×
+   per poll × per release adds up to a pegged main process. Two parts, both
+   cheap; treat a failure like a failing test:
+
+   - **Reason about hot paths in the diff.** Anything new on a poll cadence
+     (the renderer's 8s stats poll, 12s PR poll, the Resources page's 2s tick)?
+     Any new timer, or a child-process spawn (`execFile`/`spawn`/simple-git)
+     reachable from a loop? If per-tick cost scales with the number of
+     workspaces, releases, commits, or files, cache it or batch it first —
+     assume ~20 live workspaces and a 50-release history, not 2 and 5.
+   - **Measure the built app idle.** Launch the release build (the `verify`
+     skill's isolated-`ORCHESTRA_HOME` harness works) with several workspaces,
+     let it sit for a minute, then check the main process:
+
+     ```bash
+     ps -o pcpu=,comm= -p <main-pid>   # idle main process should be ~0–5% CPU
+     ```
+
+     If it's hot, profile before shipping: `kill -USR1 <main-pid>` opens the
+     Node inspector on `127.0.0.1:9229`; a short CPU profile names the
+     offender. Sustained double-digit idle CPU, or a stream of short-lived
+     `git`/`gh`/`du` children, is a release blocker.
+
+5. **Write the release description.** Compose a short, human-readable changelog
    of what's in this release and write it to a temp file. Base it on the commits
    that this release adds on top of `origin/master`:
 
@@ -73,7 +97,7 @@ launcher's AppImage with the local build.
    Keep it concise and skip noise (chore/version-bump commits). If the branch has
    only trivial commits, a one-line summary is fine.
 
-5. **Release + land on master + install locally.** One command does the push,
+6. **Release + land on master + install locally.** One command does the push,
    the master fast-forward, the tag/build, the local install, and attaches your
    description to the GitHub release:
 
@@ -85,7 +109,7 @@ launcher's AppImage with the local build.
    user asks for a different bump. Omit `--notes-file` to fall back to
    auto-generated notes (gh's commit list).
 
-6. **Report back.** Show the new version/tag. The local AppImage is already
+7. **Report back.** Show the new version/tag. The local AppImage is already
    swapped — tell the user to **relaunch Orchestra** to pick it up. CI then adds
    the x64/arm64 AppImages to the GitHub release a few minutes later.
 
