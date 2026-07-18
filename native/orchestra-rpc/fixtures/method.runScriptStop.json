@@ -1,0 +1,7 @@
+{
+  "method": "runScriptStop",
+  "params": [
+    "ws-fixture-git"
+  ],
+  "result": null
+}

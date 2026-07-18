@@ -1,0 +1,21 @@
+{
+  "method": "getWorkspaceAccounts",
+  "params": [],
+  "result": {
+    "ws-fixture-git": {
+      "workspaceId": "ws-fixture-git",
+      "accountId": null,
+      "label": "default"
+    },
+    "ws-fixture-scratch": {
+      "workspaceId": "ws-fixture-scratch",
+      "accountId": null,
+      "label": "default"
+    },
+    "ws-fixture-tmp": {
+      "workspaceId": "ws-fixture-tmp",
+      "accountId": null,
+      "label": "default"
+    }
+  }
+}

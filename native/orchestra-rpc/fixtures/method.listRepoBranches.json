@@ -1,0 +1,9 @@
+{
+  "method": "listRepoBranches",
+  "params": [
+    "/tmp/orchestra-rpc-fixtures/repo"
+  ],
+  "result": [
+    "main"
+  ]
+}

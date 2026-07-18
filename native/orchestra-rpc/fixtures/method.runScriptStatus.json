@@ -1,0 +1,7 @@
+{
+  "method": "runScriptStatus",
+  "params": [
+    "ws-fixture-git"
+  ],
+  "result": false
+}

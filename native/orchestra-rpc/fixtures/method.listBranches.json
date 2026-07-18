@@ -1,0 +1,9 @@
+{
+  "method": "listBranches",
+  "params": [
+    "ws-fixture-git"
+  ],
+  "result": [
+    "main"
+  ]
+}

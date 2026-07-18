@@ -1,0 +1,6 @@
+{
+  "channel": "ptyRestart",
+  "args": [
+    "ws-fixture-git"
+  ]
+}

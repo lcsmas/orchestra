@@ -1,0 +1,7 @@
+{
+  "channel": "selfTuneOutput",
+  "args": [
+    "run-fixture-1",
+    "transcript chunk\n"
+  ]
+}

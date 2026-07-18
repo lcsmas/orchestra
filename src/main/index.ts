@@ -1,7 +1,5 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron';
 import path from 'node:path';
-import os from 'node:os';
-import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { shellEnvSync } from 'shell-env';
 
@@ -130,129 +128,45 @@ if (!ORCHESTRA_CLI_MODE) {
 // dir — under one root. Set it for a dev build (`vite` → `electron .`) so dev
 // and a packaged app run fully isolated: separate stores, separate spools, and
 // separate single-instance locks (the lock is keyed by userData). MUST run
-// before `import { store }` below — Store's constructor reads userData at module
-// load — and before any events-spool access. A no-op when unset (the packaged
+// before `import { store }` below — the store resolves userData lazily but
+// well before anything else moves it. A no-op when unset (the packaged
 // default). The CLI path returned above never reaches here.
 if (!ORCHESTRA_CLI_MODE && process.env.ORCHESTRA_HOME) {
   app.setPath('userData', path.join(process.env.ORCHESTRA_HOME, 'userData'));
 }
+import { initPlatform } from './platform';
+import { createElectronPlatform } from './platform/electron';
 import { store } from './store';
 import {
-  detectRemoteUrl,
-  getDiff,
-  findPullRequest,
-  listBranches,
-  getDiffStats,
-} from './git';
-import {
-  verifyLinearIssue,
-  verifyLinearApiKey,
-  getLinearKeySource,
-  resetLinearAuthState,
-} from './linear';
-import { setLinearApiKey, clearLinearApiKey } from './secrets';
-import { getEnvStatus } from './env-status';
-import type { Workspace } from '../shared/types';
-import {
-  addRepoByPath,
-  removeRepoByPath,
-  archiveWorkspace,
-  createWorkspace,
-  createScratchWorkspace,
-  createOrchestratorWorkspace,
-  deleteWorkspace,
-  deleteWorkspaces,
-  dispatchMigrateAccountRequest,
   ensureRoot,
-  ensureWorkspacePort,
-  getWorktreeSizes,
   pruneOrphanedWorkspaces,
-  renameWorkspaceBranch,
-  runSetupScript,
-  startAgentPty,
-  switchWorkspaceBranch,
-  unarchiveWorkspace,
 } from './workspaces';
-import { buildScriptEnv, loginShellArgv, readScriptLog, setupLogPath } from './scripts';
-import type { Account, RepoScripts } from '../shared/types';
-import {
-  repaintPty,
-  resizePty,
-  startPty,
-  stopAll,
-  stopPty,
-  writePty,
-  readScrollback,
-  isRunning,
-} from './pty';
-import { sampleResources } from './resources';
-import { startHooksServer, stopHooksServer, getHookSocketPath } from './hooks-server';
-import { installCliShim, installAgentCliShim, installLoginBrowserShim } from './cli-shim';
-import { closeLoginBrowser, dispatchLoginUrlRequest } from './login-browser';
+import { stopAll } from './pty';
+import { startHooksServer, stopHooksServer } from './hooks-server';
+import { installCliShim, installAgentCliShim } from './cli-shim';
 import { startEventsSpool, stopEventsSpool } from './events-spool';
-import { startUsagePolling, stopUsagePolling, getLastUsage } from './usage';
-import {
-  startAccountUsagePolling,
-  stopAccountUsagePolling,
-  getAccountUsage,
-  snapshotAccountUsage,
-  computeWorkspaceAccounts,
-  refreshAccountsNow,
-  accountConfigDir,
-  armLoginWatch,
-  cancelLoginWatch,
-} from './account-usage';
-import {
-  listInheritables,
-  seedAccountInheritDefaults,
-  syncAccountInheritance,
-  syncAllAccountsInheritance,
-} from './account-inherit';
-import {
-  setSandboxWindow,
-  closeAllSandboxConnections,
-  getSandboxControlState,
-  takeSandboxControl,
-} from './transport/sandbox-manager';
-import {
-  importWorkspaceToSandbox,
-  ejectWorkspaceFromSandbox,
-  backupSandboxWorkspace,
-  startSandboxAutoBackup,
-} from './sandbox-import';
-import {
-  detectAndUpdateBranchName,
-  detectAndUpdateMergeState,
-  detectAndUpdateReleaseState,
-  reconcileExited,
-} from './activity';
-import {
-  primeLocalSyncStates,
-  snapshotSyncStates,
-  syncAllRepos,
-  syncOneRepo,
-} from './repo-sync';
-import {
-  addQueuedPrompt,
-  removeQueuedPrompt,
-  flushQueuedPrompts,
-  startPromptQueueFlusher,
-  stopPromptQueueFlusher,
-} from './prompt-queue';
-import type { CreateWorkspaceInput } from '../shared/types';
-import {
-  getSelfTuneOutput,
-  getSelfTuneRuns,
-  listSelfTuneReports,
-  openSelfTuneReport,
-  readSelfTuneLessons,
-  startSelfTuneRun,
-  startSelfTuneScheduler,
-  stopSelfTuneScheduler,
-} from './self-tune';
-import { initLogger, log, revealLogs, getLogFile } from './logger';
+import { startUsagePolling, stopUsagePolling } from './usage';
+import { startAccountUsagePolling, stopAccountUsagePolling } from './account-usage';
+import { seedAccountInheritDefaults, syncAllAccountsInheritance } from './account-inherit';
+import { closeAllSandboxConnections } from './transport/sandbox-manager';
+import { startSandboxAutoBackup } from './sandbox-import';
+import { primeLocalSyncStates, syncAllRepos } from './repo-sync';
+import { startPromptQueueFlusher, stopPromptQueueFlusher } from './prompt-queue';
+import { startSelfTuneScheduler, stopSelfTuneScheduler } from './self-tune';
+import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
+import { probeDependencies } from './deps';
+import { startUiRpcServer, type UiRpcServer } from './ui-rpc';
+import { acquireBackendLock, releaseBackendLock } from './backend-lock';
+import { initLogger, log } from './logger';
 
 let mainWindow: BrowserWindow | null = null;
+let uiRpcServer: UiRpcServer | null = null;
+
+// The platform seam (src/main/platform/): every subsystem broadcasts, opens
+// URLs, reads app paths, etc. through it instead of touching Electron. The
+// Electron implementation targets the main window via this live accessor —
+// installed at module scope so it is in place before the first store access.
+initPlatform(createElectronPlatform(() => mainWindow));
 
 // Wrap ipcMain.handle so any error thrown by a handler is logged with its
 // channel before being re-thrown back to the renderer. Without this, a failing
@@ -299,13 +213,6 @@ async function createMainWindow() {
   );
   void syncAllAccountsInheritance();
   await ensureRoot();
-  // Hook server must be ready before any PTY spawns: spawned claude inherits
-  // ORCHESTRA_SOCK from the env we'll set on the pty.spawn call, and that
-  // value is read from getHookSocketPath() which only returns non-null after
-  // listen() resolves.
-  // Re-attach branch-name watchers for all non-archived workspaces — Claude
-  // may have dropped the suggestion file while Orchestra was closed.
-  // Deferred until after mainWindow is created.
 
   // Drop the default Electron menu (File/Edit/View/Window/Help). We don't ship
   // any custom menu commands; the strip just eats vertical space.
@@ -327,21 +234,34 @@ async function createMainWindow() {
   });
   mainWindow.setMenuBarVisibility(false);
 
-  await startHooksServer(mainWindow);
+  // Hook server must be ready before any PTY spawns: spawned claude inherits
+  // ORCHESTRA_SOCK from the env set on the pty.spawn call, and that value is
+  // read from getHookSocketPath() which only returns non-null after listen().
+  await startHooksServer();
   // Primary activity path: tail the durable per-workspace hook event spools.
-  startEventsSpool(mainWindow);
+  startEventsSpool();
+  // Serve the ui-rpc socket so external frontends (the GTK app, tests) can
+  // attach to THIS running app as their backend — same store, same PTYs, two
+  // faces one state (docs/ui-rpc-protocol.md). Failure is non-fatal: the
+  // Electron UI is fully functional without it.
+  try {
+    uiRpcServer = await startUiRpcServer({
+      handlers: apiHandlers,
+      appVersion: app.getVersion(),
+      backendKind: 'electron',
+    });
+  } catch (e) {
+    log.warn('ui-rpc server failed to start (external frontends unavailable)', e);
+  }
   // Poll the signed-in account's rolling 5h/7d usage windows for the sidebar bars.
-  startUsagePolling(mainWindow);
+  startUsagePolling();
   // Poll each *configured* account's usage for the per-workspace badges.
-  startAccountUsagePolling(mainWindow);
+  startAccountUsagePolling();
   // Deliver usage-limit-parked prompts once their account's window resets.
-  startPromptQueueFlusher(mainWindow);
+  startPromptQueueFlusher();
   // Monthly Insights & Improvements: auto-run the self-tune pipeline once per
   // calendar month (checked shortly after startup and every ~6h).
-  startSelfTuneScheduler(mainWindow);
-  // Remote (sandbox-hosted) workspaces route activity + hook RPCs through the
-  // sandbox connections; hand the manager the window they target.
-  setSandboxWindow(mainWindow);
+  startSelfTuneScheduler();
   // Periodic fail-safe snapshots of every sandbox-hosted workspace — the
   // container is the only copy of unpushed work, so a dead sandbox must cost
   // at most one backup interval.
@@ -364,19 +284,13 @@ async function createMainWindow() {
   // fetches the list, so stale "ghost" rows (a ~12 KB husk, no working actions)
   // never appear. Cheap (one `git worktree list` per repo); guarded against
   // pruning when a repo is merely unmounted. Best-effort — never block startup.
-  await pruneOrphanedWorkspaces(mainWindow).catch((e) => log.warn('pruneOrphanedWorkspaces failed', e));
+  await pruneOrphanedWorkspaces().catch((e) => log.warn('pruneOrphanedWorkspaces failed', e));
 
   if (VITE_DEV_SERVER_URL) {
     await mainWindow.loadURL(VITE_DEV_SERVER_URL);
   } else {
     await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
-
-  // Capture the non-null window: the awaits above widen the `mainWindow` let
-  // back to `BrowserWindow | null` (TS can't prove a concurrent reset didn't
-  // happen across the async gap), and the background dispatches below pass it
-  // by value rather than member-accessing it through the `?.` guard.
-  const win = mainWindow;
 
   // Agents that were running when Orchestra last exited are NOT relaunched
   // here. Startup used to resume every one of them headlessly, which meant a
@@ -393,13 +307,12 @@ async function createMainWindow() {
   // otherwise the prime's late `syncing:false, syncedAt:0` event races
   // ahead of sync completion and clobbers the success state. Subsequent
   // fetches are driven by window focus.
-  primeLocalSyncStates(win)
+  primeLocalSyncStates()
     .catch((e) => log.warn('primeLocalSyncStates failed', e))
-    .then(() => syncAllRepos(win))
+    .then(() => syncAllRepos())
     .catch((e) => log.warn('syncAllRepos failed', e));
   mainWindow.on('focus', () => {
-    if (!mainWindow) return;
-    void syncAllRepos(mainWindow).catch((e) => log.warn('syncAllRepos (focus) failed', e));
+    void syncAllRepos().catch((e) => log.warn('syncAllRepos (focus) failed', e));
   });
 }
 
@@ -409,302 +322,23 @@ function getMainWindow(): BrowserWindow {
 }
 
 // ---------- IPC ----------
+//
+// Every request/response handler lives in the shared table
+// (src/main/api-handlers.ts), keyed by OrchestraAPI member name; here it is
+// wired MECHANICALLY to its historical ipcMain channel, so the renderer and
+// preload are untouched by the extraction. The ui-rpc server dispatches into
+// the very same table — one behavior, two transports, zero drift.
 
-// Only allow http(s) URLs out to the OS. Other schemes are ignored to avoid
-// opening arbitrary things (file://, javascript:, etc.) from PTY output.
-function isSafeHttpUrl(url: string): boolean {
-  try {
-    const u = new URL(url);
-    return u.protocol === 'http:' || u.protocol === 'https:';
-  } catch {
-    return false;
-  }
+for (const [method, channel] of Object.entries(METHOD_IPC_CHANNELS)) {
+  const handler = apiHandlers[method as keyof typeof apiHandlers] as (
+    ...args: unknown[]
+  ) => unknown;
+  handle(channel, (_e, ...args) => handler(...args));
 }
 
-async function openUrlExternally(url: string): Promise<void> {
-  if (!isSafeHttpUrl(url)) return;
-  await shell.openExternal(url);
-}
-
-handle('app:openExternal', async (_e, url: string) => {
-  await openUrlExternally(url);
-});
-
-handle('app:version', () => app.getVersion());
-
-// Optional-setup status (e.g. Linear API key present?). The renderer reads this
-// on load and on a slow poll to surface a small "needs setup" notice.
-handle('app:envStatus', () => getEnvStatus());
-
-// ---------- Linear API key (set in-app, stored encrypted) ----------
-
-// Current key source ('stored' | 'env' | 'none') — lets the settings UI show
-// whether a key is configured and where it came from.
-handle('linear:keySource', () => getLinearKeySource());
-
-// Validate a candidate key against Linear without saving it (live feedback).
-handle('linear:checkKey', (_e, key: string) => verifyLinearApiKey(key));
-
-// Save the key (encrypted via safeStorage). Clears verification caches so the
-// new key takes effect immediately, and re-broadcasts env status.
-handle('linear:saveKey', async (_e, key: string) => {
-  await setLinearApiKey(key);
-  resetLinearAuthState();
-});
-
-// Remove the stored key (env-var fallback, if any, still applies afterward).
-handle('linear:clearKey', async () => {
-  await clearLinearApiKey();
-  resetLinearAuthState();
-});
-
-// Last fetched usage snapshot (or null before the first successful poll). The
-// renderer reads this once on mount; subsequent updates arrive via `usage:update`.
-handle('usage:get', () => getLastUsage());
-
-// ---------- Insights & Improvements (monthly self-tune) ----------
-//
-// Run records + transcript chunks flow to the renderer; the pipeline itself
-// (headless `claude -p` per login, then one fold pass) runs entirely in main.
-handle('selfTune:list', () => getSelfTuneRuns());
-handle('selfTune:run', () => startSelfTuneRun('manual'));
-handle('selfTune:output', (_e, runId: string) => getSelfTuneOutput(runId));
-handle('selfTune:reports', () => listSelfTuneReports());
-handle('selfTune:openReport', (_e, loginId: string) => openSelfTuneReport(loginId));
-handle('selfTune:lessons', () => readSelfTuneLessons());
-
-// ---------- Accounts (per-workspace usage badges) ----------
-//
-// An account is a Claude Code config dir (CLAUDE_CONFIG_DIR) with its own
-// login. store.json holds only {id, label, configDir} — never a token.
-
-// The configured accounts (label + config-dir path, no secrets).
-handle('accounts:list', () => store.accounts);
-
-// Replace the whole list, then immediately recompute the workspace→account map
-// and refresh usage so the badges react without waiting for the next poll tick.
-handle('accounts:set', async (_e, accounts: Account[]) => {
-  const saved = await store.setAccounts(accounts);
-  // Re-materialize each account's inheritance so edited selections take effect
-  // immediately (symlinks added/removed, MCP servers merged/pruned).
-  void syncAllAccountsInheritance();
-  void refreshAccountsNow(getMainWindow());
-  return saved;
-});
-
-// What the global ~/.claude currently offers to inherit (skill dir names + MCP
-// server keys). Drives the per-account inheritance checkboxes in the UI.
-handle('accounts:listGlobalInheritables', () => listInheritables());
-
-// Cached usage for one account / all accounts (never triggers a fetch — the
-// poller keeps the cache warm within the 180s window).
-handle('accounts:usage', (_e, accountId: string) => getAccountUsage(accountId));
-handle('accounts:usageAll', () => snapshotAccountUsage());
-
-// Which account each non-archived workspace logs in as (identity only).
-handle('accounts:workspaceAccounts', () => computeWorkspaceAccounts());
-
-// Assign (or clear, with empty string) the account a repo's workspaces log in
-// as. Recompute the mapping + usage so badges update immediately.
-handle('repos:setAccount', async (_e, repoPath: string, accountId: string | null) => {
-  const repo = await store.setRepoAccount(repoPath, accountId);
-  void refreshAccountsNow(getMainWindow());
-  return repo;
-});
-
-// Migrate an EXISTING workspace to a different account (or back to the default
-// login with a null accountId). Unlike repos:setAccount — which only affects
-// NEW workspaces — this relocates the pinned workspace's conversation into the
-// target account's config dir, re-pins it, and auto-resumes if it was running,
-// so `claude --continue` keeps working. Recompute the workspace→account mapping
-// + usage afterwards so the badge repaints immediately.
-handle('workspaces:migrateAccount', async (_e, id: string, accountId: string | null) => {
-  const res = await dispatchMigrateAccountRequest({ id, accountId }, getMainWindow());
-  if (!res.ok) throw new Error(res.error ?? 'migrate failed');
-  void refreshAccountsNow(getMainWindow());
-  return res;
-});
-
-// Interactive `claude /login` in an account's config dir, so the user can
-// authenticate that account from within Orchestra. Spawns under a synthetic pty
-// id (`account-login:<accountId>`) that carries NO workspaceId — it's not an
-// agent, so no status reconciliation. The renderer hosts it in a terminal and
-// uses the normal pty:write/pty:resize/onPtyData/onPtyExit channels (all keyed
-// by pty id). On exit we refresh usage so the freshly-logged-in account's badge
-// fills in without waiting for the poll.
-handle('accounts:loginStart', async (_e, accountId: string, cols: number, rows: number) => {
-  const account = store.accounts.find((a) => a.id === accountId);
-  if (!account) throw new Error('account not found');
-  const dir = accountConfigDir(account);
-  if (!dir) throw new Error('account has no config dir');
-  const ptyId = `account-login:${accountId}`;
-  if (isRunning(ptyId)) {
-    repaintPty(ptyId, cols, rows);
-    return;
-  }
-  // Ensure the dir exists so Claude Code can write its credentials there, and
-  // materialize the account's inherited config so the login session itself has
-  // the user's settings/skills/MCP (not just a bare credentials dir).
-  await fs.promises.mkdir(dir, { recursive: true });
-  await syncAccountInheritance(account).catch((err) =>
-    log.warn('account-inherit: login-time sync failed', err),
-  );
-  // `claude /login` does NOT exit after authenticating — it drops into a normal
-  // session — and Claude Code exposes no completion signal. So watch the config
-  // dir: once a fresh OAuth token lands in .credentials.json, kill the PTY
-  // (which fires pty:exit), close the account's OAuth window, and tell the
-  // renderer login is done so it can close.
-  armLoginWatch(account, () => {
-    const win = getMainWindow();
-    if (isRunning(ptyId)) stopPty(ptyId);
-    closeLoginBrowser(accountId);
-    if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
-      win.webContents.send('accounts:loginDone', accountId);
-    }
-    void refreshAccountsNow(win);
-  });
-  // Intercept claude's automatic browser-open so the OAuth page lands in this
-  // account's ISOLATED login window, not the system browser whose claude.ai
-  // session is the user's main account (see main/login-browser.ts). The shim
-  // dir shadows xdg-open/open on PATH for this PTY only; ORCHESTRA_SOCK +
-  // ORCHESTRA_LOGIN_ACCOUNT let the shim's `orchestra login-url` phone home.
-  const shimDir = installLoginBrowserShim();
-  const sock = getHookSocketPath();
-  // The PATH we set below goes through the user's LOGIN shell, whose profile
-  // (or macOS path_helper) may rebuild PATH and push the shim behind the real
-  // /usr/bin openers — so re-prepend it in the command itself. POSIX prefix
-  // assignment: the shell still resolves `claude` normally, while claude's
-  // children (the browser opener) see the shim first. Skipped for fish, which
-  // doesn't parse it — fish keeps the env-level PATH best-effort instead.
-  const shell = path.basename(process.env.SHELL || 'bash');
-  const loginScript =
-    shimDir && shell !== 'fish'
-      ? `PATH=${JSON.stringify(shimDir)}:"$PATH" claude /login`
-      : 'claude /login';
-  const { command, args } = loginShellArgv(loginScript);
-  await startPty({
-    id: ptyId,
-    cwd: dir,
-    command,
-    args,
-    cols,
-    rows,
-    window: getMainWindow(),
-    extraEnv: {
-      CLAUDE_CONFIG_DIR: dir,
-      ORCHESTRA_LOGIN_ACCOUNT: accountId,
-      ...(sock ? { ORCHESTRA_SOCK: sock } : {}),
-      ...(shimDir
-        ? {
-            PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ''}`,
-            // Belt-and-braces for openers that honor $BROWSER over PATH lookup.
-            BROWSER: path.join(shimDir, 'xdg-open'),
-          }
-        : {}),
-    },
-  });
-});
-
-handle('accounts:loginStop', (_e, accountId: string) => {
-  cancelLoginWatch(accountId);
-  closeLoginBrowser(accountId);
-  const ptyId = `account-login:${accountId}`;
-  if (isRunning(ptyId)) stopPty(ptyId);
-});
-
-// Link clicked inside the login modal's terminal (the printed "Browser didn't
-// open? Visit:" fallback URL). Same routing as the shim path: Claude OAuth
-// pages open in the account's isolated window, anything else externally.
-handle('accounts:loginOpenUrl', (_e, accountId: string, url: string) => {
-  const res = dispatchLoginUrlRequest({ accountId, url });
-  if (!res.ok) throw new Error(res.error ?? 'failed to open url');
-});
-
-// Recompute the mapping + refetch usage now. The login modal calls this when
-// its `claude /login` PTY exits, so a freshly-authenticated account's badge
-// fills in immediately rather than on the next 30s poll.
-handle('accounts:refresh', async () => {
-  await refreshAccountsNow(getMainWindow());
-});
-
-// ---------- Diagnostic logs ----------
-
-handle('logs:reveal', async () => {
-  await revealLogs();
-});
-
-handle('logs:path', () => getLogFile());
-
-// Forward renderer-side logs/errors into the same file so a single artifact
-// captures both processes. Level is clamped to the known set; anything else is
-// treated as info.
-handle('logs:write', (_e, level: string, message: string, meta?: unknown) => {
-  const fn =
-    level === 'error'
-      ? log.error
-      : level === 'warn'
-        ? log.warn
-        : level === 'debug'
-          ? log.debug
-          : log.info;
-  fn(`[renderer] ${message}`, meta);
-});
-
-handle('repos:list', async () => {
-  // Lazy-backfill `remoteUrl` for any repo added before that field existed,
-  // or whose origin URL changed since it was first mapped. Best-effort —
-  // missing origin / unknown URL shape just leaves remoteUrl undefined.
-  for (const r of store.repos) {
-    if (r.remoteUrl) continue;
-    const url = await detectRemoteUrl(r.path).catch(() => undefined);
-    if (url) await store.updateRepo(r.path, { remoteUrl: url });
-  }
-  return store.repos;
-});
-
-handle('repos:add', async (_e, absPath: string) => {
-  return addRepoByPath(absPath, getMainWindow());
-});
-
-handle('repos:remove', async (_e, absPath: string) => {
-  await removeRepoByPath(absPath, getMainWindow());
-});
-
-handle('repos:listSyncStates', () => snapshotSyncStates());
-
-handle('repos:syncBase', async (_e, repoPath: string) => {
-  await syncOneRepo(repoPath, getMainWindow());
-});
-
-handle('repos:reorder', async (_e, orderedPaths: string[]) => {
-  await store.reorderRepos(orderedPaths);
-});
-
-handle('repos:listBranches', async (_e, repoPath: string) => {
-  if (!store.repos.some((r) => r.path === repoPath)) throw new Error('unknown repo');
-  return listBranches(repoPath);
-});
-
-// Change the branch new workspaces of a repo are cut from (its "default base").
-// Validated against the repo's actual local branches so a typo can't leave the
-// repo pointing at a branch `git worktree add` will refuse. Re-syncs the repo's
-// sync pill immediately — it tracks `origin/<defaultBranch>`.
-handle('repos:setDefaultBranch', async (_e, repoPath: string, branch: string) => {
-  const repo = store.repos.find((r) => r.path === repoPath);
-  if (!repo) throw new Error('unknown repo');
-  const target = branch.trim();
-  if (!target) throw new Error('branch required');
-  if (target !== repo.defaultBranch) {
-    const branches = await listBranches(repoPath);
-    if (!branches.includes(target))
-      throw new Error(`branch "${target}" does not exist in ${repo.name}`);
-    await store.updateRepo(repoPath, { defaultBranch: target });
-    getMainWindow().webContents.send('repos:update', store.repos);
-    void syncOneRepo(repoPath, getMainWindow()).catch(() => {});
-  }
-  return store.repos.find((r) => r.path === repoPath)!;
-});
-
+// Frontend-local by design (docs/ui-rpc-protocol.md §4): the native directory
+// picker needs a host window, so it is NOT part of the shared table — the GTK
+// frontend implements its own (GtkFileDialog).
 handle('dialog:pickDir', async () => {
   const res = await dialog.showOpenDialog(getMainWindow(), {
     properties: ['openDirectory'],
@@ -713,504 +347,53 @@ handle('dialog:pickDir', async () => {
   return res.filePaths[0];
 });
 
-handle('workspaces:list', () => store.workspaces);
-
-handle('workspaces:reorder', async (_e, orderedIds: string[]) => {
-  await store.reorderWorkspaces(orderedIds);
-});
-
-handle('workspaces:create', async (_e, input: CreateWorkspaceInput) => {
-  return createWorkspace(input, getMainWindow());
-});
-
-handle('workspaces:createScratch', async () => {
-  return createScratchWorkspace(getMainWindow());
-});
-
-handle('workspaces:createOrchestrator', async () => {
-  return createOrchestratorWorkspace(getMainWindow());
-});
-
-handle('workspaces:archive', async (_e, id: string) => {
-  await archiveWorkspace(id, getMainWindow());
-});
-
-handle('workspaces:unarchive', async (_e, id: string) => {
-  await unarchiveWorkspace(id, getMainWindow());
-});
-
-handle('workspaces:delete', async (_e, id: string) => {
-  await deleteWorkspace(id, getMainWindow());
-});
-
-handle('workspaces:deleteMany', async (_e, ids: string[]) => {
-  const window = getMainWindow();
-  await deleteWorkspaces(ids, window, (done, total) => {
-    window.webContents.send('workspaces:deleteProgress', done, total);
-  });
-});
-
-handle('workspaces:importToSandbox', async (_e, id: string, endpoint: string) => {
-  return importWorkspaceToSandbox(id, endpoint, getMainWindow());
-});
-
-handle('workspaces:ejectFromSandbox', async (_e, id: string) => {
-  return ejectWorkspaceFromSandbox(id, getMainWindow());
-});
-
-handle('sandbox:backup', async (_e, id: string) => {
-  return backupSandboxWorkspace(id);
-});
-
-handle('sandbox:controlState', (_e, id: string) => {
-  const ws = store.getWorkspace(id);
-  if (ws?.host?.kind !== 'sandbox') return null;
-  return getSandboxControlState(ws.host.endpoint);
-});
-
-handle('sandbox:takeControl', (_e, id: string) => {
-  const ws = store.getWorkspace(id);
-  if (ws?.host?.kind !== 'sandbox') return;
-  takeSandboxControl(ws.host.endpoint);
-});
-
-handle('workspaces:markSeen', async (_e, id: string) => {
-  const ws = store.getWorkspace(id);
-  if (!ws || ws.archived) return;
-  if (ws.status !== 'waiting') return;
-  const updated: Workspace = { ...ws, status: 'idle' };
-  await store.upsertWorkspace(updated);
-  getMainWindow().webContents.send('workspace:update', updated);
-});
-
-handle('workspaces:setUnread', async (_e, id: string, unread: boolean) => {
-  const ws = store.getWorkspace(id);
-  if (!ws || !!ws.markedUnread === !!unread) return;
-  // Drop the key entirely when clearing so store.json doesn't accumulate
-  // `markedUnread: false` on every workspace that was ever tagged.
-  const updated: Workspace = { ...ws, markedUnread: unread || undefined };
-  await store.upsertWorkspace(updated);
-  getMainWindow().webContents.send('workspace:update', updated);
-});
-
-handle('pty:start', async (_e, id: string, cols: number, rows: number) => {
-  const ws = store.getWorkspace(id);
-  if (!ws) throw new Error('workspace not found');
-  if (isRunning(id)) {
-    // Renderer remounted (HMR / reload) but the PTY is still alive. The fresh
-    // xterm canvas is blank and Claude has no reason to repaint on
-    // their own, so bounce the size to force a SIGWINCH-driven redraw.
-    repaintPty(id, cols, rows);
-    return;
-  }
-  // Spawn the agent PTY. The resume gate (`claude --continue` only when the
-  // user has actually submitted a prompt — ws.hasInput), hook install, and env
-  // setup all live in startAgentPty, shared with the account-migration resume.
-  // This is also where a workspace that was running before an app restart
-  // comes back to life — deliberately on first open, never at startup.
-  const resuming = ws.hasInput === true;
-  await startAgentPty(ws, cols, rows, getMainWindow());
-  // Preserve the `waiting` yellow dot across restarts: if the previous session
-  // ended with an unread "agent finished" state, the dot stays until the user
-  // actually reads it (via markSeen from setActive). Only clear stale
-  // `running` state left over from a prior crash.
-  if (ws.status === 'running') {
-    const updated: Workspace = { ...ws, status: 'idle' };
-    await store.upsertWorkspace(updated);
-    getMainWindow().webContents.send('workspace:update', updated);
-  }
-  // First-ever spawn: pipe the initial task (if any) into the agent once it
-  // has had a moment to initialize its TUI.
-  if (!resuming && ws.lastTask) {
-    const task = ws.lastTask;
-    setTimeout(() => {
-      writePty(id, task + '\n');
-      // Status flips to running once Claude fires its UserPromptSubmit hook.
-    }, 1200);
-  }
-});
-
-handle('pty:write', async (_e, id: string, data: string) => {
-  const submitted = data.includes('\r') || data.includes('\n');
-  // Heavy-resume gate (armed in startAgentPty when `claude --continue` is about
-  // to reload a large session). While armed, Claude Code is showing its
-  // compaction menu; a typed task + Enter would proceed the FULL resume and
-  // drain the usage pool. So:
-  //  - a navigation key (arrow / Esc) means the user is consciously driving
-  //    CC's menu → disarm and let their input through (this very keystroke and
-  //    the Enter that follows reach CC normally).
-  //  - a bare submit (Enter/newline) while still armed is the dangerous
-  //    blind-proceed → swallow it. The user must touch the menu first.
-  //  - everything else (typing into the menu's filter, etc.) passes through.
-  const wsGate = store.getWorkspace(id);
-  if (wsGate?.heavyResumePending) {
-    // ESC is '\x1b'; arrows are '\x1b[A'/'\x1b[B'/'\x1b[C'/'\x1b[D'. Any escape
-    // sequence here = deliberate menu navigation → disarm.
-    if (data.includes('\x1b')) {
-      const updated = { ...wsGate, heavyResumePending: false };
-      await store.upsertWorkspace(updated);
-      getMainWindow().webContents.send('workspace:update', updated);
-      return writePty(id, data);
-    }
-    if (submitted) {
-      // Blind submit into a heavy resume — suppress so it can't proceed the
-      // full-context resume. The user navigates CC's menu (arrow/Esc) to
-      // disarm, then their Enter answers the menu for real.
-      return;
-    }
-    // non-submit, non-escape keystroke (typing) — pass through harmlessly.
-    return writePty(id, data);
-  }
-  // Flip hasInput the first time the user actually submits something (Enter
-  // key / carriage return). This is what gates `claude --continue` on the
-  // next PTY start, so we avoid "No conversation found" when the log is
-  // only startup TUI noise. Activity status itself flips from Claude's own
-  // UserPromptSubmit hook, not from this handler.
-  if (submitted) {
-    const ws = store.getWorkspace(id);
-    if (ws && !ws.hasInput) {
-      const updated = { ...ws, hasInput: true };
-      await store.upsertWorkspace(updated);
-      getMainWindow().webContents.send('workspace:update', updated);
-    }
-  }
-  return writePty(id, data);
-});
-handle('pty:resize', (_e, id: string, cols: number, rows: number) =>
-  resizePty(id, cols, rows),
-);
-// Force a full child repaint via a SIGWINCH bounce. The renderer calls this
-// when its xterm may have diverged from the child TUI's diff-render model —
-// today: the window coming back from hidden (RAF/paint suspension) with a
-// pane whose PTY streamed the whole time. Claude Code paints per-cell diffs
-// and skips cells it believes unchanged, so a diverged screen never heals on
-// its own (the "scattered words" garble) — only a real repaint converges it.
-handle('pty:repaint', (_e, id: string, cols: number, rows: number) =>
-  repaintPty(id, cols, rows),
-);
-
-// Clipboard image paste. xterm.js + the renderer's `navigator.clipboard` only
-// pipes text to the PTY, so a pasted screenshot is dropped on the floor.
-// Claude Code has no stdin protocol for images, but it auto-attaches any
-// absolute image path that arrives via a bracketed paste. The renderer reads
-// the image bytes off the clipboard (same focused-document context that makes
-// text paste work — `clipboard.readImage()` in the main process can't, since
-// Wayland gates clipboard reads on surface focus the main process lacks) and
-// hands them here to spill to a temp file; we return the path to inject.
-handle('clipboard:saveImage', async (_e, mime: string, bytes: Uint8Array) => {
-  if (!bytes || bytes.byteLength === 0) return null;
-  const ext =
-    mime === 'image/jpeg'
-      ? 'jpg'
-      : mime === 'image/gif'
-        ? 'gif'
-        : mime === 'image/webp'
-          ? 'webp'
-          : 'png';
-  const dir = path.join(os.tmpdir(), 'orchestra-paste');
-  await fs.promises.mkdir(dir, { recursive: true });
-  // Prune stale spills so the temp dir doesn't grow unbounded. Best-effort —
-  // a file Claude is mid-read on is days younger than the cutoff anyway.
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  try {
-    for (const name of await fs.promises.readdir(dir)) {
-      const fp = path.join(dir, name);
-      const st = await fs.promises.stat(fp).catch(() => null);
-      if (st && st.mtimeMs < cutoff) await fs.promises.unlink(fp).catch(() => {});
-    }
-  } catch {
-    // ignore prune failures
-  }
-  const file = path.join(dir, `paste-${Date.now()}-${process.pid}.${ext}`);
-  await fs.promises.writeFile(file, Buffer.from(bytes));
-  return file;
-});
-// ---------- Prompt queue (usage-limited accounts) ----------
-
-handle('queue:add', (_e, id: string, text: string) =>
-  addQueuedPrompt(id, text, getMainWindow()),
-);
-handle('queue:remove', (_e, id: string, promptId: string) =>
-  removeQueuedPrompt(id, promptId, getMainWindow()),
-);
-// The UI's "Send now" — deliver regardless of what the usage cache says.
-handle('queue:flush', (_e, id: string) =>
-  flushQueuedPrompts(id, getMainWindow(), { force: true }),
-);
-
-handle('agent:restart', (_e, id: string) => {
-  // Mirror the branch-switch path: stop the agent PTY here (the renderer's
-  // xterm doesn't get torn down — it just resets) and tell the renderer to
-  // spawn a fresh PTY. `pty:start` will pick `claude --continue` since
-  // ws.hasInput is true, so the conversation resumes against the new
-  // process — which is what makes MCP/settings.json edits take effect.
-  if (!isRunning(id)) return;
-  stopPty(id);
-  getMainWindow().webContents.send('pty:restart', id);
-});
-
-handle('agent:stop', (_e, id: string) => {
-  // The Resources page's per-agent stop: kill the agent PTY and do NOT
-  // respawn — the point is to free the process's CPU/memory. stopPty disposes
-  // the transport listeners before killing, so the exit handler's
-  // reconciliation floor never fires on this path — reconcile the status dot
-  // here. `pty:stopped` lets the workspace terminal show the stop and re-arm
-  // its lazy start (next activation or keystroke relaunches with
-  // `claude --continue`) instead of sitting silently dead.
-  if (!isRunning(id)) return;
-  stopPty(id);
-  reconcileExited(id, getMainWindow());
-  getMainWindow().webContents.send('pty:stopped', id);
-});
-
-handle('git:diff', async (_e, id: string) => {
-  const ws = store.getWorkspace(id);
-  if (!ws) throw new Error('workspace not found');
-  if (ws.kind === 'scratch') return []; // non-git dir — no diff against a base
-  return getDiff(ws.worktreePath, ws.baseBranch);
-});
-
-handle('git:stats', async (_e, id: string) => {
-  const ws = store.getWorkspace(id);
-  if (!ws) throw new Error('workspace not found');
-  // Scratch sessions aren't git-backed: no diff stats, and none of the merge /
-  // branch reconciliation below applies.
-  if (ws.kind === 'scratch') return { additions: 0, deletions: 0, files: 0 };
-  // Piggyback merge/unpushed state refresh on the renderer's 8s stats poll.
-  // Cheap (two `rev-list --count` calls), and keeps the ↑N badge live even
-  // when the agent isn't running — which is exactly when the user finishes
-  // a commit and wants to see "ready to push".
-  void detectAndUpdateMergeState(id, getMainWindow()).catch(() => {});
-  // Same cadence: catch branches renamed outside orchestra (a terminal's
-  // `git branch -m`, an editor's VCS UI) so the stored branch name doesn't
-  // drift from what's actually checked out. One `rev-parse` per workspace.
-  void detectAndUpdateBranchName(id, getMainWindow()).catch(() => {});
-  return getDiffStats(ws.worktreePath, ws.baseBranch);
-});
-
-handle('workspaces:sizes', () => getWorktreeSizes());
-
-// One live resource sample (PTY process trees, Electron processes, cached
-// disk stats). Pulled by the Resources page on its own 2s visible poll — no
-// standing poller in main, so a closed page costs nothing.
-handle('resources:sample', () => sampleResources());
-
-handle('git:findPR', async (_e, id: string) => {
-  const ws = store.getWorkspace(id);
-  if (!ws) throw new Error('workspace not found');
-  if (ws.kind === 'scratch') return { all: [], open: null, latest: null, mergedCount: 0 };
-  // Piggyback release detection on the PR poll: same gh-based, 12s + on-focus
-  // cadence, and never on the hot stats poll. The underlying computation is
-  // memoized on (branch tip, release list), so a poll where nothing moved
-  // costs one `rev-parse` — not the full ancestry walk.
-  void detectAndUpdateReleaseState(id, getMainWindow()).catch(() => {});
-  return findPullRequest(ws.repoPath, ws.branch);
-});
-
-handle('linear:verify', async (_e, id: string) => {
-  const ws = store.getWorkspace(id);
-  if (!ws) throw new Error('workspace not found');
-  // Scratch sessions have no git branch encoding an issue; skip the CLI spawn.
-  if (ws.kind === 'scratch') return null;
-  return verifyLinearIssue(ws.branch);
-});
-
-handle('git:listBranches', async (_e, id: string) => {
-  const ws = store.getWorkspace(id);
-  if (!ws) throw new Error('workspace not found');
-  return listBranches(ws.repoPath);
-});
-
-handle('nvim:start', async (_e, id: string, cols: number, rows: number) => {
-  const ws = store.getWorkspace(id);
-  if (!ws) throw new Error('workspace not found');
-  const nvimId = `${id}:nvim`;
-  if (isRunning(nvimId)) {
-    // Renderer remounted — nudge a repaint.
-    repaintPty(nvimId, cols, rows);
-    return;
-  }
-  await startPty({
-    id: nvimId,
-    cwd: ws.worktreePath,
-    command: 'nvim',
-    args: ['.'],
-    cols,
-    rows,
-    window: getMainWindow(),
-  });
-});
-
-ipcMain.handle(
-  'workspaces:renameBranch',
-  async (_e, id: string, newBranch: string) => {
-    return renameWorkspaceBranch(id, newBranch, { manual: true }, getMainWindow());
-  },
-);
-
-handle('git:merge', async (_e, id: string) => {
-  const ws = store.getWorkspace(id);
-  if (!ws) throw new Error('workspace not found');
-
-  // Hand the merge off to the agent: it has full context of the work it just
-  // did and writes its own commit messages along the way. The agent runs
-  // inside the worktree (whose HEAD is the feature branch); to update the
-  // base branch it must operate on the main repo via `git -C <repoPath>`
-  // since the worktree's HEAD is pinned.
-  const prompt =
-    `Please merge this branch into \`${ws.baseBranch}\` and push.\n\n` +
-    `- Feature branch: \`${ws.branch}\` (current worktree HEAD)\n` +
-    `- Base branch: \`${ws.baseBranch}\`\n` +
-    `- Main repo path: \`${ws.repoPath}\`\n\n` +
-    `If there are uncommitted changes, commit them first with a clear message. ` +
-    `Then run the merge against the main repo (use \`git -C "${ws.repoPath}" ...\` so the worktree HEAD stays put), ` +
-    `and \`git push\` the base branch. ` +
-    `Tell me when it's done or if anything goes wrong.`;
-
-  writePty(id, prompt);
-  setTimeout(() => writePty(id, '\r'), 80);
-
-  return { status: 'requested' as const };
-});
-
-handle('git:switchBranch', async (_e, id: string, branch: string) => {
-  return switchWorkspaceBranch(id, branch, getMainWindow());
-});
-
-// ---------- Repo scripts (setup / run / archive) ----------
-
-handle('repos:getScripts', (_e, repoPath: string) => {
-  return store.getRepoScripts(repoPath);
-});
-
-handle('repos:setScripts', async (_e, repoPath: string, scripts: RepoScripts) => {
-  return store.setRepoScripts(repoPath, scripts);
-});
-
-handle('scripts:retrySetup', async (_e, id: string) => {
-  await runSetupScript(id, getMainWindow());
-});
-
-handle('scripts:readSetupLog', (_e, id: string) => {
-  return readScriptLog(setupLogPath(id));
-});
-
-handle('scripts:runStart', async (_e, id: string, cols: number, rows: number) => {
-  const ws0 = store.getWorkspace(id);
-  if (!ws0) throw new Error('workspace not found');
-  const script = store.getRepoScripts(ws0.repoPath).run;
-  if (!script) throw new Error('no run script configured for this repo');
-  // Lazy port allocation for legacy workspaces created before scripts existed.
-  const ws = (await ensureWorkspacePort(id, getMainWindow())) ?? ws0;
-  const runId = `${id}:run`;
-  if (isRunning(runId)) {
-    resizePty(runId, Math.max(20, cols - 1), Math.max(5, rows));
-    setTimeout(() => resizePty(runId, cols, rows), 40);
-    return;
-  }
-  const { command, args } = loginShellArgv(script);
-  await startPty({
-    id: runId,
-    cwd: ws.worktreePath,
-    command,
-    args,
-    cols,
-    rows,
-    window: getMainWindow(),
-    // Run pty inherits ORCHESTRA_* via the env passed at spawn time. node-pty's
-    // env is overridden, not merged, so we pass the full block. The agent
-    // hook env (ORCHESTRA_SOCK, ORCHESTRA_WS_ID) is intentionally absent —
-    // the run script isn't an agent.
-    extraEnv: buildScriptEnv(ws),
-  });
-});
-
-handle('scripts:runStop', (_e, id: string) => {
-  stopPty(`${id}:run`);
-});
-
-handle('scripts:runStatus', (_e, id: string) => {
-  return isRunning(`${id}:run`);
-});
-
-handle('scripts:runScrollback', (_e, id: string) => {
-  return readScrollback(`${id}:run`);
-});
+// Special: workspaces:deleteProgress used to be sent to the invoking window
+// from the deleteMany handler; the shared table now broadcasts it through the
+// platform seam, which reaches this window identically.
 
 // ---------- Dependency Check ----------
 
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const pExecFile = promisify(execFile);
-
-async function checkCommand(cmd: string): Promise<boolean> {
-  try {
-    await pExecFile('command', ['-v', cmd], { shell: '/bin/sh' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function checkDependencies(): Promise<void> {
-  // Probe all three in parallel rather than three serial subshell spawns. This
-  // is on the boot path (before the window), so the difference is real wall
-  // time the user waits at a blank screen.
-  const [hasGit, hasGh, hasClaude] = await Promise.all([
-    checkCommand('git'),
-    checkCommand('gh'),
-    checkCommand('claude'),
-  ]);
-  const missing: { name: string; desc: string; install: string }[] = [];
-
-  if (!hasGit) {
-    missing.push({
-      name: 'git',
-      desc: 'Git version control',
-      install: 'Fedora: sudo dnf install git\nUbuntu: sudo apt install git',
-    });
-  }
-
-  if (!hasGh) {
-    missing.push({
-      name: 'gh',
-      desc: 'GitHub CLI (for PR creation)',
-      install: 'Fedora: sudo dnf install gh\nUbuntu: sudo apt install gh\nOr: https://cli.github.com/',
-    });
-  }
-
-  if (!hasClaude) {
-    missing.push({
-      name: 'claude',
-      desc: 'Claude Code CLI',
-      install: 'npm install -g @anthropic-ai/claude-code\nOr: https://docs.anthropic.com/claude-code',
-    });
-  }
-
-  if (missing.length > 0) {
-    const message = missing
-      .map((m) => `❌ ${m.name}\n   ${m.desc}\n   Install:\n   ${m.install}`)
-      .join('\n\n');
-
-    await dialog.showMessageBox({
-      type: 'warning',
-      title: 'Missing Dependencies',
-      message: 'Orchestra requires the following tools:',
-      detail: message,
-      buttons: ['Continue Anyway', 'Quit'],
-      defaultId: 1,
-    }).then(({ response }) => {
-      if (response === 1) {
-        app.quit();
-      }
-    });
+  // Same probe the ui-rpc `deps:status` method serves; here it feeds the
+  // Electron-native warning dialog.
+  const status = await probeDependencies();
+  if (status.messages.length > 0) {
+    await dialog
+      .showMessageBox({
+        type: 'warning',
+        title: 'Missing Dependencies',
+        message: 'Orchestra requires the following tools:',
+        detail: status.messages.join('\n\n'),
+        buttons: ['Continue Anyway', 'Quit'],
+        defaultId: 1,
+      })
+      .then(({ response }) => {
+        if (response === 1) {
+          app.quit();
+        }
+      });
   }
 }
 
 // ---------- Lifecycle ----------
 // In CLI mode the GUI lifecycle is never wired up — the dynamic import at the
 // top of this module handles the command and exits the process.
+
+function shutdownSubsystems(): void {
+  stopAll();
+  stopEventsSpool();
+  stopHooksServer();
+  stopUsagePolling();
+  stopAccountUsagePolling();
+  stopPromptQueueFlusher();
+  stopSelfTuneScheduler();
+  closeAllSandboxConnections();
+  if (uiRpcServer) {
+    void uiRpcServer.close().catch(() => {});
+    uiRpcServer = null;
+  }
+  releaseBackendLock();
+}
 
 if (!ORCHESTRA_CLI_MODE) {
   // Single-instance guard. Two GUI instances would share the same global event
@@ -1235,6 +418,23 @@ if (!ORCHESTRA_CLI_MODE) {
     // wipe the events dir. Mirrors the ozone-relaunch bail above.
     log.info('another Orchestra instance is already running — focusing it and exiting');
     app.exit(0);
+  }
+
+  // Backend lock: the Electron single-instance lock only fences app-vs-app.
+  // The HEADLESS DAEMON (src/main/daemon.ts) is an equal backend over the
+  // same ORCHESTRA_HOME — the same events-spool wipe hazard applies — so both
+  // take this shared lockfile (liveness = pid probe). Refuse to run while a
+  // daemon owns the home.
+  const lock = acquireBackendLock('electron');
+  if (!lock.ok) {
+    log.info(
+      `an orchestra ${lock.holder.kind} backend (pid ${lock.holder.pid}) already owns this ORCHESTRA_HOME — exiting`,
+    );
+    dialog.showErrorBox(
+      'Orchestra backend already running',
+      `An Orchestra ${lock.holder.kind === 'daemon' ? 'daemon' : 'app'} (pid ${lock.holder.pid}) is already running for this data directory.\n\nStop it first, then relaunch Orchestra.`,
+    );
+    app.exit(1);
   }
 
   app.on('second-instance', () => {
@@ -1274,26 +474,12 @@ if (!ORCHESTRA_CLI_MODE) {
 
   app.on('window-all-closed', () => {
     log.info('window-all-closed — shutting down');
-    stopAll();
-    stopEventsSpool();
-    stopHooksServer();
-    stopUsagePolling();
-    stopAccountUsagePolling();
-    stopPromptQueueFlusher();
-    stopSelfTuneScheduler();
-    closeAllSandboxConnections();
+    shutdownSubsystems();
     if (process.platform !== 'darwin') app.quit();
   });
 
   app.on('before-quit', () => {
-    stopAll();
-    stopEventsSpool();
-    stopHooksServer();
-    stopUsagePolling();
-    stopAccountUsagePolling();
-    stopPromptQueueFlusher();
-    stopSelfTuneScheduler();
-    closeAllSandboxConnections();
+    shutdownSubsystems();
   });
 
   app.on('activate', () => {

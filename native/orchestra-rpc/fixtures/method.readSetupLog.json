@@ -1,0 +1,7 @@
+{
+  "method": "readSetupLog",
+  "params": [
+    "ws-fixture-git"
+  ],
+  "result": ""
+}

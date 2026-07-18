@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { BrowserWindow } from 'electron';
+import { platform } from './platform';
 import { applyAgentEvent } from './activity';
 import { log } from './logger';
 
@@ -74,7 +74,7 @@ interface Cursor {
   prevSize: number;
 }
 
-let window: BrowserWindow | null = null;
+let started = false;
 let watcher: fs.FSWatcher | null = null;
 let poll: ReturnType<typeof setInterval> | null = null;
 const cursors = new Map<string, Cursor>();
@@ -104,10 +104,12 @@ function idFromFilename(name: string): string | null {
  *  the file under a writer; growth is bounded by `maybeRotate` at a quiescent
  *  moment instead. */
 function drain(id: string): void {
-  // No renderer target yet (or torn down): don't consume events we can't apply.
+  // No attached UI yet (or torn down): don't consume events we can't apply.
+  // The old guard was "no renderer window"; it generalizes to "no Electron
+  // window AND no ui-rpc client" — either can apply status updates now.
   // Advancing the cursor here would strand whatever we read until the next
   // append, since a re-drain would early-return on `size === offset`.
-  if (!window) return;
+  if (!started || !platform.hasAttachedUi()) return;
   const p = spoolPathFor(id);
   let size: number;
   try {
@@ -188,7 +190,7 @@ function drain(id: string): void {
     // good (the dot stuck on `running`). Swallow per-line so one bad event can
     // never strand the events behind it.
     try {
-      applyAgentEvent(id, ev.event, tool, window, transcript);
+      applyAgentEvent(id, ev.event, tool, transcript);
     } catch (e) {
       log.error(`events-spool: applyAgentEvent failed for ${id} seq=${seq} event=${ev.event}`, e);
     }
@@ -232,9 +234,9 @@ function drainAll(): void {
   }
 }
 
-export function startEventsSpool(win: BrowserWindow): void {
+export function startEventsSpool(): void {
   if (watcher || poll) return;
-  window = win;
+  started = true;
   try {
     fs.mkdirSync(EVENTS_DIR, { recursive: true });
   } catch {
@@ -293,5 +295,5 @@ export function stopEventsSpool(): void {
     poll = null;
   }
   cursors.clear();
-  window = null;
+  started = false;
 }

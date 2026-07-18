@@ -1,0 +1,15 @@
+{
+  "method": "listRepos",
+  "params": [],
+  "result": [
+    {
+      "path": "/tmp/orchestra-rpc-fixtures/repo",
+      "name": "repo",
+      "defaultBranch": "main",
+      "scripts": {
+        "setup": "echo setup",
+        "run": "echo run"
+      }
+    }
+  ]
+}

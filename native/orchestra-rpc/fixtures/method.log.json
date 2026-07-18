@@ -1,0 +1,11 @@
+{
+  "method": "log",
+  "params": [
+    "info",
+    "fixture log line",
+    {
+      "fixture": true
+    }
+  ],
+  "result": null
+}

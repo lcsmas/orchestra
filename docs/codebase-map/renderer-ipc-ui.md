@@ -25,18 +25,23 @@ Bootstrap order matters; several steps run *before* the window:
 - **IPC wrapper** `handle()` `:228` — logs every handler failure with its channel
   name before re-throwing.
 
-IPC handlers (all via `handle`): repos, workspaces CRUD `:598+`, sandbox
-(`workspaces:importToSandbox` `:643`, `workspaces:ejectFromSandbox` `:647`,
-`sandbox:backup` `:651`, `sandbox:controlState`/`takeControl` `:655`/`:661` —
-see [sandbox-transport.md](sandbox-transport.md)), PTY
-(`pty:start` idempotent + heavy-resume gate; `pty:write` flips `hasInput`
-and applies the heavy-resume keystroke suppression), git
-(`git:diff`/`stats`/`findPR`/`merge`/`switchBranch` — stats poll piggybacks
-merge+branch refresh; findPR piggybacks release detection), scripts,
-linear, accounts (incl. `accounts:loginStart`), usage,
-dependency checks (probes git/gh/claude, warns if missing). Startup also wires
-`setSandboxWindow` + `startSandboxAutoBackup` (`:314`/`:318`) and closes all
-sandbox connections on quit.
+IPC handlers: the request/response BODIES live in the shared table
+`src/main/api-handlers.ts` (keyed by `OrchestraAPI` member name — repos,
+workspaces CRUD, sandbox, PTY (`ptyStart` idempotent + heavy-resume gate;
+`ptyWrite` flips `hasInput` and applies the heavy-resume keystroke
+suppression), git (stats poll piggybacks merge+branch refresh; findPR
+piggybacks release detection), scripts, linear, accounts, usage, plus the
+ui-rpc-added `deps:status`/`app:info`/`pty:scrollback`). index.ts wires the
+table to its historical channels in one loop over `METHOD_IPC_CHANNELS`
+(every registration still goes through the logging `handle` wrapper);
+`dialog:pickDir` stays an inline Electron-only handler. The SAME table backs
+the ui-rpc socket server for external frontends — see
+[ui-rpc-backend.md](ui-rpc-backend.md). Startup also acquires the shared
+backend lock (app↔daemon mutual exclusion), starts the ui-rpc server, wires
+`startSandboxAutoBackup`, probes dependencies (deps.ts → warning dialog), and
+closes all sandbox connections on quit. Main-side modules broadcast via
+`platform.broadcast(channel, …)` (the seam) instead of `webContents.send` —
+no module takes a `BrowserWindow` parameter anymore.
 
 ## IPC contract — preload + ipc.ts
 `src/shared/ipc.ts` defines the `OrchestraAPI` interface (the full renderer↔main

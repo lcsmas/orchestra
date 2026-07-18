@@ -1,0 +1,34 @@
+{
+  "method": "listSelfTuneRuns",
+  "params": [],
+  "result": [
+    {
+      "id": "run-fixture-1",
+      "trigger": "auto",
+      "status": "ok",
+      "startedAt": 1700000000000,
+      "finishedAt": 1700000000000,
+      "steps": [
+        {
+          "id": "fold",
+          "kind": "fold",
+          "loginId": "default",
+          "label": "Default login",
+          "configDir": "/tmp/orchestra-rpc-fixtures/home/.claude",
+          "status": "ok",
+          "startedAt": 1700000000000,
+          "finishedAt": 1700000000000,
+          "exitCode": 0
+        }
+      ],
+      "summary": "1 lesson added",
+      "lessons": {
+        "added": [
+          "fixture lesson one"
+        ],
+        "removed": [],
+        "total": 1
+      }
+    }
+  ]
+}

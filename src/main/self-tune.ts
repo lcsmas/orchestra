@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { app, BrowserWindow, shell } from 'electron';
+import { platform } from './platform';
 import { store } from './store';
 import { log } from './logger';
 import {
@@ -44,7 +44,6 @@ function claudeCmd(): string {
   return process.env.ORCHESTRA_SELF_TUNE_CMD || 'claude';
 }
 
-let mainWindow: BrowserWindow | null = null;
 let current: SelfTuneRun | null = null;
 let timer: ReturnType<typeof setInterval> | null = null;
 let kickoff: ReturnType<typeof setTimeout> | null = null;
@@ -56,7 +55,7 @@ const OUTPUT_CAP = 512 * 1024;
 const outputs = new Map<string, string>();
 
 function transcriptDir(): string {
-  return path.join(app.getPath('userData'), 'orchestra', 'self-tune');
+  return path.join(platform.getUserDataDir(), 'orchestra', 'self-tune');
 }
 
 function transcriptPath(runId: string): string {
@@ -72,9 +71,7 @@ function appendOutput(runId: string, chunk: string): void {
   } catch {
     // Transcript persistence is best-effort — the live buffer still streams.
   }
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('selfTune:output', runId, chunk);
-  }
+  platform.broadcast('selfTune:output', runId, chunk);
 }
 
 /** The buffered transcript of a run — from memory while the app that ran it
@@ -92,9 +89,7 @@ export function getSelfTuneOutput(runId: string): string {
 
 async function persistAndBroadcast(run: SelfTuneRun): Promise<void> {
   await store.saveSelfTuneRun(run);
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('selfTune:update', run);
-  }
+  platform.broadcast('selfTune:update', run);
 }
 
 /** Runs, newest first, with the in-flight one (if any) up to date. */
@@ -139,7 +134,7 @@ export function listSelfTuneReports(): SelfTuneReport[] {
 export async function openSelfTuneReport(loginId: string): Promise<boolean> {
   const report = listSelfTuneReports().find((r) => r.loginId === loginId);
   if (!report?.reportPath) return false;
-  const err = await shell.openPath(report.reportPath);
+  const err = await platform.openPath(report.reportPath);
   if (err) throw new Error(err);
   return true;
 }
@@ -358,8 +353,7 @@ function autoRunIfDue(): void {
  *  off a run iff no successful run exists in the current calendar month. Also
  *  sweeps any `running` run left over from a previous session to `failed`
  *  (a child process can't survive a restart). */
-export function startSelfTuneScheduler(window: BrowserWindow): void {
-  mainWindow = window;
+export function startSelfTuneScheduler(): void {
   for (const run of store.selfTuneRuns) {
     if (run.status === 'running') {
       run.status = 'failed';

@@ -1,0 +1,7 @@
+{
+  "method": "restartAgent",
+  "params": [
+    "ws-fixture-git"
+  ],
+  "result": null
+}

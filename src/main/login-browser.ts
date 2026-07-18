@@ -1,7 +1,4 @@
 import { BrowserWindow, Menu, clipboard, session, shell } from 'electron';
-import { isClaudeAuthUrl } from '../shared/accounts';
-import { store } from './store';
-import { log } from './logger';
 
 // Per-account OAuth browser windows for the interactive account login.
 //
@@ -15,10 +12,13 @@ import { log } from './logger';
 // re-login of B lands on B's remembered session.
 //
 // URLs reach here from two directions, both funneled through
-// dispatchLoginUrlRequest: the login PTY's xdg-open/open PATH shim (via
-// `orchestra login-url` → the /loginUrl socket route) intercepting claude's
-// automatic browser-open, and the login modal's link handler for the printed
-// fallback URL. Non-Claude URLs fall through to the system browser unchanged.
+// login-url.ts's dispatchLoginUrlRequest (the Electron-free router) via the
+// platform seam: the login PTY's xdg-open/open PATH shim (via `orchestra
+// login-url` → the /loginUrl socket route) intercepting claude's automatic
+// browser-open, and the login modal's link handler for the printed fallback
+// URL. Non-Claude URLs fall through to the system browser before reaching
+// this module. This file is Electron-only — imported solely by the electron
+// platform implementation and index.ts, never by the daemon bundle.
 
 const windows = new Map<string, BrowserWindow>();
 
@@ -100,22 +100,3 @@ export function closeLoginBrowser(accountId: string): void {
   if (win && !win.isDestroyed()) win.close();
 }
 
-/** Route a browser-open coming out of an account login PTY (shim → socket) or
- *  the login modal's link handler. Claude/Anthropic OAuth pages get the
- *  account's isolated window; everything else opens in the system browser. */
-export function dispatchLoginUrlRequest(req: { accountId: string; url: string }): {
-  ok: boolean;
-  error?: string;
-  mode?: 'window' | 'external';
-} {
-  const { accountId, url } = req;
-  if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'not a web url' };
-  const account = store.accounts.find((a) => a.id === accountId);
-  if (account && isClaudeAuthUrl(url)) {
-    log.info(`login-browser: opening auth url for account ${accountId}`);
-    openLoginBrowser(accountId, url, account.label);
-    return { ok: true, mode: 'window' };
-  }
-  void shell.openExternal(url);
-  return { ok: true, mode: 'external' };
-}

@@ -1,0 +1,9 @@
+{
+  "method": "mergeWorktree",
+  "params": [
+    "ws-fixture-git"
+  ],
+  "result": {
+    "status": "requested"
+  }
+}

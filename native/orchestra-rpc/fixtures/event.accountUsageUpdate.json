@@ -1,0 +1,15 @@
+{
+  "channel": "accountUsageUpdate",
+  "args": [
+    {
+      "acct-fixture-1": {
+        "accountId": "acct-fixture-1",
+        "ok": false,
+        "data": null,
+        "errorKind": "not-logged-in",
+        "errorMessage": "account has not been logged in yet",
+        "fetchedAt": 1700000000000
+      }
+    }
+  ]
+}

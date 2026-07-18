@@ -1,0 +1,11 @@
+{
+  "method": "getDiffStats",
+  "params": [
+    "ws-fixture-scratch"
+  ],
+  "result": {
+    "additions": 0,
+    "deletions": 0,
+    "files": 0
+  }
+}

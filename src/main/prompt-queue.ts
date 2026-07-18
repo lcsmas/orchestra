@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { BrowserWindow } from 'electron';
+import { platform } from './platform';
 import { log } from './logger';
 import { store } from './store';
 import { isRunning, writePty } from './pty';
@@ -37,9 +37,8 @@ const TICK_MS = 20_000;
 // if the reset time has long passed (e.g. the endpoint keeps reporting 100%).
 const REFRESH_NUDGE_MS = 120_000;
 
-function broadcast(window: BrowserWindow, ws: Workspace): void {
-  if (window.isDestroyed() || window.webContents.isDestroyed()) return;
-  window.webContents.send('workspace:update', ws);
+function broadcast(ws: Workspace): void {
+  platform.broadcast('workspace:update', ws);
 }
 
 /** The freshest usage reading for the account a workspace logs in as: the
@@ -61,11 +60,7 @@ function usageForWorkspace(ws: Workspace): { fetchedAt: number; data: UsageWindo
 /** Park a prompt on a workspace's queue. Rejects unknown/archived workspaces,
  *  empty text, and a full queue. Returns the updated workspace (also
  *  broadcast, so every renderer view sees the new queue immediately). */
-export async function addQueuedPrompt(
-  id: string,
-  text: string,
-  window: BrowserWindow,
-): Promise<Workspace> {
+export async function addQueuedPrompt(id: string, text: string): Promise<Workspace> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) throw new Error('unknown workspace');
   const body = text.replace(/\r\n?/g, '\n').trim();
@@ -79,16 +74,12 @@ export async function addQueuedPrompt(
   };
   const updated: Workspace = { ...ws, queuedPrompts: [...queue, entry] };
   await store.upsertWorkspace(updated);
-  broadcast(window, updated);
+  broadcast(updated);
   return updated;
 }
 
 /** Drop one queued prompt by its entry id. No-op when already gone. */
-export async function removeQueuedPrompt(
-  id: string,
-  promptId: string,
-  window: BrowserWindow,
-): Promise<Workspace> {
+export async function removeQueuedPrompt(id: string, promptId: string): Promise<Workspace> {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('unknown workspace');
   const queue = ws.queuedPrompts ?? [];
@@ -96,7 +87,7 @@ export async function removeQueuedPrompt(
   if (next.length === queue.length) return ws;
   const updated: Workspace = { ...ws, queuedPrompts: next };
   await store.upsertWorkspace(updated);
-  broadcast(window, updated);
+  broadcast(updated);
   return updated;
 }
 
@@ -115,7 +106,6 @@ export interface FlushResult {
  *  re-queued so nothing is silently lost. */
 export async function flushQueuedPrompts(
   id: string,
-  window: BrowserWindow,
   opts: { force?: boolean } = {},
 ): Promise<FlushResult> {
   const ws = store.getWorkspace(id);
@@ -143,7 +133,7 @@ export async function flushQueuedPrompts(
   // racing) can't double-send; failure paths below re-queue.
   const cleared: Workspace = { ...ws, queuedPrompts: [] };
   await store.upsertWorkspace(cleared);
-  broadcast(window, cleared);
+  broadcast(cleared);
 
   const requeue = async (): Promise<void> => {
     const current = store.getWorkspace(id);
@@ -153,7 +143,7 @@ export async function flushQueuedPrompts(
       queuedPrompts: [...queue, ...(current.queuedPrompts ?? [])],
     };
     await store.upsertWorkspace(restored);
-    broadcast(window, restored);
+    broadcast(restored);
   };
 
   if (isRunning(id)) {
@@ -165,7 +155,7 @@ export async function flushQueuedPrompts(
   }
 
   try {
-    if (await wakeAgentWithPrompt(id, body, window)) {
+    if (await wakeAgentWithPrompt(id, body)) {
       // Insurance mirrored from dispatchMessageRequest: a woken agent that
       // dies almost immediately lost the injected prompt — restore the queue
       // so the user still sees (and can re-send) it.
@@ -185,7 +175,7 @@ let timer: ReturnType<typeof setInterval> | null = null;
 // Last time this workspace's stale limit made us nudge the account poller.
 const lastNudge = new Map<string, number>();
 
-async function tick(window: BrowserWindow): Promise<void> {
+async function tick(): Promise<void> {
   const now = Date.now();
   for (const ws of store.workspaces) {
     if (ws.archived) continue;
@@ -194,7 +184,7 @@ async function tick(window: BrowserWindow): Promise<void> {
     const usage = usageForWorkspace(ws);
     const newestQueuedAt = Math.max(...queue.map((p) => p.queuedAt));
     if (canAutoFlushQueue(newestQueuedAt, usage, now)) {
-      const res = await flushQueuedPrompts(ws.id, window).catch((e) => {
+      const res = await flushQueuedPrompts(ws.id).catch((e) => {
         log.warn(`prompt-queue auto-flush failed for ${ws.id}`, e);
         return null;
       });
@@ -212,7 +202,7 @@ async function tick(window: BrowserWindow): Promise<void> {
       const nudged = lastNudge.get(ws.id) ?? 0;
       if (until !== null && now >= until && now - nudged >= REFRESH_NUDGE_MS) {
         lastNudge.set(ws.id, now);
-        void refreshAccountsNow(window).catch(() => {});
+        void refreshAccountsNow().catch(() => {});
       }
     }
   }
@@ -220,9 +210,9 @@ async function tick(window: BrowserWindow): Promise<void> {
 
 /** Start the queue flusher (idempotent). Ticks are pure cache reads unless a
  *  queue is actually waiting, so the steady-state cost is nil. */
-export function startPromptQueueFlusher(window: BrowserWindow): void {
+export function startPromptQueueFlusher(): void {
   if (timer) return;
-  timer = setInterval(() => void tick(window), TICK_MS);
+  timer = setInterval(() => void tick(), TICK_MS);
 }
 
 export function stopPromptQueueFlusher(): void {

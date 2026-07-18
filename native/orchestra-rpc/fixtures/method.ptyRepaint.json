@@ -1,0 +1,9 @@
+{
+  "method": "ptyRepaint",
+  "params": [
+    "ws-fixture-git",
+    120,
+    32
+  ],
+  "result": null
+}

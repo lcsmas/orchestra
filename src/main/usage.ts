@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { app, BrowserWindow } from 'electron';
+import { platform } from './platform';
 import { log } from './logger';
 import { parseUsageResponse, type RawUsageResponse } from '../shared/accounts';
 import type { UsageSnapshot } from '../shared/types';
@@ -74,7 +74,7 @@ let loadedFromDisk = false;
 // Code's `/usage` reads; a few-minutes-stale value at startup is fine since the
 // windows move slowly and the first successful poll overwrites it.
 function snapshotPath(): string {
-  return path.join(app.getPath('userData'), 'orchestra', 'usage.json');
+  return path.join(platform.getUserDataDir(), 'orchestra', 'usage.json');
 }
 
 function loadPersisted(): UsageSnapshot | null {
@@ -179,7 +179,7 @@ function nextDelay(): number {
   return Math.min(backed, BACKOFF_CAP_MS);
 }
 
-async function poll(window: BrowserWindow): Promise<void> {
+async function poll(): Promise<void> {
   // Stamp the fetch time in the main process rather than the renderer so the
   // "as of" instant is when we actually queried, not when the IPC landed.
   const { snapshot, rateLimited } = await fetchUsage(Date.now());
@@ -189,25 +189,25 @@ async function poll(window: BrowserWindow): Promise<void> {
     rateLimitStreak = 0;
     lastSnapshot = snapshot;
     persist(snapshot);
-    if (!window.isDestroyed()) window.webContents.send('usage:update', snapshot);
+    platform.broadcast('usage:update', snapshot);
   }
   // A skip (no creds / expired / non-429 error) neither advances nor resets the
   // backoff — we just retry at the current cadence.
 }
 
-function schedule(window: BrowserWindow): void {
+function schedule(): void {
   if (stopped) return;
   timer = setTimeout(() => {
-    void poll(window).finally(() => schedule(window));
+    void poll().finally(() => schedule());
   }, nextDelay());
 }
 
-export function startUsagePolling(window: BrowserWindow): void {
+export function startUsagePolling(): void {
   if (!stopped) return;
   stopped = false;
   rateLimitStreak = 0;
   // Fire once immediately, then self-schedule the next poll with backoff.
-  void poll(window).finally(() => schedule(window));
+  void poll().finally(() => schedule());
 }
 
 export function stopUsagePolling(): void {

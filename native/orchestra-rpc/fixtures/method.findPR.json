@@ -1,0 +1,12 @@
+{
+  "method": "findPR",
+  "params": [
+    "ws-fixture-scratch"
+  ],
+  "result": {
+    "all": [],
+    "open": null,
+    "latest": null,
+    "mergedCount": 0
+  }
+}

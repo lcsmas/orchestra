@@ -1,15 +1,16 @@
 // Persistent storage for the user's secrets (currently just the Linear API
 // key), set from the app's settings UI rather than an env var.
 //
-// The key is encrypted at rest with Electron's safeStorage — on Linux this uses
-// the OS secret service (libsecret / KDE wallet), on macOS the Keychain, on
-// Windows DPAPI. We store the ciphertext as base64 in a JSON file under
-// userData. If safeStorage reports no OS backend (a headless box, no keyring
-// daemon), we fall back to storing the raw value with a 0600 file mode and a
-// logged warning — better a working feature than a hard failure, and the file
-// is already user-only in userData.
+// The key is encrypted at rest with Electron's safeStorage (via the platform
+// seam) — on Linux this uses the OS secret service (libsecret / KDE wallet),
+// on macOS the Keychain, on Windows DPAPI. We store the ciphertext as base64
+// in a JSON file under userData. If the seam reports no encryption backend (a
+// headless box, no keyring daemon, or the plain-Node daemon where safeStorage
+// doesn't exist), we fall back to storing the raw value with a 0600 file mode
+// and a logged warning — better a working feature than a hard failure, and the
+// file is already user-only in userData.
 
-import { app, safeStorage } from 'electron';
+import { platform } from './platform';
 import { readFile, writeFile, mkdir, rm, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -27,7 +28,7 @@ interface SecretsFile {
 let cached: SecretsFile | null = null;
 
 function secretsPath(): string {
-  return path.join(app.getPath('userData'), 'orchestra', 'secrets.json');
+  return path.join(platform.getUserDataDir(), 'orchestra', 'secrets.json');
 }
 
 async function readFileSafe(): Promise<SecretsFile> {
@@ -64,7 +65,7 @@ export async function getLinearApiKey(): Promise<string | undefined> {
   if (!raw) return undefined;
   if (!data.enc) return raw; // plaintext fallback path
   try {
-    return safeStorage.decryptString(Buffer.from(raw, 'base64'));
+    return platform.decryptString(Buffer.from(raw, 'base64'));
   } catch (err) {
     // Ciphertext written under a different OS user/keyring can't be decrypted.
     log.warn('could not decrypt stored Linear API key', { err: String(err) });
@@ -78,8 +79,8 @@ export async function setLinearApiKey(key: string): Promise<void> {
   const trimmed = key.trim();
   if (!trimmed) return clearLinearApiKey();
   const data = await readFileSafe();
-  if (safeStorage.isEncryptionAvailable()) {
-    data.linearApiKey = safeStorage.encryptString(trimmed).toString('base64');
+  if (platform.isEncryptionAvailable()) {
+    data.linearApiKey = platform.encryptString(trimmed).toString('base64');
     data.enc = true;
   } else {
     log.warn('safeStorage unavailable — storing Linear API key unencrypted', {

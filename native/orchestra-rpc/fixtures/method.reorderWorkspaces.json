@@ -1,0 +1,11 @@
+{
+  "method": "reorderWorkspaces",
+  "params": [
+    [
+      "ws-fixture-scratch",
+      "ws-fixture-git",
+      "ws-fixture-tmp"
+    ]
+  ],
+  "result": null
+}

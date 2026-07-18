@@ -1,0 +1,10 @@
+{
+  "method": "listGlobalInheritables",
+  "params": [],
+  "result": {
+    "skills": [
+      "fixture-skill"
+    ],
+    "mcpServers": []
+  }
+}

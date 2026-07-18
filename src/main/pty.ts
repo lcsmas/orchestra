@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron';
+import { platform } from './platform';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -155,10 +155,6 @@ export function clearScrollback(id: string) {
   }
 }
 
-function canSend(window: BrowserWindow): boolean {
-  return !window.isDestroyed() && !window.webContents.isDestroyed();
-}
-
 /** Ceiling on output retained while the window can't receive it. Beyond this,
  *  keep only the newest half: the screen is desynced either way at that point,
  *  and the remount path's repaint bounce (pty:repaint / pty:start on a live
@@ -166,40 +162,42 @@ function canSend(window: BrowserWindow): boolean {
  *  only truly unrecoverable outcome. */
 const MAX_PENDING_BYTES = 8 * 1024 * 1024;
 
-/** Send whatever output has accumulated for this session as one `pty:data`
- *  message and clear the buffer + pending timer. Safe to call when empty.
- *  If the window can't receive right now (destroyed/being recreated), RETAIN
- *  the buffer instead of dropping it — a drop desyncs the renderer's xterm
- *  from the child's diff-render model permanently (scattered-fragment garble);
- *  the next flush retries delivery. */
-function flushPtyData(s: Session, window: BrowserWindow): void {
+/** Send whatever output has accumulated for this session as one delivery —
+ *  the Electron renderer's `pty:data` IPC AND binary ptyData frames to every
+ *  attached ui-rpc client, via the platform seam, AFTER coalescing (spec §6:
+ *  clients see the same 8 ms/64 KiB cadence the renderer does; no second
+ *  buffer layer) — and clear the buffer + pending timer. Safe to call when
+ *  empty. If the primary target can't receive right now (Electron window
+ *  destroyed/being recreated), the seam reports undelivered and we RETAIN the
+ *  buffer instead of dropping it — a drop desyncs the renderer's xterm from
+ *  the child's diff-render model permanently (scattered-fragment garble); the
+ *  next flush retries delivery. */
+function flushPtyData(s: Session): void {
   if (s.flushTimer) {
     clearTimeout(s.flushTimer);
     s.flushTimer = null;
   }
   if (!s.outBuf) return;
-  if (!canSend(window)) {
+  if (!platform.broadcastPtyData(s.id, s.outBuf)) {
     if (s.outBuf.length > MAX_PENDING_BYTES) s.outBuf = s.outBuf.slice(-(MAX_PENDING_BYTES / 2));
     return;
   }
-  const data = s.outBuf;
   s.outBuf = '';
-  window.webContents.send('pty:data', s.id, data);
 }
 
 /** Buffer a chunk and ensure a flush is scheduled. Flushes immediately once the
  *  buffer crosses FLUSH_BYTES so a fast producer doesn't sit behind the timer. */
-function queuePtyData(s: Session, window: BrowserWindow, data: string): void {
+function queuePtyData(s: Session, data: string): void {
   s.outBuf += data;
   if (s.outBuf.length >= FLUSH_BYTES) {
-    flushPtyData(s, window);
+    flushPtyData(s);
     return;
   }
   if (!s.flushTimer) {
     const delay = Date.now() < s.echoUntil ? FLUSH_MS_ECHO : FLUSH_MS;
     s.flushTimer = setTimeout(() => {
       s.flushTimer = null;
-      flushPtyData(s, window);
+      flushPtyData(s);
     }, delay);
   }
 }
@@ -211,7 +209,6 @@ export async function startPty(opts: {
   args: string[];
   cols: number;
   rows: number;
-  window: BrowserWindow;
   /** Workspace id to surface to Claude hooks via $ORCHESTRA_WS_ID. Omit for
    * non-agent PTYs (nvim, etc.) that don't need to phone status home. */
   workspaceId?: string;
@@ -360,7 +357,7 @@ export async function startPty(opts: {
       // Coalesce the IPC send so a burst of tiny chunks doesn't flood the
       // shared renderer queue and stall the status dot. Order is preserved:
       // appends and flushes are FIFO on this single buffer.
-      queuePtyData(session, opts.window, data);
+      queuePtyData(session, data);
     }),
   );
   session.disposables.push(
@@ -368,9 +365,9 @@ export async function startPty(opts: {
       log.info(`pty exited id=${opts.id} code=${exitCode}${session.stopped ? ' (stopped)' : ''}`);
       // Flush any buffered tail before the exit notification so the terminal
       // shows the process's final output, and so it can't arrive after exit.
-      flushPtyData(session, opts.window);
-      if (!session.stopped && canSend(opts.window)) {
-        opts.window.webContents.send('pty:exit', opts.id, exitCode);
+      flushPtyData(session);
+      if (!session.stopped && platform.canBroadcast()) {
+        platform.broadcast('pty:exit', opts.id, exitCode);
       }
       // Reconciliation floor: once the agent process is gone it can't be
       // `running`, so self-heal the status (the stuck-green "working" dot) to
@@ -393,8 +390,8 @@ export async function startPty(opts: {
       // entry at all; both correctly reconcile.
       const taken = sessions.get(opts.id);
       const replacedByLive = taken !== undefined && taken !== session;
-      if (!shuttingDown && !replacedByLive && session.workspaceId && canSend(opts.window)) {
-        reconcileExited(session.workspaceId, opts.window);
+      if (!shuttingDown && !replacedByLive && session.workspaceId && platform.canBroadcast()) {
+        reconcileExited(session.workspaceId);
       }
       disposeSession(session);
       sessions.delete(opts.id);

@@ -1,0 +1,10 @@
+{
+  "method": "deps:status",
+  "params": [],
+  "result": {
+    "git": true,
+    "gh": true,
+    "claude": true,
+    "messages": []
+  }
+}

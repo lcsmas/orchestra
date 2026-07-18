@@ -1,0 +1,19 @@
+{
+  "method": "setRepoScripts",
+  "params": [
+    "/tmp/orchestra-rpc-fixtures/repo",
+    {
+      "setup": "echo setup",
+      "run": "echo run"
+    }
+  ],
+  "result": {
+    "path": "/tmp/orchestra-rpc-fixtures/repo",
+    "name": "repo",
+    "defaultBranch": "main",
+    "scripts": {
+      "setup": "echo setup",
+      "run": "echo run"
+    }
+  }
+}

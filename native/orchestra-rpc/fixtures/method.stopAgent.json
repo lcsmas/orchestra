@@ -1,0 +1,7 @@
+{
+  "method": "stopAgent",
+  "params": [
+    "ws-fixture-git"
+  ],
+  "result": null
+}

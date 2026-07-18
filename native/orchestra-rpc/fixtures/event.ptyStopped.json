@@ -1,0 +1,6 @@
+{
+  "channel": "ptyStopped",
+  "args": [
+    "ws-fixture-git"
+  ]
+}

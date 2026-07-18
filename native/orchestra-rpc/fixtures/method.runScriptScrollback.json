@@ -1,0 +1,7 @@
+{
+  "method": "runScriptScrollback",
+  "params": [
+    "ws-fixture-git"
+  ],
+  "result": ""
+}

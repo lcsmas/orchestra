@@ -1,0 +1,16 @@
+{
+  "method": "getDiff",
+  "params": [
+    "ws-fixture-git"
+  ],
+  "result": [
+    {
+      "path": "hello.txt",
+      "status": "modified",
+      "additions": 2,
+      "deletions": 1,
+      "oldContent": "one\ntwo\nthree\n",
+      "newContent": "one\nTWO\nthree\nfour\n"
+    }
+  ]
+}
