@@ -11,11 +11,15 @@ Build first: `npx vite build` (produces `dist/` + `dist-electron/`). Do NOT use
 ## Launch an isolated instance with CDP
 
 ```bash
-ORCHESTRA_HOME=<fresh tmp dir> ORCHESTRA_DEBUG_PORT=9322 npx electron .
+ORCHESTRA_HOME=<fresh tmp dir> ORCHESTRA_DEBUG_PORT=<unique port> npx electron .
 ```
 
-- `ORCHESTRA_HOME` relocates userData/worktrees/events — never touches the real
-  `~/.orchestra` or the user's running Orchestra.
+- Pick a UNIQUE debug port (e.g. 93xx picked from your workspace id) — sibling
+  agents run identical harnesses and 9322 specifically has collided; after
+  connecting, confirm the `/json` target's `url` points at YOUR worktree.
+- `ORCHESTRA_HOME` relocates userData (store/logs/login dirs) and the events
+  spool — but NOT scratch dirs or worktrees, which the app still creates under
+  the real `~/.orchestra`; clean up any workspace you let it create.
 - `ORCHESTRA_DEBUG_PORT` enables CDP (`src/main/index.ts` also sets
   `remote-allow-origins=*`, so websockets don't 403).
 - Target discovery: `curl http://127.0.0.1:<port>/json` → `webSocketDebuggerUrl`
@@ -26,6 +30,9 @@ ORCHESTRA_HOME=<fresh tmp dir> ORCHESTRA_DEBUG_PORT=9322 npx electron .
 Native `WebSocket` + `Runtime.evaluate` (`returnByValue: true`) for DOM
 assertions and clicks; `Page.captureScreenshot` for pixels. Keep a timeout race
 around screenshots — they hang forever if the window can't produce frames.
+Terminal CONTENT is invisible to DOM assertions (the WebGL renderer paints to
+canvas; `innerText` is empty) — verify terminal output via screenshot pixels or
+the PTY log instead.
 
 ## Screenshots need a compositor that renders the window
 
