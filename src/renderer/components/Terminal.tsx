@@ -419,7 +419,14 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     const offExit = window.orchestra.onPtyExit((id, code) => {
       if (id === workspaceId) {
         clearBoot();
-        term.writeln(`\r\n\x1b[33m[agent exited with code ${code}]\x1b[0m`);
+        // Un-latch like the stopped path below, so a keystroke (or the next
+        // activation) relaunches instead of typing into a dead session.
+        started = false;
+        lastSentCols = 0;
+        lastSentRows = 0;
+        term.writeln(
+          `\r\n\x1b[33m[agent exited with code ${code} — press any key to relaunch]\x1b[0m`,
+        );
       }
     });
     // Main process stopped the pty and wants us to spawn a fresh one — used
@@ -439,11 +446,33 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       allowStartRef.current = true;
       start();
     });
+    // Main stopped the pty with NO respawn (the Resources page's per-agent
+    // stop). Un-latch `started` so the terminal doesn't sit silently dead:
+    // the next activation — or a keystroke, via the onData relaunch below —
+    // spawns a fresh agent that resumes with `claude --continue`.
+    const offStopped = window.orchestra.onPtyStopped((id) => {
+      if (id !== workspaceId) return;
+      clearBoot();
+      queue.reset();
+      started = false;
+      lastSentCols = 0;
+      lastSentRows = 0;
+      term.writeln('\r\n\x1b[33m[agent stopped — press any key to relaunch]\x1b[0m');
+    });
 
     term.onData((data) => {
       // A keystroke means the user can already see something worth typing at —
       // never leave the pill floating over a UI they're interacting with.
       clearBoot();
+      // Dead-session relaunch: after a stop (or exit), the first keystroke
+      // revives the agent instead of being dropped by a writePty no-op. The
+      // keystroke itself is intentionally not forwarded — it's the trigger,
+      // not input. Never fires pre-first-start: an inactive tab can't be
+      // typed into, and activation flips the latch and starts the PTY.
+      if (!started && allowStartRef.current) {
+        start();
+        return;
+      }
       window.orchestra.ptyWrite(workspaceId, data);
     });
 
@@ -536,6 +565,7 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       offData();
       offExit();
       offRestart();
+      offStopped();
       startRef.current = null;
       forceRefitRef.current = null;
       repaintRef.current = null;

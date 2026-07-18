@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { loginColor } from './AccountBadge';
+import { dialog } from './Dialog';
 import { formatResetsIn, formatUpdatedAgo } from './UsageBars';
 import type { ResourceSnapshot, SessionResourceStat } from '../../shared/resources';
 import type { UsageErrorKind, UsageWindow, Workspace } from '../../shared/types';
@@ -182,11 +183,45 @@ function AgentRowView({
   const procs = row.sessions.flatMap((s) => s.processes).sort((a, b) => b.memBytes - a.memBytes);
   const name = row.ws ? row.ws.branch : row.fallbackName;
   const repo = row.ws?.repoPath ? row.ws.repoPath.split('/').pop() : row.ws ? 'scratch' : '';
+  // The stop target is the agent PTY (its id IS the workspace id) — run/nvim
+  // sessions are left alone. Rows with no live agent session get no button.
+  const agentSession = row.sessions.find((s) => s.kind === 'agent');
+  const onStop = async (e: React.MouseEvent) => {
+    // The row itself is a disclosure toggle — a stop must not also expand it.
+    e.stopPropagation();
+    if (!agentSession) return;
+    if (row.ws?.status === 'running') {
+      const ok = await dialog.confirm({
+        title: 'Stop agent?',
+        message: `${name} is mid-turn. Stopping will kill the current response.`,
+        detail:
+          'The agent process exits and frees its CPU/memory. Reopening the workspace (or pressing a key in its terminal) relaunches it with `claude --continue`.',
+        tone: 'danger',
+      });
+      if (!ok) return;
+    }
+    try {
+      await window.orchestra.stopAgent(agentSession.ptyId);
+    } catch (err) {
+      void dialog.error(`Could not stop agent: ${(err as Error).message}`);
+    }
+  };
   return (
     <>
-      <button
+      {/* div[role=button], not <button>: the stop control nests inside, and
+          interactive content is invalid inside a real <button>. */}
+      <div
         className={`res-agent-row${open ? ' open' : ''}`}
+        role="button"
+        tabIndex={0}
         onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return; // let the stop button keep Enter/Space
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setOpen((v) => !v);
+          }
+        }}
         aria-expanded={open}
         title={open ? 'Hide processes' : 'Show processes'}
       >
@@ -217,7 +252,21 @@ function AgentRowView({
         )}
         <span className="res-cell dim res-col-disk">{formatBytes(diskBytes)}</span>
         <span className="res-cell dim res-col-ctx">{formatTokens(ctxTokens)}</span>
-      </button>
+        <span className="res-col-stop">
+          {agentSession && (
+            <button
+              className="res-stop-btn"
+              onClick={(e) => void onStop(e)}
+              title="Stop this agent's process (conversation resumes on relaunch)"
+              aria-label={`Stop agent ${name}`}
+            >
+              <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
+                <rect x="0.5" y="0.5" width="7" height="7" rx="1.5" fill="currentColor" />
+              </svg>
+            </button>
+          )}
+        </span>
+      </div>
       {open && !row.remote && (
         <div className="res-procs">
           {procs.length === 0 && <div className="res-procs-empty">No live processes.</div>}
@@ -551,6 +600,7 @@ export function ResourcesView() {
                 <span className="res-col-procs">procs</span>
                 <span className="res-col-disk">disk</span>
                 <span className="res-col-ctx">ctx</span>
+                <span className="res-col-stop" />
               </div>
               {rows.map((row) => (
                 <AgentRowView
@@ -576,6 +626,7 @@ export function ResourcesView() {
                   <span className="res-cell dim res-col-procs">{s.procCount}</span>
                   <span className="res-cell dim res-col-disk">—</span>
                   <span className="res-cell dim res-col-ctx">—</span>
+                  <span className="res-col-stop" />
                 </div>
               ))}
             </div>

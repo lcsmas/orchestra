@@ -56,11 +56,20 @@ panes, so every mounted TerminalView keeps its xterm scrollback. `store.page`
 Sections: stat tiles (agent CPU with a fleet-wide sparkline, agent memory, app
 memory, worktrees on disk, live-agent count) → Agents table (per-workspace
 rows: status dot, branch, session-kind chips, 3-minute CPU trace, cpu/mem/
-procs/disk/ctx; click a row to expand its process list; remote rows show a
-"runs in sandbox" note; login PTYs listed after) → App processes → Token usage
-by login (per-account cards: 5h/7d/Fable/extra meters with reset countdowns,
-error/expired notes, pinned workspaces; hottest account first) → Orchestra
-data on disk.
+procs/disk/ctx, and a per-row stop button; click a row to expand its process
+list; remote rows show a "runs in sandbox" note; login PTYs listed after) →
+App processes → Token usage by login (per-account cards: 5h/7d/Fable/extra
+meters with reset countdowns, error/expired notes, pinned workspaces; hottest
+account first) → Orchestra data on disk.
+
+Per-row stop (`.res-stop-btn`): rows with a live agent session carry a stop
+control that calls `agent:stop` on the agent PTY id — kill without respawn, so
+the process's CPU/memory is actually freed (a confirm dialog guards a mid-turn
+`running` agent). The row is a `div[role=button]`, not a `<button>`, because
+the stop button nests inside it. The workspace terminal prints "[agent stopped
+— press any key to relaunch]" and relaunches with `claude --continue` on the
+next keystroke or activation (see
+[activity-pty-terminal.md](activity-pty-terminal.md)).
 
 CPU traces live in a component-local ref (`histRef`, 90 samples ≈ 3 min at the
 2s cadence, keyed by workspace id + `__total__`); a workspace with no live

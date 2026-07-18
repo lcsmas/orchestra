@@ -144,6 +144,16 @@ failure, or a `BOOT_PILL_MAX_MS` (20 s) safety timeout. CSS
 `.term-boot-pill` (styles.css) fades in after 250 ms so fast starts never
 flash it.
 
+**Stop without respawn (`agent:stop`, main index.ts):** the Resources page's
+per-agent stop kills the agent PTY and deliberately does NOT respawn (the point
+is freeing CPU/memory). `stopPty` disposes the transport listeners before
+killing, so the exit handler's `reconcileExited` floor never fires on this path
+— the handler reconciles explicitly, then emits `pty:stopped`. Terminal.tsx
+handles it (and natural `pty:exit`) by un-latching `started` and printing a
+"press any key to relaunch" notice; `term.onData` treats the first keystroke on
+a dead session as a relaunch trigger (calls `start()`, does not forward the
+key), so the next spawn resumes via `claude --continue`.
+
 **Repaint-on-show (the garbled-frame fix):** a hidden tab is `visibility:hidden`
 (not unmounted), so the PTY keeps streaming and `drainPending` keeps writing into
 xterm while its WebGL canvas is offscreen/occluded — on some GPUs that leaves the

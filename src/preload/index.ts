@@ -66,6 +66,7 @@ const api: OrchestraAPI = {
   ptyResize: (id, cols, rows) => ipcRenderer.invoke('pty:resize', id, cols, rows),
   saveClipboardImage: (mime, bytes) => ipcRenderer.invoke('clipboard:saveImage', mime, bytes),
   restartAgent: (id) => ipcRenderer.invoke('agent:restart', id),
+  stopAgent: (id) => ipcRenderer.invoke('agent:stop', id),
   nvimStart: (id, cols, rows) => ipcRenderer.invoke('nvim:start', id, cols, rows),
 
   getRepoScripts: (repoPath) => ipcRenderer.invoke('repos:getScripts', repoPath),
@@ -90,6 +91,11 @@ const api: OrchestraAPI = {
     const listener = (_e: unknown, id: string) => cb(id);
     ipcRenderer.on('pty:restart', listener);
     return () => ipcRenderer.off('pty:restart', listener);
+  },
+  onPtyStopped: (cb) => {
+    const listener = (_e: unknown, id: string) => cb(id);
+    ipcRenderer.on('pty:stopped', listener);
+    return () => ipcRenderer.off('pty:stopped', listener);
   },
 
   sandboxControlState: (id) => ipcRenderer.invoke('sandbox:controlState', id),

@@ -200,10 +200,17 @@ export interface OrchestraAPI {
    * current PTY and triggers a fresh spawn that runs `claude --continue`,
    * picking up MCP server / settings.json changes without losing context. */
   restartAgent: (id: string) => Promise<void>;
+  /** Stop the agent process WITHOUT respawning (the Resources page's per-agent
+   * stop). The conversation isn't lost: the terminal relaunches the agent with
+   * `claude --continue` on the next activation or keystroke. */
+  stopAgent: (id: string) => Promise<void>;
   nvimStart: (id: string, cols: number, rows: number) => Promise<void>;
   onPtyData: (cb: (id: string, data: string) => void) => () => void;
   onPtyExit: (cb: (id: string, code: number) => void) => () => void;
   onPtyRestart: (cb: (id: string) => void) => () => void;
+  /** Fires after `stopAgent` killed a workspace's agent PTY — no respawn
+   * follows (unlike onPtyRestart). */
+  onPtyStopped: (cb: (id: string) => void) => () => void;
 
   // Sandbox cross-machine ownership (one driver, other machines read-only).
   /** Latest ownership state for a sandbox-hosted workspace's endpoint, or null

@@ -3848,7 +3848,7 @@ button.danger-primary:active {
 .res-agent-row {
   display: grid;
   grid-template-columns:
-    12px minmax(140px, 1fr) minmax(56px, auto) 104px 112px 72px 40px 60px 44px;
+    12px minmax(140px, 1fr) minmax(56px, auto) 104px 112px 72px 40px 60px 44px 20px;
   gap: 10px;
   align-items: center;
   padding: 8px 14px;
@@ -3857,14 +3857,14 @@ button.danger-primary:active {
   .res-table-head,
   .res-agent-row {
     grid-template-columns:
-      12px minmax(140px, 1fr) minmax(56px, auto) 112px 72px 40px 60px 44px;
+      12px minmax(140px, 1fr) minmax(56px, auto) 112px 72px 40px 60px 44px 20px;
   }
   .res-col-trace { display: none; }
 }
 @container (max-width: 579px) {
   .res-table-head,
   .res-agent-row {
-    grid-template-columns: 12px minmax(110px, 1fr) minmax(56px, auto) 112px 72px;
+    grid-template-columns: 12px minmax(110px, 1fr) minmax(56px, auto) 112px 72px 20px;
   }
   .res-col-procs,
   .res-col-disk,
@@ -3881,7 +3881,8 @@ button.danger-primary:active {
 }
 .res-table-head span:nth-child(n+5) { text-align: right; }
 .res-agent-row {
-  /* row is a <button> (expand/collapse) — strip the chrome */
+  /* row is a div[role=button] (expand/collapse) — the stop button nests
+     inside, which a real <button> can't contain */
   width: 100%;
   text-align: left;
   background: transparent;
@@ -3891,11 +3892,36 @@ button.danger-primary:active {
   padding: 9px 14px;
   font-size: 12px;
   font-weight: 400;
+  cursor: pointer;
 }
 .res-agent-row + .res-agent-row,
 .res-procs + .res-agent-row { border-top: 1px solid var(--border); }
 .res-agent-row:hover { background: var(--bg-3); transform: none; box-shadow: none; }
 .res-agent-row.static { cursor: default; }
+/* Per-row stop-the-agent control. Dim square that turns red on hover — a
+   deliberate kill affordance, not a status color. */
+.res-col-stop { display: flex; justify-content: flex-end; }
+.res-stop-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  box-shadow: none;
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+.res-stop-btn:hover {
+  background: rgba(240, 90, 90, 0.15);
+  color: var(--red);
+  opacity: 1;
+  transform: none;
+  box-shadow: none;
+}
 .res-agent-name {
   display: flex;
   flex-direction: column;
@@ -3933,16 +3959,16 @@ button.danger-primary:active {
 .res-chip.nvim { color: var(--accent-2); border-color: rgba(139, 124, 255, 0.4); }
 .res-chip.login { color: var(--yellow); border-color: rgba(255, 200, 87, 0.4); }
 .res-remote-note {
-  /* Fill the trace/cpu/memory/procs tracks but stop before disk + ctx, which
-     a remote workspace still shows. The narrowest variant hides those two
-     columns, so there the note runs to the end instead. */
-  grid-column: 4 / -3;
+  /* Fill the trace/cpu/memory/procs tracks but stop before disk + ctx (which
+     a remote workspace still shows) and the stop column. The narrowest
+     variant hides disk/ctx, so there the note runs up to the stop column. */
+  grid-column: 4 / -4;
   font-size: 11px;
   color: var(--text-dim);
   font-style: italic;
 }
 @container (max-width: 579px) {
-  .res-remote-note { grid-column: 4 / -1; }
+  .res-remote-note { grid-column: 4 / -2; }
 }
 .res-cpu-cell {
   display: grid;

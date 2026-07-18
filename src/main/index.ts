@@ -223,6 +223,7 @@ import {
   detectAndUpdateBranchName,
   detectAndUpdateMergeState,
   detectAndUpdateReleaseState,
+  reconcileExited,
 } from './activity';
 import {
   primeLocalSyncStates,
@@ -913,6 +914,20 @@ handle('agent:restart', (_e, id: string) => {
   if (!isRunning(id)) return;
   stopPty(id);
   getMainWindow().webContents.send('pty:restart', id);
+});
+
+handle('agent:stop', (_e, id: string) => {
+  // The Resources page's per-agent stop: kill the agent PTY and do NOT
+  // respawn — the point is to free the process's CPU/memory. stopPty disposes
+  // the transport listeners before killing, so the exit handler's
+  // reconciliation floor never fires on this path — reconcile the status dot
+  // here. `pty:stopped` lets the workspace terminal show the stop and re-arm
+  // its lazy start (next activation or keystroke relaunches with
+  // `claude --continue`) instead of sitting silently dead.
+  if (!isRunning(id)) return;
+  stopPty(id);
+  reconcileExited(id, getMainWindow());
+  getMainWindow().webContents.send('pty:stopped', id);
 });
 
 handle('git:diff', async (_e, id: string) => {
