@@ -1,0 +1,15 @@
+[package]
+name = "orchestra-gtk4-shell"
+version = "0.1.0"
+edition = "2021"
+description = "Exploratory GTK4+Relm4+VTE port of Orchestra's shell (prototype, not production)"
+
+[dependencies]
+relm4 = "0.11"
+gtk = { package = "gtk4", version = "0.11", features = ["v4_10"] }
+vte4 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 2
