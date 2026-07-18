@@ -1,0 +1,12 @@
+[package]
+name = "orchestra-gtk"
+description = "Native GTK4 frontend for Orchestra (coexists with the Electron app)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# M0 placeholder: A3 (gtk-skeleton workstream) adds gtk4/relm4/vte4 deps here.
+# Kept dependency-free at M0 so `cargo test -p orchestra-rpc` runs on machines
+# without GTK devel packages.
+[dependencies]
+orchestra-rpc = { path = "../orchestra-rpc" }
