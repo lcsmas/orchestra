@@ -8,9 +8,11 @@ import { store } from './store';
 import { log } from './logger';
 import {
   buildFoldPrompt,
+  ensureLessonsImport,
   enumerateSelfTuneLogins,
   isSelfTuneDue,
   lastSuccessAt,
+  LESSONS_BOOTSTRAP,
   newestReport,
   parseFoldSummary,
   type SelfTuneLogin,
@@ -149,6 +151,46 @@ export function readSelfTuneLessons(): string {
   }
 }
 
+/** Make sure the fold pass's write targets exist on a machine that has never
+ *  had them: LESSONS.md (created with its canonical header so the agent has
+ *  the file's rules to follow), the usage-data dir for self-tune.log, and —
+ *  the load-bearing one — the `@LESSONS.md` import in the global CLAUDE.md,
+ *  without which the lessons the fold writes are never loaded by any session.
+ *  The fold prompt forbids the agent from touching CLAUDE.md, so this edit
+ *  has to happen here. Returns transcript lines for what was bootstrapped. */
+function ensureFoldTargets(home: string): string[] {
+  const actions: string[] = [];
+  const claudeDir = path.join(home, '.claude');
+  try {
+    fs.mkdirSync(path.join(claudeDir, 'usage-data'), { recursive: true });
+    const lessonsPath = path.join(claudeDir, 'LESSONS.md');
+    if (!fs.existsSync(lessonsPath)) {
+      fs.writeFileSync(lessonsPath, LESSONS_BOOTSTRAP);
+      actions.push(`bootstrapped ${lessonsPath}`);
+    }
+    const claudeMdPath = path.join(claudeDir, 'CLAUDE.md');
+    let existing: string | null = null;
+    try {
+      existing = fs.readFileSync(claudeMdPath, 'utf8');
+    } catch {
+      // Missing CLAUDE.md — ensureLessonsImport(null) creates it from scratch.
+    }
+    const updated = ensureLessonsImport(existing);
+    if (updated !== null) {
+      fs.writeFileSync(claudeMdPath, updated);
+      actions.push(
+        existing === null
+          ? `created ${claudeMdPath} with the @LESSONS.md import`
+          : `added the @LESSONS.md import to ${claudeMdPath}`,
+      );
+    }
+  } catch (err) {
+    log.warn('self-tune: failed to bootstrap fold targets', err);
+    actions.push(`bootstrap of fold targets failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return actions;
+}
+
 /** Spawn one pipeline step and stream its output into the run transcript.
  *  Resolves the exit code; a spawn-level failure (ENOENT…) resolves -1 with
  *  the error recorded on the step. */
@@ -213,6 +255,9 @@ async function executeRun(run: SelfTuneRun, logins: SelfTuneLogin[]): Promise<vo
     fold.startedAt = Date.now();
     await persistAndBroadcast(run);
     appendOutput(run.id, `\n=== fold — distill lessons into ~/.claude/LESSONS.md ===\n`);
+    for (const action of ensureFoldTargets(os.homedir())) {
+      appendOutput(run.id, `${action}\n`);
+    }
     const reports = logins.map(resolveReport);
     const prompt = buildFoldPrompt(reports, os.homedir());
     const code = await runStep(run, fold, ['-p', prompt, '--dangerously-skip-permissions'], null);

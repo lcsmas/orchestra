@@ -122,6 +122,29 @@ export function newestReport(fileNames: string[]): string | null {
  *  one-line outcome ("2 lessons added") without parsing free-form output. */
 export const FOLD_RESULT_MARKER = 'SELF-TUNE-RESULT:';
 
+/** Canonical content of a freshly-bootstrapped ~/.claude/LESSONS.md — the
+ *  header carries the file's own curation rules, which the fold prompt tells
+ *  the agent to follow. */
+export const LESSONS_BOOTSTRAP =
+  '# Lessons (auto-curated by /retro — keep under ~30 bullets, one line each)\n';
+
+/** The @-import line the global ~/.claude/CLAUDE.md needs for LESSONS.md to
+ *  load into every session. Without it the fold pass writes lessons nobody
+ *  ever reads. */
+export const LESSONS_IMPORT = '@LESSONS.md';
+
+/** Ensure `claudeMd` (the global CLAUDE.md content, or null when the file
+ *  doesn't exist) @-imports LESSONS.md. Returns the content to write, or null
+ *  when the import is already present and no write is needed. */
+export function ensureLessonsImport(claudeMd: string | null): string | null {
+  if (claudeMd === null || claudeMd.trim() === '') return `${LESSONS_IMPORT}\n`;
+  // Match the import as its own token (start-of-file or whitespace on both
+  // sides) so prose mentioning "…@LESSONS.mdx" can't false-positive.
+  if (/(^|\s)@LESSONS\.md(\s|$)/.test(claudeMd)) return null;
+  const sep = claudeMd.endsWith('\n') ? '' : '\n';
+  return `${claudeMd}${sep}${LESSONS_IMPORT}\n`;
+}
+
 /** Extract the fold pass's outcome from its streamed output — the text after
  *  the last {@link FOLD_RESULT_MARKER} line — or null when the pass never
  *  printed one (crashed, or an older prompt). */

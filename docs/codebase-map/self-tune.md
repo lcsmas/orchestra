@@ -23,6 +23,10 @@ Dependency-free (testable under `node --test`):
   LESSONS.md's own rules, and asks for a final `SELF-TUNE-RESULT: <outcome>`
   marker line; `parseFoldSummary(output)` `:129` extracts it (last marker wins)
   for the UI's "Jul 18 · 2 lessons added" row.
+- `ensureLessonsImport(claudeMd)` `:203` — returns the global CLAUDE.md content
+  to write so it `@LESSONS.md`-imports lessons (creates-from-scratch on null,
+  appends when missing), or null when already present. `LESSONS_BOOTSTRAP`
+  `:130` is the canonical header for a fresh LESSONS.md.
 - Types: `SelfTuneRun` (id/trigger/status/steps/summary), `SelfTuneStep`
   (`insights:<loginId>` per login + one `fold`), `SelfTuneReport`.
 
@@ -35,6 +39,12 @@ Dependency-free (testable under `node --test`):
   login dir for alternate accounts (`runStep` `:158`). A failed insights step
   is tolerated (fold reads the newest *existing* report); the run's status is
   the fold's status.
+- **Bootstrap on bare machines**: `ensureFoldTargets(home)` `:161` runs just
+  before the fold spawn — creates `~/.claude/LESSONS.md` (canonical header),
+  the `usage-data/` dir, and ensures the global `~/.claude/CLAUDE.md`
+  `@LESSONS.md` import exists (creating CLAUDE.md if absent). Without that
+  import the fold would write lessons no session ever loads; the fold prompt
+  forbids the agent itself from touching CLAUDE.md, so main does it.
 - **Test seam**: `ORCHESTRA_SELF_TUNE_CMD` overrides the `claude` executable
   (`claudeCmd` `:41`) so tests/e2e drive the full pipeline with a fast fake.
 - **Transcript**: per-run in-memory ring buffer (512 KB tail) mirrored to

@@ -2,10 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildFoldPrompt,
+  ensureLessonsImport,
   enumerateSelfTuneLogins,
   FOLD_RESULT_MARKER,
   isSelfTuneDue,
   lastSuccessAt,
+  LESSONS_IMPORT,
   newestReport,
   parseFoldSummary,
   type SelfTuneRun,
@@ -130,6 +132,29 @@ test('buildFoldPrompt: lists every login report path, flags missing ones', () =>
   assert.match(prompt, /\/home\/u\/\.claude\/LESSONS\.md/);
   assert.match(prompt, /\/home\/u\/\.claude\/usage-data\/self-tune\.log/);
   assert.ok(prompt.includes(FOLD_RESULT_MARKER));
+});
+
+// ---- ensureLessonsImport -----------------------------------------------------
+
+test('ensureLessonsImport: missing or blank CLAUDE.md → created with just the import', () => {
+  assert.equal(ensureLessonsImport(null), `${LESSONS_IMPORT}\n`);
+  assert.equal(ensureLessonsImport(''), `${LESSONS_IMPORT}\n`);
+  assert.equal(ensureLessonsImport('  \n\n'), `${LESSONS_IMPORT}\n`);
+});
+
+test('ensureLessonsImport: import already present → no write needed', () => {
+  assert.equal(ensureLessonsImport('@LESSONS.md\n'), null);
+  assert.equal(ensureLessonsImport('@RTK.md\n@LESSONS.md\n\n## Rules\n'), null);
+  // Token at end of file without a trailing newline still counts.
+  assert.equal(ensureLessonsImport('some rules\n@LESSONS.md'), null);
+});
+
+test('ensureLessonsImport: content without the import → import appended', () => {
+  assert.equal(ensureLessonsImport('## My rules\n- be nice\n'), '## My rules\n- be nice\n@LESSONS.md\n');
+  // Missing trailing newline gets one before the import.
+  assert.equal(ensureLessonsImport('## My rules'), '## My rules\n@LESSONS.md\n');
+  // A near-miss token is not a match.
+  assert.equal(ensureLessonsImport('see @LESSONS.mdx for details\n'), 'see @LESSONS.mdx for details\n@LESSONS.md\n');
 });
 
 test('parseFoldSummary: last marker line wins; absent → null', () => {
