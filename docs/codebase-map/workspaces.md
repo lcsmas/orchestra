@@ -115,10 +115,14 @@ endpoint}` = agent lives in an always-on container, see
   with automatic snapshots in `~/.orchestra/backups/<id>/`. Full flow in
   [sandbox-transport.md](sandbox-transport.md).
 
-### Resume on app start
-- **`resumeRunningWorkspaces(window)`** `:2100` — drains
-  `store.takeResumeCandidates()` (workspaces that were `running` at shutdown) and
-  relaunches each with `claude --continue` concurrently.
+### Resume across restarts (lazy, on first open)
+- There is **no startup auto-resume** (an earlier `resumeRunningWorkspaces`
+  relaunched every previously-running agent at boot — removed: a restart with
+  many live workspaces immediately spawned that many `claude --continue`
+  processes). `store.load()` resets persisted `running` → `idle`; the agent
+  relaunches with `--continue` (via `pty:start` → `startAgentPty`) the first
+  time the user opens the workspace — TerminalView only spawns once its tab is
+  visible (fit-dimensions gate, `Terminal.tsx`).
 
 ## Worktree mechanics (git.ts)
 - `createWorktree(repoPath, branch, baseBranch, worktreePath)` — `git worktree
@@ -176,9 +180,10 @@ env-guarding) in [hooks-cli-socket.md](hooks-cli-socket.md).
 - Shape: `{ repos: RepoEntry[], workspaces: Workspace[], accounts?: Account[] }`
   at `~/.orchestra/store.json` (or `$ORCHESTRA_HOME/store.json`).
 - **Atomic writes** via a serialized promise chain (`writeChain`) + temp-file
-  rename (~`:89`). Load migrates stale `running+hasInput` → `idle` + resume queue.
+  rename (~`:89`). Load migrates stale `running`/`stalled` → `idle` (agents
+  relaunch lazily on first open, not at startup).
 - Methods: `upsertWorkspace`, `removeWorkspace`, `getWorkspace`,
-  `reorderWorkspaces`, `takeResumeCandidates`; repo methods `addRepo`/`removeRepo`/
+  `reorderWorkspaces`; repo methods `addRepo`/`removeRepo`/
   `updateRepo`/`getRepoScripts`/`setRepoScripts`; `allocatePort` (~`:185`, range
   55100–55600, counts non-archived only); account methods with validation.
 

@@ -168,7 +168,6 @@ import {
   getWorktreeSizes,
   pruneOrphanedWorkspaces,
   renameWorkspaceBranch,
-  resumeRunningWorkspaces,
   runSetupScript,
   startAgentPty,
   switchWorkspaceBranch,
@@ -377,16 +376,14 @@ async function createMainWindow() {
   // by value rather than member-accessing it through the `?.` guard.
   const win = mainWindow;
 
-  // Resume agents that were running when Orchestra last exited: relaunch
-  // `claude --continue` headlessly so the work picks back up across a restart
-  // rather than sitting idle until the user re-opens the tab. Runs after the
-  // renderer has loaded (so its pty:data / workspace:update listeners are wired
-  // and it reconnects cleanly when the user opens a resumed tab) and after the
-  // orphan prune (so we never try to resume a workspace whose worktree is gone
-  // and about to be dropped). Best-effort — never block startup on it.
-  void resumeRunningWorkspaces(win).catch((e) =>
-    log.warn('resumeRunningWorkspaces failed', e),
-  );
+  // Agents that were running when Orchestra last exited are NOT relaunched
+  // here. Startup used to resume every one of them headlessly, which meant a
+  // restart with many live workspaces immediately spawned that many `claude
+  // --continue` processes, each reloading a full session. Instead the agent
+  // starts the first time the user opens the workspace: TerminalView only
+  // spawns its PTY once the tab is actually visible (fit dimensions gate),
+  // and `pty:start` → startAgentPty picks `--continue` from ws.hasInput, so
+  // the conversation still picks up where it left off — just on demand.
 
   // Base-branch sync: prime local state immediately (no network) so the
   // sidebar paints with whatever the on-disk refs say, then kick a real
@@ -783,7 +780,9 @@ handle('pty:start', async (_e, id: string, cols: number, rows: number) => {
   }
   // Spawn the agent PTY. The resume gate (`claude --continue` only when the
   // user has actually submitted a prompt — ws.hasInput), hook install, and env
-  // setup all live in startAgentPty so the startup resume path stays identical.
+  // setup all live in startAgentPty, shared with the account-migration resume.
+  // This is also where a workspace that was running before an app restart
+  // comes back to life — deliberately on first open, never at startup.
   const resuming = ws.hasInput === true;
   await startAgentPty(ws, cols, rows, getMainWindow());
   // Preserve the `waiting` yellow dot across restarts: if the previous session
@@ -1212,9 +1211,9 @@ if (!ORCHESTRA_CLI_MODE) {
       // Agent-facing shim: written to a dir we prepend to every agent PTY's
       // PATH (see main/pty.ts), so the CLI the injected skills/hooks call
       // resolves regardless of the user's login PATH or platform. MUST run
-      // before createMainWindow(), which kicks off resumeRunningWorkspaces()
-      // and thus spawns agent PTYs — otherwise a resumed agent could get the
-      // PATH entry before the shim file exists and fall through to the raw
+      // before createMainWindow(), after which the renderer can start agent
+      // PTYs at any moment — otherwise an early agent could get the PATH
+      // entry before the shim file exists and fall through to the raw
       // binary (which launches the GUI on a bare `orchestra <subcmd>`).
       installAgentCliShim();
       await createMainWindow();

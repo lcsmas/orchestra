@@ -356,11 +356,11 @@ export async function startPty(opts: {
       // dropped a stop. This fires for a natural exit AND for an in-session
       // deliberate stop (agent:restart, branch-switch, manual stop): in both
       // cases there is no live agent, so the dot must not keep reading as
-      // "working". The ONE exception is app shutdown (`shuttingDown`): there we
-      // deliberately leave a `running` status untouched, because that persisted
-      // status is the resume marker `resumeRunningWorkspaces` keys off to
-      // relaunch the agent with `--continue` on the next launch. Only agent
-      // PTYs carry a workspaceId; nvim/run PTYs have no status.
+      // "working". The ONE exception is app shutdown (`shuttingDown`): store
+      // writes racing the quit are unreliable, and `store.load()` resets any
+      // persisted `running` to `idle` on the next launch anyway (the agent
+      // relaunches with `--continue` when the user first opens the workspace).
+      // Only agent PTYs carry a workspaceId; nvim/run PTYs have no status.
       //
       // `replacedByLive` guards the restart/branch-switch path: those stop the
       // PTY and immediately re-spawn a fresh agent under the same id. If this

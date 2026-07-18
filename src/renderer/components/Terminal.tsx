@@ -61,6 +61,17 @@ export function TerminalView({ workspaceId, isActive }: Props) {
   // (onVisible/onFocus) without them capturing a stale value.
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
+  // Lazy-start latch: the agent PTY is only spawned once this tab has been
+  // shown at least once. Every workspace's TerminalView mounts at app startup
+  // (App.tsx renders all of them; inactive panes hide via visibility:hidden,
+  // which KEEPS layout dimensions), so without this gate a restart with N
+  // workspaces immediately spawned N `claude --continue` processes. Flips
+  // true on first activation (isActive effect) or on a main-initiated
+  // pty:restart, and never resets — after that, start() behaves as before.
+  const allowStartRef = useRef(isActive);
+  // Lets the isActive effect trigger the (mount-effect-scoped) start() the
+  // first time the tab is shown. Set in the mount effect.
+  const startRef = useRef<(() => void) | null>(null);
 
   // Mount xterm once per workspaceId. Never unmounts while the workspace exists.
   useEffect(() => {
@@ -288,12 +299,15 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     };
     repaintRef.current = repaint;
 
-    // Start the PTY only after we have real container dimensions. Inactive
-    // workspace tabs render with display:none, which makes proposeDimensions
-    // return null/zero and would otherwise spawn the PTY at default 80×24
-    // and mis-wrap all scrollback before the tab is ever shown.
+    // Start the PTY only once the tab has been shown (allowStartRef — the
+    // lazy-start latch documented at its declaration) AND we have real
+    // container dimensions, so the PTY never spawns at default 80×24 and
+    // mis-wraps scrollback before the tab is ever visible. Note inactive
+    // panes hide via visibility:hidden and thus still HAVE dimensions —
+    // the latch, not the fit probe, is what makes startup lazy.
     const start = () => {
       if (started || cancelled) return;
+      if (!allowStartRef.current) return;
       const dims = (() => {
         try {
           return fit.proposeDimensions();
@@ -369,6 +383,9 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       started = false;
       lastSentCols = 0;
       lastSentRows = 0;
+      // Main explicitly asked for a respawn — bypass the lazy-start latch
+      // even if this tab was never shown.
+      allowStartRef.current = true;
       start();
     });
 
@@ -419,6 +436,10 @@ export function TerminalView({ workspaceId, isActive }: Props) {
 
     // Kick a first attempt in case the container already has dimensions.
     const raf = requestAnimationFrame(start);
+    // Expose start() so the isActive effect can fire it when the lazy-start
+    // latch flips on first activation (no resize happens then, so neither the
+    // ResizeObserver nor the RAF above would retry).
+    startRef.current = start;
 
     // Re-fit when the window becomes visible or regains focus. The container
     // size doesn't change on window show, so ResizeObserver won't fire; xterm
@@ -460,6 +481,7 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       offData();
       offExit();
       offRestart();
+      startRef.current = null;
       forceRefitRef.current = null;
       repaintRef.current = null;
       webgl?.dispose();
@@ -474,6 +496,10 @@ export function TerminalView({ workspaceId, isActive }: Props) {
   // have drifted out of sync with the PTY while hidden.
   useEffect(() => {
     if (!isActive || !termRef.current) return;
+    // First activation: flip the lazy-start latch and spawn the agent. A
+    // no-op on every later activation (start() bails on `started`).
+    allowStartRef.current = true;
+    startRef.current?.();
     const raf = requestAnimationFrame(() => {
       try {
         termRef.current?.focus();
