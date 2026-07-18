@@ -20,6 +20,14 @@ Bootstrap order matters; several steps run *before* the window:
   preload. Starts subsystems: hooks server `:292`, events spool `:294`, usage
   pollers `:296`/`:298`; background: orphan prune `:317`, agent resume `:338`,
   base-branch sync, Linear watchers.
+- **Renderer crash recovery** (`render-process-gone` handler in
+  `createMainWindow`) — a dead renderer (typically OOM: every opened workspace
+  keeps a 10k-line xterm + WebGL canvas mounted) used to leave Chromium's white
+  "sad tab" page until a manual relaunch. Now: log reason/exitCode, wait 1s,
+  `webContents.reload()` — main-side state (store, PTYs, spool) survives, so
+  the UI rehydrates in place. Crash-loop guard: >3 crashes in 60s stops
+  auto-reloading. `app.on('child-process-gone')` logs GPU/utility deaths as
+  breadcrumbs (no recovery needed — Chromium respawns those itself).
 - **Single-instance lock** `:1011` — second instance `app.exit(0)`; primary
   focuses. Dev `ORCHESTRA_HOME` gets a separate lock so dev+packaged coexist.
 - **IPC wrapper** `handle()` `:228` — logs every handler failure with its channel
