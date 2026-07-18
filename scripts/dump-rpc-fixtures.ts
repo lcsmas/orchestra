@@ -491,8 +491,13 @@ async function captureEvents(): Promise<void> {
 
 async function main(): Promise<void> {
   seed();
-  fs.rmSync(OUT_DIR, { recursive: true, force: true });
+  // Clear only the capture files this script owns (*.json). A blanket rm -rf
+  // would also delete hand-written companions living in the fixtures dir —
+  // the Rust crate's README.md — making a regen dirty the tree.
   fs.mkdirSync(OUT_DIR, { recursive: true });
+  for (const name of fs.readdirSync(OUT_DIR)) {
+    if (name.endsWith('.json')) fs.rmSync(path.join(OUT_DIR, name), { force: true });
+  }
   await store.load();
   await captureMethods();
   await captureEvents();
