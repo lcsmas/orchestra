@@ -20,6 +20,14 @@ The same artifact is both the GUI and the CLI (`<app> cli …`).
 - **electron-builder** (config in `package.json`): `appId dev.orchestra.app`,
   bundles `dist/**` + `dist-electron/**` → `release/`. Targets: Linux **AppImage**
   (`Orchestra.AppImage`), macOS **dmg**, Windows **nsis**.
+- **App icon**: source of truth is `build/icon.svg` (the "conductor's fan" mark —
+  root node splitting into four lanes ending in dots). `build/icon.png` (512², a
+  raster of the same SVG) feeds electron-builder via `linux.icon`. Copies in
+  `public/` land in `dist/` at build time: `dist/icon.svg` is the favicon
+  (`index.html`), `dist/icon.png` the runtime `BrowserWindow` icon (set in
+  `src/main/index.ts` `createMainWindow`, guarded by `existsSync` since dev runs
+  may predate any build). Regenerate the PNGs from the SVG with `@resvg/resvg-js`
+  if the mark changes, and keep `build/` and `public/` in sync.
 
 `tsconfig.json`: ES2022, `module:ESNext`, `moduleResolution:bundler`,
 `jsx:react-jsx`, `strict`, `@shared/*` path. **Excludes `src/**/*.test.ts`** (tests

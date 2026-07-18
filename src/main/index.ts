@@ -311,6 +311,9 @@ async function createMainWindow() {
   // any custom menu commands; the strip just eats vertical space.
   Menu.setApplicationMenu(null);
 
+  // Window/taskbar icon (Linux WMs read it from the window, not the package).
+  // Lives in dist/ (vite copies public/); absent in dev before a first build.
+  const windowIcon = path.join(__dirname, '../dist/icon.png');
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -319,6 +322,7 @@ async function createMainWindow() {
     title: 'Orchestra',
     backgroundColor: '#0b0d10',
     autoHideMenuBar: true,
+    ...(fs.existsSync(windowIcon) ? { icon: windowIcon } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

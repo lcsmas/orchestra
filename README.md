@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="build/icon.svg" alt="Orchestra logo" width="112" />
+</p>
+
 # Orchestra
 
 > **A Conductor-like app for Linux: run parallel Claude Code agents in isolated git worktrees — and let agents spawn agents.**

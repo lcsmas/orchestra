@@ -76,7 +76,8 @@
         "AppImage"
       ],
       "artifactName": "Orchestra.AppImage",
-      "category": "Development"
+      "category": "Development",
+      "icon": "build/icon.png"
     },
     "appImage": {
       "artifactName": "Orchestra.AppImage"
