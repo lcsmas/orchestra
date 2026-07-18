@@ -27,7 +27,10 @@ The same artifact is both the GUI and the CLI (`<app> cli …`).
   (`index.html`), `dist/icon.png` the runtime `BrowserWindow` icon (set in
   `src/main/index.ts` `createMainWindow`, guarded by `existsSync` since dev runs
   may predate any build). Regenerate the PNGs from the SVG with `@resvg/resvg-js`
-  if the mark changes, and keep `build/` and `public/` in sync.
+  if the mark changes, and keep `build/` and `public/` in sync. Launchers (rofi
+  etc.) resolve the desktop entry's `Icon=orchestra` via the XDG icon theme, not
+  the AppImage — `release.sh --install` copies the icon into
+  `~/.local/share/icons/hicolor/{512x512,scalable}/apps/`.
 
 `tsconfig.json`: ES2022, `module:ESNext`, `moduleResolution:bundler`,
 `jsx:react-jsx`, `strict`, `@shared/*` path. **Excludes `src/**/*.test.ts`** (tests

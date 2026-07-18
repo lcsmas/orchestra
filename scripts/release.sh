@@ -224,6 +224,13 @@ if [ "$CI_ONLY" = 0 ]; then
     run "cp '$APPIMAGE' '$INSTALL_PATH.tmp'"
     run "chmod +x '$INSTALL_PATH.tmp'"
     run "mv -f '$INSTALL_PATH.tmp' '$INSTALL_PATH'"
+    # Launchers (rofi, GNOME, …) resolve the desktop entry's `Icon=orchestra`
+    # through the XDG icon theme, not the AppImage's embedded icon — install it
+    # into the user's hicolor theme so the entry actually shows the logo.
+    ICON_DIR="$HOME/.local/share/icons/hicolor"
+    run "mkdir -p '$ICON_DIR/512x512/apps' '$ICON_DIR/scalable/apps'"
+    run "cp build/icon.png '$ICON_DIR/512x512/apps/orchestra.png'"
+    run "cp build/icon.svg '$ICON_DIR/scalable/apps/orchestra.svg'"
     [ "$DRY_RUN" = "1" ] || echo "  installed — relaunch Orchestra to pick up $NEW"
   fi
 else
