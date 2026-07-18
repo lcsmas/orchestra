@@ -5,8 +5,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# M0 placeholder: A3 (gtk-skeleton workstream) adds gtk4/relm4/vte4 deps here.
-# Kept dependency-free at M0 so `cargo test -p orchestra-rpc` runs on machines
-# without GTK devel packages.
+[features]
+# Compile-time switch for the fixture backend; ORCHESTRA_GTK_MOCK=1 selects it
+# at run time without rebuilding.
+mock = []
+
 [dependencies]
 orchestra-rpc = { path = "../orchestra-rpc" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+gtk.workspace = true
+relm4.workspace = true
+# Not used by the M1 skeleton yet: pinned now so the localdeps link chain is
+# exercised from day one; first consumed by the M2 terminal workstream (B2).
+vte4.workspace = true
+async-channel.workspace = true

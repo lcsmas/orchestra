@@ -1,0 +1,198 @@
+/* Orchestra GTK theme — the app-wide stylesheet.
+ *
+ * Tokens ported 1:1 from src/renderer/styles.css :root (the design tokens).
+ * GTK CSS has no var(); tokens live as @define-color and radii stay literal:
+ *   radius-sm 6px · radius 8px · radius-lg 12px
+ * Dark-only, like the Electron app (parity — plan §5.6).
+ *
+ * Sections: 1 tokens · 2 base chrome · 3 sidebar · 4 banner · 5 status strip
+ *           6 dialogs. M2 workstreams append their widget sections here.
+ */
+
+/* 1 ── tokens */
+@define-color bg #0b0d10;
+@define-color bg_2 #12151a;
+@define-color bg_3 #1a1f26;
+@define-color bg_4 #222933;
+@define-color border #242a33;
+@define-color border_strong #333b47;
+@define-color text #e6e9ef;
+@define-color text_dim #8b95a7;
+@define-color accent #6ea8ff;
+@define-color accent_strong #4a8cff;
+@define-color green #5bd68b;
+@define-color red #ff6b6b;
+@define-color yellow #ffc857;
+
+/* 2 ── base chrome */
+window {
+  background-color: @bg;
+  color: @text;
+  font-size: 13px;
+}
+paned > separator {
+  background-color: @border;
+  min-width: 3px;
+}
+scrollbar {
+  background: transparent;
+}
+scrollbar slider {
+  background-color: @border_strong;
+  border-radius: 6px;
+  min-width: 6px;
+}
+.main-area {
+  background-color: @bg;
+}
+.empty-hint {
+  color: @text_dim;
+  font-size: 14px;
+}
+
+/* 3 ── sidebar */
+.sidebar {
+  background-color: @bg_2;
+}
+.sidebar-title {
+  color: @text_dim;
+  font-weight: 700;
+  font-size: 11px;
+  padding: 12px 14px 6px 14px;
+}
+listbox {
+  background: transparent;
+}
+listbox row {
+  padding: 7px 12px;
+  border-radius: 8px;
+  margin: 1px 6px;
+}
+listbox row:hover {
+  background-color: @bg_3;
+}
+listbox row:selected,
+list row:selected {
+  background-color: @bg_4;
+  outline: none;
+}
+list row:selected label {
+  color: @text;
+}
+.ws-name {
+  color: @text;
+  font-size: 13px;
+}
+.ws-branch {
+  color: @text_dim;
+  font-size: 10px;
+}
+.ws-dot {
+  min-width: 9px;
+  min-height: 9px;
+  border-radius: 5px;
+}
+.ws-dot.running { background-color: @green; }
+.ws-dot.waiting { background-color: @yellow; }
+.ws-dot.error   { background-color: @red; }
+.ws-dot.idle    { background-color: @text_dim; opacity: 0.55; }
+.ws-dot.stopped { background-color: #555555; opacity: 0.6; }
+
+/* 4 ── backend banner */
+.banner {
+  background-color: @bg_3;
+  border-bottom: 1px solid @border;
+  padding: 6px 12px;
+}
+.banner label {
+  color: @yellow;
+  font-size: 12px;
+}
+
+/* 5 ── status strip */
+.status-strip {
+  background-color: @bg_2;
+  border-top: 1px solid @border;
+  padding: 4px 10px;
+}
+.status-text {
+  color: @text_dim;
+  font-size: 11px;
+}
+.status-strip menubutton,
+.status-strip button {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: @text_dim;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+.status-strip button:hover {
+  background-color: @bg_3;
+  color: @text;
+}
+popover contents {
+  background-color: @bg_3;
+  border: 1px solid @border_strong;
+  border-radius: 8px;
+  color: @text;
+}
+popover modelbutton:hover {
+  background-color: @bg_4;
+}
+
+/* 6 ── dialogs */
+.orch-dialog {
+  background-color: @bg_3;
+  border: 1px solid @border_strong;
+  border-radius: 12px;
+}
+.dlg-box {
+  padding: 16px 18px;
+}
+.dlg-title {
+  color: @text;
+  font-weight: 600;
+  font-size: 14px;
+}
+.orch-dialog.tone-error .dlg-title { color: @red; }
+.orch-dialog.tone-success .dlg-title { color: @green; }
+.dlg-body {
+  color: @text_dim;
+  font-size: 13px;
+}
+.dlg-buttons {
+  margin-top: 8px;
+}
+.dlg-buttons button {
+  background-color: @bg_4;
+  border: 1px solid @border_strong;
+  border-radius: 6px;
+  color: @text;
+  padding: 4px 14px;
+  box-shadow: none;
+}
+.dlg-buttons button:hover {
+  background-color: @border_strong;
+}
+.dlg-buttons button.suggested {
+  background-color: @accent_strong;
+  border-color: @accent_strong;
+  color: #ffffff;
+}
+.dlg-buttons button.suggested:hover {
+  background-color: @accent;
+}
+entry {
+  background-color: @bg_2;
+  border: 1px solid @border;
+  border-radius: 6px;
+  color: @text;
+  caret-color: @accent;
+  padding: 5px 8px;
+}
+entry:focus-within {
+  border-color: @accent;
+}
