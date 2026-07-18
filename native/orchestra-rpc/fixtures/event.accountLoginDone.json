@@ -1,0 +1,6 @@
+{
+  "channel": "accountLoginDone",
+  "args": [
+    "acct-fixture-1"
+  ]
+}

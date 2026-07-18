@@ -24,7 +24,7 @@
       "@shared/*": ["src/shared/*"]
     }
   },
-  "include": ["src"],
+  "include": ["src", "scripts/dump-rpc-fixtures.ts"],
   // Test files import with explicit `.ts` extensions so Node's built-in
   // type-stripping runner (`node --test`) can resolve them; that conflicts
   // with this app build's `moduleResolution`, so they're checked by the test

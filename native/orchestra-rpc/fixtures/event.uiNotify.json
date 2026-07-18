@@ -1,0 +1,11 @@
+{
+  "channel": "uiNotify",
+  "args": [
+    {
+      "wsId": "ws-fixture-git",
+      "kind": "finished",
+      "title": "Agent finished",
+      "body": "repo · main is ready for review"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "method": "getDiff",
+  "params": [
+    "ws-fixture-scratch"
+  ],
+  "result": []
+}

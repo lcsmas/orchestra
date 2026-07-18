@@ -1,0 +1,12 @@
+{
+  "channel": "workspaceAccountsUpdate",
+  "args": [
+    {
+      "ws-fixture-git": {
+        "workspaceId": "ws-fixture-git",
+        "accountId": null,
+        "label": "default login"
+      }
+    }
+  ]
+}

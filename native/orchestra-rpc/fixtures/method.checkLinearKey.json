@@ -1,0 +1,10 @@
+{
+  "method": "checkLinearKey",
+  "params": [
+    ""
+  ],
+  "result": {
+    "ok": false,
+    "error": "Enter an API key."
+  }
+}

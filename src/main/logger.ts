@@ -1,4 +1,6 @@
-import { app, shell } from 'electron';
+// Explicit index.ts path so this module also resolves under Node's
+// type-stripping test runner (ui-rpc.test.ts pulls it in transitively).
+import { platform } from './platform/index.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -43,21 +45,13 @@ interface Sink {
 let sinks: Sink[] = [];
 let ready = false;
 
-function electronLogsDir(): string {
-  // app.getPath('logs') is only valid after `ready`; fall back to userData if
-  // called earlier so init never throws.
-  try {
-    return app.getPath('logs');
-  } catch {
-    return path.join(app.getPath('userData'), 'logs');
-  }
-}
-
 /** Log directories in priority order; the first is the primary (revealed by the
- *  UI). De-duplicated in case the platform ever resolves them to the same path. */
+ *  UI). De-duplicated in case the platform ever resolves them to the same path.
+ *  The per-app dir comes through the seam (Electron's logs path, or its
+ *  userData/logs mirror in daemon mode) so app and daemon share sinks. */
 function logDirs(): string[] {
   const orchestraDir = path.join(os.homedir(), '.orchestra', 'logs');
-  return Array.from(new Set([orchestraDir, electronLogsDir()]));
+  return Array.from(new Set([orchestraDir, platform.getLogsDir()]));
 }
 
 function rotateIfNeeded(sink: Sink) {
@@ -119,9 +113,9 @@ export async function revealLogs(): Promise<void> {
   const primary = sinks[0];
   if (!primary) return;
   if (fs.existsSync(primary.file)) {
-    shell.showItemInFolder(primary.file);
+    platform.showItemInFolder(primary.file);
   } else {
-    await shell.openPath(primary.dir);
+    await platform.openPath(primary.dir);
   }
 }
 
@@ -157,6 +151,6 @@ export function initLogger(): void {
   });
 
   log.info(
-    `=== Orchestra ${app.getVersion()} starting === pid=${process.pid} platform=${process.platform} electron=${process.versions.electron} node=${process.versions.node}`,
+    `=== Orchestra ${platform.getAppVersion()} (${platform.kind}) starting === pid=${process.pid} platform=${process.platform} electron=${process.versions.electron ?? 'none'} node=${process.versions.node}`,
   );
 }

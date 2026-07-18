@@ -1,0 +1,9 @@
+{
+  "channel": "accountsLoginUrl",
+  "args": [
+    {
+      "accountId": "acct-fixture-1",
+      "url": "https://claude.ai/oauth/authorize?client_id=fixture"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "method": "listAccounts",
+  "params": [],
+  "result": [
+    {
+      "id": "acct-fixture-1",
+      "label": "Fixture Account",
+      "configDir": "~/claude-fixture",
+      "scratchDefault": false
+    }
+  ]
+}

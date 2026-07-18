@@ -1,0 +1,13 @@
+{
+  "method": "saveClipboardImage",
+  "params": [
+    "image/png",
+    {
+      "0": 137,
+      "1": 80,
+      "2": 78,
+      "3": 71
+    }
+  ],
+  "result": "/tmp/orchestra-paste/paste-0-0.png"
+}

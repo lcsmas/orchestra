@@ -1,0 +1,14 @@
+{
+  "method": "migrateWorkspaceAccount",
+  "params": [
+    "ws-fixture-scratch",
+    "acct-fixture-1"
+  ],
+  "result": {
+    "ok": true,
+    "id": "ws-fixture-scratch",
+    "branch": "renamed-fixture",
+    "accountId": "acct-fixture-1",
+    "resumed": false
+  }
+}

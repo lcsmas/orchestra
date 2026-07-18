@@ -1,0 +1,11 @@
+{
+  "method": "addRepo",
+  "params": [
+    "/tmp/orchestra-rpc-fixtures/repo"
+  ],
+  "result": {
+    "path": "/tmp/orchestra-rpc-fixtures/repo",
+    "name": "repo",
+    "defaultBranch": "main"
+  }
+}

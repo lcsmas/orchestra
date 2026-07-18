@@ -1,0 +1,22 @@
+{
+  "method": "removeQueuedPrompt",
+  "params": [
+    "ws-fixture-scratch",
+    "prompt-fixture-1"
+  ],
+  "result": {
+    "id": "ws-fixture-scratch",
+    "name": "scratch · fixture",
+    "kind": "scratch",
+    "repoPath": "",
+    "worktreePath": "/tmp/orchestra-rpc-fixtures/home/.orchestra/scratch/scratch-fixture",
+    "branch": "fixture",
+    "baseBranch": "",
+    "createdAt": 1700000000000,
+    "status": "waiting",
+    "agent": "claude",
+    "port": 55101,
+    "setupStatus": "ok",
+    "queuedPrompts": []
+  }
+}

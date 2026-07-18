@@ -1,0 +1,8 @@
+{
+  "method": "setUnread",
+  "params": [
+    "ws-fixture-git",
+    true
+  ],
+  "result": null
+}

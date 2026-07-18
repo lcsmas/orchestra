@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { BrowserWindow, Notification } from 'electron';
+import { platform } from './platform';
 import { log } from './logger';
 import { store } from './store';
 import {
@@ -37,7 +37,6 @@ import type { Workspace, WorkspaceStatus } from '../shared/types';
 async function setStatus(
   id: string,
   status: WorkspaceStatus,
-  window: BrowserWindow,
 ): Promise<{ ws: Workspace; changed: boolean } | null> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return null;
@@ -52,88 +51,56 @@ async function setStatus(
   // writes — the visible latency. The dot is ephemeral UI; it must not block on
   // durability, so fire the persist and let it flush in the background.
   void store.upsertWorkspace(updated).catch(() => {});
-  if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-    window.webContents.send('workspace:update', updated);
-  }
+  platform.broadcast('workspace:update', updated);
   return { ws: updated, changed: true };
 }
 
-function fireFinished(id: string, window: BrowserWindow): void {
-  // Guard isFocused: on a transiently destroyed/unavailable window it throws
-  // ("Object has been destroyed"), and since this runs INSIDE the spool drain
-  // loop, an uncaught throw here aborts the whole batch — stranding the `stop`
-  // (and any events behind it) permanently, which left the dot stuck on
-  // `running` after the turn ended. `stop`/`notify` are the only apply paths
-  // that call isFocused, which is exactly why only turn-ends were lost.
-  const focused = !window.isDestroyed() && window.isFocused();
-  void setStatus(id, 'waiting', window).then((res) => {
+function fireFinished(id: string): void {
+  // Focus is the OR of the Electron window and every attached ui-rpc client
+  // (the seam guards a destroyed window internally — an isFocused throw here
+  // used to abort the whole spool drain batch and strand the `stop`).
+  const focused = platform.isFocused();
+  void setStatus(id, 'waiting').then((res) => {
     if (!res) return;
     const { ws, changed } = res;
-    if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-      // Ship the main-process focus state with the event. document.hasFocus()
-      // is unreliable in the renderer (returns stale true on Wayland when the
-      // window is hidden on another workspace / CDP is attached), so the
-      // renderer trusts this flag instead.
-      window.webContents.send('agent:finished', id, focused);
-    }
+    // Ship the main-process focus state with the event. document.hasFocus()
+    // is unreliable in the renderer (returns stale true on Wayland when the
+    // window is hidden on another workspace / CDP is attached), so the
+    // renderer trusts this flag instead.
+    platform.broadcast('agent:finished', id, focused);
     // Re-evaluate "is this branch in sync with base after a merge, or has
     // it diverged again?" each time the agent's turn ends. Agents drive the
     // merge themselves via the Merge button's prompt, and may keep working
     // on the branch afterward — so the pill cycles on/off with each merge
     // and re-divergence rather than being a one-shot terminal state.
-    void detectAndUpdateMergeState(id, window);
+    void detectAndUpdateMergeState(id);
     // Only raise the OS notification on a real running→waiting transition. A
     // redundant terminal event that didn't move the status (already waiting)
-    // must not pop a second toast.
+    // must not pop a second toast. The seam posts the native Electron toast
+    // (click-to-focus) and/or emits the `ui:notify` event for GTK clients.
     if (focused || !changed) return;
-    try {
-      const n = new Notification({
-        title: 'Agent finished',
-        body: `${ws.name} is ready for review`,
-        silent: true,
-      });
-      n.on('click', () => {
-        if (!window.isDestroyed()) {
-          window.show();
-          window.focus();
-          window.webContents.send('workspace:focus', id);
-        }
-      });
-      n.show();
-    } catch {
-      /* notifications unsupported on this platform */
-    }
+    platform.notify({
+      wsId: id,
+      kind: 'finished',
+      title: 'Agent finished',
+      body: `${ws.name} is ready for review`,
+    });
   });
 }
 
-function fireNeedsInput(id: string, window: BrowserWindow): void {
-  // See fireFinished: guard isFocused so a destroyed window can't throw and
-  // abort the drain batch, stranding this `notify`.
-  const focused = !window.isDestroyed() && window.isFocused();
-  void setStatus(id, 'waiting', window).then((res) => {
+function fireNeedsInput(id: string): void {
+  const focused = platform.isFocused();
+  void setStatus(id, 'waiting').then((res) => {
     if (!res) return;
     const { ws, changed } = res;
-    if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-      window.webContents.send('agent:needs-input', id, focused);
-    }
+    platform.broadcast('agent:needs-input', id, focused);
     if (focused || !changed) return;
-    try {
-      const n = new Notification({
-        title: 'Agent needs input',
-        body: `${ws.name} is waiting for your answer`,
-        silent: true,
-      });
-      n.on('click', () => {
-        if (!window.isDestroyed()) {
-          window.show();
-          window.focus();
-          window.webContents.send('workspace:focus', id);
-        }
-      });
-      n.show();
-    } catch {
-      /* notifications unsupported on this platform */
-    }
+    platform.notify({
+      wsId: id,
+      kind: 'needsInput',
+      title: 'Agent needs input',
+      body: `${ws.name} is waiting for your answer`,
+    });
   });
 }
 
@@ -154,10 +121,7 @@ const lastMergeProbe = new Map<
   { branchSha: string; baseSha: string; remoteSha: string | null }
 >();
 
-export async function detectAndUpdateMergeState(
-  id: string,
-  window: BrowserWindow,
-): Promise<void> {
+export async function detectAndUpdateMergeState(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || ws.kind === 'scratch') return;
   const heads = await getRefShas(ws.repoPath, ws.branch, ws.baseBranch);
@@ -205,9 +169,7 @@ export async function detectAndUpdateMergeState(
   // Broadcast before persisting — see setStatus: the renderer must not wait on
   // the serialized store-write chain to reflect the merge pill / ↑N badge.
   void store.upsertWorkspace(updated).catch(() => {});
-  if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-    window.webContents.send('workspace:update', updated);
-  }
+  platform.broadcast('workspace:update', updated);
 }
 
 /** Reconcile the stored branch name with what's actually checked out in the
@@ -239,10 +201,7 @@ export function forgetWorkspaceProbes(id: string): void {
   lastContext.delete(id);
 }
 
-export async function detectAndUpdateBranchName(
-  id: string,
-  window: BrowserWindow,
-): Promise<void> {
+export async function detectAndUpdateBranchName(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || ws.kind === 'scratch') return;
   const now = Date.now();
@@ -265,9 +224,7 @@ export async function detectAndUpdateBranchName(
   // Broadcast before persisting — see setStatus: don't gate the renamed-branch
   // UI on the serialized store-write chain.
   void store.upsertWorkspace(updated).catch(() => {});
-  if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-    window.webContents.send('workspace:update', updated);
-  }
+  platform.broadcast('workspace:update', updated);
 }
 
 /** Detect the published GitHub Releases this branch's work shipped in and
@@ -282,10 +239,7 @@ export async function detectAndUpdateBranchName(
  *  cadence. Writes/broadcasts only when the version list actually changes.
  *  Deliberately NOT wired into `detectAndUpdateMergeState`, which runs on the
  *  hot 8s stats poll and must stay network-free. */
-export async function detectAndUpdateReleaseState(
-  id: string,
-  window: BrowserWindow,
-): Promise<void> {
+export async function detectAndUpdateReleaseState(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || ws.kind === 'scratch') return;
   // One pill for the release that FIRST shipped this branch's own work, plus
@@ -319,9 +273,7 @@ export async function detectAndUpdateReleaseState(
       releasedVersions: undefined,
     };
     void store.upsertWorkspace(cleared).catch(() => {});
-    if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-      window.webContents.send('workspace:update', cleared);
-    }
+    platform.broadcast('workspace:update', cleared);
     return;
   }
   const updated: Workspace = {
@@ -336,9 +288,7 @@ export async function detectAndUpdateReleaseState(
   // Broadcast before persisting — see setStatus: don't gate the released-version
   // pill on the serialized store-write chain.
   void store.upsertWorkspace(updated).catch(() => {});
-  if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-    window.webContents.send('workspace:update', updated);
-  }
+  platform.broadcast('workspace:update', updated);
 }
 
 /** Reconciliation floor for the status dot: the agent's process is gone, so it
@@ -349,20 +299,18 @@ export async function detectAndUpdateReleaseState(
  *  "has unreviewed output, go look" and keeps its yellow dot until the user
  *  opens it; a clean idle is reserved for never-run / already-seen workspaces.
  *  A no-op when the workspace already left `running` via a real stop/notify. */
-export function reconcileExited(id: string, window: BrowserWindow): void {
+export function reconcileExited(id: string): void {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return;
   if (ws.status !== 'running') return;
-  void setStatus(id, 'waiting', window);
+  void setStatus(id, 'waiting');
 }
 
 /** Push the agent's currently-running tool (or null to clear) to the renderer.
  *  This is ephemeral UI state — it rides its own IPC channel rather than
  *  `Workspace.status`/the store so per-tool churn never writes store.json. */
-function emitTool(id: string, tool: string | null, window: BrowserWindow): void {
-  if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-    window.webContents.send('agent:tool', id, tool);
-  }
+function emitTool(id: string, tool: string | null): void {
+  platform.broadcast('agent:tool', id, tool);
 }
 
 // Cap how much of a transcript we read. The context figure lives on the LAST
@@ -455,7 +403,6 @@ const lastContext = new Map<string, number>();
 async function emitContext(
   id: string,
   transcriptPath: string | undefined,
-  window: BrowserWindow,
   persist = false,
 ): Promise<void> {
   if (!transcriptPath) return;
@@ -483,9 +430,7 @@ async function emitContext(
   }
   if (lastContext.get(id) === tokens) return;
   lastContext.set(id, tokens);
-  if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-    window.webContents.send('agent:context', id, tokens);
-  }
+  platform.broadcast('agent:context', id, tokens);
 }
 
 /** Force-clear a workspace's context badge without consulting the transcript.
@@ -494,16 +439,14 @@ async function emitContext(
  *  until the next assistant turn, and for `clear` the fresh transcript may not
  *  even exist yet — so a recompute can't be trusted to notice the reset. Sends
  *  the 0 sentinel (renderer drops the badge) and drops the persisted figure. */
-function resetContext(id: string, window: BrowserWindow): void {
+function resetContext(id: string): void {
   const ws = store.getWorkspace(id);
   if (ws && !ws.archived && ws.contextTokens != null) {
     void store.upsertWorkspace({ ...ws, contextTokens: undefined }).catch(() => {});
   }
   if (lastContext.get(id) === 0) return;
   lastContext.set(id, 0);
-  if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-    window.webContents.send('agent:context', id, 0);
-  }
+  platform.broadcast('agent:context', id, 0);
 }
 
 /** Apply one lifecycle event to a workspace's status. Fed by the durable spool
@@ -515,24 +458,23 @@ export function applyAgentEvent(
   id: string,
   event: string,
   tool: string | undefined,
-  window: BrowserWindow,
   transcript?: string,
 ): void {
   switch (event) {
     case 'submit':
-      emitTool(id, null, window);
-      void setStatus(id, 'running', window);
+      emitTool(id, null);
+      void setStatus(id, 'running');
       break;
     case 'pretool':
-      emitTool(id, tool ?? null, window);
-      void setStatus(id, 'running', window);
+      emitTool(id, tool ?? null);
+      void setStatus(id, 'running');
       break;
     case 'posttool':
       // Stay running between tools; just clear the active-tool label. Refresh
       // the context-size badge here so it climbs live through a long turn, not
       // only at turn-end.
-      emitTool(id, null, window);
-      void emitContext(id, transcript, window);
+      emitTool(id, null);
+      void emitContext(id, transcript);
       break;
     case 'stop':
     // Claude's `StopFailure` hook (turn ended on an API error) maps here too:
@@ -540,16 +482,16 @@ export function applyAgentEvent(
     // `running`. Without this the dot stuck on `running` after every rate-limit
     // / overload turn-end.
     case 'stopfail':
-      emitTool(id, null, window);
+      emitTool(id, null);
       // Turn-end: persist the figure (piggybacks the status write fireFinished
       // is about to make) so the badge can be restored at next startup.
-      void emitContext(id, transcript, window, true);
-      fireFinished(id, window);
+      void emitContext(id, transcript, true);
+      fireFinished(id);
       break;
     case 'notify':
-      emitTool(id, null, window);
-      void emitContext(id, transcript, window, true);
-      fireNeedsInput(id, window);
+      emitTool(id, null);
+      void emitContext(id, transcript, true);
+      fireNeedsInput(id);
       break;
     case 'session':
       // SessionStart. The `tool` slot carries the hook payload's `source`
@@ -559,9 +501,9 @@ export function applyAgentEvent(
       // the next turn ended. startup/resume instead refresh the badge from the
       // (existing) transcript, which still carries a valid last-turn figure.
       if (tool === 'clear' || tool === 'compact') {
-        resetContext(id, window);
+        resetContext(id);
       } else {
-        void emitContext(id, transcript, window, true);
+        void emitContext(id, transcript, true);
       }
       break;
   }
@@ -570,10 +512,6 @@ export function applyAgentEvent(
 /** Legacy Unix-socket entry point (hooks-server `/event` route). Pre-upgrade
  *  workspaces still POST bare `{id, event}` here until their hooks are
  *  rewritten on the next pty:start; they carry no per-tool detail. */
-export function dispatchHookEvent(
-  id: string,
-  event: string,
-  window: BrowserWindow,
-): void {
-  applyAgentEvent(id, event, undefined, window);
+export function dispatchHookEvent(id: string, event: string): void {
+  applyAgentEvent(id, event, undefined);
 }

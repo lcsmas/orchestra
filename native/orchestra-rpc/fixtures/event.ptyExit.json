@@ -1,0 +1,7 @@
+{
+  "channel": "ptyExit",
+  "args": [
+    "ws-fixture-git",
+    0
+  ]
+}

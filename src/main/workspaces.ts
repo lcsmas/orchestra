@@ -3,9 +3,9 @@ import os from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, rm, appendFile, readdir, stat, open, rename, copyFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { BrowserWindow } from 'electron';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { platform } from './platform';
 import { store } from './store';
 import {
   createWorktree,
@@ -335,10 +335,7 @@ export async function ensureRoot() {
   if (!existsSync(ORCHESTRA_ROOT)) await mkdir(ORCHESTRA_ROOT, { recursive: true });
 }
 
-export async function createWorkspace(
-  input: CreateWorkspaceInput,
-  window: BrowserWindow,
-): Promise<Workspace> {
+export async function createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
   await ensureRoot();
   const id = randomUUID();
   const repoName = path.basename(input.repoPath);
@@ -388,17 +385,17 @@ export async function createWorkspace(
     ...(input.host && input.host.kind !== 'local' ? { host: input.host } : {}),
   };
   await store.upsertWorkspace(ws);
-  window.webContents.send('workspace:update', ws);
+  platform.broadcast('workspace:update', ws);
   // Push the workspace→account map right away — otherwise the new workspace's
   // account badge and usage bars read "default" until the next 30s poll tick,
   // even though the pin above is already in place.
-  void refreshAccountsNow(window).catch(() => {});
+  void refreshAccountsNow().catch(() => {});
 
   // Fire setup script asynchronously — don't block the create call. Renderer
   // sees `setupStatus: 'pending'` immediately and watches workspace:update for
   // the running → ok/failed transition.
   if (setupScript) {
-    void runSetupScript(id, window).catch((e) => {
+    void runSetupScript(id).catch((e) => {
       /* runSetupScript already persists `failed`; just leave a trace. */
       log.warn(`setup script failed for ${branch}`, e);
     });
@@ -447,7 +444,6 @@ const ORCHESTRATOR_BRIEF =
  * but its agent is seeded with {@link ORCHESTRATOR_BRIEF} so it delegates. */
 async function createScratchLikeWorkspace(
   kind: 'scratch' | 'orchestrator',
-  window: BrowserWindow,
 ): Promise<Workspace> {
   if (!existsSync(SCRATCH_ROOT)) await mkdir(SCRATCH_ROOT, { recursive: true });
   const id = randomUUID();
@@ -494,22 +490,22 @@ async function createScratchLikeWorkspace(
     setupStatus: 'ok',
   };
   await store.upsertWorkspace(ws);
-  window.webContents.send('workspace:update', ws);
+  platform.broadcast('workspace:update', ws);
   // Same prompt map push as createWorkspace: without it the session's account
   // badge sits on stale data until the next poll tick.
-  void refreshAccountsNow(window).catch(() => {});
+  void refreshAccountsNow().catch(() => {});
   return ws;
 }
 
-export function createScratchWorkspace(window: BrowserWindow): Promise<Workspace> {
-  return createScratchLikeWorkspace('scratch', window);
+export function createScratchWorkspace(): Promise<Workspace> {
+  return createScratchLikeWorkspace('scratch');
 }
 
-export function createOrchestratorWorkspace(window: BrowserWindow): Promise<Workspace> {
-  return createScratchLikeWorkspace('orchestrator', window);
+export function createOrchestratorWorkspace(): Promise<Workspace> {
+  return createScratchLikeWorkspace('orchestrator');
 }
 
-export async function archiveWorkspace(id: string, window: BrowserWindow): Promise<void> {
+export async function archiveWorkspace(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws) return;
   forgetWorkspaceProbes(id);
@@ -528,10 +524,10 @@ export async function archiveWorkspace(id: string, window: BrowserWindow): Promi
     status: 'stopped',
   };
   await store.upsertWorkspace(updated);
-  window.webContents.send('workspace:update', updated);
+  platform.broadcast('workspace:update', updated);
 }
 
-export async function unarchiveWorkspace(id: string, window: BrowserWindow): Promise<void> {
+export async function unarchiveWorkspace(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws) return;
   const updated: Workspace = {
@@ -541,7 +537,7 @@ export async function unarchiveWorkspace(id: string, window: BrowserWindow): Pro
     status: 'idle',
   };
   await store.upsertWorkspace(updated);
-  window.webContents.send('workspace:update', updated);
+  platform.broadcast('workspace:update', updated);
 }
 
 /** Tear down everything a delete owns EXCEPT the store record and the renderer
@@ -613,12 +609,12 @@ async function teardownWorkspace(ws: Workspace): Promise<void> {
   }
 }
 
-export async function deleteWorkspace(id: string, window: BrowserWindow): Promise<void> {
+export async function deleteWorkspace(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws) return;
   await teardownWorkspace(ws);
   await store.removeWorkspace(id);
-  window.webContents.send('workspace:removed', id);
+  platform.broadcast('workspace:removed', id);
 }
 
 /** Bulk hard-delete. Reaps every worktree/dir up front (archive scripts and
@@ -630,7 +626,6 @@ export async function deleteWorkspace(id: string, window: BrowserWindow): Promis
  *  after each teardown so the UI can advance its bar. */
 export async function deleteWorkspaces(
   ids: string[],
-  window: BrowserWindow,
   onProgress?: (done: number, total: number) => void,
 ): Promise<void> {
   const targets = ids.map((id) => store.getWorkspace(id)).filter((w): w is Workspace => !!w);
@@ -643,7 +638,7 @@ export async function deleteWorkspaces(
   }
   if (removed.length === 0) return;
   await store.removeWorkspaces(removed);
-  window.webContents.send('workspaces:removed', removed);
+  platform.broadcast('workspaces:removed', removed);
 }
 
 /** Reconcile the store against git's worktree registry and drop any workspace
@@ -660,7 +655,7 @@ export async function deleteWorkspaces(
  *     can't be read. A temporarily-unmounted drive must never nuke records.
  *   - Husk cleanup is confined to paths under ORCHESTRA_ROOT, so even a
  *     corrupt `worktreePath` can't trigger an `rm` outside our own dir. */
-export async function pruneOrphanedWorkspaces(window: BrowserWindow): Promise<void> {
+export async function pruneOrphanedWorkspaces(): Promise<void> {
   // Read each repo's worktree list once, not per workspace.
   const byRepo = new Map<string, Workspace[]>();
   for (const ws of store.workspaces) {
@@ -717,9 +712,7 @@ export async function pruneOrphanedWorkspaces(window: BrowserWindow): Promise<vo
       }
 
       await store.removeWorkspace(ws.id);
-      if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-        window.webContents.send('workspace:removed', ws.id);
-      }
+      platform.broadcast('workspace:removed', ws.id);
     }
   }
 }
@@ -727,7 +720,7 @@ export async function pruneOrphanedWorkspaces(window: BrowserWindow): Promise<vo
 /** Run (or re-run) the repo's setup script for a workspace. Persists
  * `setupStatus` transitions through `running` → `ok`|`failed` so the UI can
  * show progress. Safe to call when no setup script is configured (no-op). */
-export async function runSetupScript(id: string, window: BrowserWindow): Promise<void> {
+export async function runSetupScript(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws) return;
   const script = store.getRepoScripts(ws.repoPath).setup;
@@ -735,7 +728,7 @@ export async function runSetupScript(id: string, window: BrowserWindow): Promise
     if (ws.setupStatus !== 'ok') {
       const updated: Workspace = { ...ws, setupStatus: 'ok', setupError: undefined };
       await store.upsertWorkspace(updated);
-      window.webContents.send('workspace:update', updated);
+      platform.broadcast('workspace:update', updated);
     }
     return;
   }
@@ -743,7 +736,7 @@ export async function runSetupScript(id: string, window: BrowserWindow): Promise
 
   const running: Workspace = { ...ws, setupStatus: 'running', setupError: undefined };
   await store.upsertWorkspace(running);
-  window.webContents.send('workspace:update', running);
+  platform.broadcast('workspace:update', running);
 
   const result = await runOneShot({
     script,
@@ -765,20 +758,17 @@ export async function runSetupScript(id: string, window: BrowserWindow): Promise
         : result.lastStderrLine || `exit ${result.exitCode}`,
   };
   await store.upsertWorkspace(done);
-  window.webContents.send('workspace:update', done);
+  platform.broadcast('workspace:update', done);
 }
 
 /** Re-allocate a port for an existing workspace that doesn't have one yet
  * (legacy workspaces created before scripts existed). Idempotent. */
-export async function ensureWorkspacePort(
-  id: string,
-  window: BrowserWindow,
-): Promise<Workspace | undefined> {
+export async function ensureWorkspacePort(id: string): Promise<Workspace | undefined> {
   const ws = store.getWorkspace(id);
   if (!ws || typeof ws.port === 'number') return ws;
   const updated: Workspace = { ...ws, port: store.allocatePort() };
   await store.upsertWorkspace(updated);
-  window.webContents.send('workspace:update', updated);
+  platform.broadcast('workspace:update', updated);
   return updated;
 }
 
@@ -812,7 +802,6 @@ export async function renameWorkspaceBranch(
   id: string,
   rawNewBranch: string,
   opts: { manual: boolean; bumpAutoCount?: boolean },
-  window: BrowserWindow,
 ): Promise<Workspace> {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
@@ -838,7 +827,7 @@ export async function renameWorkspaceBranch(
       if ((opts.manual && !ws.branchManuallySet) || opts.bumpAutoCount) {
         const updated = { ...ws, ...gateFields };
         await store.upsertWorkspace(updated);
-        window.webContents.send('workspace:update', updated);
+        platform.broadcast('workspace:update', updated);
         return updated;
       }
       return ws;
@@ -850,7 +839,7 @@ export async function renameWorkspaceBranch(
       ...gateFields,
     };
     await store.upsertWorkspace(updated);
-    window.webContents.send('workspace:update', updated);
+    platform.broadcast('workspace:update', updated);
     return updated;
   }
   // The stored branch can drift from the worktree's real HEAD — renamed out of
@@ -863,7 +852,7 @@ export async function renameWorkspaceBranch(
     if ((opts.manual && !ws.branchManuallySet) || opts.bumpAutoCount) {
       const updated = { ...ws, branch: liveBranch, ...gateFields };
       await store.upsertWorkspace(updated);
-      window.webContents.send('workspace:update', updated);
+      platform.broadcast('workspace:update', updated);
       return updated;
     }
     return ws;
@@ -878,7 +867,7 @@ export async function renameWorkspaceBranch(
     ...gateFields,
   };
   await store.upsertWorkspace(updated);
-  window.webContents.send('workspace:update', updated);
+  platform.broadcast('workspace:update', updated);
   return updated;
 }
 
@@ -901,7 +890,6 @@ export interface RenameResult {
 export async function dispatchRenameRequest(
   id: string,
   rawNewBranch: string,
-  window: BrowserWindow,
 ): Promise<RenameResult> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
@@ -916,7 +904,7 @@ export async function dispatchRenameRequest(
     if (isScratchLike(ws)) {
       const target = sanitizeBranchName(rawNewBranch);
       if (!target) return { ok: false, error: 'invalid branch name' };
-      updated = await renameWorkspaceBranch(id, target, { manual: false, bumpAutoCount }, window);
+      updated = await renameWorkspaceBranch(id, target, { manual: false, bumpAutoCount });
     } else {
       // Suffix against the live branch (not the possibly-stale stored name) so a
       // name that collides with an existing branch still lands, and so a request
@@ -925,7 +913,7 @@ export async function dispatchRenameRequest(
       const live = (await getCurrentBranch(ws.worktreePath)) || ws.branch;
       const target = await freeBranchName(ws.repoPath, sanitizeBranchName(rawNewBranch), live);
       if (!target) return { ok: false, error: 'invalid branch name' };
-      updated = await renameWorkspaceBranch(id, target, { manual: false, bumpAutoCount }, window);
+      updated = await renameWorkspaceBranch(id, target, { manual: false, bumpAutoCount });
     }
     // Record the new auto-rename count in a worktree sentinel so the in-session
     // nudge picks up the fresh stage immediately — before the next pty restart
@@ -1010,7 +998,7 @@ const SUBMIT_MAX_ATTEMPTS = 4;
  * double-spawn. We also flip `hasInput` after injecting the task so that if the
  * agent's process later exits and the user reopens the pane, the renderer
  * resumes with `--continue` instead of re-injecting the task into a fresh run. */
-async function startWorkspaceAgentHeadless(id: string, window: BrowserWindow): Promise<void> {
+async function startWorkspaceAgentHeadless(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || isRunning(id)) return;
   const readyFile = readyFilePath(id);
@@ -1033,7 +1021,6 @@ async function startWorkspaceAgentHeadless(id: string, window: BrowserWindow): P
     args: ['--dangerously-skip-permissions'],
     cols: HEADLESS_COLS,
     rows: HEADLESS_ROWS,
-    window,
     workspaceId: id,
     extraEnv,
   });
@@ -1047,7 +1034,7 @@ async function startWorkspaceAgentHeadless(id: string, window: BrowserWindow): P
   // "third agent didn't start" symptom), with nothing to catch it. Now the task
   // text lands on readiness, and the '\r' is retried until the agent's own
   // UserPromptSubmit hook flips the status off `idle`.
-  void submitTaskWhenReady(id, task, readyFile, window);
+  void submitTaskWhenReady(id, task, readyFile);
 }
 
 /** Submit `task` into a freshly-started agent's TUI once it signals readiness,
@@ -1056,12 +1043,7 @@ async function startWorkspaceAgentHeadless(id: string, window: BrowserWindow): P
  * submit (text, then a SEPARATE '\r' a beat later) is unchanged: a trailing
  * newline in the same chunk is treated by Claude's TUI as a pasted newline and
  * never submits. */
-async function submitTaskWhenReady(
-  id: string,
-  task: string,
-  readyFile: string,
-  window: BrowserWindow,
-): Promise<void> {
+async function submitTaskWhenReady(id: string, task: string, readyFile: string): Promise<void> {
   const ready = await waitForAgentReady(readyFile, READY_TIMEOUT_MS);
   if (!ready) {
     log.warn(`agent ${id} readiness sentinel timed out — falling back to fixed delay`);
@@ -1097,9 +1079,7 @@ async function submitTaskWhenReady(
   if (fresh && !fresh.hasInput) {
     const updated: Workspace = { ...fresh, hasInput: true };
     void store.upsertWorkspace(updated).then(() => {
-      if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-        window.webContents.send('workspace:update', updated);
-      }
+      platform.broadcast('workspace:update', updated);
     });
   }
 }
@@ -1146,7 +1126,6 @@ export async function dispatchSpawnRequest(
     agent?: 'claude';
     detached?: boolean;
   },
-  window: BrowserWindow,
 ): Promise<SpawnResult> {
   const task = input.task.trim();
   if (!task) return { ok: false, error: 'empty task' };
@@ -1169,17 +1148,14 @@ export async function dispatchSpawnRequest(
   try {
     // `detached` skips only the parent nesting — `from` above still drives
     // repo inheritance, so a detached spawn need not name --repo explicitly.
-    const ws = await createWorkspace(
-      {
-        repoPath,
-        baseBranch: input.baseBranch,
-        task,
-        agent: input.agent,
-        parentId: input.detached ? undefined : input.from,
-      },
-      window,
-    );
-    await startWorkspaceAgentHeadless(ws.id, window);
+    const ws = await createWorkspace({
+      repoPath,
+      baseBranch: input.baseBranch,
+      task,
+      agent: input.agent,
+      parentId: input.detached ? undefined : input.from,
+    });
+    await startWorkspaceAgentHeadless(ws.id);
     return { ok: true, id: ws.id, branch: ws.branch };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'spawn failed' };
@@ -1205,7 +1181,7 @@ export interface AddRepoResult {
 /** Validate, persist, and register a git repo by absolute path, then broadcast
  * the refreshed repo list to the renderer so the UI updates immediately.
  * Idempotent: re-adding an existing path returns the existing entry. */
-export async function addRepoByPath(absPath: string, window: BrowserWindow): Promise<RepoEntry> {
+export async function addRepoByPath(absPath: string): Promise<RepoEntry> {
   if (!(await isGitRepo(absPath))) throw new Error(`${absPath} is not a git repo`);
   const defaultBranch = await detectDefaultBranch(absPath);
   const remoteUrl = await detectRemoteUrl(absPath).catch(() => undefined);
@@ -1217,7 +1193,7 @@ export async function addRepoByPath(absPath: string, window: BrowserWindow): Pro
   });
   // Push the full list so the renderer can replace its state wholesale — same
   // shape as `repos:list`, so no merge logic is needed on the other side.
-  window.webContents.send('repos:update', store.repos);
+  platform.broadcast('repos:update', store.repos);
   return repo;
 }
 
@@ -1225,7 +1201,7 @@ export async function addRepoByPath(absPath: string, window: BrowserWindow): Pro
  * if any workspace (active or archived) still belongs to the repo — those must be
  * deleted first so we never leave orphan worktrees pointing at a forgotten repo.
  * Idempotent: removing an unknown path is a no-op that still re-broadcasts. */
-export async function removeRepoByPath(absPath: string, window: BrowserWindow): Promise<void> {
+export async function removeRepoByPath(absPath: string): Promise<void> {
   const attached = store.workspaces.filter((w) => w.repoPath === absPath);
   if (attached.length > 0) {
     throw new Error(
@@ -1233,20 +1209,17 @@ export async function removeRepoByPath(absPath: string, window: BrowserWindow): 
     );
   }
   await store.removeRepo(absPath);
-  window.webContents.send('repos:update', store.repos);
+  platform.broadcast('repos:update', store.repos);
 }
 
 /** Socket entry point for `/addRepo`. Mirrors `dispatchSpawnRequest`: never
  * throws, always answers with an `{ ok }` envelope the caller can branch on. */
-export async function dispatchAddRepoRequest(
-  input: { path?: string },
-  window: BrowserWindow,
-): Promise<AddRepoResult> {
+export async function dispatchAddRepoRequest(input: { path?: string }): Promise<AddRepoResult> {
   const raw = input.path?.trim();
   if (!raw) return { ok: false, error: 'missing path' };
   if (!path.isAbsolute(raw)) return { ok: false, error: 'path must be absolute' };
   try {
-    const repo = await addRepoByPath(raw, window);
+    const repo = await addRepoByPath(raw);
     return { ok: true, repo };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'add repo failed' };
@@ -1268,17 +1241,16 @@ export interface DeleteWorkspaceResult {
  * `workspace:removed` so the UI updates live. Never throws; answers `{ ok }`.
  * Unknown ids fail loudly here (rather than silently no-op like
  * `deleteWorkspace`) so a CLI caller gets feedback on a bad id. */
-export async function dispatchDeleteWorkspaceRequest(
-  input: { id?: string },
-  window: BrowserWindow,
-): Promise<DeleteWorkspaceResult> {
+export async function dispatchDeleteWorkspaceRequest(input: {
+  id?: string;
+}): Promise<DeleteWorkspaceResult> {
   const id = input.id?.trim();
   if (!id) return { ok: false, error: 'missing id' };
   const ws = store.getWorkspace(id);
   if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
   try {
     const branch = ws.branch;
-    await deleteWorkspace(id, window);
+    await deleteWorkspace(id);
     return { ok: true, id, branch };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'delete failed' };
@@ -1303,10 +1275,7 @@ export interface PromoteResult {
  * as `parentId`). Idempotent — re-promoting an orchestrator is a no-op success.
  * Only a scratch session qualifies: a git worktree has a repo/branch/diff and
  * can't be repurposed as a repo-less coordinator. Never throws; answers `{ ok }`. */
-export async function dispatchPromoteRequest(
-  input: { id?: string },
-  window: BrowserWindow,
-): Promise<PromoteResult> {
+export async function dispatchPromoteRequest(input: { id?: string }): Promise<PromoteResult> {
   const id = input.id?.trim();
   if (!id) return { ok: false, error: 'missing id' };
   const ws = store.getWorkspace(id);
@@ -1334,7 +1303,7 @@ export async function dispatchPromoteRequest(
     // sentinel is what makes the standing delegation reminder kick in on its
     // very next prompt — no pty restart required.
     await markOrchestratorWorktree(ws.worktreePath);
-    window.webContents.send('workspace:update', updated);
+    platform.broadcast('workspace:update', updated);
     log.info(`promoted scratch ${ws.branch} (${id}) to orchestrator`);
     return { ok: true, id, branch: updated.branch, kind: 'orchestrator' };
   } catch (e) {
@@ -1366,10 +1335,10 @@ export interface AttachResult {
  * never carry a `parentId` of their own (they're always tree roots), so an
  * orchestrator-only parent rule also makes any deeper cycle impossible — the
  * self-check is the only one needed. Idempotent. Never throws; answers `{ ok }`. */
-export async function dispatchAttachRequest(
-  input: { id?: string; parentId?: string | null },
-  window: BrowserWindow,
-): Promise<AttachResult> {
+export async function dispatchAttachRequest(input: {
+  id?: string;
+  parentId?: string | null;
+}): Promise<AttachResult> {
   const id = input.id?.trim();
   if (!id) return { ok: false, error: 'missing id' };
   const ws = store.getWorkspace(id);
@@ -1384,7 +1353,7 @@ export async function dispatchAttachRequest(
     if (ws.parentId === undefined) return { ok: true, id, parentId: null, branch: ws.branch };
     const updated: Workspace = { ...ws, parentId: undefined };
     await store.upsertWorkspace(updated);
-    window.webContents.send('workspace:update', updated);
+    platform.broadcast('workspace:update', updated);
     log.info(`detached ${ws.branch} (${id}) from its parent`);
     return { ok: true, id, parentId: null, branch: ws.branch };
   }
@@ -1403,7 +1372,7 @@ export async function dispatchAttachRequest(
 
   const updated: Workspace = { ...ws, parentId: rawParent };
   await store.upsertWorkspace(updated);
-  window.webContents.send('workspace:update', updated);
+  platform.broadcast('workspace:update', updated);
   log.info(`attached ${ws.branch} (${id}) under orchestrator ${parent.branch} (${rawParent})`);
   return { ok: true, id, parentId: rawParent, branch: ws.branch };
 }
@@ -1487,10 +1456,10 @@ async function moveWorkspaceTranscripts(
  * CLAUDE_CONFIG_DIR the same way; a never-run session simply has no transcript
  * to move). Refuses only an archived workspace. A no-op success when already on
  * the target account. Never throws; answers `{ ok }`. */
-export async function dispatchMigrateAccountRequest(
-  input: { id?: string; accountId?: string | null },
-  window: BrowserWindow,
-): Promise<MigrateAccountResult> {
+export async function dispatchMigrateAccountRequest(input: {
+  id?: string;
+  accountId?: string | null;
+}): Promise<MigrateAccountResult> {
   const id = input.id?.trim();
   if (!id) return { ok: false, error: 'missing id' };
   const ws = store.getWorkspace(id);
@@ -1545,11 +1514,11 @@ export async function dispatchMigrateAccountRequest(
     if (targetAccountId) updated.accountId = targetAccountId;
     else delete updated.accountId;
     await store.upsertWorkspace(updated);
-    window.webContents.send('workspace:update', updated);
+    platform.broadcast('workspace:update', updated);
     // Re-broadcast the workspace→account map here rather than only in the IPC
     // handler: the socket route (`orchestra migrate-account`) reaches this
     // function too, and without the push its badge lags until the next poll.
-    void refreshAccountsNow(window).catch(() => {});
+    void refreshAccountsNow().catch(() => {});
 
     // Materialize the target account's inherited global config into its login
     // dir so a non-resumed workspace is ready for its next manual launch (the
@@ -1574,7 +1543,6 @@ export async function dispatchMigrateAccountRequest(
           updated,
           priorSize?.cols ?? MIGRATE_RESUME_COLS,
           priorSize?.rows ?? MIGRATE_RESUME_ROWS,
-          window,
         );
         resumed = true;
       } catch (err) {
@@ -1720,11 +1688,7 @@ function formatPeerMessage(fromBranch: string, fromId: string, text: string): st
  * the caller can fall back. Throws only if the PTY spawn itself fails.
  * Exported for the prompt-queue flusher, which delivers usage-limit-parked
  * prompts through the exact same live-or-wake path as peer messages. */
-export async function wakeAgentWithPrompt(
-  id: string,
-  prompt: string,
-  window: BrowserWindow,
-): Promise<boolean> {
+export async function wakeAgentWithPrompt(id: string, prompt: string): Promise<boolean> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || isRunning(id)) return false;
   const resuming = ws.hasInput === true;
@@ -1743,7 +1707,6 @@ export async function wakeAgentWithPrompt(
       : ['--dangerously-skip-permissions'],
     cols: priorSize?.cols ?? HEADLESS_COLS,
     rows: priorSize?.rows ?? HEADLESS_ROWS,
-    window,
     workspaceId: id,
     extraEnv: {
       // Per-repo env first so Orchestra's own vars below always take precedence.
@@ -1759,13 +1722,11 @@ export async function wakeAgentWithPrompt(
   // fixed delay — same concurrency fix as the headless spawn path. submitTask-
   // WhenReady handles the wait, fallback, two-write submit, and dead-PTY guard;
   // hasInput is flipped here since this turn is always a real submitted prompt.
-  void submitTaskWhenReady(id, prompt, readyFile, window);
+  void submitTaskWhenReady(id, prompt, readyFile);
   if (!ws.hasInput) {
     const updated: Workspace = { ...ws, hasInput: true };
     void store.upsertWorkspace(updated).then(() => {
-      if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-        window.webContents.send('workspace:update', updated);
-      }
+      platform.broadcast('workspace:update', updated);
     });
   }
   return true;
@@ -1783,7 +1744,6 @@ export async function dispatchMessageRequest(
     to: string;
     text: string;
   },
-  window: BrowserWindow,
 ): Promise<MessageResult> {
   const text = input.text.trim().slice(0, MESSAGE_MAX_CHARS);
   if (!text) return { ok: false, error: 'empty text' };
@@ -1809,7 +1769,7 @@ export async function dispatchMessageRequest(
 
   // Target stopped — wake it and deliver the message as its next turn.
   try {
-    if (await wakeAgentWithPrompt(input.to, body, window)) {
+    if (await wakeAgentWithPrompt(input.to, body)) {
       // Insurance: if the woken agent exits almost immediately (e.g. a resume
       // with --continue that finds no session and bails), the live inject was
       // lost. Park it so the next successful start still delivers it. A healthy
@@ -1882,11 +1842,7 @@ function sanitizeBranchName(raw: string): string {
  * branch is just a property. On success, stops any running agent/nvim so they
  * respawn against the new branch's files (any in-memory state from the old
  * branch would be stale), then emits `pty:restart`. */
-export async function switchWorkspaceBranch(
-  id: string,
-  branch: string,
-  window: BrowserWindow,
-): Promise<Workspace> {
+export async function switchWorkspaceBranch(id: string, branch: string): Promise<Workspace> {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
   if (ws.branch === branch) return ws;
@@ -1918,9 +1874,9 @@ export async function switchWorkspaceBranch(
     branchManuallySet: true,
   };
   await store.upsertWorkspace(updated);
-  window.webContents.send('workspace:update', updated);
-  if (restartAgent) window.webContents.send('pty:restart', id);
-  if (restartNvim) window.webContents.send('pty:restart', nvimId);
+  platform.broadcast('workspace:update', updated);
+  if (restartAgent) platform.broadcast('pty:restart', id);
+  if (restartNvim) platform.broadcast('pty:restart', nvimId);
   return updated;
 }
 
@@ -2650,12 +2606,7 @@ function removeHookCommand(list: unknown[], match: (cmd: string) => boolean): un
  *  submitted at least one prompt (`ws.hasInput`), since `--continue` fails with
  *  "No conversation found to continue" against a session that only ever printed
  *  its startup TUI. */
-export async function startAgentPty(
-  ws: Workspace,
-  cols: number,
-  rows: number,
-  window: BrowserWindow,
-): Promise<void> {
+export async function startAgentPty(ws: Workspace, cols: number, rows: number): Promise<void> {
   const resuming = ws.hasInput === true;
   const claudeArgs = resuming
     ? ['--continue', '--dangerously-skip-permissions']
@@ -2671,7 +2622,7 @@ export async function startAgentPty(
     if (tokens != null && tokens >= HEAVY_RESUME_TOKEN_THRESHOLD) {
       ws = { ...ws, heavyResumePending: true };
       await store.upsertWorkspace(ws);
-      if (!window.isDestroyed()) window.webContents.send('workspace:update', ws);
+      platform.broadcast('workspace:update', ws);
       log.info(`heavy-resume gate armed for ${ws.id}: ~${tokens} tokens`);
       // Safety auto-disarm: if our (deliberately low) threshold flagged a
       // session that CC does NOT actually prompt for, submits must not be
@@ -2684,7 +2635,7 @@ export async function startAgentPty(
         if (cur?.heavyResumePending) {
           const cleared = { ...cur, heavyResumePending: false };
           void store.upsertWorkspace(cleared);
-          if (!window.isDestroyed()) window.webContents.send('workspace:update', cleared);
+          platform.broadcast('workspace:update', cleared);
         }
       }, 90_000);
     } else if (ws.heavyResumePending) {
@@ -2692,7 +2643,7 @@ export async function startAgentPty(
       // longer heavy (e.g. the session was compacted/cleared since).
       ws = { ...ws, heavyResumePending: false };
       await store.upsertWorkspace(ws);
-      if (!window.isDestroyed()) window.webContents.send('workspace:update', ws);
+      platform.broadcast('workspace:update', ws);
     }
   }
   // An orchestrator's standing brief shapes its behaviour without ever showing
@@ -2757,7 +2708,6 @@ export async function startAgentPty(
     args: claudeArgs,
     cols,
     rows,
-    window,
     workspaceId: ws.id,
     extraEnv,
     host: ws.host,

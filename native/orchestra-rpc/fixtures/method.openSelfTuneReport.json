@@ -1,0 +1,7 @@
+{
+  "method": "openSelfTuneReport",
+  "params": [
+    "default"
+  ],
+  "result": false
+}

@@ -1,0 +1,11 @@
+{
+  "method": "getDiffStats",
+  "params": [
+    "ws-fixture-git"
+  ],
+  "result": {
+    "additions": 2,
+    "deletions": 1,
+    "files": 1
+  }
+}

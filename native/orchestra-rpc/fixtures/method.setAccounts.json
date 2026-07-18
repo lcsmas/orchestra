@@ -1,0 +1,19 @@
+{
+  "method": "setAccounts",
+  "params": [
+    [
+      {
+        "id": "acct-fixture-1",
+        "label": "Fixture Account",
+        "configDir": "~/claude-fixture"
+      }
+    ]
+  ],
+  "result": [
+    {
+      "id": "acct-fixture-1",
+      "label": "Fixture Account",
+      "configDir": "~/claude-fixture"
+    }
+  ]
+}

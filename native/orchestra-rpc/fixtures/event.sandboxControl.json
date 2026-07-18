@@ -1,0 +1,11 @@
+{
+  "channel": "sandboxControl",
+  "args": [
+    {
+      "endpoint": "wss://sandbox.example:8443",
+      "driverId": "client-1",
+      "driverName": "lucas-laptop",
+      "isDriver": true
+    }
+  ]
+}

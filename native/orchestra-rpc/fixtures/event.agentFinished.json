@@ -1,0 +1,7 @@
+{
+  "channel": "agentFinished",
+  "args": [
+    "ws-fixture-git",
+    false
+  ]
+}

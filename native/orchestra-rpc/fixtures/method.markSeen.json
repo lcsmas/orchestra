@@ -1,0 +1,7 @@
+{
+  "method": "markSeen",
+  "params": [
+    "ws-fixture-scratch"
+  ],
+  "result": null
+}

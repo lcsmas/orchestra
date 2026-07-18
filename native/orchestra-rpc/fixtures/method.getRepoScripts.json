@@ -1,0 +1,10 @@
+{
+  "method": "getRepoScripts",
+  "params": [
+    "/tmp/orchestra-rpc-fixtures/repo"
+  ],
+  "result": {
+    "setup": "echo setup",
+    "run": "echo run"
+  }
+}

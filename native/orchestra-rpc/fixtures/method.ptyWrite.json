@@ -1,0 +1,8 @@
+{
+  "method": "ptyWrite",
+  "params": [
+    "ws-fixture-git",
+    "x"
+  ],
+  "result": null
+}

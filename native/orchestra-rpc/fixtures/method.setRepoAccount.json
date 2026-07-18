@@ -1,0 +1,17 @@
+{
+  "method": "setRepoAccount",
+  "params": [
+    "/tmp/orchestra-rpc-fixtures/repo",
+    "acct-fixture-1"
+  ],
+  "result": {
+    "path": "/tmp/orchestra-rpc-fixtures/repo",
+    "name": "repo",
+    "defaultBranch": "main",
+    "scripts": {
+      "setup": "echo setup",
+      "run": "echo run"
+    },
+    "accountId": "acct-fixture-1"
+  }
+}

@@ -2,9 +2,10 @@
 // `resources:sample` IPC while the page is open — there is no standing poller
 // in main, so a closed page costs nothing. The pure math (stat parsing, tree
 // walking, jiffy→percent) lives in ../shared/resources.ts; this module owns
-// the platform I/O: /proc (Linux) or `ps` (elsewhere), Electron's app
-// metrics, and a cached `du` pass over Orchestra's data directories.
-import { app } from 'electron';
+// the platform I/O: /proc (Linux) or `ps` (elsewhere), the backend's own
+// process metrics (via the platform seam — Electron's app metrics, or the
+// daemon's self-sample), and a cached `du` pass over Orchestra's data dirs.
+import { platform } from './platform';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -132,14 +133,10 @@ export async function sampleResources(): Promise<ResourceSnapshot> {
     aggregateSession({ ptyId: s.id, remote: s.remote, pid: s.pid }, table, cpuPcts),
   );
 
-  // Electron's own processes. getAppMetrics measures CPU since ITS last call,
-  // which matches the page's own tick cadence. workingSetSize is KiB.
-  const metrics = app.getAppMetrics().map((m) => ({
-    type: m.type,
-    pid: m.pid,
-    cpuPct: m.cpu?.percentCPUUsage ?? 0,
-    memBytes: (m.memory?.workingSetSize ?? 0) * 1024,
-  }));
+  // The backend's own processes (Electron's app metrics, or the daemon's
+  // single self-sample). Both measure CPU since the previous call, which
+  // matches the page's own tick cadence.
+  const metrics = platform.getAppMetrics();
 
   maybeRefreshDisk(); // fire-and-forget; this tick serves the cached figures
 

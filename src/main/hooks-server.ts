@@ -2,7 +2,6 @@ import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
-import { BrowserWindow } from 'electron';
 import { dispatchHookEvent } from './activity';
 import {
   dispatchRenameRequest,
@@ -17,7 +16,7 @@ import {
   dispatchMigrateAccountRequest,
   dispatchAccountsListRequest,
 } from './workspaces';
-import { dispatchLoginUrlRequest } from './login-browser';
+import { dispatchLoginUrlRequest } from './login-url';
 import { log } from './logger';
 
 // Tiny HTTP server bound to a Unix socket. Each workspace's
@@ -81,7 +80,7 @@ export function getHookSocketPath(): string | null {
   return socketPath;
 }
 
-export async function startHooksServer(window: BrowserWindow): Promise<void> {
+export async function startHooksServer(): Promise<void> {
   if (server) return;
   const target = defaultSocketPath();
   // Stale socket left over by a prior crashed run with the same PID — drop it
@@ -137,7 +136,7 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
         try {
           if (route === '/rename') {
             if (typeof msg.id === 'string' && typeof msg.branch === 'string') {
-              send(200, await dispatchRenameRequest(msg.id, msg.branch, window));
+              send(200, await dispatchRenameRequest(msg.id, msg.branch));
             } else {
               send(200, { ok: false, error: 'missing id or branch' });
             }
@@ -145,17 +144,14 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
             if (typeof msg.task === 'string') {
               send(
                 200,
-                await dispatchSpawnRequest(
-                  {
-                    from: typeof msg.from === 'string' ? msg.from : undefined,
-                    repoPath: typeof msg.repoPath === 'string' ? msg.repoPath : undefined,
-                    baseBranch: typeof msg.baseBranch === 'string' ? msg.baseBranch : undefined,
-                    task: msg.task,
-                    agent: 'claude',
-                    detached: msg.detached === true,
-                  },
-                  window,
-                ),
+                await dispatchSpawnRequest({
+                  from: typeof msg.from === 'string' ? msg.from : undefined,
+                  repoPath: typeof msg.repoPath === 'string' ? msg.repoPath : undefined,
+                  baseBranch: typeof msg.baseBranch === 'string' ? msg.baseBranch : undefined,
+                  task: msg.task,
+                  agent: 'claude',
+                  detached: msg.detached === true,
+                }),
               );
             } else {
               send(200, { ok: false, error: 'missing task' });
@@ -178,33 +174,30 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
             if (typeof msg.to === 'string' && typeof msg.text === 'string') {
               send(
                 200,
-                await dispatchMessageRequest(
-                  {
-                    from: typeof msg.from === 'string' ? msg.from : undefined,
-                    to: msg.to,
-                    text: msg.text,
-                  },
-                  window,
-                ),
+                await dispatchMessageRequest({
+                  from: typeof msg.from === 'string' ? msg.from : undefined,
+                  to: msg.to,
+                  text: msg.text,
+                }),
               );
             } else {
               send(200, { ok: false, error: 'missing to or text' });
             }
           } else if (route === '/addRepo') {
             if (typeof msg.path === 'string') {
-              send(200, await dispatchAddRepoRequest({ path: msg.path }, window));
+              send(200, await dispatchAddRepoRequest({ path: msg.path }));
             } else {
               send(200, { ok: false, error: 'missing path' });
             }
           } else if (route === '/deleteWorkspace') {
             if (typeof msg.id === 'string') {
-              send(200, await dispatchDeleteWorkspaceRequest({ id: msg.id }, window));
+              send(200, await dispatchDeleteWorkspaceRequest({ id: msg.id }));
             } else {
               send(200, { ok: false, error: 'missing id' });
             }
           } else if (route === '/promote') {
             if (typeof msg.id === 'string') {
-              send(200, await dispatchPromoteRequest({ id: msg.id }, window));
+              send(200, await dispatchPromoteRequest({ id: msg.id }));
             } else {
               send(200, { ok: false, error: 'missing id' });
             }
@@ -212,10 +205,10 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
             if (typeof msg.id === 'string') {
               send(
                 200,
-                await dispatchAttachRequest(
-                  { id: msg.id, parentId: typeof msg.parentId === 'string' ? msg.parentId : null },
-                  window,
-                ),
+                await dispatchAttachRequest({
+                  id: msg.id,
+                  parentId: typeof msg.parentId === 'string' ? msg.parentId : null,
+                }),
               );
             } else {
               send(200, { ok: false, error: 'missing id' });
@@ -224,14 +217,11 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
             if (typeof msg.id === 'string') {
               send(
                 200,
-                await dispatchMigrateAccountRequest(
-                  {
-                    id: msg.id,
-                    // A null/empty accountId migrates back to the default login.
-                    accountId: typeof msg.accountId === 'string' ? msg.accountId : null,
-                  },
-                  window,
-                ),
+                await dispatchMigrateAccountRequest({
+                  id: msg.id,
+                  // A null/empty accountId migrates back to the default login.
+                  accountId: typeof msg.accountId === 'string' ? msg.accountId : null,
+                }),
               );
             } else {
               send(200, { ok: false, error: 'missing id' });
@@ -250,7 +240,7 @@ export async function startHooksServer(window: BrowserWindow): Promise<void> {
           } else {
             // Default route handles activity events: /event or anything else.
             if (typeof msg.id === 'string' && typeof msg.event === 'string') {
-              dispatchHookEvent(msg.id, msg.event, window);
+              dispatchHookEvent(msg.id, msg.event);
             }
             send(200, {});
           }

@@ -1,0 +1,23 @@
+{
+  "method": "renameBranch",
+  "params": [
+    "ws-fixture-scratch",
+    "renamed-fixture"
+  ],
+  "result": {
+    "id": "ws-fixture-scratch",
+    "name": "scratch · renamed-fixture",
+    "kind": "scratch",
+    "repoPath": "",
+    "worktreePath": "/tmp/orchestra-rpc-fixtures/home/.orchestra/scratch/scratch-fixture",
+    "branch": "renamed-fixture",
+    "baseBranch": "",
+    "createdAt": 1700000000000,
+    "status": "idle",
+    "agent": "claude",
+    "port": 55101,
+    "setupStatus": "ok",
+    "queuedPrompts": [],
+    "branchManuallySet": true
+  }
+}

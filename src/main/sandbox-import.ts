@@ -24,7 +24,7 @@ import { createReadStream, createWriteStream, existsSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, cp, stat, writeFile, rename, readdir, readFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { BrowserWindow } from 'electron';
+import { platform } from './platform';
 import { store } from './store';
 import { stopPty } from './pty';
 import { removeWorktree, detectRemoteUrl, createWorktree } from './git';
@@ -185,11 +185,7 @@ function postPayload(
  * anything local is touched — the local worktree is only removed after the
  * container has confirmed it owns the checkout.
  */
-export async function importWorkspaceToSandbox(
-  id: string,
-  endpoint: string,
-  window: BrowserWindow,
-): Promise<Workspace> {
+export async function importWorkspaceToSandbox(id: string, endpoint: string): Promise<Workspace> {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
   if (isScratchLike(ws)) throw new Error('scratch sessions have no git checkout to import');
@@ -261,7 +257,7 @@ export async function importWorkspaceToSandbox(
     heavyResumePending: false,
   };
   await store.upsertWorkspace(updated);
-  window.webContents.send('workspace:update', updated);
+  platform.broadcast('workspace:update', updated);
   log.info(`workspace ${ws.branch} (${id}) is now sandbox-hosted at ${endpoint}`);
 
   // First safety snapshot immediately: proves the container's /export works
@@ -394,10 +390,7 @@ export function startSandboxAutoBackup(): void {
  * history by cwd, so the pre-import local conversation becomes resumable
  * again.
  */
-export async function ejectWorkspaceFromSandbox(
-  id: string,
-  window: BrowserWindow,
-): Promise<Workspace> {
+export async function ejectWorkspaceFromSandbox(id: string): Promise<Workspace> {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
   if (ws.host?.kind !== 'sandbox') throw new Error('workspace is not sandbox-hosted');
@@ -464,7 +457,7 @@ export async function ejectWorkspaceFromSandbox(
       heavyResumePending: false,
     };
     await store.upsertWorkspace(updated);
-    window.webContents.send('workspace:update', updated);
+    platform.broadcast('workspace:update', updated);
     log.info(`workspace ${branch} (${id}) restored to local at ${worktreePath}`);
     return updated;
   } finally {

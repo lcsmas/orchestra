@@ -1,0 +1,6 @@
+{
+  "channel": "workspaceFocus",
+  "args": [
+    "ws-fixture-git"
+  ]
+}

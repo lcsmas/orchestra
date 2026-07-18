@@ -1,0 +1,18 @@
+{
+  "method": "listSelfTuneReports",
+  "params": [],
+  "result": [
+    {
+      "loginId": "default",
+      "label": "default login",
+      "configDir": "/tmp/orchestra-rpc-fixtures/home/.claude",
+      "reportPath": null
+    },
+    {
+      "loginId": "acct-fixture-1",
+      "label": "Fixture Account",
+      "configDir": "/tmp/orchestra-rpc-fixtures/home/claude-fixture",
+      "reportPath": null
+    }
+  ]
+}

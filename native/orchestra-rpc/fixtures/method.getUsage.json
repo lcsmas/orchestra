@@ -1,0 +1,20 @@
+{
+  "method": "getUsage",
+  "params": [],
+  "result": {
+    "fiveHour": {
+      "utilization": 42,
+      "resetsAt": "2023-11-15T00:00:00.000Z"
+    },
+    "sevenDay": {
+      "utilization": 17,
+      "resetsAt": "2023-11-20T00:00:00.000Z"
+    },
+    "extraUtilization": null,
+    "fable": {
+      "utilization": 5,
+      "resetsAt": "2023-11-20T00:00:00.000Z"
+    },
+    "fetchedAt": 1700000000000
+  }
+}

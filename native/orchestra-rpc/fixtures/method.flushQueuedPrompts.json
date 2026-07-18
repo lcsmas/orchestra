@@ -1,0 +1,10 @@
+{
+  "method": "flushQueuedPrompts",
+  "params": [
+    "ws-fixture-git"
+  ],
+  "result": {
+    "ok": true,
+    "delivered": 0
+  }
+}

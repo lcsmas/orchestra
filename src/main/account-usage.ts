@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { app, BrowserWindow } from 'electron';
+import { platform } from './platform';
 import { log } from './logger';
 import { store } from './store';
 import {
@@ -41,9 +41,9 @@ function userAgent(): string {
   // limits (429). Mirror Claude Code's format using Orchestra's version.
   let version = '0.0.0';
   try {
-    version = app.getVersion();
+    version = platform.getAppVersion();
   } catch {
-    /* app unavailable in odd contexts */
+    /* platform unavailable in odd contexts */
   }
   return `claude-code/${version}`;
 }
@@ -328,36 +328,34 @@ export function computeWorkspaceAccounts(): Record<string, WorkspaceAccount> {
 let timer: ReturnType<typeof setTimeout> | null = null;
 let stopped = true;
 
-function broadcastWorkspaceAccounts(window: BrowserWindow): void {
-  if (window.isDestroyed() || window.webContents.isDestroyed()) return;
-  window.webContents.send('accounts:workspaceAccounts', computeWorkspaceAccounts());
+function broadcastWorkspaceAccounts(): void {
+  platform.broadcast('accounts:workspaceAccounts', computeWorkspaceAccounts());
 }
 
-function broadcastUsage(window: BrowserWindow, byId: Record<string, AccountUsageStatus>): void {
-  if (window.isDestroyed() || window.webContents.isDestroyed()) return;
-  window.webContents.send('accounts:usageUpdate', byId);
+function broadcastUsage(byId: Record<string, AccountUsageStatus>): void {
+  platform.broadcast('accounts:usageUpdate', byId);
 }
 
-async function poll(window: BrowserWindow): Promise<void> {
+async function poll(): Promise<void> {
   // Recompute the workspace→account map each tick so a workspace created or
   // deleted since the last tick gets (or loses) its badge. Pure local work.
-  broadcastWorkspaceAccounts(window);
+  broadcastWorkspaceAccounts();
   const { byId, changed } = await refreshStale(Date.now());
-  if (changed) broadcastUsage(window, byId);
+  if (changed) broadcastUsage(byId);
 }
 
-function schedule(window: BrowserWindow): void {
+function schedule(): void {
   if (stopped) return;
   timer = setTimeout(() => {
-    void poll(window).finally(() => schedule(window));
+    void poll().finally(() => schedule());
   }, POLL_MS);
 }
 
-export function startAccountUsagePolling(window: BrowserWindow): void {
+export function startAccountUsagePolling(): void {
   if (!stopped) return;
   stopped = false;
-  broadcastWorkspaceAccounts(window);
-  void poll(window).finally(() => schedule(window));
+  broadcastWorkspaceAccounts();
+  void poll().finally(() => schedule());
 }
 
 export function stopAccountUsagePolling(): void {
@@ -370,8 +368,8 @@ export function stopAccountUsagePolling(): void {
 
 /** Called when accounts or repo→account assignments change so the renderer's
  *  mapping and usage refresh promptly without waiting for the next poll tick. */
-export async function refreshAccountsNow(window: BrowserWindow): Promise<void> {
-  broadcastWorkspaceAccounts(window);
+export async function refreshAccountsNow(): Promise<void> {
+  broadcastWorkspaceAccounts();
   const { byId } = await refreshStale(Date.now());
-  broadcastUsage(window, byId);
+  broadcastUsage(byId);
 }

@@ -1,0 +1,7 @@
+{
+  "method": "pty:scrollback",
+  "params": [
+    "ws-fixture-git"
+  ],
+  "result": ""
+}

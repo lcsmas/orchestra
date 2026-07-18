@@ -1,0 +1,58 @@
+{
+  "method": "listWorkspaces",
+  "params": [],
+  "result": [
+    {
+      "id": "ws-fixture-git",
+      "name": "repo · main",
+      "repoPath": "/tmp/orchestra-rpc-fixtures/repo",
+      "worktreePath": "/tmp/orchestra-rpc-fixtures/repo",
+      "branch": "main",
+      "baseBranch": "main",
+      "createdAt": 1700000000000,
+      "status": "idle",
+      "agent": "claude",
+      "branchManuallySet": true,
+      "port": 55100,
+      "setupStatus": "ok",
+      "contextTokens": 123456,
+      "unpushedAhead": 0,
+      "hasInput": true
+    },
+    {
+      "id": "ws-fixture-scratch",
+      "name": "scratch · fixture",
+      "kind": "scratch",
+      "repoPath": "",
+      "worktreePath": "/tmp/orchestra-rpc-fixtures/home/.orchestra/scratch/scratch-fixture",
+      "branch": "fixture",
+      "baseBranch": "",
+      "createdAt": 1700000000000,
+      "status": "waiting",
+      "agent": "claude",
+      "port": 55101,
+      "setupStatus": "ok",
+      "queuedPrompts": [
+        {
+          "id": "prompt-fixture-1",
+          "text": "queued fixture prompt",
+          "queuedAt": 1700000000000
+        }
+      ]
+    },
+    {
+      "id": "ws-fixture-tmp",
+      "name": "scratch · disposable",
+      "kind": "scratch",
+      "repoPath": "",
+      "worktreePath": "/tmp/orchestra-rpc-fixtures/home/.orchestra/scratch/scratch-disposable",
+      "branch": "disposable",
+      "baseBranch": "",
+      "createdAt": 1700000000000,
+      "status": "idle",
+      "agent": "claude",
+      "port": 55102,
+      "setupStatus": "ok"
+    }
+  ]
+}

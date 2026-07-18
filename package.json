@@ -26,7 +26,9 @@
   "scripts": {
     "dev": "ORCHESTRA_HOME=\"${ORCHESTRA_HOME:-$HOME/.orchestra-dev}\" vite",
     "build:cli": "vite build --config vite.cli.config.ts",
-    "build": "vite build && pnpm run build:cli && electron-builder",
+    "build:daemon": "vite build --config vite.daemon.config.ts",
+    "build": "vite build && pnpm run build:cli && pnpm run build:daemon && electron-builder",
+    "fixtures:rpc": "pnpm run build:daemon && node dist-electron/dump-rpc-fixtures.js",
     "start": "electron .",
     "lint": "eslint src --ext .ts,.tsx",
     "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",

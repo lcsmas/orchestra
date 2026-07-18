@@ -32,7 +32,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { app, type BrowserWindow } from 'electron';
+import { platform } from '../platform';
 import { SandboxConnection, type SandboxSocket } from './sandbox-connection';
 import { backoffDelayMs, shouldGiveUp } from './reconnect-policy';
 import type { SandboxControlState } from '../../shared/types';
@@ -77,7 +77,6 @@ function adaptSocket(ws: WebSocket): SandboxSocket {
 async function dispatchRpc(
   route: RpcRoute,
   payload: RpcRequestPayloads[RpcRoute],
-  window: BrowserWindow,
 ): Promise<RpcReplyPayload> {
   // Each dispatcher returns a concrete `{ok, ...}` result type. The wire treats
   // every reply opaquely (RpcReplyPayload = {ok, [k]: unknown}), so we widen
@@ -87,7 +86,7 @@ async function dispatchRpc(
     case 'rename': {
       const p = payload as RpcRequestPayloads['rename'];
       if (typeof p.id === 'string' && typeof p.branch === 'string') {
-        return reply(await dispatchRenameRequest(p.id, p.branch, window));
+        return reply(await dispatchRenameRequest(p.id, p.branch));
       }
       return { ok: false, error: 'missing id or branch' };
     }
@@ -95,16 +94,13 @@ async function dispatchRpc(
       const p = payload as RpcRequestPayloads['spawn'];
       if (typeof p.task === 'string') {
         return reply(
-          await dispatchSpawnRequest(
-            {
-              from: typeof p.from === 'string' ? p.from : undefined,
-              repoPath: typeof p.repoPath === 'string' ? p.repoPath : undefined,
-              baseBranch: typeof p.baseBranch === 'string' ? p.baseBranch : undefined,
-              task: p.task,
-              agent: 'claude',
-            },
-            window,
-          ),
+          await dispatchSpawnRequest({
+            from: typeof p.from === 'string' ? p.from : undefined,
+            repoPath: typeof p.repoPath === 'string' ? p.repoPath : undefined,
+            baseBranch: typeof p.baseBranch === 'string' ? p.baseBranch : undefined,
+            task: p.task,
+            agent: 'claude',
+          }),
         );
       }
       return { ok: false, error: 'missing task' };
@@ -124,10 +120,11 @@ async function dispatchRpc(
       const p = payload as RpcRequestPayloads['message'];
       if (typeof p.to === 'string' && typeof p.text === 'string') {
         return reply(
-          await dispatchMessageRequest(
-            { from: typeof p.from === 'string' ? p.from : undefined, to: p.to, text: p.text },
-            window,
-          ),
+          await dispatchMessageRequest({
+            from: typeof p.from === 'string' ? p.from : undefined,
+            to: p.to,
+            text: p.text,
+          }),
         );
       }
       return { ok: false, error: 'missing to or text' };
@@ -150,7 +147,6 @@ interface Entry {
 }
 
 const connections = new Map<string, Entry>();
-let mainWindow: BrowserWindow | null = null;
 
 // ─── Cross-machine ownership (item C, host side) ────────────────────────────
 //
@@ -167,7 +163,7 @@ let mainWindow: BrowserWindow | null = null;
 let clientId: string | null = null;
 function getClientId(): string {
   if (clientId) return clientId;
-  const file = path.join(app.getPath('userData'), 'orchestra', 'client-id');
+  const file = path.join(platform.getUserDataDir(), 'orchestra', 'client-id');
   try {
     const existing = readFileSync(file, 'utf8').trim();
     if (existing) return (clientId = existing);
@@ -316,17 +312,11 @@ async function reconnectLoop(endpoint: string, entry: Entry): Promise<void> {
   entry.conn.abandon();
 }
 
-/** Hand the manager the window every dispatch/activity update targets. Called
- *  once from app startup, alongside startHooksServer / startEventsSpool. */
-export function setSandboxWindow(window: BrowserWindow): void {
-  mainWindow = window;
-}
-
 /**
  * Get (opening if needed) the connection for an endpoint, and await its socket
- * being open. Throws if no window has been registered or the socket fails to
- * open — the caller (pty.ts) unwinds the spawn exactly as it does for a failed
- * local spawn.
+ * being open. Throws if the socket fails to open — the caller (pty.ts) unwinds
+ * the spawn exactly as it does for a failed local spawn. Activity updates and
+ * hook RPC replies flow through the platform seam, so no window is needed.
  */
 export async function getSandboxConnection(endpoint: string): Promise<SandboxConnection> {
   const existing = connections.get(endpoint);
@@ -334,16 +324,12 @@ export async function getSandboxConnection(endpoint: string): Promise<SandboxCon
     await existing.ready;
     return existing.conn;
   }
-  if (!mainWindow) {
-    throw new Error('sandbox manager has no window — setSandboxWindow not called');
-  }
-  const window = mainWindow;
 
   const { ws, open } = openSocket(endpoint);
   const ready = open.then(() => log.info(`sandbox connection open: ${endpoint}`));
 
   const conn = new SandboxConnection(adaptSocket(ws), {
-    onEvent: (session, event, tool) => applyAgentEvent(session, event, tool, window),
+    onEvent: (session, event, tool) => applyAgentEvent(session, event, tool),
     onControl: (state) => {
       const s: SandboxControlState = {
         endpoint,
@@ -352,12 +338,10 @@ export async function getSandboxConnection(endpoint: string): Promise<SandboxCon
         isDriver: state.isDriver,
       };
       controlStates.set(endpoint, s);
-      if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-        window.webContents.send('sandbox:control', s);
-      }
+      platform.broadcast('sandbox:control', s);
     },
     onRpc: (route, payload, reply) => {
-      void dispatchRpc(route, payload, window)
+      void dispatchRpc(route, payload)
         .then(reply)
         .catch((e) => reply({ ok: false, error: e instanceof Error ? e.message : 'rpc failed' }));
     },

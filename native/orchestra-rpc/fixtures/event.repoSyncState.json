@@ -1,0 +1,14 @@
+{
+  "channel": "repoSyncState",
+  "args": [
+    {
+      "repoPath": "/tmp/orchestra-rpc-fixtures/repo",
+      "baseBranch": "main",
+      "behind": 0,
+      "ahead": 1,
+      "hasUpstream": true,
+      "syncedAt": 1700000000000,
+      "syncing": false
+    }
+  ]
+}

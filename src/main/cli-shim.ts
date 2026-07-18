@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { orchestraHome } from './platform';
 import { log } from './logger';
 
 // The shipped `orchestra` CLI lives inside the app bundle (dist-electron/cli.js,
@@ -116,10 +117,14 @@ export function installCliShim(): void {
 /**
  * The orchestra-owned bin dir that main/pty.ts prepends to each agent PTY's
  * PATH. Kept separate from the user-facing shim location so we never depend on
- * the user's login PATH for agent-driven CLI calls.
+ * the user's login PATH for agent-driven CLI calls. Under the Orchestra home
+ * root (honoring $ORCHESTRA_HOME) so an isolated instance — a dev build, a
+ * smoke-tested daemon — writes ITS OWN shim instead of clobbering the packaged
+ * app's target for every live agent; the packaged default is the same
+ * ~/.orchestra/bin as always.
  */
 export function agentCliBinDir(): string {
-  return path.join(os.homedir(), '.orchestra', 'bin');
+  return path.join(orchestraHome(), 'bin');
 }
 
 /**
@@ -136,16 +141,22 @@ export function installAgentCliShim(): void {
     fs.mkdirSync(dir, { recursive: true });
     // Prefer the stable AppImage path when present; otherwise re-invoke this
     // exact executable. Both dispatch to CLI mode via the `cli` arg handled at
-    // the top of main/index.ts, so no second GUI window is ever opened.
+    // the top of main/index.ts, so no second GUI window is ever opened. A
+    // plain-Node host (the daemon under `node daemon.js`) has no cli-mode
+    // dispatch in its own entry, so its shim runs the bundled cli.js sitting
+    // next to the entry bundle directly.
     const target = process.env.APPIMAGE || process.execPath;
+    const invoke = process.versions.electron
+      ? `"${target}" cli`
+      : `"${process.execPath}" "${path.join(__dirname, 'cli.js')}"`;
     if (process.platform === 'win32') {
-      const body = ['@echo off', `rem ${SHIM_MARKER}. Safe to delete.`, `"${target}" cli %*`, ''].join(
+      const body = ['@echo off', `rem ${SHIM_MARKER}. Safe to delete.`, `${invoke} %*`, ''].join(
         '\r\n',
       );
       fs.writeFileSync(path.join(dir, 'orchestra.cmd'), body);
     } else {
       // exec replaces the shell so the CLI's exit code propagates unchanged.
-      const body = ['#!/bin/sh', `# ${SHIM_MARKER}. Safe to delete.`, `exec "${target}" cli "$@"`, ''].join(
+      const body = ['#!/bin/sh', `# ${SHIM_MARKER}. Safe to delete.`, `exec ${invoke} "$@"`, ''].join(
         '\n',
       );
       fs.writeFileSync(path.join(dir, 'orchestra'), body, { mode: 0o755 });
