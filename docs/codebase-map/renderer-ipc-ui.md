@@ -110,8 +110,15 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
 ## Other components
 - **DiffView.tsx** — Monaco `DiffEditor` (read-only, side-by-side), file list
   with +/- badges, 4s poll preserving selection, `guessLanguage` by extension.
-- **BranchPicker.tsx** — dropdown, fetches `listBranches`, filter + arrow-key nav,
-  current branch first.
+- **BranchPicker.tsx** — toolbar branch-switch dropdown, fetches `listBranches`,
+  current branch first. Its searchable list is the exported
+  `BranchPopoverPanel`, reused by every branch-choosing surface.
+- **NewWorkspaceBranchPopover.tsx** — right-click on a repo's sidebar "+"
+  opens this portal'd `BranchPopoverPanel` (fixed viewport coords — escapes the
+  sidebar's overflow clip + backdrop-filter containing block) to create a
+  workspace from a chosen base branch (`createWorkspace({repoPath, baseBranch})`;
+  plain click keeps the repo's default). Branches come from
+  `repos:listBranches` (by repo path, unlike `git:listBranches` by ws id).
 - **NvimView.tsx** — same xterm pattern for a `<wsId>:nvim` PTY (`nvim .`),
   resizable pane.
 - **Dialog.tsx** — Zustand-backed modal: `dialog.alert/confirm/error/success`
@@ -130,7 +137,10 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   `helpOpen` flag — mutually exclusive with `insightsOpen` (opening one closes
   the other; `setActive` closes both). The welcome empty state in `App.tsx`
   also renders a `welcome-features` highlight grid.
-- **RepoScriptsModal.tsx** — edit setup/run/archive scripts + account assignment.
+- **RepoScriptsModal.tsx** — edit setup/run/archive scripts, account assignment,
+  and the repo's default base branch (select fed by `repos:listBranches`, saved
+  via `repos:setDefaultBranch` — main validates the branch exists, rebroadcasts
+  `repos:update`, and re-syncs the repo's sync pill).
 - **SetupBanner.tsx** — overlay while `setupStatus` running/failed, with log +
   retry.
 - **PromptQueueBanner.tsx** — shown above the pane row while the active

@@ -31,6 +31,9 @@ export function RepoScriptsModal({ repoPath, repoName, onClose }: Props) {
   const [archive, setArchive] = useState('');
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountId, setAccountId] = useState('');
+  const [branches, setBranches] = useState<string[]>([]);
+  const [defaultBranch, setDefaultBranch] = useState('');
+  const [initialDefaultBranch, setInitialDefaultBranch] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,15 +45,22 @@ export function RepoScriptsModal({ repoPath, repoName, onClose }: Props) {
     void Promise.all([
       window.orchestra.getRepoScripts(repoPath),
       window.orchestra.listAccounts(),
+      // Branch listing is best-effort: an unreadable repo still lets the user
+      // edit scripts; the branch select just falls back to the current value.
+      window.orchestra.listRepoBranches(repoPath).catch(() => [] as string[]),
     ])
-      .then(([scripts, accs]: [RepoScripts, Account[]]) => {
+      .then(([scripts, accs, branchList]: [RepoScripts, Account[], string[]]) => {
         if (cancelled) return;
         setSetup(scripts.setup ?? '');
         setRunScript(scripts.run ?? '');
         setArchive(scripts.archive ?? '');
         setAccounts(accs);
+        setBranches(branchList);
         // Current assignment from the already-loaded repo list (no extra IPC).
-        setAccountId(repos.find((r) => r.path === repoPath)?.accountId ?? '');
+        const repo = repos.find((r) => r.path === repoPath);
+        setAccountId(repo?.accountId ?? '');
+        setDefaultBranch(repo?.defaultBranch ?? '');
+        setInitialDefaultBranch(repo?.defaultBranch ?? '');
         setLoaded(true);
       })
       .catch((e) => {
@@ -81,6 +91,9 @@ export function RepoScriptsModal({ repoPath, repoName, onClose }: Props) {
         archive: archive.trim() || undefined,
       });
       await window.orchestra.setRepoAccount(repoPath, accountId || null);
+      if (defaultBranch && defaultBranch !== initialDefaultBranch) {
+        await window.orchestra.setRepoDefaultBranch(repoPath, defaultBranch);
+      }
       // Refresh local repo cache so the Run tab's `hasRunScript` derivation
       // sees the change immediately, without waiting for a reload.
       await refreshRepos();
@@ -153,6 +166,32 @@ export function RepoScriptsModal({ repoPath, repoName, onClose }: Props) {
               onChange={setArchive}
               placeholder={ARCHIVE_PLACEHOLDER}
             />
+            <label className="field">
+              <div className="field-head">
+                <span className="field-label">Default base branch</span>
+                <span className="field-hint">
+                  The branch new workspaces of this repo are cut from, and the branch the
+                  sidebar sync pill tracks. Right-click a repo's + button to base a single
+                  workspace on a different branch.
+                </span>
+              </div>
+              <select
+                className="field-select"
+                value={defaultBranch}
+                onChange={(e) => setDefaultBranch(e.target.value)}
+              >
+                {/* Keep the stored value selectable even if it no longer exists
+                    locally (or the branch listing failed). */}
+                {defaultBranch && !branches.includes(defaultBranch) && (
+                  <option value={defaultBranch}>{defaultBranch} (missing locally)</option>
+                )}
+                {branches.map((b) => (
+                  <option key={b} value={b}>
+                    {b}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="field">
               <div className="field-head">
                 <span className="field-label">Claude account</span>

@@ -8,6 +8,9 @@ const api: OrchestraAPI = {
   listRepoSyncStates: () => ipcRenderer.invoke('repos:listSyncStates'),
   syncRepoBase: (p) => ipcRenderer.invoke('repos:syncBase', p),
   reorderRepos: (paths) => ipcRenderer.invoke('repos:reorder', paths),
+  listRepoBranches: (repoPath) => ipcRenderer.invoke('repos:listBranches', repoPath),
+  setRepoDefaultBranch: (repoPath, branch) =>
+    ipcRenderer.invoke('repos:setDefaultBranch', repoPath, branch),
   pickDirectory: () => ipcRenderer.invoke('dialog:pickDir'),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   getAppVersion: () => ipcRenderer.invoke('app:version'),

@@ -49,6 +49,13 @@ export interface OrchestraAPI {
   /** Persist a new ordering of registered repos. Pass the full list of repo
    *  paths in the desired order; any unknown path is ignored. */
   reorderRepos: (orderedPaths: string[]) => Promise<void>;
+  /** Local branches of a registered repo (sorted). Used to pick a base branch
+   *  for a new workspace, or a repo's default base branch. */
+  listRepoBranches: (repoPath: string) => Promise<string[]>;
+  /** Set the branch new workspaces of this repo are cut from (and the branch
+   *  the sidebar sync pill tracks). Rejects a branch that doesn't exist in the
+   *  repo. Returns the updated repo. */
+  setRepoDefaultBranch: (repoPath: string, branch: string) => Promise<RepoEntry>;
   pickDirectory: () => Promise<string | null>;
   openExternal: (url: string) => Promise<void>;
   /** The running app's version (from package.json). */

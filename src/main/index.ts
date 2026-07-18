@@ -680,6 +680,31 @@ handle('repos:reorder', async (_e, orderedPaths: string[]) => {
   await store.reorderRepos(orderedPaths);
 });
 
+handle('repos:listBranches', async (_e, repoPath: string) => {
+  if (!store.repos.some((r) => r.path === repoPath)) throw new Error('unknown repo');
+  return listBranches(repoPath);
+});
+
+// Change the branch new workspaces of a repo are cut from (its "default base").
+// Validated against the repo's actual local branches so a typo can't leave the
+// repo pointing at a branch `git worktree add` will refuse. Re-syncs the repo's
+// sync pill immediately — it tracks `origin/<defaultBranch>`.
+handle('repos:setDefaultBranch', async (_e, repoPath: string, branch: string) => {
+  const repo = store.repos.find((r) => r.path === repoPath);
+  if (!repo) throw new Error('unknown repo');
+  const target = branch.trim();
+  if (!target) throw new Error('branch required');
+  if (target !== repo.defaultBranch) {
+    const branches = await listBranches(repoPath);
+    if (!branches.includes(target))
+      throw new Error(`branch "${target}" does not exist in ${repo.name}`);
+    await store.updateRepo(repoPath, { defaultBranch: target });
+    getMainWindow().webContents.send('repos:update', store.repos);
+    void syncOneRepo(repoPath, getMainWindow()).catch(() => {});
+  }
+  return store.repos.find((r) => r.path === repoPath)!;
+});
+
 handle('dialog:pickDir', async () => {
   const res = await dialog.showOpenDialog(getMainWindow(), {
     properties: ['openDirectory'],

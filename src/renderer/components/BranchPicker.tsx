@@ -43,29 +43,164 @@ function highlight(name: string, query: string) {
   );
 }
 
-export function BranchPicker({ workspaceId, currentBranch, onSwitched }: Props) {
-  const [open, setOpen] = useState(false);
-  const [branches, setBranches] = useState<string[] | null>(null);
+/** The searchable branch list that fills a `.branch-popover`. Reused by every
+ * branch-choosing surface (workspace branch switch, new-workspace base pick,
+ * repo default-base pick) — only the trigger + what `onPick` does differ.
+ * Positioning is the parent's job: render this inside a `.branch-popover`. */
+export function BranchPopoverPanel({
+  branches,
+  error,
+  busy = false,
+  highlightBranch,
+  badgeLabel = 'current',
+  actionVerb = 'switch',
+  onPick,
+}: {
+  /** null = still loading. */
+  branches: string[] | null;
+  error: string | null;
+  busy?: boolean;
+  /** Branch to sort first and badge (the current / default one). */
+  highlightBranch?: string;
+  /** Badge text on `highlightBranch` ("current", "default"). */
+  badgeLabel?: string;
+  /** Verb in the ↵ footer hint ("switch", "create"). */
+  actionVerb?: string;
+  onPick: (branch: string) => void;
+}) {
   const [query, setQuery] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [activeIdx, setActiveIdx] = useState(0);
-  const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!open) return;
-    setQuery('');
-    setError(null);
+    const raf = requestAnimationFrame(() => inputRef.current?.focus());
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  const filtered = useMemo(() => {
+    const list = branches ?? [];
+    const q = query.trim().toLowerCase();
+    const base = q ? list.filter((b) => b.toLowerCase().includes(q)) : list;
+    // Highlighted branch sorts first, then alphabetical.
+    return base.slice().sort((a, b) => {
+      if (a === highlightBranch) return -1;
+      if (b === highlightBranch) return 1;
+      return a.localeCompare(b);
+    });
+  }, [branches, query, highlightBranch]);
+
+  useEffect(() => {
     setActiveIdx(0);
+  }, [query, branches]);
+
+  useEffect(() => {
+    if (!listRef.current) return;
+    const el = listRef.current.querySelector<HTMLElement>(`[data-idx="${activeIdx}"]`);
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [activeIdx]);
+
+  return (
+    <>
+      <div className="branch-search-wrap">
+        <span className="branch-search-icon" aria-hidden="true">
+          <SearchIcon />
+        </span>
+        <input
+          ref={inputRef}
+          className="branch-search"
+          type="text"
+          placeholder="Search branches…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              setActiveIdx((i) => Math.min(filtered.length - 1, i + 1));
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              setActiveIdx((i) => Math.max(0, i - 1));
+            } else if (e.key === 'Enter') {
+              e.preventDefault();
+              const pick = filtered[activeIdx];
+              if (pick) onPick(pick);
+            }
+          }}
+        />
+        {query && (
+          <button
+            type="button"
+            className="branch-search-clear"
+            aria-label="Clear search"
+            onClick={() => {
+              setQuery('');
+              inputRef.current?.focus();
+            }}
+          >
+            ×
+          </button>
+        )}
+      </div>
+      <div ref={listRef} className="branch-list" role="listbox">
+        {branches === null && <div className="branch-empty">Loading branches…</div>}
+        {branches !== null && filtered.length === 0 && (
+          <div className="branch-empty">
+            No branches match <span className="branch-empty-q">“{query}”</span>
+          </div>
+        )}
+        {filtered.map((b, i) => {
+          const isHighlighted = b === highlightBranch;
+          const isActive = i === activeIdx;
+          return (
+            <button
+              key={b}
+              type="button"
+              role="option"
+              data-idx={i}
+              aria-selected={isHighlighted}
+              className={`branch-item ${isActive ? 'active' : ''} ${isHighlighted ? 'current' : ''}`}
+              onMouseEnter={() => setActiveIdx(i)}
+              onClick={() => onPick(b)}
+              disabled={busy}
+              title={b}
+            >
+              <span className="branch-item-icon" aria-hidden="true">
+                <BranchIcon />
+              </span>
+              <span className="branch-item-name">{highlight(b, query)}</span>
+              {isHighlighted && <span className="branch-item-badge">{badgeLabel}</span>}
+            </button>
+          );
+        })}
+      </div>
+      {error ? (
+        <div className="branch-error">{error}</div>
+      ) : (
+        <div className="branch-footer">
+          <span className="branch-hint"><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+          <span className="branch-hint"><kbd>↵</kbd> {actionVerb}</span>
+          <span className="branch-hint"><kbd>esc</kbd> close</span>
+        </div>
+      )}
+    </>
+  );
+}
+
+export function BranchPicker({ workspaceId, currentBranch, onSwitched }: Props) {
+  const [open, setOpen] = useState(false);
+  const [branches, setBranches] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setError(null);
     setBranches(null);
     window.orchestra
       .listBranches(workspaceId)
       .then((list) => setBranches(list))
       .catch((e) => setError((e as Error).message));
-    const raf = requestAnimationFrame(() => inputRef.current?.focus());
-    return () => cancelAnimationFrame(raf);
   }, [open, workspaceId]);
 
   useEffect(() => {
@@ -83,30 +218,6 @@ export function BranchPicker({ workspaceId, currentBranch, onSwitched }: Props) 
       document.removeEventListener('keydown', onKey);
     };
   }, [open]);
-
-  const filtered = useMemo(() => {
-    const list = branches ?? [];
-    const q = query.trim().toLowerCase();
-    const base = q ? list.filter((b) => b.toLowerCase().includes(q)) : list;
-    // Current branch sorts first, then alphabetical.
-    return base.slice().sort((a, b) => {
-      if (a === currentBranch) return -1;
-      if (b === currentBranch) return 1;
-      return a.localeCompare(b);
-    });
-  }, [branches, query, currentBranch]);
-
-  useEffect(() => {
-    setActiveIdx(0);
-  }, [query, branches]);
-
-  useEffect(() => {
-    if (!open || !listRef.current) return;
-    const el = listRef.current.querySelector<HTMLElement>(
-      `[data-idx="${activeIdx}"]`,
-    );
-    el?.scrollIntoView({ block: 'nearest' });
-  }, [activeIdx, open]);
 
   const switchTo = async (branch: string) => {
     if (branch === currentBranch) {
@@ -144,86 +255,13 @@ export function BranchPicker({ workspaceId, currentBranch, onSwitched }: Props) 
       </button>
       {open && (
         <div className="branch-popover" role="dialog">
-          <div className="branch-search-wrap">
-            <span className="branch-search-icon" aria-hidden="true">
-              <SearchIcon />
-            </span>
-            <input
-              ref={inputRef}
-              className="branch-search"
-              type="text"
-              placeholder="Search branches…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'ArrowDown') {
-                  e.preventDefault();
-                  setActiveIdx((i) => Math.min(filtered.length - 1, i + 1));
-                } else if (e.key === 'ArrowUp') {
-                  e.preventDefault();
-                  setActiveIdx((i) => Math.max(0, i - 1));
-                } else if (e.key === 'Enter') {
-                  e.preventDefault();
-                  const pick = filtered[activeIdx];
-                  if (pick) void switchTo(pick);
-                }
-              }}
-            />
-            {query && (
-              <button
-                type="button"
-                className="branch-search-clear"
-                aria-label="Clear search"
-                onClick={() => {
-                  setQuery('');
-                  inputRef.current?.focus();
-                }}
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <div ref={listRef} className="branch-list" role="listbox">
-            {branches === null && <div className="branch-empty">Loading branches…</div>}
-            {branches !== null && filtered.length === 0 && (
-              <div className="branch-empty">
-                No branches match <span className="branch-empty-q">“{query}”</span>
-              </div>
-            )}
-            {filtered.map((b, i) => {
-              const isCurrent = b === currentBranch;
-              const isActive = i === activeIdx;
-              return (
-                <button
-                  key={b}
-                  type="button"
-                  role="option"
-                  data-idx={i}
-                  aria-selected={isCurrent}
-                  className={`branch-item ${isActive ? 'active' : ''} ${isCurrent ? 'current' : ''}`}
-                  onMouseEnter={() => setActiveIdx(i)}
-                  onClick={() => void switchTo(b)}
-                  disabled={busy}
-                  title={b}
-                >
-                  <span className="branch-item-icon" aria-hidden="true">
-                    <BranchIcon />
-                  </span>
-                  <span className="branch-item-name">{highlight(b, query)}</span>
-                  {isCurrent && <span className="branch-item-badge">current</span>}
-                </button>
-              );
-            })}
-          </div>
-          {error ? (
-            <div className="branch-error">{error}</div>
-          ) : (
-            <div className="branch-footer">
-              <span className="branch-hint"><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
-              <span className="branch-hint"><kbd>↵</kbd> switch</span>
-              <span className="branch-hint"><kbd>esc</kbd> close</span>
-            </div>
-          )}
+          <BranchPopoverPanel
+            branches={branches}
+            error={error}
+            busy={busy}
+            highlightBranch={currentBranch}
+            onPick={(b) => void switchTo(b)}
+          />
         </div>
       )}
     </div>

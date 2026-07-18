@@ -209,6 +209,13 @@ Linear API key: `getLinearApiKey`/`setLinearApiKey`/`clearLinearApiKey`.
 `getBaseSyncState` (behind/ahead vs `origin/<base>`), broadcast as
 `repo:syncState`. Fires on focus, startup, and the refresh button.
 
+The tracked base is `RepoEntry.defaultBranch` — auto-detected at add
+(`detectDefaultBranch`, git.ts) and user-configurable from the repo settings
+modal via IPC `repos:setDefaultBranch` (index.ts; validates the branch exists,
+rebroadcasts `repos:update`, kicks `syncOneRepo`). New workspaces are cut from
+it unless `CreateWorkspaceInput.baseBranch` overrides per workspace
+(right-click the repo's sidebar "+", or `orchestra spawn --base`).
+
 ## Worktree sizes — workspaces.ts `getWorktreeSizes`
 Sidebar size badges come from one scan over `ORCHESTRA_ROOT`
 (`src/main/workspaces.ts:~230`), returning `WorktreeSizes { sizes, exclusive }`

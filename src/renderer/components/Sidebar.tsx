@@ -12,6 +12,7 @@ import { groupByHost, hostLabel } from '../host-grouping';
 import { SoundSettings } from './SoundSettings';
 import { LinearSettings } from './LinearSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
+import { NewWorkspaceBranchPopover } from './NewWorkspaceBranchPopover';
 import { UsageBars } from './UsageBars';
 import { InsightsSection } from './Insights';
 import { HelpIcon } from './Help';
@@ -650,6 +651,13 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const [linearSettingsOpen, setLinearSettingsOpen] = useState(false);
   const [accountsSettingsOpen, setAccountsSettingsOpen] = useState(false);
   const [scriptsRepoPath, setScriptsRepoPath] = useState<string | null>(null);
+  // Right-clicking a repo's "+" opens a base-branch picker for the new
+  // workspace (plain click keeps the one-click default-base flow).
+  const [basePicker, setBasePicker] = useState<{
+    repoPath: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [selectedArchived, setSelectedArchived] = useState<Set<string>>(new Set());
@@ -1480,9 +1488,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 )}
                 <button
                   className="repo-add"
-                  title={`New workspace in ${repoLabel(repoPath)}`}
+                  title={`New workspace in ${repoLabel(repoPath)} — right-click to pick the base branch`}
                   aria-label={`New workspace in ${repoLabel(repoPath)}`}
                   onClick={(e) => onAddToRepo(e, repoPath)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setBasePicker({ repoPath, x: e.clientX, y: e.clientY });
+                  }}
                 >
                   +
                 </button>
@@ -1855,6 +1868,22 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
             repoPath={scriptsRepoPath}
             repoName={repoLabel(scriptsRepoPath)}
             onClose={() => setScriptsRepoPath(null)}
+          />
+        )}
+        {basePicker && (
+          <NewWorkspaceBranchPopover
+            repoPath={basePicker.repoPath}
+            repoName={repoLabel(basePicker.repoPath)}
+            defaultBranch={repos.find((r) => r.path === basePicker.repoPath)?.defaultBranch}
+            anchor={{ x: basePicker.x, y: basePicker.y }}
+            onClose={() => setBasePicker(null)}
+            onPick={(branch) => {
+              const repoPath = basePicker.repoPath;
+              setBasePicker(null);
+              createWorkspace({ repoPath, baseBranch: branch }).catch((err) =>
+                dialog.error('Could not create workspace', (err as Error).message),
+              );
+            }}
           />
         )}
 

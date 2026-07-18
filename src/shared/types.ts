@@ -244,6 +244,8 @@ export interface DiffStats {
 
 export interface CreateWorkspaceInput {
   repoPath: string;
+  /** Branch to cut the worktree from. Omitted → the repo's configured
+   * `defaultBranch`. */
   baseBranch?: string;
   task?: string;
   agent?: 'claude';
@@ -274,6 +276,11 @@ export interface RepoScripts {
 export interface RepoEntry {
   path: string;
   name: string;
+  /** Base branch new workspaces are cut from (and the branch the sidebar sync
+   * pill tracks). Auto-detected when the repo is added; user-configurable from
+   * the repo settings modal (`repos:setDefaultBranch`). A single workspace can
+   * still be based elsewhere via {@link CreateWorkspaceInput.baseBranch}
+   * (right-click the repo's "+", or `orchestra spawn --base`). */
   defaultBranch: string;
   scripts?: RepoScripts;
   /** Id of the {@link Account} this repo's workspaces log in as. Orchestra
