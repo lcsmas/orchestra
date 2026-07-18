@@ -15,8 +15,14 @@ pub enum Frame {
     /// Any JSON frame (`hello`, `req`, `res`, `event`, `focus`, `ping`, …).
     /// Typed decoding happens one layer up; the codec stays shape-agnostic.
     Json(Value),
-    PtyData { id: String, bytes: Vec<u8> },
-    PtyWrite { id: String, bytes: Vec<u8> },
+    PtyData {
+        id: String,
+        bytes: Vec<u8>,
+    },
+    PtyWrite {
+        id: String,
+        bytes: Vec<u8>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -131,13 +137,21 @@ mod tests {
 
     #[test]
     fn json_roundtrip() {
-        roundtrip(Frame::Json(json!({"t":"req","id":1,"method":"listWorkspaces","params":[]})));
+        roundtrip(Frame::Json(
+            json!({"t":"req","id":1,"method":"listWorkspaces","params":[]}),
+        ));
     }
 
     #[test]
     fn pty_frames_roundtrip() {
-        roundtrip(Frame::PtyData { id: "ws-1".into(), bytes: vec![0, 159, 146, 150] });
-        roundtrip(Frame::PtyWrite { id: "ws-1:run".into(), bytes: b"ls\r".to_vec() });
+        roundtrip(Frame::PtyData {
+            id: "ws-1".into(),
+            bytes: vec![0, 159, 146, 150],
+        });
+        roundtrip(Frame::PtyWrite {
+            id: "ws-1:run".into(),
+            bytes: b"ls\r".to_vec(),
+        });
     }
 
     #[test]
@@ -155,11 +169,20 @@ mod tests {
     #[test]
     fn back_to_back_frames() {
         let mut both = encode(&Frame::Json(json!({"t":"ping"}))).unwrap();
-        both.extend(encode(&Frame::PtyData { id: "a".into(), bytes: vec![1] }).unwrap());
+        both.extend(
+            encode(&Frame::PtyData {
+                id: "a".into(),
+                bytes: vec![1],
+            })
+            .unwrap(),
+        );
         let mut d = Decoder::new();
         d.feed(&both);
         assert!(matches!(d.next_frame().unwrap().unwrap(), Frame::Json(_)));
-        assert!(matches!(d.next_frame().unwrap().unwrap(), Frame::PtyData { .. }));
+        assert!(matches!(
+            d.next_frame().unwrap().unwrap(),
+            Frame::PtyData { .. }
+        ));
     }
 
     #[test]
