@@ -122,21 +122,20 @@ impl Default for MockBackend {
 }
 
 fn mock_workspace(id: &str, name: &str, branch: &str, status: WorkspaceStatus) -> Workspace {
-    Workspace {
-        id: id.into(),
-        name: name.into(),
-        kind: None,
-        repo_path: "/home/user/repos/orchestra".into(),
-        worktree_path: format!("/home/user/.orchestra/worktrees/{branch}"),
-        branch: branch.into(),
-        base_branch: "master".into(),
-        status,
-        parent_id: None,
-        archived: None,
-        host: None,
-        marked_unread: None,
-        context_tokens: None,
-    }
+    // Deserialized rather than struct-literal so new fields on the wire type
+    // (all Option per the serde rules) can never break the fixture backend.
+    serde_json::from_value(json!({
+        "id": id,
+        "name": name,
+        "repoPath": "/home/user/repos/orchestra",
+        "worktreePath": format!("/home/user/.orchestra/worktrees/{branch}"),
+        "branch": branch,
+        "baseBranch": "master",
+        "status": status,
+        "createdAt": 1_752_800_000_000_u64,
+        "agent": "claude",
+    }))
+    .expect("mock workspace fixture matches the wire type")
 }
 
 pub fn mock_workspaces() -> Vec<Workspace> {
@@ -188,13 +187,12 @@ impl Backend for MockBackend {
     }
 
     fn list_repos(&self) -> Result<Vec<RepoEntry>> {
-        Ok(vec![RepoEntry {
-            path: "/home/user/repos/orchestra".into(),
-            name: "orchestra".into(),
-            default_branch: "master".into(),
-            remote_url: None,
-            account_id: None,
-        }])
+        Ok(vec![serde_json::from_value(json!({
+            "path": "/home/user/repos/orchestra",
+            "name": "orchestra",
+            "defaultBranch": "master",
+        }))
+        .expect("mock repo fixture matches the wire type")])
     }
 
     fn call(&self, method: &str, _params: Vec<Value>) -> Result<Value> {
