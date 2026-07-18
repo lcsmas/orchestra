@@ -122,7 +122,11 @@ endpoint}` = agent lives in an always-on container, see
   processes). `store.load()` resets persisted `running` → `idle`; the agent
   relaunches with `--continue` (via `pty:start` → `startAgentPty`) the first
   time the user opens the workspace — TerminalView only spawns once its tab is
-  visible (fit-dimensions gate, `Terminal.tsx`).
+  visible (fit-dimensions gate, `Terminal.tsx`). During the cold boot the pane
+  shows a "Resuming previous session…" pill (see the cold-boot pill in
+  [activity-pty-terminal.md](activity-pty-terminal.md)) — Claude paints only
+  its splash header while the session reloads, so the pane would otherwise
+  look blank for a couple of seconds.
 
 ## Worktree mechanics (git.ts)
 - `createWorktree(repoPath, branch, baseBranch, worktreePath)` — `git worktree

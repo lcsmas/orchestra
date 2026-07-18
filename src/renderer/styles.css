@@ -2302,6 +2302,50 @@ button.active {
   opacity: 1;
 }
 
+/* Cold-boot pill — floats centered over the terminal while a freshly-spawned
+   agent loads its session (lazy-start cold boot: `claude --continue` paints
+   only its small splash header for a couple of seconds, so the pane otherwise
+   reads as a blank/broken page). Terminal.tsx clears it once real output
+   lands. The delayed fade-in keeps a fast start from flashing it. */
+.terminal-pane .term-boot-pill {
+  position: absolute;
+  left: 50%;
+  top: 45%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: #222933;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
+  font-size: 12.5px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+  animation: term-boot-in 160ms var(--ease) 250ms both;
+}
+.term-boot-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(110, 168, 255, 0.25);
+  border-top-color: #6ea8ff;
+  border-radius: 50%;
+  animation: setup-spin 0.7s linear infinite;
+  flex: 0 0 auto;
+}
+@keyframes term-boot-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 5px));
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+
 /* Every workspace renders a .terminal-pane (stacked absolutely so xterm
    scrollback survives tab switches). Only the active one is visible, so hide
    the other panes' scrollbar gutters — otherwise Chromium paints their thumbs

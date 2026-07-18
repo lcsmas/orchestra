@@ -126,6 +126,19 @@ Terminal.tsx also has: custom floating scrollbar (no gutter), Ctrl+C→copy,
 Ctrl+V image-paste (spill to temp file, bracketed-paste the path),
 Shift+Enter→ESC+CR, lazy PTY start + size re-assert on visibility/focus.
 
+**Cold-boot pill (the blank-first-open fix):** lazy-start means the first open
+of a previously-running workspace cold-boots `claude --continue`; Claude opens
+a ?2026 frame, paints only its small splash header (~500 B), then loads the
+session silently for seconds — the pane read as a blank page with just the
+Clawd logo. `beginBoot()` (called in `start()` right before `ptyStart`) shows a
+centered "Resuming previous session…" / "Starting agent…" pill (label from an
+imperative `useStore.getState()` read of `ws.hasInput` — no subscription);
+cleared once cumulative PTY output ≥ `BOOT_PAINT_BYTES` (2 KiB — above the
+splash, below any real TUI frame), or on user keystroke, PTY exit, spawn
+failure, or a `BOOT_PILL_MAX_MS` (20 s) safety timeout. CSS
+`.term-boot-pill` (styles.css) fades in after 250 ms so fast starts never
+flash it.
+
 **Repaint-on-show (the garbled-frame fix):** a hidden tab is `visibility:hidden`
 (not unmounted), so the PTY keeps streaming and `drainPending` keeps writing into
 xterm while its WebGL canvas is offscreen/occluded — on some GPUs that leaves the

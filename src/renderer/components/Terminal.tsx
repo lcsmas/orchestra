@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -6,11 +6,24 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { createTermWriteQueue } from '../term-write-queue';
+import { useStore } from '../store';
 
 interface Props {
   workspaceId: string;
   isActive: boolean;
 }
+
+// Cold-boot pill: hidden once the agent has painted a real TUI frame. Claude
+// opens a ?2026 sync frame at launch, paints only its small splash header
+// (logo + version, ~500 bytes measured from PTY logs), then goes silent while
+// `--continue` reloads the session — the restored conversation + input box
+// land seconds later as a multi-KiB burst. Cumulative output ≥ this since
+// spawn therefore means the real UI is on screen.
+const BOOT_PAINT_BYTES = 2048;
+// Safety net only: the pill normally clears on the first real frame, a user
+// keystroke, or PTY exit. This guards against a stuck pill if none of those
+// ever fire (e.g. an agent that quietly hangs before painting).
+const BOOT_PILL_MAX_MS = 20_000;
 
 // Handle Ctrl/Cmd+V. A pasted image (e.g. a screenshot) wins over text:
 // Claude Code has no image stdin protocol, but it auto-attaches an absolute
@@ -72,6 +85,11 @@ export function TerminalView({ workspaceId, isActive }: Props) {
   // Lets the isActive effect trigger the (mount-effect-scoped) start() the
   // first time the tab is shown. Set in the mount effect.
   const startRef = useRef<(() => void) | null>(null);
+  // Cold-boot indicator, shown while a freshly-spawned agent loads its session
+  // (lazy-start means the first open cold-boots `claude --continue`, which can
+  // take a couple of seconds during which Claude paints only its splash
+  // header — the pane otherwise reads as broken). null = hidden.
+  const [bootLabel, setBootLabel] = useState<string | null>(null);
 
   // Mount xterm once per workspaceId. Never unmounts while the workspace exists.
   useEffect(() => {
@@ -299,6 +317,32 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     };
     repaintRef.current = repaint;
 
+    // Cold-boot pill bookkeeping (see bootLabel). All state lives in this
+    // closure; the pill clears on the first real TUI frame (byte threshold),
+    // a user keystroke, PTY exit/spawn failure, or the safety timeout.
+    let bootBytes = 0;
+    let bootActive = false;
+    let bootTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearBoot = () => {
+      if (bootTimer) {
+        clearTimeout(bootTimer);
+        bootTimer = null;
+      }
+      if (!bootActive) return;
+      bootActive = false;
+      setBootLabel(null);
+    };
+    const beginBoot = () => {
+      bootBytes = 0;
+      bootActive = true;
+      // Imperative read, not a subscription — this fires once per spawn and
+      // must not re-render every TerminalView on unrelated store churn.
+      const ws = useStore.getState().workspaces.find((w) => w.id === workspaceId);
+      setBootLabel(ws?.hasInput ? 'Resuming previous session…' : 'Starting agent…');
+      if (bootTimer) clearTimeout(bootTimer);
+      bootTimer = setTimeout(clearBoot, BOOT_PILL_MAX_MS);
+    };
+
     // Start the PTY only once the tab has been shown (allowStartRef — the
     // lazy-start latch documented at its declaration) AND we have real
     // container dimensions, so the PTY never spawns at default 80×24 and
@@ -329,6 +373,7 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       // literal `^[[...` garbage when replayed. Agent context is preserved
       // through Claude's own session store (claude --continue), so we just
       // spawn a fresh TUI that paints itself.
+      beginBoot();
       window.orchestra
         .ptyStart(workspaceId, cols, rows)
         .then(() => {
@@ -349,6 +394,7 @@ export function TerminalView({ workspaceId, isActive }: Props) {
           window.orchestra.ptyResize(workspaceId, term.cols, term.rows);
         })
         .catch((e) => {
+          clearBoot();
           term.writeln(`\r\n\x1b[31mFailed to start agent: ${e.message}\x1b[0m`);
         });
     };
@@ -364,10 +410,15 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     const queue = createTermWriteQueue((data) => term.write(data));
     const offData = window.orchestra.onPtyData((id, data) => {
       if (id !== workspaceId) return;
+      if (bootActive) {
+        bootBytes += data.length;
+        if (bootBytes >= BOOT_PAINT_BYTES) clearBoot();
+      }
       queue.push(data);
     });
     const offExit = window.orchestra.onPtyExit((id, code) => {
       if (id === workspaceId) {
+        clearBoot();
         term.writeln(`\r\n\x1b[33m[agent exited with code ${code}]\x1b[0m`);
       }
     });
@@ -390,6 +441,9 @@ export function TerminalView({ workspaceId, isActive }: Props) {
     });
 
     term.onData((data) => {
+      // A keystroke means the user can already see something worth typing at —
+      // never leave the pill floating over a UI they're interacting with.
+      clearBoot();
       window.orchestra.ptyWrite(workspaceId, data);
     });
 
@@ -467,6 +521,7 @@ export function TerminalView({ workspaceId, isActive }: Props) {
 
     return () => {
       cancelled = true;
+      if (bootTimer) clearTimeout(bootTimer);
       cancelAnimationFrame(raf);
       cancelAnimationFrame(thumbSyncRaf);
       viewport?.removeEventListener('scroll', syncThumb);
@@ -521,6 +576,12 @@ export function TerminalView({ workspaceId, isActive }: Props) {
       className={`terminal-pane ${isActive ? 'active' : ''}`}
     >
       <div ref={thumbRef} className="term-scroll-thumb" aria-hidden="true" />
+      {bootLabel && (
+        <div className="term-boot-pill">
+          <span className="term-boot-spinner" aria-hidden="true" />
+          {bootLabel}
+        </div>
+      )}
     </div>
   );
 }
