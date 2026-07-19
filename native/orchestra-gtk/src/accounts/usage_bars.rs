@@ -95,6 +95,10 @@ pub struct UsageBars {
     bar5: Bar,
     bar7: Bar,
     fable: Bar,
+    /// Pay-as-you-go "extra credits" pool. Like the Fable bar it only shows
+    /// when the account has the pool enabled (extraUtilization non-null); it's
+    /// a spend meter with no reset, so its tooltip omits the countdown.
+    extra: Bar,
     panel: gtk::Popover,
     panel_list: gtk::Box,
     /// Whether hovering should lift the panel (false with no configured
@@ -116,9 +120,11 @@ impl UsageBars {
         let bar5 = Bar::new("5h", "usage-bar-5h");
         let bar7 = Bar::new("7d", "usage-bar-7d");
         let fable = Bar::new("Fable", "usage-bar-fable");
+        let extra = Bar::new("EX", "usage-bar-extra");
         root.append(&bar5.root);
         root.append(&bar7.root);
         root.append(&fable.root);
+        root.append(&extra.root);
 
         let panel_list = gtk::Box::new(gtk::Orientation::Vertical, 8);
         panel_list.add_css_class("usage-bars-panel-list");
@@ -150,6 +156,7 @@ impl UsageBars {
             bar5,
             bar7,
             fable,
+            extra,
             panel,
             panel_list,
             has_panel: Cell::new(false),
@@ -224,6 +231,8 @@ impl UsageBars {
             five: UsageWindowDetail,
             seven: UsageWindowDetail,
             fable: Option<UsageWindowDetail>,
+            /// Pay-as-you-go pool fill 0–100; None when the pool isn't enabled.
+            extra: Option<f64>,
             label: Option<String>,
             fetched_at: i64,
         }
@@ -237,6 +246,7 @@ impl UsageBars {
                     five: d.five_hour.clone(),
                     seven: d.seven_day.clone(),
                     fable: d.fable.clone(),
+                    extra: d.extra_utilization,
                     label: ws_account.map(|a| a.label.clone()),
                     fetched_at: s.fetched_at,
                 })
@@ -254,6 +264,7 @@ impl UsageBars {
                     utilization: f.utilization,
                     resets_at: f.resets_at.clone(),
                 }),
+                extra: g.extra_utilization,
                 // The default login is surfaced by name too, so the bars
                 // always say which login they measure.
                 label: Some(
@@ -293,6 +304,24 @@ impl UsageBars {
             }
             None => self.fable.root.set_visible(false),
         }
+        // Extra credits: a spend meter with no reset (empty resets_at → the
+        // Bar's tooltip omits the countdown). Only shown when the pool exists.
+        match strip.extra {
+            Some(extra) => {
+                self.extra.root.set_visible(true);
+                let window = UsageWindowDetail {
+                    utilization: extra,
+                    resets_at: String::new(),
+                };
+                self.extra.update(
+                    &window,
+                    None,
+                    &ctx("Extra credits (pay-as-you-go pool)"),
+                    now_ms,
+                );
+            }
+            None => self.extra.root.set_visible(false),
+        }
 
         // With no custom accounts the panel would just repeat the strip's one
         // default row — skip the hover affordance entirely (TS `hasPanel`).
@@ -318,6 +347,8 @@ impl UsageBars {
                 five: UsageWindowDetail,
                 seven: UsageWindowDetail,
                 fable: Option<UsageWindowDetail>,
+                /// Pay-as-you-go pool fill 0–100; None when not enabled.
+                extra: Option<f64>,
                 expired: bool,
                 fetched_at: i64,
             },
@@ -362,6 +393,7 @@ impl UsageBars {
                             five: d.five_hour.clone(),
                             seven: d.seven_day.clone(),
                             fable: d.fable.clone(),
+                            extra: d.extra_utilization,
                             expired: u.expired.unwrap_or(false),
                             fetched_at: u.fetched_at,
                         },
@@ -389,6 +421,7 @@ impl UsageBars {
                     five: detail_of(&g.five_hour),
                     seven: detail_of(&g.seven_day),
                     fable: g.fable.as_ref().map(detail_of),
+                    extra: g.extra_utilization,
                     expired: false,
                     fetched_at: g.fetched_at,
                 },
@@ -445,13 +478,25 @@ impl UsageBars {
             row_box.append(&head);
 
             if let RowState::Ok {
-                five, seven, fable, ..
+                five,
+                seven,
+                fable,
+                extra,
+                ..
             } = &row.state
             {
                 row_box.append(&mini_bar("5h", five, now_ms));
                 row_box.append(&mini_bar("7d", seven, now_ms));
                 if let Some(f) = fable {
                     row_box.append(&mini_bar("f7d", f, now_ms));
+                }
+                // Extra credits: a spend meter, no reset (empty resets_at).
+                if let Some(extra) = extra {
+                    let window = UsageWindowDetail {
+                        utilization: *extra,
+                        resets_at: String::new(),
+                    };
+                    row_box.append(&mini_bar("ex", &window, now_ms));
                 }
             }
             self.panel_list.append(&row_box);

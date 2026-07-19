@@ -176,7 +176,9 @@ the store slice and every accounts window. It calls the backend only via
 - **logic.rs** — pure ports parity-tested against the TS (`loginColor` UTF-16
   hash, severity bands, resets-in/updated-ago/token/age formats,
   `expandConfigDir`, `defaultDirFor`, panel row sort).
-- **usage_bars.rs** — `UsageBars.tsx` (strip + hover panel).
+- **usage_bars.rs** — `UsageBars.tsx` (strip + hover panel): 5h/7d cells, a
+  conditional Fable cell, and a conditional "EX" extra-credits cell (spend
+  meter, no reset countdown), plus the per-account panel with matching mini-bars.
 - **settings.rs** — `AccountsSettings.tsx` (CRUD, live configDir preview).
 - **login_modal.rs** — `AccountLoginModal.tsx` as a self-contained feed-mode VTE
   over the `account-login:<id>` PTY.
