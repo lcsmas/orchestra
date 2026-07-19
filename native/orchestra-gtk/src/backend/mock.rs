@@ -228,6 +228,76 @@ struct MockState {
     repos: Vec<RepoEntry>,
     sync: HashMap<String, Value>,
     next_id: u32,
+    /// Accounts surface (plan §5.4): the live account list (mutated by
+    /// setAccounts) and the workspace→account pin map (mutated by migrate).
+    accounts: Vec<Value>,
+    workspace_accounts: HashMap<String, Option<String>>,
+}
+
+/// Four configured accounts spanning the interesting usage shapes: "work"
+/// (healthy, Fable + extra-usage), "perso" (near-limit, expired token showing
+/// cached usage), a no-scope error, and a not-logged-in account.
+fn mock_accounts() -> Vec<Value> {
+    vec![
+        json!({ "id": "acc-work", "label": "work", "configDir": "~/.claude-work",
+                "scratchDefault": true,
+                "inherit": { "settings": true, "statusline": true } }),
+        json!({ "id": "acc-perso", "label": "perso", "configDir": "~/.claude-perso" }),
+        json!({ "id": "acc-mc", "label": "mobile-club", "configDir": "${HOME}/.claude-mc" }),
+        json!({ "id": "acc-broken", "label": "broken", "configDir": "~/.claude-broken" }),
+    ]
+}
+
+fn mock_workspace_accounts() -> HashMap<String, Option<String>> {
+    // ws-1 pinned to work; the rest default. (ids match mock_workspaces.)
+    HashMap::from([("ws-1".to_string(), Some("acc-work".to_string()))])
+}
+
+/// The global (`~/.claude`) usage snapshot: mid-range, with a Fable window so
+/// the strip's conditional Fable bar renders.
+fn mock_global_usage() -> Value {
+    json!({
+        "fiveHour": { "utilization": 41.0, "resetsAt": "2026-07-19T18:30:00Z" },
+        "sevenDay": { "utilization": 63.0, "resetsAt": "2026-07-24T00:00:00Z" },
+        "extraUtilization": 12.0,
+        "fable": { "utilization": 22.0, "resetsAt": "2026-07-24T00:00:00Z" },
+        "fetchedAt": 1_752_930_000_000_i64,
+    })
+}
+
+/// Per-account usage: healthy+Fable+extra (work), near-crit + expired-showing-
+/// cached (perso), a hard error (mobile-club: no scope), and not-logged-in.
+fn mock_account_usage() -> Value {
+    json!({
+        "acc-work": {
+            "accountId": "acc-work", "ok": true, "fetchedAt": 1_752_930_000_000_i64,
+            "data": {
+                "fiveHour": { "utilization": 48.0, "resetsAt": "2026-07-19T18:30:00Z" },
+                "sevenDay": { "utilization": 71.0, "resetsAt": "2026-07-24T00:00:00Z" },
+                "extraUtilization": 15.0,
+                "fable": { "utilization": 30.0, "resetsAt": "2026-07-24T00:00:00Z" }
+            }
+        },
+        "acc-perso": {
+            "accountId": "acc-perso", "ok": true, "fetchedAt": 1_752_929_400_000_i64,
+            "expired": true,
+            "data": {
+                "fiveHour": { "utilization": 93.0, "resetsAt": "2026-07-19T17:05:00Z" },
+                "sevenDay": { "utilization": 88.0, "resetsAt": "2026-07-24T00:00:00Z" },
+                "extraUtilization": null,
+                "fable": null
+            }
+        },
+        "acc-mc": {
+            "accountId": "acc-mc", "ok": false, "fetchedAt": 1_752_930_000_000_i64,
+            "data": null, "errorKind": "no-scope",
+            "errorMessage": "token lacks user:profile"
+        },
+        "acc-broken": {
+            "accountId": "acc-broken", "ok": false, "fetchedAt": 1_752_930_000_000_i64,
+            "data": null, "errorKind": "not-logged-in", "errorMessage": "no login found"
+        }
+    })
 }
 
 /// Fixture backend so the sidebar renders (and mutates) real states before
@@ -238,7 +308,8 @@ pub struct MockBackend {
     state: RefCell<MockState>,
     events_tx: async_channel::Sender<BackendEvent>,
     events_rx: async_channel::Receiver<BackendEvent>,
-    _pty_tx: async_channel::Sender<(String, Vec<u8>)>,
+    /// Also written by the fake login flow (account-login:<id> banner + echo).
+    pty_tx: async_channel::Sender<(String, Vec<u8>)>,
     pty_rx: async_channel::Receiver<(String, Vec<u8>)>,
     // The mock is "always connected": it seeds one Connected state so the app's
     // Connection handler fires the same first-attach path as a live backend,
@@ -259,10 +330,12 @@ impl Default for MockBackend {
                 repos: mock_repos(),
                 sync: mock_sync_states(),
                 next_id: 1,
+                accounts: mock_accounts(),
+                workspace_accounts: mock_workspace_accounts(),
             }),
             events_tx,
             events_rx,
-            _pty_tx: pty_tx,
+            pty_tx,
             pty_rx,
             _state_tx: state_tx,
             state_rx,
@@ -313,6 +386,36 @@ impl MockBackend {
     fn arg<T: serde::de::DeserializeOwned>(params: &[Value], i: usize) -> Result<T> {
         serde_json::from_value(params.get(i).cloned().unwrap_or(Value::Null))
             .map_err(|e| BackendError::Method(format!("bad param {i}: {e}")))
+    }
+
+    /// The workspace→account map as the wire `WorkspaceAccount` object keyed by
+    /// workspace id (what `getWorkspaceAccounts` returns and `workspaceAccounts`
+    /// broadcasts). Labels resolve from the live account list.
+    fn workspace_accounts_value(&self) -> Value {
+        let st = self.state.borrow();
+        let label_of = |id: &str| -> String {
+            st.accounts
+                .iter()
+                .find(|a| a["id"] == id)
+                .and_then(|a| a["label"].as_str())
+                .unwrap_or(id)
+                .to_string()
+        };
+        let map: serde_json::Map<String, Value> = st
+            .workspace_accounts
+            .iter()
+            .map(|(ws, acct)| {
+                let label = acct
+                    .as_deref()
+                    .map(label_of)
+                    .unwrap_or_else(|| "default".into());
+                (
+                    ws.clone(),
+                    json!({ "workspaceId": ws, "accountId": acct, "label": label }),
+                )
+            })
+            .collect();
+        Value::Object(map)
     }
 
     fn create(&self, extra: Value) -> Result<Value> {
@@ -512,8 +615,78 @@ impl Backend for MockBackend {
             "migrateWorkspaceAccount" => {
                 let id: String = Self::arg(&params, 0)?;
                 let account: Option<String> = Self::arg(&params, 1)?;
-                let ws = self.update_ws(&id, |w| w.account_id = account)?;
-                Ok(serde_json::to_value(&ws).unwrap())
+                // Update the workspace's pinned account (B1's sidebar badge
+                // reads w.account_id + repaints on workspaceUpdate) …
+                self.update_ws(&id, |w| w.account_id = account.clone())?;
+                // … AND the workspace→account map + broadcast (the accounts
+                // controller's usage strip / migrate menu repaint on it).
+                self.state
+                    .borrow_mut()
+                    .workspace_accounts
+                    .insert(id.clone(), account.clone());
+                self.emit("workspaceAccounts", vec![self.workspace_accounts_value()]);
+                // The accounts controller expects a MigrateAccountResult.
+                Ok(json!({ "ok": true, "id": id, "accountId": account, "resumed": false }))
+            }
+
+            // ---- accounts / usage (plan §5.4) --------------------------------
+            "listAccounts" => Ok(Value::Array(self.state.borrow().accounts.clone())),
+            "getUsage" => Ok(mock_global_usage()),
+            "getAllAccountUsage" => Ok(mock_account_usage()),
+            "getAccountUsage" => {
+                let id: String = Self::arg(&params, 0)?;
+                Ok(mock_account_usage()
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or(Value::Null))
+            }
+            "getWorkspaceAccounts" => Ok(self.workspace_accounts_value()),
+            "listGlobalInheritables" => Ok(json!({
+                "skills": ["ship", "verify", "retro", "map-codebase"],
+                "mcpServers": ["chrome-devtools", "linear"],
+            })),
+            "setAccounts" => {
+                let list: Value = Self::arg(&params, 0)?;
+                if let Value::Array(arr) = &list {
+                    self.state.borrow_mut().accounts = arr.clone();
+                }
+                // Labels may have changed → re-broadcast the workspace map.
+                self.emit("workspaceAccounts", vec![self.workspace_accounts_value()]);
+                Ok(list)
+            }
+            "setRepoAccount" => Ok(Value::Bool(true)),
+            "refreshAccounts" => {
+                self.emit("accountUsageUpdate", vec![mock_account_usage()]);
+                Ok(Value::Null)
+            }
+
+            // ---- per-account login flow --------------------------------------
+            "accountLoginStart" => {
+                let id: String = Self::arg(&params, 0)?;
+                let pty = format!("account-login:{id}");
+                // Fake the `claude /login` banner + a login URL the modal's
+                // link handler would open (drives accountLoginOpenUrl below).
+                let banner = format!(
+                    "\x1b[1mclaude /login\x1b[0m (mock)\r\n\r\n\
+                     Open this URL to authenticate account \x1b[36m{id}\x1b[0m:\r\n\
+                     \x1b[4mhttps://claude.ai/oauth/authorize?mock={id}\x1b[0m\r\n\r\n\
+                     Waiting for sign-in… (mock; use the login window)\r\n"
+                );
+                let _ = self.pty_tx.try_send((pty, banner.into_bytes()));
+                Ok(Value::Null)
+            }
+            "accountLoginStop" => Ok(Value::Null),
+            "accountLoginOpenUrl" => {
+                let id: String = Self::arg(&params, 0)?;
+                let url: String =
+                    Self::arg(&params, 1).unwrap_or_else(|_| "https://claude.ai/".into());
+                // The daemon turns an open-url request into an accountsLoginUrl
+                // event addressed to GTK clients (protocol §4).
+                self.emit(
+                    "accountsLoginUrl",
+                    vec![json!({ "accountId": id, "url": url })],
+                );
+                Ok(Value::Null)
             }
             "createWorkspace" => {
                 let input: Value = Self::arg(&params, 0)?;
@@ -653,7 +826,11 @@ impl Backend for MockBackend {
         self.state_rx.clone()
     }
 
-    fn pty_write(&self, _id: &str, _bytes: &[u8]) -> Result<()> {
+    fn pty_write(&self, id: &str, bytes: &[u8]) -> Result<()> {
+        // Local echo on the login PTY so typing in the modal is visible.
+        if id.starts_with("account-login:") {
+            let _ = self.pty_tx.try_send((id.to_string(), bytes.to_vec()));
+        }
         Ok(())
     }
 

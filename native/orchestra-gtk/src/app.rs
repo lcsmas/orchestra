@@ -16,6 +16,7 @@ use relm4::prelude::*;
 
 use orchestra_rpc::{BackendKind as RemoteKind, ConnectionState};
 
+use crate::accounts::AccountsController;
 use crate::backend::{self, Backend, BackendEvent, BackendKind, MockBackend, RpcBackend};
 use crate::dialogs;
 use crate::remote_control;
@@ -31,6 +32,10 @@ const NO_BACKEND_BANNER: &str =
 
 pub struct App {
     backend: Option<Rc<dyn Backend>>,
+    /// Accounts/usage/login controller — created when a backend attaches. Owns
+    /// the usage-bars strip in the sidebar footer and every accounts window;
+    /// the backend event pump + login PTY bytes are forwarded here.
+    accounts: Option<Rc<AccountsController>>,
     state: Rc<RefCell<UiState>>,
     state_path: PathBuf,
     /// Debounce generation for state saves: each change bumps it; only the
@@ -45,6 +50,10 @@ pub struct App {
     banner: gtk::Revealer,
     banner_label: gtk::Label,
     footer_label: gtk::Label,
+    /// Sidebar footer box that hosts the usage-bars strip (mounted by the
+    /// controller) — kept so a backend that attaches on retry can mount into it.
+    sidebar_footer: gtk::Box,
+    accounts_button: gtk::Button,
 }
 
 #[derive(Debug)]
@@ -59,9 +68,13 @@ pub enum Msg {
     Connection(ConnectionState),
     /// An `event` frame from the backend.
     BackendEvent(BackendEvent),
+    /// A binary `ptyData` frame: (pty id, raw bytes). Routed to the accounts
+    /// controller (login PTY); other ids belong to the terminal workstream.
+    PtyData(String, Vec<u8>),
     /// The sidebar activated a workspace (row-select) → drive the main pane's
     /// `set_active` (§5.3, B3). Held here so B3's MainPane mount routes it;
-    /// until then it only records the shell's notion of the active workspace.
+    /// until then it records the shell's active workspace and retargets the
+    /// accounts usage strip to that workspace's login.
     WorkspaceActivated(String),
 }
 
@@ -122,17 +135,32 @@ fn spawn_backend_streams(sender: &ComponentSender<App>, backend: &dyn Backend) {
         }
     });
     let pty = backend.pty_data();
+    let s = sender.clone();
     glib::spawn_future_local(async move {
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         while let Ok((id, bytes)) = pty.recv().await {
-            if seen.insert(id.clone()) {
-                eprintln!(
-                    "[backend] ptyData flowing for '{id}' ({} bytes)",
-                    bytes.len()
-                );
-            }
+            s.input(Msg::PtyData(id, bytes));
         }
     });
+}
+
+/// Build the accounts controller for a freshly-attached backend, mount its
+/// usage-bars strip into the sidebar footer (above the Accounts button), wire
+/// the button, and kick initial hydration.
+fn attach_accounts(
+    backend: Rc<dyn Backend>,
+    window: &gtk::ApplicationWindow,
+    footer: &gtk::Box,
+    button: &gtk::Button,
+) -> Rc<AccountsController> {
+    let ctrl = AccountsController::new(backend, window.clone().upcast());
+    // Strip goes at the top of the footer; the Accounts button stays last.
+    footer.prepend(&ctrl.usage_bars_root());
+    {
+        let ctrl = ctrl.clone();
+        button.connect_clicked(move |_| ctrl.clone().open_settings());
+    }
+    ctrl.bootstrap();
+    ctrl
 }
 
 /// Debug menu (status strip): demoes the promise-shaped dialog system.
@@ -247,13 +275,39 @@ impl SimpleComponent for App {
                     // persisted sidebar width drifts on every launch.
                     set_resize_start_child: false,
 
-                    // The real sidebar component is attached here after
-                    // `view_output!` (the M2-B1 workstream owns its widgets).
-                    #[name = "sidebar_host"]
+                    // The paned start child is a vertical stack: the real
+                    // sidebar component (mounted into `sidebar_host` after
+                    // `view_output!`, M2-B1) over the accounts footer (§5.4).
                     #[wrap(Some)]
                     set_start_child = &gtk::Box {
                         set_orientation: gtk::Orientation::Vertical,
-                        set_widget_name: "sidebar-host",
+
+                        // The real sidebar component is attached here after
+                        // `view_output!` (the M2-B1 workstream owns its widgets).
+                        #[name = "sidebar_host"]
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_widget_name: "sidebar-host",
+                            set_vexpand: true,
+                        },
+
+                        // Sidebar footer (plan §5.4): the accounts controller
+                        // mounts the usage-bars strip here, above the Accounts
+                        // settings button.
+                        #[name = "sidebar_footer"]
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_widget_name: "sidebar-footer",
+                            add_css_class: "sidebar-footer",
+
+                            #[name = "accounts_button"]
+                            gtk::Button {
+                                set_widget_name: "accounts-open",
+                                set_label: "Accounts",
+                                add_css_class: "flat",
+                                add_css_class: "accounts-open",
+                            },
+                        },
                     },
 
                     // Overlay host (plan §5.3): Resources / Insights / Help
@@ -405,9 +459,10 @@ impl SimpleComponent for App {
 
         widgets.footer_label.set_label(&footer_text(&backend));
 
-        // Mount the real sidebar as the paned start child (ONE component swap).
-        // Forward its selection output so the shell (and B3's main pane) can
-        // react to the active-workspace change.
+        // Mount the real sidebar INTO the sidebar_host box (a child of the
+        // paned start child, which also holds the accounts footer below it —
+        // so this is an append, NOT a paned-start-child swap that would drop
+        // the footer). Forward its selection output for the shell + B3.
         let sidebar = Sidebar::builder()
             .launch(SidebarInit {
                 backend: backend.clone(),
@@ -415,12 +470,25 @@ impl SimpleComponent for App {
                 state_path: state_path.clone(),
             })
             .forward(sender.input_sender(), |out| match out {
-                crate::sidebar::SidebarOutput::WorkspaceActivated(id) => Msg::WorkspaceActivated(id),
+                crate::sidebar::SidebarOutput::WorkspaceActivated(id) => {
+                    Msg::WorkspaceActivated(id)
+                }
             });
-        widgets.paned.set_start_child(Some(sidebar.widget()));
+        widgets.sidebar_host.append(sidebar.widget());
+
+        // Accounts/usage/login controller: needs a backend to render against.
+        let accounts = backend.as_ref().map(|b| {
+            attach_accounts(
+                b.clone(),
+                &widgets.main_window,
+                &widgets.sidebar_footer,
+                &widgets.accounts_button,
+            )
+        });
 
         let model = App {
             backend,
+            accounts,
             state,
             state_path,
             save_generation: Rc::new(Cell::new(0)),
@@ -431,6 +499,8 @@ impl SimpleComponent for App {
             banner: widgets.banner.clone(),
             banner_label: widgets.banner_label.clone(),
             footer_label: widgets.footer_label.clone(),
+            sidebar_footer: widgets.sidebar_footer.clone(),
+            accounts_button: widgets.accounts_button.clone(),
         };
         ComponentParts { model, widgets }
     }
@@ -473,6 +543,12 @@ impl SimpleComponent for App {
                 if let Some(b) = make_backend() {
                     spawn_backend_streams(&sender, b.as_ref());
                     b.set_focused(self.window.is_active());
+                    self.accounts = Some(attach_accounts(
+                        b.clone(),
+                        &self.window,
+                        &self.sidebar_footer,
+                        &self.accounts_button,
+                    ));
                     self.backend = Some(b.clone());
                     self.retry_active.set(false);
                     self.banner.set_reveal_child(false);
@@ -510,6 +586,12 @@ impl SimpleComponent for App {
                     // Terminal: the client gave up (or the close was
                     // deliberate). Drop it and fall back to discovery.
                     self.backend = None;
+                    // Tear down the accounts controller with the backend: its
+                    // usage strip is unmounted below by the fresh attach on
+                    // reconnect. Dropping it here stops its minute-tick timer.
+                    if let Some(accounts) = self.accounts.take() {
+                        self.sidebar_footer.remove(&accounts.usage_bars_root());
+                    }
                     self.banner_label.set_label(NO_BACKEND_BANNER);
                     self.banner.set_reveal_child(true);
                     self.footer_label.set_label(&footer_text(&self.backend));
@@ -521,18 +603,41 @@ impl SimpleComponent for App {
                 // it fans each frame out to the components that care. The sidebar
                 // decodes workspace:update/removed itself (its apply_event), so
                 // we forward the raw frame rather than mutating a duplicate list.
-                let BackendEvent::Event { channel, .. } = &ev;
+                let BackendEvent::Event { channel, args } = &ev;
                 eprintln!("[backend] event '{channel}'");
+                // Fan out to the accounts controller: decode a COPY so the raw
+                // frame can still go to the sidebar (which decodes its own
+                // workspace:update/removed via apply_event). The controller
+                // ignores channels it doesn't own.
+                if let Some(accounts) = &self.accounts {
+                    match (orchestra_rpc::Event {
+                        channel: channel.clone(),
+                        args: args.clone(),
+                    })
+                    .decode()
+                    {
+                        Ok(decoded) => accounts.handle_event(&decoded),
+                        Err(e) => eprintln!("[backend] event decode failed: {e}"),
+                    }
+                }
                 self.sidebar.emit(crate::sidebar::Msg::Backend(ev));
-                // Terminals, usage, accounts, … consume their own frames as the
-                // M2 workstreams mount their fan-out here.
+            }
+            Msg::PtyData(id, bytes) => {
+                // Login-PTY bytes go to the accounts controller; workspace PTYs
+                // belong to B2's terminal stack (mounts its fan-out here).
+                if let Some(accounts) = &self.accounts {
+                    accounts.handle_pty_data(&id, &bytes);
+                }
             }
             Msg::WorkspaceActivated(id) => {
-                // The sidebar announced a row-select. B3's main pane hangs its
-                // set_active(id) here; until that mounts, the shell just tracks
-                // the active workspace (last_active_workspace is already
-                // persisted by the sidebar itself).
+                // The sidebar announced a row-select. Retarget the usage strip
+                // to that workspace's login; B3's main pane hangs its
+                // set_active(id) here too. last_active_workspace is already
+                // persisted by the sidebar itself.
                 eprintln!("[shell] workspace activated: {id}");
+                if let Some(accounts) = &self.accounts {
+                    accounts.set_active_workspace(Some(id));
+                }
             }
             Msg::PersistNow => {
                 if let Err(e) = self.state.borrow().save(&self.state_path) {

@@ -3,6 +3,7 @@
 //! Library + thin binary split so the modules are unit-testable and the
 //! dead-code lint sees the public surface M2 workstreams will consume.
 
+pub mod accounts;
 pub mod app;
 pub mod backend;
 pub mod dialogs;

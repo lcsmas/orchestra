@@ -467,3 +467,127 @@ entry {
 entry:focus-within {
   border-color: @accent;
 }
+
+/* ---- accounts / usage / login (plan §5.4) -------------------------------- */
+
+/* Sidebar footer: usage-bars strip over the Accounts button. */
+.sidebar-footer {
+  border-top: 1px solid @border;
+  padding: 8px;
+}
+.accounts-open {
+  color: @text_dim;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+.accounts-open:hover { color: @text; }
+
+/* The 5h/7d(/Fable) strip. */
+.usage-bars {
+  padding: 4px 2px 8px;
+}
+.usage-bars.expandable { /* hover affordance hint */ }
+.usage-bar-head {
+  font-size: 11px;
+}
+.usage-bar-label { color: @text; font-weight: 600; }
+.usage-bar-note,
+.usage-bar-pct { color: @text_dim; }
+.usage-bar-track {
+  min-height: 5px;
+}
+.usage-bar-track trough {
+  min-height: 5px;
+  background-color: @bg_3;
+  border-radius: 3px;
+}
+.usage-bar-track progress {
+  min-height: 5px;
+  border-radius: 3px;
+  background-color: @accent;
+}
+/* Severity tint on the fill (≥75 warn, ≥90 crit). */
+.usage-bar-track.sev-warn progress,
+.usage-row-bar .sev-warn progress { background-color: @yellow; }
+.usage-bar-track.sev-crit progress,
+.usage-row-bar .sev-crit progress { background-color: @red; }
+
+/* Hover panel: all accounts, active-first / hottest-first. */
+.usage-bars-panel > contents {
+  background-color: @bg_2;
+  border: 1px solid @border_strong;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.usage-bars-panel-title {
+  color: @text_dim;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.usage-bars-row {
+  padding: 6px 4px;
+  border-radius: 6px;
+}
+.usage-bars-row.active { background-color: @bg_3; }
+.usage-bars-row.err .usage-bars-row-status { color: @red; }
+.usage-bars-row-name { font-weight: 600; font-size: 12px; }
+.usage-bars-row-status { color: @text_dim; font-size: 11px; }
+.usage-row-bar-label,
+.usage-row-pct { color: @text_dim; font-size: 10px; }
+
+/* Account label badge (sidebar / repo header). */
+.account-badge {
+  font-size: 12px;
+  font-weight: 600;
+}
+.account-badge.err { color: @red; }
+.account-badge.pending { opacity: 0.7; }
+
+/* Migrate menu options. */
+.ws-account-option {
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.ws-account-option.current { background-color: @bg_3; }
+.ws-account-label { color: @text; font-size: 12px; }
+
+/* Context-size badge (`.ws-context` / `.ws-context-sep`) is styled in the
+ * sidebar section above — B1 owns the mounted context badge. */
+
+/* Accounts settings window. */
+.accounts-settings .modal-header,
+.account-login-modal .modal-header {
+  padding: 14px 16px 8px;
+}
+.modal-title { color: @text; font-weight: 600; font-size: 15px; }
+.modal-sub { color: @text_dim; font-size: 12px; }
+.modal-body { padding: 8px 16px 16px; }
+.modal-hint { color: @text_dim; font-size: 12px; }
+.modal-error { color: @red; font-size: 12px; margin-top: 6px; }
+.modal-footer {
+  padding: 10px 16px;
+  border-top: 1px solid @border;
+}
+.account-card {
+  background-color: @bg_2;
+  border: 1px solid @border;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.account-field-label { color: @text_dim; font-size: 11px; }
+.account-dir-preview { color: @text_dim; font-size: 11px; }
+.account-inherit-group-label { color: @text_dim; font-size: 11px; }
+.account-inherit-empty { color: @text_dim; font-size: 11px; opacity: 0.7; }
+.accounts-add { color: @accent; }
+.modal-footer button.primary {
+  background-color: @accent_strong;
+  border-color: @accent_strong;
+  color: #ffffff;
+}
+
+/* Login terminal modal. */
+.account-login-term {
+  padding: 6px;
+  min-height: 320px;
+}
