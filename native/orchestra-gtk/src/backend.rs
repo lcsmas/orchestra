@@ -240,12 +240,37 @@ impl std::fmt::Debug for RpcBackend {
 }
 
 impl RpcBackend {
-    /// Connect + handshake against an explicit socket path (from
-    /// [`discover_socket`]). Reconnects redial this same path; when the
-    /// backend restarts under a new pid-derived path, the client's give-up
-    /// surfaces as `Disconnected` and the shell's discovery retry loop
-    /// attaches a fresh backend.
+    /// Connect + handshake, then keep the connection self-healing.
+    ///
+    /// `sock_path` is the socket the attach probe chose (from
+    /// [`discover_socket`]) and is retained for diagnostics — but the client is
+    /// built with [`RpcClient::discover`], NOT `connect`, so every reconnect
+    /// attempt RE-RESOLVES the socket (`$ORCHESTRA_UI_SOCK`, else the `ui-sock`
+    /// pointer) instead of redialing a fixed path. That matters because the
+    /// daemon's socket is pid-derived: a backend restart moves it, and a client
+    /// pinned to the old path would retry a dead socket for the full ~3 min
+    /// backoff before giving up. Re-resolving per attempt re-attaches on the
+    /// first retry (~1 s). Same-path reconnects are unaffected — discovery
+    /// simply returns the same path.
     pub fn connect(sock_path: PathBuf) -> std::result::Result<Self, orchestra_rpc::RpcError> {
+        Self::build(sock_path, true)
+    }
+
+    /// Same wiring, but pinned to an explicit socket (no re-discovery on
+    /// redial). Only for tests that serve a private socket which discovery
+    /// can't see — production always uses [`Self::connect`], because pinning is
+    /// exactly the behavior that makes a moved daemon socket unrecoverable.
+    #[cfg(test)]
+    pub fn connect_pinned(
+        sock_path: PathBuf,
+    ) -> std::result::Result<Self, orchestra_rpc::RpcError> {
+        Self::build(sock_path, false)
+    }
+
+    fn build(
+        sock_path: PathBuf,
+        rediscover: bool,
+    ) -> std::result::Result<Self, orchestra_rpc::RpcError> {
         let opts = ClientOptions {
             // Version lockstep (plan §9): the PRODUCT version from package.json,
             // not the crate's own CARGO_PKG_VERSION — so hello.appVersion, the
@@ -253,7 +278,11 @@ impl RpcBackend {
             app_version: crate::app_version().into(),
             ..ClientOptions::default()
         };
-        let (client, recv) = RpcClient::connect(&sock_path, opts)?;
+        let (client, recv) = if rediscover {
+            RpcClient::discover(opts)?
+        } else {
+            RpcClient::connect(&sock_path, opts)?
+        };
         let (events_tx, events_rx) = async_channel::unbounded();
         let (pty_tx, pty_rx) = async_channel::unbounded();
         let (state_tx, state_rx) = async_channel::unbounded();
@@ -465,7 +494,10 @@ mod tests {
             assert_eq!(focus["focused"], false);
         });
 
-        let backend = RpcBackend::connect(sock).unwrap();
+        // Pinned: this server is a private socket that discovery can't reach.
+        // (Re-discovery on redial — what production uses — is covered by
+        // orchestra-rpc's `discovered_client_reconnects_to_a_moved_socket`.)
+        let backend = RpcBackend::connect_pinned(sock).unwrap();
 
         assert_eq!(
             recv_within(&backend.connection_state(), "Connected"),

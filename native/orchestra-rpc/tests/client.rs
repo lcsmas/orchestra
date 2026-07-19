@@ -324,6 +324,75 @@ fn reconnects_after_drop_and_resumes_calls() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// The M3-P1 behavior the GTK app depends on: a client built with
+/// `RpcClient::discover` must RE-RESOLVE the pointer on every redial, so a
+/// backend that restarts on a DIFFERENT socket path (the daemon's path is
+/// pid-derived) is picked up on the next retry — rather than the client
+/// redialing the dead original path until it gives up.
+#[test]
+fn discovered_client_reconnects_to_a_moved_socket() {
+    let dir = test_socket_path("moved-dir");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let pointer = dir.join("ui-sock");
+    let sock1 = dir.join("gen1.sock");
+    let sock2 = dir.join("gen2.sock");
+
+    // Generation 1 on sock1; the pointer names it.
+    let listener1 = UnixListener::bind(&sock1).unwrap();
+    std::fs::write(&pointer, format!("{}\n", sock1.display())).unwrap();
+
+    let (sock1_c, sock2_c, pointer_c) = (sock1.clone(), sock2.clone(), pointer.clone());
+    let server = std::thread::spawn(move || {
+        // Gen 1: handshake, then move the backend to a NEW path and drop.
+        let (stream, _) = listener1.accept().unwrap();
+        let mut conn = ServerConn::new(stream);
+        conn.handshake(1);
+        let listener2 = UnixListener::bind(&sock2_c).unwrap();
+        // Repoint BEFORE dropping, exactly as a restarting daemon does.
+        std::fs::write(&pointer_c, format!("{}\n", sock2_c.display())).unwrap();
+        let _ = std::fs::remove_file(&sock1_c);
+        drop(conn);
+        drop(listener1);
+
+        // Gen 2: the client must find us via the REPOINTED pointer file.
+        let (stream, _) = listener2.accept().unwrap();
+        let mut conn = ServerConn::new(stream);
+        conn.handshake(1);
+        let req = conn.read_json();
+        assert_eq!(req["method"], "getAppVersion");
+        conn.write_json(json!({"t": "res", "id": req["id"], "ok": true, "result": "moved-ok"}));
+        let mut buf = [0u8; 64];
+        while matches!(conn.stream.read(&mut buf), Ok(n) if n > 0) {}
+    });
+
+    // Aim discovery at OUR pointer file explicitly. Deliberately NOT via
+    // ORCHESTRA_HOME/ORCHESTRA_UI_SOCK: env is process-global and `cargo test`
+    // runs tests as parallel THREADS in one process, so a sibling test's env
+    // write can land between our set and our connect (that raced ~11% of runs
+    // against `discovery_reads_env_then_pointer_file`). `discover_at` re-reads
+    // this pointer on every redial — the same self-healing path — with no
+    // global state to race.
+    let (client, rx) = RpcClient::discover_at(&pointer, fast_opts()).unwrap();
+    assert_eq!(expect_state(&rx.state), ConnectionState::Connected);
+
+    // Drop → Reconnecting → Connected AGAIN, this time on the moved socket.
+    match expect_state(&rx.state) {
+        ConnectionState::Reconnecting { .. } => {}
+        other => panic!("expected Reconnecting, got {other:?}"),
+    }
+    assert_eq!(expect_state(&rx.state), ConnectionState::Connected);
+
+    // Proof the live session is the NEW one.
+    assert_eq!(client.get_app_version().unwrap(), "moved-ok");
+
+    client.close();
+    assert_eq!(expect_state(&rx.state), ConnectionState::Disconnected);
+    server.join().unwrap();
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn gives_up_reconnecting_after_the_backoff_window() {
     let path = test_socket_path("giveup");
@@ -365,8 +434,16 @@ fn gives_up_reconnecting_after_the_backoff_window() {
 
 #[test]
 fn discovery_reads_env_then_pointer_file() {
-    // Explicit env override wins. (Env mutation is process-global — this test
-    // is the only one touching these vars, and it restores them.)
+    // Explicit env override wins.
+    //
+    // This is the ONLY test that may touch ORCHESTRA_UI_SOCK / ORCHESTRA_HOME,
+    // and that is load-bearing, not incidental: env is process-global while
+    // `cargo test` runs tests as parallel THREADS in one process, so
+    // save/restore does NOT isolate — a second test mutating these vars races
+    // this one and fails ~1 run in 9. (That happened: a reconnect test set them
+    // and inherited the flake; it now uses `RpcClient::discover_at`, which takes
+    // an explicit pointer path and needs no env.) If you need discovery in a new
+    // test, use `discover_at`/`read_pointer` — do NOT add a second env mutator.
     let dir = test_socket_path("discover-dir");
     std::fs::create_dir_all(&dir).unwrap();
     let pointer = dir.join("ui-sock");
