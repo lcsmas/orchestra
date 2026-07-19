@@ -193,9 +193,21 @@ fn clear_slot(slot: &gtk::Box) {
     }
 }
 
+/// Whether a repo has a `run` script configured — the same source of truth the
+/// toolbar gates its Run toggle on (`getRepoScripts(repoPath).run`), so the
+/// pane's guidance and the toolbar never disagree.
+fn repo_has_run_script(ctx: &Rc<Ctx>, repo_path: &str) -> bool {
+    ctx.call_typed::<orchestra_rpc::types::RepoScripts>(
+        "getRepoScripts",
+        vec![serde_json::json!(repo_path)],
+    )
+    .map(|s| s.run.is_some())
+    .unwrap_or(false)
+}
+
 /// Open a workspace's terminal surfaces: make its agent pane active (seeding
-/// scrollback + the resume pill on first open), and mount its run pane into the
-/// main pane's run slot. The agent pane's first visible fit fires `ptyStart`.
+/// scrollback + the resume pill on first open), and mount its run surface into
+/// the main pane's run slot. The agent pane's first visible fit fires `ptyStart`.
 fn open_terminal(
     terminals: &mut TerminalStack,
     main_pane: &Rc<MainPane>,
@@ -212,9 +224,17 @@ fn open_terminal(
         }
     }
     terminals.set_active(ws_id);
-    // Mount this workspace's run pane into B3's run slot (kept-alive; B3's
-    // toolbar Run button drives runScriptStart, this pane just feeds it).
-    let run = terminals.run_widget(ws_id);
+    // Mount this workspace's run surface into B3's run slot. With a run script
+    // configured that's the kept-alive run pane (B3's toolbar Run button drives
+    // runScriptStart; this pane just feeds it). WITHOUT one, the pane would be a
+    // dead empty terminal — B3's toolbar deliberately keeps the Run tab
+    // reachable as the discovery path, so show the same guidance the renderer
+    // does instead (RunTerminal.tsx's !hasRunScript branch).
+    let run = if repo_has_run_script(ctx, &ws.repo_path) {
+        terminals.run_widget(ws_id)
+    } else {
+        TerminalStack::run_guidance()
+    };
     let slot = main_pane.run_slot();
     clear_slot(slot);
     slot.append(&run);

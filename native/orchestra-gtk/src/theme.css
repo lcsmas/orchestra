@@ -72,6 +72,12 @@ scrollbar slider {
   opacity: 0;
 }
 
+/* Run slot with no run script configured — guidance instead of a dead pane
+   (mirrors the renderer's `.run-pane.empty`). */
+.run-empty {
+  padding: 24px;
+}
+
 /* Terminal-view toolbar (Agent / Run / nvim tabs + Run toggle). */
 .term-toolbar {
   padding: 4px 8px;
