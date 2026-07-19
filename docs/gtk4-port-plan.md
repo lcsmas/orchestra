@@ -757,8 +757,23 @@ Integration-surfaced M3 items (found during the serialized merge):
   - *A false lead worth recording*: events appearing to pump after the
     reconnect banner is **not** a zombie backend — `accounts/mod.rs:148` runs a
     local 60s tick refreshing relative stamps, independent of the socket.
-  - **Composition status: a TRUSTWORTHY NEGATIVE — the task is a CORRECTNESS
-    bug, not a latency improvement.** B6's first E2E (no re-attach at 220s) was
+  - **CONFIRMED TWICE, AND IT IS A HANG, NOT SLOWNESS.** The verifier
+    independently reproduced B6's negative on its own rig and went further: the
+    app does not recover *at all* — node at 0.0% CPU for 24min and 37min in two
+    separate runs, no scenario terminator, children alive. Not a long backoff;
+    **wedged**. (The e2e scenario has no internal timeout, so it waits forever —
+    give it one.)
+  - **NEW: the UI contradicts itself while wedged.** Probed through the live
+    remote-control socket, the app reports simultaneously:
+    `status-text = "backend: daemon v0.5.84 · frontend v0.5.84"` (footer claims
+    ATTACHED) and `banner-text = "connecting to a backend…"` (visible). Cause,
+    verified at source: the `ConnectionState::Reconnecting` arm (`app.rs:1084`)
+    sets the banner and **never touches the footer**, while `footer_text()`
+    reads `self.backend` — which only `Disconnected` clears. So a user sees
+    "backend: daemon" while nothing works. This is a *separate, cheap* bug from
+    the non-recovery, and it should be fixed alongside it: **the footer must not
+    claim attached while the banner says connecting** — add that as a gate
+    assertion (criterion 5). B6's first E2E (no re-attach at 220s) was
     *uninterpretable* because three confounds lived in the instrument; B6
     correctly declined to report it as a verdict, hardened the harness, and
     re-ran. Hardened: kill daemon #1 **by recorded PID** (the old
