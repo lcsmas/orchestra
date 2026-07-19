@@ -377,8 +377,9 @@ pub struct MockBackend {
     /// per-agent traces animate deterministically.
     res_tick: Cell<u64>,
     /// B5 Insights: one in-flight fake self-tune run at a time — `startSelfTune`
-    /// rejects if set, mirroring the real backend's single-run guard.
-    self_tune_running: Cell<bool>,
+    /// rejects while set, mirroring the real backend's single-run guard. Shared
+    /// with the replay thread, which clears it when the run finishes.
+    self_tune_running: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for MockBackend {
@@ -404,7 +405,7 @@ impl Default for MockBackend {
             _state_tx: state_tx,
             state_rx,
             res_tick: Cell::new(0),
-            self_tune_running: Cell::new(false),
+            self_tune_running: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -509,19 +510,35 @@ impl MockBackend {
 
     /// `startSelfTune` (B5): return the initial `running` run and spawn a thread
     /// that replays timed `selfTuneUpdate`/`selfTuneOutput` frames so the
-    /// Insights overlay shows a live run. Rejects if one is already in flight,
-    /// mirroring the real backend's single-run guard.
+    /// Insights overlay shows a live run.
+    ///
+    /// Wire contract (ipc.ts:282): resolves with the BARE `SelfTuneRun` and
+    /// REJECTS when a run is already in flight — self-tune.ts:284 throws
+    /// "A self-tune run is already in progress", which crosses ui-rpc as a
+    /// frame-level error and reaches the client as `Err`. So the guard returns
+    /// `Err(BackendError::Method)` here (NOT an `{ok:false}` envelope, which
+    /// the real handler never emits), keeping the rejection path testable.
     fn start_fake_self_tune(&self) -> Result<Value> {
-        if self.self_tune_running.get() {
-            return Ok(json!({ "ok": false, "error": "a self-tune run is already in progress" }));
+        use std::sync::atomic::Ordering;
+        // Atomic test-and-set: claim the slot or reject, never both.
+        if self
+            .self_tune_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(BackendError::Method(
+                "A self-tune run is already in progress".into(),
+            ));
         }
-        self.self_tune_running.set(true);
         let (initial, updates) = backend_fixtures::fake_run_script(backend_fixtures::MOCK_NOW_MS);
 
         let events_tx = self.events_tx.clone();
         // A background OS thread sleeps between frames; async_channel's
         // send_blocking is safe off the glib main loop and the receiver is
-        // pumped there.
+        // pumped there. The last frame marks the run finished, so the thread
+        // clears the in-flight guard — a second Run-now then starts a fresh run,
+        // exactly like the real guard (which only rejects while `running`).
+        let running = self.self_tune_running.clone();
         std::thread::spawn(move || {
             let mut prev = 0u64;
             for (at_ms, channel, args) in updates {
@@ -530,10 +547,10 @@ impl MockBackend {
                 std::thread::sleep(std::time::Duration::from_millis(delay));
                 let _ = events_tx.send_blocking(BackendEvent::Event { channel, args });
             }
+            running.store(false, std::sync::atomic::Ordering::Release);
         });
-        // The guard clears when the mock backend is dropped; a fresh run needs a
-        // fresh backend in mock mode (good enough for the demo/E2E path).
-        Ok(json!({ "ok": true, "run": initial }))
+        // BARE SelfTuneRun on the wire (ipc.ts:282) — no envelope.
+        Ok(initial)
     }
 }
 
@@ -764,17 +781,40 @@ impl Backend for MockBackend {
                 self.res_tick.set(tick.wrapping_add(1));
                 Ok(backend_fixtures::resource_snapshot(tick))
             }
-            // stopAgent(id): the mock has nothing to stop — acknowledge.
-            "stopAgent" => Ok(json!({ "ok": true })),
+            // `stopAgent(id): Promise<void>` (ipc.ts:219) — validate the key,
+            // then return the wire's void (null), not an invented envelope.
+            "stopAgent" => {
+                let _id: String = Self::arg(&params, 0)?;
+                Ok(Value::Null)
+            }
 
             // ---- Insights / self-tune (B5, docs/codebase-map/self-tune.md) ---
             "listSelfTuneRuns" => Ok(backend_fixtures::self_tune_runs()),
+            // `getSelfTuneOutput(runId): Promise<string>` — a keyed lookup, so
+            // the key is validated rather than silently defaulted.
             "getSelfTuneOutput" => {
-                let run_id = params.first().and_then(Value::as_str).unwrap_or("");
-                Ok(backend_fixtures::self_tune_output(run_id))
+                let run_id: String = Self::arg(&params, 0)?;
+                Ok(backend_fixtures::self_tune_output(&run_id))
             }
             "listSelfTuneReports" => Ok(backend_fixtures::self_tune_reports()),
-            "openSelfTuneReport" => Ok(json!({ "ok": true })),
+            // `openSelfTuneReport(loginId): Promise<boolean>` (ipc.ts:290) —
+            // a BARE bool on the wire: false when that login has no report yet
+            // (self-tune.ts:134 resolves false when `reportPath` is null). The
+            // fixture answers from the same report list the UI reads, so the
+            // false path is reachable (login "perso" has reportPath: null).
+            "openSelfTuneReport" => {
+                let login_id: String = Self::arg(&params, 0)?;
+                let has_report = backend_fixtures::self_tune_reports()
+                    .as_array()
+                    .map(|reports| {
+                        reports.iter().any(|r| {
+                            r.get("loginId").and_then(Value::as_str) == Some(login_id.as_str())
+                                && !r.get("reportPath").is_none_or(Value::is_null)
+                        })
+                    })
+                    .unwrap_or(false);
+                Ok(Value::Bool(has_report))
+            }
             "readSelfTuneLessons" => Ok(backend_fixtures::lessons_md()),
             "startSelfTune" => self.start_fake_self_tune(),
 
@@ -1254,5 +1294,67 @@ mod tests {
         let BackendEvent::Event { args: a2, .. } = rx.try_recv().unwrap();
         assert_eq!(a2[0]["syncing"], false);
         assert_eq!(a2[0]["behind"], 0);
+    }
+
+    // ---- B5 self-tune wire-shape contracts (M3 gap fixes) -------------------
+
+    /// `openSelfTuneReport: (loginId) => Promise<boolean>` (ipc.ts:290) — a
+    /// BARE bool, false when that login has no report yet (self-tune.ts:134).
+    /// The mock must reproduce BOTH branches or the false path is untestable.
+    #[test]
+    fn open_self_tune_report_returns_a_bare_bool_both_ways() {
+        let b = MockBackend::default();
+        // A login WITH a report → true.
+        let yes = b
+            .call("openSelfTuneReport", vec![json!("default")])
+            .unwrap();
+        assert_eq!(yes, Value::Bool(true), "expected a bare `true`, got {yes}");
+        // A login with `reportPath: null` → false (the branch that used to be
+        // structurally unreachable behind an {ok:true} envelope).
+        let no = b.call("openSelfTuneReport", vec![json!("perso")]).unwrap();
+        assert_eq!(no, Value::Bool(false), "expected a bare `false`, got {no}");
+        // An unknown login is also "no report".
+        let unknown = b.call("openSelfTuneReport", vec![json!("nope")]).unwrap();
+        assert_eq!(unknown, Value::Bool(false));
+    }
+
+    /// Keyed lookups validate their key (systemic rule): a missing/wrong-typed
+    /// param is an error, not a silently-defaulted fixture.
+    #[test]
+    fn keyed_self_tune_arms_validate_their_key() {
+        let b = MockBackend::default();
+        assert!(b.call("openSelfTuneReport", vec![]).is_err());
+        assert!(b.call("openSelfTuneReport", vec![json!(7)]).is_err());
+        assert!(b.call("getSelfTuneOutput", vec![]).is_err());
+        assert!(b.call("stopAgent", vec![]).is_err());
+        // `stopAgent: Promise<void>` → null on the wire, not an envelope.
+        assert_eq!(
+            b.call("stopAgent", vec![json!("ws-1")]).unwrap(),
+            Value::Null
+        );
+    }
+
+    /// `startSelfTune: () => Promise<SelfTuneRun>` (ipc.ts:282) — resolves with
+    /// the BARE run record and REJECTS while one is in flight
+    /// (self-tune.ts:284 throws). No `{ok, run}` envelope exists on the wire.
+    #[test]
+    fn start_self_tune_returns_a_bare_run_and_rejects_when_in_flight() {
+        let b = MockBackend::default();
+        let v = b.call("startSelfTune", vec![]).unwrap();
+        assert!(
+            v.get("ok").is_none() && v.get("run").is_none(),
+            "must not wrap the run in an envelope: {v}"
+        );
+        let run: orchestra_rpc::types::SelfTuneRun =
+            serde_json::from_value(v).expect("a bare SelfTuneRun deserializes");
+        assert_eq!(run.status, orchestra_rpc::types::SelfTuneRunStatus::Running);
+        assert_eq!(run.trigger, orchestra_rpc::types::SelfTuneTrigger::Manual);
+        // Second start while the first is in flight → Err, matching the real
+        // handler's throw (which crosses ui-rpc as a frame-level error).
+        let err = b.call("startSelfTune", vec![]).unwrap_err();
+        assert!(
+            format!("{err}").contains("already in progress"),
+            "unexpected rejection: {err}"
+        );
     }
 }

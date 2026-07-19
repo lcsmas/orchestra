@@ -26,6 +26,7 @@ use crate::daemon;
 use crate::dialogs;
 use crate::main_pane::MainPane;
 use crate::notify;
+use crate::overlays::insights::InsightsSection;
 use crate::overlays::{OverlayKind, Overlays};
 use crate::remote_control;
 use crate::sidebar::{Sidebar, SidebarInit};
@@ -107,6 +108,9 @@ pub struct App {
     overlays: Option<Rc<Overlays>>,
     /// Chime playback for `agentFinished` while the window is unfocused.
     sound: Rc<SoundPlayer>,
+    /// The sidebar's Insights row (§5.1) — kept so self-tune events refresh its
+    /// summary/step rows and the overlay's open state highlights it.
+    insights_section: Option<Rc<InsightsSection>>,
     /// Debounce generation for state saves: each change bumps it; only the
     /// timer holding the latest generation actually persists.
     save_generation: Rc<Cell<u64>>,
@@ -162,6 +166,23 @@ pub enum Msg {
     EscapePressed,
     /// Open the notification-sound picker (B5).
     OpenSoundPicker,
+}
+
+/// Depth-first search for a named widget under `root` — used to reach a mount
+/// slot a sibling component owns (B1's sidebar `insights-slot`) without
+/// widening that component's public surface.
+fn find_named(root: &gtk::Widget, name: &str) -> Option<gtk::Box> {
+    if root.widget_name() == name {
+        return root.clone().downcast::<gtk::Box>().ok();
+    }
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        child = c.next_sibling();
+        if let Some(found) = find_named(&c, name) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// Remove every child of a mount slot (drops B3's placeholder hint before B2
@@ -835,6 +856,19 @@ impl SimpleComponent for App {
             });
         widgets.sidebar_host.append(sidebar.widget());
 
+        // B5: mount the Insights section into the sidebar's `insights-slot`
+        // (§5.1 — between the workspace list and the usage bars). B1 builds the
+        // slot; we populate it. Clicking the row toggles the Insights overlay.
+        let insights_section =
+            find_named(sidebar.widget().upcast_ref(), "insights-slot").map(|slot| {
+                let section = InsightsSection::new({
+                    let sender = sender.clone();
+                    move || sender.input(Msg::ToggleOverlay(OverlayKind::Insights))
+                });
+                slot.append(section.widget());
+                section
+            });
+
         // Accounts/usage/login controller: needs a backend to render against.
         let accounts = backend.as_ref().map(|b| {
             attach_accounts(
@@ -944,6 +978,7 @@ impl SimpleComponent for App {
             state_path,
             overlays,
             sound,
+            insights_section,
             save_generation: Rc::new(Cell::new(0)),
             retry_active,
             attach_in_flight,
@@ -959,6 +994,9 @@ impl SimpleComponent for App {
             sidebar_footer: widgets.sidebar_footer.clone(),
             accounts_button: widgets.accounts_button.clone(),
         };
+        // Seed the sidebar Insights row with the current run history so it
+        // shows the last outcome on launch, not just after the next event.
+        model.refresh_insights_section();
         ComponentParts { model, widgets }
     }
 
@@ -1019,6 +1057,8 @@ impl SimpleComponent for App {
                     // (the terminals resolve ctx.backend() per-call, so they pick
                     // up the swapped-in live backend automatically).
                     self.reselect_active();
+                    // Missed self-tune transitions while disconnected.
+                    self.refresh_insights_section();
                     self.footer_label.set_label(&footer_text(&self.backend));
                 }
                 ConnectionState::Reconnecting { attempt, delay_ms } => {
@@ -1089,6 +1129,9 @@ impl SimpleComponent for App {
                                 let id = crate::sound::selected_sound_id(&self.state.borrow());
                                 self.sound.play(id);
                             }
+                            // Keep the sidebar Insights row in step with the
+                            // run (idle summary ↔ per-step spinner rows).
+                            UiEvent::SelfTuneUpdate(_) => self.refresh_insights_section(),
                             _ => {}
                         }
                     }
@@ -1127,11 +1170,13 @@ impl SimpleComponent for App {
             Msg::ToggleOverlay(kind) => {
                 if let Some(overlays) = &self.overlays {
                     overlays.toggle(kind);
+                    self.sync_insights_active();
                 }
             }
             Msg::EscapePressed => {
                 if let Some(overlays) = &self.overlays {
                     overlays.on_escape();
+                    self.sync_insights_active();
                 }
             }
             Msg::OpenSoundPicker => {
@@ -1286,6 +1331,33 @@ impl App {
                     });
                 }
             }
+        }
+    }
+
+    /// Re-read the self-tune run list and refresh the sidebar Insights row
+    /// (§5.1). Cheap: `listSelfTuneRuns` is an in-memory list backend-side, and
+    /// this only fires on self-tune transitions / attach.
+    fn refresh_insights_section(&self) {
+        let (Some(section), Some(backend)) = (&self.insights_section, &self.backend) else {
+            return;
+        };
+        match backend.call("listSelfTuneRuns", vec![]) {
+            Ok(v) => match serde_json::from_value::<Vec<orchestra_rpc::types::SelfTuneRun>>(v) {
+                Ok(runs) => section.set_runs(&runs),
+                Err(e) => eprintln!("[insights] bad listSelfTuneRuns shape: {e}"),
+            },
+            Err(e) => eprintln!("[insights] listSelfTuneRuns failed: {e}"),
+        }
+    }
+
+    /// Highlight the sidebar Insights row while its overlay is the active one.
+    fn sync_insights_active(&self) {
+        if let Some(section) = &self.insights_section {
+            let active = self
+                .overlays
+                .as_ref()
+                .is_some_and(|o| o.active() == Some(OverlayKind::Insights));
+            section.set_active(active);
         }
     }
 
