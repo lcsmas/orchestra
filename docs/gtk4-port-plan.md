@@ -475,7 +475,7 @@ SIGWINCH repaint bounce, sandbox reconnect banners, `pty:stopped` semantics.
 
 | Risk | Level | Mitigation |
 |---|---|---|
-| VTE feed-mode gaps (mode 2026 through feed, huge replays) | M | M2 spike week 1: replay real Claude PTY logs through feed-mode VTE (the terminal-garble playbook's corpus); fallback = port write-queue holding logic |
+| ~~VTE feed-mode gaps (mode 2026 through feed, huge replays)~~ | ~~M~~ **RESOLVED** | **B2 spike `cc2266d`: VTE handles feed-mode natively, no write-queue port.** VTE source: `feed()` + PTY reader share one parser + one redraw scheduler (each drain = one atomic repaint). Empirical: feed-vs-spawn on 2 real Claude logs + a hostile synthetic ?2026 stream, all 6 cases `dips=0`, pixel-identical. |
 | WebKitGTK OAuth acceptance (Google embedded-webview blocks) | M/H | mirror UA strategy; system-browser escape hatch exists; worst case documented manual flow (matches the known attestation wall) |
 | serde/type drift over time | M | fixtures in CI both sides; unknown-field tolerance; protocol version handshake |
 | api-handlers refactor destabilizes Electron app | M | mechanical extraction PR gated on full existing test suite + `app-e2e.mjs`; zero behavior changes allowed in that PR |
@@ -542,26 +542,61 @@ Checkpoint = agent-reported milestone; Verified = verifier PASS with viewed
 evidence; Merged = on `gtk4-native-port`.
 
 - **B2 RpcBackend** — MERGED `1ca3b8d`. RpcClient-backed `Backend`
-  selectable alongside `MockBackend` (`backend.rs`/`app.rs`). Verifier PASS:
-  live daemon on seeded temp `ORCHESTRA_HOME`, GTK in headless sway connected
-  to the daemon (footer `backend: daemon v0.5.84`), `markSeen()` →
-  broadcast `workspace:update` → sidebar re-render (before YELLOW/waiting →
-  after GRAY/idle, screenshots viewed). Unblocked B1/B3/B4/B5 to rebase onto
-  the live path. B2 continues on the ?2026 VTE feed-mode spike.
-- **B1 sidebar** — checkpoint `f767dea` (full §5.1 render pass + all row/repo
-  actions on `MockBackend`, 46 unit tests, clean gates). In verifier queue for
-  targeted pass (diff-scope + gates + headless-sway screenshots). Mock-only, so
-  verifies independent of the live path.
-- **B6 packaging/e2e** — checkpoint `ebe7681`: logger `ORCHESTRA_HOME` fix
-  (`7f3f1ac`, TS 208/208), daemon auto-spawn/handshake/refusal dialogs,
-  `build.rs` version lockstep. Also folded in the `pty.ts:74` `LOG_DIR`
-  fix (same `ORCHESTRA_HOME`-ignoring class) — B6 is the sole src/-permitted
-  agent this milestone, so both TS fixes land together and verify together.
-  Continuing on packaging/.desktop/icon/CI/E2E.
-- **B3 diff+toolbar**, **B4 accounts+login+usage**, **B5 resources+insights+
-  sound** — in flight; rebasing onto the live RpcBackend for their own
-  live-daemon smokes. MockBackend path kept selectable for E2E determinism
-  (additive live path, not a replacement).
+  selectable alongside `MockBackend`. Verifier PASS: live daemon on seeded temp
+  `ORCHESTRA_HOME`, GTK in headless sway connected (footer `backend: daemon
+  v0.5.84`), `markSeen()` → broadcast `workspace:update` → sidebar re-render
+  (YELLOW/waiting → GRAY/idle, screenshots viewed). Unblocked B1/B3/B4/B5.
+- **B2 ?2026 spike** — RESOLVED `cc2266d`: **VTE handles feed-mode natively,
+  no term-write-queue port needed** (the plan's #1 technical risk, retired).
+  Two proofs: VTE source shows `feed()` and the PTY reader share one parser +
+  one redraw-batching scheduler (each incoming-queue drain = one atomic
+  repaint, path-independent; ?2026 is a documented NOP but tearing is moot);
+  empirical feed-vs-spawn on 2 real Claude logs + a hostile synthetic ?2026
+  stream, all 6 cases `dips=0` and pixel-identical final frames.
+- **B1 sidebar** — MERGED `971e8c7` (full §5.1 at `f767dea` + dnd/E2E/2
+  bugfixes/theme.css at `dd0ec1c`, 48 tests). Coordinator resolved the merge
+  (event-ownership contract below); build + 48 tests green. B1 driving a
+  live-daemon variant of `sidebar_e2e.sh`; verifier doing the clippy/fmt gate.
+- **B4 accounts/login/usage** — checkpoint `53ae51f`, merged the integration
+  branch clean. UsageBars, AccountsSettings CRUD, AccountLoginModal (inline
+  feed-VTE), WebKitGTK OAuth window (per-account persistent partition),
+  account badge/menu. Verified compliant with the event-ownership rule
+  (`call()`/`pty_write()` only; forwards via App fan-out). Independently
+  converged on the canonical `Msg::PtyData` terminal seam (matches B2).
+  Finding relayed to B6: rootless WebKit needs a bwrap bind of the localdeps
+  `libexec` over `/usr/libexec` (compiled-in path).
+- **B5 resources/insights/help/sound** — checkpoint `69c8504`, merged clean
+  (`2d614e9`). Overlays + chime-gen + `sound.rs`/`notify.rs`. Verified
+  compliant: Insights streams via App fan-out (`overlays.dispatch(&ev)`),
+  Resources polls `sampleResources` via `call()`, `uiNotify`→GNotification,
+  `agentFinished{focused:false}`→chime all off the same fan-out. 30 tests.
+- **B3 diff+toolbar** — DONE (pending live merge) `70293c4`: full §5.3
+  main-pane — toolbar (base→branch chips, reusable `BranchPopoverPanel`,
+  Terminal/Diff/Run tabs, PR/Merge/restart/run), side-by-side GtkSourceView
+  diff (A/M/D, scroll-lockstep, intra-line word highlights, 4s visible poll),
+  three banners. 35 tests. Given the Rc-app-wide + event-ownership rulings;
+  re-applying its `Ctx`/MainPane glue against the merged branch.
+- **B6 packaging/e2e** — checkpoint `302bcff`: `ORCHESTRA_HOME` fixes (logger
+  `7f3f1ac` + `pty.ts:74` `cade9cb`), daemon auto-spawn/handshake/refusal
+  dialogs, `build.rs` version lockstep, packaging (`.desktop`, `@resvg`
+  icons, `release.sh --with-gtk` additive), `native.yml` CI (fedora:42
+  x64+arm64, fmt/clippy/test/release + TS + fixtures-drift + conformance).
+  Finishing the `native/e2e/` suite.
+
+##### Event-ownership contract (settled during B1 integration)
+
+`async_channel` is **MPMC**: two `recv()` loops on receiver clones
+round-robin, each dropping ~half the frames. So **`App` owns the single
+consumer of every backend stream** (`spawn_backend_streams`: `events()` →
+`Msg::BackendEvent`, `connection_state()` → `Msg::Connection`, `pty_data()`
+→ `Msg::PtyData`) and **fans each frame out** to the component that needs it
+(sidebar via `Msg::Backend`, accounts via `handle_event`/`handle_pty_data`,
+insights via `overlays.dispatch`, terminals via `TerminalStack::feed`).
+Components **must not call `backend.events()`/`pty_data()`/`connection_state()`
+themselves** — they receive already-forwarded frames and send intents back out
+through a sink (`Msg::Pane` → `App` calls `pty_write`/`pty_start`/…, backend
+single-owned in `App`). The backend seam is `Rc<dyn Backend>` app-wide so the
+shell can share one connection across sidebar + panes + controllers.
 
 ### M3 — parity audit
 One agent walks every ☐ in §5 against the live app pair (Electron vs GTK,
