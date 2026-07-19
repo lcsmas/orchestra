@@ -536,6 +536,33 @@ Interface discipline: B-agents may NOT touch `orchestra-rpc` types or the
 protocol; contract changes go through the orchestrator (one PR, fixtures
 regenerated, both sides updated atomically).
 
+#### M2 live progress (integration branch `gtk4-native-port`)
+
+Checkpoint = agent-reported milestone; Verified = verifier PASS with viewed
+evidence; Merged = on `gtk4-native-port`.
+
+- **B2 RpcBackend** — MERGED `1ca3b8d`. RpcClient-backed `Backend`
+  selectable alongside `MockBackend` (`backend.rs`/`app.rs`). Verifier PASS:
+  live daemon on seeded temp `ORCHESTRA_HOME`, GTK in headless sway connected
+  to the daemon (footer `backend: daemon v0.5.84`), `markSeen()` →
+  broadcast `workspace:update` → sidebar re-render (before YELLOW/waiting →
+  after GRAY/idle, screenshots viewed). Unblocked B1/B3/B4/B5 to rebase onto
+  the live path. B2 continues on the ?2026 VTE feed-mode spike.
+- **B1 sidebar** — checkpoint `f767dea` (full §5.1 render pass + all row/repo
+  actions on `MockBackend`, 46 unit tests, clean gates). In verifier queue for
+  targeted pass (diff-scope + gates + headless-sway screenshots). Mock-only, so
+  verifies independent of the live path.
+- **B6 packaging/e2e** — checkpoint `ebe7681`: logger `ORCHESTRA_HOME` fix
+  (`7f3f1ac`, TS 208/208), daemon auto-spawn/handshake/refusal dialogs,
+  `build.rs` version lockstep. Also folded in the `pty.ts:74` `LOG_DIR`
+  fix (same `ORCHESTRA_HOME`-ignoring class) — B6 is the sole src/-permitted
+  agent this milestone, so both TS fixes land together and verify together.
+  Continuing on packaging/.desktop/icon/CI/E2E.
+- **B3 diff+toolbar**, **B4 accounts+login+usage**, **B5 resources+insights+
+  sound** — in flight; rebasing onto the live RpcBackend for their own
+  live-daemon smokes. MockBackend path kept selectable for E2E determinism
+  (additive live path, not a replacement).
+
 ### M3 — parity audit
 One agent walks every ☐ in §5 against the live app pair (Electron vs GTK,
 same seeded home), files gaps, orchestrator triages, B-agents fix. Release

@@ -1,17 +1,17 @@
-//! Backend seam for the GTK frontend (plan §1.1 / M1-A3).
+//! Backend seam for the GTK frontend (plan §1.1 / M1-A3, wired M2-B2).
 //!
 //! The GTK app is a pure frontend: everything of substance lives behind a
-//! ui-rpc socket served by the Electron app or the daemon. This module keeps
-//! the crate building (and demoable) before that wiring exists: `Backend` is
-//! the narrow surface the skeleton needs, `MockBackend` serves fixtures, and
-//! `RpcBackend` is a stub over orchestra-rpc's current codec/types surface —
-//! its connection actor is A2's deliverable and gets wired in M2.
+//! ui-rpc socket served by the Electron app or the daemon. `Backend` is the
+//! narrow surface the shell needs, `MockBackend` serves fixtures, and
+//! `RpcBackend` is the live transport: it owns an [`orchestra_rpc::RpcClient`]
+//! (reader thread, ping/pong, reconnect-with-backoff) and bridges its blocking
+//! `mpsc` receivers into `async_channel`s the GTK main loop can await.
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
-use orchestra_rpc::frame::{self, Frame};
 use orchestra_rpc::types::{RepoEntry, Workspace, WorkspaceStatus};
+use orchestra_rpc::{BackendKind as RemoteKind, ClientOptions, ConnectionState, RpcClient};
 use serde_json::{json, Value};
 
 use crate::backend_fixtures;
@@ -22,6 +22,8 @@ pub type Result<T> = std::result::Result<T, BackendError>;
 pub enum BackendError {
     #[error("not wired yet: {0}")]
     NotWired(&'static str),
+    #[error(transparent)]
+    Rpc(#[from] orchestra_rpc::RpcError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,14 +53,23 @@ pub trait Backend: std::fmt::Debug {
     fn kind(&self) -> BackendKind;
     /// Backend app version for the status strip ("backend: mock v0.1.0 · …").
     fn version(&self) -> String;
+    /// What the remote reported in `helloOk.backendKind` (Rpc only).
+    fn server_kind(&self) -> Option<RemoteKind> {
+        None
+    }
     fn list_workspaces(&self) -> Result<Vec<Workspace>>;
     fn list_repos(&self) -> Result<Vec<RepoEntry>>;
     /// Generic `OrchestraAPI` method call (protocol §4).
     fn call(&self, method: &str, params: Vec<Value>) -> Result<Value>;
     /// Receiver for `event` frames. Single consumer (the app shell) in M1.
     fn events(&self) -> async_channel::Receiver<BackendEvent>;
-    /// Receiver for `ptyData` frames: (pty id, raw bytes).
+    /// Receiver for `ptyData` frames: (pty id, raw bytes). Single consumer
+    /// (async_channel is MPMC work-stealing, NOT broadcast — one message goes
+    /// to one receiver; the terminal stack must be the only reader).
     fn pty_data(&self) -> async_channel::Receiver<(String, Vec<u8>)>;
+    /// Receiver for connection lifecycle transitions (Connected /
+    /// Reconnecting / terminal Disconnected). Mock backends never fire.
+    fn connection_state(&self) -> async_channel::Receiver<ConnectionState>;
     /// `ptyWrite` fast path (protocol §2, 0x02 frames).
     fn pty_write(&self, id: &str, bytes: &[u8]) -> Result<()>;
     /// `focus` frame — the backend ORs this over all clients to decide the
@@ -110,6 +121,8 @@ pub struct MockBackend {
     events_rx: async_channel::Receiver<BackendEvent>,
     _pty_tx: async_channel::Sender<(String, Vec<u8>)>,
     pty_rx: async_channel::Receiver<(String, Vec<u8>)>,
+    _state_tx: async_channel::Sender<ConnectionState>,
+    state_rx: async_channel::Receiver<ConnectionState>,
     /// Advances on each `sampleResources` poll so sparklines/traces animate.
     tick: Cell<u64>,
     /// One in-flight fake run at a time — `startSelfTune` rejects if set, like
@@ -121,11 +134,14 @@ impl Default for MockBackend {
     fn default() -> Self {
         let (events_tx, events_rx) = async_channel::unbounded();
         let (pty_tx, pty_rx) = async_channel::unbounded();
+        let (state_tx, state_rx) = async_channel::unbounded();
         Self {
             events_tx,
             events_rx,
             _pty_tx: pty_tx,
             pty_rx,
+            _state_tx: state_tx,
+            state_rx,
             tick: Cell::new(0),
             self_tune_running: Cell::new(false),
         }
@@ -247,6 +263,10 @@ impl Backend for MockBackend {
         self.pty_rx.clone()
     }
 
+    fn connection_state(&self) -> async_channel::Receiver<ConnectionState> {
+        self.state_rx.clone()
+    }
+
     fn pty_write(&self, _id: &str, _bytes: &[u8]) -> Result<()> {
         Ok(())
     }
@@ -285,51 +305,100 @@ impl MockBackend {
     }
 }
 
-// ---- rpc stub ---------------------------------------------------------------
+// ---- rpc --------------------------------------------------------------------
 
-/// Thin stub over the ui-rpc socket. It codes against orchestra-rpc's frozen
-/// codec (`frame.rs`) and types (`types.rs`) but does NO socket IO yet: the
-/// tokio connection actor is A2's M1 deliverable, and this struct grows the
-/// real transport in M2. Until then every method reports NotWired and the
-/// shell shows the discovered-but-unwired state in the status strip.
-#[derive(Debug)]
+/// Bridge a blocking `mpsc` receiver (fed by the RpcClient's reader thread)
+/// into an `async_channel` the GTK main loop awaits. The thread exits when
+/// either side closes: sender gone (client dropped after a terminal
+/// disconnect) or receiver gone (backend replaced).
+fn bridge<T: Send + 'static, U: Send + 'static>(
+    name: &str,
+    rx: std::sync::mpsc::Receiver<T>,
+    tx: async_channel::Sender<U>,
+    map: impl Fn(T) -> U + Send + 'static,
+) {
+    std::thread::Builder::new()
+        .name(format!("ogtk-bridge-{name}"))
+        .spawn(move || {
+            while let Ok(item) = rx.recv() {
+                if tx.send_blocking(map(item)).is_err() {
+                    return;
+                }
+            }
+        })
+        .expect("spawn bridge thread");
+}
+
+/// Live transport over the ui-rpc socket: an [`RpcClient`] connection actor
+/// (reader thread, ping/pong keepalive, reconnect-with-backoff) whose three
+/// push streams are re-terminated on async channels for the GTK main loop.
+///
+/// `connect` performs the hello handshake synchronously (bounded by the
+/// client's 10 s handshake timeout); method calls block the caller — fine for
+/// init-time hydration, anything hot should go through a worker.
 pub struct RpcBackend {
     sock_path: PathBuf,
-    _events_tx: async_channel::Sender<BackendEvent>,
+    client: RpcClient,
     events_rx: async_channel::Receiver<BackendEvent>,
-    _pty_tx: async_channel::Sender<(String, Vec<u8>)>,
     pty_rx: async_channel::Receiver<(String, Vec<u8>)>,
+    state_rx: async_channel::Receiver<ConnectionState>,
+}
+
+impl std::fmt::Debug for RpcBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RpcBackend")
+            .field("sock_path", &self.sock_path)
+            .field("connected", &self.client.is_connected())
+            .finish_non_exhaustive()
+    }
 }
 
 impl RpcBackend {
-    pub fn new(sock_path: PathBuf) -> Self {
+    /// Connect + handshake against an explicit socket path (from
+    /// [`discover_socket`]). Reconnects redial this same path; when the
+    /// backend restarts under a new pid-derived path, the client's give-up
+    /// surfaces as `Disconnected` and the shell's discovery retry loop
+    /// attaches a fresh backend.
+    pub fn connect(sock_path: PathBuf) -> std::result::Result<Self, orchestra_rpc::RpcError> {
+        let opts = ClientOptions {
+            app_version: env!("CARGO_PKG_VERSION").into(),
+            ..ClientOptions::default()
+        };
+        let (client, recv) = RpcClient::connect(&sock_path, opts)?;
         let (events_tx, events_rx) = async_channel::unbounded();
         let (pty_tx, pty_rx) = async_channel::unbounded();
-        Self {
+        let (state_tx, state_rx) = async_channel::unbounded();
+        bridge("events", recv.events, events_tx, |ev| BackendEvent::Event {
+            channel: ev.channel,
+            args: ev.args,
+        });
+        bridge("pty", recv.pty, pty_tx, |chunk| chunk);
+        bridge("state", recv.state, state_tx, |s| s);
+        Ok(Self {
             sock_path,
-            _events_tx: events_tx,
+            client,
             events_rx,
-            _pty_tx: pty_tx,
             pty_rx,
-        }
+            state_rx,
+        })
     }
 
     pub fn sock_path(&self) -> &Path {
         &self.sock_path
     }
 
-    /// The `hello` frame this client will send on connect (protocol §3),
-    /// encoded with the frozen codec. Exercised by tests today, by the M2
-    /// connection actor tomorrow.
-    pub fn hello_frame() -> Vec<u8> {
-        frame::encode(&Frame::Json(json!({
-            "t": "hello",
-            "proto": 1,
-            "appVersion": env!("CARGO_PKG_VERSION"),
-            "clientKind": "gtk",
-            "focused": true,
-        })))
-        .expect("hello frame is well under the frame cap")
+    /// The shared client, for subsystems (terminal stack) that want the typed
+    /// wrappers directly rather than the stringly `call` surface.
+    pub fn client(&self) -> &RpcClient {
+        &self.client
+    }
+}
+
+impl Drop for RpcBackend {
+    fn drop(&mut self) {
+        // Deliberate close: stops the reconnect loop and reader thread; the
+        // bridge threads then drain and exit on their own.
+        self.client.close();
     }
 }
 
@@ -339,20 +408,26 @@ impl Backend for RpcBackend {
     }
 
     fn version(&self) -> String {
-        // Real version arrives in the helloOk handshake (M2).
-        "?".into()
+        self.client
+            .server_info()
+            .map(|i| i.app_version)
+            .unwrap_or_else(|| "?".into())
+    }
+
+    fn server_kind(&self) -> Option<RemoteKind> {
+        self.client.server_info().map(|i| i.backend_kind)
     }
 
     fn list_workspaces(&self) -> Result<Vec<Workspace>> {
-        Err(BackendError::NotWired("RpcBackend transport lands in M2"))
+        Ok(self.client.list_workspaces()?)
     }
 
     fn list_repos(&self) -> Result<Vec<RepoEntry>> {
-        Err(BackendError::NotWired("RpcBackend transport lands in M2"))
+        Ok(self.client.list_repos()?)
     }
 
-    fn call(&self, _method: &str, _params: Vec<Value>) -> Result<Value> {
-        Err(BackendError::NotWired("RpcBackend transport lands in M2"))
+    fn call(&self, method: &str, params: Vec<Value>) -> Result<Value> {
+        Ok(self.client.call(method, params)?)
     }
 
     fn events(&self) -> async_channel::Receiver<BackendEvent> {
@@ -363,28 +438,146 @@ impl Backend for RpcBackend {
         self.pty_rx.clone()
     }
 
-    fn pty_write(&self, _id: &str, _bytes: &[u8]) -> Result<()> {
-        Err(BackendError::NotWired("RpcBackend transport lands in M2"))
+    fn connection_state(&self) -> async_channel::Receiver<ConnectionState> {
+        self.state_rx.clone()
     }
 
-    fn set_focused(&self, _focused: bool) {}
+    fn pty_write(&self, id: &str, bytes: &[u8]) -> Result<()> {
+        Ok(self.client.send_pty_write(id, bytes)?)
+    }
+
+    fn set_focused(&self, focused: bool) {
+        // Best-effort: while disconnected the flag rides the next reconnect's
+        // hello, so a send failure here is not a loss.
+        let _ = self.client.focus(focused);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orchestra_rpc::frame::Decoder;
+    use orchestra_rpc::frame::{encode, Decoder, Frame};
+    use std::io::{Read as _, Write as _};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::time::{Duration, Instant};
 
+    /// recv with a deadline so a wiring bug fails the test instead of
+    /// hanging it (async_channel has no blocking recv_timeout).
+    fn recv_within<T>(rx: &async_channel::Receiver<T>, what: &str) -> T {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match rx.try_recv() {
+                Ok(v) => return v,
+                Err(async_channel::TryRecvError::Empty) => {
+                    assert!(Instant::now() < deadline, "timed out waiting for {what}");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(async_channel::TryRecvError::Closed) => {
+                    panic!("channel closed waiting for {what}")
+                }
+            }
+        }
+    }
+
+    fn read_json(stream: &mut UnixStream, decoder: &mut Decoder) -> Value {
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            if let Some(frame) = decoder.next_frame().unwrap() {
+                match frame {
+                    Frame::Json(v) => return v,
+                    _ => continue,
+                }
+            }
+            let n = stream.read(&mut buf).unwrap();
+            assert!(n > 0, "client closed while server expected a frame");
+            decoder.feed(&buf[..n]);
+        }
+    }
+
+    fn write_frame(stream: &mut UnixStream, frame: &Frame) {
+        stream.write_all(&encode(frame).unwrap()).unwrap();
+    }
+
+    /// Full actor round-trip against an in-process fake backend: handshake,
+    /// event + ptyData push → async channels, req/res call, focus frame.
     #[test]
-    fn hello_frame_decodes_with_the_frozen_codec() {
-        let mut d = Decoder::new();
-        d.feed(&RpcBackend::hello_frame());
-        let Frame::Json(v) = d.next_frame().unwrap().unwrap() else {
-            panic!("hello must be a JSON frame");
-        };
-        assert_eq!(v["t"], "hello");
-        assert_eq!(v["proto"], 1);
-        assert_eq!(v["clientKind"], "gtk");
+    fn rpc_backend_bridges_a_live_server() {
+        let dir = std::env::temp_dir().join(format!("orch-gtk-rpc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("ui.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut dec = Decoder::new();
+
+            let hello = read_json(&mut s, &mut dec);
+            assert_eq!(hello["t"], "hello");
+            assert_eq!(hello["proto"], 1);
+            assert_eq!(hello["clientKind"], "gtk");
+            write_frame(
+                &mut s,
+                &Frame::Json(json!({
+                    "t": "helloOk", "proto": 1,
+                    "appVersion": "9.9.9", "backendKind": "daemon",
+                })),
+            );
+            write_frame(
+                &mut s,
+                &Frame::Json(json!({
+                    "t": "event", "channel": "agentContext",
+                    "args": ["ws-1", 42_000],
+                })),
+            );
+            write_frame(
+                &mut s,
+                &Frame::PtyData {
+                    id: "ws-1".into(),
+                    bytes: b"hi from pty".to_vec(),
+                },
+            );
+
+            let req = read_json(&mut s, &mut dec);
+            assert_eq!(req["t"], "req");
+            assert_eq!(req["method"], "getAppVersion");
+            write_frame(
+                &mut s,
+                &Frame::Json(json!({
+                    "t": "res", "id": req["id"], "ok": true, "result": "9.9.9",
+                })),
+            );
+
+            let focus = read_json(&mut s, &mut dec);
+            assert_eq!(focus["t"], "focus");
+            assert_eq!(focus["focused"], false);
+        });
+
+        let backend = RpcBackend::connect(sock).unwrap();
+
+        assert_eq!(
+            recv_within(&backend.connection_state(), "Connected"),
+            ConnectionState::Connected
+        );
+        assert_eq!(backend.version(), "9.9.9");
+        assert_eq!(backend.server_kind(), Some(RemoteKind::Daemon));
+
+        let BackendEvent::Event { channel, args } = recv_within(&backend.events(), "event");
+        assert_eq!(channel, "agentContext");
+        assert_eq!(args, vec![json!("ws-1"), json!(42_000)]);
+
+        let (pty_id, bytes) = recv_within(&backend.pty_data(), "ptyData");
+        assert_eq!(pty_id, "ws-1");
+        assert_eq!(bytes, b"hi from pty");
+
+        let version = backend.call("getAppVersion", vec![]).unwrap();
+        assert_eq!(version, json!("9.9.9"));
+
+        backend.set_focused(false);
+        server.join().expect("fake server thread panicked");
+
+        drop(backend);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
