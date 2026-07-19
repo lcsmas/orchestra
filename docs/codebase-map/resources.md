@@ -79,3 +79,27 @@ Meters reuse the `.usage-bar-track/fill` primitives; **status colors
 hue because high CPU isn't a problem state. Shares `formatResetsIn` /
 `formatUpdatedAgo` (exported from `UsageBars.tsx`) and `loginColor`
 (`AccountBadge.tsx`). Styles: the `.res-*` block at the end of `styles.css`.
+
+## Native GTK4 port (M2-B5)
+
+The GTK frontend reimplements this page as a full-pane overlay over the ui-rpc
+socket (`native/orchestra-gtk/src/overlays/`, plan §5.5):
+
+- `resources.rs` — `ResourcesOverlay`: polls `sampleResources` every 2s **only
+  while shown** (`on_shown`/`on_hidden` start/stop a `glib::timeout`), rebuilds
+  the tiles + agents table + app-processes table + token cards + disk section
+  per tick. Slow data (`getWorktreeSizes`/`listAccounts`/`getUsage`/
+  `getAllAccountUsage`/`getWorkspaceAccounts`) refreshes every 8th tick. `now`
+  is taken from `snapshot.at`, not a wall clock. The agent row is a flat
+  `gtk::Button` (disclosure → process list) with the stop button as a sibling.
+  Sparklines are cairo (`draw_spark`: faint baseline, 0.14 area fill, accent
+  polyline, endpoint dot, `max(100,peak)` scale).
+- `support.rs` — pure ports of `formatBytes`/`formatCpu`/`formatTokens`/
+  `Severity` (≥90 red, ≥75 yellow) / `loginColor` (UTF-16 `hash*31+c` → hsl) /
+  `formatResetsIn`/`formatUpdatedAgo`, plus `TraceRing` (90-sample CPU history
+  with `decay()` flatline). Unit-tested against the Electron values.
+- Color discipline preserved: CPU/mem meters use `meter-accent`; yellow/red
+  (`meter-warn`/`meter-critical`) are reserved for token limits. Styles: the
+  `res-*` block in `native/orchestra-gtk/src/theme.css` (§7).
+- Mock fixtures: `native/orchestra-gtk/src/backend_fixtures.rs`
+  (`resource_snapshot(tick)` animates process trees, usage cards, disk).
