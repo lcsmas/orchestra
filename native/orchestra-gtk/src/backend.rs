@@ -10,8 +10,14 @@
 use std::path::{Path, PathBuf};
 
 use orchestra_rpc::frame::{self, Frame};
-use orchestra_rpc::types::{RepoEntry, Workspace, WorkspaceStatus};
+use orchestra_rpc::types::{RepoEntry, Workspace};
 use serde_json::{json, Value};
+
+// The fixture backend lives in its own file (backend/mock.rs) so the M2
+// sidebar/terminal workstreams can grow it without touching the RpcBackend
+// wiring below.
+mod mock;
+pub use mock::{mock_workspaces, MockBackend};
 
 pub type Result<T> = std::result::Result<T, BackendError>;
 
@@ -19,6 +25,10 @@ pub type Result<T> = std::result::Result<T, BackendError>;
 pub enum BackendError {
     #[error("not wired yet: {0}")]
     NotWired(&'static str),
+    /// A served method rejected the call (mock parity with a backend
+    /// `ok:false` response — same surface the RpcBackend maps RPC errors to).
+    #[error("{0}")]
+    Method(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,132 +102,6 @@ pub fn spawn_daemon_stub() {}
 /// `ORCHESTRA_GTK_MOCK=1` selects it without rebuilding.
 pub fn mock_requested() -> bool {
     cfg!(feature = "mock") || std::env::var("ORCHESTRA_GTK_MOCK").is_ok_and(|v| v == "1")
-}
-
-// ---- mock -------------------------------------------------------------------
-
-/// Fixture backend so the skeleton renders real pixels (and smoke.sh has
-/// something to assert) before any backend exists.
-#[derive(Debug)]
-pub struct MockBackend {
-    // Held so the receivers stay open (a dropped sender closes the channel);
-    // the mock never actually pushes.
-    _events_tx: async_channel::Sender<BackendEvent>,
-    events_rx: async_channel::Receiver<BackendEvent>,
-    _pty_tx: async_channel::Sender<(String, Vec<u8>)>,
-    pty_rx: async_channel::Receiver<(String, Vec<u8>)>,
-}
-
-impl Default for MockBackend {
-    fn default() -> Self {
-        let (events_tx, events_rx) = async_channel::unbounded();
-        let (pty_tx, pty_rx) = async_channel::unbounded();
-        Self {
-            _events_tx: events_tx,
-            events_rx,
-            _pty_tx: pty_tx,
-            pty_rx,
-        }
-    }
-}
-
-fn mock_workspace(id: &str, name: &str, branch: &str, status: WorkspaceStatus) -> Workspace {
-    // Deserialized rather than struct-literal so new fields on the wire type
-    // (all Option per the serde rules) can never break the fixture backend.
-    serde_json::from_value(json!({
-        "id": id,
-        "name": name,
-        "repoPath": "/home/user/repos/orchestra",
-        "worktreePath": format!("/home/user/.orchestra/worktrees/{branch}"),
-        "branch": branch,
-        "baseBranch": "master",
-        "status": status,
-        "createdAt": 1_752_800_000_000_u64,
-        "agent": "claude",
-    }))
-    .expect("mock workspace fixture matches the wire type")
-}
-
-pub fn mock_workspaces() -> Vec<Workspace> {
-    vec![
-        mock_workspace(
-            "ws-1",
-            "orchestra · fix-status-dot",
-            "fix-status-dot",
-            WorkspaceStatus::Running,
-        ),
-        mock_workspace(
-            "ws-2",
-            "orchestra · gtk4-port",
-            "gtk4-port",
-            WorkspaceStatus::Waiting,
-        ),
-        mock_workspace(
-            "ws-3",
-            "mobile-club · checkout-retry",
-            "checkout-retry",
-            WorkspaceStatus::Idle,
-        ),
-        mock_workspace(
-            "ws-4",
-            "orchestra · flaky-e2e-hunt",
-            "flaky-e2e-hunt",
-            WorkspaceStatus::Error,
-        ),
-        mock_workspace(
-            "ws-5",
-            "scratch · api-spelunking",
-            "api-spelunking",
-            WorkspaceStatus::Stopped,
-        ),
-    ]
-}
-
-impl Backend for MockBackend {
-    fn kind(&self) -> BackendKind {
-        BackendKind::Mock
-    }
-
-    fn version(&self) -> String {
-        env!("CARGO_PKG_VERSION").into()
-    }
-
-    fn list_workspaces(&self) -> Result<Vec<Workspace>> {
-        Ok(mock_workspaces())
-    }
-
-    fn list_repos(&self) -> Result<Vec<RepoEntry>> {
-        Ok(vec![serde_json::from_value(json!({
-            "path": "/home/user/repos/orchestra",
-            "name": "orchestra",
-            "defaultBranch": "master",
-        }))
-        .expect("mock repo fixture matches the wire type")])
-    }
-
-    fn call(&self, method: &str, _params: Vec<Value>) -> Result<Value> {
-        match method {
-            "app:info" => Ok(json!({
-                "version": env!("CARGO_PKG_VERSION"),
-                "backendKind": "mock",
-            })),
-            _ => Err(BackendError::NotWired("mock backend only serves fixtures")),
-        }
-    }
-
-    fn events(&self) -> async_channel::Receiver<BackendEvent> {
-        self.events_rx.clone()
-    }
-
-    fn pty_data(&self) -> async_channel::Receiver<(String, Vec<u8>)> {
-        self.pty_rx.clone()
-    }
-
-    fn pty_write(&self, _id: &str, _bytes: &[u8]) -> Result<()> {
-        Ok(())
-    }
-
-    fn set_focused(&self, _focused: bool) {}
 }
 
 // ---- rpc stub ---------------------------------------------------------------
@@ -320,13 +204,6 @@ mod tests {
         assert_eq!(v["t"], "hello");
         assert_eq!(v["proto"], 1);
         assert_eq!(v["clientKind"], "gtk");
-    }
-
-    #[test]
-    fn mock_serves_five_workspaces() {
-        let ws = MockBackend::default().list_workspaces().unwrap();
-        assert_eq!(ws.len(), 5);
-        assert!(ws.iter().any(|w| w.status == WorkspaceStatus::Running));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! App shell (plan §5.6): root Relm4 component — window, sidebar/main split
 //! with drag-persisted width, overlay host for future Resources/Insights/Help
 //! panes, backend-discovery banner, status strip, debug menu for the dialog
-//! system. The sidebar list here is a mock-fed placeholder; the real sidebar
-//! (factories, spawn trees, pills) is a separate M2 workstream.
+//! system. The real [`Sidebar`] component (spawn trees, pills, actions) mounts
+//! as the paned start child; the shell hands it the shared backend + UI state.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -11,15 +11,13 @@ use std::time::Duration;
 
 use gtk::gio;
 use gtk::glib;
-use gtk::pango;
 use gtk::prelude::*;
 use relm4::prelude::*;
-
-use orchestra_rpc::types::{Workspace, WorkspaceStatus};
 
 use crate::backend::{self, Backend, BackendKind, MockBackend, RpcBackend};
 use crate::dialogs;
 use crate::remote_control;
+use crate::sidebar::{Sidebar, SidebarInit};
 use crate::state::{self, UiState, WindowGeometry};
 
 pub struct Init {
@@ -27,8 +25,7 @@ pub struct Init {
 }
 
 pub struct App {
-    backend: Option<Box<dyn Backend>>,
-    workspaces: Vec<Workspace>,
+    backend: Option<Rc<dyn Backend>>,
     state: Rc<RefCell<UiState>>,
     state_path: PathBuf,
     /// Debounce generation for state saves: each change bumps it; only the
@@ -38,79 +35,29 @@ pub struct App {
     retry_active: Rc<Cell<bool>>,
     window: gtk::ApplicationWindow,
     paned: gtk::Paned,
-    list: gtk::ListBox,
+    /// The real sidebar (spawn trees, pills, actions) — the M2-B1 workstream.
+    sidebar: Controller<Sidebar>,
     banner: gtk::Revealer,
     footer_label: gtk::Label,
 }
 
 #[derive(Debug)]
 pub enum Msg {
-    RowSelected(i32),
     SidebarResized(i32),
     WindowGeometryChanged,
     RetryDiscover,
     PersistNow,
 }
 
-fn status_css(status: WorkspaceStatus) -> &'static str {
-    match status {
-        WorkspaceStatus::Idle => "idle",
-        WorkspaceStatus::Running => "running",
-        WorkspaceStatus::Waiting => "waiting",
-        WorkspaceStatus::Error => "error",
-        WorkspaceStatus::Stopped => "stopped",
-    }
-}
-
-/// Plain placeholder rows (dot + name + branch), prototype-style. The M2
-/// sidebar workstream replaces this with Relm4 factories.
-fn populate_sidebar(list: &gtk::ListBox, workspaces: &[Workspace], selected_id: Option<&str>) {
-    while let Some(row) = list.row_at_index(0) {
-        list.remove(&row);
-    }
-    for ws in workspaces {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        dot.add_css_class("ws-dot");
-        dot.add_css_class(status_css(ws.status));
-        dot.set_valign(gtk::Align::Center);
-        let col = gtk::Box::new(gtk::Orientation::Vertical, 1);
-        let name = gtk::Label::new(Some(&ws.name));
-        name.set_xalign(0.0);
-        name.set_ellipsize(pango::EllipsizeMode::End);
-        name.add_css_class("ws-name");
-        let branch = gtk::Label::new(Some(&ws.branch));
-        branch.set_xalign(0.0);
-        branch.set_ellipsize(pango::EllipsizeMode::End);
-        branch.add_css_class("ws-branch");
-        col.append(&name);
-        col.append(&branch);
-        row.append(&dot);
-        row.append(&col);
-        // Name the ListBoxRow itself (not the inner box): that's the widget
-        // the remote-control click op selects/activates.
-        let list_row = gtk::ListBoxRow::new();
-        list_row.set_widget_name(&format!("ws-row-{}", ws.id));
-        list_row.set_child(Some(&row));
-        list.append(&list_row);
-    }
-    let selected_index = selected_id
-        .and_then(|id| workspaces.iter().position(|w| w.id == id))
-        .unwrap_or(0);
-    if let Some(row) = list.row_at_index(selected_index as i32) {
-        list.select_row(Some(&row));
-    }
-}
-
-fn make_backend() -> Option<Box<dyn Backend>> {
+fn make_backend() -> Option<Rc<dyn Backend>> {
     if backend::mock_requested() {
-        return Some(Box::new(MockBackend::default()));
+        return Some(Rc::new(MockBackend::default()));
     }
     backend::discover_socket(&state::orchestra_home())
-        .map(|sock| Box::new(RpcBackend::new(sock)) as Box<dyn Backend>)
+        .map(|sock| Rc::new(RpcBackend::new(sock)) as Rc<dyn Backend>)
 }
 
-fn footer_text(backend: &Option<Box<dyn Backend>>) -> String {
+fn footer_text(backend: &Option<Rc<dyn Backend>>) -> String {
     let frontend = env!("CARGO_PKG_VERSION");
     match backend {
         Some(b) => match b.kind() {
@@ -236,35 +183,13 @@ impl SimpleComponent for App {
                     // persisted sidebar width drifts on every launch.
                     set_resize_start_child: false,
 
+                    // The real sidebar component is attached here after
+                    // `view_output!` (the M2-B1 workstream owns its widgets).
+                    #[name = "sidebar_host"]
                     #[wrap(Some)]
                     set_start_child = &gtk::Box {
                         set_orientation: gtk::Orientation::Vertical,
-                        add_css_class: "sidebar",
-                        set_widget_name: "sidebar",
-                        set_width_request: 200,
-
-                        gtk::Label {
-                            set_label: "WORKSPACES",
-                            set_xalign: 0.0,
-                            add_css_class: "sidebar-title",
-                            set_widget_name: "sidebar-title",
-                        },
-
-                        gtk::ScrolledWindow {
-                            set_vexpand: true,
-                            set_hscrollbar_policy: gtk::PolicyType::Never,
-
-                            #[name = "list"]
-                            gtk::ListBox {
-                                set_widget_name: "sidebar-list",
-                                set_selection_mode: gtk::SelectionMode::Single,
-                                connect_row_selected[sender] => move |_, row| {
-                                    if let Some(row) = row {
-                                        sender.input(Msg::RowSelected(row.index()));
-                                    }
-                                },
-                            },
-                        },
+                        set_widget_name: "sidebar-host",
                     },
 
                     // Overlay host (plan §5.3): Resources / Insights / Help
@@ -412,27 +337,27 @@ impl SimpleComponent for App {
             });
         }
 
-        let workspaces = backend
-            .as_ref()
-            .and_then(|b| b.list_workspaces().ok())
-            .unwrap_or_default();
-        populate_sidebar(
-            &widgets.list,
-            &workspaces,
-            state.borrow().last_active_workspace.as_deref(),
-        );
         widgets.footer_label.set_label(&footer_text(&backend));
+
+        // Mount the real sidebar as the paned start child (ONE component swap).
+        let sidebar = Sidebar::builder()
+            .launch(SidebarInit {
+                backend: backend.clone(),
+                state: state.clone(),
+                state_path: state_path.clone(),
+            })
+            .detach();
+        widgets.paned.set_start_child(Some(sidebar.widget()));
 
         let model = App {
             backend,
-            workspaces,
             state,
             state_path,
             save_generation: Rc::new(Cell::new(0)),
             retry_active,
             window: widgets.main_window.clone(),
             paned: widgets.paned.clone(),
-            list: widgets.list.clone(),
+            sidebar,
             banner: widgets.banner.clone(),
             footer_label: widgets.footer_label.clone(),
         };
@@ -441,12 +366,6 @@ impl SimpleComponent for App {
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
-            Msg::RowSelected(index) => {
-                if let Some(ws) = self.workspaces.get(index as usize) {
-                    self.state.borrow_mut().last_active_workspace = Some(ws.id.clone());
-                    self.schedule_save(&sender);
-                }
-            }
             Msg::SidebarResized(position) => {
                 let changed = {
                     let mut st = self.state.borrow_mut();
@@ -481,20 +400,14 @@ impl SimpleComponent for App {
                 // M2: backend::spawn_daemon_stub() grows into launching the
                 // daemon when discovery keeps failing (plan §1.1 rule 3).
                 if let Some(sock) = backend::discover_socket(&state::orchestra_home()) {
-                    self.backend = Some(Box::new(RpcBackend::new(sock)));
+                    let backend: Rc<dyn Backend> = Rc::new(RpcBackend::new(sock));
+                    self.backend = Some(backend.clone());
                     self.retry_active.set(false);
                     self.banner.set_reveal_child(false);
-                    let workspaces = self
-                        .backend
-                        .as_ref()
-                        .and_then(|b| b.list_workspaces().ok())
-                        .unwrap_or_default();
-                    self.workspaces = workspaces;
-                    populate_sidebar(
-                        &self.list,
-                        &self.workspaces,
-                        self.state.borrow().last_active_workspace.as_deref(),
-                    );
+                    // Hand the live backend to the sidebar so it reloads and
+                    // starts pumping events (parity with the app coming up
+                    // against a running daemon).
+                    self.sidebar.emit(crate::sidebar::Msg::Attach(backend));
                     self.footer_label.set_label(&footer_text(&self.backend));
                 }
             }
