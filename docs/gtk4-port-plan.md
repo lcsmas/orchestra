@@ -761,7 +761,31 @@ Integration-surfaced M3 items (found during the serialized merge):
     leaves the app "reconnecting" for up to ~3 min. Shortening that means
     touching `BackoffPolicy` or adding pointer-change detection to the
     reconnect loop — a design change to shared `orchestra-rpc`, deliberately
-    NOT bundled into a gap-fix. Scoped separately.
+    NOT bundled into a gap-fix. Scoped separately, with this **acceptance
+    gate** (from the verifier; adopted verbatim):
+    1. **New-PID socket re-attaches FAST** — assert a *bound* (e.g. <15s), not
+       merely "eventually", and assert it via **a fresh event actually reaching
+       a consumer**, not a banner change: the banner can clear before the
+       streams are re-terminated, so a banner-only assertion passes on a
+       half-recovered client.
+    2. **Same-path reconnect unregressed** — kill+restore on the same socket
+       still recovers inside the existing backoff.
+    3. **Pointer-absent window tolerated** — restart with a deliberate gap
+       between the old daemon's unlink and the new one's write; the poller must
+       tolerate a transiently missing pointer rather than latching a failure.
+    4. **The give-up path must still EXIST** — a socket that never returns must
+       still reach `Disconnected`. This is the regression the fix invites:
+       eager rediscovery could make the client retry forever, turning a 3-min
+       annoyance into a permanent hang, which is strictly worse than the bug.
+       *Test shape matters here*: driven end-to-end this assertion costs a full
+       ~180s backoff, which is slow enough that it gets skipped or stubbed — so
+       it would quietly stop running exactly when it matters. Make
+       `BackoffPolicy`'s `max_elapsed` **injectable** so the give-up *logic* is
+       asserted against a short policy in a unit/integration test, AND keep
+       **one** end-to-end run at the real policy so the injectable path can't
+       drift from shipped behaviour. If the implementer makes rediscovery
+       eager, that is also the natural place to prove eager-rediscovery and
+       give-up **coexist** rather than the former eating the latter.
 
 Fixture-corpus extension (from the M1 A1 report — diff/branch shapes are
 already captured off a seeded dirty repo; `fixtures/manifest.json` lists the
