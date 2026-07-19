@@ -28,6 +28,8 @@
     "build:cli": "vite build --config vite.cli.config.ts",
     "build:daemon": "vite build --config vite.daemon.config.ts",
     "build": "vite build && pnpm run build:cli && pnpm run build:daemon && electron-builder",
+    "build:gtk": "cargo build --release --manifest-path native/Cargo.toml -p orchestra-gtk",
+    "build:gtk:icons": "cd native/packaging && npm install --no-audit --no-fund && node gen-icons.mjs",
     "fixtures:rpc": "pnpm run build:daemon && node dist-electron/dump-rpc-fixtures.js",
     "start": "electron .",
     "lint": "eslint src --ext .ts,.tsx",

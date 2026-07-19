@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#161b23"/><stop offset="1" stop-color="#0b0d10"/>
+    </linearGradient>
+    <linearGradient id="fan" gradientUnits="userSpaceOnUse" x1="0" y1="435" x2="0" y2="150">
+      <stop offset="0" stop-color="#4a8cff"/><stop offset="0.5" stop-color="#6ea8ff"/><stop offset="1" stop-color="#8b7cff"/>
+    </linearGradient>
+    <radialGradient id="halo" gradientUnits="userSpaceOnUse" cx="256" cy="280" r="280">
+      <stop offset="0" stop-color="#4a8cff" stop-opacity="0.16"/><stop offset="1" stop-color="#4a8cff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="11"/></filter>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#tile)"/>
+  <rect width="512" height="512" rx="116" fill="url(#halo)"/>
+  <g stroke="url(#fan)" stroke-width="23" stroke-linecap="round" fill="none" opacity="0.4" filter="url(#blur)">
+    <path d="M256 418 C 256 330, 305 322, 305 252 L305 178"/>
+    <path d="M256 418 C 256 330, 207 322, 207 252 L207 178"/>
+    <path d="M256 418 C 256 326, 401 342, 401 254 L401 202"/>
+    <path d="M256 418 C 256 326, 111 342, 111 254 L111 202"/>
+  </g>
+  <g stroke="url(#fan)" stroke-width="23" stroke-linecap="round" fill="none">
+    <path d="M256 418 C 256 330, 305 322, 305 252 L305 178"/>
+    <path d="M256 418 C 256 330, 207 322, 207 252 L207 178"/>
+    <path d="M256 418 C 256 326, 401 342, 401 254 L401 202"/>
+    <path d="M256 418 C 256 326, 111 342, 111 254 L111 202"/>
+  </g>
+  <g fill="url(#fan)">
+    <circle cx="305" cy="156" r="17"/>
+    <circle cx="207" cy="156" r="17"/>
+    <circle cx="401" cy="180" r="17"/>
+    <circle cx="111" cy="180" r="17"/>
+  </g>
+  <circle cx="256" cy="418" r="23" fill="#e6e9ef"/>
+</svg>
