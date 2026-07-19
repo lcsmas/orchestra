@@ -610,7 +610,13 @@ the app.rs seam self; single-consumer property verified in the merged tree,
 61 tests; dual-consumer live re-verify in flight). **B5 verified** (`eb31b26`
 — color-discipline + event-ownership confirmed). **B6 verified** (`2145556` —
 both `src/main` `ORCHESTRA_HOME` fixes + fixtures-drift triple-checked).
-**B3 rebasing** (`c13c28c` green, merging onto the B4 tip now). **B2 DONE**
+**B3 MERGED** (`5719b0e` — MainPane + toolbar + side-by-side diff + banners;
+resolved own regions only, no second events() consumer. Integration surfaced a
+real cross-module bug per-branch verify couldn't: B3's queue banner
+deserialized `getWorkspaceAccounts` as `Vec`, but the wire contract
+(`ipc.ts:112`) + B4's mock return a `Record<id,WorkspaceAccount>` **map** —
+fixed to parse the map, verified live ws-2→acc-perso 93%. Left named empty
+slots `main-terminal-slot`/`main-run-slot` for B2 to mount into.) **B2 DONE**
 (`197aba1` — full §5.2 terminal stack live-verified: ptyData→VTE feed renders
 real agent output with no tearing, confirming the ?2026 verdict live; boot
 pill, Orchestra Symbols mono, Agent/Run/nvim toolbar w/ real nvim, kept-alive
