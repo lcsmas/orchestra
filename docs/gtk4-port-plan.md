@@ -644,12 +644,22 @@ B3's `terminal_slot()`/`run_slot()`. Coordinator gates (now incl. the fmt gate
 I run myself): build --all-targets + fmt --check clean, 89 tests. Four-consumer
 + two-direction-reconnect live re-verify in flight.
 
-Remaining: **B5** (resources/insights/help overlays — merging now, layers over
-B3's MainPane base) then **B6** (packaging/CI/E2E + the two `src/main` fixes).
-Both already passed per-branch verification.
+**B5 overlays MERGED (`057833c`) — the ENTIRE GTK UI is now assembled**:
+sidebar + accounts + main-pane/toolbar/diff + terminal + resources/insights/
+help/sound overlays, all on the RpcBackend. The `Msg::BackendEvent` handler is
+a SINGLE arm with ONE decode fanning to all five UI consumers
+(`dispatch_to_main_pane` + `accounts.handle_event` + `overlays.dispatch` +
+notify/chime + `sidebar.emit`) — the event-ownership architecture scaled
+cleanly to the full UI. Overlays layer via `add_overlay` (never unmount).
+Five-consumer + overlay-doesn't-tear-down-terminal live re-verify in flight.
 
-Prior tips verified: `26d30de` (B3, triple-consumer PASS), `33305ab` (B4,
-dual-consumer PASS — coexistence central risk closed).
+Remaining: **B6** (packaging/CI/E2E + the two `src/main` fixes) — the LAST
+merge; wraps the daemon-attach lifecycle around the assembled seam, folds B1's
+live-fan-out harness scripts into `native/e2e/`. Already per-branch verified.
+
+Tips verified: `a41fde7` (B2, four-consumer + PTY-feed + reconnect PASS),
+`26d30de` (B3, triple-consumer PASS), `33305ab` (B4, dual-consumer PASS —
+coexistence central risk closed).
 
 **Coexistence central risk CLOSED** (verifier `b4-merge` PASS on the first
 ≥2-module tip, live daemon): two independent daemon mutations — `markSeen`
