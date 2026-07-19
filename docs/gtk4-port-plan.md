@@ -757,8 +757,22 @@ Integration-surfaced M3 items (found during the serialized merge):
   - *A false lead worth recording*: events appearing to pump after the
     reconnect banner is **not** a zombie backend — `accounts/mod.rs:148` runs a
     local 60s tick refreshing relative stamps, independent of the socket.
-  - **Actual remaining defect**: even composed correctly, a daemon restart
-    leaves the app "reconnecting" for up to ~3 min. Shortening that means
+  - **Composition status: UNVERIFIED — not "works slowly", not "broken".**
+    B6's E2E showed no re-attach even at 220s (past the give-up), but B6
+    correctly refused to report that as a verdict: three confounds live in the
+    *instrument*, not the code — (a) an `atexit` reap meant post-mortem pointer
+    state was mistaken for in-window state, (b) the kill step used
+    `pkill -f dist-electron/daemon.js`, a pattern that would also match the
+    NEW daemon (and, on this machine, sibling agents' daemons), (c) no health
+    probe on d2 during the window, so "d2 stayed up" was an assumption. A
+    negative result from a dirty instrument is not evidence. What IS proven:
+    the client mechanism (`discovered_client_reconnects_to_a_moved_socket`
+    5/5), the give-up (`gives_up_reconnecting_after_the_backoff_window`), and
+    the app-side `Disconnected` handler (drops backend → `start_retry_loop`).
+    The PIECES are individually correct; only their COMPOSITION is unverified.
+  - **Actual remaining defect**: on the assumption composition works, a daemon
+    restart still leaves the app "reconnecting" for up to ~3 min. Shortening
+    that means
     touching `BackoffPolicy` or adding pointer-change detection to the
     reconnect loop — a design change to shared `orchestra-rpc`, deliberately
     NOT bundled into a gap-fix. Scoped separately, with this **acceptance
