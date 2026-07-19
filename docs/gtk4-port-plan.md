@@ -791,6 +791,12 @@ Integration-surfaced M3 items (found during the serialized merge):
     rebuild**: poll that label across the give-up boundary and watch whether the
     copy switches. Add a state-transition log line only if the banner read is
     ambiguous.
+    **Sample the SEQUENCE, not a snapshot** (B6): the app also clears/hides the
+    banner on attach, so a single late read cannot distinguish "never
+    transitioned" from "transitioned and moved on". Log each *distinct* banner
+    string with a timestamp on a short interval spanning the give-up, and let
+    the transition sequence carry the verdict. The hardened script already polls
+    on an interval, so this is a small edit to it.
   - **Actual remaining defect**: on the assumption composition works, a daemon
     restart still leaves the app "reconnecting" for up to ~3 min. Shortening
     that means
