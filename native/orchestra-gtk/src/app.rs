@@ -22,6 +22,7 @@ use crate::backend::{self, Backend, BackendEvent, BackendKind, MockBackend, RpcB
 use crate::dialogs;
 use crate::remote_control;
 use crate::state::{self, UiState, WindowGeometry};
+use crate::terminal::{PaneIntent, TerminalStack};
 
 pub struct Init {
     pub remote_control: Option<PathBuf>,
@@ -46,6 +47,8 @@ pub struct App {
     banner: gtk::Revealer,
     banner_label: gtk::Label,
     footer_label: gtk::Label,
+    /// Kept-alive terminals, one pane per workspace (plan §5.2).
+    terminals: TerminalStack,
 }
 
 #[derive(Debug)]
@@ -61,6 +64,10 @@ pub enum Msg {
     Connection(ConnectionState),
     /// An `event` frame from the backend.
     BackendEvent(BackendEvent),
+    /// A `ptyData` frame routed to the terminal stack.
+    PtyData(String, Vec<u8>),
+    /// A terminal pane wants the backend to do something (App owns the backend).
+    Pane(PaneIntent),
 }
 
 fn status_css(status: WorkspaceStatus) -> &'static str {
@@ -151,9 +158,9 @@ fn footer_text(backend: &Option<Box<dyn Backend>>) -> String {
 /// the GTK main loop (async_channel receivers are futures); each loop ends
 /// when the backend (and thus its bridge threads) is dropped.
 ///
-/// pty frames are consumed by the terminal stack (single consumer — see
-/// `Backend::pty_data`); until that lands here, a drain keeps the unbounded
-/// channel from accumulating output of every running workspace.
+/// pty frames are the terminal stack's alone (single consumer — see
+/// `Backend::pty_data`): each `(id, bytes)` becomes a `Msg::PtyData` the
+/// component routes to the matching pane's `feed()`.
 fn spawn_backend_streams(sender: &ComponentSender<App>, backend: &dyn Backend) {
     let events = backend.events();
     let s = sender.clone();
@@ -170,15 +177,10 @@ fn spawn_backend_streams(sender: &ComponentSender<App>, backend: &dyn Backend) {
         }
     });
     let pty = backend.pty_data();
+    let s = sender.clone();
     glib::spawn_future_local(async move {
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         while let Ok((id, bytes)) = pty.recv().await {
-            if seen.insert(id.clone()) {
-                eprintln!(
-                    "[backend] ptyData flowing for '{id}' ({} bytes)",
-                    bytes.len()
-                );
-            }
+            s.input(Msg::PtyData(id, bytes));
         }
     });
 }
@@ -335,17 +337,12 @@ impl SimpleComponent for App {
                         set_widget_name: "overlay-host",
 
                         #[wrap(Some)]
+                        #[name = "main_area"]
                         set_child = &gtk::Box {
                             add_css_class: "main-area",
                             set_widget_name: "main-area",
-
-                            gtk::Label {
-                                set_widget_name: "main-empty",
-                                set_label: "Select a workspace — terminals arrive with the M2 workstreams",
-                                add_css_class: "empty-hint",
-                                set_hexpand: true,
-                                set_vexpand: true,
-                            },
+                            // The terminal stack is appended in init() (it needs
+                            // the runtime `sender` to route pane intents).
                         },
                     },
                 },
@@ -484,7 +481,17 @@ impl SimpleComponent for App {
         );
         widgets.footer_label.set_label(&footer_text(&backend));
 
-        let model = App {
+        // Terminal stack: pane intents route back through the component input
+        // so the App (sole backend owner) performs the RPC.
+        let terminals = {
+            let sender = sender.clone();
+            TerminalStack::new(Rc::new(move |intent: PaneIntent| {
+                sender.input(Msg::Pane(intent));
+            }))
+        };
+        widgets.main_area.append(terminals.widget());
+
+        let mut model = App {
             backend,
             workspaces,
             state,
@@ -497,16 +504,30 @@ impl SimpleComponent for App {
             banner: widgets.banner.clone(),
             banner_label: widgets.banner_label.clone(),
             footer_label: widgets.footer_label.clone(),
+            terminals,
         };
+        // Open the persisted/first workspace terminal so the pane exists and
+        // begins its lazy-start on first fit. (Bind the id in its own `let` so
+        // the `state` borrow ends before the `&mut model` call.)
+        let initial_ws = {
+            let persisted = model.state.borrow().last_active_workspace.clone();
+            persisted
+                .filter(|id| model.workspaces.iter().any(|w| &w.id == id))
+                .or_else(|| model.workspaces.first().map(|w| w.id.clone()))
+        };
+        if let Some(ws) = initial_ws {
+            model.terminals_open(&ws);
+        }
         ComponentParts { model, widgets }
     }
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
             Msg::RowSelected(index) => {
-                if let Some(ws) = self.workspaces.get(index as usize) {
-                    self.state.borrow_mut().last_active_workspace = Some(ws.id.clone());
+                if let Some(id) = self.workspaces.get(index as usize).map(|w| w.id.clone()) {
+                    self.state.borrow_mut().last_active_workspace = Some(id.clone());
                     self.schedule_save(&sender);
+                    self.terminals_open(&id);
                 }
             }
             Msg::SidebarResized(position) => {
@@ -598,14 +619,30 @@ impl SimpleComponent for App {
                         self.repopulate_sidebar();
                     }
                     Ok(UiEvent::WorkspacesRemoved { ids }) => {
+                        for id in &ids {
+                            self.terminals.remove(id);
+                        }
                         self.workspaces.retain(|w| !ids.contains(&w.id));
                         self.repopulate_sidebar();
                     }
-                    // Everything else belongs to the M2 workstreams
-                    // (terminals, usage, accounts, …).
+                    // Terminal lifecycle (plan §5.2): exit/stopped show the
+                    // relaunch notice; restart clears + re-arms for a branch
+                    // switch. `id` may be `<ws>`, `<ws>:run`, or `<ws>:nvim`.
+                    Ok(UiEvent::PtyExit { id, .. }) => self.terminals.on_exit(&id, false),
+                    Ok(UiEvent::PtyStopped { id }) => self.terminals.on_exit(&id, true),
+                    Ok(UiEvent::PtyRestart { id }) => self.terminals.on_restart(&id),
+                    // ptyData rides the dedicated binary channel (Msg::PtyData);
+                    // a JSON copy here would double-feed, so drop it.
+                    Ok(UiEvent::PtyData { .. }) => {}
+                    // Everything else belongs to other M2 workstreams
+                    // (usage, accounts, self-tune, …).
                     _ => {}
                 }
             }
+            Msg::PtyData(id, bytes) => {
+                self.terminals.feed(&id, &bytes);
+            }
+            Msg::Pane(intent) => self.handle_pane_intent(intent),
             Msg::PersistNow => {
                 if let Err(e) = self.state.borrow().save(&self.state_path) {
                     eprintln!("[state] save failed: {e}");
@@ -632,6 +669,55 @@ impl App {
             sender.input(Msg::RetryDiscover);
             glib::ControlFlow::Continue
         });
+    }
+
+    /// Make a workspace's terminal the visible pane. On a pane's first open we
+    /// seed its scrollback from the backend, then show the resume pill — the
+    /// pane's own first-fit fires `ptyStart`.
+    fn terminals_open(&mut self, ws_id: &str) {
+        let fresh = self.terminals.is_new(ws_id);
+        if fresh {
+            if let Some(b) = &self.backend {
+                if let Ok(bytes) = b.pty_scrollback(ws_id) {
+                    self.terminals.feed_scrollback(ws_id, &bytes);
+                }
+            }
+        }
+        self.terminals.set_active(ws_id);
+        if fresh {
+            // Resuming if the workspace has prior activity; a brand-new spawn
+            // shows "Starting agent…". The status stands in for that here.
+            let resuming = self
+                .workspaces
+                .iter()
+                .find(|w| w.id == ws_id)
+                .map(|w| w.status != WorkspaceStatus::Idle)
+                .unwrap_or(false);
+            self.terminals.show_pill(ws_id, resuming);
+        }
+    }
+
+    /// Perform a terminal pane's requested backend action. Errors are logged,
+    /// not fatal — a disconnected backend simply drops the intent.
+    fn handle_pane_intent(&mut self, intent: PaneIntent) {
+        let Some(b) = &self.backend else { return };
+        let res = match &intent {
+            PaneIntent::Start { id, cols, rows } => b.pty_start(id, *cols, *rows),
+            PaneIntent::Write { id, bytes } => b.pty_write(id, bytes),
+            PaneIntent::Resize { id, cols, rows } => b.pty_resize(id, *cols, *rows),
+            PaneIntent::Repaint { id, cols, rows } => b.pty_repaint(id, *cols, *rows),
+            PaneIntent::OpenUri { uri } => {
+                gtk::UriLauncher::new(uri).launch(
+                    None::<&gtk::Window>,
+                    gio::Cancellable::NONE,
+                    |_| {},
+                );
+                Ok(())
+            }
+        };
+        if let Err(e) = res {
+            eprintln!("[terminal] intent failed: {e}");
+        }
     }
 
     /// Re-hydrate the workspace list from the backend and redraw the sidebar.

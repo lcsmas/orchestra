@@ -72,6 +72,35 @@ pub trait Backend: std::fmt::Debug {
     /// `focus` frame — the backend ORs this over all clients to decide the
     /// `focused` flag on finished/needs-input notifications.
     fn set_focused(&self, focused: bool);
+
+    // -- pty control (terminal stack) ---------------------------------------
+    // Typed helpers over the generic `call()` so the terminal panes drive the
+    // backend without hand-rolling JSON. RpcBackend inherits these defaults —
+    // `call()` already routes to the RpcClient's `OrchestraAPI` methods; the
+    // MockBackend's stubbed `call()` makes them harmless no-ops in E2E.
+
+    /// Spawn/attach the agent PTY at a given grid size (`ptyStart`).
+    fn pty_start(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.call("ptyStart", vec![json!(id), json!(cols), json!(rows)])?;
+        Ok(())
+    }
+    /// Notify the backend of a grid resize (`ptyResize`). Callers drop no-ops.
+    fn pty_resize(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.call("ptyResize", vec![json!(id), json!(cols), json!(rows)])?;
+        Ok(())
+    }
+    /// SIGWINCH repaint bounce (`ptyRepaint`) — heals child diff-model desync
+    /// after the pane was hidden. VTE itself needs no atlas clear.
+    fn pty_repaint(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.call("ptyRepaint", vec![json!(id), json!(cols), json!(rows)])?;
+        Ok(())
+    }
+    /// Scrollback replay bytes (`pty:scrollback`, base64 on the wire) to
+    /// `feed()` on (re)mount. The default has no base64 decoder, so it yields
+    /// nothing; RpcBackend overrides it with the RpcClient's decoding wrapper.
+    fn pty_scrollback(&self, _id: &str) -> Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
 }
 
 // ---- discovery --------------------------------------------------------------
@@ -379,6 +408,25 @@ impl Backend for RpcBackend {
 
     fn pty_write(&self, id: &str, bytes: &[u8]) -> Result<()> {
         Ok(self.client.send_pty_write(id, bytes)?)
+    }
+
+    // pty control: use the RpcClient's typed wrappers directly rather than the
+    // trait's generic-`call` defaults — same wire methods, but scrollback gets
+    // the client's base64 decoding for free.
+    fn pty_start(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        Ok(self.client.pty_start(id, cols, rows)?)
+    }
+
+    fn pty_resize(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        Ok(self.client.pty_resize(id, cols, rows)?)
+    }
+
+    fn pty_repaint(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        Ok(self.client.pty_repaint(id, cols, rows)?)
+    }
+
+    fn pty_scrollback(&self, id: &str) -> Result<Vec<u8>> {
+        Ok(self.client.pty_scrollback(id)?)
     }
 
     fn set_focused(&self, focused: bool) {

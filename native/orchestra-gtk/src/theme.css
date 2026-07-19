@@ -50,6 +50,28 @@ scrollbar slider {
   font-size: 14px;
 }
 
+/* Terminal stack (plan §5.2): the VTE panes paint their own bg via
+   set_colors; the boot pill floats centered over them. */
+#terminal-stack {
+  background-color: @bg;
+}
+.term-scroll {
+  background-color: #0b0d10;
+}
+.boot-pill {
+  background-color: alpha(#1b2029, 0.94);
+  color: #e6e9ef;
+  border: 1px solid alpha(#8fbcff, 0.4);
+  border-radius: 999px;
+  padding: 8px 18px;
+  font-size: 13px;
+  margin: 14px;
+  transition: opacity 250ms ease-out;
+}
+.boot-pill.faded {
+  opacity: 0;
+}
+
 /* 3 ── sidebar */
 .sidebar {
   background-color: @bg_2;
