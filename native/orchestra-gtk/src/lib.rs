@@ -7,4 +7,5 @@ pub mod app;
 pub mod backend;
 pub mod dialogs;
 pub mod remote_control;
+pub mod sidebar;
 pub mod state;
