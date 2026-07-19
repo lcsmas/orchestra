@@ -390,6 +390,8 @@ impl SimpleComponent for App {
                                     set_widget_name: "term-run-toggle",
                                     add_css_class: "run-action",
                                     set_visible: false,
+                                    set_hexpand: true,
+                                    set_halign: gtk::Align::End,
                                     connect_clicked => Msg::RunToggle,
                                 },
                             },
@@ -832,6 +834,9 @@ impl App {
     }
 
     /// Re-hydrate the workspace list from the backend and redraw the sidebar.
+    /// If no terminal is open yet (first connect, or a reconnect that hydrated
+    /// workspaces the initial `init` didn't have), open the persisted/first
+    /// workspace so its agent PTY starts.
     fn refresh_workspaces(&mut self) {
         self.workspaces = self
             .backend
@@ -839,6 +844,15 @@ impl App {
             .and_then(|b| b.list_workspaces().ok())
             .unwrap_or_default();
         self.repopulate_sidebar();
+        if self.active_ws.is_none() {
+            let persisted = self.state.borrow().last_active_workspace.clone();
+            let open = persisted
+                .filter(|id| self.workspaces.iter().any(|w| &w.id == id))
+                .or_else(|| self.workspaces.first().map(|w| w.id.clone()));
+            if let Some(ws) = open {
+                self.terminals_open(&ws);
+            }
+        }
     }
 
     fn repopulate_sidebar(&self) {
