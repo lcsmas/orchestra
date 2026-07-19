@@ -634,10 +634,22 @@ serialized merge assembly (B4 done → B3 → B5 → B6), each merged tip gettin
 dual-consumer live re-verify (prove sidebar AND accounts/overlay fan-outs both
 fire off the single consumer — the exact failure a competing pump would show).
 
-Integration tip: **`26d30de`** (B1 + B2-RpcBackend + B4 accounts/extra-credits
-+ B3 main-pane/toolbar/diff), verified — triple-consumer live PASS, both seams,
-idempotence, and the map-not-Vec wire fix all confirmed. B2 (terminals) is the
-last feature merge (→ four-consumer + the PTY-data-path re-verify), then B5, B6.
+Integration tip: **`a41fde7`** — ALL FIVE UI feature surfaces integrated
+(sidebar + accounts + main-pane/toolbar/diff + terminal, on the RpcBackend
+transport). B2's terminal merged as the last feature surface: reused B4's
+canonical `Msg::PtyData` (feed alongside `accounts.handle_pty_data` — the pty
+routing split), deleted its redundant sink/toolbar (B3 owns tabs), reworked to
+`Rc<Ctx>` per-call (honors the reconnect stale-handle constraint), mounted into
+B3's `terminal_slot()`/`run_slot()`. Coordinator gates (now incl. the fmt gate
+I run myself): build --all-targets + fmt --check clean, 89 tests. Four-consumer
++ two-direction-reconnect live re-verify in flight.
+
+Remaining: **B5** (resources/insights/help overlays — merging now, layers over
+B3's MainPane base) then **B6** (packaging/CI/E2E + the two `src/main` fixes).
+Both already passed per-branch verification.
+
+Prior tips verified: `26d30de` (B3, triple-consumer PASS), `33305ab` (B4,
+dual-consumer PASS — coexistence central risk closed).
 
 **Coexistence central risk CLOSED** (verifier `b4-merge` PASS on the first
 ≥2-module tip, live daemon): two independent daemon mutations — `markSeen`
