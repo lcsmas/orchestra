@@ -102,4 +102,6 @@ socket (`native/orchestra-gtk/src/overlays/`, plan §5.5):
   (`meter-warn`/`meter-critical`) are reserved for token limits. Styles: the
   `res-*` block in `native/orchestra-gtk/src/theme.css` (§7).
 - Mock fixtures: `native/orchestra-gtk/src/backend_fixtures.rs`
-  (`resource_snapshot(tick)` animates process trees, usage cards, disk).
+  (`resource_snapshot(tick)` animates process trees; served by
+  `backend/mock.rs`'s `call()`). Token cards + disk read mock.rs's own richer
+  account/usage/worktree-size fixtures, so the sidebar and Resources agree.
