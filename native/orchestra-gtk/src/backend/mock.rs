@@ -104,12 +104,17 @@ pub fn mock_workspaces() -> Vec<Workspace> {
             "worktreePath": "/home/user/.orchestra/worktrees/spike-vte-feed",
         })),
         // ── orchestra repo roots: one per pill state.
+        // ws-1/ws-2 carry a PINNED accountId — the row badge only exercises
+        // its label/tint path when an account is actually assigned (an
+        // unpinned row just shows "default"), so the fixture set must include
+        // assigned rows or the badge is untested.
         w(json!({
             "id": "ws-1", "status": "running",
             "name": "orchestra · fix-status-dot",
             "branch": "fix-status-dot", "repoPath": ORCHESTRA_REPO,
             "worktreePath": "/home/user/.orchestra/worktrees/fix-status-dot",
             "unpushedAhead": 3, "contextTokens": 127_000,
+            "accountId": "acc-work",
         })),
         w(json!({
             "id": "ws-2", "status": "waiting",
@@ -117,6 +122,8 @@ pub fn mock_workspaces() -> Vec<Workspace> {
             "branch": "usage-poll-retry", "repoPath": ORCHESTRA_REPO,
             "worktreePath": "/home/user/.orchestra/worktrees/usage-poll-retry",
             "mergedAt": base,
+            // Near-limit + expired: proves the badge keeps its cached tint.
+            "accountId": "acc-perso",
         })),
         w(json!({
             "id": "ws-3", "status": "idle",
@@ -615,6 +622,15 @@ impl Backend for MockBackend {
             "migrateWorkspaceAccount" => {
                 let id: String = Self::arg(&params, 0)?;
                 let account: Option<String> = Self::arg(&params, 1)?;
+                // The "broken" account is a deterministic FAILURE fixture.
+                // Parity with the real handler (`api-handlers.ts:357`), which
+                // THROWS on `!res.ok` — so failure reaches a GTK client as a
+                // method error, never as an ok:false payload.
+                if account.as_deref() == Some("acc-broken") {
+                    return Err(BackendError::Method(
+                        "no login found in that account's config dir".into(),
+                    ));
+                }
                 // Update the workspace's pinned account (B1's sidebar badge
                 // reads w.account_id + repaints on workspaceUpdate) …
                 self.update_ws(&id, |w| w.account_id = account.clone())?;
@@ -625,8 +641,19 @@ impl Backend for MockBackend {
                     .workspace_accounts
                     .insert(id.clone(), account.clone());
                 self.emit("workspaceAccounts", vec![self.workspace_accounts_value()]);
-                // The accounts controller expects a MigrateAccountResult.
-                Ok(json!({ "ok": true, "id": id, "accountId": account, "resumed": false }))
+                // MigrateAccountResult. `resumed` reports whether a RUNNING
+                // agent was restarted after the move; the fixture resumes the
+                // running rows so the "couldn't resume" notice stays a genuine
+                // exception rather than firing on every migrate.
+                let resumed = self
+                    .state
+                    .borrow()
+                    .workspaces
+                    .iter()
+                    .find(|w| w.id == id)
+                    .map(|w| w.status == orchestra_rpc::types::WorkspaceStatus::Running)
+                    .unwrap_or(false);
+                Ok(json!({ "ok": true, "id": id, "accountId": account, "resumed": resumed }))
             }
 
             // ---- accounts / usage (plan §5.4) --------------------------------

@@ -16,6 +16,8 @@ use relm4::Sender;
 
 use orchestra_rpc::types::{PrState, RepoSyncState, SetupStatus, WorkspaceStatus};
 
+use crate::accounts::logic::login_color_hex;
+
 use super::pills::{format_bytes, format_tokens, size_title};
 use super::rows::{
     ArchivedBarSpec, ArchivedRowSpec, HostHeaderSpec, RepoHeaderSpec, Row, SectionKind,
@@ -802,10 +804,29 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
     }
 
     // Account badge → migrate menu (content §5.4; the affordance is ours).
-    let account = gtk::Button::with_label(s.ws.account_id.as_deref().unwrap_or("default"));
+    // Shows the login's LABEL tinted by its stable login color, with the
+    // hotter rolling window's severity as a CSS class — the `AccountBadge.tsx`
+    // contract. Never the raw account id.
+    let account = gtk::Button::new();
+    let account_label = gtk::Label::new(None);
+    account_label.set_markup(&format!(
+        "<span foreground=\"{}\">{}</span>",
+        login_color_hex(&s.account_label),
+        glib::markup_escape_text(&s.account_label),
+    ));
+    // Named so the login text stays inspectable: a Button with a custom child
+    // has no `label` property, so the harness reads this Label instead.
+    account_label.set_widget_name(&format!("ws-account-label-{}", s.ws.id));
+    account.set_child(Some(&account_label));
     account.set_widget_name(&format!("ws-account-{}", s.ws.id));
     account.add_css_class("ws-login-badge");
-    account.set_tooltip_text(Some("Claude login this agent uses — click to migrate"));
+    match s.account_severity {
+        Some(sev) => account.add_css_class(&format!("sev-{}", sev.css())),
+        // No reading yet (first poll in flight, or a hard usage error): the
+        // tooltip says which, and the badge stays untinted.
+        None => account.add_css_class("pending"),
+    }
+    account.set_tooltip_text(Some(&s.account_tooltip));
     account.set_valign(gtk::Align::Center);
     {
         let sender_ = sender.clone();

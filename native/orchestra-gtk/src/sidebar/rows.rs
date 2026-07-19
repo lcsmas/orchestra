@@ -12,7 +12,12 @@
 use std::collections::{HashMap, HashSet};
 
 use orchestra_rpc::types::{
-    DiffStats, EnvStatusItem, LinearIssue, PrsForBranch, RepoEntry, RepoSyncState, Workspace,
+    AccountUsageStatus, DiffStats, EnvStatusItem, LinearIssue, PrsForBranch, RepoEntry,
+    RepoSyncState, UsageSnapshot, Workspace,
+};
+
+use crate::accounts::logic::{
+    age_text, clamp_pct, error_title, severity, Severity, DEFAULT_LOGIN_LABEL,
 };
 
 use super::forest::{
@@ -40,6 +45,18 @@ pub struct SidebarData {
     /// stored here as absent). Falls back to `Workspace.contextTokens`.
     pub context_tokens: HashMap<String, u64>,
     pub env_status: Vec<EnvStatusItem>,
+    /// Configured accounts by id → label, so the row badge shows the LOGIN
+    /// NAME rather than the raw account id (plan §5.4 / `AccountBadge.tsx`).
+    pub account_labels: HashMap<String, String>,
+    /// Rolling per-account usage, for the badge's severity tint. Keyed by
+    /// account id; absent = first poll still in flight.
+    pub account_usage: HashMap<String, AccountUsageStatus>,
+    /// The default login's usage — the tint source for unpinned workspaces.
+    pub global_usage: Option<UsageSnapshot>,
+    /// Epoch-ms "now", stamped by the component at rebuild time. Kept on the
+    /// data (rather than read from the clock in here) so this module stays
+    /// pure and its row computations remain unit-testable.
+    pub now_ms: i64,
 }
 
 /// Transient + persisted UI state the row list depends on.
@@ -107,6 +124,61 @@ pub struct HostHeaderSpec {
     pub count: usize,
 }
 
+/// Resolve a workspace's login badge for display — the pure core of
+/// `AccountBadge.tsx`'s `AccountUsageBadge` (label, severity tint, tooltip).
+///
+/// A pinned account reads the per-account poller; an unpinned one (or a
+/// dangling id, i.e. the account was deleted) falls back to the default login
+/// and the global poller, exactly like the Electron badge. An EXPIRED token
+/// keeps its last-good data and stays normally tinted — only the tooltip flags
+/// it — so a re-login prompt never hides real consumption.
+pub fn resolve_account_badge(
+    account_id: Option<&str>,
+    data: &SidebarData,
+    now_ms: i64,
+) -> (String, Option<Severity>, String) {
+    let label = account_id.and_then(|id| data.account_labels.get(id).cloned());
+    let Some((account_id, label)) = account_id.zip(label) else {
+        // Default login: tint by the global poller.
+        let label = DEFAULT_LOGIN_LABEL.to_string();
+        let Some(u) = data.global_usage.as_ref() else {
+            return (label.clone(), None, format!("{label}: fetching usage…"));
+        };
+        let five = clamp_pct(u.five_hour.utilization);
+        let seven = clamp_pct(u.seven_day.utilization);
+        let tooltip = format!(
+            "{label} — Claude usage (Orchestra's default login)\n\
+             5-hour window: {five}%\n7-day window: {seven}%\nas of {}",
+            age_text(u.fetched_at, now_ms)
+        );
+        return (label, Some(severity(five.max(seven))), tooltip);
+    };
+
+    let Some(u) = data.account_usage.get(account_id) else {
+        // First poll still in flight.
+        let tooltip = format!("{label}: fetching usage…");
+        return (label, None, tooltip);
+    };
+    let Some(d) = u.data.as_ref() else {
+        // No cached usage at all → a hard error (no dir, no scope, never
+        // logged in). Untinted; the tooltip explains.
+        let tooltip = error_title(&label, u.error_kind);
+        return (label, None, tooltip);
+    };
+    let five = clamp_pct(d.five_hour.utilization);
+    let seven = clamp_pct(d.seven_day.utilization);
+    let mut tooltip =
+        format!("{label} — Claude usage\n5-hour window: {five}%\n7-day window: {seven}%");
+    if let Some(extra) = d.extra_utilization {
+        tooltip.push_str(&format!("\nextra usage: {}%", extra.round() as i64));
+    }
+    if u.expired.unwrap_or(false) {
+        tooltip.push_str("\n⚠ token expired — re-login (showing cached usage)");
+    }
+    tooltip.push_str(&format!("\nas of {}", age_text(u.fetched_at, now_ms)));
+    (label, Some(severity(five.max(seven))), tooltip)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct WsRowSpec {
     pub ws: Workspace,
@@ -127,6 +199,15 @@ pub struct WsRowSpec {
     pub repo_label: String,
     pub tool: Option<String>,
     pub context_tokens: Option<u64>,
+    /// The login this agent runs as, resolved for display (plan §5.4): the
+    /// account's LABEL, or "default" when unpinned — never the raw account id.
+    pub account_label: String,
+    /// Severity of that login's hotter rolling window, for the badge tint;
+    /// None while the first usage poll is still in flight.
+    pub account_severity: Option<Severity>,
+    /// Full badge tooltip (windows, extra usage, expiry, age) — the same text
+    /// the Electron badge shows.
+    pub account_tooltip: String,
     pub sizes_exclusive: bool,
     pub active: bool,
     pub deleting: bool,
@@ -247,6 +328,8 @@ fn ws_row(
         data.linear.get(&ws.id),
         cross_repo_child,
     );
+    let (account_label, account_severity, account_tooltip) =
+        resolve_account_badge(ws.account_id.as_deref(), data, data.now_ms);
     WsRowSpec {
         depth,
         tree,
@@ -260,6 +343,9 @@ fn ws_row(
         repo_label: repo_label(&data.repos, &ws.repo_path),
         tool: data.tools.get(&ws.id).cloned(),
         context_tokens: context_tokens_of(data, ws),
+        account_label,
+        account_severity,
+        account_tooltip,
         sizes_exclusive: data.sizes_exclusive,
         active: ui.active_id.as_deref() == Some(ws.id.as_str()),
         deleting: ui.deleting_ids.contains(&ws.id),
@@ -518,6 +604,82 @@ mod tests {
 
     fn keys(rows: &[Row]) -> Vec<String> {
         rows.iter().map(|r| r.key()).collect()
+    }
+
+    /// The row badge must show the login's LABEL (never the raw account id),
+    /// tinted by the hotter window — the `AccountBadge.tsx` contract. Regression
+    /// guard for the M3 gap where the sidebar rendered `account_id` verbatim.
+    #[test]
+    fn account_badge_resolves_label_not_id() {
+        let mut data = mock_data();
+        data.now_ms = 1_752_930_000_000;
+        data.account_labels = HashMap::from([("acc-work".to_string(), "work".to_string())]);
+        data.account_usage = serde_json::from_value(serde_json::json!({
+            "acc-work": {
+                "accountId": "acc-work", "ok": true, "fetchedAt": 1_752_930_000_000_i64,
+                "data": {
+                    "fiveHour": { "utilization": 48.0, "resetsAt": "" },
+                    "sevenDay": { "utilization": 91.0, "resetsAt": "" },
+                    "extraUtilization": null, "fable": null
+                }
+            }
+        }))
+        .unwrap();
+
+        // Pinned account → its label, tinted by the HOTTER window (91 → crit).
+        let (label, sev, tip) = resolve_account_badge(Some("acc-work"), &data, data.now_ms);
+        assert_eq!(label, "work", "must render the label, not the id");
+        assert_eq!(sev, Some(Severity::Crit));
+        assert!(tip.contains("5-hour window: 48%") && tip.contains("7-day window: 91%"));
+
+        // Unpinned → the default login (global poller absent here → pending).
+        let (label, sev, tip) = resolve_account_badge(None, &data, data.now_ms);
+        assert_eq!(label, DEFAULT_LOGIN_LABEL);
+        assert_eq!(sev, None);
+        assert!(tip.contains("fetching usage"));
+
+        // A DANGLING id (account deleted) falls back to the default login
+        // rather than leaking the id into the UI.
+        let (label, _, _) = resolve_account_badge(Some("acc-gone"), &data, data.now_ms);
+        assert_eq!(label, DEFAULT_LOGIN_LABEL);
+    }
+
+    /// An expired token keeps its cached usage and stays normally tinted (only
+    /// the tooltip flags it); a hard error renders untinted with the reason.
+    #[test]
+    fn account_badge_expired_stays_tinted_error_does_not() {
+        let mut data = mock_data();
+        data.now_ms = 1_752_930_000_000;
+        data.account_labels = HashMap::from([
+            ("acc-exp".to_string(), "perso".to_string()),
+            ("acc-err".to_string(), "broken".to_string()),
+        ]);
+        data.account_usage = serde_json::from_value(serde_json::json!({
+            "acc-exp": {
+                "accountId": "acc-exp", "ok": true, "fetchedAt": 1_752_930_000_000_i64,
+                "expired": true,
+                "data": {
+                    "fiveHour": { "utilization": 80.0, "resetsAt": "" },
+                    "sevenDay": { "utilization": 20.0, "resetsAt": "" },
+                    "extraUtilization": null, "fable": null
+                }
+            },
+            "acc-err": {
+                "accountId": "acc-err", "ok": false, "fetchedAt": 1_752_930_000_000_i64,
+                "data": null, "errorKind": "not-logged-in", "errorMessage": "no login"
+            }
+        }))
+        .unwrap();
+
+        let (label, sev, tip) = resolve_account_badge(Some("acc-exp"), &data, data.now_ms);
+        assert_eq!(label, "perso");
+        assert_eq!(sev, Some(Severity::Warn), "expired keeps its cached tint");
+        assert!(tip.contains("token expired"));
+
+        let (label, sev, tip) = resolve_account_badge(Some("acc-err"), &data, data.now_ms);
+        assert_eq!(label, "broken");
+        assert_eq!(sev, None, "a hard usage error renders untinted");
+        assert!(tip.contains("no login found"), "tooltip explains: {tip}");
     }
 
     #[test]
