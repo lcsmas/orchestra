@@ -70,33 +70,62 @@ export async function startHeadlessSway() {
   child.stdout.on('data', (d) => swayLog.push(d.toString()));
   child.stderr.on('data', (d) => swayLog.push(d.toString()));
 
-  // Wait for sway to create a NEW wayland-N socket.
+  // Wait for sway to create a NEW wayland-N socket — and prove it's LIVE.
+  // A crashed/killed compositor leaves its socket file behind, so "the file
+  // appeared" is not enough: a stale socket refuses connections, and handing it
+  // to the app yields a silent "Failed to open display" and a hung scenario.
   let waylandDisplay = null;
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    const now = waylandSockets(runtimeDir).filter((s) => !before.has(s));
-    if (now.length) {
-      waylandDisplay = now[0];
-      break;
+    const fresh = waylandSockets(runtimeDir).filter((s) => !before.has(s));
+    for (const cand of fresh) {
+      if (await socketAccepts(path.join(runtimeDir, cand))) {
+        waylandDisplay = cand;
+        break;
+      }
     }
+    if (waylandDisplay) break;
     if (child.exitCode !== null) {
       throw new Error(`sway exited (${child.exitCode}) before creating a display:\n${swayLog.join('')}`);
     }
     await sleep(150);
   }
-  if (!waylandDisplay) throw new Error(`headless sway never created a wayland socket:\n${swayLog.join('')}`);
+  if (!waylandDisplay) throw new Error(`headless sway never created a live wayland socket:\n${swayLog.join('')}`);
 
-  return {
+  const sockFile = path.join(runtimeDir, waylandDisplay);
+  const handle = {
     waylandDisplay,
     runtimeDir,
     stop() {
-      try {
-        process.kill(-child.pid, 'SIGTERM');
-      } catch {
-        /* already gone */
+      // Reap the compositor and remove its socket + lock, so a dead compositor
+      // can't leave a stale display behind for the next run to pick up.
+      killGroup(child);
+      for (const f of [sockFile, `${sockFile}.lock`]) {
+        try {
+          fs.rmSync(f, { force: true });
+        } catch {
+          /* ignore */
+        }
       }
     },
   };
+  registerCleanup(() => handle.stop());
+  return handle;
+}
+
+/** True if something is actually listening on this unix socket (a stale socket
+ *  file from a dead compositor refuses with ECONNREFUSED). */
+function socketAccepts(sockPath) {
+  return new Promise((resolve) => {
+    const s = net.connect(sockPath);
+    const done = (ok) => {
+      s.destroy();
+      resolve(ok);
+    };
+    s.once('connect', () => done(true));
+    s.once('error', () => done(false));
+    setTimeout(() => done(false), 1000);
+  });
 }
 
 function waylandSockets(runtimeDir) {
@@ -150,19 +179,70 @@ export async function launchGtk({ sway, env = {}, args = [], label = 'gtk' }) {
   }
 
   const rc = await RemoteControl.connect(rcSock);
+  registerCleanup(() => stopChild(child, rc));
   return {
     rc,
     logs,
     logText: () => logs.join(''),
     stop() {
-      rc.close();
-      try {
-        process.kill(-child.pid, 'SIGTERM');
-      } catch {
-        /* already gone */
-      }
+      stopChild(child, rc);
     },
   };
+}
+
+/** Close the RC connection and reap the app's whole process group, escalating
+ *  SIGTERM → SIGKILL. A GTK app that ignores SIGTERM (or dies mid-handshake)
+ *  otherwise survives the run and leaks into the next one. */
+function stopChild(child, rc) {
+  try {
+    rc.close();
+  } catch {
+    /* ignore */
+  }
+  killGroup(child);
+}
+
+/** SIGTERM a detached child's process group. Only ever targets `-child.pid`
+ *  (its own group, created by `detached: true`) and NEVER a bare negative pid
+ *  we didn't spawn — signalling the wrong group would take down the runner
+ *  itself. Already-dead children raise ESRCH, which is fine. */
+function killGroup(child) {
+  if (!child || child.exitCode !== null || !child.pid) return;
+  try {
+    process.kill(-child.pid, 'SIGTERM');
+  } catch {
+    /* already gone */
+  }
+}
+
+// Last-resort reaping: whatever a scenario forgot (or an exception skipped)
+// still dies when the runner exits, so runs never accumulate stray compositors
+// or app processes. Mirrors the atexit pattern the bash e2e scripts use.
+const cleanups = new Set();
+function registerCleanup(fn) {
+  cleanups.add(fn);
+}
+let cleanupInstalled = false;
+export function installExitCleanup() {
+  if (cleanupInstalled) return;
+  cleanupInstalled = true;
+  const runAll = () => {
+    for (const fn of cleanups) {
+      try {
+        fn();
+      } catch {
+        /* best effort */
+      }
+    }
+    cleanups.clear();
+  };
+  process.on('exit', runAll);
+  for (const sig of ['SIGINT', 'SIGTERM']) {
+    process.on(sig, () => {
+      runAll();
+      process.exit(1);
+    });
+  }
 }
 
 /** Newline-JSON client for src/remote_control.rs. One response line per op. */

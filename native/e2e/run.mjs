@@ -22,6 +22,7 @@ import {
   mkTmp,
   waitFor,
   sleep,
+  installExitCleanup,
 } from './harness.mjs';
 import { startFakeBackend } from './fake-backend.mjs';
 
@@ -205,6 +206,192 @@ scenario('daemon-auto-spawn', async ({ sway }) => {
 });
 
 // ---------------------------------------------------------------------------
+// Scenario: startup dependency warning (M3 P0). The Electron app blocks with a
+// "Missing Dependencies" dialog (Continue Anyway / Quit) when git/gh/claude are
+// missing; the GTK app had NO deps:status caller at all. After attach it must
+// probe deps:status and show the same dialog with the same copy.
+// ---------------------------------------------------------------------------
+scenario('missing-dependency-warning', async ({ sway }) => {
+  const home = mkTmp('deps-home');
+  const uiSock = path.join(mkTmp('deps-sock'), 'ui.sock');
+  // A backend that reports two missing tools.
+  const backend = await startFakeBackend(uiSock, {
+    proto: 1,
+    appVersion: APP_VERSION,
+    backendKind: 'daemon',
+    methods: {
+      'deps:status': {
+        git: true,
+        gh: false,
+        claude: false,
+        messages: ['gh is not installed — PR features will not work', 'claude is not installed'],
+      },
+    },
+  });
+
+  const app = await launchGtk({
+    sway,
+    label: 'deps',
+    env: { ORCHESTRA_HOME: home, ORCHESTRA_UI_SOCK: uiSock },
+  });
+
+  try {
+    const title = await waitFor(
+      async () => {
+        const r = await app.rc.get('dialog-title', 'label').catch(() => null);
+        return r && r.ok && /Missing Dependencies/i.test(r.value || '') ? r.value : null;
+      },
+      { desc: 'missing-dependency dialog', timeoutMs: 15_000 },
+    );
+    const body = await app.rc.get('dialog-body', 'label');
+    // Electron's exact message line + both backend-supplied detail messages.
+    assert(
+      /Orchestra requires the following tools:/i.test(body.value),
+      `dialog uses Electron's message copy: ${body.value}`,
+    );
+    assert(/gh is not installed/.test(body.value), `dialog lists the gh message: ${body.value}`);
+    assert(/claude is not installed/.test(body.value), `dialog lists the claude message: ${body.value}`);
+    // Electron's buttons: Continue Anyway (confirm) / Quit (cancel).
+    const confirmBtn = await app.rc.get('dialog-confirm', 'label');
+    const cancelBtn = await app.rc.get('dialog-cancel', 'label');
+    assert(/Continue Anyway/i.test(confirmBtn.value || ''), `confirm button: ${confirmBtn.value}`);
+    assert(/Quit/i.test(cancelBtn.value || ''), `cancel button: ${cancelBtn.value}`);
+
+    await app.rc.screenshot(path.join(SHOT_DIR, 'missing-dependency-warning.png')).catch(() => {});
+
+    // "Continue Anyway" dismisses and leaves the app attached.
+    await app.rc.click('dialog-confirm');
+    const footer = await waitFor(
+      async () => {
+        const r = await app.rc.get('status-text', 'label').catch(() => null);
+        return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
+      },
+      { desc: 'still attached after Continue Anyway', timeoutMs: 8000 },
+    );
+    return `"${title}" shown with Electron's copy + buttons; Continue Anyway keeps it attached (${footer})`;
+  } finally {
+    app.stop();
+    await backend.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Scenario: reconnect to a NEW socket path (M3 P1). The daemon's socket is
+// pid-derived, so a backend restart moves it. RpcBackend::connect builds its
+// client with RpcClient::discover, so every reconnect attempt re-resolves the
+// pointer — the app must re-attach within seconds, NOT sit on the dead path
+// for the client's full ~3 min give-up.
+// ---------------------------------------------------------------------------
+scenario('reconnect-new-socket-path', async ({ sway }) => {
+  const home = mkTmp('reattach-home');
+  const sockA = path.join(home, 'ui-a.sock');
+  const sockB = path.join(home, 'ui-b.sock');
+
+  // Backend #1 on sockA; pointer names it.
+  let backend = await startFakeBackend(sockA, {
+    proto: 1,
+    appVersion: APP_VERSION,
+    backendKind: 'daemon',
+  });
+  fs.writeFileSync(path.join(home, 'ui-sock'), sockA + '\n');
+
+  // No ORCHESTRA_UI_SOCK: discovery must go through the POINTER file, which is
+  // what moves when the backend restarts.
+  const app = await launchGtk({ sway, label: 'reattach', env: { ORCHESTRA_HOME: home } });
+
+  try {
+    await waitFor(
+      async () => {
+        const r = await app.rc.get('status-text', 'label').catch(() => null);
+        return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
+      },
+      { desc: 'initial attach to socket A', timeoutMs: 20_000 },
+    );
+
+    // Restart the backend on a DIFFERENT path and repoint the pointer file —
+    // exactly what a daemon restart under a new pid does.
+    await backend.close();
+    fs.rmSync(sockA, { force: true });
+    backend = await startFakeBackend(sockB, {
+      proto: 1,
+      appVersion: APP_VERSION,
+      backendKind: 'daemon',
+    });
+    fs.writeFileSync(path.join(home, 'ui-sock'), sockB + '\n');
+
+    // Must re-attach FAST (well inside the client's give-up). A generous 30 s
+    // bound still fails loudly if the old pinned-path behavior regresses (that
+    // path only recovers after ~3 min).
+    const t0 = Date.now();
+    await waitFor(
+      async () => {
+        const r = await app.rc.get('status-text', 'label').catch(() => null);
+        return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
+      },
+      { desc: 're-attach after the socket moved', timeoutMs: 30_000 },
+    );
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    return `re-attached to the moved socket in ~${secs}s (old behavior: ~180s give-up)`;
+  } finally {
+    app.stop();
+    await backend.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Scenario: same-path reconnect is UNREGRESSED (the other direction the M3 fix
+// must not break). The backend restarts on the SAME socket path; discovery
+// returns that same path, so the app re-attaches as before.
+// ---------------------------------------------------------------------------
+scenario('reconnect-same-socket-path', async ({ sway }) => {
+  const home = mkTmp('samepath-home');
+  const sock = path.join(home, 'ui.sock');
+
+  let backend = await startFakeBackend(sock, {
+    proto: 1,
+    appVersion: APP_VERSION,
+    backendKind: 'daemon',
+  });
+  fs.writeFileSync(path.join(home, 'ui-sock'), sock + '\n');
+
+  const app = await launchGtk({ sway, label: 'samepath', env: { ORCHESTRA_HOME: home } });
+
+  try {
+    await waitFor(
+      async () => {
+        const r = await app.rc.get('status-text', 'label').catch(() => null);
+        return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
+      },
+      { desc: 'initial attach', timeoutMs: 20_000 },
+    );
+
+    // Bounce the backend on the SAME path (pointer unchanged).
+    await backend.close();
+    fs.rmSync(sock, { force: true });
+    await sleep(500);
+    backend = await startFakeBackend(sock, {
+      proto: 1,
+      appVersion: APP_VERSION,
+      backendKind: 'daemon',
+    });
+
+    const t0 = Date.now();
+    await waitFor(
+      async () => {
+        const r = await app.rc.get('status-text', 'label').catch(() => null);
+        return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
+      },
+      { desc: 're-attach on the same path', timeoutMs: 30_000 },
+    );
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    return `same-path reconnect unregressed (~${secs}s)`;
+  } finally {
+    app.stop();
+    await backend.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Scenario: backend-lock mutual exclusion (a second backend refuses to start
 // while one owns the home). Uses the REAL daemon (dist-electron/daemon.js) —
 // SKIPS if it isn't built, since the lock logic under test lives there.
@@ -299,6 +486,10 @@ function runDaemonToExit(daemonJs, home) {
 }
 
 async function main() {
+  // Reap any compositor/app we start, even on a throw or Ctrl-C — otherwise a
+  // failed run leaves stray processes and stale wayland sockets behind, and the
+  // NEXT run can pick a dead display and hang.
+  installExitCleanup();
   const only = process.argv.slice(2);
   const selected = only.length ? scenarios.filter((s) => only.includes(s.name)) : scenarios;
   if (!selected.length) {
