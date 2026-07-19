@@ -653,6 +653,16 @@ notify/chime + `sidebar.emit`) — the event-ownership architecture scaled
 cleanly to the full UI. Overlays layer via `add_overlay` (never unmount).
 Five-consumer + overlay-doesn't-tear-down-terminal live re-verify in flight.
 
+**✅ M2 COMPLETE AND VERIFIED END-TO-END** (`c1ad201`, + harness fix
+`0aa151e`). Verifier `b6-merge` PASS: attach-wraps-seam (zero streams in the
+attach flow), both `src/main` `ORCHESTRA_HOME` fixes intact, TS 208/208 + tsc
+clean, fixtures-drift genuinely empty (rtk-trap-safe), native e2e 4+1, version
+lockstep live (daemon+frontend v0.5.84), whole-workspace cargo green, and B1's
+live-fan-out harnesses BOTH green on the assembled app (late-attach exercises
+discovery→attach→hydrate→mutate end to end). Next: **M3 parity audit**.
+
+---
+
 **B6 MERGED (`c1ad201`) — M2 IS FULLY ASSEMBLED.** All six workstreams
 integrated: complete GTK UI (sidebar + accounts + main-pane + terminal +
 overlays) + RpcBackend transport + packaging/CI/e2e + the daemon-attach
