@@ -102,7 +102,7 @@ verified **by code**, and reproducible live only with an account assigned.
 | Feature | Electron ref | GTK ref | Status | Note |
 |---|---|---|---|---|
 | Base→feature branch chip + BranchPicker | `App.tsx:436-447`, `BranchPicker.tsx:50-269` | `toolbar/mod.rs:136-178,514-559` | **PARTIAL (functional break)** | Re-verified: `toolbar/mod.rs:525` calls `listBranches` with `ws.repo_path`, but `api-handlers.ts:749-751` does `store.getWorkspace(id)` and **throws "workspace not found"**. The GTK comment at `:521-522` asserts the wrong signature. Picker errors/empties on every open against a real backend. |
-| Tabs Terminal/Diff/Run | `App.tsx:450-495` | `toolbar/mod.rs:186-209,744-745` | DIVERGENT | GTK hides Run without a run script (follows the ledger); Electron always shows it with a "· setup" hint (`:491`) as the discovery path to the scripts modal. Needs a ledger ruling, not a silent divergence. |
+| Tabs Terminal/Diff/Run | `App.tsx:450-495` | `toolbar/mod.rs:186-209,744-745` | **DIVERGENT (gap — ruled)** | GTK's `set_visible(!is_scratch_like && st.has_run)` hides the Run tab without a run script; Electron **deliberately keeps it visible** with a "· setup" hint and a tailored tooltip, per an explicit intent comment at `App.tsx:475-494` ("so users notice the affordance and discover the gear-icon entry point"). **Coordinator ruling: Electron wins** — the ledger was wrong. GTK removes the only entry point a user without a run script would find. See gap 12b. |
 | Restart-agent | `App.tsx:297-313,496-517` | `toolbar/mod.rs:213-219,563-596` | MATCH | Same confirm-when-running gate and `--continue` copy. |
 | Run start/stop toggle | `App.tsx:317-354,518-536` | `toolbar/mod.rs:600-628`, `main_pane.rs:313-322` | MATCH | Same 80×24 defaults and pty-exit clearing. |
 | PR button (`findPR`) | `App.tsx:288,537-571` | `toolbar/mod.rs:632-653,786-819` | MATCH | Identical `unpushedAhead` priming and the 80 ms type-then-`\r` split. |
@@ -338,6 +338,15 @@ Only PARTIAL / MISSING / DIVERGENT. IMPROVEMENTs are excluded by design.
     real backend. Confirm the daemon's rejection shape live before changing.
     → **B5**.
 
+12b. **Run tab hidden without a run script — removes a discovery affordance.**
+    `toolbar/mod.rs:745` gates the tab on `st.has_run`; Electron deliberately keeps
+    it visible with a "· setup" hint and tailored tooltip
+    (`App.tsx:475-494`, explicit intent comment). A user with no run script
+    configured loses the only entry point to the scripts modal.
+    **Ruled by the coordinator: Electron wins; the ledger text was wrong** — this
+    is a gap, not a sanctioned divergence (same class as the §5.6 persistence
+    list). → **B3**.
+
 12. **Prompt-queue limit state goes stale.** Usage is fetched only on
     `set_workspace` (`banners/queue.rs:191`); the 30 s timer re-renders a stale
     reading. The banner keeps saying "Usage limit reached" after a reset, and won't
@@ -420,13 +429,20 @@ Only PARTIAL / MISSING / DIVERGENT. IMPROVEMENTs are excluded by design.
 40. **Repo sync tooltip** says "Last synced Nm ago" vs Electron's wall clock; base
     picker lacks `defaultBranch` emphasis. → **B1**.
 
-### Needs a ledger ruling (not obviously a bug)
+### Ledger corrections surfaced by this audit
 
-- **Run tab hidden without a run script** (`toolbar/mod.rs:744-745`). GTK follows
-  the ledger text; Electron deliberately keeps the tab visible with a "· setup"
-  hint (`App.tsx:475-494`) as the discovery path into the scripts modal. GTK's
-  behavior removes that entry point. Decide which is intended rather than leaving
-  it a silent divergence.
+Two places where **the plan's own ledger was wrong**, and everything downstream
+trusted it. Both are now corrected in `docs/gtk4-port-plan.md`:
+
+- **§5.3 Run tab** — the ledger implied hiding it without a run script; Electron
+  deliberately keeps it visible as a discovery affordance. Ruled: Electron wins
+  (gap 12b).
+- **§5.6 persistence list** — omitted `orchestra.lastSandboxEndpoint` and
+  `orchestra:debug`, and collapsed three independent `collapsed*` keys into one.
+  The authoritative 8-key table is in §5.6 above.
+
+A parity ledger that under-specifies is worse than useless when several agents
+code against it: it converts a spec bug into N implementation bugs.
 
 ---
 
@@ -522,8 +538,8 @@ The `listBranches` P0 is the clearest instance, and it is a **class, not a slip*
 tests distinguishes them, and both mock arms return identical hardcoded lists.
 
 Generalizing: **any two API methods that share a return shape but differ in key
-type are a standing hazard for a second frontend.** Two countermeasures fall out
-of this audit, both cheap:
+type are a standing hazard for a second frontend.** Three countermeasures fall out
+of this audit, all cheap:
 
 ### Testing policy (recommended, permanent)
 
@@ -549,6 +565,13 @@ in the API surface, not only in the GTK caller.
 
 This is an argument *for* the port beyond the port itself: a second frontend
 hardens the backend contract for both.
+
+**The ledger itself needed correcting twice.** This audit found two places where
+`docs/gtk4-port-plan.md` §5 misstated the target — the Run tab's visibility
+(ruled: Electron wins, gap 12b) and the §5.6 persistence key list. When N agents
+implement against a shared spec, a spec bug becomes N implementation bugs, so an
+audit's job includes checking the ledger against the source of truth, not only
+the code against the ledger.
 
 ## Fixture-corpus note (plan §M3)
 
