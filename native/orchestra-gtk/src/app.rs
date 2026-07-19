@@ -20,7 +20,10 @@ use orchestra_rpc::{BackendKind as RemoteKind, ConnectionState, UiEvent};
 
 use crate::backend::{self, Backend, BackendEvent, BackendKind, MockBackend, RpcBackend};
 use crate::dialogs;
+use crate::notify;
+use crate::overlays::{OverlayKind, Overlays};
 use crate::remote_control;
+use crate::sound::SoundPlayer;
 use crate::state::{self, UiState, WindowGeometry};
 
 pub struct Init {
@@ -31,10 +34,17 @@ const NO_BACKEND_BANNER: &str =
     "no backend found — start Orchestra or the daemon (retrying every 3s)";
 
 pub struct App {
-    backend: Option<Box<dyn Backend>>,
+    // `Rc` (not `Box`) so the Resources/Insights overlays can hold their own
+    // clone for polling/streaming without a second socket connection.
+    backend: Option<Rc<dyn Backend>>,
     workspaces: Vec<Workspace>,
     state: Rc<RefCell<UiState>>,
     state_path: PathBuf,
+    /// The Resources/Insights/Help overlays, mounted into the overlay host
+    /// once a backend is available (they need it to poll/stream).
+    overlays: Option<Rc<Overlays>>,
+    /// Chime playback for `agentFinished` while the window is unfocused.
+    sound: Rc<SoundPlayer>,
     /// Debounce generation for state saves: each change bumps it; only the
     /// timer holding the latest generation actually persists.
     save_generation: Rc<Cell<u64>>,
@@ -61,6 +71,14 @@ pub enum Msg {
     Connection(ConnectionState),
     /// An `event` frame from the backend.
     BackendEvent(BackendEvent),
+    /// Toggle one of the Resources/Insights/Help overlays.
+    ToggleOverlay(OverlayKind),
+    /// Escape key — close the topmost overlay if any.
+    EscapePressed,
+    /// Open the notification-sound picker.
+    OpenSoundPicker,
+    /// Select a workspace by id (from a clicked notification).
+    SelectWorkspace(String),
 }
 
 fn status_css(status: WorkspaceStatus) -> &'static str {
@@ -113,13 +131,13 @@ fn populate_sidebar(list: &gtk::ListBox, workspaces: &[Workspace], selected_id: 
     }
 }
 
-fn make_backend() -> Option<Box<dyn Backend>> {
+fn make_backend() -> Option<Rc<dyn Backend>> {
     if backend::mock_requested() {
-        return Some(Box::new(MockBackend::default()));
+        return Some(Rc::new(MockBackend::default()));
     }
     let sock = backend::discover_socket(&state::orchestra_home())?;
     match RpcBackend::connect(sock) {
-        Ok(b) => Some(Box::new(b)),
+        Ok(b) => Some(Rc::new(b)),
         Err(e) => {
             eprintln!("[backend] connect failed: {e}");
             None
@@ -127,7 +145,7 @@ fn make_backend() -> Option<Box<dyn Backend>> {
     }
 }
 
-fn footer_text(backend: &Option<Box<dyn Backend>>) -> String {
+fn footer_text(backend: &Option<Rc<dyn Backend>>) -> String {
     let frontend = env!("CARGO_PKG_VERSION");
     match backend {
         Some(b) => match b.kind() {
@@ -331,6 +349,7 @@ impl SimpleComponent for App {
                     // unmount the main area, hence the GtkOverlay layering
                     // exists from day one.
                     #[wrap(Some)]
+                    #[name = "overlay_host"]
                     set_end_child = &gtk::Overlay {
                         set_widget_name: "overlay-host",
 
@@ -363,6 +382,36 @@ impl SimpleComponent for App {
                         set_hexpand: true,
                     },
 
+                    // Overlay triggers (Electron sidebar-header buttons). These
+                    // stay simple text buttons on the status strip until the M2
+                    // sidebar workstream gives them their final home.
+                    gtk::Button {
+                        set_widget_name: "open-resources",
+                        set_label: "Resources",
+                        add_css_class: "strip-btn",
+                        connect_clicked[sender] => move |_| sender.input(Msg::ToggleOverlay(OverlayKind::Resources)),
+                    },
+                    gtk::Button {
+                        set_widget_name: "open-insights",
+                        set_label: "Insights",
+                        add_css_class: "strip-btn",
+                        connect_clicked[sender] => move |_| sender.input(Msg::ToggleOverlay(OverlayKind::Insights)),
+                    },
+                    gtk::Button {
+                        set_widget_name: "open-sound",
+                        set_label: "🔔",
+                        add_css_class: "strip-btn",
+                        set_tooltip_text: Some("Notification sound"),
+                        connect_clicked[sender] => move |_| sender.input(Msg::OpenSoundPicker),
+                    },
+                    gtk::Button {
+                        set_widget_name: "open-help",
+                        set_label: "?",
+                        add_css_class: "strip-btn",
+                        set_tooltip_text: Some("What Orchestra can do"),
+                        connect_clicked[sender] => move |_| sender.input(Msg::ToggleOverlay(OverlayKind::Help)),
+                    },
+
                     #[name = "debug_menu"]
                     gtk::MenuButton {
                         set_widget_name: "debug-menu",
@@ -387,6 +436,7 @@ impl SimpleComponent for App {
         let state_path = state::state_path(&state::orchestra_home());
         let state = Rc::new(RefCell::new(UiState::load(&state_path)));
         let backend = make_backend();
+        let sound = Rc::new(SoundPlayer::new(&state::orchestra_home()));
 
         let widgets = view_output!();
 
@@ -473,6 +523,41 @@ impl SimpleComponent for App {
             });
         }
 
+        // Notification action: clicking a desktop notification presents the
+        // window and selects the workspace (plan §5.6 notifications item).
+        if let Some(app) = widgets.main_window.application() {
+            let sender = sender.clone();
+            let win = widgets.main_window.clone();
+            notify::install_focus_action(&app, move |ws_id| {
+                win.present();
+                sender.input(Msg::SelectWorkspace(ws_id));
+            });
+        }
+
+        // Mount the Resources/Insights/Help overlays into the host once a
+        // backend exists — they poll/stream through it. Rebuilt on reconnect.
+        let overlays = backend.as_ref().map(|b| {
+            Overlays::new(
+                &widgets.overlay_host,
+                b.clone(),
+                state.clone(),
+                sound.clone(),
+            )
+        });
+
+        // Escape closes the topmost overlay.
+        {
+            let keys = gtk::EventControllerKey::new();
+            let sender = sender.clone();
+            keys.connect_key_pressed(move |_, key, _, _| {
+                if key == gtk::gdk::Key::Escape {
+                    sender.input(Msg::EscapePressed);
+                }
+                glib::Propagation::Proceed
+            });
+            widgets.main_window.add_controller(keys);
+        }
+
         let workspaces = backend
             .as_ref()
             .and_then(|b| b.list_workspaces().ok())
@@ -489,6 +574,8 @@ impl SimpleComponent for App {
             workspaces,
             state,
             state_path,
+            overlays,
+            sound,
             save_generation: Rc::new(Cell::new(0)),
             retry_active,
             window: widgets.main_window.clone(),
@@ -585,25 +672,76 @@ impl SimpleComponent for App {
             },
             Msg::BackendEvent(BackendEvent::Event { channel, args }) => {
                 eprintln!("[backend] event '{channel}'");
-                match (orchestra_rpc::Event { channel, args }).decode() {
-                    Ok(UiEvent::WorkspaceUpdate(ws)) => {
+                let decoded = (orchestra_rpc::Event { channel, args }).decode();
+                let Ok(ev) = decoded else { return };
+                // Insights owns the self-tune stream — hand it every event.
+                if let Some(overlays) = &self.overlays {
+                    overlays.dispatch(&ev);
+                }
+                match ev {
+                    UiEvent::WorkspaceUpdate(ws) => {
                         match self.workspaces.iter_mut().find(|w| w.id == ws.id) {
                             Some(slot) => *slot = *ws,
                             None => self.workspaces.push(*ws),
                         }
                         self.repopulate_sidebar();
                     }
-                    Ok(UiEvent::WorkspaceRemoved { id }) => {
+                    UiEvent::WorkspaceRemoved { id } => {
                         self.workspaces.retain(|w| w.id != id);
                         self.repopulate_sidebar();
                     }
-                    Ok(UiEvent::WorkspacesRemoved { ids }) => {
+                    UiEvent::WorkspacesRemoved { ids } => {
                         self.workspaces.retain(|w| !ids.contains(&w.id));
                         self.repopulate_sidebar();
+                    }
+                    // Desktop notification (plan §5.6). The backend already
+                    // gates on focus, so every uiNotify we get is meant to show.
+                    UiEvent::UiNotify(n) => {
+                        if let Some(app) = self.window.application() {
+                            notify::show(&app, &n);
+                        }
+                    }
+                    // Chime when an agent finishes while unfocused (the event's
+                    // `focused` flag is the OR across clients; play only when
+                    // false — matches the Electron chime gate).
+                    UiEvent::AgentFinished { focused: false, .. } => {
+                        let id = crate::sound::selected_sound_id(&self.state.borrow());
+                        self.sound.play(id);
                     }
                     // Everything else belongs to the M2 workstreams
                     // (terminals, usage, accounts, …).
                     _ => {}
+                }
+            }
+            Msg::ToggleOverlay(kind) => {
+                if let Some(overlays) = &self.overlays {
+                    overlays.toggle(kind);
+                }
+            }
+            Msg::EscapePressed => {
+                if let Some(overlays) = &self.overlays {
+                    overlays.on_escape();
+                }
+            }
+            Msg::OpenSoundPicker => {
+                let selected = crate::sound::selected_sound_id(&self.state.borrow()).to_string();
+                let state = self.state.clone();
+                let sender2 = sender.clone();
+                crate::sound::open_sound_settings(
+                    &self.window.clone().upcast(),
+                    self.sound.clone(),
+                    &selected,
+                    move |id| {
+                        state.borrow_mut().notification_sound = Some(id.to_string());
+                        sender2.input(Msg::PersistNow);
+                    },
+                );
+            }
+            Msg::SelectWorkspace(id) => {
+                if let Some(index) = self.workspaces.iter().position(|w| w.id == id) {
+                    if let Some(row) = self.list.row_at_index(index as i32) {
+                        self.list.select_row(Some(&row));
+                    }
                 }
             }
             Msg::PersistNow => {

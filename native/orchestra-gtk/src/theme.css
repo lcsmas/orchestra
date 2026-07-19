@@ -196,3 +196,269 @@ entry {
 entry:focus-within {
   border-color: @accent;
 }
+
+/* 7 ── overlays (B5: Resources / Insights / Help) ─────────────────────────
+ * Full-pane overlays layered over the main area by GtkOverlay. Each fills the
+ * host and paints an opaque background so the main area doesn't bleed through.
+ */
+@define-color accent_2 #7c6ef2;
+
+.overlay {
+  background-color: @bg;
+  padding: 0;
+}
+.overlay-title {
+  color: @text;
+  font-weight: 700;
+  font-size: 16px;
+}
+.overlay-close {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: @text_dim;
+  font-size: 18px;
+  padding: 0 8px;
+  border-radius: 6px;
+}
+.overlay-close:hover {
+  background-color: @bg_3;
+  color: @text;
+}
+.strip-btn { font-size: 11px; }
+
+/* shared meter fills (width set widget-side; colors here) */
+.usage-bar-track {
+  background-color: @bg_4;
+  border-radius: 4px;
+  min-height: 6px;
+}
+.usage-bar-fill {
+  border-radius: 4px;
+  min-height: 6px;
+}
+.usage-bar-fill.meter-accent { background-color: @accent; }
+.usage-bar-fill.meter-accent-2 { background-color: @accent_2; }
+.usage-bar-fill.meter-normal { background-color: @accent; }
+.usage-bar-fill.meter-warn { background-color: @yellow; }
+.usage-bar-fill.meter-critical { background-color: @red; }
+
+/* Resources page */
+.res-header {
+  padding: 14px 18px 10px 18px;
+  border-bottom: 1px solid @border;
+}
+.res-live { color: @green; font-size: 11px; }
+.res-scroll { padding: 16px 18px; }
+.res-tiles { }
+.res-tile {
+  background-color: @bg_2;
+  border: 1px solid @border;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.res-tile-label { color: @text_dim; font-size: 11px; }
+.res-tile-value { color: @text; font-size: 20px; font-weight: 700; }
+.res-tile-sub { color: @text_dim; font-size: 10px; }
+.res-section-title {
+  color: @text_dim;
+  font-weight: 700;
+  font-size: 11px;
+  margin-top: 6px;
+}
+.res-table-head { color: @text_dim; font-size: 10px; padding: 2px 6px; }
+.res-table-head label { color: @text_dim; }
+.res-agent-row {
+  padding: 6px;
+  border-radius: 8px;
+}
+.res-agent-row:hover { background-color: @bg_2; }
+.res-agent-row.open { background-color: @bg_2; }
+.res-agent-branch { color: @text; font-size: 13px; }
+.res-agent-sub { color: @text_dim; font-size: 10px; }
+.res-cell { color: @text; font-size: 12px; }
+.res-cell.dim { color: @text_dim; }
+.res-remote-note { color: @text_dim; font-style: italic; font-size: 11px; }
+.res-chip {
+  background-color: @bg_4;
+  border-radius: 5px;
+  padding: 0 6px;
+  font-size: 9px;
+  color: @text_dim;
+}
+.res-chip.agent { color: @accent; }
+.res-chip.run { color: @green; }
+.res-chip.login { color: @text_dim; }
+.res-stop-btn {
+  background: transparent;
+  border: 1px solid @border_strong;
+  border-radius: 5px;
+  padding: 2px 6px;
+  min-width: 10px;
+  min-height: 10px;
+}
+.res-stop-btn:hover { border-color: @red; }
+.res-stop-icon {
+  background-color: @text_dim;
+  min-width: 8px;
+  min-height: 8px;
+  border-radius: 2px;
+}
+.res-stop-btn:hover .res-stop-icon { background-color: @red; }
+.res-procs {
+  background-color: @bg;
+  border-left: 2px solid @border_strong;
+  margin: 0 6px 6px 20px;
+  padding: 4px 8px;
+}
+.res-proc-comm { color: @text; font-family: monospace; font-size: 11px; }
+.res-procs-empty { color: @text_dim; font-size: 11px; font-style: italic; }
+.res-empty { color: @text_dim; font-size: 13px; }
+.res-account-card {
+  background-color: @bg_2;
+  border: 1px solid @border;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 0 8px 0 0;
+  min-width: 260px;
+}
+.res-account-name { font-weight: 700; font-size: 13px; }
+.res-account-note { color: @text_dim; font-size: 10px; }
+.res-account-note.err { color: @yellow; }
+.res-account-ws { color: @text_dim; font-size: 10px; }
+.res-meter-label { color: @text_dim; font-size: 11px; }
+.res-meter-value { color: @text; font-size: 11px; }
+.res-meter-detail { color: @text_dim; font-size: 10px; }
+.res-disk-row { padding: 3px 0; }
+.res-disk-label { color: @text; font-size: 12px; }
+.res-disk-note { color: @text_dim; font-size: 10px; font-style: italic; }
+
+/* Insights */
+.insights-view-header {
+  padding: 14px 18px 10px 18px;
+  border-bottom: 1px solid @border;
+}
+.insights-view-sub { color: @text_dim; font-size: 12px; }
+.insights-view-body { padding: 16px 18px; }
+.insights-panel {
+  background-color: @bg_2;
+  border: 1px solid @border;
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.insights-panel-title { color: @text; font-weight: 700; font-size: 13px; }
+.insights-panel-meta { color: @text_dim; font-size: 10px; }
+.insights-run-btn.primary, .primary {
+  background-color: @accent_strong;
+  color: #ffffff;
+  border-radius: 6px;
+  padding: 4px 14px;
+  border: none;
+}
+.insights-run-btn.primary:disabled { background-color: @bg_4; color: @text_dim; }
+.insights-step-label { color: @text; font-size: 12px; }
+.insights-step-meta { color: @text_dim; font-size: 10px; }
+.insights-step-icon.ok { color: @green; }
+.insights-step-icon.fail { color: @red; }
+.insights-step-icon.pending { color: @text_dim; }
+.insights-diff { margin-top: 6px; }
+.insights-diff-title { color: @text_dim; font-size: 10px; font-weight: 700; }
+.insights-diff-line.added .insights-diff-sign { color: @green; }
+.insights-diff-line.removed .insights-diff-sign { color: @red; }
+.insights-diff-line label { font-size: 11px; }
+.insights-transcript, .insights-lessons {
+  font-family: monospace;
+  font-size: 11px;
+  color: @text;
+  background-color: @bg;
+  border: 1px solid @border;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.insights-transcript text, .insights-lessons text { background-color: @bg; }
+.insights-history-row {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+.insights-history-row:hover { background-color: @bg_3; }
+.insights-history-row.selected { background-color: @bg_4; }
+.insights-history-status {
+  min-width: 8px; min-height: 8px; border-radius: 4px;
+}
+.insights-history-status.ok { background-color: @green; }
+.insights-history-status.failed { background-color: @red; }
+.insights-history-status.running { background-color: @yellow; }
+.insights-history-when { color: @text; font-size: 11px; }
+.insights-history-trigger { color: @text_dim; font-size: 10px; }
+.insights-history-summary { color: @text_dim; font-size: 11px; }
+.insights-report-btn {
+  background-color: @bg_3;
+  border: 1px solid @border;
+  border-radius: 6px;
+  padding: 4px 10px;
+  color: @text;
+}
+.insights-report-btn:disabled { color: @text_dim; }
+.insights-report-open { color: @accent; font-size: 10px; }
+.insights-empty-hint { color: @text_dim; font-size: 12px; }
+/* sidebar Insights section (mounted by B1) */
+.insights-row {
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+.insights-row:hover { background-color: @bg_3; }
+.insights-row.active { background-color: @bg_4; }
+.insights-row-icon { color: @accent_2; }
+.insights-row-title { color: @text; font-size: 12px; font-weight: 600; }
+.insights-row-sub { color: @text_dim; font-size: 10px; }
+.insights-step { padding: 1px 10px 1px 24px; }
+
+/* Help */
+.help-view-header {
+  padding: 14px 18px 10px 18px;
+  border-bottom: 1px solid @border;
+}
+.help-view-sub { color: @text_dim; font-size: 12px; }
+.help-view-body { padding: 16px 18px; }
+.help-panel {
+  background-color: @bg_2;
+  border: 1px solid @border;
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.help-panel-title { color: @text; font-weight: 700; font-size: 14px; }
+.help-panel-intro { color: @text_dim; font-size: 12px; }
+.help-item-name { color: @accent; font-size: 12px; font-weight: 600; }
+.help-item-desc { color: @text_dim; font-size: 12px; }
+.help-footer-text { color: @text_dim; font-size: 12px; }
+.help-link {
+  background: transparent;
+  border: none;
+  color: @accent;
+  padding: 0;
+}
+
+/* Sound picker (SoundSettings parity) */
+.sound-row { padding: 6px 4px; }
+.sound-name { color: @text; font-size: 13px; }
+.sound-desc { color: @text_dim; font-size: 10px; }
+.sound-radio {
+  min-width: 12px; min-height: 12px;
+  border-radius: 7px;
+  border: 2px solid @border_strong;
+}
+.sound-radio.selected {
+  border-color: @accent;
+  background-color: @accent;
+}
+.sound-play {
+  background: transparent;
+  border: 1px solid @border;
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+.sound-play:hover { border-color: @accent; }
