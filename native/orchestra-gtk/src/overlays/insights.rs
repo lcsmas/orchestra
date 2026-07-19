@@ -420,22 +420,19 @@ impl InsightsOverlay {
         let result = self.backend.call("startSelfTune", vec![]);
         // Follow the new run.
         *self.picked_run_id.borrow_mut() = None;
+        // Wire contract (ipc.ts:282): resolves with the BARE SelfTuneRun, and
+        // REJECTS when a run is already in flight (self-tune.ts:284 throws
+        // "A self-tune run is already in progress"). A thrown handler crosses
+        // ui-rpc as a frame-level `{ok:false,error}` response, which the client
+        // surfaces as Err(RpcError::Backend) — so the conflict lands in the Err
+        // arm, never as an Ok envelope.
         match result {
-            Ok(v) => {
-                // Backend may return { ok, run } or { ok:false, error }.
-                if v.get("ok").and_then(|b| b.as_bool()) == Some(false) {
-                    let msg = v
-                        .get("error")
-                        .and_then(|e| e.as_str())
-                        .unwrap_or("a self-tune run is already in progress")
-                        .to_string();
-                    self.surface_start_error(&msg);
-                } else if let Some(run) = v.get("run") {
-                    if let Ok(run) = serde_json::from_value::<SelfTuneRun>(run.clone()) {
-                        self.apply_run_update(run);
-                    }
-                }
-            }
+            Ok(v) => match serde_json::from_value::<SelfTuneRun>(v) {
+                Ok(run) => self.apply_run_update(run),
+                // Shape drift: don't fail silently — the run list refresh below
+                // still picks the run up, but the mismatch is worth surfacing.
+                Err(e) => eprintln!("[insights] startSelfTune returned an unexpected shape: {e}"),
+            },
             Err(e) => self.surface_start_error(&format!("{e}")),
         }
         self.refresh_runs();
@@ -453,12 +450,20 @@ impl InsightsOverlay {
         });
     }
 
+    /// Open a login's newest report. `openSelfTuneReport` is declared
+    /// `Promise<boolean>` (ipc.ts:290) and resolves **false** when that login
+    /// has no report yet — it only rejects when the OS open itself fails
+    /// (self-tune.ts:134). Both outcomes must be surfaced: silently discarding
+    /// the `false` leaves the user clicking a button that does nothing.
+    ///
+    /// `has_report` is the cached hint from `listSelfTuneReports`; it can be
+    /// stale (report deleted, or the list fetched before a run), so the
+    /// server's answer is authoritative and gets the same "no report" message.
     fn on_open_report(self: &Rc<Self>, login_id: &str, has_report: bool) {
         let parent = self.root.root().and_downcast::<gtk::Window>();
-        if !has_report {
-            let parent2 = parent.clone();
+        let no_report = |parent: Option<gtk::Window>| {
             glib::spawn_future_local(async move {
-                if let Some(win) = parent2 {
+                if let Some(win) = parent {
                     crate::dialogs::alert(
                         &win,
                         "No report yet",
@@ -467,18 +472,26 @@ impl InsightsOverlay {
                     .await;
                 }
             });
+        };
+        if !has_report {
+            no_report(parent);
             return;
         }
-        if let Err(e) = self
+        match self
             .backend
             .call("openSelfTuneReport", vec![serde_json::json!(login_id)])
         {
-            let msg = format!("{e}");
-            glib::spawn_future_local(async move {
-                if let Some(win) = parent {
-                    crate::dialogs::error(&win, "Could not open report", &msg).await;
-                }
-            });
+            // Bare `false` on the wire: the login has no report after all.
+            Ok(v) if v.as_bool() == Some(false) => no_report(parent),
+            Ok(_) => {}
+            Err(e) => {
+                let msg = format!("{e}");
+                glib::spawn_future_local(async move {
+                    if let Some(win) = parent {
+                        crate::dialogs::error(&win, "Could not open report", &msg).await;
+                    }
+                });
+            }
         }
     }
 
