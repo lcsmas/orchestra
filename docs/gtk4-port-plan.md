@@ -600,12 +600,24 @@ Two contract additions landed on the integration branch to support this:
   -pane selection channel (B3's `set_active` hangs off App's forwarded
   `Msg::WorkspaceActivated`), so B3 doesn't store-poll `last_active_workspace`.
 
-Status snapshot: **B1 MERGED + live-verified** (two independent live fan-out
-proofs: verifier `markSeen`→idle, B1 `setUnread`→unread). **B4 verified**
-(`cea0cc1`, re-merging its inline accounts-mock into `backend/mock.rs`).
-**B5 done** (`eb31b26`, in verify). **B6 done** (`2145556`, in verify — owns
-the two `src/main` `ORCHESTRA_HOME` fixes). **B3 done-pending** (`70293c4`,
-re-applying `Ctx` glue). **B2 in flight** (§5.2 core landed, ?2026 resolved).
+Status snapshot: **B1 MERGED + live-verified** (three live fan-out proofs:
+verifier `markSeen`→idle, B1 `setUnread`→unread, B1 late-attach). **B4 MERGED**
+(`072f7ab` — folded its inline accounts-mock into `backend/mock.rs`, resolved
+the app.rs seam self; single-consumer property verified in the merged tree,
+61 tests; dual-consumer live re-verify in flight). **B5 verified** (`eb31b26`
+— color-discipline + event-ownership confirmed). **B6 verified** (`2145556` —
+both `src/main` `ORCHESTRA_HOME` fixes + fixtures-drift triple-checked).
+**B3 rebasing** (`c13c28c` green, merging onto the B4 tip now). **B2 in flight**
+(§5.2 terminal widget; ?2026 resolved).
+
+All six branches passed **per-branch** verification. Remaining work is the
+serialized merge assembly (B4 done → B3 → B5 → B6), each merged tip getting a
+dual-consumer live re-verify (prove sidebar AND accounts/overlay fan-outs both
+fire off the single consumer — the exact failure a competing pump would show).
+
+Post-M2 follow-up already queued: B4 is porting the just-shipped Electron
+`usage-bar-extra-credits` feature to the GTK usage bar (behavioral match),
+merging as a targeted delta after the main B4 merge.
 
 ##### Event-ownership contract (settled during B1 integration)
 
