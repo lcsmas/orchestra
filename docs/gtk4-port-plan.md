@@ -585,11 +585,14 @@ evidence; Merged = on `gtk4-native-port`.
 
 ##### Merge sequencing (app.rs seam serialization)
 
-B3/B4/B5/B6 all edit `app.rs` (`spawn_backend_streams` + the `Msg` enum) and
+B2/B3/B4/B5/B6 all edit `app.rs` (`spawn_backend_streams` + the `Msg` enum) and
 `backend.rs`, so merges are **serialized** — each agent rebases onto the prior
-merge and reconciles the seam once, rather than a four-way collision. Order:
-**B4 → B3 → B5 → B6**. The coordinator owns the `spawn_backend_streams`/trait
-seam resolution; each agent owns the reconciliation of its own handler regions.
+merge and reconciles the seam once, rather than a five-way collision. Order:
+**B4 → B3 → B2 → B5 → B6** (B2 after B3 because its terminal stack mounts inside
+B3's MainPane Terminal tab — the pane must exist first; B2's Backend-trait
+additions are all *defaulted* methods, so additive/non-breaking). The
+coordinator owns the `spawn_backend_streams`/trait seam resolution; each agent
+owns the reconciliation of its own handler regions.
 
 Two contract additions landed on the integration branch to support this:
 - `Msg::PtyData(id, bytes)` — the canonical terminal seam (B2 and B4 converged
@@ -607,8 +610,12 @@ the app.rs seam self; single-consumer property verified in the merged tree,
 61 tests; dual-consumer live re-verify in flight). **B5 verified** (`eb31b26`
 — color-discipline + event-ownership confirmed). **B6 verified** (`2145556` —
 both `src/main` `ORCHESTRA_HOME` fixes + fixtures-drift triple-checked).
-**B3 rebasing** (`c13c28c` green, merging onto the B4 tip now). **B2 in flight**
-(§5.2 terminal widget; ?2026 resolved).
+**B3 rebasing** (`c13c28c` green, merging onto the B4 tip now). **B2 DONE**
+(`197aba1` — full §5.2 terminal stack live-verified: ptyData→VTE feed renders
+real agent output with no tearing, confirming the ?2026 verdict live; boot
+pill, Orchestra Symbols mono, Agent/Run/nvim toolbar w/ real nvim, kept-alive
+scrollback, keyboard/clipboard/URL parity; 15 tests. Merges after B3 — its
+terminal mounts in B3's MainPane Terminal tab).
 
 All six branches passed **per-branch** verification. Remaining work is the
 serialized merge assembly (B4 done → B3 → B5 → B6), each merged tip getting a
