@@ -14,5 +14,6 @@ pub mod main_pane;
 pub mod remote_control;
 pub mod sidebar;
 pub mod state;
+pub mod terminal;
 pub mod toolbar;
 pub mod usage_limit;

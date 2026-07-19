@@ -155,6 +155,12 @@ impl MainPane {
         &self.run_slot
     }
 
+    /// Register B2's nvim-toggle handler (replaces the internal stub). Fires
+    /// with `true` when the toolbar's nvim toggle opens the file pane.
+    pub fn connect_nvim_toggled(&self, f: impl Fn(bool) + 'static) {
+        self.toolbar.connect_nvim_toggled(f);
+    }
+
     fn wire(self: &Rc<Self>, outer: &gtk::Stack) {
         // Toolbar tab → stack page + (for diff) point the DiffView at the ws.
         {

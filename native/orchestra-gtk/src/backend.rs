@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use orchestra_rpc::types::{RepoEntry, Workspace};
 use orchestra_rpc::{BackendKind as RemoteKind, ClientOptions, ConnectionState, RpcClient};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 // The fixture backend lives in its own file (backend/mock.rs) so the M2
 // sidebar/terminal workstreams can grow it without touching the RpcBackend
@@ -82,6 +82,60 @@ pub trait Backend: std::fmt::Debug {
     /// `focus` frame — the backend ORs this over all clients to decide the
     /// `focused` flag on finished/needs-input notifications.
     fn set_focused(&self, focused: bool);
+
+    // -- pty control (terminal stack) ---------------------------------------
+    // Typed helpers over the generic `call()` so the terminal panes drive the
+    // backend without hand-rolling JSON. RpcBackend inherits these defaults —
+    // `call()` already routes to the RpcClient's `OrchestraAPI` methods; the
+    // MockBackend's stubbed `call()` makes them harmless no-ops in E2E.
+
+    /// Spawn/attach the agent PTY at a given grid size (`ptyStart`).
+    fn pty_start(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.call("ptyStart", vec![json!(id), json!(cols), json!(rows)])?;
+        Ok(())
+    }
+    /// Notify the backend of a grid resize (`ptyResize`). Callers drop no-ops.
+    fn pty_resize(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.call("ptyResize", vec![json!(id), json!(cols), json!(rows)])?;
+        Ok(())
+    }
+    /// SIGWINCH repaint bounce (`ptyRepaint`) — heals child diff-model desync
+    /// after the pane was hidden. VTE itself needs no atlas clear.
+    fn pty_repaint(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.call("ptyRepaint", vec![json!(id), json!(cols), json!(rows)])?;
+        Ok(())
+    }
+    /// Scrollback replay bytes (`pty:scrollback`, base64 on the wire) to
+    /// `feed()` on (re)mount. The default has no base64 decoder, so it yields
+    /// nothing; RpcBackend overrides it with the RpcClient's decoding wrapper.
+    fn pty_scrollback(&self, _id: &str) -> Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
+    /// Spill a pasted clipboard image to a temp file (`saveClipboardImage`),
+    /// returning its path (None for empty input). The default can't base64 the
+    /// bytes, so it no-ops; RpcBackend overrides with the RpcClient's encoder.
+    fn save_clipboard_image(&self, _mime: &str, _bytes: &[u8]) -> Result<Option<String>> {
+        Ok(None)
+    }
+    /// Start the run-script PTY (`<ws>:run`) — `runScriptStart` keyed by the
+    /// bare workspace id (the backend derives the `:run` suffix).
+    fn run_script_start(&self, ws_id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.call(
+            "runScriptStart",
+            vec![json!(ws_id), json!(cols), json!(rows)],
+        )?;
+        Ok(())
+    }
+    /// Stop the run-script PTY (`runScriptStop`).
+    fn run_script_stop(&self, ws_id: &str) -> Result<()> {
+        self.call("runScriptStop", vec![json!(ws_id)])?;
+        Ok(())
+    }
+    /// Start the nvim PTY (`<ws>:nvim`) — `nvimStart` keyed by the bare id.
+    fn nvim_start(&self, ws_id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.call("nvimStart", vec![json!(ws_id), json!(cols), json!(rows)])?;
+        Ok(())
+    }
 }
 
 // ---- discovery --------------------------------------------------------------
@@ -256,6 +310,29 @@ impl Backend for RpcBackend {
         Ok(self.client.send_pty_write(id, bytes)?)
     }
 
+    // pty control: use the RpcClient's typed wrappers directly rather than the
+    // trait's generic-`call` defaults — same wire methods, but scrollback gets
+    // the client's base64 decoding for free.
+    fn pty_start(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        Ok(self.client.pty_start(id, cols, rows)?)
+    }
+
+    fn pty_resize(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        Ok(self.client.pty_resize(id, cols, rows)?)
+    }
+
+    fn pty_repaint(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        Ok(self.client.pty_repaint(id, cols, rows)?)
+    }
+
+    fn pty_scrollback(&self, id: &str) -> Result<Vec<u8>> {
+        Ok(self.client.pty_scrollback(id)?)
+    }
+
+    fn save_clipboard_image(&self, mime: &str, bytes: &[u8]) -> Result<Option<String>> {
+        Ok(self.client.save_clipboard_image(mime, bytes)?)
+    }
+
     fn set_focused(&self, focused: bool) {
         // Best-effort: while disconnected the flag rides the next reconnect's
         // hello, so a send failure here is not a loss.
@@ -267,7 +344,6 @@ impl Backend for RpcBackend {
 mod tests {
     use super::*;
     use orchestra_rpc::frame::{encode, Decoder, Frame};
-    use serde_json::json;
     use std::io::{Read as _, Write as _};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::time::{Duration, Instant};

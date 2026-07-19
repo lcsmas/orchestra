@@ -25,6 +25,7 @@ use crate::main_pane::MainPane;
 use crate::remote_control;
 use crate::sidebar::{Sidebar, SidebarInit};
 use crate::state::{self, UiState, WindowGeometry};
+use crate::terminal::TerminalStack;
 
 pub struct Init {
     pub remote_control: Option<PathBuf>,
@@ -44,6 +45,10 @@ pub struct App {
     ctx: Rc<Ctx>,
     /// The main pane (toolbar + banners + view stack), mounted in overlay_host.
     main_pane: Rc<MainPane>,
+    /// Kept-alive feed-mode terminals (plan §5.2, B2) — agent pane in the main
+    /// pane's terminal slot, run pane in its run slot, nvim via the toolbar
+    /// toggle. All backend calls route through `ctx` per-call.
+    terminals: TerminalStack,
     /// Mirror of the workspace list so App can resolve an activated id (from
     /// the sidebar) to a full record for the main pane.
     workspaces: Vec<Workspace>,
@@ -87,6 +92,49 @@ pub enum Msg {
     /// until then it records the shell's active workspace and retargets the
     /// accounts usage strip to that workspace's login.
     WorkspaceActivated(String),
+    /// B3's toolbar nvim toggle → reveal/hide B2's nvim file pane.
+    NvimToggle(bool),
+}
+
+/// Remove every child of a mount slot (drops B3's placeholder hint before B2
+/// appends its surface).
+fn clear_slot(slot: &gtk::Box) {
+    while let Some(child) = slot.first_child() {
+        slot.remove(&child);
+    }
+}
+
+/// Open a workspace's terminal surfaces: make its agent pane active (seeding
+/// scrollback + the resume pill on first open), and mount its run pane into the
+/// main pane's run slot. The agent pane's first visible fit fires `ptyStart`.
+fn open_terminal(
+    terminals: &mut TerminalStack,
+    main_pane: &Rc<MainPane>,
+    ctx: &Rc<Ctx>,
+    ws: &Workspace,
+) {
+    let ws_id = &ws.id;
+    let fresh = terminals.is_new(ws_id);
+    if fresh {
+        if let Some(b) = ctx.backend() {
+            if let Ok(bytes) = b.pty_scrollback(ws_id) {
+                terminals.feed_scrollback(ws_id, &bytes);
+            }
+        }
+    }
+    terminals.set_active(ws_id);
+    // Mount this workspace's run pane into B3's run slot (kept-alive; B3's
+    // toolbar Run button drives runScriptStart, this pane just feeds it).
+    let run = terminals.run_widget(ws_id);
+    let slot = main_pane.run_slot();
+    clear_slot(slot);
+    slot.append(&run);
+    if fresh {
+        // Resuming if the workspace already has activity; a brand-new spawn
+        // shows "Starting agent…". The status stands in for that here.
+        let resuming = ws.status != orchestra_rpc::types::WorkspaceStatus::Idle;
+        terminals.show_pill(ws_id, resuming);
+    }
 }
 
 fn make_backend() -> Option<Rc<dyn Backend>> {
@@ -506,6 +554,19 @@ impl SimpleComponent for App {
         let main_pane = MainPane::new(ctx.clone());
         widgets.overlay_host.set_child(Some(main_pane.widget()));
 
+        // Terminal stack: agent GtkStack into B3's terminal slot (clear the
+        // placeholder hint first). Run/nvim panes mount lazily into their slots
+        // on first activation. Backend calls resolve `ctx.backend()` per-call.
+        let mut terminals = TerminalStack::new(ctx.clone());
+        clear_slot(main_pane.terminal_slot());
+        main_pane.terminal_slot().append(terminals.agent_widget());
+        // B3's toolbar nvim toggle reveals/hides B2's nvim pane (routed through
+        // the component so it reaches `&mut terminals`).
+        {
+            let sender = sender.clone();
+            main_pane.connect_nvim_toggled(move |open| sender.input(Msg::NvimToggle(open)));
+        }
+
         // Point the main pane at the persisted (or first) workspace so it isn't
         // empty on launch; the sidebar drives it thereafter via WorkspaceActivated.
         let workspaces = backend
@@ -518,13 +579,19 @@ impl SimpleComponent for App {
             .as_ref()
             .and_then(|id| workspaces.iter().find(|w| &w.id == id).cloned())
             .or_else(|| workspaces.first().cloned());
-        main_pane.set_active(initial);
+        main_pane.set_active(initial.clone());
+        // Open the initial workspace's terminal (mounts run/nvim slots, seeds
+        // scrollback, shows the pill; the pane's first-fit fires ptyStart).
+        if let Some(ws) = &initial {
+            open_terminal(&mut terminals, &main_pane, &ctx, ws);
+        }
 
         let model = App {
             backend,
             accounts,
             ctx,
             main_pane,
+            terminals,
             workspaces,
             state,
             state_path,
@@ -611,6 +678,10 @@ impl SimpleComponent for App {
                     if let Some(b) = &self.backend {
                         self.sidebar.emit(crate::sidebar::Msg::Attach(b.clone()));
                     }
+                    // Re-point the main pane + terminal at the active workspace
+                    // (the terminals resolve ctx.backend() per-call, so they pick
+                    // up the swapped-in live backend automatically).
+                    self.reselect_active();
                     self.footer_label.set_label(&footer_text(&self.backend));
                 }
                 ConnectionState::Reconnecting { attempt, delay_ms } => {
@@ -667,10 +738,13 @@ impl SimpleComponent for App {
             }
             Msg::PtyData(id, bytes) => {
                 // Login-PTY bytes go to the accounts controller; workspace PTYs
-                // belong to B2's terminal stack (mounts its fan-out here).
+                // (`<ws>`, `<ws>:run`, `<ws>:nvim`) go to B2's terminal stack.
+                // Additive: the stack drops ids with no pane, accounts ignores
+                // workspace ids — each consumes only what it owns.
                 if let Some(accounts) = &self.accounts {
                     accounts.handle_pty_data(&id, &bytes);
                 }
+                self.terminals.feed(&id, &bytes);
             }
             Msg::WorkspaceActivated(id) => {
                 // The sidebar announced a row-select. Point the main pane at it
@@ -679,10 +753,16 @@ impl SimpleComponent for App {
                 // is already persisted by the sidebar itself.
                 eprintln!("[shell] workspace activated: {id}");
                 let ws = self.workspaces.iter().find(|w| w.id == id).cloned();
-                self.main_pane.set_active(ws);
+                self.main_pane.set_active(ws.clone());
+                if let Some(ws) = &ws {
+                    open_terminal(&mut self.terminals, &self.main_pane, &self.ctx, ws);
+                }
                 if let Some(accounts) = &self.accounts {
                     accounts.set_active_workspace(Some(id));
                 }
+            }
+            Msg::NvimToggle(open) => {
+                self.terminals.set_nvim_open(open);
             }
             Msg::PersistNow => {
                 if let Err(e) = self.state.borrow().save(&self.state_path) {
@@ -714,10 +794,23 @@ impl App {
                     self.main_pane.on_workspace_changed(&ws);
                 }
             }
-            // ptyExit: (ptyId) — clears the run toggle when the run pty exits.
+            // ptyExit: (ptyId) — clears the run toggle when the run pty exits,
+            // and shows B2's "press any key to relaunch" notice on the pane.
             "ptyExit" => {
                 if let Some(id) = args.first().and_then(|v| v.as_str()) {
                     self.main_pane.on_pty_exit(id);
+                    self.terminals.on_exit(id, false);
+                }
+            }
+            // ptyStopped / ptyRestart: B2 terminal lifecycle.
+            "ptyStopped" => {
+                if let Some(id) = args.first().and_then(|v| v.as_str()) {
+                    self.terminals.on_exit(id, true);
+                }
+            }
+            "ptyRestart" => {
+                if let Some(id) = args.first().and_then(|v| v.as_str()) {
+                    self.terminals.on_restart(id);
                 }
             }
             // sandboxControl: SandboxControlState — drives the read-only bar.
@@ -748,7 +841,12 @@ impl App {
             .as_ref()
             .and_then(|id| self.workspaces.iter().find(|w| &w.id == id).cloned())
             .or_else(|| self.workspaces.first().cloned());
-        self.main_pane.set_active(active);
+        self.main_pane.set_active(active.clone());
+        // Open the terminal too, so a reconnect (or an init that raced the
+        // daemon socket) starts the agent PTY — not just repaints the chrome.
+        if let Some(ws) = &active {
+            open_terminal(&mut self.terminals, &self.main_pane, &self.ctx, ws);
+        }
     }
 
     /// 3 s discovery poll while no backend is attached. Idempotent: a loop
