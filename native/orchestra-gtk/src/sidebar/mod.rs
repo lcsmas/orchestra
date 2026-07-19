@@ -237,10 +237,12 @@ impl Sidebar {
     }
 
     /// Rebuild the list from the derived rows, reusing unchanged widgets by
-    /// key. While a rename is in flight we skip the structural rebuild so the
-    /// focused `Entry` survives — only the renaming row differs anyway.
+    /// key. While a rename is in flight AND its Entry is already on screen we
+    /// skip the structural rebuild so the focused `Entry` survives — an
+    /// external event's rebuild would otherwise blow away the in-progress edit.
+    /// The rebuild that first OPENS the rename (entry not yet built) must run.
     fn rebuild(&mut self) {
-        if self.renaming_id.is_some() && self.list.row_at_index(0).is_some() {
+        if self.renaming_id.is_some() && find_named_entry(&self.list, "ws-rename-entry").is_some() {
             return;
         }
         let ui = self.ui();
@@ -554,6 +556,16 @@ impl Component for Sidebar {
             });
         }
 
+        // Sidebar action group: headless sway advertises no pointer, so the GTK
+        // drag controllers and double-click rename gesture can't be exercised
+        // in E2E. These parameterized actions emit the SAME messages those
+        // handlers do — the remote-control harness invokes them to drive
+        // reorder and rename deterministically:
+        //   sidebar.drop-ws / drop-repo  "<dragged>|<target>|before|after"
+        //   sidebar.start-rename         "<ws-id>"
+        //   sidebar.commit-rename        "<ws-id>"  (reads the live entry text)
+        install_sidebar_actions(&root, &input, &list);
+
         let window = root
             .root()
             .and_then(|r| r.downcast::<gtk::Window>().ok())
@@ -580,9 +592,12 @@ impl Component for Sidebar {
         };
         model.active_id = model.state.borrow().last_active_workspace.clone();
 
-        if let Some(backend) = model.backend.clone() {
+        // App owns the single backend.events() consumer and forwards frames
+        // here as Msg::Backend (see app.rs spawn_backend_streams). The sidebar
+        // must NOT open its own pump — two async_channel receivers on one
+        // channel are competing consumers and would each miss half the events.
+        if model.backend.is_some() {
             model.refresh_snapshot();
-            pump_events(backend, input.clone());
         }
         model.rebuild();
 
@@ -606,8 +621,12 @@ impl Component for Sidebar {
                     self.active_id = Some(id.clone());
                     self.state.borrow_mut().last_active_workspace = Some(id);
                     self.schedule_save(&sender);
+                    // Rebuild so the `active` highlight moves — only the two
+                    // affected rows' specs change, so widget reuse keeps this
+                    // cheap (the rest are reused untouched).
+                } else {
+                    rebuild = false;
                 }
-                rebuild = false;
             }
             Msg::ToggleRepoCollapsed(path) => {
                 Self::toggle_persisted(&mut self.state.borrow_mut().collapsed_repos, &path);
@@ -822,15 +841,109 @@ impl Component for Sidebar {
     }
 }
 
-/// Consume the backend's push channel on the GTK main context, forwarding each
-/// frame as a [`Msg::Backend`]. One consumer per attach.
-fn pump_events(backend: Rc<dyn Backend>, input: relm4::Sender<Msg>) {
-    let rx = backend.events();
-    glib::spawn_future_local(async move {
-        while let Ok(ev) = rx.recv().await {
-            input.emit(Msg::Backend(ev));
+/// Parse a reorder action param "<dragged>|<target>|<before|after>".
+fn parse_reorder_param(s: &str) -> Option<(String, String, bool)> {
+    let mut parts = s.splitn(3, '|');
+    let dragged = parts.next()?.to_string();
+    let target = parts.next()?.to_string();
+    let before = match parts.next()? {
+        "before" => true,
+        "after" => false,
+        _ => return None,
+    };
+    Some((dragged, target, before))
+}
+
+/// Install the `sidebar` action group (E2E driving — see the call site).
+fn install_sidebar_actions(root: &gtk::Box, input: &relm4::Sender<Msg>, list: &gtk::ListBox) {
+    let group = gio::SimpleActionGroup::new();
+    let str_ty = Some(glib::VariantTy::STRING);
+
+    let drop_ws = gio::SimpleAction::new("drop-ws", str_ty);
+    {
+        let input = input.clone();
+        drop_ws.connect_activate(move |_, param| {
+            if let Some((dragged, target, before)) =
+                param.and_then(|p| p.str()).and_then(parse_reorder_param)
+            {
+                input.emit(Msg::DropWs {
+                    dragged,
+                    target,
+                    before,
+                });
+            }
+        });
+    }
+    group.add_action(&drop_ws);
+
+    let drop_repo = gio::SimpleAction::new("drop-repo", str_ty);
+    {
+        let input = input.clone();
+        drop_repo.connect_activate(move |_, param| {
+            if let Some((dragged, target, before)) =
+                param.and_then(|p| p.str()).and_then(parse_reorder_param)
+            {
+                input.emit(Msg::DropRepo {
+                    dragged,
+                    target,
+                    before,
+                });
+            }
+        });
+    }
+    group.add_action(&drop_repo);
+
+    let start_rename = gio::SimpleAction::new("start-rename", str_ty);
+    {
+        let input = input.clone();
+        start_rename.connect_activate(move |_, param| {
+            if let Some(id) = param.and_then(|p| p.str()) {
+                input.emit(Msg::StartRename(id.to_string()));
+            }
+        });
+    }
+    group.add_action(&start_rename);
+
+    let commit_rename = gio::SimpleAction::new("commit-rename", str_ty);
+    {
+        let input = input.clone();
+        let list = list.clone();
+        commit_rename.connect_activate(move |_, param| {
+            let Some(id) = param.and_then(|p| p.str()) else {
+                return;
+            };
+            // Read the live rename Entry's text (the same value the
+            // activate/blur handlers would commit) and drive CommitRename.
+            let branch = find_named_entry(&list, "ws-rename-entry")
+                .map(|e| e.text().to_string())
+                .unwrap_or_default();
+            input.emit(Msg::CommitRename {
+                id: id.to_string(),
+                branch,
+            });
+        });
+    }
+    group.add_action(&commit_rename);
+
+    root.insert_action_group("sidebar", Some(&group));
+}
+
+/// Depth-first search for a named [`gtk::Entry`] under a widget (the single
+/// open rename entry — there is at most one at a time).
+fn find_named_entry(root: &impl IsA<gtk::Widget>, name: &str) -> Option<gtk::Entry> {
+    let mut child = root.as_ref().first_child();
+    while let Some(c) = child {
+        if c.widget_name() == name {
+            if let Ok(e) = c.clone().downcast::<gtk::Entry>() {
+                return Some(e);
+            }
         }
-    });
+        if let Some(found) = find_named_entry(&c, name) {
+            return Some(found);
+        }
+        child = c.next_sibling();
+    }
+    None
 }
 
 fn build_footer(input: &relm4::Sender<Msg>) -> gtk::Box {
@@ -1305,4 +1418,28 @@ impl Sidebar {
 #[derive(serde::Deserialize)]
 struct AccountBrief {
     id: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_reorder_param;
+
+    #[test]
+    fn reorder_param_parses_before_after() {
+        assert_eq!(
+            parse_reorder_param("ws-1|ws-2|before"),
+            Some(("ws-1".into(), "ws-2".into(), true))
+        );
+        assert_eq!(
+            parse_reorder_param("repo:/a|repo:/b|after"),
+            Some(("repo:/a".into(), "repo:/b".into(), false))
+        );
+    }
+
+    #[test]
+    fn reorder_param_rejects_malformed() {
+        assert_eq!(parse_reorder_param("only-two|parts"), None);
+        assert_eq!(parse_reorder_param("a|b|sideways"), None);
+        assert_eq!(parse_reorder_param(""), None);
+    }
 }
