@@ -901,7 +901,8 @@ impl Backend for MockBackend {
             // Run-script toggle (per-workspace live flag).
             "runScriptStatus" => {
                 let id: String = Self::arg(&params, 0)?;
-                Ok(json!(*self.state.borrow().run_live.get(&id).unwrap_or(&false)))
+                let running = *self.state.borrow().run_live.get(&id).unwrap_or(&false);
+                Ok(json!(running))
             }
             "runScriptStart" => {
                 let id: String = Self::arg(&params, 0)?;
