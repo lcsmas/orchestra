@@ -22,4 +22,9 @@ relm4.workspace = true
 # `check_hyperlink_at`, added in v0_70) — the bundled VTE is 0.80.5, so the
 # feature is safely present at link time.
 vte4 = { workspace = true, features = ["v0_72"] }
+# B3 (diff + toolbar): side-by-side diff panes and intra-line word diffs.
+sourceview5.workspace = true
+similar.workspace = true
+# B4 (accounts/login): OAuth login window.
+webkit6.workspace = true
 async-channel.workspace = true

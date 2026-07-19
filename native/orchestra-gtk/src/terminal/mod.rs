@@ -18,7 +18,6 @@ mod pane;
 mod stack;
 
 pub use fonts::load_app_fonts;
-pub use pane::{PaneIntent, PaneKind};
 pub use stack::TerminalStack;
 
 use gtk::gdk;

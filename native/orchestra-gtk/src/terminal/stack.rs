@@ -1,162 +1,170 @@
-//! Kept-alive terminal stack (plan §5.2): one [`TerminalPane`] per workspace in
-//! a `GtkStack`, so scrollback survives tab switches. Routes `ptyData` frames
-//! to the matching pane, lazily builds a pane on first activation, and bounces a
-//! repaint when a pane is shown again.
+//! Kept-alive terminal stack (plan §5.2): one [`TerminalPane`] per pty id in a
+//! `GtkStack`, so scrollback survives tab switches. Routes `ptyData` frames to
+//! the matching pane, lazily builds panes, and bounces a repaint when a pane is
+//! shown again.
+//!
+//! The stack holds THREE surfaces per workspace — the agent pane (`<ws>`, in
+//! B3's terminal slot), the run pane (`<ws>:run`, in B3's run slot), and the
+//! nvim pane (`<ws>:nvim`, toggled by B3's toolbar). B3's toolbar owns tab
+//! switching and run start/stop; this stack is pure content.
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use gtk::prelude::*;
 
-use super::pane::{PaneIntent, PaneKind, TerminalPane};
+use super::pane::{PaneKind, TerminalPane};
+use crate::ctx::Ctx;
 
 pub struct TerminalStack {
-    stack: gtk::Stack,
+    /// Agent panes live in a GtkStack (mounted in B3's terminal slot) so one
+    /// kept-alive VTE per workspace switches without losing scrollback.
+    agent_stack: gtk::Stack,
+    /// The run/nvim surfaces (their host boxes are B3's run_slot / a toggled
+    /// nvim box); tracked here so ptyData routes and they stay kept-alive.
     panes: HashMap<String, TerminalPane>,
-    /// Sink handed to every pane so their intents reach the App.
-    sink: Rc<dyn Fn(PaneIntent)>,
-    active: Option<String>,
+    ctx: Rc<Ctx>,
+    active_ws: Option<String>,
 }
 
 impl TerminalStack {
-    /// `sink` receives every pane's [`PaneIntent`] (the App owns the backend and
-    /// performs the RPC).
-    pub fn new(sink: Rc<dyn Fn(PaneIntent)>) -> Self {
-        let stack = gtk::Stack::new();
-        stack.set_widget_name("terminal-stack");
-        stack.set_hexpand(true);
-        stack.set_vexpand(true);
-        // No cross-fade: terminals should snap, and a transition would animate
-        // a fed-but-hidden pane's first frame.
-        stack.set_transition_type(gtk::StackTransitionType::None);
+    pub fn new(ctx: Rc<Ctx>) -> Self {
+        let agent_stack = gtk::Stack::new();
+        agent_stack.set_widget_name("terminal-stack");
+        agent_stack.set_hexpand(true);
+        agent_stack.set_vexpand(true);
+        agent_stack.set_transition_type(gtk::StackTransitionType::None);
         TerminalStack {
-            stack,
+            agent_stack,
             panes: HashMap::new(),
-            sink,
-            active: None,
+            ctx,
+            active_ws: None,
         }
     }
 
-    /// The `GtkStack` to mount in the main area.
-    pub fn widget(&self) -> &gtk::Widget {
-        self.stack.upcast_ref()
+    /// The agent GtkStack — mount this in B3's `terminal_slot()`.
+    pub fn agent_widget(&self) -> &gtk::Widget {
+        self.agent_stack.upcast_ref()
     }
 
-    /// Whether no pane exists yet for `id` (so the caller seeds scrollback and
-    /// the pill exactly once, on first open).
-    pub fn is_new(&self, id: &str) -> bool {
-        !self.panes.contains_key(id)
+    /// Whether no agent pane exists yet for `ws_id` (so the caller seeds
+    /// scrollback + shows the pill exactly once, on first open).
+    pub fn is_new(&self, ws_id: &str) -> bool {
+        !self.panes.contains_key(ws_id)
     }
 
-    /// Ensure an agent pane exists for `id` (kept alive across switches).
-    fn ensure_pane(&mut self, id: &str) -> &TerminalPane {
-        self.ensure_kind(id, PaneKind::Agent)
-    }
-
-    /// Ensure a pane of a given kind exists (agent `<ws>`, run `<ws>:run`, nvim
-    /// `<ws>:nvim`). The GtkStack name is the full pty id, matching ptyData
-    /// routing.
-    fn ensure_kind(&mut self, id: &str, kind: PaneKind) -> &TerminalPane {
+    /// Ensure a pane of a given kind exists (keyed by the FULL pty id, which is
+    /// also the GtkStack name / how ptyData routes).
+    fn ensure(&mut self, id: &str, kind: PaneKind) -> &TerminalPane {
         if !self.panes.contains_key(id) {
-            let pane = TerminalPane::with_kind(id, kind, self.sink.clone());
-            self.stack.add_named(pane.widget(), Some(id));
+            let pane = TerminalPane::with_kind(id, kind, self.ctx.clone());
+            if kind == PaneKind::Agent {
+                self.agent_stack.add_named(pane.widget(), Some(id));
+            }
             self.panes.insert(id.to_string(), pane);
         }
         self.panes.get(id).expect("pane just inserted")
     }
 
-    /// Show the run-script or nvim pane for a workspace, building it (with the
-    /// right kind) on first request. The run pane does NOT auto-start — the
-    /// caller's toolbar drives `start_manual`.
-    pub fn set_active_kind(&mut self, ws_id: &str, kind: PaneKind) {
-        let id = match kind {
-            PaneKind::Agent => ws_id.to_string(),
-            PaneKind::Run => format!("{ws_id}:run"),
-            PaneKind::Nvim => format!("{ws_id}:nvim"),
-        };
-        self.ensure_kind(&id, kind);
-        self.stack.set_visible_child_name(&id);
-        if self.active.as_deref() != Some(&id) {
-            self.active = Some(id.clone());
-            if let Some(pane) = self.panes.get(&id) {
+    /// Make `ws_id`'s agent pane the visible one in the agent stack, creating it
+    /// if needed. Showing a pane again bounces a repaint.
+    pub fn set_active(&mut self, ws_id: &str) {
+        self.ensure(ws_id, PaneKind::Agent);
+        self.agent_stack.set_visible_child_name(ws_id);
+        if self.active_ws.as_deref() != Some(ws_id) {
+            self.active_ws = Some(ws_id.to_string());
+            if let Some(pane) = self.panes.get(ws_id) {
                 pane.on_shown();
             }
         }
     }
 
-    /// Toggle the Run pane's PTY via its toolbar (start if stopped, stop if
-    /// running is tracked by the caller). Returns false if no run pane exists.
-    pub fn run_start(&self, ws_id: &str) {
-        if let Some(pane) = self.panes.get(&format!("{ws_id}:run")) {
-            pane.start_manual();
-        }
-    }
-
-    pub fn run_stop(&self, ws_id: &str) {
-        if let Some(pane) = self.panes.get(&format!("{ws_id}:run")) {
-            pane.stop();
-        }
-    }
-
-    /// Make `id`'s pane the visible one, creating it if needed. Showing a pane
-    /// again bounces a repaint so the child re-converges.
-    pub fn set_active(&mut self, id: &str) {
-        self.ensure_pane(id);
-        self.stack.set_visible_child_name(id);
-        if self.active.as_deref() != Some(id) {
-            self.active = Some(id.to_string());
-            if let Some(pane) = self.panes.get(id) {
-                pane.on_shown();
-            }
-        }
-    }
-
-    /// Route a `ptyData` frame to its pane. Only the agent PTY (`<wsId>`) and
-    /// its `:run`/`:nvim` siblings map to visible panes; unknown ids (e.g.
-    /// `account-login:*`) are dropped here.
+    /// Route a `ptyData` frame to its pane (agent `<ws>`, run `<ws>:run`, nvim
+    /// `<ws>:nvim`). Unknown ids (e.g. `account-login:*`) are dropped here — the
+    /// accounts controller owns those.
     pub fn feed(&mut self, id: &str, bytes: &[u8]) {
         if let Some(pane) = self.panes.get(id) {
             pane.feed(bytes);
         }
     }
 
-    /// Seed a pane's scrollback (decoded backend bytes) before live feed.
-    pub fn feed_scrollback(&mut self, id: &str, bytes: &[u8]) {
-        self.ensure_pane(id);
-        if let Some(pane) = self.panes.get(id) {
+    /// Seed an agent pane's scrollback (backend bytes) before live feed.
+    pub fn feed_scrollback(&mut self, ws_id: &str, bytes: &[u8]) {
+        self.ensure(ws_id, PaneKind::Agent);
+        if let Some(pane) = self.panes.get(ws_id) {
             pane.feed_scrollback(bytes);
         }
     }
 
-    /// Show the boot pill on a pane (agent start/resume).
-    pub fn show_pill(&mut self, id: &str, resuming: bool) {
-        self.ensure_pane(id);
-        if let Some(pane) = self.panes.get(id) {
+    /// Show the boot pill on an agent pane (agent start/resume).
+    pub fn show_pill(&mut self, ws_id: &str, resuming: bool) {
+        self.ensure(ws_id, PaneKind::Agent);
+        if let Some(pane) = self.panes.get(ws_id) {
             pane.show_pill(resuming);
         }
     }
 
-    /// A `pty:exit`/`pty:stopped` for `id`.
+    /// Build (if needed) and return the run pane's widget for `ws_id`, to mount
+    /// into B3's `run_slot()`. The run PTY is started by B3's toolbar; this pane
+    /// just feeds + resizes it.
+    pub fn run_widget(&mut self, ws_id: &str) -> gtk::Widget {
+        let id = format!("{ws_id}:run");
+        self.ensure(&id, PaneKind::Run).widget().clone()
+    }
+
+    /// Toggle the nvim file pane for the active workspace within the agent
+    /// stack (B3's toolbar nvim toggle drives this). `open` reveals the nvim
+    /// pane (built + auto-started on first open); `false` returns to the agent
+    /// pane. Both stay kept-alive so scrollback/session survive the toggle.
+    pub fn set_nvim_open(&mut self, open: bool) {
+        let Some(ws_id) = self.active_ws.clone() else {
+            return;
+        };
+        if open {
+            let nvim_id = format!("{ws_id}:nvim");
+            if !self.panes.contains_key(&nvim_id) {
+                let pane = TerminalPane::with_kind(&nvim_id, PaneKind::Nvim, self.ctx.clone());
+                self.agent_stack.add_named(pane.widget(), Some(&nvim_id));
+                self.panes.insert(nvim_id.clone(), pane);
+            }
+            self.agent_stack.set_visible_child_name(&nvim_id);
+            if let Some(pane) = self.panes.get(&nvim_id) {
+                pane.on_shown();
+            }
+        } else {
+            self.agent_stack.set_visible_child_name(&ws_id);
+            if let Some(pane) = self.panes.get(&ws_id) {
+                pane.on_shown();
+            }
+        }
+    }
+
+    /// A `ptyExit`/`ptyStopped` for `id`.
     pub fn on_exit(&self, id: &str, stopped: bool) {
         if let Some(pane) = self.panes.get(id) {
             pane.on_exit(stopped);
         }
     }
 
-    /// A `pty:restart` for `id` (branch switch).
+    /// A `ptyRestart` for `id` (branch switch).
     pub fn on_restart(&self, id: &str) {
         if let Some(pane) = self.panes.get(id) {
             pane.on_restart();
         }
     }
 
-    /// Drop a pane entirely (workspace removed).
-    pub fn remove(&mut self, id: &str) {
-        if let Some(pane) = self.panes.remove(id) {
-            self.stack.remove(pane.widget());
+    /// Drop a workspace's panes entirely (workspace removed).
+    pub fn remove(&mut self, ws_id: &str) {
+        for suffix in ["", ":run", ":nvim"] {
+            let id = format!("{ws_id}{suffix}");
+            if let Some(pane) = self.panes.remove(&id) {
+                if suffix.is_empty() {
+                    self.agent_stack.remove(pane.widget());
+                }
+            }
         }
-        if self.active.as_deref() == Some(id) {
-            self.active = None;
+        if self.active_ws.as_deref() == Some(ws_id) {
+            self.active_ws = None;
         }
     }
 }
