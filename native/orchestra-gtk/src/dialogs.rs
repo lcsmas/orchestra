@@ -279,6 +279,33 @@ pub async fn confirm(parent: &gtk::Window, title: &str, body: &str) -> bool {
     .is_some()
 }
 
+/// Two-button confirm with CALLER-CHOSEN labels and tone — for dialogs that
+/// must mirror the Electron app's wording (e.g. the missing-dependency warning's
+/// "Continue Anyway" / "Quit"). Returns true when the confirm button was used;
+/// dismissing (Escape / cancel) returns false.
+pub async fn confirm_labeled(
+    parent: &gtk::Window,
+    tone: Tone,
+    title: &str,
+    body: &str,
+    confirm_label: &str,
+    cancel_label: &str,
+) -> bool {
+    run(
+        parent,
+        Spec {
+            tone,
+            title,
+            body,
+            confirm_label,
+            cancel_label: Some(cancel_label),
+            entry_placeholder: None,
+        },
+    )
+    .await
+    .is_some()
+}
+
 pub async fn prompt(
     parent: &gtk::Window,
     title: &str,

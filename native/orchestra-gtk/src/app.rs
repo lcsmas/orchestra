@@ -1229,9 +1229,15 @@ impl App {
                 self.backend = Some(backend.clone());
                 // Hand the live backend to the sidebar: it hydrates its own
                 // snapshot. App owns the events() pump and forwards frames.
-                self.sidebar.emit(crate::sidebar::Msg::Attach(backend));
+                self.sidebar
+                    .emit(crate::sidebar::Msg::Attach(backend.clone()));
                 self.footer_label.set_label(&footer_text(&self.backend));
                 self.reselect_active();
+                // Startup dependency check (parity with the Electron app's
+                // checkDependencies at src/main/index.ts): the backend is the
+                // only side that can probe git/gh/claude, so this runs on the
+                // first successful attach.
+                self.check_dependencies(&backend);
 
                 if electron_owns {
                     // §1.1 rule 2: our daemon lost the lock to the Electron
@@ -1287,6 +1293,68 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Startup dependency warning — parity with the Electron app's
+    /// `checkDependencies` (src/main/index.ts): probe `deps:status` through the
+    /// freshly-attached backend and, if anything is missing, show a BLOCKING
+    /// dialog with Electron's exact copy and its Continue Anyway / Quit
+    /// choice (Quit is the default action there, and quitting ends the app).
+    ///
+    /// Only the backend can run the probe, so this fires on attach rather than
+    /// at startup; a frontend with no backend has nothing to warn about yet.
+    fn check_dependencies(&self, backend: &Rc<dyn Backend>) {
+        // The call is a blocking RPC; keep it off the first paint by deferring
+        // to the main loop's idle, then only surface a dialog if it reports gaps.
+        let backend = backend.clone();
+        let win = self.window.clone().upcast::<gtk::Window>();
+        glib::spawn_future_local(async move {
+            let status = match backend.call("deps:status", vec![]) {
+                Ok(v) => match serde_json::from_value::<orchestra_rpc::types::DepsStatus>(v) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("[deps] status decode failed: {e}");
+                        return;
+                    }
+                },
+                Err(e) => {
+                    // A backend that doesn't serve deps:status (older release,
+                    // or the mock) simply gets no warning — never a hard error.
+                    eprintln!("[deps] status unavailable: {e}");
+                    return;
+                }
+            };
+            if status.messages.is_empty() {
+                return;
+            }
+            // Electron's wording, verbatim: title "Missing Dependencies",
+            // message "Orchestra requires the following tools:", detail =
+            // messages joined by a blank line, buttons Continue Anyway / Quit.
+            let body = format!(
+                "Orchestra requires the following tools:\n\n{}",
+                status.messages.join("\n\n")
+            );
+            let cont = dialogs::confirm_labeled(
+                &win,
+                dialogs::Tone::Error,
+                "Missing Dependencies",
+                &body,
+                "Continue Anyway",
+                "Quit",
+            )
+            .await;
+            if !cont {
+                // Matches Electron's defaultId: 1 → app.quit().
+                if let Some(app) = win
+                    .downcast_ref::<gtk::ApplicationWindow>()
+                    .and_then(|w| w.application())
+                {
+                    app.quit();
+                } else {
+                    win.close();
+                }
+            }
+        });
     }
 
     /// Route a decoded backend event to the main pane, then keep App's own
