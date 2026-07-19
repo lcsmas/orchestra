@@ -97,6 +97,277 @@ list row:selected label {
 .ws-dot.error   { background-color: @red; }
 .ws-dot.idle    { background-color: @text_dim; opacity: 0.55; }
 .ws-dot.stopped { background-color: #555555; opacity: 0.6; }
+.ws-dot.unread  { background-color: @accent; box-shadow: 0 0 0 3px alpha(@accent, 0.25); }
+
+/* 3b ── sidebar (M2-B1): header, sections, trees, pills, actions.
+ * The full §5.1 surface; matches the Electron sidebar's compact look. */
+
+/* Header action strip (+ Repo / ⚡ / 🌿). */
+.sidebar-header {
+  padding: 8px 8px 4px 12px;
+}
+.sidebar-header-btn {
+  background-color: @bg_3;
+  border: 1px solid @border;
+  border-radius: 6px;
+  color: @text_dim;
+  font-size: 11px;
+  padding: 2px 8px;
+  min-height: 0;
+}
+.sidebar-header-btn:hover { background-color: @bg_4; color: @text; }
+
+/* Section + repo + host headers share a compact non-row look. */
+.section-header-row,
+.repo-header-row,
+.host-header-row,
+.repo-sync-row,
+.archived-toggle-row,
+.archived-bar-row {
+  padding: 2px 6px;
+}
+.repo-header, .host-group-header {
+  padding: 3px 6px;
+}
+.repo-name, .host-name {
+  color: @text;
+  font-weight: 600;
+  font-size: 12px;
+}
+.scratch-glyph { font-size: 12px; }
+.repo-collapse, .host-collapse {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 2px 4px;
+  min-height: 0;
+}
+.repo-collapse:hover, .host-collapse:hover { background-color: @bg_3; }
+.caret { color: @text_dim; font-size: 10px; }
+
+.host-dot {
+  min-width: 7px;
+  min-height: 7px;
+  border-radius: 4px;
+}
+.host-dot.local  { background-color: @text_dim; }
+.host-dot.remote { background-color: @accent; }
+
+.repo-header-actions button,
+.repo-scripts-btn,
+.repo-add {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: @text_dim;
+  padding: 1px 6px;
+  min-height: 0;
+  border-radius: 6px;
+}
+.repo-header-actions button:hover,
+.repo-scripts-btn:hover,
+.repo-add:hover { background-color: @bg_3; color: @text; }
+.repo-scripts-btn.danger:hover { color: @red; }
+
+/* Base-branch sync pill row under an expanded repo header. */
+.repo-sync {
+  background-color: @bg_3;
+  border: 1px solid @border;
+  border-radius: 6px;
+  padding: 2px 8px;
+  min-height: 0;
+}
+.repo-sync:hover { background-color: @bg_4; }
+.repo-sync.error { border-color: @red; }
+.repo-sync-base { color: @text_dim; font-size: 11px; }
+.repo-sync-status { font-size: 11px; }
+.repo-sync-status.muted { color: @text_dim; opacity: 0.7; }
+.repo-sync-status .behind { color: @yellow; }
+.repo-sync-status .ahead  { color: @green; }
+
+/* Workspace rows: item box, tree indent, collapse caret. */
+.ws-item { padding: 0; }
+.ws-tree-connector { color: @text_dim; opacity: 0.5; font-size: 12px; }
+/* The subtree caret / its placeholder are flat glyphs, NOT raised buttons. */
+.ws-collapse {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0 2px;
+  min-height: 0;
+  min-width: 14px;
+  color: @text_dim;
+}
+.ws-collapse:hover { color: @text; background: transparent; }
+.ws-collapse-spacer { min-width: 14px; }
+.ws-name-row { min-height: 20px; }
+
+/* Context / account / size mini-badges riding the name row. */
+.ws-context { color: @text_dim; font-size: 10px; }
+.ws-context-sep { color: @text_dim; opacity: 0.5; }
+.ws-login-badge {
+  background-color: @bg_3;
+  border: none;
+  border-radius: 5px;
+  color: @text_dim;
+  font-size: 10px;
+  padding: 0 5px;
+  min-height: 0;
+}
+.ws-login-badge:hover { background-color: @bg_4; color: @text; }
+
+/* Hidden-descendant count pill, tinted by most-urgent hidden status. */
+.ws-hidden-count {
+  background-color: @bg_4;
+  color: @text_dim;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 6px;
+}
+.ws-hidden-count.error   { background-color: alpha(@red, 0.25);    color: @red; }
+.ws-hidden-count.waiting { background-color: alpha(@yellow, 0.22); color: @yellow; }
+.ws-hidden-count.running { background-color: alpha(@green, 0.20);  color: @green; }
+
+/* Pill zoo (merge/released/unpushed/diff/setup/PR/Linear/size/repo-tag). */
+.ws-pills { margin-top: 2px; }
+.ws-pills.mini { opacity: 0.95; }
+.pill {
+  border-radius: 6px;
+  font-size: 10px;
+  padding: 0 6px;
+  min-height: 0;
+}
+.pill.repo-count, .pill.host-count {
+  background-color: @bg_4;
+  color: @text_dim;
+}
+.pill.repo-tag-pill { background-color: @bg_4; color: @accent; }
+.pill.merged-pill   { background-color: alpha(@accent, 0.18); color: @accent; }
+.pill.released-pill { background-color: alpha(@green, 0.18);  color: @green; }
+.pill.unpushed-pill { background-color: alpha(@yellow, 0.18); color: @yellow; }
+.pill.ws-size       { background-color: @bg_3; color: @text_dim; }
+.pill.setup-pill    { background-color: @bg_4; color: @text_dim; }
+.pill.setup-pill.failed { background-color: alpha(@red, 0.2); color: @red; }
+.diff-indicator { background-color: @bg_3; }
+.diff-indicator .add { color: @green; font-size: 10px; }
+.diff-indicator .del { color: @red;   font-size: 10px; }
+.pill-btn { border: none; box-shadow: none; }
+.pr-badge {
+  background-color: @bg_4;
+  color: @text_dim;
+  border-radius: 6px;
+  font-size: 10px;
+  padding: 0 6px;
+  min-height: 0;
+}
+.pr-badge.open   { color: @green; }
+.pr-badge.merged { color: @accent; }
+.pr-badge.closed { color: @red; }
+.pr-badge.linear { color: @accent; }
+
+/* Hover-revealed per-row action strip. */
+.ws-icon-btn {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: @text_dim;
+  padding: 0 4px;
+  min-height: 0;
+  opacity: 0;
+}
+.ws-row:hover .ws-icon-btn { opacity: 1; }
+.ws-icon-btn:hover { color: @text; background-color: @bg_3; border-radius: 6px; }
+.ws-icon-btn.danger:hover { color: @red; }
+.ws-icon-btn.unread-on { color: @accent; opacity: 1; }
+
+.ws-row.active { background-color: @bg_4; }
+.ws-row.unread .ws-name { color: @accent; }
+.ws-name-input {
+  background-color: @bg;
+  border: 1px solid @accent;
+  border-radius: 6px;
+  color: @text;
+  font-size: 13px;
+  padding: 1px 6px;
+}
+
+/* Archived section. */
+.archived-toggle {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: @text_dim;
+  padding: 2px 6px;
+}
+.archived-toggle:hover { background-color: @bg_3; }
+.archived-bar { padding: 4px 6px; }
+.archived-bar-count { color: @text_dim; font-size: 11px; }
+.archived-bar-delete {
+  background-color: alpha(@red, 0.2);
+  color: @red;
+  border: none;
+  border-radius: 6px;
+  font-size: 11px;
+  padding: 1px 8px;
+  min-height: 0;
+}
+.archived-progress-label { color: @text_dim; font-size: 11px; }
+.archived-row { opacity: 0.8; }
+.ws-sub { color: @text_dim; font-size: 10px; }
+
+/* Env-notice tray. */
+.env-notices { padding: 4px 8px; }
+.env-notice {
+  background-color: alpha(@yellow, 0.1);
+  border: 1px solid alpha(@yellow, 0.3);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.env-notice label { color: @text_dim; font-size: 11px; }
+.env-notice-dismiss {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: @text_dim;
+  padding: 0 4px;
+  min-height: 0;
+}
+.env-notice-dismiss:hover { color: @text; }
+
+/* Footer link strip. */
+.sidebar-footer {
+  border-top: 1px solid @border;
+  padding: 4px 10px;
+}
+.footer-link {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: @text_dim;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+.footer-link:hover { background-color: @bg_3; color: @text; }
+
+/* Base-picker + account-migrate popovers. */
+.base-picker-header { color: @text_dim; font-size: 11px; padding: 4px 8px; }
+.base-picker-item, .account-menu-item {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: @text;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+.base-picker-item:hover, .account-menu-item:hover { background-color: @bg_4; }
+
+/* Drag-reorder drop indicators. */
+.ws-row.dragging, .repo-header-row.dragging { opacity: 0.4; }
+.drop-before { box-shadow: inset 0 2px 0 0 @accent; }
+.drop-after  { box-shadow: inset 0 -2px 0 0 @accent; }
 
 /* 4 ── backend banner */
 .banner {
@@ -281,9 +552,8 @@ entry:focus-within {
 .ws-account-option.current { background-color: @bg_3; }
 .ws-account-label { color: @text; font-size: 12px; }
 
-/* Context-size badge. */
-.ws-context { color: @yellow; font-size: 11px; }
-.ws-context-sep { color: @text_dim; margin: 0 3px; }
+/* Context-size badge (`.ws-context` / `.ws-context-sep`) is styled in the
+ * sidebar section above — B1 owns the mounted context badge. */
 
 /* Accounts settings window. */
 .accounts-settings .modal-header,

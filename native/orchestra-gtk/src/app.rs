@@ -1,8 +1,8 @@
 //! App shell (plan §5.6): root Relm4 component — window, sidebar/main split
 //! with drag-persisted width, overlay host for future Resources/Insights/Help
 //! panes, backend-discovery banner, status strip, debug menu for the dialog
-//! system. The sidebar list here is a mock-fed placeholder; the real sidebar
-//! (factories, spawn trees, pills) is a separate M2 workstream.
+//! system. The real [`Sidebar`] component (spawn trees, pills, actions) mounts
+//! as the paned start child; the shell hands it the shared backend + UI state.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -11,17 +11,16 @@ use std::time::Duration;
 
 use gtk::gio;
 use gtk::glib;
-use gtk::pango;
 use gtk::prelude::*;
 use relm4::prelude::*;
 
-use orchestra_rpc::types::{Workspace, WorkspaceStatus};
-use orchestra_rpc::{BackendKind as RemoteKind, ConnectionState, UiEvent};
+use orchestra_rpc::{BackendKind as RemoteKind, ConnectionState};
 
 use crate::accounts::AccountsController;
 use crate::backend::{self, Backend, BackendEvent, BackendKind, MockBackend, RpcBackend};
 use crate::dialogs;
 use crate::remote_control;
+use crate::sidebar::{Sidebar, SidebarInit};
 use crate::state::{self, UiState, WindowGeometry};
 
 pub struct Init {
@@ -37,7 +36,6 @@ pub struct App {
     /// the usage-bars strip in the sidebar footer and every accounts window;
     /// the backend event pump + login PTY bytes are forwarded here.
     accounts: Option<Rc<AccountsController>>,
-    workspaces: Vec<Workspace>,
     state: Rc<RefCell<UiState>>,
     state_path: PathBuf,
     /// Debounce generation for state saves: each change bumps it; only the
@@ -47,7 +45,8 @@ pub struct App {
     retry_active: Rc<Cell<bool>>,
     window: gtk::ApplicationWindow,
     paned: gtk::Paned,
-    list: gtk::ListBox,
+    /// The real sidebar (spawn trees, pills, actions) — the M2-B1 workstream.
+    sidebar: Controller<Sidebar>,
     banner: gtk::Revealer,
     banner_label: gtk::Label,
     footer_label: gtk::Label,
@@ -59,7 +58,6 @@ pub struct App {
 
 #[derive(Debug)]
 pub enum Msg {
-    RowSelected(i32),
     SidebarResized(i32),
     WindowGeometryChanged,
     RetryDiscover,
@@ -73,56 +71,11 @@ pub enum Msg {
     /// A binary `ptyData` frame: (pty id, raw bytes). Routed to the accounts
     /// controller (login PTY); other ids belong to the terminal workstream.
     PtyData(String, Vec<u8>),
-}
-
-fn status_css(status: WorkspaceStatus) -> &'static str {
-    match status {
-        WorkspaceStatus::Idle => "idle",
-        WorkspaceStatus::Running => "running",
-        WorkspaceStatus::Waiting => "waiting",
-        WorkspaceStatus::Error => "error",
-        WorkspaceStatus::Stopped => "stopped",
-    }
-}
-
-/// Plain placeholder rows (dot + name + branch), prototype-style. The M2
-/// sidebar workstream replaces this with Relm4 factories.
-fn populate_sidebar(list: &gtk::ListBox, workspaces: &[Workspace], selected_id: Option<&str>) {
-    while let Some(row) = list.row_at_index(0) {
-        list.remove(&row);
-    }
-    for ws in workspaces {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        dot.add_css_class("ws-dot");
-        dot.add_css_class(status_css(ws.status));
-        dot.set_valign(gtk::Align::Center);
-        let col = gtk::Box::new(gtk::Orientation::Vertical, 1);
-        let name = gtk::Label::new(Some(&ws.name));
-        name.set_xalign(0.0);
-        name.set_ellipsize(pango::EllipsizeMode::End);
-        name.add_css_class("ws-name");
-        let branch = gtk::Label::new(Some(&ws.branch));
-        branch.set_xalign(0.0);
-        branch.set_ellipsize(pango::EllipsizeMode::End);
-        branch.add_css_class("ws-branch");
-        col.append(&name);
-        col.append(&branch);
-        row.append(&dot);
-        row.append(&col);
-        // Name the ListBoxRow itself (not the inner box): that's the widget
-        // the remote-control click op selects/activates.
-        let list_row = gtk::ListBoxRow::new();
-        list_row.set_widget_name(&format!("ws-row-{}", ws.id));
-        list_row.set_child(Some(&row));
-        list.append(&list_row);
-    }
-    let selected_index = selected_id
-        .and_then(|id| workspaces.iter().position(|w| w.id == id))
-        .unwrap_or(0);
-    if let Some(row) = list.row_at_index(selected_index as i32) {
-        list.select_row(Some(&row));
-    }
+    /// The sidebar activated a workspace (row-select) → drive the main pane's
+    /// `set_active` (§5.3, B3). Held here so B3's MainPane mount routes it;
+    /// until then it records the shell's active workspace and retargets the
+    /// accounts usage strip to that workspace's login.
+    WorkspaceActivated(String),
 }
 
 fn make_backend() -> Option<Rc<dyn Backend>> {
@@ -131,7 +84,7 @@ fn make_backend() -> Option<Rc<dyn Backend>> {
     }
     let sock = backend::discover_socket(&state::orchestra_home())?;
     match RpcBackend::connect(sock) {
-        Ok(b) => Some(Rc::new(b)),
+        Ok(b) => Some(Rc::new(b) as Rc<dyn Backend>),
         Err(e) => {
             eprintln!("[backend] connect failed: {e}");
             None
@@ -322,34 +275,20 @@ impl SimpleComponent for App {
                     // persisted sidebar width drifts on every launch.
                     set_resize_start_child: false,
 
+                    // The paned start child is a vertical stack: the real
+                    // sidebar component (mounted into `sidebar_host` after
+                    // `view_output!`, M2-B1) over the accounts footer (§5.4).
                     #[wrap(Some)]
                     set_start_child = &gtk::Box {
                         set_orientation: gtk::Orientation::Vertical,
-                        add_css_class: "sidebar",
-                        set_widget_name: "sidebar",
-                        set_width_request: 200,
 
-                        gtk::Label {
-                            set_label: "WORKSPACES",
-                            set_xalign: 0.0,
-                            add_css_class: "sidebar-title",
-                            set_widget_name: "sidebar-title",
-                        },
-
-                        gtk::ScrolledWindow {
+                        // The real sidebar component is attached here after
+                        // `view_output!` (the M2-B1 workstream owns its widgets).
+                        #[name = "sidebar_host"]
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_widget_name: "sidebar-host",
                             set_vexpand: true,
-                            set_hscrollbar_policy: gtk::PolicyType::Never,
-
-                            #[name = "list"]
-                            gtk::ListBox {
-                                set_widget_name: "sidebar-list",
-                                set_selection_mode: gtk::SelectionMode::Single,
-                                connect_row_selected[sender] => move |_, row| {
-                                    if let Some(row) = row {
-                                        sender.input(Msg::RowSelected(row.index()));
-                                    }
-                                },
-                            },
                         },
 
                         // Sidebar footer (plan §5.4): the accounts controller
@@ -518,16 +457,24 @@ impl SimpleComponent for App {
             });
         }
 
-        let workspaces = backend
-            .as_ref()
-            .and_then(|b| b.list_workspaces().ok())
-            .unwrap_or_default();
-        populate_sidebar(
-            &widgets.list,
-            &workspaces,
-            state.borrow().last_active_workspace.as_deref(),
-        );
         widgets.footer_label.set_label(&footer_text(&backend));
+
+        // Mount the real sidebar INTO the sidebar_host box (a child of the
+        // paned start child, which also holds the accounts footer below it —
+        // so this is an append, NOT a paned-start-child swap that would drop
+        // the footer). Forward its selection output for the shell + B3.
+        let sidebar = Sidebar::builder()
+            .launch(SidebarInit {
+                backend: backend.clone(),
+                state: state.clone(),
+                state_path: state_path.clone(),
+            })
+            .forward(sender.input_sender(), |out| match out {
+                crate::sidebar::SidebarOutput::WorkspaceActivated(id) => {
+                    Msg::WorkspaceActivated(id)
+                }
+            });
+        widgets.sidebar_host.append(sidebar.widget());
 
         // Accounts/usage/login controller: needs a backend to render against.
         let accounts = backend.as_ref().map(|b| {
@@ -542,14 +489,13 @@ impl SimpleComponent for App {
         let model = App {
             backend,
             accounts,
-            workspaces,
             state,
             state_path,
             save_generation: Rc::new(Cell::new(0)),
             retry_active,
             window: widgets.main_window.clone(),
             paned: widgets.paned.clone(),
-            list: widgets.list.clone(),
+            sidebar,
             banner: widgets.banner.clone(),
             banner_label: widgets.banner_label.clone(),
             footer_label: widgets.footer_label.clone(),
@@ -561,18 +507,6 @@ impl SimpleComponent for App {
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
-            Msg::RowSelected(index) => {
-                if let Some(ws) = self.workspaces.get(index as usize) {
-                    let id = ws.id.clone();
-                    self.state.borrow_mut().last_active_workspace = Some(id.clone());
-                    // The usage strip retargets to the selected workspace's
-                    // login (pinned account or default).
-                    if let Some(accounts) = &self.accounts {
-                        accounts.set_active_workspace(Some(id));
-                    }
-                    self.schedule_save(&sender);
-                }
-            }
             Msg::SidebarResized(position) => {
                 let changed = {
                     let mut st = self.state.borrow_mut();
@@ -615,10 +549,13 @@ impl SimpleComponent for App {
                         &self.sidebar_footer,
                         &self.accounts_button,
                     ));
-                    self.backend = Some(b);
+                    self.backend = Some(b.clone());
                     self.retry_active.set(false);
                     self.banner.set_reveal_child(false);
-                    self.refresh_workspaces();
+                    // Hand the live backend to the sidebar: it hydrates its own
+                    // snapshot (refresh_snapshot). App owns the events() pump and
+                    // forwards frames, so the sidebar does not pump itself.
+                    self.sidebar.emit(crate::sidebar::Msg::Attach(b));
                     self.footer_label.set_label(&footer_text(&self.backend));
                 }
             }
@@ -630,9 +567,11 @@ impl SimpleComponent for App {
             Msg::Connection(state) => match state {
                 ConnectionState::Connected => {
                     self.banner.set_reveal_child(false);
-                    // Reconnects re-handshake: refresh what the socket serves
+                    // Reconnects re-handshake: re-hydrate the sidebar snapshot
                     // (server info for the footer, missed workspace updates).
-                    self.refresh_workspaces();
+                    if let Some(b) = &self.backend {
+                        self.sidebar.emit(crate::sidebar::Msg::Attach(b.clone()));
+                    }
                     self.footer_label.set_label(&footer_text(&self.backend));
                 }
                 ConnectionState::Reconnecting { attempt, delay_ms } => {
@@ -659,37 +598,45 @@ impl SimpleComponent for App {
                     Self::start_retry_loop(&self.retry_active, &sender);
                 }
             },
-            Msg::BackendEvent(BackendEvent::Event { channel, args }) => {
+            Msg::BackendEvent(ev) => {
+                // App owns the single events() consumer (spawn_backend_streams);
+                // it fans each frame out to the components that care. The sidebar
+                // decodes workspace:update/removed itself (its apply_event), so
+                // we forward the raw frame rather than mutating a duplicate list.
+                let BackendEvent::Event { channel, args } = &ev;
                 eprintln!("[backend] event '{channel}'");
-                match (orchestra_rpc::Event { channel, args }).decode() {
-                    Ok(UiEvent::WorkspaceUpdate(ws)) => {
-                        match self.workspaces.iter_mut().find(|w| w.id == ws.id) {
-                            Some(slot) => *slot = *ws,
-                            None => self.workspaces.push(*ws),
-                        }
-                        self.repopulate_sidebar();
+                // Fan out to the accounts controller: decode a COPY so the raw
+                // frame can still go to the sidebar (which decodes its own
+                // workspace:update/removed via apply_event). The controller
+                // ignores channels it doesn't own.
+                if let Some(accounts) = &self.accounts {
+                    match (orchestra_rpc::Event {
+                        channel: channel.clone(),
+                        args: args.clone(),
+                    })
+                    .decode()
+                    {
+                        Ok(decoded) => accounts.handle_event(&decoded),
+                        Err(e) => eprintln!("[backend] event decode failed: {e}"),
                     }
-                    Ok(UiEvent::WorkspaceRemoved { id }) => {
-                        self.workspaces.retain(|w| w.id != id);
-                        self.repopulate_sidebar();
-                    }
-                    Ok(UiEvent::WorkspacesRemoved { ids }) => {
-                        self.workspaces.retain(|w| !ids.contains(&w.id));
-                        self.repopulate_sidebar();
-                    }
-                    // Usage / account / login channels drive the accounts
-                    // controller (plan §5.4); anything else it ignores.
-                    Ok(ev) => {
-                        if let Some(accounts) = &self.accounts {
-                            accounts.handle_event(&ev);
-                        }
-                    }
-                    Err(e) => eprintln!("[backend] event decode failed: {e}"),
                 }
+                self.sidebar.emit(crate::sidebar::Msg::Backend(ev));
             }
             Msg::PtyData(id, bytes) => {
+                // Login-PTY bytes go to the accounts controller; workspace PTYs
+                // belong to B2's terminal stack (mounts its fan-out here).
                 if let Some(accounts) = &self.accounts {
                     accounts.handle_pty_data(&id, &bytes);
+                }
+            }
+            Msg::WorkspaceActivated(id) => {
+                // The sidebar announced a row-select. Retarget the usage strip
+                // to that workspace's login; B3's main pane hangs its
+                // set_active(id) here too. last_active_workspace is already
+                // persisted by the sidebar itself.
+                eprintln!("[shell] workspace activated: {id}");
+                if let Some(accounts) = &self.accounts {
+                    accounts.set_active_workspace(Some(id));
                 }
             }
             Msg::PersistNow => {
@@ -718,24 +665,6 @@ impl App {
             sender.input(Msg::RetryDiscover);
             glib::ControlFlow::Continue
         });
-    }
-
-    /// Re-hydrate the workspace list from the backend and redraw the sidebar.
-    fn refresh_workspaces(&mut self) {
-        self.workspaces = self
-            .backend
-            .as_ref()
-            .and_then(|b| b.list_workspaces().ok())
-            .unwrap_or_default();
-        self.repopulate_sidebar();
-    }
-
-    fn repopulate_sidebar(&self) {
-        populate_sidebar(
-            &self.list,
-            &self.workspaces,
-            self.state.borrow().last_active_workspace.as_deref(),
-        );
     }
 
     fn schedule_save(&self, sender: &ComponentSender<Self>) {
