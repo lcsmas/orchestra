@@ -127,6 +127,13 @@ pub struct HostHeaderSpec {
 /// Resolve a workspace's login badge for display — the pure core of
 /// `AccountBadge.tsx`'s `AccountUsageBadge` (label, severity tint, tooltip).
 ///
+/// This is deliberately hand-rolled rather than mounting
+/// `accounts::badge::WorkspaceAccountMenu`: that widget registers a PERMANENT
+/// repaint hook on `AccountsController` (a push-only registry with no removal),
+/// and the sidebar rebuilds its rows wholesale on every event — one listener
+/// per row per rebuild would grow unboundedly and pin the dead widgets. Keeping
+/// the resolution pure here also keeps it unit-testable.
+///
 /// A pinned account reads the per-account poller; an unpinned one (or a
 /// dangling id, i.e. the account was deleted) falls back to the default login
 /// and the global poller, exactly like the Electron badge. An EXPIRED token
