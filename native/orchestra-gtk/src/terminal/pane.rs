@@ -20,8 +20,17 @@ use super::{term_bg, term_fg, term_palette, terminal_font};
 /// single-owned: the pane never holds a backend handle.
 #[derive(Debug, Clone)]
 pub enum PaneIntent {
-    /// First visible fit — spawn/attach the PTY at this grid size.
-    Start { id: String, cols: u16, rows: u16 },
+    /// First visible fit (or manual Run/relaunch) — spawn/attach the PTY at
+    /// this grid size. `kind` selects the backend method (ptyStart /
+    /// runScriptStart / nvimStart).
+    Start {
+        id: String,
+        kind: PaneKind,
+        cols: u16,
+        rows: u16,
+    },
+    /// Stop the PTY (Run pane ■ button) — `runScriptStop`.
+    Stop { id: String, kind: PaneKind },
     /// Keystroke/paste bytes to forward as `ptyWrite`.
     Write { id: String, bytes: Vec<u8> },
     /// Grid changed — `ptyResize` (already de-duped against the last size).
@@ -39,6 +48,32 @@ pub enum PaneIntent {
     OpenUri { uri: String },
 }
 
+/// Which kind of PTY a pane fronts — governs Ctrl+C policy, auto-start, and
+/// which RPC methods drive it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneKind {
+    /// The agent PTY (`<ws>`): auto-starts on first fit; Ctrl+C NEVER forwards
+    /// (the agent must not get SIGINT) — copy-or-nothing.
+    Agent,
+    /// The run-script PTY (`<ws>:run`): manual Start/Stop; Ctrl+C forwards when
+    /// there's no selection (kill the dev server).
+    Run,
+    /// The nvim PTY (`<ws>:nvim`): auto-starts on first fit; Ctrl+C forwards
+    /// when there's no selection (nvim owns the key).
+    Nvim,
+}
+
+impl PaneKind {
+    /// Whether Ctrl+C with no selection is forwarded to the PTY.
+    fn forwards_ctrl_c(self) -> bool {
+        !matches!(self, PaneKind::Agent)
+    }
+    /// Whether the pane auto-starts on its first visible fit.
+    fn auto_starts(self) -> bool {
+        !matches!(self, PaneKind::Run)
+    }
+}
+
 /// Lifecycle of the underlying PTY as the pane understands it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Life {
@@ -52,6 +87,7 @@ enum Life {
 
 pub struct TerminalPane {
     id: String,
+    kind: PaneKind,
     /// Root widget mounted into the GtkStack: overlay = [VTE | boot pill].
     root: gtk::Overlay,
     term: vte4::Terminal,
@@ -67,8 +103,9 @@ pub struct TerminalPane {
 }
 
 impl TerminalPane {
-    /// Build a pane for `id`. `sink` receives every [`PaneIntent`].
-    pub fn new(id: &str, sink: Rc<dyn Fn(PaneIntent)>) -> Self {
+    /// Build a pane of a specific [`PaneKind`]. `sink` receives every
+    /// [`PaneIntent`] the pane emits.
+    pub fn with_kind(id: &str, kind: PaneKind, sink: Rc<dyn Fn(PaneIntent)>) -> Self {
         let term = vte4::Terminal::new();
         term.set_font(Some(&terminal_font()));
         let palette = term_palette();
@@ -104,6 +141,7 @@ impl TerminalPane {
 
         let pane = TerminalPane {
             id: id.to_string(),
+            kind,
             root,
             term,
             pill,
@@ -213,9 +251,11 @@ impl TerminalPane {
     }
 
     fn wire(&self) {
-        // Keystrokes → ptyWrite. A Dead pane relaunches instead of forwarding.
+        // Keystrokes → ptyWrite. A Dead agent/nvim pane relaunches on any key
+        // instead of forwarding; a Dead Run pane waits for the Run button.
         {
             let id = self.id.clone();
+            let kind = self.kind;
             let sink = self.sink.clone();
             let boot = self.boot.clone();
             let pill = self.pill.clone();
@@ -225,11 +265,15 @@ impl TerminalPane {
                 // VTE emits commit for both UTF-8 text (size = byte length) and
                 // single-byte control input; forward the raw bytes either way.
                 if life.get() == Life::Dead {
+                    if kind == PaneKind::Run {
+                        return; // Run relaunches only via the toolbar button.
+                    }
                     // Relaunch on any key; swallow this keystroke.
                     life.set(Life::Running);
                     let (cols, rows) = last_size.get();
                     (sink)(PaneIntent::Start {
                         id: id.clone(),
+                        kind,
                         cols: cols.max(1),
                         rows: rows.max(1),
                     });
@@ -255,6 +299,7 @@ impl TerminalPane {
         // VTE has already re-flowed `column_count/row_count` to the allocation.
         {
             let id = self.id.clone();
+            let kind = self.kind;
             let sink = self.sink.clone();
             let last_size = self.last_size.clone();
             let started = self.started.clone();
@@ -267,15 +312,20 @@ impl TerminalPane {
                 if !term.is_mapped() || (cols, rows) == last_size.get() {
                     return glib::ControlFlow::Continue;
                 }
+                let first_fit = !started.replace(true);
                 last_size.set((cols, rows));
-                if !started.replace(true) {
+                if first_fit && kind.auto_starts() {
+                    // Agent/nvim start themselves on first fit; Run waits for
+                    // its button (but still records the size for start_manual).
                     life.set(Life::Running);
                     (sink)(PaneIntent::Start {
                         id: id.clone(),
+                        kind,
                         cols,
                         rows,
                     });
-                } else {
+                } else if !first_fit && life.get() == Life::Running {
+                    // Only resize a live PTY; an unstarted Run pane just tracks.
                     (sink)(PaneIntent::Resize {
                         id: id.clone(),
                         cols,
@@ -290,9 +340,10 @@ impl TerminalPane {
         self.wire_links();
     }
 
-    /// Keyboard parity with the renderer's `Terminal.tsx`:
-    /// - Ctrl+C copies the selection (VTE clipboard) and is NEVER forwarded —
-    ///   the agent must not receive SIGINT.
+    /// Keyboard parity with the renderer's `Terminal.tsx`/`RunTerminal.tsx`:
+    /// - Ctrl+C copies the selection; whether it then forwards `^C` depends on
+    ///   the pane kind — the agent NEVER forwards (no SIGINT), run/nvim forward
+    ///   when there's no selection (kill the dev server / nvim owns the key).
     /// - Ctrl+V pastes: a clipboard image wins (spilled to a temp file, its path
     ///   bracketed-pasted), else the clipboard text.
     /// - Shift+Enter sends ESC+CR (what `/terminal-setup` configures) so the
@@ -304,6 +355,7 @@ impl TerminalPane {
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let id = self.id.clone();
+        let kind = self.kind;
         let sink = self.sink.clone();
         let term = self.term.clone();
         let boot = self.boot.clone();
@@ -327,15 +379,23 @@ impl TerminalPane {
             }
             match key {
                 gtk::gdk::Key::c | gtk::gdk::Key::C => {
-                    // Copy-or-nothing; never forward ^C.
                     if term.has_selection() {
                         term.copy_clipboard_format(vte4::Format::Text);
+                        glib::Propagation::Stop
+                    } else if kind.forwards_ctrl_c() {
+                        // Forward ^C (0x03) — run/nvim panes want the signal.
+                        (sink)(PaneIntent::Write {
+                            id: id.clone(),
+                            bytes: vec![0x03],
+                        });
+                        glib::Propagation::Stop
+                    } else {
+                        // Agent: swallow entirely (no SIGINT). Still dismiss pill.
+                        if boot.borrow_mut().apply(Trigger::Keystroke) {
+                            Self::fade_out(&pill, &boot, &life);
+                        }
+                        glib::Propagation::Stop
                     }
-                    // Dismissing the pill on a keystroke still applies.
-                    if boot.borrow_mut().apply(Trigger::Keystroke) {
-                        Self::fade_out(&pill, &boot, &life);
-                    }
-                    glib::Propagation::Stop
                 }
                 gtk::gdk::Key::v | gtk::gdk::Key::V => {
                     Self::paste_clipboard(&term, &id, &sink);
@@ -345,6 +405,33 @@ impl TerminalPane {
             }
         });
         self.term.add_controller(keys);
+    }
+
+    /// Manually (re)start this pane's PTY — the Run toolbar's ▶ button. Uses the
+    /// last known grid size (or a sane default before the first fit).
+    pub fn start_manual(&self) {
+        let (mut cols, mut rows) = self.last_size.get();
+        if cols == 0 || rows == 0 {
+            (cols, rows) = (80, 24);
+        }
+        self.started.set(true);
+        self.life.set(Life::Running);
+        self.term.reset(false, false);
+        (self.sink)(PaneIntent::Start {
+            id: self.id.clone(),
+            kind: self.kind,
+            cols,
+            rows,
+        });
+    }
+
+    /// Stop this pane's PTY — the Run toolbar's ■ button.
+    pub fn stop(&self) {
+        self.life.set(Life::Dead);
+        (self.sink)(PaneIntent::Stop {
+            id: self.id.clone(),
+            kind: self.kind,
+        });
     }
 
     /// Read the widget's clipboard: an image (any `image/*`) becomes PNG bytes

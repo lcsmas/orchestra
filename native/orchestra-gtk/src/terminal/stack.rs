@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use gtk::prelude::*;
 
-use super::pane::{PaneIntent, TerminalPane};
+use super::pane::{PaneIntent, PaneKind, TerminalPane};
 
 pub struct TerminalStack {
     stack: gtk::Stack,
@@ -48,14 +48,54 @@ impl TerminalStack {
         !self.panes.contains_key(id)
     }
 
-    /// Ensure a pane exists for `id` (kept alive across switches).
+    /// Ensure an agent pane exists for `id` (kept alive across switches).
     fn ensure_pane(&mut self, id: &str) -> &TerminalPane {
+        self.ensure_kind(id, PaneKind::Agent)
+    }
+
+    /// Ensure a pane of a given kind exists (agent `<ws>`, run `<ws>:run`, nvim
+    /// `<ws>:nvim`). The GtkStack name is the full pty id, matching ptyData
+    /// routing.
+    fn ensure_kind(&mut self, id: &str, kind: PaneKind) -> &TerminalPane {
         if !self.panes.contains_key(id) {
-            let pane = TerminalPane::new(id, self.sink.clone());
+            let pane = TerminalPane::with_kind(id, kind, self.sink.clone());
             self.stack.add_named(pane.widget(), Some(id));
             self.panes.insert(id.to_string(), pane);
         }
         self.panes.get(id).expect("pane just inserted")
+    }
+
+    /// Show the run-script or nvim pane for a workspace, building it (with the
+    /// right kind) on first request. The run pane does NOT auto-start — the
+    /// caller's toolbar drives `start_manual`.
+    pub fn set_active_kind(&mut self, ws_id: &str, kind: PaneKind) {
+        let id = match kind {
+            PaneKind::Agent => ws_id.to_string(),
+            PaneKind::Run => format!("{ws_id}:run"),
+            PaneKind::Nvim => format!("{ws_id}:nvim"),
+        };
+        self.ensure_kind(&id, kind);
+        self.stack.set_visible_child_name(&id);
+        if self.active.as_deref() != Some(&id) {
+            self.active = Some(id.clone());
+            if let Some(pane) = self.panes.get(&id) {
+                pane.on_shown();
+            }
+        }
+    }
+
+    /// Toggle the Run pane's PTY via its toolbar (start if stopped, stop if
+    /// running is tracked by the caller). Returns false if no run pane exists.
+    pub fn run_start(&self, ws_id: &str) {
+        if let Some(pane) = self.panes.get(&format!("{ws_id}:run")) {
+            pane.start_manual();
+        }
+    }
+
+    pub fn run_stop(&self, ws_id: &str) {
+        if let Some(pane) = self.panes.get(&format!("{ws_id}:run")) {
+            pane.stop();
+        }
     }
 
     /// Make `id`'s pane the visible one, creating it if needed. Showing a pane

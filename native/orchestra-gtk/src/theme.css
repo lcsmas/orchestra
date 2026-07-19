@@ -72,6 +72,23 @@ scrollbar slider {
   opacity: 0;
 }
 
+/* Terminal-view toolbar (Agent / Run / nvim tabs + Run toggle). */
+.term-toolbar {
+  padding: 4px 8px;
+  background-color: @bg_2;
+  border-bottom: 1px solid @border;
+}
+.term-tab {
+  margin-right: 4px;
+  padding: 2px 12px;
+  font-size: 12px;
+}
+.run-action {
+  margin-left: auto;
+  padding: 2px 12px;
+  font-size: 12px;
+}
+
 /* 3 ── sidebar */
 .sidebar {
   background-color: @bg_2;

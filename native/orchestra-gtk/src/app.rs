@@ -49,6 +49,12 @@ pub struct App {
     footer_label: gtk::Label,
     /// Kept-alive terminals, one pane per workspace (plan §5.2).
     terminals: TerminalStack,
+    /// The workspace whose terminal is currently shown (for the view toolbar).
+    active_ws: Option<String>,
+    /// Whether the active workspace's run script is running (toolbar label).
+    run_running: bool,
+    /// Run/Stop toolbar button, relabeled on toggle.
+    run_button: gtk::Button,
 }
 
 #[derive(Debug)]
@@ -68,6 +74,10 @@ pub enum Msg {
     PtyData(String, Vec<u8>),
     /// A terminal pane wants the backend to do something (App owns the backend).
     Pane(PaneIntent),
+    /// Switch the active workspace's terminal view (Agent / Run / nvim).
+    ShowTermView(crate::terminal::PaneKind),
+    /// Run-pane toolbar toggle (start if stopped, else stop).
+    RunToggle,
 }
 
 fn status_css(status: WorkspaceStatus) -> &'static str {
@@ -118,6 +128,12 @@ fn populate_sidebar(list: &gtk::ListBox, workspaces: &[Workspace], selected_id: 
     if let Some(row) = list.row_at_index(selected_index as i32) {
         list.select_row(Some(&row));
     }
+}
+
+/// PTY ids are `<ws>`, `<ws>:run`, or `<ws>:nvim`. The run/nvim RPC methods key
+/// off the BARE workspace id, so drop the suffix.
+fn strip_pty_suffix(id: &str) -> &str {
+    id.split_once(':').map_or(id, |(ws, _)| ws)
 }
 
 fn make_backend() -> Option<Box<dyn Backend>> {
@@ -339,10 +355,44 @@ impl SimpleComponent for App {
                         #[wrap(Some)]
                         #[name = "main_area"]
                         set_child = &gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
                             add_css_class: "main-area",
                             set_widget_name: "main-area",
-                            // The terminal stack is appended in init() (it needs
-                            // the runtime `sender` to route pane intents).
+
+                            // Terminal-view toolbar: Agent / Run / nvim tabs plus
+                            // the Run pane's ▶/■ control. The terminal stack is
+                            // appended below in init() (needs the runtime sender).
+                            gtk::Box {
+                                add_css_class: "term-toolbar",
+                                set_widget_name: "term-toolbar",
+
+                                gtk::Button {
+                                    set_label: "Agent",
+                                    set_widget_name: "term-tab-agent",
+                                    add_css_class: "term-tab",
+                                    connect_clicked => Msg::ShowTermView(crate::terminal::PaneKind::Agent),
+                                },
+                                gtk::Button {
+                                    set_label: "Run",
+                                    set_widget_name: "term-tab-run",
+                                    add_css_class: "term-tab",
+                                    connect_clicked => Msg::ShowTermView(crate::terminal::PaneKind::Run),
+                                },
+                                gtk::Button {
+                                    set_label: "nvim",
+                                    set_widget_name: "term-tab-nvim",
+                                    add_css_class: "term-tab",
+                                    connect_clicked => Msg::ShowTermView(crate::terminal::PaneKind::Nvim),
+                                },
+                                #[name = "run_button"]
+                                gtk::Button {
+                                    set_label: "▶ Run",
+                                    set_widget_name: "term-run-toggle",
+                                    add_css_class: "run-action",
+                                    set_visible: false,
+                                    connect_clicked => Msg::RunToggle,
+                                },
+                            },
                         },
                     },
                 },
@@ -380,6 +430,9 @@ impl SimpleComponent for App {
         if let Some(settings) = gtk::Settings::default() {
             settings.set_gtk_application_prefer_dark_theme(true);
         }
+        // Register the bundled Orchestra Symbols subset before any terminal is
+        // built, so the circled-number status glyphs render at mono metrics.
+        crate::terminal::load_app_fonts();
 
         let state_path = state::state_path(&state::orchestra_home());
         let state = Rc::new(RefCell::new(UiState::load(&state_path)));
@@ -505,6 +558,9 @@ impl SimpleComponent for App {
             banner_label: widgets.banner_label.clone(),
             footer_label: widgets.footer_label.clone(),
             terminals,
+            active_ws: None,
+            run_running: false,
+            run_button: widgets.run_button.clone(),
         };
         // Open the persisted/first workspace terminal so the pane exists and
         // begins its lazy-start on first fit. (Bind the id in its own `let` so
@@ -643,6 +699,27 @@ impl SimpleComponent for App {
                 self.terminals.feed(&id, &bytes);
             }
             Msg::Pane(intent) => self.handle_pane_intent(intent),
+            Msg::ShowTermView(kind) => {
+                use crate::terminal::PaneKind;
+                if let Some(ws) = self.active_ws.clone() {
+                    self.terminals.set_active_kind(&ws, kind);
+                    // The Run toggle only shows on the Run view.
+                    self.run_button.set_visible(kind == PaneKind::Run);
+                }
+            }
+            Msg::RunToggle => {
+                if let Some(ws) = self.active_ws.clone() {
+                    if self.run_running {
+                        self.terminals.run_stop(&ws);
+                        self.run_running = false;
+                        self.run_button.set_label("▶ Run");
+                    } else {
+                        self.terminals.run_start(&ws);
+                        self.run_running = true;
+                        self.run_button.set_label("■ Stop");
+                    }
+                }
+            }
             Msg::PersistNow => {
                 if let Err(e) = self.state.borrow().save(&self.state_path) {
                     eprintln!("[state] save failed: {e}");
@@ -684,6 +761,10 @@ impl App {
             }
         }
         self.terminals.set_active(ws_id);
+        self.active_ws = Some(ws_id.to_string());
+        // Switching workspace returns to the Agent view; hide the Run toggle.
+        self.run_running = false;
+        self.run_button.set_visible(false);
         if fresh {
             // Resuming if the workspace has prior activity; a brand-new spawn
             // shows "Starting agent…". The status stands in for that here.
@@ -700,9 +781,27 @@ impl App {
     /// Perform a terminal pane's requested backend action. Errors are logged,
     /// not fatal — a disconnected backend simply drops the intent.
     fn handle_pane_intent(&mut self, intent: PaneIntent) {
+        use crate::terminal::PaneKind;
         let Some(b) = &self.backend else { return };
         let res = match &intent {
-            PaneIntent::Start { id, cols, rows } => b.pty_start(id, *cols, *rows),
+            PaneIntent::Start {
+                id,
+                kind,
+                cols,
+                rows,
+            } => match kind {
+                // Agent PTY: keyed by the pane id (`<ws>`).
+                PaneKind::Agent => b.pty_start(id, *cols, *rows),
+                // Run/nvim: the RPC wants the BARE workspace id; the pane id
+                // carries the `:run`/`:nvim` suffix used for ptyData routing.
+                PaneKind::Run => b.run_script_start(strip_pty_suffix(id), *cols, *rows),
+                PaneKind::Nvim => b.nvim_start(strip_pty_suffix(id), *cols, *rows),
+            },
+            PaneIntent::Stop { id, kind } => match kind {
+                PaneKind::Run => b.run_script_stop(strip_pty_suffix(id)),
+                // Agent/nvim have no explicit stop from the pane toolbar.
+                _ => Ok(()),
+            },
             PaneIntent::Write { id, bytes } => b.pty_write(id, bytes),
             PaneIntent::Resize { id, cols, rows } => b.pty_resize(id, *cols, *rows),
             PaneIntent::Repaint { id, cols, rows } => b.pty_repaint(id, *cols, *rows),

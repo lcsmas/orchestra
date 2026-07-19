@@ -107,6 +107,25 @@ pub trait Backend: std::fmt::Debug {
     fn save_clipboard_image(&self, _mime: &str, _bytes: &[u8]) -> Result<Option<String>> {
         Ok(None)
     }
+    /// Start the run-script PTY (`<ws>:run`) — `runScriptStart` keyed by the
+    /// bare workspace id (the backend derives the `:run` suffix).
+    fn run_script_start(&self, ws_id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.call(
+            "runScriptStart",
+            vec![json!(ws_id), json!(cols), json!(rows)],
+        )?;
+        Ok(())
+    }
+    /// Stop the run-script PTY (`runScriptStop`).
+    fn run_script_stop(&self, ws_id: &str) -> Result<()> {
+        self.call("runScriptStop", vec![json!(ws_id)])?;
+        Ok(())
+    }
+    /// Start the nvim PTY (`<ws>:nvim`) — `nvimStart` keyed by the bare id.
+    fn nvim_start(&self, ws_id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.call("nvimStart", vec![json!(ws_id), json!(cols), json!(rows)])?;
+        Ok(())
+    }
 }
 
 // ---- discovery --------------------------------------------------------------

@@ -13,10 +13,12 @@
 //!   its first visible fit, and routes `(id, bytes)` ptyData to the right pane.
 
 mod boot_pill;
+mod fonts;
 mod pane;
 mod stack;
 
-pub use pane::PaneIntent;
+pub use fonts::load_app_fonts;
+pub use pane::{PaneIntent, PaneKind};
 pub use stack::TerminalStack;
 
 use gtk::gdk;
