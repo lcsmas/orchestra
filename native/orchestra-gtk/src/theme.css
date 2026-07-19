@@ -196,3 +196,204 @@ entry {
 entry:focus-within {
   border-color: @accent;
 }
+
+/* ============================================================
+   §7  Main pane: toolbar, tabs, branch chips + picker  (B3)
+   ============================================================ */
+
+.main-area { background-color: @bg; }
+.main-content { background-color: @bg; }
+.empty-title { font-size: 1.4em; font-weight: 700; color: @text; }
+
+.toolbar {
+  padding: 6px 10px;
+  border-bottom: 1px solid @border;
+  background-color: @bg_2;
+}
+
+/* Branch chips ------------------------------------------------ */
+.branch-chip {
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid @border_strong;
+  background-color: @bg_3;
+  color: @text;
+  font-size: 0.9em;
+}
+.branch-chip.base { background-color: @bg_3; color: @text_dim; }
+.branch-chip.current { background-color: @bg_4; }
+.branch-chip.current:hover { border-color: @accent; }
+.branch-chip.orchestrator { border-color: @green; color: @green; }
+.branch-chip.scratch { border-color: @yellow; color: @yellow; }
+.branch-chip-icon { color: @text_dim; }
+.branch-chip-text { font-family: monospace; }
+.branch-arrow { color: @text_dim; }
+
+/* Branch picker popover -------------------------------------- */
+.branch-panel { padding: 6px; min-width: 260px; }
+.branch-list { background: transparent; }
+.branch-list row {
+  padding: 4px 6px;
+  border-radius: 5px;
+}
+.branch-list row:selected { background-color: @accent_strong; color: #fff; }
+.branch-list row.current .branch-item-badge {
+  color: @accent;
+  font-size: 0.8em;
+}
+.branch-item-icon { color: @text_dim; }
+.branch-item-name { font-family: monospace; }
+.branch-empty, .branch-error {
+  padding: 8px 6px;
+  color: @text_dim;
+  font-size: 0.9em;
+}
+.branch-error { color: @red; }
+.branch-footer { padding: 6px 4px 2px; }
+.branch-hint { color: @text_dim; font-size: 0.8em; }
+
+/* Tabs ------------------------------------------------------- */
+.toolbar-tabs { }
+.tab {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: @text_dim;
+}
+.tab:hover { background-color: @bg_3; color: @text; }
+.tab:checked { background-color: @bg_4; color: @text; }
+.diff-indicator { font-family: monospace; font-size: 0.85em; }
+
+/* Action buttons -------------------------------------------- */
+.restart-btn, .run-toggle-btn, .pane-toggle {
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid @border;
+  background-color: @bg_3;
+  color: @text;
+}
+.restart-btn:hover, .run-toggle-btn:hover, .pane-toggle:hover { border-color: @accent; }
+.run-toggle-btn.running { border-color: @green; color: @green; }
+.pane-toggle:checked { background-color: @bg_4; border-color: @accent; }
+
+.pr-link {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid @border_strong;
+  background-color: @bg_3;
+  color: @text;
+}
+.pr-link.primary { background-color: @accent_strong; border-color: @accent_strong; color: #fff; }
+.pr-link.pr-link-create.primed { border-color: @accent; color: @accent; }
+
+.merge-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid @border_strong;
+  background-color: @bg_3;
+  color: @text;
+}
+.merge-btn:hover { border-color: @green; color: @green; }
+.merge-pill-label {
+  padding: 3px 8px;
+  border-radius: 6px;
+  background-color: @bg_4;
+  color: @green;
+  font-size: 0.85em;
+}
+
+.add, .diff-add { color: @green; font-family: monospace; }
+.del, .diff-del { color: @red; font-family: monospace; }
+
+/* ============================================================
+   §8  Diff view  (B3)
+   ============================================================ */
+
+.diff-status-title { font-size: 1.1em; font-weight: 600; color: @text; }
+.diff-status-sub { color: @text_dim; }
+.diff-files { background-color: @bg_2; }
+.diff-files row { padding: 4px 8px; border-radius: 4px; }
+.diff-files row:selected { background-color: @accent_strong; color: #fff; }
+.diff-file-status {
+  font-family: monospace;
+  font-weight: 700;
+  min-width: 14px;
+}
+.diff-file-status.added { color: @green; }
+.diff-file-status.modified { color: @yellow; }
+.diff-file-status.deleted { color: @red; }
+.diff-file-status.renamed { color: @accent; }
+.diff-file-name { font-family: monospace; font-size: 0.9em; }
+.diff-header {
+  padding: 6px 10px;
+  border-bottom: 1px solid @border;
+  background-color: @bg_2;
+}
+.diff-header-path { font-family: monospace; color: @text; }
+.diff-trunc-notice {
+  padding: 4px 10px;
+  background-color: @bg_3;
+  color: @yellow;
+  font-size: 0.85em;
+}
+.diff-panes { background-color: @border; }
+.diff-source { background-color: @bg; }
+
+/* ============================================================
+   §9  Banners: setup, prompt-queue, sandbox  (B3)
+   ============================================================ */
+
+.setup-banner { padding: 8px 10px; border-bottom: 1px solid @border; }
+.setup-banner.running { background-color: @bg_3; }
+.setup-banner.failed { background-color: rgba(255,107,107,0.12); }
+.setup-banner.ok { background-color: @bg_2; }
+.setup-banner-title { font-weight: 600; color: @text; }
+.setup-banner-sub { color: @text_dim; font-size: 0.9em; }
+.setup-banner-x {
+  color: @red;
+  font-weight: 700;
+  min-width: 18px;
+}
+.setup-banner-log {
+  font-family: monospace;
+  font-size: 0.85em;
+  color: @text_dim;
+  background-color: @bg;
+  padding: 6px 8px;
+}
+
+.queue-banner { padding: 8px 10px; border-bottom: 1px solid @border; background-color: @bg_2; }
+.queue-banner.limited { background-color: rgba(255,200,87,0.10); }
+.queue-banner-title { font-weight: 600; color: @text; }
+.queue-banner-sub { color: @text_dim; font-size: 0.9em; }
+.queue-banner-list row { padding: 2px 4px; }
+.queue-banner-item-n {
+  font-family: monospace;
+  color: @text_dim;
+  min-width: 16px;
+}
+.queue-banner-item-text { color: @text; font-size: 0.9em; }
+.queue-banner-item-x { padding: 0 6px; color: @text_dim; }
+.queue-banner-item-x:hover { color: @red; }
+.queue-banner-textarea { font-family: monospace; }
+
+.sandbox-control-bar {
+  padding: 6px 10px;
+  border-bottom: 1px solid @border;
+  background-color: rgba(110,168,255,0.10);
+}
+.sandbox-control-dot {
+  min-width: 8px;
+  min-height: 8px;
+  border-radius: 8px;
+  background-color: @accent;
+}
+.sandbox-control-text { color: @text; font-size: 0.9em; }
+.sandbox-control-take {
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid @accent;
+  color: @accent;
+  background: transparent;
+}

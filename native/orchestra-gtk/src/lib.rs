@@ -5,6 +5,12 @@
 
 pub mod app;
 pub mod backend;
+pub mod banners;
+pub mod ctx;
 pub mod dialogs;
+pub mod diff;
+pub mod main_pane;
 pub mod remote_control;
 pub mod state;
+pub mod toolbar;
+pub mod usage_limit;
