@@ -289,6 +289,12 @@ impl BranchPopoverPanel {
         } else if rows.is_empty() {
             self.empty_label
                 .set_label(&format!("No branches match “{}”", self.entry.text()));
+        } else {
+            // Rows arrived: clear the placeholder rather than only hiding it,
+            // so the widget's text never contradicts what's on screen (a stale
+            // "Loading branches…" on a populated list reads as a hung fetch to
+            // both a user glancing at it and an E2E harness reading the label).
+            self.empty_label.set_label("");
         }
         self.empty_label.set_visible(rows.is_empty());
         self.list_scroll.set_visible(!rows.is_empty());

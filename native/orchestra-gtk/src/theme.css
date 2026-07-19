@@ -782,6 +782,8 @@ entry:focus-within {
 .main-area { background-color: @bg; }
 .main-content { background-color: @bg; }
 .empty-title { font-size: 1.4em; font-weight: 700; color: @text; }
+/* Dim "· setup" suffix on the Run tab when the repo has no run script. */
+.tab-dim { color: @text_dim; opacity: 0.75; font-size: 0.9em; }
 
 .toolbar {
   padding: 6px 10px;

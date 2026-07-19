@@ -79,6 +79,13 @@ impl MainPane {
         run_hint.set_vexpand(true);
         run_slot.append(&run_hint);
 
+        // NOTE (M3 gap #2): the "No run script configured" guidance that the
+        // always-visible Run tab leads to belongs in the RUN PANE, which B2
+        // owns — app.rs mounts `TerminalStack::run_widget()` into this slot and
+        // replaces anything B3 puts here. The toolbar half (tab stays visible,
+        // dim "· setup" hint, learn-more tooltip, run-toggle still gated on
+        // has_run) is B3's and lives in toolbar/mod.rs::apply_state.
+
         let stack = gtk::Stack::new();
         stack.set_widget_name("main-view-stack");
         stack.set_hexpand(true);
