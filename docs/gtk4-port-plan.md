@@ -757,19 +757,40 @@ Integration-surfaced M3 items (found during the serialized merge):
   - *A false lead worth recording*: events appearing to pump after the
     reconnect banner is **not** a zombie backend — `accounts/mod.rs:148` runs a
     local 60s tick refreshing relative stamps, independent of the socket.
-  - **Composition status: UNVERIFIED — not "works slowly", not "broken".**
-    B6's E2E showed no re-attach even at 220s (past the give-up), but B6
-    correctly refused to report that as a verdict: three confounds live in the
-    *instrument*, not the code — (a) an `atexit` reap meant post-mortem pointer
-    state was mistaken for in-window state, (b) the kill step used
-    `pkill -f dist-electron/daemon.js`, a pattern that would also match the
-    NEW daemon (and, on this machine, sibling agents' daemons), (c) no health
-    probe on d2 during the window, so "d2 stayed up" was an assumption. A
-    negative result from a dirty instrument is not evidence. What IS proven:
-    the client mechanism (`discovered_client_reconnects_to_a_moved_socket`
-    5/5), the give-up (`gives_up_reconnecting_after_the_backoff_window`), and
-    the app-side `Disconnected` handler (drops backend → `start_retry_loop`).
-    The PIECES are individually correct; only their COMPOSITION is unverified.
+  - **Composition status: a TRUSTWORTHY NEGATIVE — the task is a CORRECTNESS
+    bug, not a latency improvement.** B6's first E2E (no re-attach at 220s) was
+    *uninterpretable* because three confounds lived in the instrument; B6
+    correctly declined to report it as a verdict, hardened the harness, and
+    re-ran. Hardened: kill daemon #1 **by recorded PID** (the old
+    `pkill -f dist-electron/daemon.js` would also match the NEW daemon — and,
+    on this machine, 28 sibling agents' daemons), reap d2 **explicitly** at the
+    end of the window so post-mortem state can't masquerade as in-window state,
+    and **poll d2 every 5s** (process alive + real connect) so "the backend
+    stayed up" is an observation. Result: still no re-attach at 220s, with d2
+    healthy THROUGHOUT — so the failure can no longer be explained by a dead
+    backend.
+  - What IS proven independently: the client re-resolution mechanism
+    (`discovered_client_reconnects_to_a_moved_socket`, 5/5), the give-up
+    (`gives_up_reconnecting_after_the_backoff_window`), and the app-side
+    `Disconnected` handler by source review (drops backend → `start_retry_loop`).
+    Each piece works; the composition does not.
+  - **The single highest-value next probe** (B6's caveat, endorsed — the
+    negative is trustworthy but not proven-exhaustive, since the APP side was
+    never instrumented): observe whether `ConnectionState::Disconnected` is
+    actually **delivered to the handler** after the 180s give-up. It splits the
+    remaining possibilities cleanly — if it never arrives, the bug is in the
+    client's give-up path; if it arrives and the app still doesn't recover, the
+    bug is in `start_retry_loop`/rediscovery. Two very different fixes. Do this
+    first in the scoped harness.
+    *And it is nearly free* (B6's insight, verified): the two states already
+    write DISTINCT banner copy — `Disconnected` → `NO_BACKEND_BANNER`
+    (`app.rs:79`), `Reconnecting` → "backend connection lost — reconnecting
+    (attempt N…)" (`app.rs:1086`) — and the label is a named widget
+    (`backend-banner-text`, `app.rs:606`) the existing remote-control harness
+    can already read. So the decisive observation needs **no code change and no
+    rebuild**: poll that label across the give-up boundary and watch whether the
+    copy switches. Add a state-transition log line only if the banner read is
+    ambiguous.
   - **Actual remaining defect**: on the assumption composition works, a daemon
     restart still leaves the app "reconnecting" for up to ~3 min. Shortening
     that means
