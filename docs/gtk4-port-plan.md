@@ -653,13 +653,26 @@ notify/chime + `sidebar.emit`) — the event-ownership architecture scaled
 cleanly to the full UI. Overlays layer via `add_overlay` (never unmount).
 Five-consumer + overlay-doesn't-tear-down-terminal live re-verify in flight.
 
-Remaining: **B6** (packaging/CI/E2E + the two `src/main` fixes) — the LAST
-merge; wraps the daemon-attach lifecycle around the assembled seam, folds B1's
-live-fan-out harness scripts into `native/e2e/`. Already per-branch verified.
+**B6 MERGED (`c1ad201`) — M2 IS FULLY ASSEMBLED.** All six workstreams
+integrated: complete GTK UI (sidebar + accounts + main-pane + terminal +
+overlays) + RpcBackend transport + packaging/CI/e2e + the daemon-attach
+lifecycle + the two `src/main` `ORCHESTRA_HOME` fixes. B6's async `attach_flow`
+WRAPS the fan-out (init + RetryDiscover drive discovery→spawn→handshake;
+`on_attach` does the full live wiring + §1.1 refusal/warning dialogs) WITHOUT
+adding a stream consumer — grep-confirmed the three stream calls stay in
+`spawn_backend_streams` (app.rs:431), attach flow opens zero. Fixed a
+version-lockstep gap (`connect()` used `env!` → `app_version()`; footer reads
+matching daemon+frontend live). B1's live-fan-out harnesses folded into
+`native/e2e/`, both pass. Coordinator gates: whole-workspace build --all-targets
++ fmt --check clean, 146 tests. Full-matrix final re-verify (TS 208 +
+fixtures-drift + e2e) in flight.
 
-Tips verified: `a41fde7` (B2, four-consumer + PTY-feed + reconnect PASS),
+Merged-tip verifications (each a live re-check as a new consumer was added):
+`c1ad201` (B6, final, in flight), `057833c` (B5, five/six-consumer + overlay
+layering PASS), `a41fde7` (B2, four-consumer + PTY-feed + reconnect PASS),
 `26d30de` (B3, triple-consumer PASS), `33305ab` (B4, dual-consumer PASS —
-coexistence central risk closed).
+coexistence central risk closed). The event-ownership architecture was proven
+live at every scale from 2→6 consumers, none ever dark.
 
 **Coexistence central risk CLOSED** (verifier `b4-merge` PASS on the first
 ≥2-module tip, live daemon): two independent daemon mutations — `markSeen`
