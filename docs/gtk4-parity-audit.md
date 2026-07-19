@@ -525,11 +525,27 @@ Generalizing: **any two API methods that share a return shape but differ in key
 type are a standing hazard for a second frontend.** Two countermeasures fall out
 of this audit, both cheap:
 
-1. **Mock arms standing in for a keyed lookup must validate their key**, even when
-   returning a fixture (`mock.rs:962-964` already shows the pattern). This alone
-   converts an entire class of live-only bugs into test-time failures.
-2. **Prefer distinguishable key types or names** where a method takes an id vs a
-   path — the ambiguity is in the Electron API, not only in the GTK caller.
+### Testing policy (recommended, permanent)
+
+> **A mock arm must be at least as strict as the contract it stands in for.**
+>
+> 1. **Validate the key.** Any arm standing in for a keyed lookup must extract and
+>    validate its argument via `Self::arg(&params, N)?` even when returning a
+>    fixture — `mock.rs:962-964` already shows the pattern. This alone would have
+>    caught the `listBranches` P0 in the existing suite.
+> 2. **Match the wire shape exactly.** Return what the contract returns — a bare
+>    `boolean`, a bare struct — never an invented `{ok, …}` envelope. Both
+>    `openSelfTuneReport` (`mock.rs:748`) and `startSelfTune` (`mock.rs:750`)
+>    violate this, and in each case the looser mock is precisely what makes the
+>    real bug untestable.
+
+This is a standing policy change, not a one-off fix: a mock looser than its
+contract converts live-only bugs into passing tests, and every future frontend
+inherits the problem.
+
+A third countermeasure sits on the Electron side: **prefer distinguishable key
+types or names** where sibling methods take an id vs a path. The ambiguity lives
+in the API surface, not only in the GTK caller.
 
 This is an argument *for* the port beyond the port itself: a second frontend
 hardens the backend contract for both.
