@@ -773,7 +773,25 @@ Integration-surfaced M3 items (found during the serialized merge):
     "backend: daemon" while nothing works. This is a *separate, cheap* bug from
     the non-recovery, and it should be fixed alongside it: **the footer must not
     claim attached while the banner says connecting** — add that as a gate
-    assertion (criterion 5). B6's first E2E (no re-attach at 220s) was
+    assertion (criterion 5).
+    *Sequence criterion 5 FIRST*: because the footer bug is independent of
+    recovery, it is testable **before any recovery fix exists** — drop the
+    socket, assert footer-vs-banner disagreement, done in seconds with no 180s
+    window. It is the one criterion that can go green early and guard against
+    regressions in the cheap direction while the expensive work is in flight.
+    And it must be asserted **during** the reconnecting window: a gate that
+    only checks the end state passes trivially and proves nothing.
+  - **Harness hygiene is part of the task.** Two runs leaked 28 orphaned
+    processes (up to 3h17m old) because cleanup never ran when the parent was
+    killed. Note that **a `trap` does not fire on SIGKILL**, which is what a
+    command timeout eventually sends — so `trap`/`setsid` alone is not the fix.
+    Two parts, the first higher-value: (a) an **internal per-scenario timeout**,
+    so a hang FAILS with a terminator instead of waiting forever (that alone
+    turns a 24-minute wedge into a 60-second FAIL line, converting "absence of a
+    terminator" into a positive result — the whole class of trap this port kept
+    hitting); (b) cleanup keyed to something outliving the parent — child pids
+    written to a file the next run reaps, or children in their own process group
+    killed by group. B6's first E2E (no re-attach at 220s) was
     *uninterpretable* because three confounds lived in the instrument; B6
     correctly declined to report it as a verdict, hardened the harness, and
     re-ran. Hardened: kill daemon #1 **by recorded PID** (the old
