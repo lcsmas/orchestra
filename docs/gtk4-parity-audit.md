@@ -234,17 +234,41 @@ Only PARTIAL / MISSING / DIVERGENT. IMPROVEMENTs are excluded by design.
 
 1. **`listBranches` called with the wrong argument — branch picker is broken.**
    `toolbar/mod.rs:525` passes `ws.repo_path`; `api-handlers.ts:749-751` does
-   `store.getWorkspace(id)` and throws "workspace not found". The GTK comment at
-   `:521-522` asserts the wrong signature. Errors on **every** open against a real
-   backend; the mock accepts a path, which is why per-branch verification missed it.
-   → **B3**. Fix: pass the workspace id.
+   `store.getWorkspace(id)` and throws "workspace not found". Errors on **every**
+   open against a real backend. → **B3**. Fix: pass the workspace id.
 
-2. **Account migration has no confirmation and fails silently.**
+   **Root cause — two sibling methods take different argument types:**
+
+   | Method | Handler | Takes | GTK call site | OK? |
+   |---|---|---|---|---|
+   | `listRepoBranches` | `api-handlers.ts:274-277` (`store.repos.some(r => r.path === repoPath)`) | a **repo path** | `sidebar/mod.rs:1059` passes `repo_path` | ✅ |
+   | `listBranches` | `api-handlers.ts:749-751` (`store.getWorkspace(id)`) | a **workspace id** | `toolbar/mod.rs:525` passes `ws.repo_path` | ❌ |
+
+   The GTK comment at `toolbar/mod.rs:521-522` documents the *other* method's
+   signature ("listBranches(repoPath) → string[]"), which is likely how the
+   confusion arose — fix the comment with the code.
+
+   **Why no test caught it**: both mock arms (`mock.rs:632`, `mock.rs:958`) return
+   the *same* hardcoded branch list and **ignore their params entirely**, so the
+   mock cannot distinguish an id from a path. Contrast `runScriptStatus`
+   (`mock.rs:962-964`), which does extract its arg via `Self::arg(&params, 0)?` —
+   the correct pattern already exists in the same file. Making mock arms validate
+   their arguments would close this whole bug class (see CONTRACT-MISMATCH below).
+
+2. **Account migration has no confirmation.**
    `sidebar/mod.rs:801-806` is `fire_and_forget("migrateWorkspaceAccount")` — one
    click stops the agent and relocates the conversation, where Electron always
-   confirms (`AccountBadge.tsx:214-221`). The discarded result also hides
-   `{ok:false,error}` logical failures, and there is no busy state to block a
-   double-click. → **B4**.
+   confirms (`AccountBadge.tsx:214-221`). No busy state blocks a double-click.
+   → **B4**.
+
+   *Corrected during the sweep*: this is **not** a silent failure. The handler
+   (`api-handlers.ts:355-357`) throws on `!res.ok` and `fire_and_forget` does show
+   a dialog on throw (`sidebar/mod.rs:1008-1023`). The defect is (a) the **missing
+   confirm** on a destructive action — the genuine safety issue — and (b)
+   **inconsistent handling**: `accounts/badge.rs:319-336` handles the same method
+   correctly via `call_typed`, checking `r.ok` and surfacing `r.error`, while the
+   discarded result here cannot distinguish "migrated but not resumed" from full
+   success.
 
 3. **`accounts/badge.rs` is a complete 384-line port with zero consumers.**
    The live badge (`sidebar/widgets.rs:805`) renders the raw **account UUID** with
@@ -300,6 +324,19 @@ Only PARTIAL / MISSING / DIVERGENT. IMPROVEMENTs are excluded by design.
     `reconnect: false` probe (`backend.rs:176`) of a caller-chosen socket.
     Worst case is ~180 s + ≤3 s (the retry loop at `app.rs:1374` then rediscovers),
     so it self-heals; there is no permanent hang. → **B6**.
+
+11b. **"Open report" silently does nothing when a login has no report.**
+    `openSelfTuneReport` returns `Promise<boolean>` (`ipc.ts:290`) where `false`
+    means "no report yet"; `overlays/insights.rs:472-474` inspects only `Err(_)`,
+    so `Ok(false)` reads as success — no window, no message, no log. Fix requires
+    **both** the call site and `mock.rs:748` (which returns an object where the
+    contract says a bare boolean, making the branch untestable). → **B5**.
+
+11c. **`startSelfTune` parses an envelope the daemon never sends.**
+    `insights.rs:420` reads `{ok, run}`; `ipc.ts:282` returns a bare `SelfTuneRun`
+    and *throws* on an in-flight run. The `ok:false` branch is dead against the
+    real backend. Confirm the daemon's rejection shape live before changing.
+    → **B5**.
 
 12. **Prompt-queue limit state goes stale.** Usage is fetched only on
     `set_workspace` (`banners/queue.rs:191`); the 30 s timer re-renders a stale
@@ -393,6 +430,64 @@ Only PARTIAL / MISSING / DIVERGENT. IMPROVEMENTs are excluded by design.
 
 ---
 
+## CONTRACT-MISMATCH — wire-contract bugs invisible to every existing test
+
+A dedicated sweep of all 22 `call_typed` / `call` sites and 13 `fire_and_forget`
+sites, comparing each against its `api-handlers.ts` handler signature **and** its
+`mock.rs` arm.
+
+**Why this class matters most:** the mock backend is *more permissive than the
+wire contract*. Many mock arms return a constant and ignore their parameters, so
+a GTK call site can pass the wrong argument shape — or deserialize the wrong
+return shape — and per-branch verification passes while only a live daemon fails.
+
+| Method | GTK call site | Handler ref | Mock arm | Severity | Concrete failure |
+|---|---|---|---|---|---|
+| `listBranches` | `toolbar/mod.rs:525` (passes `ws.repo_path`) | `api-handlers.ts:749-753` (`store.getWorkspace(id)`); typed `ipc.ts:257` `(id: string)` | `mock.rs:958` — returns a constant list, **params ignored** | **BROKEN-LIVE** | Handler throws `workspace not found`; `load_branches` takes the `Err` arm (`toolbar/mod.rs:159-162`), so the popover opens **empty with an error on every open**. See P0 #1. |
+| `openSelfTuneReport` | `overlays/insights.rs:472-474` — inspects only `Err(_)` | `ipc.ts:290` → `Promise<boolean>`, where **`false` = "no report yet"**; `api-handlers.ts:837` | `mock.rs:748` — returns `json!({"ok": true})`, an **object where the contract says bare boolean** | **SUSPICIOUS** (real logical bug) | A successful `Ok(false)` is treated as success: the user clicks "open report" and **nothing happens — no window, no message, no log**. The mock's object return makes the `false` branch structurally untestable. Fix requires **both** sides. |
+| `startSelfTune` | `overlays/insights.rs:420` — branches on `v.get("ok") == Some(false)`, reads `{ok, run}` | `ipc.ts:282` → bare `SelfTuneRun`, and **rejects (throws)** when a run is in flight | `mock.rs:750` → `start_fake_self_tune` returns `{ok:false,error}` / `{ok:true,run}` — **an envelope the real handler never emits** | **SUSPICIOUS** | The `ok:false` branch is **dead** against the real daemon, and the success path reads the wrong shape. Symptom is degraded messaging, not a hard break (the `Err` path still catches the conflict). Confirm the daemon's rejection shape live before changing. |
+
+**Verified NOT mismatches** (filed to prevent false positives): `getWorkspaceAccounts`
+(both `banners/queue.rs:229` and `accounts/mod.rs:126` correctly use
+`HashMap<String, WorkspaceAccount>`, matching `ipc.ts:112` — **the previously
+reported Vec-vs-Map bug is already fixed**), `stopAgent` (`resources.rs:686`, correctly
+uses an `Agent`-filtered `pty_id`), `listRepoBranches` (`sidebar/mod.rs:1059`, genuinely
+takes a path), `getRepoScripts`, `switchBranch`, `renameBranch`, `queuePrompt`,
+`removeQueuedPrompt`, `importToSandbox`, `migrateWorkspaceAccount`,
+`sandboxControlState`, `getDiff`/`getDiffStats`/`findPR`/`runScriptStatus`, and all
+PTY methods.
+
+### Systemic root cause — param-ignoring mock arms
+
+`listBranches` (`mock.rs:958`), `listRepoBranches`, `openSelfTuneReport`
+(`mock.rs:748`), `stopAgent`, `takeSandboxControl`, `restartAgent`, and
+`mergeWorktree` all return constants regardless of input. **Any argument-shape
+error in these methods is untestable by construction.** The correct pattern
+already exists in the same file — `runScriptStatus` (`mock.rs:962-964`) extracts
+its argument via `Self::arg(&params, 0)?`.
+
+**Recommendation**: every mock arm standing in for a keyed lookup should validate
+its key even when returning a fixture. That single change would have caught the
+`listBranches` P0 in the existing test suite.
+
+## SILENT-FAILURE — `fire_and_forget` call sites
+
+**Correction to a common assumption**: `Sidebar::fire_and_forget`
+(`sidebar/mod.rs:1004-1025`) is **not** fully silent — it *does* surface
+transport/throw errors in a dialog (`:1008-1023`). What it discards is the
+**return value**, so only failures encoded in a *successful* reply are invisible.
+
+| Method | Call site | Destructive? | Failable? | On failure the user sees |
+|---|---|---|---|---|
+| `migrateWorkspaceAccount` | `sidebar/mod.rs:802` | **Yes** — relocates a transcript, restarts the agent | Yes — returns `{ok,error}` | Handler `api-handlers.ts:355-357` **throws** on `!res.ok`, so the dialog *does* fire. But the result is discarded, so "migrated but not resumed" is indistinguishable from success — and `accounts/badge.rs:319-336` handles the *same method* correctly via `call_typed`. **Inconsistent handling, not silent failure.** The real defect remains the missing confirm (P0 #2). |
+| `openExternal` | `sidebar/mod.rs:720` | No | **Yes, silently** | `api-handlers.ts:301`'s `isSafeHttpUrl` (`:233-240`) drops any non-http(s) URL and **resolves successfully** → nothing opens, no dialog, no log. The one genuinely silent path found. |
+| `renameBranch` | `sidebar/mod.rs:751` | Yes — moves a git branch | Yes (throws) | Dialog shown; the returned updated `Workspace` (`ipc.ts:180`) is dropped, UI relies on the event pump. |
+| `archiveWorkspace` / `unarchiveWorkspace` | `mod.rs:766`, `:770` | Yes | Yes (throws) | Dialog shown; handler returns `void` — acceptable. |
+| `createWorkspace` / `createScratch…` / `createOrchestrator…` | `mod.rs:1044`, `:1026` | No | Yes | Dialog shown; returned `Workspace` dropped (event pump renders it). |
+| `addRepo` / `syncRepoBase` / `reorderWorkspaces` / `reorderRepos` / `setUnread` / `revealLogs` | `mod.rs:716`, `:741`, `:1404`, `:1427`, `:762`, `:724` | No | Low | Dialog shown on throw — acceptable. |
+
+---
+
 ## IMPROVEMENTS — GTK deliberately exceeds Electron
 
 **Do not file these as regressions or "fix" them back.**
@@ -410,6 +505,34 @@ Only PARTIAL / MISSING / DIVERGENT. IMPROVEMENTs are excluded by design.
 | Atomic state write + corrupt→defaults | `state.rs:70-86` | Safer than localStorage. |
 
 ---
+
+## Conclusions
+
+**The port is a contract test for the Electron API surface.** Until now the
+React renderer was the *only* consumer of `OrchestraAPI`, so ambiguities in that
+surface were never stressed — a method's real contract was whatever its single
+caller happened to pass. The GTK app is the first independent consumer, and it is
+surfacing latent ambiguity that the single-consumer era structurally could not
+reveal.
+
+The `listBranches` P0 is the clearest instance, and it is a **class, not a slip**:
+`listBranches(id)` and `listRepoBranches(repoPath)` share a return shape
+(`string[]`), sit one word apart in name, and validate against *different* stores
+(`store.getWorkspace` vs `store.repos.some`). Nothing in the type system or the
+tests distinguishes them, and both mock arms return identical hardcoded lists.
+
+Generalizing: **any two API methods that share a return shape but differ in key
+type are a standing hazard for a second frontend.** Two countermeasures fall out
+of this audit, both cheap:
+
+1. **Mock arms standing in for a keyed lookup must validate their key**, even when
+   returning a fixture (`mock.rs:962-964` already shows the pattern). This alone
+   converts an entire class of live-only bugs into test-time failures.
+2. **Prefer distinguishable key types or names** where a method takes an id vs a
+   path — the ambiguity is in the Electron API, not only in the GTK caller.
+
+This is an argument *for* the port beyond the port itself: a second frontend
+hardens the backend contract for both.
 
 ## Fixture-corpus note (plan §M3)
 
