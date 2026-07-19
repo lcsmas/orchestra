@@ -112,6 +112,42 @@ impl TerminalStack {
         self.ensure(&id, PaneKind::Run).widget().clone()
     }
 
+    /// The "no run script configured" guidance shown in the run slot instead of
+    /// a dead terminal (Electron `RunTerminal.tsx`'s `!hasRunScript` branch).
+    /// B3's toolbar keeps the Run TAB reachable even without a script — this is
+    /// the other half of that discovery path, so the copy names the same entry
+    /// point (the repo's gear in the sidebar) the tab's tooltip promises.
+    pub fn run_guidance() -> gtk::Widget {
+        let col = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        col.set_widget_name("run-empty");
+        col.add_css_class("run-empty");
+        col.set_valign(gtk::Align::Center);
+        col.set_halign(gtk::Align::Center);
+        col.set_hexpand(true);
+        col.set_vexpand(true);
+
+        let title = gtk::Label::new(Some("No run script configured"));
+        title.set_widget_name("run-empty-title");
+        title.add_css_class("empty-title");
+
+        // Same wording as the renderer, with the inline <code> bits rendered as
+        // monospace via pango markup.
+        let body = gtk::Label::new(None);
+        body.set_widget_name("run-empty-hint");
+        body.add_css_class("empty-hint");
+        body.set_markup(
+            "Click the gear icon next to the repo name in the sidebar to add a \
+             <tt>run</tt> script (e.g. <tt>pnpm dev --port $ORCHESTRA_PORT</tt>).",
+        );
+        body.set_wrap(true);
+        body.set_justify(gtk::Justification::Center);
+        body.set_max_width_chars(52);
+
+        col.append(&title);
+        col.append(&body);
+        col.upcast()
+    }
+
     /// Toggle the nvim file pane for the active workspace within the agent
     /// stack (B3's toolbar nvim toggle drives this). `open` reveals the nvim
     /// pane (built + auto-started on first open); `false` returns to the agent
