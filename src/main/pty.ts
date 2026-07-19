@@ -1,6 +1,5 @@
-import { platform } from './platform';
+import { platform, orchestraHome } from './platform';
 import path from 'node:path';
-import os from 'node:os';
 import fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { getHookSocketPath } from './hooks-server';
@@ -71,7 +70,12 @@ const sessions = new Map<string, Session>();
 // width instead of snapping to a default geometry.
 const lastSizes = new Map<string, { cols: number; rows: number }>();
 
-const LOG_DIR = path.join(os.homedir(), '.orchestra', 'logs');
+// Per-workspace PTY logs live under the active ORCHESTRA_HOME, like every other
+// runtime artifact (logger.ts, the store, the ui-sock) — a dev instance
+// (ORCHESTRA_HOME=~/.orchestra-dev) or an isolated E2E home must not scribble
+// into the real ~/.orchestra. orchestraHome() falls back to ~/.orchestra when
+// the env var is unset, matching the previous hardcoded path.
+const LOG_DIR = path.join(orchestraHome(), 'logs');
 const MAX_LOG_BYTES = 2 * 1024 * 1024; // 2 MB cap per workspace
 
 // pty:data coalescing. All main→renderer IPC — terminal output AND the
