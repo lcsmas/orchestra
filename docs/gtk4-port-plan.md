@@ -615,9 +615,11 @@ serialized merge assembly (B4 done → B3 → B5 → B6), each merged tip gettin
 dual-consumer live re-verify (prove sidebar AND accounts/overlay fan-outs both
 fire off the single consumer — the exact failure a competing pump would show).
 
-Post-M2 follow-up already queued: B4 is porting the just-shipped Electron
-`usage-bar-extra-credits` feature to the GTK usage bar (behavioral match),
-merging as a targeted delta after the main B4 merge.
+Post-M2 follow-up landed: B4's GTK port of the just-shipped Electron
+`usage-bar-extra-credits` feature merged (`33305ab`) as an isolated delta
+(only `accounts/usage_bars.rs` + `smoke-accounts.sh`) — behavioral match to
+Electron `10460f7` (EX/ex labels, conditional show, no-reset tooltip, shared
+severity). Integration tip is now `33305ab`.
 
 ##### Event-ownership contract (settled during B1 integration)
 
