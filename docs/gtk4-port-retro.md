@@ -74,6 +74,38 @@ by the plan and the audit.
     artifact reached a verifier gate. Extracting the toolchain took one command
     once I bothered.
 
+12. **The stale-binary trap fired twice and nearly shipped two false verdicts.**
+    Once in an A/B across commits where only one arm was rebuilt ("the B4 fix
+    broke pane activation"), once driving an E2E against a binary rebuilt for
+    `cargo test` but not before the drive ("the deps:status P0 doesn't fire",
+    reproducible 3/3 in isolation). Both were caught by accident — the second
+    only because adding instrumentation forced a rebuild. `cargo test` does not
+    refresh `target/debug/<bin>`, so **rebuild before any drive that execs the
+    binary**, and treat "reproduces in isolation" as *zero* evidence of a real
+    defect when the artifact's provenance is unchecked: reproducibility is what
+    a stale artifact does best. This should have been a standing pre-drive step
+    from M1, not a lesson learned twice.
+
+13. **A stale comment licensed a race.** `orchestra-rpc/tests/client.rs:444`
+    said "this test is the only one touching these vars" — true when written,
+    false the moment a new test touched them, and it made the resulting ~11%
+    flake look sanctioned. Comments asserting exclusivity or invariants rot
+    silently and are worse than no comment, because they suppress the check.
+    (Same pattern as the `listBranches` comment documenting the *sibling*
+    method's contract.) Fix the comment with the code, every time.
+
+## The through-line
+
+Every false verdict this swarm nearly shipped came from **evidence that looked
+more convincing than a real failure would have**: a vacuous assertion that
+could not fail, an A/B with one arm stale, a negative from an unaudited
+instrument, a timing-misaligned sample, a green half-E2E that drove past the
+other half's gap, and a stale binary reproducing perfectly in isolation. None
+of these fail loudly. They fabricate plausible, actionable, wrong answers — and
+a plausible answer gets acted on where a loud failure gets investigated. The
+single highest-value habit across the whole port was asking, before believing
+any result: *what would have to be true for this evidence to be misleading?*
+
 ## To carry into the next swarm
 
 - Name agents for their **role**, not their first task; rename when scope grows.
