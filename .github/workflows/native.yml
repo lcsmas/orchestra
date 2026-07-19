@@ -1,0 +1,134 @@
+name: Native (GTK4)
+
+# Builds and checks the native GTK4 frontend (native/orchestra-gtk) and the
+# shared RPC crate (native/orchestra-rpc) on both arches, plus the TS gates
+# that back the port (the RPC fixtures the conformance rig consumes are
+# regenerated from the Node backend). Unlike the rootless dev-box localdeps
+# hack, CI runs in a Fedora container with root and installs the real -devel
+# packages via dnf.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'native/**'
+      - 'src/**'
+      - 'scripts/dump-rpc-fixtures.ts'
+      - '.github/workflows/native.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+  pull_request:
+    paths:
+      - 'native/**'
+      - 'src/**'
+      - 'scripts/dump-rpc-fixtures.ts'
+      - '.github/workflows/native.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+  workflow_dispatch: {}
+
+# One in-flight run per ref; a new push cancels the previous run.
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+
+    runs-on: ${{ matrix.os }}
+
+    # Fedora 42 matches the dev box (Asahi Fedora 42) and ships the gtk4 /
+    # vte291-gtk4 / gtksourceview5 / webkitgtk6.0 / gstreamer1 -devel packages
+    # the M2 crate surface links against.
+    container:
+      image: fedora:42
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            gcc gcc-c++ make pkgconf-pkg-config git tar \
+            rust cargo clippy rustfmt \
+            gtk4-devel vte291-gtk4-devel glib2-devel cairo-devel \
+            cairo-gobject-devel pango-devel gdk-pixbuf2-devel graphene-devel \
+            harfbuzz-devel vulkan-loader-devel \
+            gtksourceview5-devel \
+            webkitgtk6.0-devel libsoup3-devel javascriptcoregtk6.0-devel \
+            gstreamer1-devel gstreamer1-plugins-base-devel
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # actions/checkout marks the workdir "dirty" for git inside a container
+      # (uid mismatch) unless it's a safe.directory; the fixtures drift gate
+      # below runs `git diff`, so this must be set.
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Rust versions
+        run: cargo --version && rustc --version && cargo clippy --version && rustfmt --version
+
+      - name: cargo fmt (check)
+        working-directory: native
+        run: cargo fmt --all --check
+
+      - name: cargo clippy (deny warnings)
+        working-directory: native
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        working-directory: native
+        run: cargo test --workspace
+
+      - name: cargo build (release)
+        working-directory: native
+        run: cargo build --release -p orchestra-gtk
+
+      - name: Upload GTK binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: orchestra-gtk-${{ matrix.arch }}
+          path: native/target/release/orchestra-gtk
+          if-no-files-found: error
+
+      # ---- TS-side gates (the RPC fixtures are generated from the backend) ----
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TS test suite
+        run: pnpm run test
+
+      # Regenerate the ui-rpc fixture corpus from the backend and fail if it
+      # drifts from what's committed — a wire-shape change must land with the
+      # regenerated fixtures (plan §8 / docs/ui-rpc-protocol.md §7).
+      - name: RPC fixtures drift gate
+        run: |
+          pnpm run fixtures:rpc
+          git diff --exit-code -- native/orchestra-rpc/fixtures \
+            || { echo "::error::RPC fixtures are stale — run 'pnpm run fixtures:rpc' and commit the result"; exit 1; }
+
+      # Re-run conformance now that the fixtures are freshly generated (the
+      # committed corpus may be empty on a feature branch; this proves the
+      # typed mirrors roundtrip the CURRENT backend output).
+      - name: RPC conformance (against fresh fixtures)
+        working-directory: native
+        run: cargo test -p orchestra-rpc --test conformance
