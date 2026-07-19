@@ -16,9 +16,9 @@ use gtk::prelude::*;
 use orchestra_rpc::types::{DiffStats, PrsForBranch, Workspace};
 use serde_json::json;
 
+use crate::banners::Banners;
 use crate::ctx::Ctx;
 use crate::diff::DiffView;
-use crate::banners::Banners;
 use crate::toolbar::{Tab, Toolbar};
 
 /// Poll cadences (seconds), matching the Electron visible-polls.
@@ -295,7 +295,10 @@ impl MainPane {
             self.toolbar.set_prs(None);
             return;
         };
-        match self.ctx.call_typed::<PrsForBranch>("findPR", vec![json!(id)]) {
+        match self
+            .ctx
+            .call_typed::<PrsForBranch>("findPR", vec![json!(id)])
+        {
             Ok(prs) => self.toolbar.set_prs(Some(&prs)),
             Err(_) => self.toolbar.set_prs(None),
         }

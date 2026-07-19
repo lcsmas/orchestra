@@ -14,13 +14,16 @@ use serde_json::Value;
 
 use crate::backend::Backend;
 
+/// Callback the app shell installs to fan an updated workspace back out.
+type WorkspaceMutatedFn = Box<dyn Fn(Workspace)>;
+
 pub struct Ctx {
     pub window: gtk::Window,
     backend: RefCell<Option<Rc<dyn Backend>>>,
     /// Hook for mutations that return an updated `Workspace` (queuePrompt,
     /// switchBranch, …): the app shell wires this to refresh its list + the
     /// main pane so every surface sees the new state at once.
-    on_workspace_mutated: RefCell<Option<Box<dyn Fn(Workspace)>>>,
+    on_workspace_mutated: RefCell<Option<WorkspaceMutatedFn>>,
 }
 
 impl Ctx {
@@ -71,15 +74,11 @@ impl Ctx {
     /// Frontend-local `openExternal` (protocol §4: frontends SHOULD open
     /// locally rather than round-trip the backend).
     pub fn open_external(&self, url: &str) {
-        gtk::UriLauncher::new(url).launch(
-            Some(&self.window),
-            gtk::gio::Cancellable::NONE,
-            |res| {
-                if let Err(e) = res {
-                    eprintln!("[open-external] {e}");
-                }
-            },
-        );
+        gtk::UriLauncher::new(url).launch(Some(&self.window), gtk::gio::Cancellable::NONE, |res| {
+            if let Err(e) = res {
+                eprintln!("[open-external] {e}");
+            }
+        });
     }
 
     /// Keystrokes into a workspace PTY (the 0x02 fast path).

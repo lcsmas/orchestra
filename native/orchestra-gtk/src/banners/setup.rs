@@ -212,7 +212,10 @@ impl SetupBanner {
         let Some(id) = self.state.borrow().ws.as_ref().map(|w| w.id.clone()) else {
             return;
         };
-        let text = match self.ctx.call_typed::<String>("readSetupLog", vec![json!(id)]) {
+        let text = match self
+            .ctx
+            .call_typed::<String>("readSetupLog", vec![json!(id)])
+        {
             Ok(t) if !t.is_empty() => t,
             Ok(_) => "(no setup log captured yet)".into(),
             Err(e) => format!("failed to read setup log: {e}"),
@@ -257,7 +260,10 @@ impl SetupBanner {
         let status = self.status();
         let log_open = self.state.borrow().log_open;
         let retrying = self.state.borrow().retrying;
-        let visible = matches!(status, Some(SetupStatus::Running) | Some(SetupStatus::Failed)) || log_open;
+        let visible = matches!(
+            status,
+            Some(SetupStatus::Running) | Some(SetupStatus::Failed)
+        ) || log_open;
         self.root.set_visible(visible);
         if !visible {
             return;

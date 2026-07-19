@@ -85,12 +85,17 @@ pub struct Toolbar {
     nvim_toggle: gtk::ToggleButton,
 
     /// Fired when a tab is picked (the pane swaps its stack + marks seen).
-    on_tab: RefCell<Option<Box<dyn Fn(Tab)>>>,
+    on_tab: RefCell<Option<TabFn>>,
     /// Fired when the nvim/file-pane toggle flips (B2 owns the pane).
-    on_nvim: RefCell<Option<Box<dyn Fn(bool)>>>,
+    on_nvim: RefCell<Option<NvimFn>>,
     /// Guards the tab ToggleButton handlers during programmatic sync.
     syncing_tabs: Cell<bool>,
 }
+
+/// Callback fired when a toolbar tab is selected.
+type TabFn = Box<dyn Fn(Tab)>;
+/// Callback fired when the nvim/file-pane toggle flips.
+type NvimFn = Box<dyn Fn(bool)>;
 
 impl Toolbar {
     pub fn new(ctx: Rc<Ctx>) -> Rc<Self> {
@@ -108,7 +113,8 @@ impl Toolbar {
         orchestrator_chip.add_css_class("branch-chip");
         orchestrator_chip.add_css_class("orchestrator");
         orchestrator_chip.set_widget_name("branch-chip-orchestrator");
-        orchestrator_chip.set_tooltip_text(Some("Orchestrator session — coordinates spawned agents"));
+        orchestrator_chip
+            .set_tooltip_text(Some("Orchestrator session — coordinates spawned agents"));
         let orch_icon = gtk::Label::new(Some("🌿"));
         let chip_text_orchestrator = gtk::Label::new(None);
         chip_text_orchestrator.add_css_class("branch-chip-text");
@@ -207,9 +213,7 @@ impl Toolbar {
         let restart_btn = gtk::Button::new();
         restart_btn.add_css_class("restart-btn");
         restart_btn.set_widget_name("restart-btn");
-        restart_btn.set_child(Some(&gtk::Image::from_icon_name(
-            "view-refresh-symbolic",
-        )));
+        restart_btn.set_child(Some(&gtk::Image::from_icon_name("view-refresh-symbolic")));
         restart_btn.set_tooltip_text(Some(
             "Restart agent (resumes via --continue, picks up MCP / settings changes)",
         ));
@@ -232,8 +236,7 @@ impl Toolbar {
             "Merge this worktree into its base branch (the agent commits, merges & pushes)",
         ));
 
-        let merge_pill_label =
-            gtk::Label::new(Some("merge requested — the agent merges & pushes"));
+        let merge_pill_label = gtk::Label::new(Some("merge requested — the agent merges & pushes"));
         merge_pill_label.add_css_class("merge-pill-label");
         let merge_pill = gtk::Revealer::new();
         merge_pill.set_child(Some(&merge_pill_label));
@@ -324,11 +327,7 @@ impl Toolbar {
             st.run_live = false;
             // Scratch-like sessions have only the Terminal tab; snap back to it
             // so a Diff/Run selection doesn't leave the pane blank (App.tsx).
-            if st
-                .ws
-                .as_ref()
-                .is_some_and(|w| w.is_scratch_like())
-                && st.active_tab != Tab::Terminal
+            if st.ws.as_ref().is_some_and(|w| w.is_scratch_like()) && st.active_tab != Tab::Terminal
             {
                 st.active_tab = Tab::Terminal;
             }
@@ -543,9 +542,9 @@ impl Toolbar {
         }
         self.branch_panel.set_busy(true);
         // switchBranch(id, branch) → Workspace (the updated record).
-        let result: Result<Workspace, String> =
-            self.ctx
-                .call_typed("switchBranch", vec![json!(ws.id), json!(branch)]);
+        let result: Result<Workspace, String> = self
+            .ctx
+            .call_typed("switchBranch", vec![json!(ws.id), json!(branch)]);
         self.branch_panel.set_busy(false);
         match result {
             Ok(updated) => {
@@ -586,8 +585,12 @@ impl Toolbar {
                 }
             }
             if let Err(e) = ctx.call("restartAgent", vec![json!(ws.id)]) {
-                dialogs::error(&win, "Restart failed", &format!("Could not restart agent: {e}"))
-                    .await;
+                dialogs::error(
+                    &win,
+                    "Restart failed",
+                    &format!("Could not restart agent: {e}"),
+                )
+                .await;
             }
         });
     }
@@ -685,8 +688,12 @@ impl Toolbar {
                     });
                 }
                 Err(e) => {
-                    dialogs::error(&win, "Merge failed", &format!("Could not request merge: {e}"))
-                        .await;
+                    dialogs::error(
+                        &win,
+                        "Merge failed",
+                        &format!("Could not request merge: {e}"),
+                    )
+                    .await;
                 }
             }
         });
@@ -765,7 +772,8 @@ impl Toolbar {
             self.run_toggle_icon
                 .set_icon_name(Some("media-playback-stop-symbolic"));
             self.run_toggle.add_css_class("running");
-            self.run_toggle.set_tooltip_text(Some("Stop the run script"));
+            self.run_toggle
+                .set_tooltip_text(Some("Stop the run script"));
         } else {
             self.run_toggle_icon
                 .set_icon_name(Some("media-playback-start-symbolic"));
@@ -784,7 +792,8 @@ impl Toolbar {
                 self.pr_btn.add_css_class("primary");
                 self.pr_btn.remove_css_class("pr-link-create");
                 self.pr_btn.remove_css_class("primed");
-                self.pr_btn.set_tooltip_text(Some(&format!("OPEN · {}", pr.title)));
+                self.pr_btn
+                    .set_tooltip_text(Some(&format!("OPEN · {}", pr.title)));
             }
             // No open PR → prime when there are unpushed commits.
             _ => {

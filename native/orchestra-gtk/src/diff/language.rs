@@ -43,7 +43,10 @@ mod tests {
     #[test]
     fn maps_the_electron_table() {
         assert_eq!(language_id_for_path("src/main.rs"), Some("rust"));
-        assert_eq!(language_id_for_path("src/shared/types.ts"), Some("typescript"));
+        assert_eq!(
+            language_id_for_path("src/shared/types.ts"),
+            Some("typescript")
+        );
         assert_eq!(language_id_for_path("App.tsx"), Some("typescript-jsx"));
         assert_eq!(language_id_for_path("a/b/util.js"), Some("js"));
         assert_eq!(language_id_for_path("conf.yml"), Some("yaml"));

@@ -58,8 +58,9 @@ pub enum Msg {
     /// sandboxControl, …) — decoded and dispatched to the main pane.
     BackendEvent(BackendEvent),
     /// A mutation returned an updated workspace (switchBranch, queuePrompt);
-    /// refresh the sidebar row + the main pane so every surface agrees.
-    WorkspaceMutated(Workspace),
+    /// refresh the sidebar row + the main pane so every surface agrees. Boxed
+    /// so the large `Workspace` doesn't inflate every `Msg`.
+    WorkspaceMutated(Box<Workspace>),
 }
 
 fn status_css(status: WorkspaceStatus) -> &'static str {
@@ -432,13 +433,11 @@ impl SimpleComponent for App {
             // the sidebar + main pane refresh together.
             let sender = sender.clone();
             ctx.set_on_workspace_mutated(move |ws| {
-                sender.input(Msg::WorkspaceMutated(ws));
+                sender.input(Msg::WorkspaceMutated(Box::new(ws)));
             });
         }
         let main_pane = MainPane::new(ctx.clone());
-        widgets
-            .overlay_host
-            .set_child(Some(main_pane.widget()));
+        widgets.overlay_host.set_child(Some(main_pane.widget()));
 
         // Backend event pump: drain the push channel into the loop. Single
         // consumer (the app shell), per the protocol.
@@ -564,6 +563,7 @@ impl SimpleComponent for App {
                 self.dispatch_event(&channel, &args);
             }
             Msg::WorkspaceMutated(ws) => {
+                let ws = *ws;
                 // Reflect the new record in the sidebar list + the pane.
                 if let Some(slot) = self.workspaces.iter_mut().find(|w| w.id == ws.id) {
                     *slot = ws.clone();
@@ -597,11 +597,7 @@ impl App {
                     .first()
                     .and_then(|v| serde_json::from_value::<Workspace>(v.clone()).ok())
                 {
-                    if let Some(slot) = self
-                        .workspaces
-                        .iter()
-                        .position(|w| w.id == ws.id)
-                    {
+                    if let Some(slot) = self.workspaces.iter().position(|w| w.id == ws.id) {
                         // Keep the local mirror in sync so a later reselect
                         // sees the fresh record (interior mutability avoided:
                         // the sidebar re-derives from it on the next tick).

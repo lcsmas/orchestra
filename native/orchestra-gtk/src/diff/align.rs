@@ -13,6 +13,10 @@
 
 use similar::{ChangeTag, DiffTag, TextDiff};
 
+/// A half-open byte range `[start, end)` into a cell's `text` — one intra-line
+/// highlight span.
+pub type ByteRange = (usize, usize);
+
 /// What one aligned row means for a single pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellKind {
@@ -34,7 +38,7 @@ pub struct Cell {
     /// Intra-line highlight ranges, as BYTE offsets into `text` (word-level
     /// inserts/deletes from the paired line's word diff). Only non-empty on
     /// `Changed` cells that are paired with a counterpart.
-    pub ranges: Vec<(usize, usize)>,
+    pub ranges: Vec<ByteRange>,
 }
 
 /// One row of the side-by-side view: the old (left) and new (right) cells.
@@ -52,7 +56,7 @@ fn context(text: &str) -> Cell {
     }
 }
 
-fn changed(text: &str, ranges: Vec<(usize, usize)>) -> Cell {
+fn changed(text: &str, ranges: Vec<ByteRange>) -> Cell {
     Cell {
         kind: CellKind::Changed,
         text: text.into(),
@@ -76,12 +80,12 @@ fn line_text(s: &str) -> &str {
 /// Word-level intra-line diff of a paired old/new line: byte ranges of the
 /// deleted words in `old` and the inserted words in `new`. Adjacent ranges
 /// merge so a run of changed words highlights as one span.
-fn word_ranges(old: &str, new: &str) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+fn word_ranges(old: &str, new: &str) -> (Vec<ByteRange>, Vec<ByteRange>) {
     let diff = TextDiff::from_words(old, new);
-    let mut old_ranges: Vec<(usize, usize)> = Vec::new();
-    let mut new_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut old_ranges: Vec<ByteRange> = Vec::new();
+    let mut new_ranges: Vec<ByteRange> = Vec::new();
     let (mut old_off, mut new_off) = (0usize, 0usize);
-    let push = |ranges: &mut Vec<(usize, usize)>, start: usize, end: usize| {
+    let push = |ranges: &mut Vec<ByteRange>, start: usize, end: usize| {
         if let Some(last) = ranges.last_mut() {
             if last.1 == start {
                 last.1 = end;
@@ -157,16 +161,16 @@ pub fn align(old: &str, new: &str) -> Vec<Row> {
                         new: changed(n, new_ranges),
                     });
                 }
-                for o in (or.start + paired)..or.end {
+                for line in &old_lines[or.start + paired..or.end] {
                     rows.push(Row {
-                        old: changed(line_text(old_lines[o]), Vec::new()),
+                        old: changed(line_text(line), Vec::new()),
                         new: filler(),
                     });
                 }
-                for n in (nr.start + paired)..nr.end {
+                for line in &new_lines[nr.start + paired..nr.end] {
                     rows.push(Row {
                         old: filler(),
-                        new: changed(line_text(new_lines[n]), Vec::new()),
+                        new: changed(line_text(line), Vec::new()),
                     });
                 }
             }
@@ -258,23 +262,24 @@ mod tests {
                 .filter(|r| r.old.kind != CellKind::Filler)
                 .map(|r| r.old.text.as_str())
                 .collect();
-            let expect_old: Vec<&str> =
-                old.split_inclusive('\n').map(line_text).collect();
+            let expect_old: Vec<&str> = old.split_inclusive('\n').map(line_text).collect();
             assert_eq!(old_texts, expect_old, "old side order for {old:?}");
             let new_texts: Vec<&str> = rows
                 .iter()
                 .filter(|r| r.new.kind != CellKind::Filler)
                 .map(|r| r.new.text.as_str())
                 .collect();
-            let expect_new: Vec<&str> =
-                new.split_inclusive('\n').map(line_text).collect();
+            let expect_new: Vec<&str> = new.split_inclusive('\n').map(line_text).collect();
             assert_eq!(new_texts, expect_new, "new side order for {new:?}");
         }
     }
 
     #[test]
     fn intra_line_word_ranges_cover_the_changed_words() {
-        let rows = align("let count = compute(a, b);\n", "let total = compute(a, c);\n");
+        let rows = align(
+            "let count = compute(a, b);\n",
+            "let total = compute(a, c);\n",
+        );
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
         // Old highlights cover "count" and "b"; new cover "total" and "c".

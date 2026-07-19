@@ -33,8 +33,11 @@ pub struct BranchPopoverPanel {
     /// Badge text on the highlighted branch ("current", "default").
     badge_label: String,
     state: RefCell<PanelState>,
-    on_pick: RefCell<Option<Box<dyn Fn(String)>>>,
+    on_pick: RefCell<Option<PickFn>>,
 }
+
+/// Callback fired when the user picks a branch.
+type PickFn = Box<dyn Fn(String)>;
 
 impl BranchPopoverPanel {
     /// `action_verb` fills the ↵ footer hint ("switch", "create");

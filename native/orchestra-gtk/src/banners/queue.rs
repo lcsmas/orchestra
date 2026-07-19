@@ -222,9 +222,9 @@ impl PromptQueueBanner {
             return;
         };
         // getWorkspaceAccounts() → WorkspaceAccount[]; find ours.
-        if let Ok(accounts) =
-            self.ctx
-                .call_typed::<Vec<WorkspaceAccount>>("getWorkspaceAccounts", vec![])
+        if let Ok(accounts) = self
+            .ctx
+            .call_typed::<Vec<WorkspaceAccount>>("getWorkspaceAccounts", vec![])
         {
             if let Some(wa) = accounts.into_iter().find(|a| a.workspace_id == id) {
                 let mut st = self.state.borrow_mut();
@@ -276,9 +276,7 @@ impl PromptQueueBanner {
             return;
         }
         self.state.borrow_mut().busy = true;
-        let result = self
-            .ctx
-            .call("queuePrompt", vec![json!(id), json!(text)]);
+        let result = self.ctx.call("queuePrompt", vec![json!(id), json!(text)]);
         self.state.borrow_mut().busy = false;
         match result {
             Ok(_) => buf.set_text(""),
@@ -298,12 +296,12 @@ impl PromptQueueBanner {
         };
         self.state.borrow_mut().busy = true;
         // flushQueuedPrompts(id) → { ok, delivered, error? }.
-        let result =
-            self.ctx
-                .call_typed::<orchestra_rpc::types::FlushQueuedPromptsResult>(
-                    "flushQueuedPrompts",
-                    vec![json!(id)],
-                );
+        let result = self
+            .ctx
+            .call_typed::<orchestra_rpc::types::FlushQueuedPromptsResult>(
+                "flushQueuedPrompts",
+                vec![json!(id)],
+            );
         self.state.borrow_mut().busy = false;
         match result {
             Ok(res) if !res.ok => self.error(&format!(

@@ -162,9 +162,8 @@ impl DiffView {
         header.append(&header_adds);
         header.append(&header_dels);
 
-        let trunc_label = gtk::Label::new(Some(
-            "Large file — content truncated to 300 KB for display",
-        ));
+        let trunc_label =
+            gtk::Label::new(Some("Large file — content truncated to 300 KB for display"));
         trunc_label.set_xalign(0.0);
         let trunc_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         trunc_box.add_css_class("diff-trunc-notice");
@@ -482,8 +481,8 @@ fn apply_side<'a>(
             // similar yields byte offsets; TextIter wants char offsets.
             let c0 = cell.text[..b0].chars().count() as i32;
             let c1 = cell.text[..b1].chars().count() as i32;
-            let mut s = start.clone();
-            let mut e = start.clone();
+            let mut s = start;
+            let mut e = start;
             s.forward_chars(c0);
             e.forward_chars(c1);
             buf.apply_tag_by_name("word", &s, &e);

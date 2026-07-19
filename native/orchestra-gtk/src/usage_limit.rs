@@ -142,8 +142,7 @@ pub fn parse_iso_ms(s: &str) -> Option<i64> {
     let hour = num(11..13)?;
     let min = num(14..16)?;
     let sec = num(17..19)?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || min > 59 || sec > 60
-    {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || min > 59 || sec > 60 {
         return None;
     }
 
@@ -170,10 +169,14 @@ pub fn parse_iso_ms(s: &str) -> Option<i64> {
         Some(&(sign @ b'+' | sign @ b'-')) => {
             let rest = s.get(i + 1..)?;
             let (h, m) = match rest.len() {
-                5 if rest.as_bytes()[2] == b':' => {
-                    (rest[0..2].parse::<i64>().ok()?, rest[3..5].parse::<i64>().ok()?)
-                }
-                4 => (rest[0..2].parse::<i64>().ok()?, rest[2..4].parse::<i64>().ok()?),
+                5 if rest.as_bytes()[2] == b':' => (
+                    rest[0..2].parse::<i64>().ok()?,
+                    rest[3..5].parse::<i64>().ok()?,
+                ),
+                4 => (
+                    rest[0..2].parse::<i64>().ok()?,
+                    rest[2..4].parse::<i64>().ok()?,
+                ),
                 _ => return None,
             };
             let total = h * 60 + m;
@@ -235,7 +238,10 @@ mod tests {
         assert_eq!(parse_iso_ms("2026-07-12T14:00:00+02:00"), Some(NOW));
         assert_eq!(parse_iso_ms("2026-07-12T10:00:00-02:00"), Some(NOW));
         // Leap-year day and a pre-March date (the yoe branch).
-        assert_eq!(parse_iso_ms("2024-02-29T00:00:00Z"), Some(1_709_164_800_000));
+        assert_eq!(
+            parse_iso_ms("2024-02-29T00:00:00Z"),
+            Some(1_709_164_800_000)
+        );
         // Malformed.
         assert_eq!(parse_iso_ms(""), None);
         assert_eq!(parse_iso_ms("not a date"), None);
@@ -308,21 +314,44 @@ mod tests {
         let limited = windows(100.0, 3.0, None);
         // No reading at all, or no data on it → hold.
         assert!(!can_auto_flush_queue(queued_at, None, NOW));
-        assert!(!can_auto_flush_queue(queued_at, Some((NOW + 60_000, None)), NOW));
+        assert!(!can_auto_flush_queue(
+            queued_at,
+            Some((NOW + 60_000, None)),
+            NOW
+        ));
         // Reading predates (or ties) the queue instant → can't prove the reset.
-        assert!(!can_auto_flush_queue(queued_at, Some((NOW - 60_000, Some(&ok))), NOW));
-        assert!(!can_auto_flush_queue(queued_at, Some((NOW, Some(&ok))), NOW));
+        assert!(!can_auto_flush_queue(
+            queued_at,
+            Some((NOW - 60_000, Some(&ok))),
+            NOW
+        ));
+        assert!(!can_auto_flush_queue(
+            queued_at,
+            Some((NOW, Some(&ok))),
+            NOW
+        ));
         // Fresh reading but still limited → hold.
-        assert!(!can_auto_flush_queue(queued_at, Some((NOW + 60_000, Some(&limited))), NOW));
+        assert!(!can_auto_flush_queue(
+            queued_at,
+            Some((NOW + 60_000, Some(&limited))),
+            NOW
+        ));
         // Fresh reading, un-limited → flush.
-        assert!(can_auto_flush_queue(queued_at, Some((NOW + 60_000, Some(&ok))), NOW));
+        assert!(can_auto_flush_queue(
+            queued_at,
+            Some((NOW + 60_000, Some(&ok))),
+            NOW
+        ));
     }
 
     #[test]
     fn format_resets_in_matches_usagebars() {
         assert_eq!(format_resets_in(RESET_5H, NOW), "resets in 2h 0m");
         assert_eq!(format_resets_in(RESET_7D, NOW), "resets in 2d 12h");
-        assert_eq!(format_resets_in("2026-07-12T12:25:00Z", NOW), "resets in 25m");
+        assert_eq!(
+            format_resets_in("2026-07-12T12:25:00Z", NOW),
+            "resets in 25m"
+        );
         assert_eq!(format_resets_in("2026-07-12T11:00:00Z", NOW), "resets now");
         assert_eq!(format_resets_in("", NOW), "");
     }
