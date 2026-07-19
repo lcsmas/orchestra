@@ -8,9 +8,13 @@
 //! `mpsc` receivers into `async_channel`s the GTK main loop can await.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use orchestra_rpc::types::{RepoEntry, Workspace};
-use orchestra_rpc::{BackendKind as RemoteKind, ClientOptions, ConnectionState, RpcClient};
+use orchestra_rpc::{
+    BackendKind as RemoteKind, ClientKind, ClientOptions, ConnectionState, RpcClient, RpcError,
+    ServerInfo,
+};
 use serde_json::{json, Value};
 
 // The fixture backend lives in its own file (backend/mock.rs) so the M2
@@ -158,11 +162,28 @@ fn discover_socket_via_pointer(home: &Path) -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
-/// M2 stub (plan §1.1 rule 3): when discovery fails, spawn the daemon
-/// (`Orchestra.AppImage daemon` via the `~/.local/bin/orchestra` shim's
-/// APPIMAGE, else `$ORCHESTRA_DAEMON_CMD`) and re-attach. M1 only surfaces
-/// the retry banner; this exists so the call site is already in place.
-pub fn spawn_daemon_stub() {}
+/// Attach-time handshake probe (M2/B6, plan §1.1 rule 5): one connect with
+/// reconnect off, capture `helloOk`, close. Distinguishes a healthy backend
+/// (returns its [`ServerInfo`] for the footer and the appVersion-lockstep
+/// warning) from a protocol mismatch (`RpcError::ProtoMismatch` — the caller
+/// shows the refusal dialog and does NOT attach, protocol §3). The persistent
+/// connection is the feature workstreams' wiring; this probe only gates it.
+pub fn probe_backend(sock: &Path) -> std::result::Result<ServerInfo, RpcError> {
+    let opts = ClientOptions {
+        client_kind: ClientKind::Gtk,
+        app_version: crate::app_version().to_string(),
+        focused: true,
+        handshake_timeout: Duration::from_secs(5),
+        reconnect: false,
+        ..Default::default()
+    };
+    let (client, _receivers) = RpcClient::connect(sock, opts)?;
+    let info = client
+        .server_info()
+        .ok_or_else(|| RpcError::Handshake("no helloOk after connect".into()))?;
+    client.close();
+    Ok(info)
+}
 
 /// Run-time mock switch: the `mock` cargo feature forces it, and
 /// `ORCHESTRA_GTK_MOCK=1` selects it without rebuilding.
@@ -226,7 +247,10 @@ impl RpcBackend {
     /// attaches a fresh backend.
     pub fn connect(sock_path: PathBuf) -> std::result::Result<Self, orchestra_rpc::RpcError> {
         let opts = ClientOptions {
-            app_version: env!("CARGO_PKG_VERSION").into(),
+            // Version lockstep (plan §9): the PRODUCT version from package.json,
+            // not the crate's own CARGO_PKG_VERSION — so hello.appVersion, the
+            // footer, and the backend's version check all agree across a release.
+            app_version: crate::app_version().into(),
             ..ClientOptions::default()
         };
         let (client, recv) = RpcClient::connect(&sock_path, opts)?;

@@ -63,8 +63,57 @@ jobs:
           name: ${{ matrix.artifact }}
           path: release/${{ matrix.artifact }}
 
+  # Native GTK4 frontend — built in a Fedora container with the real -devel
+  # packages (the localdeps hack is dev-box-only). Version is already in
+  # lockstep: build.rs bakes the repo package.json version into the crate.
+  build-gtk:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+
+    runs-on: ${{ matrix.os }}
+    container:
+      image: fedora:42
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            gcc gcc-c++ make pkgconf-pkg-config git tar \
+            rust cargo \
+            gtk4-devel vte291-gtk4-devel glib2-devel cairo-devel \
+            cairo-gobject-devel pango-devel gdk-pixbuf2-devel graphene-devel \
+            harfbuzz-devel vulkan-loader-devel \
+            gtksourceview5-devel \
+            webkitgtk6.0-devel libsoup3-devel javascriptcoregtk6.0-devel \
+            gstreamer1-devel gstreamer1-plugins-base-devel
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Build orchestra-gtk (release)
+        working-directory: native
+        run: cargo build --release -p orchestra-gtk
+
+      - name: Rename artifact
+        run: mv native/target/release/orchestra-gtk release/orchestra-gtk-${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orchestra-gtk-${{ matrix.arch }}
+          path: release/orchestra-gtk-${{ matrix.arch }}
+          if-no-files-found: error
+
   publish:
-    needs: build
+    needs: [build, build-gtk]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
 
@@ -85,5 +134,7 @@ jobs:
           files: |
             artifacts/Orchestra-x64.AppImage/Orchestra-x64.AppImage
             artifacts/Orchestra-arm64.AppImage/Orchestra-arm64.AppImage
+            artifacts/orchestra-gtk-x64/orchestra-gtk-x64
+            artifacts/orchestra-gtk-arm64/orchestra-gtk-arm64
           fail_on_unmatched_files: true
           generate_release_notes: true

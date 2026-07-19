@@ -27,6 +27,7 @@ design decisions, so you get accurate context without grepping the tree first.
 | Platform seam (Electron vs headless), api-handlers table, ui-rpc socket server, daemon entry, backend lock, rpc fixtures | `docs/codebase-map/ui-rpc-backend.md` |
 | Sandbox/remote agents: wire protocol, shim, Docker image, transports, reconnect, ownership lock, import/eject/backups | `docs/codebase-map/sandbox-transport.md` |
 | Vite/electron-builder build, release pipeline, CI, bundled skills | `docs/codebase-map/build-release.md` |
+| Native GTK4 frontend (`orchestra-gtk`): backend discovery/attach probe, daemon auto-spawn, version lockstep, remote-control harness, packaging/CI/E2E | `docs/codebase-map/native-ui.md` |
 
 The map is reference material — verify a `file:line` against live source before
 relying on it, since line numbers drift.

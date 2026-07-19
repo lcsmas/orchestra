@@ -1,8 +1,7 @@
 // Explicit index.ts path so this module also resolves under Node's
 // type-stripping test runner (ui-rpc.test.ts pulls it in transitively).
-import { platform } from './platform/index.ts';
+import { platform, orchestraHome } from './platform/index.ts';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 // Persistent diagnostic logger for the main process. Orchestra is usually
@@ -14,9 +13,11 @@ import path from 'node:path';
 //
 // The log is written to TWO locations so it's easy to find regardless of where
 // you look:
-//   1. ~/.orchestra/logs/orchestra.log  — next to the per-workspace PTY
-//      scrollback and worktrees, so all Orchestra data lives under one root.
-//      This is the primary (what the "Logs" button reveals).
+//   1. <ORCHESTRA_HOME>/logs/orchestra.log (default ~/.orchestra/logs) — next
+//      to the per-workspace PTY scrollback and worktrees, so all Orchestra
+//      data lives under one root. This is the primary (what the "Logs" button
+//      reveals), and it follows the $ORCHESTRA_HOME override so an isolated
+//      daemon or dev instance never writes into the real home's log.
 //   2. <Electron logs dir>/orchestra.log — the platform-standard per-app logs
 //      dir (Linux: ~/.config/orchestra/logs), where tooling expects app logs.
 // Distinct from the per-workspace PTY scrollback (terminal replay) — this is
@@ -50,7 +51,7 @@ let ready = false;
  *  The per-app dir comes through the seam (Electron's logs path, or its
  *  userData/logs mirror in daemon mode) so app and daemon share sinks. */
 function logDirs(): string[] {
-  const orchestraDir = path.join(os.homedir(), '.orchestra', 'logs');
+  const orchestraDir = path.join(orchestraHome(), 'logs');
   return Array.from(new Set([orchestraDir, platform.getLogsDir()]));
 }
 

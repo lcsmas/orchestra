@@ -32,5 +32,7 @@ async-channel.workspace = true
 gstreamer.workspace = true
 
 [build-dependencies]
+# build.rs reads the repo package.json version (plan §9 lockstep).
+serde_json.workspace = true
 # Renders the chime recipes into OUT_DIR at build time (no assets in git).
 chime-gen = { path = "../chime-gen" }

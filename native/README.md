@@ -25,13 +25,19 @@ cargo test --workspace
 
 `.localdeps/` is gitignored — every checkout runs `setup-localdeps.sh` once.
 On a machine with sudo, `dnf install gtk4-devel vte291-gtk4-devel` makes both
-scripts unnecessary (sourcing `env.sh` stays harmless). Current dep set is
-gtk4 + vte4; M2 workstreams extend `DEPS` in `setup-localdeps.sh`
-(gtksourceview5, webkitgtk6, gstreamer).
+scripts unnecessary (sourcing `env.sh` stays harmless). `setup-localdeps.sh`
+covers the full M2 surface (gtk4, vte4, gtksourceview5, webkitgtk6, gstreamer).
 
 `cargo clippy`/`cargo fmt` are not in Fedora's `cargo` package: extract the
 `clippy` and `rustfmt` RPMs the same rootless way and put their `usr/bin` on
-`PATH`.
+`PATH`. (Same trick works for `ShellCheck`/`actionlint` when touching CI.)
+
+> **Rootless WebKit caveat:** WebKitGTK 6's web/network-process helpers are
+> compiled into `/usr/libexec`, which the localdeps prefix can't provide.
+> Account-login WebViews under a rootless dev run need a `bwrap` tmpfs overlay
+> binding the localdeps webkit libexec over `/usr/libexec` (a `WEBKIT_EXEC_PATH`
+> env override does **not** work). Moot for an installed package and for CI
+> (system webkit's libexec exists).
 
 ## Running the GTK app
 
@@ -44,7 +50,16 @@ cargo run -p orchestra-gtk                            # discover a real backend
 - **Backend discovery** (`ui-rpc-protocol.md` §1): `$ORCHESTRA_UI_SOCK`
   overrides; else the pointer file `$ORCHESTRA_HOME/ui-sock` (default
   `~/.orchestra/ui-sock`). No backend → non-blocking banner + 3 s retry.
-  Daemon auto-spawn is an M2 stub (`backend::spawn_daemon_stub`).
+- **Attach + daemon auto-spawn** (`src/daemon.rs`, plan §1.1): discovery
+  miss → locate a backend (`$ORCHESTRA_DAEMON_CMD` → the `~/.local/bin/
+  orchestra` shim's AppImage → a dev checkout's `dist-electron/daemon.js`),
+  spawn it detached under the current `ORCHESTRA_HOME`, wait for the ui-sock,
+  and attach. Attach is gated by a one-shot handshake probe
+  (`backend::probe_backend`): a **protocol** mismatch is refused (dialog, no
+  attach); an **appVersion** mismatch is a non-fatal warning; a backend-lock
+  loss to the Electron app attaches to it instead ("two faces, one state").
+  `--stop-daemon-on-exit` SIGTERMs a daemon we spawned on close (default:
+  leave it running). See `docs/gtk-app.md` for the full story.
 - **Mock mode**: `ORCHESTRA_GTK_MOCK=1` (or the `mock` cargo feature) serves
   five fixture workspaces so the shell renders without any backend.
 - **UI state** persists to `$ORCHESTRA_HOME/gtk-ui-state.json` (sidebar
@@ -86,3 +101,37 @@ Builds, launches mock mode inside a **fresh headless sway** (never the user's
 desktop), drives the harness (widget tree, title, footer, screenshot),
 prints PASS/FAIL. Screenshot artifact: `target/smoke/smoke.png`; logs are
 kept in the run dir on failure.
+
+## E2E scenarios
+
+`native/e2e/` drives the real binary through the remote-control socket for
+protocol/lifecycle behavior (attach, refusal, daemon spawn, backend-lock
+exclusion, coexistence). Dependency-free Node:
+
+```bash
+(cd native && cargo build -p orchestra-gtk)   # release or debug
+node native/e2e/run.mjs            # or: pnpm run e2e:gtk
+```
+
+See `native/e2e/README.md` for the scenario list and which ones skip pending
+sibling workstreams.
+
+## Packaging (plan §9)
+
+- **Version lockstep**: `build.rs` bakes the repo `package.json` version into
+  the crate (`ORCHESTRA_APP_VERSION`, exposed as `orchestra_gtk::app_version()`)
+  — one bump, both the Electron and native artifacts. A test asserts they match.
+- **`build:gtk`** (root `package.json`) = `cargo build --release -p
+  orchestra-gtk`. NOT wired into the default `pnpm run build` — the Electron
+  release cadence must not grow a Rust-toolchain dependency.
+- **Desktop entry + icons**: `native/packaging/orchestra-gtk.desktop`
+  ("Orchestra (Native)") and `gen-icons.mjs`, which renders `build/icon.svg`
+  (the shared brand source) into a hicolor PNG tree via `@resvg/resvg-js` (a
+  pure-Rust rasterizer — no system cairo/rsvg). `@resvg` lives in a standalone
+  `native/packaging/package.json` so it never enters the Electron install;
+  `pnpm run build:gtk:icons` installs it and renders.
+- **Release**: `scripts/release.sh --with-gtk` cargo-builds the native binary
+  and attaches `orchestra-gtk-<arch>` to the same GitHub release; CI
+  (`.github/workflows/native.yml` + the `build-gtk` matrix in `release.yml`)
+  builds both arches in a `fedora:42` container with the real `-devel`
+  packages (no localdeps in CI — that's a dev-box hack).

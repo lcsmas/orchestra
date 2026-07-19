@@ -1,0 +1,12 @@
+{
+  "name": "orchestra-gtk-packaging",
+  "private": true,
+  "description": "Build-only helpers for the native GTK app: renders build/icon.svg into hicolor PNGs for the .desktop entry. Standalone so @resvg (a native rasterizer) never enters the Electron app's dependency install.",
+  "type": "module",
+  "scripts": {
+    "icons": "node gen-icons.mjs"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2"
+  }
+}

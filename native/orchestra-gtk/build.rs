@@ -1,18 +1,35 @@
-//! Build script for orchestra-gtk. Two jobs:
-//!  1. Render the chime recipes (native/chime-gen — the port of
+//! Build script for orchestra-gtk. Three jobs:
+//!  1. Version lockstep (plan §9): read the REPO version from package.json and
+//!     expose it as ORCHESTRA_APP_VERSION — one bump versions both artifacts.
+//!     Code uses `crate::app_version()`, never CARGO_PKG_VERSION (the crate's
+//!     own 0.1.x, deliberately not the product version).
+//!  2. Render the chime recipes (native/chime-gen — the port of
 //!     src/renderer/chime.ts) into OUT_DIR; sound.rs embeds the bytes via the
 //!     generated chime_assets.rs, so the binary is self-contained and the
 //!     shipped audio can never drift from the recipe tables (chime-gen's tests
 //!     pin those against chime.ts).
-//!  2. Link `libfontconfig` for the app-font registration in `terminal::fonts`
+//!  3. Link `libfontconfig` for the app-font registration in `terminal::fonts`
 //!     (fontconfig is present transitively via pango but not on the link line,
 //!     so its `FcConfig*` symbols are otherwise undefined).
 
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn main() {
-    // ---- 1. chime WAVs → OUT_DIR/chime_assets.rs ----
+    // ---- 1. version lockstep: package.json → ORCHESTRA_APP_VERSION ----
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
+    let pkg = Path::new(&manifest).join("../../package.json");
+    println!("cargo:rerun-if-changed={}", pkg.display());
+    let raw = std::fs::read_to_string(&pkg)
+        .unwrap_or_else(|e| panic!("cannot read {} for version lockstep: {e}", pkg.display()));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).expect("repo package.json parses as JSON");
+    let version = parsed["version"]
+        .as_str()
+        .expect("repo package.json has a string version field");
+    println!("cargo:rustc-env=ORCHESTRA_APP_VERSION={version}");
+
+    // ---- 2. chime WAVs → OUT_DIR/chime_assets.rs ----
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
     let wav_dir = out_dir.join("chimes");
     std::fs::create_dir_all(&wav_dir).expect("create chime OUT_DIR");
@@ -46,7 +63,7 @@ fn main() {
     // The recipes live in chime-gen's source; cargo already rebuilds when a
     // build-dependency changes, so no extra rerun-if-changed is needed.
 
-    // ---- 2. link libfontconfig by exact soname ----
+    // ---- 3. link libfontconfig by exact soname ----
     // `-l:libfontconfig.so.1` rather than `-lfontconfig`: the rootless localdeps
     // prefix has no `-devel` `libfontconfig.so` symlink, so the plain `-l` form
     // can't resolve. The soname is ABI-stable.

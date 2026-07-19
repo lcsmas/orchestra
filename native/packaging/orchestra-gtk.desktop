@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Orchestra (Native)
+GenericName=Parallel agent runner
+Comment=Run parallel Claude Code agents in isolated git worktrees — native GTK4 frontend
+# The build/packaging step rewrites Exec= and Icon= to the installed paths.
+# `%U` lets a launcher pass a URL/file through to the app; harmless when empty.
+Exec=orchestra-gtk %U
+Icon=orchestra-gtk
+Terminal=false
+Categories=Development;Utility;
+Keywords=claude;agents;git;worktree;ai;
+StartupNotify=true
+StartupWMClass=dev.orchestra.gtk
