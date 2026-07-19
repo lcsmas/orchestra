@@ -10,6 +10,10 @@ license.workspace = true
 # at run time without rebuilding.
 mock = []
 
+[build-dependencies]
+# build.rs reads the repo package.json version (plan §9 lockstep).
+serde_json.workspace = true
+
 [dependencies]
 orchestra-rpc = { path = "../orchestra-rpc" }
 serde.workspace = true

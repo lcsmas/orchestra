@@ -11,12 +11,17 @@ fn main() {
     // Our own flags are parsed (and hidden from GTK) here; everything else is
     // ignored so future GTK/GLib args pass through harmlessly.
     let mut remote_control: Option<PathBuf> = None;
+    let mut stop_daemon_on_exit = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--remote-control" {
             remote_control = args.next().map(PathBuf::from);
         } else if let Some(path) = arg.strip_prefix("--remote-control=") {
             remote_control = Some(PathBuf::from(path));
+        } else if arg == "--stop-daemon-on-exit" {
+            // Opt in to SIGTERMing a daemon WE spawned when the window closes.
+            // Default off — plan §1.1 rule 3: agents keep running headless.
+            stop_daemon_on_exit = true;
         }
     }
 
@@ -37,5 +42,8 @@ fn main() {
     // The stylesheet is loaded in App::init — set_global_css needs an open
     // display, which from_app doesn't guarantee this early.
     let app = relm4::RelmApp::from_app(gtk_app).with_args(vec![]);
-    app.run::<App>(Init { remote_control });
+    app.run::<App>(Init {
+        remote_control,
+        stop_daemon_on_exit,
+    });
 }

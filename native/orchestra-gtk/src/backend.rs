@@ -8,9 +8,11 @@
 //! its connection actor is A2's deliverable and gets wired in M2.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use orchestra_rpc::frame::{self, Frame};
 use orchestra_rpc::types::{RepoEntry, Workspace, WorkspaceStatus};
+use orchestra_rpc::{ClientKind, ClientOptions, RpcClient, RpcError, ServerInfo};
 use serde_json::{json, Value};
 
 pub type Result<T> = std::result::Result<T, BackendError>;
@@ -82,11 +84,28 @@ fn discover_socket_via_pointer(home: &Path) -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
-/// M2 stub (plan §1.1 rule 3): when discovery fails, spawn the daemon
-/// (`Orchestra.AppImage daemon` via the `~/.local/bin/orchestra` shim's
-/// APPIMAGE, else `$ORCHESTRA_DAEMON_CMD`) and re-attach. M1 only surfaces
-/// the retry banner; this exists so the call site is already in place.
-pub fn spawn_daemon_stub() {}
+/// Attach-time handshake probe (M2/B6, plan §1.1 rule 5): one connect with
+/// reconnect off, capture `helloOk`, close. Distinguishes a healthy backend
+/// (returns its [`ServerInfo`] for the footer and the appVersion-lockstep
+/// warning) from a protocol mismatch (`RpcError::ProtoMismatch` — the caller
+/// shows the refusal dialog and does NOT attach, protocol §3). The persistent
+/// connection is the feature workstreams' wiring; this probe only gates it.
+pub fn probe_backend(sock: &Path) -> std::result::Result<ServerInfo, RpcError> {
+    let opts = ClientOptions {
+        client_kind: ClientKind::Gtk,
+        app_version: crate::app_version().to_string(),
+        focused: true,
+        handshake_timeout: Duration::from_secs(5),
+        reconnect: false,
+        ..Default::default()
+    };
+    let (client, _receivers) = RpcClient::connect(sock, opts)?;
+    let info = client
+        .server_info()
+        .ok_or_else(|| RpcError::Handshake("no helloOk after connect".into()))?;
+    client.close();
+    Ok(info)
+}
 
 /// Run-time mock switch: the `mock` cargo feature forces it, and
 /// `ORCHESTRA_GTK_MOCK=1` selects it without rebuilding.
@@ -179,7 +198,7 @@ impl Backend for MockBackend {
     }
 
     fn version(&self) -> String {
-        env!("CARGO_PKG_VERSION").into()
+        crate::app_version().into()
     }
 
     fn list_workspaces(&self) -> Result<Vec<Workspace>> {
@@ -198,7 +217,7 @@ impl Backend for MockBackend {
     fn call(&self, method: &str, _params: Vec<Value>) -> Result<Value> {
         match method {
             "app:info" => Ok(json!({
-                "version": env!("CARGO_PKG_VERSION"),
+                "version": crate::app_version(),
                 "backendKind": "mock",
             })),
             _ => Err(BackendError::NotWired("mock backend only serves fixtures")),
@@ -260,7 +279,7 @@ impl RpcBackend {
         frame::encode(&Frame::Json(json!({
             "t": "hello",
             "proto": 1,
-            "appVersion": env!("CARGO_PKG_VERSION"),
+            "appVersion": crate::app_version(),
             "clientKind": "gtk",
             "focused": true,
         })))

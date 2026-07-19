@@ -5,7 +5,7 @@
 //! (factories, spawn trees, pills) is a separate M2 workstream.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -16,14 +16,54 @@ use gtk::prelude::*;
 use relm4::prelude::*;
 
 use orchestra_rpc::types::{Workspace, WorkspaceStatus};
+use orchestra_rpc::{RpcError, ServerInfo, PROTO_VERSION};
 
 use crate::backend::{self, Backend, BackendKind, MockBackend, RpcBackend};
+use crate::daemon;
 use crate::dialogs;
 use crate::remote_control;
 use crate::state::{self, UiState, WindowGeometry};
 
 pub struct Init {
     pub remote_control: Option<PathBuf>,
+    /// `--stop-daemon-on-exit`: SIGTERM a daemon WE spawned when the window
+    /// closes. Default off — plan §1.1 rule 3: agents keep working after the
+    /// UI goes away.
+    pub stop_daemon_on_exit: bool,
+}
+
+/// Progress reports from the attach-flow worker thread (discovery →
+/// auto-spawn → handshake probe), marshalled onto the GTK loop as messages.
+#[derive(Debug)]
+pub enum AttachUpdate {
+    /// Progress text for the discovery banner.
+    Banner(String),
+    /// Handshake succeeded — attach. `note` carries the story to surface.
+    Attached {
+        sock: PathBuf,
+        info: ServerInfo,
+        note: Option<AttachNote>,
+    },
+    /// Backend speaks a different ui-rpc protocol — REFUSED (plan §1.1 rule
+    /// 5 / protocol §3). No attach; retrying cannot heal it.
+    Refused { server_proto: u32 },
+    /// Non-fatal failure: show `banner`, optionally a dialog, and let the 3 s
+    /// discovery retries keep running.
+    Failed {
+        banner: String,
+        dialog: Option<(String, String)>,
+    },
+}
+
+/// How the successful attach came about (decides the §1.1 dialog).
+#[derive(Debug)]
+pub enum AttachNote {
+    /// We spawned this daemon; pid recorded for `--stop-daemon-on-exit`.
+    SpawnedDaemon { pid: u32 },
+    /// Our spawned daemon lost the backend lock to the Electron app — which
+    /// serves the same ui-rpc socket, so we attached to it instead ("two
+    /// faces, one state", plan §1.1 rule 2).
+    ElectronOwnsHome,
 }
 
 pub struct App {
@@ -36,10 +76,20 @@ pub struct App {
     save_generation: Rc<Cell<u64>>,
     /// Discovery retry loop runs only while no backend is attached.
     retry_active: Rc<Cell<bool>>,
+    /// An attach-flow worker thread is running; don't start a second.
+    attach_in_flight: bool,
+    /// Backend refused on protocol version — retrying cannot heal it.
+    proto_refused: bool,
+    /// What the backend said in helloOk (footer + version comparisons).
+    server_info: Option<ServerInfo>,
+    /// Pid of a daemon WE spawned this session, shared with the close handler
+    /// for `--stop-daemon-on-exit`. Never holds a discovered backend's pid.
+    spawned_pid: Rc<Cell<Option<u32>>>,
     window: gtk::ApplicationWindow,
     paned: gtk::Paned,
     list: gtk::ListBox,
     banner: gtk::Revealer,
+    banner_label: gtk::Label,
     footer_label: gtk::Label,
 }
 
@@ -49,6 +99,7 @@ pub enum Msg {
     SidebarResized(i32),
     WindowGeometryChanged,
     RetryDiscover,
+    Attach(AttachUpdate),
     PersistNow,
 }
 
@@ -102,26 +153,212 @@ fn populate_sidebar(list: &gtk::ListBox, workspaces: &[Workspace], selected_id: 
     }
 }
 
-fn make_backend() -> Option<Box<dyn Backend>> {
-    if backend::mock_requested() {
-        return Some(Box::new(MockBackend::default()));
-    }
-    backend::discover_socket(&state::orchestra_home())
-        .map(|sock| Box::new(RpcBackend::new(sock)) as Box<dyn Backend>)
-}
-
-fn footer_text(backend: &Option<Box<dyn Backend>>) -> String {
-    let frontend = env!("CARGO_PKG_VERSION");
+fn footer_text(backend: &Option<Box<dyn Backend>>, server: Option<&ServerInfo>) -> String {
+    let frontend = crate::app_version();
     match backend {
         Some(b) => match b.kind() {
             BackendKind::Mock => {
                 format!("backend: mock v{} · frontend v{frontend}", b.version())
             }
-            BackendKind::Rpc => {
-                format!("backend: rpc (socket found — wires up in M2) · frontend v{frontend}")
-            }
+            BackendKind::Rpc => match server {
+                Some(info) => {
+                    let kind = match info.backend_kind {
+                        orchestra_rpc::BackendKind::Electron => "electron",
+                        orchestra_rpc::BackendKind::Daemon => "daemon",
+                    };
+                    format!(
+                        "backend: {kind} v{} · frontend v{frontend}",
+                        info.app_version
+                    )
+                }
+                None => format!("backend: rpc (handshaking…) · frontend v{frontend}"),
+            },
         },
         None => format!("backend: none · frontend v{frontend}"),
+    }
+}
+
+/// Spawn the attach-flow on a std worker thread, marshalling its progress
+/// back as `Msg::Attach`. Kept off the GTK thread because every step blocks
+/// (socket polls, child waits, the handshake) while the loop keeps painting.
+fn spawn_attach(sender: &ComponentSender<App>, allow_spawn: bool) {
+    let sender = sender.clone();
+    let home = state::orchestra_home();
+    std::thread::spawn(move || {
+        attach_flow(home, allow_spawn, |u| sender.input(Msg::Attach(u)));
+    });
+}
+
+// ---- attach flow (worker-thread side) --------------------------------------
+
+/// Discovery → (optionally) daemon auto-spawn → handshake probe, reporting
+/// progress as [`AttachUpdate`]s. Runs on a std thread: every step here
+/// blocks (socket polls, child waits, the handshake), and the GTK loop must
+/// keep painting the banner meanwhile.
+fn attach_flow(home: PathBuf, allow_spawn: bool, send: impl Fn(AttachUpdate)) {
+    if let Some(sock) = backend::discover_socket(&home) {
+        probe_and_send(&sock, None, &send);
+        return;
+    }
+    if !allow_spawn {
+        send(AttachUpdate::Failed {
+            banner: "no backend found — start Orchestra or the daemon (retrying every 3s)".into(),
+            dialog: None,
+        });
+        return;
+    }
+
+    // Plan §1.1 rule 3: no socket → spawn the daemon and attach.
+    let user_home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    let Some(cmd) = daemon::locate_daemon_command(&user_home) else {
+        send(AttachUpdate::Failed {
+            banner: "no backend found and no daemon to start — set $ORCHESTRA_DAEMON_CMD, \
+                     install the Orchestra AppImage, or build dist-electron/daemon.js"
+                .into(),
+            dialog: None,
+        });
+        return;
+    };
+    send(AttachUpdate::Banner(format!(
+        "no backend found — starting the Orchestra daemon ({})…",
+        cmd.describe()
+    )));
+    let mut spawned = match daemon::spawn_daemon(&cmd, &home) {
+        Ok(s) => s,
+        Err(e) => {
+            send(AttachUpdate::Failed {
+                banner: format!("failed to start the daemon: {e} (retrying discovery every 3s)"),
+                dialog: None,
+            });
+            return;
+        }
+    };
+    match daemon::wait_for_socket(&mut spawned, &home, Duration::from_secs(15)) {
+        daemon::WaitOutcome::Ready(sock) => {
+            let pid = spawned.pid;
+            daemon::reap_in_background(spawned);
+            probe_and_send(&sock, Some(AttachNote::SpawnedDaemon { pid }), &send);
+        }
+        daemon::WaitOutcome::Exited { code, output_tail } => {
+            report_daemon_exit(&home, code, &output_tail, &spawned_log(&spawned), &send);
+        }
+        daemon::WaitOutcome::TimedOut => {
+            daemon::reap_in_background(spawned);
+            send(AttachUpdate::Failed {
+                banner: format!(
+                    "daemon started but its UI socket did not appear within 15s — \
+                     see {}/logs/ (still retrying)",
+                    home.display()
+                ),
+                dialog: None,
+            });
+        }
+    }
+}
+
+fn spawned_log(spawned: &daemon::SpawnedDaemon) -> PathBuf {
+    spawned.spawn_log.clone()
+}
+
+/// Turn a dead spawned daemon into the right §1.1 story.
+fn report_daemon_exit(
+    home: &Path,
+    code: Option<i32>,
+    output_tail: &str,
+    spawn_log: &Path,
+    send: &impl Fn(AttachUpdate),
+) {
+    match daemon::diagnose_exit(output_tail, home) {
+        daemon::ExitDiagnosis::LockHeld { kind, pid } if kind == "electron" => {
+            // The Electron app owns this home — and a current one serves the
+            // ui-rpc socket itself. If it's there, attaching to IT is the
+            // designed outcome, not an error (plan §1.1 rule 2).
+            if let Some(sock) = backend::discover_socket(home) {
+                probe_and_send(&sock, Some(AttachNote::ElectronOwnsHome), send);
+            } else {
+                send(AttachUpdate::Failed {
+                    banner: "Orchestra (Electron) owns this home but serves no UI socket".into(),
+                    dialog: Some((
+                        "Orchestra (Electron) owns this home".into(),
+                        format!(
+                            "The Electron app (pid {}) already owns {} — only one backend may \
+                             run per home, so the daemon refused to start.\n\nA current \
+                             Orchestra serves the UI socket itself and this window would have \
+                             attached to it automatically; not finding one usually means that \
+                             Electron app predates ui-rpc. Update it, or quit it and this app \
+                             will start (or find) a daemon on the next retry.",
+                            pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
+                            home.display(),
+                        ),
+                    )),
+                });
+            }
+        }
+        daemon::ExitDiagnosis::LockHeld { kind, pid } => {
+            let pid_str = pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into());
+            send(AttachUpdate::Failed {
+                banner: format!(
+                    "a {kind} backend (pid {pid_str}) owns this home but serves no UI socket"
+                ),
+                dialog: Some((
+                    "Backend lock held".into(),
+                    format!(
+                        "A {kind} backend (pid {pid_str}) holds {}/backend.lock, so the daemon \
+                         we started refused to run — but no UI socket was found either.\n\n\
+                         If pid {pid_str} is a live Orchestra backend it may still be booting \
+                         (this app keeps retrying). If it is NOT running, the lock is stale — \
+                         the next backend start reclaims a dead pid's lock automatically, so \
+                         retrying shortly should heal it; if it persists, check \
+                         {}/logs/orchestra.log and delete backend.lock yourself.",
+                        home.display(),
+                        home.display(),
+                    ),
+                )),
+            });
+        }
+        daemon::ExitDiagnosis::Other => {
+            send(AttachUpdate::Failed {
+                banner: "the daemon exited during startup (see dialog / spawn log)".into(),
+                dialog: Some((
+                    "Daemon failed to start".into(),
+                    format!(
+                        "The spawned daemon exited{} before serving its UI socket.\n\n{}\n\n\
+                         Full early output: {}",
+                        code.map(|c| format!(" with code {c}")).unwrap_or_default(),
+                        if output_tail.is_empty() {
+                            "(no output captured)"
+                        } else {
+                            output_tail
+                        },
+                        spawn_log.display(),
+                    ),
+                )),
+            });
+        }
+    }
+}
+
+/// Handshake-probe a discovered socket and send the outcome (attach, proto
+/// refusal, or a retryable failure).
+fn probe_and_send(sock: &Path, note: Option<AttachNote>, send: &impl Fn(AttachUpdate)) {
+    match backend::probe_backend(sock) {
+        Ok(info) => send(AttachUpdate::Attached {
+            sock: sock.to_path_buf(),
+            info,
+            note,
+        }),
+        Err(RpcError::ProtoMismatch { server }) => send(AttachUpdate::Refused {
+            server_proto: server,
+        }),
+        Err(e) => send(AttachUpdate::Failed {
+            banner: format!(
+                "backend at {} is not answering the handshake: {e} (retrying every 3s)",
+                sock.display()
+            ),
+            dialog: None,
+        }),
     }
 }
 
@@ -213,6 +450,7 @@ impl SimpleComponent for App {
                     gtk::Box {
                         add_css_class: "banner",
 
+                        #[name = "banner_label"]
                         gtk::Label {
                             set_widget_name: "backend-banner-text",
                             set_label: "no backend found — start Orchestra or the daemon (retrying every 3s)",
@@ -327,7 +565,15 @@ impl SimpleComponent for App {
 
         let state_path = state::state_path(&state::orchestra_home());
         let state = Rc::new(RefCell::new(UiState::load(&state_path)));
-        let backend = make_backend();
+        // Synchronous backend creation is mock-only: the mock is the entire
+        // backend. A real backend is discovered/spawned asynchronously by the
+        // attach-flow worker below (its blocking socket polls and handshake
+        // must not stall the first present), so it starts life as `None`.
+        let backend: Option<Box<dyn Backend>> = if backend::mock_requested() {
+            Some(Box::new(MockBackend::default()))
+        } else {
+            None
+        };
 
         let widgets = view_output!();
 
@@ -364,11 +610,20 @@ impl SimpleComponent for App {
                 sender.input(Msg::WindowGeometryChanged);
             });
         }
+        // Pid of a daemon WE spawned this session; the close handler SIGTERMs
+        // it under `--stop-daemon-on-exit`. Shared so the attach-flow handler
+        // (Msg::Attach) can record the pid after the async spawn completes.
+        let spawned_pid: Rc<Cell<Option<u32>>> = Rc::new(Cell::new(None));
+
         // Flush state synchronously on close — a debounced save may still be
-        // pending, and the main loop quits right after this.
+        // pending, and the main loop quits right after this. Also stops a
+        // daemon we spawned, if `--stop-daemon-on-exit` was set (plan §1.1
+        // rule 3 default is to LEAVE it running).
         {
             let state = state.clone();
             let path = state_path.clone();
+            let spawned_pid = spawned_pid.clone();
+            let stop_on_exit = init.stop_daemon_on_exit;
             widgets.main_window.connect_close_request(move |win| {
                 {
                     let mut st = state.borrow_mut();
@@ -380,6 +635,11 @@ impl SimpleComponent for App {
                 }
                 if let Err(e) = state.borrow().save(&path) {
                     eprintln!("[state] save on close failed: {e}");
+                }
+                if stop_on_exit {
+                    if let Some(pid) = spawned_pid.get() {
+                        daemon::stop_daemon(pid);
+                    }
                 }
                 glib::Propagation::Proceed
             });
@@ -399,8 +659,18 @@ impl SimpleComponent for App {
         }
 
         let retry_active = Rc::new(Cell::new(backend.is_none()));
+        let mut attach_in_flight = false;
         if backend.is_none() {
             widgets.banner.set_reveal_child(true);
+            widgets.banner_label.set_label("connecting to a backend…");
+            // Kick off the first attach worker immediately (allow_spawn: it may
+            // start the daemon). The 3 s timer is the RETRY loop for when this
+            // one fails and leaves no backend — it re-runs discovery only
+            // (allow_spawn: false — one auto-spawn attempt per launch is
+            // enough; repeated spawns would fight the backend lock).
+            attach_in_flight = true;
+            spawn_attach(&sender, true);
+
             let sender = sender.clone();
             let active = retry_active.clone();
             glib::timeout_add_seconds_local(3, move || {
@@ -421,7 +691,7 @@ impl SimpleComponent for App {
             &workspaces,
             state.borrow().last_active_workspace.as_deref(),
         );
-        widgets.footer_label.set_label(&footer_text(&backend));
+        widgets.footer_label.set_label(&footer_text(&backend, None));
 
         let model = App {
             backend,
@@ -430,10 +700,15 @@ impl SimpleComponent for App {
             state_path,
             save_generation: Rc::new(Cell::new(0)),
             retry_active,
+            attach_in_flight,
+            proto_refused: false,
+            server_info: None,
+            spawned_pid,
             window: widgets.main_window.clone(),
             paned: widgets.paned.clone(),
             list: widgets.list.clone(),
             banner: widgets.banner.clone(),
+            banner_label: widgets.banner_label.clone(),
             footer_label: widgets.footer_label.clone(),
         };
         ComponentParts { model, widgets }
@@ -475,29 +750,17 @@ impl SimpleComponent for App {
                 }
             }
             Msg::RetryDiscover => {
-                if self.backend.is_some() {
+                // Nothing to do once attached, a worker is already running, or
+                // the protocol was refused (retrying cannot heal a mismatch).
+                if self.backend.is_some() || self.attach_in_flight || self.proto_refused {
                     return;
                 }
-                // M2: backend::spawn_daemon_stub() grows into launching the
-                // daemon when discovery keeps failing (plan §1.1 rule 3).
-                if let Some(sock) = backend::discover_socket(&state::orchestra_home()) {
-                    self.backend = Some(Box::new(RpcBackend::new(sock)));
-                    self.retry_active.set(false);
-                    self.banner.set_reveal_child(false);
-                    let workspaces = self
-                        .backend
-                        .as_ref()
-                        .and_then(|b| b.list_workspaces().ok())
-                        .unwrap_or_default();
-                    self.workspaces = workspaces;
-                    populate_sidebar(
-                        &self.list,
-                        &self.workspaces,
-                        self.state.borrow().last_active_workspace.as_deref(),
-                    );
-                    self.footer_label.set_label(&footer_text(&self.backend));
-                }
+                // Retry runs discovery only (allow_spawn: false): the first
+                // attach already made the one auto-spawn attempt this launch.
+                self.attach_in_flight = true;
+                spawn_attach(&sender, false);
             }
+            Msg::Attach(update) => self.on_attach(update),
             Msg::PersistNow => {
                 if let Err(e) = self.state.borrow().save(&self.state_path) {
                     eprintln!("[state] save failed: {e}");
@@ -509,6 +772,116 @@ impl SimpleComponent for App {
 }
 
 impl App {
+    /// Apply one [`AttachUpdate`] from the attach-flow worker.
+    fn on_attach(&mut self, update: AttachUpdate) {
+        match update {
+            AttachUpdate::Banner(text) => {
+                self.banner_label.set_label(&text);
+            }
+            AttachUpdate::Attached { sock, info, note } => {
+                self.attach_in_flight = false;
+                self.retry_active.set(false);
+                self.banner.set_reveal_child(false);
+                let electron_owns = matches!(note, Some(AttachNote::ElectronOwnsHome));
+                if let Some(AttachNote::SpawnedDaemon { pid }) = note {
+                    self.spawned_pid.set(Some(pid));
+                }
+                // appVersion lockstep is a WARNING, not fatal (protocol §3):
+                // both apps ship from the same release, so a mismatch means one
+                // side is stale — surface it but still attach.
+                let ours = crate::app_version();
+                if info.app_version != ours {
+                    let win = self.window.clone().upcast::<gtk::Window>();
+                    let (theirs, kind) = (info.app_version.clone(), info.backend_kind);
+                    let kind = match kind {
+                        orchestra_rpc::BackendKind::Electron => "Electron app",
+                        orchestra_rpc::BackendKind::Daemon => "daemon",
+                    };
+                    glib::spawn_future_local(async move {
+                        dialogs::alert(
+                            &win,
+                            "Version mismatch",
+                            &format!(
+                                "This native frontend is v{ours} but the {kind} backend it \
+                                 attached to is v{theirs}. They ship from the same release in \
+                                 lockstep, so one side is out of date — update the older one. \
+                                 Attaching anyway; some features may be missing or misbehave.",
+                            ),
+                        )
+                        .await;
+                    });
+                }
+                self.server_info = Some(info);
+                self.backend = Some(Box::new(RpcBackend::new(sock)));
+                let workspaces = self
+                    .backend
+                    .as_ref()
+                    .and_then(|b| b.list_workspaces().ok())
+                    .unwrap_or_default();
+                self.workspaces = workspaces;
+                populate_sidebar(
+                    &self.list,
+                    &self.workspaces,
+                    self.state.borrow().last_active_workspace.as_deref(),
+                );
+                self.footer_label
+                    .set_label(&footer_text(&self.backend, self.server_info.as_ref()));
+                if electron_owns {
+                    // §1.1 rule 2: our daemon lost the lock to the Electron
+                    // app, which serves the same socket — we attached to it.
+                    let win = self.window.clone().upcast::<gtk::Window>();
+                    glib::spawn_future_local(async move {
+                        dialogs::alert(
+                            &win,
+                            "Attached to the Electron app",
+                            "Orchestra (Electron) already owns this home and serves the UI \
+                             socket itself, so this window attached to it automatically — the \
+                             two apps are two faces of one running backend. Changes you make \
+                             here appear there and vice versa.",
+                        )
+                        .await;
+                    });
+                }
+            }
+            AttachUpdate::Refused { server_proto } => {
+                self.attach_in_flight = false;
+                self.proto_refused = true;
+                self.retry_active.set(false);
+                self.banner.set_reveal_child(true);
+                self.banner_label.set_label(
+                    "backend refused: incompatible ui-rpc protocol — update the older app",
+                );
+                let win = self.window.clone().upcast::<gtk::Window>();
+                let ours = PROTO_VERSION;
+                glib::spawn_future_local(async move {
+                    dialogs::error(
+                        &win,
+                        "Incompatible backend",
+                        &format!(
+                            "The backend speaks ui-rpc protocol v{server_proto}, but this \
+                             frontend speaks v{ours}. The protocol is frozen per release, so \
+                             this means the two apps are from different releases — update the \
+                             older side; both ship from the same release in lockstep. This \
+                             window will not attach until they match.",
+                        ),
+                    )
+                    .await;
+                });
+            }
+            AttachUpdate::Failed { banner, dialog } => {
+                self.attach_in_flight = false;
+                self.banner.set_reveal_child(true);
+                self.banner_label.set_label(&banner);
+                if let Some((title, body)) = dialog {
+                    let win = self.window.clone().upcast::<gtk::Window>();
+                    glib::spawn_future_local(async move {
+                        dialogs::error(&win, &title, &body).await;
+                    });
+                }
+            }
+        }
+    }
+
     fn schedule_save(&self, sender: &ComponentSender<Self>) {
         let generation = self.save_generation.get() + 1;
         self.save_generation.set(generation);
