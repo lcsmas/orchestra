@@ -181,12 +181,15 @@ jobs:
       # No GPU in the container: point wlroots at its Pixman software renderer
       # (WLR_RENDERER) and GTK's GSK at its cairo software fallback
       # (GSK_RENDERER) so both the compositor and the app render without one.
+      # NB: do NOT also set LIBGL_ALWAYS_SOFTWARE — on a host that HAS a GPU it
+      # makes wlroots' EGL init refuse ("not allowed to force software when the
+      # API selects a hardware device") and sway never comes up; WLR_RENDERER
+      # is the correct, device-selection-agnostic knob.
       - name: Run E2E scenarios
         env:
           XDG_RUNTIME_DIR: /tmp/xdg
           WLR_RENDERER: pixman
           GSK_RENDERER: cairo
-          LIBGL_ALWAYS_SOFTWARE: '1'
         run: |
           mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
           node native/e2e/run.mjs
