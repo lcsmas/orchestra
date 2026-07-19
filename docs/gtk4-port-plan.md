@@ -583,6 +583,30 @@ evidence; Merged = on `gtk4-native-port`.
   x64+arm64, fmt/clippy/test/release + TS + fixtures-drift + conformance).
   Finishing the `native/e2e/` suite.
 
+##### Merge sequencing (app.rs seam serialization)
+
+B3/B4/B5/B6 all edit `app.rs` (`spawn_backend_streams` + the `Msg` enum) and
+`backend.rs`, so merges are **serialized** — each agent rebases onto the prior
+merge and reconciles the seam once, rather than a four-way collision. Order:
+**B4 → B3 → B5 → B6**. The coordinator owns the `spawn_backend_streams`/trait
+seam resolution; each agent owns the reconciliation of its own handler regions.
+
+Two contract additions landed on the integration branch to support this:
+- `Msg::PtyData(id, bytes)` — the canonical terminal seam (B2 and B4 converged
+  on it independently). `spawn_backend_streams`' `pty_data()` drain forwards it;
+  consumers (`TerminalStack::feed`, accounts `handle_pty_data`) receive it,
+  never opening their own `pty_data()` pump.
+- `Sidebar::Output::WorkspaceActivated(String)` (`40d88b6`) — the sidebar→main
+  -pane selection channel (B3's `set_active` hangs off App's forwarded
+  `Msg::WorkspaceActivated`), so B3 doesn't store-poll `last_active_workspace`.
+
+Status snapshot: **B1 MERGED + live-verified** (two independent live fan-out
+proofs: verifier `markSeen`→idle, B1 `setUnread`→unread). **B4 verified**
+(`cea0cc1`, re-merging its inline accounts-mock into `backend/mock.rs`).
+**B5 done** (`eb31b26`, in verify). **B6 done** (`2145556`, in verify — owns
+the two `src/main` `ORCHESTRA_HOME` fixes). **B3 done-pending** (`70293c4`,
+re-applying `Ctx` glue). **B2 in flight** (§5.2 core landed, ?2026 resolved).
+
 ##### Event-ownership contract (settled during B1 integration)
 
 `async_channel` is **MPMC**: two `recv()` loops on receiver clones
