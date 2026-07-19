@@ -74,6 +74,9 @@ pub struct Toolbar {
     tab_terminal: gtk::ToggleButton,
     tab_diff: gtk::ToggleButton,
     tab_run: gtk::ToggleButton,
+    /// The dim "· setup" suffix on the Run tab, shown only when the repo has
+    /// no run script configured.
+    run_tab_hint: gtk::Label,
     diff_indicator: gtk::Label,
 
     // Action buttons ---------------------------------------------------------
@@ -200,9 +203,20 @@ impl Toolbar {
         diff_box.append(&diff_indicator);
         tab_diff.set_child(Some(&diff_box));
         tab_diff.set_group(Some(&tab_terminal));
-        let tab_run = gtk::ToggleButton::with_label("Run");
+        // "Run" plus a dim "· setup" hint shown only when the repo has no run
+        // script (App.tsx:491) — the tab itself stays visible either way.
+        let tab_run = gtk::ToggleButton::new();
         tab_run.add_css_class("tab");
         tab_run.set_widget_name("tab-run");
+        let run_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let run_label = gtk::Label::new(Some("Run"));
+        let run_tab_hint = gtk::Label::new(Some(" · setup"));
+        run_tab_hint.add_css_class("tab-dim");
+        run_tab_hint.set_widget_name("tab-run-hint");
+        run_tab_hint.set_visible(false);
+        run_box.append(&run_label);
+        run_box.append(&run_tab_hint);
+        tab_run.set_child(Some(&run_box));
         tab_run.set_group(Some(&tab_terminal));
         tabs.append(&tab_terminal);
         tabs.append(&tab_diff);
@@ -282,6 +296,7 @@ impl Toolbar {
             tab_terminal,
             tab_diff,
             tab_run,
+            run_tab_hint,
             diff_indicator,
             run_toggle,
             run_toggle_icon,
@@ -331,16 +346,21 @@ impl Toolbar {
             {
                 st.active_tab = Tab::Terminal;
             }
-            // Run tab may have vanished with the workspace switch.
-            if !has_run && st.active_tab == Tab::Run {
-                st.active_tab = Tab::Terminal;
-            }
+            // The Run tab stays selectable without a run script (it shows the
+            // setup guidance), so a missing script no longer snaps away from
+            // it — only scratch-like workspaces, handled above, do.
         }
         self.merge_pill.set_reveal_child(false);
         self.apply_state();
         // Surface the (possibly clamped) active tab to the pane.
         let tab = self.state.borrow().active_tab;
         self.emit_tab(tab);
+    }
+
+    /// Whether the active workspace's repo has a `run` script configured — the
+    /// pane reads this to choose the run pane vs the setup guidance.
+    pub fn has_run_script(&self) -> bool {
+        self.state.borrow().has_run
     }
 
     /// The currently selected tab (the pane reads this to restore its stack on
@@ -518,11 +538,14 @@ impl Toolbar {
         self.branch_panel.reset();
         self.branch_panel.set_highlight(Some(&ws.branch));
         self.branch_panel.focus_search();
-        // listBranches(repoPath) → string[] (current-first is the panel's job
-        // via set_highlight; it sorts the highlighted branch to the top).
+        // listBranches(WORKSPACE ID) → string[]: the handler resolves repoPath
+        // from the workspace itself (api-handlers.ts:749) and throws
+        // "workspace not found" for anything else — passing repo_path here
+        // broke the picker against every real backend. Current-first is the
+        // panel's job via set_highlight; it sorts the highlighted branch first.
         match self
             .ctx
-            .call_typed::<Vec<String>>("listBranches", vec![json!(ws.repo_path)])
+            .call_typed::<Vec<String>>("listBranches", vec![json!(ws.id)])
         {
             Ok(branches) => self.branch_panel.set_branches(Some(branches)),
             Err(e) => {
@@ -740,11 +763,21 @@ impl Toolbar {
                 .set_tooltip_text(Some(&format!("base branch: {}", ws.base_branch)));
         }
 
-        // Tabs: Diff + Run are git-only; Run additionally needs a run script.
+        // Tabs: Diff + Run are git-only. The Run TAB stays visible even without
+        // a run script (App.tsx:478) — it's the only affordance that leads a
+        // user to the scripts entry point, so hiding it removes the discovery
+        // path; it just wears a dim "· setup" hint and a learn-more tooltip.
         self.tab_diff.set_visible(!is_scratch_like);
-        self.tab_run.set_visible(!is_scratch_like && st.has_run);
+        self.tab_run.set_visible(!is_scratch_like);
+        self.run_tab_hint.set_visible(!st.has_run);
+        self.tab_run.set_tooltip_text(Some(if st.has_run {
+            "Spawn the configured run script (dev server, etc.)"
+        } else {
+            "No run script configured for this repo — click to learn more"
+        }));
 
-        // Action buttons: PR / merge / run-toggle are git-only.
+        // Action buttons: PR / merge are git-only. The run TOGGLE stays gated
+        // on has_run — a ▶ with no script to spawn would be meaningless.
         self.run_toggle.set_visible(!is_scratch_like && st.has_run);
         self.pr_btn.set_visible(!is_scratch_like);
         self.merge_btn.set_visible(!is_scratch_like);

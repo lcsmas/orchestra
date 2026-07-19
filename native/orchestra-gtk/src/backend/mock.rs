@@ -36,6 +36,19 @@ fn repo_fixture(v: Value) -> RepoEntry {
     serde_json::from_value(v).expect("mock repo fixture matches the wire type")
 }
 
+/// Branch list for a repo path. Deliberately DIFFERENT per repo so a caller
+/// that passes the wrong argument (a repo path where a workspace id belongs,
+/// or vice-versa) surfaces as a wrong/empty list rather than coincidentally
+/// matching one shared fixture.
+fn branches_for_repo(repo_path: &str) -> Value {
+    match repo_path {
+        ORCHESTRA_REPO => json!(["master", "develop", "release/0.5", "spike/vte"]),
+        MOBILE_CLUB_REPO => json!(["develop", "main", "release/2026.07", "hotfix/checkout"]),
+        // Scratch-like workspaces have no repo; the picker never opens for them.
+        _ => json!([]),
+    }
+}
+
 /// Epoch ms — fixture timestamps are anchored in the past; live ones (rename,
 /// sync) use now.
 fn now_ms() -> i64 {
@@ -445,6 +458,37 @@ impl MockBackend {
             .map_err(|e| BackendError::Method(format!("bad param {i}: {e}")))
     }
 
+    /// Resolve a WORKSPACE-ID argument against the fixture store, erroring on
+    /// an unknown id exactly like the real handlers do ("workspace not found").
+    ///
+    /// THE RULE (M3 gap-fix): any mock arm standing in for a keyed lookup must
+    /// validate its key. A mock that ignores its argument cannot tell a
+    /// workspace id from a repo path, so a caller passing the wrong one looks
+    /// correct here and fails only against a live backend — exactly how the
+    /// toolbar's `listBranches(repo_path)` bug survived every mock-based test.
+    fn require_ws(&self, id: &str) -> Result<Workspace> {
+        self.state
+            .borrow()
+            .workspaces
+            .iter()
+            .find(|w| w.id == id)
+            .cloned()
+            .ok_or_else(|| BackendError::Method(format!("workspace not found: {id}")))
+    }
+
+    /// Resolve a REPO-PATH argument against the fixture store. Same rule as
+    /// [`Self::require_ws`], for the path-keyed methods (getRepoScripts,
+    /// listRepoBranches, syncRepoBase…).
+    fn require_repo(&self, path: &str) -> Result<RepoEntry> {
+        self.state
+            .borrow()
+            .repos
+            .iter()
+            .find(|r| r.path == path)
+            .cloned()
+            .ok_or_else(|| BackendError::Method(format!("no repo {path}")))
+    }
+
     /// The workspace→account map as the wire `WorkspaceAccount` object keyed by
     /// workspace id (what `getWorkspaceAccounts` returns and `workspaceAccounts`
     /// broadcasts). Labels resolve from the live account list.
@@ -629,7 +673,15 @@ impl Backend for MockBackend {
                     _ => Value::Null,
                 })
             }
-            "listRepoBranches" => Ok(json!(["master", "develop", "release/0.5", "spike/vte"])),
+            // listRepoBranches takes a repoPath (ipc.ts:54) — the mirror image
+            // of listBranches, which takes a workspace id. Validate the arg
+            // against the fixture repos so a caller that passes the wrong one
+            // fails HERE instead of only against a live backend.
+            "listRepoBranches" => {
+                let repo_path: String = Self::arg(&params, 0)?;
+                self.require_repo(&repo_path)?;
+                Ok(branches_for_repo(&repo_path))
+            }
             "renameBranch" => {
                 let id: String = Self::arg(&params, 0)?;
                 let branch: String = Self::arg(&params, 1)?;
@@ -924,7 +976,9 @@ impl Backend for MockBackend {
             // deleted JS file (drives the side-by-side view + intra-line
             // highlights + A/M/D classification).
             "getDiff" => {
+                // Keyed by workspace id — validate it (see require_ws).
                 let id: String = Self::arg(&params, 0)?;
+                self.require_ws(&id)?;
                 Ok(if id == "ws-1" {
                     mock_diff_files()
                 } else {
@@ -932,13 +986,11 @@ impl Backend for MockBackend {
                 })
             }
             "getRepoScripts" => {
+                // Keyed by REPO PATH (ipc.ts:262), not a workspace id.
                 let path: String = Self::arg(&params, 0)?;
-                let st = self.state.borrow();
-                Ok(st
-                    .repos
-                    .iter()
-                    .find(|r| r.path == path)
-                    .and_then(|r| r.scripts.clone())
+                let repo = self.require_repo(&path)?;
+                Ok(repo
+                    .scripts
                     .map(|s| serde_json::to_value(s).unwrap())
                     .unwrap_or_else(|| json!({})))
             }
@@ -953,24 +1005,39 @@ impl Backend for MockBackend {
                 })?;
                 Ok(serde_json::to_value(&ws).unwrap())
             }
-            // listBranches is the toolbar picker's source (listRepoBranches is
-            // the sidebar's new-workspace picker — same fixture list).
-            "listBranches" => Ok(json!(["master", "develop", "release/0.5", "spike/vte"])),
-            "restartAgent" => Ok(Value::Null),
+            // listBranches takes a WORKSPACE ID and resolves the repo itself
+            // (api-handlers.ts:749) — the mirror image of listRepoBranches,
+            // which takes a repoPath. Resolve the id strictly and error on an
+            // unknown one exactly like the real handler ("workspace not
+            // found"): a permissive mock here previously masked a toolbar bug
+            // that passed repo_path and failed against every live backend.
+            "listBranches" => {
+                let id: String = Self::arg(&params, 0)?;
+                let ws = self.require_ws(&id)?;
+                Ok(branches_for_repo(&ws.repo_path))
+            }
+            "restartAgent" => {
+                let id: String = Self::arg(&params, 0)?;
+                self.require_ws(&id)?;
+                Ok(Value::Null)
+            }
 
             // Run-script toggle (per-workspace live flag).
             "runScriptStatus" => {
                 let id: String = Self::arg(&params, 0)?;
+                self.require_ws(&id)?;
                 let running = *self.state.borrow().run_live.get(&id).unwrap_or(&false);
                 Ok(json!(running))
             }
             "runScriptStart" => {
                 let id: String = Self::arg(&params, 0)?;
+                self.require_ws(&id)?;
                 self.state.borrow_mut().run_live.insert(id, true);
                 Ok(json!(true))
             }
             "runScriptStop" => {
                 let id: String = Self::arg(&params, 0)?;
+                self.require_ws(&id)?;
                 self.state.borrow_mut().run_live.insert(id, false);
                 Ok(json!(true))
             }
@@ -978,6 +1045,7 @@ impl Backend for MockBackend {
             // Setup banner: log tail + retry (ws-4 failed, ws-5 running).
             "readSetupLog" => {
                 let id: String = Self::arg(&params, 0)?;
+                self.require_ws(&id)?;
                 Ok(match id.as_str() {
                     "ws-5" => json!(
                         "$ pnpm install\nProgress: resolved 812, reused 800, downloaded 12\nLinking dependencies...\n"
@@ -1036,6 +1104,7 @@ impl Backend for MockBackend {
             // this machine is not the driver).
             "sandboxControlState" => {
                 let id: String = Self::arg(&params, 0)?;
+                self.require_ws(&id)?;
                 Ok(if id == "ws-mc-sb1" || id == "ws-mc-sb2" {
                     json!({
                         "endpoint": SANDBOX_A,
@@ -1047,10 +1116,18 @@ impl Backend for MockBackend {
                     Value::Null
                 })
             }
-            "takeSandboxControl" => Ok(Value::Null),
+            "takeSandboxControl" => {
+                let id: String = Self::arg(&params, 0)?;
+                self.require_ws(&id)?;
+                Ok(Value::Null)
+            }
 
             // Merge is delegated to the agent → { status: "requested" }.
-            "mergeWorktree" => Ok(json!({ "status": "requested" })),
+            "mergeWorktree" => {
+                let id: String = Self::arg(&params, 0)?;
+                self.require_ws(&id)?;
+                Ok(json!({ "status": "requested" }))
+            }
 
             _ => Err(BackendError::NotWired(
                 "mock backend does not serve this method",
@@ -1225,5 +1302,80 @@ mod tests {
         let BackendEvent::Event { args: a2, .. } = rx.try_recv().unwrap();
         assert_eq!(a2[0]["syncing"], false);
         assert_eq!(a2[0]["behind"], 0);
+    }
+
+    /// The two branch-listing methods take MIRROR-IMAGE arguments
+    /// (`listBranches(workspaceId)` vs `listRepoBranches(repoPath)`,
+    /// ipc.ts:257/54). A permissive mock that ignored its argument masked a
+    /// toolbar bug that passed repo_path to listBranches and threw
+    /// "workspace not found" against every live backend — so the mock now
+    /// resolves each strictly and these tests pin that.
+    #[test]
+    fn list_branches_takes_a_workspace_id_not_a_repo_path() {
+        let b = MockBackend::default();
+        // A real workspace id resolves to ITS repo's branches.
+        let out = b.call("listBranches", vec![json!("ws-1")]).unwrap();
+        assert_eq!(out, branches_for_repo(ORCHESTRA_REPO));
+        // A workspace in the other repo gets that repo's (different) list.
+        let mc = b.call("listBranches", vec![json!("ws-mc-1")]).unwrap();
+        assert_eq!(mc, branches_for_repo(MOBILE_CLUB_REPO));
+        assert_ne!(out, mc, "per-repo lists must differ or a wrong arg hides");
+        // Passing a repo PATH (the old bug) is rejected, like the real handler.
+        assert!(b.call("listBranches", vec![json!(ORCHESTRA_REPO)]).is_err());
+    }
+
+    #[test]
+    fn list_repo_branches_takes_a_repo_path_not_a_workspace_id() {
+        let b = MockBackend::default();
+        let out = b
+            .call("listRepoBranches", vec![json!(ORCHESTRA_REPO)])
+            .unwrap();
+        assert_eq!(out, branches_for_repo(ORCHESTRA_REPO));
+        // Passing a workspace id is rejected.
+        assert!(b.call("listRepoBranches", vec![json!("ws-1")]).is_err());
+    }
+
+    /// THE RULE: every mock arm standing in for a keyed lookup validates its
+    /// key, so a caller that passes the wrong KIND of key (id vs path) fails
+    /// here instead of only against a live backend. Pins the whole class.
+    #[test]
+    fn keyed_methods_reject_an_unknown_key() {
+        let b = MockBackend::default();
+        // Workspace-id-keyed: a bogus id AND a repo path (the wrong kind) fail.
+        for m in [
+            "getDiff",
+            "listBranches",
+            "restartAgent",
+            "runScriptStatus",
+            "runScriptStart",
+            "runScriptStop",
+            "readSetupLog",
+            "retrySetup",
+            "markSeen",
+            "mergeWorktree",
+            "sandboxControlState",
+            "takeSandboxControl",
+            "flushQueuedPrompts",
+        ] {
+            assert!(
+                b.call(m, vec![json!("no-such-ws")]).is_err(),
+                "{m} must reject an unknown workspace id"
+            );
+            assert!(
+                b.call(m, vec![json!(ORCHESTRA_REPO)]).is_err(),
+                "{m} must reject a repo PATH where a workspace id belongs"
+            );
+        }
+        // Repo-path-keyed: a bogus path AND a workspace id (wrong kind) fail.
+        for m in ["getRepoScripts", "listRepoBranches"] {
+            assert!(
+                b.call(m, vec![json!("/no/such/repo")]).is_err(),
+                "{m} must reject an unknown repo path"
+            );
+            assert!(
+                b.call(m, vec![json!("ws-1")]).is_err(),
+                "{m} must reject a workspace ID where a repo path belongs"
+            );
+        }
     }
 }
