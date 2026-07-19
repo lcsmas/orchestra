@@ -46,6 +46,20 @@ pub enum Op {
         name: String,
         prop: Prop,
     },
+    /// Activate a `group.action` on the named widget (or the main window if no
+    /// widget is named), with an optional string parameter. This drives
+    /// affordances that have no clickable widget under headless CI — chiefly
+    /// the sidebar's `sidebar.drop-ws` / `sidebar.drop-repo` reorder actions,
+    /// which stand in for pointer drag-and-drop the seatless compositor can't
+    /// synthesize.
+    Action {
+        /// Fully-qualified `group.name`, e.g. "sidebar.drop-ws".
+        action: String,
+        #[serde(default)]
+        param: Option<String>,
+        #[serde(default)]
+        name: Option<String>,
+    },
     /// Render the named widget offscreen via WidgetPaintable → GSK
     /// render_texture → PNG (no name: the topmost open dialog, else the main
     /// window). Works without a visible frame, which is exactly what
@@ -127,6 +141,13 @@ async fn handle_connection(conn: gio::SocketConnection) {
             continue;
         }
         let response = match parse_op(line) {
+            // Screenshots wait for a frame-clock tick first: a structural
+            // rebuild leaves layout pending, and snapshotting the same turn
+            // yields an empty render node under headless CI.
+            Ok(op @ Op::Screenshot { .. }) => {
+                await_frame().await;
+                handle_op(op)
+            }
             Ok(op) => handle_op(op),
             Err(e) => err(format!("bad request: {e}")),
         };
@@ -140,6 +161,32 @@ async fn handle_connection(conn: gio::SocketConnection) {
             break;
         }
     }
+}
+
+/// Await one frame-clock tick on the main window so a pending relayout is
+/// flushed before a screenshot. Falls back to a short timeout if the window
+/// has no frame clock yet (never realized), so this can't hang the connection.
+async fn await_frame() {
+    let Some(win) = main_window() else { return };
+    let (tx, rx) = async_channel::bounded::<()>(1);
+    // Two ticks: the first schedules layout, the second paints it.
+    let count = std::rc::Rc::new(std::cell::Cell::new(0u8));
+    let tx2 = tx.clone();
+    win.add_tick_callback(move |_, _| {
+        let n = count.get() + 1;
+        count.set(n);
+        if n >= 2 {
+            let _ = tx2.try_send(());
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
+    });
+    // Safety valve: don't wait forever if the frame clock is idle.
+    glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+        let _ = tx.try_send(());
+    });
+    let _ = rx.recv().await;
 }
 
 // ---- widget-tree plumbing ---------------------------------------------------
@@ -292,6 +339,27 @@ fn handle_op(op: Op) -> Value {
                 json!(handled),
             )]))
         }
+        Op::Action {
+            action,
+            param,
+            name,
+        } => {
+            // Resolve the widget that carries the action group (a named widget,
+            // else the main window — actions bubble up the widget tree, so a
+            // group installed on the sidebar root is reachable from either).
+            let target: Option<gtk::Widget> = match &name {
+                Some(n) => find_widget(n),
+                None => main_window().map(|w| w.upcast()),
+            };
+            let Some(target) = target else {
+                return err("no widget to activate the action on");
+            };
+            let variant = param.map(|p| p.to_variant());
+            match target.activate_action(&action, variant.as_ref()) {
+                Ok(()) => ok(Default::default()),
+                Err(e) => err(format!("action {action:?} failed: {e}")),
+            }
+        }
         Op::Get { name, prop } => {
             let Some(w) = find_widget(&name) else {
                 return err(format!("no widget named {name:?}"));
@@ -347,6 +415,18 @@ fn handle_op(op: Op) -> Value {
 }
 
 fn screenshot_widget(widget: &gtk::Widget, path: &str) -> Result<(i32, i32), String> {
+    // A structural rebuild (the sidebar detaches + re-appends its rows) leaves
+    // a pending relayout; snapshotting in the same main-loop turn yields an
+    // empty render node. Drain pending main-context work first so the tree is
+    // laid out before we snapshot — this is the headless equivalent of waiting
+    // a frame.
+    let ctx = glib::MainContext::default();
+    let mut guard = 0;
+    while ctx.pending() && guard < 10_000 {
+        ctx.iteration(false);
+        guard += 1;
+    }
+
     let (w, h) = (widget.width(), widget.height());
     if w == 0 || h == 0 {
         return Err("widget has zero size (not mapped yet?)".into());
@@ -415,6 +495,14 @@ mod tests {
             Op::Screenshot {
                 path: "/tmp/x.png".into(),
                 name: None
+            }
+        );
+        assert_eq!(
+            parse_op(r#"{"op":"action","action":"sidebar.drop-ws","param":"a|b|before"}"#).unwrap(),
+            Op::Action {
+                action: "sidebar.drop-ws".into(),
+                param: Some("a|b|before".into()),
+                name: None,
             }
         );
     }

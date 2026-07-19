@@ -165,6 +165,32 @@ queue survives restarts) instead of burning turns on "limit reached" errors.
 - **AccountsSettings.tsx** — manage accounts + inheritance checkboxes/chips
   (populated from `listGlobalInheritables`); saves via `setAccounts` then syncs.
 
+## GTK4 port (native/orchestra-gtk/src/accounts/)
+The native frontend mirrors the Electron components over the ui-rpc `Backend`
+seam (`docs/ui-rpc-protocol.md`); a single `AccountsController` (`mod.rs`) owns
+the store slice and every accounts window. It calls the backend only via
+`call()`/`pty_write()` — the app shell (`app.rs`) owns the single
+`events()`/`pty_data()` consumer and fans usage/account/login frames to
+`AccountsController::handle_event` / `handle_pty_data` (`Msg::BackendEvent` /
+`Msg::PtyData`).
+- **logic.rs** — pure ports parity-tested against the TS (`loginColor` UTF-16
+  hash, severity bands, resets-in/updated-ago/token/age formats,
+  `expandConfigDir`, `defaultDirFor`, panel row sort).
+- **usage_bars.rs** — `UsageBars.tsx` (strip + hover panel): 5h/7d cells, a
+  conditional Fable cell, and a conditional "EX" extra-credits cell (spend
+  meter, no reset countdown), plus the per-account panel with matching mini-bars.
+- **settings.rs** — `AccountsSettings.tsx` (CRUD, live configDir preview).
+- **login_modal.rs** — `AccountLoginModal.tsx` as a self-contained feed-mode VTE
+  over the `account-login:<id>` PTY.
+- **login_web.rs** — `login-browser.ts` replacement: per-account WebKitGTK 6
+  OAuth windows with a persistent `NetworkSession` under
+  `<home>/gtk-login-partitions/<id>` (isolated cookie jar per account) and the
+  UA-marker strip. Consent wall is manual (attestation).
+- **badge.rs** — `WorkspaceAccountMenu` (migrate) + context-size badge.
+- E2E: `scripts/smoke-accounts.sh` (strip/settings/login modal) and
+  `scripts/smoke-webkit.sh` + `examples/webkit_isolation.rs` (two accounts →
+  two on-disk partition dirs), both under headless sway.
+
 ## Tests
 `accounts.test.ts` covers `expandConfigDir`, `parseCredentials`, `isExpired`,
 `parseUsageResponse`, `classifyHttpError`, `resolveWorkspaceAccountId`,

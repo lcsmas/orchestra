@@ -1,13 +1,18 @@
-// Render the chime recipes (native/chime-gen — the port of
-// src/renderer/chime.ts) into OUT_DIR at build time. sound.rs embeds the
-// bytes via the generated chime_assets.rs, so the app binary is
-// self-contained and the shipped audio can never drift from the recipe
-// tables (chime-gen's tests pin those against chime.ts).
+//! Build script for orchestra-gtk. Two jobs:
+//!  1. Render the chime recipes (native/chime-gen — the port of
+//!     src/renderer/chime.ts) into OUT_DIR; sound.rs embeds the bytes via the
+//!     generated chime_assets.rs, so the binary is self-contained and the
+//!     shipped audio can never drift from the recipe tables (chime-gen's tests
+//!     pin those against chime.ts).
+//!  2. Link `libfontconfig` for the app-font registration in `terminal::fonts`
+//!     (fontconfig is present transitively via pango but not on the link line,
+//!     so its `FcConfig*` symbols are otherwise undefined).
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
 fn main() {
+    // ---- 1. chime WAVs → OUT_DIR/chime_assets.rs ----
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
     let wav_dir = out_dir.join("chimes");
     std::fs::create_dir_all(&wav_dir).expect("create chime OUT_DIR");
@@ -38,7 +43,12 @@ fn main() {
     }
     table.push_str("];\n");
     std::fs::write(out_dir.join("chime_assets.rs"), table).expect("write chime_assets.rs");
-
     // The recipes live in chime-gen's source; cargo already rebuilds when a
     // build-dependency changes, so no extra rerun-if-changed is needed.
+
+    // ---- 2. link libfontconfig by exact soname ----
+    // `-l:libfontconfig.so.1` rather than `-lfontconfig`: the rootless localdeps
+    // prefix has no `-devel` `libfontconfig.so` symlink, so the plain `-l` form
+    // can't resolve. The soname is ABI-stable.
+    println!("cargo:rustc-link-arg=-l:libfontconfig.so.1");
 }

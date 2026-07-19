@@ -50,6 +50,44 @@ scrollbar slider {
   font-size: 14px;
 }
 
+/* Terminal stack (plan §5.2): the VTE panes paint their own bg via
+   set_colors; the boot pill floats centered over them. */
+#terminal-stack {
+  background-color: @bg;
+}
+.term-scroll {
+  background-color: #0b0d10;
+}
+.boot-pill {
+  background-color: alpha(#1b2029, 0.94);
+  color: #e6e9ef;
+  border: 1px solid alpha(#8fbcff, 0.4);
+  border-radius: 999px;
+  padding: 8px 18px;
+  font-size: 13px;
+  margin: 14px;
+  transition: opacity 250ms ease-out;
+}
+.boot-pill.faded {
+  opacity: 0;
+}
+
+/* Terminal-view toolbar (Agent / Run / nvim tabs + Run toggle). */
+.term-toolbar {
+  padding: 4px 8px;
+  background-color: @bg_2;
+  border-bottom: 1px solid @border;
+}
+.term-tab {
+  margin-right: 4px;
+  padding: 2px 12px;
+  font-size: 12px;
+}
+.run-action {
+  padding: 2px 12px;
+  font-size: 12px;
+}
+
 /* 3 ── sidebar */
 .sidebar {
   background-color: @bg_2;
@@ -97,6 +135,277 @@ list row:selected label {
 .ws-dot.error   { background-color: @red; }
 .ws-dot.idle    { background-color: @text_dim; opacity: 0.55; }
 .ws-dot.stopped { background-color: #555555; opacity: 0.6; }
+.ws-dot.unread  { background-color: @accent; box-shadow: 0 0 0 3px alpha(@accent, 0.25); }
+
+/* 3b ── sidebar (M2-B1): header, sections, trees, pills, actions.
+ * The full §5.1 surface; matches the Electron sidebar's compact look. */
+
+/* Header action strip (+ Repo / ⚡ / 🌿). */
+.sidebar-header {
+  padding: 8px 8px 4px 12px;
+}
+.sidebar-header-btn {
+  background-color: @bg_3;
+  border: 1px solid @border;
+  border-radius: 6px;
+  color: @text_dim;
+  font-size: 11px;
+  padding: 2px 8px;
+  min-height: 0;
+}
+.sidebar-header-btn:hover { background-color: @bg_4; color: @text; }
+
+/* Section + repo + host headers share a compact non-row look. */
+.section-header-row,
+.repo-header-row,
+.host-header-row,
+.repo-sync-row,
+.archived-toggle-row,
+.archived-bar-row {
+  padding: 2px 6px;
+}
+.repo-header, .host-group-header {
+  padding: 3px 6px;
+}
+.repo-name, .host-name {
+  color: @text;
+  font-weight: 600;
+  font-size: 12px;
+}
+.scratch-glyph { font-size: 12px; }
+.repo-collapse, .host-collapse {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 2px 4px;
+  min-height: 0;
+}
+.repo-collapse:hover, .host-collapse:hover { background-color: @bg_3; }
+.caret { color: @text_dim; font-size: 10px; }
+
+.host-dot {
+  min-width: 7px;
+  min-height: 7px;
+  border-radius: 4px;
+}
+.host-dot.local  { background-color: @text_dim; }
+.host-dot.remote { background-color: @accent; }
+
+.repo-header-actions button,
+.repo-scripts-btn,
+.repo-add {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: @text_dim;
+  padding: 1px 6px;
+  min-height: 0;
+  border-radius: 6px;
+}
+.repo-header-actions button:hover,
+.repo-scripts-btn:hover,
+.repo-add:hover { background-color: @bg_3; color: @text; }
+.repo-scripts-btn.danger:hover { color: @red; }
+
+/* Base-branch sync pill row under an expanded repo header. */
+.repo-sync {
+  background-color: @bg_3;
+  border: 1px solid @border;
+  border-radius: 6px;
+  padding: 2px 8px;
+  min-height: 0;
+}
+.repo-sync:hover { background-color: @bg_4; }
+.repo-sync.error { border-color: @red; }
+.repo-sync-base { color: @text_dim; font-size: 11px; }
+.repo-sync-status { font-size: 11px; }
+.repo-sync-status.muted { color: @text_dim; opacity: 0.7; }
+.repo-sync-status .behind { color: @yellow; }
+.repo-sync-status .ahead  { color: @green; }
+
+/* Workspace rows: item box, tree indent, collapse caret. */
+.ws-item { padding: 0; }
+.ws-tree-connector { color: @text_dim; opacity: 0.5; font-size: 12px; }
+/* The subtree caret / its placeholder are flat glyphs, NOT raised buttons. */
+.ws-collapse {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0 2px;
+  min-height: 0;
+  min-width: 14px;
+  color: @text_dim;
+}
+.ws-collapse:hover { color: @text; background: transparent; }
+.ws-collapse-spacer { min-width: 14px; }
+.ws-name-row { min-height: 20px; }
+
+/* Context / account / size mini-badges riding the name row. */
+.ws-context { color: @text_dim; font-size: 10px; }
+.ws-context-sep { color: @text_dim; opacity: 0.5; }
+.ws-login-badge {
+  background-color: @bg_3;
+  border: none;
+  border-radius: 5px;
+  color: @text_dim;
+  font-size: 10px;
+  padding: 0 5px;
+  min-height: 0;
+}
+.ws-login-badge:hover { background-color: @bg_4; color: @text; }
+
+/* Hidden-descendant count pill, tinted by most-urgent hidden status. */
+.ws-hidden-count {
+  background-color: @bg_4;
+  color: @text_dim;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 6px;
+}
+.ws-hidden-count.error   { background-color: alpha(@red, 0.25);    color: @red; }
+.ws-hidden-count.waiting { background-color: alpha(@yellow, 0.22); color: @yellow; }
+.ws-hidden-count.running { background-color: alpha(@green, 0.20);  color: @green; }
+
+/* Pill zoo (merge/released/unpushed/diff/setup/PR/Linear/size/repo-tag). */
+.ws-pills { margin-top: 2px; }
+.ws-pills.mini { opacity: 0.95; }
+.pill {
+  border-radius: 6px;
+  font-size: 10px;
+  padding: 0 6px;
+  min-height: 0;
+}
+.pill.repo-count, .pill.host-count {
+  background-color: @bg_4;
+  color: @text_dim;
+}
+.pill.repo-tag-pill { background-color: @bg_4; color: @accent; }
+.pill.merged-pill   { background-color: alpha(@accent, 0.18); color: @accent; }
+.pill.released-pill { background-color: alpha(@green, 0.18);  color: @green; }
+.pill.unpushed-pill { background-color: alpha(@yellow, 0.18); color: @yellow; }
+.pill.ws-size       { background-color: @bg_3; color: @text_dim; }
+.pill.setup-pill    { background-color: @bg_4; color: @text_dim; }
+.pill.setup-pill.failed { background-color: alpha(@red, 0.2); color: @red; }
+.diff-indicator { background-color: @bg_3; }
+.diff-indicator .add { color: @green; font-size: 10px; }
+.diff-indicator .del { color: @red;   font-size: 10px; }
+.pill-btn { border: none; box-shadow: none; }
+.pr-badge {
+  background-color: @bg_4;
+  color: @text_dim;
+  border-radius: 6px;
+  font-size: 10px;
+  padding: 0 6px;
+  min-height: 0;
+}
+.pr-badge.open   { color: @green; }
+.pr-badge.merged { color: @accent; }
+.pr-badge.closed { color: @red; }
+.pr-badge.linear { color: @accent; }
+
+/* Hover-revealed per-row action strip. */
+.ws-icon-btn {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: @text_dim;
+  padding: 0 4px;
+  min-height: 0;
+  opacity: 0;
+}
+.ws-row:hover .ws-icon-btn { opacity: 1; }
+.ws-icon-btn:hover { color: @text; background-color: @bg_3; border-radius: 6px; }
+.ws-icon-btn.danger:hover { color: @red; }
+.ws-icon-btn.unread-on { color: @accent; opacity: 1; }
+
+.ws-row.active { background-color: @bg_4; }
+.ws-row.unread .ws-name { color: @accent; }
+.ws-name-input {
+  background-color: @bg;
+  border: 1px solid @accent;
+  border-radius: 6px;
+  color: @text;
+  font-size: 13px;
+  padding: 1px 6px;
+}
+
+/* Archived section. */
+.archived-toggle {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: @text_dim;
+  padding: 2px 6px;
+}
+.archived-toggle:hover { background-color: @bg_3; }
+.archived-bar { padding: 4px 6px; }
+.archived-bar-count { color: @text_dim; font-size: 11px; }
+.archived-bar-delete {
+  background-color: alpha(@red, 0.2);
+  color: @red;
+  border: none;
+  border-radius: 6px;
+  font-size: 11px;
+  padding: 1px 8px;
+  min-height: 0;
+}
+.archived-progress-label { color: @text_dim; font-size: 11px; }
+.archived-row { opacity: 0.8; }
+.ws-sub { color: @text_dim; font-size: 10px; }
+
+/* Env-notice tray. */
+.env-notices { padding: 4px 8px; }
+.env-notice {
+  background-color: alpha(@yellow, 0.1);
+  border: 1px solid alpha(@yellow, 0.3);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.env-notice label { color: @text_dim; font-size: 11px; }
+.env-notice-dismiss {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: @text_dim;
+  padding: 0 4px;
+  min-height: 0;
+}
+.env-notice-dismiss:hover { color: @text; }
+
+/* Footer link strip. */
+.sidebar-footer {
+  border-top: 1px solid @border;
+  padding: 4px 10px;
+}
+.footer-link {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: @text_dim;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+.footer-link:hover { background-color: @bg_3; color: @text; }
+
+/* Base-picker + account-migrate popovers. */
+.base-picker-header { color: @text_dim; font-size: 11px; padding: 4px 8px; }
+.base-picker-item, .account-menu-item {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: @text;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+.base-picker-item:hover, .account-menu-item:hover { background-color: @bg_4; }
+
+/* Drag-reorder drop indicators. */
+.ws-row.dragging, .repo-header-row.dragging { opacity: 0.4; }
+.drop-before { box-shadow: inset 0 2px 0 0 @accent; }
+.drop-after  { box-shadow: inset 0 -2px 0 0 @accent; }
 
 /* 4 ── backend banner */
 .banner {
@@ -197,9 +506,9 @@ entry:focus-within {
   border-color: @accent;
 }
 
-/* 7 ── overlays (B5: Resources / Insights / Help) ─────────────────────────
- * Full-pane overlays layered over the main area by GtkOverlay. Each fills the
- * host and paints an opaque background so the main area doesn't bleed through.
+/* 8 ── overlays (B5: Resources / Insights / Help) ─────────────────────────
+ * Full-pane overlays layered over the main pane by GtkOverlay. Each fills the
+ * host and paints an opaque background so the main pane doesn't bleed through.
  */
 @define-color accent_2 #7c6ef2;
 
@@ -465,3 +774,328 @@ entry:focus-within {
   padding: 2px 6px;
 }
 .sound-play:hover { border-color: @accent; }
+
+/* ============================================================
+   §7  Main pane: toolbar, tabs, branch chips + picker  (B3)
+   ============================================================ */
+
+.main-area { background-color: @bg; }
+.main-content { background-color: @bg; }
+.empty-title { font-size: 1.4em; font-weight: 700; color: @text; }
+
+.toolbar {
+  padding: 6px 10px;
+  border-bottom: 1px solid @border;
+  background-color: @bg_2;
+}
+
+/* Branch chips ------------------------------------------------ */
+.branch-chip {
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid @border_strong;
+  background-color: @bg_3;
+  color: @text;
+  font-size: 0.9em;
+}
+.branch-chip.base { background-color: @bg_3; color: @text_dim; }
+.branch-chip.current { background-color: @bg_4; }
+.branch-chip.current:hover { border-color: @accent; }
+.branch-chip.orchestrator { border-color: @green; color: @green; }
+.branch-chip.scratch { border-color: @yellow; color: @yellow; }
+.branch-chip-icon { color: @text_dim; }
+.branch-chip-text { font-family: monospace; }
+.branch-arrow { color: @text_dim; }
+
+/* Branch picker popover -------------------------------------- */
+.branch-panel { padding: 6px; min-width: 260px; }
+.branch-list { background: transparent; }
+.branch-list row {
+  padding: 4px 6px;
+  border-radius: 5px;
+}
+.branch-list row:selected { background-color: @accent_strong; color: #fff; }
+.branch-list row.current .branch-item-badge {
+  color: @accent;
+  font-size: 0.8em;
+}
+.branch-item-icon { color: @text_dim; }
+.branch-item-name { font-family: monospace; }
+.branch-empty, .branch-error {
+  padding: 8px 6px;
+  color: @text_dim;
+  font-size: 0.9em;
+}
+.branch-error { color: @red; }
+.branch-footer { padding: 6px 4px 2px; }
+.branch-hint { color: @text_dim; font-size: 0.8em; }
+
+/* Tabs ------------------------------------------------------- */
+.toolbar-tabs { }
+.tab {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: @text_dim;
+}
+.tab:hover { background-color: @bg_3; color: @text; }
+.tab:checked { background-color: @bg_4; color: @text; }
+.diff-indicator { font-family: monospace; font-size: 0.85em; }
+
+/* Action buttons -------------------------------------------- */
+.restart-btn, .run-toggle-btn, .pane-toggle {
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid @border;
+  background-color: @bg_3;
+  color: @text;
+}
+.restart-btn:hover, .run-toggle-btn:hover, .pane-toggle:hover { border-color: @accent; }
+.run-toggle-btn.running { border-color: @green; color: @green; }
+.pane-toggle:checked { background-color: @bg_4; border-color: @accent; }
+
+.pr-link {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid @border_strong;
+  background-color: @bg_3;
+  color: @text;
+}
+.pr-link.primary { background-color: @accent_strong; border-color: @accent_strong; color: #fff; }
+.pr-link.pr-link-create.primed { border-color: @accent; color: @accent; }
+
+.merge-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid @border_strong;
+  background-color: @bg_3;
+  color: @text;
+}
+.merge-btn:hover { border-color: @green; color: @green; }
+.merge-pill-label {
+  padding: 3px 8px;
+  border-radius: 6px;
+  background-color: @bg_4;
+  color: @green;
+  font-size: 0.85em;
+}
+
+.add, .diff-add { color: @green; font-family: monospace; }
+.del, .diff-del { color: @red; font-family: monospace; }
+
+/* ============================================================
+   §8  Diff view  (B3)
+   ============================================================ */
+
+.diff-status-title { font-size: 1.1em; font-weight: 600; color: @text; }
+.diff-status-sub { color: @text_dim; }
+.diff-files { background-color: @bg_2; }
+.diff-files row { padding: 4px 8px; border-radius: 4px; }
+.diff-files row:selected { background-color: @accent_strong; color: #fff; }
+.diff-file-status {
+  font-family: monospace;
+  font-weight: 700;
+  min-width: 14px;
+}
+.diff-file-status.added { color: @green; }
+.diff-file-status.modified { color: @yellow; }
+.diff-file-status.deleted { color: @red; }
+.diff-file-status.renamed { color: @accent; }
+.diff-file-name { font-family: monospace; font-size: 0.9em; }
+.diff-header {
+  padding: 6px 10px;
+  border-bottom: 1px solid @border;
+  background-color: @bg_2;
+}
+.diff-header-path { font-family: monospace; color: @text; }
+.diff-trunc-notice {
+  padding: 4px 10px;
+  background-color: @bg_3;
+  color: @yellow;
+  font-size: 0.85em;
+}
+.diff-panes { background-color: @border; }
+.diff-source { background-color: @bg; }
+
+/* ============================================================
+   §9  Banners: setup, prompt-queue, sandbox  (B3)
+   ============================================================ */
+
+.setup-banner { padding: 8px 10px; border-bottom: 1px solid @border; }
+.setup-banner.running { background-color: @bg_3; }
+.setup-banner.failed { background-color: rgba(255,107,107,0.12); }
+.setup-banner.ok { background-color: @bg_2; }
+.setup-banner-title { font-weight: 600; color: @text; }
+.setup-banner-sub { color: @text_dim; font-size: 0.9em; }
+.setup-banner-x {
+  color: @red;
+  font-weight: 700;
+  min-width: 18px;
+}
+.setup-banner-log {
+  font-family: monospace;
+  font-size: 0.85em;
+  color: @text_dim;
+  background-color: @bg;
+  padding: 6px 8px;
+}
+
+.queue-banner { padding: 8px 10px; border-bottom: 1px solid @border; background-color: @bg_2; }
+.queue-banner.limited { background-color: rgba(255,200,87,0.10); }
+.queue-banner-title { font-weight: 600; color: @text; }
+.queue-banner-sub { color: @text_dim; font-size: 0.9em; }
+.queue-banner-list row { padding: 2px 4px; }
+.queue-banner-item-n {
+  font-family: monospace;
+  color: @text_dim;
+  min-width: 16px;
+}
+.queue-banner-item-text { color: @text; font-size: 0.9em; }
+.queue-banner-item-x { padding: 0 6px; color: @text_dim; }
+.queue-banner-item-x:hover { color: @red; }
+.queue-banner-textarea { font-family: monospace; }
+
+.sandbox-control-bar {
+  padding: 6px 10px;
+  border-bottom: 1px solid @border;
+  background-color: rgba(110,168,255,0.10);
+}
+.sandbox-control-dot {
+  min-width: 8px;
+  min-height: 8px;
+  border-radius: 8px;
+  background-color: @accent;
+}
+.sandbox-control-text { color: @text; font-size: 0.9em; }
+.sandbox-control-take {
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid @accent;
+  color: @accent;
+  background: transparent;
+}
+
+/* ---- accounts / usage / login (plan §5.4) -------------------------------- */
+
+/* Sidebar footer: usage-bars strip over the Accounts button. */
+.sidebar-footer {
+  border-top: 1px solid @border;
+  padding: 8px;
+}
+.accounts-open {
+  color: @text_dim;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+.accounts-open:hover { color: @text; }
+
+/* The 5h/7d(/Fable) strip. */
+.usage-bars {
+  padding: 4px 2px 8px;
+}
+.usage-bars.expandable { /* hover affordance hint */ }
+.usage-bar-head {
+  font-size: 11px;
+}
+.usage-bar-label { color: @text; font-weight: 600; }
+.usage-bar-note,
+.usage-bar-pct { color: @text_dim; }
+.usage-bar-track {
+  min-height: 5px;
+}
+.usage-bar-track trough {
+  min-height: 5px;
+  background-color: @bg_3;
+  border-radius: 3px;
+}
+.usage-bar-track progress {
+  min-height: 5px;
+  border-radius: 3px;
+  background-color: @accent;
+}
+/* Severity tint on the fill (≥75 warn, ≥90 crit). */
+.usage-bar-track.sev-warn progress,
+.usage-row-bar .sev-warn progress { background-color: @yellow; }
+.usage-bar-track.sev-crit progress,
+.usage-row-bar .sev-crit progress { background-color: @red; }
+
+/* Hover panel: all accounts, active-first / hottest-first. */
+.usage-bars-panel > contents {
+  background-color: @bg_2;
+  border: 1px solid @border_strong;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.usage-bars-panel-title {
+  color: @text_dim;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.usage-bars-row {
+  padding: 6px 4px;
+  border-radius: 6px;
+}
+.usage-bars-row.active { background-color: @bg_3; }
+.usage-bars-row.err .usage-bars-row-status { color: @red; }
+.usage-bars-row-name { font-weight: 600; font-size: 12px; }
+.usage-bars-row-status { color: @text_dim; font-size: 11px; }
+.usage-row-bar-label,
+.usage-row-pct { color: @text_dim; font-size: 10px; }
+
+/* Account label badge (sidebar / repo header). */
+.account-badge {
+  font-size: 12px;
+  font-weight: 600;
+}
+.account-badge.err { color: @red; }
+.account-badge.pending { opacity: 0.7; }
+
+/* Migrate menu options. */
+.ws-account-option {
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.ws-account-option.current { background-color: @bg_3; }
+.ws-account-label { color: @text; font-size: 12px; }
+
+/* Context-size badge (`.ws-context` / `.ws-context-sep`) is styled in the
+ * sidebar section above — B1 owns the mounted context badge. */
+
+/* Accounts settings window. */
+.accounts-settings .modal-header,
+.account-login-modal .modal-header {
+  padding: 14px 16px 8px;
+}
+.modal-title { color: @text; font-weight: 600; font-size: 15px; }
+.modal-sub { color: @text_dim; font-size: 12px; }
+.modal-body { padding: 8px 16px 16px; }
+.modal-hint { color: @text_dim; font-size: 12px; }
+.modal-error { color: @red; font-size: 12px; margin-top: 6px; }
+.modal-footer {
+  padding: 10px 16px;
+  border-top: 1px solid @border;
+}
+.account-card {
+  background-color: @bg_2;
+  border: 1px solid @border;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.account-field-label { color: @text_dim; font-size: 11px; }
+.account-dir-preview { color: @text_dim; font-size: 11px; }
+.account-inherit-group-label { color: @text_dim; font-size: 11px; }
+.account-inherit-empty { color: @text_dim; font-size: 11px; opacity: 0.7; }
+.accounts-add { color: @accent; }
+.modal-footer button.primary {
+  background-color: @accent_strong;
+  border-color: @accent_strong;
+  color: #ffffff;
+}
+
+/* Login terminal modal. */
+.account-login-term {
+  padding: 6px;
+  min-height: 320px;
+}

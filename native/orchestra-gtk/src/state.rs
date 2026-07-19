@@ -15,7 +15,29 @@ pub struct UiState {
     pub window: Option<WindowGeometry>,
     pub last_active_workspace: Option<String>,
     /// Chime id from the sound picker (plan §5.5); None = default (`knock`).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub notification_sound: Option<String>,
+    // ---- sidebar (M2-B1) — the localStorage-parity keys from Sidebar.tsx:
+    // `orchestra.collapsedRepos` / `collapsedHosts` / `collapsedOrchestrators`
+    // / `dismissedEnvNotices` / `lastSandboxEndpoint`. Vec (not HashSet) so
+    // the JSON stays stable across saves.
+    /// Repo paths whose section is folded.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub collapsed_repos: Vec<String>,
+    /// Per-node collapse, keyed `<repoPath>::<hostKey>` so folding a sandbox
+    /// node in one repo doesn't fold it in another.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub collapsed_hosts: Vec<String>,
+    /// Workspace ids whose spawned subtree is folded. Stale ids of deleted
+    /// workspaces are harmless (they simply never match a row).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub collapsed_subtrees: Vec<String>,
+    /// Env-notice ids the user waved away — stays gone across launches until
+    /// the item resolves (an `ok` item never shows regardless).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dismissed_env_notices: Vec<String>,
+    /// Prefill for the import-to-sandbox endpoint prompt.
+    pub last_sandbox_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +110,11 @@ mod tests {
             }),
             last_active_workspace: Some("ws-2".into()),
             notification_sound: Some("tada".into()),
+            collapsed_repos: vec!["/home/user/repos/orchestra".into()],
+            collapsed_hosts: vec!["/home/user/repos/mc::sandbox:ws://h:1".into()],
+            collapsed_subtrees: vec!["ws-1".into()],
+            dismissed_env_notices: vec!["linear".into()],
+            last_sandbox_endpoint: Some("ws://sandbox-host:8787".into()),
         };
         state.save(&path).unwrap();
         assert_eq!(UiState::load(&path), state);

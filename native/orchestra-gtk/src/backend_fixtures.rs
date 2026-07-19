@@ -113,76 +113,12 @@ pub fn resource_snapshot(tick: u64) -> Value {
     })
 }
 
-/// `getWorktreeSizes` result (`WorktreeSizes`).
-pub fn worktree_sizes() -> Value {
-    json!({
-        "sizes": {
-            "ws-1": 210_000_000u64,
-            "ws-2": 1_400_000_000u64,
-            "ws-3": 48_000_000u64,
-            "ws-4": 3_200_000_000u64,
-            "ws-5": 12_000_000u64,
-        },
-        "exclusive": true,
-    })
-}
-
-/// `listAccounts` result.
-pub fn accounts() -> Value {
-    json!([
-        { "id": "mc", "label": "mc", "configDir": "~/.claude-mc" },
-        { "id": "perso", "label": "perso", "configDir": "~/.claude-perso" },
-    ])
-}
-
-/// `getUsage` result — the default login's snapshot.
-pub fn global_usage() -> Value {
-    json!({
-        "fiveHour": { "utilization": 62.0, "resetsAt": "2026-07-18T14:00:00.000Z" },
-        "sevenDay": { "utilization": 41.0, "resetsAt": "2026-07-21T09:00:00.000Z" },
-        "fable": { "utilization": 78.0, "resetsAt": "2026-07-21T09:00:00.000Z" },
-        "extraUtilization": 12.0,
-        "fetchedAt": MOCK_NOW_MS - 90_000,
-    })
-}
-
-/// `getAllAccountUsage` result: `mc` is hot (91% five-hour → sorts first and
-/// exercises the red severity tier), `perso` is an expired login (error path).
-pub fn account_usage() -> Value {
-    json!({
-        "mc": {
-            "accountId": "mc",
-            "ok": true,
-            "data": {
-                "fiveHour": { "utilization": 91.0, "resetsAt": "2026-07-18T13:20:00.000Z" },
-                "sevenDay": { "utilization": 77.5, "resetsAt": "2026-07-20T22:00:00.000Z" },
-                "extraUtilization": null,
-                "fable": { "utilization": 34.0, "resetsAt": "2026-07-20T22:00:00.000Z" },
-            },
-            "errorKind": null,
-            "errorMessage": null,
-            "fetchedAt": MOCK_NOW_MS - 150_000,
-        },
-        "perso": {
-            "accountId": "perso",
-            "ok": false,
-            "data": null,
-            "errorKind": "not-logged-in",
-            "errorMessage": "no OAuth token",
-            "fetchedAt": MOCK_NOW_MS - 400_000,
-            "expired": true,
-        },
-    })
-}
-
-/// `getWorkspaceAccounts` result: ws-1 pinned to mc, the rest default login.
-pub fn workspace_accounts() -> Value {
-    json!({
-        "ws-1": { "workspaceId": "ws-1", "accountId": "mc", "label": "mc" },
-        "ws-2": { "workspaceId": "ws-2", "accountId": null, "label": "default" },
-        "ws-3": { "workspaceId": "ws-3", "accountId": null, "label": "default" },
-    })
-}
+// NOTE: `getWorktreeSizes`, `listAccounts`, `getUsage`, `getAllAccountUsage`,
+// and `getWorkspaceAccounts` are served by `backend/mock.rs`'s own richer
+// fixtures (consistent with the sidebar's workspace/account set), so B5 no
+// longer duplicates them here — the Resources token cards + disk section read
+// mock.rs's values. Only the Resources snapshot and the Insights/self-tune
+// fixtures below are B5-owned.
 
 const LESSON_ADDED_1: &str =
     "[2026-07-15] Verify the harness's own wait logic before blaming the target under test.";

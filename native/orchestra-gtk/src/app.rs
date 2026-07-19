@@ -1,8 +1,8 @@
 //! App shell (plan §5.6): root Relm4 component — window, sidebar/main split
 //! with drag-persisted width, overlay host for future Resources/Insights/Help
 //! panes, backend-discovery banner, status strip, debug menu for the dialog
-//! system. The sidebar list here is a mock-fed placeholder; the real sidebar
-//! (factories, spawn trees, pills) is a separate M2 workstream.
+//! system. The real [`Sidebar`] component (spawn trees, pills, actions) mounts
+//! as the paned start child; the shell hands it the shared backend + UI state.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -11,20 +11,24 @@ use std::time::Duration;
 
 use gtk::gio;
 use gtk::glib;
-use gtk::pango;
 use gtk::prelude::*;
 use relm4::prelude::*;
 
-use orchestra_rpc::types::{Workspace, WorkspaceStatus};
+use orchestra_rpc::types::Workspace;
 use orchestra_rpc::{BackendKind as RemoteKind, ConnectionState, UiEvent};
 
+use crate::accounts::AccountsController;
 use crate::backend::{self, Backend, BackendEvent, BackendKind, MockBackend, RpcBackend};
+use crate::ctx::Ctx;
 use crate::dialogs;
+use crate::main_pane::MainPane;
 use crate::notify;
 use crate::overlays::{OverlayKind, Overlays};
 use crate::remote_control;
+use crate::sidebar::{Sidebar, SidebarInit};
 use crate::sound::SoundPlayer;
 use crate::state::{self, UiState, WindowGeometry};
+use crate::terminal::TerminalStack;
 
 pub struct Init {
     pub remote_control: Option<PathBuf>,
@@ -34,9 +38,26 @@ const NO_BACKEND_BANNER: &str =
     "no backend found — start Orchestra or the daemon (retrying every 3s)";
 
 pub struct App {
-    // `Rc` (not `Box`) so the Resources/Insights overlays can hold their own
-    // clone for polling/streaming without a second socket connection.
+    // `Rc` (not `Box`) so the accounts controller and the Resources/Insights
+    // overlays can each hold a clone for polling/streaming without a second
+    // socket connection.
     backend: Option<Rc<dyn Backend>>,
+    /// Accounts/usage/login controller — created when a backend attaches. Owns
+    /// the usage-bars strip in the sidebar footer and every accounts window;
+    /// the backend event pump + login PTY bytes are forwarded here.
+    accounts: Option<Rc<AccountsController>>,
+    /// Shared backend seam for the main-pane widget tree (toolbar / diff /
+    /// banners) — App keeps its backend in sync via [`Ctx::set_backend`].
+    ctx: Rc<Ctx>,
+    /// The main pane (toolbar + banners + view stack), the base child of the
+    /// overlay host — always present; B5's overlays layer on top of it.
+    main_pane: Rc<MainPane>,
+    /// Kept-alive feed-mode terminals (plan §5.2, B2) — agent pane in the main
+    /// pane's terminal slot, run pane in its run slot, nvim via the toolbar
+    /// toggle. All backend calls route through `ctx` per-call.
+    terminals: TerminalStack,
+    /// Mirror of the workspace list so App can resolve an activated id (from
+    /// the sidebar) to a full record for the main pane.
     workspaces: Vec<Workspace>,
     state: Rc<RefCell<UiState>>,
     state_path: PathBuf,
@@ -52,15 +73,19 @@ pub struct App {
     retry_active: Rc<Cell<bool>>,
     window: gtk::ApplicationWindow,
     paned: gtk::Paned,
-    list: gtk::ListBox,
+    /// The real sidebar (spawn trees, pills, actions) — the M2-B1 workstream.
+    sidebar: Controller<Sidebar>,
     banner: gtk::Revealer,
     banner_label: gtk::Label,
     footer_label: gtk::Label,
+    /// Sidebar footer box that hosts the usage-bars strip (mounted by the
+    /// controller) — kept so a backend that attaches on retry can mount into it.
+    sidebar_footer: gtk::Box,
+    accounts_button: gtk::Button,
 }
 
 #[derive(Debug)]
 pub enum Msg {
-    RowSelected(i32),
     SidebarResized(i32),
     WindowGeometryChanged,
     RetryDiscover,
@@ -71,63 +96,61 @@ pub enum Msg {
     Connection(ConnectionState),
     /// An `event` frame from the backend.
     BackendEvent(BackendEvent),
-    /// Toggle one of the Resources/Insights/Help overlays.
+    /// A binary `ptyData` frame: (pty id, raw bytes). Routed to the accounts
+    /// controller (login PTY); other ids belong to the terminal workstream.
+    PtyData(String, Vec<u8>),
+    /// The sidebar activated a workspace (row-select) → drive the main pane's
+    /// `set_active` (§5.3, B3). Also the target of a clicked desktop
+    /// notification (B5), which presents the window and selects the workspace.
+    WorkspaceActivated(String),
+    /// B3's toolbar nvim toggle → reveal/hide B2's nvim file pane.
+    NvimToggle(bool),
+    /// Toggle one of the Resources/Insights/Help overlays (B5).
     ToggleOverlay(OverlayKind),
-    /// Escape key — close the topmost overlay if any.
+    /// Escape key — close the topmost overlay if any (B5).
     EscapePressed,
-    /// Open the notification-sound picker.
+    /// Open the notification-sound picker (B5).
     OpenSoundPicker,
-    /// Select a workspace by id (from a clicked notification).
-    SelectWorkspace(String),
 }
 
-fn status_css(status: WorkspaceStatus) -> &'static str {
-    match status {
-        WorkspaceStatus::Idle => "idle",
-        WorkspaceStatus::Running => "running",
-        WorkspaceStatus::Waiting => "waiting",
-        WorkspaceStatus::Error => "error",
-        WorkspaceStatus::Stopped => "stopped",
+/// Remove every child of a mount slot (drops B3's placeholder hint before B2
+/// appends its surface).
+fn clear_slot(slot: &gtk::Box) {
+    while let Some(child) = slot.first_child() {
+        slot.remove(&child);
     }
 }
 
-/// Plain placeholder rows (dot + name + branch), prototype-style. The M2
-/// sidebar workstream replaces this with Relm4 factories.
-fn populate_sidebar(list: &gtk::ListBox, workspaces: &[Workspace], selected_id: Option<&str>) {
-    while let Some(row) = list.row_at_index(0) {
-        list.remove(&row);
+/// Open a workspace's terminal surfaces: make its agent pane active (seeding
+/// scrollback + the resume pill on first open), and mount its run pane into the
+/// main pane's run slot. The agent pane's first visible fit fires `ptyStart`.
+fn open_terminal(
+    terminals: &mut TerminalStack,
+    main_pane: &Rc<MainPane>,
+    ctx: &Rc<Ctx>,
+    ws: &Workspace,
+) {
+    let ws_id = &ws.id;
+    let fresh = terminals.is_new(ws_id);
+    if fresh {
+        if let Some(b) = ctx.backend() {
+            if let Ok(bytes) = b.pty_scrollback(ws_id) {
+                terminals.feed_scrollback(ws_id, &bytes);
+            }
+        }
     }
-    for ws in workspaces {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        dot.add_css_class("ws-dot");
-        dot.add_css_class(status_css(ws.status));
-        dot.set_valign(gtk::Align::Center);
-        let col = gtk::Box::new(gtk::Orientation::Vertical, 1);
-        let name = gtk::Label::new(Some(&ws.name));
-        name.set_xalign(0.0);
-        name.set_ellipsize(pango::EllipsizeMode::End);
-        name.add_css_class("ws-name");
-        let branch = gtk::Label::new(Some(&ws.branch));
-        branch.set_xalign(0.0);
-        branch.set_ellipsize(pango::EllipsizeMode::End);
-        branch.add_css_class("ws-branch");
-        col.append(&name);
-        col.append(&branch);
-        row.append(&dot);
-        row.append(&col);
-        // Name the ListBoxRow itself (not the inner box): that's the widget
-        // the remote-control click op selects/activates.
-        let list_row = gtk::ListBoxRow::new();
-        list_row.set_widget_name(&format!("ws-row-{}", ws.id));
-        list_row.set_child(Some(&row));
-        list.append(&list_row);
-    }
-    let selected_index = selected_id
-        .and_then(|id| workspaces.iter().position(|w| w.id == id))
-        .unwrap_or(0);
-    if let Some(row) = list.row_at_index(selected_index as i32) {
-        list.select_row(Some(&row));
+    terminals.set_active(ws_id);
+    // Mount this workspace's run pane into B3's run slot (kept-alive; B3's
+    // toolbar Run button drives runScriptStart, this pane just feeds it).
+    let run = terminals.run_widget(ws_id);
+    let slot = main_pane.run_slot();
+    clear_slot(slot);
+    slot.append(&run);
+    if fresh {
+        // Resuming if the workspace already has activity; a brand-new spawn
+        // shows "Starting agent…". The status stands in for that here.
+        let resuming = ws.status != orchestra_rpc::types::WorkspaceStatus::Idle;
+        terminals.show_pill(ws_id, resuming);
     }
 }
 
@@ -137,7 +160,7 @@ fn make_backend() -> Option<Rc<dyn Backend>> {
     }
     let sock = backend::discover_socket(&state::orchestra_home())?;
     match RpcBackend::connect(sock) {
-        Ok(b) => Some(Rc::new(b)),
+        Ok(b) => Some(Rc::new(b) as Rc<dyn Backend>),
         Err(e) => {
             eprintln!("[backend] connect failed: {e}");
             None
@@ -188,17 +211,32 @@ fn spawn_backend_streams(sender: &ComponentSender<App>, backend: &dyn Backend) {
         }
     });
     let pty = backend.pty_data();
+    let s = sender.clone();
     glib::spawn_future_local(async move {
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         while let Ok((id, bytes)) = pty.recv().await {
-            if seen.insert(id.clone()) {
-                eprintln!(
-                    "[backend] ptyData flowing for '{id}' ({} bytes)",
-                    bytes.len()
-                );
-            }
+            s.input(Msg::PtyData(id, bytes));
         }
     });
+}
+
+/// Build the accounts controller for a freshly-attached backend, mount its
+/// usage-bars strip into the sidebar footer (above the Accounts button), wire
+/// the button, and kick initial hydration.
+fn attach_accounts(
+    backend: Rc<dyn Backend>,
+    window: &gtk::ApplicationWindow,
+    footer: &gtk::Box,
+    button: &gtk::Button,
+) -> Rc<AccountsController> {
+    let ctrl = AccountsController::new(backend, window.clone().upcast());
+    // Strip goes at the top of the footer; the Accounts button stays last.
+    footer.prepend(&ctrl.usage_bars_root());
+    {
+        let ctrl = ctrl.clone();
+        button.connect_clicked(move |_| ctrl.clone().open_settings());
+    }
+    ctrl.bootstrap();
+    ctrl
 }
 
 /// Debug menu (status strip): demoes the promise-shaped dialog system.
@@ -313,33 +351,37 @@ impl SimpleComponent for App {
                     // persisted sidebar width drifts on every launch.
                     set_resize_start_child: false,
 
+                    // The paned start child is a vertical stack: the real
+                    // sidebar component (mounted into `sidebar_host` after
+                    // `view_output!`, M2-B1) over the accounts footer (§5.4).
                     #[wrap(Some)]
                     set_start_child = &gtk::Box {
                         set_orientation: gtk::Orientation::Vertical,
-                        add_css_class: "sidebar",
-                        set_widget_name: "sidebar",
-                        set_width_request: 200,
 
-                        gtk::Label {
-                            set_label: "WORKSPACES",
-                            set_xalign: 0.0,
-                            add_css_class: "sidebar-title",
-                            set_widget_name: "sidebar-title",
+                        // The real sidebar component is attached here after
+                        // `view_output!` (the M2-B1 workstream owns its widgets).
+                        #[name = "sidebar_host"]
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_widget_name: "sidebar-host",
+                            set_vexpand: true,
                         },
 
-                        gtk::ScrolledWindow {
-                            set_vexpand: true,
-                            set_hscrollbar_policy: gtk::PolicyType::Never,
+                        // Sidebar footer (plan §5.4): the accounts controller
+                        // mounts the usage-bars strip here, above the Accounts
+                        // settings button.
+                        #[name = "sidebar_footer"]
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_widget_name: "sidebar-footer",
+                            add_css_class: "sidebar-footer",
 
-                            #[name = "list"]
-                            gtk::ListBox {
-                                set_widget_name: "sidebar-list",
-                                set_selection_mode: gtk::SelectionMode::Single,
-                                connect_row_selected[sender] => move |_, row| {
-                                    if let Some(row) = row {
-                                        sender.input(Msg::RowSelected(row.index()));
-                                    }
-                                },
+                            #[name = "accounts_button"]
+                            gtk::Button {
+                                set_widget_name: "accounts-open",
+                                set_label: "Accounts",
+                                add_css_class: "flat",
+                                add_css_class: "accounts-open",
                             },
                         },
                     },
@@ -347,25 +389,13 @@ impl SimpleComponent for App {
                     // Overlay host (plan §5.3): Resources / Insights / Help
                     // attach as overlay children in M2 — overlays must never
                     // unmount the main area, hence the GtkOverlay layering
-                    // exists from day one.
-                    #[wrap(Some)]
+                    // exists from day one. B3's MainPane (toolbar + banners +
+                    // view stack) mounts here after init (it needs the toplevel
+                    // window for its Ctx).
                     #[name = "overlay_host"]
+                    #[wrap(Some)]
                     set_end_child = &gtk::Overlay {
                         set_widget_name: "overlay-host",
-
-                        #[wrap(Some)]
-                        set_child = &gtk::Box {
-                            add_css_class: "main-area",
-                            set_widget_name: "main-area",
-
-                            gtk::Label {
-                                set_widget_name: "main-empty",
-                                set_label: "Select a workspace — terminals arrive with the M2 workstreams",
-                                add_css_class: "empty-hint",
-                                set_hexpand: true,
-                                set_vexpand: true,
-                            },
-                        },
                     },
                 },
 
@@ -523,19 +553,59 @@ impl SimpleComponent for App {
             });
         }
 
-        // Notification action: clicking a desktop notification presents the
-        // window and selects the workspace (plan §5.6 notifications item).
-        if let Some(app) = widgets.main_window.application() {
+        widgets.footer_label.set_label(&footer_text(&backend));
+
+        // Mount the real sidebar INTO the sidebar_host box (a child of the
+        // paned start child, which also holds the accounts footer below it —
+        // so this is an append, NOT a paned-start-child swap that would drop
+        // the footer). Forward its selection output for the shell + B3.
+        let sidebar = Sidebar::builder()
+            .launch(SidebarInit {
+                backend: backend.clone(),
+                state: state.clone(),
+                state_path: state_path.clone(),
+            })
+            .forward(sender.input_sender(), |out| match out {
+                crate::sidebar::SidebarOutput::WorkspaceActivated(id) => {
+                    Msg::WorkspaceActivated(id)
+                }
+            });
+        widgets.sidebar_host.append(sidebar.widget());
+
+        // Accounts/usage/login controller: needs a backend to render against.
+        let accounts = backend.as_ref().map(|b| {
+            attach_accounts(
+                b.clone(),
+                &widgets.main_window,
+                &widgets.sidebar_footer,
+                &widgets.accounts_button,
+            )
+        });
+
+        // Shared context + main pane (toolbar / banners / view stack). The Ctx
+        // is the single seam every main-pane widget calls through; it holds the
+        // toplevel window (dialog parent + visible-poll gate) and the backend.
+        let ctx = Ctx::new(widgets.main_window.clone().upcast::<gtk::Window>());
+        ctx.set_backend(backend.clone());
+        {
+            // A mutation that returns an updated Workspace (switchBranch,
+            // queuePrompt) re-enters the loop as a synthesized workspaceUpdate,
+            // so the sidebar + main pane refresh together off the one fan-out.
             let sender = sender.clone();
-            let win = widgets.main_window.clone();
-            notify::install_focus_action(&app, move |ws_id| {
-                win.present();
-                sender.input(Msg::SelectWorkspace(ws_id));
+            ctx.set_on_workspace_mutated(move |ws| {
+                sender.input(Msg::BackendEvent(BackendEvent::Event {
+                    channel: "workspaceUpdate".into(),
+                    args: vec![serde_json::to_value(ws).unwrap_or(serde_json::Value::Null)],
+                }));
             });
         }
+        let main_pane = MainPane::new(ctx.clone());
+        widgets.overlay_host.set_child(Some(main_pane.widget()));
 
-        // Mount the Resources/Insights/Help overlays into the host once a
-        // backend exists — they poll/stream through it. Rebuilt on reconnect.
+        // B5 overlays layer ON TOP of the main pane (its always-present base
+        // child) via add_overlay — Resources/Insights/Help cover the pane like
+        // the Electron model, and never unmount it. They poll/stream through
+        // their own backend clone.
         let overlays = backend.as_ref().map(|b| {
             Overlays::new(
                 &widgets.overlay_host,
@@ -544,7 +614,16 @@ impl SimpleComponent for App {
                 sound.clone(),
             )
         });
-
+        // Notification click → present the window + select the workspace
+        // (routes through the same WorkspaceActivated path the sidebar uses).
+        if let Some(app) = widgets.main_window.application() {
+            let sender = sender.clone();
+            let win = widgets.main_window.clone();
+            notify::install_focus_action(&app, move |ws_id| {
+                win.present();
+                sender.input(Msg::WorkspaceActivated(ws_id));
+            });
+        }
         // Escape closes the topmost overlay.
         {
             let keys = gtk::EventControllerKey::new();
@@ -558,19 +637,44 @@ impl SimpleComponent for App {
             widgets.main_window.add_controller(keys);
         }
 
+        // Terminal stack: agent GtkStack into B3's terminal slot (clear the
+        // placeholder hint first). Run/nvim panes mount lazily into their slots
+        // on first activation. Backend calls resolve `ctx.backend()` per-call.
+        let mut terminals = TerminalStack::new(ctx.clone());
+        clear_slot(main_pane.terminal_slot());
+        main_pane.terminal_slot().append(terminals.agent_widget());
+        // B3's toolbar nvim toggle reveals/hides B2's nvim pane (routed through
+        // the component so it reaches `&mut terminals`).
+        {
+            let sender = sender.clone();
+            main_pane.connect_nvim_toggled(move |open| sender.input(Msg::NvimToggle(open)));
+        }
+
+        // Point the main pane at the persisted (or first) workspace so it isn't
+        // empty on launch; the sidebar drives it thereafter via WorkspaceActivated.
         let workspaces = backend
             .as_ref()
             .and_then(|b| b.list_workspaces().ok())
             .unwrap_or_default();
-        populate_sidebar(
-            &widgets.list,
-            &workspaces,
-            state.borrow().last_active_workspace.as_deref(),
-        );
-        widgets.footer_label.set_label(&footer_text(&backend));
+        let initial = state
+            .borrow()
+            .last_active_workspace
+            .as_ref()
+            .and_then(|id| workspaces.iter().find(|w| &w.id == id).cloned())
+            .or_else(|| workspaces.first().cloned());
+        main_pane.set_active(initial.clone());
+        // Open the initial workspace's terminal (mounts run/nvim slots, seeds
+        // scrollback, shows the pill; the pane's first-fit fires ptyStart).
+        if let Some(ws) = &initial {
+            open_terminal(&mut terminals, &main_pane, &ctx, ws);
+        }
 
         let model = App {
             backend,
+            accounts,
+            ctx,
+            main_pane,
+            terminals,
             workspaces,
             state,
             state_path,
@@ -580,22 +684,18 @@ impl SimpleComponent for App {
             retry_active,
             window: widgets.main_window.clone(),
             paned: widgets.paned.clone(),
-            list: widgets.list.clone(),
+            sidebar,
             banner: widgets.banner.clone(),
             banner_label: widgets.banner_label.clone(),
             footer_label: widgets.footer_label.clone(),
+            sidebar_footer: widgets.sidebar_footer.clone(),
+            accounts_button: widgets.accounts_button.clone(),
         };
         ComponentParts { model, widgets }
     }
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
-            Msg::RowSelected(index) => {
-                if let Some(ws) = self.workspaces.get(index as usize) {
-                    self.state.borrow_mut().last_active_workspace = Some(ws.id.clone());
-                    self.schedule_save(&sender);
-                }
-            }
             Msg::SidebarResized(position) => {
                 let changed = {
                     let mut st = self.state.borrow_mut();
@@ -632,11 +732,22 @@ impl SimpleComponent for App {
                 if let Some(b) = make_backend() {
                     spawn_backend_streams(&sender, b.as_ref());
                     b.set_focused(self.window.is_active());
-                    self.backend = Some(b);
+                    self.accounts = Some(attach_accounts(
+                        b.clone(),
+                        &self.window,
+                        &self.sidebar_footer,
+                        &self.accounts_button,
+                    ));
+                    self.ctx.set_backend(Some(b.clone()));
+                    self.backend = Some(b.clone());
                     self.retry_active.set(false);
                     self.banner.set_reveal_child(false);
-                    self.refresh_workspaces();
+                    // Hand the live backend to the sidebar: it hydrates its own
+                    // snapshot (refresh_snapshot). App owns the events() pump and
+                    // forwards frames, so the sidebar does not pump itself.
+                    self.sidebar.emit(crate::sidebar::Msg::Attach(b));
                     self.footer_label.set_label(&footer_text(&self.backend));
+                    self.reselect_active();
                 }
             }
             Msg::FocusChanged(focused) => {
@@ -647,9 +758,15 @@ impl SimpleComponent for App {
             Msg::Connection(state) => match state {
                 ConnectionState::Connected => {
                     self.banner.set_reveal_child(false);
-                    // Reconnects re-handshake: refresh what the socket serves
+                    // Reconnects re-handshake: re-hydrate the sidebar snapshot
                     // (server info for the footer, missed workspace updates).
-                    self.refresh_workspaces();
+                    if let Some(b) = &self.backend {
+                        self.sidebar.emit(crate::sidebar::Msg::Attach(b.clone()));
+                    }
+                    // Re-point the main pane + terminal at the active workspace
+                    // (the terminals resolve ctx.backend() per-call, so they pick
+                    // up the swapped-in live backend automatically).
+                    self.reselect_active();
                     self.footer_label.set_label(&footer_text(&self.backend));
                 }
                 ConnectionState::Reconnecting { attempt, delay_ms } => {
@@ -664,54 +781,96 @@ impl SimpleComponent for App {
                     // Terminal: the client gave up (or the close was
                     // deliberate). Drop it and fall back to discovery.
                     self.backend = None;
+                    self.ctx.set_backend(None);
+                    // Tear down the accounts controller with the backend: its
+                    // usage strip is unmounted below by the fresh attach on
+                    // reconnect. Dropping it here stops its minute-tick timer.
+                    if let Some(accounts) = self.accounts.take() {
+                        self.sidebar_footer.remove(&accounts.usage_bars_root());
+                    }
                     self.banner_label.set_label(NO_BACKEND_BANNER);
                     self.banner.set_reveal_child(true);
                     self.footer_label.set_label(&footer_text(&self.backend));
                     Self::start_retry_loop(&self.retry_active, &sender);
                 }
             },
-            Msg::BackendEvent(BackendEvent::Event { channel, args }) => {
+            Msg::BackendEvent(ev) => {
+                // App owns the single events() consumer (spawn_backend_streams);
+                // it fans each frame out to the components that care. The sidebar
+                // decodes workspace:update/removed itself (its apply_event), so
+                // we forward the raw frame rather than mutating a duplicate list.
+                let BackendEvent::Event { channel, args } = &ev;
                 eprintln!("[backend] event '{channel}'");
-                let decoded = (orchestra_rpc::Event { channel, args }).decode();
-                let Ok(ev) = decoded else { return };
-                // Insights owns the self-tune stream — hand it every event.
-                if let Some(overlays) = &self.overlays {
-                    overlays.dispatch(&ev);
-                }
-                match ev {
-                    UiEvent::WorkspaceUpdate(ws) => {
-                        match self.workspaces.iter_mut().find(|w| w.id == ws.id) {
-                            Some(slot) => *slot = *ws,
-                            None => self.workspaces.push(*ws),
+                // Fan out to the main pane (B3): workspaceUpdate → toolbar/
+                // banners, ptyExit → run toggle, sandboxControl → sandbox bar.
+                self.dispatch_to_main_pane(channel, args);
+                // Decode a COPY once and hand it to the fan-out consumers that
+                // want the typed event (accounts, B5 overlays/notify/chime); the
+                // raw frame still goes to the sidebar (it decodes its own
+                // workspace:update/removed via apply_event).
+                match (orchestra_rpc::Event {
+                    channel: channel.clone(),
+                    args: args.clone(),
+                })
+                .decode()
+                {
+                    Ok(decoded) => {
+                        if let Some(accounts) = &self.accounts {
+                            accounts.handle_event(&decoded);
                         }
-                        self.repopulate_sidebar();
-                    }
-                    UiEvent::WorkspaceRemoved { id } => {
-                        self.workspaces.retain(|w| w.id != id);
-                        self.repopulate_sidebar();
-                    }
-                    UiEvent::WorkspacesRemoved { ids } => {
-                        self.workspaces.retain(|w| !ids.contains(&w.id));
-                        self.repopulate_sidebar();
-                    }
-                    // Desktop notification (plan §5.6). The backend already
-                    // gates on focus, so every uiNotify we get is meant to show.
-                    UiEvent::UiNotify(n) => {
-                        if let Some(app) = self.window.application() {
-                            notify::show(&app, &n);
+                        // Insights owns the self-tune stream — hand it every event.
+                        if let Some(overlays) = &self.overlays {
+                            overlays.dispatch(&decoded);
+                        }
+                        match &decoded {
+                            // Desktop notification (plan §5.6). The backend already
+                            // gates on focus, so every uiNotify we get is meant to show.
+                            UiEvent::UiNotify(n) => {
+                                if let Some(app) = self.window.application() {
+                                    notify::show(&app, n);
+                                }
+                            }
+                            // Chime when an agent finishes while unfocused (the
+                            // event's `focused` flag is the OR across clients; play
+                            // only when false — the Electron chime gate).
+                            UiEvent::AgentFinished { focused: false, .. } => {
+                                let id = crate::sound::selected_sound_id(&self.state.borrow());
+                                self.sound.play(id);
+                            }
+                            _ => {}
                         }
                     }
-                    // Chime when an agent finishes while unfocused (the event's
-                    // `focused` flag is the OR across clients; play only when
-                    // false — matches the Electron chime gate).
-                    UiEvent::AgentFinished { focused: false, .. } => {
-                        let id = crate::sound::selected_sound_id(&self.state.borrow());
-                        self.sound.play(id);
-                    }
-                    // Everything else belongs to the M2 workstreams
-                    // (terminals, usage, accounts, …).
-                    _ => {}
+                    Err(e) => eprintln!("[backend] event decode failed: {e}"),
                 }
+                self.sidebar.emit(crate::sidebar::Msg::Backend(ev));
+            }
+            Msg::PtyData(id, bytes) => {
+                // Login-PTY bytes go to the accounts controller; workspace PTYs
+                // (`<ws>`, `<ws>:run`, `<ws>:nvim`) go to B2's terminal stack.
+                // Additive: the stack drops ids with no pane, accounts ignores
+                // workspace ids — each consumes only what it owns.
+                if let Some(accounts) = &self.accounts {
+                    accounts.handle_pty_data(&id, &bytes);
+                }
+                self.terminals.feed(&id, &bytes);
+            }
+            Msg::WorkspaceActivated(id) => {
+                // The sidebar announced a row-select. Point the main pane at it
+                // (§5.3 setActive: diff/toolbar/banners + markSeen), and retarget
+                // the usage strip to that workspace's login. last_active_workspace
+                // is already persisted by the sidebar itself.
+                eprintln!("[shell] workspace activated: {id}");
+                let ws = self.workspaces.iter().find(|w| w.id == id).cloned();
+                self.main_pane.set_active(ws.clone());
+                if let Some(ws) = &ws {
+                    open_terminal(&mut self.terminals, &self.main_pane, &self.ctx, ws);
+                }
+                if let Some(accounts) = &self.accounts {
+                    accounts.set_active_workspace(Some(id));
+                }
+            }
+            Msg::NvimToggle(open) => {
+                self.terminals.set_nvim_open(open);
             }
             Msg::ToggleOverlay(kind) => {
                 if let Some(overlays) = &self.overlays {
@@ -737,13 +896,6 @@ impl SimpleComponent for App {
                     },
                 );
             }
-            Msg::SelectWorkspace(id) => {
-                if let Some(index) = self.workspaces.iter().position(|w| w.id == id) {
-                    if let Some(row) = self.list.row_at_index(index as i32) {
-                        self.list.select_row(Some(&row));
-                    }
-                }
-            }
             Msg::PersistNow => {
                 if let Err(e) = self.state.borrow().save(&self.state_path) {
                     eprintln!("[state] save failed: {e}");
@@ -755,6 +907,80 @@ impl SimpleComponent for App {
 }
 
 impl App {
+    /// Route a decoded backend event to the main pane, then keep App's own
+    /// workspace mirror current. Only the channels the main pane consumes are
+    /// handled here; the sidebar + accounts own the rest via their own fan-out.
+    fn dispatch_to_main_pane(&mut self, channel: &str, args: &[serde_json::Value]) {
+        match channel {
+            // workspaceUpdate: a single Workspace record changed.
+            "workspaceUpdate" => {
+                if let Some(ws) = args
+                    .first()
+                    .and_then(|v| serde_json::from_value::<Workspace>(v.clone()).ok())
+                {
+                    if let Some(slot) = self.workspaces.iter_mut().find(|w| w.id == ws.id) {
+                        *slot = ws.clone();
+                    } else {
+                        self.workspaces.push(ws.clone());
+                    }
+                    self.main_pane.on_workspace_changed(&ws);
+                }
+            }
+            // ptyExit: (ptyId) — clears the run toggle when the run pty exits,
+            // and shows B2's "press any key to relaunch" notice on the pane.
+            "ptyExit" => {
+                if let Some(id) = args.first().and_then(|v| v.as_str()) {
+                    self.main_pane.on_pty_exit(id);
+                    self.terminals.on_exit(id, false);
+                }
+            }
+            // ptyStopped / ptyRestart: B2 terminal lifecycle.
+            "ptyStopped" => {
+                if let Some(id) = args.first().and_then(|v| v.as_str()) {
+                    self.terminals.on_exit(id, true);
+                }
+            }
+            "ptyRestart" => {
+                if let Some(id) = args.first().and_then(|v| v.as_str()) {
+                    self.terminals.on_restart(id);
+                }
+            }
+            // sandboxControl: SandboxControlState — drives the read-only bar.
+            "sandboxControl" => {
+                if let Some(state) = args.first().and_then(|v| {
+                    serde_json::from_value::<orchestra_rpc::types::SandboxControlState>(v.clone())
+                        .ok()
+                }) {
+                    self.main_pane.on_sandbox_control(state);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Re-resolve the persisted active workspace against a freshly-attached
+    /// backend and point the main pane at it.
+    fn reselect_active(&mut self) {
+        self.workspaces = self
+            .backend
+            .as_ref()
+            .and_then(|b| b.list_workspaces().ok())
+            .unwrap_or_default();
+        let active = self
+            .state
+            .borrow()
+            .last_active_workspace
+            .as_ref()
+            .and_then(|id| self.workspaces.iter().find(|w| &w.id == id).cloned())
+            .or_else(|| self.workspaces.first().cloned());
+        self.main_pane.set_active(active.clone());
+        // Open the terminal too, so a reconnect (or an init that raced the
+        // daemon socket) starts the agent PTY — not just repaints the chrome.
+        if let Some(ws) = &active {
+            open_terminal(&mut self.terminals, &self.main_pane, &self.ctx, ws);
+        }
+    }
+
     /// 3 s discovery poll while no backend is attached. Idempotent: a loop
     /// already running keeps its timer; `retry_active` is the single switch.
     fn start_retry_loop(retry_active: &Rc<Cell<bool>>, sender: &ComponentSender<Self>) {
@@ -770,24 +996,6 @@ impl App {
             sender.input(Msg::RetryDiscover);
             glib::ControlFlow::Continue
         });
-    }
-
-    /// Re-hydrate the workspace list from the backend and redraw the sidebar.
-    fn refresh_workspaces(&mut self) {
-        self.workspaces = self
-            .backend
-            .as_ref()
-            .and_then(|b| b.list_workspaces().ok())
-            .unwrap_or_default();
-        self.repopulate_sidebar();
-    }
-
-    fn repopulate_sidebar(&self) {
-        populate_sidebar(
-            &self.list,
-            &self.workspaces,
-            self.state.borrow().last_active_workspace.as_deref(),
-        );
     }
 
     fn schedule_save(&self, sender: &ComponentSender<Self>) {

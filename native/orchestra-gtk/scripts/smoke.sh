@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Smoke test for the GTK skeleton (plan §8.4): build, launch in mock mode
 # inside a FRESH headless sway compositor (never the user's desktop), drive
-# the remote-control harness, assert the window title + sidebar placeholder +
-# 5 mock workspace rows, capture a screenshot, print PASS/FAIL.
+# the remote-control harness, assert the window title + the real sidebar's
+# section/tree/repo rows render + the B3 toolbar/tabs mount, capture a
+# screenshot, print PASS/FAIL.
+#
+# For the deeper sidebar interaction scenarios (select / collapse / rename /
+# reorder with a screenshot per state) see the sibling sidebar_e2e.sh.
 #
 # Headless sway's seat advertises no pointer/keyboard, so compositor-level
 # input never reaches the client — the harness synthesizes events GTK-side
@@ -98,9 +102,22 @@ def walk(nodes):
         names.add(n.get("name"))
         walk(n.get("children", []))
 walk(r.get("widgets", []))
-check("sidebar placeholder present", "sidebar-list" in names)
-check("5 mock workspace rows", sum(1 for n in names if str(n).startswith("ws-row-")) == 5)
+check("sidebar list present", "sidebar-list" in names)
+# The real sidebar renders the full §5.1 mock fixture: orchestrator + scratch
+# tree sections, per-repo groups, and their spawn-threaded rows.
+check("orchestrators section header", "section-orchestrators" in names)
+check("scratch section header", "section-scratch" in names)
+ws_rows = sum(1 for n in names if str(n).startswith("ws-row-"))
+check("mock workspace rows render (>=12)", ws_rows >= 12)
+check("orchestra repo header", any(str(n).startswith("repo-row-") for n in names))
+check("host header for the mixed repo", any(str(n).startswith("host-row-") for n in names))
+check("archived toggle present", "archived-toggle-row" in names)
 check("status strip present", "status-text" in names)
+# B3 main-pane surface: the toolbar and its tabs mount for the initial ws.
+check("toolbar present", "toolbar" in names)
+check("terminal tab present", "tab-terminal" in names)
+check("diff tab present", "tab-diff" in names)
+check("branch picker present", "branch-picker-btn" in names)
 
 title = rpc({"op": "get", "name": "main-window", "prop": "label"})
 check("window title is Orchestra", title.get("ok") and "Orchestra" in str(title.get("value")))

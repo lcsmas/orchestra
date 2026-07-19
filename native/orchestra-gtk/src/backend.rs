@@ -7,14 +7,18 @@
 //! (reader thread, ping/pong, reconnect-with-backoff) and bridges its blocking
 //! `mpsc` receivers into `async_channel`s the GTK main loop can await.
 
-use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
-use orchestra_rpc::types::{RepoEntry, Workspace, WorkspaceStatus};
+use orchestra_rpc::types::{RepoEntry, Workspace};
 use orchestra_rpc::{BackendKind as RemoteKind, ClientOptions, ConnectionState, RpcClient};
 use serde_json::{json, Value};
 
-use crate::backend_fixtures;
+// The fixture backend lives in its own file (backend/mock.rs) so the M2
+// sidebar/terminal/resources workstreams can grow it without touching the
+// RpcBackend wiring below. B5's Resources/Insights/usage fixtures live in
+// `backend_fixtures` and are served by mock.rs's `call()`.
+mod mock;
+pub use mock::{mock_workspaces, MockBackend};
 
 pub type Result<T> = std::result::Result<T, BackendError>;
 
@@ -24,6 +28,10 @@ pub enum BackendError {
     NotWired(&'static str),
     #[error(transparent)]
     Rpc(#[from] orchestra_rpc::RpcError),
+    /// A served method rejected the call (mock parity with a backend
+    /// `ok:false` response — same surface the RpcBackend maps RPC errors to).
+    #[error("{0}")]
+    Method(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +83,60 @@ pub trait Backend: std::fmt::Debug {
     /// `focus` frame — the backend ORs this over all clients to decide the
     /// `focused` flag on finished/needs-input notifications.
     fn set_focused(&self, focused: bool);
+
+    // -- pty control (terminal stack) ---------------------------------------
+    // Typed helpers over the generic `call()` so the terminal panes drive the
+    // backend without hand-rolling JSON. RpcBackend inherits these defaults —
+    // `call()` already routes to the RpcClient's `OrchestraAPI` methods; the
+    // MockBackend's stubbed `call()` makes them harmless no-ops in E2E.
+
+    /// Spawn/attach the agent PTY at a given grid size (`ptyStart`).
+    fn pty_start(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.call("ptyStart", vec![json!(id), json!(cols), json!(rows)])?;
+        Ok(())
+    }
+    /// Notify the backend of a grid resize (`ptyResize`). Callers drop no-ops.
+    fn pty_resize(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.call("ptyResize", vec![json!(id), json!(cols), json!(rows)])?;
+        Ok(())
+    }
+    /// SIGWINCH repaint bounce (`ptyRepaint`) — heals child diff-model desync
+    /// after the pane was hidden. VTE itself needs no atlas clear.
+    fn pty_repaint(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.call("ptyRepaint", vec![json!(id), json!(cols), json!(rows)])?;
+        Ok(())
+    }
+    /// Scrollback replay bytes (`pty:scrollback`, base64 on the wire) to
+    /// `feed()` on (re)mount. The default has no base64 decoder, so it yields
+    /// nothing; RpcBackend overrides it with the RpcClient's decoding wrapper.
+    fn pty_scrollback(&self, _id: &str) -> Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
+    /// Spill a pasted clipboard image to a temp file (`saveClipboardImage`),
+    /// returning its path (None for empty input). The default can't base64 the
+    /// bytes, so it no-ops; RpcBackend overrides with the RpcClient's encoder.
+    fn save_clipboard_image(&self, _mime: &str, _bytes: &[u8]) -> Result<Option<String>> {
+        Ok(None)
+    }
+    /// Start the run-script PTY (`<ws>:run`) — `runScriptStart` keyed by the
+    /// bare workspace id (the backend derives the `:run` suffix).
+    fn run_script_start(&self, ws_id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.call(
+            "runScriptStart",
+            vec![json!(ws_id), json!(cols), json!(rows)],
+        )?;
+        Ok(())
+    }
+    /// Stop the run-script PTY (`runScriptStop`).
+    fn run_script_stop(&self, ws_id: &str) -> Result<()> {
+        self.call("runScriptStop", vec![json!(ws_id)])?;
+        Ok(())
+    }
+    /// Start the nvim PTY (`<ws>:nvim`) — `nvimStart` keyed by the bare id.
+    fn nvim_start(&self, ws_id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.call("nvimStart", vec![json!(ws_id), json!(cols), json!(rows)])?;
+        Ok(())
+    }
 }
 
 // ---- discovery --------------------------------------------------------------
@@ -106,203 +168,6 @@ pub fn spawn_daemon_stub() {}
 /// `ORCHESTRA_GTK_MOCK=1` selects it without rebuilding.
 pub fn mock_requested() -> bool {
     cfg!(feature = "mock") || std::env::var("ORCHESTRA_GTK_MOCK").is_ok_and(|v| v == "1")
-}
-
-// ---- mock -------------------------------------------------------------------
-
-/// Fixture backend so the skeleton renders real pixels (and smoke.sh has
-/// something to assert) before any backend exists.
-#[derive(Debug)]
-pub struct MockBackend {
-    // The events sender IS used: `startSelfTune` spawns a thread that replays
-    // timed selfTuneUpdate/selfTuneOutput frames through a clone of it, so the
-    // Insights overlay animates a live run in mock mode.
-    events_tx: async_channel::Sender<BackendEvent>,
-    events_rx: async_channel::Receiver<BackendEvent>,
-    _pty_tx: async_channel::Sender<(String, Vec<u8>)>,
-    pty_rx: async_channel::Receiver<(String, Vec<u8>)>,
-    _state_tx: async_channel::Sender<ConnectionState>,
-    state_rx: async_channel::Receiver<ConnectionState>,
-    /// Advances on each `sampleResources` poll so sparklines/traces animate.
-    tick: Cell<u64>,
-    /// One in-flight fake run at a time — `startSelfTune` rejects if set, like
-    /// the real backend's single-run guard.
-    self_tune_running: Cell<bool>,
-}
-
-impl Default for MockBackend {
-    fn default() -> Self {
-        let (events_tx, events_rx) = async_channel::unbounded();
-        let (pty_tx, pty_rx) = async_channel::unbounded();
-        let (state_tx, state_rx) = async_channel::unbounded();
-        Self {
-            events_tx,
-            events_rx,
-            _pty_tx: pty_tx,
-            pty_rx,
-            _state_tx: state_tx,
-            state_rx,
-            tick: Cell::new(0),
-            self_tune_running: Cell::new(false),
-        }
-    }
-}
-
-fn mock_workspace(id: &str, name: &str, branch: &str, status: WorkspaceStatus) -> Workspace {
-    // Deserialized rather than struct-literal so new fields on the wire type
-    // (all Option per the serde rules) can never break the fixture backend.
-    serde_json::from_value(json!({
-        "id": id,
-        "name": name,
-        "repoPath": "/home/user/repos/orchestra",
-        "worktreePath": format!("/home/user/.orchestra/worktrees/{branch}"),
-        "branch": branch,
-        "baseBranch": "master",
-        "status": status,
-        "createdAt": 1_752_800_000_000_u64,
-        "agent": "claude",
-    }))
-    .expect("mock workspace fixture matches the wire type")
-}
-
-pub fn mock_workspaces() -> Vec<Workspace> {
-    vec![
-        mock_workspace(
-            "ws-1",
-            "orchestra · fix-status-dot",
-            "fix-status-dot",
-            WorkspaceStatus::Running,
-        ),
-        mock_workspace(
-            "ws-2",
-            "orchestra · gtk4-port",
-            "gtk4-port",
-            WorkspaceStatus::Waiting,
-        ),
-        mock_workspace(
-            "ws-3",
-            "mobile-club · checkout-retry",
-            "checkout-retry",
-            WorkspaceStatus::Idle,
-        ),
-        mock_workspace(
-            "ws-4",
-            "orchestra · flaky-e2e-hunt",
-            "flaky-e2e-hunt",
-            WorkspaceStatus::Error,
-        ),
-        mock_workspace(
-            "ws-5",
-            "scratch · api-spelunking",
-            "api-spelunking",
-            WorkspaceStatus::Stopped,
-        ),
-    ]
-}
-
-impl Backend for MockBackend {
-    fn kind(&self) -> BackendKind {
-        BackendKind::Mock
-    }
-
-    fn version(&self) -> String {
-        env!("CARGO_PKG_VERSION").into()
-    }
-
-    fn list_workspaces(&self) -> Result<Vec<Workspace>> {
-        Ok(mock_workspaces())
-    }
-
-    fn list_repos(&self) -> Result<Vec<RepoEntry>> {
-        Ok(vec![serde_json::from_value(json!({
-            "path": "/home/user/repos/orchestra",
-            "name": "orchestra",
-            "defaultBranch": "master",
-        }))
-        .expect("mock repo fixture matches the wire type")])
-    }
-
-    fn call(&self, method: &str, params: Vec<Value>) -> Result<Value> {
-        match method {
-            "app:info" => Ok(json!({
-                "version": env!("CARGO_PKG_VERSION"),
-                "backendKind": "mock",
-            })),
-            // Resources page (docs/codebase-map/resources.md).
-            "sampleResources" => {
-                let tick = self.tick.get();
-                self.tick.set(tick.wrapping_add(1));
-                Ok(backend_fixtures::resource_snapshot(tick))
-            }
-            "getWorktreeSizes" => Ok(backend_fixtures::worktree_sizes()),
-            "listAccounts" => Ok(backend_fixtures::accounts()),
-            "getUsage" => Ok(backend_fixtures::global_usage()),
-            "getAllAccountUsage" => Ok(backend_fixtures::account_usage()),
-            "getWorkspaceAccounts" => Ok(backend_fixtures::workspace_accounts()),
-            // stopAgent(id): the mock has nothing to stop — acknowledge.
-            "stopAgent" => Ok(json!({ "ok": true })),
-            // Insights / self-tune (docs/codebase-map/self-tune.md).
-            "listSelfTuneRuns" => Ok(backend_fixtures::self_tune_runs()),
-            "getSelfTuneOutput" => {
-                let run_id = params.first().and_then(Value::as_str).unwrap_or("");
-                Ok(backend_fixtures::self_tune_output(run_id))
-            }
-            "listSelfTuneReports" => Ok(backend_fixtures::self_tune_reports()),
-            "openSelfTuneReport" => Ok(json!({ "ok": true })),
-            "readSelfTuneLessons" => Ok(backend_fixtures::lessons_md()),
-            "startSelfTune" => self.start_fake_self_tune(),
-            _ => Err(BackendError::NotWired("mock backend only serves fixtures")),
-        }
-    }
-
-    fn events(&self) -> async_channel::Receiver<BackendEvent> {
-        self.events_rx.clone()
-    }
-
-    fn pty_data(&self) -> async_channel::Receiver<(String, Vec<u8>)> {
-        self.pty_rx.clone()
-    }
-
-    fn connection_state(&self) -> async_channel::Receiver<ConnectionState> {
-        self.state_rx.clone()
-    }
-
-    fn pty_write(&self, _id: &str, _bytes: &[u8]) -> Result<()> {
-        Ok(())
-    }
-
-    fn set_focused(&self, _focused: bool) {}
-}
-
-impl MockBackend {
-    /// `startSelfTune`: returns the initial `running` run and spawns a thread
-    /// that replays timed `selfTuneUpdate`/`selfTuneOutput` frames so the
-    /// Insights overlay shows a live run. Rejects if one is already in flight,
-    /// mirroring the real backend's single-run guard.
-    fn start_fake_self_tune(&self) -> Result<Value> {
-        if self.self_tune_running.get() {
-            return Ok(json!({ "ok": false, "error": "a self-tune run is already in progress" }));
-        }
-        self.self_tune_running.set(true);
-        let (initial, updates) = backend_fixtures::fake_run_script(backend_fixtures::MOCK_NOW_MS);
-
-        let events_tx = self.events_tx.clone();
-        // A background OS thread sleeps between frames; async_channel's
-        // send_blocking is safe off the glib main loop and the receiver is
-        // pumped there.
-        std::thread::spawn(move || {
-            let mut prev = 0u64;
-            for (at_ms, channel, args) in updates {
-                let delay = at_ms.saturating_sub(prev);
-                prev = at_ms;
-                std::thread::sleep(std::time::Duration::from_millis(delay));
-                let _ = events_tx.send_blocking(BackendEvent::Event { channel, args });
-            }
-        });
-        // The guard clears when the mock backend is dropped; a fresh run needs
-        // a fresh backend in mock mode (good enough for the demo/E2E path).
-        Ok(json!({ "ok": true, "run": initial }))
-    }
 }
 
 // ---- rpc --------------------------------------------------------------------
@@ -446,6 +311,29 @@ impl Backend for RpcBackend {
         Ok(self.client.send_pty_write(id, bytes)?)
     }
 
+    // pty control: use the RpcClient's typed wrappers directly rather than the
+    // trait's generic-`call` defaults — same wire methods, but scrollback gets
+    // the client's base64 decoding for free.
+    fn pty_start(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        Ok(self.client.pty_start(id, cols, rows)?)
+    }
+
+    fn pty_resize(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        Ok(self.client.pty_resize(id, cols, rows)?)
+    }
+
+    fn pty_repaint(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        Ok(self.client.pty_repaint(id, cols, rows)?)
+    }
+
+    fn pty_scrollback(&self, id: &str) -> Result<Vec<u8>> {
+        Ok(self.client.pty_scrollback(id)?)
+    }
+
+    fn save_clipboard_image(&self, mime: &str, bytes: &[u8]) -> Result<Option<String>> {
+        Ok(self.client.save_clipboard_image(mime, bytes)?)
+    }
+
     fn set_focused(&self, focused: bool) {
         // Best-effort: while disconnected the flag rides the next reconnect's
         // hello, so a send failure here is not a loss.
@@ -578,13 +466,6 @@ mod tests {
 
         drop(backend);
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn mock_serves_five_workspaces() {
-        let ws = MockBackend::default().list_workspaces().unwrap();
-        assert_eq!(ws.len(), 5);
-        assert!(ws.iter().any(|w| w.status == WorkspaceStatus::Running));
     }
 
     #[test]
