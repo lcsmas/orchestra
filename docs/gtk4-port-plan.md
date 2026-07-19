@@ -634,6 +634,11 @@ serialized merge assembly (B4 done → B3 → B5 → B6), each merged tip gettin
 dual-consumer live re-verify (prove sidebar AND accounts/overlay fan-outs both
 fire off the single consumer — the exact failure a competing pump would show).
 
+Integration tip: **`26d30de`** (B1 + B2-RpcBackend + B4 accounts/extra-credits
++ B3 main-pane/toolbar/diff), verified — triple-consumer live PASS, both seams,
+idempotence, and the map-not-Vec wire fix all confirmed. B2 (terminals) is the
+last feature merge (→ four-consumer + the PTY-data-path re-verify), then B5, B6.
+
 **Coexistence central risk CLOSED** (verifier `b4-merge` PASS on the first
 ≥2-module tip, live daemon): two independent daemon mutations — `markSeen`
 (→ sidebar dot) and `refreshAccounts` (→ accounts strip) — both fired off the
