@@ -132,3 +132,61 @@ jobs:
       - name: RPC conformance (against fresh fixtures)
         working-directory: native
         run: cargo test -p orchestra-rpc --test conformance
+
+  # End-to-end scenarios: drive the real orchestra-gtk binary via its
+  # remote-control socket inside a headless sway (native/e2e/). x64 only —
+  # the scenarios test protocol/lifecycle behavior, not arch-specific code.
+  e2e:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:42
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            gcc gcc-c++ make pkgconf-pkg-config git tar nodejs npm \
+            rust cargo sway mesa-dri-drivers mesa-vulkan-drivers \
+            gtk4-devel vte291-gtk4-devel glib2-devel cairo-devel \
+            cairo-gobject-devel pango-devel gdk-pixbuf2-devel graphene-devel \
+            harfbuzz-devel vulkan-loader-devel \
+            gtksourceview5-devel \
+            webkitgtk6.0-devel libsoup3-devel javascriptcoregtk6.0-devel \
+            gstreamer1-devel gstreamer1-plugins-base-devel
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build orchestra-gtk
+        working-directory: native
+        run: cargo build --release -p orchestra-gtk
+
+      # Lets the backend-lock scenario run (its lock logic lives in the TS
+      # backend); without it that one scenario skips-with-reason.
+      - name: Build daemon bundle
+        run: pnpm run build:daemon
+
+      # No GPU in the container: point wlroots at its Pixman software renderer
+      # (WLR_RENDERER) and GTK's GSK at its cairo software fallback
+      # (GSK_RENDERER) so both the compositor and the app render without one.
+      - name: Run E2E scenarios
+        env:
+          XDG_RUNTIME_DIR: /tmp/xdg
+          WLR_RENDERER: pixman
+          GSK_RENDERER: cairo
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+          node native/e2e/run.mjs
