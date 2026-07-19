@@ -39,6 +39,10 @@ use orchestra_rpc::types::{Account, AccountUsageStatus, UsageSnapshot, Workspace
 
 use crate::backend::Backend;
 
+/// A live badge/menu repaint hook: invoked with the fresh state + epoch-ms
+/// "now" on every store change (and once on registration).
+type RenderListener = Box<dyn Fn(&AccountsState, i64)>;
+
 /// The store slice this domain renders from — the GTK mirror of the Zustand
 /// slices `UsageBars.tsx`/`AccountBadge.tsx` subscribe to.
 #[derive(Debug, Default)]
@@ -69,7 +73,7 @@ pub struct AccountsController {
     login_modal: RefCell<Option<login_modal::LoginModal>>,
     /// Repaint hooks of live badges/menus (sidebar rows register here);
     /// invoked with the fresh state on every store change.
-    listeners: RefCell<Vec<Box<dyn Fn(&AccountsState, i64)>>>,
+    listeners: RefCell<Vec<RenderListener>>,
 }
 
 impl AccountsController {
@@ -145,7 +149,7 @@ impl AccountsController {
 
     /// Badges/menus born after bootstrap register their repaint hook here and
     /// get an immediate first paint.
-    pub fn add_render_listener(self: &Rc<Self>, f: Box<dyn Fn(&AccountsState, i64)>) {
+    pub fn add_render_listener(self: &Rc<Self>, f: RenderListener) {
         f(&self.state.borrow(), Self::now_ms());
         self.listeners.borrow_mut().push(f);
     }

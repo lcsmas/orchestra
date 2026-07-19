@@ -7,6 +7,7 @@
 //! (reader thread, ping/pong, reconnect-with-backoff) and bridges its blocking
 //! `mpsc` receivers into `async_channel`s the GTK main loop can await.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use orchestra_rpc::types::{RepoEntry, Workspace, WorkspaceStatus};
@@ -109,16 +110,26 @@ pub fn mock_requested() -> bool {
 
 /// Fixture backend so the skeleton renders real pixels (and smoke.sh has
 /// something to assert) before any backend exists.
+///
+/// The accounts/usage surface (plan §5.4) is *stateful* here so the GTK
+/// components are demoable end-to-end against the mock: `setAccounts` /
+/// `migrateWorkspaceAccount` mutate the held state and push the matching
+/// `event` frames, and `accountLoginStart` / `accountLoginOpenUrl` push fake
+/// login-PTY bytes and an `accountsLoginUrl` event so the login modal and the
+/// WebKit OAuth window light up without a real daemon. (The live path is
+/// additive — this deterministic mock stays selectable for E2E.)
 #[derive(Debug)]
 pub struct MockBackend {
-    // Held so the receivers stay open (a dropped sender closes the channel);
-    // the mock never actually pushes.
-    _events_tx: async_channel::Sender<BackendEvent>,
+    events_tx: async_channel::Sender<BackendEvent>,
     events_rx: async_channel::Receiver<BackendEvent>,
-    _pty_tx: async_channel::Sender<(String, Vec<u8>)>,
+    pty_tx: async_channel::Sender<(String, Vec<u8>)>,
     pty_rx: async_channel::Receiver<(String, Vec<u8>)>,
     _state_tx: async_channel::Sender<ConnectionState>,
     state_rx: async_channel::Receiver<ConnectionState>,
+    /// Live account list (seeded from fixtures, mutated by setAccounts).
+    accounts: RefCell<Vec<Value>>,
+    /// workspace id → resolved account id (null = default login).
+    workspace_accounts: RefCell<std::collections::HashMap<String, Option<String>>>,
 }
 
 impl Default for MockBackend {
@@ -127,13 +138,125 @@ impl Default for MockBackend {
         let (pty_tx, pty_rx) = async_channel::unbounded();
         let (state_tx, state_rx) = async_channel::unbounded();
         Self {
-            _events_tx: events_tx,
+            events_tx,
             events_rx,
-            _pty_tx: pty_tx,
+            pty_tx,
             pty_rx,
             _state_tx: state_tx,
             state_rx,
+            accounts: RefCell::new(mock_accounts()),
+            workspace_accounts: RefCell::new(mock_workspace_accounts()),
         }
+    }
+}
+
+/// Two configured accounts spanning the interesting shapes: "work" (healthy,
+/// Fable + extra-usage), "perso" (near-limit, expired token showing cached
+/// usage), plus a no-scope error and a not-logged-in account.
+fn mock_accounts() -> Vec<Value> {
+    vec![
+        json!({ "id": "acc-work", "label": "work", "configDir": "~/.claude-work",
+                "scratchDefault": true,
+                "inherit": { "settings": true, "statusline": true } }),
+        json!({ "id": "acc-perso", "label": "perso", "configDir": "~/.claude-perso" }),
+        json!({ "id": "acc-mc", "label": "mobile-club", "configDir": "${HOME}/.claude-mc" }),
+        json!({ "id": "acc-broken", "label": "broken", "configDir": "~/.claude-broken" }),
+    ]
+}
+
+fn mock_workspace_accounts() -> std::collections::HashMap<String, Option<String>> {
+    // ws-1 pinned to work; the rest default. (ws ids match mock_workspaces.)
+    [("ws-1".to_string(), Some("acc-work".to_string()))]
+        .into_iter()
+        .collect()
+}
+
+/// The global (`~/.claude`) usage snapshot: mid-range, with a Fable window so
+/// the strip's conditional Fable bar renders.
+fn mock_global_usage() -> Value {
+    json!({
+        "fiveHour": { "utilization": 41.0, "resetsAt": "2026-07-19T18:30:00Z" },
+        "sevenDay": { "utilization": 63.0, "resetsAt": "2026-07-24T00:00:00Z" },
+        "extraUtilization": 12.0,
+        "fable": { "utilization": 22.0, "resetsAt": "2026-07-24T00:00:00Z" },
+        "fetchedAt": 1_752_930_000_000_i64,
+    })
+}
+
+/// Per-account usage map covering: healthy+Fable+extra (work), near-crit +
+/// expired-showing-cached (perso), a hard error (mobile-club: no scope), and a
+/// not-logged-in account (broken).
+fn mock_account_usage() -> Value {
+    json!({
+        "acc-work": {
+            "accountId": "acc-work", "ok": true, "fetchedAt": 1_752_930_000_000_i64,
+            "data": {
+                "fiveHour": { "utilization": 48.0, "resetsAt": "2026-07-19T18:30:00Z" },
+                "sevenDay": { "utilization": 71.0, "resetsAt": "2026-07-24T00:00:00Z" },
+                "extraUtilization": 15.0,
+                "fable": { "utilization": 30.0, "resetsAt": "2026-07-24T00:00:00Z" }
+            }
+        },
+        "acc-perso": {
+            "accountId": "acc-perso", "ok": true, "fetchedAt": 1_752_929_400_000_i64,
+            "expired": true,
+            "data": {
+                "fiveHour": { "utilization": 93.0, "resetsAt": "2026-07-19T17:05:00Z" },
+                "sevenDay": { "utilization": 88.0, "resetsAt": "2026-07-24T00:00:00Z" },
+                "extraUtilization": null,
+                "fable": null
+            }
+        },
+        "acc-mc": {
+            "accountId": "acc-mc", "ok": false, "fetchedAt": 1_752_930_000_000_i64,
+            "data": null, "errorKind": "no-scope",
+            "errorMessage": "token lacks user:profile"
+        },
+        "acc-broken": {
+            "accountId": "acc-broken", "ok": false, "fetchedAt": 1_752_930_000_000_i64,
+            "data": null, "errorKind": "not-logged-in", "errorMessage": "no login found"
+        }
+    })
+}
+
+impl MockBackend {
+    /// Push an `event` frame (mirrors the daemon's broadcast).
+    fn emit(&self, channel: &str, args: Vec<Value>) {
+        let _ = self.events_tx.try_send(BackendEvent::Event {
+            channel: channel.to_string(),
+            args,
+        });
+    }
+
+    /// The current workspace→account map as the wire `WorkspaceAccount` object
+    /// keyed by workspace id (what `getWorkspaceAccounts` returns and
+    /// `workspaceAccounts` broadcasts).
+    fn workspace_accounts_value(&self) -> Value {
+        let accounts = self.accounts.borrow();
+        let label_of = |id: &str| -> String {
+            accounts
+                .iter()
+                .find(|a| a["id"] == id)
+                .and_then(|a| a["label"].as_str())
+                .unwrap_or(id)
+                .to_string()
+        };
+        let map: serde_json::Map<String, Value> = self
+            .workspace_accounts
+            .borrow()
+            .iter()
+            .map(|(ws, acct)| {
+                let label = acct
+                    .as_deref()
+                    .map(label_of)
+                    .unwrap_or_else(|| "default".into());
+                (
+                    ws.clone(),
+                    json!({ "workspaceId": ws, "accountId": acct, "label": label }),
+                )
+            })
+            .collect();
+        Value::Object(map)
     }
 }
 
@@ -211,12 +334,101 @@ impl Backend for MockBackend {
         .expect("mock repo fixture matches the wire type")])
     }
 
-    fn call(&self, method: &str, _params: Vec<Value>) -> Result<Value> {
+    fn call(&self, method: &str, params: Vec<Value>) -> Result<Value> {
         match method {
             "app:info" => Ok(json!({
                 "version": env!("CARGO_PKG_VERSION"),
                 "backendKind": "mock",
             })),
+
+            // ---- accounts / usage (plan §5.4) --------------------------------
+            "listAccounts" => Ok(Value::Array(self.accounts.borrow().clone())),
+            "getUsage" => Ok(mock_global_usage()),
+            "getAllAccountUsage" => Ok(mock_account_usage()),
+            "getAccountUsage" => {
+                let id = params.first().and_then(|v| v.as_str()).unwrap_or("");
+                Ok(mock_account_usage().get(id).cloned().unwrap_or(Value::Null))
+            }
+            "getWorkspaceAccounts" => Ok(self.workspace_accounts_value()),
+            "listGlobalInheritables" => Ok(json!({
+                "skills": ["ship", "verify", "retro", "map-codebase"],
+                "mcpServers": ["chrome-devtools", "linear"],
+            })),
+
+            "setAccounts" => {
+                let list = params.into_iter().next().unwrap_or(Value::Array(vec![]));
+                if let Value::Array(arr) = &list {
+                    *self.accounts.borrow_mut() = arr.clone();
+                }
+                // Labels may have changed → re-broadcast the workspace map.
+                self.emit("workspaceAccounts", vec![self.workspace_accounts_value()]);
+                Ok(list)
+            }
+            "setRepoAccount" => {
+                // (repoPath, accountId|null) — no per-repo state in the mock;
+                // acknowledge so the settings surface can round-trip.
+                Ok(Value::Bool(true))
+            }
+            "migrateWorkspaceAccount" => {
+                let ws = params
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let target = params.get(1).and_then(|v| v.as_str()).map(str::to_string);
+                self.workspace_accounts
+                    .borrow_mut()
+                    .insert(ws.clone(), target.clone());
+                // The daemon broadcasts the recomputed map after a migrate.
+                self.emit("workspaceAccounts", vec![self.workspace_accounts_value()]);
+                Ok(json!({ "ok": true, "id": ws, "accountId": target, "resumed": false }))
+            }
+            "refreshAccounts" => {
+                // Re-push the usage map (post-login the badge fills in).
+                self.emit("accountUsageUpdate", vec![mock_account_usage()]);
+                Ok(Value::Null)
+            }
+
+            // ---- per-account login flow --------------------------------------
+            "accountLoginStart" => {
+                let id = params
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let pty = format!("account-login:{id}");
+                // Fake the `claude /login` banner + a login URL the modal's
+                // link handler would open (drives accountLoginOpenUrl below).
+                let banner = format!(
+                    "\x1b[1mclaude /login\x1b[0m (mock)\r\n\r\n\
+                     Open this URL to authenticate account \x1b[36m{id}\x1b[0m:\r\n\
+                     \x1b[4mhttps://claude.ai/oauth/authorize?mock={id}\x1b[0m\r\n\r\n\
+                     Waiting for sign-in… (mock; use the login window)\r\n"
+                );
+                let _ = self.pty_tx.try_send((pty, banner.into_bytes()));
+                Ok(Value::Null)
+            }
+            "accountLoginStop" => Ok(Value::Null),
+            "accountLoginOpenUrl" => {
+                let id = params
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let url = params
+                    .get(1)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("https://claude.ai/")
+                    .to_string();
+                // The daemon turns an open-url request into an accountsLoginUrl
+                // event addressed to GTK clients (protocol §4).
+                self.emit(
+                    "accountsLoginUrl",
+                    vec![json!({ "accountId": id, "url": url })],
+                );
+                Ok(Value::Null)
+            }
+
             _ => Err(BackendError::NotWired("mock backend only serves fixtures")),
         }
     }
@@ -233,7 +445,11 @@ impl Backend for MockBackend {
         self.state_rx.clone()
     }
 
-    fn pty_write(&self, _id: &str, _bytes: &[u8]) -> Result<()> {
+    fn pty_write(&self, id: &str, bytes: &[u8]) -> Result<()> {
+        // Local echo on the login PTY so typing in the modal is visible.
+        if id.starts_with("account-login:") {
+            let _ = self.pty_tx.try_send((id.to_string(), bytes.to_vec()));
+        }
         Ok(())
     }
 

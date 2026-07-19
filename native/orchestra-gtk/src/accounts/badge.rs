@@ -44,14 +44,7 @@ impl AccountUsageBadge {
     /// Repaint for a given resolved account id (None = default login).
     fn render(&self, account_id: Option<&str>, state: &AccountsState, now_ms: i64) {
         // Reset transient state classes; keep the base "account-badge".
-        for c in [
-            "pending",
-            "err",
-            "usage",
-            "sev-ok",
-            "sev-warn",
-            "sev-crit",
-        ] {
+        for c in ["pending", "err", "usage", "sev-ok", "sev-warn", "sev-crit"] {
             self.label.remove_css_class(c);
         }
 
@@ -183,9 +176,7 @@ impl WorkspaceAccountMenu {
         let root = gtk::MenuButton::new();
         root.set_widget_name(&format!("ws-account-trigger-{workspace_id}"));
         root.add_css_class("ws-account-trigger");
-        root.set_tooltip_text(Some(
-            "Click to migrate this workspace to another account",
-        ));
+        root.set_tooltip_text(Some("Click to migrate this workspace to another account"));
         root.set_child(Some(badge.widget()));
 
         let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
@@ -288,12 +279,7 @@ impl WorkspaceAccountMenu {
             if current.as_deref() == target_id.as_deref() {
                 return;
             }
-            migrate(
-                &ctrl,
-                &workspace_id,
-                target_id.clone(),
-                &target_label,
-            );
+            migrate(&ctrl, &workspace_id, target_id.clone(), &target_label);
         });
         self.list.append(&button);
     }

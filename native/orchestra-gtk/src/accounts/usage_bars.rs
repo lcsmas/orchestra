@@ -106,6 +106,7 @@ pub struct UsageBars {
 }
 
 impl UsageBars {
+    #[allow(clippy::new_without_default)] // constructed only by the controller
     pub fn new() -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         root.add_css_class("usage-bars");
@@ -276,12 +277,8 @@ impl UsageBars {
             Some(l) => format!("Claude usage ({l}) — {window}"),
             None => format!("Claude usage — {window}"),
         };
-        self.bar5.update(
-            &strip.five,
-            label,
-            &ctx("5-hour session window"),
-            now_ms,
-        );
+        self.bar5
+            .update(&strip.five, label, &ctx("5-hour session window"), now_ms);
         self.bar7.update(
             &strip.seven,
             Some(&format_updated_ago(strip.fetched_at, now_ms)),

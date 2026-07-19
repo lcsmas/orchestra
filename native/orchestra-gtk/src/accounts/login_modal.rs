@@ -141,8 +141,10 @@ impl LoginModal {
             let terminal = terminal.clone();
             let account_id = account_id.to_string();
             glib::idle_add_local_once(move || {
-                let cols = terminal.column_count().max(1) as i64;
-                let rows = terminal.row_count().max(1) as i64;
+                // VTE cell grid. Fall back to 80×24 until the widget has laid
+                // out its first frame.
+                let cols = terminal.column_count();
+                let rows = terminal.row_count();
                 let (cols, rows) = if cols < 2 || rows < 2 {
                     (80, 24)
                 } else {
@@ -191,8 +193,10 @@ impl LoginModal {
     /// mark exited so a backdrop close now dismisses freely.
     pub fn on_pty_exit(&self, code: i32) {
         self.terminal.feed(
-            format!("\r\n\x1b[33m[login session ended (code {code}) — you can close this]\x1b[0m\r\n")
-                .as_bytes(),
+            format!(
+                "\r\n\x1b[33m[login session ended (code {code}) — you can close this]\x1b[0m\r\n"
+            )
+            .as_bytes(),
         );
         self.exited.set(true);
         self.button.set_label("Done");

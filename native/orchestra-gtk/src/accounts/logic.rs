@@ -21,9 +21,9 @@ pub fn login_color(name: &str) -> String {
     for unit in name.encode_utf16() {
         hash = hash.wrapping_mul(31).wrapping_add(unit as i32);
     }
-    // JS `%` truncates toward zero exactly like Rust's, so this double-mod
-    // idiom transfers verbatim.
-    let hue = ((hash % 360) + 360) % 360;
+    // JS's `((h % 360) + 360) % 360` (a non-negative modulo) is exactly
+    // `rem_euclid` for i32 — same hue in both apps.
+    let hue = hash.rem_euclid(360);
     format!("hsl({hue}, 55%, 68%)")
 }
 
@@ -408,7 +408,10 @@ mod tests {
         assert_eq!(format_updated_ago(0, now), "");
         assert_eq!(format_updated_ago(now - 30_000, now), "updated just now");
         assert_eq!(format_updated_ago(now - 90_000, now), "updated 1m ago");
-        assert_eq!(format_updated_ago(now - 3_700_000, now), "updated 1h 1m ago");
+        assert_eq!(
+            format_updated_ago(now - 3_700_000, now),
+            "updated 1h 1m ago"
+        );
         assert_eq!(
             format_updated_ago(now - 90_000_000, now),
             "updated 1d 1h ago"
@@ -471,7 +474,7 @@ mod tests {
 
     #[test]
     fn panel_rows_sort_active_first_then_hottest() {
-        let mut rows = vec![
+        let mut rows = [
             ("cold", row_sort_key(false, 10.0)),
             ("error", row_sort_key(false, -1.0)),
             ("active", row_sort_key(true, 0.0)),

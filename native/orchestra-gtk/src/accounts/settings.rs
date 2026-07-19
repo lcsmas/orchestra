@@ -191,7 +191,11 @@ pub fn open(ctrl: &Rc<AccountsController>) {
 
 /// Build one account card (existing `Account` or a fresh row) and wire its
 /// live behaviors (dir preview, label→dir sync, scratch-default radio, login).
-fn build_row(ctrl: &Rc<AccountsController>, model: &Rc<Model>, account: Option<&Account>) -> Rc<Row> {
+fn build_row(
+    ctrl: &Rc<AccountsController>,
+    model: &Rc<Model>,
+    account: Option<&Account>,
+) -> Rc<Row> {
     let id = account
         .map(|a| a.id.clone())
         .unwrap_or_else(|| format!("acc-{}", AccountsController::now_ms()));
@@ -263,7 +267,9 @@ fn build_row(ctrl: &Rc<AccountsController>, model: &Rc<Model>, account: Option<&
     root.append(&inherit_statusline);
 
     let inherited_skills: &[String] = inherit.and_then(|i| i.skills.as_deref()).unwrap_or(&[]);
-    let inherited_mcp: &[String] = inherit.and_then(|i| i.mcp_servers.as_deref()).unwrap_or(&[]);
+    let inherited_mcp: &[String] = inherit
+        .and_then(|i| i.mcp_servers.as_deref())
+        .unwrap_or(&[]);
 
     let skills = build_chip_group(
         &root,
