@@ -187,8 +187,14 @@ pub fn discover_socket_path() -> Result<PathBuf, RpcError> {
             }
         },
     };
-    let pointer = home.join("ui-sock");
-    let content = std::fs::read_to_string(&pointer).map_err(|e| {
+    read_pointer(&home.join("ui-sock"))
+}
+
+/// Read a `ui-sock` pointer file and return the socket path it names. Split out
+/// of [`discover_socket_path`] so a caller can point at an explicit pointer file
+/// without going through process-global env (see [`RpcClient::discover_at`]).
+pub fn read_pointer(pointer: &Path) -> Result<PathBuf, RpcError> {
+    let content = std::fs::read_to_string(pointer).map_err(|e| {
         RpcError::Discovery(format!(
             "no backend socket pointer at {}: {e}",
             pointer.display()
@@ -211,6 +217,10 @@ pub fn discover_socket_path() -> Result<PathBuf, RpcError> {
 enum Source {
     /// Reconnect redials this exact path.
     Explicit(PathBuf),
+    /// Reconnect re-reads THIS pointer file (same self-healing behaviour as
+    /// `Discovered`, but aimed at an explicit pointer instead of resolving one
+    /// from the environment — so callers, and tests, need no global env).
+    Pointer(PathBuf),
     /// Reconnect re-runs discovery (the backend may have restarted under a
     /// new pid-derived socket path).
     Discovered,
@@ -306,6 +316,19 @@ impl RpcClient {
     /// connect. Reconnects re-run discovery.
     pub fn discover(opts: ClientOptions) -> Result<(Self, Receivers), RpcError> {
         Self::connect_inner(Source::Discovered, opts)
+    }
+
+    /// Like [`Self::discover`], but resolving an EXPLICIT `ui-sock` pointer file
+    /// instead of one derived from the environment. Reconnects re-read that
+    /// pointer, so a backend restarting under a new socket path is still picked
+    /// up — the same self-healing behaviour, without depending on (or mutating)
+    /// process-global env. Useful for a caller managing several homes, and it
+    /// lets tests exercise re-discovery without racing each other's env.
+    pub fn discover_at(
+        pointer: impl AsRef<Path>,
+        opts: ClientOptions,
+    ) -> Result<(Self, Receivers), RpcError> {
+        Self::connect_inner(Source::Pointer(pointer.as_ref().to_path_buf()), opts)
     }
 
     fn connect_inner(source: Source, opts: ClientOptions) -> Result<(Self, Receivers), RpcError> {
@@ -451,6 +474,7 @@ impl RpcClient {
 fn dial(shared: &Arc<Shared>) -> Result<(UnixStream, Decoder, ServerInfo), RpcError> {
     let path = match &shared.source {
         Source::Explicit(p) => p.clone(),
+        Source::Pointer(p) => read_pointer(p)?,
         Source::Discovered => discover_socket_path()?,
     };
     let stream = UnixStream::connect(&path)?;

@@ -366,14 +366,14 @@ fn discovered_client_reconnects_to_a_moved_socket() {
         while matches!(conn.stream.read(&mut buf), Ok(n) if n > 0) {}
     });
 
-    // ORCHESTRA_HOME points discovery at our dir (no ORCHESTRA_UI_SOCK, so the
-    // POINTER FILE is what gets re-read on each redial).
-    let prev_home = std::env::var_os("ORCHESTRA_HOME");
-    let prev_sock = std::env::var_os("ORCHESTRA_UI_SOCK");
-    std::env::set_var("ORCHESTRA_HOME", &dir);
-    std::env::remove_var("ORCHESTRA_UI_SOCK");
-
-    let (client, rx) = RpcClient::discover(fast_opts()).unwrap();
+    // Aim discovery at OUR pointer file explicitly. Deliberately NOT via
+    // ORCHESTRA_HOME/ORCHESTRA_UI_SOCK: env is process-global and `cargo test`
+    // runs tests as parallel THREADS in one process, so a sibling test's env
+    // write can land between our set and our connect (that raced ~11% of runs
+    // against `discovery_reads_env_then_pointer_file`). `discover_at` re-reads
+    // this pointer on every redial — the same self-healing path — with no
+    // global state to race.
+    let (client, rx) = RpcClient::discover_at(&pointer, fast_opts()).unwrap();
     assert_eq!(expect_state(&rx.state), ConnectionState::Connected);
 
     // Drop → Reconnecting → Connected AGAIN, this time on the moved socket.
@@ -390,13 +390,6 @@ fn discovered_client_reconnects_to_a_moved_socket() {
     assert_eq!(expect_state(&rx.state), ConnectionState::Disconnected);
     server.join().unwrap();
 
-    match prev_home {
-        Some(v) => std::env::set_var("ORCHESTRA_HOME", v),
-        None => std::env::remove_var("ORCHESTRA_HOME"),
-    }
-    if let Some(v) = prev_sock {
-        std::env::set_var("ORCHESTRA_UI_SOCK", v);
-    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -441,8 +434,16 @@ fn gives_up_reconnecting_after_the_backoff_window() {
 
 #[test]
 fn discovery_reads_env_then_pointer_file() {
-    // Explicit env override wins. (Env mutation is process-global — this test
-    // is the only one touching these vars, and it restores them.)
+    // Explicit env override wins.
+    //
+    // This is the ONLY test that may touch ORCHESTRA_UI_SOCK / ORCHESTRA_HOME,
+    // and that is load-bearing, not incidental: env is process-global while
+    // `cargo test` runs tests as parallel THREADS in one process, so
+    // save/restore does NOT isolate — a second test mutating these vars races
+    // this one and fails ~1 run in 9. (That happened: a reconnect test set them
+    // and inherited the flake; it now uses `RpcClient::discover_at`, which takes
+    // an explicit pointer path and needs no env.) If you need discovery in a new
+    // test, use `discover_at`/`read_pointer` — do NOT add a second env mutator.
     let dir = test_socket_path("discover-dir");
     std::fs::create_dir_all(&dir).unwrap();
     let pointer = dir.join("ui-sock");
