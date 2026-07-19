@@ -15,15 +15,18 @@ use gtk::prelude::*;
 use relm4::prelude::*;
 
 use orchestra_rpc::types::Workspace;
-use orchestra_rpc::{BackendKind as RemoteKind, ConnectionState};
+use orchestra_rpc::{BackendKind as RemoteKind, ConnectionState, UiEvent};
 
 use crate::accounts::AccountsController;
 use crate::backend::{self, Backend, BackendEvent, BackendKind, MockBackend, RpcBackend};
 use crate::ctx::Ctx;
 use crate::dialogs;
 use crate::main_pane::MainPane;
+use crate::notify;
+use crate::overlays::{OverlayKind, Overlays};
 use crate::remote_control;
 use crate::sidebar::{Sidebar, SidebarInit};
+use crate::sound::SoundPlayer;
 use crate::state::{self, UiState, WindowGeometry};
 use crate::terminal::TerminalStack;
 
@@ -35,6 +38,9 @@ const NO_BACKEND_BANNER: &str =
     "no backend found — start Orchestra or the daemon (retrying every 3s)";
 
 pub struct App {
+    // `Rc` (not `Box`) so the accounts controller and the Resources/Insights
+    // overlays can each hold a clone for polling/streaming without a second
+    // socket connection.
     backend: Option<Rc<dyn Backend>>,
     /// Accounts/usage/login controller — created when a backend attaches. Owns
     /// the usage-bars strip in the sidebar footer and every accounts window;
@@ -43,7 +49,8 @@ pub struct App {
     /// Shared backend seam for the main-pane widget tree (toolbar / diff /
     /// banners) — App keeps its backend in sync via [`Ctx::set_backend`].
     ctx: Rc<Ctx>,
-    /// The main pane (toolbar + banners + view stack), mounted in overlay_host.
+    /// The main pane (toolbar + banners + view stack), the base child of the
+    /// overlay host — always present; B5's overlays layer on top of it.
     main_pane: Rc<MainPane>,
     /// Kept-alive feed-mode terminals (plan §5.2, B2) — agent pane in the main
     /// pane's terminal slot, run pane in its run slot, nvim via the toolbar
@@ -54,6 +61,11 @@ pub struct App {
     workspaces: Vec<Workspace>,
     state: Rc<RefCell<UiState>>,
     state_path: PathBuf,
+    /// The Resources/Insights/Help overlays, mounted into the overlay host
+    /// once a backend is available (they need it to poll/stream).
+    overlays: Option<Rc<Overlays>>,
+    /// Chime playback for `agentFinished` while the window is unfocused.
+    sound: Rc<SoundPlayer>,
     /// Debounce generation for state saves: each change bumps it; only the
     /// timer holding the latest generation actually persists.
     save_generation: Rc<Cell<u64>>,
@@ -88,12 +100,17 @@ pub enum Msg {
     /// controller (login PTY); other ids belong to the terminal workstream.
     PtyData(String, Vec<u8>),
     /// The sidebar activated a workspace (row-select) → drive the main pane's
-    /// `set_active` (§5.3, B3). Held here so B3's MainPane mount routes it;
-    /// until then it records the shell's active workspace and retargets the
-    /// accounts usage strip to that workspace's login.
+    /// `set_active` (§5.3, B3). Also the target of a clicked desktop
+    /// notification (B5), which presents the window and selects the workspace.
     WorkspaceActivated(String),
     /// B3's toolbar nvim toggle → reveal/hide B2's nvim file pane.
     NvimToggle(bool),
+    /// Toggle one of the Resources/Insights/Help overlays (B5).
+    ToggleOverlay(OverlayKind),
+    /// Escape key — close the topmost overlay if any (B5).
+    EscapePressed,
+    /// Open the notification-sound picker (B5).
+    OpenSoundPicker,
 }
 
 /// Remove every child of a mount slot (drops B3's placeholder hint before B2
@@ -395,6 +412,36 @@ impl SimpleComponent for App {
                         set_hexpand: true,
                     },
 
+                    // Overlay triggers (Electron sidebar-header buttons). These
+                    // stay simple text buttons on the status strip until the M2
+                    // sidebar workstream gives them their final home.
+                    gtk::Button {
+                        set_widget_name: "open-resources",
+                        set_label: "Resources",
+                        add_css_class: "strip-btn",
+                        connect_clicked[sender] => move |_| sender.input(Msg::ToggleOverlay(OverlayKind::Resources)),
+                    },
+                    gtk::Button {
+                        set_widget_name: "open-insights",
+                        set_label: "Insights",
+                        add_css_class: "strip-btn",
+                        connect_clicked[sender] => move |_| sender.input(Msg::ToggleOverlay(OverlayKind::Insights)),
+                    },
+                    gtk::Button {
+                        set_widget_name: "open-sound",
+                        set_label: "🔔",
+                        add_css_class: "strip-btn",
+                        set_tooltip_text: Some("Notification sound"),
+                        connect_clicked[sender] => move |_| sender.input(Msg::OpenSoundPicker),
+                    },
+                    gtk::Button {
+                        set_widget_name: "open-help",
+                        set_label: "?",
+                        add_css_class: "strip-btn",
+                        set_tooltip_text: Some("What Orchestra can do"),
+                        connect_clicked[sender] => move |_| sender.input(Msg::ToggleOverlay(OverlayKind::Help)),
+                    },
+
                     #[name = "debug_menu"]
                     gtk::MenuButton {
                         set_widget_name: "debug-menu",
@@ -419,6 +466,7 @@ impl SimpleComponent for App {
         let state_path = state::state_path(&state::orchestra_home());
         let state = Rc::new(RefCell::new(UiState::load(&state_path)));
         let backend = make_backend();
+        let sound = Rc::new(SoundPlayer::new(&state::orchestra_home()));
 
         let widgets = view_output!();
 
@@ -554,6 +602,41 @@ impl SimpleComponent for App {
         let main_pane = MainPane::new(ctx.clone());
         widgets.overlay_host.set_child(Some(main_pane.widget()));
 
+        // B5 overlays layer ON TOP of the main pane (its always-present base
+        // child) via add_overlay — Resources/Insights/Help cover the pane like
+        // the Electron model, and never unmount it. They poll/stream through
+        // their own backend clone.
+        let overlays = backend.as_ref().map(|b| {
+            Overlays::new(
+                &widgets.overlay_host,
+                b.clone(),
+                state.clone(),
+                sound.clone(),
+            )
+        });
+        // Notification click → present the window + select the workspace
+        // (routes through the same WorkspaceActivated path the sidebar uses).
+        if let Some(app) = widgets.main_window.application() {
+            let sender = sender.clone();
+            let win = widgets.main_window.clone();
+            notify::install_focus_action(&app, move |ws_id| {
+                win.present();
+                sender.input(Msg::WorkspaceActivated(ws_id));
+            });
+        }
+        // Escape closes the topmost overlay.
+        {
+            let keys = gtk::EventControllerKey::new();
+            let sender = sender.clone();
+            keys.connect_key_pressed(move |_, key, _, _| {
+                if key == gtk::gdk::Key::Escape {
+                    sender.input(Msg::EscapePressed);
+                }
+                glib::Propagation::Proceed
+            });
+            widgets.main_window.add_controller(keys);
+        }
+
         // Terminal stack: agent GtkStack into B3's terminal slot (clear the
         // placeholder hint first). Run/nvim panes mount lazily into their slots
         // on first activation. Backend calls resolve `ctx.backend()` per-call.
@@ -595,6 +678,8 @@ impl SimpleComponent for App {
             workspaces,
             state,
             state_path,
+            overlays,
+            sound,
             save_generation: Rc::new(Cell::new(0)),
             retry_active,
             window: widgets.main_window.clone(),
@@ -719,20 +804,43 @@ impl SimpleComponent for App {
                 // Fan out to the main pane (B3): workspaceUpdate → toolbar/
                 // banners, ptyExit → run toggle, sandboxControl → sandbox bar.
                 self.dispatch_to_main_pane(channel, args);
-                // Fan out to the accounts controller: decode a COPY so the raw
-                // frame can still go to the sidebar (which decodes its own
-                // workspace:update/removed via apply_event). The controller
-                // ignores channels it doesn't own.
-                if let Some(accounts) = &self.accounts {
-                    match (orchestra_rpc::Event {
-                        channel: channel.clone(),
-                        args: args.clone(),
-                    })
-                    .decode()
-                    {
-                        Ok(decoded) => accounts.handle_event(&decoded),
-                        Err(e) => eprintln!("[backend] event decode failed: {e}"),
+                // Decode a COPY once and hand it to the fan-out consumers that
+                // want the typed event (accounts, B5 overlays/notify/chime); the
+                // raw frame still goes to the sidebar (it decodes its own
+                // workspace:update/removed via apply_event).
+                match (orchestra_rpc::Event {
+                    channel: channel.clone(),
+                    args: args.clone(),
+                })
+                .decode()
+                {
+                    Ok(decoded) => {
+                        if let Some(accounts) = &self.accounts {
+                            accounts.handle_event(&decoded);
+                        }
+                        // Insights owns the self-tune stream — hand it every event.
+                        if let Some(overlays) = &self.overlays {
+                            overlays.dispatch(&decoded);
+                        }
+                        match &decoded {
+                            // Desktop notification (plan §5.6). The backend already
+                            // gates on focus, so every uiNotify we get is meant to show.
+                            UiEvent::UiNotify(n) => {
+                                if let Some(app) = self.window.application() {
+                                    notify::show(&app, n);
+                                }
+                            }
+                            // Chime when an agent finishes while unfocused (the
+                            // event's `focused` flag is the OR across clients; play
+                            // only when false — the Electron chime gate).
+                            UiEvent::AgentFinished { focused: false, .. } => {
+                                let id = crate::sound::selected_sound_id(&self.state.borrow());
+                                self.sound.play(id);
+                            }
+                            _ => {}
+                        }
                     }
+                    Err(e) => eprintln!("[backend] event decode failed: {e}"),
                 }
                 self.sidebar.emit(crate::sidebar::Msg::Backend(ev));
             }
@@ -763,6 +871,30 @@ impl SimpleComponent for App {
             }
             Msg::NvimToggle(open) => {
                 self.terminals.set_nvim_open(open);
+            }
+            Msg::ToggleOverlay(kind) => {
+                if let Some(overlays) = &self.overlays {
+                    overlays.toggle(kind);
+                }
+            }
+            Msg::EscapePressed => {
+                if let Some(overlays) = &self.overlays {
+                    overlays.on_escape();
+                }
+            }
+            Msg::OpenSoundPicker => {
+                let selected = crate::sound::selected_sound_id(&self.state.borrow()).to_string();
+                let state = self.state.clone();
+                let sender2 = sender.clone();
+                crate::sound::open_sound_settings(
+                    &self.window.clone().upcast(),
+                    self.sound.clone(),
+                    &selected,
+                    move |id| {
+                        state.borrow_mut().notification_sound = Some(id.to_string());
+                        sender2.input(Msg::PersistNow);
+                    },
+                );
             }
             Msg::PersistNow => {
                 if let Err(e) = self.state.borrow().save(&self.state_path) {

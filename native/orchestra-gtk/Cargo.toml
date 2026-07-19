@@ -28,3 +28,9 @@ similar.workspace = true
 # B4 (accounts/login): OAuth login window.
 webkit6.workspace = true
 async-channel.workspace = true
+# Chime playback (plan §5.5): pre-rendered WAVs through a playbin.
+gstreamer.workspace = true
+
+[build-dependencies]
+# Renders the chime recipes into OUT_DIR at build time (no assets in git).
+chime-gen = { path = "../chime-gen" }

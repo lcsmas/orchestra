@@ -14,6 +14,9 @@ pub struct UiState {
     pub sidebar_width: Option<i32>,
     pub window: Option<WindowGeometry>,
     pub last_active_workspace: Option<String>,
+    /// Chime id from the sound picker (plan §5.5); None = default (`knock`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notification_sound: Option<String>,
     // ---- sidebar (M2-B1) — the localStorage-parity keys from Sidebar.tsx:
     // `orchestra.collapsedRepos` / `collapsedHosts` / `collapsedOrchestrators`
     // / `dismissedEnvNotices` / `lastSandboxEndpoint`. Vec (not HashSet) so
@@ -106,6 +109,7 @@ mod tests {
                 maximized: false,
             }),
             last_active_workspace: Some("ws-2".into()),
+            notification_sound: Some("tada".into()),
             collapsed_repos: vec!["/home/user/repos/orchestra".into()],
             collapsed_hosts: vec!["/home/user/repos/mc::sandbox:ws://h:1".into()],
             collapsed_subtrees: vec!["ws-1".into()],

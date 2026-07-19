@@ -95,3 +95,25 @@ Dependency-free (testable under `node --test`):
 `newestReport` ordering + fallbacks, the fold prompt contract (report list,
 cross-login dedupe wording, marker), `parseFoldSummary`, and the lessons diff
 (`parseLessonBullets`, `diffLessons`, `summarizeLessonsDiff`).
+
+## Native GTK4 port (M2-B5)
+
+`native/orchestra-gtk/src/overlays/insights.rs` reimplements both surfaces:
+
+- `InsightsSection` — the sidebar entry (idle summary row / per-step spinner
+  rows while running). Exported for the B1 sidebar workstream to mount;
+  `set_runs(&[SelfTuneRun])` refreshes it.
+- `InsightsOverlay` — the full pane: run history (click → `picked_run_id`),
+  the selected run's step list + lessons diff + live transcript (seeded from
+  `getSelfTuneOutput`, appended from `selfTuneOutput` events via a `TextView`
+  with tail-follow scroll), Run-now (`startSelfTune`, in-flight rejection
+  surfaced through a dialog), per-login report buttons (`openSelfTuneReport`),
+  and a read-only LESSONS.md panel that counts bullets, flags "N new since the
+  last run", and bolds/accent-colors the added bullets via a `TextTag`.
+- Event routing follows the coordinator's single-consumer rule: `App` owns the
+  one `backend.events()` pump and fans out via `Msg::BackendEvent`; the overlay
+  consumes `selfTuneUpdate`/`selfTuneOutput` through `Overlays::dispatch`, never
+  its own `events()` receiver.
+- Mock fixtures: `backend_fixtures.rs` (`self_tune_runs`, `self_tune_output`,
+  `lessons_md`, and `fake_run_script` — a streaming in-flight run replayed off
+  a thread through the mock's event sender by `startSelfTune`).

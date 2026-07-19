@@ -14,8 +14,9 @@ use orchestra_rpc::{BackendKind as RemoteKind, ClientOptions, ConnectionState, R
 use serde_json::{json, Value};
 
 // The fixture backend lives in its own file (backend/mock.rs) so the M2
-// sidebar/terminal workstreams can grow it without touching the RpcBackend
-// wiring below.
+// sidebar/terminal/resources workstreams can grow it without touching the
+// RpcBackend wiring below. B5's Resources/Insights/usage fixtures live in
+// `backend_fixtures` and are served by mock.rs's `call()`.
 mod mock;
 pub use mock::{mock_workspaces, MockBackend};
 

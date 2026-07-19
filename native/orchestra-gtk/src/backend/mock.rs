@@ -14,7 +14,7 @@
 //! wire types (all `Option` per the serde rules) can never break the fixture
 //! backend.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use orchestra_rpc::types::{RepoEntry, Workspace, WorkspaceHost};
@@ -22,6 +22,7 @@ use orchestra_rpc::ConnectionState;
 use serde_json::{json, Value};
 
 use super::{Backend, BackendError, BackendEvent, BackendKind, Result};
+use crate::backend_fixtures;
 
 const ORCHESTRA_REPO: &str = "/home/user/repos/orchestra";
 const MOBILE_CLUB_REPO: &str = "/home/user/repos/mobile-club";
@@ -363,6 +364,12 @@ pub struct MockBackend {
     // then holds the sender so the receiver stays open (never reconnects).
     _state_tx: async_channel::Sender<ConnectionState>,
     state_rx: async_channel::Receiver<ConnectionState>,
+    /// B5 Resources: advances on each `sampleResources` poll so sparklines and
+    /// per-agent traces animate deterministically.
+    res_tick: Cell<u64>,
+    /// B5 Insights: one in-flight fake self-tune run at a time — `startSelfTune`
+    /// rejects if set, mirroring the real backend's single-run guard.
+    self_tune_running: Cell<bool>,
 }
 
 impl Default for MockBackend {
@@ -387,6 +394,8 @@ impl Default for MockBackend {
             pty_rx,
             _state_tx: state_tx,
             state_rx,
+            res_tick: Cell::new(0),
+            self_tune_running: Cell::new(false),
         }
     }
 }
@@ -487,6 +496,35 @@ impl MockBackend {
         };
         self.emit_workspace_update(&ws);
         Ok(serde_json::to_value(&ws).expect("workspace serializes"))
+    }
+
+    /// `startSelfTune` (B5): return the initial `running` run and spawn a thread
+    /// that replays timed `selfTuneUpdate`/`selfTuneOutput` frames so the
+    /// Insights overlay shows a live run. Rejects if one is already in flight,
+    /// mirroring the real backend's single-run guard.
+    fn start_fake_self_tune(&self) -> Result<Value> {
+        if self.self_tune_running.get() {
+            return Ok(json!({ "ok": false, "error": "a self-tune run is already in progress" }));
+        }
+        self.self_tune_running.set(true);
+        let (initial, updates) = backend_fixtures::fake_run_script(backend_fixtures::MOCK_NOW_MS);
+
+        let events_tx = self.events_tx.clone();
+        // A background OS thread sleeps between frames; async_channel's
+        // send_blocking is safe off the glib main loop and the receiver is
+        // pumped there.
+        std::thread::spawn(move || {
+            let mut prev = 0u64;
+            for (at_ms, channel, args) in updates {
+                let delay = at_ms.saturating_sub(prev);
+                prev = at_ms;
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+                let _ = events_tx.send_blocking(BackendEvent::Event { channel, args });
+            }
+        });
+        // The guard clears when the mock backend is dropped; a fresh run needs a
+        // fresh backend in mock mode (good enough for the demo/E2E path).
+        Ok(json!({ "ok": true, "run": initial }))
     }
 }
 
@@ -689,6 +727,28 @@ impl Backend for MockBackend {
                     .unwrap_or(Value::Null))
             }
             "getWorkspaceAccounts" => Ok(self.workspace_accounts_value()),
+
+            // ---- Resources page (B5, docs/codebase-map/resources.md) ---------
+            // Animated off a tick so sparklines/traces show life in mock mode.
+            "sampleResources" => {
+                let tick = self.res_tick.get();
+                self.res_tick.set(tick.wrapping_add(1));
+                Ok(backend_fixtures::resource_snapshot(tick))
+            }
+            // stopAgent(id): the mock has nothing to stop — acknowledge.
+            "stopAgent" => Ok(json!({ "ok": true })),
+
+            // ---- Insights / self-tune (B5, docs/codebase-map/self-tune.md) ---
+            "listSelfTuneRuns" => Ok(backend_fixtures::self_tune_runs()),
+            "getSelfTuneOutput" => {
+                let run_id = params.first().and_then(Value::as_str).unwrap_or("");
+                Ok(backend_fixtures::self_tune_output(run_id))
+            }
+            "listSelfTuneReports" => Ok(backend_fixtures::self_tune_reports()),
+            "openSelfTuneReport" => Ok(json!({ "ok": true })),
+            "readSelfTuneLessons" => Ok(backend_fixtures::lessons_md()),
+            "startSelfTune" => self.start_fake_self_tune(),
+
             "listGlobalInheritables" => Ok(json!({
                 "skills": ["ship", "verify", "retro", "map-codebase"],
                 "mcpServers": ["chrome-devtools", "linear"],

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["orchestra-rpc", "orchestra-gtk"]
+members = ["orchestra-rpc", "orchestra-gtk", "chime-gen"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,3 +24,4 @@ similar = "2"
 # from setup-localdeps.sh on rootless boxes.
 webkit6 = "0.6"
 async-channel = "2"
+gstreamer = "0.25"

@@ -6,13 +6,17 @@
 pub mod accounts;
 pub mod app;
 pub mod backend;
+pub(crate) mod backend_fixtures;
 pub mod banners;
 pub mod ctx;
 pub mod dialogs;
 pub mod diff;
 pub mod main_pane;
+pub mod notify;
+pub mod overlays;
 pub mod remote_control;
 pub mod sidebar;
+pub mod sound;
 pub mod state;
 pub mod terminal;
 pub mod toolbar;
