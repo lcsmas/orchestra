@@ -21,3 +21,9 @@ relm4.workspace = true
 # exercised from day one; first consumed by the M2 terminal workstream (B2).
 vte4.workspace = true
 async-channel.workspace = true
+# Chime playback (plan §5.5): pre-rendered WAVs through a playbin.
+gstreamer.workspace = true
+
+[build-dependencies]
+# Renders the chime recipes into OUT_DIR at build time (no assets in git).
+chime-gen = { path = "../chime-gen" }

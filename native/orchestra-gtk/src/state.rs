@@ -14,6 +14,8 @@ pub struct UiState {
     pub sidebar_width: Option<i32>,
     pub window: Option<WindowGeometry>,
     pub last_active_workspace: Option<String>,
+    /// Chime id from the sound picker (plan §5.5); None = default (`knock`).
+    pub notification_sound: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +87,7 @@ mod tests {
                 maximized: false,
             }),
             last_active_workspace: Some("ws-2".into()),
+            notification_sound: Some("tada".into()),
         };
         state.save(&path).unwrap();
         assert_eq!(UiState::load(&path), state);

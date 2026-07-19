@@ -5,6 +5,10 @@
 
 pub mod app;
 pub mod backend;
+pub(crate) mod backend_fixtures;
 pub mod dialogs;
+pub mod notify;
+pub mod overlays;
 pub mod remote_control;
+pub mod sound;
 pub mod state;

@@ -7,11 +7,14 @@
 //! `RpcBackend` is a stub over orchestra-rpc's current codec/types surface —
 //! its connection actor is A2's deliverable and gets wired in M2.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use orchestra_rpc::frame::{self, Frame};
 use orchestra_rpc::types::{RepoEntry, Workspace, WorkspaceStatus};
 use serde_json::{json, Value};
+
+use crate::backend_fixtures;
 
 pub type Result<T> = std::result::Result<T, BackendError>;
 
@@ -100,12 +103,18 @@ pub fn mock_requested() -> bool {
 /// something to assert) before any backend exists.
 #[derive(Debug)]
 pub struct MockBackend {
-    // Held so the receivers stay open (a dropped sender closes the channel);
-    // the mock never actually pushes.
-    _events_tx: async_channel::Sender<BackendEvent>,
+    // The events sender IS used: `startSelfTune` spawns a thread that replays
+    // timed selfTuneUpdate/selfTuneOutput frames through a clone of it, so the
+    // Insights overlay animates a live run in mock mode.
+    events_tx: async_channel::Sender<BackendEvent>,
     events_rx: async_channel::Receiver<BackendEvent>,
     _pty_tx: async_channel::Sender<(String, Vec<u8>)>,
     pty_rx: async_channel::Receiver<(String, Vec<u8>)>,
+    /// Advances on each `sampleResources` poll so sparklines/traces animate.
+    tick: Cell<u64>,
+    /// One in-flight fake run at a time — `startSelfTune` rejects if set, like
+    /// the real backend's single-run guard.
+    self_tune_running: Cell<bool>,
 }
 
 impl Default for MockBackend {
@@ -113,10 +122,12 @@ impl Default for MockBackend {
         let (events_tx, events_rx) = async_channel::unbounded();
         let (pty_tx, pty_rx) = async_channel::unbounded();
         Self {
-            _events_tx: events_tx,
+            events_tx,
             events_rx,
             _pty_tx: pty_tx,
             pty_rx,
+            tick: Cell::new(0),
+            self_tune_running: Cell::new(false),
         }
     }
 }
@@ -195,12 +206,35 @@ impl Backend for MockBackend {
         .expect("mock repo fixture matches the wire type")])
     }
 
-    fn call(&self, method: &str, _params: Vec<Value>) -> Result<Value> {
+    fn call(&self, method: &str, params: Vec<Value>) -> Result<Value> {
         match method {
             "app:info" => Ok(json!({
                 "version": env!("CARGO_PKG_VERSION"),
                 "backendKind": "mock",
             })),
+            // Resources page (docs/codebase-map/resources.md).
+            "sampleResources" => {
+                let tick = self.tick.get();
+                self.tick.set(tick.wrapping_add(1));
+                Ok(backend_fixtures::resource_snapshot(tick))
+            }
+            "getWorktreeSizes" => Ok(backend_fixtures::worktree_sizes()),
+            "listAccounts" => Ok(backend_fixtures::accounts()),
+            "getUsage" => Ok(backend_fixtures::global_usage()),
+            "getAllAccountUsage" => Ok(backend_fixtures::account_usage()),
+            "getWorkspaceAccounts" => Ok(backend_fixtures::workspace_accounts()),
+            // stopAgent(id): the mock has nothing to stop — acknowledge.
+            "stopAgent" => Ok(json!({ "ok": true })),
+            // Insights / self-tune (docs/codebase-map/self-tune.md).
+            "listSelfTuneRuns" => Ok(backend_fixtures::self_tune_runs()),
+            "getSelfTuneOutput" => {
+                let run_id = params.first().and_then(Value::as_str).unwrap_or("");
+                Ok(backend_fixtures::self_tune_output(run_id))
+            }
+            "listSelfTuneReports" => Ok(backend_fixtures::self_tune_reports()),
+            "openSelfTuneReport" => Ok(json!({ "ok": true })),
+            "readSelfTuneLessons" => Ok(backend_fixtures::lessons_md()),
+            "startSelfTune" => self.start_fake_self_tune(),
             _ => Err(BackendError::NotWired("mock backend only serves fixtures")),
         }
     }
@@ -218,6 +252,37 @@ impl Backend for MockBackend {
     }
 
     fn set_focused(&self, _focused: bool) {}
+}
+
+impl MockBackend {
+    /// `startSelfTune`: returns the initial `running` run and spawns a thread
+    /// that replays timed `selfTuneUpdate`/`selfTuneOutput` frames so the
+    /// Insights overlay shows a live run. Rejects if one is already in flight,
+    /// mirroring the real backend's single-run guard.
+    fn start_fake_self_tune(&self) -> Result<Value> {
+        if self.self_tune_running.get() {
+            return Ok(json!({ "ok": false, "error": "a self-tune run is already in progress" }));
+        }
+        self.self_tune_running.set(true);
+        let (initial, updates) = backend_fixtures::fake_run_script(backend_fixtures::MOCK_NOW_MS);
+
+        let events_tx = self.events_tx.clone();
+        // A background OS thread sleeps between frames; async_channel's
+        // send_blocking is safe off the glib main loop and the receiver is
+        // pumped there.
+        std::thread::spawn(move || {
+            let mut prev = 0u64;
+            for (at_ms, channel, args) in updates {
+                let delay = at_ms.saturating_sub(prev);
+                prev = at_ms;
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+                let _ = events_tx.send_blocking(BackendEvent::Event { channel, args });
+            }
+        });
+        // The guard clears when the mock backend is dropped; a fresh run needs
+        // a fresh backend in mock mode (good enough for the demo/E2E path).
+        Ok(json!({ "ok": true, "run": initial }))
+    }
 }
 
 // ---- rpc stub ---------------------------------------------------------------

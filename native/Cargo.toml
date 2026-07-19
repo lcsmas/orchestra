@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["orchestra-rpc", "orchestra-gtk"]
+members = ["orchestra-rpc", "orchestra-gtk", "chime-gen"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,3 +17,4 @@ gtk = { package = "gtk4", version = "0.11", features = ["v4_10"] }
 relm4 = "0.11"
 vte4 = "0.10"
 async-channel = "2"
+gstreamer = "0.25"
