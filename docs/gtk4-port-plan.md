@@ -615,6 +615,16 @@ serialized merge assembly (B4 done → B3 → B5 → B6), each merged tip gettin
 dual-consumer live re-verify (prove sidebar AND accounts/overlay fan-outs both
 fire off the single consumer — the exact failure a competing pump would show).
 
+**Coexistence central risk CLOSED** (verifier `b4-merge` PASS on the first
+≥2-module tip, live daemon): two independent daemon mutations — `markSeen`
+(→ sidebar dot) and `refreshAccounts` (→ accounts strip) — both fired off the
+*single* `spawn_backend_streams` consumer, each logged once, **neither surface
+went dark**. Seam grep confirms exactly one production consumer per stream.
+This proves the load-bearing property of the whole electron-coexists-with-GTK
+design: N feature modules fan out from one backend consumer without stealing
+each other's frames. Each further merged tip re-checks this with one more
+surface (B3 adds the main pane → a triple-consumer assertion).
+
 Post-M2 follow-up landed: B4's GTK port of the just-shipped Electron
 `usage-bar-extra-credits` feature merged (`33305ab`) as an isolated delta
 (only `accounts/usage_bars.rs` + `smoke-accounts.sh`) — behavioral match to
