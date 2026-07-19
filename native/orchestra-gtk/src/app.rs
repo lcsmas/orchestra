@@ -16,8 +16,9 @@ use gtk::prelude::*;
 use relm4::prelude::*;
 
 use orchestra_rpc::types::{Workspace, WorkspaceStatus};
+use orchestra_rpc::{BackendKind as RemoteKind, ConnectionState, UiEvent};
 
-use crate::backend::{self, Backend, BackendKind, MockBackend, RpcBackend};
+use crate::backend::{self, Backend, BackendEvent, BackendKind, MockBackend, RpcBackend};
 use crate::dialogs;
 use crate::remote_control;
 use crate::state::{self, UiState, WindowGeometry};
@@ -25,6 +26,9 @@ use crate::state::{self, UiState, WindowGeometry};
 pub struct Init {
     pub remote_control: Option<PathBuf>,
 }
+
+const NO_BACKEND_BANNER: &str =
+    "no backend found — start Orchestra or the daemon (retrying every 3s)";
 
 pub struct App {
     backend: Option<Box<dyn Backend>>,
@@ -40,6 +44,7 @@ pub struct App {
     paned: gtk::Paned,
     list: gtk::ListBox,
     banner: gtk::Revealer,
+    banner_label: gtk::Label,
     footer_label: gtk::Label,
 }
 
@@ -50,6 +55,12 @@ pub enum Msg {
     WindowGeometryChanged,
     RetryDiscover,
     PersistNow,
+    /// Window focus-in/out → `focus` frame (backend ORs over all clients).
+    FocusChanged(bool),
+    /// Connection lifecycle from the RpcBackend's state stream.
+    Connection(ConnectionState),
+    /// An `event` frame from the backend.
+    BackendEvent(BackendEvent),
 }
 
 fn status_css(status: WorkspaceStatus) -> &'static str {
@@ -106,8 +117,14 @@ fn make_backend() -> Option<Box<dyn Backend>> {
     if backend::mock_requested() {
         return Some(Box::new(MockBackend::default()));
     }
-    backend::discover_socket(&state::orchestra_home())
-        .map(|sock| Box::new(RpcBackend::new(sock)) as Box<dyn Backend>)
+    let sock = backend::discover_socket(&state::orchestra_home())?;
+    match RpcBackend::connect(sock) {
+        Ok(b) => Some(Box::new(b)),
+        Err(e) => {
+            eprintln!("[backend] connect failed: {e}");
+            None
+        }
+    }
 }
 
 fn footer_text(backend: &Option<Box<dyn Backend>>) -> String {
@@ -118,11 +135,52 @@ fn footer_text(backend: &Option<Box<dyn Backend>>) -> String {
                 format!("backend: mock v{} · frontend v{frontend}", b.version())
             }
             BackendKind::Rpc => {
-                format!("backend: rpc (socket found — wires up in M2) · frontend v{frontend}")
+                let remote = match b.server_kind() {
+                    Some(RemoteKind::Electron) => "electron",
+                    Some(RemoteKind::Daemon) => "daemon",
+                    None => "rpc",
+                };
+                format!("backend: {remote} v{} · frontend v{frontend}", b.version())
             }
         },
         None => format!("backend: none · frontend v{frontend}"),
     }
+}
+
+/// Forward a backend's push streams into the component's input queue. Runs on
+/// the GTK main loop (async_channel receivers are futures); each loop ends
+/// when the backend (and thus its bridge threads) is dropped.
+///
+/// pty frames are consumed by the terminal stack (single consumer — see
+/// `Backend::pty_data`); until that lands here, a drain keeps the unbounded
+/// channel from accumulating output of every running workspace.
+fn spawn_backend_streams(sender: &ComponentSender<App>, backend: &dyn Backend) {
+    let events = backend.events();
+    let s = sender.clone();
+    glib::spawn_future_local(async move {
+        while let Ok(ev) = events.recv().await {
+            s.input(Msg::BackendEvent(ev));
+        }
+    });
+    let states = backend.connection_state();
+    let s = sender.clone();
+    glib::spawn_future_local(async move {
+        while let Ok(state) = states.recv().await {
+            s.input(Msg::Connection(state));
+        }
+    });
+    let pty = backend.pty_data();
+    glib::spawn_future_local(async move {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        while let Ok((id, bytes)) = pty.recv().await {
+            if seen.insert(id.clone()) {
+                eprintln!(
+                    "[backend] ptyData flowing for '{id}' ({} bytes)",
+                    bytes.len()
+                );
+            }
+        }
+    });
 }
 
 /// Debug menu (status strip): demoes the promise-shaped dialog system.
@@ -213,9 +271,10 @@ impl SimpleComponent for App {
                     gtk::Box {
                         add_css_class: "banner",
 
+                        #[name = "banner_label"]
                         gtk::Label {
                             set_widget_name: "backend-banner-text",
-                            set_label: "no backend found — start Orchestra or the daemon (retrying every 3s)",
+                            set_label: NO_BACKEND_BANNER,
                             set_xalign: 0.0,
                             set_hexpand: true,
                         },
@@ -398,17 +457,19 @@ impl SimpleComponent for App {
             remote_control::serve(sock);
         }
 
-        let retry_active = Rc::new(Cell::new(backend.is_none()));
-        if backend.is_none() {
+        let retry_active = Rc::new(Cell::new(false));
+        if let Some(b) = backend.as_deref() {
+            spawn_backend_streams(&sender, b);
+        } else {
             widgets.banner.set_reveal_child(true);
+            Self::start_retry_loop(&retry_active, &sender);
+        }
+        // Focus reporting: GTK4 has no focus-in/out on the window; the
+        // `is-active` property is the toplevel-focus signal.
+        {
             let sender = sender.clone();
-            let active = retry_active.clone();
-            glib::timeout_add_seconds_local(3, move || {
-                if !active.get() {
-                    return glib::ControlFlow::Break;
-                }
-                sender.input(Msg::RetryDiscover);
-                glib::ControlFlow::Continue
+            widgets.main_window.connect_is_active_notify(move |w| {
+                sender.input(Msg::FocusChanged(w.is_active()));
             });
         }
 
@@ -434,6 +495,7 @@ impl SimpleComponent for App {
             paned: widgets.paned.clone(),
             list: widgets.list.clone(),
             banner: widgets.banner.clone(),
+            banner_label: widgets.banner_label.clone(),
             footer_label: widgets.footer_label.clone(),
         };
         ComponentParts { model, widgets }
@@ -480,22 +542,68 @@ impl SimpleComponent for App {
                 }
                 // M2: backend::spawn_daemon_stub() grows into launching the
                 // daemon when discovery keeps failing (plan §1.1 rule 3).
-                if let Some(sock) = backend::discover_socket(&state::orchestra_home()) {
-                    self.backend = Some(Box::new(RpcBackend::new(sock)));
+                if let Some(b) = make_backend() {
+                    spawn_backend_streams(&sender, b.as_ref());
+                    b.set_focused(self.window.is_active());
+                    self.backend = Some(b);
                     self.retry_active.set(false);
                     self.banner.set_reveal_child(false);
-                    let workspaces = self
-                        .backend
-                        .as_ref()
-                        .and_then(|b| b.list_workspaces().ok())
-                        .unwrap_or_default();
-                    self.workspaces = workspaces;
-                    populate_sidebar(
-                        &self.list,
-                        &self.workspaces,
-                        self.state.borrow().last_active_workspace.as_deref(),
-                    );
+                    self.refresh_workspaces();
                     self.footer_label.set_label(&footer_text(&self.backend));
+                }
+            }
+            Msg::FocusChanged(focused) => {
+                if let Some(b) = &self.backend {
+                    b.set_focused(focused);
+                }
+            }
+            Msg::Connection(state) => match state {
+                ConnectionState::Connected => {
+                    self.banner.set_reveal_child(false);
+                    // Reconnects re-handshake: refresh what the socket serves
+                    // (server info for the footer, missed workspace updates).
+                    self.refresh_workspaces();
+                    self.footer_label.set_label(&footer_text(&self.backend));
+                }
+                ConnectionState::Reconnecting { attempt, delay_ms } => {
+                    self.banner_label.set_label(&format!(
+                        "backend connection lost — reconnecting (attempt {}, next try in {}s)",
+                        attempt + 1,
+                        delay_ms.div_ceil(1000),
+                    ));
+                    self.banner.set_reveal_child(true);
+                }
+                ConnectionState::Disconnected => {
+                    // Terminal: the client gave up (or the close was
+                    // deliberate). Drop it and fall back to discovery.
+                    self.backend = None;
+                    self.banner_label.set_label(NO_BACKEND_BANNER);
+                    self.banner.set_reveal_child(true);
+                    self.footer_label.set_label(&footer_text(&self.backend));
+                    Self::start_retry_loop(&self.retry_active, &sender);
+                }
+            },
+            Msg::BackendEvent(BackendEvent::Event { channel, args }) => {
+                eprintln!("[backend] event '{channel}'");
+                match (orchestra_rpc::Event { channel, args }).decode() {
+                    Ok(UiEvent::WorkspaceUpdate(ws)) => {
+                        match self.workspaces.iter_mut().find(|w| w.id == ws.id) {
+                            Some(slot) => *slot = *ws,
+                            None => self.workspaces.push(*ws),
+                        }
+                        self.repopulate_sidebar();
+                    }
+                    Ok(UiEvent::WorkspaceRemoved { id }) => {
+                        self.workspaces.retain(|w| w.id != id);
+                        self.repopulate_sidebar();
+                    }
+                    Ok(UiEvent::WorkspacesRemoved { ids }) => {
+                        self.workspaces.retain(|w| !ids.contains(&w.id));
+                        self.repopulate_sidebar();
+                    }
+                    // Everything else belongs to the M2 workstreams
+                    // (terminals, usage, accounts, …).
+                    _ => {}
                 }
             }
             Msg::PersistNow => {
@@ -509,6 +617,41 @@ impl SimpleComponent for App {
 }
 
 impl App {
+    /// 3 s discovery poll while no backend is attached. Idempotent: a loop
+    /// already running keeps its timer; `retry_active` is the single switch.
+    fn start_retry_loop(retry_active: &Rc<Cell<bool>>, sender: &ComponentSender<Self>) {
+        if retry_active.replace(true) {
+            return;
+        }
+        let sender = sender.clone();
+        let active = retry_active.clone();
+        glib::timeout_add_seconds_local(3, move || {
+            if !active.get() {
+                return glib::ControlFlow::Break;
+            }
+            sender.input(Msg::RetryDiscover);
+            glib::ControlFlow::Continue
+        });
+    }
+
+    /// Re-hydrate the workspace list from the backend and redraw the sidebar.
+    fn refresh_workspaces(&mut self) {
+        self.workspaces = self
+            .backend
+            .as_ref()
+            .and_then(|b| b.list_workspaces().ok())
+            .unwrap_or_default();
+        self.repopulate_sidebar();
+    }
+
+    fn repopulate_sidebar(&self) {
+        populate_sidebar(
+            &self.list,
+            &self.workspaces,
+            self.state.borrow().last_active_workspace.as_deref(),
+        );
+    }
+
     fn schedule_save(&self, sender: &ComponentSender<Self>) {
         let generation = self.save_generation.get() + 1;
         self.save_generation.set(generation);
