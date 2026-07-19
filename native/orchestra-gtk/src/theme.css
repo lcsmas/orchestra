@@ -271,6 +271,9 @@ entry:focus-within {
 .res-agent-row {
   padding: 6px;
   border-radius: 8px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
 .res-agent-row:hover { background-color: @bg_2; }
 .res-agent-row.open { background-color: @bg_2; }

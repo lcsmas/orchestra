@@ -7,8 +7,9 @@
 use serde_json::{json, Value};
 
 /// Fixed "now" for mock data: 2026-07-18 12:00:00 UTC, matching the mock
-/// workspaces' created_at era.
-pub const MOCK_NOW_MS: i64 = 1_752_840_000_000;
+/// workspaces' created_at era and the usage/self-tune fixture dates below (so
+/// reset countdowns and "N ago" strings come out sensibly relative to it).
+pub const MOCK_NOW_MS: i64 = 1_784_376_000_000;
 
 /// Deterministic wobble in [0, amp): a couple of incommensurate sawtooths so
 /// consecutive ticks differ and sparklines get a believable shape.

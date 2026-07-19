@@ -492,9 +492,16 @@ impl ResourcesOverlay {
         let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
         container.set_widget_name(&format!("res-agent-{}", row.key));
 
+        // The row is [disclosure-button | stop-button]: a real Button (not a
+        // Box+gesture) so the remote-control harness's Click can drive expand,
+        // and so keyboard/focus work. The stop control is a SIBLING, never
+        // nested inside the button (a button inside a button is invalid).
+        let outer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let disclosure = gtk::Button::new();
+        disclosure.set_widget_name(&format!("res-agent-row-{}", row.key));
+        disclosure.add_css_class("res-agent-row");
+        disclosure.set_hexpand(true);
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        header.add_css_class("res-agent-row");
-        header.set_widget_name(&format!("res-agent-row-{}", row.key));
 
         let status = ws
             .as_ref()
@@ -571,7 +578,11 @@ impl ResourcesOverlay {
         header.append(&cell(&opt_bytes(disk), "res-cell dim res-col-disk"));
         header.append(&cell(&opt_tokens(ctx), "res-cell dim res-col-ctx"));
 
-        // stop button (only for rows with a live agent session)
+        disclosure.set_child(Some(&header));
+        outer.append(&disclosure);
+
+        // stop button (only for rows with a live agent session) — a SIBLING of
+        // the disclosure button, not nested in it.
         let agent_pty = row
             .sessions
             .iter()
@@ -579,6 +590,7 @@ impl ResourcesOverlay {
             .map(|s| s.pty_id.clone());
         let stop_col = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         stop_col.add_css_class("res-col-stop");
+        stop_col.set_valign(gtk::Align::Center);
         if let Some(pty) = agent_pty {
             let stop = gtk::Button::new();
             stop.set_widget_name(&format!("res-stop-{}", row.key));
@@ -597,10 +609,9 @@ impl ResourcesOverlay {
             });
             stop_col.append(&stop);
         }
-        header.append(&stop_col);
+        outer.append(&stop_col);
 
-        // Click the header to expand/collapse the process list.
-        container.append(&header);
+        container.append(&outer);
 
         let procs_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         procs_box.add_css_class("res-procs");
@@ -615,27 +626,25 @@ impl ResourcesOverlay {
             .unwrap_or(false);
         procs_box.set_visible(expanded && !row.remote);
         if expanded {
-            header.add_css_class("open");
+            disclosure.add_css_class("open");
         }
         container.append(&procs_box);
 
         if !row.remote {
-            let gesture = gtk::GestureClick::new();
             let key = row.key.clone();
             let expanded_map = self.expanded.clone();
             let procs_box_c = procs_box.clone();
-            let header_c = header.clone();
-            gesture.connect_released(move |_, _, _, _| {
+            let disclosure_c = disclosure.clone();
+            disclosure.connect_clicked(move |_| {
                 let now = !expanded_map.borrow().get(&key).copied().unwrap_or(false);
                 expanded_map.borrow_mut().insert(key.clone(), now);
                 procs_box_c.set_visible(now);
                 if now {
-                    header_c.add_css_class("open");
+                    disclosure_c.add_css_class("open");
                 } else {
-                    header_c.remove_css_class("open");
+                    disclosure_c.remove_css_class("open");
                 }
             });
-            header.add_controller(gesture);
         }
 
         container
