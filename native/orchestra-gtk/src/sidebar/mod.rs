@@ -144,6 +144,17 @@ pub enum Msg {
     Rebuild,
 }
 
+/// Output the app shell forwards to the main pane. The sidebar owns which
+/// workspace is active (`Sidebar.tsx` writes `last_active_workspace`); it
+/// announces a *change* so the main pane (§5.3, B3) can `set_active`. Emitted
+/// only when the active id actually changes — not on re-selecting the current
+/// row — so a store-poll (fragile) isn't needed downstream.
+#[derive(Debug)]
+pub enum SidebarOutput {
+    /// The active workspace changed to this id via a user row-select.
+    WorkspaceActivated(String),
+}
+
 /// Widget cache entry: the last spec we built a row from (for PartialEq-based
 /// reuse) and the live `ListBoxRow`.
 struct RowWidget {
@@ -457,7 +468,7 @@ fn header_button(
 impl Component for Sidebar {
     type Init = SidebarInit;
     type Input = Msg;
-    type Output = ();
+    type Output = SidebarOutput;
     type CommandOutput = ();
     type Root = gtk::Box;
     type Widgets = ();
@@ -619,8 +630,11 @@ impl Component for Sidebar {
             Msg::Select(id) => {
                 if self.active_id.as_deref() != Some(id.as_str()) {
                     self.active_id = Some(id.clone());
-                    self.state.borrow_mut().last_active_workspace = Some(id);
+                    self.state.borrow_mut().last_active_workspace = Some(id.clone());
                     self.schedule_save(&sender);
+                    // Announce the change so the app shell can drive the main
+                    // pane's set_active (§5.3). Only fires on an actual change.
+                    let _ = sender.output(SidebarOutput::WorkspaceActivated(id));
                     // Rebuild so the `active` highlight moves — only the two
                     // affected rows' specs change, so widget reuse keeps this
                     // cheap (the rest are reused untouched).

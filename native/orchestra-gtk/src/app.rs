@@ -59,6 +59,10 @@ pub enum Msg {
     Connection(ConnectionState),
     /// An `event` frame from the backend.
     BackendEvent(BackendEvent),
+    /// The sidebar activated a workspace (row-select) → drive the main pane's
+    /// `set_active` (§5.3, B3). Held here so B3's MainPane mount routes it;
+    /// until then it only records the shell's notion of the active workspace.
+    WorkspaceActivated(String),
 }
 
 fn make_backend() -> Option<Rc<dyn Backend>> {
@@ -402,13 +406,17 @@ impl SimpleComponent for App {
         widgets.footer_label.set_label(&footer_text(&backend));
 
         // Mount the real sidebar as the paned start child (ONE component swap).
+        // Forward its selection output so the shell (and B3's main pane) can
+        // react to the active-workspace change.
         let sidebar = Sidebar::builder()
             .launch(SidebarInit {
                 backend: backend.clone(),
                 state: state.clone(),
                 state_path: state_path.clone(),
             })
-            .detach();
+            .forward(sender.input_sender(), |out| match out {
+                crate::sidebar::SidebarOutput::WorkspaceActivated(id) => Msg::WorkspaceActivated(id),
+            });
         widgets.paned.set_start_child(Some(sidebar.widget()));
 
         let model = App {
@@ -518,6 +526,13 @@ impl SimpleComponent for App {
                 self.sidebar.emit(crate::sidebar::Msg::Backend(ev));
                 // Terminals, usage, accounts, … consume their own frames as the
                 // M2 workstreams mount their fan-out here.
+            }
+            Msg::WorkspaceActivated(id) => {
+                // The sidebar announced a row-select. B3's main pane hangs its
+                // set_active(id) here; until that mounts, the shell just tracks
+                // the active workspace (last_active_workspace is already
+                // persisted by the sidebar itself).
+                eprintln!("[shell] workspace activated: {id}");
             }
             Msg::PersistNow => {
                 if let Err(e) = self.state.borrow().save(&self.state_path) {
