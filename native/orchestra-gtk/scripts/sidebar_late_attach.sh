@@ -98,7 +98,7 @@ sleep 1
 
 echo "-- driving the late-attach scenario"
 if python3 - "$RC" "$HOME_DIR" "$REPO" "$ART" <<'PY'
-import json, socket, struct, subprocess, sys, os, time
+import json, socket, struct, subprocess, sys, os, time, atexit
 
 rc_path, home, repo, art = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 rc = socket.socket(socket.AF_UNIX); rc.connect(rc_path); rcf = rc.makefile("rw")
@@ -135,6 +135,18 @@ daemon = subprocess.Popen(
     stderr=subprocess.STDOUT,
     env={**os.environ, "ORCHESTRA_HOME": home, "HOME": home},
 )
+# The daemon is a Python-spawned subprocess: the bash trap can't see its PID,
+# so terminate it here on ANY exit path (else it leaks a throwaway-home daemon
+# that survives the run — accumulates across CI runs). atexit fires on both the
+# normal sys.exit and any uncaught exception.
+def _kill_daemon():
+    if daemon.poll() is None:
+        daemon.terminate()
+        try:
+            daemon.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            daemon.kill()
+atexit.register(_kill_daemon)
 # Wait for the daemon socket, then for the app's 3s retry loop to attach.
 sock = None
 for _ in range(100):
