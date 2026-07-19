@@ -1,12 +1,29 @@
 ---
 name: verify
-description: Drive a built Orchestra instance end-to-end to verify a UI change — isolated ORCHESTRA_HOME, CDP over a debug port, and (for screenshots) a headless sway compositor so frames render without touching the user's desktop.
+description: Drive a built Orchestra instance end-to-end to verify a UI change — isolated ORCHESTRA_HOME, CDP over a debug port (Electron) or the remote-control socket (GTK), and (for screenshots) a headless sway compositor so frames render without touching the user's desktop.
 ---
 
 # Verify an Orchestra UI change by driving the real app
 
+**First: which frontend did you change?** Orchestra has TWO, sharing one
+backend over a ui-rpc socket (`docs/gtk4-port-plan.md`, `docs/ui-rpc-protocol.md`):
+
+- **Electron** (`src/renderer/`) — this document. CDP over a debug port.
+- **GTK** (`native/orchestra-gtk/`) — CDP does not apply. Launch with
+  `--remote-control <sock>` and drive via its harness ops
+  (`list_widgets` / `click` / `type` / `key` / `get` / `screenshot` / `action`);
+  see `native/e2e/` and `native/orchestra-gtk/scripts/*.sh` for working drives,
+  and source `native/env.sh` first. A backend-affecting change should be
+  verified on BOTH frontends — that is the point of the coexistence design.
+
+Everything below (isolated `ORCHESTRA_HOME`, headless sway for frames) applies
+to both.
+
 Build first: `npx vite build` (produces `dist/` + `dist-electron/`). Do NOT use
-`pnpm run lint` here (OOMs); `npx tsc --noEmit` is the typecheck.
+`pnpm run lint` here (OOMs); `npx tsc --noEmit` is the typecheck. For the GTK
+app, rebuild the binary before ANY drive that execs it — `cargo test` does not
+refresh `target/debug/orchestra-gtk`, and a stale binary reproduces a false
+failure perfectly in isolation.
 
 ## Launch an isolated instance with CDP
 
