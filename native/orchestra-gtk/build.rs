@@ -24,7 +24,10 @@ fn main() {
             let wav = chime_gen::render_wav(&recipe);
             let path = wav_dir.join(format!("{}.wav", recipe.id));
             std::fs::write(&path, wav).expect("write chime wav");
-            format!("include_bytes!(concat!(env!(\"OUT_DIR\"), \"/chimes/{}.wav\"))", recipe.id)
+            format!(
+                "include_bytes!(concat!(env!(\"OUT_DIR\"), \"/chimes/{}.wav\"))",
+                recipe.id
+            )
         };
         writeln!(
             table,

@@ -38,9 +38,15 @@ pub enum Source {
 pub enum Filter {
     None,
     /// Web Audio bandpass: linear Q.
-    Bandpass { freq: Vec<Ramp>, q: f64 },
+    Bandpass {
+        freq: Vec<Ramp>,
+        q: f64,
+    },
     /// Web Audio lowpass: Q in dB (the value chime.ts writes).
-    Lowpass { freq: Vec<Ramp>, q: f64 },
+    Lowpass {
+        freq: Vec<Ramp>,
+        q: f64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,13 +69,7 @@ pub struct Recipe {
 
 const QUIET: f64 = 0.0001;
 
-fn osc(
-    start: f64,
-    stop: f64,
-    wave: Wave,
-    freq: Vec<Ramp>,
-    gain: Vec<Ramp>,
-) -> Voice {
+fn osc(start: f64, stop: f64, wave: Wave, freq: Vec<Ramp>, gain: Vec<Ramp>) -> Voice {
     Voice {
         start,
         stop,

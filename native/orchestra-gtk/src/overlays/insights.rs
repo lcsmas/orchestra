@@ -177,12 +177,14 @@ impl InsightsSection {
     pub fn set_runs(&self, runs: &[SelfTuneRun]) {
         let last = runs.first();
         let running = last.filter(|r| r.status == SelfTuneRunStatus::Running);
-        self.sub.set_text(match (running, last) {
-            (Some(_), _) => "self-tuning…".to_string(),
-            (None, Some(r)) => run_outcome(r),
-            (None, None) => "not run yet".to_string(),
-        }
-        .as_str());
+        self.sub.set_text(
+            match (running, last) {
+                (Some(_), _) => "self-tuning…".to_string(),
+                (None, Some(r)) => run_outcome(r),
+                (None, None) => "not run yet".to_string(),
+            }
+            .as_str(),
+        );
 
         clear(&self.steps_box);
         if let Some(run) = running {
@@ -380,7 +382,10 @@ impl InsightsOverlay {
     fn reseed_transcript(&self) {
         self.transcript.borrow_mut().clear();
         if let Some(id) = self.shown_run_id() {
-            if let Ok(v) = self.backend.call("getSelfTuneOutput", vec![serde_json::json!(id)]) {
+            if let Ok(v) = self
+                .backend
+                .call("getSelfTuneOutput", vec![serde_json::json!(id)])
+            {
                 if let Ok(s) = serde_json::from_value::<String>(v) {
                     *self.transcript.borrow_mut() = s;
                 }
@@ -665,7 +670,11 @@ impl InsightsOverlay {
         p
     }
 
-    fn build_history_row(self: &Rc<Self>, run: &SelfTuneRun, shown_id: Option<&str>) -> gtk::Button {
+    fn build_history_row(
+        self: &Rc<Self>,
+        run: &SelfTuneRun,
+        shown_id: Option<&str>,
+    ) -> gtk::Button {
         let btn = gtk::Button::new();
         btn.set_widget_name(&format!("insights-history-{}", run.id));
         btn.add_css_class("insights-history-row");
@@ -880,7 +889,10 @@ mod tests {
     fn parse_lesson_bullets_counts_top_level() {
         let md = "# Header\n\nprose line\n- first bullet\n-notabullet\n  - indented still counts\n- second\n";
         let bullets = parse_lesson_bullets(md);
-        assert_eq!(bullets, vec!["first bullet", "indented still counts", "second"]);
+        assert_eq!(
+            bullets,
+            vec!["first bullet", "indented still counts", "second"]
+        );
     }
 
     #[test]

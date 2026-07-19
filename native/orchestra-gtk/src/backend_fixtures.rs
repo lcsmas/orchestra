@@ -330,12 +330,18 @@ pub fn fake_run_script(started_at: i64) -> (Value, Vec<(u64, String, Vec<Value>)
         (
             600,
             "selfTuneOutput".to_string(),
-            vec![json!(run_id), json!("$ claude -p \"/insights\" (login: default)\n")],
+            vec![
+                json!(run_id),
+                json!("$ claude -p \"/insights\" (login: default)\n"),
+            ],
         ),
         (
             1200,
             "selfTuneOutput".to_string(),
-            vec![json!(run_id), json!("Report written: report-2026-07-18-120001.html\n")],
+            vec![
+                json!(run_id),
+                json!("Report written: report-2026-07-18-120001.html\n"),
+            ],
         ),
         (
             1400,
@@ -345,7 +351,10 @@ pub fn fake_run_script(started_at: i64) -> (Value, Vec<(u64, String, Vec<Value>)
         (
             2200,
             "selfTuneOutput".to_string(),
-            vec![json!(run_id), json!("$ claude -p \"/insights\" (login: mc)\n")],
+            vec![
+                json!(run_id),
+                json!("$ claude -p \"/insights\" (login: mc)\n"),
+            ],
         ),
         (
             3000,
@@ -355,7 +364,10 @@ pub fn fake_run_script(started_at: i64) -> (Value, Vec<(u64, String, Vec<Value>)
         (
             3600,
             "selfTuneOutput".to_string(),
-            vec![json!(run_id), json!("fold pass: distilling lessons…\nSELF-TUNE-RESULT: 1 lesson added\n")],
+            vec![
+                json!(run_id),
+                json!("fold pass: distilling lessons…\nSELF-TUNE-RESULT: 1 lesson added\n"),
+            ],
         ),
         (
             4200,

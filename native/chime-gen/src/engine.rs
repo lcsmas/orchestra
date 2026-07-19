@@ -156,11 +156,7 @@ fn osc_sample(wave: Wave, phase: f64) -> f64 {
 /// Total length of a rendered sound in seconds: the last voice's stop time
 /// plus a short tail so ramped filters ring out instead of clicking.
 pub fn duration(voices: &[Voice]) -> f64 {
-    voices
-        .iter()
-        .map(|v| v.start + v.stop)
-        .fold(0.0, f64::max)
-        + 0.05
+    voices.iter().map(|v| v.start + v.stop).fold(0.0, f64::max) + 0.05
 }
 
 /// Render a whole recipe (all its voices mixed) to f32 samples at 48 kHz.

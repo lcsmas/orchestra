@@ -147,11 +147,9 @@ impl ResourcesOverlay {
         // Wire the fleet trace's draw function.
         {
             let samples = overlay.fleet_samples.clone();
-            overlay
-                .fleet_trace_area
-                .set_draw_func(move |_, cr, w, h| {
-                    draw_spark(cr, w, h, &samples.borrow());
-                });
+            overlay.fleet_trace_area.set_draw_func(move |_, cr, w, h| {
+                draw_spark(cr, w, h, &samples.borrow());
+            });
         }
 
         overlay
@@ -444,7 +442,11 @@ impl ResourcesOverlay {
     ) {
         clear(&self.tiles);
 
-        let cpu_tile = tile("Agent CPU", &format_cpu(agent_cpu), &format!("{cpu_cores} cores available"));
+        let cpu_tile = tile(
+            "Agent CPU",
+            &format_cpu(agent_cpu),
+            &format!("{cpu_cores} cores available"),
+        );
         cpu_tile.add_css_class("res-tile-cpu");
         // Reparent the persistent fleet spark into the CPU tile.
         if let Some(parent) = self.fleet_trace_area.parent() {
@@ -503,10 +505,7 @@ impl ResourcesOverlay {
         disclosure.set_hexpand(true);
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
 
-        let status = ws
-            .as_ref()
-            .map(|w| status_css(w.status))
-            .unwrap_or("idle");
+        let status = ws.as_ref().map(|w| status_css(w.status)).unwrap_or("idle");
         let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         dot.add_css_class("ws-dot");
         dot.add_css_class(status);
@@ -516,7 +515,10 @@ impl ResourcesOverlay {
         // name + sub (repo · account)
         let name_box = gtk::Box::new(gtk::Orientation::Vertical, 1);
         name_box.set_width_request(190);
-        let name = ws.as_ref().map(|w| w.branch.clone()).unwrap_or(row.key.clone());
+        let name = ws
+            .as_ref()
+            .map(|w| w.branch.clone())
+            .unwrap_or(row.key.clone());
         let name_l = gtk::Label::new(Some(&name));
         name_l.set_xalign(0.0);
         name_l.add_css_class("res-agent-branch");
@@ -683,7 +685,8 @@ impl ResourcesOverlay {
             }
             if let Err(e) = backend.call("stopAgent", vec![serde_json::json!(pty)]) {
                 if let Some(win) = &parent {
-                    crate::dialogs::error(win, "Error", &format!("Could not stop agent: {e}")).await;
+                    crate::dialogs::error(win, "Error", &format!("Could not stop agent: {e}"))
+                        .await;
                 }
             }
         });
@@ -991,7 +994,11 @@ fn meter_track(frac: f64, fill_class: &str) -> gtk::Box {
 }
 
 fn build_procs(procs_box: &gtk::Box, row: &AgentRow) {
-    let mut procs: Vec<_> = row.sessions.iter().flat_map(|s| s.processes.clone()).collect();
+    let mut procs: Vec<_> = row
+        .sessions
+        .iter()
+        .flat_map(|s| s.processes.clone())
+        .collect();
     procs.sort_by_key(|p| std::cmp::Reverse(p.mem_bytes));
     if procs.is_empty() {
         let empty = gtk::Label::new(Some("No live processes."));
@@ -1031,10 +1038,7 @@ fn build_login_row(s: &SessionResourceStat) -> gtk::Box {
     let name_box = gtk::Box::new(gtk::Orientation::Vertical, 1);
     name_box.set_width_request(190);
     let name = cell("login", "res-agent-branch");
-    let acct = s
-        .pty_id
-        .strip_prefix("account-login:")
-        .unwrap_or(&s.pty_id);
+    let acct = s.pty_id.strip_prefix("account-login:").unwrap_or(&s.pty_id);
     let sub = cell(acct, "res-agent-sub");
     name_box.append(&name);
     name_box.append(&sub);
@@ -1045,7 +1049,10 @@ fn build_login_row(s: &SessionResourceStat) -> gtk::Box {
     header.append(&trace_col);
     header.append(&cpu_cell(s.cpu_pct));
     header.append(&cell(&format_bytes(s.mem_bytes), "res-cell"));
-    header.append(&cell(&s.proc_count.to_string(), "res-cell dim res-col-procs"));
+    header.append(&cell(
+        &s.proc_count.to_string(),
+        "res-cell dim res-col-procs",
+    ));
     header.append(&cell("—", "res-cell dim res-col-disk"));
     header.append(&cell("—", "res-cell dim res-col-ctx"));
     let stop_col = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -1261,7 +1268,11 @@ fn hsl_to_hex(hsl: &str) -> String {
     let (r, g, b) = if s == 0.0 {
         (l, l, l)
     } else {
-        let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+        let q = if l < 0.5 {
+            l * (1.0 + s)
+        } else {
+            l + s - l * s
+        };
         let p = 2.0 * l - q;
         (
             hue(p, q, h + 1.0 / 3.0),

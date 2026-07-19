@@ -77,7 +77,10 @@ mod tests {
             panic!("knock body must be an oscillator");
         };
         assert_eq!(*wave, Wave::Sine);
-        assert_eq!(freq, &[Ramp { t: 0.0, v: 180.0 }, Ramp { t: 0.09, v: 70.0 }]);
+        assert_eq!(
+            freq,
+            &[Ramp { t: 0.0, v: 180.0 }, Ramp { t: 0.09, v: 70.0 }]
+        );
         assert_eq!(body.gain[1], Ramp { t: 0.004, v: 0.45 });
         assert_eq!(body.gain[2], Ramp { t: 0.11, v: 0.0001 });
         let tick = &knock.voices[1];
@@ -126,7 +129,10 @@ mod tests {
         let Filter::Bandpass { freq, q } = &swoosh.voices[0].filter else {
             panic!("swoosh is bandpass noise");
         };
-        assert_eq!(freq, &[Ramp { t: 0.0, v: 800.0 }, Ramp { t: 0.18, v: 3200.0 }]);
+        assert_eq!(
+            freq,
+            &[Ramp { t: 0.0, v: 800.0 }, Ramp { t: 0.18, v: 3200.0 }]
+        );
         assert_eq!(*q, 3.0);
 
         // pluck: sawtooth A4 through a 2800→500 Hz lowpass, Q 2 (dB).
@@ -139,7 +145,10 @@ mod tests {
         let Filter::Lowpass { freq, q } = &pluck.voices[0].filter else {
             panic!("pluck is lowpassed");
         };
-        assert_eq!(freq, &[Ramp { t: 0.0, v: 2800.0 }, Ramp { t: 0.25, v: 500.0 }]);
+        assert_eq!(
+            freq,
+            &[Ramp { t: 0.0, v: 2800.0 }, Ramp { t: 0.25, v: 500.0 }]
+        );
         assert_eq!(*q, 2.0);
 
         // zap: sawtooth 1400→220 Hz over 0.12 s, fixed 3500 Hz lowpass.
@@ -147,7 +156,10 @@ mod tests {
         let Source::Osc { freq, .. } = &zap.voices[0].source else {
             panic!()
         };
-        assert_eq!(freq, &[Ramp { t: 0.0, v: 1400.0 }, Ramp { t: 0.12, v: 220.0 }]);
+        assert_eq!(
+            freq,
+            &[Ramp { t: 0.0, v: 1400.0 }, Ramp { t: 0.12, v: 220.0 }]
+        );
 
         // bubble: sine 500→900→600 Hz.
         let bubble = recipe("bubble");

@@ -117,7 +117,9 @@ impl SoundPlayer {
         if chime.wav.is_empty() || !self.ensure_gst() {
             return;
         }
-        let Some(path) = self.spill(chime) else { return };
+        let Some(path) = self.spill(chime) else {
+            return;
+        };
         let playbin = match gst::ElementFactory::make("playbin")
             .property("uri", format!("file://{}", path.display()))
             .build()
@@ -166,10 +168,7 @@ impl SoundPlayer {
             Err(_) => return false,
         };
         let ok = playbin.set_state(gst::State::Playing).is_ok()
-            && playbin
-                .state(gst::ClockTime::from_seconds(5))
-                .0
-                .is_ok();
+            && playbin.state(gst::ClockTime::from_seconds(5)).0.is_ok();
         let _ = playbin.set_state(gst::State::Null);
         ok
     }

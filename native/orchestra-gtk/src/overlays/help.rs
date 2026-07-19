@@ -213,15 +213,11 @@ impl HelpOverlay {
         link.connect_clicked(|btn| {
             let launcher = gtk::UriLauncher::new(GUIDE_URL);
             let parent = btn.root().and_downcast::<gtk::Window>();
-            launcher.launch(
-                parent.as_ref(),
-                gtk::gio::Cancellable::NONE,
-                move |res| {
-                    if let Err(e) = res {
-                        eprintln!("[help] could not open guide URL: {e}");
-                    }
-                },
-            );
+            launcher.launch(parent.as_ref(), gtk::gio::Cancellable::NONE, move |res| {
+                if let Err(e) = res {
+                    eprintln!("[help] could not open guide URL: {e}");
+                }
+            });
         });
         footer.append(&link);
         body.append(&footer);
@@ -261,7 +257,10 @@ mod tests {
         // Eight sections, in Help.tsx order.
         assert_eq!(SECTIONS.len(), 8);
         assert_eq!(SECTIONS[0].title, "The core loop");
-        assert_eq!(SECTIONS.last().unwrap().title, "Orchestra can improve itself");
+        assert_eq!(
+            SECTIONS.last().unwrap().title,
+            "Orchestra can improve itself"
+        );
         // Every section has at least one item; every item has name+desc.
         for s in SECTIONS {
             assert!(!s.items.is_empty(), "section '{}' has no items", s.title);
