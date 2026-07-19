@@ -109,9 +109,20 @@ than the coordinator's guess, and because two of these trace back to me.
 15. **Tested inside a framing instead of against the code.** The audit said "P2,
     one-line fix, ~3 min latency", so the first window was 60s — inside a 180s
     backoff — then widened reactively to 120s and 220s. Reading `BackoffPolicy`
-    takes one grep. *This one is substantially mine*: I relayed the audit's
-    framing as the brief without questioning it, and later compounded it by
-    asking for "the observed re-attach time" as though recovery were established.
+    takes one grep. **Genuinely shared, both halves independent:**
+    - *Coordinator*: I relayed the audit's framing as the brief without
+      questioning it, then compounded it by asking for "the observed re-attach
+      time" as though recovery were established. Relaying a FRAMING carries the
+      same ownership as relaying a CLAIM — and framings are more dangerous,
+      because they shape what an agent thinks to *measure*, not just what it
+      believes.
+    - *Agent*: B6 pushed back on my taking the larger share, correctly. It had
+      the code open, `BackoffPolicy::default` was one grep from the file it was
+      already editing, and it was applying "re-check the premise at source"
+      elsewhere in the same task. **A brief is a hypothesis to verify, not a
+      parameter to design against.** Neither half excuses the other; recording
+      it as "substantially the coordinator's" would let the agent-side lesson
+      off the hook, which is what B6 objected to.
 
 16. **Fixed an instance and called it a class.** The env-leak flake was the same
     defect already hit and fixed on the orchestra-gtk side earlier in the wave;
