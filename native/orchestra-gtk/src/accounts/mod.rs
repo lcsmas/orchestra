@@ -71,8 +71,20 @@ pub struct AccountsController {
     usage_bars: usage_bars::UsageBars,
     login_web: login_web::LoginWebManager,
     login_modal: RefCell<Option<login_modal::LoginModal>>,
-    /// Repaint hooks of live badges/menus (sidebar rows register here);
-    /// invoked with the fresh state on every store change.
+    /// Repaint hooks of live badges/menus, invoked with the fresh state on
+    /// every store change.
+    ///
+    /// ⚠ PERMANENT for the controller's lifetime — this registry is
+    /// **push-only** ([`Self::add_render_listener`]); there is no removal path,
+    /// and each entry pins the widget refs its closure captured. So a caller
+    /// must NOT register a listener per rebuild: anything that recreates its
+    /// widgets on every event would grow this Vec unboundedly and leak the dead
+    /// widgets with it. That is precisely why the sidebar's row account badge
+    /// is hand-rolled against `accounts::logic` (it rebuilds rows wholesale —
+    /// see `sidebar/rows.rs::resolve_account_badge`) instead of mounting
+    /// [`badge::WorkspaceAccountMenu`]. Register only from widgets that live as
+    /// long as the controller; if you need per-rebuild mounts, add a removal
+    /// path (keyed handles) FIRST.
     listeners: RefCell<Vec<RenderListener>>,
 }
 
@@ -149,6 +161,12 @@ impl AccountsController {
 
     /// Badges/menus born after bootstrap register their repaint hook here and
     /// get an immediate first paint.
+    ///
+    /// ⚠ The registration is PERMANENT — there is no `remove_render_listener`.
+    /// Call this only for widgets that live as long as the controller. A caller
+    /// that recreates its widgets per rebuild (the sidebar row list does) would
+    /// grow [`Self::listeners`] unboundedly and pin every dead widget; build a
+    /// removal path first if you need that. See the field's note.
     pub fn add_render_listener(self: &Rc<Self>, f: RenderListener) {
         f(&self.state.borrow(), Self::now_ms());
         self.listeners.borrow_mut().push(f);

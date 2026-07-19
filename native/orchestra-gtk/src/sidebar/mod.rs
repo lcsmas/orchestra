@@ -27,9 +27,13 @@ use gtk::prelude::*;
 use relm4::prelude::*;
 
 use orchestra_rpc::events::{Event, UiEvent};
-use orchestra_rpc::types::{CreateWorkspaceInput, EnvStatusItem, RepoSyncState, Workspace};
+use orchestra_rpc::types::{
+    AccountUsageStatus, CreateWorkspaceInput, EnvStatusItem, MigrateAccountResult, RepoSyncState,
+    UsageSnapshot, Workspace, WorkspaceStatus,
+};
 use serde_json::{json, Value};
 
+use crate::accounts::logic::{login_color_hex, DEFAULT_LOGIN_LABEL};
 use crate::backend::{Backend, BackendEvent};
 use crate::dialogs;
 use crate::state::UiState;
@@ -119,6 +123,9 @@ pub enum Msg {
     MigrateAccount {
         ws_id: String,
         account_id: Option<String>,
+        /// Display label of the target login ("default" for None) — the confirm
+        /// dialog names the account the way the user picked it, never its id.
+        target_label: String,
     },
     // ---- drag & drop -----------------------------------------------------
     DropWs {
@@ -256,6 +263,9 @@ impl Sidebar {
         if self.renaming_id.is_some() && find_named_entry(&self.list, "ws-rename-entry").is_some() {
             return;
         }
+        // Stamp "now" for the age-dependent row content (the account badge's
+        // "as of Xm ago" tooltip); rows.rs stays clock-free and testable.
+        self.data.now_ms = glib::real_time() / 1000;
         let ui = self.ui();
         let rows = compute_rows(&self.data, &ui);
 
@@ -366,6 +376,31 @@ impl Sidebar {
                 self.data.sizes_exclusive = sizes.exclusive;
             }
         }
+        self.refresh_accounts_snapshot();
+    }
+
+    /// Accounts + usage for the row badges (label to show, utilization to tint
+    /// by). Split out so the usage/account event handlers can refresh just this
+    /// slice without a full snapshot reload.
+    fn refresh_accounts_snapshot(&mut self) {
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        if let Ok(v) = backend.call("listAccounts", vec![]) {
+            if let Ok(list) = serde_json::from_value::<Vec<AccountBrief>>(v) {
+                self.data.account_labels = list.into_iter().map(|a| (a.id, a.label)).collect();
+            }
+        }
+        if let Ok(v) = backend.call("getAllAccountUsage", vec![]) {
+            if let Ok(map) = serde_json::from_value::<HashMap<String, AccountUsageStatus>>(v) {
+                self.data.account_usage = map;
+            }
+        }
+        if let Ok(v) = backend.call("getUsage", vec![]) {
+            if let Ok(snap) = serde_json::from_value::<Option<UsageSnapshot>>(v) {
+                self.data.global_usage = snap;
+            }
+        }
     }
 
     /// Fold one decoded backend event into `data`/transient state. Returns true
@@ -430,8 +465,25 @@ impl Sidebar {
                 self.data.repos = repos;
                 true
             }
-            // Channels the sidebar doesn't render (usage bars, accounts, pty,
-            // self-tune) are owned by sibling workstreams.
+            // The row account badge renders the login's label + usage tint, so
+            // these two keep it live (the usage-bars strip owns the same frames
+            // independently — App fans one frame out to both).
+            UiEvent::AccountUsageUpdate(map) => {
+                self.data.account_usage = map;
+                true
+            }
+            UiEvent::UsageUpdate(snap) => {
+                self.data.global_usage = Some(*snap);
+                true
+            }
+            // A migrate re-pins the workspace: the labels may also have changed
+            // (setAccounts broadcasts this too), so re-pull the account slice.
+            UiEvent::WorkspaceAccountsUpdate(_) => {
+                self.refresh_accounts_snapshot();
+                true
+            }
+            // Channels the sidebar doesn't render (login pty, self-tune) are
+            // owned by sibling workstreams.
             _ => false,
         }
     }
@@ -798,11 +850,22 @@ impl Component for Sidebar {
                 self.open_account_menu(&sender, ws_id, current, anchor);
                 rebuild = false;
             }
-            Msg::MigrateAccount { ws_id, account_id } => {
-                self.fire_and_forget(
-                    "migrateWorkspaceAccount",
-                    vec![json!(ws_id), json!(account_id)],
-                );
+            Msg::MigrateAccount {
+                ws_id,
+                account_id,
+                target_label,
+            } => {
+                // Whether the agent was running BEFORE the move decides if a
+                // `resumed:false` reply is worth reporting (a stopped agent is
+                // expected not to resume).
+                let was_running = self
+                    .data
+                    .workspaces
+                    .iter()
+                    .find(|w| w.id == ws_id)
+                    .map(|w| w.status == WorkspaceStatus::Running)
+                    .unwrap_or(false);
+                self.migrate_account(ws_id, account_id, target_label, was_running);
                 rebuild = false;
             }
             Msg::DropWs {
@@ -1001,6 +1064,76 @@ impl Sidebar {
     /// Call a backend method, ignoring the reply. Errors surface as an async
     /// error dialog (parity with the Electron `dialog.error(...)` catches). The
     /// event pump drives the resulting UI change.
+    /// Migrate a workspace to another login — the port of
+    /// `AccountBadge.tsx:210` (`WorkspaceAccountMenu.migrate`).
+    ///
+    /// This is a DESTRUCTIVE action: the main process auto-stops the agent,
+    /// relocates its Claude conversation into the target account's config dir,
+    /// re-pins it, and resumes if it was running. So it is CONFIRMED first,
+    /// exactly like Electron — a stray click must never restart a running
+    /// agent.
+    ///
+    /// Failure needs no handling of its own: `migrateWorkspaceAccount` throws
+    /// on `!ok` (`api-handlers.ts:357`), so it arrives as a method error and
+    /// the shared error dialog covers it. What the raw call DID discard is the
+    /// success payload — a migration that could not resume the agent looks
+    /// identical to a clean one — so the result is read and a non-resumed
+    /// migrate is reported. The badge repaints itself when the resulting
+    /// `workspaceAccounts` / `workspaceUpdate` broadcast lands.
+    fn migrate_account(
+        &self,
+        ws_id: String,
+        account_id: Option<String>,
+        target_label: String,
+        was_running: bool,
+    ) {
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        let win = self.window.clone();
+        glib::spawn_future_local(async move {
+            let ok = dialogs::confirm(
+                &win,
+                "Migrate account",
+                &format!(
+                    "Migrate this workspace to \u{201c}{target_label}\u{201d}?\n\n\
+                     Its Claude conversation moves into that account and the agent restarts \
+                     (resuming where it left off if it was running)."
+                ),
+            )
+            .await;
+            if !ok {
+                return;
+            }
+            match backend.call(
+                "migrateWorkspaceAccount",
+                vec![json!(ws_id), json!(account_id)],
+            ) {
+                Err(e) => {
+                    dialogs::error(&win, "Could not migrate account", &e.to_string()).await;
+                }
+                Ok(v) => {
+                    // The agent was running but could not be resumed — say so
+                    // rather than letting it read as a clean migration. A
+                    // stopped agent not resuming is expected, not news.
+                    if let Ok(r) = serde_json::from_value::<MigrateAccountResult>(v) {
+                        if was_running && r.resumed == Some(false) {
+                            dialogs::alert(
+                                &win,
+                                "Migrated",
+                                &format!(
+                                    "This workspace now runs as \u{201c}{target_label}\u{201d}. \
+                                     Its agent was not resumed — start it when you're ready."
+                                ),
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     fn fire_and_forget(&self, method: &'static str, params: Vec<Value>) {
         let Some(backend) = self.backend.clone() else {
             return;
@@ -1340,12 +1473,15 @@ impl Sidebar {
         current: Option<String>,
         anchor: gtk::Widget,
     ) {
-        let mut accounts: Vec<Option<String>> = vec![None]; // "default"
+        // (account id, display label). The default login always leads, then
+        // every configured account — shown BY LABEL, never by id.
+        let mut accounts: Vec<(Option<String>, String)> =
+            vec![(None, DEFAULT_LOGIN_LABEL.to_string())];
         if let Some(backend) = &self.backend {
             if let Ok(v) = backend.call("listAccounts", vec![]) {
                 if let Ok(list) = serde_json::from_value::<Vec<AccountBrief>>(v) {
                     for a in list {
-                        accounts.push(Some(a.id));
+                        accounts.push((Some(a.id), a.label));
                     }
                 }
             }
@@ -1355,14 +1491,27 @@ impl Sidebar {
         popover.set_parent(&anchor);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
         list.add_css_class("account-menu-list");
-        for account in accounts {
+        for (account, label) in accounts {
             let is_current = account.as_deref() == current.as_deref();
-            let label = account.clone().unwrap_or_else(|| "default".to_string());
-            let row = gtk::Button::with_label(&if is_current {
-                format!("✓ {label}")
+            // Login-color dot + label, mirroring the Electron menu options.
+            let row = gtk::Button::new();
+            let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            let dot = gtk::Label::new(None);
+            dot.add_css_class("dot");
+            dot.set_valign(gtk::Align::Center);
+            dot.set_markup(&format!(
+                "<span foreground=\"{}\">\u{25cf}</span>",
+                login_color_hex(&label)
+            ));
+            content.append(&dot);
+            let text = gtk::Label::new(Some(&if is_current {
+                format!("\u{2713} {label}")
             } else {
                 label.clone()
-            });
+            }));
+            text.set_xalign(0.0);
+            content.append(&text);
+            row.set_child(Some(&content));
             row.set_widget_name(&format!("account-pick-{label}"));
             row.add_css_class("account-menu-item");
             row.set_sensitive(!is_current);
@@ -1374,6 +1523,7 @@ impl Sidebar {
                 sender.input(Msg::MigrateAccount {
                     ws_id: ws_id.clone(),
                     account_id: account.clone(),
+                    target_label: label.clone(),
                 });
             });
             list.append(&row);
@@ -1428,10 +1578,12 @@ impl Sidebar {
     }
 }
 
-/// Minimal account row for the migrate menu.
+/// Minimal account row for the migrate menu + badge: the id identifies the
+/// account on the wire, the label is what the user ever sees.
 #[derive(serde::Deserialize)]
 struct AccountBrief {
     id: String,
+    label: String,
 }
 
 #[cfg(test)]
