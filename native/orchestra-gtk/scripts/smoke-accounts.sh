@@ -102,10 +102,14 @@ check("usage-bars strip present", "usage-bars" in names)
 check("5h bar present", "usage-bar-5h" in names)
 check("7d bar present", "usage-bar-7d" in names)
 check("Fable bar present (global snapshot has fable)", "usage-bar-fable" in names)
+check("extra-credits bar present (global snapshot has extra)", "usage-bar-extra" in names)
 check("hover panel present in tree", "usage-bars-panel" in names)
 
 vis = rpc({"op": "get", "name": "usage-bars", "prop": "visible"})
 check("strip is visible (has usage data)", vis.get("ok") and vis.get("value") is True)
+# The extra-credits cell only shows when the pool is enabled (extra non-null).
+exvis = rpc({"op": "get", "name": "usage-bar-extra", "prop": "visible"})
+check("extra bar visible (pool enabled in fixture)", exvis.get("ok") and exvis.get("value") is True)
 # Strip is 'expandable' because the mock seeds configured accounts.
 css = rpc({"op": "get", "name": "usage-bars", "prop": "css"})
 check("strip is expandable (accounts configured)", css.get("ok") and "expandable" in css.get("value", []))
