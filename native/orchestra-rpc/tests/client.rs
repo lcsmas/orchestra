@@ -324,6 +324,82 @@ fn reconnects_after_drop_and_resumes_calls() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// The M3-P1 behavior the GTK app depends on: a client built with
+/// `RpcClient::discover` must RE-RESOLVE the pointer on every redial, so a
+/// backend that restarts on a DIFFERENT socket path (the daemon's path is
+/// pid-derived) is picked up on the next retry — rather than the client
+/// redialing the dead original path until it gives up.
+#[test]
+fn discovered_client_reconnects_to_a_moved_socket() {
+    let dir = test_socket_path("moved-dir");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let pointer = dir.join("ui-sock");
+    let sock1 = dir.join("gen1.sock");
+    let sock2 = dir.join("gen2.sock");
+
+    // Generation 1 on sock1; the pointer names it.
+    let listener1 = UnixListener::bind(&sock1).unwrap();
+    std::fs::write(&pointer, format!("{}\n", sock1.display())).unwrap();
+
+    let (sock1_c, sock2_c, pointer_c) = (sock1.clone(), sock2.clone(), pointer.clone());
+    let server = std::thread::spawn(move || {
+        // Gen 1: handshake, then move the backend to a NEW path and drop.
+        let (stream, _) = listener1.accept().unwrap();
+        let mut conn = ServerConn::new(stream);
+        conn.handshake(1);
+        let listener2 = UnixListener::bind(&sock2_c).unwrap();
+        // Repoint BEFORE dropping, exactly as a restarting daemon does.
+        std::fs::write(&pointer_c, format!("{}\n", sock2_c.display())).unwrap();
+        let _ = std::fs::remove_file(&sock1_c);
+        drop(conn);
+        drop(listener1);
+
+        // Gen 2: the client must find us via the REPOINTED pointer file.
+        let (stream, _) = listener2.accept().unwrap();
+        let mut conn = ServerConn::new(stream);
+        conn.handshake(1);
+        let req = conn.read_json();
+        assert_eq!(req["method"], "getAppVersion");
+        conn.write_json(json!({"t": "res", "id": req["id"], "ok": true, "result": "moved-ok"}));
+        let mut buf = [0u8; 64];
+        while matches!(conn.stream.read(&mut buf), Ok(n) if n > 0) {}
+    });
+
+    // ORCHESTRA_HOME points discovery at our dir (no ORCHESTRA_UI_SOCK, so the
+    // POINTER FILE is what gets re-read on each redial).
+    let prev_home = std::env::var_os("ORCHESTRA_HOME");
+    let prev_sock = std::env::var_os("ORCHESTRA_UI_SOCK");
+    std::env::set_var("ORCHESTRA_HOME", &dir);
+    std::env::remove_var("ORCHESTRA_UI_SOCK");
+
+    let (client, rx) = RpcClient::discover(fast_opts()).unwrap();
+    assert_eq!(expect_state(&rx.state), ConnectionState::Connected);
+
+    // Drop → Reconnecting → Connected AGAIN, this time on the moved socket.
+    match expect_state(&rx.state) {
+        ConnectionState::Reconnecting { .. } => {}
+        other => panic!("expected Reconnecting, got {other:?}"),
+    }
+    assert_eq!(expect_state(&rx.state), ConnectionState::Connected);
+
+    // Proof the live session is the NEW one.
+    assert_eq!(client.get_app_version().unwrap(), "moved-ok");
+
+    client.close();
+    assert_eq!(expect_state(&rx.state), ConnectionState::Disconnected);
+    server.join().unwrap();
+
+    match prev_home {
+        Some(v) => std::env::set_var("ORCHESTRA_HOME", v),
+        None => std::env::remove_var("ORCHESTRA_HOME"),
+    }
+    if let Some(v) = prev_sock {
+        std::env::set_var("ORCHESTRA_UI_SOCK", v);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn gives_up_reconnecting_after_the_backoff_window() {
     let path = test_socket_path("giveup");
