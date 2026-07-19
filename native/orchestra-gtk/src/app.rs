@@ -706,6 +706,18 @@ impl App {
             PaneIntent::Write { id, bytes } => b.pty_write(id, bytes),
             PaneIntent::Resize { id, cols, rows } => b.pty_resize(id, *cols, *rows),
             PaneIntent::Repaint { id, cols, rows } => b.pty_repaint(id, *cols, *rows),
+            PaneIntent::PasteImage { id, mime, bytes } => {
+                // Spill the image to a temp file, then bracketed-paste its path
+                // (mirrors Terminal.tsx). Empty input yields no path.
+                match b.save_clipboard_image(mime, bytes) {
+                    Ok(Some(path)) => {
+                        let paste = format!("\x1b[200~{path} \x1b[201~");
+                        b.pty_write(id, paste.as_bytes())
+                    }
+                    Ok(None) => Ok(()),
+                    Err(e) => Err(e),
+                }
+            }
             PaneIntent::OpenUri { uri } => {
                 gtk::UriLauncher::new(uri).launch(
                     None::<&gtk::Window>,

@@ -101,6 +101,12 @@ pub trait Backend: std::fmt::Debug {
     fn pty_scrollback(&self, _id: &str) -> Result<Vec<u8>> {
         Ok(Vec::new())
     }
+    /// Spill a pasted clipboard image to a temp file (`saveClipboardImage`),
+    /// returning its path (None for empty input). The default can't base64 the
+    /// bytes, so it no-ops; RpcBackend overrides with the RpcClient's encoder.
+    fn save_clipboard_image(&self, _mime: &str, _bytes: &[u8]) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 // ---- discovery --------------------------------------------------------------
@@ -427,6 +433,10 @@ impl Backend for RpcBackend {
 
     fn pty_scrollback(&self, id: &str) -> Result<Vec<u8>> {
         Ok(self.client.pty_scrollback(id)?)
+    }
+
+    fn save_clipboard_image(&self, mime: &str, bytes: &[u8]) -> Result<Option<String>> {
+        Ok(self.client.save_clipboard_image(mime, bytes)?)
     }
 
     fn set_focused(&self, focused: bool) {

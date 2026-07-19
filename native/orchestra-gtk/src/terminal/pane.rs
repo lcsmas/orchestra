@@ -28,6 +28,13 @@ pub enum PaneIntent {
     Resize { id: String, cols: u16, rows: u16 },
     /// Tab shown again — `ptyRepaint` to heal any child diff-model desync.
     Repaint { id: String, cols: u16, rows: u16 },
+    /// A clipboard image (PNG bytes) to spill to a temp file via
+    /// `saveClipboardImage`, then bracketed-paste the returned path.
+    PasteImage {
+        id: String,
+        mime: String,
+        bytes: Vec<u8>,
+    },
     /// A URL was activated in the terminal — open it.
     OpenUri { uri: String },
 }
@@ -278,6 +285,130 @@ impl TerminalPane {
                 glib::ControlFlow::Continue
             });
         }
+
+        self.wire_keyboard();
+        self.wire_links();
+    }
+
+    /// Keyboard parity with the renderer's `Terminal.tsx`:
+    /// - Ctrl+C copies the selection (VTE clipboard) and is NEVER forwarded —
+    ///   the agent must not receive SIGINT.
+    /// - Ctrl+V pastes: a clipboard image wins (spilled to a temp file, its path
+    ///   bracketed-pasted), else the clipboard text.
+    /// - Shift+Enter sends ESC+CR (what `/terminal-setup` configures) so the
+    ///   TUI can distinguish it from a plain submit.
+    ///
+    /// The controller sits in the CAPTURE phase so it intercepts before VTE's
+    /// own key handling.
+    fn wire_keyboard(&self) {
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let id = self.id.clone();
+        let sink = self.sink.clone();
+        let term = self.term.clone();
+        let boot = self.boot.clone();
+        let pill = self.pill.clone();
+        let life = self.life.clone();
+        keys.connect_key_pressed(move |_ctrl, key, _code, modifiers| {
+            let ctrl = modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+            let shift = modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            let alt = modifiers.contains(gtk::gdk::ModifierType::ALT_MASK);
+
+            // Shift+Enter → ESC+CR (no other modifiers).
+            if key == gtk::gdk::Key::Return && shift && !ctrl && !alt {
+                (sink)(PaneIntent::Write {
+                    id: id.clone(),
+                    bytes: b"\x1b\r".to_vec(),
+                });
+                return glib::Propagation::Stop;
+            }
+            if !ctrl {
+                return glib::Propagation::Proceed;
+            }
+            match key {
+                gtk::gdk::Key::c | gtk::gdk::Key::C => {
+                    // Copy-or-nothing; never forward ^C.
+                    if term.has_selection() {
+                        term.copy_clipboard_format(vte4::Format::Text);
+                    }
+                    // Dismissing the pill on a keystroke still applies.
+                    if boot.borrow_mut().apply(Trigger::Keystroke) {
+                        Self::fade_out(&pill, &boot, &life);
+                    }
+                    glib::Propagation::Stop
+                }
+                gtk::gdk::Key::v | gtk::gdk::Key::V => {
+                    Self::paste_clipboard(&term, &id, &sink);
+                    glib::Propagation::Stop
+                }
+                _ => glib::Propagation::Proceed,
+            }
+        });
+        self.term.add_controller(keys);
+    }
+
+    /// Read the widget's clipboard: an image (any `image/*`) becomes PNG bytes
+    /// routed as [`PaneIntent::PasteImage`] (App spills + bracketed-pastes the
+    /// path); otherwise the text is written verbatim. Async because GTK's
+    /// clipboard reads are.
+    fn paste_clipboard(term: &vte4::Terminal, id: &str, sink: &Rc<dyn Fn(PaneIntent)>) {
+        let clipboard = term.clipboard();
+        let id_img = id.to_string();
+        let sink_img = sink.clone();
+        let clipboard_txt = clipboard.clone();
+        let id_txt = id.to_string();
+        let sink_txt = sink.clone();
+        clipboard.read_texture_async(gtk::gio::Cancellable::NONE, move |res| {
+            match res {
+                Ok(Some(texture)) => {
+                    let bytes = texture.save_to_png_bytes();
+                    (sink_img)(PaneIntent::PasteImage {
+                        id: id_img,
+                        mime: "image/png".into(),
+                        bytes: bytes.to_vec(),
+                    });
+                }
+                _ => {
+                    // No image → fall back to text paste.
+                    clipboard_txt.read_text_async(gtk::gio::Cancellable::NONE, move |res| {
+                        if let Ok(Some(text)) = res {
+                            if !text.is_empty() {
+                                (sink_txt)(PaneIntent::Write {
+                                    id: id_txt,
+                                    bytes: text.as_bytes().to_vec(),
+                                });
+                            }
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    /// URL affordance: allow OSC-8 hyperlinks and register the URL regex so VTE
+    /// underlines matches; a click resolves the OSC-8 target (what Claude Code
+    /// emits) and opens it via the App (`gtk::show_uri`).
+    fn wire_links(&self) {
+        self.term.set_allow_hyperlink(true);
+        // Best-effort: a bad regex just means no underline affordance. VTE's
+        // regex is PCRE2; PCRE2_MULTILINE (0x0400) makes ^/$ line-relative and
+        // `(?i)` inline handles case. A build without PCRE2 just skips this.
+        const PCRE2_MULTILINE: u32 = 0x0000_0400;
+        let url_re = "(?i)\\b(?:https?|ftp|file)://[^\\s\\x00-\\x1f<>\"]+";
+        if let Ok(regex) = vte4::Regex::for_match(url_re, PCRE2_MULTILINE) {
+            self.term.match_add_regex(&regex, 0);
+        }
+        let click = gtk::GestureClick::new();
+        let term = self.term.clone();
+        let sink = self.sink.clone();
+        click.connect_released(move |_g, _n, x, y| {
+            if let Some(uri) = term.check_hyperlink_at(x, y) {
+                (sink)(PaneIntent::OpenUri {
+                    uri: uri.to_string(),
+                });
+            }
+        });
+        self.term.add_controller(click);
     }
 
     /// Begin the pill fade (called from a Visible→Fading transition).
