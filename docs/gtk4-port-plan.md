@@ -387,10 +387,15 @@ SIGWINCH repaint bounce, sandbox reconnect banners, `pty:stopped` semantics.
 
 - ☐ gtk::Application id `dev.orchestra.gtk` (DBus single-instance of the
   FRONTEND; the backend lock is separate, §1.1).
-- ☐ Frontend state file `$ORCHESTRA_HOME/gtk-ui-state.json`: sidebar width,
-  nvim width, collapsed sections, collapsed subtree ids, dismissed env
-  notices, chime selection, last active workspace, window geometry — the
-  localStorage parity list.
+- ☐ Frontend state file `$ORCHESTRA_HOME/gtk-ui-state.json` — the
+  localStorage parity list. **Corrected by the M3 audit** (this list previously
+  omitted two keys and collapsed three independent ones into a single item; see
+  `docs/gtk4-parity-audit.md` §5.6 for the authoritative 8-key table):
+  sidebar width; nvim pane width; the THREE independent `collapsed*` keys
+  (repos, hosts, subtree ids — separate localStorage keys, not one);
+  dismissed env notices; chime selection; last active workspace; window
+  geometry; `orchestra.lastSandboxEndpoint`; `orchestra:debug`.
+  Audit status: 7/8 covered — **nvim pane width is the real miss**.
 - ☐ Theme: port styles.css tokens (already done in prototype) + full CSS
   pass for all new widgets; light theme NOT ported (Electron app is
   dark-only — parity).
