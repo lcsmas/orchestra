@@ -1,19 +1,23 @@
-//! Backend seam for the GTK frontend (plan §1.1 / M1-A3).
+//! Backend seam for the GTK frontend (plan §1.1 / M1-A3, wired M2-B2).
 //!
 //! The GTK app is a pure frontend: everything of substance lives behind a
-//! ui-rpc socket served by the Electron app or the daemon. This module keeps
-//! the crate building (and demoable) before that wiring exists: `Backend` is
-//! the narrow surface the skeleton needs, `MockBackend` serves fixtures, and
-//! `RpcBackend` is a stub over orchestra-rpc's current codec/types surface —
-//! its connection actor is A2's deliverable and gets wired in M2.
+//! ui-rpc socket served by the Electron app or the daemon. `Backend` is the
+//! narrow surface the shell needs, `MockBackend` serves fixtures, and
+//! `RpcBackend` is the live transport: it owns an [`orchestra_rpc::RpcClient`]
+//! (reader thread, ping/pong, reconnect-with-backoff) and bridges its blocking
+//! `mpsc` receivers into `async_channel`s the GTK main loop can await.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use orchestra_rpc::frame::{self, Frame};
 use orchestra_rpc::types::{RepoEntry, Workspace};
-use serde_json::{json, Value};
+use orchestra_rpc::{BackendKind as RemoteKind, ClientOptions, ConnectionState, RpcClient};
+use serde_json::Value;
+
+// The fixture backend lives in its own file (backend/mock.rs) so the M2
+// sidebar/terminal workstreams can grow it without touching the RpcBackend
+// wiring below.
+mod mock;
+pub use mock::{mock_workspaces, MockBackend};
 
 pub type Result<T> = std::result::Result<T, BackendError>;
 
@@ -21,6 +25,12 @@ pub type Result<T> = std::result::Result<T, BackendError>;
 pub enum BackendError {
     #[error("not wired yet: {0}")]
     NotWired(&'static str),
+    #[error(transparent)]
+    Rpc(#[from] orchestra_rpc::RpcError),
+    /// A served method rejected the call (mock parity with a backend
+    /// `ok:false` response — same surface the RpcBackend maps RPC errors to).
+    #[error("{0}")]
+    Method(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,14 +60,23 @@ pub trait Backend: std::fmt::Debug {
     fn kind(&self) -> BackendKind;
     /// Backend app version for the status strip ("backend: mock v0.1.0 · …").
     fn version(&self) -> String;
+    /// What the remote reported in `helloOk.backendKind` (Rpc only).
+    fn server_kind(&self) -> Option<RemoteKind> {
+        None
+    }
     fn list_workspaces(&self) -> Result<Vec<Workspace>>;
     fn list_repos(&self) -> Result<Vec<RepoEntry>>;
     /// Generic `OrchestraAPI` method call (protocol §4).
     fn call(&self, method: &str, params: Vec<Value>) -> Result<Value>;
     /// Receiver for `event` frames. Single consumer (the app shell) in M1.
     fn events(&self) -> async_channel::Receiver<BackendEvent>;
-    /// Receiver for `ptyData` frames: (pty id, raw bytes).
+    /// Receiver for `ptyData` frames: (pty id, raw bytes). Single consumer
+    /// (async_channel is MPMC work-stealing, NOT broadcast — one message goes
+    /// to one receiver; the terminal stack must be the only reader).
     fn pty_data(&self) -> async_channel::Receiver<(String, Vec<u8>)>;
+    /// Receiver for connection lifecycle transitions (Connected /
+    /// Reconnecting / terminal Disconnected). Mock backends never fire.
+    fn connection_state(&self) -> async_channel::Receiver<ConnectionState>;
     /// `ptyWrite` fast path (protocol §2, 0x02 frames).
     fn pty_write(&self, id: &str, bytes: &[u8]) -> Result<()>;
     /// `focus` frame — the backend ORs this over all clients to decide the
@@ -96,463 +115,100 @@ pub fn mock_requested() -> bool {
     cfg!(feature = "mock") || std::env::var("ORCHESTRA_GTK_MOCK").is_ok_and(|v| v == "1")
 }
 
-// ---- mock -------------------------------------------------------------------
+// ---- rpc --------------------------------------------------------------------
 
-/// Fixture backend so the skeleton renders real pixels (and smoke.sh has
-/// something to assert) before any backend exists. Stateful: `call()` mutates
-/// the workspaces (switchBranch, run start/stop, queue add/remove, …) so the
-/// B3 toolbar/diff/banners exercise real round-trips in mock mode.
-#[derive(Debug)]
-pub struct MockBackend {
-    state: RefCell<MockState>,
-    // Held so the receivers stay open (a dropped sender closes the channel);
-    // the mock never actually pushes.
-    _events_tx: async_channel::Sender<BackendEvent>,
-    events_rx: async_channel::Receiver<BackendEvent>,
-    _pty_tx: async_channel::Sender<(String, Vec<u8>)>,
-    pty_rx: async_channel::Receiver<(String, Vec<u8>)>,
+/// Bridge a blocking `mpsc` receiver (fed by the RpcClient's reader thread)
+/// into an `async_channel` the GTK main loop awaits. The thread exits when
+/// either side closes: sender gone (client dropped after a terminal
+/// disconnect) or receiver gone (backend replaced).
+fn bridge<T: Send + 'static, U: Send + 'static>(
+    name: &str,
+    rx: std::sync::mpsc::Receiver<T>,
+    tx: async_channel::Sender<U>,
+    map: impl Fn(T) -> U + Send + 'static,
+) {
+    std::thread::Builder::new()
+        .name(format!("ogtk-bridge-{name}"))
+        .spawn(move || {
+            while let Ok(item) = rx.recv() {
+                if tx.send_blocking(map(item)).is_err() {
+                    return;
+                }
+            }
+        })
+        .expect("spawn bridge thread");
 }
 
-#[derive(Debug)]
-struct MockState {
-    workspaces: Vec<Workspace>,
-    branches: Vec<String>,
-    /// `<ws-id>` → run-script PTY live.
-    run_live: HashMap<String, bool>,
-    /// Per-endpoint sandbox control (mock: ws-6's endpoint, driven elsewhere).
-    sandbox: HashMap<String, Value>,
-}
-
-impl Default for MockBackend {
-    fn default() -> Self {
-        let (events_tx, events_rx) = async_channel::unbounded();
-        let (pty_tx, pty_rx) = async_channel::unbounded();
-        Self {
-            state: RefCell::new(MockState {
-                workspaces: mock_workspaces(),
-                branches: vec![
-                    "master".into(),
-                    "develop".into(),
-                    "fix-status-dot".into(),
-                    "gtk4-port".into(),
-                    "feature/diff-toolbar".into(),
-                    "feature/sandbox-import".into(),
-                    "release/0.6".into(),
-                ],
-                run_live: HashMap::new(),
-                sandbox: HashMap::new(),
-            }),
-            _events_tx: events_tx,
-            events_rx,
-            _pty_tx: pty_tx,
-            pty_rx,
-        }
-    }
-}
-
-/// Build a workspace fixture from a JSON object — deserialized rather than
-/// struct-literal so new wire fields (all Option per the serde rules) can never
-/// break the fixture backend. `extra` merges over the base object.
-fn mock_workspace_json(base: Value) -> Workspace {
-    serde_json::from_value(base).expect("mock workspace fixture matches the wire type")
-}
-
-pub fn mock_workspaces() -> Vec<Workspace> {
-    let ws = |id: &str, name: &str, branch: &str, status: &str, extra: Value| {
-        let mut obj = json!({
-            "id": id,
-            "name": name,
-            "repoPath": "/home/user/repos/orchestra",
-            "worktreePath": format!("/home/user/.orchestra/worktrees/{branch}"),
-            "branch": branch,
-            "baseBranch": "master",
-            "status": status,
-            "createdAt": 1_752_800_000_000_i64,
-            "agent": "claude",
-        });
-        if let (Value::Object(o), Value::Object(e)) = (&mut obj, extra) {
-            o.extend(e);
-        }
-        mock_workspace_json(obj)
-    };
-    vec![
-        // Running · open PR #412 · run script · dirty worktree.
-        ws(
-            "ws-1",
-            "orchestra · fix-status-dot",
-            "fix-status-dot",
-            "running",
-            json!({}),
-        ),
-        // Waiting · 3 unpushed commits (PR button primed).
-        ws(
-            "ws-2",
-            "orchestra · gtk4-port",
-            "gtk4-port",
-            "waiting",
-            json!({ "unpushedAhead": 3 }),
-        ),
-        // Setup running.
-        ws(
-            "ws-3",
-            "mobile-club · checkout-retry",
-            "checkout-retry",
-            "idle",
-            json!({ "setupStatus": "running" }),
-        ),
-        // Setup failed + error text.
-        ws(
-            "ws-4",
-            "orchestra · flaky-e2e-hunt",
-            "flaky-e2e-hunt",
-            "error",
-            json!({
-                "setupStatus": "failed",
-                "setupError": "pnpm install exited 1 — network unreachable",
-            }),
-        ),
-        // Scratch session (Terminal-only).
-        ws(
-            "ws-5",
-            "scratch · api-spelunking",
-            "api-spelunking",
-            "stopped",
-            json!({ "kind": "scratch" }),
-        ),
-        // Sandbox host, this machine NOT the driver.
-        ws(
-            "ws-6",
-            "orchestra · remote-refactor",
-            "remote-refactor",
-            "running",
-            json!({ "host": { "kind": "sandbox", "endpoint": "ws://sandbox-1:8787" } }),
-        ),
-        // Usage-limited with two queued prompts, pinned account "mc".
-        ws(
-            "ws-7",
-            "orchestra · big-migration",
-            "big-migration",
-            "waiting",
-            json!({
-                "accountId": "acc-mc",
-                "queuedPrompts": [
-                    { "id": "q1", "text": "Run the full migration and report row counts.", "queuedAt": 1_752_800_100_000_i64 },
-                    { "id": "q2", "text": "Then open a PR summarising the schema changes.", "queuedAt": 1_752_800_200_000_i64 },
-                ],
-            }),
-        ),
-    ]
-}
-
-/// The multi-file dirty-worktree diff ws-1 serves: a modified TS file with
-/// intra-line word changes, an added markdown file, and a deleted JS file.
-fn mock_diff_files() -> Value {
-    json!([
-        {
-            "path": "src/renderer/status.ts",
-            "status": "modified",
-            "additions": 3,
-            "deletions": 2,
-            "oldContent": "export function statusDot(state: State): string {\n  const cls = state.busy ? 'busy' : 'idle';\n  return `<span class=\"${cls}\"></span>`;\n}\n",
-            "newContent": "export function statusDot(state: State): string {\n  const cls = state.running ? 'running' : 'idle';\n  const title = state.label ?? cls;\n  return `<span class=\"${cls}\" title=\"${title}\"></span>`;\n}\n",
-        },
-        {
-            "path": "docs/status.md",
-            "status": "added",
-            "additions": 4,
-            "deletions": 0,
-            "oldContent": "",
-            "newContent": "# Status dots\n\nEach workspace row shows a colored dot:\n\n- green — the agent is running\n",
-        },
-        {
-            "path": "src/legacy/old-status.js",
-            "status": "deleted",
-            "additions": 0,
-            "deletions": 3,
-            "oldContent": "function oldDot(s) {\n  return s.busy ? 'busy' : 'idle';\n}\n",
-            "newContent": "",
-        },
-    ])
-}
-
-impl Backend for MockBackend {
-    fn kind(&self) -> BackendKind {
-        BackendKind::Mock
-    }
-
-    fn version(&self) -> String {
-        env!("CARGO_PKG_VERSION").into()
-    }
-
-    fn list_workspaces(&self) -> Result<Vec<Workspace>> {
-        Ok(self.state.borrow().workspaces.clone())
-    }
-
-    fn list_repos(&self) -> Result<Vec<RepoEntry>> {
-        Ok(vec![serde_json::from_value(json!({
-            "path": "/home/user/repos/orchestra",
-            "name": "orchestra",
-            "defaultBranch": "master",
-            "scripts": { "run": "pnpm run dev" },
-        }))
-        .expect("mock repo fixture matches the wire type")])
-    }
-
-    fn call(&self, method: &str, params: Vec<Value>) -> Result<Value> {
-        // First positional arg as &str (most methods take a ws or repo id).
-        let arg0 = || params.first().and_then(|v| v.as_str()).map(str::to_owned);
-        match method {
-            "app:info" => Ok(json!({
-                "version": env!("CARGO_PKG_VERSION"),
-                "backendKind": "mock",
-            })),
-
-            // -- diff / stats / PR --------------------------------------------
-            "getDiff" => match arg0().as_deref() {
-                Some("ws-1") => Ok(mock_diff_files()),
-                _ => Ok(json!([])),
-            },
-            "getDiffStats" => match arg0().as_deref() {
-                Some("ws-1") => Ok(json!({ "additions": 7, "deletions": 5, "files": 3 })),
-                _ => Ok(json!({ "additions": 0, "deletions": 0, "files": 0 })),
-            },
-            "findPR" => match arg0().as_deref() {
-                Some("ws-1") => Ok(json!({
-                    "all": [{ "url": "https://github.com/o/o/pull/412", "number": 412, "state": "OPEN", "title": "Fix status dot latency" }],
-                    "open": { "url": "https://github.com/o/o/pull/412", "number": 412, "state": "OPEN", "title": "Fix status dot latency" },
-                    "latest": { "url": "https://github.com/o/o/pull/412", "number": 412, "state": "OPEN", "title": "Fix status dot latency" },
-                    "mergedCount": 0,
-                })),
-                _ => Ok(json!({ "all": [], "mergedCount": 0 })),
-            },
-
-            // -- branches -----------------------------------------------------
-            "listBranches" | "listRepoBranches" => Ok(json!(self.state.borrow().branches)),
-            "switchBranch" => {
-                let (Some(id), Some(branch)) = (arg0(), params.get(1).and_then(|v| v.as_str()))
-                else {
-                    return Err(BackendError::NotWired("switchBranch needs (id, branch)"));
-                };
-                let mut st = self.state.borrow_mut();
-                if let Some(ws) = st.workspaces.iter_mut().find(|w| w.id == id) {
-                    ws.branch = branch.to_owned();
-                    ws.branch_manually_set = Some(true);
-                    return Ok(serde_json::to_value(ws.clone()).unwrap());
-                }
-                Err(BackendError::NotWired("switchBranch: unknown workspace"))
-            }
-
-            // -- repo scripts -------------------------------------------------
-            "getRepoScripts" => Ok(json!({ "run": "pnpm run dev", "setup": "pnpm install" })),
-
-            // -- agent / run --------------------------------------------------
-            "restartAgent" => Ok(json!(null)),
-            "runScriptStatus" => {
-                Ok(json!(*self
-                    .state
-                    .borrow()
-                    .run_live
-                    .get(&arg0().unwrap_or_default())
-                    .unwrap_or(&false)))
-            }
-            "runScriptStart" => {
-                if let Some(id) = arg0() {
-                    self.state.borrow_mut().run_live.insert(id, true);
-                }
-                Ok(json!(true))
-            }
-            "runScriptStop" => {
-                if let Some(id) = arg0() {
-                    self.state.borrow_mut().run_live.insert(id, false);
-                }
-                Ok(json!(true))
-            }
-            "markSeen" => Ok(json!(null)),
-
-            // -- setup banner -------------------------------------------------
-            "readSetupLog" => match arg0().as_deref() {
-                Some("ws-3") => Ok(json!(
-                    "$ pnpm install\nProgress: resolved 812, reused 800, downloaded 12\nLinking dependencies...\n"
-                )),
-                Some("ws-4") => Ok(json!(
-                    "$ pnpm install\nnpm ERR! network request to registry failed\npnpm install exited 1 — network unreachable\n"
-                )),
-                _ => Ok(json!("")),
-            },
-            "retrySetup" => {
-                // Flip the workspace to running so the banner reflects a retry.
-                if let Some(id) = arg0() {
-                    let mut st = self.state.borrow_mut();
-                    if let Some(ws) = st.workspaces.iter_mut().find(|w| w.id == id) {
-                        ws.setup_status =
-                            Some(orchestra_rpc::types::SetupStatus::Running);
-                        ws.setup_error = None;
-                    }
-                }
-                Ok(json!(null))
-            }
-
-            // -- prompt queue -------------------------------------------------
-            "queuePrompt" => {
-                let (Some(id), Some(text)) = (arg0(), params.get(1).and_then(|v| v.as_str()))
-                else {
-                    return Err(BackendError::NotWired("queuePrompt needs (id, text)"));
-                };
-                let mut st = self.state.borrow_mut();
-                if let Some(ws) = st.workspaces.iter_mut().find(|w| w.id == id) {
-                    let mut q = ws.queued_prompts.take().unwrap_or_default();
-                    q.push(orchestra_rpc::types::QueuedPrompt {
-                        id: format!("q{}", q.len() + 1),
-                        text: text.to_owned(),
-                        queued_at: 1_752_800_300_000,
-                    });
-                    ws.queued_prompts = Some(q);
-                    return Ok(serde_json::to_value(ws.clone()).unwrap());
-                }
-                Err(BackendError::NotWired("queuePrompt: unknown workspace"))
-            }
-            "removeQueuedPrompt" => {
-                let (Some(id), Some(pid)) = (arg0(), params.get(1).and_then(|v| v.as_str()))
-                else {
-                    return Err(BackendError::NotWired("removeQueuedPrompt needs (id, promptId)"));
-                };
-                let mut st = self.state.borrow_mut();
-                if let Some(ws) = st.workspaces.iter_mut().find(|w| w.id == id) {
-                    if let Some(q) = ws.queued_prompts.as_mut() {
-                        q.retain(|p| p.id != pid);
-                    }
-                }
-                Ok(json!(null))
-            }
-            "flushQueuedPrompts" => {
-                if let Some(id) = arg0() {
-                    let mut st = self.state.borrow_mut();
-                    if let Some(ws) = st.workspaces.iter_mut().find(|w| w.id == id) {
-                        let n = ws.queued_prompts.take().map(|q| q.len()).unwrap_or(0);
-                        return Ok(json!({ "ok": true, "delivered": n }));
-                    }
-                }
-                Ok(json!({ "ok": true, "delivered": 0 }))
-            }
-
-            // -- accounts / usage --------------------------------------------
-            "getWorkspaceAccounts" => Ok(json!(self
-                .state
-                .borrow()
-                .workspaces
-                .iter()
-                .map(|w| {
-                    match w.account_id.as_deref() {
-                        Some("acc-mc") => json!({ "workspaceId": w.id, "accountId": "acc-mc", "label": "mc" }),
-                        _ => json!({ "workspaceId": w.id, "accountId": Value::Null, "label": "default" }),
-                    }
-                })
-                .collect::<Vec<_>>())),
-            "getAccountUsage" => match arg0().as_deref() {
-                // "mc" is over its 5-hour limit, resets far in the future.
-                Some("acc-mc") => Ok(json!({
-                    "accountId": "acc-mc",
-                    "ok": true,
-                    "data": {
-                        "fiveHour": { "utilization": 100.0, "resetsAt": "2027-01-01T00:00:00Z" },
-                        "sevenDay": { "utilization": 40.0, "resetsAt": "2027-01-01T00:00:00Z" },
-                        "extraUtilization": Value::Null,
-                        "fable": Value::Null,
-                    },
-                    "fetchedAt": 1_900_000_000_000_i64,
-                })),
-                _ => Ok(json!({ "accountId": arg0(), "ok": false, "fetchedAt": 0 })),
-            },
-            "getUsage" => Ok(json!({
-                "fiveHour": { "utilization": 12.0, "resetsAt": "2027-01-01T00:00:00Z" },
-                "sevenDay": { "utilization": 30.0, "resetsAt": "2027-01-01T00:00:00Z" },
-                "fetchedAt": 1_900_000_000_000_i64,
-            })),
-
-            // -- sandbox ------------------------------------------------------
-            "sandboxControlState" => match arg0().as_deref() {
-                Some("ws-6") => Ok(json!({
-                    "endpoint": "ws://sandbox-1:8787",
-                    "driverId": "lucas-desktop",
-                    "driverName": "lucas-desktop",
-                    "isDriver": false,
-                })),
-                _ => Ok(json!(null)),
-            },
-            "takeSandboxControl" => {
-                if let Some(id) = arg0() {
-                    self.state.borrow_mut().sandbox.insert(id, json!({ "isDriver": true }));
-                }
-                Ok(json!(null))
-            }
-
-            // -- merge --------------------------------------------------------
-            "mergeWorktree" => Ok(json!({ "status": "requested" })),
-
-            _ => Err(BackendError::NotWired("mock backend does not serve this method")),
-        }
-    }
-
-    fn events(&self) -> async_channel::Receiver<BackendEvent> {
-        self.events_rx.clone()
-    }
-
-    fn pty_data(&self) -> async_channel::Receiver<(String, Vec<u8>)> {
-        self.pty_rx.clone()
-    }
-
-    fn pty_write(&self, _id: &str, _bytes: &[u8]) -> Result<()> {
-        Ok(())
-    }
-
-    fn set_focused(&self, _focused: bool) {}
-}
-
-// ---- rpc stub ---------------------------------------------------------------
-
-/// Thin stub over the ui-rpc socket. It codes against orchestra-rpc's frozen
-/// codec (`frame.rs`) and types (`types.rs`) but does NO socket IO yet: the
-/// tokio connection actor is A2's M1 deliverable, and this struct grows the
-/// real transport in M2. Until then every method reports NotWired and the
-/// shell shows the discovered-but-unwired state in the status strip.
-#[derive(Debug)]
+/// Live transport over the ui-rpc socket: an [`RpcClient`] connection actor
+/// (reader thread, ping/pong keepalive, reconnect-with-backoff) whose three
+/// push streams are re-terminated on async channels for the GTK main loop.
+///
+/// `connect` performs the hello handshake synchronously (bounded by the
+/// client's 10 s handshake timeout); method calls block the caller — fine for
+/// init-time hydration, anything hot should go through a worker.
 pub struct RpcBackend {
     sock_path: PathBuf,
-    _events_tx: async_channel::Sender<BackendEvent>,
+    client: RpcClient,
     events_rx: async_channel::Receiver<BackendEvent>,
-    _pty_tx: async_channel::Sender<(String, Vec<u8>)>,
     pty_rx: async_channel::Receiver<(String, Vec<u8>)>,
+    state_rx: async_channel::Receiver<ConnectionState>,
+}
+
+impl std::fmt::Debug for RpcBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RpcBackend")
+            .field("sock_path", &self.sock_path)
+            .field("connected", &self.client.is_connected())
+            .finish_non_exhaustive()
+    }
 }
 
 impl RpcBackend {
-    pub fn new(sock_path: PathBuf) -> Self {
+    /// Connect + handshake against an explicit socket path (from
+    /// [`discover_socket`]). Reconnects redial this same path; when the
+    /// backend restarts under a new pid-derived path, the client's give-up
+    /// surfaces as `Disconnected` and the shell's discovery retry loop
+    /// attaches a fresh backend.
+    pub fn connect(sock_path: PathBuf) -> std::result::Result<Self, orchestra_rpc::RpcError> {
+        let opts = ClientOptions {
+            app_version: env!("CARGO_PKG_VERSION").into(),
+            ..ClientOptions::default()
+        };
+        let (client, recv) = RpcClient::connect(&sock_path, opts)?;
         let (events_tx, events_rx) = async_channel::unbounded();
         let (pty_tx, pty_rx) = async_channel::unbounded();
-        Self {
+        let (state_tx, state_rx) = async_channel::unbounded();
+        bridge("events", recv.events, events_tx, |ev| BackendEvent::Event {
+            channel: ev.channel,
+            args: ev.args,
+        });
+        bridge("pty", recv.pty, pty_tx, |chunk| chunk);
+        bridge("state", recv.state, state_tx, |s| s);
+        Ok(Self {
             sock_path,
-            _events_tx: events_tx,
+            client,
             events_rx,
-            _pty_tx: pty_tx,
             pty_rx,
-        }
+            state_rx,
+        })
     }
 
     pub fn sock_path(&self) -> &Path {
         &self.sock_path
     }
 
-    /// The `hello` frame this client will send on connect (protocol §3),
-    /// encoded with the frozen codec. Exercised by tests today, by the M2
-    /// connection actor tomorrow.
-    pub fn hello_frame() -> Vec<u8> {
-        frame::encode(&Frame::Json(json!({
-            "t": "hello",
-            "proto": 1,
-            "appVersion": env!("CARGO_PKG_VERSION"),
-            "clientKind": "gtk",
-            "focused": true,
-        })))
-        .expect("hello frame is well under the frame cap")
+    /// The shared client, for subsystems (terminal stack) that want the typed
+    /// wrappers directly rather than the stringly `call` surface.
+    pub fn client(&self) -> &RpcClient {
+        &self.client
+    }
+}
+
+impl Drop for RpcBackend {
+    fn drop(&mut self) {
+        // Deliberate close: stops the reconnect loop and reader thread; the
+        // bridge threads then drain and exit on their own.
+        self.client.close();
     }
 }
 
@@ -562,20 +218,26 @@ impl Backend for RpcBackend {
     }
 
     fn version(&self) -> String {
-        // Real version arrives in the helloOk handshake (M2).
-        "?".into()
+        self.client
+            .server_info()
+            .map(|i| i.app_version)
+            .unwrap_or_else(|| "?".into())
+    }
+
+    fn server_kind(&self) -> Option<RemoteKind> {
+        self.client.server_info().map(|i| i.backend_kind)
     }
 
     fn list_workspaces(&self) -> Result<Vec<Workspace>> {
-        Err(BackendError::NotWired("RpcBackend transport lands in M2"))
+        Ok(self.client.list_workspaces()?)
     }
 
     fn list_repos(&self) -> Result<Vec<RepoEntry>> {
-        Err(BackendError::NotWired("RpcBackend transport lands in M2"))
+        Ok(self.client.list_repos()?)
     }
 
-    fn call(&self, _method: &str, _params: Vec<Value>) -> Result<Value> {
-        Err(BackendError::NotWired("RpcBackend transport lands in M2"))
+    fn call(&self, method: &str, params: Vec<Value>) -> Result<Value> {
+        Ok(self.client.call(method, params)?)
     }
 
     fn events(&self) -> async_channel::Receiver<BackendEvent> {
@@ -586,64 +248,147 @@ impl Backend for RpcBackend {
         self.pty_rx.clone()
     }
 
-    fn pty_write(&self, _id: &str, _bytes: &[u8]) -> Result<()> {
-        Err(BackendError::NotWired("RpcBackend transport lands in M2"))
+    fn connection_state(&self) -> async_channel::Receiver<ConnectionState> {
+        self.state_rx.clone()
     }
 
-    fn set_focused(&self, _focused: bool) {}
+    fn pty_write(&self, id: &str, bytes: &[u8]) -> Result<()> {
+        Ok(self.client.send_pty_write(id, bytes)?)
+    }
+
+    fn set_focused(&self, focused: bool) {
+        // Best-effort: while disconnected the flag rides the next reconnect's
+        // hello, so a send failure here is not a loss.
+        let _ = self.client.focus(focused);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orchestra_rpc::frame::Decoder;
-    use orchestra_rpc::types::WorkspaceStatus;
+    use orchestra_rpc::frame::{encode, Decoder, Frame};
+    use serde_json::json;
+    use std::io::{Read as _, Write as _};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::time::{Duration, Instant};
 
-    #[test]
-    fn hello_frame_decodes_with_the_frozen_codec() {
-        let mut d = Decoder::new();
-        d.feed(&RpcBackend::hello_frame());
-        let Frame::Json(v) = d.next_frame().unwrap().unwrap() else {
-            panic!("hello must be a JSON frame");
-        };
-        assert_eq!(v["t"], "hello");
-        assert_eq!(v["proto"], 1);
-        assert_eq!(v["clientKind"], "gtk");
+    /// recv with a deadline so a wiring bug fails the test instead of
+    /// hanging it (async_channel has no blocking recv_timeout).
+    fn recv_within<T>(rx: &async_channel::Receiver<T>, what: &str) -> T {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match rx.try_recv() {
+                Ok(v) => return v,
+                Err(async_channel::TryRecvError::Empty) => {
+                    assert!(Instant::now() < deadline, "timed out waiting for {what}");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(async_channel::TryRecvError::Closed) => {
+                    panic!("channel closed waiting for {what}")
+                }
+            }
+        }
     }
 
-    #[test]
-    fn mock_serves_seven_workspaces() {
-        let ws = MockBackend::default().list_workspaces().unwrap();
-        assert_eq!(ws.len(), 7);
-        assert!(ws.iter().any(|w| w.status == WorkspaceStatus::Running));
-        // The B3 fixture surface: a scratch, a sandbox host, and a queued one.
-        assert!(ws.iter().any(|w| w.is_scratch_like()));
-        assert!(ws.iter().any(|w| w.host.is_some()));
-        assert!(ws.iter().any(|w| w.queued_prompts.is_some()));
+    fn read_json(stream: &mut UnixStream, decoder: &mut Decoder) -> Value {
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            if let Some(frame) = decoder.next_frame().unwrap() {
+                match frame {
+                    Frame::Json(v) => return v,
+                    _ => continue,
+                }
+            }
+            let n = stream.read(&mut buf).unwrap();
+            assert!(n > 0, "client closed while server expected a frame");
+            decoder.feed(&buf[..n]);
+        }
     }
 
-    #[test]
-    fn mock_switch_branch_mutates_and_returns_the_workspace() {
-        let b = MockBackend::default();
-        let updated = b
-            .call("switchBranch", vec![json!("ws-1"), json!("develop")])
-            .unwrap();
-        assert_eq!(updated["branch"], "develop");
-        // The mutation sticks for the next read.
-        let ws = b.list_workspaces().unwrap();
-        assert_eq!(ws.iter().find(|w| w.id == "ws-1").unwrap().branch, "develop");
+    fn write_frame(stream: &mut UnixStream, frame: &Frame) {
+        stream.write_all(&encode(frame).unwrap()).unwrap();
     }
 
+    /// Full actor round-trip against an in-process fake backend: handshake,
+    /// event + ptyData push → async channels, req/res call, focus frame.
     #[test]
-    fn mock_diff_has_the_three_classifications() {
-        let b = MockBackend::default();
-        let diff = b.call("getDiff", vec![json!("ws-1")]).unwrap();
-        let files = diff.as_array().unwrap();
-        assert_eq!(files.len(), 3);
-        let statuses: Vec<&str> = files.iter().map(|f| f["status"].as_str().unwrap()).collect();
-        assert!(statuses.contains(&"modified"));
-        assert!(statuses.contains(&"added"));
-        assert!(statuses.contains(&"deleted"));
+    fn rpc_backend_bridges_a_live_server() {
+        let dir = std::env::temp_dir().join(format!("orch-gtk-rpc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("ui.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut dec = Decoder::new();
+
+            let hello = read_json(&mut s, &mut dec);
+            assert_eq!(hello["t"], "hello");
+            assert_eq!(hello["proto"], 1);
+            assert_eq!(hello["clientKind"], "gtk");
+            write_frame(
+                &mut s,
+                &Frame::Json(json!({
+                    "t": "helloOk", "proto": 1,
+                    "appVersion": "9.9.9", "backendKind": "daemon",
+                })),
+            );
+            write_frame(
+                &mut s,
+                &Frame::Json(json!({
+                    "t": "event", "channel": "agentContext",
+                    "args": ["ws-1", 42_000],
+                })),
+            );
+            write_frame(
+                &mut s,
+                &Frame::PtyData {
+                    id: "ws-1".into(),
+                    bytes: b"hi from pty".to_vec(),
+                },
+            );
+
+            let req = read_json(&mut s, &mut dec);
+            assert_eq!(req["t"], "req");
+            assert_eq!(req["method"], "getAppVersion");
+            write_frame(
+                &mut s,
+                &Frame::Json(json!({
+                    "t": "res", "id": req["id"], "ok": true, "result": "9.9.9",
+                })),
+            );
+
+            let focus = read_json(&mut s, &mut dec);
+            assert_eq!(focus["t"], "focus");
+            assert_eq!(focus["focused"], false);
+        });
+
+        let backend = RpcBackend::connect(sock).unwrap();
+
+        assert_eq!(
+            recv_within(&backend.connection_state(), "Connected"),
+            ConnectionState::Connected
+        );
+        assert_eq!(backend.version(), "9.9.9");
+        assert_eq!(backend.server_kind(), Some(RemoteKind::Daemon));
+
+        let BackendEvent::Event { channel, args } = recv_within(&backend.events(), "event");
+        assert_eq!(channel, "agentContext");
+        assert_eq!(args, vec![json!("ws-1"), json!(42_000)]);
+
+        let (pty_id, bytes) = recv_within(&backend.pty_data(), "ptyData");
+        assert_eq!(pty_id, "ws-1");
+        assert_eq!(bytes, b"hi from pty");
+
+        let version = backend.call("getAppVersion", vec![]).unwrap();
+        assert_eq!(version, json!("9.9.9"));
+
+        backend.set_focused(false);
+        server.join().expect("fake server thread panicked");
+
+        drop(backend);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

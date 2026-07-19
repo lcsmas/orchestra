@@ -7,6 +7,7 @@
 //! account's `getAccountUsage`, or the default login's global `getUsage`.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use gtk::glib;
@@ -221,15 +222,16 @@ impl PromptQueueBanner {
         let Some(id) = self.state.borrow().ws.as_ref().map(|w| w.id.clone()) else {
             return;
         };
-        // getWorkspaceAccounts() → WorkspaceAccount[]; find ours.
+        // getWorkspaceAccounts() → Record<workspaceId, WorkspaceAccount> (the
+        // wire contract, ipc.ts:112) — look ours up by id.
         if let Ok(accounts) = self
             .ctx
-            .call_typed::<Vec<WorkspaceAccount>>("getWorkspaceAccounts", vec![])
+            .call_typed::<HashMap<String, WorkspaceAccount>>("getWorkspaceAccounts", vec![])
         {
-            if let Some(wa) = accounts.into_iter().find(|a| a.workspace_id == id) {
+            if let Some(wa) = accounts.get(&id) {
                 let mut st = self.state.borrow_mut();
-                st.account_label = wa.label;
-                st.account_id = wa.account_id;
+                st.account_label = wa.label.clone();
+                st.account_id = wa.account_id.clone();
             }
         }
         let account_id = self.state.borrow().account_id.clone();
