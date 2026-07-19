@@ -687,6 +687,17 @@ One agent walks every ☐ in §5 against the live app pair (Electron vs GTK,
 same seeded home), files gaps, orchestrator triages, B-agents fix. Release
 gate: ledger 100 %, coexistence tests green, docs done.
 
+Integration-surfaced M3 items (found during the serialized merge):
+- **Daemon-restart reconnect latency** (verifier, b2-merge): the ui-rpc socket
+  is PID-keyed (`orchestra-ui-<pid>.sock`), so a daemon restart = a NEW socket
+  path. The RpcClient redials the OLD path with 1→2→4…30s backoff for ~3 min
+  (`orchestra-rpc client.rs:54`) before giving up → `Disconnected` →
+  rediscovery of the new socket. Net: after an Electron/daemon restart the GTK
+  app can sit "reconnecting" for up to 3 minutes. Likely fix: while
+  reconnecting, also poll the `ui-sock` pointer file for a CHANGED path and
+  redial the new socket immediately (race rediscovery against the backoff)
+  rather than waiting the backoff out. Coexistence rough edge, not a blocker.
+
 Fixture-corpus extension (from the M1 A1 report — diff/branch shapes are
 already captured off a seeded dirty repo; `fixtures/manifest.json` lists the
 rest with reasons): the uncaptured result shapes are create* (random branch
