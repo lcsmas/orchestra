@@ -616,3 +616,20 @@ window.orchestra.onWorkspaceAccountsUpdate((byId) => {
     .then((accounts) => useStore.setState({ accounts }))
     .catch(() => {});
 });
+
+// Test seam for CDP-driven E2E (the `verify` skill): patch store slices
+// directly. Usage snapshots in particular have no other injection path — the
+// pollers need real credentials — so a driver seeds `globalUsage` /
+// `accountUsage` through this to render the usage strip against synthetic data.
+// It only wraps the same `useStore.setState` the IPC handlers above call, and
+// the renderer loads solely local content, so it adds no reachable surface.
+declare global {
+  interface Window {
+    __orchestraSetState?: (patch: Partial<State>) => void;
+  }
+}
+try {
+  window.__orchestraSetState = (patch) => useStore.setState(patch);
+} catch {
+  /* non-browser context (tests) — no window to attach to */
+}
