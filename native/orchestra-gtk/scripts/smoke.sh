@@ -2,7 +2,8 @@
 # Smoke test for the GTK skeleton (plan §8.4): build, launch in mock mode
 # inside a FRESH headless sway compositor (never the user's desktop), drive
 # the remote-control harness, assert the window title + the real sidebar's
-# section/tree/repo rows render, capture a screenshot, print PASS/FAIL.
+# section/tree/repo rows render + the B3 toolbar/tabs mount, capture a
+# screenshot, print PASS/FAIL.
 #
 # For the deeper sidebar interaction scenarios (select / collapse / rename /
 # reorder with a screenshot per state) see the sibling sidebar_e2e.sh.
@@ -112,6 +113,11 @@ check("orchestra repo header", any(str(n).startswith("repo-row-") for n in names
 check("host header for the mixed repo", any(str(n).startswith("host-row-") for n in names))
 check("archived toggle present", "archived-toggle-row" in names)
 check("status strip present", "status-text" in names)
+# B3 main-pane surface: the toolbar and its tabs mount for the initial ws.
+check("toolbar present", "toolbar" in names)
+check("terminal tab present", "tab-terminal" in names)
+check("diff tab present", "tab-diff" in names)
+check("branch picker present", "branch-picker-btn" in names)
 
 title = rpc({"op": "get", "name": "main-window", "prop": "label"})
 check("window title is Orchestra", title.get("ok") and "Orchestra" in str(title.get("value")))

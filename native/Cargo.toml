@@ -16,6 +16,9 @@ thiserror = "2"
 gtk = { package = "gtk4", version = "0.11", features = ["v4_10"] }
 relm4 = "0.11"
 vte4 = "0.10"
+# B3 (diff + toolbar): side-by-side diff panes + intra-line word diffs.
+sourceview5 = "0.11"
+similar = "2"
 # OAuth login window (plan §5.4): WebKitGTK 6 bindings; 0.6.x is the release
 # train paired with gtk4-rs 0.11. Needs webkitgtk6.0-devel + javascriptcoregtk
 # from setup-localdeps.sh on rootless boxes.

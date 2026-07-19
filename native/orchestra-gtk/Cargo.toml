@@ -20,5 +20,9 @@ relm4.workspace = true
 # Not used by the M1 skeleton yet: pinned now so the localdeps link chain is
 # exercised from day one; first consumed by the M2 terminal workstream (B2).
 vte4.workspace = true
+# B3 (diff + toolbar): side-by-side diff panes and intra-line word diffs.
+sourceview5.workspace = true
+similar.workspace = true
+# B4 (accounts/login): OAuth login window.
 webkit6.workspace = true
 async-channel.workspace = true

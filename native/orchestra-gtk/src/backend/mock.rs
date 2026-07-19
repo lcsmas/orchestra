@@ -117,6 +117,13 @@ pub fn mock_workspaces() -> Vec<Workspace> {
             "branch": "usage-poll-retry", "repoPath": ORCHESTRA_REPO,
             "worktreePath": "/home/user/.orchestra/worktrees/usage-poll-retry",
             "mergedAt": base,
+            // B3 prompt-queue banner: two parked prompts (the banner also
+            // shows the account-limit state; ws-2 is pinned to acc-perso in
+            // mock_workspace_accounts, whose usage reading is near-limit).
+            "queuedPrompts": [
+                { "id": "q1", "text": "Run the full migration and report row counts.", "queuedAt": 1_752_800_100_000_i64 },
+                { "id": "q2", "text": "Then open a PR summarising the schema changes.", "queuedAt": 1_752_800_200_000_i64 },
+            ],
         })),
         w(json!({
             "id": "ws-3", "status": "idle",
@@ -191,7 +198,7 @@ fn mock_repos() -> Vec<RepoEntry> {
             "name": "orchestra",
             "defaultBranch": "master",
             "remoteUrl": "https://github.com/lcsmas/orchestra",
-            "scripts": { "setup": "pnpm install" },
+            "scripts": { "setup": "pnpm install", "run": "pnpm run dev" },
         })),
         repo_fixture(json!({
             "path": MOBILE_CLUB_REPO,
@@ -232,6 +239,8 @@ struct MockState {
     /// setAccounts) and the workspace→account pin map (mutated by migrate).
     accounts: Vec<Value>,
     workspace_accounts: HashMap<String, Option<String>>,
+    /// `<ws-id>` → run-script PTY live (B3 run start/stop toggle).
+    run_live: HashMap<String, bool>,
 }
 
 /// Four configured accounts spanning the interesting usage shapes: "work"
@@ -249,8 +258,13 @@ fn mock_accounts() -> Vec<Value> {
 }
 
 fn mock_workspace_accounts() -> HashMap<String, Option<String>> {
-    // ws-1 pinned to work; the rest default. (ids match mock_workspaces.)
-    HashMap::from([("ws-1".to_string(), Some("acc-work".to_string()))])
+    // ws-1 pinned to work; ws-2 pinned to perso (near-limit — drives the B3
+    // prompt-queue banner's usage reading); the rest default. (ids match
+    // mock_workspaces.)
+    HashMap::from([
+        ("ws-1".to_string(), Some("acc-work".to_string())),
+        ("ws-2".to_string(), Some("acc-perso".to_string())),
+    ])
 }
 
 /// The global (`~/.claude`) usage snapshot: mid-range, with a Fable window so
@@ -300,6 +314,39 @@ fn mock_account_usage() -> Value {
     })
 }
 
+/// The multi-file dirty-worktree diff ws-1 serves (B3 diff view): a modified
+/// TS file with intra-line word changes, an added markdown file, and a deleted
+/// JS file — exercises A/M/D classification, side-by-side rendering, line
+/// backgrounds, and `similar` intra-line word highlights.
+fn mock_diff_files() -> Value {
+    json!([
+        {
+            "path": "src/renderer/status.ts",
+            "status": "modified",
+            "additions": 3,
+            "deletions": 2,
+            "oldContent": "export function statusDot(state: State): string {\n  const cls = state.busy ? 'busy' : 'idle';\n  return `<span class=\"${cls}\"></span>`;\n}\n",
+            "newContent": "export function statusDot(state: State): string {\n  const cls = state.running ? 'running' : 'idle';\n  const title = state.label ?? cls;\n  return `<span class=\"${cls}\" title=\"${title}\"></span>`;\n}\n",
+        },
+        {
+            "path": "docs/status.md",
+            "status": "added",
+            "additions": 4,
+            "deletions": 0,
+            "oldContent": "",
+            "newContent": "# Status dots\n\nEach workspace row shows a colored dot:\n\n- green — the agent is running\n",
+        },
+        {
+            "path": "src/legacy/old-status.js",
+            "status": "deleted",
+            "additions": 0,
+            "deletions": 3,
+            "oldContent": "function oldDot(s) {\n  return s.busy ? 'busy' : 'idle';\n}\n",
+            "newContent": "",
+        },
+    ])
+}
+
 /// Fixture backend so the sidebar renders (and mutates) real states before
 /// any backend exists. Single-threaded by design — it lives on the GTK main
 /// context, like every other `Backend`.
@@ -332,6 +379,7 @@ impl Default for MockBackend {
                 next_id: 1,
                 accounts: mock_accounts(),
                 workspace_accounts: mock_workspace_accounts(),
+                run_live: HashMap::new(),
             }),
             events_tx,
             events_rx,
@@ -808,6 +856,141 @@ impl Backend for MockBackend {
                 Ok(Value::Null)
             }
             "openExternal" | "revealLogs" | "log" => Ok(Value::Null),
+
+            // ── B3 main-pane methods (diff / toolbar / banners) ─────────────
+            // (getUsage / getAccountUsage / getWorkspaceAccounts are B4's.)
+            // Full-content diff for the one dirty-worktree fixture: a modified
+            // TS file with intra-line word changes, an added markdown, and a
+            // deleted JS file (drives the side-by-side view + intra-line
+            // highlights + A/M/D classification).
+            "getDiff" => {
+                let id: String = Self::arg(&params, 0)?;
+                Ok(if id == "ws-1" {
+                    mock_diff_files()
+                } else {
+                    json!([])
+                })
+            }
+            "getRepoScripts" => {
+                let path: String = Self::arg(&params, 0)?;
+                let st = self.state.borrow();
+                Ok(st
+                    .repos
+                    .iter()
+                    .find(|r| r.path == path)
+                    .and_then(|r| r.scripts.clone())
+                    .map(|s| serde_json::to_value(s).unwrap())
+                    .unwrap_or_else(|| json!({})))
+            }
+            // switchBranch mirrors renameBranch's mutation but is the toolbar's
+            // branch-picker entry point.
+            "switchBranch" => {
+                let id: String = Self::arg(&params, 0)?;
+                let branch: String = Self::arg(&params, 1)?;
+                let ws = self.update_ws(&id, |w| {
+                    w.branch = branch.clone();
+                    w.branch_manually_set = Some(true);
+                })?;
+                Ok(serde_json::to_value(&ws).unwrap())
+            }
+            // listBranches is the toolbar picker's source (listRepoBranches is
+            // the sidebar's new-workspace picker — same fixture list).
+            "listBranches" => Ok(json!(["master", "develop", "release/0.5", "spike/vte"])),
+            "restartAgent" => Ok(Value::Null),
+
+            // Run-script toggle (per-workspace live flag).
+            "runScriptStatus" => {
+                let id: String = Self::arg(&params, 0)?;
+                Ok(json!(*self.state.borrow().run_live.get(&id).unwrap_or(&false)))
+            }
+            "runScriptStart" => {
+                let id: String = Self::arg(&params, 0)?;
+                self.state.borrow_mut().run_live.insert(id, true);
+                Ok(json!(true))
+            }
+            "runScriptStop" => {
+                let id: String = Self::arg(&params, 0)?;
+                self.state.borrow_mut().run_live.insert(id, false);
+                Ok(json!(true))
+            }
+
+            // Setup banner: log tail + retry (ws-4 failed, ws-5 running).
+            "readSetupLog" => {
+                let id: String = Self::arg(&params, 0)?;
+                Ok(match id.as_str() {
+                    "ws-5" => json!(
+                        "$ pnpm install\nProgress: resolved 812, reused 800, downloaded 12\nLinking dependencies...\n"
+                    ),
+                    "ws-4" => json!(
+                        "$ pnpm install\nnpm ERR! network request to registry failed\npnpm install exited 1\n"
+                    ),
+                    _ => json!(""),
+                })
+            }
+            "retrySetup" => {
+                let id: String = Self::arg(&params, 0)?;
+                self.update_ws(&id, |w| {
+                    w.setup_status = Some(orchestra_rpc::types::SetupStatus::Running);
+                    w.setup_error = None;
+                })?;
+                Ok(Value::Null)
+            }
+
+            // Prompt queue (ws-2 seeded with two prompts + a pinned account).
+            "queuePrompt" => {
+                let id: String = Self::arg(&params, 0)?;
+                let text: String = Self::arg(&params, 1)?;
+                let ws = self.update_ws(&id, |w| {
+                    let mut q = w.queued_prompts.take().unwrap_or_default();
+                    let n = q.len() + 1;
+                    q.push(orchestra_rpc::types::QueuedPrompt {
+                        id: format!("q{n}"),
+                        text: text.clone(),
+                        queued_at: now_ms(),
+                    });
+                    w.queued_prompts = Some(q);
+                })?;
+                Ok(serde_json::to_value(&ws).unwrap())
+            }
+            "removeQueuedPrompt" => {
+                let id: String = Self::arg(&params, 0)?;
+                let pid: String = Self::arg(&params, 1)?;
+                self.update_ws(&id, |w| {
+                    if let Some(q) = w.queued_prompts.as_mut() {
+                        q.retain(|p| p.id != pid);
+                    }
+                })?;
+                Ok(Value::Null)
+            }
+            "flushQueuedPrompts" => {
+                let id: String = Self::arg(&params, 0)?;
+                let mut delivered = 0u64;
+                self.update_ws(&id, |w| {
+                    delivered = w.queued_prompts.take().map(|q| q.len() as u64).unwrap_or(0);
+                })?;
+                Ok(json!({ "ok": true, "delivered": delivered }))
+            }
+
+            // Sandbox read-only bar (ws-mc-sb1 / ws-mc-sb2 are sandbox-hosted;
+            // this machine is not the driver).
+            "sandboxControlState" => {
+                let id: String = Self::arg(&params, 0)?;
+                Ok(if id == "ws-mc-sb1" || id == "ws-mc-sb2" {
+                    json!({
+                        "endpoint": SANDBOX_A,
+                        "driverId": "lucas-desktop",
+                        "driverName": "lucas-desktop",
+                        "isDriver": false,
+                    })
+                } else {
+                    Value::Null
+                })
+            }
+            "takeSandboxControl" => Ok(Value::Null),
+
+            // Merge is delegated to the agent → { status: "requested" }.
+            "mergeWorktree" => Ok(json!({ "status": "requested" })),
+
             _ => Err(BackendError::NotWired(
                 "mock backend does not serve this method",
             )),

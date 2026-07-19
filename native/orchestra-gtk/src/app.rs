@@ -14,11 +14,14 @@ use gtk::glib;
 use gtk::prelude::*;
 use relm4::prelude::*;
 
+use orchestra_rpc::types::Workspace;
 use orchestra_rpc::{BackendKind as RemoteKind, ConnectionState};
 
 use crate::accounts::AccountsController;
 use crate::backend::{self, Backend, BackendEvent, BackendKind, MockBackend, RpcBackend};
+use crate::ctx::Ctx;
 use crate::dialogs;
+use crate::main_pane::MainPane;
 use crate::remote_control;
 use crate::sidebar::{Sidebar, SidebarInit};
 use crate::state::{self, UiState, WindowGeometry};
@@ -36,6 +39,14 @@ pub struct App {
     /// the usage-bars strip in the sidebar footer and every accounts window;
     /// the backend event pump + login PTY bytes are forwarded here.
     accounts: Option<Rc<AccountsController>>,
+    /// Shared backend seam for the main-pane widget tree (toolbar / diff /
+    /// banners) — App keeps its backend in sync via [`Ctx::set_backend`].
+    ctx: Rc<Ctx>,
+    /// The main pane (toolbar + banners + view stack), mounted in overlay_host.
+    main_pane: Rc<MainPane>,
+    /// Mirror of the workspace list so App can resolve an activated id (from
+    /// the sidebar) to a full record for the main pane.
+    workspaces: Vec<Workspace>,
     state: Rc<RefCell<UiState>>,
     state_path: PathBuf,
     /// Debounce generation for state saves: each change bumps it; only the
@@ -313,24 +324,13 @@ impl SimpleComponent for App {
                     // Overlay host (plan §5.3): Resources / Insights / Help
                     // attach as overlay children in M2 — overlays must never
                     // unmount the main area, hence the GtkOverlay layering
-                    // exists from day one.
+                    // exists from day one. B3's MainPane (toolbar + banners +
+                    // view stack) mounts here after init (it needs the toplevel
+                    // window for its Ctx).
+                    #[name = "overlay_host"]
                     #[wrap(Some)]
                     set_end_child = &gtk::Overlay {
                         set_widget_name: "overlay-host",
-
-                        #[wrap(Some)]
-                        set_child = &gtk::Box {
-                            add_css_class: "main-area",
-                            set_widget_name: "main-area",
-
-                            gtk::Label {
-                                set_widget_name: "main-empty",
-                                set_label: "Select a workspace — terminals arrive with the M2 workstreams",
-                                add_css_class: "empty-hint",
-                                set_hexpand: true,
-                                set_vexpand: true,
-                            },
-                        },
                     },
                 },
 
@@ -486,9 +486,46 @@ impl SimpleComponent for App {
             )
         });
 
+        // Shared context + main pane (toolbar / banners / view stack). The Ctx
+        // is the single seam every main-pane widget calls through; it holds the
+        // toplevel window (dialog parent + visible-poll gate) and the backend.
+        let ctx = Ctx::new(widgets.main_window.clone().upcast::<gtk::Window>());
+        ctx.set_backend(backend.clone());
+        {
+            // A mutation that returns an updated Workspace (switchBranch,
+            // queuePrompt) re-enters the loop as a synthesized workspaceUpdate,
+            // so the sidebar + main pane refresh together off the one fan-out.
+            let sender = sender.clone();
+            ctx.set_on_workspace_mutated(move |ws| {
+                sender.input(Msg::BackendEvent(BackendEvent::Event {
+                    channel: "workspaceUpdate".into(),
+                    args: vec![serde_json::to_value(ws).unwrap_or(serde_json::Value::Null)],
+                }));
+            });
+        }
+        let main_pane = MainPane::new(ctx.clone());
+        widgets.overlay_host.set_child(Some(main_pane.widget()));
+
+        // Point the main pane at the persisted (or first) workspace so it isn't
+        // empty on launch; the sidebar drives it thereafter via WorkspaceActivated.
+        let workspaces = backend
+            .as_ref()
+            .and_then(|b| b.list_workspaces().ok())
+            .unwrap_or_default();
+        let initial = state
+            .borrow()
+            .last_active_workspace
+            .as_ref()
+            .and_then(|id| workspaces.iter().find(|w| &w.id == id).cloned())
+            .or_else(|| workspaces.first().cloned());
+        main_pane.set_active(initial);
+
         let model = App {
             backend,
             accounts,
+            ctx,
+            main_pane,
+            workspaces,
             state,
             state_path,
             save_generation: Rc::new(Cell::new(0)),
@@ -549,6 +586,7 @@ impl SimpleComponent for App {
                         &self.sidebar_footer,
                         &self.accounts_button,
                     ));
+                    self.ctx.set_backend(Some(b.clone()));
                     self.backend = Some(b.clone());
                     self.retry_active.set(false);
                     self.banner.set_reveal_child(false);
@@ -557,6 +595,7 @@ impl SimpleComponent for App {
                     // forwards frames, so the sidebar does not pump itself.
                     self.sidebar.emit(crate::sidebar::Msg::Attach(b));
                     self.footer_label.set_label(&footer_text(&self.backend));
+                    self.reselect_active();
                 }
             }
             Msg::FocusChanged(focused) => {
@@ -586,6 +625,7 @@ impl SimpleComponent for App {
                     // Terminal: the client gave up (or the close was
                     // deliberate). Drop it and fall back to discovery.
                     self.backend = None;
+                    self.ctx.set_backend(None);
                     // Tear down the accounts controller with the backend: its
                     // usage strip is unmounted below by the fresh attach on
                     // reconnect. Dropping it here stops its minute-tick timer.
@@ -605,6 +645,9 @@ impl SimpleComponent for App {
                 // we forward the raw frame rather than mutating a duplicate list.
                 let BackendEvent::Event { channel, args } = &ev;
                 eprintln!("[backend] event '{channel}'");
+                // Fan out to the main pane (B3): workspaceUpdate → toolbar/
+                // banners, ptyExit → run toggle, sandboxControl → sandbox bar.
+                self.dispatch_to_main_pane(channel, args);
                 // Fan out to the accounts controller: decode a COPY so the raw
                 // frame can still go to the sidebar (which decodes its own
                 // workspace:update/removed via apply_event). The controller
@@ -630,11 +673,13 @@ impl SimpleComponent for App {
                 }
             }
             Msg::WorkspaceActivated(id) => {
-                // The sidebar announced a row-select. Retarget the usage strip
-                // to that workspace's login; B3's main pane hangs its
-                // set_active(id) here too. last_active_workspace is already
-                // persisted by the sidebar itself.
+                // The sidebar announced a row-select. Point the main pane at it
+                // (§5.3 setActive: diff/toolbar/banners + markSeen), and retarget
+                // the usage strip to that workspace's login. last_active_workspace
+                // is already persisted by the sidebar itself.
                 eprintln!("[shell] workspace activated: {id}");
+                let ws = self.workspaces.iter().find(|w| w.id == id).cloned();
+                self.main_pane.set_active(ws);
                 if let Some(accounts) = &self.accounts {
                     accounts.set_active_workspace(Some(id));
                 }
@@ -650,6 +695,62 @@ impl SimpleComponent for App {
 }
 
 impl App {
+    /// Route a decoded backend event to the main pane, then keep App's own
+    /// workspace mirror current. Only the channels the main pane consumes are
+    /// handled here; the sidebar + accounts own the rest via their own fan-out.
+    fn dispatch_to_main_pane(&mut self, channel: &str, args: &[serde_json::Value]) {
+        match channel {
+            // workspaceUpdate: a single Workspace record changed.
+            "workspaceUpdate" => {
+                if let Some(ws) = args
+                    .first()
+                    .and_then(|v| serde_json::from_value::<Workspace>(v.clone()).ok())
+                {
+                    if let Some(slot) = self.workspaces.iter_mut().find(|w| w.id == ws.id) {
+                        *slot = ws.clone();
+                    } else {
+                        self.workspaces.push(ws.clone());
+                    }
+                    self.main_pane.on_workspace_changed(&ws);
+                }
+            }
+            // ptyExit: (ptyId) — clears the run toggle when the run pty exits.
+            "ptyExit" => {
+                if let Some(id) = args.first().and_then(|v| v.as_str()) {
+                    self.main_pane.on_pty_exit(id);
+                }
+            }
+            // sandboxControl: SandboxControlState — drives the read-only bar.
+            "sandboxControl" => {
+                if let Some(state) = args.first().and_then(|v| {
+                    serde_json::from_value::<orchestra_rpc::types::SandboxControlState>(v.clone())
+                        .ok()
+                }) {
+                    self.main_pane.on_sandbox_control(state);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Re-resolve the persisted active workspace against a freshly-attached
+    /// backend and point the main pane at it.
+    fn reselect_active(&mut self) {
+        self.workspaces = self
+            .backend
+            .as_ref()
+            .and_then(|b| b.list_workspaces().ok())
+            .unwrap_or_default();
+        let active = self
+            .state
+            .borrow()
+            .last_active_workspace
+            .as_ref()
+            .and_then(|id| self.workspaces.iter().find(|w| &w.id == id).cloned())
+            .or_else(|| self.workspaces.first().cloned());
+        self.main_pane.set_active(active);
+    }
+
     /// 3 s discovery poll while no backend is attached. Idempotent: a loop
     /// already running keeps its timer; `retry_active` is the single switch.
     fn start_retry_loop(retry_active: &Rc<Cell<bool>>, sender: &ComponentSender<Self>) {
