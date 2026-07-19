@@ -299,8 +299,17 @@ SIGWINCH repaint bounce, sandbox reconnect banners, `pty:stopped` semantics.
 `DiffView.tsx`, `BranchPicker.tsx`, `Dialog.tsx`, `SetupBanner.tsx`)
 
 - ☐ Toolbar: base→feature branch chip (BranchPicker dropdown: searchable
-  branch list, current-first, `switchBranch`); tabs Terminal / Diff / Run
-  (Run only when run script configured); restart-agent button
+  branch list, current-first, `switchBranch`); tabs Terminal / Diff / Run.
+  **Corrected by the M3 audit** — this previously read "Run only when run
+  script configured", which is WRONG: Electron deliberately keeps the Run tab
+  VISIBLE without a run script (`App.tsx:475-494`, with an explicit intent
+  comment: "Tab stays visible without a run script so users notice the
+  affordance and discover the gear-icon entry point"), rendering a dim
+  "· setup" hint and a "click to learn more" tooltip — it is the discovery
+  path into the scripts modal. Only the run start/stop TOGGLE is gated on
+  `has_run`. Hiding the tab removes the sole entry point for a user who has
+  not configured a run script yet.
+  Restart-agent button
   (`restartAgent`); run start/stop toggle; PR button (state from `findPR`,
   click opens PR / creation URL); nvim toggle; workspace title.
 - ☐ Diff view: file list with +/- badges & A/M/D classification; side-by-side
