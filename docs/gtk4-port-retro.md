@@ -94,6 +94,39 @@ by the plan and the audit.
     (Same pattern as the `listBranches` comment documenting the *sibling*
     method's contract.) Fix the comment with the code, every time.
 
+## Agent self-assessment (B6, volunteered)
+
+Recorded because an agent's own account of where it wasted effort is worth more
+than the coordinator's guess, and because two of these trace back to me.
+
+14. **Half the M3 effort went into the instrument, not the product** — stale
+    wayland sockets, leaked processes, a process-group kill that silently killed
+    the runner, a fake backend that hung once the app *attached* rather than
+    probed. All real bugs, all discovered reactively one failed run at a time. A
+    ten-minute harness audit before trusting its first negative would have found
+    most of them together.
+
+15. **Tested inside a framing instead of against the code.** The audit said "P2,
+    one-line fix, ~3 min latency", so the first window was 60s — inside a 180s
+    backoff — then widened reactively to 120s and 220s. Reading `BackoffPolicy`
+    takes one grep. *This one is substantially mine*: I relayed the audit's
+    framing as the brief without questioning it, and later compounded it by
+    asking for "the observed re-attach time" as though recovery were established.
+
+16. **Fixed an instance and called it a class.** The env-leak flake was the same
+    defect already hit and fixed on the orchestra-gtk side earlier in the wave;
+    nobody asked "where else does this shape exist" until the verifier found it
+    in `orchestra-rpc`. The class audit took two minutes when finally run.
+
+17. **The first fix for that regression made it worse** — setting an env var in
+    a threaded suite broke two more tests. Right instinct (smallest change),
+    wrong not to ask whether the mechanism being used carried the same hazard as
+    the bug being fixed.
+
+B6's own through-line: *reactive where a cheap upfront read would have been
+decisive — audit the instrument, read the policy, grep the class.* That
+generalizes past this agent and past this port.
+
 ## The through-line
 
 Every false verdict this swarm nearly shipped came from **evidence that looked
