@@ -43,9 +43,23 @@ class FrameDecoder {
   }
 }
 
+/** Benign default result for a method the attach path calls during hydration.
+ *  Lists → [], app:info → a minimal record, everything else → null. A scenario
+ *  can override any method via opts.methods[name] (a value or a fn(params)). */
+function methodResult(method, overrides = {}) {
+  if (Object.prototype.hasOwnProperty.call(overrides, method)) {
+    const v = overrides[method];
+    return typeof v === 'function' ? v() : v;
+  }
+  if (/^list/i.test(method) || method === 'getAllAccountUsage') return [];
+  if (method === 'app:info') return { version: '9.9.9', backendKind: 'daemon' };
+  return null;
+}
+
 /** Start a fake backend. Returns { sock, close() }. Options:
  *  proto (default 1), appVersion (default '9.9.9'), backendKind
- *  ('electron'|'daemon'), and onHello(frame) for assertions. */
+ *  ('electron'|'daemon'), onHello(frame) for assertions, and methods{} to
+ *  override individual method results (value or fn). */
 export function startFakeBackend(sockPath, opts = {}) {
   const { proto = 1, appVersion = '9.9.9', backendKind = 'daemon', onHello } = opts;
   try {
@@ -61,9 +75,17 @@ export function startFakeBackend(sockPath, opts = {}) {
           if (onHello) onHello(frame);
           conn.write(encodeJson({ t: 'helloOk', proto, appVersion, backendKind }));
         }
-        // ping → pong keeps a probe-only connection from timing out; the probe
-        // closes right after helloOk, so this is belt-and-suspenders.
+        // ping → pong keeps a live connection from timing out.
         if (frame.t === 'ping') conn.write(encodeJson({ t: 'pong' }));
+        // Answer every method call so a client that ATTACHES (not just probes)
+        // doesn't block on init-time hydration (listWorkspaces/listRepos/…, the
+        // accounts bootstrap). A benign empty result is enough for the
+        // handshake/lifecycle scenarios — they assert on the footer/dialogs, not
+        // on workspace content. `methods` lets a scenario override specifics.
+        if (frame.t === 'req') {
+          const result = methodResult(frame.method, opts.methods);
+          conn.write(encodeJson({ t: 'res', id: frame.id, ok: true, result }));
+        }
       }
     });
     conn.on('error', () => {});

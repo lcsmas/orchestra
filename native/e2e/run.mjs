@@ -239,11 +239,14 @@ scenario(
 );
 
 // ---------------------------------------------------------------------------
-// Scenario: coexistence — Electron + GTK live, update visible in both within
-// 1s; PTY typed from either renders in both. SKIPPED until the persistent
-// RpcBackend transport lands (sibling workstream): the GTK app currently
-// attaches via a one-shot handshake probe and its RpcBackend is A3's NotWired
-// stub, so it carries no live workspace/PTY traffic yet. Harness is ready.
+// Scenario: coexistence — Electron + GTK attached to the SAME home, a change
+// visible in both within 1s and a PTY typed from either rendering in both.
+// SKIPPED: the single-consumer fan-out this depends on is now MERGED and is
+// already covered end-to-end against a real daemon by the B1 live-daemon
+// scripts (native/orchestra-gtk/scripts/sidebar_{live_drive,late_attach}.sh —
+// see README). What remains is driving BOTH an Electron instance and the GTK
+// app simultaneously and asserting cross-mirroring, which needs an Electron
+// build in the loop; that's future work, not a gap in the merged transport.
 // ---------------------------------------------------------------------------
 scenario(
   'coexistence-live-update',
@@ -252,9 +255,9 @@ scenario(
   },
   {
     skip: () =>
-      'persistent RpcBackend transport not merged yet — the GTK app attaches via a one-shot ' +
-      'handshake probe (backend::probe_backend); live workspace/PTY mirroring needs the sibling ' +
-      "transport workstream. Harness (launchGtk + fake-backend) is in place for when it lands.",
+      'Electron+GTK SIMULTANEOUS mirroring needs an Electron instance in the loop (future work). ' +
+      'The underlying single-consumer fan-out IS merged and is covered against a real daemon by ' +
+      'native/orchestra-gtk/scripts/sidebar_{live_drive,late_attach}.sh (see README).',
   },
 );
 

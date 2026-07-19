@@ -475,7 +475,7 @@ SIGWINCH repaint bounce, sandbox reconnect banners, `pty:stopped` semantics.
 
 | Risk | Level | Mitigation |
 |---|---|---|
-| VTE feed-mode gaps (mode 2026 through feed, huge replays) | M | M2 spike week 1: replay real Claude PTY logs through feed-mode VTE (the terminal-garble playbook's corpus); fallback = port write-queue holding logic |
+| ~~VTE feed-mode gaps (mode 2026 through feed, huge replays)~~ | ~~M~~ **RESOLVED** | **B2 spike `cc2266d`: VTE handles feed-mode natively, no write-queue port.** VTE source: `feed()` + PTY reader share one parser + one redraw scheduler (each drain = one atomic repaint). Empirical: feed-vs-spawn on 2 real Claude logs + a hostile synthetic ?2026 stream, all 6 cases `dips=0`, pixel-identical. |
 | WebKitGTK OAuth acceptance (Google embedded-webview blocks) | M/H | mirror UA strategy; system-browser escape hatch exists; worst case documented manual flow (matches the known attestation wall) |
 | serde/type drift over time | M | fixtures in CI both sides; unknown-field tolerance; protocol version handshake |
 | api-handlers refactor destabilizes Electron app | M | mechanical extraction PR gated on full existing test suite + `app-e2e.mjs`; zero behavior changes allowed in that PR |
@@ -536,10 +536,177 @@ Interface discipline: B-agents may NOT touch `orchestra-rpc` types or the
 protocol; contract changes go through the orchestrator (one PR, fixtures
 regenerated, both sides updated atomically).
 
+#### M2 live progress (integration branch `gtk4-native-port`)
+
+Checkpoint = agent-reported milestone; Verified = verifier PASS with viewed
+evidence; Merged = on `gtk4-native-port`.
+
+- **B2 RpcBackend** — MERGED `1ca3b8d`. RpcClient-backed `Backend`
+  selectable alongside `MockBackend`. Verifier PASS: live daemon on seeded temp
+  `ORCHESTRA_HOME`, GTK in headless sway connected (footer `backend: daemon
+  v0.5.84`), `markSeen()` → broadcast `workspace:update` → sidebar re-render
+  (YELLOW/waiting → GRAY/idle, screenshots viewed). Unblocked B1/B3/B4/B5.
+- **B2 ?2026 spike** — RESOLVED `cc2266d`: **VTE handles feed-mode natively,
+  no term-write-queue port needed** (the plan's #1 technical risk, retired).
+  Two proofs: VTE source shows `feed()` and the PTY reader share one parser +
+  one redraw-batching scheduler (each incoming-queue drain = one atomic
+  repaint, path-independent; ?2026 is a documented NOP but tearing is moot);
+  empirical feed-vs-spawn on 2 real Claude logs + a hostile synthetic ?2026
+  stream, all 6 cases `dips=0` and pixel-identical final frames.
+- **B1 sidebar** — MERGED `971e8c7` (full §5.1 at `f767dea` + dnd/E2E/2
+  bugfixes/theme.css at `dd0ec1c`, 48 tests). Coordinator resolved the merge
+  (event-ownership contract below); build + 48 tests green. B1 driving a
+  live-daemon variant of `sidebar_e2e.sh`; verifier doing the clippy/fmt gate.
+- **B4 accounts/login/usage** — checkpoint `53ae51f`, merged the integration
+  branch clean. UsageBars, AccountsSettings CRUD, AccountLoginModal (inline
+  feed-VTE), WebKitGTK OAuth window (per-account persistent partition),
+  account badge/menu. Verified compliant with the event-ownership rule
+  (`call()`/`pty_write()` only; forwards via App fan-out). Independently
+  converged on the canonical `Msg::PtyData` terminal seam (matches B2).
+  Finding relayed to B6: rootless WebKit needs a bwrap bind of the localdeps
+  `libexec` over `/usr/libexec` (compiled-in path).
+- **B5 resources/insights/help/sound** — checkpoint `69c8504`, merged clean
+  (`2d614e9`). Overlays + chime-gen + `sound.rs`/`notify.rs`. Verified
+  compliant: Insights streams via App fan-out (`overlays.dispatch(&ev)`),
+  Resources polls `sampleResources` via `call()`, `uiNotify`→GNotification,
+  `agentFinished{focused:false}`→chime all off the same fan-out. 30 tests.
+- **B3 diff+toolbar** — DONE (pending live merge) `70293c4`: full §5.3
+  main-pane — toolbar (base→branch chips, reusable `BranchPopoverPanel`,
+  Terminal/Diff/Run tabs, PR/Merge/restart/run), side-by-side GtkSourceView
+  diff (A/M/D, scroll-lockstep, intra-line word highlights, 4s visible poll),
+  three banners. 35 tests. Given the Rc-app-wide + event-ownership rulings;
+  re-applying its `Ctx`/MainPane glue against the merged branch.
+- **B6 packaging/e2e** — checkpoint `302bcff`: `ORCHESTRA_HOME` fixes (logger
+  `7f3f1ac` + `pty.ts:74` `cade9cb`), daemon auto-spawn/handshake/refusal
+  dialogs, `build.rs` version lockstep, packaging (`.desktop`, `@resvg`
+  icons, `release.sh --with-gtk` additive), `native.yml` CI (fedora:42
+  x64+arm64, fmt/clippy/test/release + TS + fixtures-drift + conformance).
+  Finishing the `native/e2e/` suite.
+
+##### Merge sequencing (app.rs seam serialization)
+
+B2/B3/B4/B5/B6 all edit `app.rs` (`spawn_backend_streams` + the `Msg` enum) and
+`backend.rs`, so merges are **serialized** — each agent rebases onto the prior
+merge and reconciles the seam once, rather than a five-way collision. Order:
+**B4 → B3 → B2 → B5 → B6** (B2 after B3 because its terminal stack mounts inside
+B3's MainPane Terminal tab — the pane must exist first; B2's Backend-trait
+additions are all *defaulted* methods, so additive/non-breaking). The
+coordinator owns the `spawn_backend_streams`/trait seam resolution; each agent
+owns the reconciliation of its own handler regions.
+
+Coordinator gate note: rustfmt 1.95 is now rootless-extracted into
+`native/.localdeps/rusttools` (gitignored), so the coordinator runs
+`cargo fmt -p orchestra-gtk --check` on every merged tip before handing to the
+verifier — closing the gap where a merge-assembly fmt artifact (an unformatted
+folded-in mock arm) slipped into the B3 tip and cost one FAIL round-trip.
+
+Two contract additions landed on the integration branch to support this:
+- `Msg::PtyData(id, bytes)` — the canonical terminal seam (B2 and B4 converged
+  on it independently). `spawn_backend_streams`' `pty_data()` drain forwards it;
+  consumers (`TerminalStack::feed`, accounts `handle_pty_data`) receive it,
+  never opening their own `pty_data()` pump.
+- `Sidebar::Output::WorkspaceActivated(String)` (`40d88b6`) — the sidebar→main
+  -pane selection channel (B3's `set_active` hangs off App's forwarded
+  `Msg::WorkspaceActivated`), so B3 doesn't store-poll `last_active_workspace`.
+
+Status snapshot: **B1 MERGED + live-verified** (three live fan-out proofs:
+verifier `markSeen`→idle, B1 `setUnread`→unread, B1 late-attach). **B4 MERGED**
+(`072f7ab` — folded its inline accounts-mock into `backend/mock.rs`, resolved
+the app.rs seam self; single-consumer property verified in the merged tree,
+61 tests; dual-consumer live re-verify in flight). **B5 verified** (`eb31b26`
+— color-discipline + event-ownership confirmed). **B6 verified** (`2145556` —
+both `src/main` `ORCHESTRA_HOME` fixes + fixtures-drift triple-checked).
+**B3 MERGED** (`5719b0e` — MainPane + toolbar + side-by-side diff + banners;
+resolved own regions only, no second events() consumer. Integration surfaced a
+real cross-module bug per-branch verify couldn't: B3's queue banner
+deserialized `getWorkspaceAccounts` as `Vec`, but the wire contract
+(`ipc.ts:112`) + B4's mock return a `Record<id,WorkspaceAccount>` **map** —
+fixed to parse the map, verified live ws-2→acc-perso 93%. Left named empty
+slots `main-terminal-slot`/`main-run-slot` for B2 to mount into.) **B2 DONE**
+(`197aba1` — full §5.2 terminal stack live-verified: ptyData→VTE feed renders
+real agent output with no tearing, confirming the ?2026 verdict live; boot
+pill, Orchestra Symbols mono, Agent/Run/nvim toolbar w/ real nvim, kept-alive
+scrollback, keyboard/clipboard/URL parity; 15 tests. Merges after B3 — its
+terminal mounts in B3's MainPane Terminal tab).
+
+All six branches passed **per-branch** verification. Remaining work is the
+serialized merge assembly (B4 done → B3 → B5 → B6), each merged tip getting a
+dual-consumer live re-verify (prove sidebar AND accounts/overlay fan-outs both
+fire off the single consumer — the exact failure a competing pump would show).
+
+Integration tip: **`a41fde7`** — ALL FIVE UI feature surfaces integrated
+(sidebar + accounts + main-pane/toolbar/diff + terminal, on the RpcBackend
+transport). B2's terminal merged as the last feature surface: reused B4's
+canonical `Msg::PtyData` (feed alongside `accounts.handle_pty_data` — the pty
+routing split), deleted its redundant sink/toolbar (B3 owns tabs), reworked to
+`Rc<Ctx>` per-call (honors the reconnect stale-handle constraint), mounted into
+B3's `terminal_slot()`/`run_slot()`. Coordinator gates (now incl. the fmt gate
+I run myself): build --all-targets + fmt --check clean, 89 tests. Four-consumer
++ two-direction-reconnect live re-verify in flight.
+
+**B5 overlays MERGED (`057833c`) — the ENTIRE GTK UI is now assembled**:
+sidebar + accounts + main-pane/toolbar/diff + terminal + resources/insights/
+help/sound overlays, all on the RpcBackend. The `Msg::BackendEvent` handler is
+a SINGLE arm with ONE decode fanning to all five UI consumers
+(`dispatch_to_main_pane` + `accounts.handle_event` + `overlays.dispatch` +
+notify/chime + `sidebar.emit`) — the event-ownership architecture scaled
+cleanly to the full UI. Overlays layer via `add_overlay` (never unmount).
+Five-consumer + overlay-doesn't-tear-down-terminal live re-verify in flight.
+
+Remaining: **B6** (packaging/CI/E2E + the two `src/main` fixes) — the LAST
+merge; wraps the daemon-attach lifecycle around the assembled seam, folds B1's
+live-fan-out harness scripts into `native/e2e/`. Already per-branch verified.
+
+Tips verified: `a41fde7` (B2, four-consumer + PTY-feed + reconnect PASS),
+`26d30de` (B3, triple-consumer PASS), `33305ab` (B4, dual-consumer PASS —
+coexistence central risk closed).
+
+**Coexistence central risk CLOSED** (verifier `b4-merge` PASS on the first
+≥2-module tip, live daemon): two independent daemon mutations — `markSeen`
+(→ sidebar dot) and `refreshAccounts` (→ accounts strip) — both fired off the
+*single* `spawn_backend_streams` consumer, each logged once, **neither surface
+went dark**. Seam grep confirms exactly one production consumer per stream.
+This proves the load-bearing property of the whole electron-coexists-with-GTK
+design: N feature modules fan out from one backend consumer without stealing
+each other's frames. Each further merged tip re-checks this with one more
+surface (B3 adds the main pane → a triple-consumer assertion).
+
+Post-M2 follow-up landed: B4's GTK port of the just-shipped Electron
+`usage-bar-extra-credits` feature merged (`33305ab`) as an isolated delta
+(only `accounts/usage_bars.rs` + `smoke-accounts.sh`) — behavioral match to
+Electron `10460f7` (EX/ex labels, conditional show, no-reset tooltip, shared
+severity). Integration tip is now `33305ab`.
+
+##### Event-ownership contract (settled during B1 integration)
+
+`async_channel` is **MPMC**: two `recv()` loops on receiver clones
+round-robin, each dropping ~half the frames. So **`App` owns the single
+consumer of every backend stream** (`spawn_backend_streams`: `events()` →
+`Msg::BackendEvent`, `connection_state()` → `Msg::Connection`, `pty_data()`
+→ `Msg::PtyData`) and **fans each frame out** to the component that needs it
+(sidebar via `Msg::Backend`, accounts via `handle_event`/`handle_pty_data`,
+insights via `overlays.dispatch`, terminals via `TerminalStack::feed`).
+Components **must not call `backend.events()`/`pty_data()`/`connection_state()`
+themselves** — they receive already-forwarded frames and send intents back out
+through a sink (`Msg::Pane` → `App` calls `pty_write`/`pty_start`/…, backend
+single-owned in `App`). The backend seam is `Rc<dyn Backend>` app-wide so the
+shell can share one connection across sidebar + panes + controllers.
+
 ### M3 — parity audit
 One agent walks every ☐ in §5 against the live app pair (Electron vs GTK,
 same seeded home), files gaps, orchestrator triages, B-agents fix. Release
 gate: ledger 100 %, coexistence tests green, docs done.
+
+Integration-surfaced M3 items (found during the serialized merge):
+- **Daemon-restart reconnect latency** (verifier, b2-merge): the ui-rpc socket
+  is PID-keyed (`orchestra-ui-<pid>.sock`), so a daemon restart = a NEW socket
+  path. The RpcClient redials the OLD path with 1→2→4…30s backoff for ~3 min
+  (`orchestra-rpc client.rs:54`) before giving up → `Disconnected` →
+  rediscovery of the new socket. Net: after an Electron/daemon restart the GTK
+  app can sit "reconnecting" for up to 3 minutes. Likely fix: while
+  reconnecting, also poll the `ui-sock` pointer file for a CHANGED path and
+  redial the new socket immediately (race rediscovery against the backoff)
+  rather than waiting the backoff out. Coexistence rough edge, not a blocker.
 
 Fixture-corpus extension (from the M1 A1 report — diff/branch shapes are
 already captured off a seeded dirty repo; `fixtures/manifest.json` lists the

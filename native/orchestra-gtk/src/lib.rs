@@ -3,12 +3,25 @@
 //! Library + thin binary split so the modules are unit-testable and the
 //! dead-code lint sees the public surface M2 workstreams will consume.
 
+pub mod accounts;
 pub mod app;
 pub mod backend;
+pub(crate) mod backend_fixtures;
+pub mod banners;
+pub mod ctx;
 pub mod daemon;
 pub mod dialogs;
+pub mod diff;
+pub mod main_pane;
+pub mod notify;
+pub mod overlays;
 pub mod remote_control;
+pub mod sidebar;
+pub mod sound;
 pub mod state;
+pub mod terminal;
+pub mod toolbar;
+pub mod usage_limit;
 
 /// The product version (repo package.json, injected by build.rs — plan §9
 /// version lockstep). This is what goes into `hello.appVersion`, the footer,

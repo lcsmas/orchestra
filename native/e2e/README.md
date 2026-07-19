@@ -34,7 +34,28 @@ an unmerged workstream **skips with a reason** instead of failing.
 | `appversion-warning-nonfatal` | ✅ runs | proto = 1 but appVersion differs → **warning** dialog, attach still proceeds |
 | `daemon-auto-spawn` | ✅ runs | no socket → `$ORCHESTRA_DAEMON_CMD` spawn → wait for ui-sock → attach; spawn log lands under the isolated `ORCHESTRA_HOME` |
 | `backend-lock-mutual-exclusion` | ✅ runs (needs `dist-electron/daemon.js`) | a second backend refuses the home with "already owns" and exits non-zero; skips if the daemon bundle isn't built (`pnpm run build:daemon`) |
-| `coexistence-live-update` | ⏭️ skipped | Electron+GTK live mirroring (1 s update, PTY roundtrip) — needs the persistent `RpcBackend` transport (sibling workstream). Harness is ready; lights up when it lands. |
+| `coexistence-live-update` | ⏭️ skipped | Electron+GTK live mirroring (1 s update, PTY roundtrip) — a placeholder kept as a marker. The **live-daemon scripts below** already cover the single-consumer fan-out end to end against a real daemon; full Electron+GTK simultaneous mirroring is future work. |
+
+The fake backend answers the hello/helloOk handshake **and** every subsequent
+`req` with a benign empty `res`, so a scenario that ATTACHES (not just probes)
+doesn't block on init-time hydration (`listWorkspaces`, the accounts bootstrap).
+Override individual methods via `startFakeBackend(sock, { methods: {…} })`.
+
+## Live-daemon fan-out scripts (B1)
+
+Two bash drives under `native/orchestra-gtk/scripts/` exercise the real
+single-consumer fan-out against an actual `dist-electron/daemon.js` (no mock, no
+fake) in headless sway — they seed a throwaway `ORCHESTRA_HOME`, boot the
+daemon, drive the app via remote-control, mutate **through** the daemon, and
+assert the sidebar re-renders. Prereq: `pnpm run build:daemon`.
+
+| Script | Proves |
+|---|---|
+| `sidebar_live_drive.sh` | App launched WITH the daemon up → footer `backend: rpc/daemon`, seeded row renders, a through-daemon `setUnread` re-renders the dot via App→forward→sidebar (the events() fan-out delivers live frames). |
+| `sidebar_late_attach.sh` | App launched with NO backend → banner/`backend: none` → daemon appears → the 3 s `RetryDiscover` loop discovers it → `Msg::Attach` hydrates the sidebar (`refresh_snapshot`), then a through-daemon mutation still re-renders. Covers the discovery/auto-attach path. |
+
+Run: `bash native/orchestra-gtk/scripts/sidebar_live_drive.sh` (artifacts under
+`native/target/{live-drive,late-attach}/`).
 
 ## Why a custom harness (not CDP/Playwright)
 

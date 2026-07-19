@@ -1,0 +1,10 @@
+[package]
+name = "chime-gen"
+description = "Build-time chime synthesizer: renders src/renderer/chime.ts's recipes to WAV"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# No dependencies on purpose: this crate runs as a build-dependency of
+# orchestra-gtk, so every dep here lengthens every clean build of the app.
+[dependencies]

@@ -30,6 +30,16 @@ export function resolveGtkBin() {
   );
 }
 
+/** LD_LIBRARY_PATH additions for the rootless localdeps build. The binary links
+ *  gtksourceview5 / webkit6 / vte / gstreamer from native/.localdeps/prefix
+ *  (which has no system -devel), so those .so's must be findable at run time.
+ *  Returns '' on a system-lib box (CI) where the prefix doesn't exist — there
+ *  the system loader already resolves everything. Mirrors native/env.sh. */
+export function localdepsLibPath() {
+  const lib64 = path.join(REPO_ROOT, 'native', '.localdeps', 'prefix', 'usr', 'lib64');
+  return fs.existsSync(lib64) ? lib64 : '';
+}
+
 let tmpCounter = 0;
 export function mkTmp(prefix) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `orch-e2e-${prefix}-${process.pid}-${tmpCounter++}-`));
@@ -107,11 +117,16 @@ export async function launchGtk({ sway, env = {}, args = [], label = 'gtk' }) {
   const bin = resolveGtkBin();
   const rcSock = path.join(mkTmp(`${label}-rc`), 'rc.sock');
   const logs = [];
+  // Prepend the localdeps lib path so a rootless build finds its .so's
+  // (gtksourceview5/webkit6/vte/gstreamer); no-op on a system-lib box.
+  const ldExtra = localdepsLibPath();
+  const ldPath = [ldExtra, process.env.LD_LIBRARY_PATH].filter(Boolean).join(':');
   const child = spawn(bin, ['--remote-control', rcSock, ...args], {
     env: {
       ...process.env,
       WAYLAND_DISPLAY: sway.waylandDisplay,
       GDK_BACKEND: 'wayland',
+      ...(ldPath ? { LD_LIBRARY_PATH: ldPath } : {}),
       // Never DBus-activate a sibling; every run is its own process.
       ...env,
     },

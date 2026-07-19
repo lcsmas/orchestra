@@ -10,10 +10,6 @@ license.workspace = true
 # at run time without rebuilding.
 mock = []
 
-[build-dependencies]
-# build.rs reads the repo package.json version (plan §9 lockstep).
-serde_json.workspace = true
-
 [dependencies]
 orchestra-rpc = { path = "../orchestra-rpc" }
 serde.workspace = true
@@ -21,7 +17,22 @@ serde_json.workspace = true
 thiserror.workspace = true
 gtk.workspace = true
 relm4.workspace = true
-# Not used by the M1 skeleton yet: pinned now so the localdeps link chain is
-# exercised from day one; first consumed by the M2 terminal workstream (B2).
-vte4.workspace = true
+# The M2 terminal workstream (B2) consumes vte4. `v0_72` unlocks the newer VTE
+# API the terminal pane needs (OSC-8 hyperlink resolution via
+# `check_hyperlink_at`, added in v0_70) — the bundled VTE is 0.80.5, so the
+# feature is safely present at link time.
+vte4 = { workspace = true, features = ["v0_72"] }
+# B3 (diff + toolbar): side-by-side diff panes and intra-line word diffs.
+sourceview5.workspace = true
+similar.workspace = true
+# B4 (accounts/login): OAuth login window.
+webkit6.workspace = true
 async-channel.workspace = true
+# Chime playback (plan §5.5): pre-rendered WAVs through a playbin.
+gstreamer.workspace = true
+
+[build-dependencies]
+# build.rs reads the repo package.json version (plan §9 lockstep).
+serde_json.workspace = true
+# Renders the chime recipes into OUT_DIR at build time (no assets in git).
+chime-gen = { path = "../chime-gen" }
