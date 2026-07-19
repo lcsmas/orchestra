@@ -594,6 +594,12 @@ additions are all *defaulted* methods, so additive/non-breaking). The
 coordinator owns the `spawn_backend_streams`/trait seam resolution; each agent
 owns the reconciliation of its own handler regions.
 
+Coordinator gate note: rustfmt 1.95 is now rootless-extracted into
+`native/.localdeps/rusttools` (gitignored), so the coordinator runs
+`cargo fmt -p orchestra-gtk --check` on every merged tip before handing to the
+verifier — closing the gap where a merge-assembly fmt artifact (an unformatted
+folded-in mock arm) slipped into the B3 tip and cost one FAIL round-trip.
+
 Two contract additions landed on the integration branch to support this:
 - `Msg::PtyData(id, bytes)` — the canonical terminal seam (B2 and B4 converged
   on it independently). `spawn_backend_streams`' `pty_data()` drain forwards it;
