@@ -200,13 +200,31 @@ list row:selected label {
 .archived-bar-row {
   padding: 2px 6px;
 }
+/* Ported from Electron .repo-header (styles.css:942-951). The 14px inset
+   matches the row text inset so headers and rows share one left edge; the
+   bottom padding is asymmetric (3px vs 4px) exactly as authored.
+
+   NOTE ON THE CASCADE: these headers are GtkListBoxRows inside #sidebar-list,
+   so the generic `listbox row` rule also applies to them. This padding is
+   only correct once that generic rule is scoped out of #sidebar-list — the
+   inset below is measured against a row that contributes no padding or
+   margin of its own. Do not read the values here in isolation. */
 .repo-header, .host-group-header {
-  padding: 3px 6px;
+  padding: 4px 14px 3px;
 }
+/* Headers RECEDE as labels: small, uppercase, tracked out, dim. Previously
+   12px @text, which competed with the row names instead of sitting behind
+   them. font-size/letter-spacing/text-transform/color come from the PARENT
+   `.repo-header` rule in Electron (styles.css:946-950, inherited by the
+   label); `font-weight: 600` is .repo-name's own (styles.css:987-992) and is
+   kept. Applied directly to the label here because GTK inherits font
+   properties but the values belong on the text node either way. */
 .repo-name, .host-name {
-  color: @text;
+  color: @text_dim;
   font-weight: 600;
-  font-size: 12px;
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
 }
 .scratch-glyph { font-size: 12px; }
 .repo-collapse, .host-collapse {
@@ -488,24 +506,51 @@ list row:selected label {
 .archived-row { opacity: 0.8; }
 .ws-sub { color: @text_dim; font-size: 10px; }
 
-/* Env-notice tray. */
-.env-notices { padding: 4px 8px; }
-.env-notice {
-  background-color: alpha(@yellow, 0.1);
-  border: 1px solid alpha(@yellow, 0.3);
-  border-radius: 6px;
-  padding: 4px 8px;
+/* Env-notice tray. Ported from Electron .env-notice* (styles.css:810-880).
+   Electron's tray is a flat tinted BAND, not a card: the container carries the
+   divider above it, each notice is full-bleed with no border and no radius,
+   and siblings are separated by a 1px rule. The previous GTK treatment was a
+   bordered rounded card with a single dim one-line label, which read as a
+   boxed sentence rather than a titled notice. */
+.env-notices {
+  border-top: 1px solid @border;
 }
-.env-notice label { color: @text_dim; font-size: 11px; }
+.env-notice {
+  padding: 9px 12px;
+  background-color: rgba(255, 200, 87, 0.06);
+}
+/* styles.css:823 — `.env-notice + .env-notice { border-top }`. GTK4 CSS has
+   no adjacent-sibling combinator, so the equivalent class is applied to every
+   notice after the first in build_notice's caller. */
+.env-notice.not-first { border-top: 1px solid @border; }
+.env-notice-icon {
+  color: @yellow;
+  margin-top: 1px;
+}
+.env-notice-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: @text;
+}
+.env-notice-detail {
+  font-size: 11px;
+  color: @text_dim;
+  margin-top: 2px;
+}
 .env-notice-dismiss {
   background: transparent;
   border: none;
   box-shadow: none;
   color: @text_dim;
-  padding: 0 4px;
+  font-size: 16px;
+  padding: 0 2px;
   min-height: 0;
+  border-radius: 4px;
 }
-.env-notice-dismiss:hover { color: @text; }
+.env-notice-dismiss:hover {
+  color: @text;
+  background-color: rgba(255, 255, 255, 0.06);
+}
 
 /* Footer link strip. */
 .sidebar-footer {
@@ -919,10 +964,29 @@ entry:focus-within {
 /* Dim "· setup" suffix on the Run tab when the repo has no run script. */
 .tab-dim { color: @text_dim; opacity: 0.75; font-size: 0.9em; }
 
+/* Ported from Electron .toolbar (styles.css:1787-1799). Values are literal:
+   48px fixed height, 0 14px padding, 10px gap (set on the GtkBox in
+   toolbar/mod.rs), 1px bottom border, and the two-stop vertical gradient.
+   The gradient's rgba stops are kept EXACTLY as authored rather than folded
+   into the opaque @bg_2/@bg_3 tokens they approximate — see the deviation
+   note below for why the alpha still matters even without the blur.
+
+   DEVIATION (GTK cannot express): Electron pairs this gradient with
+   `backdrop-filter: blur(14px) saturate(140%)`. GTK4 CSS has no
+   backdrop-filter and no equivalent — there is no way to sample and blur
+   what is painted behind a widget. This is a real toolkit limit, not an
+   untested assumption: unlike @keyframes (which GTK4 DOES support), no GTK
+   CSS property reads the backdrop. Consequence: in Electron the toolbar is
+   translucent and the terminal tints through it; here the same gradient
+   composites over whatever is behind without blurring it. The gradient
+   alone gets most of the way, which is why it is ported verbatim. */
 .toolbar {
-  padding: 6px 10px;
+  min-height: 48px;
+  padding: 0 14px;
   border-bottom: 1px solid @border;
-  background-color: @bg_2;
+  background-image: linear-gradient(180deg,
+                                    rgba(24, 28, 35, 0.75) 0%,
+                                    rgba(18, 21, 26, 0.85) 100%);
 }
 
 /* Branch chips ------------------------------------------------ */

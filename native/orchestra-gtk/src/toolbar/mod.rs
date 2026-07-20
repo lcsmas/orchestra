@@ -102,7 +102,9 @@ type NvimFn = Box<dyn Fn(bool)>;
 
 impl Toolbar {
     pub fn new(ctx: Rc<Ctx>) -> Rc<Self> {
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        // 10px spacing matches Electron .toolbar's `gap: 10px`
+        // (styles.css:1794); the rest of the strip is styled in theme.css.
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         root.add_css_class("toolbar");
         root.set_widget_name("toolbar");
 

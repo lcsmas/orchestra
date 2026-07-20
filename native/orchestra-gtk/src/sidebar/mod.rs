@@ -319,21 +319,52 @@ impl Sidebar {
             .collect();
         let notices = env_notices(&self.data.env_status, &dismissed);
         self.notices_box.set_visible(!notices.is_empty());
-        for item in notices {
-            self.notices_box.append(&self.build_notice(&item));
+        // GTK4 CSS has no adjacent-sibling combinator, so Electron's
+        // `.env-notice + .env-notice { border-top }` (styles.css:823) becomes
+        // an explicit class on every notice after the first.
+        for (i, item) in notices.iter().enumerate() {
+            let notice = self.build_notice(item);
+            if i > 0 {
+                notice.add_css_class("not-first");
+            }
+            self.notices_box.append(&notice);
         }
     }
 
+    /// Mirrors the Electron notice DOM (`Sidebar.tsx:2007-2047`): an icon, a
+    /// body holding a bold title line (`{label} not configured`) and a dim
+    /// detail line, then the dismiss button. The previous single concatenated
+    /// `{label}: {detail}` label flattened that hierarchy into one dim line.
+    /// Widget names are unchanged — the E2E drives assert on them.
     fn build_notice(&self, item: &EnvStatusItem) -> gtk::Box {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         row.add_css_class("env-notice");
         row.set_widget_name(&format!("env-notice-{}", item.id));
-        let text = gtk::Label::new(Some(&format!("{}: {}", item.label, item.detail)));
-        text.set_xalign(0.0);
-        text.set_wrap(true);
-        text.set_hexpand(true);
-        row.append(&text);
-        let dismiss = gtk::Button::with_label("✕");
+
+        // styles.css:826 `.env-notice-icon` — yellow, top-aligned to the title.
+        let icon = gtk::Label::new(Some("⚙"));
+        icon.add_css_class("env-notice-icon");
+        icon.set_valign(gtk::Align::Start);
+        row.append(&icon);
+
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        body.add_css_class("env-notice-body");
+        body.set_hexpand(true);
+
+        let title = gtk::Label::new(Some(&format!("{} not configured", item.label)));
+        title.add_css_class("env-notice-title");
+        title.set_xalign(0.0);
+        title.set_wrap(true);
+        body.append(&title);
+
+        let detail = gtk::Label::new(Some(&item.detail));
+        detail.add_css_class("env-notice-detail");
+        detail.set_xalign(0.0);
+        detail.set_wrap(true);
+        body.append(&detail);
+        row.append(&body);
+
+        let dismiss = gtk::Button::with_label("×");
         dismiss.set_widget_name(&format!("env-notice-dismiss-{}", item.id));
         dismiss.add_css_class("env-notice-dismiss");
         dismiss.set_tooltip_text(Some("Dismiss"));
