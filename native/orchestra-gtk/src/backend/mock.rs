@@ -227,6 +227,11 @@ fn mock_repos() -> Vec<RepoEntry> {
             "path": MOBILE_CLUB_REPO,
             "name": "mobile-club",
             "defaultBranch": "develop",
+            // PINNED so the repo header's login badge is actually exercised.
+            // No mock repo pinned an account before, which is why the header
+            // could render the raw `accountId` (a bare UUID in the live app)
+            // without any fixture, test or capture showing it.
+            "accountId": "acc-mc",
         })),
     ]
 }

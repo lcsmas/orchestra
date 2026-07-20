@@ -156,6 +156,33 @@ Entry points live in the **sidebar header** (`sidebar/mod.rs`, Electron parity
 with `Sidebar.tsx:1362–1385`) and route out as
 `SidebarOutput::HeaderAction` → `Msg::ToggleOverlay` (`app.rs:1211`).
 
+### Sidebar header layout and the "+ New" menu
+
+The header is a HORIZONTAL box matching `.sidebar-header`
+(`styles.css:522`: `justify-content: space-between; align-items: center`) —
+wordmark left, `.sidebar-header-actions` right, on ONE row.
+
+Session creation is a single **"+ New" `GtkMenuButton`** (`header-new-menu`)
+opening a `GtkPopover` (`new-menu-popover`) with three items built by
+`new_menu_item()`: `new-menu-workspace` / `new-menu-scratch` /
+`new-menu-orchestrator`, each an accent-tinted icon plus a bold title over a dim
+subtitle. This ports Electron's `.new-menu` (`Sidebar.tsx:1399`); `GtkPopover`
+supplies the Escape / outside-click dismissal Electron wires by hand
+(`Sidebar.tsx:646-661`), and each item calls `popdown()` before emitting, so the
+menu closes before the action runs.
+
+It replaced three separate `Scratch` / `Orchestrator` / `Repo` buttons that were
+this port's own invention — they were built against a cited `.header-repo-btn`
+rule that occurs **zero** times in Electron. At 449px they could not share a row
+with the wordmark, which is why the header used to be stacked vertically; the
+menu drops the actions row to 138px natural.
+
+**Known remaining gap:** Electron's header carries three icon buttons — Help /
+Bell / **Users** (accounts) — while this port carries four: Help / Bell /
+Resources / Insights, and no Users button. Resources and Insights have no
+Electron header counterpart; they are parked here for want of another entry
+point, and cost ~3px of sidebar minimum width.
+
 ## Remote-control harness — remote_control.rs
 
 The CDP replacement (plan §8.4), compiled in always, activated by
