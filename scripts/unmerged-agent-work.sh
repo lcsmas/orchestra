@@ -4,12 +4,20 @@
 # WHY THIS EXISTS — and NOT the reason first assumed.
 #
 # The first version of this comment claimed agent messages "evaporate between
-# turns". That was fabricated to explain an absence I had not investigated.
-# Orchestra's delivery is sound: workspaces.ts:1890 types the message into a
-# RUNNING target's PTY and submits it; a STOPPED target gets woken, and only
-# if waking fails is the message parked in ~/.orchestra/inbox/<wsid>.txt, which
-# inbox-instruction.sh drains on the next session. Live, started, inbox — three
-# paths, all covered.
+# turns". That was fabricated to explain an absence I had not investigated, and
+# it was wrong at BOTH layers of a two-layer mechanism:
+#
+#   1. Claude Code queues input typed while a turn is running and delivers it
+#      to the agent — nothing is lost by arriving mid-turn. Orchestra writes
+#      into a running agent's PTY, so this is the layer that actually carries
+#      peer messages.
+#   2. Orchestra's inbox (~/.orchestra/inbox/<wsid>.txt, drained by
+#      inbox-instruction.sh) is a SEPARATE fallback for a workspace whose agent
+#      is not running at all — workspaces.ts:1890 wakes a stopped target, and
+#      only if waking fails is the message parked.
+#
+# Both work. The inbox directory did not even exist — not "empty", absent —
+# because nothing had ever failed to deliver.
 #
 # The real gaps are quieter, and none of them is a broken queue:
 #   - An agent COMMITS BEFORE IT REPORTS. Work exists on a branch for minutes
