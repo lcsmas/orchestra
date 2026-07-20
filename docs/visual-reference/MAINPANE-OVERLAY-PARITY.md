@@ -23,7 +23,7 @@ to a captured frame in `docs/visual-reference/mainpane/`.
 | GTK-only addition | 1 |
 | CANNOT-VERIFY (reason given) | 2 |
 | **Reached with a rendered frame** | **18 / 21** |
-| **Not reached** | **3** (named in [Not reached](#not-reached-3-surfaces)) |
+| **Not reached** | **4** (named in [Not reached](#not-reached-4-surfaces)) |
 
 ---
 
@@ -58,6 +58,23 @@ reached any verdict below.)
 **Measurement discipline.** All colour verdicts are regional dominance over a
 stated region with the sample share and pixel count given, never point samples.
 Edge/geometry verdicts use column-persistence voting.
+
+**On `docs/gtk4-parity-inventory.md`.** That document is a **frozen snapshot of
+one morning's source review**, not a live score, and its negatives are
+**directional**: they were derived by guessing identifiers from Electron and
+searching GTK for them, so they fail toward *claiming things are missing that
+are fully implemented*. Demonstrated false-ABSENT/dead instances so far:
+`usage-bars-slot`, `.ws-empty-hint`, and `.usage-bar-fill` (rows 80 **and** 99 —
+re-derived live above). Two surfaces it lists ABSENT/STUB are 500 and 607 lines
+long with rendered frames; this report adds a fourth correction, its welcome
+screen (finding 7).
+
+**Treat every ABSENT/STUB verdict there as UNVERIFIED — never as a reason to
+skip verifying a surface.** A "present" verdict is more trustworthy than a
+"missing" one. Enumerate the real widget namespace and assert against it rather
+than searching for the identifier the doc names (an agent nearly filed two
+surfaces ABSENT searching `sound-modal`/`accounts-modal` when the real toplevels
+are `sound-settings`/`accounts-settings`).
 
 ---
 
@@ -274,7 +291,7 @@ dirty file so both sides render an actual diff.
 
 ---
 
-## Not reached (3 surfaces)
+## Not reached (4 surfaces)
 
 Named, per the coverage rule — an unreached surface tells the next wave where to
 start.
@@ -289,6 +306,23 @@ start.
 3. **Insights per-row content parity** (history rows, diff lines, lesson
    entries). Blocked by the state mismatch in finding 10 — the two sides must be
    pinned to the *same* self-tune run.
+4. **Token-usage limit meter rows** (`.res-meter`, `.usage-bar-track`,
+   `.usage-bar-fill.meter-*`). **Never constructed in my run**, so no frame
+   here is evidence about them either way. `resources.rs` builds a meter row
+   only when a usage window exists (`if let Some(w) = &c.five_hour` /
+   `seven_day` / `fable`); all four seeded accounts rendered "not logged in",
+   so zero meter rows were built. **Needs a fixture with populated
+   `UsageWindow` values.**
+
+   > Do **not** take `docs/gtk4-parity-inventory.md` rows 80/99 as evidence
+   > here. They call `.usage-bar-fill.meter-*` **dead**; it is **live**.
+   > Re-derived at this tip with both controls in the same command (positive
+   > `res-tile` → 7 refs; negative `zzqqxx` → 0):
+   > **2 live refs in `overlays/resources.rs`** — `meter_track()` and the
+   > `.res-meter` row, each doing
+   > `fill.add_css_class("usage-bar-fill"); fill.add_css_class(sev.meter_class())`
+   > — plus a matching `theme.css` rule. The row is unverified because my
+   > *fixture* never populated usage data, **not** because the code is absent.
 
 ---
 
