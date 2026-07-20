@@ -59,6 +59,24 @@ pub enum Op {
     Measure {
         name: String,
     },
+    /// Report the named widget's bounds IN MAIN-WINDOW COORDINATES.
+    ///
+    /// `Measure` answers "how wide", never "where" — and a whole-window region
+    /// diff needs WHERE, because it crops regions out of one composited window
+    /// frame rather than snapshotting each widget. That distinction is not
+    /// cosmetic: a widget-scoped snapshot renders OFFSCREEN over nothing, so a
+    /// translucent fill composites against transparent black and a correct
+    /// low-alpha tint reads as a solid slab (this produced, and had retracted,
+    /// an "88.8% dominance" finding in M4). Cropping the real window frame
+    /// reads what the compositor actually painted, which is what a user sees.
+    ///
+    /// Returns 0x0 for a widget that exists but has never been allocated —
+    /// deliberately NOT an error, because "present but painting nothing" is a
+    /// distinct and more interesting finding than "absent", and collapsing the
+    /// two would hide exactly the permanently-invisible-widget class of defect.
+    Bounds {
+        name: String,
+    },
     /// Activate a `group.action` on the named widget (or the main window if no
     /// widget is named), with an optional string parameter. This drives
     /// affordances that have no clickable widget under headless CI — chiefly
@@ -434,6 +452,29 @@ fn handle_op(op: Op) -> Value {
                 ("alloc_width".into(), json!(w.width())),
             ]))
         }
+        Op::Bounds { name } => {
+            let Some(w) = find_widget(&name) else {
+                return err(format!("no widget named {name:?}"));
+            };
+            let Some(win) = main_window() else {
+                return err("no main window");
+            };
+            // compute_bounds maps the widget's own box into the window's
+            // coordinate space, which is the space the frame capture is in.
+            // It returns None when the widget is not currently allocated —
+            // reported below as an explicit 0x0 rather than an error.
+            let (x, y, width, height) = match w.compute_bounds(win.upcast_ref::<gtk::Widget>()) {
+                Some(r) => (r.x(), r.y(), r.width(), r.height()),
+                None => (0.0, 0.0, 0.0, 0.0),
+            };
+            ok(serde_json::Map::from_iter([
+                ("x".into(), json!(x)),
+                ("y".into(), json!(y)),
+                ("width".into(), json!(width)),
+                ("height".into(), json!(height)),
+                ("allocated".into(), json!(w.width() > 0 && w.height() > 0)),
+            ]))
+        }
         Op::Screenshot { path, name } => {
             // Named targets resolve across ALL toplevels (dialogs included).
             // With no name, prefer the topmost open dialog: dialogs are their
@@ -541,6 +582,12 @@ mod tests {
             parse_op(r#"{"op":"measure","name":"sidebar"}"#).unwrap(),
             Op::Measure {
                 name: "sidebar".into()
+            }
+        );
+        assert_eq!(
+            parse_op(r#"{"op":"bounds","name":"main-area"}"#).unwrap(),
+            Op::Bounds {
+                name: "main-area".into()
             }
         );
         assert_eq!(

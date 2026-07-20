@@ -160,7 +160,7 @@ with `Sidebar.tsx:1362–1385`) and route out as
 
 The CDP replacement (plan §8.4), compiled in always, activated by
 `--remote-control <sock>`. Newline-JSON over a unix socket:
-`list_widgets`/`click`/`type`/`key`/`get`/`measure`/`screenshot`. Events are
+`list_widgets`/`click`/`type`/`key`/`get`/`measure`/`bounds`/`screenshot`. Events are
 synthesized GTK-side (headless sway advertises no seat input); screenshots render
 offscreen via `WidgetPaintable → GSK render_texture` (no visible frame needed).
 
@@ -171,7 +171,19 @@ wide a widget ENDED UP, not how narrow it would go — and a `GtkPaned` with
 before theorising about any width defect: it is what showed the sidebar's
 minimum was 338px while it allocated 518px, retracting a top-ranked "the header
 labels widened the sidebar" finding that two rounds of source reading had
-supported. Widget
+supported.
+
+`bounds` (`remote_control.rs:455`) returns a widget's `x`/`y`/`width`/`height`
+**in main-window coordinates** via `compute_bounds`, plus `allocated`. `measure`
+answers "how wide", never "where" — and cropping regions out of one composited
+window frame needs WHERE. That distinction is not cosmetic: a widget-scoped
+screenshot renders OFFSCREEN over nothing, so a translucent fill composites
+against transparent black and a correct low-alpha tint reads as a solid slab.
+An unallocated widget returns 0x0 rather than an error, because "present but
+painting nothing" is a distinct (and more interesting) finding than "absent".
+Consumed by the whole-window diff harness (`docs/visual-reference/whole-window/`).
+
+Widget
 names: `main-window`, `sidebar-list`, `ws-row-<id>`, `status-text`,
 `backend-banner`/`backend-banner-text`, `dialog-title|body|entry|confirm|cancel`.
 Consumed by `native/e2e/` and `orchestra-gtk/scripts/smoke.sh`.
