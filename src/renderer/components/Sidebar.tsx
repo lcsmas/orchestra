@@ -312,6 +312,19 @@ function PRClosedIcon() {
   );
 }
 
+// Warning triangle — shown when the `gh` PR query failed, so PR state is
+// unknown rather than empty. Deliberately NOT a PR-branch glyph: this badge
+// means "could not ask", and reusing the PR shape would read as a real PR.
+function PRErrorIcon() {
+  return (
+    <svg {...ICON_PROPS}>
+      <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </svg>
+  );
+}
+
 // Linear's mark, simplified to a single tilted-square glyph at the icon size.
 function LinearIcon() {
   return (
@@ -391,9 +404,19 @@ function PrLinearBadges({
   linearIssue: LinearIssue | null;
 }) {
   const { visible: visiblePRs, hidden: hiddenPRs } = orderedVisiblePRs(prRecord);
-  if (visiblePRs.length === 0 && !linearIssue) return null;
+  const prError = prRecord?.error;
+  if (visiblePRs.length === 0 && !linearIssue && !prError) return null;
   return (
     <>
+      {prError && (
+        <span
+          className="pr-badge error"
+          title={`Could not query GitHub for PRs — PR status is unknown, not absent.\n${prError}`}
+        >
+          <PRErrorIcon />
+          <span className="pr-badge-num">PR?</span>
+        </span>
+      )}
       {linearIssue && (
         <span
           className="pr-badge linear"

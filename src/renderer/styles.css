@@ -1488,6 +1488,18 @@ input:focus, textarea:focus, select:focus {
   background: transparent;
   border-color: var(--border);
 }
+/* `gh` PR query failed — PR state is unknown, not empty. Amber (warning), not
+   the `.closed` red, so it doesn't read as a closed PR. Not clickable: there's
+   no URL to open, so it overrides the base badge's pointer cursor like `.more`. */
+.pr-badge.error {
+  color: #e8b96a;
+  border-color: rgba(232, 185, 106, 0.4);
+  cursor: help;
+}
+.pr-badge.error:hover {
+  background: rgba(232, 185, 106, 0.14);
+  border-color: rgba(232, 185, 106, 0.65);
+}
 /* Linear issue link — Linear's indigo brand color. */
 .pr-badge.linear {
   color: #8b91f0;

@@ -598,10 +598,20 @@ export async function findPullRequest(
     const prs = { all, open, latest, mergedCount };
     prCache.set(cacheKey, { at: Date.now(), prs });
     return prs;
-  } catch {
+  } catch (err) {
     // Don't cache failures (gh missing, transient network) — let the next poll
     // retry rather than serving an empty result for the whole TTL.
-    return { all: [], open: null, latest: null, mergedCount: 0 };
+    //
+    // Report the failure rather than returning a bare empty result: an empty
+    // `all` is indistinguishable from "this branch has no PRs", so a broken
+    // `gh` (missing binary, invalid GITHUB_TOKEN, rate limit) used to make the
+    // PR badge silently disappear — failing in the passing direction, which
+    // sends the user looking for a lost PR instead of a broken credential.
+    const e = err as { stderr?: string; message?: string };
+    // gh puts its actual diagnostic on stderr ("gh: Bad credentials", "API rate
+    // limit exceeded…"); `message` is just the exec wrapper's "Command failed".
+    const detail = (e.stderr || e.message || '').trim().split('\n')[0] || 'gh query failed';
+    return { all: [], open: null, latest: null, mergedCount: 0, error: detail };
   }
 }
 
