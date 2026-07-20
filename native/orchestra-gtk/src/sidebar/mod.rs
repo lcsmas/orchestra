@@ -77,6 +77,14 @@ pub enum Msg {
     // ---- repo actions ----------------------------------------------------
     OpenExternal(String),
     OpenRepoScripts(String),
+    /// Linear API-key modal (`LinearSettings.tsx`). Reached from the Linear
+    /// env-notice's "Set API key…" link and the footer's Linear button —
+    /// the same two entry points Electron has (Sidebar.tsx:2230 / :2296).
+    OpenLinearSettings,
+    /// Re-read `getEnvStatus` and repaint the notice tray. Emitted after the
+    /// Linear modal changes the stored key, so the "Linear not configured"
+    /// notice clears without waiting for a full refresh.
+    RefreshEnvStatus,
     RemoveRepo(String),
     SyncRepoBase(String),
     AddRepo,
@@ -404,6 +412,20 @@ impl Sidebar {
         detail.set_xalign(0.0);
         detail.set_wrap(true);
         body.append(&detail);
+
+        // The Linear notice carries a "Set API key…" link instead of a docs
+        // link (Sidebar.tsx:2225-2233): the fix is in-app, so send the user to
+        // the modal rather than out to a browser.
+        if item.id == "linear" {
+            let set_key = gtk::Button::with_label("Set API key…");
+            set_key.set_widget_name("env-notice-linear-set-key");
+            set_key.add_css_class("env-notice-link");
+            set_key.set_halign(gtk::Align::Start);
+            let sender = self.sender_handle.clone();
+            set_key.connect_clicked(move |_| sender.emit(Msg::OpenLinearSettings));
+            body.append(&set_key);
+        }
+
         row.append(&body);
 
         let dismiss = gtk::Button::with_label("×");
@@ -887,14 +909,23 @@ impl Component for Sidebar {
                 let _ = sender.output(SidebarOutput::HeaderAction(action));
                 rebuild = false;
             }
-            Msg::OpenRepoScripts(_path) => {
-                // Modal CONTENT is a sibling workstream (B3/B4); stub-open.
-                self.stub_modal(
-                    &sender,
-                    "Repo scripts",
-                    "The setup/run/archive script editor is a separate M2 workstream.",
-                );
+            Msg::OpenRepoScripts(path) => {
+                self.open_repo_scripts(path);
                 rebuild = false;
+            }
+            Msg::OpenLinearSettings => {
+                self.open_linear_settings(&sender);
+                rebuild = false;
+            }
+            Msg::RefreshEnvStatus => {
+                if let Some(backend) = self.backend.clone() {
+                    if let Ok(v) = backend.call("getEnvStatus", vec![]) {
+                        if let Ok(list) = serde_json::from_value::<Vec<EnvStatusItem>>(v) {
+                            self.data.env_status = list;
+                        }
+                    }
+                }
+                // Falls through to the rebuild so the notice tray repaints.
             }
             Msg::RemoveRepo(path) => {
                 self.remove_repo(&sender, path);
@@ -1250,6 +1281,19 @@ fn build_footer(input: &relm4::Sender<Msg>) -> gtk::Box {
         logs.connect_clicked(move |_| input.emit(Msg::RevealLogs));
     }
     footer.append(&logs);
+    // Linear API key — the footer entry point Electron has at Sidebar.tsx:2294
+    // (inventory row 77 lists it as missing from the GTK footer).
+    let linear = gtk::Button::with_label("Linear");
+    linear.set_widget_name("footer-linear");
+    linear.add_css_class("footer-link");
+    linear.set_tooltip_text(Some(
+        "Linear API key — verify branch issue keys against Linear",
+    ));
+    {
+        let input = input.clone();
+        linear.connect_clicked(move |_| input.emit(Msg::OpenLinearSettings));
+    }
+    footer.append(&linear);
     footer
 }
 
@@ -1345,6 +1389,53 @@ impl Sidebar {
         }
     }
 
+    /// A `Ctx` over this component's backend + toplevel, for the form modals
+    /// in `crate::modals`. Built per-open rather than held: the sidebar's
+    /// backend is swapped on attach, so a cached Ctx could serve a stale one.
+    ///
+    /// This hands the modals a CALL handle only — they never touch
+    /// `events()`/`pty_data()`, which the App owns as the single consumer.
+    fn modal_ctx(&self) -> Option<Rc<crate::ctx::Ctx>> {
+        let backend = self.backend.clone()?;
+        let ctx = crate::ctx::Ctx::new(self.window.clone());
+        ctx.set_backend(Some(backend));
+        Some(ctx)
+    }
+
+    /// Repo scripts modal (`RepoScriptsModal.tsx`) — replaces the stub the Run
+    /// tab's guidance text points users at.
+    fn open_repo_scripts(&self, repo_path: String) {
+        let Some(ctx) = self.modal_ctx() else {
+            return;
+        };
+        let repo_name = self
+            .data
+            .repos
+            .iter()
+            .find(|r| r.path == repo_path)
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| repo_path.clone());
+        glib::spawn_future_local(async move {
+            crate::modals::repo_scripts::open(ctx, repo_path, repo_name).await;
+        });
+    }
+
+    /// Linear API-key modal (`LinearSettings.tsx`). A save or clear changes
+    /// the configured source, so refresh the env-status notices — that is what
+    /// Electron's `onChanged` does (LinearSettings.tsx:48).
+    fn open_linear_settings(&self, sender: &ComponentSender<Self>) {
+        let Some(ctx) = self.modal_ctx() else {
+            return;
+        };
+        let sender = sender.input_sender().clone();
+        glib::spawn_future_local(async move {
+            if crate::modals::linear::open(ctx).await {
+                sender.emit(Msg::RefreshEnvStatus);
+            }
+        });
+    }
+
+    #[allow(dead_code)]
     fn stub_modal(&self, _sender: &ComponentSender<Self>, title: &str, body: &str) {
         let win = self.window.clone();
         let title = title.to_string();

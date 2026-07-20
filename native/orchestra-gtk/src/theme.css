@@ -2029,3 +2029,207 @@ button.welcome-help-btn:hover {
   border-color: rgba(227, 179, 65, 0.5);
   color: #e3b341;
 }
+/* ===================================================================== *
+ * Form modals: repo scripts (RepoScriptsModal.tsx) and Linear API key
+ * (LinearSettings.tsx). Both windows also carry `.orch-dialog`, so the
+ * gradient/border/shadow and the `dialog-pop` entry come from the dialog
+ * rules above — only what these two add is here.
+ *
+ * NOTE ON `text-transform`: styles.css uppercases `.field-label` (:2753)
+ * and GTK4 has no text-transform, so the labels are uppercased in Rust
+ * (modals/repo_scripts.rs build_field) and only the size/weight/tracking
+ * are ported here.
+ * ===================================================================== */
+
+.repo-scripts-modal .modal-root {
+  /* styles.css:2692-2696 — the modal zeroes `.modal`'s 22px pad so the
+     header/footer 1px dividers reach the modal edges; each section owns
+     its own padding below. */
+  padding: 0;
+}
+.modal-header {
+  /* styles.css:2698-2704: padding 18px 22px 12px + 1px bottom divider. */
+  padding: 18px 22px 12px;
+  border-bottom: 1px solid alpha(#ffffff, 0.06);
+}
+.modal-title {
+  /* styles.css:2705 `.modal-header h2 { margin:0; font-size:15px }` — the
+     600 weight comes from the h2 element in Electron, explicit here. */
+  font-size: 15px;
+  font-weight: 600;
+  color: @text;
+}
+.modal-sub {
+  /* styles.css:2706-2715: 4px top margin, 12px dim monospace. */
+  margin-top: 4px;
+  font-size: 12px;
+  color: @text_dim;
+  font-family: monospace;
+}
+.modal-close {
+  /* styles.css:2716-2724: transparent, dim, 20px glyph, 0 4px pad. */
+  background: none;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  color: @text_dim;
+  font-size: 20px;
+  padding: 0 4px;
+  min-height: 0;
+}
+.modal-close:hover {
+  /* styles.css:2725. */
+  color: @text;
+  background: none;
+}
+.modal-body {
+  /* styles.css:2726-2730: padding 16px 22px. */
+  padding: 16px 22px;
+}
+.modal-hint {
+  /* styles.css:2731-2736: 12px dim, 14px bottom margin. GTK has no
+     line-height property; the 1.5 lh is left to Pango's default. */
+  font-size: 12px;
+  color: @text_dim;
+  margin-bottom: 14px;
+}
+.field {
+  /* styles.css:2489 `.field { margin-bottom: 12px }`. */
+  margin-bottom: 12px;
+}
+.field-head {
+  /* styles.css:2744-2749: 5px below the head, before the control. */
+  margin-bottom: 5px;
+}
+.field-label {
+  /* styles.css:2750-2756: 11px / 600 / .6px tracking, full-brightness.
+     (uppercase applied in Rust — see the note at the top of this block) */
+  font-size: 11px;
+  font-weight: 600;
+  color: @text;
+  letter-spacing: 0.6px;
+}
+.field-hint {
+  /* styles.css:2757-2763: 11.5px dim, normal weight, no tracking. */
+  font-size: 11.5px;
+  font-weight: normal;
+  color: @text_dim;
+  letter-spacing: 0;
+}
+.field-textarea {
+  /* styles.css:2764-2776: monospace 12.5px, inset dark fill, 1px border,
+     --radius (8px), 8px/10px padding. min-height lives on the scroller
+     (set_min_content_height(80), matching :2774). */
+  font-family: monospace;
+  font-size: 12.5px;
+  background-color: alpha(#000000, 0.25);
+  color: @text;
+  padding: 8px 10px;
+}
+.field-textarea-scroll {
+  /* The border/radius belong to the scrolled frame, not the inner TextView,
+     or the focus ring would be drawn inside the scroll viewport. */
+  border: 1px solid alpha(#ffffff, 0.08);
+  border-radius: 8px;
+  background-color: alpha(#000000, 0.25);
+}
+.field-textarea-scroll:focus-within {
+  /* styles.css:2777-2780 `.field-textarea:focus { border-color: --accent }`. */
+  border-color: @accent;
+}
+.field-select {
+  /* styles.css:3468-3486: --bg-3 fill, 1px --border, --radius, 13px text.
+     Electron resets the native chevron to a custom SVG (:3475-3479); GTK's
+     DropDown draws its own arrow, so only the box is ported. The 34px right
+     pad in Electron exists to clear that SVG — GTK reserves its own space,
+     so this uses the symmetric 11px. */
+  background-color: @bg_3;
+  border: 1px solid @border;
+  border-radius: 8px;
+  color: @text;
+  padding: 8px 11px;
+  font-size: 13px;
+}
+.field-select:hover {
+  /* styles.css:3487-3490. */
+  border-color: @border_strong;
+  background-color: @bg_4;
+}
+.modal-error {
+  /* styles.css:2781-2789: red-tinted fill + border, #ffb4b4, 8px/10px. */
+  margin-top: 8px;
+  padding: 8px 10px;
+  background-color: alpha(#dc5050, 0.12);
+  border: 1px solid alpha(#dc5050, 0.3);
+  border-radius: 8px;
+  color: #ffb4b4;
+  font-size: 12px;
+}
+.modal-footer {
+  /* styles.css:2790-2796: padding 12px 22px 18px + 1px top divider. */
+  padding: 12px 22px 18px;
+  border-top: 1px solid alpha(#ffffff, 0.06);
+}
+.modal-footer button {
+  /* styles.css:2797-2800. */
+  padding: 6px 14px;
+  font-size: 12.5px;
+}
+
+/* ---- Linear API key modal ------------------------------------------- */
+
+.linear-title {
+  /* styles.css:2489 `.modal h2 { font-size: 16px }`; `.sound-settings h2`
+     (:494) trims the bottom margin to 4px and this modal follows it, the
+     hint below owning the 14px gap (:497). */
+  font-size: 16px;
+  font-weight: 600;
+  color: @text;
+  margin-bottom: 4px;
+}
+.linear-key-source {
+  /* styles.css:502-509: 11.5px, 7px/10px pad, 6px radius, --bg-3, dim. */
+  font-size: 11.5px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  background-color: @bg_3;
+  color: @text_dim;
+}
+.linear-key-source.stored {
+  /* styles.css:510 — a stored key reads at full brightness. */
+  color: @text;
+}
+.linear-key-input {
+  /* styles.css:511-523: 8px/10px pad, 6px radius, --border, --bg-2,
+     monospace 12.5px. */
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid @border;
+  background-color: @bg_2;
+  color: @text;
+  font-family: monospace;
+  font-size: 12.5px;
+}
+.linear-key-input:focus-within {
+  /* styles.css:524. */
+  border-color: @accent;
+}
+.linear-key-input:disabled {
+  /* styles.css:524 `.linear-key-input:disabled { opacity: 0.6 }`. */
+  opacity: 0.6;
+}
+.linear-key-status {
+  /* styles.css:525-529: 11.5px, 8px top margin, 16px min-height so the row
+     never collapses and shifts the action buttons between states. */
+  font-size: 11.5px;
+  margin-top: 8px;
+  min-height: 16px;
+}
+.linear-key-status.ok { color: #5fd08a; }   /* styles.css:530 */
+.linear-key-status.err { color: @red; }      /* styles.css:531 */
+.linear-key-status.muted { color: @text_dim; } /* styles.css:532 */
+.linear-key-actions {
+  /* styles.css:2493 `.modal-actions { margin-top: 12px }` + :533. */
+  margin-top: 12px;
+}

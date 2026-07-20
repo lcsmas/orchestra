@@ -57,6 +57,22 @@ pub fn topmost() -> Option<gtk::Window> {
     OPEN.with_borrow(|open| open.last().cloned())
 }
 
+/// Register a modal built OUTSIDE this module (the repo-scripts and Linear
+/// settings modals in `crate::modals`) into the same stack.
+///
+/// Those two are full form modals rather than the alert/confirm/prompt shapes
+/// [`run`] serves, so they build their own window — but they must still be
+/// reachable by `topmost()`, or the remote-control harness screenshots the
+/// main window and its Escape routing skips them entirely.
+pub fn register(win: &gtk::Window) {
+    OPEN.with_borrow_mut(|open| open.push(win.clone()));
+}
+
+/// Counterpart to [`register`], called from the modal's `close-request`.
+pub fn unregister(win: &gtk::Window) {
+    OPEN.with_borrow_mut(|open| open.retain(|w| w != win));
+}
+
 /// Cancel (Esc) the topmost open dialog. Returns false when none is open.
 pub fn cancel_topmost() -> bool {
     activate_on_topmost("dlg.cancel")

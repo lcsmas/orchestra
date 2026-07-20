@@ -11,10 +11,46 @@ Modules (`native/orchestra-gtk/src/`): `main.rs` (flag parse + GApplication),
 `app.rs` (Relm4 root component: window, sidebar, banner, status strip, attach
 flow), `backend.rs` (the `Backend` trait + `MockBackend` + `RpcBackend` stub +
 discovery/probe), `daemon.rs` (daemon auto-spawn), `dialogs.rs` (promise-shaped
-alert/confirm/prompt/error/success), `remote_control.rs` (the CDP-replacement
-test harness), `state.rs` (UI-state persistence), `theme.css`. The sidebar
-factories, terminals (vte4), and diff (gtksourceview5) are separate M2
-workstreams that land in their own modules.
+alert/confirm/prompt/error/success), `modals/` (the two large FORM modals —
+see below), `remote_control.rs` (the CDP-replacement test harness), `state.rs`
+(UI-state persistence), `theme.css`. The sidebar factories, terminals (vte4),
+and diff (gtksourceview5) are separate M2 workstreams that land in their own
+modules.
+
+## Form modals — modals/
+
+`dialogs.rs` serves the small alert/confirm/prompt shapes; anything with a real
+form lives in `modals/` and shares the dialog PRESENTATION (`.orch-dialog`
+gradient/border/shadow + the `dialog-pop` entry) by adding those CSS classes to
+its own `gtk::Window`:
+
+- `modals/repo_scripts.rs` — port of `RepoScriptsModal.tsx`. Setup/run/archive
+  editors + default-base-branch and Claude-account pickers. Opened from the
+  sidebar's per-repo gear button (`sidebar/mod.rs` `Msg::OpenRepoScripts` →
+  `open_repo_scripts`). Saves via `setRepoScripts` → `setRepoAccount` →
+  `setRepoDefaultBranch` (the last only when the branch CHANGED), matching the
+  Electron call order.
+- `modals/linear.rs` — port of `LinearSettings.tsx`. Reached from BOTH the
+  Linear env-notice's "Set API key…" link and the sidebar footer's Linear
+  button (`Msg::OpenLinearSettings`), mirroring Electron's two entry points.
+  Uses `getLinearKeySource` / `checkLinearKey` / `saveLinearKey` /
+  `clearLinearKey`; a key Linear positively rejects ("Invalid API key.") is
+  never persisted, but a mere network failure still allows the save.
+
+Both register in the `dialogs::OPEN` stack via `dialogs::register`/`unregister`
+so `dialogs::topmost()` — the remote-control harness's default screenshot
+target and Esc route — sees them. Neither opens an event pump: they hold a
+`Ctx` and use `call`/`call_typed` only, since the App owns the single
+`events()`/`pty_data()` consumer.
+
+E2E: `native/e2e/run.mjs` `repo-scripts-modal-opens-and-saves` and
+`linear-settings-modal-opens-and-saves` drive both against the mock, asserting
+TRANSITIONS (modal absent → present; the saved script read back from the
+backend; the key source flipping none → stored) rather than states that could
+already hold. Because the `type` op needs a `GtkEditable` and a `TextView` is
+not one, the repo-scripts editors are written through a `scripts.set` action
+installed on that modal — the same escape hatch `sidebar.drop-ws` uses for
+pointer-only drag.
 
 ## Version lockstep — build.rs + lib.rs
 

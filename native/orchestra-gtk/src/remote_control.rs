@@ -395,6 +395,14 @@ fn handle_op(op: Op) -> Value {
                         json!(button.label().map(|l| l.to_string()))
                     } else if let Some(editable) = w.dynamic_cast_ref::<gtk::Editable>() {
                         json!(editable.text().as_str())
+                    } else if let Some(view) = w.downcast_ref::<gtk::TextView>() {
+                        // A TextView is NOT a GtkEditable, so without this arm
+                        // its content is unreadable to the harness — which is
+                        // every multi-line editor in the app (the repo-scripts
+                        // modal's setup/run/archive fields). Additive: no
+                        // existing arm changes behaviour.
+                        let b = view.buffer();
+                        json!(b.text(&b.start_iter(), &b.end_iter(), false).as_str())
                     } else {
                         return err(format!("widget {name:?} has no label-like property"));
                     }
