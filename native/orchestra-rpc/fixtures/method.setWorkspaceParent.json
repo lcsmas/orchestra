@@ -1,0 +1,22 @@
+{
+  "method": "setWorkspaceParent",
+  "params": [
+    "ws-fixture-tmp",
+    "ws-fixture-git"
+  ],
+  "result": {
+    "id": "ws-fixture-tmp",
+    "name": "scratch · disposable",
+    "kind": "scratch",
+    "repoPath": "",
+    "worktreePath": "/tmp/orchestra-rpc-fixtures/home/.orchestra/scratch/scratch-disposable",
+    "branch": "disposable",
+    "baseBranch": "",
+    "createdAt": 1700000000000,
+    "status": "idle",
+    "agent": "claude",
+    "port": 55102,
+    "setupStatus": "ok",
+    "parentId": "ws-fixture-git"
+  }
+}

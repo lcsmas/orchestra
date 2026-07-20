@@ -27,7 +27,10 @@ import {
   createOrchestratorWorkspace,
   deleteWorkspace,
   deleteWorkspaces,
+  dispatchAttachRequest,
+  dispatchDemoteRequest,
   dispatchMigrateAccountRequest,
+  dispatchPromoteRequest,
   ensureWorkspacePort,
   getWorktreeSizes,
   renameWorkspaceBranch,
@@ -185,6 +188,9 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   backupSandbox: 'sandbox:backup',
   markSeen: 'workspaces:markSeen',
   setUnread: 'workspaces:setUnread',
+  promoteWorkspace: 'workspaces:promote',
+  demoteWorkspace: 'workspaces:demote',
+  setWorkspaceParent: 'workspaces:setParent',
   renameBranch: 'workspaces:renameBranch',
   reorderWorkspaces: 'workspaces:reorder',
   queuePrompt: 'queue:add',
@@ -244,6 +250,16 @@ function isSafeHttpUrl(url: string): boolean {
 export async function openUrlExternally(url: string): Promise<void> {
   if (!isSafeHttpUrl(url)) return;
   await platform.openExternal(url);
+}
+
+/** Read a workspace back after a mutation that reported success, for handlers
+ *  whose contract is "return the updated record". The lookup failing here means
+ *  the record vanished between the write and the read, which is a bug rather
+ *  than a caller error — surface it instead of returning a stale/blank struct. */
+function requireWorkspace(id: string): Workspace {
+  const ws = store.getWorkspace(id);
+  if (!ws) throw new Error(`unknown workspace: ${id}`);
+  return ws;
 }
 
 export const apiHandlers: ApiHandlerTable = {
@@ -515,6 +531,30 @@ export const apiHandlers: ApiHandlerTable = {
     const updated: Workspace = { ...ws, markedUnread: unread || undefined };
     await store.upsertWorkspace(updated);
     platform.broadcast('workspace:update', updated);
+  },
+
+  // The dispatch* entry points are the socket/CLI contract and answer an
+  // `{ ok, error }` envelope rather than throwing. On the wire an envelope
+  // inside a result would be a second, redundant error channel — the frame
+  // already carries `{ ok: false, error }` — so unwrap here: reject on failure
+  // (the rejection becomes the frame-level error) and hand back the fresh
+  // record so the caller can assert the transition it just asked for.
+  promoteWorkspace: async (id) => {
+    const res = await dispatchPromoteRequest({ id });
+    if (!res.ok) throw new Error(res.error || 'promote failed');
+    return requireWorkspace(id);
+  },
+
+  demoteWorkspace: async (id) => {
+    const res = await dispatchDemoteRequest({ id });
+    if (!res.ok) throw new Error(res.error || 'demote failed');
+    return requireWorkspace(id);
+  },
+
+  setWorkspaceParent: async (id, parentId) => {
+    const res = await dispatchAttachRequest({ id, parentId });
+    if (!res.ok) throw new Error(res.error || 'set parent failed');
+    return requireWorkspace(id);
   },
 
   renameBranch: (id, newBranch) => renameWorkspaceBranch(id, newBranch, { manual: true }),

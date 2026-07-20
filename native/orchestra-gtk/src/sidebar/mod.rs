@@ -127,11 +127,36 @@ pub enum Msg {
         /// dialog names the account the way the user picked it, never its id.
         target_label: String,
     },
+    // ---- re-parenting (promote / demote / attach / detach) ---------------
+    /// Grant the orchestrate capability. A scratch session swaps its KIND; a
+    /// git worktree keeps `kind: 'worktree'` and gains `canOrchestrate`, so it
+    /// retains diff/merge/PR handling.
+    Promote(String),
+    /// Revoke the capability. Only offered on a promoted WORKTREE — the
+    /// backend refuses to demote an orchestrator-KIND session.
+    Demote(String),
+    /// Open the "Attach to…" picker listing every workspace that can
+    /// orchestrate (minus this row and its own descendants).
+    OpenAttachMenu {
+        ws_id: String,
+        anchor: gtk::Widget,
+    },
+    /// Re-parent `ws_id` under `parent_id`, or detach it when None.
+    SetParent {
+        ws_id: String,
+        parent_id: Option<String>,
+    },
     // ---- drag & drop -----------------------------------------------------
     DropWs {
         dragged: String,
         target: String,
         before: bool,
+    },
+    /// DnD re-parent: a row was dropped ONTO an orchestrator row (as opposed
+    /// to between rows, which reorders).
+    DropOnto {
+        dragged: String,
+        parent: String,
     },
     DropRepo {
         dragged: String,
@@ -868,12 +893,46 @@ impl Component for Sidebar {
                 self.migrate_account(ws_id, account_id, target_label, was_running);
                 rebuild = false;
             }
+            Msg::Promote(id) => {
+                self.fire_and_forget("promoteWorkspace", vec![json!(id)]);
+                rebuild = false;
+            }
+            Msg::Demote(id) => {
+                self.fire_and_forget("demoteWorkspace", vec![json!(id)]);
+                rebuild = false;
+            }
+            Msg::OpenAttachMenu { ws_id, anchor } => {
+                self.open_attach_menu(&sender, ws_id, anchor);
+                rebuild = false;
+            }
+            Msg::SetParent { ws_id, parent_id } => {
+                // `null` is a first-class value here (detach), so the param is
+                // always sent — json!(None::<String>) serializes to null.
+                self.fire_and_forget("setWorkspaceParent", vec![json!(ws_id), json!(parent_id)]);
+                rebuild = false;
+            }
             Msg::DropWs {
                 dragged,
                 target,
                 before,
             } => {
                 self.commit_ws_drop(dragged, target, before);
+                rebuild = false;
+            }
+            Msg::DropOnto { dragged, parent } => {
+                // Guard here as well as at the drop target: only a coordinator
+                // may take children, and a row may not adopt itself.
+                let ok = dragged != parent
+                    && self
+                        .workspace(&parent)
+                        .map(|w| w.can_orchestrate())
+                        .unwrap_or(false);
+                if ok {
+                    self.fire_and_forget(
+                        "setWorkspaceParent",
+                        vec![json!(dragged), json!(Some(parent))],
+                    );
+                }
                 rebuild = false;
             }
             Msg::DropRepo {
@@ -929,6 +988,22 @@ fn parse_reorder_param(s: &str) -> Option<(String, String, bool)> {
         _ => return None,
     };
     Some((dragged, target, before))
+}
+
+/// Parse a set-parent action param: "<ws>|<parent>" attaches, a bare "<ws>"
+/// (or a trailing empty field) detaches. Detach must stay expressible, so an
+/// absent parent is `None` rather than a parse failure.
+fn parse_parent_param(s: &str) -> (String, Option<String>) {
+    match s.split_once('|') {
+        Some((ws, parent)) => {
+            let parent = parent.trim();
+            (
+                ws.to_string(),
+                (!parent.is_empty()).then(|| parent.to_string()),
+            )
+        }
+        None => (s.to_string(), None),
+    }
 }
 
 /// Install the `sidebar` action group (E2E driving — see the call site).
@@ -1001,6 +1076,44 @@ fn install_sidebar_actions(root: &gtk::Box, input: &relm4::Sender<Msg>, list: &g
         });
     }
     group.add_action(&commit_rename);
+
+    // Re-parenting actions. The promote/demote BUTTONS are named widgets the
+    // harness can click directly; these exist so an E2E can also drive the
+    // paths that have no plain button — attaching (whose target is chosen in a
+    // popover) and DnD-onto (which needs a pointer to synthesize a drag).
+    let promote = gio::SimpleAction::new("promote", str_ty);
+    {
+        let input = input.clone();
+        promote.connect_activate(move |_, param| {
+            if let Some(id) = param.and_then(|p| p.str()) {
+                input.emit(Msg::Promote(id.to_string()));
+            }
+        });
+    }
+    group.add_action(&promote);
+
+    let demote = gio::SimpleAction::new("demote", str_ty);
+    {
+        let input = input.clone();
+        demote.connect_activate(move |_, param| {
+            if let Some(id) = param.and_then(|p| p.str()) {
+                input.emit(Msg::Demote(id.to_string()));
+            }
+        });
+    }
+    group.add_action(&demote);
+
+    // "<ws>|<parent>" attaches; "<ws>" alone (or "<ws>|") detaches.
+    let set_parent = gio::SimpleAction::new("set-parent", str_ty);
+    {
+        let input = input.clone();
+        set_parent.connect_activate(move |_, param| {
+            if let Some((ws_id, parent_id)) = param.and_then(|p| p.str()).map(parse_parent_param) {
+                input.emit(Msg::SetParent { ws_id, parent_id });
+            }
+        });
+    }
+    group.add_action(&set_parent);
 
     root.insert_action_group("sidebar", Some(&group));
 }
@@ -1221,6 +1334,98 @@ impl Sidebar {
         }
         popover.set_child(Some(&list));
         popover.popup();
+    }
+
+    /// "Attach to…" picker: every workspace that can orchestrate, minus this
+    /// row, its current parent (already there) and its own descendants — a
+    /// cycle the backend would reject anyway, so it is never offered. Plus a
+    /// "Detach" entry when the row currently has a parent.
+    fn open_attach_menu(
+        &self,
+        sender: &ComponentSender<Self>,
+        ws_id: String,
+        anchor: gtk::Widget,
+    ) {
+        let current_parent = self.workspace(&ws_id).and_then(|w| w.parent_id.clone());
+        let descendants = self.descendants_of(&ws_id);
+        let candidates: Vec<(String, String)> = self
+            .data
+            .workspaces
+            .iter()
+            .filter(|w| w.can_orchestrate())
+            .filter(|w| w.archived != Some(true))
+            .filter(|w| w.id != ws_id && !descendants.contains(&w.id))
+            .filter(|w| Some(w.id.as_str()) != current_parent.as_deref())
+            .map(|w| (w.id.clone(), w.branch.clone()))
+            .collect();
+
+        let popover = gtk::Popover::new();
+        popover.set_widget_name("attach-picker");
+        popover.set_parent(&anchor);
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        list.add_css_class("base-picker-list");
+        let header = gtk::Label::new(Some(if candidates.is_empty() && current_parent.is_none() {
+            "No coordinator to attach to"
+        } else {
+            "Attach under coordinator:"
+        }));
+        header.set_xalign(0.0);
+        header.add_css_class("base-picker-header");
+        list.append(&header);
+
+        for (id, branch) in candidates {
+            let row = gtk::Button::with_label(&branch);
+            row.set_widget_name(&format!("attach-pick-{id}"));
+            row.add_css_class("base-picker-item");
+            let sender = sender.clone();
+            let popover_ = popover.clone();
+            let ws_id_ = ws_id.clone();
+            let id_ = id.clone();
+            row.connect_clicked(move |_| {
+                popover_.popdown();
+                sender.input(Msg::SetParent {
+                    ws_id: ws_id_.clone(),
+                    parent_id: Some(id_.clone()),
+                });
+            });
+            list.append(&row);
+        }
+
+        if current_parent.is_some() {
+            let row = gtk::Button::with_label("Detach — move to top level");
+            row.set_widget_name(&format!("attach-detach-{ws_id}"));
+            row.add_css_class("base-picker-item");
+            let sender = sender.clone();
+            let popover_ = popover.clone();
+            let ws_id_ = ws_id.clone();
+            row.connect_clicked(move |_| {
+                popover_.popdown();
+                sender.input(Msg::SetParent {
+                    ws_id: ws_id_.clone(),
+                    parent_id: None,
+                });
+            });
+            list.append(&row);
+        }
+
+        popover.set_child(Some(&list));
+        popover.popup();
+    }
+
+    /// Every workspace reachable downward from `root` (exclusive). Attaching a
+    /// row under one of its own descendants would build a cycle, so these are
+    /// filtered out of the picker.
+    fn descendants_of(&self, root: &str) -> HashSet<String> {
+        let mut out = HashSet::new();
+        let mut frontier = vec![root.to_string()];
+        while let Some(cur) = frontier.pop() {
+            for w in &self.data.workspaces {
+                if w.parent_id.as_deref() == Some(cur.as_str()) && out.insert(w.id.clone()) {
+                    frontier.push(w.id.clone());
+                }
+            }
+        }
+        out
     }
 
     /// Map a git repo in via the native folder picker (`pickDirectory` is
@@ -1588,7 +1793,19 @@ struct AccountBrief {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_reorder_param;
+    use super::{parse_parent_param, parse_reorder_param};
+
+    #[test]
+    fn parent_param_attaches_and_detaches() {
+        assert_eq!(
+            parse_parent_param("ws-1|orch-1"),
+            ("ws-1".to_string(), Some("orch-1".to_string()))
+        );
+        // Detach must stay expressible: a bare id and an empty trailing field
+        // both mean "no parent", not a parse failure.
+        assert_eq!(parse_parent_param("ws-1"), ("ws-1".to_string(), None));
+        assert_eq!(parse_parent_param("ws-1|"), ("ws-1".to_string(), None));
+    }
 
     #[test]
     fn reorder_param_parses_before_after() {

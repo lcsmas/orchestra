@@ -99,6 +99,40 @@ names: `main-window`, `sidebar-list`, `ws-row-<id>`, `status-text`,
 `backend-banner`/`backend-banner-text`, `dialog-title|body|entry|confirm|cancel`.
 Consumed by `native/e2e/` and `orchestra-gtk/scripts/smoke.sh`.
 
+## Re-parenting surface (promote / demote / attach)
+
+The sidebar was read-only on tree shape — it *rendered* orchestrator trees but
+had no action to change them, and promote/attach existed only as CLI/socket
+routes with nothing on the ui-rpc wire. Three ops now carry them
+(`docs/ui-rpc-protocol.md`), each returning the **bare updated `Workspace`** (no
+`{ok,…}` envelope — that lives at the frame level only):
+
+| Op | Rust client | Meaning |
+|---|---|---|
+| `promoteWorkspace(id)` | `client.rs:1034` | worktree gains `canOrchestrate`; scratch swaps `kind` |
+| `demoteWorkspace(id)` | `client.rs:1040` | clears the capability, detaches children |
+| `setWorkspaceParent(id, parentId\|null)` | `client.rs:1046` | attach / detach |
+
+`Workspace::can_orchestrate()` (`native/orchestra-rpc/src/types/workspace.rs:144`)
+mirrors the TS helper — use it for tree/parent decisions and `is_scratch_like`
+for git ones (see [workspaces.md](workspaces.md) for why they must not be
+conflated).
+
+UI lives in `sidebar/widgets.rs` (coordinator pill `ws-coordinator-<id>`,
+buttons `ws-promote-<id>` / `ws-demote-<id>` / `ws-attach-<id>`, and the
+`DropZone` band) and `sidebar/mod.rs` (`Msg::Promote/Demote/SetParent/DropOnto`,
+routed through the existing `fire_and_forget`). **Only `can_orchestrate()` rows
+accept a drop** — the middle third of such a row adopts, outer thirds reorder;
+other rows keep the plain half/half reorder split.
+
+Per the single-consumer rule, these components open no stream of their own: they
+`call()` and let the resulting `workspace:update` broadcast drive the re-render
+(see the `gtk-backend-single-consumer-fanout` invariant in `app.rs`).
+
+E2E drives it headlessly via the remote-control actions `sidebar.promote`,
+`sidebar.demote`, and `sidebar.set-parent` (param `"<ws>|<parent>"`; a bare
+`"<ws>"` detaches) — GTK cannot synthesize pointer drags without a seat.
+
 ## Packaging, CI, E2E
 
 - **Packaging** (`native/packaging/`): `orchestra-gtk.desktop`, `gen-icons.mjs`

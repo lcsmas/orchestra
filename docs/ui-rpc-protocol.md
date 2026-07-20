@@ -58,6 +58,33 @@ Deviations from the interface (exhaustive):
 | `saveClipboardImage` | served; `bytes` param travels as base64 string in JSON (only large-payload req; ≤ 16 MiB frame cap applies) |
 | all `on*` members | not methods — they are the event channels below |
 
+### Tree-shape methods (promote / demote / re-parent)
+
+Three members re-shape the workspace tree. They exist on the socket/CLI side as
+`dispatchPromoteRequest` / `dispatchDemoteRequest` / `dispatchAttachRequest`,
+which answer an `{ ok, error }` envelope — **that envelope does not reach the
+wire.** The api-handler unwraps it: a failure becomes a rejected promise (so it
+arrives as frame-level `ok:false` with the message), and success resolves the
+freshly-read `Workspace`, letting a caller assert the transition it asked for.
+A result carrying `{ ok: … }` would be a second, redundant error channel.
+
+| Method | Params | Result | Rejects when |
+|---|---|---|---|
+| `promoteWorkspace` | `[id]` | updated `Workspace` | unknown id |
+| `demoteWorkspace` | `[id]` | updated `Workspace` | unknown id; workspace is `kind:'orchestrator'` (repo-less by nature — delete it instead) |
+| `setWorkspaceParent` | `[id, parentId \| null]` | updated `Workspace` | unknown id or parent; parent cannot orchestrate; self-parent or a cycle |
+
+All three are idempotent. Promotion has two routes, and the distinction is
+observable on the returned record: a `kind:'scratch'` workspace becomes
+`kind:'orchestrator'`, while a git worktree KEEPS `kind:'worktree'` and gains
+`canOrchestrate: true` — so it retains diff/merge/PR/branch handling while also
+parenting children. Consumers deciding "can this parent others?" must therefore
+check `kind === 'orchestrator' || canOrchestrate === true`, never the kind alone
+(`Workspace::can_orchestrate()` in orchestra-rpc). `demoteWorkspace` clears only
+the capability, and detaches any children first — a `parentId` pointing at a
+non-orchestrator would render nowhere, since the sidebar walks trees from
+orchestrator roots.
+
 Added methods (not in OrchestraAPI yet; backend adds in M1):
 
 | Method | Params | Result |

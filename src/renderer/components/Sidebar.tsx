@@ -7,7 +7,7 @@ import type {
   Workspace,
   WorkspaceStatus,
 } from '../../shared/types';
-import { isScratchLike } from '../../shared/types';
+import { isScratchLike, canOrchestrate } from '../../shared/types';
 import { groupByHost, hostLabel } from '../host-grouping';
 import { SoundSettings } from './SoundSettings';
 import { LinearSettings } from './LinearSettings';
@@ -669,8 +669,24 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const [bulkDelete, setBulkDelete] = useState<{ done: number; total: number } | null>(null);
   // Drag-and-drop reordering state. A workspace drag and a repo-group drag are
   // mutually exclusive — only one of these is ever non-null at a time.
-  const [dragWs, setDragWs] = useState<{ id: string; repoPath: string } | null>(null);
+  const [dragWs, setDragWs] = useState<{
+    id: string;
+    repoPath: string;
+    /** Live parent at drag start. Drives the detach affordance: a row with a
+     * parent can be dropped on a repo header to pop it back out to a root. */
+    parentId?: string;
+    /** True when the drag started on a nested (depth > 0) row. Such rows are
+     * positioned by the spawn tree, not manual order, so they are re-parent
+     * drags only — never reorder drags. */
+    nested: boolean;
+  } | null>(null);
   const [dropWs, setDropWs] = useState<{ id: string; pos: 'before' | 'after' } | null>(null);
+  // Re-parent drop target: the id of an orchestrator-capable row the dragged
+  // workspace is hovering over, or the repoPath of a repo header hovered as a
+  // DETACH target. Kept separate from `dropWs` because a re-parent drop lands
+  // ON the row (whole-row highlight) rather than BETWEEN two rows.
+  const [attachTo, setAttachTo] = useState<string | null>(null);
+  const [detachOver, setDetachOver] = useState<string | null>(null);
   const [dragRepo, setDragRepo] = useState<string | null>(null);
   const [dropRepo, setDropRepo] = useState<{ path: string; pos: 'before' | 'after' } | null>(null);
 
@@ -714,8 +730,46 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const clearDnd = () => {
     setDragWs(null);
     setDropWs(null);
+    setAttachTo(null);
+    setDetachOver(null);
     setDragRepo(null);
     setDropRepo(null);
+  };
+
+  // Every descendant of the dragged row, so a re-parent can't create a cycle
+  // (dropping a parent onto its own child). Recomputed per drag hover — the
+  // subtree is tiny and this only runs while a drag is in flight.
+  const isDescendantOfDrag = (candidateId: string): boolean => {
+    if (!dragWs) return false;
+    if (candidateId === dragWs.id) return true;
+    return collectDescendants(dragWs.id, forest.childrenOf).some((d) => d.id === candidateId);
+  };
+
+  /** Whether `target` may accept a re-parent drop of the in-flight drag.
+   * Deliberately narrow — the user's rule is that ONLY orchestrator-capable
+   * rows are drop targets, so a plain worktree row never accepts a drop no
+   * matter what is being dragged. */
+  const canAttachTo = (target: Workspace): boolean =>
+    !!dragWs &&
+    canOrchestrate(target) &&
+    dragWs.id !== target.id &&
+    dragWs.parentId !== target.id &&
+    !isDescendantOfDrag(target.id);
+
+  // Commit a re-parent: attach the dragged workspace under `parentId`, or
+  // detach it to a root when `parentId` is null. `setWorkspaceParent` is owned
+  // by a sibling agent's ipc.ts change; this is the agreed call site for it.
+  const commitReparent = (parentId: string | null) => {
+    const drag = dragWs;
+    clearDnd();
+    if (!drag) return;
+    if ((drag.parentId ?? null) === parentId) return;
+    void window.orchestra.setWorkspaceParent(drag.id, parentId).catch((err: unknown) => {
+      void dialog.error(
+        parentId ? 'Could not attach workspace' : 'Could not detach workspace',
+        (err as Error).message,
+      );
+    });
   };
 
   // Commit a workspace move: pull the dragged id out of the full ordering and
@@ -1053,6 +1107,17 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   // was spawned by an orchestrator has a live parent, so it isn't a root here —
   // it surfaces inside that orchestrator's tree instead (spawn beats repo). Its
   // subtree, flattened by groupRootsByRepo, still nests any further children.
+  //
+  // A PROMOTED WORKTREE (kind 'worktree' + canOrchestrate) stays right here, in
+  // its own repo section: `isScratchLike` is false for it, so it lands in
+  // `repoRoots` as an ordinary root and keeps its repo grouping, branch, diff
+  // pills and reorder handle. Only `kind === 'orchestrator'` moves to the
+  // pinned Orchestrators section — which is why section assignment must ask
+  // `isScratchLike` (a GIT question) and never `canOrchestrate` (a TREE
+  // question). Its children arrive via groupRootsByRepo's flattenSubtree and
+  // render indented beneath it, exactly like an orchestrator's subtree; because
+  // a child is never a forest root, it cannot also appear in its own repo
+  // section, so nothing double-renders.
   const { activeGroups, repoOrder } = useMemo(() => {
     const repoRoots = forest.roots.filter((w) => !isScratchLike(w));
     const activeGroups = groupRootsByRepo(repoRoots, forest);
@@ -1122,9 +1187,43 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         return (
           <div
             key={w.id}
-            className={`ws-item ${activeId === w.id ? 'active' : ''}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}${w.markedUnread ? ' unread' : ''}`}
+            className={`ws-item ${activeId === w.id ? 'active' : ''}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}${w.markedUnread ? ' unread' : ''}${dragWs?.id === w.id ? ' dragging' : attachTo === w.id ? ' attach-target' : ''}`}
             style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
             onClick={() => setActive(w.id)}
+            // Rows in the pinned sections are re-parent drag sources and, when
+            // orchestrator-capable, re-parent DROP TARGETS. They are never
+            // reorder targets — the spawn tree owns their order.
+            draggable={renamingId !== w.id && !isDeleting}
+            onDragStart={(e) => {
+              if ((e.target as HTMLElement).closest('button, input')) {
+                e.preventDefault();
+                return;
+              }
+              e.stopPropagation();
+              setDragRepo(null);
+              setDragWs({ id: w.id, repoPath: w.repoPath, parentId: w.parentId, nested: isChild });
+              e.dataTransfer.effectAllowed = 'move';
+              try {
+                e.dataTransfer.setData('text/plain', w.id);
+              } catch {
+                /* some platforms reject setData — drag still works */
+              }
+            }}
+            onDragOver={(e) => {
+              if (!canAttachTo(w)) return;
+              e.preventDefault();
+              e.stopPropagation();
+              e.dataTransfer.dropEffect = 'move';
+              setDropWs(null);
+              setAttachTo((prev) => (prev === w.id ? prev : w.id));
+            }}
+            onDrop={(e) => {
+              if (attachTo !== w.id) return;
+              e.preventDefault();
+              e.stopPropagation();
+              commitReparent(w.id);
+            }}
+            onDragEnd={clearDnd}
           >
             {isChild && (
               <span className="ws-tree-connector" aria-hidden="true">
@@ -1410,7 +1509,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
             }}
           >
             <div
-              className="repo-header"
+              className={`repo-header${detachOver === repoPath ? ' detach-target' : ''}`}
               title={repoPath}
               draggable={isRegisteredRepo}
               onDragStart={(e) => {
@@ -1428,6 +1527,23 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 }
               }}
               onDragEnd={clearDnd}
+              onDragOver={(e) => {
+                // Dropping a NESTED row on a repo header detaches it back out
+                // to a root of that repo. Roots have no parent to shed, so they
+                // are ignored here and keep their repo-reorder behaviour.
+                if (!dragWs?.parentId) return;
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = 'move';
+                setAttachTo(null);
+                setDetachOver((prev) => (prev === repoPath ? prev : repoPath));
+              }}
+              onDrop={(e) => {
+                if (!dragWs?.parentId) return;
+                e.preventDefault();
+                e.stopPropagation();
+                commitReparent(null);
+              }}
             >
               <button
                 className="repo-collapse"
@@ -1555,12 +1671,31 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               // null and shows nothing. URL/identifier come straight from Linear,
               // so they're never fabricated.
               const linearIssue = linear[w.id] ?? null;
+              // A promoted worktree is a coordinator: it can be collapsed, it
+              // shows a child count, and it is a valid re-parent DROP TARGET.
+              // `canOrchestrate` is the TREE question — it stays true for a
+              // 'worktree' kind, which is exactly why this row still gets the
+              // full git chrome below (branch, diff pills, PR badges).
+              const isOrchestratorRow = canOrchestrate(w);
+              const kids = forest.childrenOf.get(w.id) ?? [];
+              const collapsible = kids.length > 0;
+              const isCollapsed = collapsible && collapsedOrch.has(w.id);
+              const hiddenKids = isCollapsed ? collectDescendants(w.id, forest.childrenOf) : [];
+              const hiddenUrgency = hiddenKids.some((h) => h.status === 'error')
+                ? 'error'
+                : hiddenKids.some((h) => h.status === 'waiting' || h.markedUnread)
+                  ? 'waiting'
+                  : hiddenKids.some((h) => h.status === 'running')
+                    ? 'running'
+                    : '';
               const wsDnd =
                 dragWs?.id === w.id
                   ? ' dragging'
-                  : dropWs?.id === w.id
-                    ? ` drop-${dropWs.pos}`
-                    : '';
+                  : attachTo === w.id
+                    ? ' attach-target'
+                    : dropWs?.id === w.id
+                      ? ` drop-${dropWs.pos}`
+                      : '';
               // Spawned children are positioned by the orchestrator tree, not by
               // manual order, so they are not drag-reorderable (only depth-0
               // roots are). Indent each level; a child in a different repo than
@@ -1572,6 +1707,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               // branch name doesn't strand the size on its own line above the
               // badges; when it doesn't, the size stays inline on the name row.
               const hasPills =
+                isOrchestratorRow ||
+                isCollapsed ||
                 crossRepoChild ||
                 (!!w.mergedAt && !w.divergedFromBase && !hasMergedPRBadge) ||
                 !!w.releasedAt ||
@@ -1587,19 +1724,23 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                   className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}${isChild ? ' ws-child' : ''}${w.markedUnread ? ' unread' : ''}${wsDnd}`}
                   style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
                   onClick={() => setActive(w.id)}
-                  draggable={!isChild && renamingId !== w.id}
+                  // Nested rows are now draggable too — not to reorder them
+                  // (the spawn tree owns their position), but so they can be
+                  // dragged OUT to detach or onto another orchestrator.
+                  draggable={renamingId !== w.id}
                   onDragStart={(e) => {
-                    if (isChild) {
-                      e.preventDefault();
-                      return;
-                    }
                     if ((e.target as HTMLElement).closest('button, input')) {
                       e.preventDefault();
                       return;
                     }
                     e.stopPropagation();
                     setDragRepo(null);
-                    setDragWs({ id: w.id, repoPath: w.repoPath });
+                    setDragWs({
+                      id: w.id,
+                      repoPath: w.repoPath,
+                      parentId: w.parentId,
+                      nested: isChild,
+                    });
                     e.dataTransfer.effectAllowed = 'move';
                     try {
                       e.dataTransfer.setData('text/plain', w.id);
@@ -1608,11 +1749,26 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     }
                   }}
                   onDragOver={(e) => {
+                    if (!dragWs) return;
+                    // Re-parent takes precedence: ONLY an orchestrator-capable
+                    // row accepts a drop. A plain worktree row never does, so
+                    // the user can't accidentally nest under a non-coordinator.
+                    if (canAttachTo(w)) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      e.dataTransfer.dropEffect = 'move';
+                      setDropWs(null);
+                      setAttachTo((prev) => (prev === w.id ? prev : w.id));
+                      return;
+                    }
                     // Same-repo reordering only — cross-repo drops are a no-op,
-                    // and tree-nested children are not reorder targets.
-                    if (isChild || !dragWs || dragWs.repoPath !== w.repoPath || dragWs.id === w.id) return;
+                    // and tree-nested rows are not reorder targets (neither as
+                    // the dragged row nor as the target).
+                    if (isChild || dragWs.nested) return;
+                    if (dragWs.repoPath !== w.repoPath || dragWs.id === w.id) return;
                     e.preventDefault();
                     e.dataTransfer.dropEffect = 'move';
+                    setAttachTo(null);
                     const pos = dropPosFromEvent(e);
                     setDropWs((prev) =>
                       prev?.id === w.id && prev.pos === pos ? prev : { id: w.id, pos },
@@ -1622,7 +1778,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     if (!dragWs) return;
                     e.preventDefault();
                     e.stopPropagation();
-                    commitWsDrop();
+                    if (attachTo === w.id) commitReparent(w.id);
+                    else commitWsDrop();
                   }}
                   onDragEnd={clearDnd}
                 >
@@ -1631,6 +1788,24 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       ╰─
                     </span>
                   )}
+                  {collapsible ? (
+                    <button
+                      className="ws-collapse"
+                      aria-expanded={!isCollapsed}
+                      aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} agents nested under ${w.branch}`}
+                      title={
+                        isCollapsed
+                          ? `Show ${hiddenKids.length} nested agent${hiddenKids.length === 1 ? '' : 's'}`
+                          : 'Hide nested agents'
+                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleOrchCollapsed(w.id);
+                      }}
+                    >
+                      <span className={`caret ${isCollapsed ? '' : 'open'}`}>▸</span>
+                    </button>
+                  ) : null}
                   <div
                     className={`ws-dot ${w.status as WorkspaceStatus}${w.markedUnread ? ' unread' : ''}`}
                     title={
@@ -1689,6 +1864,28 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         </span>
                       )}
                       <span className="ws-pills">
+                      {isOrchestratorRow && (
+                        <span
+                          className="orchestrator-pill"
+                          title={
+                            w.kind === 'orchestrator'
+                              ? 'Orchestrator session — coordinates the agents nested under it'
+                              : `Promoted worktree — coordinates ${kids.length} nested agent${kids.length === 1 ? '' : 's'} while keeping its own branch`
+                          }
+                        >
+                          orch{kids.length > 0 ? ` ${kids.length}` : ''}
+                        </span>
+                      )}
+                      {isCollapsed && (
+                        <span
+                          className={`ws-hidden-count${hiddenUrgency ? ` ${hiddenUrgency}` : ''}`}
+                          title={`${hiddenKids.length} hidden agent${hiddenKids.length === 1 ? '' : 's'}: ${hiddenKids
+                            .map((h) => (h.markedUnread ? `${h.branch} (unread)` : h.branch))
+                            .join(', ')}`}
+                        >
+                          {hiddenKids.length}
+                        </span>
+                      )}
                       {crossRepoChild && (
                         <span
                           className="repo-tag-pill"
@@ -1802,14 +1999,27 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               );
                 }; // end renderWs
 
+                // Apply the same depth-first collapse fold the pinned spawn-tree
+                // sections use, so folding a promoted worktree hides its
+                // subtree here too. Rows are depth-first, so a collapsed node
+                // hides every deeper row that follows it until the walk climbs
+                // back to its depth.
+                const visibleItems: TreeRow[] = [];
+                let skipBelow: number | null = null;
+                for (const row of items) {
+                  if (skipBelow !== null && row.depth > skipBelow) continue;
+                  skipBelow = null;
+                  visibleItems.push(row);
+                  if (collapsedOrch.has(row.ws.id)) skipBelow = row.depth;
+                }
                 // `items` are orchestrator-tree rows ({ ws, depth }); surface
                 // each row's host so groupByHost (which keys off `host`) can
                 // bucket the rows while renderWs still gets its depth.
                 const nodeGroups = groupByHost(
-                  items.map((r) => ({ ...r, host: r.ws.host })),
+                  visibleItems.map((r) => ({ ...r, host: r.ws.host })),
                 );
                 // All-local repo: flat list, byte-for-byte the previous layout.
-                if (!nodeGroups) return items.map(renderWs);
+                if (!nodeGroups) return visibleItems.map(renderWs);
                 // Mixed repo: a collapsible header per node, rows beneath.
                 return nodeGroups.map(({ key, items: nodeItems }) => {
                   const hostId = `${repoPath}::${key}`;

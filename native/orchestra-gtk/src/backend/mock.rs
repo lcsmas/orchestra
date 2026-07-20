@@ -17,7 +17,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use orchestra_rpc::types::{RepoEntry, Workspace, WorkspaceHost};
+use orchestra_rpc::types::{RepoEntry, Workspace, WorkspaceHost, WorkspaceKind};
 use orchestra_rpc::ConnectionState;
 use serde_json::{json, Value};
 
@@ -717,6 +717,123 @@ impl Backend for MockBackend {
                 })?;
                 Ok(serde_json::to_value(&ws).unwrap())
             }
+            // Promote / demote / re-parent. These mirror the real guards in
+            // workspaces.ts (dispatchPromoteRequest / dispatchDemoteRequest /
+            // dispatchAttachRequest) so an E2E driving the mock exercises the
+            // same accept/reject decisions the live backend makes. All three
+            // return the BARE updated Workspace (ipc.ts) — the `{ok,error}`
+            // envelope the dispatch* functions use is unwrapped by the handler
+            // and never reaches the wire; a rejection is a frame-level error,
+            // which is `Err(BackendError::Method)` here.
+            "promoteWorkspace" => {
+                let id: String = Self::arg(&params, 0)?;
+                let ws = self.require_ws(&id)?;
+                // Idempotent: already a coordinator by either route → no-op.
+                if ws.can_orchestrate() {
+                    return Ok(serde_json::to_value(&ws).unwrap());
+                }
+                // A scratch session swaps its KIND; a git worktree keeps its
+                // kind and gains the CAPABILITY, so it retains diff/merge/PR
+                // handling (`isScratchLike` must stay false for it).
+                let updated = self.update_ws(&id, |w| {
+                    if w.kind == Some(WorkspaceKind::Scratch) {
+                        w.kind = Some(WorkspaceKind::Orchestrator);
+                    } else {
+                        w.can_orchestrate = Some(true);
+                    }
+                })?;
+                Ok(serde_json::to_value(&updated).unwrap())
+            }
+            "demoteWorkspace" => {
+                let id: String = Self::arg(&params, 0)?;
+                let ws = self.require_ws(&id)?;
+                // Only the capability is reversible — an orchestrator-KIND
+                // scratch session is repo-less by nature and cannot become a
+                // worktree, so the real backend refuses it.
+                if ws.kind == Some(WorkspaceKind::Orchestrator) {
+                    return Err(BackendError::Method(
+                        "an orchestrator session cannot be demoted (it is repo-less by nature); \
+                         delete it instead"
+                            .into(),
+                    ));
+                }
+                if ws.can_orchestrate != Some(true) {
+                    return Ok(serde_json::to_value(&ws).unwrap());
+                }
+                // Children would render nowhere under a non-orchestrator (the
+                // sidebar only walks trees from orchestrator roots), so detach
+                // them rather than leaving dangling edges.
+                let children: Vec<String> = self
+                    .state
+                    .borrow()
+                    .workspaces
+                    .iter()
+                    .filter(|w| w.parent_id.as_deref() == Some(id.as_str()))
+                    .map(|w| w.id.clone())
+                    .collect();
+                for child in children {
+                    self.update_ws(&child, |w| w.parent_id = None)?;
+                }
+                let updated = self.update_ws(&id, |w| w.can_orchestrate = None)?;
+                Ok(serde_json::to_value(&updated).unwrap())
+            }
+            "setWorkspaceParent" => {
+                let id: String = Self::arg(&params, 0)?;
+                // `null` is a first-class value here (detach), so the param is
+                // Option<String> — not a missing arg.
+                let parent_id: Option<String> = Self::arg(&params, 1)?;
+                self.require_ws(&id)?;
+                let parent = parent_id
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty());
+                let Some(parent) = parent else {
+                    let updated = self.update_ws(&id, |w| w.parent_id = None)?;
+                    return Ok(serde_json::to_value(&updated).unwrap());
+                };
+                if parent == id {
+                    return Err(BackendError::Method(
+                        "a workspace cannot be its own parent".into(),
+                    ));
+                }
+                let parent_ws = self.require_ws(&parent).map_err(|_| {
+                    BackendError::Method(format!("unknown parent workspace: {parent}"))
+                })?;
+                // Parenting under a non-orchestrator would bury the child in a
+                // subtree the sidebar never renders.
+                if !parent_ws.can_orchestrate() {
+                    return Err(BackendError::Method(format!(
+                        "workspace cannot orchestrate: {parent}"
+                    )));
+                }
+                // Walk the proposed parent's ancestry — a promoted worktree CAN
+                // itself have a parent, so A→B→A is reachable and a self-check
+                // alone would let it through, hanging every tree walk. Mirrors
+                // the same guard in dispatchAttachRequest.
+                {
+                    let state = self.state.borrow();
+                    let mut seen: Vec<String> = vec![id.clone()];
+                    let mut cur = parent.clone();
+                    loop {
+                        if seen.contains(&cur) {
+                            return Err(BackendError::Method(
+                                "that would create a parent cycle".into(),
+                            ));
+                        }
+                        seen.push(cur.clone());
+                        let next = state
+                            .workspaces
+                            .iter()
+                            .find(|w| w.id == cur)
+                            .and_then(|w| w.parent_id.clone());
+                        match next {
+                            Some(p) => cur = p,
+                            None => break,
+                        }
+                    }
+                }
+                let updated = self.update_ws(&id, |w| w.parent_id = Some(parent.clone()))?;
+                Ok(serde_json::to_value(&updated).unwrap())
+            }
             "setUnread" => {
                 let id: String = Self::arg(&params, 0)?;
                 let unread: bool = Self::arg(&params, 1)?;
@@ -1302,6 +1419,122 @@ mod tests {
             .unwrap()
             .iter()
             .any(|w| w.id == "ws-arch-1"));
+    }
+
+    /// Helper: read one workspace's (can_orchestrate, kind, parent_id).
+    fn ws_of(b: &MockBackend, id: &str) -> Workspace {
+        b.list_workspaces()
+            .unwrap()
+            .into_iter()
+            .find(|w| w.id == id)
+            .unwrap_or_else(|| panic!("no workspace {id}"))
+    }
+
+    #[test]
+    fn promote_worktree_grants_capability_without_changing_kind() {
+        let b = MockBackend::default();
+
+        // BEFORE: an ordinary git worktree that cannot orchestrate. Asserted so
+        // the after-state below proves a TRANSITION rather than passing
+        // vacuously on a row that was already a coordinator.
+        let before = ws_of(&b, "ws-1");
+        assert!(
+            !before.can_orchestrate(),
+            "fixture ws-1 must start as a non-coordinator"
+        );
+        // An ABSENT kind is a worktree (`workspace.rs:26`), which is how the
+        // fixtures spell it — so assert the kind is preserved verbatim below
+        // rather than expecting an explicit `Some(Worktree)`.
+        let before_kind = before.kind;
+        assert!(!before.is_scratch_like());
+
+        b.call("promoteWorkspace", vec![json!("ws-1")]).unwrap();
+
+        // AFTER: capability gained, KIND unchanged — that divergence is the
+        // whole feature (a promoted worktree keeps diff/merge/PR handling, so
+        // `is_scratch_like` must stay false).
+        let after = ws_of(&b, "ws-1");
+        assert!(after.can_orchestrate(), "promote must grant the capability");
+        assert_eq!(
+            after.kind, before_kind,
+            "a promoted worktree keeps its kind"
+        );
+        assert!(!after.is_scratch_like());
+    }
+
+    #[test]
+    fn demote_revokes_capability_and_detaches_children() {
+        let b = MockBackend::default();
+        b.call("promoteWorkspace", vec![json!("ws-1")]).unwrap();
+        b.call("setWorkspaceParent", vec![json!("ws-2"), json!("ws-1")])
+            .unwrap();
+
+        // BEFORE: a promoted coordinator that actually has a child.
+        assert!(ws_of(&b, "ws-1").can_orchestrate());
+        assert_eq!(ws_of(&b, "ws-2").parent_id.as_deref(), Some("ws-1"));
+
+        b.call("demoteWorkspace", vec![json!("ws-1")]).unwrap();
+
+        // AFTER: capability gone, and the child detached rather than being
+        // left pointing at a parent the sidebar no longer walks trees from.
+        assert!(!ws_of(&b, "ws-1").can_orchestrate());
+        assert_eq!(ws_of(&b, "ws-2").parent_id, None);
+    }
+
+    #[test]
+    fn demote_is_refused_for_an_orchestrator_kind_session() {
+        let b = MockBackend::default();
+        assert_eq!(ws_of(&b, "orch-1").kind, Some(WorkspaceKind::Orchestrator));
+        assert!(b.call("demoteWorkspace", vec![json!("orch-1")]).is_err());
+        // Still an orchestrator — the refusal changed nothing.
+        assert_eq!(ws_of(&b, "orch-1").kind, Some(WorkspaceKind::Orchestrator));
+    }
+
+    #[test]
+    fn set_parent_attaches_detaches_and_refuses_bad_targets() {
+        let b = MockBackend::default();
+
+        // Attach under the orchestrator-kind root: None -> Some.
+        assert_eq!(ws_of(&b, "ws-1").parent_id, None);
+        b.call("setWorkspaceParent", vec![json!("ws-1"), json!("orch-1")])
+            .unwrap();
+        assert_eq!(ws_of(&b, "ws-1").parent_id.as_deref(), Some("orch-1"));
+
+        // Detach: Some -> None (null is a first-class value, not a missing arg).
+        b.call("setWorkspaceParent", vec![json!("ws-1"), Value::Null])
+            .unwrap();
+        assert_eq!(ws_of(&b, "ws-1").parent_id, None);
+
+        // A non-orchestrator parent is refused — it would bury the child in a
+        // subtree the sidebar never renders.
+        assert!(!ws_of(&b, "ws-2").can_orchestrate());
+        assert!(b
+            .call("setWorkspaceParent", vec![json!("ws-1"), json!("ws-2")])
+            .is_err());
+        assert_eq!(ws_of(&b, "ws-1").parent_id, None);
+
+        // Self-parenting is refused.
+        assert!(b
+            .call("setWorkspaceParent", vec![json!("ws-1"), json!("ws-1")])
+            .is_err());
+    }
+
+    #[test]
+    fn set_parent_refuses_a_cycle_through_a_promoted_worktree() {
+        let b = MockBackend::default();
+        // A promoted worktree CAN itself have a parent, so A->B->A is
+        // reachable and a self-check alone would let it through.
+        b.call("promoteWorkspace", vec![json!("ws-1")]).unwrap();
+        b.call("promoteWorkspace", vec![json!("ws-2")]).unwrap();
+        b.call("setWorkspaceParent", vec![json!("ws-2"), json!("ws-1")])
+            .unwrap();
+        assert_eq!(ws_of(&b, "ws-2").parent_id.as_deref(), Some("ws-1"));
+
+        // Closing the loop must be rejected, leaving ws-1 unparented.
+        assert!(b
+            .call("setWorkspaceParent", vec![json!("ws-1"), json!("ws-2")])
+            .is_err());
+        assert_eq!(ws_of(&b, "ws-1").parent_id, None);
     }
 
     #[test]

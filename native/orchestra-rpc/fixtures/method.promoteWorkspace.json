@@ -1,0 +1,34 @@
+{
+  "method": "promoteWorkspace",
+  "params": [
+    "ws-fixture-git"
+  ],
+  "result": {
+    "id": "ws-fixture-git",
+    "name": "repo · main",
+    "repoPath": "/tmp/orchestra-rpc-fixtures/repo",
+    "worktreePath": "/tmp/orchestra-rpc-fixtures/repo",
+    "branch": "main",
+    "baseBranch": "main",
+    "createdAt": 1700000000000,
+    "status": "idle",
+    "agent": "claude",
+    "branchManuallySet": true,
+    "port": 55100,
+    "setupStatus": "ok",
+    "contextTokens": 123456,
+    "unpushedAhead": 0,
+    "hasInput": true,
+    "mergedAt": 1700000000000,
+    "divergedFromBase": false,
+    "queuedPrompts": [
+      {
+        "id": "00000000-0000-4000-8000-000000000000",
+        "text": "fixture prompt",
+        "queuedAt": 1700000000000
+      }
+    ],
+    "markedUnread": true,
+    "canOrchestrate": true
+  }
+}
