@@ -59,28 +59,92 @@ absent, so the seeded rows survive to first paint instead of being torn down.
 A finished `selfTuneRuns` entry is seeded so the scheduler doesn't spawn a
 headless `claude` mid-capture.
 
+## Which commit is this set? — `CAPTURED-AT.json`
+
+**A reference set that cannot tell you it is out of date is a yardstick that
+lies quietly.** `CAPTURED-AT.json` records, per capture, the commit it was taken
+at plus its md5, and **`check-fresh.sh` exits non-zero when rendering-affecting
+code changed since the captures were taken**:
+
+```bash
+docs/visual-reference/check-fresh.sh          # is this set current?
+docs/visual-reference/check-fresh.sh --at X   # is it evidence about commit X?
+```
+
+> **Staleness is per-file-per-commit, not a property of this directory.**
+> A capture taken at commit X is *valid evidence about X*. It becomes a lie only
+> when read as evidence about a **later** commit. The check reports which
+> surfaces were taken at which commit and never says "the set is stale" flatly.
+
+**What counts as stale is deliberately not "taken at a commit other than
+HEAD".** That rule is unusably strict: committing the captures necessarily
+creates a new HEAD, so a correctly-regenerated set would fail its own check one
+second after being written — and *a check that cries wolf is a check people
+learn to ignore*, which is the exact failure this tooling exists to prevent.
+(This is observed, not theorised — the first version of the script did it.)
+Instead the check asks whether anything under a **watched set of
+rendering-affecting paths** (`native/orchestra-gtk/src`, `src/renderer`,
+`src/main`, `src/shared`, `src/preload`, and the seed/driver scripts) changed
+between the capture commit and the target. The list is deliberately wide: a
+false "stale" costs one recapture, a false "fresh" costs a wrong verdict about
+whether a milestone landed. When it fails it **names the files that changed**,
+so the message is actionable rather than merely alarming.
+
+Fail-closed by design: a missing manifest, a capture missing from disk, a
+capture edited after the manifest was written, or a capture commit that is
+unreachable from the target all FAIL. An unanswerable question is not a pass.
+
+This is not hypothetical. Every GTK capture here was last written at `8924229`
+(M4-V2's own commit), and two milestones landed after it — `387c34f` (V3:
+header/env-notice/toolbar) and `82a990a` (V4: dialogs). Sampling the *committed*
+`gtk-toolbar.png` then gave **36px tall and flat colour**, which reads as a
+clean, specific, actionable finding: *"V3's toolbar work did nothing."* It was
+wrong. A fresh capture at the tip gives **48px with a three-step gradient**.
+Nothing failed and nothing warned — a stale file simply answered the question.
+The verifier escaped only by checking the file's `git log` rather than its
+contents. **Those captures were never invalid for V2, which was genuinely
+verified against them**; they were only stale for V3 and V4.
+
+Sidecar JSON rather than PNG metadata, deliberately: a `tEXt` chunk is invisible
+in a diff, a file listing and in review, so a set whose provenance silently
+stopped being updated looks identical to a current one. A JSON file shows up in
+`git diff` as a changed hash next to changed binaries — new PNGs *without* a
+manifest change is an obvious tell. It also survives PNG optimizers, which strip
+ancillary chunks by default.
+
 ## Regenerating
 
-Both capture scripts run the app inside their **own headless sway** — no window
-ever appears on your desktop. Each writes its PNGs into this directory.
-
-### Electron
+**One command does both halves and records provenance:**
 
 ```bash
-npx vite build                              # produces dist/ + dist-electron/
-docs/visual-reference/capture-electron.sh   # seeds, launches, screenshots
+./native/setup-localdeps.sh          # once per worktree: rootless GTK deps
+docs/visual-reference/recapture.sh   # builds, captures both, writes the manifest
 ```
 
-### GTK
+`recapture.sh` rebuilds `target/**release**/orchestra-gtk` (the binary
+`capture-gtk.sh` actually execs — `cargo test` does *not* refresh it), runs both
+capture scripts, writes `CAPTURED-AT.json`, and then runs `check-fresh.sh`
+against what it just produced. It refuses to run with uncommitted changes under
+`native/orchestra-gtk` or `src/`, because the captures would show those changes
+while the manifest recorded `HEAD` — provenance that is a lie.
 
-```bash
-./native/setup-localdeps.sh                 # once per worktree: rootless GTK deps
-source native/env.sh
-cargo build -p orchestra-gtk --release --manifest-path native/Cargo.toml
-docs/visual-reference/capture-gtk.sh
-```
+Regenerating **one half alone is a trap**: the pair's value is that both sides
+show the same state at the same size, so a half-regenerated set compares a fresh
+frontend against a stale one and calls the difference a parity defect.
 
-Regenerate both, then compare the matching pair.
+### The row pin is not optional
+
+`recapture.sh` exports `ORCHESTRA_CAPTURE_ROW=ws-row-ws-4`. The app auto-selects
+a row at boot and **which** row differs *between builds*, not merely between
+runs. Auto-selection only ever lands on **tree-top** rows (`orch-1`,
+`orch-scratch-kid`, `ws-2`), so the pin must be a **mid-list row that is never
+auto-selected**. `drive-gtk.py` fails loudly on an absent row (`:131`) and
+refuses an already-`.active` one (`:142`) rather than falling back to a racy
+scan — a pair that quietly differs in selected row still looks like a rigorous
+comparison. Pin correctly and it is one-shot; do not add a retry loop.
+
+Both halves run the app in their **own headless sway**, so no window ever
+appears on your desktop.
 
 ## Files
 
@@ -92,6 +156,10 @@ Regenerate both, then compare the matching pair.
 | `drive-electron.mjs` | Dep-free CDP driver (screenshots each surface) |
 | `capture-gtk.sh` | Headless sway + `ORCHESTRA_GTK_MOCK=1` + remote-control |
 | `drive-gtk.py` | Harness driver over the `--remote-control` socket |
+| `recapture.sh` | **Regenerate both halves + manifest in one command** |
+| `write-manifest.mjs` | Records commit + md5 per capture |
+| `check-fresh.sh` | **Fails loudly when a capture is not from `HEAD`** |
+| `CAPTURED-AT.json` | The provenance manifest itself |
 
 ## Gotchas worth keeping
 
