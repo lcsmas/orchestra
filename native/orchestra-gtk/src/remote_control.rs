@@ -46,6 +46,18 @@ pub enum Op {
         name: String,
         prop: Prop,
     },
+    /// Report the named widget's size-negotiation numbers: MINIMUM and NATURAL
+    /// width, plus its current allocation.
+    ///
+    /// Allocation alone cannot explain a layout floor — it tells you how wide a
+    /// widget ENDED UP, not how narrow it was willing to be. A GtkPaned with
+    /// `shrink_start_child(false)` clamps its position to the start child's
+    /// MINIMUM, so that minimum is the number that decides the sidebar width,
+    /// and nothing in the harness could read it. Two hypotheses about this
+    /// sidebar died against allocation-only evidence before this op existed.
+    Measure {
+        name: String,
+    },
     /// Activate a `group.action` on the named widget (or the main window if no
     /// widget is named), with an optional string parameter. This drives
     /// affordances that have no clickable widget under headless CI — chiefly
@@ -409,6 +421,17 @@ fn handle_op(op: Op) -> Value {
                 }
             };
             ok(serde_json::Map::from_iter([("value".into(), value)]))
+        }
+        Op::Measure { name } => {
+            let Some(w) = find_widget(&name) else {
+                return err(format!("no widget named {name:?}"));
+            };
+            let (min, nat, _, _) = w.measure(gtk::Orientation::Horizontal, -1);
+            ok(serde_json::Map::from_iter([
+                ("min_width".into(), json!(min)),
+                ("nat_width".into(), json!(nat)),
+                ("alloc_width".into(), json!(w.width())),
+            ]))
         }
         Op::Screenshot { path, name } => {
             // Named targets resolve across ALL toplevels (dialogs included).

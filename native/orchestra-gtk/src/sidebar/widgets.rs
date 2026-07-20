@@ -53,9 +53,26 @@ fn label(text: &str, classes: &[&str]) -> gtk::Label {
     l
 }
 
+/// A label that ellipsizes AND can actually shrink.
+///
+/// `set_ellipsize` ALONE does not reduce a GtkLabel's minimum width: the label
+/// still requests its full natural text width, and ellipsizing only engages if
+/// something else forces it narrower. Nothing here did, so every sidebar row
+/// requested the width of its longest untruncated branch name — measured at
+/// 516px, which is what held the root GtkPaned open (it sets
+/// `shrink_start_child(false)`, so the start child's minimum is a hard floor)
+/// and made `set_position(280)` a no-op.
+///
+/// `set_width_chars(0)` + `set_max_width_chars(0)` releases that floor: the
+/// minimum collapses, the row can be narrower than its text, and the ellipsis
+/// finally does its job. This is also why widening the pane never fixed the
+/// name truncation — the labels were never the thing being clipped by width,
+/// they were the thing SETTING it.
 fn ellipsized(text: &str, classes: &[&str]) -> gtk::Label {
     let l = label(text, classes);
     l.set_ellipsize(pango::EllipsizeMode::End);
+    l.set_width_chars(0);
+    l.set_max_width_chars(0);
     l
 }
 

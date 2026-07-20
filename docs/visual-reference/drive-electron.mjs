@@ -13,7 +13,7 @@
  *
  * Usage: drive-electron.mjs <cdp-port> <outdir>
  */
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const [, , port, outDir] = process.argv;
@@ -130,7 +130,38 @@ else console.warn('  ! .sidebar not found — skipping sidebar crop');
 // this driver took "the first inactive row", so the two halves silently
 // selected DIFFERENT workspaces and every selected-state pair compared unlike
 // things while looking rigorous. Unpinned behaviour is unchanged.
-const pinRow = process.env.ORCHESTRA_CAPTURE_ROW ?? '';
+// The pin is expressed in GTK's vocabulary — a widget id, `ws-row-<workspaceId>`
+// — because drive-gtk.py matches widget names exactly. This driver has only the
+// rendered DOM, which carries no workspace id, so a raw id pin could NEVER match
+// here and the pair fell back to capturing two DIFFERENT workspaces (GTK pinned,
+// Electron unpinned) while both logs read as successes. Translate the id to the
+// row's seeded display name so ONE pin means the same workspace on both halves.
+//
+// Unknown-id pins fail loudly below rather than silently degrading to a text
+// match, which would restore exactly the mismatch the pin exists to remove.
+const rawPin = process.env.ORCHESTRA_CAPTURE_ROW ?? '';
+let pinRow = rawPin;
+if (rawPin.startsWith('ws-row-')) {
+  const wsId = rawPin.slice('ws-row-'.length);
+  // Read the seeded store rather than importing seed-store.mjs: that file is a
+  // SCRIPT (it writes a store from process.argv[2] at import time), not a module.
+  const storePath = process.env.ORCHESTRA_CAPTURE_STORE ?? '';
+  if (!storePath) {
+    console.error('FAIL: ORCHESTRA_CAPTURE_ROW is an id pin but ORCHESTRA_CAPTURE_STORE is unset.');
+    process.exit(1);
+  }
+  const { workspaces = [] } = JSON.parse(readFileSync(storePath, 'utf8'));
+  const hit = workspaces.find((w) => w.id === wsId);
+  if (!hit) {
+    console.error(`FAIL: ORCHESTRA_CAPTURE_ROW=${rawPin} names no seeded workspace id.`);
+    console.error(`      seeded ids: ${workspaces.map((w) => w.id).join(', ')}`);
+    process.exit(1);
+  }
+  // Match on the branch, not the full name: the row's text interleaves pills
+  // and account labels around it, so the name is not a contiguous substring.
+  pinRow = hit.branch ?? hit.name;
+  console.log(`-- pin ${rawPin} -> row text containing "${pinRow}"`);
+}
 const selected = await evaluate(`(() => {
   const pin = ${JSON.stringify(pinRow)};
   const rows = [...document.querySelectorAll('.ws-item')];
@@ -246,7 +277,7 @@ if (dialogShown) {
 // byte-identical to the previous surface, which LOOKS like a successful capture
 // but proves nothing. Fail loudly instead.
 const { createHash } = await import('node:crypto');
-const { readdirSync, readFileSync } = await import('node:fs');
+const { readdirSync } = await import('node:fs');
 const digests = new Map();
 for (const f of readdirSync(outDir).sort()) {
   if (!f.startsWith('electron-') || !f.endsWith('.png')) continue;

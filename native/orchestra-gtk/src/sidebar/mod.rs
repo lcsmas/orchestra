@@ -669,7 +669,26 @@ impl Component for Sidebar {
         let input = sender.input_sender().clone();
 
         // ---- header strip: title + action buttons -----------------------
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        //
+        // VERTICAL, and that is the width constraint — not a style choice.
+        //
+        // Electron's `.sidebar-header` is `flex-wrap: wrap` (styles.css:443) and
+        // its `.sidebar-header-actions` likewise (styles.css:449), inside an
+        // `.app` grid whose sidebar track is a HARD `340px` (styles.css:390).
+        // At that width the row cannot fit, so it wraps onto three lines:
+        // wordmark / four icon buttons + Scratch + Orchestrator / Repo.
+        //
+        // The port had this as one HORIZONTAL box, which has no wrap and
+        // therefore a natural minimum equal to the sum of every child. Because
+        // the root GtkPaned sets `shrink_start_child(false)`, that minimum
+        // becomes a FLOOR the paned position cannot go below — so
+        // `set_position(280)` was silently overridden and the sidebar measured
+        // 516px. The labels did not "push the boundary" through any styling
+        // rule; they raised the start child's minimum, and the paned obeyed it.
+        //
+        // Wrapping is what removes the floor: with the actions in a FlowBox the
+        // header's minimum is one button wide, so the requested width wins.
+        let header = gtk::Box::new(gtk::Orientation::Vertical, 8);
         header.add_css_class("sidebar-header");
         header.set_widget_name("sidebar-header");
         // Electron's wordmark (Sidebar.tsx:1360 `<h1>Orchestra</h1>`), not the
@@ -689,10 +708,32 @@ impl Component for Sidebar {
         // for the triggers, and — the defect the user reported — ⚡ and 🌿 alone
         // as the Scratch and Orchestrator buttons, which rendered as two blank
         // dark squares because an emoji in a Button label is not an icon.
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6); // gap: 6px, styles.css:451
+        // A FlowBox, not a Box: this is the GTK4 stand-in for Electron's
+        // `flex-wrap: wrap` (styles.css:449). GTK4 CSS has no `gap`, so the 6px
+        // of styles.css:451 is the row/column spacing set below, not a rule.
+        //
+        // `max_children_per_line` must be large enough never to force a break of
+        // its own — the WIDTH decides where lines break, exactly as flex-wrap
+        // does. Left at the child count so the container never out-thinks the
+        // available space.
+        let actions = gtk::FlowBox::new();
         actions.add_css_class("sidebar-header-actions");
         actions.set_widget_name("sidebar-header-actions");
+        actions.set_orientation(gtk::Orientation::Horizontal);
+        actions.set_row_spacing(6); // gap: 6px, styles.css:451
+        actions.set_column_spacing(6);
+        actions.set_max_children_per_line(7);
+        actions.set_min_children_per_line(1);
+        // Electron right-aligns the wrapped rows (`justify-content: flex-end`,
+        // styles.css:450). GTK4 FlowBox has no per-line justification, so the
+        // box itself is end-aligned and packs its lines from the right edge.
         actions.set_halign(gtk::Align::End);
+        // Selection is a FlowBox default that would make these buttons look
+        // like list items and steal their click; they are actions, not choices.
+        actions.set_selection_mode(gtk::SelectionMode::None);
+        // Without this the FlowBox claims the full natural width of one line,
+        // reinstating the very floor this change exists to remove.
+        actions.set_hexpand(true);
 
         actions.append(&header_icon_button(
             crate::icons::HELP,

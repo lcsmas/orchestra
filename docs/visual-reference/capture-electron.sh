@@ -63,6 +63,9 @@ done
 curl -sf "http://127.0.0.1:$PORT/json" >/dev/null || { echo "CDP never came up"; cat "$RUN/app.log"; exit 1; }
 echo "-- CDP up; driving"
 
+# The row pin is a GTK widget id (`ws-row-<workspaceId>`); the driver needs the
+# seeded store to translate it to the text this half can actually match on.
+export ORCHESTRA_CAPTURE_STORE="$HOME_DIR/userData/orchestra/store.json"
 if node "$HERE/drive-electron.mjs" "$PORT" "$OUT"; then
   STATUS=PASS
   echo "PASS — electron captures in $OUT"
