@@ -72,8 +72,9 @@ function BellIcon() {
   );
 }
 
-function ZapIcon() {
-  // Lucide `zap` — a quick, throwaway scratch session.
+export function ZapIcon() {
+  // Lucide `zap` — a quick, throwaway scratch session. Exported so the
+  // toolbar scratch chip and welcome screen reuse the same glyph.
   return (
     <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor"
       strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
@@ -362,17 +363,6 @@ function ResourcesIcon() {
   );
 }
 
-function ExternalLinkIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" focusable="false">
-      <path
-        fill="currentColor"
-        d="M9 1a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0V2.207L7.354 8.854a.5.5 0 1 1-.708-.708L13.293 1.5H9.5A.5.5 0 0 1 9 1zM2.5 3A1.5 1.5 0 0 0 1 4.5v9A1.5 1.5 0 0 0 2.5 15h9a1.5 1.5 0 0 0 1.5-1.5v-5a.5.5 0 0 0-1 0v5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5h5a.5.5 0 0 0 0-1h-5z"
-      />
-    </svg>
-  );
-}
-
 /** PRs for a branch, ordered open-first then gh's newest-first, capped at the
  * three we surface. Shared so the row and its merged-pill suppression agree on
  * which PRs are "visible". */
@@ -650,6 +640,25 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const setHelpOpen = useStore((s) => s.setHelpOpen);
   const [linearSettingsOpen, setLinearSettingsOpen] = useState(false);
   const [accountsSettingsOpen, setAccountsSettingsOpen] = useState(false);
+  // Header "+ New" menu — the single entry point for creating a session of
+  // any kind (repo workspace / scratch / orchestrator). Closes on outside
+  // click or Escape.
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!newMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest?.('.new-menu')) setNewMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setNewMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [newMenuOpen]);
   const [scriptsRepoPath, setScriptsRepoPath] = useState<string | null>(null);
   // Right-clicking a repo's "+" opens a base-branch picker for the new
   // workspace (plain click keeps the one-click default-base flow).
@@ -1085,8 +1094,10 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     }
   };
 
-  const onRemoveRepo = async (e: React.MouseEvent, repoPath: string) => {
-    e.stopPropagation();
+  // Lives in the repo's gear modal (RepoScriptsModal danger zone), not inline
+  // in the header — destructive actions don't sit between routine ones.
+  // Returns whether the repo was actually removed so the modal knows to close.
+  const onRemoveRepo = async (repoPath: string): Promise<boolean> => {
     const name = repoLabel(repoPath);
     const ok = await dialog.confirm({
       title: 'Remove repo',
@@ -1095,11 +1106,13 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       tone: 'danger',
       confirmLabel: 'Remove',
     });
-    if (!ok) return;
+    if (!ok) return false;
     try {
       await removeRepo(repoPath);
+      return true;
     } catch (err) {
       void dialog.error('Could not remove repo', (err as Error).message);
+      return false;
     }
   };
 
@@ -1383,33 +1396,71 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           >
             <UsersIcon />
           </button>
-          <button
-            className="header-repo-btn"
-            onClick={onNewScratch}
-            title="New scratch session — throwaway, no git repo needed"
-            aria-label="New scratch session"
-          >
-            <ZapIcon />
-            <span>Scratch</span>
-          </button>
-          <button
-            className="header-repo-btn"
-            onClick={onNewOrchestrator}
-            title="New orchestrator — an agent that delegates work by spawning child agents"
-            aria-label="New orchestrator session"
-          >
-            <OrchestratorIcon />
-            <span>Orchestrator</span>
-          </button>
-          <button
-            className="header-repo-btn"
-            onClick={onNewFromRepo}
-            title="New workspace from a git repo…"
-            aria-label="New workspace from a git repo"
-          >
-            <FolderPlusIcon />
-            <span>Repo</span>
-          </button>
+          <div className="new-menu">
+            <button
+              className="new-menu-btn"
+              onClick={() => setNewMenuOpen((v) => !v)}
+              title="New session — workspace, scratch, or orchestrator"
+              aria-label="New session"
+              aria-haspopup="menu"
+              aria-expanded={newMenuOpen}
+            >
+              <span className="new-menu-plus" aria-hidden="true">+</span>
+              <span>New</span>
+            </button>
+            {newMenuOpen && (
+              <div className="new-menu-popover" role="menu" aria-label="New session">
+                <button
+                  role="menuitem"
+                  className="new-menu-item"
+                  onClick={() => {
+                    setNewMenuOpen(false);
+                    onNewFromRepo();
+                  }}
+                >
+                  <span className="new-menu-item-icon repo" aria-hidden="true">
+                    <FolderPlusIcon />
+                  </span>
+                  <span className="new-menu-item-body">
+                    <span className="new-menu-item-title">Workspace</span>
+                    <span className="new-menu-item-sub">agent on its own branch of a git repo</span>
+                  </span>
+                </button>
+                <button
+                  role="menuitem"
+                  className="new-menu-item"
+                  onClick={() => {
+                    setNewMenuOpen(false);
+                    onNewScratch();
+                  }}
+                >
+                  <span className="new-menu-item-icon scratch" aria-hidden="true">
+                    <ZapIcon />
+                  </span>
+                  <span className="new-menu-item-body">
+                    <span className="new-menu-item-title">Scratch session</span>
+                    <span className="new-menu-item-sub">throwaway, no git repo needed</span>
+                  </span>
+                </button>
+                <button
+                  role="menuitem"
+                  className="new-menu-item"
+                  onClick={() => {
+                    setNewMenuOpen(false);
+                    onNewOrchestrator();
+                  }}
+                >
+                  <span className="new-menu-item-icon orchestrator" aria-hidden="true">
+                    <OrchestratorIcon />
+                  </span>
+                  <span className="new-menu-item-body">
+                    <span className="new-menu-item-title">Orchestrator</span>
+                    <span className="new-menu-item-sub">delegates work to agents it spawns</span>
+                  </span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
       <div className="ws-list">
@@ -1418,7 +1469,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           scratchTrees.length === 0 &&
           orchestratorTrees.length === 0 && (
           <div style={{ padding: '20px', color: 'var(--text-dim)', fontSize: 12 }}>
-            No agents running. Click <strong>Scratch</strong> for a quick throwaway session, or <strong>Repo</strong> to map a git repo.
+            No agents running. Click <strong>+ New</strong> above to start a workspace, a scratch session, or an orchestrator.
           </div>
         )}
         {orchestratorTrees.length > 0 && (
@@ -1476,12 +1527,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           // Only registered repos can be reordered — orphan repoPaths (entry
           // removed but workspaces remain) always trail and aren't draggable.
           const isRegisteredRepo = repos.some((r) => r.path === repoPath);
-          // A repo can only be removed once it holds no workspaces at all
-          // (active, archived, or scratch) — otherwise main rejects the call
-          // to avoid orphaning worktrees. Gate the button on the same rule so
-          // we never offer an action that's bound to fail.
-          const canRemoveRepo =
-            isRegisteredRepo && !workspaces.some((w) => w.repoPath === repoPath);
           const collapsed = collapsedRepos.has(repoPath);
           const repoDnd =
             dragRepo === repoPath
@@ -1588,16 +1633,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 >
                   <GearIcon />
                 </button>
-                {canRemoveRepo && (
-                  <button
-                    className="repo-scripts-btn danger"
-                    title={`Remove ${repoLabel(repoPath)} from Orchestra (your git repo is left untouched)`}
-                    aria-label={`Remove ${repoLabel(repoPath)} from Orchestra`}
-                    onClick={(e) => onRemoveRepo(e, repoPath)}
-                  >
-                    <TrashIcon />
-                  </button>
-                )}
                 <button
                   className="repo-add"
                   title={`New workspace in ${repoLabel(repoPath)} — right-click to pick the base branch`}
@@ -2068,6 +2103,18 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           <RepoScriptsModal
             repoPath={scriptsRepoPath}
             repoName={repoLabel(scriptsRepoPath)}
+            // A repo can only be removed once it holds no workspaces at all
+            // (active, archived, or scratch) — otherwise main rejects the call
+            // to avoid orphaning worktrees. Gate the modal's danger zone on the
+            // same rule so we never offer an action that's bound to fail.
+            canRemove={
+              repos.some((r) => r.path === scriptsRepoPath) &&
+              !workspaces.some((w) => w.repoPath === scriptsRepoPath)
+            }
+            onRemove={async () => {
+              const removed = await onRemoveRepo(scriptsRepoPath);
+              if (removed) setScriptsRepoPath(null);
+            }}
             onClose={() => setScriptsRepoPath(null)}
           />
         )}
@@ -2261,26 +2308,26 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       )}
       <InsightsSection />
       <UsageBars />
+      {/* Icon-only footer: four tertiary destinations behind tooltips + the
+          version. Labels moved to title/aria-label so the row costs one slim
+          line regardless of sidebar width. */}
       <div className="sidebar-footer">
         <button
           className={`sidebar-footer-link${page === 'resources' ? ' active' : ''}`}
           onClick={() => setPage(page === 'resources' ? 'workspaces' : 'resources')}
-          title="Live CPU, memory, disk and token usage of every agent"
+          title="Resources — live CPU, memory, disk and token usage of every agent"
           aria-label="Open the Resources page"
           aria-pressed={page === 'resources'}
         >
           <ResourcesIcon />
-          <span>Resources</span>
         </button>
         <button
           className="sidebar-footer-link"
           onClick={() => window.orchestra.openExternal('https://github.com/lcsmas/orchestra')}
-          title="Open Orchestra on GitHub"
+          title="Open Orchestra on GitHub (lcsmas/orchestra)"
           aria-label="Open Orchestra on GitHub"
         >
           <GitHubIcon />
-          <span>lcsmas/orchestra</span>
-          <ExternalLinkIcon />
         </button>
         <button
           className="sidebar-footer-link"
@@ -2289,7 +2336,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           aria-label="Open diagnostic logs"
         >
           <LogsIcon />
-          <span>Logs</span>
         </button>
         <button
           className="sidebar-footer-link"
@@ -2298,7 +2344,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           aria-label="Linear settings"
         >
           <LinearIcon />
-          <span>Linear</span>
         </button>
         {version && (
           <span className="sidebar-footer-version" title="Orchestra version">

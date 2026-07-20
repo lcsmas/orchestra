@@ -218,6 +218,9 @@ async function createMainWindow() {
   // any custom menu commands; the strip just eats vertical space.
   Menu.setApplicationMenu(null);
 
+  // Window/taskbar icon (Linux WMs read it from the window, not the package).
+  // Lives in dist/ (vite copies public/); absent in dev before a first build.
+  const windowIcon = path.join(__dirname, '../dist/icon.png');
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -226,6 +229,7 @@ async function createMainWindow() {
     title: 'Orchestra',
     backgroundColor: '#0b0d10',
     autoHideMenuBar: true,
+    ...(fs.existsSync(windowIcon) ? { icon: windowIcon } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -278,6 +282,41 @@ async function createMainWindow() {
     if (VITE_DEV_SERVER_URL && url.startsWith(VITE_DEV_SERVER_URL)) return;
     event.preventDefault();
     void openUrlExternally(url);
+  });
+
+  // Renderer crash recovery. A dead renderer otherwise leaves Chromium's white
+  // "sad tab" page in the window until the user quits and relaunches by hand —
+  // and the renderer is the process most likely to die: every opened workspace
+  // keeps a 10k-line xterm (plus WebGL canvas) mounted for scrollback, so a
+  // long session with many workspaces can push it past Chromium's per-process
+  // memory limits. Everything the renderer holds is rebuildable from main
+  // (store hydration, PTY scrollback replay, live event resubscription), so a
+  // reload restores a working UI in place — agents keep running throughout;
+  // pty.ts already retains undeliverable output while the window can't
+  // receive. Guard against a crash loop (e.g. reload → restore same state →
+  // OOM again): after 3 crashes in 60s, stop reloading and leave the sad page.
+  let rendererCrashes: number[] = [];
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    if (details.reason === 'clean-exit') return;
+    const now = Date.now();
+    rendererCrashes = rendererCrashes.filter((t) => now - t < 60_000);
+    rendererCrashes.push(now);
+    log.error(
+      `renderer process gone: reason=${details.reason} exitCode=${details.exitCode} (crash ${rendererCrashes.length} in the last 60s)`,
+    );
+    if (rendererCrashes.length > 3) {
+      log.error('renderer crash loop — giving up on auto-reload; restart Orchestra manually');
+      return;
+    }
+    // Small delay so a system-wide event (OOM killer sweep, GPU reset) settles
+    // before we ask Chromium to spin up a fresh renderer.
+    setTimeout(() => {
+      const w = mainWindow;
+      if (w && !w.isDestroyed()) {
+        log.info('reloading renderer after crash');
+        w.webContents.reload();
+      }
+    }, 1000);
   });
 
   // Drop workspaces whose worktree was deleted out-of-band BEFORE the renderer
@@ -445,6 +484,17 @@ if (!ORCHESTRA_CLI_MODE) {
       mainWindow.show();
       mainWindow.focus();
     }
+  });
+
+  // Diagnostics for helper-process deaths (GPU, utility, …). Nothing to
+  // recover here — Chromium respawns these itself — but the log line is the
+  // only breadcrumb tying a later renderer crash or blank canvas to, say, a
+  // GPU process reset that happened seconds earlier.
+  app.on('child-process-gone', (_event, details) => {
+    if (details.reason === 'clean-exit') return;
+    log.warn(
+      `child process gone: type=${details.type} reason=${details.reason} exitCode=${details.exitCode}${details.name ? ` name=${details.name}` : ''}`,
+    );
   });
 
   app.whenReady().then(async () => {

@@ -156,7 +156,11 @@ queue survives restarts) instead of burning turns on "limit reached" errors.
   `WorkspaceContextBadge` `:92`. Colour tint by the hotter window
   (≥90% crit/≥75% warn); `loginColor` `:36` hashes the name to a stable HSL.
 - **UsageBars.tsx** — slim 5h/7d bars (plus a "Fable" bar when the account has
-  a Fable-scoped weekly limit; panel rows show it as "F7D") for the active
+  a Fable-scoped weekly limit; panel rows show it as "F7D", and an "EX"/"ex"
+  bar when the account's pay-as-you-go pool is enabled — `extraUtilization`
+  non-null. The extra-credits cell is a spend meter, not a rolling window: it
+  has no `resetsAt`, so its tooltip omits the "resets in" clause; it hides
+  entirely when the pool is disabled) for the active
   workspace's account, plus a
   hover panel of all accounts sorted hottest-first. An "updated Xm ago" stamp
   (from the snapshot's `fetchedAt`) sits directly on the strip — centered in

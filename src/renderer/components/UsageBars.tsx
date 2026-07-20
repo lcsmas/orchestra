@@ -5,7 +5,11 @@ import type { UsageErrorKind, UsageWindowDetail } from '../../shared/types';
 
 // Slim progress bars showing the active workspace's account rolling usage
 // limits: the 5-hour session window, the 7-day weekly window, and — when the
-// plan has one — the Fable-scoped 7-day window. When the
+// plan has one — the Fable-scoped 7-day window. Plus, when the account has a
+// pay-as-you-go pool enabled, an "extra credits" cell showing how full that
+// pool is. Unlike the three rolling windows it has NO reset — it's a spend
+// meter, not a countdown — so its tooltip omits the "resets in" clause.
+// When the
 // active workspace has a pinned account, the data comes from the per-account
 // poller (src/main/account-usage.ts, pushed via accounts:usageUpdate). When
 // the workspace uses the default login (no pinned account), it falls back to
@@ -81,37 +85,36 @@ function errorText(kind: UsageErrorKind | null): string {
   }
 }
 
-function UsageBar({
+/* One window inside the compact strip: label · track · percent on a single
+   line, so all cells (5h / 7d / Fable / extra credits) share one row of footer
+   height. The reset countdown and window name live on the cell's tooltip;
+   the per-account breakdown stays on the hover panel. `window.resetsAt` is ''
+   for the extra-credits pool (a spend meter, not a rolling window) — the
+   tooltip then omits the countdown clause. */
+function StripCell({
   label,
   title,
   window,
   now,
-  note,
 }: {
   label: string;
   title: string;
   window: { utilization: number; resetsAt: string };
   now: number;
-  /** Muted text centered between the window label and the percent — the 5h bar
-   *  shows the account name here, the 7d bar the "updated Xm ago" stamp. */
-  note?: string;
 }) {
   const pct = clampPct(window.utilization);
   const resets = formatResetsIn(window.resetsAt, now);
   return (
-    <div className="usage-bar" title={`${title}${resets ? ` — ${resets}` : ''}`}>
-      <div className="usage-bar-head">
-        <span className="usage-bar-label">{label}</span>
-        {note && <span className="usage-bar-note">{note}</span>}
-        <span className="usage-bar-pct">{pct}%</span>
-      </div>
-      <div className="usage-bar-track">
-        <div
+    <span className="usage-strip-cell" title={`${title} — ${pct}%${resets ? ` · ${resets}` : ''}`}>
+      <span className="usage-strip-label">{label}</span>
+      <span className="usage-bar-track">
+        <span
           className="usage-bar-fill"
           style={{ width: `${pct}%`, background: severityVar(pct) }}
         />
-      </div>
-    </div>
+      </span>
+      <span className="usage-strip-pct">{pct}%</span>
+    </span>
   );
 }
 
@@ -150,6 +153,9 @@ type RowState =
       sevenDay: UsageWindowDetail;
       /** Fable-scoped weekly window; null when the account's plan has none. */
       fable: UsageWindowDetail | null;
+      /** Pay-as-you-go pool fill 0–100; null when the pool isn't enabled. Has
+       *  no reset, so it renders as a labelled bar with no countdown. */
+      extraUtilization: number | null;
       expired?: boolean;
       /** Epoch ms of the snapshot the bars render — shows as "updated Xm ago". */
       fetchedAt: number;
@@ -197,6 +203,13 @@ function UsageRowView({ row, now }: { row: UsageRow; now: number }) {
           <MiniBar label="5h" window={row.state.fiveHour} now={now} />
           <MiniBar label="7d" window={row.state.sevenDay} now={now} />
           {row.state.fable && <MiniBar label="f7d" window={row.state.fable} now={now} />}
+          {row.state.extraUtilization !== null && (
+            <MiniBar
+              label="ex"
+              window={{ utilization: row.state.extraUtilization, resetsAt: '' }}
+              now={now}
+            />
+          )}
         </>
       )}
     </div>
@@ -251,6 +264,9 @@ export function UsageBars() {
   let fiveHour: { utilization: number; resetsAt: string } | null = null;
   let sevenDay: { utilization: number; resetsAt: string } | null = null;
   let fable: { utilization: number; resetsAt: string } | null = null;
+  // Pay-as-you-go pool fill 0–100, or null when the account has no enabled
+  // extra-usage pool (then the "ex" cell is hidden, like the Fable bar).
+  let extra: number | null = null;
   let accountLabel: string | null = null;
   let fetchedAt = 0;
 
@@ -262,6 +278,7 @@ export function UsageBars() {
       fiveHour = perAccountStatus.data.fiveHour;
       sevenDay = perAccountStatus.data.sevenDay;
       fable = perAccountStatus.data.fable ?? null;
+      extra = perAccountStatus.data.extraUtilization;
       accountLabel = activeAccount?.label ?? null;
       fetchedAt = perAccountStatus.fetchedAt;
     }
@@ -270,6 +287,7 @@ export function UsageBars() {
     fiveHour = globalUsage.fiveHour;
     sevenDay = globalUsage.sevenDay;
     fable = globalUsage.fable ?? null;
+    extra = globalUsage.extraUtilization ?? null;
     // Surface the default login by name too, the same as a pinned account, so
     // the bars always say which login they're measuring.
     accountLabel = activeAccount?.label ?? 'default';
@@ -314,6 +332,7 @@ export function UsageBars() {
           fiveHour: u.data.fiveHour,
           sevenDay: u.data.sevenDay,
           fable: u.data.fable ?? null,
+          extraUtilization: u.data.extraUtilization,
           expired: u.expired,
           fetchedAt: u.fetchedAt,
         },
@@ -344,6 +363,7 @@ export function UsageBars() {
         fiveHour: globalUsage.fiveHour,
         sevenDay: globalUsage.sevenDay,
         fable: globalUsage.fable ?? null,
+        extraUtilization: globalUsage.extraUtilization ?? null,
         fetchedAt: globalUsage.fetchedAt,
       },
     });
@@ -374,28 +394,31 @@ export function UsageBars() {
           ))}
         </div>
       )}
-      <UsageBar
-        label="5h"
-        title={`Claude usage${accountLabel ? ` (${accountLabel})` : ''} — 5-hour session window`}
-        window={fiveHour}
-        now={now}
-        note={accountLabel ?? undefined}
-      />
-      <UsageBar
-        label="7d"
-        title={`Claude usage${accountLabel ? ` (${accountLabel})` : ''} — 7-day weekly window`}
-        window={sevenDay}
-        now={now}
-        note={formatUpdatedAgo(fetchedAt, now)}
-      />
-      {fable && (
-        <UsageBar
-          label="Fable"
-          title={`Claude usage${accountLabel ? ` (${accountLabel})` : ''} — Fable 7-day weekly window`}
-          window={fable}
-          now={now}
-        />
-      )}
+      <div
+        className="usage-strip"
+        role="group"
+        aria-label={`Claude usage${accountLabel ? ` — ${accountLabel}` : ''}`}
+      >
+        {accountLabel && (
+          <span
+            className="usage-strip-account"
+            title={`Usage for ${accountLabel} — ${formatUpdatedAgo(fetchedAt, now)}`}
+          >
+            {accountLabel}
+          </span>
+        )}
+        <StripCell label="5h" title="5-hour session window" window={fiveHour} now={now} />
+        <StripCell label="7d" title="7-day weekly window" window={sevenDay} now={now} />
+        {fable && <StripCell label="F" title="Fable 7-day weekly window" window={fable} now={now} />}
+        {extra !== null && (
+          <StripCell
+            label="EX"
+            title="Extra credits (pay-as-you-go pool)"
+            window={{ utilization: extra, resetsAt: '' }}
+            now={now}
+          />
+        )}
+      </div>
     </div>
   );
 }

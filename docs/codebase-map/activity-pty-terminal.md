@@ -115,6 +115,10 @@ changes, never on an out-of-band respawn).
 
 ## Terminal.tsx (agent view, ~479 lines)
 xterm.js with addons: **FitAddon**, **WebLinksAddon** (opens via IPC),
+themed via the shared `TERM_THEME` (`src/renderer/term-theme.ts` — app-chrome
+bg/fg/cursor plus Ghostty's default ANSI-16 palette (Tomorrow Night); xterm's
+stock ANSI colors are the legacy VGA set, which made Claude's TUI look harsher
+in-app than in a native terminal),
 **Unicode11Addon** (`:104` — align char widths with Claude's Ink TUI so emoji
 don't cause overwrites), **WebglAddon** (`:117`, GPU; disposes on context-loss →
 DOM fallback). Font stack leads with **"Orchestra Symbols"** (bundled mono

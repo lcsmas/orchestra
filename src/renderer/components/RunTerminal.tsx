@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { createTermWriteQueue } from '../term-write-queue';
+import { TERM_THEME } from '../term-theme';
 
 interface Props {
   workspaceId: string;
@@ -35,12 +36,7 @@ export function RunTerminal({ workspaceId, isActive, hasRunScript }: Props) {
       fontSize: 13,
       fontFamily:
         '"Orchestra Symbols", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace',
-      theme: {
-        background: '#1a1f26',
-        foreground: '#e6e9ef',
-        cursor: '#6ea8ff',
-        selectionBackground: '#334155',
-      },
+      theme: TERM_THEME,
       convertEol: true,
       scrollback: 5000,
       linkHandler: {

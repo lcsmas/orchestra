@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from './store';
-import { Sidebar, OrchestratorIcon } from './components/Sidebar';
+import { Sidebar, OrchestratorIcon, ZapIcon } from './components/Sidebar';
 import { TerminalView } from './components/Terminal';
 import { DiffView } from './components/DiffView';
 import { BranchPicker } from './components/BranchPicker';
@@ -383,8 +383,8 @@ export function App() {
             <div>Run parallel Claude Code agents in isolated git worktrees — each on its own branch, all in one dashboard.</div>
             <div className="empty-actions">
               <button className="primary" onClick={addRepoOnly}>+ New workspace</button>
-              <button className="secondary" onClick={createScratchWorkspace}>⚡ Scratch session</button>
-              <button className="secondary" onClick={createOrchestratorWorkspace}>🌿 Orchestrator</button>
+              <button className="secondary" onClick={createScratchWorkspace}><ZapIcon /> Scratch session</button>
+              <button className="secondary" onClick={createOrchestratorWorkspace}><OrchestratorIcon /> Orchestrator</button>
             </div>
             <div className="welcome-features">
               <div className="welcome-feature">
@@ -428,7 +428,7 @@ export function App() {
                   </span>
                 ) : isScratch ? (
                   <span className="branch-chip scratch" title="Scratch session — not tracked by git">
-                    <span aria-hidden="true">⚡</span>
+                    <ZapIcon />
                     <span className="branch-chip-text">{active.branch}</span>
                   </span>
                 ) : (
@@ -447,6 +447,10 @@ export function App() {
                   </>
                 )}
               </div>
+              {/* View controls — what fills the pane. The nvim pane-toggle is
+                  a view control too, so it lives beside the tabs rather than
+                  stranded at the far edge of the toolbar. */}
+              <div className="toolbar-views">
               <div className="tabs">
                 <button
                   className={`tab ${view === 'terminal' ? 'active' : ''}`}
@@ -493,6 +497,36 @@ export function App() {
                   );
                 })()}
               </div>
+              <button
+                className={`pane-toggle ${nvimOpen ? 'active' : ''}`}
+                onClick={() => setNvimOpen((v) => !v)}
+                title={nvimOpen ? 'Hide file pane' : 'Show file pane'}
+                aria-label={nvimOpen ? 'Hide file pane' : 'Show file pane'}
+                aria-pressed={nvimOpen}
+              >
+                <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                  <path
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M2.5 3.25A1.25 1.25 0 0 1 3.75 2h8.5A1.25 1.25 0 0 1 13.5 3.25v9.5A1.25 1.25 0 0 1 12.25 14h-8.5A1.25 1.25 0 0 1 2.5 12.75v-9.5Z"
+                  />
+                  <path
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinecap="round"
+                    d="M10 2.5v11"
+                  />
+                </svg>
+              </button>
+              </div>
+              <div className="toolbar-sep" aria-hidden="true" />
+              {/* Actions — things that DO something to the workspace: restart
+                  the agent, start/stop the run script, and the PR call-to-
+                  action pinned at the far right. */}
+              <div className="toolbar-actions">
               <button
                 className="restart-btn"
                 onClick={onRestart}
@@ -569,30 +603,7 @@ export function App() {
                   </button>
                 );
               })())}
-              <button
-                className={`pane-toggle ${nvimOpen ? 'active' : ''}`}
-                onClick={() => setNvimOpen((v) => !v)}
-                title={nvimOpen ? 'Hide file pane' : 'Show file pane'}
-                aria-label={nvimOpen ? 'Hide file pane' : 'Show file pane'}
-                aria-pressed={nvimOpen}
-              >
-                <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-                  <path
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.3"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M2.5 3.25A1.25 1.25 0 0 1 3.75 2h8.5A1.25 1.25 0 0 1 13.5 3.25v9.5A1.25 1.25 0 0 1 12.25 14h-8.5A1.25 1.25 0 0 1 2.5 12.75v-9.5Z"
-                  />
-                  <path
-                    stroke="currentColor"
-                    strokeWidth="1.3"
-                    strokeLinecap="round"
-                    d="M10 2.5v11"
-                  />
-                </svg>
-              </button>
+              </div>
             </div>
             {/* SetupBanner sits ABOVE .pane-row, not inside .pane. Inside,
                 the active TerminalView uses `position: absolute; inset: 0`

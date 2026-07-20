@@ -6,6 +6,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { createTermWriteQueue } from '../term-write-queue';
+import { TERM_THEME } from '../term-theme';
 import { useStore } from '../store';
 
 interface Props {
@@ -106,12 +107,7 @@ export function TerminalView({ workspaceId, isActive }: Props) {
         '"Orchestra Symbols", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace',
       // Required so the unicode11 addon can register its width provider.
       allowProposedApi: true,
-      theme: {
-        background: '#1a1f26',
-        foreground: '#e6e9ef',
-        cursor: '#6ea8ff',
-        selectionBackground: '#334155',
-      },
+      theme: TERM_THEME,
       convertEol: true,
       scrollback: 10000,
       // Override the default OSC 8 hyperlink activator (a confirm() dialog

@@ -157,10 +157,10 @@ export const useStore = create<State>((set, get) => ({
   loaded: false,
 
   setActive: (id) => {
-    // Picking a workspace dismisses the overlay panes (Insights, Help) — they
-    // cover the main pane, so leaving one up would eclipse the terminal the
-    // user just chose.
-    set({ activeId: id, insightsOpen: false, helpOpen: false });
+    // Picking a workspace dismisses the full-pane surfaces (Insights, Help,
+    // Resources) — they cover the main pane, so leaving one up would eclipse
+    // the terminal the user just chose.
+    set({ activeId: id, insightsOpen: false, helpOpen: false, page: 'workspaces' });
     if (id) {
       const ws = get().workspaces.find((w) => w.id === id);
       if (ws && ws.status === 'waiting') {
@@ -616,3 +616,20 @@ window.orchestra.onWorkspaceAccountsUpdate((byId) => {
     .then((accounts) => useStore.setState({ accounts }))
     .catch(() => {});
 });
+
+// Test seam for CDP-driven E2E (the `verify` skill): patch store slices
+// directly. Usage snapshots in particular have no other injection path — the
+// pollers need real credentials — so a driver seeds `globalUsage` /
+// `accountUsage` through this to render the usage strip against synthetic data.
+// It only wraps the same `useStore.setState` the IPC handlers above call, and
+// the renderer loads solely local content, so it adds no reachable surface.
+declare global {
+  interface Window {
+    __orchestraSetState?: (patch: Partial<State>) => void;
+  }
+}
+try {
+  window.__orchestraSetState = (patch) => useStore.setState(patch);
+} catch {
+  /* non-browser context (tests) — no window to attach to */
+}
