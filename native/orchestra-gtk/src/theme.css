@@ -192,6 +192,13 @@ scrollbar slider {
 }
 .term-scroll {
   background-color: @bg_3;
+  /* styles.css:2395-2400 — zero RIGHT padding so the scrollbar sits flush
+     against the pane edge, small breathing room on the other three so glyphs
+     do not touch the frame. The port had none, which is why text ran into the
+     edges. Padding is safe to put on the scroller rather than the VTE itself:
+     it shrinks the child allocation, so the terminal reflows to the smaller
+     width instead of being clipped. */
+  padding: 6px 0 6px 6px;
 }
 .boot-pill {
   background-color: alpha(#1b2029, 0.94);
@@ -1572,8 +1579,12 @@ entry:focus-within {
 .accounts-open:hover { color: @text; }
 
 /* The 5h/7d(/Fable) strip. */
+/* styles.css:796-800 — the strip is separated from the footer by a top border
+   and sits on symmetric 6px/12px padding. The port had neither: no border, and
+   an asymmetric 4px/2px/8px that pushed the bars against the sidebar edges. */
 .usage-bars {
-  padding: 4px 2px 8px;
+  border-top: 1px solid @border;
+  padding: 6px 12px;
 }
 .usage-bars.expandable { /* hover affordance hint */ }
 .usage-bar-head {
@@ -1582,18 +1593,36 @@ entry:focus-within {
 .usage-bar-label { color: @text; font-weight: 600; }
 .usage-bar-note,
 .usage-bar-pct { color: @text_dim; }
+/* GtkProgressBar variant — the sidebar usage strip (usage_bars.rs:57,526).
+   The Box variant on the Resources page is styled by the earlier
+   `.usage-bar-track` block; both are live, on different widget types, so a
+   change here reaches only half the call sites. See styles.css:840-851.
+   GtkProgressBar paints the groove on `trough` and the fill on `progress`,
+   so the surface values go on those nodes, not the widget. The widget itself
+   still needs the height or it reserves Adwaita's taller default and the
+   groove floats inside a too-tall box — that padding is what reads as a
+   border around the bar. */
 .usage-bar-track {
-  min-height: 5px;
+  min-height: 4px;
 }
 .usage-bar-track trough {
-  min-height: 5px;
-  background-color: @bg_3;
-  border-radius: 3px;
+  min-height: 4px;
+  background-color: @bg_4;
+  border-radius: 2px;
+  /* Adwaita gives the trough a 1px inset border; Electron's track has none
+     (styles.css:840-845 sets background + radius only). Left in, it is the
+     "ugly surround" — a lighter hairline tracing the bar. */
+  border: none;
+  box-shadow: none;
+  padding: 0;
 }
 .usage-bar-track progress {
-  min-height: 5px;
-  border-radius: 3px;
+  min-height: 4px;
+  border-radius: 2px;
   background-color: @accent;
+  border: none;
+  box-shadow: none;
+  margin: 0;
 }
 /* Severity tint on the fill (≥75 warn, ≥90 crit). */
 .usage-bar-track.sev-warn progress,
