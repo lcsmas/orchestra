@@ -181,8 +181,72 @@ const OVERLAYS = [
   },
 ];
 
+// Entry points are TOGGLES (Insights.tsx:69 `setInsightsOpen(!insightsOpen)`),
+// so the drive must start from a KNOWN-CLOSED state or the click closes an
+// already-open overlay. Asserting closed-before-open makes the open a real
+// transition rather than a coin flip inherited from the previous iteration.
+// ALL overlay roots must be closed, not just the one about to open. They stack
+// by z-index (.res-page 25, .insights-view 5, .help-view 5 — styles.css), so a
+// leftover Resources page PAINTS OVER a correctly-opened Insights view: the
+// DOM probe for .insights-view passes (it is present, sized, has its heading)
+// while the screenshot shows Resources. A per-root check is structurally blind
+// to that, because nothing it inspects is wrong.
+//
+// Escape alone is not enough: ResourcesView binds it via a React useEffect
+// keydown listener (ResourcesView.tsx:394) that a synthetic document-level
+// dispatch does not reliably reach. Click each overlay's own close control.
+const ALL_ROOTS = ['.res-page', '.insights-view', '.help-view'];
+
+const closeAllOverlays = async () => {
+  for (let pass = 0; pass < 4; pass++) {
+    const open = [];
+    for (const r of ALL_ROOTS) if (await count(r)) open.push(r);
+    if (!open.length) return true;
+    await evaluate(`(() => {
+      const btn = document.querySelector('.res-close, .insights-close, .help-close, .overlay-close');
+      if (btn) { btn.click(); return true; }
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return false;
+    })()`);
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  const still = [];
+  for (const r of ALL_ROOTS) if (await count(r)) still.push(r);
+  if (still.length) console.log(`  ! overlays still open: ${still.join(', ')}`);
+  return still.length === 0;
+};
+
+/** On-stage probe that CAN FAIL: presence in the DOM is upstream of being
+ *  rendered. The root must exist, carry its own heading text, and have a
+ *  non-zero box AT CAPTURE TIME — the control and the screenshot must sample
+ *  the same moment, or a momentarily-present root yields a passing control
+ *  next to a screenshot of something else entirely. */
+//  It must ALSO be the topmost overlay: hit-test the centre of its own box and
+//  require the element under that point to be inside this root. That is what
+//  the camera sees, so it is the only probe whose pass implies the screenshot
+//  shows this surface.
+const onStage = (root) =>
+  evaluate(`(() => {
+    const v = document.querySelector(${JSON.stringify(root)});
+    if (!v) return { present: false };
+    const r = v.getBoundingClientRect();
+    const h = v.querySelector('h2, .overlay-title, .res-header, .help-view-titles');
+    const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    const others = ['.res-page', '.insights-view', '.help-view']
+      .filter((s) => s !== ${JSON.stringify(root)} && document.querySelector(s));
+    return {
+      present: true,
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+      heading: h ? h.textContent.trim().slice(0, 60) : null,
+      topmost: !!(hit && v.contains(hit)),
+      alsoOpen: others,
+    };
+  })()`);
+
 for (const ov of welcomeRun ? [] : OVERLAYS) {
   console.log(`-- overlay: ${ov.name}`);
+  await closeAllOverlays();
   const before = await count(ov.root);
   const clicked = await ov.open();
   if (!clicked) {
@@ -191,15 +255,20 @@ for (const ov of welcomeRun ? [] : OVERLAYS) {
     continue;
   }
   const opened = await waitFor(ov.root);
-  if (opened) {
-    console.log(`  control OK: ${ov.root} present (was ${before})`);
-    results[ov.name] = 'OPENED';
-  } else {
-    console.log(`  ! control FAILED: ${ov.root} never appeared`);
-    results[ov.name] =
-      'CANNOT-VERIFY: root never appeared; an empty capture may be MY drive';
-  }
   await new Promise((r) => setTimeout(r, 1500)); // async sampling populates
+  // Re-probe immediately before the shot, so the assertion and the capture
+  // describe the same frame.
+  const stage = await onStage(ov.root);
+  if (opened && stage?.present && stage.w > 0 && stage.h > 0 && stage.topmost) {
+    console.log(
+      `  control OK: ${ov.root} TOPMOST (was ${before}) ${stage.w}x${stage.h} heading=${JSON.stringify(stage.heading)}`,
+    );
+    results[ov.name] = `OPENED (${stage.w}x${stage.h})`;
+  } else {
+    console.log(`  ! control FAILED: ${ov.root} not the topmost on-stage overlay: ${JSON.stringify(stage)}`);
+    results[ov.name] =
+      'CANNOT-VERIFY: not topmost at capture time; the capture shows a DIFFERENT surface';
+  }
   await shot(`overlay-${ov.name}`);
   // Close so the next overlay opens from a known state, and ASSERT it closed.
   await evaluate(
