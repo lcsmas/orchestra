@@ -1,0 +1,163 @@
+-- headless sway on wayland-3
+class-probe controls OK (126 distinct classes on named widgets)
+
+class                      rules applied?  operative declarations
+sidebar                        9 YES       [.sidebar-title] color: @accent; font-weight: 700; font-size: 15px; letter-spacing: 0.2px; padding: 0;
+                                             OUTRANKED: [.sidebar] background-color: @bg_2;
+                                             OUTRANKED: [.sidebar-title] color: @text_dim; font-weight: 700; font-size: 11px; padding: 12px 14p
+                                             OUTRANKED: [.sidebar-header] padding: 8px 8px 4px 12px;
+                                             OUTRANKED: [.sidebar-header-btn] background-color: @bg_3; border: 1px solid @border; border-radius: 6px
+                                             OUTRANKED: [.sidebar-header-btn:hover] background-color: @bg_4; color: @text;
+                                             OUTRANKED: [.sidebar-footer] border-top: 1px solid @border; padding: 4px 10px;
+                                             OUTRANKED: [.sidebar-footer] border-top: 1px solid @border; padding: 8px;
+                                             OUTRANKED: [.sidebar-header] padding: 14px 16px; border-bottom: 1px solid @border;
+sidebar-header                 4 YES       [.sidebar-header] padding: 14px 16px; border-bottom: 1px solid @border;
+                                             OUTRANKED: [.sidebar-header] padding: 8px 8px 4px 12px;
+                                             OUTRANKED: [.sidebar-header-btn] background-color: @bg_3; border: 1px solid @border; border-radius: 6px
+                                             OUTRANKED: [.sidebar-header-btn:hover] background-color: @bg_4; color: @text;
+sidebar-title                  2 YES       [.sidebar-title] color: @accent; font-weight: 700; font-size: 15px; letter-spacing: 0.2px; padding: 0;
+                                             OUTRANKED: [.sidebar-title] color: @text_dim; font-weight: 700; font-size: 11px; padding: 12px 14p
+ws-list                        0 no        — NO RULE IN theme.css
+repo-section                   0 no        — NO RULE IN theme.css
+repo-header                    2 no        [.ws-row.dragging, .repo-header-row.dragging] opacity: 0.4;
+                                             OUTRANKED: [.repo-header, .host-group-header] padding: 4px 14px 3px;
+repo-name                      1 no        [.repo-name, .host-name] color: @text_dim; font-weight: 600; font-size: 10px; letter-spacing: 0.8px; text-transform
+repo-count                     1 no        [.pill.repo-count, .pill.host-count] background-color: @bg_4; color: @text_dim;
+repo-add                       2 YES       [.repo-add:hover] background-color: @bg_3; color: @text;
+                                             OUTRANKED: [.repo-add] background: transparent; border: none; box-shadow: none; color: @text_
+orchestrator-section           0 no        — NO RULE IN theme.css
+scratch-section                0 no        — NO RULE IN theme.css
+repo-sync                      8 YES       [.repo-sync-status .ahead] color: @green;
+                                             OUTRANKED: [.repo-sync] background-color: @bg_3; border: 1px solid @border; border-radius: 6px
+                                             OUTRANKED: [.repo-sync:hover] background-color: @bg_4;
+                                             OUTRANKED: [.repo-sync.error] border-color: @red;
+                                             OUTRANKED: [.repo-sync-base] color: @text_dim; font-size: 11px;
+                                             OUTRANKED: [.repo-sync-status] font-size: 11px;
+                                             OUTRANKED: [.repo-sync-status.muted] color: @text_dim; opacity: 0.7;
+                                             OUTRANKED: [.repo-sync-status .behind] color: @yellow;
+host-group-header              1 no        [.repo-header, .host-group-header] padding: 4px 14px 3px;
+host-dot                       3 no        [.host-dot.remote] background-color: @accent;
+                                             OUTRANKED: [.host-dot] min-width: 7px; min-height: 7px; border-radius: 4px;
+                                             OUTRANKED: [.host-dot.local] background-color: @text_dim;
+ws-row                         4 YES       [.ws-row.dragging, .repo-header-row.dragging] opacity: 0.4;
+                                             OUTRANKED: [#sidebar-list row.ws-row:selected] background-color: @bg_3; border-left-color: @accent;
+                                             OUTRANKED: [.ws-row:hover .ws-icon-btn] opacity: 1;
+                                             OUTRANKED: [.ws-row.unread .ws-name] color: @accent;
+ws-item                        2 no        [.ws-item] padding: 4px 14px;
+                                             OUTRANKED: [* it (Electron pairs that offset with `.ws-item] align-items: flex-start
+ws-dot                         7 no        [.ws-dot.unread] background-color: @accent; box-shadow: 0 0 6px alpha(@accent, 0.6); opacity: 1; animation:
+                                             OUTRANKED: [.ws-dot] min-width: 8px; min-height: 8px; border-radius: 50%; margin-top: 4px;
+                                             OUTRANKED: [.ws-dot.running] background-color: @green; animation: ws-dot-pulse 1.6s ease-out infini
+                                             OUTRANKED: [.ws-dot.waiting] background-color: @yellow; box-shadow: 0 0 8px alpha(@yellow, 0.55);
+                                             OUTRANKED: [.ws-dot.error] background-color: @red; box-shadow: 0 0 8px alpha(@red, 0.5);
+                                             OUTRANKED: [.ws-dot.idle] background-color: @text_dim; opacity: 0.55;
+                                             OUTRANKED: [.ws-dot.stopped] background-color: #555555; opacity: 0.6;
+ws-tree-connector              1 no        [.ws-tree-connector] color: @text_dim; opacity: 0.5; font-size: 12px;
+ws-collapse                    3 YES       [.ws-collapse-spacer] min-width: 14px;
+                                             OUTRANKED: [.ws-collapse] background: transparent; border: none; box-shadow: none; padding: 0 2p
+                                             OUTRANKED: [.ws-collapse:hover] color: @text; background: transparent;
+ws-name                        4 no        [.ws-name-input] background-color: @bg; border: 1px solid @accent; border-radius: 6px; color: @text; font-s
+                                             OUTRANKED: [.ws-name] color: @text; font-size: 13px;
+                                             OUTRANKED: [.ws-name-row] min-height: 20px;
+                                             OUTRANKED: [.ws-row.unread .ws-name] color: @accent;
+ws-hidden-count                4 no        [.ws-hidden-count.running] background-color: alpha(@green, 0.20);  color: @green;
+                                             OUTRANKED: [.ws-hidden-count] background-color: @bg_4; color: @text_dim; border-radius: 8px; font-si
+                                             OUTRANKED: [.ws-hidden-count.error] background-color: alpha(@red, 0.25);    color: @red;
+                                             OUTRANKED: [.ws-hidden-count.waiting] background-color: alpha(@yellow, 0.22); color: @yellow;
+ws-icon-btn                    6 YES       [per-row strip — `.ws-icon-btn] opacity: 0
+                                             OUTRANKED: [.ws-icon-btn] background: transparent; border: none; box-shadow: none; color: @text_
+                                             OUTRANKED: [.ws-row:hover .ws-icon-btn] opacity: 1;
+                                             OUTRANKED: [.ws-icon-btn:hover] color: @text; background-color: @bg_3; border-radius: 6px;
+                                             OUTRANKED: [.ws-icon-btn.danger:hover] color: @red;
+                                             OUTRANKED: [.ws-icon-btn.unread-on] color: @accent; opacity: 1;
+ws-context                     2 no        [.ws-context-sep] color: @text_dim; opacity: 0.5;
+                                             OUTRANKED: [.ws-context] color: @text_dim; font-size: 10px;
+ws-size                        1 no        [.pill.ws-size] background-color: @bg_3; color: @text_dim;
+ws-login-badge                 1 YES       [.ws-login-badge] background: none; border: none; border-radius: 0; /* VERIFIED DEAD 2026-07-20 — kept delib
+account-badge                  3 no        [.account-badge.pending] opacity: 0.7;
+                                             OUTRANKED: [.account-badge] font-size: 10px; font-weight: 500; padding: 0; background: none; borde
+                                             OUTRANKED: [.account-badge.err] color: @red;
+ws-pills                       3 no        [.ws-pills.mini .pill.repo-tag-pill] font-size: 8px; padding: 0 4px;
+                                             OUTRANKED: [.ws-pills] margin-top: 2px;
+                                             OUTRANKED: [.ws-pills.mini] opacity: 0.95;
+repo-tag-pill                  2 YES       [.pill.repo-tag-pill] background-color: @bg_3; color: @text_dim; border: 1px solid @border;
+                                             OUTRANKED: [.ws-pills.mini .pill.repo-tag-pill] font-size: 8px; padding: 0 4px;
+orchestrator-pill              0 no        — NO RULE IN theme.css
+merged-pill                    1 no        [.pill.merged-pill] background-color: rgba(179, 139, 255, 0.12); color: #c4a8ff; border: 1px solid rgba(179, 1
+released-pill                  1 no        [.pill.released-pill] background-color: rgba(126, 231, 135, 0.10); color: #7ee787; border: 1px solid rgba(126, 2
+unpushed-pill                  1 no        [.pill.unpushed-pill] background-color: rgba(245, 196, 107, 0.10); color: #f5c46b; border: 1px solid rgba(245, 1
+diff-indicator                 4 no        [.diff-indicator] font-family: monospace; font-size: 0.85em;
+                                             OUTRANKED: [.diff-indicator] background-color: @bg_3;
+                                             OUTRANKED: [.diff-indicator .add] color: @green; font-size: 10px;
+                                             OUTRANKED: [.diff-indicator .del] color: @red;   font-size: 10px;
+setup-pill                     2 YES       [.pill.setup-pill.failed] background-color: alpha(@red, 0.2); color: @red;
+                                             OUTRANKED: [.pill.setup-pill] background-color: @bg_4; color: @text_dim;
+pr-badge                       5 no        [.pr-badge.linear] color: @accent;
+                                             OUTRANKED: [.pr-badge] background-color: @bg_4; color: @text_dim; border-radius: 6px; font-si
+                                             OUTRANKED: [.pr-badge.open] color: @green;
+                                             OUTRANKED: [.pr-badge.merged] color: @accent;
+                                             OUTRANKED: [.pr-badge.closed] color: @red;
+archived-toggle                3 YES       [.archived-toggle image] -gtk-icon-style: symbolic;
+                                             OUTRANKED: [.archived-toggle] background: transparent; border: none; box-shadow: none; color: @text_
+                                             OUTRANKED: [.archived-toggle:hover] background-color: @bg_3;
+archived-bar                   4 no        [.archived-bar-delete] background-color: alpha(@red, 0.2); color: @red; border: none; border-radius: 6px; font-si
+                                             OUTRANKED: [.archived-bar-row] padding: 2px 6px;
+                                             OUTRANKED: [.archived-bar] padding: 4px 6px;
+                                             OUTRANKED: [.archived-bar-count] color: @text_dim; font-size: 11px;
+archived-row                   1 no        [.archived-row] opacity: 0.8;
+env-notice                     9 YES       [.env-notice-dismiss:hover] color: @text; background-color: rgba(255, 255, 255, 0.06);
+                                             OUTRANKED: [.env-notices] border-top: 1px solid @border;
+                                             OUTRANKED: [.env-notice] padding: 9px 12px; background-color: rgba(255, 200, 87, 0.06);
+                                             OUTRANKED: [/* styles.css:823 — `.env-notice + .env-notice] border-top
+                                             OUTRANKED: [.env-notice.not-first] border-top: 1px solid @border;
+                                             OUTRANKED: [.env-notice-icon] color: @yellow; margin-top: 1px;
+                                             OUTRANKED: [.env-notice-title] font-size: 11.5px; font-weight: 600; color: @text;
+                                             OUTRANKED: [.env-notice-detail] font-size: 11px; color: @text_dim; margin-top: 2px;
+                                             OUTRANKED: [.env-notice-dismiss] background: transparent; border: none; box-shadow: none; color: @text_
+env-notice-body                0 no        — NO RULE IN theme.css
+env-notice-link                0 YES       — NO RULE IN theme.css
+sidebar-footer                 2 YES       [.sidebar-footer] border-top: 1px solid @border; padding: 8px;
+                                             OUTRANKED: [.sidebar-footer] border-top: 1px solid @border; padding: 4px 10px;
+sidebar-footer-link            0 no        — NO RULE IN theme.css
+footer-link                    2 YES       [.footer-link:hover] background-color: @bg_3; color: @text;
+                                             OUTRANKED: [.footer-link] background: transparent; border: none; box-shadow: none; color: @text_
+sidebar-footer-version         0 no        — NO RULE IN theme.css
+usage-bars                    10 YES       [.usage-bars-row-updated] font-size: 10px; color: @text_dim; opacity: 0.7;
+                                             OUTRANKED: [.usage-bars] padding: 4px 2px 8px;
+                                             OUTRANKED: [.usage-bars.expandable] /* hover affordance hint */
+                                             OUTRANKED: [.usage-bars-panel > contents] background-color: @bg_2; border: 1px solid @border_strong; border-radi
+                                             OUTRANKED: [.usage-bars-panel-title] color: @text_dim; font-size: 11px; font-weight: 600; margin-bottom: 4p
+                                             OUTRANKED: [.usage-bars-row] padding: 6px 4px; border-radius: 6px;
+                                             OUTRANKED: [.usage-bars-row.active] background-color: @bg_3;
+                                             OUTRANKED: [.usage-bars-row.err .usage-bars-row-status] color: @red;
+                                             OUTRANKED: [.usage-bars-row-name] font-weight: 600; font-size: 12px;
+                                             OUTRANKED: [.usage-bars-row-status] color: @text_dim; font-size: 11px;
+usage-bar-label                1 no        [.usage-bar-label] color: @text; font-weight: 600;
+usage-bar-track                4 YES       [.usage-bar-track progress] min-height: 5px; border-radius: 3px; background-color: @accent;
+                                             OUTRANKED: [.usage-bar-track] background-color: @bg_4; border-radius: 4px; min-height: 6px;
+                                             OUTRANKED: [.usage-bar-track] min-height: 5px;
+                                             OUTRANKED: [.usage-bar-track trough] min-height: 5px; background-color: @bg_3; border-radius: 3px;
+usage-bar-fill                 6 no        [.usage-bar-fill.meter-critical] background-color: @red;
+                                             OUTRANKED: [.usage-bar-fill] border-radius: 4px; min-height: 6px;
+                                             OUTRANKED: [.usage-bar-fill.meter-accent] background-color: @accent;
+                                             OUTRANKED: [.usage-bar-fill.meter-accent-2] background-color: @accent_2;
+                                             OUTRANKED: [.usage-bar-fill.meter-normal] background-color: @accent;
+                                             OUTRANKED: [.usage-bar-fill.meter-warn] background-color: @yellow;
+insights-row                   6 YES       [.insights-row-sub] color: @text_dim; font-size: 10px;
+                                             OUTRANKED: [.insights-row] background: transparent; border: none; border-radius: 8px; padding: 6p
+                                             OUTRANKED: [.insights-row:hover] background-color: @bg_3;
+                                             OUTRANKED: [.insights-row.active] background-color: @bg_4;
+                                             OUTRANKED: [.insights-row-icon] color: @accent_2;
+                                             OUTRANKED: [.insights-row-title] color: @text; font-size: 12px; font-weight: 600;
+insights-step                  6 no        [.insights-step] padding: 1px 10px 1px 24px;
+                                             OUTRANKED: [.insights-step-label] color: @text; font-size: 12px;
+                                             OUTRANKED: [.insights-step-meta] color: @text_dim; font-size: 10px;
+                                             OUTRANKED: [.insights-step-icon.ok] color: @green;
+                                             OUTRANKED: [.insights-step-icon.fail] color: @red;
+                                             OUTRANKED: [.insights-step-icon.pending] color: @text_dim;
+ws-empty-hint                  1 no        [.ws-empty-hint] padding: 20px; color: @text_dim; font-size: 12px;
+-- app log tail:
+[remote-control] listening on /run/user/1000/orch-audit.W3Lta5/rc.sock
+[backend] event 'workspaceUpdate'
+[backend] event 'workspaceUpdate'
+[terminal] start ws-2: not wired yet: mock backend does not serve this method
