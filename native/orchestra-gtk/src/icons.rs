@@ -61,7 +61,7 @@ use gtk::{gio, glib};
 
 /// The GResource prefix `build.rs` bundles the icons under. GTK appends its
 /// own `icons/<theme>/<size>/` convention to an icon-theme resource path, so
-/// this is the parent of the `scalable/actions` directory in the bundle.
+/// this is the parent of the `symbolic/actions` directory in the bundle.
 const RESOURCE_PATH: &str = "/dev/orchestra/gtk";
 
 /// The compiled GResource bundle (built from `icons/*.svg` by `build.rs`).
@@ -134,6 +134,39 @@ pub const INSIGHTS: &str = "orch-insights-symbolic";
 pub const USERS: &str = "orch-users-symbolic";
 /// Logs — `LogsIcon`.
 pub const LOGS: &str = "orch-logs-symbolic";
+
+/// Every icon name this module exposes — the single list both tests
+/// enumerate, so a new constant cannot be added without being covered.
+#[cfg(test)]
+const NAMED: &[&str] = &[
+    BRANCH,
+    CARET_DOWN,
+    RESTART,
+    PLAY,
+    STOP,
+    PANE,
+    PR,
+    EXTERNAL,
+    ZAP,
+    ORCHESTRATOR,
+    GEAR,
+    GITHUB,
+    TRASH,
+    FOLDER_PLUS,
+    ARCHIVE,
+    RESTORE,
+    SEARCH,
+    CLOSE,
+    PLUS,
+    SANDBOX_UP,
+    SANDBOX_DOWN,
+    BELL,
+    HELP,
+    RESOURCES,
+    INSIGHTS,
+    USERS,
+    LOGS,
+];
 
 /// Register the embedded icon bundle with the default [`gtk::IconTheme`].
 ///
@@ -211,36 +244,7 @@ mod tests {
             "no icons enumerated under {dir} — the resource path is wrong"
         );
 
-        let named = [
-            BRANCH,
-            CARET_DOWN,
-            RESTART,
-            PLAY,
-            STOP,
-            PANE,
-            PR,
-            EXTERNAL,
-            ZAP,
-            ORCHESTRATOR,
-            GEAR,
-            GITHUB,
-            TRASH,
-            FOLDER_PLUS,
-            ARCHIVE,
-            RESTORE,
-            SEARCH,
-            CLOSE,
-            PLUS,
-            SANDBOX_UP,
-            SANDBOX_DOWN,
-            BELL,
-            HELP,
-            RESOURCES,
-            INSIGHTS,
-            USERS,
-            LOGS,
-        ];
-        for name in named {
+        for name in NAMED.iter().copied() {
             assert!(
                 present.iter().any(|p| p == name),
                 "icon {name} is named in code but absent from the bundle; \
@@ -255,6 +259,86 @@ mod tests {
             !present.iter().any(|p| p == "orch-zzznonsense-symbolic"),
             "absent-icon check is broken — it matched a name that does not exist"
         );
+    }
+
+    /// Every named icon RESOLVES through a real [`gtk::IconTheme`].
+    ///
+    /// Every named icon RESOLVES, not merely exists in the bundle.
+    ///
+    /// The test above proves the assets are *in* the GResource. That is not the
+    /// same as GTK being able to *find* them, and the difference is invisible:
+    /// an unresolved name falls back to `image-missing.svg`, which is a small
+    /// grey glyph at the same size as the real icons, so a rendered toolbar
+    /// still looks plausible. `has_icon()` is the only thing that distinguishes
+    /// them — and it answers false for a correct-but-unreachable name exactly
+    /// as it does for a nonsense one.
+    ///
+    /// MUST run under a real [`gtk::Application`]. Icon resolution keys off the
+    /// application's resource base path (`dev.orchestra.gtk` →
+    /// `/dev/orchestra/gtk`), so under a bare `gtk::init()` every name misses no
+    /// matter how the bundle is laid out — four different layouts were probed
+    /// that way and all four reported false, which nearly sent this chasing a
+    /// path bug that did not exist.
+    ///
+    /// Controls, both required: a stock symbolic icon (proves the resolver
+    /// works at all — if it misses, no verdict below means anything) and a
+    /// nonsense name (proves a miss is reported as a miss, rather than
+    /// `has_icon` answering true for everything).
+    #[test]
+    fn every_named_icon_resolves_through_the_icon_theme() {
+        use gtk::prelude::*;
+
+        if gtk::init().is_err() {
+            eprintln!("no display — skipping icon resolution test");
+            return;
+        }
+
+        let app = gtk::Application::builder()
+            .application_id("dev.orchestra.gtk")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        let failures: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+        let sink = failures.clone();
+
+        app.connect_startup(move |app| {
+            register();
+            let Some(display) = gtk::gdk::Display::default() else {
+                sink.borrow_mut().push("no default display".into());
+                app.quit();
+                return;
+            };
+            let theme = gtk::IconTheme::for_display(&display);
+            let mut bad = sink.borrow_mut();
+
+            if !theme.has_icon("document-open-symbolic") {
+                bad.push(
+                    "KNOWN-GOOD control (document-open-symbolic) did not resolve — \
+                     the icon theme is unusable here, so this run proves nothing"
+                        .into(),
+                );
+            }
+            if theme.has_icon("orch-zzznonsense-symbolic") {
+                bad.push(
+                    "KNOWN-ABSENT control resolved — has_icon() answers true for \
+                     everything, so this test would be vacuous"
+                        .into(),
+                );
+            }
+            for name in NAMED {
+                if !theme.has_icon(name) {
+                    bad.push(format!(
+                        "{name} does not resolve — it would draw GTK's \
+                         broken-image placeholder"
+                    ));
+                }
+            }
+            app.quit();
+        });
+        app.connect_activate(|_| {});
+        app.run_with_args::<&str>(&[]);
+
+        let bad = failures.borrow();
+        assert!(bad.is_empty(), "icon resolution failures:\n  {}", bad.join("\n  "));
     }
 
     /// Every shipped asset carries `currentColor`, the property GTK's symbolic

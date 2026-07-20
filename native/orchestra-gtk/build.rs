@@ -89,8 +89,26 @@ fn main() {
     icons.sort();
     assert!(!icons.is_empty(), "icons/ contains no .svg assets");
 
-    // GTK looks icons up under <resource-path>/icons/<theme>/<size>/<name>.svg;
-    // `scalable/actions` is the standard location for symbolic assets.
+    // GTK resolves resource icons at <resource-base>/icons/<dir>/<ctx>/<name>.svg,
+    // where <resource-base> is the GtkApplication's resource base path — derived
+    // from the application id, so `dev.orchestra.gtk` gives `/dev/orchestra/gtk`.
+    // GTK scans that automatically; `IconTheme::add_resource_path` is belt-and-
+    // braces for the same prefix.
+    //
+    // `scalable/actions` is correct here. Verified empirically rather than
+    // reasoned about, because two plausible-sounding theories were both wrong:
+    // four candidate layouts (symbolic/, scalable/, 16x16/, hicolor/scalable/)
+    // were compiled into throwaway bundles and probed with `has_icon()`, and
+    // ALL FOUR reported false — under a bare `Gtk.init()` harness. The layout
+    // was never the variable. The missing ingredient was a real GtkApplication:
+    // under one, `scalable/actions` resolves to
+    // `resource:///dev/orchestra/gtk/icons/scalable/actions/<name>.svg`.
+    //
+    // Recording that because the failure is indistinguishable from a bad path:
+    // an unresolved icon falls back to `image-missing.svg`, and `has_icon()`
+    // answers false for a correct-but-unreachable name exactly as it does for a
+    // nonsense one. Chasing the path would have been the obvious next move and
+    // it would have been wrong.
     let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<gresources>\n");
     writeln!(
         xml,
