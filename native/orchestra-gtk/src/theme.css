@@ -24,6 +24,52 @@
 @define-color red #ff6b6b;
 @define-color yellow #ffc857;
 
+/* 1b ── state transitions
+
+   Electron eases every interactive state change; the port did not, so every
+   hover, focus and press SNAPPED. That is invisible in a screenshot, which is
+   why several static verification passes missed it, and it is the largest part
+   of "hovers are not the same" / "it feels different".
+
+   Reference (src/renderer/styles.css): 41 transition declarations, of which
+   the dominant recipe is `140ms var(--ease)` over background / border-color /
+   color, with `0.12s ease` for the transform micro-motions. --ease is
+   cubic-bezier(0.3, 0.8, 0.3, 1). Timings and curve are copied, not invented.
+
+   Every property here was MEASURED as actually interpolating in GTK 4.18
+   before being written (examples/transition_probe.rs, three passing controls):
+   background, background-color, color, border-color, box-shadow and transform
+   all ease. GTK4 accepts the `background` shorthand and the custom
+   cubic-bezier, both verified rather than assumed — a declaration GTK parses
+   but ignores would leave these rules dead while looking correct in review.
+
+   Selectors are listed explicitly rather than applied with a blanket rule:
+   the set is exactly those that already carry a :hover rule, so this changes
+   only HOW those states arrive, never WHICH states exist or what they look
+   like. */
+#sidebar-list row, .account-inherit-chip, .account-menu-item,
+.accounts-open, .archived-toggle, .base-picker-item, .branch-chip.current,
+.branch-chip.head, .dlg-buttons button, .dlg-buttons button.destructive,
+.dlg-buttons button.suggested, .empty-actions button.primary,
+.empty-actions button.secondary, .env-notice-dismiss, .field-select,
+.footer-link, .header-icon-btn, .header-repo-btn, .host-collapse,
+.insights-history-row, .insights-row, .merge-btn, .modal-close,
+.overlay-close, .pane-toggle, .pane-toggle:checked, .pr-link,
+.queue-banner-item-x, .repo-add, .repo-collapse, .repo-header .ws-icon-btn,
+.repo-header .ws-icon-btn.danger, .repo-header-actions .ws-icon-btn,
+.repo-header-actions button, .repo-scripts-btn, .repo-scripts-btn.danger,
+.repo-sync, .res-agent-row, .res-stop-btn, .res-stop-btn .res-stop-icon,
+.restart-btn, .run-toggle-btn, .run-toggle-btn.running,
+.sidebar-header-btn, .sound-play, .status-strip button, .tab, .ws-collapse,
+.ws-icon-btn, .ws-icon-btn.danger, .ws-row .ws-icon-btn,
+button.welcome-help-btn, listbox row, popover modelbutton {
+  transition: background 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              background-color 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              border-color 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              color 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              box-shadow 140ms cubic-bezier(0.3, 0.8, 0.3, 1);
+}
+
 /* 2 ── base chrome */
 window {
   background-color: @bg;
