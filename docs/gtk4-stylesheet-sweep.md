@@ -291,13 +291,31 @@ readings equally, and the evidence cannot choose between them:
    the stylesheet defines a newer `.toolbar`/`.tab` family that appears to have
    superseded them).
 2. **Missing widget** — the styling is correct and the widget that should carry
-   it was never built, or lost its class in a refactor. `.ws-branch` is
-   suspicious this way: the sidebar shows branch names, and a `.ws-branch` rule
-   with no `.ws-branch` widget may be a *bug*, not dead CSS.
+   it was never built, or lost its class in a refactor.
 
 Choosing between "delete the rule" and "fix the widget" is precisely the
 judgement my brief says I cannot make without an author present. **Both readings
 go to the coordinator.**
+
+### RESOLVED after review: `.ws-branch` is orphaned styling (reading 2)
+
+The coordinator resolved this one at source and I verified it independently
+rather than relaying it (controls in the same run: `ws-name`=2, `ws-dot`=4,
+`pill`=3 present; `ws-branch`=0).
+
+`sidebar/widgets.rs:743` renders the branch name as
+`ellipsized(&s.ws.branch, &["ws-name"])` — **class `ws-name`, never
+`ws-branch`**. So `.ws-branch` (:130, `color: @text_dim; font-size: 10px`) is
+styling for a class no widget receives, while the text it was written for
+renders under `.ws-name` at 13px `@text`.
+
+This is now a **checkable question rather than a coin flip**: either the branch
+name is *meant* to be dim 10px (in which case the widget has the wrong class and
+this is a live styling bug), or the current `.ws-name` treatment is correct (in
+which case `.ws-branch` is stale). Still a judgement about intent — but a
+narrow, answerable one, not the open-ended ambiguity this section originally
+reported. The other three (`.term-toolbar`, `.term-tab`, `.run-action`) remain
+as reported above.
 
 ### Instrument-failure note
 
