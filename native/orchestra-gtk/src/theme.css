@@ -205,10 +205,12 @@ list row:selected label {
    bottom padding is asymmetric (3px vs 4px) exactly as authored.
 
    NOTE ON THE CASCADE: these headers are GtkListBoxRows inside #sidebar-list,
-   so the generic `listbox row` rule also applies to them. This padding is
-   only correct once that generic rule is scoped out of #sidebar-list — the
-   inset below is measured against a row that contributes no padding or
-   margin of its own. Do not read the values here in isolation. */
+   so the generic `listbox row` rule (padding 7px 12px, margin 1px 6px) WOULD
+   also apply and stack with this inset. It does not, because `#sidebar-list
+   row` zeroes padding/margin at :290. That opt-out is load-bearing for the
+   14px here: if it is ever narrowed or removed, this inset starts stacking
+   again and the ellipsized repo names truncate. DIFF-NOTES D2 blames this
+   rule alone for the header inset; that was never the whole story. */
 .repo-header, .host-group-header {
   padding: 4px 14px 3px;
 }
