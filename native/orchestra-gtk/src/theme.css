@@ -307,16 +307,45 @@ list row:selected label {
 /* Context / account / size mini-badges riding the name row. */
 .ws-context { color: @text_dim; font-size: 10px; }
 .ws-context-sep { color: @text_dim; opacity: 0.5; }
+/* The workspace/repo-row login badge — DIFF-NOTES item C's real surface.
+   The note points at `.account-badge` (theme.css:1056), but the sidebar rows
+   never use that class: they build `.ws-login-badge` (widgets.rs:258, 822).
+   And on the Electron side the operative rule is not the `.account-badge` chip
+   at styles.css:3101-3115 either — every sidebar/repo-header instance renders
+   `account-badge inline` (AccountBadge.tsx:308,323,348,367,386), and
+   `.account-badge.inline` (styles.css:3163-3191) CANCELS the chip:
+       padding: 0; font-size: 10px; font-weight: 500;
+       background: none; border: none; border-radius: 0;
+   So the target is BARE TINTED TEXT, not a chip — the @bg_3 pill this rule used
+   to paint was the divergence. Confirmed against electron-sidebar.png, where
+   work/perso/default are plain tinted words after a `·` (the separator is
+   already emitted at widgets.rs:257).
+   The hover rule is dropped with the chip: with no background there is nothing
+   to lighten, and Electron gives the inline badge no hover treatment.
+   This is a gtk::Button (widgets.rs:810), so box-shadow/outline are zeroed too —
+   GTK's default button chrome would otherwise re-draw the frame the chip removal
+   is trying to get rid of.
+   DEVIATION — no colour rule here: the button's child Label is painted with
+   Pango markup (widgets.rs:812, the per-login colour from accounts::logic), and
+   markup beats CSS colour, so `color`/severity rules on this widget would be
+   DEAD STYLE THAT LOOKS LOAD-BEARING — it parses, applies, and is silently
+   overridden, which reads exactly like a working rule in source. Electron's
+   text-only severity tints (styles.css:3193-3197, #d9b772 / #e09a9a) therefore
+   have no CSS equivalent here; if they are ever wanted they belong in
+   accounts::logic's colour selection, alongside the login colour it already
+   owns — NOT as a CSS rule that cannot win. Left to the existing logic on
+   purpose: the brief says do not reimplement or duplicate loginColor. */
 .ws-login-badge {
-  background-color: @bg_3;
+  background: none;
   border: none;
-  border-radius: 5px;
-  color: @text_dim;
+  border-radius: 0;
+  box-shadow: none;
+  outline: none;
   font-size: 10px;
-  padding: 0 5px;
+  font-weight: 500;
+  padding: 0;
   min-height: 0;
 }
-.ws-login-badge:hover { background-color: @bg_4; color: @text; }
 
 /* Hidden-descendant count pill, tinted by most-urgent hidden status. */
 .ws-hidden-count {
@@ -334,20 +363,60 @@ list row:selected label {
 /* Pill zoo (merge/released/unpushed/diff/setup/PR/Linear/size/repo-tag). */
 .ws-pills { margin-top: 2px; }
 .ws-pills.mini { opacity: 0.95; }
+/* The mini strip shrinks its repo tag a step (styles.css:1382-1385). */
+.ws-pills.mini .pill.repo-tag-pill {
+  font-size: 8px;
+  padding: 0 4px;
+}
+/* Pill geometry/typography ported from the Electron pill family, which shares
+   one shape across .merged-pill/.released-pill/.unpushed-pill/.repo-tag-pill
+   (styles.css:307-352, 1210-1222): a full capsule (border-radius: 999px), 9px
+   600-weight type with 0.2px tracking, and 0 5px padding. The 6px gap Electron
+   gets from each pill's `margin-left: 6px` is the strip Box's own spacing in
+   GTK (widgets.rs:860) — set there, not here, so it does not double up. */
 .pill {
-  border-radius: 6px;
-  font-size: 10px;
-  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  padding: 0 5px;
   min-height: 0;
 }
 .pill.repo-count, .pill.host-count {
   background-color: @bg_4;
   color: @text_dim;
 }
-.pill.repo-tag-pill { background-color: @bg_4; color: @accent; }
-.pill.merged-pill   { background-color: alpha(@accent, 0.18); color: @accent; }
-.pill.released-pill { background-color: alpha(@green, 0.18);  color: @green; }
-.pill.unpushed-pill { background-color: alpha(@yellow, 0.18); color: @yellow; }
+/* The 1px translucent border is what makes Electron's pills read as objects
+   rather than flat colour blocks; every tinted pill below carries one at the
+   source's .32 alpha. Hues are the source's literals, not token aliases: the
+   merged pill is PURPLE in Electron (#c4a8ff on rgba(179,139,255,…)), and
+   @accent would have kept it blue. */
+.pill.repo-tag-pill {
+  background-color: @bg_3;
+  color: @text_dim;
+  border: 1px solid @border;
+}
+/* Only the merged pill is uppercased. styles.css:315 sets text-transform on
+   .merged-pill alone, and the comment at styles.css:320-324 says the released
+   pill deliberately keeps it OFF so a version tag (v0.1.11) renders verbatim
+   rather than shouted — uppercasing the whole family would be a regression.
+   The unpushed pill ("↑3") has no letters to transform. */
+.pill.merged-pill {
+  background-color: rgba(179, 139, 255, 0.12);
+  color: #c4a8ff;
+  border: 1px solid rgba(179, 139, 255, 0.32);
+  text-transform: uppercase;
+}
+.pill.released-pill {
+  background-color: rgba(126, 231, 135, 0.10);
+  color: #7ee787;
+  border: 1px solid rgba(126, 231, 135, 0.32);
+}
+.pill.unpushed-pill {
+  background-color: rgba(245, 196, 107, 0.10);
+  color: #f5c46b;
+  border: 1px solid rgba(245, 196, 107, 0.32);
+}
 .pill.ws-size       { background-color: @bg_3; color: @text_dim; }
 .pill.setup-pill    { background-color: @bg_4; color: @text_dim; }
 .pill.setup-pill.failed { background-color: alpha(@red, 0.2); color: @red; }
@@ -1111,10 +1180,31 @@ entry:focus-within {
 .usage-row-bar-label,
 .usage-row-pct { color: @text_dim; font-size: 10px; }
 
-/* Account label badge (sidebar / repo header). */
+/* Account label badge (sidebar / repo header).
+   NOT a chip. DIFF-NOTES item C cites the chip rule at styles.css:3101-3115
+   (999px capsule, white wash, 1px border) — but that is NOT the rule in effect
+   here. Every sidebar/repo-header instance renders `.account-badge inline`
+   (AccountBadge.tsx:308,323,348,367,386), and `.account-badge.inline`
+   (styles.css:3163-3191) cancels the chip outright:
+       padding: 0; font-size: 10px; font-weight: 500;
+       background: none; border: none; border-radius: 0;
+   So Electron's sidebar account label is BARE TINTED TEXT, and porting the chip
+   would have made GTK diverge from the very thing we are matching. Values below
+   are the .inline ones. (The chip is real, just for a surface the GTK app does
+   not render — if a non-inline badge is ever added, it needs its own class.)
+   The 12px→10px drop and 600→500 weight are the visible part of this fix.
+   DEVIATION: `color` is deliberately not set. badge.rs:136 paints the label via
+   Pango markup (`<span foreground=…>`, the per-login colour from
+   accounts::logic) and markup beats CSS colour, so a colour rule here would be
+   dead style that merely looks load-bearing. The chip geometry is what CSS owns;
+   text colour stays with the existing login-colour logic (untouched, per brief). */
 .account-badge {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 0;
 }
 .account-badge.err { color: @red; }
 .account-badge.pending { opacity: 0.7; }
