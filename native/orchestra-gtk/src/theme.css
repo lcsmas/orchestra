@@ -586,28 +586,112 @@ popover modelbutton:hover {
   background-color: @bg_4;
 }
 
-/* 6 ── dialogs */
+/* 6 ── dialogs
+ *
+ * Ported from the Electron `.dialog` stack (styles.css:2463-2554) — M4-V4.
+ * Values are the SOURCE values, not approximations; each rule cites its
+ * styles.css origin.
+ *
+ * RECORDED DEVIATION (plan §0) — no backdrop scrim.
+ * Electron's `.dialog-backdrop` (styles.css:2465-2469) dims AND blurs the
+ * whole window behind the modal:
+ *     background: rgba(6,8,12,.6); backdrop-filter: blur(14px) saturate(120%)
+ * GTK4 CSS has NO backdrop-filter property at all — the blur half is
+ * unreachable by every available approach, not merely by this one. A scrim
+ * toplevel could dim but not blur, and would add a third window to the
+ * `dialogs::OPEN` stack that remote_control.rs walks for `topmost()` (its
+ * screenshot target and Esc routing), i.e. real E2E surface for a partial
+ * effect that still would not match. Deviation accepted deliberately; the
+ * dialog compensates with the layered drop shadow below, which is the other
+ * depth cue Electron uses. */
 .orch-dialog {
-  background-color: @bg_3;
-  border: 1px solid @border_strong;
+  /* styles.css:2479 gradient + :2482 border + :2483 radius-lg (12px). */
+  background: linear-gradient(180deg, alpha(#1c2129, 0.94) 0%, alpha(#14171d, 0.96) 100%);
+  border: 1px solid alpha(#ffffff, 0.08);
   border-radius: 12px;
+  /* styles.css:2484-2487 — inset highlight + the two drop shadows. */
+  box-shadow:
+    inset 0 1px 0 alpha(#ffffff, 0.05),
+    0 24px 64px alpha(#000000, 0.65),
+    0 2px 8px alpha(#000000, 0.45);
 }
 .dlg-box {
-  padding: 16px 18px;
+  /* styles.css:2488 padding: 22px 22px 18px. */
+  padding: 22px 22px 18px;
+}
+/* Entry animation, ported from Electron's `dialog-pop`
+   (styles.css:2491 + keyframes :2493-2496): 180ms on the --ease curve
+   (styles.css:64 cubic-bezier(.3,.8,.3,1)), fading in from 6px low at .97
+   scale. VERIFIED to actually animate under GTK4 rather than assumed: six
+   screenshots taken across the entry window yielded six DISTINCT hashes.
+   NOTE: DIFF-NOTES states GTK CSS has no animation support — that is WRONG,
+   @keyframes animates fine here (6/6 distinct frames).
+
+   PARTIAL DEVIATION, measured not assumed: Electron's keyframes also
+   translateY(6px)+scale(.97). GTK4 PARSES `transform` in a keyframe without
+   any warning but does NOT apply it to a toplevel window — a transform-only
+   probe (translateY(40px) scale(.7) over 2000ms, deliberately gross) yielded
+   1 distinct frame out of 6, against 6/6 for the opacity fade on the same
+   rig. So it is silently ignored, not merely subtle. The opacity fade and
+   the 180ms/curve are ported exactly; the 6px rise and .97 scale are the
+   only part dropped. */
+@keyframes dialog-pop {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.orch-dialog {
+  animation: dialog-pop 180ms cubic-bezier(0.3, 0.8, 0.3, 1);
+}
+/* styles.css:2497-2505 — the 40px circular tinted tone chip above the title.
+   Tint + inset ring are per-tone (styles.css:2506-2524). */
+.dlg-icon {
+  min-width: 40px;
+  min-height: 40px;
+  border-radius: 20px;
+  margin-bottom: 12px;
+  font-size: 20px;
+}
+.orch-dialog.tone-info .dlg-icon {
+  background-color: alpha(#6ea8ff, 0.12);
+  color: @accent;
+  box-shadow: inset 0 0 0 1px alpha(#6ea8ff, 0.3);
+}
+.orch-dialog.tone-success .dlg-icon {
+  background-color: alpha(#5bd68b, 0.12);
+  color: @green;
+  box-shadow: inset 0 0 0 1px alpha(#5bd68b, 0.3);
+}
+.orch-dialog.tone-error .dlg-icon {
+  background-color: alpha(#ff6b6b, 0.12);
+  color: @red;
+  box-shadow: inset 0 0 0 1px alpha(#ff6b6b, 0.3);
 }
 .dlg-title {
+  /* styles.css:2526-2532 — 15px/600, full-brightness. GTK 4.18 accepts the
+     source em unit directly (verified: no theme parser error), so this is
+     the literal -0.01em rather than a px approximation. */
   color: @text;
   font-weight: 600;
-  font-size: 14px;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+  margin-bottom: 6px;
 }
-.orch-dialog.tone-error .dlg-title { color: @red; }
-.orch-dialog.tone-success .dlg-title { color: @green; }
+/* NO per-tone title tint. `.dialog-title` (styles.css:2526-2532) is the ONLY
+   title rule in the Electron stylesheet — the title is always var(--text),
+   and tone is carried by the icon chip above it, never by tinting the words.
+   GTK previously coloured the title red/green per tone (the pre-M4 rules
+   removed here); that read as an error message rather than a heading and is
+   visible as the last remaining difference against electron-dialog.png. */
 .dlg-body {
-  color: @text_dim;
+  /* styles.css:2533-2537 — `.dialog-message` is 13px at FULL --text with
+     line-height 1.5; the dim treatment belongs to `.dialog-detail` (:2541),
+     not to the message. GTK renders both paragraphs in this one label. */
+  color: @text;
   font-size: 13px;
 }
 .dlg-buttons {
-  margin-top: 8px;
+  /* styles.css:2549-2553 — actions sit 18px below the body, gap 8px. */
+  margin-top: 18px;
 }
 .dlg-buttons button {
   background-color: @bg_4;
@@ -627,6 +711,37 @@ popover modelbutton:hover {
 }
 .dlg-buttons button.suggested:hover {
   background-color: @accent;
+}
+/* The DESTRUCTIVE confirm. Electron's dialog picks `button.danger-primary`
+   (styles.css:2618-2626) whenever tone===danger && kind===confirm
+   (Dialog.tsx:109) — a FILLED red gradient. Note DIFF-NOTES G3 cites
+   `button.danger` (styles.css:165-173) instead, which is a dim OUTLINE style
+   used elsewhere; porting that rule would render visibly wrong. */
+.dlg-buttons button.destructive {
+  background: linear-gradient(180deg, #ff8585 0%, #ff5a5a 100%);
+  border-color: alpha(#ffffff, 0.1);
+  color: #2a0808;
+  font-weight: 600;
+  box-shadow:
+    inset 0 1px 0 alpha(#ffffff, 0.25),
+    0 1px 2px alpha(#000000, 0.4),
+    0 4px 14px alpha(#ff5050, 0.28);
+}
+.dlg-buttons button.destructive:hover {
+  /* styles.css:2628-2634. */
+  background: linear-gradient(180deg, #ff9999 0%, #ff6e6e 100%);
+  border-color: alpha(#ffffff, 0.15);
+  box-shadow:
+    inset 0 1px 0 alpha(#ffffff, 0.3),
+    0 2px 4px alpha(#000000, 0.4),
+    0 6px 18px alpha(#ff5050, 0.38);
+}
+.dlg-buttons button.destructive:active {
+  /* styles.css:2637-2642. */
+  background: linear-gradient(180deg, #ff5a5a 0%, #ef4646 100%);
+  box-shadow:
+    inset 0 1px 2px alpha(#000000, 0.15),
+    0 1px 2px alpha(#000000, 0.4);
 }
 entry {
   background-color: @bg_2;

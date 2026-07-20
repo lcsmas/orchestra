@@ -32,6 +32,17 @@ impl Tone {
             Tone::Success => "tone-success",
         }
     }
+
+    /// Glyph for the circular tone chip above the title — the GTK stand-in for
+    /// Electron's inline `ToneIcon` SVGs (Dialog.tsx:174-200). Same three
+    /// shapes: danger/error = (!) in a circle, success = a check, info = (i).
+    fn icon_glyph(self) -> &'static str {
+        match self {
+            Tone::Info => "\u{24d8}",    // ⓘ
+            Tone::Error => "\u{26a0}",   // ⚠
+            Tone::Success => "\u{2713}", // ✓
+        }
+    }
 }
 
 thread_local! {
@@ -71,6 +82,11 @@ struct Spec<'a> {
     cancel_label: Option<&'a str>,
     /// Some(placeholder) turns the dialog into a prompt with a text entry.
     entry_placeholder: Option<&'a str>,
+    /// Styles the confirm button as the DESTRUCTIVE action (filled red), the
+    /// way Electron does for `tone: 'danger'` confirms (Dialog.tsx:109 →
+    /// `button.danger-primary`). Purely visual: the button's label, its
+    /// position and what it resolves to are unchanged.
+    destructive: bool,
 }
 
 /// None = cancelled/dismissed; Some(text) = confirmed (text is "" for
@@ -91,6 +107,16 @@ async fn run(parent: &gtk::Window, spec: Spec<'_>) -> Option<String> {
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
     content.add_css_class("dlg-box");
+
+    // Tone chip (Electron `.dialog-icon`, styles.css:2497-2524): a circular
+    // tinted glyph above the title. ADDITIVE widget — nothing existing is
+    // renamed; the name is new so E2E drives that assert on the old names are
+    // unaffected.
+    let icon = gtk::Label::new(Some(spec.tone.icon_glyph()));
+    icon.set_widget_name("dialog-icon");
+    icon.add_css_class("dlg-icon");
+    icon.set_halign(gtk::Align::Start);
+    content.append(&icon);
 
     let title = gtk::Label::new(Some(spec.title));
     title.set_xalign(0.0);
@@ -148,7 +174,11 @@ async fn run(parent: &gtk::Window, spec: Spec<'_>) -> Option<String> {
 
     let confirm = gtk::Button::with_label(spec.confirm_label);
     confirm.set_widget_name("dialog-confirm");
-    confirm.add_css_class("suggested");
+    confirm.add_css_class(if spec.destructive {
+        "destructive"
+    } else {
+        "suggested"
+    });
     {
         let finish = finish.clone();
         confirm.connect_clicked(move |_| finish(true));
@@ -228,6 +258,7 @@ pub async fn alert(parent: &gtk::Window, title: &str, body: &str) {
             confirm_label: "OK",
             cancel_label: None,
             entry_placeholder: None,
+            destructive: false,
         },
     )
     .await;
@@ -243,6 +274,7 @@ pub async fn error(parent: &gtk::Window, title: &str, body: &str) {
             confirm_label: "OK",
             cancel_label: None,
             entry_placeholder: None,
+            destructive: false,
         },
     )
     .await;
@@ -258,6 +290,7 @@ pub async fn success(parent: &gtk::Window, title: &str, body: &str) {
             confirm_label: "OK",
             cancel_label: None,
             entry_placeholder: None,
+            destructive: false,
         },
     )
     .await;
@@ -273,6 +306,7 @@ pub async fn confirm(parent: &gtk::Window, title: &str, body: &str) -> bool {
             confirm_label: "Confirm",
             cancel_label: Some("Cancel"),
             entry_placeholder: None,
+            destructive: false,
         },
     )
     .await
@@ -300,6 +334,36 @@ pub async fn confirm_labeled(
             confirm_label,
             cancel_label: Some(cancel_label),
             entry_placeholder: None,
+            destructive: false,
+        },
+    )
+    .await
+    .is_some()
+}
+
+/// Two-button DESTRUCTIVE confirm: caller-chosen confirm label, error tone,
+/// and a filled-red confirm button — the GTK equivalent of the Electron
+/// dialog's `tone: 'danger'` + `confirmLabel` pair (Sidebar.tsx:893-894).
+///
+/// Behaviourally identical to [`confirm`]: returns true only when the confirm
+/// button (or Enter) resolved it; Escape/Cancel/dismiss return false. The
+/// difference is presentation plus the caller-supplied label.
+pub async fn confirm_destructive(
+    parent: &gtk::Window,
+    title: &str,
+    body: &str,
+    confirm_label: &str,
+) -> bool {
+    run(
+        parent,
+        Spec {
+            tone: Tone::Error,
+            title,
+            body,
+            confirm_label,
+            cancel_label: Some("Cancel"),
+            entry_placeholder: None,
+            destructive: true,
         },
     )
     .await
@@ -321,6 +385,7 @@ pub async fn prompt(
             confirm_label: "OK",
             cancel_label: Some("Cancel"),
             entry_placeholder: Some(placeholder),
+            destructive: false,
         },
     )
     .await
