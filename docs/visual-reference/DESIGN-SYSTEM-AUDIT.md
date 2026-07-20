@@ -1,7 +1,16 @@
 # Cross-cutting design-system audit — GTK4 vs Electron
 
-**Commit audited:** `7521d70` · **Date:** 2026-07-20 · **Verdict basis:** rendered
-pixels and controlled probes, not source reading.
+**Commit audited:** `7521d70`, with defects **3** and **5** re-derived at
+`05c2b4f` after the icons/header merge · **Date:** 2026-07-20 · **Verdict
+basis:** rendered pixels and controlled probes, not source reading.
+
+> **Re-measurement note.** The icons/header work changed the sidebar's width
+> contributors, voiding the original 75px figure — it had been measured against
+> a sidebar that no longer exists. Defect 3 is re-derived from fresh captures at
+> `05c2b4f` (both full-window halves rebuilt and re-hashed; both hashes changed,
+> so these are genuinely new pixels). **The gap widened rather than closed.**
+> Every other finding below still refers to `7521d70`; those touching the
+> sidebar body should be re-derived before being acted on.
 
 Scope: the design system itself — type scale, colour tokens, spacing rhythm,
 depth cues, chrome — rather than any single surface. A wrong token repeats across
@@ -22,7 +31,7 @@ Ranked by user-visible impact × breadth of surfaces affected.
 |---|---|---|---|
 | 1 | **Main pane background is two token steps too dark** | Electron `(26,31,38)` = `bg-3` (±0); GTK `(11,13,16)` = `bg` (±0) | Largest surface in the app. Wrong base under every pane-hosted widget |
 | 2 | **Transitions are absent** | Electron 44 `transition` declarations; GTK **1** | Every hover/state change **snaps**. Best single explanation of "feels different" |
-| 3 | **Sidebar 75px too wide** | **Content** width 339px vs 414px, agreed by 64/66 independent scanlines. (A "76px" figure quoted elsewhere measures *to the border column* — same finding, different reference edge) | Displaces the origin of every main-pane measurement |
+| 3 | **Sidebar 179px too wide — REGRESSED at `05c2b4f`** | **Content** width 339px vs **518px**, agreed by 64/66 independent scanlines. Was 414px (+75) at `7521d70`; the header-label work added **~104px more**. Cause: all three header action buttons (`Scratch`, `Orchestrator`, `Repo`) now carry text labels on one row, plus the `Orchestra` wordmark | Worst-ranked layout defect. Displaces the origin of every main-pane measurement. Electron fits the same controls in 339px |
 | 4 | **Dialog card geometry** | Electron `width:420px` declared → 420×215; GTK unconstrained → 378×241 | GTK shrink-wraps: 42px narrower, 26px taller |
 | 5 | **Divider seam is 3px of structure where Electron has 1px** — *not* a colour defect | Electron: `x=339` `(36,42,51)` = `border`, one column. GTK: `x=414` `(27,27,27)` stock `GtkPaned` separator **+** `x=415,416` `(36,42,51)` = `border` (2px) | ⚠️ **Do not fix by recolouring.** GTK already paints the correct token; recolouring the separator yields a **3px border** — worse than the defect. Remove the `GtkPaned` separator and narrow the border to 1px |
 | 6 | **`accent_2` token wrong** | GTK `#7c6ef2` → painted `rgb(124,110,242)`; Electron `#8b7cff` → `rgb(139,124,255)`. Δ −15/−14/−13 | Use sites: `.usage-bar-fill.meter-accent-2`, `.insights-row-icon` |
@@ -41,7 +50,7 @@ Ranked by user-visible impact × breadth of surfaces affected.
 | Text tokens (`text`, `text-dim`, `accent`) | **MATCHES** | `(230,233,239)`, `(139,149,167)`, `(110,168,255)` identical both sides |
 | Sidebar background | **MATCHES** | `(18,21,26)` = `bg-2` both sides, dominant over 4754 samples |
 | Main pane background | **DIFFERS** | 100% vs 99% regional dominance (defect 1) |
-| Sidebar width | **DIFFERS** | 339 vs 414 (defect 3) |
+| Sidebar width | **DIFFERS (regressed)** | 339 vs 518 at `05c2b4f`; was 339 vs 414 at `7521d70` (defect 3) |
 | Divider — colour | **MATCHES** | GTK paints `(36,42,51)` = `border` exactly, at `x=415,416` |
 | Divider — structure | **DIFFERS** | 3px seam vs 1px (defect 5) |
 | Spacing rhythm | **MATCHES** | `Box::new(_, 8)` = `.ws-item gap:8px`; `_,5` = `.ws-pills gap:5px`; `_,8` = `.dialog-actions gap:8px` |
@@ -114,9 +123,23 @@ the spacing rules in theme.css would stop the next person rediscovering it.
 
 ## 6. Capture manifest
 
-All captures regenerated at `7521d70` via `recapture.sh` (both halves together);
-`check-fresh.sh` passes. **14/14 distinct by md5 — zero duplicates**, so no
-silently no-opped drive is being counted as a verified surface.
+Captures regenerated at `7521d70` via `recapture.sh` (both halves together);
+`check-fresh.sh` passed at that commit. **14/14 distinct by md5 — zero
+duplicates**, so no silently no-opped drive is counted as a verified surface.
+
+> **Provenance after the `05c2b4f` re-measurement.** The `full-window` pair was
+> re-captured at `05c2b4f` and **supersedes** the `7521d70` hashes below:
+> `dc24f43fe9e803866f4d28f20bb55c2e` (electron),
+> `597878a17f446ee9a8f9e7320aa7dd47` (gtk) — both differ from their `7521d70`
+> predecessors, confirming genuinely new pixels.
+>
+> The remaining twelve still describe `7521d70`, and `CAPTURED-AT.json` was
+> **not** updated because the run aborted at the Electron selected-state step
+> (row-addressing gap above) before `write-manifest.mjs` ran. So
+> `check-fresh.sh` will report this set STALE for `05c2b4f` — **that is the tool
+> working correctly, not a failure to route around.** Anyone needing
+> selected-state evidence at `05c2b4f` must fix the addressing scheme and
+> re-run, not read the table below as current.
 
 | md5 | file |
 |---|---|
@@ -157,11 +180,27 @@ hard-failed the run) to a mid-list row, and got `chmod +x` for the RC=126 this
 audit hit.
 
 > **Known gap — selected-state pairs are still not trustworthy.** Reading the
-> env var is necessary but *not sufficient*: another agent pinned `ws-4` in its
-> own Electron driver and got "absent", so the two halves **do not share a
+> env var is necessary but *not sufficient*: the two halves **do not share a
 > row-addressing scheme**. Until the same selector resolves the same workspace
 > on both sides, a pinned run can still compare different rows — the failure
 > mode this pin exists to prevent.
+
+**The gap is now pinned down concretely.** Re-running `recapture.sh` at
+`05c2b4f` hard-failed with the exact mismatch:
+
+- `drive-gtk.py` addresses rows by **widget name** — `ws-row-ws-5` ✓
+- `drive-electron.mjs` addresses them by **rendered text content** —
+  `checkout-retry·default`
+
+No single `ORCHESTRA_CAPTURE_ROW` value satisfies both. A fix needs one shared
+addressing scheme — most naturally a stable `data-ws-id` attribute on the
+Electron row, so both sides key on the fixture's workspace id.
+
+Two guards did fire correctly and are worth keeping: the **already-active**
+guard caught the boot race auto-selecting `ws-mc-1` (clicking it would have been
+a no-op yielding byte-identical "selected" captures), and the **absent-row**
+guard listed all 14 rendered rows instead of silently falling back. Both failed
+loudly, which is why this gap is documented rather than shipped as evidence.
 
 ---
 
