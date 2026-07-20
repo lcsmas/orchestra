@@ -646,14 +646,15 @@ impl Component for Sidebar {
         notices_box.set_visible(false);
         root.append(&notices_box);
 
-        // Placeholder mount points the sibling Insights / usage-bars
-        // workstreams attach into (kept from day one so the layout is stable).
+        // Placeholder mount point the sibling Insights workstream attaches into
+        // (kept from day one so the layout is stable).
         let insights_slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
         insights_slot.set_widget_name("insights-slot");
         root.append(&insights_slot);
-        let usage_slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        usage_slot.set_widget_name("usage-bars-slot");
-        root.append(&usage_slot);
+        // NOTE: the matching "usage-bars-slot" Box was removed — it was created,
+        // named and appended but never mounted into (the usage bars live in the
+        // app.rs sidebar footer instead), so it only added an empty Box to the
+        // sidebar's vertical stack.
 
         root.append(&build_footer(&input));
 
