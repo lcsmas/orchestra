@@ -220,6 +220,26 @@ are argued** — `.pr-badge`, `.res-cell`, `.diff-indicator` were cleared by
 reading call sites and judging which variant dominates, which is the same step
 that produced the error above. They are OPEN, not verified.
 
+**3.3c A gate is only as good as the instructions for re-proving it.** The T6
+handover documented its gate as "verified RC=101". That is a re-proof procedure
+which *manufactures false confirmations* — the coordinator followed it, got
+RC=101 from a **build** failure, and nearly ratified an unrun gate. The bug was
+one file; the trap was in the handover, so it would have mis-taught every future
+reader rather than one.
+
+State re-proof by **artifact**, never by exit code: which strings must appear
+(`running N tests`, the named test `... FAILED`) and which setup step causes the
+false arm (here, sourcing `native/env.sh`).
+
+**3.3d Report what a gate is proven against, not that it is proven.** T6's font
+gate is proven against **one** known-bad input — the actual pre-fix font, which
+is the input that mattered. It does not follow that it catches every way the
+asset can break: a subset re-cut from a proportional face with the *right* name
+is caught only by the advance test, and one correct in both but with empty
+outlines passes **both**. Neither is hypothetical if someone regenerates the
+asset. A gate with a documented blind spot is worth more than one described as
+complete.
+
 **3.4 The inventory is demoted from spec to lead list.**
 Its ABSENT/STUB verdicts are treated as unverified. Enumerate the real widget
 namespace and assert against it; never search for the identifier the doc names.
