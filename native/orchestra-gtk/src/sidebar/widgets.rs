@@ -3,10 +3,19 @@
 //! the component's `Sender<Msg>`; no state lives in the widgets themselves,
 //! so the list can be rebuilt from specs at any time.
 //!
-//! Iconography is deliberately glyph-based (no SVG assets): behavioral parity
-//! is the gate (plan §0), and text glyphs render identically under headless
-//! CI. Every actionable widget carries a `widget_name` for the
-//! remote-control harness.
+//! Iconography comes from [`crate::icons`] — real symbolic SVG assets embedded
+//! in the binary, matching the inline SVGs Electron draws. This replaced an
+//! earlier glyph-based approach ("no SVG assets", justified by headless-CI
+//! stability); the glyphs were the visible defect the user reported, because a
+//! `⚙`/`↗`/`✕`/`+` resolves through whatever fallback font carries it and so
+//! lands at an inconsistent weight and size next to real chrome.
+//!
+//! Text that Electron ALSO renders as text is still text and must stay that
+//! way — diff +/- counts, commit-ahead arrows, tree connectors, collapse
+//! carets. Converting those would be a regression dressed up as parity.
+//!
+//! Every actionable widget carries a `widget_name` for the remote-control
+//! harness.
 
 use gtk::gdk;
 use gtk::glib;
@@ -51,15 +60,24 @@ fn ellipsized(text: &str, classes: &[&str]) -> gtk::Label {
 }
 
 /// Small glyph action button (the `.ws-icon-btn` strip).
-fn icon_button(
-    glyph: &str,
+/// An icon button carrying a real icon from [`crate::icons`].
+///
+/// Every sidebar action used to be built by a glyph-taking sibling that
+/// rendered a *character* as a label (`⚙`, `↗`, `✕`, a bare `+`), which is why
+/// they came out at whatever weight and size the fallback font supplied. That
+/// helper is gone — nothing constructs an action button from a glyph any more.
+/// Text that is genuinely text (counts, arrows, carets) uses [`label`].
+fn icon_button_named(
+    icon: &str,
+    px: i32,
     name: &str,
     tooltip: &str,
     classes: &[&str],
     sender: &Sender<Msg>,
     msg: impl Fn() -> Msg + 'static,
 ) -> gtk::Button {
-    let b = gtk::Button::with_label(glyph);
+    let b = gtk::Button::new();
+    b.set_child(Some(&crate::icons::image_sized(icon, px)));
     b.set_widget_name(name);
     b.add_css_class("ws-icon-btn");
     for c in classes {
@@ -71,6 +89,7 @@ fn icon_button(
     b.connect_clicked(move |_| sender.emit(msg()));
     b
 }
+
 
 fn pill(text: &str, name_class: &str, tooltip: &str) -> gtk::Label {
     let p = label(text, &["pill", name_class]);
@@ -269,14 +288,17 @@ fn build_empty_hint() -> gtk::ListBoxRow {
 fn build_section_header(kind: &SectionKind, count: usize, sender: &Sender<Msg>) -> gtk::ListBoxRow {
     let (glyph, title, add_name, add_tip, msg): (_, _, _, _, fn() -> Msg) = match kind {
         SectionKind::Orchestrators => (
-            "🌿",
+            // Was the 🌿 emoji. Electron uses `OrchestratorIcon` (a network
+            // node branching to two children) — Sidebar.tsx.
+            crate::icons::ORCHESTRATOR,
             "Orchestrators",
             "section-add-orchestrator",
             "New orchestrator",
             || Msg::NewOrchestrator,
         ),
         SectionKind::Scratch => (
-            "⚡",
+            // Was the ⚡ emoji; Electron uses `ZapIcon` (Sidebar.tsx).
+            crate::icons::ZAP,
             "Scratch",
             "section-add-scratch",
             "New scratch session",
@@ -285,13 +307,24 @@ fn build_section_header(kind: &SectionKind, count: usize, sender: &Sender<Msg>) 
     };
     let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     hbox.add_css_class("repo-header");
-    hbox.append(&label(glyph, &["scratch-glyph"]));
+    let glyph_icon = crate::icons::image_sized(glyph, 13);
+    glyph_icon.add_css_class("scratch-glyph");
+    hbox.append(&glyph_icon);
     let name = label(title, &["repo-name"]);
     name.set_hexpand(true);
     hbox.append(&name);
     // Section count badge = ROOT count, not row count (ledger).
     hbox.append(&pill(&count.to_string(), "repo-count", "Sessions"));
-    let add = icon_button("+", add_name, add_tip, &["repo-add"], sender, msg);
+    // Was a bare "+" character rendered as a label.
+    let add = icon_button_named(
+        crate::icons::PLUS,
+        13,
+        add_name,
+        add_tip,
+        &["repo-add"],
+        sender,
+        msg,
+    );
     hbox.append(&add);
 
     let row = gtk::ListBoxRow::new();
@@ -339,8 +372,11 @@ fn build_repo_header(s: &RepoHeaderSpec, sender: &Sender<Msg>) -> gtk::ListBoxRo
     ));
     if let Some(url) = &s.remote_url {
         let url = url.clone();
-        actions.append(&icon_button(
-            "↗",
+        // Was the ↗ arrow standing in for a GitHub mark; Electron draws
+        // `GitHubIcon` here (Sidebar.tsx:1567).
+        actions.append(&icon_button_named(
+            crate::icons::GITHUB,
+            13,
             &format!("repo-github-{}", s.label),
             &format!("Open {} on GitHub", s.label),
             &["repo-scripts-btn"],
@@ -350,8 +386,10 @@ fn build_repo_header(s: &RepoHeaderSpec, sender: &Sender<Msg>) -> gtk::ListBoxRo
     }
     {
         let path = s.repo_path.clone();
-        actions.append(&icon_button(
-            "⚙",
+        // Was the ⚙ glyph; Electron draws `GearIcon` (Sidebar.tsx:1580).
+        actions.append(&icon_button_named(
+            crate::icons::GEAR,
+            13,
             &format!("repo-scripts-{}", s.label),
             &format!("Configure setup / run / archive scripts for {}", s.label),
             &["repo-scripts-btn"],
@@ -361,8 +399,9 @@ fn build_repo_header(s: &RepoHeaderSpec, sender: &Sender<Msg>) -> gtk::ListBoxRo
     }
     if s.can_remove {
         let path = s.repo_path.clone();
-        actions.append(&icon_button(
-            "✕",
+        actions.append(&icon_button_named(
+            crate::icons::CLOSE,
+            12,
             &format!("repo-remove-{}", s.label),
             &format!(
                 "Remove {} from Orchestra (your git repo is left untouched)",
@@ -986,8 +1025,14 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
     } else {
         let unread_on = s.ws.marked_unread == Some(true);
         let id = s.ws.id.clone();
-        let toggle = icon_button(
-            if unread_on { "⚑" } else { "⚐" },
+        // Electron draws `BookmarkIcon`, filled when unread (Sidebar.tsx:144).
+    let toggle = icon_button_named(
+            if unread_on {
+                crate::icons::BOOKMARK
+            } else {
+                crate::icons::BOOKMARK_OUTLINE
+            },
+            13,
             &format!("ws-unread-{}", s.ws.id),
             if unread_on {
                 "Clear the unread tag"
@@ -1009,8 +1054,9 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
         if s.ws.can_orchestrate() {
             if s.ws.kind != Some(WorkspaceKind::Orchestrator) {
                 let id = s.ws.id.clone();
-                hbox.append(&icon_button(
-                    "⌄",
+                hbox.append(&icon_button_named(
+                    crate::icons::CHEVRON_DOWN,
+                    13,
                     &format!("ws-demote-{}", s.ws.id),
                     "Demote — stop this worktree coordinating (its children detach to top level)",
                     &[],
@@ -1020,8 +1066,9 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
             }
         } else {
             let id = s.ws.id.clone();
-            hbox.append(&icon_button(
-                "⌃",
+            hbox.append(&icon_button_named(
+                crate::icons::CHEVRON_UP,
+                13,
                 &format!("ws-promote-{}", s.ws.id),
                 "Promote to coordinator — let this workspace spawn and adopt child agents",
                 &[],
@@ -1055,8 +1102,10 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
             if s.ws.host.is_none() {
                 let id = s.ws.id.clone();
                 let name = s.ws.name.clone();
-                hbox.append(&icon_button(
-                    "☁↑",
+                // Electron: `SandboxUploadIcon` (Sidebar.tsx:1972).
+                hbox.append(&icon_button_named(
+                    crate::icons::SANDBOX_UP,
+                    13,
                     &format!("ws-sandbox-import-{}", s.ws.id),
                     "Import to sandbox — move this workspace into an always-on sandbox container",
                     &[],
@@ -1069,8 +1118,10 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
             } else {
                 let id = s.ws.id.clone();
                 let name = s.ws.name.clone();
-                hbox.append(&icon_button(
-                    "☁↓",
+                // Electron: `SandboxDownloadIcon` (Sidebar.tsx:1981).
+                hbox.append(&icon_button_named(
+                    crate::icons::SANDBOX_DOWN,
+                    13,
                     &format!("ws-sandbox-eject-{}", s.ws.id),
                     "Return to this machine — restore the workspace from its sandbox to a local worktree",
                     &[],
@@ -1085,8 +1136,10 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
         if !scratch_like {
             let id = s.ws.id.clone();
             let name = s.ws.name.clone();
-            hbox.append(&icon_button(
-                "🗄",
+            // Was the 🗄 emoji; Electron draws `ArchiveIcon` (Sidebar.tsx:1334).
+            hbox.append(&icon_button_named(
+                crate::icons::ARCHIVE,
+                13,
                 &format!("ws-archive-{}", s.ws.id),
                 "Archive workspace",
                 &[],
@@ -1104,8 +1157,10 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
                 .map(TreeVariant::root_noun)
                 .unwrap_or("scratch session");
             let is_root = s.depth == 0;
-            hbox.append(&icon_button(
-                "✕",
+            // Electron draws `TrashIcon` for delete (Sidebar.tsx:1343).
+            hbox.append(&icon_button_named(
+                crate::icons::TRASH,
+                13,
                 &format!("ws-delete-{}", s.ws.id),
                 if is_root {
                     match noun {
@@ -1318,8 +1373,10 @@ fn build_archived_row(s: &ArchivedRowSpec, sender: &Sender<Msg>) -> gtk::ListBox
     } else {
         {
             let id = s.ws.id.clone();
-            hbox.append(&icon_button(
-                "↺",
+            // Electron: `RestoreIcon`.
+            hbox.append(&icon_button_named(
+                crate::icons::RESTORE,
+                13,
                 &format!("ws-restore-{}", s.ws.id),
                 "Restore workspace",
                 &[],
@@ -1330,8 +1387,10 @@ fn build_archived_row(s: &ArchivedRowSpec, sender: &Sender<Msg>) -> gtk::ListBox
         {
             let id = s.ws.id.clone();
             let name = s.ws.name.clone();
-            hbox.append(&icon_button(
-                "✕",
+            // Electron draws `TrashIcon` for delete (Sidebar.tsx:1343).
+            hbox.append(&icon_button_named(
+                crate::icons::TRASH,
+                13,
                 &format!("ws-delete-{}", s.ws.id),
                 "Delete workspace permanently",
                 &["danger"],
