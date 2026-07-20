@@ -123,6 +123,52 @@ def main():
             unpaired.append((rid, "unparseable colour", e.get("gtkWidget")))
             continue
 
+        # ── COMPARABILITY GATE 1: ANCESTOR-RESOLVED REFERENCE ───────────────
+        # An element that paints NOTHING resolves to whatever ancestor does,
+        # and `painted` then holds a value the region never actually sets.
+        # Diffing GTK's painted surface against that inherited colour compares
+        # two different quantities, and the result is a confident number about
+        # nothing. `.main` and `.app` have no background declaration at all in
+        # styles.css, so main-pane and app-root both reported Δ22 against a
+        # root colour neither of them paints — and the same defect can equally
+        # manufacture a Δ0 PASS when the inherited value happens to match.
+        # This is the gradient trap (see oracle-electron.mjs) in its second
+        # form: that fix taught the walk to SEE gradient paints, but a
+        # genuinely unpainted element still climbs and reports as though the
+        # ancestor's value were its own. The oracle already records `hops`;
+        # only the report failed to act on it.
+        if eb.get("hops", 0) > 0:
+            unpaired.append((
+                rid,
+                f"ELECTRON REFERENCE IS ANCESTOR-RESOLVED (hops={eb['hops']}, "
+                f"from {eb.get('from')}) — the element paints nothing, so there "
+                f"is no element-level value to compare",
+                g["widget"]))
+            continue
+
+        # ── COMPARABILITY GATE 2: STATE-DEPENDENT REFERENCE ─────────────────
+        # A row whose only painting rules are :hover/.active paints nothing at
+        # rest. If the oracle captured it painting, the element was HOVERED or
+        # SELECTED — and the GTK probe samples whichever row sits at those
+        # bounds, typically a resting one. Precision does not survive a state
+        # mismatch: it yields a sharper wrong number, not a softer one.
+        # ws-row reported Δ12 this way (Electron's SELECTED gtk4-port-coordinator
+        # against GTK's RESTING ws-row-orch-1).
+        # NB: the oracle nests this inside effectiveBg, not at region top level.
+        # The first version of this gate read e["stateAtCapture"] — a key that
+        # never exists — so it silently never fired while LOOKING like a gate.
+        # A guard nobody has seen fire is indistinguishable from one that
+        # cannot; this one is proven against ws-row below.
+        estate = eb.get("stateAtCapture")
+        gstate = g.get("stateAtCapture")
+        if estate and estate != (gstate or "rest"):
+            unpaired.append((
+                rid,
+                f"STATE MISMATCH — electron captured in '{estate}', GTK in "
+                f"'{gstate or 'rest'}'; re-capture both in the same state",
+                g["widget"]))
+            continue
+
         # COMPOSITING BASE. A translucent Electron surface is painted OVER
         # whatever its ancestors paint, and the GTK pixel is already the
         # composited result. Comparing a raw rgba() against a composited pixel

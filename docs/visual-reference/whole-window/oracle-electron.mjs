@@ -195,6 +195,17 @@ const effectiveBg = (sel) =>
     const ownCs = getComputedStyle(el);
     const own = ownCs.backgroundColor;
     const ownImg = ownCs.backgroundImage;
+    // WHICH STATE IS THIS ELEMENT IN? A rule can be perfectly correct and
+    // still be the wrong REFERENCE: .ws-item paints nothing at rest and only
+    // :hover/.active paint it, so an oracle reading of a SELECTED row compared
+    // against a RESTING GTK row is a state mismatch wearing the costume of a
+    // colour defect. Reported so diff-report.py can refuse the pair rather
+    // than emit a precise, actionable, wrong delta.
+    const stateAtCapture =
+      el.matches(':hover') ? 'hover'
+      : (el.classList.contains('active') || el.classList.contains('selected')) ? 'active'
+      : el.matches(':focus-within') ? 'focus'
+      : 'rest';
     let node = el, hops = 0;
     while (node) {
       const cs = getComputedStyle(node);
@@ -208,6 +219,7 @@ const effectiveBg = (sel) =>
           alpha: stops.length ? alphaOf(stops[0]) : alphaOf(bg),
           paintKind: 'gradient', gradientStops: stops, gradient: img,
           from: node === el ? 'self' : (node.className || node.tagName), hops,
+          stateAtCapture,
         };
       }
       if (alphaOf(bg) > 0) {
@@ -215,13 +227,14 @@ const effectiveBg = (sel) =>
           own, ownImage: ownImg, painted: bg, alpha: alphaOf(bg),
           paintKind: 'color', gradientStops: null, gradient: null,
           from: node === el ? 'self' : (node.className || node.tagName), hops,
+          stateAtCapture,
         };
       }
       node = node.parentElement; hops++;
     }
     return { own, ownImage: ownImg, painted: null, alpha: 0,
              paintKind: 'none', gradientStops: null, gradient: null,
-             from: 'none', hops };
+             from: 'none', hops, stateAtCapture };
   })()`);
 
 const out = { viewport, rows, regions: {} };
