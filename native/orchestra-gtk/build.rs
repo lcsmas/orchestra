@@ -63,7 +63,118 @@ fn main() {
     // The recipes live in chime-gen's source; cargo already rebuilds when a
     // build-dependency changes, so no extra rerun-if-changed is needed.
 
-    // ---- 3. link libfontconfig by exact soname ----
+    // ---- 3. icons/*.svg → OUT_DIR/icons.gresource ----
+    // The Electron side hand-writes 39 inline SVGs (src/renderer/**/*.tsx) and
+    // recolours them via `fill="currentColor"`. GTK's equivalent is a symbolic
+    // icon: a `-symbolic`-suffixed name resolves through the IconTheme and is
+    // recoloured to the widget's CSS `color`, which is what keeps a single asset
+    // working across hover/active/accent states instead of baking one colour in.
+    //
+    // The SVGs are compiled into a GResource and embedded in the binary (same
+    // reason the chimes above are: the shipped artifact must be self-contained).
+    // A filesystem icon search path would be the other option, but it would put
+    // the assets outside the binary, so a packaging slip becomes a runtime UI
+    // defect instead of a build failure. (A missing icon at run time renders
+    // GTK's broken-image placeholder — visible, not silent; measured in
+    // src/icons.rs's module docs. Embedding is about not shipping the breakage,
+    // not about the breakage being invisible.)
+    let icon_dir = Path::new(&manifest).join("icons");
+    println!("cargo:rerun-if-changed={}", icon_dir.display());
+    let mut icons: Vec<String> = std::fs::read_dir(&icon_dir)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", icon_dir.display()))
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".svg"))
+        .collect();
+    icons.sort();
+    assert!(!icons.is_empty(), "icons/ contains no .svg assets");
+
+    // GTK looks icons up under <resource-path>/icons/<theme>/<size>/<name>.svg;
+    // `scalable/actions` is the standard location for symbolic assets.
+    let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<gresources>\n");
+    writeln!(
+        xml,
+        "  <gresource prefix=\"/dev/orchestra/gtk/icons/scalable/actions\">"
+    )
+    .unwrap();
+    for name in &icons {
+        writeln!(xml, "    <file preprocess=\"xml-stripblanks\">{name}</file>").unwrap();
+    }
+    xml.push_str("  </gresource>\n</gresources>\n");
+    let xml_path = out_dir.join("icons.gresource.xml");
+    std::fs::write(&xml_path, xml).expect("write icons.gresource.xml");
+
+    // `glib-compile-resources` ships in glib2-devel, which CI installs
+    // system-wide. The rootless dev setup (native/setup-localdeps.sh) extracts
+    // it into .localdeps/prefix instead and env.sh does not put that on PATH,
+    // so fall back to querying pkg-config for glib's own tool directory rather
+    // than requiring every developer to extend PATH by hand.
+    let gresource = out_dir.join("icons.gresource");
+    let compiler = std::env::var("GLIB_COMPILE_RESOURCES")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .or_else(|| {
+            // Ask pkg-config where glib keeps the tool. NOTE: on the rootless
+            // setup this answers `/usr/bin/glib-compile-resources` — the path
+            // the extracted RPM *would* install to — while the binary actually
+            // lives under the localdeps prefix, so the answer is checked with
+            // is_file() and both candidates are tried. Trusting the variable
+            // blindly is what made the first attempt at this fail.
+            let var = |name: &str| -> Option<String> {
+                let out = std::process::Command::new("pkg-config")
+                    .args([&format!("--variable={name}"), "gio-2.0"])
+                    .output()
+                    .ok()?;
+                Some(String::from_utf8(out.stdout).ok()?.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            };
+            let direct = var("glib_compile_resources");
+            // Both `glib_compile_resources` and `prefix` report /usr even under
+            // the rootless setup — the extracted .pc files describe where the
+            // RPM *would* install, not where it was unpacked. The only thing
+            // that actually knows the real root is PKG_CONFIG_PATH, so walk up
+            // from each entry (…/prefix/usr/lib64/pkgconfig → …/prefix/usr) and
+            // look for bin/ there.
+            let from_pc_path = std::env::var("PKG_CONFIG_PATH")
+                .unwrap_or_default()
+                .split(':')
+                .filter(|s| !s.is_empty())
+                .filter_map(|entry| {
+                    let root = Path::new(entry).parent()?.parent()?;
+                    Some(root.join("bin/glib-compile-resources"))
+                })
+                .find(|p| p.is_file())
+                .map(|p| p.to_string_lossy().into_owned());
+
+            [direct, from_pc_path]
+                .into_iter()
+                .flatten()
+                .find(|p| Path::new(p).is_file())
+        })
+        .unwrap_or_else(|| "glib-compile-resources".to_string());
+
+    let status = std::process::Command::new(&compiler)
+        .arg("--sourcedir")
+        .arg(&icon_dir)
+        .arg("--target")
+        .arg(&gresource)
+        .arg(&xml_path)
+        .status()
+        .unwrap_or_else(|e| {
+            panic!(
+                "cannot run {compiler}: {e}\n\
+                 glib-compile-resources comes from glib2-devel. If it is installed \
+                 outside PATH (the rootless .localdeps prefix), set \
+                 GLIB_COMPILE_RESOURCES to its full path."
+            )
+        });
+    assert!(status.success(), "{compiler} failed on {}", xml_path.display());
+    // Fail the build rather than let an empty/missing bundle ship: an icon that
+    // doesn't resolve draws nothing at run time, with no error to notice.
+    let compiled = std::fs::metadata(&gresource).expect("icons.gresource was produced");
+    assert!(compiled.len() > 0, "icons.gresource is empty");
+
+    // ---- 4. link libfontconfig by exact soname ----
     // `-l:libfontconfig.so.1` rather than `-lfontconfig`: the rootless localdeps
     // prefix has no `-devel` `libfontconfig.so` symlink, so the plain `-l` form
     // can't resolve. The soname is ABI-stable.

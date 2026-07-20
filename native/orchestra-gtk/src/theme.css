@@ -1465,3 +1465,378 @@ entry:focus-within {
    adopts instead of reordering, so it reads as a filled target rather than the
    insertion line `.drop-before`/`.drop-after` draw (theme.css:472). */
 .drop-onto { box-shadow: inset 0 0 0 2px @accent; }
+
+/* ==========================================================================
+   Toolbar icons + button hierarchy — ported from src/renderer/styles.css.
+   Every value below is quoted from the rule cited on its line; where GTK4
+   lacks the mechanism Electron uses (::before/::after, backdrop-filter) the
+   substitution is named. Appended as one block to stay merge-friendly.
+   ========================================================================== */
+
+/* Symbolic icons recolour to the widget's `color`, which is how a single asset
+   tracks dim/hover/accent the way Electron's currentColor does. -gtk-icon-style
+   is what forces that treatment even when an asset carries its own fills. */
+.branch-chip-icon,
+.branch-caret,
+.pr-ext,
+.restart-btn image,
+.run-toggle-btn image,
+.pane-toggle image,
+.pr-link image,
+.branch-item-icon,
+.sidebar-header-btn image,
+.repo-scripts-btn image,
+.ws-icon-btn image,
+.repo-add image,
+.archived-toggle image {
+  -gtk-icon-style: symbolic;
+}
+
+/* .branch-chip svg { opacity: 0.8 } — styles.css:1885-1888. */
+.branch-chip-icon { opacity: 0.8; }
+
+/* The accent chip is `.branch-chip.head` (styles.css:1865-1869):
+   color var(--accent) #6ea8ff, background rgba(110,168,255,0.1),
+   border-color rgba(110,168,255,0.35). The port previously used a `.current`
+   class that has NO rule in styles.css, which is why it rendered flat grey. */
+.branch-chip.head {
+  color: @accent;
+  background-color: alpha(@accent, 0.1);
+  border: 1px solid alpha(@accent, 0.35);
+}
+.branch-chip.head:hover { background-color: alpha(@accent, 0.16); }
+/* The chip owns its caret, so suppress the MenuButton's built-in arrow. */
+.branch-chip.head > widget > image.branch-caret { opacity: 0.7; }
+
+/* button.pr-link — styles.css:187-199. The one PRIMARY toolbar action:
+   translucent accent tint, NOT a solid fill (the port had it solid
+   white-on-blue). gap 7px / padding 6px 12px / font-weight 600. */
+.pr-link {
+  background-color: alpha(@accent, 0.08);
+  border: 1px solid alpha(@accent, 0.28);
+  color: @accent;
+  padding: 6px 12px;
+  font-weight: 600;
+  box-shadow: none;
+}
+/* styles.css:220-225 (transform/box-shadow lift omitted: GTK4 has no
+   `transform` on widgets — it parses in a keyframe and does nothing). */
+.pr-link:hover {
+  background-color: alpha(@accent, 0.16);
+  border-color: alpha(@accent, 0.55);
+}
+/* button.pr-link.pr-link-create.primed — styles.css:357-363. */
+.pr-link.pr-link-create.primed {
+  border-color: alpha(@accent, 0.55);
+  color: @accent;
+}
+/* button.pr-link.merged — styles.css:229-233. */
+.pr-link.merged {
+  color: #c4a8ff;
+  background-color: alpha(#b38bff, 0.08);
+  border-color: alpha(#b38bff, 0.28);
+}
+/* button.pr-link.closed — styles.css:239-243. */
+.pr-link.closed {
+  color: #ff8a8a;
+  background-color: alpha(#f08080, 0.08);
+  border-color: alpha(#f08080, 0.3);
+}
+
+/* button.restart-btn / button.run-toggle-btn — styles.css:255-268 and 276-289.
+   28x28 icon buttons, transparent with a faint white border; SECONDARY, so they
+   must recede next to .pr-link above. */
+.restart-btn,
+.run-toggle-btn {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  background-color: transparent;
+  border: 1px solid alpha(#ffffff, 0.10);
+  color: @text_dim;
+  border-radius: 6px;
+  box-shadow: none;
+}
+/* styles.css:269-274 / 290-294 (the :hover rotate is Electron-only — GTK4
+   cannot transform a widget). */
+.restart-btn:hover,
+.run-toggle-btn:hover {
+  background-color: alpha(#ffffff, 0.05);
+  border-color: alpha(#ffffff, 0.22);
+  color: @text;
+}
+/* button.run-toggle-btn.running — styles.css:295-299: green while live, and
+   red on hover (:300-304) because hovering it means "stop". */
+.run-toggle-btn.running {
+  color: #4ade80;
+  border-color: alpha(#4ade80, 0.35);
+  background-color: alpha(#4ade80, 0.08);
+}
+.run-toggle-btn.running:hover {
+  color: #f87171;
+  border-color: alpha(#f87171, 0.4);
+  background-color: alpha(#f87171, 0.1);
+}
+
+/* .pane-toggle — styles.css:2220-2250. 30x30 (not 28 — the source really does
+   differ from the two buttons above), and `active` is accent-tinted. */
+.pane-toggle {
+  min-width: 30px;
+  min-height: 30px;
+  margin-left: 4px;
+  padding: 0;
+  background-color: transparent;
+  border: 1px solid transparent;
+  color: @text_dim;
+  border-radius: 8px;
+  box-shadow: none;
+}
+.pane-toggle:hover {
+  color: @text;
+  background-color: @bg_3;
+  border-color: transparent;
+}
+.pane-toggle:checked {
+  color: @accent;
+  background-color: alpha(@accent, 0.12);
+  border-color: alpha(@accent, 0.35);
+}
+.pane-toggle:checked:hover {
+  background-color: alpha(@accent, 0.18);
+  border-color: alpha(@accent, 0.5);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * TOOLBAR ICONS + BUTTON HIERARCHY — ported from src/renderer/styles.css
+ *
+ * Appended as one block (rather than edited in place) because four sibling
+ * branches are touching this file; every rule here overrides an earlier,
+ * eyeballed one by cascade order, and each carries the styles.css line it
+ * came from so the next reader can diff against the source rather than guess.
+ *
+ * WHY THESE EXIST: the earlier rules used round numbers (`padding: 4px 6px`,
+ * `border-radius: 6px`) where Electron has specific ones (28x28 fixed boxes,
+ * 999px pills, translucent accent tints). A round number where the source has
+ * a specific value is the signature of an eyeballed port.
+ *
+ * The Electron rules these mirror are all `button.<class>` — a higher
+ * specificity than the bare `.<class>` selectors above — but GTK4 CSS has no
+ * element/tag selectors for widgets, so specificity is matched by ORDER here.
+ * Do not move this block above the rules it supersedes.
+ * ═════════════════════════════════════════════════════════════════════════ */
+
+/* --- Branch chips (styles.css:1841-1893) --------------------------------- */
+/* Electron: `border-radius: 999px` — a pill, not the 6px rounded rect the
+   port had (styles.css:1846). `padding: 3px 9px` (styles.css:1845),
+   `gap: 5px` (1844), `font-size: 12px` (1848), `font-weight: 500` (1849). */
+.branch-chip {
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid @border;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* styles.css:1861-1864 — dim text on the flat bg-3 surface. */
+.branch-chip.base {
+  color: @text_dim;
+  background-color: @bg_3;
+}
+
+/* styles.css:1865-1869. THE HEADLINE FIX: Electron's current-branch chip is
+   accent-tinted, not grey. The port applied `.branch-chip.current`, a class
+   with NO rule in styles.css (verified: zero matches), so the chip fell back
+   to a flat `@bg_4` — which is exactly what the user saw. `.head` is the real
+   upstream class; `.current` is kept as an alias so existing E2E selectors and
+   the branch popover's own `current` marker keep working. */
+.branch-chip.head,
+.branch-chip.current {
+  color: @accent;
+  background-color: alpha(@accent, 0.1);
+  border-color: alpha(@accent, 0.35);
+}
+
+/* styles.css:1872-1876 (scratch) and 1880-1884 (orchestrator). Both are
+   tint + matching border, not the border-only treatment the port had; the
+   literals are Electron's, which differ slightly from this file's @yellow /
+   @green tokens. */
+.branch-chip.scratch {
+  color: #e3b341;
+  background-color: rgba(227, 179, 65, 0.1);
+  border-color: rgba(227, 179, 65, 0.35);
+}
+.branch-chip.orchestrator {
+  color: #7ee787;
+  background-color: rgba(126, 231, 135, 0.1);
+  border-color: rgba(126, 231, 135, 0.35);
+}
+
+/* styles.css:1885-1888 — `.branch-chip svg { opacity: 0.8 }`. The icon
+   inherits the chip's `color` (that is the whole point of symbolic assets),
+   so this must NOT set a colour of its own: the port's
+   `.branch-chip-icon { color: @text_dim }` pinned every chip's icon to grey
+   and defeated the accent/scratch/orchestrator tints above. */
+.branch-chip-icon {
+  opacity: 0.8;
+}
+
+/* styles.css:1855-1859 — monospace label. */
+.branch-chip-text {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* The dropdown caret inside the branch chip (BranchPicker.tsx renders it at
+   10px after the label). Slightly dimmer than the text, like the chip icon. */
+.branch-caret {
+  opacity: 0.7;
+}
+
+/* styles.css:1889-1893 */
+.branch-arrow {
+  color: @text_dim;
+  font-size: 13px;
+}
+
+/* --- Tabs (styles.css:2136-2157) ----------------------------------------- */
+/* `padding: 4px 12px` (2141) and `border-radius: 6px` (2142) already matched.
+   What was missing is the ACTIVE tab's inset highlight + drop shadow
+   (styles.css:2156), which is what lifts the selected tab off the strip. */
+.tab {
+  border: 1px solid transparent;
+  font-weight: 500;
+}
+.tab:checked {
+  background-color: @bg_4;
+  color: @text;
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.06),
+              0 1px 2px alpha(#000000, 0.3);
+}
+
+/* --- Icon buttons: restart / run toggle (styles.css:255-304) ------------- */
+/* Electron sizes these as fixed 28x28 boxes with `padding: 0`
+   (styles.css:259-261, 280-282) — a square icon button, not the
+   `padding: 4px 6px` text-button shape the port used. The border is a faint
+   white wash (styles.css:263), not the opaque @border token. */
+.restart-btn,
+.run-toggle-btn {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid alpha(#ffffff, 0.10);
+  color: @text_dim;
+}
+/* styles.css:269-273 / 290-293 */
+.restart-btn:hover,
+.run-toggle-btn:hover {
+  background-color: alpha(#ffffff, 0.05);
+  border-color: alpha(#ffffff, 0.22);
+  color: @text;
+}
+/* styles.css:295-299 — running is GREEN... */
+.run-toggle-btn.running {
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.35);
+  background-color: rgba(74, 222, 128, 0.08);
+}
+/* ...and styles.css:300-304 — hovering a RUNNING toggle turns it RED, because
+   the click stops the script. The port had no such rule, so the destructive
+   action gave no warning on hover. */
+.run-toggle-btn.running:hover {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.4);
+  background-color: rgba(248, 113, 113, 0.1);
+}
+
+/* --- Pane toggle (styles.css:2220-2250) ---------------------------------- */
+/* 30x30 here, not 28 — Electron genuinely uses a different size for this one
+   (styles.css:2224-2225 vs :259-260). Kept distinct rather than unified. */
+.pane-toggle {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  margin-left: 4px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: @text_dim;
+}
+.pane-toggle:hover {
+  color: @text;
+  background-color: @bg_3;
+  border-color: transparent;
+}
+/* styles.css:2242-2246 — active is accent-tinted. */
+.pane-toggle:checked {
+  color: @accent;
+  background-color: alpha(@accent, 0.12);
+  border-color: alpha(@accent, 0.35);
+}
+.pane-toggle:checked:hover {
+  background-color: alpha(@accent, 0.18);
+  border-color: alpha(@accent, 0.5);
+}
+
+/* --- PR button: the one PRIMARY action (styles.css:187-253) -------------- */
+/* The port rendered `.pr-link.primary` as solid white-on-blue, which is not
+   what Electron does and is why "Open PR" and "Merge" read as the same weight
+   in the capture. Upstream it is a TRANSLUCENT accent tint with an accent
+   border and accent text (styles.css:191-193) — present enough to lead the
+   button row without shouting. `padding: 6px 12px` (194), `gap: 7px` (190),
+   `font-weight: 600` (195). */
+.pr-link {
+  padding: 6px 12px;
+  border-radius: 8px;
+  background-color: rgba(110, 168, 255, 0.08);
+  border: 1px solid rgba(110, 168, 255, 0.28);
+  color: @accent;
+  font-weight: 600;
+}
+/* styles.css:220-225. The `transform: translateY(-0.5px)` lift is NOT ported:
+   GTK4 silently accepts `transform` in a rule and does nothing with it — it
+   parses clean and is inert, so porting it would look done and change no
+   pixels. The shadow and colour shift carry the hover state instead. */
+.pr-link:hover {
+  background-color: rgba(110, 168, 255, 0.16);
+  border-color: rgba(110, 168, 255, 0.55);
+  box-shadow: 0 4px 14px rgba(74, 140, 255, 0.18);
+}
+/* `.primary` is applied by sync_pr_button for the OPEN-PR state. It must not
+   re-skin the button — upstream both states share one look and differ only by
+   the trailing arrow — so this deliberately holds the same values rather than
+   the solid fill the port had. */
+.pr-link.primary {
+  background-color: rgba(110, 168, 255, 0.08);
+  border-color: rgba(110, 168, 255, 0.28);
+  color: @accent;
+}
+/* styles.css:357-363 — the primed "you have unpushed commits" state. */
+.pr-link.pr-link-create.primed {
+  border-color: rgba(110, 168, 255, 0.5);
+  background-color: rgba(110, 168, 255, 0.14);
+}
+/* styles.css:214-215 — the ::after arrow is drawn at 0.7 opacity. */
+.pr-ext {
+  opacity: 0.7;
+}
+
+/* --- Merge button: SECONDARY, must recede (no Electron counterpart) ------ */
+/* GTK-only button (parity inventory row 23). It sat at the same visual weight
+   as the PR button, so the toolbar had two equal-looking primaries. Electron
+   has no rule to cite here; the treatment mirrors the *secondary* language of
+   the icon buttons above (transparent ground, faint white border, dim text)
+   so that hierarchy reads correctly against the accent-tinted PR button. */
+.merge-btn {
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid alpha(#ffffff, 0.10);
+  color: @text_dim;
+  font-weight: 500;
+}
+.merge-btn:hover {
+  background-color: alpha(#ffffff, 0.05);
+  border-color: alpha(@green, 0.5);
+  color: @green;
+}

@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 
 use gtk::gio;
+use gtk::prelude::*;
 use orchestra_gtk::app::{App, Init};
 
 fn main() {
@@ -38,6 +39,14 @@ fn main() {
         .application_id("dev.orchestra.gtk")
         .flags(flags)
         .build();
+
+    // Embedded icon assets, registered on `startup` for the same reason the
+    // stylesheet waits for App::init: the default IconTheme is per-display, so
+    // the resource path can only be added once a display is open. `startup`
+    // fires after GTK is initialised and before any window is built, which is
+    // the earliest safe point — every widget that names an icon is constructed
+    // later, so none can lose a race with this.
+    gtk_app.connect_startup(|_| orchestra_gtk::icons::register());
 
     // The stylesheet is loaded in App::init — set_global_css needs an open
     // display, which from_app doesn't guarantee this early.

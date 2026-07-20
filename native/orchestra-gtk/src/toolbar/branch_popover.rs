@@ -300,7 +300,10 @@ impl BranchPopoverPanel {
         self.list_scroll.set_visible(!rows.is_empty());
 
         for b in &rows {
-            let icon = gtk::Label::new(Some("⎇"));
+            // Was `⎇` U+2387 ALTERNATIVE KEY SYMBOL — a keyboard glyph. Electron
+            // renders its `BranchIcon` on every branch row (BranchPicker.tsx:155
+            // `.branch-item`), the same mark the chips now use.
+            let icon = crate::icons::image_sized(crate::icons::BRANCH, 13);
             icon.add_css_class("branch-item-icon");
             let name = gtk::Label::new(None);
             name.set_xalign(0.0);
