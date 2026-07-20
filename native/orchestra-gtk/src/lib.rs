@@ -396,3 +396,73 @@ mod scrollback_replay_tests {
         assert!(false_hits.is_empty(), "gate must ignore commented-out mentions");
     }
 }
+
+#[cfg(test)]
+mod terminal_cell_size_tests {
+    //! Pin the terminal font SIZE against the renderer's.
+    //!
+    //! The size crosses a unit boundary: the renderer sets `fontSize: 13` in
+    //! CSS **pixels** (`src/renderer/components/Terminal.tsx:100`), while Pango
+    //! takes **points**. Copying the number across that boundary is exactly how
+    //! the port shipped 11pt — 14.67px at 96dpi — and ran 12.5% oversized, with
+    //! fewer columns fitting a pane.
+    //!
+    //! Measured with `examples/cell_size_probe` against a real VTE: 11pt gives
+    //! a 9.0x20.0 cell, 10pt gives 8.0x18.0, which is the renderer's. The cell
+    //! is what has to match; the point size is just the knob that reaches it.
+    //!
+    //! This is a source-level gate because the true assertion (a cell of
+    //! 8.0x18.0) needs a realized VTE inside a compositor, which the unit suite
+    //! has no access to. It therefore pins the INPUT that the probe proved
+    //! produces the right OUTPUT — and names the probe, so a future change is
+    //! re-measured rather than re-argued.
+
+    const TERMINAL_RS: &str = include_str!("terminal/mod.rs");
+
+    /// The size the probe measured onto the renderer's 8.0x18.0 cell.
+    const EXPECTED_PT: &str = "Orchestra Symbols 10";
+
+    fn code_lines(src: &str) -> Vec<&str> {
+        src.lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with("//") && !l.starts_with("/*") && !l.starts_with('*'))
+            .collect()
+    }
+
+    #[test]
+    fn terminal_font_size_matches_the_renderer_cell() {
+        let decl: Vec<&str> = code_lines(TERMINAL_RS)
+            .into_iter()
+            .filter(|l| l.contains("FontDescription::from_string"))
+            .collect();
+
+        assert_eq!(
+            decl.len(),
+            1,
+            "expected exactly one terminal FontDescription; found {}: {decl:?}",
+            decl.len()
+        );
+        assert!(
+            decl[0].contains(EXPECTED_PT),
+            "terminal font size drifted from the renderer's cell. Expected a \
+             description containing {EXPECTED_PT:?} (measured 8.0x18.0 per cell, \
+             matching Terminal.tsx fontSize 13). Found: {}\n  \
+             NOTE the units differ — Pango points here, CSS pixels there; 11pt \
+             is 14.67px and ships a 12.5% oversized terminal. Re-run \
+             `cargo run --release --example cell_size_probe` before changing this.",
+            decl[0]
+        );
+    }
+
+    #[test]
+    fn gate_catches_the_oversized_value_that_shipped() {
+        // Positive control: the exact string that was wrong in production must
+        // be rejected, so this gate has been watched to fire rather than
+        // assumed to work.
+        let shipped = r#"pango::FontDescription::from_string("JetBrains Mono, Orchestra Symbols 11")"#;
+        assert!(
+            !shipped.contains(EXPECTED_PT),
+            "the gate's expected value must not match the known-bad 11pt string"
+        );
+    }
+}

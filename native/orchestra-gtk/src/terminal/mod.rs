@@ -23,8 +23,30 @@ pub use stack::TerminalStack;
 use gtk::gdk;
 use gtk::pango;
 
-/// JetBrains Mono at 11pt with "Orchestra Symbols" as an explicit second
+/// JetBrains Mono at 10pt with "Orchestra Symbols" as an explicit second
 /// family, mirroring the renderer's `fontFamily` list (`Terminal.tsx:106`).
+///
+/// THE SIZE IS IN PANGO POINTS, THE RENDERER'S IS IN CSS PIXELS, and copying
+/// the number across the unit boundary is what made the terminal 12.5% too
+/// large. `Terminal.tsx:100` sets `fontSize: 13` (px); the port asked for 11
+/// (pt), which at 96dpi is 14.67px. Fewer columns fit a pane, and the user
+/// reported "everything looks bigger".
+///
+/// MEASURED, not computed — the arithmetic said 9.75pt == 13px exactly, but
+/// Pango rounds, so the arithmetic was only a hypothesis
+/// (`examples/cell_size_probe`, run against a real VTE):
+///
+/// ```text
+///   font              cell w   cell h   vs Electron 8.0 x 18.0
+///   ...Symbols 11        9.0     20.0    +12.5%  +11.1%   <- was
+///   ...Symbols 10        8.0     18.0     +0.0%   +0.0%   <- is
+///   ...Symbols 9.75      8.0     18.0     +0.0%   +0.0%
+///   ...Symbols 9.5       8.0     17.0     +0.0%   -5.6%
+/// ```
+///
+/// 10 and 9.75 both land on the target cell; 10 is chosen as the value a
+/// reader can check without recomputing a rounding. Re-run the probe before
+/// changing this — the cell, not the point size, is what has to match.
 ///
 /// The second family is NOT decorative. Pango only reaches an app-registered
 /// face if something asks for it by family name: registering the subset with
@@ -41,7 +63,7 @@ use gtk::pango;
 /// slot. That is a 1px paint overflow, not a grid desync: those glyphs are
 /// width-2 in Claude's accounting too, so VTE reserving 2 cells is correct.
 pub fn terminal_font() -> pango::FontDescription {
-    pango::FontDescription::from_string("JetBrains Mono, Orchestra Symbols 11")
+    pango::FontDescription::from_string("JetBrains Mono, Orchestra Symbols 10")
 }
 
 fn rgba(hex: &str) -> gdk::RGBA {
