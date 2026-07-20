@@ -24,6 +24,7 @@ use serde_json::json;
 
 use crate::ctx::Ctx;
 use crate::dialogs;
+use crate::icons;
 use branch_popover::BranchPopoverPanel;
 
 /// Which main-pane view a tab selects — mirrors the Electron single global
@@ -83,6 +84,12 @@ pub struct Toolbar {
     run_toggle: gtk::Button,
     run_toggle_icon: gtk::Image,
     pr_btn: gtk::Button,
+    /// The PR button's text. Held separately because the button's child is a
+    /// custom icon+label+arrow box; `pr_btn.set_label()` would replace it.
+    pr_label: gtk::Label,
+    /// The trailing external-link arrow, hidden in the "create a PR" state
+    /// (Electron: `.pr-link-create::after { display: none }`, styles.css:228).
+    pr_ext: gtk::Image,
     merge_btn: gtk::Button,
     merge_pill: gtk::Revealer,
     nvim_toggle: gtk::ToggleButton,
@@ -120,7 +127,11 @@ impl Toolbar {
         orchestrator_chip.set_widget_name("branch-chip-orchestrator");
         orchestrator_chip
             .set_tooltip_text(Some("Orchestrator session — coordinates spawned agents"));
-        let orch_icon = gtk::Label::new(Some("🌿"));
+        // Was the 🌿 literal — an emoji standing in for an icon, which renders
+        // in whatever colour/weight the fallback emoji font supplies and so
+        // ignores `.branch-chip.orchestrator`'s colour entirely.
+        let orch_icon = icons::image_sized(icons::ORCHESTRATOR, 12);
+        orch_icon.add_css_class("branch-chip-icon");
         let chip_text_orchestrator = gtk::Label::new(None);
         chip_text_orchestrator.add_css_class("branch-chip-text");
         orchestrator_chip.append(&orch_icon);
@@ -132,7 +143,9 @@ impl Toolbar {
         scratch_chip.add_css_class("scratch");
         scratch_chip.set_widget_name("branch-chip-scratch");
         scratch_chip.set_tooltip_text(Some("Scratch session — not tracked by git"));
-        let scratch_icon = gtk::Label::new(Some("⚡"));
+        // Was the ⚡ literal (see the orchestrator chip above).
+        let scratch_icon = icons::image_sized(icons::ZAP, 12);
+        scratch_icon.add_css_class("branch-chip-icon");
         let chip_text_scratch = gtk::Label::new(None);
         chip_text_scratch.add_css_class("branch-chip-text");
         scratch_chip.append(&scratch_icon);
@@ -145,7 +158,10 @@ impl Toolbar {
         base_chip.add_css_class("branch-chip");
         base_chip.add_css_class("base");
         base_chip.set_widget_name("branch-chip-base");
-        let base_icon = gtk::Label::new(Some("⑃"));
+        // Was `⑃` U+2443 OCR INVERTED FORK — not a git glyph at all, merely
+        // fork-shaped in some fonts. Electron draws a real git-branch mark
+        // here (App.tsx `.branch-chip.base`), 12px like this one.
+        let base_icon = icons::image_sized(icons::BRANCH, 12);
         base_icon.add_css_class("branch-chip-icon");
         let base_chip_text = gtk::Label::new(None);
         base_chip_text.add_css_class("branch-chip-text");
@@ -162,15 +178,32 @@ impl Toolbar {
         let branch_btn = gtk::MenuButton::new();
         branch_btn.set_popover(Some(&branch_popover));
         branch_btn.add_css_class("branch-chip");
+        // `head`, not `current`. Electron's accent-tinted chip is
+        // `.branch-chip.head` (styles.css:1865-1869); `.branch-chip.current`
+        // has NO rule anywhere in styles.css (verified: 0 matches). The port
+        // was styling a class that does not exist upstream, which is why this
+        // chip rendered flat grey instead of accent-blue. `current` is kept
+        // alongside it so the remote-control E2E selectors keep resolving.
+        branch_btn.add_css_class("head");
         branch_btn.add_css_class("current");
         branch_btn.set_widget_name("branch-picker-btn");
+        // gap: 5px matches .branch-chip's `gap: 5px` (styles.css:1844).
         let branch_btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 5);
-        let branch_btn_icon = gtk::Label::new(Some("⎇"));
+        // Was `⎇` U+2387 ALTERNATIVE KEY SYMBOL — a keyboard glyph, not a git
+        // one. Same 12px branch mark as the base chip, so the two finally match.
+        let branch_btn_icon = icons::image_sized(icons::BRANCH, 12);
         branch_btn_icon.add_css_class("branch-chip-icon");
         let branch_btn_label = gtk::Label::new(None);
         branch_btn_label.add_css_class("branch-chip-text");
+        // The dropdown caret Electron draws inside the chip (BranchPicker.tsx
+        // renders a 10px chevron after the label). GTK's MenuButton would
+        // otherwise supply its own arrow outside our chip layout, so the chip
+        // owns the caret and the MenuButton's built-in one stays off.
+        let branch_btn_caret = icons::image_sized(icons::CARET_DOWN, 10);
+        branch_btn_caret.add_css_class("branch-caret");
         branch_btn_box.append(&branch_btn_icon);
         branch_btn_box.append(&branch_btn_label);
+        branch_btn_box.append(&branch_btn_caret);
         branch_btn.set_child(Some(&branch_btn_box));
 
         git_title.append(&base_chip);
@@ -229,21 +262,50 @@ impl Toolbar {
         let restart_btn = gtk::Button::new();
         restart_btn.add_css_class("restart-btn");
         restart_btn.set_widget_name("restart-btn");
-        restart_btn.set_child(Some(&gtk::Image::from_icon_name("view-refresh-symbolic")));
+        // Was the stock `view-refresh-symbolic`, whose shape is whatever the
+        // user's system icon theme supplies. Electron draws its own arc+arrow
+        // at 14px (App.tsx `.restart-btn`); this is that exact path.
+        restart_btn.set_child(Some(&icons::image_sized(icons::RESTART, 14)));
         restart_btn.set_tooltip_text(Some(
             "Restart agent (resumes via --continue, picks up MCP / settings changes)",
         ));
 
-        let run_toggle_icon = gtk::Image::from_icon_name("media-playback-start-symbolic");
+        // Electron uses a 13px play triangle / stop square (App.tsx
+        // `.run-toggle-btn`); `apply_state` swaps between icons::PLAY and
+        // icons::STOP rather than between two stock media icons.
+        let run_toggle_icon = icons::image_sized(icons::PLAY, 13);
         let run_toggle = gtk::Button::new();
         run_toggle.add_css_class("run-toggle-btn");
         run_toggle.set_widget_name("run-toggle-btn");
         run_toggle.set_child(Some(&run_toggle_icon));
 
+        // The PR button is Electron's one *primary* toolbar action: an
+        // accent-tinted pill carrying a pull-request mark, and — when it links
+        // out to a real PR — a trailing external-link arrow. Both of those are
+        // CSS mask pseudo-elements upstream (`button.pr-link::before`,
+        // styles.css:201-209, and `::after`, styles.css:210-219). GTK4 has no
+        // ::before/::after, so they must be real child widgets; the geometry is
+        // the same, lifted from those two mask URLs.
+        //
+        // `.pr-link-create` (the "ask the agent to open a PR" state) hides the
+        // arrow upstream — `::after { display: none }` (styles.css:228) —
+        // because that button submits a prompt rather than opening a URL. Here
+        // that is `pr_ext.set_visible(false)`, driven in `apply_state`.
         let pr_btn = gtk::Button::new();
         pr_btn.add_css_class("pr-link");
         pr_btn.set_widget_name("pr-btn");
-        pr_btn.set_label("Open PR");
+        // gap: 7px — styles.css:190.
+        let pr_box = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+        // 14px — the ::before mask's width/height (styles.css:203-204).
+        let pr_icon = icons::image_sized(icons::PR, 14);
+        let pr_label = gtk::Label::new(Some("Open PR"));
+        // 10px — the ::after mask's width/height (styles.css:212-213).
+        let pr_ext = icons::image_sized(icons::EXTERNAL, 10);
+        pr_ext.add_css_class("pr-ext");
+        pr_box.append(&pr_icon);
+        pr_box.append(&pr_label);
+        pr_box.append(&pr_ext);
+        pr_btn.set_child(Some(&pr_box));
 
         let merge_btn = gtk::Button::with_label("Merge");
         merge_btn.add_css_class("merge-btn");
@@ -262,9 +324,9 @@ impl Toolbar {
         let nvim_toggle = gtk::ToggleButton::new();
         nvim_toggle.add_css_class("pane-toggle");
         nvim_toggle.set_widget_name("nvim-toggle");
-        nvim_toggle.set_child(Some(&gtk::Image::from_icon_name(
-            "sidebar-show-right-symbolic",
-        )));
+        // Was the stock `sidebar-show-right-symbolic`. Electron draws a 16px
+        // panel outline with a divider (App.tsx `.pane-toggle`).
+        nvim_toggle.set_child(Some(&icons::image_sized(icons::PANE, 16)));
         nvim_toggle.set_tooltip_text(Some("Show file pane"));
 
         root.append(&restart_btn);
@@ -303,6 +365,8 @@ impl Toolbar {
             run_toggle,
             run_toggle_icon,
             pr_btn,
+            pr_label,
+            pr_ext,
             merge_btn,
             merge_pill,
             nvim_toggle,
@@ -803,48 +867,64 @@ impl Toolbar {
 
     fn sync_run_toggle(&self) {
         let live = self.state.borrow().run_live;
+        // Both arms name our own assets. They previously swapped to the stock
+        // `media-playback-*-symbolic` pair, so the button rendered our play
+        // triangle at construction and then jumped to a system-theme icon of a
+        // different shape and weight the first time the run state changed —
+        // a mismatch only visible after driving the toggle.
         if live {
-            self.run_toggle_icon
-                .set_icon_name(Some("media-playback-stop-symbolic"));
+            self.run_toggle_icon.set_icon_name(Some(icons::STOP));
             self.run_toggle.add_css_class("running");
             self.run_toggle
                 .set_tooltip_text(Some("Stop the run script"));
         } else {
-            self.run_toggle_icon
-                .set_icon_name(Some("media-playback-start-symbolic"));
+            self.run_toggle_icon.set_icon_name(Some(icons::PLAY));
             self.run_toggle.remove_css_class("running");
             self.run_toggle
                 .set_tooltip_text(Some("Run the app (run script)"));
         }
     }
 
+    /// Refresh the PR button's label, tone and trailing arrow.
+    ///
+    /// Sets `pr_label`, never `pr_btn.set_label()`: the button's child is our
+    /// own icon+label+arrow box (Electron draws those two icons as `::before`
+    /// / `::after` masks, which GTK4 cannot do), and `set_label` REPLACES the
+    /// child with a plain label — silently discarding both icons. That failure
+    /// looks like "the icons never worked" rather than "something removed
+    /// them", so it is worth the explicit note.
     fn sync_pr_button(&self) {
         let st = self.state.borrow();
         match &st.open_pr {
-            // OPEN PR → "PR #N" primary link.
+            // OPEN PR → "PR #N" primary link. This is the arm that opens a URL,
+            // so it is the only one showing the external-link arrow
+            // (styles.css:228 hides it for .pr-link-create).
             Some(pr) if pr.state == PrState::Open => {
-                self.pr_btn.set_label(&format!("PR #{}", pr.number));
+                self.pr_label.set_label(&format!("PR #{}", pr.number));
+                self.pr_ext.set_visible(true);
                 self.pr_btn.add_css_class("primary");
                 self.pr_btn.remove_css_class("pr-link-create");
                 self.pr_btn.remove_css_class("primed");
                 self.pr_btn
                     .set_tooltip_text(Some(&format!("OPEN · {}", pr.title)));
             }
-            // No open PR → prime when there are unpushed commits.
+            // No open PR → prime when there are unpushed commits. This arm
+            // submits a prompt rather than opening a URL, so no arrow.
             _ => {
                 let unpushed = st.ws.as_ref().and_then(|w| w.unpushed_ahead).unwrap_or(0);
                 let primed = unpushed > 0;
+                self.pr_ext.set_visible(false);
                 self.pr_btn.remove_css_class("primary");
                 self.pr_btn.add_css_class("pr-link-create");
                 if primed {
-                    self.pr_btn.set_label(&format!("Open PR · ↑{unpushed}"));
+                    self.pr_label.set_label(&format!("Open PR · ↑{unpushed}"));
                     self.pr_btn.add_css_class("primed");
                     self.pr_btn.set_tooltip_text(Some(&format!(
                         "{unpushed} commit{} ready to push — ask the agent to push and open a PR",
                         if unpushed == 1 { "" } else { "s" }
                     )));
                 } else {
-                    self.pr_btn.set_label("Open PR");
+                    self.pr_label.set_label("Open PR");
                     self.pr_btn.remove_css_class("primed");
                     self.pr_btn
                         .set_tooltip_text(Some("Ask the focused Claude Code agent to create a PR"));
