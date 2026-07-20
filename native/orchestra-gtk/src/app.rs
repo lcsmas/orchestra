@@ -78,6 +78,16 @@ pub enum AttachNote {
 const NO_BACKEND_BANNER: &str =
     "no backend found — start Orchestra or the daemon (retrying every 3s)";
 
+/// Default sidebar width, matching Electron's `SIDEBAR_WIDTH_DEFAULT = 340`
+/// (App.tsx:30), which feeds `grid-template-columns: <w>px 1fr` (styles.css:390,
+/// the `.app` grid). Both frontends persist a user-dragged width and fall back
+/// to this default; the port's was 280, so a first run was 60px narrower than
+/// Electron's for no reason other than the number never being ported.
+///
+/// Electron's rendered CONTENT width is 339px — the 340px track minus the
+/// `.sidebar` 1px `border-right` (styles.css:430).
+const SIDEBAR_WIDTH_DEFAULT: i32 = 340;
+
 pub struct App {
     // `Rc` (not `Box`) so the accounts controller and the Resources/Insights
     // overlays can each hold a clone for polling/streaming without a second
@@ -593,7 +603,7 @@ impl SimpleComponent for App {
                     set_orientation: gtk::Orientation::Horizontal,
                     set_widget_name: "root-paned",
                     set_vexpand: true,
-                    set_position: 280,
+                    set_position: SIDEBAR_WIDTH_DEFAULT,
                     set_shrink_start_child: false,
                     // Window resizes flex the main area only — otherwise
                     // GtkPaned rescales the position proportionally and the
@@ -726,7 +736,9 @@ impl SimpleComponent for App {
                     widgets.main_window.maximize();
                 }
             }
-            widgets.paned.set_position(st.sidebar_width.unwrap_or(280));
+            widgets
+                .paned
+                .set_position(st.sidebar_width.unwrap_or(SIDEBAR_WIDTH_DEFAULT));
         }
         {
             let sender = sender.clone();

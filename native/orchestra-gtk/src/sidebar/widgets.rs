@@ -53,6 +53,14 @@ fn label(text: &str, classes: &[&str]) -> gtk::Label {
     l
 }
 
+// NOTE (measured, do not "fix" this into max_width_chars(0)):
+// `set_max_width_chars(0)` on these labels collapses every workspace row to a
+// bare "…" — the ellipsis eats the whole name. It was tried here while chasing
+// the sidebar-width defect, on the theory that the labels' natural width set a
+// layout floor. Measurement disproved the premise: the sidebar's MINIMUM is
+// 338px, far below the 518px it was allocating, so the labels were never the
+// constraint. The real cause was a stale persisted `sidebarWidth` leaking into
+// the captures (see capture-gtk.sh's ORCHESTRA_HOME comment).
 fn ellipsized(text: &str, classes: &[&str]) -> gtk::Label {
     let l = label(text, classes);
     l.set_ellipsize(pango::EllipsizeMode::End);

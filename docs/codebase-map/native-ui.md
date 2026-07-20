@@ -160,9 +160,18 @@ with `Sidebar.tsx:1362–1385`) and route out as
 
 The CDP replacement (plan §8.4), compiled in always, activated by
 `--remote-control <sock>`. Newline-JSON over a unix socket:
-`list_widgets`/`click`/`type`/`key`/`get`/`screenshot`. Events are synthesized
-GTK-side (headless sway advertises no seat input); screenshots render offscreen
-via `WidgetPaintable → GSK render_texture` (no visible frame needed). Widget
+`list_widgets`/`click`/`type`/`key`/`get`/`measure`/`screenshot`. Events are
+synthesized GTK-side (headless sway advertises no seat input); screenshots render
+offscreen via `WidgetPaintable → GSK render_texture` (no visible frame needed).
+
+`measure` (`remote_control.rs:50`) returns `min_width`/`nat_width`/`alloc_width`
+for a named widget. Allocation alone cannot explain a layout floor — it says how
+wide a widget ENDED UP, not how narrow it would go — and a `GtkPaned` with
+`shrink_start_child(false)` clamps to the start child's MINIMUM. Reach for this
+before theorising about any width defect: it is what showed the sidebar's
+minimum was 338px while it allocated 518px, retracting a top-ranked "the header
+labels widened the sidebar" finding that two rounds of source reading had
+supported. Widget
 names: `main-window`, `sidebar-list`, `ws-row-<id>`, `status-text`,
 `backend-banner`/`backend-banner-text`, `dialog-title|body|entry|confirm|cancel`.
 Consumed by `native/e2e/` and `orchestra-gtk/scripts/smoke.sh`.

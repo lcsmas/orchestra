@@ -52,6 +52,24 @@ echo "-- headless sway up on $WD"
 
 echo "-- launching orchestra-gtk (MOCK fixture)"
 RC="$RUN/rc.sock"
+# ORCHESTRA_HOME is NOT optional, and its absence was a real measurement bug.
+#
+# orchestra-gtk persists `sidebarWidth` to $ORCHESTRA_HOME/gtk-ui-state.json and
+# restores it at startup (app.rs:729). Without this line the capture inherited
+# the DEVELOPER'S OWN ~/.orchestra — so whatever width anyone had last dragged
+# their sidebar to became the "measured" GTK width on every run.
+#
+# That is exactly what produced DESIGN-SYSTEM-AUDIT defect 3: captures showed a
+# 518px sidebar against Electron's 337px and it was attributed to the header
+# labels. A controlled A/B (same binary, same compositor, only the state file
+# differing) gave 518px with the stale file and 338px with an empty home. The
+# port's real width was always ~338px; the 179px "regression" was this leak.
+#
+# The Electron half already isolates its home for the same reason. A capture
+# that reads developer state is not reproducible, and it fails SILENTLY — the
+# number looks plausible, so it gets acted on rather than investigated.
+export ORCHESTRA_HOME="$RUN/gtk-home"
+mkdir -p "$ORCHESTRA_HOME"
 ORCHESTRA_GTK_MOCK=1 GDK_BACKEND=wayland WAYLAND_DISPLAY="$WD" \
   "$BIN" --remote-control "$RC" >"$RUN/app.log" 2>&1 &
 APP_PID=$!

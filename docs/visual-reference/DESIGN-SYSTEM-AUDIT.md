@@ -4,11 +4,19 @@
 `05c2b4f` after the icons/header merge · **Date:** 2026-07-20 · **Verdict
 basis:** rendered pixels and controlled probes, not source reading.
 
-> **Re-measurement note.** The icons/header work changed the sidebar's width
-> contributors, voiding the original 75px figure — it had been measured against
-> a sidebar that no longer exists. Defect 3 is re-derived from fresh captures at
-> `05c2b4f` (both full-window halves rebuilt and re-hashed; both hashes changed,
-> so these are genuinely new pixels). **The gap widened rather than closed.**
+> **Re-measurement note — defect 3 is RETRACTED.** Both the original +75px and
+> the re-derived +179px figures were **artifacts of the capture rig**, not the
+> port. `capture-gtk.sh` never set `ORCHESTRA_HOME`, so every GTK capture booted
+> against the developer's real `~/.orchestra` and restored whatever
+> `sidebarWidth` had last been persisted there (518). A controlled A/B — same
+> binary, same compositor, only the state file differing — gives 518px with the
+> stale file and 338px with an empty home. Both prior figures therefore measured
+> a local preference, and the "the header labels widened it" causal story never
+> held: the sidebar's own minimum was 338px throughout.
+>
+> The lesson generalises past this defect: **a capture that reads developer
+> state is not reproducible, and it fails silently in the plausible direction.**
+> Nothing errored; the number just looked like a defect and got ranked #1.
 > Every other finding below still refers to `7521d70`; those touching the
 > sidebar body should be re-derived before being acted on.
 
@@ -31,7 +39,7 @@ Ranked by user-visible impact × breadth of surfaces affected.
 |---|---|---|---|
 | 1 | **Main pane background is two token steps too dark** | Electron `(26,31,38)` = `bg-3` (±0); GTK `(11,13,16)` = `bg` (±0) | Largest surface in the app. Wrong base under every pane-hosted widget |
 | 2 | **Transitions are absent** | Electron 44 `transition` declarations; GTK **1** | Every hover/state change **snaps**. Best single explanation of "feels different" |
-| 3 | **Sidebar 179px too wide — REGRESSED at `05c2b4f`** | **Content** width 339px vs **518px**, agreed by 64/66 independent scanlines. Was 414px (+75) at `7521d70`; the header-label work added **~104px more**. Cause: all three header action buttons (`Scratch`, `Orchestrator`, `Repo`) now carry text labels on one row, plus the `Orchestra` wordmark | Worst-ranked layout defect. Displaces the origin of every main-pane measurement. Electron fits the same controls in 339px |
+| 3 | ~~**Sidebar 179px too wide**~~ — **RETRACTED: measurement artifact.** FIXED, now +1px | 337px vs **338px**, 128/128 scanlines. The 518px reading was never the port's layout: `capture-gtk.sh` did not set `ORCHESTRA_HOME`, so captures restored the **developer's own persisted `sidebarWidth: 518`** from `~/.orchestra/gtk-ui-state.json` (app.rs:729). Controlled A/B, same binary, only the state file differing: stale home → 518px, empty home → 338px. The header labels were **not** the cause — the sidebar's own minimum was 338px all along, far below what it was allocating | Fixed by isolating capture state, plus porting Electron's `SIDEBAR_WIDTH_DEFAULT = 340` (App.tsx:30) which the port had as 280 |
 | 4 | **Dialog card geometry** | Electron `width:420px` declared → 420×215; GTK unconstrained → 378×241 | GTK shrink-wraps: 42px narrower, 26px taller |
 | 5 | **Divider seam is 3px of structure where Electron has 1px** — *not* a colour defect | Electron: `x=339` `(36,42,51)` = `border`, one column. GTK: `x=414` `(27,27,27)` stock `GtkPaned` separator **+** `x=415,416` `(36,42,51)` = `border` (2px) | ⚠️ **Do not fix by recolouring.** GTK already paints the correct token; recolouring the separator yields a **3px border** — worse than the defect. Remove the `GtkPaned` separator and narrow the border to 1px |
 | 6 | **`accent_2` token wrong** | GTK `#7c6ef2` → painted `rgb(124,110,242)`; Electron `#8b7cff` → `rgb(139,124,255)`. Δ −15/−14/−13 | Use sites: `.usage-bar-fill.meter-accent-2`, `.insights-row-icon` |
@@ -50,7 +58,7 @@ Ranked by user-visible impact × breadth of surfaces affected.
 | Text tokens (`text`, `text-dim`, `accent`) | **MATCHES** | `(230,233,239)`, `(139,149,167)`, `(110,168,255)` identical both sides |
 | Sidebar background | **MATCHES** | `(18,21,26)` = `bg-2` both sides, dominant over 4754 samples |
 | Main pane background | **DIFFERS** | 100% vs 99% regional dominance (defect 1) |
-| Sidebar width | **DIFFERS (regressed)** | 339 vs 518 at `05c2b4f`; was 339 vs 414 at `7521d70` (defect 3) |
+| Sidebar width | **MATCHES** (was a rig artifact) | 337 vs 338, 128/128 scanlines, after isolating `ORCHESTRA_HOME` and porting the 340px default (defect 3) |
 | Divider — colour | **MATCHES** | GTK paints `(36,42,51)` = `border` exactly, at `x=415,416` |
 | Divider — structure | **DIFFERS** | 3px seam vs 1px (defect 5) |
 | Spacing rhythm | **MATCHES** | `Box::new(_, 8)` = `.ws-item gap:8px`; `_,5` = `.ws-pills gap:5px`; `_,8` = `.dialog-actions gap:8px` |
@@ -79,8 +87,9 @@ result from it should be read as "matching".
 - **Defect 1** puts the wrong base colour under every pane-hosted widget. Any
   agent reporting "this widget's background is slightly off" in the main pane is
   most likely seeing this one assignment error.
-- **Defect 3** displaces the x-origin of the entire main pane; any x-offset
-  measured against the window rather than the pane inherits a 75px error.
+- **Defect 3** is retracted (rig artifact, now +1px). Any earlier finding whose
+  x-offset was measured against the WINDOW rather than the pane edge inherited
+  the bogus 75/179px error and should be re-derived.
 - **Defect 2** will read as "the app feels cheap/abrupt" and will never appear as
   a static-screenshot defect, because a snapshot cannot show a missing easing.
 
