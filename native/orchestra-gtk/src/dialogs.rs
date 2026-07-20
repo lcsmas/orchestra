@@ -121,7 +121,12 @@ async fn run(parent: &gtk::Window, spec: Spec<'_>) -> Option<String> {
     win.add_css_class("orch-dialog");
     win.add_css_class(spec.tone.css_class());
 
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    // Spacing 0, NOT 8. Electron's `.dialog` declares no gap; the icon/title/
+    // detail/input separations are all child margins, and theme.css already ports
+    // `.dlg-title{margin-bottom:6px}` (:955) and `.dlg-buttons{margin-top:18px}`
+    // (:967). GTK adds box spacing ON TOP of those margins, so title->body
+    // rendered 14px instead of 6 and body->buttons 26px instead of 18.
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.add_css_class("dlg-box");
 
     // Tone chip (Electron `.dialog-icon`, styles.css:2497-2524): a circular

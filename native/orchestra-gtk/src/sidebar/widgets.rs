@@ -67,6 +67,7 @@ fn ellipsized(text: &str, classes: &[&str]) -> gtk::Label {
     l
 }
 
+
 /// Small glyph action button (the `.ws-icon-btn` strip).
 /// An icon button carrying a real icon from [`crate::icons`].
 ///
@@ -453,7 +454,10 @@ fn build_repo_header(s: &RepoHeaderSpec, sender: &Sender<Msg>) -> gtk::ListBoxRo
     collapse.set_halign(gtk::Align::Fill);
     hbox.append(&collapse);
 
-    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    // 6, not 2. `.repo-header-actions` computes to gap:6px in the running
+    // renderer (oracle; styles.css:1201). Another case where the port was
+    // TIGHTER than Electron — the trailing action cluster was cramped.
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     actions.add_css_class("repo-header-actions");
     actions.append(&pill(
         &s.count.to_string(),
@@ -836,7 +840,39 @@ fn append_pills(strip: &gtk::Box, s: &WsRowSpec, sender: &Sender<Msg>) {
 }
 
 fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
-    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    // 8, not 6. `.ws-item` computes to gap:8px in the running renderer across
+    // every variant (oracle: active / unread / merged / ws-child all 8px;
+    // styles.css:1268). This is the most-repeated row in the app, so the 2px
+    // deficit was visible on every line of the sidebar — and it is a case where
+    // the port was TIGHTER than Electron, not looser.
+    //
+    // KNOWN INTERACTION, measured and left deliberately unfixed here: this row is
+    // currently UNSHRINKABLE, so widening its gap also widens the whole sidebar.
+    // The GtkPaned has `shrink_start_child(false)` (app.rs:615), so the sidebar's
+    // width is clamped to this row's MINIMUM, and the sidebar measured 340 -> 350
+    // when this went 6 -> 8. Electron does not have that coupling: its `.ws-item`
+    // carries `min-width: 0` (oracle-measured minW=0px on all five variants), so
+    // the row shrinks below its content and the sidebar stays pinned at 340.
+    // The row's own children sum to only ~154px, so the 350 floor is NOT the sum
+    // of these gaps — it is a separate shrinkability defect that predates this
+    // change (the sidebar measured 344 before any edit in this series).
+    // Reverting to 6 would only mask it by 2px while re-introducing a confirmed
+    // spacing mismatch, so the correct value stays and the floor is reported as
+    // its own finding.
+    //
+    // Two candidate causes were TESTED AND DISPROVED, recorded so the next person
+    // does not re-run them: (1) `set_max_width_chars(1)` on the row labels, on the
+    // theory that an ellipsizing label reports its full text as a natural-width
+    // floor — measured with and without, sidebar stayed 350 BOTH ways, so it is
+    // inert here and was reverted (see also the older note above `ellipsized`,
+    // where a previous agent disproved the same theory with max_width_chars(0));
+    // (2) the always-present action buttons, on the theory that Electron's
+    // hover-reveal keeps them out of layout — but Electron hides them with
+    // `opacity` (styles.css:1770-1773), which still occupies space, so that is not
+    // the difference either. The row's named children measure ~154px total against
+    // a 350px floor, so the constraint is still UNIDENTIFIED — do not assume it is
+    // the gaps.
+    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     hbox.add_css_class("ws-item");
 
     // Tree indentation + connector for spawned children.
@@ -903,7 +939,16 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
     let body = gtk::Box::new(gtk::Orientation::Vertical, 2);
     body.add_css_class("ws-body");
     body.set_hexpand(true);
-    let name_row = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+    // 6, not 5 — and this site CANNOT fully match by construction.
+    // `.ws-name-row` computes to `gap: 4px 6px` in the running renderer (oracle;
+    // styles.css:1531-1534) — an ASYMMETRIC row/column pair. A gtk::Box carries a
+    // single spacing scalar, so only one of the two numbers is representable.
+    // 6 is the correct choice: it is the COLUMN gap, which is the one that
+    // applies here. The 4px row-gap only takes effect when Electron's
+    // `flex-wrap: wrap` moves badges to a second line, and a GtkBox cannot wrap
+    // at all — so no scalar could reproduce it. Reproducing the wrap behaviour
+    // needs a GtkFlowBox, not a different number; see the parity report.
+    let name_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     name_row.add_css_class("ws-name-row");
 
     if s.renaming {
@@ -1434,7 +1479,9 @@ fn build_archived_bar(s: &ArchivedBarSpec, sender: &Sender<Msg>) -> gtk::ListBox
 }
 
 fn build_archived_row(s: &ArchivedRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
-    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    // 8, not 6 — same `.ws-item` cascade as build_ws_row above (the archived row
+    // carries `ws-item archived`, and `.archived` adds no gap override).
+    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     hbox.add_css_class("ws-item");
     hbox.add_css_class("archived");
     hbox.set_tooltip_text(Some(&s.ws.name));

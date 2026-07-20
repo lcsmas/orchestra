@@ -445,16 +445,41 @@ list row:selected label {
 .repo-add:hover { background-color: @bg_3; color: @text; }
 .repo-scripts-btn.danger:hover { color: @red; }
 
-/* Base-branch sync pill row under an expanded repo header. */
+/* Base-branch sync row under an expanded repo header.
+   NOT a pill. Electron's `.repo-sync` (styles.css:1224-1234) is BARE TEXT on the
+   sidebar background: display:flex, gap:6px, padding:1px 14px 3px, font-size:11px,
+   color:var(--text-dim). It declares NO background, NO border and NO
+   border-radius, and its only hover state is `color: var(--text)` (styles.css:1235)
+   — a colour change, never a background.
+   The port previously painted a filled, bordered, 6px-rounded pill here, which is
+   the "base branch indicator has a weird background and borders" report. Same
+   defect class as the `.ws-login-badge` chip removed earlier in this file: a bare
+   Electron text element rendered as a chip in GTK.
+   This is a gtk::Button, so the default button chrome must be zeroed explicitly
+   or the frame comes back on its own. */
 .repo-sync {
-  background-color: @bg_3;
-  border: 1px solid @border;
-  border-radius: 6px;
-  padding: 2px 8px;
+  background: none;
+  background-color: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  outline: none;
+  padding: 1px 14px 3px;
   min-height: 0;
+  font-size: 11px;
+  color: @text_dim;
 }
-.repo-sync:hover { background-color: @bg_4; }
-.repo-sync.error { border-color: @red; }
+.repo-sync:hover {
+  background: none;
+  background-color: transparent;
+  color: @text;
+}
+/* `.repo-sync` has no border any more (see above), so the old
+   `border-color: @red` here was DEAD STYLE that could never paint. Electron's
+   error state is `color: #ff7a7a` (styles.css:1237) — a text colour, matching
+   the bare-text treatment. Verified: the rule below is the only `.repo-sync.error`
+   declaration in this file. */
+.repo-sync.error { color: #ff7a7a; }
 /* styles.css:1239 sets `font-family: var(--font-mono)` — the base-branch name
    is mono in Electron, like the branch chip beside it. */
 .repo-sync-base {
@@ -1433,7 +1458,21 @@ entry:focus-within {
 .branch-hint { color: @text_dim; font-size: 0.8em; }
 
 /* Tabs ------------------------------------------------------- */
-.toolbar-tabs { }
+/* The tab strip's INSET CONTAINER. This rule was previously empty, so the tabs
+   floated loose in the toolbar with no surround at all — the "no padding" report.
+   Electron's counterpart is `.tabs` (styles.css:2268-2275): an inline-flex pill
+   with padding:3px, background:var(--bg), a 1px border and var(--radius) = 8px.
+   NAMING: `.toolbar-tabs` does not exist in styles.css (0 occurrences) — it is
+   the port's own class, applied at toolbar/mod.rs:220-221. The name is kept
+   because the Rust sets it and the widget is looked up by it; only the missing
+   styling is ported here. Do not "correct" the anchor to `.tabs` and assume a
+   rule already covers this — nothing else in this file styles this container. */
+.toolbar-tabs {
+  padding: 3px;
+  background-color: @bg;
+  border: 1px solid @border;
+  border-radius: 8px;
+}
 .tab {
   padding: 4px 12px;
   border: none;
@@ -1928,10 +1967,15 @@ entry:focus-within {
 /* button.restart-btn / button.run-toggle-btn — styles.css:255-268 and 276-289.
    28x28 icon buttons, transparent with a faint white border; SECONDARY, so they
    must recede next to .pr-link above. */
+/* NOTE: a SECOND, near-identical `.restart-btn, .run-toggle-btn` block exists
+   later in this file (search `BORDER-BOX vs CONTENT-BOX`). GTK4 CSS has no
+   specificity ordering, so the LATER block wins and is the operative one; this
+   copy is kept in sync so the duplicate cannot silently reintroduce the 30px
+   rendering if the blocks are ever reordered or the later one removed. */
 .restart-btn,
 .run-toggle-btn {
-  min-width: 28px;
-  min-height: 28px;
+  min-width: 26px;
+  min-height: 26px;
   padding: 0;
   background-color: transparent;
   border: 1px solid alpha(#ffffff, 0.10);
@@ -2099,10 +2143,21 @@ entry:focus-within {
    (styles.css:259-261, 280-282) — a square icon button, not the
    `padding: 4px 6px` text-button shape the port used. The border is a faint
    white wash (styles.css:263), not the opaque @border token. */
+/* BORDER-BOX vs CONTENT-BOX — measured, not derived. Electron sets `width:28px`
+   under a global `* { box-sizing: border-box }` (styles.css:37), so its 28px
+   INCLUDES the 1px border. GTK4 `min-width` is a CONTENT-box minimum with the
+   border OUTSIDE it, so `min-width:28px` rendered 30px: measured on the running
+   app via the remote-control `measure` op (alloc 30.0) against the Electron
+   oracle's getBoundingClientRect (28). Subtracting the two 1px borders is what
+   makes the frontends agree — the declaration was never the problem, the box
+   model was.
+   `.pane-toggle` is deliberately NOT grouped here: Electron sizes it 30x30
+   (styles.css:2224-2225), so a shared value would fix one member and break the
+   other. Enumerate members before editing a grouped rule. */
 .restart-btn,
 .run-toggle-btn {
-  min-width: 28px;
-  min-height: 28px;
+  min-width: 26px;
+  min-height: 26px;
   padding: 0;
   border-radius: 6px;
   background: transparent;
@@ -2589,10 +2644,13 @@ button.welcome-help-btn:hover {
   padding: 0;
 }
 
-/* styles.css:471-484 — icon-only, fixed 28x28 square. */
+/* styles.css:471-484 — icon-only, fixed 28x28 square.
+   26 not 28 for the same border-box reason as `.restart-btn` above: Electron's
+   28px includes its 1px border, GTK4's min-width does not. This is the widget
+   behind the "header buttons too big" report. */
 .header-icon-btn {
-  min-width: 28px;
-  min-height: 28px;
+  min-width: 26px;
+  min-height: 26px;
   padding: 0;
   background: transparent;
   border: 1px solid transparent;

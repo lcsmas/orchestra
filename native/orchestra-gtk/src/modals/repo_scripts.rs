@@ -231,7 +231,13 @@ pub async fn open(ctx: Rc<Ctx>, repo_path: String, repo_name: String) -> bool {
     root.append(&header);
 
     // ---- body (styles.css:2726-2730 `padding:16px 22px; overflow:auto`) ---
-    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    // Spacing 0, NOT 12. Electron's `.modal-body` (styles.css:2877) declares no
+    // gap at all — inter-field separation comes entirely from
+    // `.field { margin-bottom: 12px }` (styles.css:2489), and theme.css already
+    // ports that same margin. GTK ADDS box spacing to child margins, so a 12
+    // here rendered every gap at 24px instead of 12. Double-counted, and
+    // invisible to a CSS-to-CSS diff because the value lives in Rust.
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
     body.add_css_class("modal-body");
 
     // styles.css:2731-2736 `.modal-hint`: 12px dim, 14px bottom margin, 1.5 lh.
