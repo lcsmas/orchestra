@@ -51,8 +51,24 @@ Both frontends driven to the **same seeded state at 1600×1000** and captured at
 
 **Freshness.** `check-fresh.sh` reported the committed set STALE on arrival
 (taken at an older tip; `widgets.rs` and `theme.css` had changed since). All
-captures were regenerated. ⚠️ Note `check-fresh.sh` **exits 0 even when it
-reports staleness** — its exit code is not a gate, only its text is.
+captures were regenerated.
+
+> **RETRACTED (this report's own error).** An earlier version of this section
+> claimed `check-fresh.sh` "exits 0 even when it reports staleness — its exit
+> code is not a gate". **That is false and the claim is withdrawn.** Re-tested
+> with both controls: fresh manifest → `EXIT=0` + PASSED banner; manifest
+> rewritten to an ancient commit → **`EXIT=1`** + FAILED banner (manifest
+> restored afterwards, verified clean). **The exit code IS a usable gate.**
+>
+> The false reading came from **this report's own method note 1** firing on my
+> own instrument: I ran `check-fresh.sh ... | tail -30; echo "RC=$?"`, so `RC`
+> was **`tail`'s** exit code, not the script's. The banner said FAILED and the
+> number said 0, and I believed the number.
+>
+> Worth recording rather than quietly deleting: the `$?` trap produced a
+> **plausible, specific, actionable, wrong** claim about a *safety check* —
+> the exact shape that gets acted on. Anyone scripting around "the exit code
+> is not a gate" would have skipped a real staleness check.
 
 **Build provenance.** Release build with `RC` captured on its own line, then the
 **artifact** verified rather than the exit code: `strings` on the binary
@@ -350,11 +366,32 @@ Recorded because each produced a **plausible, specific, actionable WRONG**
 result rather than an error, and all three were caught by controls rather than
 by noticing something looked off.
 
-**1. `$?` from the wrong command → a false "dependencies present".**
-`ls .localdeps 2>&1 | head -3; echo $?` printed **RC=0 while `ls` failed** —
-the code came from `head`. That is what made a missing `.localdeps` look
-present. Every subsequent check captured `RC=$?` on its own line and verified by
-**artifact presence**, never the printed code.
+**1. `$?` from the wrong command — it fired TWICE, and the second one reached
+the report.**
+
+*First:* `ls .localdeps 2>&1 | head -3; echo $?` printed **RC=0 while `ls`
+failed** — the code came from `head`. That made a missing `.localdeps` look
+present. Caught immediately, and every subsequent check captured `RC=$?` on its
+own line and verified by **artifact presence**.
+
+*Second, and worse:* `check-fresh.sh ... | tail -30; echo "RC=$?"` gave `tail`'s
+exit code, and I wrote **"check-fresh.sh exits 0 even when it reports
+staleness — its exit code is not a gate"** into this report as fact. It is
+false (see the retraction above; `EXIT=1` under a negative control). The banner
+on screen said FAILED and the number said 0 — **I believed the number over the
+text sitting directly above it.**
+
+Two lessons the first instance alone would not have taught:
+
+- **Knowing the trap did not stop me repeating it.** I documented this exact
+  failure in this same report and then shipped an instance of it. A rule you
+  can recite is not a rule you have mechanised — the durable fix is `CMD; RC=$?`
+  before any pipe, not vigilance.
+- **It produced a false claim about a *safety check*.** A wrong verdict about a
+  UI surface costs one re-measurement; a wrong verdict about the tool that
+  detects stale evidence would have had someone disable a real gate. The claim
+  was caught only because a peer **tested it with a negative control instead of
+  taking my word** — which is the behaviour that should be normal here.
 
 **2. Widget-scoped snapshots of translucent surfaces — and the parent is not
 always enough.** A widget-scoped snapshot renders a translucent surface over
