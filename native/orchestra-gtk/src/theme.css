@@ -973,6 +973,15 @@ entry:focus-within {
    into the opaque @bg_2/@bg_3 tokens they approximate — see the deviation
    note below for why the alpha still matters even without the blur.
 
+   EVIDENCE NOTE (V4 found a third CSS failure mode): a GTK rule can (a) error
+   in the parser, (b) parse AND work, or (c) PARSE SILENTLY AND DO NOTHING —
+   and (c) is indistinguishable from (b) by any parse check, so "it parsed" is
+   never evidence a property works. Every rule in this block is category (b),
+   confirmed in rendered pixels rather than by parsing: the toolbar crop
+   measures 48px tall against 44px before (Electron reference is also 48), and
+   the header uppercase/tracking is measurable as a Pango width delta
+   (orchestra 53px -> 64px, mobile-club 67px -> 73px).
+
    DEVIATION (GTK cannot express): Electron pairs this gradient with
    `backdrop-filter: blur(14px) saturate(140%)`. GTK4 CSS has no
    backdrop-filter and no equivalent — there is no way to sample and blur
