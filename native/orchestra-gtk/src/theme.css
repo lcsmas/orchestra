@@ -70,6 +70,52 @@ button.welcome-help-btn, listbox row, popover modelbutton {
               box-shadow 140ms cubic-bezier(0.3, 0.8, 0.3, 1);
 }
 
+/* Base `button` recipe (styles.css:105) — Orchestra's DEFAULT button look, the
+ * one an unclassed `<button>` gets in the renderer.
+ *
+ * The port has no bare `button` rule, so a GTK button with no orchestra class
+ * falls through to stock ADWAITA rather than to Orchestra's default — a
+ * visible difference wherever the renderer relies on the base recipe. A live
+ * sweep of all 40 buttons in the app found exactly two in that state, and
+ * both are unclassed `<button>` in the renderer (SetupBanner "View log",
+ * PromptQueueBanner "Queue"), so both should be showing the base look.
+ *
+ * Scoped to those two widgets rather than written as a blanket `button {}`:
+ * a bare element selector in GTK also hits buttons this app does not own —
+ * VTE internals, popover children, scrollbar steppers, spin buttons — where
+ * Adwaita's own styling is correct and overriding it would be a regression.
+ * The tradeoff is that a future unclassed button will silently miss this and
+ * fall through again; the general fix is a shared constructor, not CSS. */
+#setup-view-log,
+#queue-add {
+  background-image: none;
+  background-color: @bg_3;
+  color: @text;
+  border: 1px solid @border;
+  border-radius: 8px;          /* --radius */
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.1px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);   /* --shadow-sm */
+  transition: background 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              background-color 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              border-color 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              color 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              box-shadow 140ms cubic-bezier(0.3, 0.8, 0.3, 1);
+}
+/* styles.css:124 */
+#setup-view-log:hover,
+#queue-add:hover {
+  background-color: @bg_4;
+  border-color: @border_strong;
+}
+/* styles.css:133 */
+#setup-view-log:disabled,
+#queue-add:disabled {
+  opacity: 0.5;
+}
+
 /* 2 ── base chrome */
 window {
   background-color: @bg;
