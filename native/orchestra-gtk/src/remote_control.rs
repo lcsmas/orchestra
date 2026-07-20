@@ -2,7 +2,8 @@
 //! compiled in always, activated only by `--remote-control <sock-path>`.
 //!
 //! Protocol: newline-delimited JSON over a unix socket, one response line per
-//! request line. Ops: list_widgets / click / type / key / get / screenshot
+//! request line. Ops: list_widgets / click / type / key / get / measure /
+//! screenshot
 //! (see `Op`). Every meaningful widget carries a `widget_name`, and lookups
 //! walk ALL toplevels so dialogs are reachable too.
 //!
@@ -534,6 +535,12 @@ mod tests {
             Op::Get {
                 name: "main-window".into(),
                 prop: Prop::Label
+            }
+        );
+        assert_eq!(
+            parse_op(r#"{"op":"measure","name":"sidebar"}"#).unwrap(),
+            Op::Measure {
+                name: "sidebar".into()
             }
         );
         assert_eq!(
