@@ -130,7 +130,11 @@ impl InsightsSection {
             "Insights & Improvements — monthly Claude Code self-tuning",
         ));
         let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let icon = gtk::Label::new(Some("✦"));
+        // Was the ✦ literal (U+2726). The renderer draws Lucide `sparkles`
+        // here (Insights.tsx `SparkleIcon`), whose geometry the bundled
+        // orch-insights-symbolic already reproduces exactly — the asset was
+        // registered and simply unused at this call site.
+        let icon = crate::icons::image_sized(crate::icons::INSIGHTS, 14);
         icon.add_css_class("insights-row-icon");
         row_box.append(&icon);
         let title = gtk::Label::new(Some("Insights"));

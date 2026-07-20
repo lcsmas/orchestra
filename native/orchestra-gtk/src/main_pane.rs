@@ -437,6 +437,27 @@ fn build_welcome() -> (gtk::Box, WelcomeCtas) {
     ));
     tagline.add_css_class("welcome-tagline");
 
+    /// A button showing a symbolic icon followed by a text label, mirroring
+    /// the renderer's `<button><SomeIcon /> Text</button>`.
+    ///
+    /// Deliberately NOT built on `sidebar::widgets::icon_button_named`, the
+    /// existing icon-button helper: that one stamps `.ws-icon-btn` on
+    /// everything it makes, and `.ws-icon-btn` is `opacity: 0` revealed by
+    /// `.ws-row:hover`. A welcome-screen button has no `.ws-row` ancestor, so
+    /// nothing could ever reveal it and it would be permanently invisible
+    /// while still reporting visible=true and appearing in list_widgets.
+    /// That exact failure has already happened twice in this port.
+    fn icon_label_button(icon: &str, text: &str) -> gtk::Button {
+        let b = gtk::Button::new();
+        // 6px matches the renderer's `button` icon/label gap (styles.css).
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let img = crate::icons::image_sized(icon, 14);
+        row.append(&img);
+        row.append(&gtk::Label::new(Some(text)));
+        b.set_child(Some(&row));
+        b
+    }
+
     // `.empty-actions` (styles.css:2451): flex row, gap 10px, margin-top 4px.
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     actions.add_css_class("empty-actions");
@@ -444,13 +465,22 @@ fn build_welcome() -> (gtk::Box, WelcomeCtas) {
     actions.set_halign(gtk::Align::Center);
     actions.set_margin_top(4);
 
+    // App.tsx: `+ New workspace` really is a literal `+` in the renderer, so
+    // this one is a plain label. The other two are NOT — they render
+    // `<ZapIcon />` and `<OrchestratorIcon />`.
     let new_workspace = gtk::Button::with_label("+ New workspace");
     new_workspace.set_widget_name("welcome-new-workspace");
     new_workspace.add_css_class("primary");
-    let scratch = gtk::Button::with_label("⚡ Scratch session");
+
+    // Were the ⚡ / 🌿 literals. An emoji standing in for an icon renders in
+    // whatever colour and weight the fallback emoji font supplies, so it
+    // ignores the button's own `color` entirely — the same reason the
+    // orchestrator branch-chip dropped its 🌿 (toolbar/mod.rs). The assets
+    // already existed and were simply unused here.
+    let scratch = icon_label_button(crate::icons::ZAP, "Scratch session");
     scratch.set_widget_name("welcome-scratch");
     scratch.add_css_class("secondary");
-    let orchestrator = gtk::Button::with_label("🌿 Orchestrator");
+    let orchestrator = icon_label_button(crate::icons::ORCHESTRATOR, "Orchestrator");
     orchestrator.set_widget_name("welcome-orchestrator");
     orchestrator.add_css_class("secondary");
     actions.append(&new_workspace);

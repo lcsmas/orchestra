@@ -392,7 +392,12 @@ impl Sidebar {
         row.set_widget_name(&format!("env-notice-{}", item.id));
 
         // styles.css:826 `.env-notice-icon` — yellow, top-aligned to the title.
-        let icon = gtk::Label::new(Some("⚙"));
+        //
+        // Was the ⚙ literal (U+2699), which was also the WRONG SYMBOL, not just
+        // the wrong rendering: the renderer draws Lucide `info` here
+        // (components/Sidebar.tsx `SetupIcon`), deliberately "a calm heads-up,
+        // not an alarm" per its own comment. A gear reads as settings.
+        let icon = crate::icons::image_sized(crate::icons::INFO, 15);
         icon.add_css_class("env-notice-icon");
         icon.set_valign(gtk::Align::Start);
         row.append(&icon);
