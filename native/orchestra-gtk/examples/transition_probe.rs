@@ -106,6 +106,14 @@ fn probes() -> Vec<Probe> {
         Probe { name: "transform-translateY", css: "transform: translateY(20px);", prop: "transform", expect_eases: None },
         Probe { name: "transform-rotate",     css: "transform: rotate(30deg);",    prop: "transform", expect_eases: None },
         Probe { name: "transform-scale",      css: "transform: scale(1.6);",       prop: "transform", expect_eases: None },
+        // Electron writes `background` (the SHORTHAND) in 26 of its 41
+        // transition declarations, and times everything with a custom
+        // cubic-bezier. Both must be verified in GTK before the port copies
+        // them: a shorthand GTK does not accept as a transitionable property,
+        // or an easing function it rejects, would parse and do nothing —
+        // leaving the port with transitions that silently never run.
+        Probe { name: "background-SHORTHAND", css: "background: rgb(240,60,60);", prop: "background", expect_eases: None },
+        Probe { name: "cubic-bezier-easing",  css: "background-color: rgb(240,60,60);", prop: "background-color", expect_eases: Some(true) },
     ]
 }
 
@@ -231,10 +239,12 @@ async fn run_probe(win: &gtk::ApplicationWindow, target: &gtk::Box, p: &Probe) -
              border: 4px solid rgb(30,40,60);
              opacity: 1;
              border-radius: 0px;
-             transition: {} {DURATION_MS}ms linear;
+             transition: {} {DURATION_MS}ms {};
          }}
          .probe-target.active {{ {} }}",
-        p.prop, p.css
+        p.prop,
+        if p.name == "cubic-bezier-easing" { "cubic-bezier(0.3, 0.8, 0.3, 1)" } else { "linear" },
+        p.css
     );
     // `load_from_string` is gated behind the v4_12 feature; the workspace pins
     // gtk4 to v4_10, so the unconditional (deprecated-since-4.12) entry point
