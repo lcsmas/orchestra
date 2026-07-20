@@ -29,11 +29,20 @@
 #
 # The lesson generalises past this script: a mutation test whose mutation does
 # not actually alter the observable is not a weaker test, it is an INVERTED one —
-# it accuses a working instrument. So the target below is a surface measured at
-# 96.7% dominance (nearly pure fill, minimal occlusion), and the assertion
-# requires the sentinel to appear IN THE FRAME, not merely in the binary.
+# it accuses a working instrument. So the target is a real painting surface and
+# the assertion requires the sentinel to appear IN THE FRAME, not merely in the
+# binary.
 #
-# It is also a region the harness currently reports as MATCHING (Δ3, within
+#   3. Third constraint, added when the harness learned to reject uncomparable
+#      regions: the target must be COMPARABLE. `.sidebar-footer` was the target
+#      until the oracle started resolving paint provenance — it has NO
+#      background rule of its own (styles.css:1005) and inherits `.sidebar`'s
+#      gradient, so it is now correctly UNCOMPARABLE and never enters the
+#      ranking. Asserting on it would have made this proof fail for a reason
+#      unrelated to detection. The target is now `.sidebar` itself: hops=0, a
+#      real gradient rule on the element, 70.6% dominance.
+#
+# It is also a region the harness reports as MATCHING at rest (Δ3, within
 # threshold), so the test cannot pass on a pre-existing defect.
 #
 # Usage: prove-detector.sh
@@ -72,11 +81,11 @@ echo "============================================================"
 # Append an override so the injection cannot depend on matching an existing
 # rule's exact text (which would break silently when the theme is edited).
 # Appended LAST so it wins on order at equal specificity over the existing
-# `.sidebar-footer` rules (theme.css:556, 1305).
+# `.sidebar` rules.
 cat >> "$CSS" <<EOF
 
 /* ---- FAULT INJECTION (prove-detector.sh) — removed on restore ---- */
-.sidebar-footer { background-color: $SENTINEL; }
+.sidebar { background-color: $SENTINEL; }
 EOF
 
 # Verify the injection reached the FILE before building (an append that failed
@@ -180,11 +189,11 @@ if mag == 0:
 
 # GATE 1 — did the DIFF rank it and report the injected value?
 d = json.load(open("$HERE/out-dirty/diff-result.json"))
-row = next((r for r in d["rows"] if r["id"] == "sidebar-bottom"), None)
+row = next((r for r in d["rows"] if r["id"] == "sidebar-body"), None)
 if row is None:
-    print("   sidebar-bottom was not compared at all")
+    print("   sidebar-body was not compared at all")
     sys.exit(1)
-print(f"   sidebar-bottom: gtk=rgb{tuple(row['gtk'])} delta={row['delta']}")
+print(f"   sidebar-body: gtk=rgb{tuple(row['gtk'])} delta={row['delta']}")
 ok = tuple(row["gtk"]) == (255, 0, 255) and row["delta"] > d["threshold"]
 print("   DETECTOR FIRED" if ok else "   detector did NOT report the injected colour")
 sys.exit(0 if ok else 1)
@@ -219,7 +228,7 @@ set +e
 "$HERE/run-diff.sh" "$HERE/out-clean" > "$LOGDIR"/prove-clean.log 2>&1
 set -e
 
-python3 - <<PY || { echo "FAIL: sidebar-bottom did not return to matching after restore"; exit 1; }
+python3 - <<PY || { echo "FAIL: sidebar-body did not return to matching after restore"; exit 1; }
 import json, sys
 sys.path.insert(0, "$HERE")
 from framescan import read_png, count_magenta
@@ -232,11 +241,11 @@ if mag != 0:
     sys.exit(1)
 
 d = json.load(open("$HERE/out-clean/diff-result.json"))
-row = next((r for r in d["rows"] if r["id"] == "sidebar-bottom"), None)
+row = next((r for r in d["rows"] if r["id"] == "sidebar-body"), None)
 if row is None:
-    print("   sidebar-bottom missing from the clean run")
+    print("   sidebar-body missing from the clean run")
     sys.exit(1)
-print(f"   sidebar-bottom: gtk=rgb{tuple(row['gtk'])} delta={row['delta']}")
+print(f"   sidebar-body: gtk=rgb{tuple(row['gtk'])} delta={row['delta']}")
 sys.exit(0 if row["delta"] <= d["threshold"] else 1)
 PY
 echo "-- STEP 2 PASS: the same region reads clean once the defect is removed"
