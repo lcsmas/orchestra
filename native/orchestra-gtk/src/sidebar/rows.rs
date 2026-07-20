@@ -693,8 +693,14 @@ mod tests {
             .expect("repo header row");
 
         let (label, _, _) = &header.account;
-        assert_eq!(label, "work", "header must show the login label, not the id");
-        assert_ne!(label, "acc-work", "the raw account id must never reach the UI");
+        assert_eq!(
+            label, "work",
+            "header must show the login label, not the id"
+        );
+        assert_ne!(
+            label, "acc-work",
+            "the raw account id must never reach the UI"
+        );
 
         // A repo pinning NO account still renders a badge — Electron's
         // AccountUsageBadge falls through to the default login rather than

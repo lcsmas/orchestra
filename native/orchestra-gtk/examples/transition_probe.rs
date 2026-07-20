@@ -89,31 +89,81 @@ fn probes() -> Vec<Probe> {
             expect_eases: Some(false),
         },
         // --- THE PROPERTIES ELECTRON ANIMATES ---
-        Probe { name: "background-color", css: "background-color: rgb(240,60,60);", prop: "background-color", expect_eases: None },
-        Probe { name: "color",            css: "color: rgb(240,60,60);",            prop: "color", expect_eases: None },
-        Probe { name: "border-color",     css: "border-color: rgb(240,60,60);",     prop: "border-color", expect_eases: None },
-        Probe { name: "box-shadow",       css: "box-shadow: 0 0 12px rgb(240,60,60);", prop: "box-shadow", expect_eases: None },
+        Probe {
+            name: "background-color",
+            css: "background-color: rgb(240,60,60);",
+            prop: "background-color",
+            expect_eases: None,
+        },
+        Probe {
+            name: "color",
+            css: "color: rgb(240,60,60);",
+            prop: "color",
+            expect_eases: None,
+        },
+        Probe {
+            name: "border-color",
+            css: "border-color: rgb(240,60,60);",
+            prop: "border-color",
+            expect_eases: None,
+        },
+        Probe {
+            name: "box-shadow",
+            css: "box-shadow: 0 0 12px rgb(240,60,60);",
+            prop: "box-shadow",
+            expect_eases: None,
+        },
         // Electron animates `transform` 8x. A previous session found `transform`
         // inside a @keyframes block is inert in GTK4 — but a TRANSITION is a
         // different code path, so it must be measured separately rather than
         // assumed to share that verdict.
-        Probe { name: "transform",        css: "transform: translateX(40px);",      prop: "transform", expect_eases: None },
+        Probe {
+            name: "transform",
+            css: "transform: translateX(40px);",
+            prop: "transform",
+            expect_eases: None,
+        },
         // Three more transform forms. A single negative on translateX would not
         // distinguish "GTK ignores transform" from "GTK ignores THIS transform
         // function" — and Electron uses translateY/rotate/scale, not translateX,
         // so a verdict drawn from translateX alone would not even cover the
         // real usage. Large magnitudes so any effect is unmissable.
-        Probe { name: "transform-translateY", css: "transform: translateY(20px);", prop: "transform", expect_eases: None },
-        Probe { name: "transform-rotate",     css: "transform: rotate(30deg);",    prop: "transform", expect_eases: None },
-        Probe { name: "transform-scale",      css: "transform: scale(1.6);",       prop: "transform", expect_eases: None },
+        Probe {
+            name: "transform-translateY",
+            css: "transform: translateY(20px);",
+            prop: "transform",
+            expect_eases: None,
+        },
+        Probe {
+            name: "transform-rotate",
+            css: "transform: rotate(30deg);",
+            prop: "transform",
+            expect_eases: None,
+        },
+        Probe {
+            name: "transform-scale",
+            css: "transform: scale(1.6);",
+            prop: "transform",
+            expect_eases: None,
+        },
         // Electron writes `background` (the SHORTHAND) in 26 of its 41
         // transition declarations, and times everything with a custom
         // cubic-bezier. Both must be verified in GTK before the port copies
         // them: a shorthand GTK does not accept as a transitionable property,
         // or an easing function it rejects, would parse and do nothing —
         // leaving the port with transitions that silently never run.
-        Probe { name: "background-SHORTHAND", css: "background: rgb(240,60,60);", prop: "background", expect_eases: None },
-        Probe { name: "cubic-bezier-easing",  css: "background-color: rgb(240,60,60);", prop: "background-color", expect_eases: Some(true) },
+        Probe {
+            name: "background-SHORTHAND",
+            css: "background: rgb(240,60,60);",
+            prop: "background",
+            expect_eases: None,
+        },
+        Probe {
+            name: "cubic-bezier-easing",
+            css: "background-color: rgb(240,60,60);",
+            prop: "background-color",
+            expect_eases: Some(true),
+        },
     ]
 }
 
@@ -163,9 +213,12 @@ fn build(app: &gtk::Application) {
     let results = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
 
     glib::spawn_future_local(glib::clone!(
-        #[strong] win,
-        #[strong] target,
-        #[strong] results,
+        #[strong]
+        win,
+        #[strong]
+        target,
+        #[strong]
+        results,
         async move {
             // Let the window map and settle before the first probe: GTK layout
             // is deferred to the frame clock, so sampling too early yields
@@ -195,12 +248,17 @@ fn build(app: &gtk::Application) {
                 glib::timeout_future(std::time::Duration::from_millis(50)).await;
             }
             if stable < 3 {
-                println!("ABORT: target geometry never settled ({lw}x{lh}) — no verdict is trustworthy");
+                println!(
+                    "ABORT: target geometry never settled ({lw}x{lh}) — no verdict is trustworthy"
+                );
                 win.close();
                 return;
             }
-            println!("geometry settled: target {lw}x{lh}, window {}x{}\n",
-                     win.width(), win.height());
+            println!(
+                "geometry settled: target {lw}x{lh}, window {}x{}\n",
+                win.width(),
+                win.height()
+            );
 
             // Warm-up pass, result discarded. The FIRST probe absorbs the
             // window's initial resize settle, which changes the cropped
@@ -243,7 +301,11 @@ async fn run_probe(win: &gtk::ApplicationWindow, target: &gtk::Box, p: &Probe) -
          }}
          .probe-target.active {{ {} }}",
         p.prop,
-        if p.name == "cubic-bezier-easing" { "cubic-bezier(0.3, 0.8, 0.3, 1)" } else { "linear" },
+        if p.name == "cubic-bezier-easing" {
+            "cubic-bezier(0.3, 0.8, 0.3, 1)"
+        } else {
+            "linear"
+        },
         p.css
     );
     // `load_from_string` is gated behind the v4_12 feature; the workspace pins
@@ -303,10 +365,7 @@ async fn run_probe(win: &gtk::ApplicationWindow, target: &gtk::Box, p: &Probe) -
         mids.push(snapshot_region(win, target.upcast_ref(), rect));
     }
 
-    glib::timeout_future(std::time::Duration::from_millis(
-        (DURATION_MS as u64) + 250,
-    ))
-    .await;
+    glib::timeout_future(std::time::Duration::from_millis((DURATION_MS as u64) + 250)).await;
     let after = snapshot_region(win, target.upcast_ref(), rect);
 
     gtk::style_context_remove_provider_for_display(&display, &provider);
@@ -362,15 +421,17 @@ async fn run_probe(win: &gtk::ApplicationWindow, target: &gtk::Box, p: &Probe) -
             return "n/a".into();
         }
         // Region width, not window width: these buffers are cropped.
-        let w = rect.map(|(x0,_,x1,_)| x1-x0).unwrap_or(1).max(1);
+        let w = rect.map(|(x0, _, x1, _)| x1 - x0).unwrap_or(1).max(1);
         let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
         let mut count = 0usize;
         for i in (0..a.len()).step_by(4) {
             if a[i..i + 4] != b[i..i + 4] {
                 let px = (i / 4) % w;
                 let py = (i / 4) / w;
-                x0 = x0.min(px); y0 = y0.min(py);
-                x1 = x1.max(px); y1 = y1.max(py);
+                x0 = x0.min(px);
+                y0 = y0.min(py);
+                x1 = x1.max(px);
+                y1 = y1.max(py);
                 count += 1;
             }
         }
@@ -474,7 +535,9 @@ async fn run_probe(win: &gtk::ApplicationWindow, target: &gtk::Box, p: &Probe) -
 async fn await_frames(win: &gtk::ApplicationWindow, n: usize) {
     for _ in 0..n {
         let (tx, rx) = async_channel::bounded(1);
-        let Some(clock) = win.frame_clock() else { return };
+        let Some(clock) = win.frame_clock() else {
+            return;
+        };
         let id = clock.connect_after_paint(move |_| {
             let _ = tx.try_send(());
         });

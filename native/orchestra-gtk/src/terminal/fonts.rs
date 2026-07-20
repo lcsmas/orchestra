@@ -35,10 +35,22 @@ const ORCHESTRA_SYMBOLS_TTF: &[u8] = include_bytes!("../../assets/fonts/orchestr
 /// the Display optical size are omitted because no rule asks for them.
 /// SIL OFL 1.1, same terms as the symbol subset — see Inter-OFL.txt.
 const INTER_FACES: &[(&str, &[u8])] = &[
-    ("Inter-Regular.ttf", include_bytes!("../../assets/fonts/Inter-Regular.ttf")),
-    ("Inter-Medium.ttf", include_bytes!("../../assets/fonts/Inter-Medium.ttf")),
-    ("Inter-SemiBold.ttf", include_bytes!("../../assets/fonts/Inter-SemiBold.ttf")),
-    ("Inter-Bold.ttf", include_bytes!("../../assets/fonts/Inter-Bold.ttf")),
+    (
+        "Inter-Regular.ttf",
+        include_bytes!("../../assets/fonts/Inter-Regular.ttf"),
+    ),
+    (
+        "Inter-Medium.ttf",
+        include_bytes!("../../assets/fonts/Inter-Medium.ttf"),
+    ),
+    (
+        "Inter-SemiBold.ttf",
+        include_bytes!("../../assets/fonts/Inter-SemiBold.ttf"),
+    ),
+    (
+        "Inter-Bold.ttf",
+        include_bytes!("../../assets/fonts/Inter-Bold.ttf"),
+    ),
 ];
 
 unsafe extern "C" {
