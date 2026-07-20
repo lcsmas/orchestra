@@ -15,10 +15,33 @@ Line anchors reference v0.5.84+.
 
 ## 0. Definition of "1:1"
 
-Behavioral feature parity: every capability, workflow, indicator, and
-persistence behavior of the Electron app exists and behaves the same in the
-GTK app. NOT pixel identity, and NOT identical internals. Known unavoidable
-substitutions (all approved-by-plan, listed in §10):
+**REVISED 2026-07-20 (user directive): parity is now BEHAVIOURAL *and*
+VISUAL.** The original bar was behaviour-only and explicitly "NOT pixel
+identity"; the whole M1–M3 swarm was briefed against that, and the M3 audit
+judged every row on behaviour alone. The user has seen the built GTK app and
+wants it to *look* like the Electron one. So visual fidelity is now a
+first-class requirement, not a nicety.
+
+What that means concretely:
+
+- `src/renderer/styles.css` (**4322 lines**) is the visual source of truth;
+  `native/orchestra-gtk/src/theme.css` is **1109 lines** — the design tokens
+  were ported, most of the actual styling was not. That gap is the work.
+- Target: a side-by-side of the same seeded state should be hard to tell apart
+  at a glance — same spacing, weights, radii, shadows, hover/active states,
+  transitions, density, and alignment. GTK CSS cannot do everything Chromium
+  can; where it genuinely cannot, match as closely as the toolkit allows and
+  **record the deviation with its reason** rather than silently diverging.
+- **Evidence is a side-by-side screenshot**, not an assertion. "Looks right" is
+  unfalsifiable; a paired capture of the same fixture state is not. Nothing in
+  this workstream is done without one.
+
+Behavioural parity (below) remains fully in force — visual work must not
+regress it.
+
+Known unavoidable substitutions (all approved-by-plan, listed in §10) — note
+these are *implementation* substitutions and do NOT license visual difference
+in the surrounding chrome:
 
 | Electron | GTK | Consequence |
 |---|---|---|
@@ -728,6 +751,43 @@ themselves** — they receive already-forwarded frames and send intents back out
 through a sink (`Msg::Pane` → `App` calls `pty_write`/`pty_start`/…, backend
 single-owned in `App`). The backend seam is `Rc<dyn Backend>` app-wide so the
 shell can share one connection across sidebar + panes + controllers.
+
+### M4 — visual parity + defect closure (user directive, 2026-07-20)
+
+Two tracks. **V-track**: make the GTK app look like the Electron app (§0 as
+revised). **D-track**: close the known defects, foremost the reconnect wedge.
+
+**V0 — the reference capture comes first, and everything depends on it.**
+Nobody can match a target nobody has photographed. Build the Electron app, seed
+ONE fixture state, capture it in headless sway, then capture the GTK app on the
+*same* seeded state. Commit both. That pair is the baseline every later claim
+is measured against, and it is why "looks better" becomes a testable statement.
+
+- V1 sidebar chrome · V2 main pane / toolbar / diff · V3 accounts, usage bars,
+  dialogs · V4 overlays (Resources / Insights / Help) + global chrome (window,
+  footer, banners, scrollbars, focus rings).
+- Each V-agent works one surface, against the paired reference, and reports
+  with a **before/after/reference triptych** of the same fixture state.
+- Rule for all V-agents: `styles.css` is the source of truth — read the actual
+  rule, don't eyeball the screenshot. Port the *value* (padding, radius, weight,
+  shadow, transition), not an approximation of it.
+- Rule two: **do not regress behaviour.** The M3 gates stay green; a V-agent
+  that changes a widget's name breaks the E2E harnesses that assert on it, so
+  rename nothing without saying so.
+
+**D-track defects** (all already diagnosed to source):
+- **D1 reconnect wedge** — the app does not recover when the daemon moves
+  socket; confirmed on two rigs, 0% CPU, no terminator. Five-criterion gate and
+  the free banner-sequence probe are specified above; criterion 5 (the stale
+  footer) is independent and should land first.
+- **D2 harness hygiene** — internal per-scenario timeout so a hang FAILS with a
+  terminator; cleanup that outlives a SIGKILLed parent (a `trap` will not fire).
+- **D3 latent env race** — `daemon.rs:426` `ORCHESTRA_DAEMON_CMD`, same shape as
+  the flake already fixed; currently true-by-luck (one reader, one writer).
+
+Gate for M4: the V0 pair plus a per-surface triptych, all M3 behavioural gates
+still green, D1's five criteria met, and every deviation GTK genuinely cannot
+express recorded with its reason.
 
 ### M3 — parity audit
 One agent walks every ☐ in §5 against the live app pair (Electron vs GTK,
