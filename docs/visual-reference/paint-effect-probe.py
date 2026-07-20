@@ -27,6 +27,23 @@ modes (thanks to gtk4-port-verifier for the distinction):
 A run whose controls do not both behave is INVALID and its verdicts must be
 discarded, not interpreted.
 
+!! READ THIS BEFORE USING THIS PROBE TO DECLARE A RULE DEAD !!
+
+An OUTER `box-shadow` paints OUTSIDE the widget's bounds and WidgetPaintable
+CLIPS to those bounds, so a widget-scoped run reports it as no-change EVEN WHEN
+IT WORKS. Point this at theme.css unguarded and it will call every outer glow
+dead — including the working `.ws-dot.running/.waiting/.error` ones. Snapshot a
+PARENT container (or drive the app's --remote-control screenshot op) so the glow
+falls inside the captured region. The `inset` case registers normally, which is
+how you can tell the probe is otherwise healthy.
+
+And for a DEAD-RULE SWEEP specifically: give every rule you believe dead its own
+POSITIVE CONTROL in the same run. A probe that cannot detect anything reports
+EVERY rule as dead — and for this task the expected finding and the instrument
+failure produce identical output, which is the one case where a control is not
+optional. Re-derive rather than inherit: a rule someone else proved dead should
+fail your control-backed run too, and if it doesn't, say so.
+
 Usage:
   paint-effect-probe.py static   [theme.css]
   paint-effect-probe.py animated [theme.css] [css-class] [duration-ms] [frames]
