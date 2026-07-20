@@ -312,6 +312,14 @@ export interface PRsForBranch {
   latest: PRInfo | null;
   /** Count of merged PRs ever opened from this branch. */
   mergedCount: number;
+  /** Set when the `gh` query itself FAILED (gh missing, bad/expired token, rate
+   * limit, network) — carries the first stderr line for the badge tooltip.
+   * Distinguishes "we could not ask" from "we asked and there are no PRs": both
+   * yield empty `all`, and without this the PR badge silently vanishes on a
+   * broken `gh`, which reads as "no PR exists". Absent on every successful
+   * query, so a present `error` always means the other fields are unknown, not
+   * empty. */
+  error?: string;
 }
 
 /** A Linear issue confirmed to exist, resolved by querying Linear for the

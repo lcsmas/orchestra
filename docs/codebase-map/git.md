@@ -58,7 +58,15 @@ keying on just (branch, base) pinned a stale `↑N` badge across a push.
 - **`findPullRequest(repoPath, branch)`** `:543` — `gh pr list --head <branch>
   --state all --json …`, returns `PRsForBranch` (`all/open/latest/mergedCount`,
   `types.ts:212`). 20s cache; runs from repo root so PR state survives a missing
-  worktree. Misses aren't cached (retry immediately).
+  worktree. Misses aren't cached (retry immediately). On failure it returns the
+  empty result **plus `error: <first stderr line>`** (`PRsForBranch.error`): an
+  empty `all` alone is indistinguishable from "this branch has no PRs", so a
+  broken `gh` (missing binary, invalid `GITHUB_TOKEN`, rate limit) used to make
+  the PR badge silently vanish — failing in the passing direction. The Sidebar
+  renders `error` as an amber `.pr-badge.error` ("PR?") whose tooltip carries the
+  `gh` stderr line, so "could not ask" reads differently from "nothing to show".
+  Note `gh` puts its real diagnostic on **stderr** — `err.message` is only the
+  exec wrapper's "Command failed".
 - **`getReleaseState`** `:722` / **`getReleaseVersionsContaining`** `:797` — pill
   policy: the earliest published release containing the branch's *authored*
   commits (`authoredCommits` `:870`, reflog-derived) **plus** each release the
