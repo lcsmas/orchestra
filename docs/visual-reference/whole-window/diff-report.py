@@ -103,8 +103,20 @@ def main():
 
     rows = []
     unpaired = []
+    uncomparable = []
 
     for rid, e in E["regions"].items():
+        # UNCOMPARABLE REGIONS NEVER ENTER THE RANKING.
+        # If the Electron value is inherited from an ancestor, or exists only
+        # under a state rule, then a delta computed from it is meaningless in
+        # BOTH directions: it can invent a defect, and it can invent a PASS.
+        # The delta-0 case is the worse one — a confident pass is never
+        # revisited, so the error becomes permanent. Reported in its own
+        # section with the reason, never as a number.
+        if e.get("comparable") is False:
+            uncomparable.append((rid, e.get("uncomparableReasons", []),
+                                 e.get("selector"), e.get("gtkWidget")))
+            continue
         g = G["regions"].get(rid)
         if g is None:
             absent = next((a for a in G.get("absent", []) if a["id"] == rid), None)
@@ -246,15 +258,30 @@ def main():
     # ── COVERAGE, named rather than silent ──────────────────────────────────
     # An omitted surface is indistinguishable from a verified one. Every region
     # that could NOT be compared is named, with the reason.
+    if uncomparable:
+        print("\nUNCOMPARABLE — MEASURED BUT NOT DIFFED")
+        print("-" * 78)
+        print("  These are NOT passes and NOT failures. A delta computed from")
+        print("  them would be meaningless in both directions — it can invent a")
+        print("  defect, and it can invent a PASS (the worse case: a confident")
+        print("  delta-0 is never revisited, so the error becomes permanent).")
+        for rid, reasons, sel, gtk in uncomparable:
+            print(f"\n  {rid}  (electron {sel} vs gtk {gtk})")
+            for why in reasons:
+                print(f"     - {why}")
+
     print("\nCOVERAGE")
     print("-" * 78)
     total = len(E["regions"])
     print(f"  compared {len(rows)} of {total} oracle regions")
+    if uncomparable:
+        print(f"  UNCOMPARABLE ({len(uncomparable)}): "
+              f"{', '.join(r[0] for r in uncomparable)}")
     if unpaired:
         print(f"  NOT COMPARED ({len(unpaired)}) — these are UNVERIFIED, not passing:")
         for rid, why, w in unpaired:
             print(f"     - {rid:16s} {why} (gtk target: {w})")
-    else:
+    elif not uncomparable:
         print("  every oracle region was paired and compared")
 
     print("\nVERDICT")
@@ -269,14 +296,20 @@ def main():
         print(f"  all {len(rows)} compared regions within threshold {threshold}")
     if unpaired:
         print(f"  plus {len(unpaired)} region(s) UNVERIFIED (named above)")
+    if uncomparable:
+        print(f"  plus {len(uncomparable)} region(s) UNCOMPARABLE — these need a "
+              f"different instrument, not a rerun")
 
     # Machine-readable result beside the oracle, for the prove-detector gate
     # and for the sibling agents consuming the work order.
     import os
     result_path = os.path.join(os.path.dirname(os.path.abspath(epath)),
                                "diff-result.json")
-    json.dump({"rows": rows, "unpaired": unpaired, "threshold": threshold,
-               "failing": len(failing),
+    json.dump({"rows": rows, "unpaired": unpaired,
+               "uncomparable": [{"id": r[0], "reasons": r[1],
+                                 "selector": r[2], "gtkWidget": r[3]}
+                                for r in uncomparable],
+               "threshold": threshold, "failing": len(failing),
                "geometry": {"w": ew, "h": eh}},
               open(result_path, "w"), indent=2)
     print(f"\n  machine-readable result: {result_path}")

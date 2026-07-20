@@ -140,6 +140,60 @@ const viewport = await evaluate(
 console.log(`-- achieved viewport ${viewport.w}x${viewport.h} @dpr ${viewport.dpr}`);
 
 // ── Read each region from the oracle ────────────────────────────────────────
+/**
+ * Does a rule ANYWHERE in the stylesheets set a background ON THIS ELEMENT's own
+ * selector — and does the winning one come from a STATE rule (:hover, .active,
+ * :focus)?
+ *
+ * This is the difference between "the element paints this" and "the element
+ * inherits this from an ancestor", which getComputedStyle CANNOT express: it
+ * happily reports the resolved value either way. Without this distinction the
+ * harness compares an Electron ANCESTOR's fill against a GTK WIDGET's fill and
+ * calls the result a delta — and worse, the two can coincidentally agree and
+ * manufacture a PASS. A defect that produces a confident Δ0 is strictly more
+ * dangerous than one that produces a wrong number, because nothing downstream
+ * ever looks at it again.
+ *
+ * The state axis is the same class of error on a different axis: a value that
+ * only exists under :hover or .active is not comparable to a resting GTK
+ * capture. Comparing them measures the difference between two STATES and
+ * reports it as a difference between two IMPLEMENTATIONS.
+ */
+const paintProvenance = (sel) =>
+  evaluate(`(() => {
+    const el = document.querySelector(${JSON.stringify(sel)});
+    if (!el) return null;
+    const STATE_RE = /:hover|:focus|:active|\\.active|\\.selected|\\.unread|:checked/;
+    let ownRule = false, stateRule = false;
+    const matched = [];
+    for (const sheet of document.styleSheets) {
+      let rules;
+      try { rules = sheet.cssRules; } catch (e) { continue; }  // cross-origin
+      if (!rules) continue;
+      for (const rule of rules) {
+        if (!rule.selectorText || !rule.style) continue;
+        const bg = rule.style.getPropertyValue('background') ||
+                   rule.style.getPropertyValue('background-color') ||
+                   rule.style.getPropertyValue('background-image');
+        if (!bg) continue;
+        for (const part of rule.selectorText.split(',')) {
+          const s = part.trim();
+          let base = s;
+          try { if (!el.matches(s)) {
+            // A state rule will NOT match at rest; strip state to test whether
+            // it targets this element at all, then flag it as state-dependent.
+            base = s.replace(STATE_RE, '');
+            if (!base || !el.matches(base)) continue;
+            matched.push(s); stateRule = true; continue;
+          } } catch (e) { continue; }
+          matched.push(s);
+          if (STATE_RE.test(s)) stateRule = true; else ownRule = true;
+        }
+      }
+    }
+    return { ownRule, stateRule, matchedSelectors: matched.slice(0, 8) };
+  })()`);
+
 const readRegion = (sel) =>
   evaluate(`(() => {
     const el = document.querySelector(${JSON.stringify(sel)});
@@ -245,22 +299,49 @@ for (const r of REGIONS) {
     missing.push(`${r.id} (${r.sel})`);
     continue;
   }
+  const eb = await effectiveBg(r.sel);
+  const prov = await paintProvenance(r.sel);
+
+  // COMPARABILITY IS DECIDED HERE, NOT LEFT TO THE READER.
+  // A region is comparable only if the Electron value came from a rule on the
+  // ELEMENT ITSELF, at REST. Anything else is UNCOMPARABLE — reported as such
+  // rather than as a delta, because both failure directions are silent: an
+  // ancestor-resolved value can differ (false defect) or coincidentally agree
+  // (false PASS, which nobody ever revisits).
+  const reasons = [];
+  if (eb.hops > 0) {
+    reasons.push(
+      `Electron value is INHERITED from an ancestor (${eb.hops} hop(s), ` +
+      `from "${eb.from}") — no background rule on ${r.sel} itself, so this ` +
+      `compares an Electron ANCESTOR's fill against a GTK WIDGET's fill`);
+  }
+  if (prov && !prov.ownRule && prov.stateRule) {
+    reasons.push(
+      `the only background rules matching ${r.sel} are STATE rules ` +
+      `(${prov.matchedSelectors.join(', ')}) — not comparable to a resting ` +
+      `GTK capture`);
+  }
+
   out.regions[r.id] = {
     ...data,
     selector: r.sel,
     gtkWidget: r.gtk,
     surfaceClass: r.class,
-    effectiveBg: await effectiveBg(r.sel),
+    effectiveBg: eb,
+    paintProvenance: prov,
+    comparable: reasons.length === 0,
+    uncomparableReasons: reasons,
   };
-  const eb = out.regions[r.id].effectiveBg;
+
   const kind = eb.paintKind === 'gradient'
     ? `GRADIENT(${eb.gradientStops.length} stops)`
     : eb.paintKind;
+  const verdict = reasons.length ? 'UNCOMPARABLE' : 'comparable';
   console.log(
     `   ${r.id.padEnd(16)} ${String(eb.painted).padEnd(24)} a=${eb.alpha}` +
-      ` ${kind} from=${eb.from} [${r.class}]` +
-      ` ${Math.round(data.bounds.w)}x${Math.round(data.bounds.h)}`,
+      ` ${kind} from=${eb.from} hops=${eb.hops} [${r.class}] ${verdict}`,
   );
+  for (const why of reasons) console.log(`        ! ${why}`);
 }
 
 // An unmatched selector is a HARD failure. If it were skipped, the region would

@@ -64,13 +64,14 @@ are listed because each one is a live trap for anyone extending the harness:
    sentinel pixels appearing in the composited frame before it will render any
    verdict about the detector.
 
-**Known limitation, stated rather than discovered later:** `main-pane` reads
-Δ0, but its 94.4% dominance is the *terminal child's* fill, not `main-area`'s
-own. The region as sampled is dominated by an occluding child. A Δ0 here means
-"the content area's painted result matches", **not** "main-area's background
-token is correct" — those are different claims and only the first is measured.
-The M5 plan's headline `main-pane` Δ55 was measured on a different app state;
-this harness's fixture shows the terminal, and that difference is unreconciled.
+**`main-pane` is RETIRED, not reconciled.** It was reported Δ0 with a caveat
+that its 94.4% dominance is the *terminal child's* fill (`main-area` is fully
+occluded — proven: magenta injected into it produced zero on-screen pixels).
+The Electron half turned out to be wrong too: `.main` has no background rule, so
+that reference was an inherited root colour. **Both sides measured the wrong
+thing, for two different reasons.** The M5 plan's headline `main-pane` Δ55 and
+this harness's Δ0 should not be reconciled — neither is measurable as specified,
+and picking a "canonical state" for it would be picking between two artifacts.
 
 **Not covered:** every region below is a static fill or ink colour. Hover, focus,
 scroll-position, menus, animation and the transitions gap are **structurally
@@ -78,25 +79,23 @@ invisible** to this harness (§3.3 of the plan) and are not claimed as passing.
 
 ---
 
-## First ranked diff
+## Ranked diff — current
 
 1596x971, mock/seeded fixture, both halves state-matched, geometry asserted.
 
 | Region | Electron (oracle) | GTK (frame px) | Δ | share | class |
 |---|---|---|---|---|---|
-| **ws-row** | rgb(26,31,38) | rgb(18,21,26) | **12** | 82.2% | fill |
 | **toolbar** | rgb(21,24,30) | rgb(30,33,38) | **9** | 8.8% ⚠ | fill |
-| header-strip | rgb(20,23,29) | rgb(18,21,26) | 3 | 91.9% | fill |
 | sidebar-body | rgb(20,23,29) | rgb(18,21,26) | 3 | 70.6% | fill |
-| sidebar-bottom | rgb(20,23,29) | rgb(18,21,26) | 3 | 96.7% | fill |
-| main-pane | rgb(11,13,16) | rgb(11,13,16) | 0 | 94.4% | fill (see limitation) |
-| app-root | rgb(11,13,16) | rgb(11,13,16) | 0 | 75.5% | fill |
+
+**Coverage: 2 of 8 compared. 6 UNCOMPARABLE** — `header-strip`,
+`sidebar-bottom`, `main-pane`, `app-root`, `ws-row`, `ws-name`. Not passes and
+not failures; see below.
 
 **⚠ The toolbar row is UNRELIABLE as a colour claim.** Its 8.8% sample share
 means the "dominant" colour is a thin plurality, not a characterisation — the
 toolbar is mostly buttons, labels and icons, not fill. The Δ9 is reported but
-should not be acted on without a fill-only re-measurement. This is exactly the
-number the harness exists to flag rather than launder.
+should not be acted on without a fill-only re-measurement.
 
 **Electron paints the sidebar and toolbar as translucent gradients**
 (0.75–0.92 alpha, 2 stops each), composited over the app root before comparison.
@@ -104,8 +103,32 @@ A flat GTK fill can match the dominant colour and still differ across the
 region's height — reported per-row in the provenance section, since the scalar
 delta cannot express it.
 
-**Coverage: 7 of 8 oracle regions compared.** `ws-name` (ink) was not probed —
-GTK label bounds are not yet resolved. **UNVERIFIED, not passing.**
+### RETRACTED: the earlier table's top two findings were artifacts
+
+The first published table ranked **`ws-row` Δ12 as the #1 work item** and
+reported `header-strip` / `sidebar-bottom` / `main-pane` / `app-root` as
+**passing**. All four claims are withdrawn:
+
+- **`ws-row` Δ12 was a STATE artifact.** `.ws-item` has *no* resting background
+  rule — the only background rules matching it are `.ws-item:hover` and
+  `.ws-item.active`. The oracle resolved a hover/active fill and compared it to
+  a *resting* GTK row, measuring the difference between two STATES and reporting
+  it as a difference between two IMPLEMENTATIONS.
+- **Four "passes" were ancestor-resolved.** `.sidebar-header` (styles.css:522),
+  `.sidebar-footer` (1005), `.main` (1937) and `.app` (473) contain **zero
+  background declarations** — verified at source, one block each. Their values
+  were inherited, so the Δ3/Δ0 agreements were coincidences between an Electron
+  *ancestor's* fill and a GTK *widget's* fill.
+
+The second failure mode is the dangerous one: **an uncomparable region can
+manufacture a confident Δ0 PASS**, and a pass is never revisited, so the error
+becomes permanent. A wrong number gets challenged; a wrong pass does not.
+
+The harness now **rejects both cases before ranking** rather than leaving the
+reader to catch them (`comparable: false` in the oracle, an UNCOMPARABLE section
+in the report). Closing the class, not the instance — but note this shrank real
+coverage from a claimed 7/8 to an honest 2/8. **The earlier number was not
+coverage, it was six unexamined comparisons.**
 
 ---
 
@@ -128,6 +151,22 @@ remote-control harness (`Measure` answers "how wide", never "where").
 **Every number carries provenance**: dominant colour, sample share, region
 bounds, surface class (fill vs ink — the alpha risk is on fills only), and the
 instrument that produced it. Shares below 50% are flagged UNRELIABLE inline.
+
+**Comparability is decided by the harness, not by the reader.** A region is
+diffed only if the Electron value came from a rule on the **element itself**, at
+**rest**. Two things disqualify it, and `getComputedStyle` can express neither —
+it reports a resolved value identically in all cases:
+
+- **Ancestor-resolved** (`hops > 0`): the element has no background rule, so the
+  value is inherited. Diffing it compares an Electron *ancestor's* fill against a
+  GTK *widget's* fill.
+- **State-dependent**: the only matching background rules are `:hover`,
+  `.active`, `:focus` etc. Diffing it measures the gap between two *states* and
+  reports it as a gap between two *implementations*.
+
+Both are rejected before ranking, with the reason printed. This matters most in
+the direction that looks like success: an uncomparable region can **coincide**
+and produce a confident Δ0, and nothing downstream ever re-examines a pass.
 
 **Geometry is asserted, not assumed.** Both halves report achieved size and the
 diff **refuses** to compare a mismatched pair — a pair captured at different
