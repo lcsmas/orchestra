@@ -833,9 +833,19 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
     // Subtree collapse caret (pinned tree sections only).
     if s.tree.is_some() {
         if s.collapsible {
-            let caret = gtk::Button::with_label(if s.collapsed { "▸" } else { "▾" });
+            // The glyph is a `.caret` LABEL inside the button, not the button's
+            // own label — matching Sidebar.tsx:1261 (`<span class="caret">`
+            // inside `.ws-collapse`) and the repo/host collapse buttons above.
+            // As a bare button label it carried no `.caret` class, so every
+            // `.caret` rule missed it and the glyph rendered at the button's
+            // inherited size instead of the caret scale.
+            let caret = gtk::Button::new();
             caret.set_widget_name(&format!("ws-collapse-{}", s.ws.id));
             caret.add_css_class("ws-collapse");
+            caret.set_child(Some(&label(
+                if s.collapsed { "▸" } else { "▾" },
+                &["caret"],
+            )));
             caret.set_tooltip_text(Some(&if s.collapsed {
                 format!(
                     "Show {} spawned agent{}",

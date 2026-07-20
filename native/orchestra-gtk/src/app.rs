@@ -708,6 +708,14 @@ impl SimpleComponent for App {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        // BEFORE the stylesheet: `theme.css` names Inter, and a font-family
+        // that resolves before its face is registered falls back permanently
+        // for the widgets already styled. This call was previously absent
+        // entirely — `load_app_fonts` was defined and re-exported but never
+        // invoked, so the bundled terminal symbol subset was never registered
+        // either (its status glyphs had been silently falling back to the
+        // proportional system face the subset exists to avoid).
+        crate::terminal::load_app_fonts();
         relm4::set_global_css(include_str!("theme.css"));
         if let Some(settings) = gtk::Settings::default() {
             settings.set_gtk_application_prefer_dark_theme(true);

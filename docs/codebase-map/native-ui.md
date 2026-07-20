@@ -176,6 +176,31 @@ names: `main-window`, `sidebar-list`, `ws-row-<id>`, `status-text`,
 `backend-banner`/`backend-banner-text`, `dialog-title|body|entry|confirm|cancel`.
 Consumed by `native/e2e/` and `orchestra-gtk/scripts/smoke.sh`.
 
+`get {prop: "font"}` reports the type Pango resolved for a widget AFTER the
+cascade: family, `size_px`, weight, style, plus **`resolved_family`** — the face
+that will actually be shaped, loaded through the context's font map. That last
+field is the point: `family` echoes the declared stack, so a widget can report
+`"Inter,…"` while rendering Adwaita Sans. Reading `theme.css` cannot answer the
+question at all, because a family can be outranked, silently substituted by
+fontconfig, or (the case that bit the port) never declared, leaving the widget
+on the `gtk-font-name` SETTING, which appears in no stylesheet. `size_px` is
+device px when `size_is_absolute` is true, which GTK CSS px always produces.
+Letter-spacing is deliberately absent — it lives on Pango attributes with no
+widget-level getter, so any value would be a constant 0 that reads as "no
+tracking set". Used by `docs/visual-reference/measure-type-gtk.{sh,py}`; the
+Electron counterpart reads `getComputedStyle` over CDP. See
+`docs/visual-reference/T2-TYPE-SCALE.md`.
+
+**Fonts are registered at startup**, not inherited from the system:
+`terminal/fonts.rs` adds the embedded faces to fontconfig's application set via
+`FcConfigAppFontAddFile` — the Orchestra Symbols terminal subset and the four
+Inter weights (400/500/600/700, SIL OFL) the UI is styled in. `app.rs` calls
+`load_app_fonts()` **before** `set_global_css`, because a `font-family` that
+resolves before its face is registered falls back permanently for the widgets
+already styled. Inter is bundled rather than depended on: the Electron renderer
+pulls it from Google Fonts at runtime, so it is not a system font on the
+machines this port targets.
+
 ## Re-parenting surface (promote / demote / attach)
 
 The sidebar was read-only on tree shape — it *rendered* orchestrator trees but
