@@ -785,9 +785,41 @@ is measured against, and it is why "looks better" becomes a testable statement.
 - **D3 latent env race** — `daemon.rs:426` `ORCHESTRA_DAEMON_CMD`, same shape as
   the flake already fixed; currently true-by-luck (one reader, one writer).
 
-Gate for M4: the V0 pair plus a per-surface triptych, all M3 behavioural gates
-still green, D1's five criteria met, and every deviation GTK genuinely cannot
-express recorded with its reason.
+**The visual acceptance gate** (from the verifier — visual claims are the least
+falsifiable thing in this project, so the standard is fixed BEFORE any claim is
+made, and V-agents are briefed against it so it shapes how they capture, not
+just how they report):
+
+1. **Triptych on the same seeded state** (before / after / reference) — and the
+   reviewer **verifies the state matches rather than trusting the labels**:
+   same fixture, same selected workspace, same tab, same window size, compared
+   via the invariant parts of the frame (sidebar row set, toolbar labels,
+   footer text). *A mismatched-state triptych is the visual analogue of a stale
+   binary — convincing and worthless*, and it fails in the direction of looking
+   rigorous.
+2. **The reviewer captures its own reference** from the same seed rather than
+   only reading `docs/visual-reference/`. The moment a yardstick lives in the
+   repo it can go stale or be mis-seeded and nobody re-derives it; a
+   disagreement with the committed pair is itself a finding, ahead of any
+   styling judgement.
+3. **Values, not approximations.** Where a claim cites a CSS rule, diff the
+   values three ways: the `styles.css` rule, the `theme.css` rule, and what the
+   widget actually renders. The tell for eyeballing is a round number where the
+   source has a specific one.
+4. **Widget names diffed BEFORE the drives are re-run.** A V-agent that renames
+   a widget while restyling breaks the E2E drives that assert on it, and the
+   red drive looks exactly like a behavioural regression. Check
+   `set_widget_name` across the branch first so a rename is a scope question,
+   not a false defect. Then re-run the sidebar drives + the composed run-tab
+   gate, after a **fresh rebuild** (both stale-binary incidents happened on
+   drives that exec the binary).
+5. **"Did this branch touch ONLY styling?"** asked per branch — a visual branch
+   that quietly edits behaviour is the best hiding place for a regression in
+   this milestone, and it is cheap to ask.
+
+Gate for M4: the V0 pair plus a per-surface triptych meeting the five criteria
+above, all M3 behavioural gates still green, D1's five criteria met, and every
+deviation GTK genuinely cannot express recorded with its reason.
 
 ### M3 — parity audit
 One agent walks every ☐ in §5 against the live app pair (Electron vs GTK,
