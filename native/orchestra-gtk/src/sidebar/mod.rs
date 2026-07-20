@@ -891,6 +891,12 @@ impl Component for Sidebar {
         new_box.append(&plus);
         new_box.append(&gtk::Label::new(Some("New")));
         new_btn.set_child(Some(&new_box));
+        // Electron's trigger is a plain <button> with just "+" and "New"; a
+        // GtkMenuButton adds its own dropdown indicator, rendering "+ New ▾".
+        // Suppress it at the widget rather than relying on CSS alone — the
+        // arrow is an internal child, so styling it is version-dependent while
+        // this property is the documented control.
+        new_btn.set_always_show_arrow(false);
 
         let new_popover = gtk::Popover::new();
         new_popover.set_widget_name("new-menu-popover");

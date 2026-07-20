@@ -1371,17 +1371,33 @@ entry:focus-within {
 }
 
 /* Branch chips ------------------------------------------------ */
+/* styles.css:1981-1993. Five divergences, the radius being the visible one:
+   Electron's chip is a PILL (999px), not a 6px rounded rect. Note the port
+   had `font-size: 0.9em` — a relative size an absolute px-to-px audit cannot
+   compare at all, which is how it survived the type-scale sweep. */
 .branch-chip {
-  padding: 3px 8px;
-  border-radius: 6px;
-  border: 1px solid @border_strong;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid @border;
   background-color: @bg_3;
   color: @text;
-  font-size: 0.9em;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 12px;
+  font-weight: 500;
 }
 .branch-chip.base { background-color: @bg_3; color: @text_dim; }
-.branch-chip.current { background-color: @bg_4; }
-.branch-chip.current:hover { border-color: @accent; }
+/* Electron calls this `.head` (styles.css:2005) and gives it accent text on a
+   tinted accent wash — the port had only a flat @bg_4, losing the colour that
+   marks which branch you are ON. Both class names are kept so the widget can
+   emit either without silently falling back to the base look. */
+.branch-chip.current,
+.branch-chip.head {
+  color: @accent;
+  background-color: alpha(@accent, 0.1);
+  border-color: alpha(@accent, 0.35);
+}
+.branch-chip.current:hover,
+.branch-chip.head:hover { border-color: @accent; }
 .branch-chip.orchestrator { border-color: @green; color: @green; }
 .branch-chip.scratch { border-color: @yellow; color: @yellow; }
 .branch-chip-icon { color: @text_dim; }
@@ -2622,6 +2638,24 @@ button.welcome-help-btn:hover {
 .new-menu-plus {
   font-size: 14px;
   font-weight: 600;
+}
+/* Electron's trigger is a plain <button> whose only children are the "+" span
+   and the "New" label (Sidebar.tsx). GtkMenuButton additionally paints its own
+   dropdown indicator inside the button, so the port renders "+ New ▾" against
+   Electron's "+ New" — the widest visible difference on this control, and one
+   invisible to a CSS-value diff because the extra node has no counterpart to
+   compare against. Hide it rather than swapping the widget: MenuButton carries
+   the popover wiring, keyboard activation and a11y role we would otherwise
+   hand-roll on a plain Button. */
+.new-menu-btn > arrow,
+.new-menu-btn arrow.down,
+.new-menu-btn > image.arrow {
+  -gtk-icon-source: none;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
 }
 
 /* styles.css:573-587. GtkPopover paints its own background/border on the
