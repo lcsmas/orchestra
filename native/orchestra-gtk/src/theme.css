@@ -1645,8 +1645,14 @@ entry:focus-within {
    accounts::logic) and markup beats CSS colour, so a colour rule here would be
    dead style that merely looks load-bearing. The chip geometry is what CSS owns;
    text colour stays with the existing login-colour logic (untouched, per brief). */
+/* 10px, NOT the 10.5px on Electron's bare `.account-badge`. Every renderer
+   call site emits `account-badge inline` (AccountBadge.tsx:308-386, all 5),
+   and `.account-badge.inline` (styles.css) sets font-size: 10px at higher
+   specificity — so the bare rule's 10.5px is dead style that never governs.
+   The padding/background/border below are that same inline variant, which is
+   why this rule models `.inline` rather than the bare class. */
 .account-badge {
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 500;
   padding: 0;
   background: none;
