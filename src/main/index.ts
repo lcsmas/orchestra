@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { shellEnvSync } from 'shell-env';
