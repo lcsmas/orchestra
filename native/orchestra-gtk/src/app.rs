@@ -120,6 +120,11 @@ pub struct App {
     attach_in_flight: bool,
     /// Backend refused on protocol version — retrying cannot heal it.
     proto_refused: bool,
+    /// Is the attached backend actually REACHABLE right now? Distinct from
+    /// `backend.is_some()`: during a reconnect the handle stays (the client owns
+    /// the retry and its streams get reused) while nothing works. Display must
+    /// key on this, never on handle presence — see [`footer_text`].
+    backend_live: bool,
     /// What the backend said in helloOk (footer + version comparisons).
     server_info: Option<ServerInfo>,
     /// Pid of a daemon WE spawned this session, shared with the close handler
@@ -257,13 +262,37 @@ fn make_backend() -> Option<Rc<dyn Backend>> {
     None
 }
 
-fn footer_text(backend: &Option<Rc<dyn Backend>>) -> String {
+/// Status-strip text.
+///
+/// `live` is the CONNECTION state, not merely whether a backend handle exists.
+/// They diverge during a reconnect: the client owns the retry, so `self.backend`
+/// stays `Some` (its streams and state are about to be reused) and only
+/// `Disconnected` clears it — but nothing works meanwhile. Reporting on handle
+/// presence alone made the footer claim "backend: daemon v0.5.84" while the
+/// banner said "connecting…", which is the one thing a status strip must never
+/// do (M4 D1a; gate criterion 5).
+///
+/// KNOWN BOUNDARY — presence≠reachability is a LATENT CLASS, not just this
+/// function. The `Reconnecting` arm clears no handles at all, so during a
+/// reconnect `self.backend`, `Ctx`'s backend (`ctx.set_backend`), the sidebar's
+/// own `backend` (`sidebar/mod.rs`), and the accounts controller are all still
+/// `Some` — every surface keyed on backend-PRESENCE is optimistic in that
+/// window. Only the footer is fixed here, deliberately: it is the user-visible
+/// liar, and clearing the handles instead would tear down state the reconnect
+/// is about to reuse. Anything else that starts *claiming* liveness should take
+/// the connection state the same way rather than infer it from `is_some()`.
+fn footer_text(backend: &Option<Rc<dyn Backend>>, live: bool) -> String {
     // Version lockstep (plan §9): the PRODUCT version, not the crate's own.
     let frontend = crate::app_version();
     match backend {
         Some(b) => match b.kind() {
             BackendKind::Mock => {
                 format!("backend: mock v{} · frontend v{frontend}", b.version())
+            }
+            // A handle we can't currently reach is reported as reconnecting, NOT
+            // as the backend it used to be talking to.
+            BackendKind::Rpc if !live => {
+                format!("backend: reconnecting… · frontend v{frontend}")
             }
             BackendKind::Rpc => {
                 let remote = match b.server_kind() {
@@ -857,7 +886,9 @@ impl SimpleComponent for App {
             });
         }
 
-        widgets.footer_label.set_label(&footer_text(&backend));
+        // At init the only synchronous backend is the mock, which is always
+        // reachable; a real one attaches later via the attach flow.
+        widgets.footer_label.set_label(&footer_text(&backend, true));
 
         // Mount the real sidebar INTO the sidebar_host box (a child of the
         // paned start child, which also holds the accounts footer below it —
@@ -985,7 +1016,7 @@ impl SimpleComponent for App {
         if let Some(ws) = &initial {
             open_terminal(&mut terminals, &main_pane, &ctx, ws);
         }
-        widgets.footer_label.set_label(&footer_text(&backend));
+        widgets.footer_label.set_label(&footer_text(&backend, true));
 
         let model = App {
             backend,
@@ -1003,6 +1034,9 @@ impl SimpleComponent for App {
             retry_active,
             attach_in_flight,
             proto_refused: false,
+            // A mock backend (the only synchronous one) is reachable by
+            // construction; a real one flips this on its first Connected.
+            backend_live: true,
             server_info: None,
             spawned_pid,
             window: widgets.main_window.clone(),
@@ -1067,6 +1101,7 @@ impl SimpleComponent for App {
             }
             Msg::Connection(state) => match state {
                 ConnectionState::Connected => {
+                    self.backend_live = true;
                     self.banner.set_reveal_child(false);
                     // Reconnects re-handshake: re-hydrate the sidebar snapshot
                     // (server info for the footer, missed workspace updates).
@@ -1079,9 +1114,18 @@ impl SimpleComponent for App {
                     self.reselect_active();
                     // Missed self-tune transitions while disconnected.
                     self.refresh_insights_section();
-                    self.footer_label.set_label(&footer_text(&self.backend));
+                    self.footer_label
+                        .set_label(&footer_text(&self.backend, self.backend_live));
                 }
                 ConnectionState::Reconnecting { attempt, delay_ms } => {
+                    // The handle survives a reconnect (the client is retrying and
+                    // will reuse its streams), but the backend is NOT reachable —
+                    // so the footer must stop claiming it is. Without this the UI
+                    // contradicts itself: "backend: daemon v0.5.84" in the footer
+                    // while the banner says connecting (M4 D1a).
+                    self.backend_live = false;
+                    self.footer_label
+                        .set_label(&footer_text(&self.backend, self.backend_live));
                     self.banner_label.set_label(&format!(
                         "backend connection lost — reconnecting (attempt {}, next try in {}s)",
                         attempt + 1,
@@ -1102,7 +1146,11 @@ impl SimpleComponent for App {
                     }
                     self.banner_label.set_label(NO_BACKEND_BANNER);
                     self.banner.set_reveal_child(true);
-                    self.footer_label.set_label(&footer_text(&self.backend));
+                    // backend is None here, so `live` is moot — pass the flag
+                    // anyway so every call site reads uniformly.
+                    self.backend_live = false;
+                    self.footer_label
+                        .set_label(&footer_text(&self.backend, self.backend_live));
                     Self::start_retry_loop(&self.retry_active, &sender);
                 }
             },
@@ -1296,7 +1344,10 @@ impl App {
                 // snapshot. App owns the events() pump and forwards frames.
                 self.sidebar
                     .emit(crate::sidebar::Msg::Attach(backend.clone()));
-                self.footer_label.set_label(&footer_text(&self.backend));
+                // The probe just handshook this socket, so it is reachable.
+                self.backend_live = true;
+                self.footer_label
+                    .set_label(&footer_text(&self.backend, self.backend_live));
                 self.reselect_active();
                 // Startup dependency check (parity with the Electron app's
                 // checkDependencies at src/main/index.ts): the backend is the
