@@ -298,6 +298,13 @@ export class RemoteControl {
   get(name, prop) {
     return this.send({ op: 'get', name, prop });
   }
+  /** Read (to omitted) or set the vertical scroll offset of the ScrolledWindow
+   * containing `name`. Returns {value, upper, page_size} — check `upper` before
+   * trusting a 0, since "scrolled to top" and "nothing to scroll" look the
+   * same in `value` alone. */
+  scroll(name, to) {
+    return this.send(to === undefined ? { op: 'scroll', name } : { op: 'scroll', name, to });
+  }
   screenshot(pathOut, name) {
     return this.send(name ? { op: 'screenshot', path: pathOut, name } : { op: 'screenshot', path: pathOut });
   }

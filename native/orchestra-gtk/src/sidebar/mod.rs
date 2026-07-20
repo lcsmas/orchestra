@@ -238,6 +238,20 @@ pub struct Sidebar {
     selecting: Rc<Cell<bool>>,
     // Widgets.
     list: gtk::ListBox,
+    /// The row list's vertical scroll adjustment, held so `rebuild` can put the
+    /// scroll offset back after re-applying the selection — GtkListBox scrolls
+    /// the selected row into view, which moves the viewport out from under the
+    /// user. Electron never scrolls this list programmatically, so the offset
+    /// must survive a rebuild unchanged (bar a clamp when the list gets
+    /// shorter). See the restore in `rebuild`.
+    vadj: gtk::Adjustment,
+    /// The offset the USER last scrolled to, which is not the same as the
+    /// adjustment's current value: collapsing a section shortens the list and
+    /// GTK clamps the value down, so reading `vadj` at the next rebuild would
+    /// treat the clamped position as the intent and never scroll back when the
+    /// section expands again. Updated only from real scroll activity, so a
+    /// clamp cannot overwrite it.
+    scroll_intent: Rc<Cell<f64>>,
     notices_box: gtk::Box,
     row_cache: HashMap<String, RowWidget>,
     window: gtk::Window,
@@ -319,6 +333,12 @@ impl Sidebar {
         let ui = self.ui();
         let rows = compute_rows(&self.data, &ui);
 
+        // Where the user last scrolled to — NOT `vadj.value()`, which may have
+        // been clamped down by an earlier collapse. Using the clamped value
+        // would make the position stick at the shorter list's bottom and never
+        // come back when the section expands again.
+        let scroll_to = self.scroll_intent.get();
+
         // Detach every current child (we re-append in order below; reused
         // widgets are re-parented, fresh ones built).
         while let Some(row) = self.list.row_at_index(0) {
@@ -346,12 +366,77 @@ impl Sidebar {
         self.row_cache = next;
 
         // Restore the visible selection without re-entering Select.
+        //
+        // `select_row` makes GtkListBox scroll the selected row into view. The
+        // Electron sidebar never scrolls the list programmatically — there is
+        // no `scrollIntoView`/`scrollTop` anywhere in `src/renderer` outside
+        // BranchPicker's dropdown keyboard nav — so the viewport must stay put
+        // whatever the selection does. Skipping the call when the selection is
+        // unchanged removes the gratuitous case; the offset restore below
+        // covers the rest, including a deliberate click on an off-screen row.
         self.selecting.set(true);
+        let current = self.list.selected_row();
         match &selected_row {
-            Some(row) => self.list.select_row(Some(row)),
-            None => self.list.unselect_all(),
+            Some(row) => {
+                if current.as_ref() != Some(row) {
+                    self.list.select_row(Some(row));
+                }
+            }
+            None => {
+                if current.is_some() {
+                    self.list.unselect_all();
+                }
+            }
         }
         self.selecting.set(false);
+
+        // Put the scroll offset back, because `select_row` above just moved it:
+        // GtkListBox scrolls the selected row into view, so a rebuild while the
+        // selected row is off-screen yanks the viewport to it. That is the
+        // "list jumps to the beginning" the user reported — measured at
+        // 335px -> 0 on selecting the first row, with the adjustment's upper
+        // bound UNCHANGED, which is what distinguishes it from a legitimate
+        // clamp. Rebuilds are frequent (status events, snapshot refreshes), so
+        // this was not specific to collapsing.
+        //
+        // Emptying and refilling the ListBox does NOT by itself lose the offset
+        // — that hypothesis was tested and disproved: with this restore
+        // disabled, a collapse moves 335 -> 179 purely as GTK clamping to the
+        // now-shorter list, and never reaches 0.
+        //
+        // Deferred to the frame clock because layout has not run yet: the
+        // adjustment's upper bound is still the pre-rebuild one, so setting the
+        // value now would be clamped against stale bounds. `set_value` clamps to
+        // [lower, upper - page_size] itself, so a genuinely shorter list still
+        // lands at its new bottom rather than out of range.
+        //
+        // HELD for several frames rather than restored once: GtkListBox's
+        // scroll-into-view is itself queued and lands AFTER the first tick, so a
+        // single restore wins the frame and loses the war (measured — the
+        // one-shot version still ended at 0). Re-asserting the offset each
+        // frame outlasts it. A handful of frames is imperceptible and the list
+        // is not user-scrollable mid-rebuild.
+        //
+        // Skipped when nothing was scrolled — avoids arming a tick callback on
+        // every rebuild in the common short-list case.
+        if scroll_to > 0.0 {
+            let vadj = self.vadj.clone();
+            // Bounded so this can never become a permanent frame callback, and
+            // so a user scroll immediately after a rebuild is not fought for
+            // longer than the rebuild itself.
+            let ticks_left = Cell::new(6u8);
+            self.list.add_tick_callback(move |_, _| {
+                ticks_left.set(ticks_left.get().saturating_sub(1));
+                if vadj.upper() > vadj.page_size() && vadj.value() != scroll_to {
+                    vadj.set_value(scroll_to);
+                }
+                if ticks_left.get() == 0 {
+                    glib::ControlFlow::Break
+                } else {
+                    glib::ControlFlow::Continue
+                }
+            });
+        }
 
         self.rebuild_notices();
     }
@@ -801,6 +886,41 @@ impl Component for Sidebar {
         list.set_widget_name("sidebar-list");
         list.set_selection_mode(gtk::SelectionMode::Single);
         scroll.set_child(Some(&list));
+        let vadj = scroll.vadjustment();
+        // Remember where the user scrolled to, so a clamp cannot overwrite it.
+        //
+        // Signal ORDER cannot be used to tell the two apart: when a collapse
+        // shortens the list, the clamping `value-changed` arrives BEFORE the
+        // `changed` that reports the new bounds, so a flag armed on `changed`
+        // is always set one event too late (measured — the clamp to 179 was
+        // recorded as intent and overwrote the user's 335).
+        //
+        // What does distinguish them is the value's relationship to the
+        // bounds: a clamp lands exactly on the maximum, and it only ever moves
+        // the value DOWN. So a decrease that lands on the current maximum is
+        // treated as a clamp and leaves the intent alone; anything else is the
+        // user. Scrolling deliberately to the bottom therefore does not update
+        // the intent — which costs nothing, because the restore clamps to the
+        // bottom anyway when the list is that short.
+        let scroll_intent = Rc::new(Cell::new(0.0f64));
+        {
+            let intent = scroll_intent.clone();
+            vadj.connect_value_changed(move |a| {
+                let v = a.value();
+                let max = (a.upper() - a.page_size()).max(0.0);
+                let landed_on_max = (v - max).abs() < 0.5;
+                if landed_on_max && v < intent.get() {
+                    return; // GTK clamping to a shorter list, not the user.
+                }
+                // Never remember a position past the current bottom. Early in
+                // startup the page size is still growing, so a transient
+                // "bottom" can exceed the settled one (measured: 406 recorded
+                // against a page size of 337 that became 408). set_value would
+                // clamp it on the way out, but storing it makes the intent a
+                // number nobody can reason about.
+                intent.set(v.min(max));
+            });
+        }
         root.append(&scroll);
 
         // ---- env-notice tray + insights/usage slots + footer ------------
@@ -869,6 +989,8 @@ impl Component for Sidebar {
             renaming_id: None,
             selecting,
             list,
+            vadj,
+            scroll_intent,
             notices_box,
             row_cache: HashMap::new(),
             window,

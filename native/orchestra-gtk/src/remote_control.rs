@@ -22,7 +22,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+// No `Eq`: `Scroll.to` is an f64 (a scroll offset is fractional), and f64 is
+// not Eq. Nothing compares an Op with `==`; the parse tests use `matches!`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
     /// Full widget-name tree of every toplevel window.
@@ -72,6 +74,20 @@ pub enum Op {
         param: Option<String>,
         #[serde(default)]
         name: Option<String>,
+    },
+    /// Read or set the vertical scroll offset of the ScrolledWindow that
+    /// contains (or is) the named widget. Scroll position is an INTERACTION
+    /// state: no still screenshot can show it, so verifying "the list did not
+    /// jump to the top when a repo collapsed" is impossible without reading the
+    /// adjustment as a number. Returns `value`, `upper` and `page_size` so a
+    /// caller can tell "offset 0" (jumped) from "nothing was scrollable"
+    /// (vacuously 0) — those are indistinguishable from the value alone, and
+    /// the second would pass a broken app.
+    Scroll {
+        name: String,
+        /// Absent → read only.
+        #[serde(default)]
+        to: Option<f64>,
     },
     /// Render the named widget offscreen via WidgetPaintable → GSK
     /// render_texture → PNG (no name: the topmost open dialog, else the main
@@ -422,6 +438,38 @@ fn handle_op(op: Op) -> Value {
                 }
             };
             ok(serde_json::Map::from_iter([("value".into(), value)]))
+        }
+        Op::Scroll { name, to } => {
+            let Some(w) = find_widget(&name) else {
+                return err(format!("no widget named {name:?}"));
+            };
+            // The caller names the widget it knows (the ListBox); the
+            // adjustment lives on the ScrolledWindow ancestor. Walk up rather
+            // than making every caller know the container's name.
+            let mut node = Some(w.clone());
+            let sw = loop {
+                match node {
+                    Some(n) => {
+                        if let Some(sw) = n.downcast_ref::<gtk::ScrolledWindow>() {
+                            break Some(sw.clone());
+                        }
+                        node = n.parent();
+                    }
+                    None => break None,
+                }
+            };
+            let Some(sw) = sw else {
+                return err(format!("widget {name:?} is not inside a ScrolledWindow"));
+            };
+            let adj = sw.vadjustment();
+            if let Some(v) = to {
+                adj.set_value(v);
+            }
+            ok(serde_json::Map::from_iter([
+                ("value".into(), json!(adj.value())),
+                ("upper".into(), json!(adj.upper())),
+                ("page_size".into(), json!(adj.page_size())),
+            ]))
         }
         Op::Measure { name } => {
             let Some(w) = find_widget(&name) else {
