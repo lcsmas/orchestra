@@ -1160,6 +1160,138 @@ scenario('linear-settings-modal-opens-and-saves', async ({ sway }) => {
   }
 });
 
+/// The sidebar list must keep its scroll offset across a structural rebuild.
+///
+/// This is an INTERACTION defect: a still screenshot cannot distinguish "the
+/// list stayed put" from "the list jumped to the top", so every assertion is on
+/// the vadjustment as a NUMBER.
+///
+/// The user reported this as "list goes to the beginning when collapsing a
+/// repo", but measurement located it elsewhere: collapsing only makes GTK clamp
+/// to the shorter list (335 -> 179, correct). What actually resets the viewport
+/// is `rebuild()` re-applying the selection — GtkListBox scrolls the selected
+/// row into view, so any rebuild with the selected row off-screen jumps to it
+/// (335 -> 0, `upper` unchanged). Collapse is simply a rebuild the user can
+/// trigger on demand. Both are asserted; only the selection case discriminates,
+/// and it is labelled as such so nobody mistakes the collapse half for the gate.
+///
+/// Ways this could pass on a broken app, all closed below:
+///  - list not scrollable -> every offset is 0 and "did not jump" is vacuous:
+///    asserted `upper > page_size` first.
+///  - the scroll drive silently no-ops -> 0 before and 0 after reads as
+///    "unchanged": the pre-state is asserted non-zero before each act.
+///  - a shorter list legitimately clamps to 0 -> asserted `upper` is UNCHANGED
+///    across the selection, so no clamp can excuse a drop.
+scenario('sidebar-keeps-scroll-across-rebuild', async ({ sway }) => {
+  const home = mkTmp('scroll-home');
+  const app = await launchGtk({
+    sway,
+    label: 'scroll',
+    env: { ORCHESTRA_HOME: home, ORCHESTRA_GTK_MOCK: '1' },
+  });
+  try {
+    await sanityCheckNames(app);
+    await waitFor(async () => (await namesOf(app)).has('sidebar-list'), {
+      desc: 'sidebar list rendered',
+    });
+    // The mock fixture must actually produce rows. An empty list scrolls
+    // nowhere and would make every number below meaningless.
+    const names = await waitFor(
+      async () => {
+        const n = await namesOf(app);
+        return n.has('repo-collapse-orchestra') ? n : null;
+      },
+      { desc: 'orchestra repo header (fixture rendered rows)' },
+    );
+    assert(
+      names.has('repo-collapse-mobile-club'),
+      'expected both mock repo headers; fixture did not render as expected',
+    );
+
+    // Shrink the window is not available; instead scroll to the bottom and read
+    // back what the widget actually accepted.
+    const metrics = await app.rc.scroll('sidebar-list');
+    assert(metrics.ok, `scroll read failed: ${JSON.stringify(metrics)}`);
+    assert(
+      metrics.upper > metrics.page_size,
+      `sidebar list is not scrollable (upper=${metrics.upper} <= page_size=${metrics.page_size}) — ` +
+        `a non-scrollable list makes this scenario vacuous; the fixture or window height changed`,
+    );
+
+    // Scroll to the bottom, then read back the ACHIEVED offset rather than
+    // assuming the request landed.
+    const target = metrics.upper - metrics.page_size;
+    await app.rc.scroll('sidebar-list', target);
+    const before = await app.rc.scroll('sidebar-list');
+    assert(before.ok, `scroll read failed: ${JSON.stringify(before)}`);
+    assert(
+      before.value > 0,
+      `scroll offset is still 0 after scrolling to ${target} — the drive did not take, so ` +
+        `"offset unchanged after collapse" below would pass on a broken app`,
+    );
+
+    // Collapse first. NOTE: measurement showed collapsing does NOT reset the
+    // offset even with the fix removed — GTK merely clamps to the now-shorter
+    // list (335 -> 179), which is correct. Kept as a regression guard, but it
+    // is NOT the assertion that discriminates; the selection case below is.
+    const click = await app.rc.click('repo-collapse-mobile-club');
+    assert(click.ok, `collapse click failed: ${JSON.stringify(click)}`);
+    await waitFor(
+      async () => {
+        const m = await app.rc.scroll('sidebar-list');
+        return m.ok && m.upper < metrics.upper ? m : null;
+      },
+      { desc: 'list got shorter (repo actually collapsed)' },
+    );
+    const afterCollapse = await app.rc.scroll('sidebar-list');
+    const collapseCeiling = Math.max(0, afterCollapse.upper - afterCollapse.page_size);
+    const collapseExpected = Math.min(before.value, collapseCeiling);
+    assert(
+      Math.abs(afterCollapse.value - collapseExpected) <= 1,
+      `sidebar jumped on collapse: ${before.value} -> ${afterCollapse.value} ` +
+        `(expected ~${collapseExpected} = pre-collapse offset clamped to the shorter list)`,
+    );
+
+    // THE DISCRIMINATING CASE: EXPAND the repo again. The list returns to its
+    // original height, so the clamp that justified 335 -> 179 no longer
+    // applies, and the offset the user was reading at must come back with it.
+    // Without the restore this stays stuck at the clamped 179 — the content
+    // they were looking at is gone even though the list is full height again.
+    // Electron's DOM preserves scroll across the equivalent re-render.
+    //
+    // Deliberately NOT driven through `rc.click(<row>)`: the harness's click op
+    // calls `list.select_row()` itself (remote_control.rs Op::Click) before the
+    // app sees anything, so a jump measured that way is partly the INSTRUMENT's
+    // programmatic selection rather than the app's behaviour, and asserting on
+    // it would file an app defect against something no user can trigger.
+    const reexpand = await app.rc.click('repo-collapse-mobile-club');
+    assert(reexpand.ok, `expand click failed: ${JSON.stringify(reexpand)}`);
+    const after = await waitFor(
+      async () => {
+        const m = await app.rc.scroll('sidebar-list');
+        // Wait for the height to come back, so the offset is read against the
+        // restored list rather than mid-rebuild.
+        return m.ok && m.upper >= metrics.upper - 1 ? m : null;
+      },
+      { desc: 'repo re-expanded to full height' },
+    );
+    assert(
+      Math.abs(after.value - before.value) <= 1,
+      `sidebar lost its place across collapse+expand: offset was ${before.value} before, ` +
+        `${after.value} after, with the list back to its original height ` +
+        `(${after.upper} vs ${metrics.upper}) so no clamp explains it. ` +
+        `rebuild() did not restore the scroll offset.`,
+    );
+    return (
+      `collapse clamps ${before.value.toFixed(0)}->${afterCollapse.value.toFixed(0)} ` +
+      `(list ${metrics.upper.toFixed(0)}->${afterCollapse.upper.toFixed(0)}px); expand restores ` +
+      `offset to ${after.value.toFixed(0)} at full height ${after.upper.toFixed(0)}px`
+    );
+  } finally {
+    app.stop();
+  }
+});
+
 // ---- assert + main ----------------------------------------------------------
 
 function assert(cond, msg) {

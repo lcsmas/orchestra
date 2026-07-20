@@ -160,7 +160,7 @@ with `Sidebar.tsx:1362–1385`) and route out as
 
 The CDP replacement (plan §8.4), compiled in always, activated by
 `--remote-control <sock>`. Newline-JSON over a unix socket:
-`list_widgets`/`click`/`type`/`key`/`get`/`measure`/`screenshot`. Events are
+`list_widgets`/`click`/`type`/`key`/`get`/`measure`/`scroll`/`screenshot`. Events are
 synthesized GTK-side (headless sway advertises no seat input); screenshots render
 offscreen via `WidgetPaintable → GSK render_texture` (no visible frame needed).
 
@@ -171,7 +171,22 @@ wide a widget ENDED UP, not how narrow it would go — and a `GtkPaned` with
 before theorising about any width defect: it is what showed the sidebar's
 minimum was 338px while it allocated 518px, retracting a top-ranked "the header
 labels widened the sidebar" finding that two rounds of source reading had
-supported. Widget
+supported.
+
+`scroll` (`remote_control.rs`) reads — or with `to`, sets — the vertical offset
+of the `ScrolledWindow` containing the named widget, returning `value`, `upper`
+and `page_size`. Scroll position is an INTERACTION state that no still
+screenshot can show, so it is the only way to verify "the list did not jump".
+All three numbers matter: `value` alone cannot distinguish "scrolled to the top"
+from "nothing was scrollable", and the second passes on a broken app. It is what
+established that collapsing a repo section merely CLAMPS the offset to the
+shorter list (335→179, correct) rather than resetting it, relocating the user's
+"list goes back to the beginning" report to the rebuild's scroll restore. Note
+the `click` op calls `list.select_row()` itself before the app sees anything, so
+a scroll jump measured through a row click is partly the harness's own doing —
+drive rebuilds another way when asserting on scroll.
+
+Widget
 names: `main-window`, `sidebar-list`, `ws-row-<id>`, `status-text`,
 `backend-banner`/`backend-banner-text`, `dialog-title|body|entry|confirm|cancel`.
 Consumed by `native/e2e/` and `orchestra-gtk/scripts/smoke.sh`.

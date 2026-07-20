@@ -472,7 +472,13 @@ list row:selected label {
 
 /* .ws-row.active's background moved to the #sidebar-list block above, which
  * pairs it with the accent border and corrects @bg_4 -> @bg_3 (styles.css:1138). */
-.ws-row.unread .ws-name { color: @accent; }
+/* Unread reads like unread mail: BRIGHTER AND BOLDER name, not a blue one.
+ * The blue lives on the dot (.ws-dot.unread) and the bookmark toggle
+ * (.ws-icon-btn.unread-on) only. styles.css:1414-1417 sets var(--text) +
+ * font-weight 700 here — colouring the name @accent was the "blue label"
+ * defect. Reading that the Electron rule EXISTS is not enough; the fix is in
+ * what it SETS. */
+.ws-row.unread .ws-name { color: @text; font-weight: 700; }
 .ws-name-input {
   background-color: @bg;
   border: 1px solid @accent;
