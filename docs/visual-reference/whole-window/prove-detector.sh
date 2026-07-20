@@ -45,6 +45,16 @@ CSS="$REPO/native/orchestra-gtk/src/theme.css"
 BACKUP="$(mktemp /tmp/theme-css-backup.XXXXXX)"
 SENTINEL="rgb(255,0,255)"   # magenta: impossible as a real theme value
 
+# LOGS GO IN A PER-RUN PRIVATE DIR, NOT SHARED /tmp PATHS.
+# The first version wrote /tmp/prove-{build-,}{dirty,clean}.log — fixed names on
+# a machine where ~50 sibling agents run this same checked-in script. A sibling
+# DID overwrite them: reading the shared build log after my own run showed
+# a `Compiling` line from ANOTHER WORKTREE entirely. That is the worst shape a
+# corruption can take — the file still parses, still looks like a build log, and
+# a verdict read out of it is confidently wrong about the wrong subject. Nothing
+# fails; the evidence is simply someone else's.
+LOGDIR="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/prove-detector.XXXXXX")"
+
 restore() {
   if [ -f "$BACKUP" ]; then
     cp "$BACKUP" "$CSS"
@@ -88,10 +98,10 @@ cd "$REPO"
 source "$REPO/native/env.sh"
 set +e
 cargo build -p orchestra-gtk --release --manifest-path "$REPO/native/Cargo.toml" \
-  > /tmp/prove-build-dirty.log 2>&1
+  > "$LOGDIR"/prove-build-dirty.log 2>&1
 BUILD_RC=$?
 set -e
-[ "$BUILD_RC" -eq 0 ] || { echo "FAIL: build failed"; tail -20 /tmp/prove-build-dirty.log; exit 1; }
+[ "$BUILD_RC" -eq 0 ] || { echo "FAIL: build failed"; tail -20 "$LOGDIR"/prove-build-dirty.log; exit 1; }
 
 # VERIFY BY CONTENT, NOT MTIME. "Did I rebuild" is not the question; "is the
 # thing I am about to execute the thing I edited" is. Paired with a
@@ -110,7 +120,7 @@ echo "-- injected binary confirmed by CONTENT"
 echo
 echo "-- running the diff against the DEFECTIVE build"
 set +e
-"$HERE/run-diff.sh" "$HERE/out-dirty" > /tmp/prove-dirty.log 2>&1
+"$HERE/run-diff.sh" "$HERE/out-dirty" > "$LOGDIR"/prove-dirty.log 2>&1
 DIRTY_RC=$?
 set -e
 
@@ -127,8 +137,8 @@ if [ ! -f "$HERE/out-dirty/diff-result.json" ]; then
   echo "SETUP FAILURE (not a detector verdict): the diff produced no result file."
   echo "The harness never reached the subject, so this run says NOTHING about"
   echo "whether the detector works. Cause, from the run log:"
-  python3 - <<'PY'
-lines = open("/tmp/prove-dirty.log", errors="replace").read().splitlines()
+  python3 - <<PY
+lines = open("$LOGDIR/prove-dirty.log", errors="replace").read().splitlines()
 skip = ("at ", "task:", "config:", "baseDir", "binary:", "maxConcurrent",
         "trimmed:", "}", "{", ")")
 for l in lines:
@@ -143,7 +153,7 @@ if [ "$DIRTY_RC" -ne 1 ]; then
   echo "SETUP FAILURE (not a detector verdict): diff exited $DIRTY_RC, expected 1"
   exit 2
 fi
-sed -n '/RANKED REGION/,/^$/p' /tmp/prove-dirty.log || true
+sed -n '/RANKED REGION/,/^$/p' "$LOGDIR"/prove-dirty.log || true
 
 # THE ASSERTION: the injected region must be RANKED and carry the injected
 # value. Merely "the run exited nonzero" would also be satisfied by the
@@ -191,10 +201,10 @@ restore
 # run after any intervening command it would read THAT command's code.
 set +e
 cargo build -p orchestra-gtk --release --manifest-path "$REPO/native/Cargo.toml" \
-  > /tmp/prove-build-clean.log 2>&1
+  > "$LOGDIR"/prove-build-clean.log 2>&1
 CLEAN_BUILD_RC=$?
 set -e
-[ "$CLEAN_BUILD_RC" -eq 0 ] || { echo "FAIL: clean rebuild failed"; tail -20 /tmp/prove-build-clean.log; exit 1; }
+[ "$CLEAN_BUILD_RC" -eq 0 ] || { echo "FAIL: clean rebuild failed"; tail -20 "$LOGDIR"/prove-build-clean.log; exit 1; }
 
 python3 - <<PY || { echo "FAIL: sentinel still in the binary after restore"; exit 1; }
 import sys
@@ -206,7 +216,7 @@ sys.exit(0 if sentinel == 0 and control > 0 else 1)
 PY
 
 set +e
-"$HERE/run-diff.sh" "$HERE/out-clean" > /tmp/prove-clean.log 2>&1
+"$HERE/run-diff.sh" "$HERE/out-clean" > "$LOGDIR"/prove-clean.log 2>&1
 set -e
 
 python3 - <<PY || { echo "FAIL: sidebar-bottom did not return to matching after restore"; exit 1; }
