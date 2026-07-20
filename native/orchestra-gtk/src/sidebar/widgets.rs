@@ -90,7 +90,6 @@ fn icon_button_named(
     b
 }
 
-
 fn pill(text: &str, name_class: &str, tooltip: &str) -> gtk::Label {
     let p = label(text, &["pill", name_class]);
     p.set_tooltip_text(Some(tooltip));
@@ -112,6 +111,41 @@ fn pill_button(
     for c in classes {
         b.add_css_class(c);
     }
+    b.set_tooltip_text(Some(tooltip));
+    b.set_valign(gtk::Align::Center);
+    let sender = sender.clone();
+    b.connect_clicked(move |_| sender.emit(msg()));
+    b
+}
+
+/// A pill button whose leading mark is a real icon rather than a character in
+/// the label.
+///
+/// [`pill_button`] takes text only, so an icon could only be smuggled in as a
+/// glyph inside the label string — which is exactly the substitution this work
+/// removes. This gives the icon its own child widget, so it inherits the
+/// pill's CSS `color` (symbolic recolouring) and sizes independently of the
+/// font.
+fn pill_icon_button(
+    icon: &str,
+    text: &str,
+    classes: &[&str],
+    tooltip: &str,
+    sender: &Sender<Msg>,
+    msg: impl Fn() -> Msg + 'static,
+) -> gtk::Button {
+    let b = gtk::Button::new();
+    b.add_css_class("pill");
+    b.add_css_class("pill-btn");
+    for c in classes {
+        b.add_css_class(c);
+    }
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let img = crate::icons::image_sized(icon, 11);
+    img.add_css_class("pill-icon");
+    row.append(&img);
+    row.append(&gtk::Label::new(Some(text)));
+    b.set_child(Some(&row));
     b.set_tooltip_text(Some(tooltip));
     b.set_valign(gtk::Align::Center);
     let sender = sender.clone();
@@ -694,14 +728,21 @@ fn append_pills(strip: &gtk::Box, s: &WsRowSpec, sender: &Sender<Msg>) {
         ));
     }
     for pr in &p.prs_visible {
-        let (glyph, cls) = match pr.state {
-            PrState::Open => ("⎇", "open"),
-            PrState::Merged => ("⌥", "merged"),
-            PrState::Closed => ("✕", "closed"),
+        // Electron draws three DISTINCT marks here (Sidebar.tsx `PROpenIcon` /
+        // `PRMergedIcon` / `PRClosedIcon`), so the STATE is carried by shape,
+        // not only by the `.pr-badge` colour — which is what keeps it readable
+        // in greyscale or to a colour-blind reader. The glyphs these replace
+        // were `⎇`/`⌥`/`✕`, and `⌥` (OPTION KEY) is not a merge symbol in any
+        // iconography; it merely looked arrow-ish in whatever font resolved it.
+        let (icon, cls) = match pr.state {
+            PrState::Open => (crate::icons::PR_OPEN, "open"),
+            PrState::Merged => (crate::icons::PR_MERGED, "merged"),
+            PrState::Closed => (crate::icons::PR_CLOSED, "closed"),
         };
         let url = pr.url.clone();
-        strip.append(&pill_button(
-            &format!("{glyph} #{}", pr.number),
+        strip.append(&pill_icon_button(
+            icon,
+            &format!("#{}", pr.number),
             &["pr-badge", cls],
             &format!(
                 "PR #{} · {} · {}",
@@ -1026,7 +1067,7 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
         let unread_on = s.ws.marked_unread == Some(true);
         let id = s.ws.id.clone();
         // Electron draws `BookmarkIcon`, filled when unread (Sidebar.tsx:144).
-    let toggle = icon_button_named(
+        let toggle = icon_button_named(
             if unread_on {
                 crate::icons::BOOKMARK
             } else {
