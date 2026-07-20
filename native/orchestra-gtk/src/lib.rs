@@ -327,3 +327,72 @@ mod version_tests {
         assert_eq!(super::app_version(), parsed["version"].as_str().unwrap());
     }
 }
+
+#[cfg(test)]
+mod scrollback_replay_tests {
+    //! Guard for the terminal-scramble fix: the app must NOT replay the raw PTY
+    //! scrollback log into the VTE pane.
+    //!
+    //! The log contains sequences the CHILD emitted expecting the TERMINAL to
+    //! answer (DA1 `ESC[c`, XTVERSION `ESC[>0q` — both present in real agent
+    //! logs). Feeding them back makes VTE answer, and the reply leaves through
+    //! the pane's `commit` handler as `ptyWrite` into the LIVE Claude session's
+    //! stdin mid-frame. Measured on VTE 0.80.5: 17 / 15 / 6 bytes injected,
+    //! against a plain-text control that injects 0
+    //! (`examples/scrollback_query_probe`).
+    //!
+    //! The renderer refuses the same replay for the same reason
+    //! (`src/renderer/components/Terminal.tsx:366`).
+    //!
+    //! This is a SOURCE-level gate because the defect is a call that should not
+    //! exist; there is no runtime state to assert once it is gone. It is
+    //! deliberately narrow: it fails only on a live `feed_scrollback` call in
+    //! `app.rs`, not on the (annotated, intentionally retained) definition.
+
+    const APP_RS: &str = include_str!("app.rs");
+
+    /// Source lines with comments and string literals removed, so a call named
+    /// inside prose can't trip the gate.
+    fn code_lines(src: &str) -> Vec<&str> {
+        src.lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with("//") && !l.starts_with("/*") && !l.starts_with('*'))
+            .collect()
+    }
+
+    #[test]
+    fn app_does_not_replay_pty_scrollback() {
+        let offenders: Vec<&str> = code_lines(APP_RS)
+            .into_iter()
+            .filter(|l| l.contains("feed_scrollback") || l.contains("pty_scrollback"))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "app.rs replays PTY scrollback again — this re-injects the child's \
+             own DA1/XTVERSION queries into the live session and scrambles the \
+             TUI. See `open_terminal` and examples/scrollback_query_probe.\n  \
+             {offenders:?}"
+        );
+    }
+
+    /// The gate above is worthless if it cannot fail. Prove it fires on input
+    /// that DOES contain the call, so nobody inherits a check nobody has
+    /// watched fail.
+    #[test]
+    fn gate_detects_a_reintroduced_replay() {
+        let bad = "fn open_terminal() {\n    terminals.feed_scrollback(ws_id, &bytes);\n}";
+        let hits: Vec<&str> = code_lines(bad)
+            .into_iter()
+            .filter(|l| l.contains("feed_scrollback") || l.contains("pty_scrollback"))
+            .collect();
+        assert_eq!(hits.len(), 1, "gate must catch a reintroduced replay");
+
+        // ...and must NOT fire on a mere mention in a comment.
+        let commented = "// terminals.feed_scrollback(ws_id, &bytes); -- removed, see probe";
+        let false_hits: Vec<&str> = code_lines(commented)
+            .into_iter()
+            .filter(|l| l.contains("feed_scrollback"))
+            .collect();
+        assert!(false_hits.is_empty(), "gate must ignore commented-out mentions");
+    }
+}
