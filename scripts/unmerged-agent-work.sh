@@ -19,13 +19,17 @@
 # Both work. The inbox directory did not even exist — not "empty", absent —
 # because nothing had ever failed to deliver.
 #
-# THE ACTUAL CAUSE, third try, and it was neither layer: MY SPAWN BRIEF NEVER
-# TOLD THE AGENTS HOW TO REPORT. It said "commit on your branch and report" —
-# six mentions of "report", not one `orchestra message <ws-id>`. Earlier waves
-# included the id; I dropped it rewriting the brief. The agents finished,
-# committed, and had nowhere to send anything. The verified-fanout skill now
-# carries a grep-your-own-brief check, because the requirement was already
-# written down and still got lost.
+# THE ACTUAL CAUSE, and it is one level above the missing instruction: I NEVER
+# INVOKED THE verified-fanout SKILL. I hand-wrote the M5 brief and called
+# `orchestra spawn` seven times directly, reconstructing the brief from memory
+# and losing the parts I did not happen to recall — the `orchestra message
+# <ws-id>` report-back line among them, and also the skill's requirement for a
+# DEDICATED VERIFIER gating merges, which M5 has none of.
+#
+# So the missing instruction was a symptom. Adding a grep check inside the skill
+# helps whoever invokes the skill; it does nothing for the failure where the
+# skill is bypassed. The guard that would have caught this is invoking it at
+# all — which standing instructions already require for any multi-agent fan-out.
 #
 # The remaining gaps are quieter, and none of them is a broken queue:
 #   - An agent COMMITS BEFORE IT REPORTS. Work exists on a branch for minutes
