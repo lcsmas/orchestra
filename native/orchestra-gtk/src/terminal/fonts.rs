@@ -128,6 +128,18 @@ fn register(file_name: &str, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+// Re-proving these gates: swap the old font in and confirm they fail.
+//
+// DO NOT JUDGE THAT RE-RUN BY ITS EXIT CODE. `cargo test` here exits 101 both
+// when a test fails AND when the build never ran (without `source native/env.sh`
+// pkg-config cannot find glib, the crate does not compile, and you get 101 from
+// a run that tested nothing). The two are indistinguishable from the code alone,
+// and the wrong one agrees with what you expect — this cost a reviewer a false
+// "gate confirmed" on the first attempt.
+//
+// Check the ARTIFACT instead: the output must contain `running 2 tests` AND name
+// `subset_declares_orchestra_symbols_family ... FAILED`. Absent those, the run is
+// inconclusive, not a pass.
 #[cfg(test)]
 mod tests {
     use super::*;
