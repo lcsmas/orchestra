@@ -17,6 +17,42 @@ see below), `remote_control.rs` (the CDP-replacement test harness), `state.rs`
 and diff (gtksourceview5) are separate M2 workstreams that land in their own
 modules.
 
+## Design tokens and terminal colors — theme.css + terminal/mod.rs
+
+Two separate sources of color, and a change to one does NOT cover the other.
+
+**`theme.css` §1** holds 18 `@define-color` tokens ported 1:1 from the
+renderer's `:root` (`src/renderer/styles.css:43`). Verified equal to Electron's
+*computed* values via CDP. Five (`accent_bright`, `accent_ink`, `accent_2`,
+`scratch`, `orchestrator`) were added later — before that they existed only as
+repeated literals, which is how independently-appended blocks drifted.
+
+Three notes that cost real debugging time:
+
+- **Read Electron with `backgroundImage`, not just `backgroundColor`.** The
+  sidebar (`styles.css:513`) and toolbar (`:1937`-ish) paint with translucent
+  `linear-gradient`s; `getComputedStyle().backgroundColor` reports
+  `rgba(0,0,0,0)` for those, so a color-only probe concludes "transparent" for
+  a surface that plainly paints.
+- **A GTK gradient needs an explicit `background-color` as its backdrop.** GTK
+  does not inherit the window's `@bg` under a `background-image`, so translucent
+  stops composite over the wrong base — the sidebar measured (25,28,33) against
+  Electron's (18,21,27) until `background-color: @bg` was added beneath it.
+- **The compiler does not validate this file.** `cargo build` succeeds with
+  syntactically invalid CSS; the failure appears only at runtime as a
+  `Gtk-WARNING ... Theme parser error`. Launch the app and read stderr.
+
+**`terminal/mod.rs:39-90`** (`term_fg`/`term_bg`/`term_cursor`/`term_selection`/
+`term_palette`) is the terminal's color source, applied via `set_colors` in
+`terminal/pane.rs:104`. It must track `src/renderer/term-theme.ts`
+(`TERM_THEME`), which is what xterm.js uses on the Electron side — the
+renderer's `.terminal-pane` background (`styles.css:2395`) is itself a
+hardcoded mirror of it. The 16 ANSI slots are Ghostty's default (Tomorrow
+Night), NOT the app's UI accent tokens; an earlier version used the accents and
+matched Electron in 0 of 16 slots. Since the terminal is the app's largest
+surface, a wrong value here reads as the whole app being the wrong color, and
+no CSS audit can see it.
+
 ## Form modals — modals/
 
 `dialogs.rs` serves the small alert/confirm/prompt shapes; anything with a real
