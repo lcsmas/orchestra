@@ -618,30 +618,56 @@ fn header_icon_button(
     b
 }
 
-/// Labelled create button — Electron's `.header-repo-btn` (Sidebar.tsx:1387),
-/// an icon PLUS a text label ("Scratch" / "Orchestrator" / "Repo").
-///
-/// The label is the point: these are the primary create actions in the app,
-/// and without it two of them were indistinguishable dark squares.
-fn header_repo_button(
+/// One entry of the "+ New" popover — Electron's `.new-menu-item`
+/// (Sidebar.tsx:1413), an accent-tinted icon beside a two-line body: a bold
+/// title and a dim one-line description of what the session kind is for.
+fn new_menu_item(
     icon: &str,
-    label: &str,
+    icon_class: &str,
+    title: &str,
+    subtitle: &str,
     name: &str,
-    tooltip: &str,
+    popover: &gtk::Popover,
     sender: &relm4::Sender<Msg>,
     msg: impl Fn() -> Msg + 'static,
 ) -> gtk::Button {
     let b = gtk::Button::new();
-    // gap: 4px — styles.css:456.
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    row.append(&crate::icons::image_sized(icon, 13));
-    row.append(&gtk::Label::new(Some(label)));
+    // gap: 9px, align-items: flex-start — styles.css:588.
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 9);
+    row.set_valign(gtk::Align::Start);
+
+    // `.new-menu-item-icon` carries the per-kind colour (styles.css:609-611):
+    // accent for a repo workspace, and the scratch / orchestrator hues for the
+    // other two — the same tokens their sidebar glyphs use.
+    let icon_img = crate::icons::image_sized(icon, 15);
+    icon_img.add_css_class("new-menu-item-icon");
+    icon_img.add_css_class(icon_class);
+    icon_img.set_valign(gtk::Align::Start);
+    row.append(&icon_img);
+
+    // gap: 1px — styles.css:612.
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 1);
+    let title_l = gtk::Label::new(Some(title));
+    title_l.set_xalign(0.0);
+    title_l.add_css_class("new-menu-item-title");
+    let sub_l = gtk::Label::new(Some(subtitle));
+    sub_l.set_xalign(0.0);
+    sub_l.add_css_class("new-menu-item-sub");
+    body.append(&title_l);
+    body.append(&sub_l);
+    row.append(&body);
+
     b.set_child(Some(&row));
     b.set_widget_name(name);
-    b.add_css_class("header-repo-btn");
-    b.set_tooltip_text(Some(tooltip));
+    b.add_css_class("new-menu-item");
     let sender = sender.clone();
-    b.connect_clicked(move |_| sender.emit(msg()));
+    let popover = popover.clone();
+    b.connect_clicked(move |_| {
+        // Electron closes the menu before running the action
+        // (`setNewMenuOpen(false)` precedes each handler, Sidebar.tsx:1417).
+        popover.popdown();
+        sender.emit(msg());
+    });
     b
 }
 
@@ -670,23 +696,25 @@ impl Component for Sidebar {
 
         // ---- header strip: title + action buttons -----------------------
         //
-        // VERTICAL because Electron's header WRAPS and this one could not.
+        // HORIZONTAL, matching Electron's `.sidebar-header` (styles.css:522):
+        // `display: flex; justify-content: space-between; align-items: center;
+        // gap: 8px` — the wordmark and the actions share ONE row. `flex-wrap`
+        // is a narrow-window fallback there, not the normal layout.
         //
-        // Electron's `.sidebar-header` is `flex-wrap: wrap` (styles.css:443) and
-        // its `.sidebar-header-actions` likewise (styles.css:449), inside an
-        // `.app` grid whose sidebar track is `340px` (styles.css:390). At that
-        // width the controls cannot fit on one line, so Electron wraps them onto
-        // three: wordmark / icon buttons + Scratch + Orchestrator / Repo.
+        // This was VERTICAL, on a rationale that no longer holds and never
+        // quite did: it claimed Electron wraps onto three lines ending in
+        // "Scratch / Orchestrator / Repo" buttons styled by `.header-repo-btn`
+        // at Sidebar.tsx:1387. No such rule and no such buttons exist —
+        // `header-repo-btn` occurs zero times in both Sidebar.tsx and
+        // styles.css. Those three create buttons were this port's own
+        // invention; at 449px they could not share a row with the wordmark, so
+        // the port stacked them and grew the header past Electron's.
         //
-        // The port had one HORIZONTAL box with no wrap, whose natural width is
-        // the sum of every child (measured: 449px for the actions alone). At the
-        // 340px default that overflows. Wrapping is what lets the same controls
-        // — labels intact — fit the Electron width.
-        //
-        // This is NOT what caused the 518px sidebar; that was a stale persisted
-        // width leaking into the captures (see capture-gtk.sh). The wrap is
-        // needed on its own merits: without it the header cannot fit 340px.
-        let header = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        // Replacing them with Electron's single "+ New" menu drops the actions
+        // to 138px natural (measured over the remote-control harness), so the
+        // icon triggers and the menu button fit one line inside the 308px
+        // header with room to spare — 220px against 308.
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         header.add_css_class("sidebar-header");
         header.set_widget_name("sidebar-header");
         // Electron's wordmark (Sidebar.tsx:1360 `<h1>Orchestra</h1>`), not the
@@ -699,37 +727,26 @@ impl Component for Sidebar {
         title.set_hexpand(true);
         header.append(&title);
 
-        // Actions, in Electron's order (Sidebar.tsx:1361-1413): the icon-only
-        // triggers first, then the three LABELLED create buttons.
+        // Actions, in Electron's order (Sidebar.tsx:1361-1463): the icon-only
+        // triggers, then the single "+ New" menu button that ends the row.
         //
-        // Every one of these was an emoji or bare character before: 📊 💡 🔔 ?
-        // for the triggers, and — the defect the user reported — ⚡ and 🌿 alone
-        // as the Scratch and Orchestrator buttons, which rendered as two blank
-        // dark squares because an emoji in a Button label is not an icon.
-        // TWO rows, not one wrapping container.
+        // Every trigger was an emoji or bare character before: 📊 💡 🔔 ? — an
+        // emoji in a Button label is not an icon, so they rendered as blank
+        // dark squares.
         //
-        // A single GtkFlowBox over all seven buttons was tried and rejected by
-        // measurement: a FlowBox allocates uniform CELLS, so the four 28x28 icon
-        // buttons were padded to the width of "Orchestrator" and sprawled across
-        // a row of their own, making the header ~17px taller than Electron's.
-        // `set_homogeneous(false)` does not change this — the uniform cell is
-        // the container's layout model, not an option.
-        //
-        // Electron's own wrap lands the same way (electron-sidebar.png, ink
-        // bands y=45..71 and y=85..104): icon triggers and the first create
-        // buttons on one line, the overflow on the next. Modelling that as two
-        // explicit boxes reproduces it without fighting FlowBox's cell sizing.
-        let actions = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        // ONE row — `.sidebar-header-actions` is `display: flex;
+        // justify-content: flex-end; gap: 6px` (styles.css:533). The icon
+        // triggers and the "+ New" button are siblings on that row.
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         actions.add_css_class("sidebar-header-actions");
         actions.set_widget_name("sidebar-header-actions");
         actions.set_halign(gtk::Align::End);
+        actions.set_valign(gtk::Align::Center); // align-items: center
 
-        // Row 1: the icon-only triggers, at their natural 28x28.
-        let icon_row = gtk::Box::new(gtk::Orientation::Horizontal, 6); // styles.css:451
-        icon_row.set_halign(gtk::Align::End);
-        // Row 2: the three LABELLED create buttons.
-        let create_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        create_row.set_halign(gtk::Align::End);
+        // Both aliases point at the single actions row now, so the append
+        // order below still reads as "triggers first, then create".
+        let icon_row = actions.clone();
+        let create_row = actions.clone();
 
         icon_row.append(&header_icon_button(
             crate::icons::HELP,
@@ -764,32 +781,72 @@ impl Component for Sidebar {
             || Msg::Header(HeaderAction::OpenInsights),
         ));
 
-        create_row.append(&header_repo_button(
-            crate::icons::ZAP,
-            "Scratch",
-            "header-new-scratch",
-            "New scratch session — throwaway, no git repo needed",
-            &input,
-            || Msg::NewScratch,
-        ));
-        create_row.append(&header_repo_button(
-            crate::icons::ORCHESTRATOR,
-            "Orchestrator",
-            "header-new-orchestrator",
-            "New orchestrator — an agent that delegates work by spawning child agents",
-            &input,
-            || Msg::NewOrchestrator,
-        ));
-        create_row.append(&header_repo_button(
+        // The single "+ New" menu — Electron's `.new-menu` (Sidebar.tsx:1399).
+        // One entry point for all three session kinds, replacing the three
+        // separate Scratch / Orchestrator / Repo buttons this port had.
+        //
+        // GtkPopover already does what Electron wires by hand: it closes on
+        // Escape and on an outside click (Sidebar.tsx:646-661 installs a
+        // `keydown` + document `mousedown` listener for exactly that), and it
+        // takes keyboard focus so Tab/arrows walk the items.
+        let new_btn = gtk::MenuButton::new();
+        new_btn.set_widget_name("header-new-menu");
+        new_btn.add_css_class("new-menu-btn");
+        new_btn.set_tooltip_text(Some("New session — workspace, scratch, or orchestrator"));
+        // gap: 5px — styles.css:550. The "+" is a text span in Electron
+        // (`.new-menu-plus`, styles.css:568), not an icon.
+        let new_box = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+        let plus = gtk::Label::new(Some("+"));
+        plus.add_css_class("new-menu-plus");
+        new_box.append(&plus);
+        new_box.append(&gtk::Label::new(Some("New")));
+        new_btn.set_child(Some(&new_box));
+
+        let new_popover = gtk::Popover::new();
+        new_popover.set_widget_name("new-menu-popover");
+        new_popover.add_css_class("new-menu-popover");
+        // `top: calc(100% + 6px); right: 0` — below the button, right-aligned
+        // (styles.css:573-576).
+        new_popover.set_position(gtk::PositionType::Bottom);
+        new_popover.set_halign(gtk::Align::End);
+        // gap: 2px, width: 246px — styles.css:578-581.
+        let new_list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        new_list.set_size_request(246, -1);
+
+        // Order matches Electron exactly (Sidebar.tsx:1413-1460).
+        new_list.append(&new_menu_item(
             crate::icons::FOLDER_PLUS,
-            "Repo",
-            "header-add-repo",
-            "New workspace from a git repo…",
+            "repo",
+            "Workspace",
+            "agent on its own branch of a git repo",
+            "new-menu-workspace",
+            &new_popover,
             &input,
             || Msg::AddRepo,
         ));
-        actions.append(&icon_row);
-        actions.append(&create_row);
+        new_list.append(&new_menu_item(
+            crate::icons::ZAP,
+            "scratch",
+            "Scratch session",
+            "throwaway, no git repo needed",
+            "new-menu-scratch",
+            &new_popover,
+            &input,
+            || Msg::NewScratch,
+        ));
+        new_list.append(&new_menu_item(
+            crate::icons::ORCHESTRATOR,
+            "orchestrator",
+            "Orchestrator",
+            "delegates work to agents it spawns",
+            "new-menu-orchestrator",
+            &new_popover,
+            &input,
+            || Msg::NewOrchestrator,
+        ));
+        new_popover.set_child(Some(&new_list));
+        new_btn.set_popover(Some(&new_popover));
+        create_row.append(&new_btn);
         header.append(&actions);
         root.append(&header);
 

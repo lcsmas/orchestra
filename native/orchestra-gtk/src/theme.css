@@ -2288,28 +2288,84 @@ button.welcome-help-btn:hover {
   border-color: transparent;
 }
 
-/* styles.css:453-464 — icon + LABEL, the three create actions. */
-.header-repo-btn {
-  padding: 5px 8px;
-  background: transparent;
-  border: 1px solid @border;
-  color: @text_dim;
+/* ── The "+ New" menu ─────────────────────────────────────────────────────
+   styles.css:543-626. Replaces the three `.header-repo-btn` create buttons
+   this port had; Electron has a single accent-tinted button opening a popover.
+   `.header-repo-btn` was never an Electron class — it occurs zero times in
+   both Sidebar.tsx and styles.css — so its rules are removed rather than kept.
+
+   Electron's rgba(110,168,255,α) literals are @accent (#6ea8ff) at α. GTK CSS
+   has no colour-mix, so they stay as alpha() over the same hue. */
+.new-menu-btn {
+  padding: 5px 10px;
+  background-color: alpha(@accent, 0.08);
+  border: 1px solid alpha(@accent, 0.28);
+  color: @accent;
   border-radius: 6px;
   font-size: 12px;
+  font-weight: 600;
+  /* box-shadow: none (styles.css:559) — GTK buttons ship one by default. */
+  box-shadow: none;
+  /* styles.css:560 — 140ms. The port's one transition became many under T3. */
+  transition: background-color 140ms ease, border-color 140ms ease,
+    color 140ms ease;
 }
-/* styles.css:466-470 — note the accent border on hover, which is what marks
-   these out as the create actions rather than generic chrome. */
-.header-repo-btn:hover {
+.new-menu-btn:hover {
+  background-color: alpha(@accent, 0.16);
+  border-color: alpha(@accent, 0.55);
+  color: @accent;
+}
+/* styles.css:568-572 — the "+" is heavier and larger than the "New" label. */
+.new-menu-plus {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* styles.css:573-587. GtkPopover paints its own background/border on the
+   `contents` node, so the surface tokens go there rather than on the widget. */
+.new-menu-popover contents {
+  padding: 4px; /* --space-1 */
   background-color: @bg_3;
-  color: @text;
-  border-color: @accent;
+  border: 1px solid @border_strong;
+  border-radius: 8px;
+  /* --shadow-md, styles.css:82. */
+  box-shadow: 0 4px 12px alpha(black, 0.35), 0 1px 2px alpha(black, 0.4);
 }
+
+/* styles.css:588-603 — a flat, borderless row; only hover fills it. */
+.new-menu-item {
+  padding: 7px 9px;
+  background: transparent;
+  background-image: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  box-shadow: none;
+}
+.new-menu-item:hover {
+  background-color: @bg_4;
+  border-color: transparent;
+}
+/* styles.css:618-625 — bold title over a dim, smaller description. */
+.new-menu-item-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: @text;
+}
+.new-menu-item-sub {
+  font-size: 10.5px;
+  color: @text_dim;
+}
+/* styles.css:609-611 — one hue per session kind, matching the sidebar glyphs
+   (#e3b341 scratch / #7ee787 orchestrator, as at theme.css:1735 and :1740). */
+.new-menu-item-icon.repo { color: @accent; }
+.new-menu-item-icon.scratch { color: #e3b341; }
+.new-menu-item-icon.orchestrator { color: #7ee787; }
 
 /* Symbolic recolouring for the new header buttons' icons, matching the
    existing list at theme.css:1555-1564. Without this GTK may render the icon
    in its own colour instead of inheriting the button's `color`. */
 .header-icon-btn image,
-.header-repo-btn image,
+.new-menu-item-icon,
 .pill-icon {
   -gtk-icon-style: symbolic;
 }

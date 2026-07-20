@@ -410,10 +410,27 @@ fn build_repo_header(s: &RepoHeaderSpec, sender: &Sender<Msg>) -> gtk::ListBoxRo
     let repo_name = ellipsized(&s.label, &["repo-name"]);
     repo_name.set_hexpand(true);
     cbox.append(&repo_name);
-    if let Some(account) = &s.account_id {
+    // Login badge — Electron's `<RepoAccountBadge>` (Sidebar.tsx:1607). Renders
+    // unconditionally: a repo pinning no account still shows the default-login
+    // badge, tinted by the global poller (`AccountBadge.tsx:302`).
+    {
+        let (acc_label, severity, tooltip) = &s.account;
         cbox.append(&label("·", &["ws-context-sep"]));
-        let acc = label(account, &["ws-login-badge"]);
-        acc.set_tooltip_text(Some("Account this repo's agents log in as"));
+        let acc = gtk::Label::new(None);
+        acc.set_markup(&format!(
+            "<span foreground=\"{}\">{}</span>",
+            login_color_hex(acc_label),
+            glib::markup_escape_text(acc_label),
+        ));
+        acc.add_css_class("ws-login-badge");
+        acc.set_widget_name(&format!("repo-account-label-{}", s.label));
+        match severity {
+            Some(sev) => acc.add_css_class(&format!("sev-{}", sev.css())),
+            // No reading yet (first poll in flight, or a hard usage error):
+            // the tooltip says which, and the badge stays untinted.
+            None => acc.add_css_class("pending"),
+        }
+        acc.set_tooltip_text(Some(tooltip));
         cbox.append(&acc);
     }
     collapse.set_child(Some(&cbox));

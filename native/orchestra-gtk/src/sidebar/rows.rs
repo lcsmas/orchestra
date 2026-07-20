@@ -111,7 +111,17 @@ pub struct RepoHeaderSpec {
     pub can_remove: bool,
     pub collapsed: bool,
     pub remote_url: Option<String>,
-    pub account_id: Option<String>,
+    /// Resolved login badge for this repo's pinned account: (label, severity,
+    /// tooltip) from [`resolve_account_badge`]. Electron renders
+    /// `<RepoAccountBadge>` here, which resolves `RepoEntry.accountId` to the
+    /// account's LABEL and falls back to the default-login badge when the repo
+    /// pins nothing (or pins a deleted account) — so this is unconditional,
+    /// exactly like `AccountUsageBadge` (`AccountBadge.tsx:302`).
+    ///
+    /// Previously this carried the raw `account_id`, which the header rendered
+    /// verbatim: a repo pinned to an account showed a bare UUID
+    /// (`605ea8c3-…`) where Electron shows the login name.
+    pub account: (String, Option<Severity>, String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -503,7 +513,11 @@ pub fn compute_rows(data: &SidebarData, ui: &SidebarUi) -> Vec<Row> {
             can_remove,
             collapsed,
             remote_url: repo.and_then(|r| r.remote_url.clone()),
-            account_id: repo.and_then(|r| r.account_id.clone()),
+            account: resolve_account_badge(
+                repo.and_then(|r| r.account_id.as_deref()),
+                data,
+                data.now_ms,
+            ),
         }));
         if collapsed {
             continue;
@@ -649,6 +663,52 @@ mod tests {
         // rather than leaking the id into the UI.
         let (label, _, _) = resolve_account_badge(Some("acc-gone"), &data, data.now_ms);
         assert_eq!(label, DEFAULT_LOGIN_LABEL);
+    }
+
+    /// The REPO HEADER's badge must resolve too — Electron renders
+    /// `<RepoAccountBadge>` there (Sidebar.tsx:1607), which maps
+    /// `RepoEntry.accountId` through the account list to its LABEL.
+    ///
+    /// Regression guard for the defect the user hit in the live app: the header
+    /// rendered `RepoHeaderSpec.account_id` verbatim, so a repo pinned to an
+    /// account showed a bare UUID (`605ea8c3-d852-…`) where Electron showed the
+    /// login name. Note `account_badge_resolves_label_not_id` above covers the
+    /// RESOLVER and passed throughout — the bug was that the repo header never
+    /// called it. Testing the helper is not testing its use.
+    #[test]
+    fn repo_header_badge_resolves_label_not_id() {
+        let mut data = mock_data();
+        data.now_ms = 1_752_930_000_000;
+        let repo_path = data.repos[0].path.clone();
+        data.repos[0].account_id = Some("acc-work".into());
+        data.account_labels = HashMap::from([("acc-work".to_string(), "work".to_string())]);
+
+        let rows = compute_rows(&data, &SidebarUi::default());
+        let header = rows
+            .iter()
+            .find_map(|r| match r {
+                Row::RepoHeader(s) if s.repo_path == repo_path => Some(s),
+                _ => None,
+            })
+            .expect("repo header row");
+
+        let (label, _, _) = &header.account;
+        assert_eq!(label, "work", "header must show the login label, not the id");
+        assert_ne!(label, "acc-work", "the raw account id must never reach the UI");
+
+        // A repo pinning NO account still renders a badge — Electron's
+        // AccountUsageBadge falls through to the default login rather than
+        // rendering nothing (AccountBadge.tsx:302).
+        data.repos[0].account_id = None;
+        let rows = compute_rows(&data, &SidebarUi::default());
+        let header = rows
+            .iter()
+            .find_map(|r| match r {
+                Row::RepoHeader(s) if s.repo_path == repo_path => Some(s),
+                _ => None,
+            })
+            .expect("repo header row");
+        assert_eq!(header.account.0, DEFAULT_LOGIN_LABEL);
     }
 
     /// An expired token keeps its cached usage and stays normally tinted (only
