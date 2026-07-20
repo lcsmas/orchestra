@@ -434,6 +434,98 @@ scenario(
 );
 
 // ---------------------------------------------------------------------------
+// D1b DIAGNOSTIC: what actually happens when the daemon moves to a new socket?
+//
+// Records the SEQUENCE of (ConnectionState, banner) across the whole window
+// rather than sampling where a state is expected — the real wedge has no
+// window at all (it never recovers), so any cadence tuned to a short-lived
+// state would miss it entirely. Each DISTINCT pair is logged with a timestamp;
+// the transitions, or their absence, carry the verdict:
+//
+//   • state reaches Disconnected, app does not recover  ⇒ app-side
+//     start_retry_loop / rediscovery
+//   • state never leaves Reconnecting past the give-up  ⇒ client give-up path
+//     in orchestra-rpc
+//
+// Diagnostic only: asserts nothing about recovery, so it reports rather than
+// fails. Opt-in because it deliberately runs long.
+// ---------------------------------------------------------------------------
+scenario(
+  'diagnose-reconnect-wedge',
+  async ({ sway, ctl }) => {
+    const home = mkTmp('diag-home');
+    const sockA = path.join(home, 'ui-a.sock');
+    const sockB = path.join(home, 'ui-b.sock');
+    let backend = await startFakeBackend(sockA, {
+      proto: 1,
+      appVersion: APP_VERSION,
+      backendKind: 'daemon',
+    });
+    fs.writeFileSync(path.join(home, 'ui-sock'), sockA + '\n');
+    const app = await launchGtk({ sway, label: 'diag', env: { ORCHESTRA_HOME: home } });
+
+    const seq = [];
+    let last = '';
+    const sample = async () => {
+      const cap = await appProbe(app)();
+      const state = cap.connectionState.status === 'value' ? cap.connectionState.value : `<${cap.connectionState.status}>`;
+      const banner = cap.banner.status === 'value' ? cap.banner.value : `<${cap.banner.status}>`;
+      const footer = cap.footer.status === 'value' ? cap.footer.value : `<${cap.footer.status}>`;
+      const key = `${state}|${banner}|${footer}`;
+      if (key !== last) {
+        last = key;
+        seq.push({ t: `+${((Date.now() - t0) / 1000).toFixed(1)}s`, state, banner, footer });
+      }
+      return cap;
+    };
+    ctl.probe = async () => ({ sequence: seq, note: 'D1b diagnostic — see sequence' });
+
+    const t0 = Date.now();
+    try {
+      await waitFor(
+        async () => {
+          const r = await app.rc.get('status-text', 'label').catch(() => null);
+          return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
+        },
+        { desc: 'initial attach', timeoutMs: 20_000 },
+      );
+      await sample();
+
+      // Daemon "restarts" on a NEW socket: close the old listener entirely
+      // (so nothing can redial it), then serve a different path and repoint.
+      await backend.close();
+      fs.rmSync(sockA, { force: true });
+      backend = await startFakeBackend(sockB, {
+        proto: 1,
+        appVersion: APP_VERSION,
+        backendKind: 'daemon',
+      });
+      fs.writeFileSync(path.join(home, 'ui-sock'), sockB + '\n');
+
+      // Watch for 200s — past the client's 180s give-up — sampling every 250ms.
+      const deadline = Date.now() + 200_000;
+      while (Date.now() < deadline) {
+        await sample();
+        await sleep(250);
+      }
+      return `sequence (${seq.length} distinct states):\n      ${seq
+        .map((s) => `${s.t} state=${s.state} banner="${s.banner}" footer="${s.footer}"`)
+        .join('\n      ')}`;
+    } finally {
+      app.stop();
+      await backend.close();
+    }
+  },
+  {
+    budgetMs: 260_000,
+    skip: () =>
+      process.env.E2E_DIAGNOSE === '1'
+        ? null
+        : 'D1b diagnostic — set E2E_DIAGNOSE=1 to run (watches for 200s past the give-up)',
+  },
+);
+
+// ---------------------------------------------------------------------------
 // POSITIVE CONTROL for the timeout capture (M4 D2a). Hangs deliberately while
 // the app sits in a state whose values are ALREADY KNOWN VERBATIM — D1a's
 // reconnecting window — and asserts the capture reports THOSE.

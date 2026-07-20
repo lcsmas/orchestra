@@ -240,6 +240,12 @@ struct Shared {
     focused: AtomicBool,
     closed: AtomicBool,
     reconnecting: AtomicBool,
+    /// Why the most recent reconnect attempt failed, categorised
+    /// (discovery / connect / handshake). Diagnostic only — the reconnect loop
+    /// treats every failure the same, but WHICH failure it was is what
+    /// distinguishes "the pointer was missing so we never dialled" from "we
+    /// dialled and were refused". See its write site in `reconnect_loop`.
+    last_retry_error: Mutex<Option<String>>,
     /// Millis (since `epoch`) of the last byte received.
     last_rx_ms: AtomicU64,
     epoch: Instant,
@@ -346,6 +352,7 @@ impl RpcClient {
             generation: AtomicU64::new(0),
             closed: AtomicBool::new(false),
             reconnecting: AtomicBool::new(false),
+            last_retry_error: Mutex::new(None),
             last_rx_ms: AtomicU64::new(0),
             epoch: Instant::now(),
             events_tx,
@@ -375,6 +382,14 @@ impl RpcClient {
             .lock()
             .expect("server_info lock")
             .clone()
+    }
+
+    /// Why the last reconnect attempt failed, categorised — `None` before any
+    /// retry has failed. Diagnostic surface for harnesses investigating
+    /// reconnect behaviour (M4 D1b): it separates "never dialled, the pointer
+    /// was absent" from "dialled and refused", which the loop itself collapses.
+    pub fn last_retry_error(&self) -> Option<String> {
+        self.shared.last_retry_error.lock().ok()?.clone()
     }
 
     pub fn is_connected(&self) -> bool {
@@ -702,6 +717,11 @@ fn reconnect_loop(shared: &Arc<Shared>) {
         let delay = policy.delay_ms(attempt);
         let elapsed = start.elapsed().as_millis() as u64;
         if policy.should_give_up(elapsed + delay) {
+            eprintln!(
+                "[orchestra-rpc] reconnect giving up at attempt {attempt}: \
+                 elapsed {elapsed}ms + delay {delay}ms exceeds {}ms",
+                policy.max_elapsed_ms
+            );
             shared.reconnecting.store(false, Ordering::SeqCst);
             shared.send_state(ConnectionState::Disconnected);
             return;
@@ -733,7 +753,46 @@ fn reconnect_loop(shared: &Arc<Shared>) {
                 shared.send_state(ConnectionState::Disconnected);
                 return;
             }
-            Err(_) => attempt += 1,
+            Err(e) => {
+                // WHY an attempt failed is three different facts, and the loop
+                // used to discard all three identically. They distinguish real
+                // causes: a DISCOVERY failure means we never even tried to
+                // connect (the ui-sock pointer was absent — the real daemon
+                // unlinks it on shutdown, so every redial in the gap before its
+                // replacement writes one burns an attempt and inflates the
+                // backoff), whereas a CONNECT or HANDSHAKE failure means we
+                // reached a path and it refused. Diagnosing the reconnect
+                // behaviour without this distinction is guesswork, so the
+                // reason is recorded for `last_retry_error()` and traced.
+                let kind = match &e {
+                    RpcError::Discovery(_) => "discovery",
+                    RpcError::Handshake(_) => "handshake",
+                    RpcError::Io(_) => "connect",
+                    _ => "other",
+                };
+                // ELAPSED is logged alongside attempt/kind because the three
+                // together discriminate the candidate wedges, and no single
+                // snapshot can:
+                //   - attempt CLIMBING  → loop alive, retrying forever: the
+                //     give-up exists but is never reached (suspect elapsed not
+                //     accumulating the way should_give_up expects).
+                //   - attempt STOPPED   → loop exited WITHOUT emitting
+                //     Disconnected: a silent exit, a different bug entirely.
+                // A stopped counter and a slowly-climbing one look identical in
+                // one sample, so this is emitted EVERY attempt to give the
+                // reader a sequence rather than a point.
+                let elapsed_ms = start.elapsed().as_millis() as u64;
+                let line = format!(
+                    "attempt {attempt} failed ({kind}) after {elapsed_ms}ms \
+                     of {}ms budget: {e}",
+                    policy.max_elapsed_ms
+                );
+                if let Ok(mut slot) = shared.last_retry_error.lock() {
+                    *slot = Some(line.clone());
+                }
+                eprintln!("[orchestra-rpc] reconnect {line}");
+                attempt += 1;
+            }
         }
     }
 }
