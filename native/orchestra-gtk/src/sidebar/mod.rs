@@ -1537,7 +1537,10 @@ fn find_named_entry(root: &impl IsA<gtk::Widget>, name: &str) -> Option<gtk::Ent
 }
 
 fn build_footer(input: &relm4::Sender<Msg>) -> gtk::Box {
-    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    // 2, not 8. `.sidebar-footer` computes to gap:2px in the running renderer
+    // (oracle: getComputedStyle, styles.css:1012) — these are tight icon buttons,
+    // and 8 was 4x the reference.
+    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     footer.add_css_class("sidebar-footer");
     footer.set_widget_name("sidebar-footer");
     let link = |glyph: &str, name: &str, tip: &str, url: &'static str| {
