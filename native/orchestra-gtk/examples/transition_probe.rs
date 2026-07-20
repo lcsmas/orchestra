@@ -98,6 +98,14 @@ fn probes() -> Vec<Probe> {
         // different code path, so it must be measured separately rather than
         // assumed to share that verdict.
         Probe { name: "transform",        css: "transform: translateX(40px);",      prop: "transform", expect_eases: None },
+        // Three more transform forms. A single negative on translateX would not
+        // distinguish "GTK ignores transform" from "GTK ignores THIS transform
+        // function" — and Electron uses translateY/rotate/scale, not translateX,
+        // so a verdict drawn from translateX alone would not even cover the
+        // real usage. Large magnitudes so any effect is unmissable.
+        Probe { name: "transform-translateY", css: "transform: translateY(20px);", prop: "transform", expect_eases: None },
+        Probe { name: "transform-rotate",     css: "transform: rotate(30deg);",    prop: "transform", expect_eases: None },
+        Probe { name: "transform-scale",      css: "transform: scale(1.6);",       prop: "transform", expect_eases: None },
     ]
 }
 
@@ -254,7 +262,22 @@ async fn run_probe(win: &gtk::ApplicationWindow, target: &gtk::Box, p: &Probe) -
     glib::timeout_future(std::time::Duration::from_millis(150)).await;
     await_frames(win, 2).await;
 
-    let before = snapshot_region(win, target.upcast_ref());
+    // Pin the crop rect from the SETTLED BASE state, before the toggle.
+    let rect = {
+        let w = win.width().max(1) as usize;
+        let h = win.height().max(1) as usize;
+        const PAD: i32 = 60;
+        match target.translate_coordinates(win, 0.0, 0.0) {
+            Some((tx, ty)) => Some((
+                ((tx as i32) - PAD).max(0) as usize,
+                ((ty as i32) - PAD).max(0) as usize,
+                (((tx as i32) + target.width() + PAD) as usize).min(w),
+                (((ty as i32) + target.height() + PAD) as usize).min(h),
+            )),
+            None => None,
+        }
+    };
+    let before = snapshot_region(win, target.upcast_ref(), rect);
 
     // Drive the state change. Class toggle, not a pointer: this probe is about
     // whether the ENGINE interpolates, which is independent of what causes the
@@ -267,14 +290,14 @@ async fn run_probe(win: &gtk::ApplicationWindow, target: &gtk::Box, p: &Probe) -
     let mut mids = Vec::new();
     for _ in 0..6 {
         glib::timeout_future(std::time::Duration::from_millis(45)).await;
-        mids.push(snapshot_region(win, target.upcast_ref()));
+        mids.push(snapshot_region(win, target.upcast_ref(), rect));
     }
 
     glib::timeout_future(std::time::Duration::from_millis(
         (DURATION_MS as u64) + 250,
     ))
     .await;
-    let after = snapshot_region(win, target.upcast_ref());
+    let after = snapshot_region(win, target.upcast_ref(), rect);
 
     gtk::style_context_remove_provider_for_display(&display, &provider);
 
@@ -329,7 +352,7 @@ async fn run_probe(win: &gtk::ApplicationWindow, target: &gtk::Box, p: &Probe) -
             return "n/a".into();
         }
         // Region width, not window width: these buffers are cropped.
-        let w = ((target.width() + 48).max(1)) as usize;
+        let w = rect.map(|(x0,_,x1,_)| x1-x0).unwrap_or(1).max(1);
         let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
         let mut count = 0usize;
         for i in (0..a.len()).step_by(4) {
@@ -479,7 +502,11 @@ fn tx_guard(rx: async_channel::Receiver<()>) -> glib::SourceId {
 ///    snapshot composites against nothing, so translucent fills and shadows
 ///    misreport. Rendering the window and then CROPPING keeps the opaque
 ///    backdrop while removing the irrelevant area.
-fn snapshot_region(win: &gtk::ApplicationWindow, target: &gtk::Widget) -> Vec<u8> {
+fn snapshot_region(
+    win: &gtk::ApplicationWindow,
+    target: &gtk::Widget,
+    pinned: Option<(usize, usize, usize, usize)>,
+) -> Vec<u8> {
     let full = snapshot_pixels(win);
     if full.is_empty() {
         return full;
@@ -490,14 +517,42 @@ fn snapshot_region(win: &gtk::ApplicationWindow, target: &gtk::Widget) -> Vec<u8
     // Target allocation in window coordinates, padded so outset box-shadow is
     // included — a shadow-only change would otherwise fall outside the crop and
     // read as "no effect".
-    const PAD: i32 = 24;
-    let Some((tx, ty)) = target.translate_coordinates(win, 0.0, 0.0) else {
-        return full;
+    //
+    // Anchored to the widget's position but with a FIXED size, which is the
+    // combination that survives a transform.
+    //
+    // Two failed alternatives, both caught by the controls:
+    //  - Following the live allocation: a transform changes the allocation, so
+    //    the buffer changed LENGTH mid-probe and translateY/rotate/scale all
+    //    came back as INSTRUMENT FAULT (uncomparable), not as results.
+    //  - Anchoring to the window centre: the target is centred by LAYOUT, not
+    //    at the window's geometric centre, so the crop landed on empty
+    //    background and even the known-good opacity control read zero — the
+    //    rig reporting, correctly, that it had gone blind.
+    //
+    // Taking the position once (from the settled base state) and holding the
+    // SIZE constant keeps every frame the same shape while still framing the
+    // widget, so motion into and out of the box is measurable.
+    const PAD: i32 = 60;
+    let (x0, y0, x1, y1) = match pinned {
+        // The rect is computed ONCE per probe from the settled base state and
+        // reused for every frame. Recomputing per frame is what let a
+        // transform change the buffer's length mid-probe.
+        Some(r) => r,
+        None => {
+            let Some((tx, ty)) = target.translate_coordinates(win, 0.0, 0.0) else {
+                return full;
+            };
+            let (tw, th) = (target.width(), target.height());
+            (
+                ((tx as i32) - PAD).max(0) as usize,
+                ((ty as i32) - PAD).max(0) as usize,
+                (((tx as i32) + tw + PAD) as usize).min(w),
+                (((ty as i32) + th + PAD) as usize).min(h),
+            )
+        }
     };
-    let x0 = ((tx as i32) - PAD).max(0) as usize;
-    let y0 = ((ty as i32) - PAD).max(0) as usize;
-    let x1 = (((tx as i32) + target.width() + PAD) as usize).min(w);
-    let y1 = (((ty as i32) + target.height() + PAD) as usize).min(h);
+    let (x1, y1) = (x1.min(w), y1.min(h));
     if x1 <= x0 || y1 <= y0 {
         return Vec::new();
     }
