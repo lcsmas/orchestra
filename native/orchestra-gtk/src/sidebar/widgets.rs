@@ -861,7 +861,11 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
     // tag + PR/Linear mini strip (matching the Electron layouts).
     let is_tree = s.tree.is_some();
     if !is_tree && s.pills.any() {
-        let strip = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        // 5px = `.ws-pills { gap: 5px }` (styles.css:1392). Each Electron pill
+        // also carries `margin-left: 6px`, but `.ws-pills > * { margin-left: 0 }`
+        // (styles.css:1397) zeroes it inside the strip, so the gap is the whole
+        // spacing — the mini strip below keeps 4px per `.ws-pills.mini`.
+        let strip = gtk::Box::new(gtk::Orientation::Horizontal, 5);
         strip.add_css_class("ws-pills");
         append_pills(&strip, s, sender);
         body.append(&strip);

@@ -115,16 +115,45 @@ def active_rows():
     return r
 
 
-target_row = None
-for name in rows:
-    r = rpc({"op": "get", "name": name, "prop": "css"})
-    classes = set(r.get("value", [])) if r.get("ok") else set()
-    if "active" not in classes:
-        target_row = name
-        break
+# WHICH row gets selected is a BOOT RACE by default. The scan below takes the
+# first row lacking `.active`, so the answer depends on whether the app's own
+# auto-selection has landed before the driver's first poll. Three rigs saw the
+# same commit yield different targets (ws-row-orch-1 / ws-row-orch-scratch-kid),
+# which matters because a before/after pair that quietly differs in SELECTED ROW
+# still looks like a rigorous comparison — it is a state mismatch, not a change.
+# Set ORCHESTRA_CAPTURE_ROW to pin the target when capturing a comparable pair.
+#
+# An absent pinned row FAILS LOUDLY and never falls back to the racy scan: a
+# silent fallback would restore the exact nondeterminism this flag removes while
+# reading as though the run were pinned, which is worse than having no flag.
+target_row = os.environ.get("ORCHESTRA_CAPTURE_ROW") or None
+if target_row is not None and target_row not in rows:
+    print(f"FAIL: ORCHESTRA_CAPTURE_ROW={target_row!r} is not among the rendered rows")
+    print(f"      rendered: {', '.join(rows)}")
+    sys.exit(1)
+if target_row is None:
+    for name in rows:
+        r = rpc({"op": "get", "name": name, "prop": "css"})
+        classes = set(r.get("value", [])) if r.get("ok") else set()
+        if "active" not in classes:
+            target_row = name
+            break
 if target_row is None:
     print("FAIL: every row already active — nothing to select")
     sys.exit(1)
+
+# A pinned row that is ALREADY `.active` makes the click below a no-op, and the
+# post-click assertion then passes VACUOUSLY — the class it checks for was there
+# before the click. The captures come out byte-identical to the unselected ones
+# and only the md5 duplicate guard notices. Refuse the target instead: this must
+# be caught here, where the cause is obvious, not downstream as a hash collision.
+if os.environ.get("ORCHESTRA_CAPTURE_ROW"):
+    r = rpc({"op": "get", "name": target_row, "prop": "css"})
+    if r.get("ok") and "active" in set(r.get("value", [])):
+        print(f"FAIL: ORCHESTRA_CAPTURE_ROW={target_row!r} is ALREADY active at boot")
+        print("      Clicking it is a no-op, so the 'selected' captures would be")
+        print("      byte-identical to the unselected ones. Pin a different row.")
+        sys.exit(1)
 
 if click(target_row):
     # Assert the selection actually moved onto the clicked row.
