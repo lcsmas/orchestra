@@ -31,9 +31,15 @@
 #
 # Exit 0 = no rendering-affecting change since capture. Exit 1 = stale.
 #
-# Usage: docs/visual-reference/check-fresh.sh [--at <commit>]
-#   --at lets you ask "is this set evidence about commit X" — used to prove the
-#   detector FIRES (point it at a pre-V3 commit, demand exit 1).
+# Usage: docs/visual-reference/check-fresh.sh [--at <commit>] [--dir <subdir>]
+#   --at  lets you ask "is this set evidence about commit X" — used to prove the
+#         detector FIRES (point it at a pre-V3 commit, demand exit 1).
+#   --dir points the check at a capture set in a SUBDIRECTORY (default: this
+#         script's own dir, the mock pair). Use `--dir real-backend` for the
+#         shared-backend pair, which has its own CAPTURED-AT.json. Both pairs
+#         are watched against the SAME rendering-affecting paths, so a code
+#         change staleness-fails both — which is correct: it moves pixels in
+#         either capture regardless of backend.
 set -euo pipefail
 
 # Everything whose change can move a pixel in either frontend. Deliberately
@@ -55,26 +61,38 @@ WATCHED=(
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-MANIFEST="$HERE/CAPTURED-AT.json"
 
 REF="HEAD"
-if [ "${1:-}" = "--at" ]; then REF="${2:?--at needs a commit}"; fi
+SUBDIR=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --at)  REF="${2:?--at needs a commit}"; shift 2 ;;
+    --dir) SUBDIR="${2:?--dir needs a subdirectory}"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+DIR="$HERE${SUBDIR:+/$SUBDIR}"
+MANIFEST="$DIR/CAPTURED-AT.json"
 WANT="$(git -C "$REPO" rev-parse "$REF")"
 
 # A MISSING manifest must fail, not pass. An unmanifested set is exactly the
 # state this tool exists to prevent, and "no manifest, no complaint" would make
 # deleting the file the easiest way to silence the check.
+# Which regenerator to point at, depending on which pair is being checked.
+REGEN="docs/visual-reference/recapture.sh"
+[ -n "$SUBDIR" ] && REGEN="docs/visual-reference/recapture-real.sh"
+
 if [ ! -f "$MANIFEST" ]; then
   echo "STALENESS CHECK FAILED: no $MANIFEST" >&2
   echo "  The capture set has no recorded provenance, so it cannot be trusted" >&2
-  echo "  as evidence about any commit. Regenerate: docs/visual-reference/recapture.sh" >&2
+  echo "  as evidence about any commit. Regenerate: $REGEN" >&2
   exit 1
 fi
 
 # Parsed with node (already a repo dependency) rather than jq, which is not
 # guaranteed present on this host.
-node - "$MANIFEST" "$WANT" "$HERE" "$REPO" "${WATCHED[@]}" <<'NODE'
-const [, , manifestPath, want, dir, repo, ...watched] = process.argv;
+node - "$MANIFEST" "$WANT" "$DIR" "$REPO" "$REGEN" "${WATCHED[@]}" <<'NODE'
+const [, , manifestPath, want, dir, repo, regen, ...watched] = process.argv;
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
@@ -157,6 +175,6 @@ if (missing.length) {
   for (const f of missing) console.error(`      - ${f}`);
 }
 console.error(`\n  Do NOT read these as evidence about ${short(want)}. Regenerate first:`);
-console.error(`    docs/visual-reference/recapture.sh`);
+console.error(`    ${regen}`);
 process.exit(1);
 NODE

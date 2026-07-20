@@ -1,0 +1,61 @@
+{
+  "_comment": "Provenance for the paired visual-reference captures. Each entry is the commit the capture was taken at. A capture is VALID evidence about ITS OWN commit and stale only when read as evidence about a later one — staleness is per-file-per-commit, not a property of this directory. check-fresh.sh fails when any entry is not HEAD.",
+  "captures": {
+    "electron-dialog.png": {
+      "commit": "5397b8bec0f6c7d548c0b8b8afaa8212d1bd67d3",
+      "md5": "d0e789cf534f4b29d2ac476f61ffb07f"
+    },
+    "electron-full-window.png": {
+      "commit": "5397b8bec0f6c7d548c0b8b8afaa8212d1bd67d3",
+      "md5": "3830433f45a3f014e5cbf92fb92f9972"
+    },
+    "electron-main-pane.png": {
+      "commit": "5397b8bec0f6c7d548c0b8b8afaa8212d1bd67d3",
+      "md5": "5a27d5794316c0a172ec551ca298c622"
+    },
+    "electron-sidebar-selected.png": {
+      "commit": "5397b8bec0f6c7d548c0b8b8afaa8212d1bd67d3",
+      "md5": "6e68ace01d426c29ef3f6081015c0818"
+    },
+    "electron-sidebar.png": {
+      "commit": "5397b8bec0f6c7d548c0b8b8afaa8212d1bd67d3",
+      "md5": "9e8657297c63744834c0036cba457b28"
+    },
+    "electron-toolbar.png": {
+      "commit": "5397b8bec0f6c7d548c0b8b8afaa8212d1bd67d3",
+      "md5": "47b6f8668a61f0360996a08d19c7ef9b"
+    },
+    "electron-workspace-selected.png": {
+      "commit": "5397b8bec0f6c7d548c0b8b8afaa8212d1bd67d3",
+      "md5": "2ed15b3a6f4436ce22a2829591b0c4c8"
+    },
+    "gtk-dialog.png": {
+      "commit": "5397b8bec0f6c7d548c0b8b8afaa8212d1bd67d3",
+      "md5": "a40efcc90cf9deda0913d438ba18f8fc"
+    },
+    "gtk-full-window.png": {
+      "commit": "5397b8bec0f6c7d548c0b8b8afaa8212d1bd67d3",
+      "md5": "dce8d886876a246a9bdd319c717a9102"
+    },
+    "gtk-main-pane.png": {
+      "commit": "5397b8bec0f6c7d548c0b8b8afaa8212d1bd67d3",
+      "md5": "c6f60e633926096e6cecaefbd64dc9bc"
+    },
+    "gtk-sidebar-selected.png": {
+      "commit": "5397b8bec0f6c7d548c0b8b8afaa8212d1bd67d3",
+      "md5": "cc57acd2a1821fb3ca045fc72c872f74"
+    },
+    "gtk-sidebar.png": {
+      "commit": "5397b8bec0f6c7d548c0b8b8afaa8212d1bd67d3",
+      "md5": "e61514ccb848b17ddbb68ed14e62ae8b"
+    },
+    "gtk-toolbar.png": {
+      "commit": "5397b8bec0f6c7d548c0b8b8afaa8212d1bd67d3",
+      "md5": "8bf0bb31bc612a919e65414ba002cac0"
+    },
+    "gtk-workspace-selected.png": {
+      "commit": "5397b8bec0f6c7d548c0b8b8afaa8212d1bd67d3",
+      "md5": "8818797b3d0e929dfd3ff1a5cb920c94"
+    }
+  }
+}

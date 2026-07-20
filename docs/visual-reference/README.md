@@ -34,17 +34,79 @@ a click that silently no-ops otherwise yields a duplicate screenshot that looks
 like a successful capture but proves nothing. This guard caught two such no-ops
 while building the pair.
 
-## Why the state matches on both sides
+## Two pairs, and why the mock pair's state does NOT fully match
+
+There are **two** reference pairs here, answering two different questions.
+
+### The mock pair (top level) — the deterministic E2E default
 
 The GTK app serves its fixture from compiled-in Rust
 (`native/orchestra-gtk/src/backend/mock.rs`, `ORCHESTRA_GTK_MOCK=1`); the
 Electron app reads a `store.json` off disk. So `seed-store.mjs` **mirrors
 `mock.rs` field for field** into an Electron store. Both frontends deserialize
-the same wire `Workspace` type, so the mirror is exact.
+the same wire `Workspace` type, so the SEED is an exact mirror.
 
 > **If you change `mock.rs`, update `seed-store.mjs` in the same change** —
-> otherwise the two halves of the pair stop showing the same state and the
-> comparison proves nothing.
+> otherwise the seeds stop describing the same state.
+
+**BUT an exact seed mirror does NOT make the captured state match**, and this is
+the trap the mock pair fell into. The GTK mock SERVES every field from the
+fixture, but Electron does not READ the seed for git/gh/du/usage-derived
+fields — it **recomputes them live** (`src/main/activity.ts`,
+`src/main/workspaces.ts`, `src/main/git.ts`) and OVERWRITES the seed. The repo
+paths are deliberately non-existent, so those live computations ERROR into empty
+states: no PR badges (just a `PR?` error), no size/version/unpushed pills, no
+repo-sync `↓N`, and the usage strip reads the developer's real `~/.claude`. So
+in the mock pair, **most "parity differences" are STATE differences, not
+rendering ones** — a mock can never mirror a field the other side computes live.
+(Measured: the seeds were confirmed field-for-field identical, yet the captures
+diverged on ~7 of 9 surfaces.)
+
+The mock pair is still the right default for deterministic E2E and it is the
+ONLY pair that renders the rich pill zoo (a live backend against absent repos
+renders none of it). Just do not read it as a rendering-parity yardstick.
+
+### The shared-backend pair (`real-backend/`) — the trustworthy rendering yardstick
+
+To compare RENDERING, both frontends must show the SAME data. `recapture-real.sh`
+→ `capture-real-pair.sh` runs **both frontends against ONE Electron backend**:
+Electron owns the backend lock and serves a ui-rpc socket for external frontends
+(`src/main/ui-rpc.ts` writes `<ORCHESTRA_HOME>/ui-sock`); the GTK app, launched
+**without** `ORCHESTRA_GTK_MOCK` against that same home, discovers the socket
+(`native/orchestra-gtk/src/backend.rs` `discover_socket`) and attaches as a
+second client (`app.rs` `attach_flow` — no daemon spawn, no lock contention).
+Each frontend gets its own headless sway (two clients in one compositor get
+tiled to ~half width), but they share ONE backend, so the data is identical by
+construction. Any remaining difference in this pair is a **real rendering /
+layout / feature difference** — including the fact that Electron renders a `PR?`
+error badge on every **repo-backed** row (the `gh` query fails against the
+absent repo) while the GTK sidebar renders none on that same data. Note "every
+repo-backed row", not "every row": `findPR` is keyed on a repo path, so the
+repo-less orchestrator/scratch rows (gtk4-port-coordinator, api-spelunking,
+verifier) get no `PR?` on EITHER side. The GTK gap is that its sidebar never
+polls `findPR` per row at all (only the selected-workspace toolbar does —
+`main_pane.rs`), so `data.prs` stays empty. A real feature gap, cleanly isolated
+by the shared backend, not state noise.
+
+The capture asserts (not assumes) the attach: it reads the GTK footer
+`status-text` over remote-control and requires `backend: electron`, rejecting a
+mock/daemon/none fallback that would silently produce a plausible non-shared
+capture.
+
+This pair does NOT exercise the pill zoo (absent repos → empty git/gh/usage on
+both sides). That is the correct trade: it proves DATA PARITY, which the mock
+pair cannot; the mock pair proves the pill zoo, which this one cannot.
+
+> **KNOWN-UNSTABLE REGION — the terminal pane.** The pinned selected row
+> (`ws-row-ws-3`, chime-volume) has a non-existent worktree, so selecting it
+> fires a `pty:start` error. Both frontends have the SAME two states — a
+> "Starting agent…" boot pill (`Terminal.tsx` / `boot_pill.rs`) then the red
+> error text once the failure arrives — but they receive the error at slightly
+> different moments, so a captured pair can show Electron with the error text
+> and GTK still on the boot pill. That is a TIMING difference, not a rendering
+> one. Do NOT read the terminal region of the `*-workspace-selected` /
+> `*-main-pane` captures as a parity signal. To remove the flake, pin a selected
+> row with a VALID worktree, or exclude the terminal region from any diff.
 
 The fixture deliberately exercises: orchestrator/scratch spawn trees (incl. a
 cross-repo grandchild), repo groups, every status dot, unread rows, the pill zoo
@@ -156,10 +218,13 @@ appears on your desktop.
 | `drive-electron.mjs` | Dep-free CDP driver (screenshots each surface) |
 | `capture-gtk.sh` | Headless sway + `ORCHESTRA_GTK_MOCK=1` + remote-control |
 | `drive-gtk.py` | Harness driver over the `--remote-control` socket |
-| `recapture.sh` | **Regenerate both halves + manifest in one command** |
-| `write-manifest.mjs` | Records commit + md5 per capture |
-| `check-fresh.sh` | **Fails loudly when a capture is not from `HEAD`** |
-| `CAPTURED-AT.json` | The provenance manifest itself |
+| `recapture.sh` | **Regenerate the MOCK pair (both halves) + manifest** |
+| `capture-real-pair.sh` | **Shared-backend capture** — both frontends on ONE Electron backend (GTK mock OFF, attaches to Electron ui-rpc); writes to `real-backend/` |
+| `recapture-real.sh` | **Regenerate the SHARED-BACKEND pair + manifest** (sibling of `recapture.sh`) |
+| `write-manifest.mjs` | Records commit + md5 per capture (works on either dir) |
+| `check-fresh.sh` | **Fails loudly when a capture is stale** (`--dir real-backend` checks the shared pair) |
+| `CAPTURED-AT.json` | The provenance manifest itself (one per pair dir) |
+| `real-backend/` | The shared-backend pair + its own `CAPTURED-AT.json` |
 
 ## Gotchas worth keeping
 
