@@ -397,8 +397,11 @@ fn build_repo_header(s: &RepoHeaderSpec, sender: &Sender<Msg>) -> gtk::ListBoxRo
     collapse.set_widget_name(&format!("repo-collapse-{}", s.label));
     collapse.add_css_class("repo-collapse");
     let cbox = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+    cbox.set_hexpand(true);
     cbox.append(&label(if s.collapsed { "▸" } else { "▾" }, &["caret"]));
-    cbox.append(&ellipsized(&s.label, &["repo-name"]));
+    let repo_name = ellipsized(&s.label, &["repo-name"]);
+    repo_name.set_hexpand(true);
+    cbox.append(&repo_name);
     if let Some(account) = &s.account_id {
         cbox.append(&label("·", &["ws-context-sep"]));
         let acc = label(account, &["ws-login-badge"]);
@@ -411,8 +414,18 @@ fn build_repo_header(s: &RepoHeaderSpec, sender: &Sender<Msg>) -> gtk::ListBoxRo
         let path = s.repo_path.clone();
         collapse.connect_clicked(move |_| sender.emit(Msg::ToggleRepoCollapsed(path.clone())));
     }
-    collapse.set_hexpand(true);
-    collapse.set_halign(gtk::Align::Start);
+    // hexpand goes on the ELLIPSIZING NAME LABEL inside the button, not on the
+    // button itself. A Button will not shrink below its child's natural width,
+    // so an hexpanding button claimed the whole row and pushed the GitHub/gear
+    // /remove actions off the right edge — they were constructed and present in
+    // the widget tree (verified via the remote-control harness) but had no
+    // space to lay out in, so the repo header rendered as a truncated
+    // "ORCHEST…" with only the count and "+" visible.
+    //
+    // This is why the gear and GitHub icons read as "missing" in a capture
+    // while the code that builds them is plainly there: a layout defect, not a
+    // missing asset. `build_section_header` above already does it this way.
+    collapse.set_halign(gtk::Align::Fill);
     hbox.append(&collapse);
 
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 2);

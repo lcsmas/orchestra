@@ -594,18 +594,51 @@ struct WorktreeSizesReply {
     exclusive: bool,
 }
 
-/// Header action button (the top strip: Help / Bell / Accounts / Scratch /
-/// Orchestrator / + Repo).
-fn header_button(
+/// Icon-only header button — Electron's `.header-icon-btn` (Sidebar.tsx:1363),
+/// a 28x28 square used for help / bell / accounts / the overlay triggers.
+///
+/// Split from [`header_repo_button`] because Electron genuinely has two header
+/// button shapes, and collapsing them is what produced the defect this
+/// replaces: the create buttons rendered as bare icon squares with their
+/// labels missing, which the user read as broken chrome.
+fn header_icon_button(
+    icon: &str,
+    name: &str,
+    tooltip: &str,
+    sender: &relm4::Sender<Msg>,
+    msg: impl Fn() -> Msg + 'static,
+) -> gtk::Button {
+    let b = gtk::Button::new();
+    b.set_child(Some(&crate::icons::image_sized(icon, 15)));
+    b.set_widget_name(name);
+    b.add_css_class("header-icon-btn");
+    b.set_tooltip_text(Some(tooltip));
+    let sender = sender.clone();
+    b.connect_clicked(move |_| sender.emit(msg()));
+    b
+}
+
+/// Labelled create button — Electron's `.header-repo-btn` (Sidebar.tsx:1387),
+/// an icon PLUS a text label ("Scratch" / "Orchestrator" / "Repo").
+///
+/// The label is the point: these are the primary create actions in the app,
+/// and without it two of them were indistinguishable dark squares.
+fn header_repo_button(
+    icon: &str,
     label: &str,
     name: &str,
     tooltip: &str,
     sender: &relm4::Sender<Msg>,
     msg: impl Fn() -> Msg + 'static,
 ) -> gtk::Button {
-    let b = gtk::Button::with_label(label);
+    let b = gtk::Button::new();
+    // gap: 4px — styles.css:456.
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    row.append(&crate::icons::image_sized(icon, 13));
+    row.append(&gtk::Label::new(Some(label)));
+    b.set_child(Some(&row));
     b.set_widget_name(name);
-    b.add_css_class("sidebar-header-btn");
+    b.add_css_class("header-repo-btn");
     b.set_tooltip_text(Some(tooltip));
     let sender = sender.clone();
     b.connect_clicked(move |_| sender.emit(msg()));
@@ -639,65 +672,86 @@ impl Component for Sidebar {
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         header.add_css_class("sidebar-header");
         header.set_widget_name("sidebar-header");
-        let title = gtk::Label::new(Some("WORKSPACES"));
+        // Electron's wordmark (Sidebar.tsx:1360 `<h1>Orchestra</h1>`), not the
+        // "WORKSPACES" section label the port had — this is the app's title,
+        // not a heading for the list below it.
+        let title = gtk::Label::new(Some("Orchestra"));
         title.set_xalign(0.0);
         title.add_css_class("sidebar-title");
         title.set_widget_name("sidebar-title");
         title.set_hexpand(true);
         header.append(&title);
-        // Overlay/settings triggers, in Electron's header order
-        // (`Sidebar.tsx:1362–1385`: help, bell, then the create buttons). These
-        // used to sit on the debug status strip; App owns what they open, so
-        // they route out through SidebarOutput::HeaderAction.
-        header.append(&header_button(
-            "📊",
+
+        // Actions, in Electron's order (Sidebar.tsx:1361-1413): the icon-only
+        // triggers first, then the three LABELLED create buttons.
+        //
+        // Every one of these was an emoji or bare character before: 📊 💡 🔔 ?
+        // for the triggers, and — the defect the user reported — ⚡ and 🌿 alone
+        // as the Scratch and Orchestrator buttons, which rendered as two blank
+        // dark squares because an emoji in a Button label is not an icon.
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6); // gap: 6px, styles.css:451
+        actions.add_css_class("sidebar-header-actions");
+        actions.set_widget_name("sidebar-header-actions");
+        actions.set_halign(gtk::Align::End);
+
+        actions.append(&header_icon_button(
+            crate::icons::HELP,
+            "open-help",
+            "Help — what Orchestra can do",
+            &input,
+            || Msg::Header(HeaderAction::OpenHelp),
+        ));
+        actions.append(&header_icon_button(
+            crate::icons::BELL,
+            "open-sound",
+            "Notification sound settings",
+            &input,
+            || Msg::Header(HeaderAction::OpenSoundPicker),
+        ));
+        // Resources and Insights have no Electron header counterpart (they are
+        // reached from the footer / their own sections there). They are kept
+        // here because this port currently has no other entry point for them —
+        // flagged rather than silently dropped.
+        actions.append(&header_icon_button(
+            crate::icons::RESOURCES,
             "open-resources",
             "Resources — CPU, memory, disk and token usage",
             &input,
             || Msg::Header(HeaderAction::OpenResources),
         ));
-        header.append(&header_button(
-            "💡",
+        actions.append(&header_icon_button(
+            crate::icons::INSIGHTS,
             "open-insights",
             "Insights — monthly self-tune runs",
             &input,
             || Msg::Header(HeaderAction::OpenInsights),
         ));
-        header.append(&header_button(
-            "🔔",
-            "open-sound",
-            "Notification sound",
-            &input,
-            || Msg::Header(HeaderAction::OpenSoundPicker),
-        ));
-        header.append(&header_button(
-            "?",
-            "open-help",
-            "What Orchestra can do",
-            &input,
-            || Msg::Header(HeaderAction::OpenHelp),
-        ));
-        header.append(&header_button(
-            "+ Repo",
-            "header-add-repo",
-            "Map a git repo into Orchestra",
-            &input,
-            || Msg::AddRepo,
-        ));
-        header.append(&header_button(
-            "⚡",
+
+        actions.append(&header_repo_button(
+            crate::icons::ZAP,
+            "Scratch",
             "header-new-scratch",
-            "New scratch session",
+            "New scratch session — throwaway, no git repo needed",
             &input,
             || Msg::NewScratch,
         ));
-        header.append(&header_button(
-            "🌿",
+        actions.append(&header_repo_button(
+            crate::icons::ORCHESTRATOR,
+            "Orchestrator",
             "header-new-orchestrator",
-            "New orchestrator",
+            "New orchestrator — an agent that delegates work by spawning child agents",
             &input,
             || Msg::NewOrchestrator,
         ));
+        actions.append(&header_repo_button(
+            crate::icons::FOLDER_PLUS,
+            "Repo",
+            "header-add-repo",
+            "New workspace from a git repo…",
+            &input,
+            || Msg::AddRepo,
+        ));
+        header.append(&actions);
         root.append(&header);
 
         // ---- scrolling row list -----------------------------------------
@@ -1517,12 +1571,7 @@ impl Sidebar {
     /// row, its current parent (already there) and its own descendants — a
     /// cycle the backend would reject anyway, so it is never offered. Plus a
     /// "Detach" entry when the row currently has a parent.
-    fn open_attach_menu(
-        &self,
-        sender: &ComponentSender<Self>,
-        ws_id: String,
-        anchor: gtk::Widget,
-    ) {
+    fn open_attach_menu(&self, sender: &ComponentSender<Self>, ws_id: String, anchor: gtk::Widget) {
         let current_parent = self.workspace(&ws_id).and_then(|w| w.parent_id.clone());
         let descendants = self.descendants_of(&ws_id);
         let candidates: Vec<(String, String)> = self
