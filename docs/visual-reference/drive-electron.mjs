@@ -123,16 +123,44 @@ else console.warn('  ! .sidebar not found — skipping sidebar crop');
 // Click a row that is NOT already active. The app boots with the first row
 // selected, so clicking `.ws-item[0]` is a no-op that yields a screenshot
 // byte-identical to the full-window one — a capture that silently proves
-// nothing. Pick the first INACTIVE row and assert the selection moved.
+// nothing. Assert the selection moved.
+//
+// ORCHESTRA_CAPTURE_ROW pins WHICH row, and honouring it here is what makes a
+// GTK/Electron pair comparable: drive-gtk.py has always pinned by name while
+// this driver took "the first inactive row", so the two halves silently
+// selected DIFFERENT workspaces and every selected-state pair compared unlike
+// things while looking rigorous. Unpinned behaviour is unchanged.
+const pinRow = process.env.ORCHESTRA_CAPTURE_ROW ?? '';
 const selected = await evaluate(`(() => {
+  const pin = ${JSON.stringify(pinRow)};
   const rows = [...document.querySelectorAll('.ws-item')];
+  const label = (r) => r.textContent.trim();
+  if (pin) {
+    const hit = rows.find((r) => label(r).includes(pin));
+    // Fail loudly rather than falling back to the racy scan: a silent fallback
+    // would reintroduce the mismatch this pin exists to remove.
+    if (!hit) return { error: 'notfound', rows: rows.map(label) };
+    if (hit.classList.contains('active')) return { error: 'already-active', name: label(hit) };
+    const name = label(hit).slice(0, 40);
+    hit.click();
+    return { name };
+  }
   const target = rows.find((r) => !r.classList.contains('active'));
-  if (!target) return null;
-  const name = target.textContent.trim().slice(0, 40);
+  if (!target) return { error: 'no-inactive' };
+  const name = label(target).slice(0, 40);
   target.click();
-  return name;
+  return { name };
 })()`);
-if (!selected) {
+if (selected?.error === 'notfound') {
+  console.error(`FAIL: ORCHESTRA_CAPTURE_ROW=${pinRow} matched no row. Rendered rows:`);
+  selected.rows.forEach((r) => console.error(`  ${r}`));
+  process.exit(1);
+}
+if (selected?.error === 'already-active') {
+  console.error(`FAIL: pinned row "${selected.name}" is ALREADY active — the click would be a no-op`);
+  process.exit(1);
+}
+if (!selected?.name) {
   console.error('FAIL: no inactive .ws-item to select');
   process.exit(1);
 }

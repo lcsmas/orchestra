@@ -21,7 +21,12 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-export ORCHESTRA_CAPTURE_ROW="${ORCHESTRA_CAPTURE_ROW:-ws-row-ws-4}"
+# Pin a MID-LIST row. The app auto-selects a row at boot and WHICH row differs
+# between builds, but auto-selection only ever lands on tree-top rows — so a
+# mid-list pin turns a flaky retry loop into a one-shot. ws-4 was the old pin
+# and became auto-selected on this tip, which fails the already-active guard
+# and hard-fails the whole run.
+export ORCHESTRA_CAPTURE_ROW="${ORCHESTRA_CAPTURE_ROW:-ws-row-ws-mc-1}"
 
 if ! git -C "$REPO" diff --quiet HEAD -- native/orchestra-gtk src; then
   echo "WARNING: uncommitted changes under native/orchestra-gtk or src/." >&2
