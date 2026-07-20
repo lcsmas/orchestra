@@ -15,7 +15,7 @@ use gtk::prelude::*;
 use vte4::prelude::*;
 
 use super::boot_pill::{self, BootPill, PillKind, Trigger};
-use super::{term_bg, term_fg, term_palette, terminal_font};
+use super::{term_bg, term_cursor, term_fg, term_palette, term_selection, terminal_font};
 use crate::ctx::Ctx;
 
 /// Which kind of PTY a pane fronts — governs Ctrl+C policy, auto-start, and
@@ -102,6 +102,8 @@ impl TerminalPane {
         let palette = term_palette();
         let palette_refs: Vec<&gtk::gdk::RGBA> = palette.iter().collect();
         term.set_colors(Some(&term_fg()), Some(&term_bg()), &palette_refs);
+        term.set_color_cursor(Some(&term_cursor()));
+        term.set_color_highlight(Some(&term_selection()));
         term.set_scrollback_lines(10_000);
         term.set_scroll_on_output(false);
         term.set_scroll_on_keystroke(true);

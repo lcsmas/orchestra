@@ -35,33 +35,56 @@ fn rgba(hex: &str) -> gdk::RGBA {
     hex.parse().expect("valid hex color")
 }
 
-/// Foreground / background used by every pane (prototype palette).
+/// Foreground / background used by every pane.
+///
+/// These MUST track `src/renderer/term-theme.ts` (`TERM_THEME`), which is the
+/// source of truth for both frontends' terminal colors — the renderer's
+/// `.terminal-pane` background is itself a hardcoded mirror of it
+/// (styles.css:2395, with a comment saying so). The background is `--bg-3`,
+/// NOT `--bg`: the terminal is the largest surface in the app, so a wrong
+/// layer here reads as the whole app being the wrong color.
 pub fn term_fg() -> gdk::RGBA {
     rgba("#e6e9ef")
 }
 pub fn term_bg() -> gdk::RGBA {
-    rgba("#0b0d10")
+    rgba("#1a1f26")
 }
 
-/// The 16-color ANSI palette, lifted verbatim from the GTK prototype (which in
-/// turn tracks the renderer's `styles.css` terminal tokens).
+/// Cursor and selection, also from `TERM_THEME`. VTE leaves these at its own
+/// defaults unless set explicitly, so omitting them is a visible divergence.
+pub fn term_cursor() -> gdk::RGBA {
+    rgba("#6ea8ff")
+}
+pub fn term_selection() -> gdk::RGBA {
+    rgba("#334155")
+}
+
+/// The 16-color ANSI palette — Ghostty's default (Tomorrow Night), ported
+/// 1:1 from `TERM_THEME` in `src/renderer/term-theme.ts`.
+///
+/// Do NOT substitute the app's UI accent tokens here. An earlier version of
+/// this function used `@accent`/`@green`/`@red` and matched Electron in 0 of
+/// 16 slots (deltas up to 94/255), which is why Claude's TUI rendered with
+/// visibly different colors in the two frontends. The renderer picked this
+/// palette deliberately: without it xterm.js falls back to a legacy VGA-ish
+/// scheme that made the TUI look harsher than a native terminal.
 pub fn term_palette() -> [gdk::RGBA; 16] {
     [
-        rgba("#0b0d10"),
-        rgba("#ff6b6b"),
-        rgba("#5bd68b"),
-        rgba("#ffc857"),
-        rgba("#6ea8ff"),
-        rgba("#c792ea"),
-        rgba("#7fdbca"),
-        rgba("#e6e9ef"),
-        rgba("#333b47"),
-        rgba("#ff8f8f"),
-        rgba("#7fe3a8"),
-        rgba("#ffd77e"),
-        rgba("#8fbcff"),
-        rgba("#d7b3f0"),
-        rgba("#a3ebdd"),
-        rgba("#ffffff"),
+        rgba("#1d1f21"),
+        rgba("#cc6666"),
+        rgba("#b5bd68"),
+        rgba("#f0c674"),
+        rgba("#81a2be"),
+        rgba("#b294bb"),
+        rgba("#8abeb7"),
+        rgba("#c5c8c6"),
+        rgba("#666666"),
+        rgba("#d54e53"),
+        rgba("#b9ca4a"),
+        rgba("#e7c547"),
+        rgba("#7aa6da"),
+        rgba("#c397d8"),
+        rgba("#70c0b1"),
+        rgba("#eaeaea"),
     ]
 }

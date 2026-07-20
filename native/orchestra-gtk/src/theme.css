@@ -23,6 +23,17 @@
 @define-color green #5bd68b;
 @define-color red #ff6b6b;
 @define-color yellow #ffc857;
+/* Tokens Electron's :root defines that this file previously only ever spelled
+   as literals. Added so a value has ONE home here as it does there; the port
+   had 14 tokens against 93 hex literals, which is how independently-appended
+   blocks drifted without a single selector conflict. */
+@define-color accent_bright #7ab4ff;
+/* Ink for text sitting on an accent-filled surface. */
+@define-color accent_ink #081022;
+@define-color accent_2 #8b7cff;
+/* Session-kind accents — scratch (amber) and orchestrator (green). */
+@define-color scratch #e3b341;
+@define-color orchestrator #7ee787;
 
 /* 2 ── base chrome */
 window {
@@ -51,16 +62,20 @@ scrollbar slider {
 }
 
 /* Terminal stack (plan §5.2): the VTE panes paint their own bg via
-   set_colors; the boot pill floats centered over them. */
+   set_colors; the boot pill floats centered over them.
+   These track the terminal background (@bg_3 = TERM_THEME.background in
+   src/renderer/term-theme.ts), NOT @bg — the renderer's `.terminal-pane`
+   is @bg_3 and every ancestor above it is transparent, so this is the
+   layer the user actually sees across the app's largest surface. */
 #terminal-stack {
-  background-color: @bg;
+  background-color: @bg_3;
 }
 .term-scroll {
-  background-color: #0b0d10;
+  background-color: @bg_3;
 }
 .boot-pill {
   background-color: alpha(#1b2029, 0.94);
-  color: #e6e9ef;
+  color: @text;
   border: 1px solid alpha(#8fbcff, 0.4);
   border-radius: 999px;
   padding: 8px 18px;
@@ -79,15 +94,31 @@ scrollbar slider {
 }
 
 /* 3 ── sidebar */
+/* Electron paints the sidebar with a translucent vertical gradient over --bg
+   (styles.css:513), not a flat fill — the DOM oracle reports
+   backgroundColor: rgba(0,0,0,0) with the paint living in background-image.
+   A flat @bg_2 lands within ~1/255 of the END stop, so a region diff calls it
+   a match while the vertical ramp is entirely missing. Ported 1:1; the
+   backdrop-filter blur has no GTK equivalent and is deliberately omitted (the
+   surface behind it is opaque @bg, so the blur is a no-op on color).
+
+   background-color is the BACKDROP the translucent stops composite over, and
+   it is load-bearing: GTK does not inherit the window's @bg here, so without
+   it the sidebar measured (25,28,33) against Electron's (18,21,27) — lighter
+   than even the un-composited stops. The end stop is exactly @bg_2, which is
+   why the previous flat `background-color: @bg_2` matched on average while
+   missing the ramp entirely. */
 .sidebar {
-  background-color: @bg_2;
+  background-color: @bg;
+  background-image: linear-gradient(180deg,
+                                    alpha(#151921, 0.85) 0%,
+                                    alpha(@bg_2, 0.92) 100%);
+  border-right: 1px solid @border;
 }
-.sidebar-title {
-  color: @text_dim;
-  font-weight: 700;
-  font-size: 11px;
-  padding: 12px 14px 6px 14px;
-}
+/* NOTE: a `.sidebar-title` block here (11px, @text_dim) was DEAD — a later
+   block wins on source order with 15px/@accent, which is what actually mirrors
+   Electron's `.sidebar-header h1` (styles.css:782). Removed; see that later
+   block for the operative rule and the known gradient-fill gap. */
 listbox {
   background: transparent;
 }
@@ -160,10 +191,11 @@ list row:selected label {
 /* 3b ── sidebar (M2-B1): header, sections, trees, pills, actions.
  * The full §5.1 surface; matches the Electron sidebar's compact look. */
 
-/* Header action strip (Resources / Insights / 🔔 / ? / + Repo / ⚡ / 🌿). */
-.sidebar-header {
-  padding: 8px 8px 4px 12px;
-}
+/* Header action strip (Resources / Insights / 🔔 / ? / + Repo / ⚡ / 🌿).
+   NOTE: the `.sidebar-header` padding rule that used to sit here (8px 8px 4px
+   12px) was DEAD — a second `.sidebar-header` block later in this file wins on
+   source order and sets Electron's 14px 16px. Removed rather than left to
+   mislead; the operative rule is in §"sidebar chrome" below. */
 .sidebar-header-btn {
   background-color: @bg_3;
   border: 1px solid @border;
@@ -426,9 +458,9 @@ list row:selected label {
   text-transform: uppercase;
 }
 .pill.released-pill {
-  background-color: rgba(126, 231, 135, 0.10);
-  color: #7ee787;
-  border: 1px solid rgba(126, 231, 135, 0.32);
+  background-color: alpha(@orchestrator, 0.10);
+  color: @orchestrator;
+  border: 1px solid alpha(@orchestrator, 0.32);
 }
 .pill.unpushed-pill {
   background-color: rgba(245, 196, 107, 0.10);
@@ -517,7 +549,7 @@ list row:selected label {
 }
 .env-notice {
   padding: 9px 12px;
-  background-color: rgba(255, 200, 87, 0.06);
+  background-color: alpha(@yellow, 0.06);
 }
 /* styles.css:823 — `.env-notice + .env-notice { border-top }`. GTK4 CSS has
    no adjacent-sibling combinator, so the equivalent class is applied to every
@@ -553,10 +585,9 @@ list row:selected label {
 }
 
 /* Footer link strip. */
-.sidebar-footer {
-  border-top: 1px solid @border;
-  padding: 4px 10px;
-}
+/* NOTE: a `.sidebar-footer` block here (padding 4px 10px) was DEAD — a later
+   block wins on source order. The operative rule now carries Electron's
+   5px 10px (styles.css:1005); see below. */
 .footer-link {
   background: transparent;
   border: none;
@@ -697,19 +728,19 @@ popover modelbutton:hover {
   font-size: 20px;
 }
 .orch-dialog.tone-info .dlg-icon {
-  background-color: alpha(#6ea8ff, 0.12);
+  background-color: alpha(@accent, 0.12);
   color: @accent;
-  box-shadow: inset 0 0 0 1px alpha(#6ea8ff, 0.3);
+  box-shadow: inset 0 0 0 1px alpha(@accent, 0.3);
 }
 .orch-dialog.tone-success .dlg-icon {
-  background-color: alpha(#5bd68b, 0.12);
+  background-color: alpha(@green, 0.12);
   color: @green;
-  box-shadow: inset 0 0 0 1px alpha(#5bd68b, 0.3);
+  box-shadow: inset 0 0 0 1px alpha(@green, 0.3);
 }
 .orch-dialog.tone-error .dlg-icon {
-  background-color: alpha(#ff6b6b, 0.12);
+  background-color: alpha(@red, 0.12);
   color: @red;
-  box-shadow: inset 0 0 0 1px alpha(#ff6b6b, 0.3);
+  box-shadow: inset 0 0 0 1px alpha(@red, 0.3);
 }
 .dlg-title {
   /* styles.css:2526-2532 — 15px/600, full-brightness. GTK 4.18 accepts the
@@ -1072,8 +1103,19 @@ entry:focus-within {
    §7  Main pane: toolbar, tabs, branch chips + picker  (B3)
    ============================================================ */
 
+/* NOTE: `.main-area` is also declared at the top of this file (§2 base chrome)
+   with the same value; kept here as the §7 section anchor. The welcome screen
+   renders on this surface and already matches Electron at @bg — do NOT retint
+   it, the workspace-content branch is where the divergence lived.
+
+   `#main-content` is a WIDGET NAME (main_pane.rs sets set_widget_name), so it
+   needs the `#` ID selector — the `.main-content` CLASS rule that used to sit
+   here matched nothing (no add_css_class("main-content") exists) and was dead.
+   It stays @bg: Electron's `main.main` / `.pane-row` / `.pane` are all
+   rgba(0,0,0,0) over #root's --bg, so this container is genuinely the base
+   layer; the visible @bg_3 comes from the terminal surface inside it. */
 .main-area { background-color: @bg; }
-.main-content { background-color: @bg; }
+#main-content { background-color: @bg; }
 .empty-title { font-size: 1.4em; font-weight: 700; color: @text; }
 /* Dim "· setup" suffix on the Run tab when the repo has no run script. */
 .tab-dim { color: @text_dim; opacity: 0.75; font-size: 0.9em; }
@@ -1109,7 +1151,7 @@ entry:focus-within {
   border-bottom: 1px solid @border;
   background-image: linear-gradient(180deg,
                                     rgba(24, 28, 35, 0.75) 0%,
-                                    rgba(18, 21, 26, 0.85) 100%);
+                                    alpha(@bg_2, 0.85) 100%);
 }
 
 /* Branch chips ------------------------------------------------ */
@@ -1247,7 +1289,7 @@ entry:focus-within {
 
 .setup-banner { padding: 8px 10px; border-bottom: 1px solid @border; }
 .setup-banner.running { background-color: @bg_3; }
-.setup-banner.failed { background-color: rgba(255,107,107,0.12); }
+.setup-banner.failed { background-color: alpha(@red, 0.12); }
 .setup-banner.ok { background-color: @bg_2; }
 .setup-banner-title { font-weight: 600; color: @text; }
 .setup-banner-sub { color: @text_dim; font-size: 0.9em; }
@@ -1265,7 +1307,7 @@ entry:focus-within {
 }
 
 .queue-banner { padding: 8px 10px; border-bottom: 1px solid @border; background-color: @bg_2; }
-.queue-banner.limited { background-color: rgba(255,200,87,0.10); }
+.queue-banner.limited { background-color: alpha(@yellow, 0.10); }
 .queue-banner-title { font-weight: 600; color: @text; }
 .queue-banner-sub { color: @text_dim; font-size: 0.9em; }
 .queue-banner-list row { padding: 2px 4px; }
@@ -1282,7 +1324,7 @@ entry:focus-within {
 .sandbox-control-bar {
   padding: 6px 10px;
   border-bottom: 1px solid @border;
-  background-color: rgba(110,168,255,0.10);
+  background-color: alpha(@accent, 0.10);
 }
 .sandbox-control-dot {
   min-width: 8px;
@@ -1302,9 +1344,11 @@ entry:focus-within {
 /* ---- accounts / usage / login (plan §5.4) -------------------------------- */
 
 /* Sidebar footer: usage-bars strip over the Accounts button. */
+/* Electron: styles.css:1005 — border-top 1px @border, padding 5px 10px.
+   (Was 8px here, which is neither of the two values Electron uses.) */
 .sidebar-footer {
   border-top: 1px solid @border;
-  padding: 8px;
+  padding: 5px 10px;
 }
 .accounts-open {
   color: @text_dim;
@@ -1491,8 +1535,8 @@ entry:focus-within {
 }
 .account-inherit-chip:hover { border-color: rgba(255, 255, 255, 0.22); }
 .account-inherit-chip:checked {
-  border-color: rgba(110, 168, 255, 0.6);
-  background-color: rgba(110, 168, 255, 0.12);
+  border-color: alpha(@accent, 0.6);
+  background-color: alpha(@accent, 0.12);
 }
 
 /* Help overlay (styles.css:4288-4304). `.help-item` is a Box: its 150px/1fr
@@ -1567,8 +1611,8 @@ entry:focus-within {
 .branch-chip-icon { opacity: 0.8; }
 
 /* The accent chip is `.branch-chip.head` (styles.css:1865-1869):
-   color var(--accent) #6ea8ff, background rgba(110,168,255,0.1),
-   border-color rgba(110,168,255,0.35). The port previously used a `.current`
+   color var(--accent) @accent, background alpha(@accent, 0.1),
+   border-color alpha(@accent, 0.35). The port previously used a `.current`
    class that has NO rule in styles.css, which is why it rendered flat grey. */
 .branch-chip.head {
   color: @accent;
@@ -1732,14 +1776,14 @@ entry:focus-within {
    literals are Electron's, which differ slightly from this file's @yellow /
    @green tokens. */
 .branch-chip.scratch {
-  color: #e3b341;
-  background-color: rgba(227, 179, 65, 0.1);
-  border-color: rgba(227, 179, 65, 0.35);
+  color: @scratch;
+  background-color: alpha(@scratch, 0.1);
+  border-color: alpha(@scratch, 0.35);
 }
 .branch-chip.orchestrator {
-  color: #7ee787;
-  background-color: rgba(126, 231, 135, 0.1);
-  border-color: rgba(126, 231, 135, 0.35);
+  color: @orchestrator;
+  background-color: alpha(@orchestrator, 0.1);
+  border-color: alpha(@orchestrator, 0.35);
 }
 
 /* styles.css:1885-1888 — `.branch-chip svg { opacity: 0.8 }`. The icon
@@ -1859,8 +1903,8 @@ entry:focus-within {
 .pr-link {
   padding: 6px 12px;
   border-radius: 8px;
-  background-color: rgba(110, 168, 255, 0.08);
-  border: 1px solid rgba(110, 168, 255, 0.28);
+  background-color: alpha(@accent, 0.08);
+  border: 1px solid alpha(@accent, 0.28);
   color: @accent;
   font-weight: 600;
 }
@@ -1869,23 +1913,23 @@ entry:focus-within {
    parses clean and is inert, so porting it would look done and change no
    pixels. The shadow and colour shift carry the hover state instead. */
 .pr-link:hover {
-  background-color: rgba(110, 168, 255, 0.16);
-  border-color: rgba(110, 168, 255, 0.55);
-  box-shadow: 0 4px 14px rgba(74, 140, 255, 0.18);
+  background-color: alpha(@accent, 0.16);
+  border-color: alpha(@accent, 0.55);
+  box-shadow: 0 4px 14px alpha(@accent_strong, 0.18);
 }
 /* `.primary` is applied by sync_pr_button for the OPEN-PR state. It must not
    re-skin the button — upstream both states share one look and differ only by
    the trailing arrow — so this deliberately holds the same values rather than
    the solid fill the port had. */
 .pr-link.primary {
-  background-color: rgba(110, 168, 255, 0.08);
-  border-color: rgba(110, 168, 255, 0.28);
+  background-color: alpha(@accent, 0.08);
+  border-color: alpha(@accent, 0.28);
   color: @accent;
 }
 /* styles.css:357-363 — the primed "you have unpushed commits" state. */
 .pr-link.pr-link-create.primed {
-  border-color: rgba(110, 168, 255, 0.5);
-  background-color: rgba(110, 168, 255, 0.14);
+  border-color: alpha(@accent, 0.5);
+  background-color: alpha(@accent, 0.14);
 }
 /* styles.css:214-215 — the ::after arrow is drawn at 0.7 opacity. */
 .pr-ext {
@@ -1987,22 +2031,22 @@ button.welcome-help-btn:hover {
  * welcome CTAs carry their own scope and the existing rule is left alone. */
 
 /* `button.primary` (styles.css:138): the 180deg #7ab4ff→#4a8cff gradient,
- * 1px rgba(255,255,255,0.1) border, #081022 text, weight 600, and the three
+ * 1px rgba(255,255,255,0.1) border, @accent_ink text, weight 600, and the three
  * stacked shadows (inset highlight + drop + accent glow). Base `button`
  * (styles.css:105) gives 13px / padding 6px 12px / radius 8px. */
 .empty-actions button.primary {
-  background-image: linear-gradient(180deg, #7ab4ff 0%, #4a8cff 100%);
-  background-color: #4a8cff;
+  background-image: linear-gradient(180deg, @accent_bright 0%, @accent_strong 100%);
+  background-color: @accent_strong;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
   padding: 6px 12px;
-  color: #081022;
+  color: @accent_ink;
   font-size: 13px;
   font-weight: 600;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.25),
     0 1px 2px rgba(0, 0, 0, 0.4),
-    0 4px 14px rgba(74, 140, 255, 0.25);
+    0 4px 14px alpha(@accent_strong, 0.25);
 }
 /* styles.css:148 */
 .empty-actions button.primary:hover {
@@ -2026,8 +2070,8 @@ button.welcome-help-btn:hover {
 }
 /* styles.css:2460 — the amber hover. */
 .empty-actions button.secondary:hover {
-  border-color: rgba(227, 179, 65, 0.5);
-  color: #e3b341;
+  border-color: alpha(@scratch, 0.5);
+  color: @scratch;
 }
 /* ===================================================================== *
  * Form modals: repo scripts (RepoScriptsModal.tsx) and Linear API key
@@ -2262,6 +2306,12 @@ button.welcome-help-btn:hover {
    GTK4 CSS cannot clip a background gradient to glyphs (no
    background-clip: text), so this takes the accent colour flat — the closest
    available, and noted so nobody "fixes" it into a no-op gradient later. */
+/* Mirrors Electron's `.sidebar-header h1` (styles.css:782).
+   KNOWN RESIDUAL DIFFERENCE, not an oversight: Electron fills the glyphs with
+   a 90deg gradient from --accent to --accent-2 (@accent_2) via background-clip:
+   text. GTK CSS has no background-clip:text, so this is a flat @accent — the
+   left end of that ramp. Closing it would need a Pango attribute or a custom
+   snapshot; @accent-2 has no @define-color yet either. */
 .sidebar-title {
   color: @accent;
   font-weight: 700;
