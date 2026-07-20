@@ -225,3 +225,47 @@ Roughly equal-weight, minimal file contention (all in `theme.css` except G3):
 Every V-agent should re-run both capture scripts (see `README.md`) after its
 change and diff its surface against the committed Electron reference — the
 fixture is deterministic, so a same-size recapture is directly comparable.
+
+---
+
+## ⚠️ CORRECTIONS — read before acting on ANY item above
+
+Four anchors in this document were found wrong during M4-V execution, all the
+same class: **the rule cited is not the rule in effect.** Porting a cited rule
+produces a change that "matches the citation" and renders wrong — which passes
+a careless review because a rule *was* cited.
+
+**Before porting any value, confirm which rule actually governs the widget**
+(cascade, specificity and generic element selectors can outrank the cited one),
+and check the item is still true at tip.
+
+| Item | Cited | Actually in effect | Found by |
+|---|---|---|---|
+| A1 | `.ws-item { padding: 0 }` (theme.css:233) | generic `listbox row { padding: 7px 12px; border-radius: 8px; margin: 1px 6px }` (theme.css:110-114) — GTK rows are rounded margined CARDS, Electron rows are full-bleed STRIPS | V1 |
+| A2 | (accent bar only) | ALSO the wrong token: GTK `@bg_4` #222933 vs Electron `--bg-3` #1a1f26 (styles.css:1138) | V1 |
+| D2 | `.repo-header { padding: 3px 6px }` (theme.css:173) | same generic `listbox row` — headers are ListBoxRows inside `#sidebar-list` | V3 |
+| G3 | `button.danger` (styles.css:165-173) — a DIM OUTLINE | `button.danger-primary` (styles.css:2618-2626) — a FILLED RED GRADIENT; `Dialog.tsx:109` selects it via `tone==='danger' && kind==='confirm'` | V4 |
+| **C** | `.account-badge` (styles.css:3101-3115) — a 999px chip | **`.account-badge.inline` (styles.css:3163-3191) CANCELS the chip**: `padding: 0`, no background/border/radius, 10px/500. Sidebar renders `account-badge inline` (AccountBadge.tsx:308,323,348). **The fix is the OPPOSITE of what this document says** — porting the chip makes GTK diverge from Electron while looking like parity work | V2 |
+
+**One false limit, also corrected:** this document claims GTK CSS has no
+animation and that the status-dot pulse needs a deviation. **It does support
+`@keyframes`/`animation`** — V1 ported the Electron keyframes verbatim and
+proved it animates (6 timed captures, 6 distinct hashes). *A deviation recorded
+for a capability that exists is worse than no note: it teaches a false limit
+that later gets cited as precedent.* Test before recording any deviation.
+
+**Genuine GTK gaps confirmed so far:** `backdrop-filter` (blur/saturate) does
+not exist in GTK4 CSS — affects the toolbar (F) and the dialog backdrop (G1).
+
+**Method notes earned during execution:**
+- The committed `gtk-*.png` have drifted behind tip. Capture your own BEFORE;
+  the committed `electron-*.png` ARE current (`git log b3ac930..HEAD --
+  src/renderer/ src/main/` is empty).
+- Prove a baseline binary is uncontaminated by **grepping an embedded string**
+  you introduced — mtimes are not enough, a rebuild can land between build and
+  capture. Include a **known-present positive control in the same command**:
+  zero hits alone is equally consistent with "strings found nothing at all".
+- `drive-gtk.py` picked its target row nondeterministically (boot race). Pin it
+  with `ORCHESTRA_CAPTURE_ROW`, which fails loudly if the row is absent.
+- Run with `G_MESSAGES_DEBUG=all` to confirm zero CSS parse warnings — a rule
+  that fails to parse is discarded silently and looks applied in source.
