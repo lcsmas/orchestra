@@ -1,219 +1,440 @@
-# Main pane + overlay parity — verified against rendered frames
+# Overlay + main-pane parity — rendered-frame verification
 
-**Report only. No `*.rs` and no `theme.css` was modified.**
+**Report only. No `*.rs`, no `theme.css`, no UI code was modified.** The only
+code changed is the Electron *driver* (`drive-electron-mainpane.mjs`), which had
+a control that passed while the camera saw a different surface — see
+[Rig defect found and fixed](#rig-defect-found-and-fixed-electron-driver).
 
-Scope: everything right of the sidebar, plus the three full-page overlays.
-Captured at tip `b611436` (rebased onto the icons/header + design-system
-merges), both frontends at **1600×1000** in matched states.
-
-**Resources / Insights / Help were driven against a REAL DAEMON, not the mock.**
-They were gated on a backend existing synchronously at init and were dead
-no-ops in every real session until the overlay-gating fix, so every prior
-"verification" of them was done under `ORCHESTRA_GTK_MOCK`. The GTK capture
-script drops the mock flag entirely and lets the app auto-spawn
-`dist-electron/daemon.js` against the same seeded store the Electron half
-reads. The footer in every GTK overlay capture reads `backend: daemon v0.5.84`,
-which is the proof it was not the mock.
+Scope: the three full-page overlays (Resources, Insights, Help) plus the
+main-pane surfaces (welcome screen, tab strip, Run pane, diff pane, status
+strip). Both frontends driven into matched states at **1600×1000**, GTK against
+a **real daemon** (no `ORCHESTRA_GTK_MOCK`), and every verdict below is anchored
+to a captured frame in `docs/visual-reference/mainpane/`.
 
 ---
 
-## Ranked defects — worst first by user-visible impact
+## Coverage: 18 of 21 surfaces verified
 
-### 1. Sidebar is 179px too wide — and it got worse, not better ⚠️ REGRESSION
+| | Count |
+|---|---:|
+| MATCHES | 5 |
+| DIFFERS (measured) | 8 |
+| ABSENT | 2 |
+| GTK-only addition | 1 |
+| CANNOT-VERIFY (reason given) | 2 |
+| **Reached with a rendered frame** | **18 / 21** |
+| **Not reached** | **4** (named in [Not reached](#not-reached-4-surfaces)) |
 
-| | Electron | GTK | Delta |
-|---|---:|---:|---:|
-| Sidebar width | **337px** | **516px** | **+179px** |
+---
 
-Measured by column-persistence voting over the full window height, confirmed
-independently by first-strong-edge scans at y=300/400/600/700. Identical figure
-in **both** the seeded and empty-store states, on four different captures.
+## Provenance split — read before quoting any number
 
-**This is a regression against the previously reported +75px.** Earlier in this
-workstream the gap was measured at 337 vs 412. After the icons/header merge gave
-the header buttons text labels plus a wordmark, GTK's sidebar grew to 516px. The
-header row is now the binding constraint on sidebar width.
+Not every number here shares a provenance, and mixing them silently corrupts
+background/gap readings:
 
-Impact is not confined to the sidebar: it steals 179px from the main pane on
-every screen, and it displaces the x-origin of every main-pane surface. Any
-pane-relative geometry anyone measured before this merge is void.
+- **Window-scoped frames** (`*-overlay-*.png`, `gtk-welcome-full.png`,
+  `electron-welcome-full.png`) — alpha 255 at 100.0%, fully composited.
+  **Every colour, fill, gap and geometry number in this report comes from
+  these.**
+- **Widget-scoped frames** (`gtk-welcome-pane.png` **47.8% alpha-zero**,
+  `gtk-welcome-feature-grid.png` **9.6% alpha-zero**) — usable as evidence of
+  *presence/allocation only*. **Do not measure backgrounds, gaps or seams on
+  these**: a widget-scoped snapshot renders a translucent or unfilled area with
+  nothing behind it.
 
-### 2. Main-pane background is two token steps too dark — in the workspace state only
+That hazard is live in this harness, and it is scoped in a way that defeats
+casual review — it leaves **opaque fills correct** and silently rewrites only
+the numbers nobody spot-checks. Measured on the same feature-card region:
 
-Region x≥40 relative to each side's own pane edge, y 200–940, **regional
-dominance** (not a point sample):
-
-| State | Electron | GTK |
+| Scope | Card fill | Gap between cards |
 |---|---|---|
-| Workspace selected | **(26,31,38)** — 100.0% of 899,840px | **(11,13,16)** — 99.1% of 811,040px |
-| Welcome / empty | (11,13,16) — 86.1% | (11,13,16) — 84.6% ✅ match |
+| Widget (`gtk-welcome-feature-grid.png`) | `rgb(18,21,26)` 73.5% | `rgb(0,0,0)` **a=0 void** 11.1% |
+| Window (`gtk-welcome-full.png`) | `rgb(18,21,26)` 75.6% | `rgb(11,13,16)` 10.4% |
 
-Both sides land exactly on a defined token, so this is a wrong **assignment**,
-not a wrong value.
+The fill agrees; only the background is fabricated. (Hazard flagged by the
+`gtk4-native-port` agent; confirmed live here, and confirmed *not* to have
+reached any verdict below.)
 
-**Fix direction matters here and is easy to get backwards.** The welcome/empty
-branch already paints correctly. Only the **workspace-content branch** is wrong.
-Fixing this at the pane root would "fix" the state that is already correct and
-regress it.
+**Measurement discipline.** All colour verdicts are regional dominance over a
+stated region with the sample share and pixel count given, never point samples.
+Edge/geometry verdicts use column-persistence voting.
 
-### 3. Resources: stat tiles and token-usage cards are clipped at the right edge
+**On `docs/gtk4-parity-inventory.md`.** That document is a **frozen snapshot of
+one morning's source review**, not a live score, and its negatives are
+**directional**: they were derived by guessing identifiers from Electron and
+searching GTK for them, so they fail toward *claiming things are missing that
+are fully implemented*. Demonstrated false-ABSENT/dead instances so far:
+`usage-bars-slot`, `.ws-empty-hint`, and `.usage-bar-fill` (rows 80 **and** 99 —
+re-derived live above). Two surfaces it lists ABSENT/STUB are 500 and 607 lines
+long with rendered frames; this report adds a fourth correction, its welcome
+screen (finding 7).
 
-`gtk-overlay-resources.png` vs `electron-overlay-resources.png`. In GTK the
-"Worktrees on disk" tile and the `mobile-club` token card run past the window's
-right edge and are cut mid-content. Electron fits its tile row within the pane.
+**Treat every ABSENT/STUB verdict there as UNVERIFIED — never as a reason to
+skip verifying a surface.** A "present" verdict is more trustworthy than a
+"missing" one. Enumerate the real widget namespace and assert against it rather
+than searching for the identifier the doc names (an agent nearly filed two
+surfaces ABSENT searching `sound-modal`/`accounts-modal` when the real toplevels
+are `sound-settings`/`accounts-settings`).
 
-Given defect 1 removes 179px of pane width, this is plausibly downstream of the
-sidebar rather than a defect in Resources' own layout — **whoever fixes it
-should re-check after the sidebar width is corrected**, because it may resolve
-on its own. Flagged as a distinct symptom because it is what a user actually
-sees, but it is not independently root-caused.
+---
 
-### 4. Tab strip: active-tab state is carried by a different mechanism
+## Findings
 
-| | Electron | GTK |
+### 1. Resources stat tiles are CLIPPED at the window edge — DIFFERS
+
+**The first-wave observation is confirmed, and all three of its open confounds
+are now closed.**
+
+Tile-band content extent, regional scan `y[60,180)` / `y[55,195)`:
+
+| | Rightmost content column | Gap to window edge |
+|---|---:|---:|
+| **GTK** | **1595** (of 1596) | **0px** |
+| **Electron** | 1487 (of 1596) | 108px |
+
+The 5th tile ("Live agents") is cut off mid-card in GTK; Electron leaves a
+108px right margin.
+
+Confounds closed:
+
+1. **Is it the sidebar width?** *No — and this is the load-bearing measurement.*
+   Measured tile borders sit at x = 520, 823, 1120, 1416 → a **284px pitch**.
+   Five tiles therefore need `5×284 + 4×12 gap + 36 pad = **1504px**`:
+
+   | Pane width | Fits? |
+   |---|---|
+   | GTK pane today (1077px) | ✗ |
+   | Electron pane (1256px) | ✗ |
+   | **GTK pane after the sidebar fix (1257px)** | **✗** |
+
+   The row overflows even at Electron's own pane width, so **the sidebar fix
+   will not resolve this.** (My first pass reasoned from *hypothetical* 150–200px
+   tiles and concluded "independent of sidebar width" — the measured 284px pitch
+   is what actually settles it. The hypothetical arithmetic was wrong and is
+   corrected here rather than quietly dropped.)
+2. **Does Electron clip identically?** No — 108px of margin, and its
+   `.res-tiles` is `display:grid; grid-template-columns: repeat(auto-fit,
+   minmax(150px,1fr))`, which **reflows onto a second row** when width is short.
+3. **Is the row scrollable by design?** No.
+   `resources.rs` sets `scroll.set_hscrollbar_policy(gtk::PolicyType::Never)`,
+   so the clipped tile is **unreachable**, not merely off-screen.
+
+**Root cause** (construction, not CSS — GTK's `.res-tiles { }` rule is empty):
+GTK builds a `gtk::Box::new(Horizontal, 12)` with `set_homogeneous(true)`, a
+single non-wrapping row. Electron uses an auto-fit grid that reflows.
+
+Frames: `gtk-overlay-resources.png`, `electron-overlay-resources.png`.
+
+### 2. Help item names are the wrong colour — DIFFERS
+
+Regional scan over the item-name rows (text pixels only, `sum>200`):
+
+| | Dominant text colour | Share | Region |
+|---|---|---:|---|
+| **GTK** | **`rgb(110,168,255)` — blue** | 5.0% of 3830 text px | x[553,760) y[150,300) |
+| **Electron** | `rgb(230,233,239)` — neutral | 13.3% of 1443 text px | x[369,520) y[160,300) |
+
+**Root cause, confirmed at source** (the rule that actually governs, not a
+guessed one):
+
+- Electron `styles.css`: `.help-item-name { font-weight: 600; color: var(--text); }`
+- GTK `theme.css`: `.help-item-name { color: @accent; font-size: 12px; font-weight: 600; }`
+
+A one-token difference — `@accent` where the reference uses neutral body text.
+Every help item name reads as a hyperlink in GTK.
+
+### 3. Help item layout model differs — DIFFERS
+
+- **Electron**: `.help-item { display: grid; grid-template-columns: 150px 1fr; gap: 10px; }`
+  → name in a 150px left column, description beside it.
+- **GTK** (`help.rs`): `gtk::Box::new(gtk::Orientation::Vertical, 1)`
+  → name **above** description, stacked.
+
+Visible in both frames; the GTK panel is consequently taller per item.
+
+### 4. Overlay headers: Electron hides them under the toolbar, GTK does not — DIFFERS
+
+This is the finding that cost three wrong hypotheses, and it is only settleable
+by measurement. Live geometry from the running Electron renderer:
+
+```
+main      x=340 y=0 1256x971  pos=relative z=auto
+toolbar   x=340 y=0 1256x48   pos=relative z=20
+insights  x=340 y=0 1256x971  pos=absolute z=5
+```
+
+Measured stacking order: **`.res-page` (25) > `.toolbar` (20) > `.insights-view`
+(5) = `.help-view` (5)**.
+
+So in Electron the Resources page covers the toolbar and shows its own header,
+while **Insights and Help render their headers *underneath* the 48px toolbar,
+which stays visible**. GTK draws a full-width header for all three overlays and
+has no equivalent toolbar overlap.
+
+Whether Electron's behaviour is intentional or its own latent defect is an
+author question — but the two frontends demonstrably differ, and GTK is not
+reproducing Electron's presentation.
+
+### 5. Run pane: no run toolbar and no run-status label — ABSENT
+
+Electron's Run tab renders a per-pane toolbar with a green **▶ Run** button and
+a **STOPPED** status label. GTK renders neither; the pane is bare below the
+setup banner.
+
+Source check with both controls in the same command (positive control
+`toolbar-tabs` → 1 file / present in theme.css; negative control `zzqqxx` → 0 /
+false):
+
+| Token | GTK `*.rs` files | GTK `theme.css` |
+|---|---:|---:|
+| `run-status` | 0 | absent |
+| `term-toolbar` | 0 | absent |
+| `run-action` | 0 | absent |
+| `STOPPED` | 0 | absent |
+
+Confirms inventory rows 108/109 with rendered evidence.
+
+Frames: `gtk-mainpane-tab-run.png`, `electron-mainpane-tab-run.png`.
+
+### 6. Tab strip alignment differs — DIFFERS
+
+Both strips are **48px** tall. Content clusters by column-persistence voting:
+
+| | Clusters (x ranges) |
+|---|---|
+| **Electron** | `14-255` … gap … `819-939`, `970-1009`, `1028-1039`, `1096-1197`, `1220-1233` |
+| **GTK** | `14-417`, `450-472`, `511-522`, `592-690`, `720-756` … `1071-1083` |
+
+Electron pushes tabs and actions **right**; GTK runs them **continuously from
+the left**, leaving only the pane-toggle at the far right.
+
+**Root cause:** Electron's `.title { flex: 1; }` expands to push subsequent
+children right. GTK instead puts the expansion on the *tabs* box —
+`tabs.set_halign(Center); tabs.set_hexpand(true);` (comment: "tabs (center)") —
+and its `title` box has no hexpand.
+
+### 7. Welcome screen — MATCHES (and the inventory is stale)
+
+`docs/gtk4-parity-inventory.md` rows 4–7 list the welcome screen, action
+buttons, feature grid and help button as **ABSENT**. **That is no longer true.**
+GTK renders the heading, tagline, 3 CTA buttons, a 6-card feature grid and the
+"Everything Orchestra can do" button.
+
+Card-band regional comparison (window-scoped frames only):
+
+| | Card fill | Gap | Border |
+|---|---|---|---|
+| **GTK** (93,236 px) | `rgb(18,21,26)` **75.6%** | `rgb(11,13,16)` 10.4% | `rgb(36,42,51)` 2.6% |
+| **Electron** (99,756 px) | `rgb(18,21,26)` **77.6%** | `rgb(11,13,16)` 9.8% | `rgb(36,42,51)` 1.9% |
+
+Identical values with near-identical sample shares.
+
+> **Scope caveat:** the two welcome runs use different stores (GTK's harness
+> action clears the active workspace against a *seeded* store; Electron's
+> welcome only renders with an *empty* store). The **sidebars are therefore not
+> comparable** in this pair — this verdict covers the welcome **pane** only.
+
+### 8. Overlay panel/tile surface treatment — MATCHES
+
+Dominant fill, window-scoped regions:
+
+| Surface | GTK | Electron |
 |---|---|---|
-| Active tab classes | `tab active` | `tab toggle` |
+| Help panel | `rgb(18,21,26)` 89.3% / 211,150 px | `rgb(18,21,26)` 87.4% / 176,945 px |
+| Insights panel | `rgb(18,21,26)` 96.9% / 164,800 px | `rgb(18,21,26)` 60.6% / 207,910 px |
+| Resources tile | `rgb(18,21,26)` 92.3% / 63,800 px | `rgb(18,21,26)` 85.5% / 139,050 px |
 
-GTK never applies an `active` class; it uses GTK's ToggleButton state instead.
-The classes are not equivalent, so any `theme.css` rule written against `.tab.active`
-is dead. This is a concrete reason the tab strip cannot match by CSS alone.
+Card/panel colour is ported correctly across all three overlays. The remaining
+overlay differences are **structural, not chromatic**.
 
----
+### 9. Help body content — MATCHES
 
-## Per-surface verdicts
+All four panels ("The core loop", "Agents that spawn agents", "Review & ship",
+"Terminals & status") and their items are present with **verbatim identical
+copy** on both sides. Only colour (finding 2) and layout (finding 3) differ.
 
-| Surface | Verdict | Evidence |
-|---|---|---|
-| **Help overlay** | **MATCHES (structurally)** | Live daemon. Allocates 176,078 B — the largest of the three. All sections, panels and item rows render with real content. |
-| **Insights overlay** | **MATCHES (structurally)** | Live daemon, 109,280 B. Last-run steps, log body, Reports row, History, LESSONS.md panel all populated from real backend data. |
-| **Resources overlay** | **DIFFERS** | Live daemon, 64,035 B. Renders with real CPU/memory/disk/token data, but see defect 3 (right-edge clipping). |
-| **Welcome screen** | **MATCHES (close)** | Heading, tagline, 3 CTAs with correct primary/secondary hierarchy, 6-card grid in 3×2, help chip below — all present and closely matched. Pane background matches exactly. |
-| **Main-pane background (workspace)** | **DIFFERS** | Defect 2. |
-| **Sidebar width / pane origin** | **DIFFERS** | Defect 1. |
-| **Tab strip** | **DIFFERS** | Defect 4. |
-| **Status/footer strip** | **MATCHES** | `gtk-statusstrip.png`; reads `backend: daemon v0.5.84 · frontend v0.5.84`. |
-| **Terminal pane** | **CANNOT-BE-IDENTICAL** | Declared substitution (VTE vs xterm.js). |
-| **Diff view** | **CANNOT-BE-IDENTICAL** | Declared substitution (GtkSourceView vs Monaco). |
+### 10. Insights overlay structure — MATCHES (with a state caveat)
 
-### Overlay entry points differ (structural, not styling)
+GTK renders Last-run + per-step rows, the transcript block, Reports chips,
+History and the LESSONS.md panel — the full Electron section set, in the same
+order, on the same panel treatment.
 
-Read from source with controls, not guessed:
+> **State caveat:** the two runs show **different data**. GTK ran a live
+> self-tune against the real daemon (Jul 20, failed, 6 steps, populated
+> transcript); Electron shows the seeded Jul 18 completed run with "No
+> transcript available". Section *inventory and ordering* are comparable;
+> per-row content is not.
 
-| Overlay | Electron | GTK |
-|---|---|---|
-| Resources | sidebar **footer** link (`Sidebar.tsx:2266`) | sidebar **header** button |
-| Insights | sidebar **insights row** (`Insights.tsx:70`) | sidebar **header** button |
-| Help | sidebar header icon (`Sidebar.tsx:1364`) | sidebar header button ✅ |
+### 11. Status strip — GTK-only addition
 
-Two of the three are reached from a different place than in Electron.
+GTK renders a 1576×16 strip: `backend: daemon v0.5.84 · frontend v0.5.84`.
+Electron has no such element — `status-strip` and `status-text` appear in **0**
+`.tsx` files and are absent from `styles.css` (positive control `version` → 2
+files / present in CSS; negative control `zzqqxx` → 0 / absent). Electron shows
+the version in the sidebar footer instead.
 
----
+Not a parity gap; a GTK addition, recorded so it is not mistaken for one.
 
-## NOT REACHED — where the next wave should start
+### 12. Diff pane — CANNOT-VERIFY (state mismatch, not a defect)
 
-Stated plainly because a surface I did not reach is a finding, not a gap to hide:
+The two frontends are in genuinely different backend states:
 
-- **Run pane empty/guidance state.** The Run tab was captured, but the fixture's
-  workspace has no run script, and its worktree path does not exist, so the pane
-  showed a backend error rather than the guidance state. Needs a fixture whose
-  worktree exists.
-- **Main-pane empty state (non-welcome).** The `.empty` loading state is distinct
-  from the welcome screen; only the welcome branch was driven.
-- **Diff/Run tab pixel comparison.** Captures exist for both halves but I did not
-  complete a measured comparison; the terminal pane's engine substitution makes
-  the region-level comparison less meaningful without per-widget scoping.
-- **Overlay internals at widget level.** Only overlay roots plus 2 child widgets
-  each were allocation-probed. The res-tile grid, agents table, sparkline,
-  session chips, limit meters, help panels and insights history rows were **not**
-  individually verified.
-- **Nvim pane.** Toggle exists, pane never mounts — not re-verified here.
+- **Electron**: "No changes yet — The agent hasn't modified any files in this worktree."
+- **GTK**: "Diff unavailable — backend error (Error): Cannot use simple-git on a directory that does not exist"
+
+The fixture's repo paths are deliberately non-existent (so the boot-path orphan
+pruner leaves the rows alone), and the two backends surface that differently.
+Comparing these frames would compare error handling, not diff rendering.
+
+**Rig that would close it:** seed a real temporary git worktree with a known
+dirty file so both sides render an actual diff.
 
 ---
 
-## Method notes (two of my own instruments were wrong first)
+## Not reached (4 surfaces)
 
-Both are recorded because in each case my **passing controls did not catch it** —
-domain judgement did.
+Named, per the coverage rule — an unreached surface tells the next wave where to
+start.
 
-1. **A single scanline is a point sample in the other axis.** My first pane-edge
-   detector probed one row and locked onto the welcome *card's* left edge
-   (689px) instead of the sidebar boundary (337px) — a clean, specific, wrong
-   reference that would have made every pane-relative measurement wrong by
-   ~350px while looking precise. Caught only because 689px is absurd against a
-   sidebar visibly ~340px wide. Fixed with column-persistence voting.
+1. **Resources agents table with live rows.** Both sides rendered the *empty*
+   state ("No agent processes right now"), so `.res-agent-row`, `.res-chips`,
+   `.res-col-*` and the expanded process list were never exercised. Needs a
+   fixture with a running agent PTY.
+2. **Resources CPU sparkline geometry** (`.res-tile-spark`, hand-drawn
+   `DrawingArea` vs SVG path). Both captures show a flat 0% trace, so curve/fill
+   geometry is untested. Needs sustained synthetic CPU load during capture.
+3. **Insights per-row content parity** (history rows, diff lines, lesson
+   entries). Blocked by the state mismatch in finding 10 — the two sides must be
+   pinned to the *same* self-tune run.
+4. **Token-usage limit meter rows** (`.res-meter`, `.usage-bar-track`,
+   `.usage-bar-fill.meter-*`). **Never constructed in my run**, so no frame
+   here is evidence about them either way. `resources.rs` builds a meter row
+   only when a usage window exists (`if let Some(w) = &c.five_hour` /
+   `seven_day` / `fable`); all four seeded accounts rendered "not logged in",
+   so zero meter rows were built. **Needs a fixture with populated
+   `UsageWindow` values.**
 
-2. **A control suite can be structurally blind on exactly one item, and nothing
-   inside it can tell you which.** Resources and Insights *populate* on open, so
-   a descendant-count jump was an independent control. Help is built *statically*
-   at mount and only flips `set_visible`, so that control **cannot fire** for it —
-   leaving `visible=True` as the sole evidence for precisely the one overlay
-   where the present-but-zero-allocation failure mode is undetectable by my other
-   probe. The tell was not a failed test; it was noticing Help opens by a
-   *different mechanism*, i.e. reading the code rather than the results.
-   Re-tested with widget-scoped screenshot bytes + sibling controls: Help
-   allocates 176,078 B and survives.
-
-   **Bytes > 0 proves allocation, not correctness** — a widget can allocate and
-   paint the wrong colour or paint clipped. It is a necessary gate before pixel
-   comparison, never a verdict.
-
-3. **Colour is always regional dominance with the share reported**, never a point
-   sample. A point sample on a surface with rows/hover/selection painted over it
-   yields a sharp wrong number and more confidence in it — that exact error
-   produced, then required retracting, a "GTK sidebar is one step too light"
-   finding elsewhere in this workstream. Reporting the share lets a reader judge
-   representativeness instead of taking the triple on trust.
+   > Do **not** take `docs/gtk4-parity-inventory.md` rows 80/99 as evidence
+   > here. They call `.usage-bar-fill.meter-*` **dead**; it is **live**.
+   > Re-derived at this tip with both controls in the same command (positive
+   > `res-tile` → 7 refs; negative `zzqqxx` → 0):
+   > **2 live refs in `overlays/resources.rs`** — `meter_track()` and the
+   > `.res-meter` row, each doing
+   > `fill.add_css_class("usage-bar-fill"); fill.add_css_class(sev.meter_class())`
+   > — plus a matching `theme.css` rule. The row is unverified because my
+   > *fixture* never populated usage data, **not** because the code is absent.
 
 ---
 
-## Capture manifest
+## Harness reach limit (blocks per-element probing on two overlays)
 
-All captures fresh at tip `b611436`. Every capture md5'd; **no duplicates**
-within a matched set (the drivers fail the run on a duplicate, because a drive
-step that silently no-ops still writes a plausible screenshot).
+`remote_control.rs::find_widget` resolves **only** `widget_name()` — there is no
+CSS-class or type selector. Named widgets available:
 
-| md5 | bytes | file |
+| Overlay | Lines | Named widgets |
 |---|---:|---|
-| c7503e2cc26503703578080b9cfc89c0 | 23287 | mainpane-welcome/electron-welcome-feature-grid.png |
-| 9f101d9eb44733e46a05cd06e6e3a399 | 108703 | mainpane-welcome/electron-welcome-full.png |
-| e18ccf64d2129db73026e63cf1a7bc15 | 57947 | mainpane-welcome/electron-welcome-pane.png |
-| ca68e8e93530924a96c47bccce1c944d | 27351 | mainpane-welcome/gtk-welcome-feature-grid.png |
-| 8cbf1ab888905a8c49623c8571a3fc13 | 102571 | mainpane-welcome/gtk-welcome-full.png |
-| 3c04731e2894cae09337cc92e3476bf8 | 54929 | mainpane-welcome/gtk-welcome-pane.png |
-| 107882e1f083031a33dfef5a4df2d322 | 34462 | mainpane/electron-mainpane-tab-diff.png |
-| 24e5cd9cfd83a8ab5aca5b2bbd1af438 | 27064 | mainpane/electron-mainpane-tab-run.png |
-| b346ddd1ed2fa8b90534dbd17e91261b | 32392 | mainpane/electron-mainpane-terminal.png |
-| 4a56253f14858f6c55838b21a231c30a | 288306 | mainpane/electron-overlay-help.png |
-| b4d8c077b8b1d33ec0db11c83fee1f44 | 141174 | mainpane/electron-overlay-insights.png |
-| 058f21a4da66c257cd8272c5b7d5b59c | 178126 | mainpane/electron-overlay-resources.png |
-| a1093fa48047f6af78c44fa724f607f8 | 11041 | mainpane/electron-tabstrip.png |
-| e9bcafea5d0e4a96f55889cfe6311e2e | 35483 | mainpane/gtk-mainpane-tab-diff.png |
-| 0f12df08b7563410e5f2a2efd2eabbd5 | 26976 | mainpane/gtk-mainpane-tab-run.png |
-| a3c353a54345ac53d7eca3eec0358ad9 | 30999 | mainpane/gtk-mainpane-terminal.png |
-| b27a2043c2dfc224ac97f6c03b867ba7 | 267463 | mainpane/gtk-overlay-help.png |
-| 683b09a8077071cd63e26b81fed92d66 | 200112 | mainpane/gtk-overlay-insights.png |
-| 1cab3207cb1feee6074278be70cc50e3 | 144588 | mainpane/gtk-overlay-resources.png |
-| ecf17bcce5c1ccfeb06d0265c621f0b3 | 3326 | mainpane/gtk-statusstrip.png |
-| 3fac5aa25057f91fbfd551441dd666cc | 14282 | mainpane/gtk-tabstrip.png |
+| Resources | 1363 | `resources-overlay`, `res-live`, `res-close` (**3**) |
+| Insights | 932 | `insights-overlay`, `insights-row`, `insights-run-btn`, `insights-close`, `insights-section`, `insights-transcript`, `insights-lessons` (7) |
+| Help | 286 | `help-overlay`, `help-close`, `help-guide-link` (**3**) |
 
-Allocation probe results (live daemon, per-widget screenshot bytes; each overlay
-root is the sibling positive control for its own children, so the capture path
-proves itself in the same command):
+So Resources' stat tiles, sparkline, agent rows, token cards and disk rows —
+and every Help panel/item — are **unaddressable**: they cannot be
+allocation-probed or widget-screenshotted. All verdicts about them here are
+**pixel-derived from window-scoped frames**, which is why findings 1–3 are
+stated as regional measurements rather than per-widget assertions.
 
-```
-resources-overlay  64035 B   res-live 444        res-close 263
-insights-overlay  109280 B   insights-run-btn 919  insights-close 263
-help-overlay      176078 B   help-close 263      help-guide-link 1989
-```
+**To close:** add `set_widget_name()` to the tile/panel/row containers.
 
-No zero-allocation widgets among those probed.
+---
 
-### Reproducing
+## Allocation gate (necessary, not sufficient)
+
+Widget-scoped screenshot bytes, with the overlay root as the sibling positive
+control that makes a zero meaningful. Bytes > 0 proves **allocation**, not
+correctness — it gates the pixel comparison rather than replacing it.
+
+| Overlay | Root bytes | Probe children |
+|---|---:|---|
+| Resources | 63,309 | `res-live` 444, `res-close` 263 |
+| Insights | 109,124 | `insights-run-btn` 919, `insights-close` 263 |
+| Help | 176,078 | `help-close` 263, `help-guide-link` 1,989 |
+
+No zero-allocation widgets. Open-controls: Resources 30→112 descendants,
+Insights 77→111, Help `visible False→True` (Help is built **statically** and only
+flips visibility, so a descendant-count control is structurally blind to it —
+which is why both control types are asserted).
+
+---
+
+## Rig defect found and fixed (Electron driver)
+
+The driver's overlay control was `count('.insights-view')` — DOM presence,
+sampled right after the click. It **passed while the screenshot showed a
+different surface**. Three hypotheses died before a measurement settled it, and
+that sequence is the useful part:
+
+1. *"The sidebar also renders `.insights-view`"* — **wrong**; `App.tsx:668`
+   gates it on `insightsOpen`.
+2. *"A leftover Resources page painted over it"* — **wrong**; header-band md5s
+   of all four captures came back **all-distinct**, so no capture was a
+   duplicate of another.
+3. **Correct, and only from measured geometry:** the toolbar is `z-index: 20`
+   and `.insights-view` is `z-index: 5`, so the toolbar legitimately paints over
+   the overlay header (finding 4).
+
+What settled it was asking the live page for boxes and computed z-index, not
+better reasoning about the source.
+
+Fixes applied to `drive-electron-mainpane.mjs` (driver only):
+
+- `closeAllOverlays()` closes **every** overlay root before each open, via each
+  overlay's own close button. Escape alone is unreliable — `ResourcesView.tsx:394`
+  binds it through a React `useEffect` listener that a synthetic
+  document-level dispatch does not reliably reach. The entry points are
+  **toggles** (`Insights.tsx:69`), so an un-reset state makes the click *close*
+  the overlay.
+- `onStage()` re-probes **immediately before the shot** (so control and capture
+  describe the same frame) and requires the root to be **topmost** via
+  `elementFromPoint` hit-testing.
+
+**Mutation-tested**, because a check nobody has seen fail is not a check:
+pointing the Insights root at `.insights-view-ZZZ-mutant` made the control fail
+as intended (`! control FAILED ... {"present":false}`), and reverting restored
+the pass. Post-fix, all three overlays report `TOPMOST` with their real headings
+(`"Insights & Improvements"`, `"Resources…"`, `"What Orchestra can do…"`).
+
+**General rule this generalises to:** every widget-tree signal — DOM presence,
+`visible=True`, `list_widgets`, element size, even a topmost hit-test — is
+**upstream of what the camera sees**. Assert against the painted frame or
+measured z-order.
+
+---
+
+## Reproducing
 
 ```bash
-docs/visual-reference/capture-gtk-mainpane.sh                    # GTK, real daemon
-docs/visual-reference/capture-electron-mainpane.sh               # Electron, seeded
-ORCHESTRA_WELCOME_RUN=1 docs/visual-reference/capture-gtk-mainpane.sh \
-  docs/visual-reference/mainpane-welcome                         # welcome, empty store
-docs/visual-reference/measure-pair.py <electron.png> <gtk.png>   # regional dominance
+./native/setup-localdeps.sh                      # once per worktree
+source native/env.sh && cargo build -p orchestra-gtk --release \
+  --manifest-path native/Cargo.toml              # NOT from the repo root (exits 101)
+npx vite build && pnpm run build:daemon          # Electron renderer + daemon.js
+
+docs/visual-reference/capture-gtk-mainpane.sh  <outdir>   # real daemon, no mock
+ORCHESTRA_DEBUG_PORT=<free-port> \
+  docs/visual-reference/capture-electron-mainpane.sh <outdir>
+ORCHESTRA_WELCOME_RUN=1 ORCHESTRA_DEBUG_PORT=<free-port> \
+  docs/visual-reference/capture-electron-mainpane.sh <outdir>   # empty-store welcome
 ```
+
+**Pick a free CDP port**: 9377 is the default and collides with sibling agents
+on this machine (observed: `bind() failed: Address already in use`, which
+surfaces only as "CDP never came up").
+
+**Row matching across halves.** The two drivers do not share a row-addressing
+scheme — `drive-gtk.py` addresses by **widget name**, `drive-electron.mjs` by
+**rendered text**. For this run they resolve to the **same workspace**, verified
+against the shared seed: exactly one entry satisfies both predicates —
+`id=ws-4`, `branch=flaky-e2e-hunt`. So the selected-state pairs here are
+matched. Anyone changing the pin must re-verify that correspondence.
+
+Both halves ran in their own headless sway; no window reached the user's
+desktop.
