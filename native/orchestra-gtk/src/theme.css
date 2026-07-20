@@ -339,7 +339,21 @@ list row:selected label {
   background: none;
   border: none;
   border-radius: 0;
+  /* VERIFIED DEAD 2026-07-20 — kept deliberately, do not "restore" meaning to
+     it. Snapshotting a PARENT container (so an outer shadow is not clipped
+     away) gives a byte-identical region digest AND identical ink count with
+     this line and with `box-shadow: initial`; a loud-red-shadow positive
+     control in the same run moved both, so the probe does see shadows here.
+     GTK's flat/plain buttons simply carry no default box-shadow to suppress.
+     Harmless, so not deleted mid-milestone — it goes with the full dead-rule
+     sweep. Recorded here so the next reader doesn't re-derive the question, or
+     assume it is load-bearing and preserve it through a refactor. */
   box-shadow: none;
+  /* UNVERIFIED — do not delete on "it made no difference". `outline` is the
+     FOCUS RING, so it only paints while focused; an unfocused test of a
+     focus-only property is a measurement that CANNOT FAIL. Tried it headless
+     and `has_focus()` stayed False (the toplevel never takes focus), so the
+     state where this applies was unreachable. Needs a focused check. */
   outline: none;
   font-size: 10px;
   font-weight: 500;
