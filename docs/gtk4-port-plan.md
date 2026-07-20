@@ -775,11 +775,34 @@ is measured against, and it is why "looks better" becomes a testable statement.
   that changes a widget's name breaks the E2E harnesses that assert on it, so
   rename nothing without saying so.
 
-**D-track defects** (all already diagnosed to source):
-- **D1 reconnect wedge** — the app does not recover when the daemon moves
-  socket; confirmed on two rigs, 0% CPU, no terminator. Five-criterion gate and
-  the free banner-sequence probe are specified above; criterion 5 (the stale
-  footer) is independent and should land first.
+**D-track defects.**
+
+> ⚠️ **RETRACTED: THERE WAS NEVER A RECONNECT WEDGE.** This track opened on a
+> report of a ~3-minute (then 24- and 37-minute) hang after a daemon moves
+> socket. That report is withdrawn. Measured directly with reader/
+> `connection_lost` instrumentation on the real daemon, the app **re-attaches in
+> 0.9 s** with a live, working connection. The M3 `discover()` fix has worked on
+> the real rig since it landed.
+>
+> **Two independent broken harnesses produced the same phantom**, and their
+> agreement is what sustained hours of investigation: one polled a banner label
+> the app never clears when hiding it (a condition that could never become true
+> again), the other awaited a `server.close()` whose callback fires only after
+> all existing connections close — while the app held one open. Neither rig ever
+> measured the application. Four carefully-argued hypotheses (pointer-absent
+> window, elapsed-budget reset across respawned loops, stranded restart path,
+> parked reader) were all wrong; one run of direct instrumentation settled it.
+>
+> **So do not read this track as "we fixed the reconnect wedge."** What actually
+> happened: there was no wedge; along the way a *real* stale-footer bug was
+> found (by probing an app that was hung for a fake reason), a calibrated
+> timeout instrument was built, two harnesses were hardened, and a latent env
+> race was closed. The 180 s give-up remains real in code but has never been
+> observed to be reached.
+
+- **D1 — RESOLVED AS AN INSTRUMENT ARTIFACT.** Criterion 5 (the stale footer)
+  was independent of recovery and *was* a genuine bug — fixed in D1a. The
+  remaining criteria described a defect that does not exist.
 - **D2 harness hygiene** — internal per-scenario timeout so a hang FAILS with a
   terminator; cleanup that outlives a SIGKILLed parent (a `trap` will not fire).
 - **D3 latent env race** — `daemon.rs:426` `ORCHESTRA_DAEMON_CMD`, same shape as
@@ -849,7 +872,13 @@ Integration-surfaced M3 items (found during the serialized merge):
   - *A false lead worth recording*: events appearing to pump after the
     reconnect banner is **not** a zombie backend — `accounts/mod.rs:148` runs a
     local 60s tick refreshing relative stamps, independent of the socket.
-  - **CONFIRMED TWICE, AND IT IS A HANG, NOT SLOWNESS.** The verifier
+  - ⚠️ **EVERYTHING BELOW IN THIS ITEM IS RETRACTED — see the D-track note in
+    §M4. There was no wedge; measured directly, the app re-attaches in 0.9 s.
+    "Confirmed twice" turned out to be two independent harness bugs producing
+    the same phantom, which is precisely why it read as corroboration. Kept
+    verbatim rather than deleted, because how a well-evidenced wrong conclusion
+    was built is the useful part.**
+  - ~~**CONFIRMED TWICE, AND IT IS A HANG, NOT SLOWNESS.**~~ The verifier
     independently reproduced B6's negative on its own rig and went further: the
     app does not recover *at all* — node at 0.0% CPU for 24min and 37min in two
     separate runs, no scenario terminator, children alive. Not a long backoff;
