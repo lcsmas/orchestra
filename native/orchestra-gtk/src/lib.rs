@@ -194,7 +194,10 @@ mod type_scale_tests {
         // (class, Electron's font-size). Half-pixel values are intentional and
         // GTK renders them — several already shipped (.env-notice-title 11.5px).
         const EXPECTED: &[(&str, &str)] = &[
-            ("account-badge", "10.5px"),
+            // 10px, from `.account-badge.inline` — the renderer emits that
+            // compound at every call site, so the bare rule's 10.5px is dead
+            // style. Pinning the bare value here would enforce a defect.
+            ("account-badge", "10px"),
             ("account-field-label", "10.5px"),
             ("account-inherit-empty", "11.5px"),
             ("account-inherit-group-label", "10.5px"),
