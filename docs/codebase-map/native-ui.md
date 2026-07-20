@@ -278,6 +278,32 @@ resolves before its face is registered falls back permanently for the widgets
 already styled. Inter is bundled rather than depended on: the Electron renderer
 pulls it from Google Fonts at runtime, so it is not a system font on the
 machines this port targets.
+
+Registration alone does **not** make a face reachable: fontconfig matches on a
+font's INTERNAL family name, and Pango only selects a face something asks for by
+name. Two things must therefore hold for the terminal symbol subset, and each is
+independently silent when broken —
+
+1. `orchestra-symbols.ttf` must declare `family = "Orchestra Symbols"`. It is cut
+   from Adwaita Mono and shipped carrying that source name until 2026-07-20, so
+   nothing could request it.
+2. `terminal_font()` (`terminal/mod.rs`) must NAME it as a fallback family
+   (`"JetBrains Mono, Orchestra Symbols 11"`), mirroring the renderer's
+   `fontFamily` list at `Terminal.tsx:106`.
+
+With either half missing, `load_app_fonts()` still returns success and the glyphs
+still paint — only the ADVANCE is wrong (U+2460 measured 20.0px against a 9.0px
+cell = 2.22 cells, overflowing and shifting the rest of the line, which is the
+"terminal is sometimes scrambled" report). Nothing short of measuring an advance
+detects it, so `terminal::fonts::tests` gates the font's internal name directly.
+The Electron half cannot warn you: its `@font-face` ASSIGNS the family name
+(`styles.css:28`), so the same mis-named file works there.
+
+Note this governs TEXT-presentation codepoints only. Pango routes
+Emoji_Presentation glyphs (U+2705 ✅, U+274C ❌) to an emoji font regardless of
+the fallback list; those are width-2 in both VTE and Claude's accounting, so the
+grid stays aligned and only the paint overflows its cell by ~1px.
+
 `hover` (`remote_control.rs`) sets or clears GTK's `PRELIGHT` flag — the flag
 CSS `:hover` actually selects on — and `get`'s `state` prop reads the runtime
 state flags (hover/active/focused/checked/…). Together they make hover

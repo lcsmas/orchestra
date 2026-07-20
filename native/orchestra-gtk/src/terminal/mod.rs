@@ -23,12 +23,25 @@ pub use stack::TerminalStack;
 use gtk::gdk;
 use gtk::pango;
 
-/// JetBrains Mono at 11pt, matching the Electron renderer. The "Orchestra
-/// Symbols" subset (for ①②③ status glyphs) is loaded app-wide via fontconfig at
-/// startup (see [`load_app_fonts`]); it participates as a fallback so the
-/// circled-number metrics match the web build.
+/// JetBrains Mono at 11pt with "Orchestra Symbols" as an explicit second
+/// family, mirroring the renderer's `fontFamily` list (`Terminal.tsx:106`).
+///
+/// The second family is NOT decorative. Pango only reaches an app-registered
+/// face if something asks for it by family name: registering the subset with
+/// fontconfig ([`load_app_fonts`]) makes it *available*, never *preferred*. With
+/// a bare "JetBrains Mono" here, the circled-number glyphs the subset exists to
+/// fix fell through to a system face and measured 20.0px against a 9.0px cell —
+/// 2.22 cells, so every one of them overflowed its cell and shifted the rest of
+/// the line. Naming the subset drops U+2460 to exactly 1.00 cell (measured;
+/// U+0041 and U+2500 held at 1.00 as controls).
+///
+/// This only governs TEXT-presentation codepoints. Pango routes
+/// Emoji_Presentation glyphs (U+2705 ✅, U+274C ❌ — EAW=W) to an emoji font by
+/// presentation, so they ignore this list and still paint ~19px in a 2-cell
+/// slot. That is a 1px paint overflow, not a grid desync: those glyphs are
+/// width-2 in Claude's accounting too, so VTE reserving 2 cells is correct.
 pub fn terminal_font() -> pango::FontDescription {
-    pango::FontDescription::from_string("JetBrains Mono 11")
+    pango::FontDescription::from_string("JetBrains Mono, Orchestra Symbols 11")
 }
 
 fn rgba(hex: &str) -> gdk::RGBA {

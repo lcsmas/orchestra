@@ -7,6 +7,13 @@
 //! Electron renderer by bundling the same subset (the glyphs carry a 0.6em mono
 //! advance). JetBrains Mono itself is resolved by name from the system.
 //!
+//! REGISTERING IS ONLY HALF OF IT. Fontconfig will not hand Pango a face nobody
+//! asked for, so the subset also has to be NAMED in the font description —
+//! that's the second family in [`super::terminal_font`]. For most of this
+//! module's life it was registered but unnamed AND mis-named internally, so the
+//! very glyphs it exists for still fell back: U+2460 measured 2.22 cells against
+//! a 9px cell and overflowed. Both halves are needed; either alone is a no-op.
+//!
 //! fontconfig has no gtk4-rs wrapper for app fonts, so we bind the two C
 //! entry points directly. libfontconfig is already linked transitively through
 //! pango/gtk, so no extra link flags are needed.
@@ -15,6 +22,25 @@ use std::ffi::c_void;
 use std::os::raw::{c_char, c_int};
 
 /// The subset TTF, embedded so the binary is self-contained.
+///
+/// IF YOU REGENERATE THIS FILE, CHECK ITS INTERNAL FAMILY NAME FIRST:
+///
+/// ```text
+/// fc-query --format '%{family}\n' orchestra-symbols.ttf   # must be "Orchestra Symbols"
+/// ```
+///
+/// The subset is cut from Adwaita Mono and inherited that family name in its
+/// `name` table. Fontconfig matches on the INTERNAL name, so while it was
+/// called "Adwaita Mono" nothing could request it — [`load_app_fonts`] returned
+/// success, the face was registered, the glyphs painted, and only the ADVANCE
+/// was wrong (U+2460 measured 2.22 cells against a 9px cell, overflowing and
+/// shifting the rest of the line). Every signal short of measuring an advance
+/// reported healthy, which is why it survived several review passes.
+///
+/// The Electron half cannot warn you: its `@font-face` ASSIGNS the family name
+/// (`styles.css:28`), so the same mis-named file works there by accident of CSS
+/// semantics. Naming it correctly here is what makes `terminal_font()`'s
+/// fallback list reachable at all.
 const ORCHESTRA_SYMBOLS_TTF: &[u8] = include_bytes!("../../assets/fonts/orchestra-symbols.ttf");
 
 /// Inter — the UI face, embedded for the same reason the symbol subset is.
@@ -100,4 +126,110 @@ fn register(file_name: &str, bytes: &[u8]) -> std::io::Result<()> {
         return Err(std::io::Error::other("FcConfigAppFontAddFile failed"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The subset's `name` table must say "Orchestra Symbols".
+    ///
+    /// This asserts the property that actually broke. Registration succeeding
+    /// is NOT the property: while the file was named "Adwaita Mono",
+    /// [`load_app_fonts`] returned success and the glyphs painted — only the
+    /// advance was wrong. A test gating on registration would have passed for
+    /// this bug's entire life, so it gates on the name instead.
+    ///
+    /// Parsed straight from the embedded bytes rather than via fontconfig, so
+    /// it holds in a headless test env with no font config at all.
+    #[test]
+    fn subset_declares_orchestra_symbols_family() {
+        let names = name_table_strings(ORCHESTRA_SYMBOLS_TTF);
+        assert!(
+            names.iter().any(|n| n == "Orchestra Symbols"),
+            "orchestra-symbols.ttf must declare family \"Orchestra Symbols\" — \
+             fontconfig matches on the internal name, so a subset still carrying \
+             its source family (\"Adwaita Mono\") is unreachable by name and its \
+             glyphs fall back at the wrong advance. Found: {names:?}"
+        );
+        // Negative control: the source family must be gone, otherwise this test
+        // would also pass on a file carrying BOTH names.
+        assert!(
+            !names.iter().any(|n| n == "Adwaita Mono"),
+            "subset still carries the source family name: {names:?}"
+        );
+    }
+
+    /// Every glyph must sit on the 0.6-em monospace advance the cell assumes.
+    /// A subset regenerated from a proportional face would break the grid while
+    /// still registering and painting fine.
+    #[test]
+    fn subset_glyphs_are_monospace_advance() {
+        let (upem, advances) = hmtx_advances(ORCHESTRA_SYMBOLS_TTF);
+        assert_eq!(upem, 1000, "unexpected unitsPerEm");
+        for adv in &advances {
+            assert_eq!(
+                *adv, 600,
+                "non-mono advance {adv}/{upem} em in the symbol subset (want 600 = 0.60 em)"
+            );
+        }
+        assert!(!advances.is_empty(), "no advances parsed — probe is broken");
+    }
+
+    /// Minimal big-endian TrueType `name`-table reader (IDs 1/4/6/16).
+    fn name_table_strings(font: &[u8]) -> Vec<String> {
+        let (off, _) = table(font, b"name").expect("name table");
+        let count = be16(font, off + 2) as usize;
+        let storage = off + be16(font, off + 4) as usize;
+        let mut out = Vec::new();
+        for i in 0..count {
+            let rec = off + 6 + 12 * i;
+            let (plat, len, str_off) = (
+                be16(font, rec),
+                be16(font, rec + 8) as usize,
+                be16(font, rec + 10) as usize,
+            );
+            let bytes = &font[storage + str_off..storage + str_off + len];
+            // platform 3 (Windows) is UTF-16BE; platform 1 (Mac) is single-byte.
+            let s = if plat == 3 {
+                bytes
+                    .chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .filter_map(|u| char::from_u32(u as u32))
+                    .collect()
+            } else {
+                bytes.iter().map(|&b| b as char).collect::<String>()
+            };
+            out.push(s);
+        }
+        out
+    }
+
+    /// Returns (unitsPerEm, every advance width in `hmtx`).
+    fn hmtx_advances(font: &[u8]) -> (u16, Vec<u16>) {
+        let (head, _) = table(font, b"head").expect("head");
+        let upem = be16(font, head + 18);
+        let (hhea, _) = table(font, b"hhea").expect("hhea");
+        let n = be16(font, hhea + 34) as usize;
+        let (hmtx, _) = table(font, b"hmtx").expect("hmtx");
+        ((upem), (0..n).map(|i| be16(font, hmtx + 4 * i)).collect())
+    }
+
+    fn table(font: &[u8], tag: &[u8; 4]) -> Option<(usize, usize)> {
+        let n = be16(font, 4) as usize;
+        (0..n).find_map(|i| {
+            let rec = 12 + 16 * i;
+            (&font[rec..rec + 4] == tag)
+                .then(|| (be32(font, rec + 8) as usize, be32(font, rec + 12) as usize))
+        })
+    }
+
+    fn be16(b: &[u8], o: usize) -> u16 {
+        u16::from_be_bytes([b[o], b[o + 1]])
+    }
+    fn be32(b: &[u8], o: usize) -> u32 {
+        u32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+    }
 }
