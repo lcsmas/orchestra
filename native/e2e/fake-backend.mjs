@@ -67,7 +67,10 @@ export function startFakeBackend(sockPath, opts = {}) {
   } catch {
     /* ignore */
   }
+  const live = new Set();
   const server = net.createServer((conn) => {
+    live.add(conn);
+    conn.on('close', () => live.delete(conn));
     const dec = new FrameDecoder();
     conn.on('data', (chunk) => {
       for (const frame of dec.push(chunk)) {
@@ -96,8 +99,19 @@ export function startFakeBackend(sockPath, opts = {}) {
     server.listen(sockPath, () => {
       resolve({
         sock: sockPath,
+        /// Drop every LIVE connection without closing the listener — the client
+        /// sees its socket die and enters ConnectionState::Reconnecting, which
+        /// `close()` alone does NOT cause (server.close stops accepting but
+        /// leaves established connections up, so the client notices nothing).
+        /// Needed to assert UI state DURING the reconnecting window.
+        dropConnections: () => {
+          for (const c of live) c.destroy();
+          live.clear();
+        },
         close: () =>
           new Promise((res) => {
+            for (const c of live) c.destroy();
+            live.clear();
             server.close(() => res());
           }),
       });

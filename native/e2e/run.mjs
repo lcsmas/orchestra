@@ -276,6 +276,72 @@ scenario('missing-dependency-warning', async ({ sway }) => {
 });
 
 // ---------------------------------------------------------------------------
+// Scenario: the UI must not contradict itself while reconnecting (M4 D1a,
+// gate criterion 5). The client owns the retry, so `self.backend` stays Some
+// during a reconnect and only Disconnected clears it — which made the footer
+// keep claiming "backend: daemon v0.5.84" while the banner said connecting.
+//
+// The assertion fires DURING the reconnecting window, not after recovery: an
+// end-state-only check passes trivially and proves nothing.
+// ---------------------------------------------------------------------------
+scenario('footer-not-stale-while-reconnecting', async ({ sway }) => {
+  const home = mkTmp('stalefooter-home');
+  const uiSock = path.join(mkTmp('stalefooter-sock'), 'ui.sock');
+  const backend = await startFakeBackend(uiSock, {
+    proto: 1,
+    appVersion: APP_VERSION,
+    backendKind: 'daemon',
+  });
+
+  const app = await launchGtk({
+    sway,
+    label: 'stalefooter',
+    env: { ORCHESTRA_HOME: home, ORCHESTRA_UI_SOCK: uiSock },
+  });
+
+  try {
+    // Attached: footer names the daemon.
+    const attached = await waitFor(
+      async () => {
+        const r = await app.rc.get('status-text', 'label').catch(() => null);
+        return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
+      },
+      { desc: 'initial attach', timeoutMs: 20_000 },
+    );
+
+    // Drop the live connection WITHOUT closing the listener: the client goes to
+    // Reconnecting (and can succeed again later — we only need the window).
+    backend.dropConnections();
+
+    // Catch the app INSIDE the reconnecting window and assert the two surfaces
+    // agree. Poll fast: the window is real but short.
+    const observed = await waitFor(
+      async () => {
+        const b = await app.rc.get('backend-banner-text', 'label').catch(() => null);
+        if (!b || !b.ok || !/reconnect/i.test(b.value || '')) return null;
+        const f = await app.rc.get('status-text', 'label').catch(() => null);
+        return f && f.ok ? { banner: b.value, footer: f.value } : null;
+      },
+      { desc: 'the reconnecting window', timeoutMs: 30_000, intervalMs: 50 },
+    );
+
+    // THE BUG: footer claiming a live backend while the banner says reconnecting.
+    assert(
+      !/backend: (daemon|electron)\b/i.test(observed.footer),
+      `footer must not claim an attached backend while reconnecting — ` +
+        `banner="${observed.banner}" footer="${observed.footer}"`,
+    );
+    await app.rc
+      .screenshot(path.join(SHOT_DIR, 'footer-not-stale-while-reconnecting.png'))
+      .catch(() => {});
+    return `during reconnect: banner="${observed.banner}" footer="${observed.footer}" (was "${attached}")`;
+  } finally {
+    app.stop();
+    await backend.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Scenario: reconnect to a NEW socket path (M3 P1). The daemon's socket is
 // pid-derived, so a backend restart moves it. RpcBackend::connect builds its
 // client with RpcClient::discover, so every reconnect attempt re-resolves the
