@@ -250,7 +250,18 @@ async function main(argv: string[]): Promise<void> {
       if (detached) body.detached = true;
       const res = await request('/spawn', body);
       if (!res.ok) fail(res.error ?? 'failed to spawn workspace');
-      process.stdout.write(`Spawned ${res.id as string} on branch ${res.branch as string}\n`);
+      // `ok` alone is not proof: a spawn that failed partway (e.g. the git
+      // worktree add collided with a stale checkout) has come back ok:true
+      // with both fields undefined, and this printed
+      // "Spawned undefined on branch undefined" — a SUCCESS line for a failed
+      // spawn, which reads as fine in a log and sends nobody looking.
+      if (typeof res.id !== 'string' || typeof res.branch !== 'string') {
+        fail(
+          `spawn reported success but returned no workspace (id=${String(res.id)}, ` +
+            `branch=${String(res.branch)}) — check for a stale git worktree with that branch name`,
+        );
+      }
+      process.stdout.write(`Spawned ${res.id} on branch ${res.branch}\n`);
       return;
     }
 

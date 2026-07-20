@@ -29,6 +29,7 @@ import {
   getPtySize,
 } from './pty';
 import { expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
+import { submitPlan } from '../shared/task-submit';
 import { syncAccountInheritance } from './account-inherit';
 import { refreshAccountsNow } from './account-usage';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
@@ -1005,6 +1006,13 @@ const SUBMIT_CR_DELAY_MS = 150;
 const SUBMIT_CONFIRM_MS = 2_500;
 const SUBMIT_POLL_MS = 100;
 const SUBMIT_MAX_ATTEMPTS = 4;
+// If every '\r' in a round goes unconfirmed, the likelier explanation is that
+// the TASK TEXT never landed (an empty box submits forever without leaving
+// `idle`) rather than four dropped keystrokes in a row. Each extra round
+// re-types before retrying. Two rounds is deliberate: one recovery attempt,
+// then a loud error naming the manual fix — an unbounded loop against a wedged
+// TUI would retype indefinitely.
+const SUBMIT_TYPE_ROUNDS = 2;
 
 /** Spawn a freshly-created workspace's agent straight from the main process,
  * without waiting for the renderer's TerminalView to become visible. The
@@ -1074,25 +1082,62 @@ async function submitTaskWhenReady(id: string, task: string, readyFile: string):
     await clearReadyFile(id);
     return;
   }
-  // Type the prompt once, then submit with a confirmed, retrying carriage
-  // return. The text itself reliably lands once the readiness sentinel is up;
-  // it's the submit '\r' that used to get dropped under concurrent spawns, so
-  // only the '\r' is retried (re-typing the task would duplicate it in the
-  // input). We treat "status left idle" as proof the submit registered.
-  writePty(id, task);
-  await new Promise((r) => setTimeout(r, SUBMIT_CR_DELAY_MS));
+  // Type the prompt, then submit with a confirmed, retrying carriage return.
+  //
+  // TWO failures are possible and they need DIFFERENT remedies, which is why
+  // this is a nested loop rather than a flat '\r' retry:
+  //
+  //   1. The '\r' is dropped — text sits in the box, never sent. Resending
+  //      '\r' fixes it; re-typing would duplicate the task.
+  //   2. The TEXT never lands — the box is empty. Observed on a real spawn
+  //      whose agent sat at a pristine prompt (placeholder still showing) with
+  //      no idea it had been given a task. Here resending '\r' is useless: it
+  //      submits an empty box forever and every attempt "fails" identically,
+  //      so the flat loop burned its whole budget on a remedy that could not
+  //      work, then warned and gave up.
+  //
+  // We cannot read the agent's input box to tell these apart, so after
+  // exhausting the '\r' retries we assume case 2 and RE-TYPE. Duplication is
+  // the acceptable risk: a doubled prompt is visible and recoverable, while a
+  // silently empty agent looks exactly like a slow one and waits forever.
+  // The escalation itself lives in ../shared/task-submit (pure, unit-tested —
+  // this file imports Electron and cannot be). Walk its steps until the agent
+  // leaves `idle`.
   let submitted = false;
-  for (let attempt = 0; attempt < SUBMIT_MAX_ATTEMPTS; attempt++) {
+  let submits = 0;
+  for (const step of submitPlan({
+    maxSubmitAttempts: SUBMIT_MAX_ATTEMPTS,
+    typeRounds: SUBMIT_TYPE_ROUNDS,
+  })) {
     if (!isRunning(id)) break;
+    if (step.kind === 'clear') {
+      log.warn(`agent ${id} still idle after ${submits} submits — re-typing the task`);
+      // Ctrl-U kills the input line, so a retype cannot concatenate onto a
+      // half-delivered prompt.
+      writePty(id, '\x15');
+      await new Promise((r) => setTimeout(r, SUBMIT_CR_DELAY_MS));
+      continue;
+    }
+    if (step.kind === 'type') {
+      writePty(id, task);
+      await new Promise((r) => setTimeout(r, SUBMIT_CR_DELAY_MS));
+      continue;
+    }
     writePty(id, '\r');
+    submits++;
     if (await waitForSubmitConfirmed(id, SUBMIT_CONFIRM_MS)) {
       submitted = true;
       break;
     }
-    log.warn(`agent ${id} submit '\\r' not confirmed (attempt ${attempt + 1}) — resending`);
+    log.warn(`agent ${id} submit '\\r' not confirmed (attempt ${submits}) — resending`);
   }
   if (!submitted) {
-    log.warn(`agent ${id} opening prompt may not have submitted after ${SUBMIT_MAX_ATTEMPTS} attempts`);
+    // Loud, and actionable: name the recovery the coordinator can run by hand.
+    log.error(
+      `agent ${id} NEVER ACCEPTED ITS OPENING PROMPT after ${SUBMIT_TYPE_ROUNDS} type rounds ` +
+        `x ${SUBMIT_MAX_ATTEMPTS} submits — it is sitting idle with no task. ` +
+        `Recover with: orchestra message ${id} "<the task>"`,
+    );
   }
   await clearReadyFile(id);
   const fresh = store.getWorkspace(id);
