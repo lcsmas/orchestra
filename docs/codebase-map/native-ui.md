@@ -27,6 +27,17 @@ renderer's `:root` (`src/renderer/styles.css:43`). Verified equal to Electron's
 `scratch`, `orchestrator`) were added later — before that they existed only as
 repeated literals, which is how independently-appended blocks drifted.
 
+**§1 is the ONLY place a token may be defined.** A second `@define-color` for
+the same name anywhere later in the file silently wins — no parser error, no
+warning — and every consumer of the first definition changes color. That
+happened: an overlays section re-declared `accent_2` as `#7c6ef2` (a value in
+no Electron stylesheet), so `.usage-bar-fill.meter-accent-2` and
+`.insights-row-icon` rendered the wrong purple while the canonical `#8b7cff`
+sat dead in §1. Two tests in `lib.rs` (`theme_token_tests`) now gate this: one
+fails on any duplicate name, one pins the 18 shared values to the renderer's.
+Both have been mutation-tested — the duplicate gate was confirmed to fail by
+assertion (not by a compile error) with the offending pair named.
+
 Three notes that cost real debugging time:
 
 - **Read Electron with `backgroundImage`, not just `backgroundColor`.** The
