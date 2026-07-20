@@ -807,6 +807,30 @@ is measured against, and it is why "looks better" becomes a testable statement.
   terminator; cleanup that outlives a SIGKILLed parent (a `trap` will not fire).
 - **D3 latent env race** — `daemon.rs:426` `ORCHESTRA_DAEMON_CMD`, same shape as
   the flake already fixed; currently true-by-luck (one reader, one writer).
+  **Done for `daemon.rs` only** — it now takes an injected override rather than
+  reading process-global env, with no serialisation added. Scoped honestly: the
+  *class* is NOT closed, because `orchestra-rpc/tests/client.rs` still mutates
+  `ORCHESTRA_UI_SOCK`/`ORCHESTRA_HOME` (7 occurrences). The earlier fix removed
+  the flake's *victim*, not its *polluter*. "We fixed the flake" and "we closed
+  the class" are different claims.
+
+**M4 follow-ups — real, small, deliberately NOT bundled** (each on its own
+branch; recorded here so they survive the thread):
+1. **Clear the banner label when hiding it.** `app.rs:1155` and `:1336` hide the
+   banner; neither clears the text, so a hidden banner retains stale copy. This
+   cost a milestone: an E2E assertion polled that label and could never become
+   true again. One line, real trap for humans and harnesses alike.
+2. **Remove the env polluter** in `orchestra-rpc/tests/client.rs` — the
+   remaining half of D3's class.
+3. **`Connected` is emitted before the writer is installed.** `reconnect_loop`
+   sends `Connected`, then `install_connection` installs the writer; `write_frame`
+   returns `NotConnected` while it is `None` (`client.rs:268`). A caller that
+   waits for `Connected` and calls immediately races the install — load-sensitive,
+   so it reads as flakiness. The ordering is *deliberate* (it stops a dying
+   connection's `Reconnecting` preceding this `Connected`), so it fixed one race
+   and opened a smaller one. Decide between emitting `Connected` after the writer
+   is live, or giving callers a documented "wait until callable" primitive. Real
+   API sharp edge, not only a test-side assumption.
 
 **The visual acceptance gate** (from the verifier — visual claims are the least
 falsifiable thing in this project, so the standard is fixed BEFORE any claim is
