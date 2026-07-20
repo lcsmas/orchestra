@@ -1,15 +1,28 @@
 #!/usr/bin/env bash
 # Surface child-agent work that is committed but NOT merged.
 #
-# WHY THIS EXISTS: agents report via `orchestra message`, which only lands
-# while a turn is running. An agent that finishes between turns goes idle and
-# its report evaporates — so "no agent reported" is indistinguishable from
-# "no agent finished". That has stranded work five times in this project,
-# including a case where the coordinator ran a merge check, reported it as
-# proof, and the check was structurally wrong.
+# WHY THIS EXISTS — and NOT the reason first assumed.
 #
-# Agent messages are not a reliable signal. The unmerged-commit count is.
-# This runs on every prompt so the check fires without anyone remembering.
+# The first version of this comment claimed agent messages "evaporate between
+# turns". That was fabricated to explain an absence I had not investigated.
+# Orchestra's delivery is sound: workspaces.ts:1890 types the message into a
+# RUNNING target's PTY and submits it; a STOPPED target gets woken, and only
+# if waking fails is the message parked in ~/.orchestra/inbox/<wsid>.txt, which
+# inbox-instruction.sh drains on the next session. Live, started, inbox — three
+# paths, all covered.
+#
+# The real gaps are quieter, and none of them is a broken queue:
+#   - An agent COMMITS BEFORE IT REPORTS. Work exists on a branch for minutes
+#     or hours before any message is sent — and if the agent is still working,
+#     no message is owed yet. "No report" often just means "not finished".
+#   - An agent can stop, be killed, or run out of context after committing and
+#     before reporting. Then no message is ever owed, and nothing is wrong
+#     anywhere — the commits simply sit there.
+#   - A report that DOES arrive can be missed in a long turn among tool output.
+#
+# So this is not a workaround for a broken mechanism. It is a second,
+# independent signal that does not depend on an agent choosing to speak:
+# commits on a branch are a fact about the repo, not a message anyone sent.
 #
 # Scoped deliberately: only branches that are BOTH a live peer AND share
 # history with this branch. An unrelated branch also has commits we do not —
@@ -51,4 +64,4 @@ done <<< "$(awk 'NR>2 {print $1, $2}' <<< "$peers")"
 
 printf '[unmerged agent work] child branches with commits not on this branch:\n'
 printf "%b" "$out"
-printf 'An agent that goes idle between turns cannot report — verify at the branch tip, not by waiting for a message.\n'
+printf 'Commits exist before a report is sent, and an agent may still be working. Check the tip; do not wait to be told.\n'
