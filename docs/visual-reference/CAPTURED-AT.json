@@ -2,60 +2,60 @@
   "_comment": "Provenance for the paired visual-reference captures. Each entry is the commit the capture was taken at. A capture is VALID evidence about ITS OWN commit and stale only when read as evidence about a later one — staleness is per-file-per-commit, not a property of this directory. check-fresh.sh fails when any entry is not HEAD.",
   "captures": {
     "electron-dialog.png": {
-      "commit": "fc75501d948f3ebe66eaf73e2fbe911bd16d58d2",
-      "md5": "66f32ea4047b8194d99d8085b3581925"
+      "commit": "b92714ff8abbf97ecfc44f26b61ed9d90e1e2188",
+      "md5": "4a32dbbea03612f6a166d06f84822d95"
     },
     "electron-full-window.png": {
-      "commit": "fc75501d948f3ebe66eaf73e2fbe911bd16d58d2",
-      "md5": "5adde89a71c4c7ae162f3afc0f2f4043"
+      "commit": "b92714ff8abbf97ecfc44f26b61ed9d90e1e2188",
+      "md5": "07ccd0d3b82fb926da0f299324833171"
     },
     "electron-main-pane.png": {
-      "commit": "fc75501d948f3ebe66eaf73e2fbe911bd16d58d2",
-      "md5": "8ffa6b7c5ac4680f31437d3807e2a06c"
+      "commit": "b92714ff8abbf97ecfc44f26b61ed9d90e1e2188",
+      "md5": "8e96b4814308f4afe417babcec7c57ab"
     },
     "electron-sidebar-selected.png": {
-      "commit": "fc75501d948f3ebe66eaf73e2fbe911bd16d58d2",
-      "md5": "553150024f4a30d9f8f77bb8e7818807"
+      "commit": "b92714ff8abbf97ecfc44f26b61ed9d90e1e2188",
+      "md5": "9eae1d9a371b5788a0998233ab657e02"
     },
     "electron-sidebar.png": {
-      "commit": "fc75501d948f3ebe66eaf73e2fbe911bd16d58d2",
-      "md5": "b23059b36e0d2d467e22aabac22d8530"
+      "commit": "b92714ff8abbf97ecfc44f26b61ed9d90e1e2188",
+      "md5": "77037e5cd00e57c72a5bc6af32beffe9"
     },
     "electron-toolbar.png": {
-      "commit": "fc75501d948f3ebe66eaf73e2fbe911bd16d58d2",
+      "commit": "b92714ff8abbf97ecfc44f26b61ed9d90e1e2188",
       "md5": "bc96b40da8751710dbf4e2ae04cd79bd"
     },
     "electron-workspace-selected.png": {
-      "commit": "fc75501d948f3ebe66eaf73e2fbe911bd16d58d2",
-      "md5": "b3e8d81951d4ced19e5a3a08b601bab2"
+      "commit": "b92714ff8abbf97ecfc44f26b61ed9d90e1e2188",
+      "md5": "367df303e0ed375122a93921562402c4"
     },
     "gtk-dialog.png": {
-      "commit": "fc75501d948f3ebe66eaf73e2fbe911bd16d58d2",
+      "commit": "b92714ff8abbf97ecfc44f26b61ed9d90e1e2188",
       "md5": "4313653a6ca51c0d8f5a5ad07f197756"
     },
     "gtk-full-window.png": {
-      "commit": "fc75501d948f3ebe66eaf73e2fbe911bd16d58d2",
-      "md5": "f97434c070c4d8748940a4fb4e1c77c7"
+      "commit": "b92714ff8abbf97ecfc44f26b61ed9d90e1e2188",
+      "md5": "95c397e53484e68dd04e19d51aec2197"
     },
     "gtk-main-pane.png": {
-      "commit": "fc75501d948f3ebe66eaf73e2fbe911bd16d58d2",
+      "commit": "b92714ff8abbf97ecfc44f26b61ed9d90e1e2188",
       "md5": "915c93ad2c493ab6206d2e7e7a041891"
     },
     "gtk-sidebar-selected.png": {
-      "commit": "fc75501d948f3ebe66eaf73e2fbe911bd16d58d2",
-      "md5": "365e9d15c4c16c76dfa300e2265547c7"
+      "commit": "b92714ff8abbf97ecfc44f26b61ed9d90e1e2188",
+      "md5": "0dd637278dbb761abde68036564a435b"
     },
     "gtk-sidebar.png": {
-      "commit": "fc75501d948f3ebe66eaf73e2fbe911bd16d58d2",
-      "md5": "bcb1ace06f11269b448721a92c68a010"
+      "commit": "b92714ff8abbf97ecfc44f26b61ed9d90e1e2188",
+      "md5": "b2cf4e76d165af052cc27bee781f1bd5"
     },
     "gtk-toolbar.png": {
-      "commit": "fc75501d948f3ebe66eaf73e2fbe911bd16d58d2",
-      "md5": "4ad56a2d18acb8e0356368aa1ee79574"
+      "commit": "b92714ff8abbf97ecfc44f26b61ed9d90e1e2188",
+      "md5": "c5f55baf71da3b019b5391e4a759a1fb"
     },
     "gtk-workspace-selected.png": {
-      "commit": "fc75501d948f3ebe66eaf73e2fbe911bd16d58d2",
-      "md5": "fba0dbb98b3056af658463a4be588001"
+      "commit": "b92714ff8abbf97ecfc44f26b61ed9d90e1e2188",
+      "md5": "6e9295551743915027486289fc0888f2"
     }
   }
 }
