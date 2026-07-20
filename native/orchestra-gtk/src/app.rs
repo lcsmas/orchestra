@@ -137,6 +137,10 @@ pub struct App {
     banner: gtk::Revealer,
     banner_label: gtk::Label,
     footer_label: gtk::Label,
+    /// Mirror of the last `ConnectionState` we received, exposed to the
+    /// remote-control harness (never shown). See its widget definition for why
+    /// cause-vs-symptom must be readable separately.
+    conn_state_label: gtk::Label,
     /// Sidebar footer box that hosts the usage-bars strip (mounted by the
     /// controller) — kept so a backend that attaches on retry can mount into it.
     sidebar_footer: gtk::Box,
@@ -715,6 +719,29 @@ impl SimpleComponent for App {
                         set_hexpand: true,
                     },
 
+                    // Live ConnectionState, for the remote-control harness only
+                    // — never shown (zero-width, no_show_all-equivalent via
+                    // set_visible(false) would make it unreadable, so it stays
+                    // "visible" but empty-sized).
+                    //
+                    // Why this exists: when the app wedges there is no signal at
+                    // all — 0% CPU, empty log — and the BANNER is only the
+                    // symptom. The cause is the ConnectionState the app last
+                    // received, and the two can DISAGREE: state Disconnected
+                    // while the banner still shows reconnecting copy means the
+                    // fault is app-side delivery/handling; a state that never
+                    // left Reconnecting means it is the client's give-up path.
+                    // Exposing it as a named label lets the E2E timeout capture
+                    // read cause and symptom side by side (M4 D2a).
+                    #[name = "conn_state_label"]
+                    gtk::Label {
+                        set_widget_name: "debug-connection-state",
+                        set_label: "initial",
+                        set_width_request: 0,
+                        set_max_width_chars: 1,
+                        set_opacity: 0.0,
+                    },
+
                     // Overlay triggers (Electron sidebar-header buttons). These
                     // stay simple text buttons on the status strip until the M2
                     // sidebar workstream gives them their final home.
@@ -1045,6 +1072,7 @@ impl SimpleComponent for App {
             banner: widgets.banner.clone(),
             banner_label: widgets.banner_label.clone(),
             footer_label: widgets.footer_label.clone(),
+            conn_state_label: widgets.conn_state_label.clone(),
             sidebar_footer: widgets.sidebar_footer.clone(),
             accounts_button: widgets.accounts_button.clone(),
         };
@@ -1099,61 +1127,84 @@ impl SimpleComponent for App {
                     b.set_focused(focused);
                 }
             }
-            Msg::Connection(state) => match state {
-                ConnectionState::Connected => {
-                    self.backend_live = true;
-                    self.banner.set_reveal_child(false);
-                    // Reconnects re-handshake: re-hydrate the sidebar snapshot
-                    // (server info for the footer, missed workspace updates).
-                    if let Some(b) = &self.backend {
-                        self.sidebar.emit(crate::sidebar::Msg::Attach(b.clone()));
+            Msg::Connection(state) => {
+                // Mirror the CAUSE for the harness before acting on it, so a cut
+                // taken mid-handling still reads the state that arrived.
+                //
+                // STALENESS: this is the only writer besides the attach path
+                // (which re-points it at a new connection before that
+                // connection's stream can speak). The one residual window is a
+                // just-replaced backend whose pump future has not yet noticed
+                // its channel closed; it ends as soon as the dropped client
+                // closes. Documented rather than silent — a mirror that stops
+                // updating reads as authoritative, which is exactly the failure
+                // it exists to detect.
+                self.conn_state_label.set_label(
+                    match &state {
+                        ConnectionState::Connected => "Connected".into(),
+                        ConnectionState::Reconnecting { attempt, delay_ms } => {
+                            format!("Reconnecting{{attempt:{attempt},delay_ms:{delay_ms}}}")
+                        }
+                        ConnectionState::Disconnected => "Disconnected".into(),
                     }
-                    // Re-point the main pane + terminal at the active workspace
-                    // (the terminals resolve ctx.backend() per-call, so they pick
-                    // up the swapped-in live backend automatically).
-                    self.reselect_active();
-                    // Missed self-tune transitions while disconnected.
-                    self.refresh_insights_section();
-                    self.footer_label
-                        .set_label(&footer_text(&self.backend, self.backend_live));
-                }
-                ConnectionState::Reconnecting { attempt, delay_ms } => {
-                    // The handle survives a reconnect (the client is retrying and
-                    // will reuse its streams), but the backend is NOT reachable —
-                    // so the footer must stop claiming it is. Without this the UI
-                    // contradicts itself: "backend: daemon v0.5.84" in the footer
-                    // while the banner says connecting (M4 D1a).
-                    self.backend_live = false;
-                    self.footer_label
-                        .set_label(&footer_text(&self.backend, self.backend_live));
-                    self.banner_label.set_label(&format!(
-                        "backend connection lost — reconnecting (attempt {}, next try in {}s)",
-                        attempt + 1,
-                        delay_ms.div_ceil(1000),
-                    ));
-                    self.banner.set_reveal_child(true);
-                }
-                ConnectionState::Disconnected => {
-                    // Terminal: the client gave up (or the close was
-                    // deliberate). Drop it and fall back to discovery.
-                    self.backend = None;
-                    self.ctx.set_backend(None);
-                    // Tear down the accounts controller with the backend: its
-                    // usage strip is unmounted below by the fresh attach on
-                    // reconnect. Dropping it here stops its minute-tick timer.
-                    if let Some(accounts) = self.accounts.take() {
-                        self.sidebar_footer.remove(&accounts.usage_bars_root());
+                    .as_str(),
+                );
+                match state {
+                    ConnectionState::Connected => {
+                        self.backend_live = true;
+                        self.banner.set_reveal_child(false);
+                        // Reconnects re-handshake: re-hydrate the sidebar snapshot
+                        // (server info for the footer, missed workspace updates).
+                        if let Some(b) = &self.backend {
+                            self.sidebar.emit(crate::sidebar::Msg::Attach(b.clone()));
+                        }
+                        // Re-point the main pane + terminal at the active workspace
+                        // (the terminals resolve ctx.backend() per-call, so they pick
+                        // up the swapped-in live backend automatically).
+                        self.reselect_active();
+                        // Missed self-tune transitions while disconnected.
+                        self.refresh_insights_section();
+                        self.footer_label
+                            .set_label(&footer_text(&self.backend, self.backend_live));
                     }
-                    self.banner_label.set_label(NO_BACKEND_BANNER);
-                    self.banner.set_reveal_child(true);
-                    // backend is None here, so `live` is moot — pass the flag
-                    // anyway so every call site reads uniformly.
-                    self.backend_live = false;
-                    self.footer_label
-                        .set_label(&footer_text(&self.backend, self.backend_live));
-                    Self::start_retry_loop(&self.retry_active, &sender);
+                    ConnectionState::Reconnecting { attempt, delay_ms } => {
+                        // The handle survives a reconnect (the client is retrying and
+                        // will reuse its streams), but the backend is NOT reachable —
+                        // so the footer must stop claiming it is. Without this the UI
+                        // contradicts itself: "backend: daemon v0.5.84" in the footer
+                        // while the banner says connecting (M4 D1a).
+                        self.backend_live = false;
+                        self.footer_label
+                            .set_label(&footer_text(&self.backend, self.backend_live));
+                        self.banner_label.set_label(&format!(
+                            "backend connection lost — reconnecting (attempt {}, next try in {}s)",
+                            attempt + 1,
+                            delay_ms.div_ceil(1000),
+                        ));
+                        self.banner.set_reveal_child(true);
+                    }
+                    ConnectionState::Disconnected => {
+                        // Terminal: the client gave up (or the close was
+                        // deliberate). Drop it and fall back to discovery.
+                        self.backend = None;
+                        self.ctx.set_backend(None);
+                        // Tear down the accounts controller with the backend: its
+                        // usage strip is unmounted below by the fresh attach on
+                        // reconnect. Dropping it here stops its minute-tick timer.
+                        if let Some(accounts) = self.accounts.take() {
+                            self.sidebar_footer.remove(&accounts.usage_bars_root());
+                        }
+                        self.banner_label.set_label(NO_BACKEND_BANNER);
+                        self.banner.set_reveal_child(true);
+                        // backend is None here, so `live` is moot — pass the flag
+                        // anyway so every call site reads uniformly.
+                        self.backend_live = false;
+                        self.footer_label
+                            .set_label(&footer_text(&self.backend, self.backend_live));
+                        Self::start_retry_loop(&self.retry_active, &sender);
+                    }
                 }
-            },
+            }
             Msg::BackendEvent(ev) => {
                 // App owns the single events() consumer (spawn_backend_streams);
                 // it fans each frame out to the components that care. The sidebar
@@ -1330,6 +1381,14 @@ impl App {
                         return;
                     }
                 };
+                // Re-point the state mirror at the NEW connection before its
+                // stream can report anything. Without this the mirror keeps the
+                // previous client's last state across an attach — stale, and
+                // stale reads as authoritative, which is the same disease as a
+                // footer claiming attached. The mirror must never describe a
+                // connection that no longer exists.
+                self.conn_state_label
+                    .set_label("Connected(attached, awaiting first stream event)");
                 spawn_backend_streams(sender, backend.as_ref());
                 backend.set_focused(self.window.is_active());
                 self.accounts = Some(attach_accounts(
