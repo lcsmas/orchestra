@@ -1,0 +1,6 @@
+# Run artifacts: regenerate with run-diff.sh. Captures are evidence for the run
+# that produced them, never a source of truth for a later one — check-fresh.sh
+# exists because stale captures read exactly like fresh ones.
+out/
+out-dirty/
+out-clean/
