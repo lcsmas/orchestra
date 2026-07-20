@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   REPO_ROOT,
   resolveGtkBin,
@@ -913,10 +914,279 @@ scenario(
   },
 );
 
+// ---------------------------------------------------------------------------
+// Scenario: the two form modals (repo scripts + Linear API key) OPEN, RENDER
+// and their actions REACH THE BACKEND.
+//
+// WHAT MAKES THESE NON-VACUOUS. Both assert a TRANSITION, never a state that
+// might already hold:
+//
+//   • repo-scripts: the modal is not in the widget tree before the click and
+//     IS after (open transition), and the SAVED VALUE is read back from the
+//     backend and must DIFFER from what was loaded (mutation transition). An
+//     "ok: true" from the save call proves nothing — a sibling agent found an
+//     action that returned ok while doing nothing, so the verdict here comes
+//     from re-reading getRepoScripts, not from the save's return.
+//   • linear: getLinearKeySource must go "none" → "stored" across the save.
+//     Asserting "is it stored?" alone would pass against a fixture that had
+//     always been stored.
+//
+// Screenshots are hashed and duplicates FAIL: a drive step that silently
+// no-ops still "captures" a PNG, so byte-identical shots are the tell that a
+// click did nothing (this repo has shipped that exact bug before).
+// ---------------------------------------------------------------------------
+
+/** Flatten a list_widgets reply into a Set of widget names.
+ *
+ *  The reply is `{ ok, widgets: [<toplevel tree>...] }` and each node is
+ *  `{ name, type, visible, children? }` (remote_control.rs:260-273). Getting
+ *  that key wrong does not fail loudly — the walker just returns an empty set
+ *  and every `waitFor` on it times out, which reads exactly like an app hang.
+ *  Hence `sanityCheckNames` below. */
+function widgetNames(reply) {
+  const names = new Set();
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (node.name) names.add(node.name);
+    if (Array.isArray(node.children)) node.children.forEach(walk);
+  };
+  (reply?.widgets || []).forEach(walk);
+  return names;
+}
+
+async function namesOf(app) {
+  return widgetNames(await app.rc.listWidgets());
+}
+
+/// Positive control for the walker itself: assert it can see a widget that is
+/// unconditionally present. Without this, an empty set is indistinguishable
+/// from "the app rendered nothing", and the scenario blames the app for a bug
+/// in its own instrument.
+async function sanityCheckNames(app) {
+  const names = await waitFor(
+    async () => {
+      const n = await namesOf(app);
+      return n.size > 0 ? n : null;
+    },
+    { desc: 'list_widgets returns a non-empty tree (walker sanity check)' },
+  );
+  assert(
+    names.has('main-window'),
+    `widget walker sees ${names.size} names but not 'main-window' — the walker or the ` +
+      `reply shape is wrong, not the app: ${[...names].slice(0, 20).join(', ')}`,
+  );
+  return names;
+}
+
+scenario('repo-scripts-modal-opens-and-saves', async ({ sway }) => {
+  const home = mkTmp('scripts-home');
+  const app = await launchGtk({
+    sway,
+    label: 'scripts',
+    env: { ORCHESTRA_HOME: home, ORCHESTRA_GTK_MOCK: '1' },
+  });
+  const shots = [];
+  try {
+    await sanityCheckNames(app);
+    await waitFor(async () => (await namesOf(app)).has('sidebar-footer'), {
+      desc: 'sidebar rendered',
+    });
+
+    // PRE-STATE: the modal must NOT already exist, or "it is open" proves
+    // nothing about the click.
+    const before = await namesOf(app);
+    assert(
+      !before.has('repo-scripts-modal'),
+      'repo-scripts modal must be absent before the click (else the open assertion is vacuous)',
+    );
+    // Per-repo gear button: `repo-scripts-<repo name>` (widgets.rs). The mock
+    // fixture's orchestra repo is the one carrying seeded scripts.
+    const gear = 'repo-scripts-orchestra';
+    assert(before.has(gear), `no ${gear} in the tree: ${[...before].slice(0, 40).join(', ')}`);
+
+    await app.rc.click(gear);
+    await waitFor(async () => (await namesOf(app)).has('repo-scripts-modal'), {
+      desc: 'repo-scripts modal opens',
+    });
+
+    // It RENDERED, not merely exists: the three editors and both pickers are
+    // in the tree, so a modal that opened empty would fail here.
+    const open = await namesOf(app);
+    for (const w of [
+      'repo-scripts-setup',
+      'repo-scripts-run',
+      'repo-scripts-archive',
+      'repo-scripts-branch',
+      'repo-scripts-account',
+      'repo-scripts-save',
+    ]) {
+      assert(open.has(w), `repo-scripts modal is missing ${w}`);
+    }
+
+    const shot = path.join(SHOT_DIR, 'repo-scripts-modal.png');
+    const r = await app.rc.screenshot(shot, 'repo-scripts-modal');
+    assert(r.ok, `screenshot failed: ${JSON.stringify(r)}`);
+    shots.push(shot);
+
+    // MUTATION: set a new setup script, save, then read it back FROM THE
+    // BACKEND. The read-back is the assertion — the save's own return is not.
+    //
+    // Written via the modal's `scripts.set` action rather than the `type` op:
+    // a TextView is not a GtkEditable and the headless seat has no keyboard.
+    // Resolved on a widget INSIDE the group's owner (actions resolve UP the
+    // widget tree), hence the editor's own name as the target.
+    const marker = '# e2e-marker\necho hello';
+    const setRes = await app.rc.send({
+      op: 'action',
+      action: 'scripts.set',
+      param: `setup|${marker}`,
+      name: 'repo-scripts-setup',
+    });
+    assert(setRes.ok, `scripts.set failed: ${JSON.stringify(setRes)}`);
+    // Confirm the editor actually took the text before crediting the save —
+    // otherwise a no-op action would save the ORIGINAL value and the
+    // round-trip assertion below could pass on the seeded fixture.
+    const typed = await app.rc.get('repo-scripts-setup', 'label');
+    assert(
+      typed.ok && String(typed.value || '').includes('echo hello'),
+      `editor did not take the new text: ${JSON.stringify(typed)}`,
+    );
+    await app.rc.click('repo-scripts-save');
+    await waitFor(async () => !(await namesOf(app)).has('repo-scripts-modal'), {
+      desc: 'modal closes after a successful save',
+    });
+
+    // Re-open and confirm the value came back — same drive path a user takes.
+    await app.rc.click(gear);
+    await waitFor(async () => (await namesOf(app)).has('repo-scripts-setup'), {
+      desc: 'repo-scripts modal re-opens',
+    });
+    const readBack = await app.rc.get('repo-scripts-setup', 'label');
+    assert(
+      readBack.ok && String(readBack.value || '').includes('echo hello'),
+      `saved setup script did not round-trip through the backend: ${JSON.stringify(readBack)}`,
+    );
+
+    const shot2 = path.join(SHOT_DIR, 'repo-scripts-modal-saved.png');
+    await app.rc.screenshot(shot2, 'repo-scripts-modal');
+    shots.push(shot2);
+    assertDistinctShots(shots);
+
+    return `modal opened, saved, and the value round-tripped via getRepoScripts (${shots.length} shots)`;
+  } finally {
+    app.stop();
+  }
+});
+
+scenario('linear-settings-modal-opens-and-saves', async ({ sway }) => {
+  const home = mkTmp('linear-home');
+  const app = await launchGtk({
+    sway,
+    label: 'linear',
+    env: { ORCHESTRA_HOME: home, ORCHESTRA_GTK_MOCK: '1' },
+  });
+  const shots = [];
+  try {
+    await sanityCheckNames(app);
+    await waitFor(async () => (await namesOf(app)).has('footer-linear'), {
+      desc: 'sidebar footer with the Linear button',
+    });
+
+    const before = await namesOf(app);
+    assert(
+      !before.has('linear-settings'),
+      'linear modal must be absent before the click (else the open assertion is vacuous)',
+    );
+
+    await app.rc.click('footer-linear');
+    await waitFor(async () => (await namesOf(app)).has('linear-settings'), {
+      desc: 'linear modal opens',
+    });
+
+    const open = await namesOf(app);
+    for (const w of ['linear-key-input', 'linear-key-test', 'linear-key-save', 'linear-key-source']) {
+      assert(open.has(w), `linear modal is missing ${w}`);
+    }
+
+    // PRE-STATE: the mock starts with NO key, so the source line says so.
+    // This is what makes the post-save assertion a transition.
+    const srcBefore = await app.rc.get('linear-key-source', 'label');
+    assert(
+      /No key configured/i.test(srcBefore.value || ''),
+      `expected the no-key state before saving, got: ${JSON.stringify(srcBefore)}`,
+    );
+
+    const shot = path.join(SHOT_DIR, 'linear-settings-modal.png');
+    const r = await app.rc.screenshot(shot, 'linear-settings');
+    assert(r.ok, `screenshot failed: ${JSON.stringify(r)}`);
+    shots.push(shot);
+
+    // A key the mock's checkLinearKey ACCEPTS (it validates the prefix rather
+    // than ignoring the param), so this exercises check → save → source flip.
+    await app.rc.type('lin_api_e2e_valid_key', 'linear-key-input');
+    await app.rc.click('linear-key-save');
+
+    // BOUNDED, and deliberately so. The save path is synchronous against the
+    // mock, so the flip lands in well under a second; letting this ride the
+    // 60s scenario budget means a broken save reports as an uninformative
+    // TIMED OUT (verified — that is exactly what the mutation run produced)
+    // instead of naming the state it got stuck in.
+    await waitFor(
+      async () => {
+        const s = await app.rc.get('linear-key-source', 'label').catch(() => null);
+        return s && s.ok && /saved in Orchestra/i.test(s.value || '') ? s.value : null;
+      },
+      {
+        timeoutMs: 5_000,
+        desc:
+          'key source transitions none → stored (still reads as unsaved ⇒ the save never ' +
+          'reached the backend)',
+      },
+    );
+
+    // The remove button is revealed only for a STORED key — a second,
+    // independent witness that the save actually landed in the backend.
+    const afterSave = await namesOf(app);
+    assert(afterSave.has('linear-key-remove'), 'remove button should appear once a key is stored');
+
+    const shot2 = path.join(SHOT_DIR, 'linear-settings-modal-saved.png');
+    await app.rc.screenshot(shot2, 'linear-settings');
+    shots.push(shot2);
+    assertDistinctShots(shots);
+
+    return `modal opened; key source transitioned none → stored (${shots.length} shots)`;
+  } finally {
+    app.stop();
+  }
+});
+
 // ---- assert + main ----------------------------------------------------------
 
 function assert(cond, msg) {
   if (!cond) throw new Error(`assertion failed: ${msg}`);
+}
+
+/// Hash every captured PNG and FAIL on a duplicate.
+///
+/// A drive step that silently no-ops (clicking something already in the target
+/// state) still produces a screenshot, so a set of shots can look like N proven
+/// surfaces while proving fewer. Byte-identical captures are the mechanical
+/// tell. Also fails an EMPTY file: a capture that wrote nothing is not evidence.
+function assertDistinctShots(paths) {
+  const seen = new Map();
+  for (const p of paths) {
+    assert(fs.existsSync(p), `screenshot missing: ${p}`);
+    const buf = fs.readFileSync(p);
+    assert(buf.length > 0, `screenshot is empty: ${p}`);
+    const hash = createHash('sha256').update(buf).digest('hex');
+    const prior = seen.get(hash);
+    assert(
+      !prior,
+      `screenshots are byte-identical (${path.basename(prior || '')} vs ${path.basename(p)}) — ` +
+        `a drive step probably no-opped`,
+    );
+    seen.set(hash, p);
+  }
 }
 
 // Minimal daemon spawn helpers (only used by the backend-lock scenario).

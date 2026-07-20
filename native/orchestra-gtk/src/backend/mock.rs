@@ -264,6 +264,10 @@ struct MockState {
     workspace_accounts: HashMap<String, Option<String>>,
     /// `<ws-id>` → run-script PTY live (B3 run start/stop toggle).
     run_live: HashMap<String, bool>,
+    /// Stored Linear API key, or None when unset — what `getLinearKeySource`
+    /// reports as "stored"/"none". Starts None so the Linear modal opens in
+    /// the no-key state and a save is an observable TRANSITION.
+    linear_key: Option<String>,
 }
 
 /// Four configured accounts spanning the interesting usage shapes: "work"
@@ -410,6 +414,7 @@ impl Default for MockBackend {
                 accounts: mock_accounts(),
                 workspace_accounts: mock_workspace_accounts(),
                 run_live: HashMap::new(),
+                linear_key: None,
             }),
             events_tx,
             events_rx,
@@ -1000,7 +1005,37 @@ impl Backend for MockBackend {
                 self.emit("workspaceAccounts", vec![self.workspace_accounts_value()]);
                 Ok(list)
             }
-            "setRepoAccount" => Ok(Value::Bool(true)),
+            // `setRepoAccount(repoPath, accountId | null): Promise<RepoEntry>`
+            // (ipc.ts) — returns the BARE updated RepoEntry. This arm used to
+            // return `true` while ignoring both params: a wrong-keyed call (or
+            // a client expecting the RepoEntry) looked fine against the mock
+            // and failed only live, which is the exact class of live-only bug
+            // require_repo exists to prevent.
+            "setRepoAccount" => {
+                let path: String = Self::arg(&params, 0)?;
+                self.require_repo(&path)?;
+                // `null` is a first-class value (unpin → default login), so
+                // this is Option<String>, not a missing arg.
+                let account_id: Option<String> = Self::arg(&params, 1)?;
+                if let Some(id) = account_id.as_deref() {
+                    let known = self.state.borrow().accounts.iter().any(|a| a["id"] == id);
+                    if !known {
+                        return Err(BackendError::Method(format!("unknown account {id}")));
+                    }
+                }
+                let updated = {
+                    let mut st = self.state.borrow_mut();
+                    let repo = st
+                        .repos
+                        .iter_mut()
+                        .find(|r| r.path == path)
+                        .expect("require_repo just matched");
+                    repo.account_id = account_id;
+                    repo.clone()
+                };
+                self.emit_repos_update();
+                Ok(serde_json::to_value(&updated).unwrap())
+            }
             "refreshAccounts" => {
                 self.emit("accountUsageUpdate", vec![mock_account_usage()]);
                 Ok(Value::Null)
@@ -1180,6 +1215,114 @@ impl Backend for MockBackend {
                     .map(|s| serde_json::to_value(s).unwrap())
                     .unwrap_or_else(|| json!({})))
             }
+            // `setRepoScripts(repoPath, scripts): Promise<RepoEntry>`
+            // (ipc.ts:263) — keyed by REPO PATH, returns the BARE updated
+            // RepoEntry, never an envelope. Both params are validated: the path
+            // against the fixture repos (see require_repo) and the scripts
+            // object against the wire type, so a caller sending a workspace id
+            // or a wrong-shaped payload fails HERE rather than only live.
+            "setRepoScripts" => {
+                let path: String = Self::arg(&params, 0)?;
+                self.require_repo(&path)?;
+                let scripts: orchestra_rpc::types::RepoScripts = Self::arg(&params, 1)?;
+                let updated = {
+                    let mut st = self.state.borrow_mut();
+                    let repo = st
+                        .repos
+                        .iter_mut()
+                        .find(|r| r.path == path)
+                        .expect("require_repo just matched");
+                    // An all-None RepoScripts CLEARS the entry, matching the
+                    // real handler: the modal sends absent keys for blank
+                    // editors, and storing `{}` would leave a truthy scripts
+                    // object that makes the Run tab think a script exists.
+                    repo.scripts = (scripts != orchestra_rpc::types::RepoScripts::default())
+                        .then_some(scripts);
+                    repo.clone()
+                };
+                self.emit_repos_update();
+                Ok(serde_json::to_value(&updated).unwrap())
+            }
+            // `setRepoDefaultBranch(repoPath, branch): Promise<RepoEntry>`
+            // (ipc.ts:261). The branch is validated against THAT repo's branch
+            // list, so pointing a repo at a branch it does not have fails here
+            // — the real handler resolves the ref and throws.
+            "setRepoDefaultBranch" => {
+                let path: String = Self::arg(&params, 0)?;
+                self.require_repo(&path)?;
+                let branch: String = Self::arg(&params, 1)?;
+                let known = branches_for_repo(&path);
+                let exists = known
+                    .as_array()
+                    .map(|b| b.iter().any(|v| v.as_str() == Some(branch.as_str())))
+                    .unwrap_or(false);
+                if !exists {
+                    return Err(BackendError::Method(format!(
+                        "unknown branch {branch} in {path}"
+                    )));
+                }
+                let updated = {
+                    let mut st = self.state.borrow_mut();
+                    let repo = st
+                        .repos
+                        .iter_mut()
+                        .find(|r| r.path == path)
+                        .expect("require_repo just matched");
+                    repo.default_branch = branch;
+                    repo.clone()
+                };
+                self.emit_repos_update();
+                Ok(serde_json::to_value(&updated).unwrap())
+            }
+
+            // ---- Linear API key (LinearSettings modal) -----------------------
+            // `getLinearKeySource(): Promise<LinearKeySource>` — a BARE
+            // lowercase string on the wire ("stored" | "env" | "none"), not an
+            // envelope. The fixture starts at "none" so the modal's
+            // no-key-configured state is what a fresh mock session shows, and
+            // save/clear move it, making the TRANSITION observable.
+            "getLinearKeySource" => Ok(json!(if self.state.borrow().linear_key.is_some() {
+                "stored"
+            } else {
+                "none"
+            })),
+            // `checkLinearKey(key): Promise<LinearKeyCheck>` — the key is
+            // INSPECTED, not ignored: a `lin_api_`-prefixed key verifies, any
+            // other non-empty string is rejected with the exact
+            // "Invalid API key." string the save path keys off (the modal
+            // refuses to persist on that error but allows a network failure).
+            // A permissive arm here would make the refuse-to-save branch
+            // untestable by construction.
+            "checkLinearKey" => {
+                let key: String = Self::arg(&params, 0)?;
+                let key = key.trim();
+                if key.is_empty() {
+                    return Err(BackendError::Method("missing key".into()));
+                }
+                Ok(if key.starts_with("lin_api_") {
+                    json!({ "ok": true, "name": "Orchestra Mock Workspace" })
+                } else {
+                    json!({ "ok": false, "error": "Invalid API key." })
+                })
+            }
+            // `saveLinearKey(key): Promise<void>` — void (null) on the wire.
+            // Rejects a key the check would reject, so the mock cannot end up
+            // storing something checkLinearKey calls invalid.
+            "saveLinearKey" => {
+                let key: String = Self::arg(&params, 0)?;
+                let key = key.trim().to_string();
+                if !key.starts_with("lin_api_") {
+                    return Err(BackendError::Method("Invalid API key.".into()));
+                }
+                self.state.borrow_mut().linear_key = Some(key);
+                Ok(Value::Null)
+            }
+            // `clearLinearKey(): Promise<void>` — void (null) on the wire.
+            "clearLinearKey" => {
+                self.state.borrow_mut().linear_key = None;
+                Ok(Value::Null)
+            }
+
             // switchBranch mirrors renameBranch's mutation but is the toolbar's
             // branch-picker entry point.
             "switchBranch" => {

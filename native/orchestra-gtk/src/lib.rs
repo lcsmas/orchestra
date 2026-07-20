@@ -13,6 +13,7 @@ pub mod daemon;
 pub mod dialogs;
 pub mod diff;
 pub mod main_pane;
+pub mod modals;
 pub mod notify;
 pub mod overlays;
 pub mod remote_control;
