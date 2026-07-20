@@ -54,14 +54,54 @@ Region dominance, 3px sampling, both windows in the same state:
 | **Main pane** | **rgb(11,13,16)** | **rgb(26,31,38)** | **55** |
 | Status strip | rgb(18,21,26) | rgb(26,31,38) | **30** |
 
-**Four of six regions are wrong, and it is ONE error class repeated:** GTK
-assigns the wrong background *layer* — `bg` where Electron uses `bg-3`, `bg-2`
-where Electron uses `bg-3`. The token VALUES are correct; they are applied to
-the wrong surfaces. That is why a CSS read finds nothing and why per-surface
-audits missed it — each agent saw only its own region and had no cross-region
-reference.
+**RETRACTED 2026-07-20 — the wrong-layer diagnosis does not survive source.**
+The table above is a real measurement of two rendered windows; the *explanation*
+under it was wrong, and it was wrong in the direction that would have sent an
+agent to rewrite correct CSS.
 
-This single class accounts for most of "colorimetry is not the same".
+Checked at source, both sides set the same token on the root surface:
+
+| | Electron | GTK |
+|---|---|---|
+| Root | `styles.css:87` — `html, body, #root { background: var(--bg) }` | `theme.css:159` — `window { background-color: @bg }` |
+| Value | `#0b0d10` | `#0b0d10` |
+| Main pane | `.app` sets **no background** — inherits `#0b0d10` | `.main-area` — `@bg` = `#0b0d10` |
+
+`--bg-3` in Electron is a **control/popover** colour (`.field textarea`,
+`.new-menu-popover`, `.sound-play`, `.linear-key-source`), not a region
+background. So "Electron's main pane is `rgb(26,31,38)`" was reading *content
+filling the pane* — a populated pane against an empty one — not a surface.
+
+Two method failures produced it, both already named in §3 and both committed
+anyway:
+- **A dominance figure without its surface class.** §3.5 requires stating fill
+  vs ink beside every colour number. These were recorded as region colours with
+  no check that a region background rule existed.
+- **Comparing two states precisely.** Precision presupposes comparability; the
+  two windows were not in the same content state, so tightening the measurement
+  produced a sharper wrong number and more confidence in it.
+
+**What remains true and unexplained:** the six regions *did* measure
+differently on live windows. That is still a real signal — the cause is simply
+not a token misassignment. The genuine differences found so far are elsewhere:
+Electron's sidebar is a **translucent gradient with a backdrop filter** —
+
+```css
+/* styles.css:514 */
+background: linear-gradient(180deg, rgba(21,25,31,.85) 0%, rgba(18,21,26,.92) 100%);
+backdrop-filter: blur(18px) saturate(140%);
+```
+
+— where GTK paints flat `@bg_2` (`theme.css:232`). Two separate gaps: the
+**gradient** (portable) and the **backdrop blur** (GTK4 CSS has no
+`backdrop-filter`; approximating it needs a different mechanism, or a decision
+to drop it). Alpha and gradient are the axes to check next, not layer
+assignment. Note this also means the sidebar is a **translucent surface**, so
+§3.5's alpha rule applies to any measurement of it.
+
+**Do not re-derive item 1 from the table above.** Re-measure with both windows
+in the same content state, and assert a background rule exists for any surface
+before reporting its colour.
 
 **Method note this proves:** the whole-window region diff is one command and
 found in seconds what four scoped verification waves did not. It runs FIRST in
