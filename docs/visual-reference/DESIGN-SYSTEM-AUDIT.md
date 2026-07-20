@@ -22,9 +22,9 @@ Ranked by user-visible impact × breadth of surfaces affected.
 |---|---|---|---|
 | 1 | **Main pane background is two token steps too dark** | Electron `(26,31,38)` = `bg-3` (±0); GTK `(11,13,16)` = `bg` (±0) | Largest surface in the app. Wrong base under every pane-hosted widget |
 | 2 | **Transitions are absent** | Electron 44 `transition` declarations; GTK **1** | Every hover/state change **snaps**. Best single explanation of "feels different" |
-| 3 | **Sidebar 75px too wide** | 339px vs 414px, agreed by 64/66 independent scanlines | Displaces the origin of every main-pane measurement |
+| 3 | **Sidebar 75px too wide** | **Content** width 339px vs 414px, agreed by 64/66 independent scanlines. (A "76px" figure quoted elsewhere measures *to the border column* — same finding, different reference edge) | Displaces the origin of every main-pane measurement |
 | 4 | **Dialog card geometry** | Electron `width:420px` declared → 420×215; GTK unconstrained → 378×241 | GTK shrink-wraps: 42px narrower, 26px taller |
-| 5 | **Divider colour has no blue tint** | Electron `(36,42,51)` = `border` (±0); GTK `(27,27,27)` neutral grey, ±16 | Reads as a different material wherever dividers appear |
+| 5 | **Divider seam is 3px of structure where Electron has 1px** — *not* a colour defect | Electron: `x=339` `(36,42,51)` = `border`, one column. GTK: `x=414` `(27,27,27)` stock `GtkPaned` separator **+** `x=415,416` `(36,42,51)` = `border` (2px) | ⚠️ **Do not fix by recolouring.** GTK already paints the correct token; recolouring the separator yields a **3px border** — worse than the defect. Remove the `GtkPaned` separator and narrow the border to 1px |
 | 6 | **`accent_2` token wrong** | GTK `#7c6ef2` → painted `rgb(124,110,242)`; Electron `#8b7cff` → `rgb(139,124,255)`. Δ −15/−14/−13 | Use sites: `.usage-bar-fill.meter-accent-2`, `.insights-row-icon` |
 | 7 | **`.ws-name` one step too large** | GTK 13px vs Electron 12px/500 — renders 9px wider, 1px taller | Every workspace row |
 | 8 | **`.ws-sub` one step too small** | GTK 10px vs Electron 11px | Every workspace row |
@@ -42,7 +42,8 @@ Ranked by user-visible impact × breadth of surfaces affected.
 | Sidebar background | **MATCHES** | `(18,21,26)` = `bg-2` both sides, dominant over 4754 samples |
 | Main pane background | **DIFFERS** | 100% vs 99% regional dominance (defect 1) |
 | Sidebar width | **DIFFERS** | 339 vs 414 (defect 3) |
-| Divider | **DIFFERS** | defect 5 |
+| Divider — colour | **MATCHES** | GTK paints `(36,42,51)` = `border` exactly, at `x=415,416` |
+| Divider — structure | **DIFFERS** | 3px seam vs 1px (defect 5) |
 | Spacing rhythm | **MATCHES** | `Box::new(_, 8)` = `.ws-item gap:8px`; `_,5` = `.ws-pills gap:5px`; `_,8` = `.dialog-actions gap:8px` |
 | `.pill` typography | **MATCHES** | 9px/600/0.2px + `padding:0 5px`, measured identical |
 | `.dlg-title` / `.dlg-body` | **MATCHES** | 15px/600/−0.01em, 13px — faithful port |
@@ -146,9 +147,21 @@ verdicts**: `*-workspace-selected`, `*-main-pane`, `*-toolbar`,
 `*-sidebar-selected`. No finding in this report is drawn from them.
 
 Every finding above comes from the **full-window** pair (boot state on both
-sides, genuinely matched) or the **dialog** and **sidebar** crops. The pin gap
-is a live harness defect: the set silently compares different rows while
-presenting as a rigorous comparison.
+sides, genuinely matched) or the **dialog** and **sidebar** crops.
+
+**Status (fixed on the integration branch after this audit):**
+`drive-electron.mjs` now honours `ORCHESTRA_CAPTURE_ROW` with a loud failure
+listing rendered rows plus an already-active guard mirroring `drive-gtk.py`;
+`recapture.sh` moved off the `ws-4` pin (auto-selected at boot, which
+hard-failed the run) to a mid-list row, and got `chmod +x` for the RC=126 this
+audit hit.
+
+> **Known gap — selected-state pairs are still not trustworthy.** Reading the
+> env var is necessary but *not sufficient*: another agent pinned `ws-4` in its
+> own Electron driver and got "absent", so the two halves **do not share a
+> row-addressing scheme**. Until the same selector resolves the same workspace
+> on both sides, a pinned run can still compare different rows — the failure
+> mode this pin exists to prevent.
 
 ---
 
@@ -175,7 +188,33 @@ one showing only what survived. Each died to a control or a re-measurement.
    line-count ratio). Measured: 39 box-shadows, 12 inset highlights, 7
    gradients, spot-checked as faithful ports. The real gap is transitions.
 
-**The pattern worth carrying forward:** in (1) and (2) the instrument was sound
+6. **"The divider colour has no blue tint."** Superseded by a sibling's
+   column-by-column measurement and re-confirmed on these captures: GTK paints
+   the `border` token **exactly**, at `x=415,416`. My single sample landed on
+   `x=414`, the first column of a 3-column structure. The defect is structural
+   (a stock `GtkPaned` separator Electron lacks, plus a 2px border where
+   Electron has 1px), not chromatic — and **acting on my version would have
+   made it worse**: recolouring the separator yields a 3px border, a change
+   that passes review, appears to address the report, and degrades the thing it
+   repairs.
+
+### Method conclusion — the transferable part
+
+**Sample regionally from the first measurement; never let a point sample become
+a verdict.** Of the six claims withdrawn here, *four* were point-sample
+artifacts (3, 4, 6, and the sidebar half of 4). The sibling who caught (6) was
+not more careful — they used column-by-column regional dominance from the
+start and so never generated the artifact to retract. That is the difference
+between a method that produces errors you must be sharp enough to catch, and
+one that does not produce them. Prefer the second: regional dominance across
+the whole region, or a controlled probe with both a known-good and a
+known-inert control.
+
+The corollary matters as much: a point sample on a structured surface does not
+fail loudly. It returns a clean, specific, actionable, **wrong** number — and
+in case (6) that number pointed at a "fix" that would have degraded the app.
+
+**The other pattern worth carrying forward:** in (1) and (2) the instrument was sound
 and its controls *passed* — it was blind to an alternative **notation**
 (`rgba()` vs hex; constructor-arg vs setter). Passing controls prove a probe can
 detect what it looks for; they say nothing about whether it is looking in the
