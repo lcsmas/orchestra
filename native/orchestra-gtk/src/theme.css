@@ -1027,7 +1027,12 @@ entry:focus-within {
  * Full-pane overlays layered over the main pane by GtkOverlay. Each fills the
  * host and paints an opaque background so the main pane doesn't bleed through.
  */
-@define-color accent_2 #7c6ef2;
+/* NOTE: an `@define-color accent_2 #7c6ef2;` sat here and silently OVERRODE the
+   canonical token in §1 (later definition wins), so `.usage-bar-fill.meter-
+   accent-2` and `.insights-row-icon` both rendered the wrong purple. #7c6ef2
+   appears nowhere in the Electron renderer; the source of truth is
+   `--accent-2: #8b7cff` (styles.css:57, confirmed against the computed value
+   over CDP). Removed — §1 is the only place a token may be defined. */
 
 .overlay {
   background-color: @bg;
