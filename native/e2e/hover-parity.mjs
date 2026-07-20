@@ -63,7 +63,16 @@ const CANDIDATES = [
   { name: 'ws-delete-scratch-1', parent: 'ws-row-scratch-1' }, // .ws-icon-btn.danger
   'open-help', // .footer-link
   'open-resources', // .footer-link
-  'tab-terminal', // .tab
+  // tab-terminal is the ACTIVE tab at boot, and `.tab:checked` sets the same
+  // surface `.tab:hover` would — so hovering it legitimately changes nothing.
+  // Testing only the active tab would report a working hover as absent.
+  'tab-terminal', // .tab (active — expected NO-VISUAL-CHANGE)
+  // tab-diff is the inactive tab and WOULD be the discriminating case, but it
+  // has zero allocation in this fixture (the tab strip needs a workspace state
+  // this mock does not reach), so `.tab:hover` is UNVERIFIED either way. Left
+  // in the list deliberately: it reports NO-ALLOCATION rather than vanishing,
+  // because an omitted surface reads as a verified one.
+  'tab-diff', // .tab (inactive — UNVERIFIED, no allocation in this fixture)
   'restart-btn', // .restart-btn
   'welcome-help-btn', // button.welcome-help-btn
 ];
