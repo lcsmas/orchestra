@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Ported verbatim from src/renderer/components/Sidebar.tsx (LinearIcon):
+     Linear's mark, simplified to a single tilted square at icon size.
+     The rotate() is baked into the path here because it is static geometry. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="3" transform="rotate(45 12 12)"/></svg>

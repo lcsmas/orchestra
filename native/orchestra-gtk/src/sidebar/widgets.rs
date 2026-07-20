@@ -307,10 +307,28 @@ pub fn build_row(spec: &Row, sender: &Sender<Msg>) -> gtk::ListBoxRow {
 }
 
 fn build_empty_hint() -> gtk::ListBoxRow {
-    let l = label(
-        "No agents running. Click ⚡ Scratch for a quick throwaway session, or + Repo to map a git repo.",
-        &["ws-empty-hint"],
+    // Verbatim from Sidebar.tsx:1421, INCLUDING the emphasis:
+    //   No agents running. Click <strong>Scratch</strong> for a quick throwaway
+    //   session, or <strong>Repo</strong> to map a git repo.
+    //
+    // The port had rendered this as "Click ⚡ Scratch … or + Repo …", inventing
+    // a lightning bolt and a "+" that Electron does not draw here. Those were
+    // the glyphs the user saw in the empty sidebar.
+    //
+    // Note the fix is BOLD TEXT, not an icon: Electron marks these up with
+    // <strong>, so lifting the glyphs into icon widgets would have moved this
+    // AWAY from the reference while looking like the same class of fix as the
+    // rest of this work. Checked at the source before porting.
+    //
+    // Pango markup rather than CSS: this is emphasis on a SPAN of a label, and
+    // GTK CSS styles whole widgets — there is no selector for "these two words".
+    let l = gtk::Label::new(None);
+    l.set_markup(
+        "No agents running. Click <b>Scratch</b> for a quick throwaway session, \
+         or <b>Repo</b> to map a git repo.",
     );
+    l.add_css_class("ws-empty-hint");
+    l.set_xalign(0.0);
     l.set_wrap(true);
     let row = gtk::ListBoxRow::new();
     row.set_widget_name("ws-empty-hint");
@@ -716,8 +734,13 @@ fn append_pills(strip: &gtk::Box, s: &WsRowSpec, sender: &Sender<Msg>) {
     }
     if let Some(issue) = &p.linear {
         let url = issue.url.clone();
-        strip.append(&pill_button(
-            &format!("◈ {}", issue.identifier),
+        // Electron renders `LinearIcon` here (Sidebar.tsx) — an SVG tilted
+        // square, not a character. The `◈` this replaces is U+25C8 WHITE
+        // DIAMOND CONTAINING BLACK SMALL DIAMOND, which is a different shape
+        // and resolves through whatever font carries it.
+        strip.append(&pill_icon_button(
+            crate::icons::LINEAR,
+            &issue.identifier,
             &["pr-badge", "linear"],
             &format!(
                 "Linear {}: {} — open in Linear",

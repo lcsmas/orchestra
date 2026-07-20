@@ -2233,3 +2233,14 @@ button.welcome-help-btn:hover {
   /* styles.css:2493 `.modal-actions { margin-top: 12px }` + :533. */
   margin-top: 12px;
 }
+
+/* Empty-sidebar hint. Electron styles this inline rather than by class
+   (Sidebar.tsx:1420: padding 20px, color var(--text-dim), font-size 12px), so
+   the values come from that element, not from a `.ws-empty-hint` rule — there
+   is no such rule upstream to cite. Parity inventory row 32 flagged the class
+   as having no GTK rule at all, i.e. it was rendering at default label size. */
+.ws-empty-hint {
+  padding: 20px;
+  color: @text_dim;
+  font-size: 12px;
+}

@@ -106,6 +106,9 @@ pub const PR_OPEN: &str = "orch-pr-open-symbolic";
 pub const PR_MERGED: &str = "orch-pr-merged-symbolic";
 /// Closed PR — `PRClosedIcon` (Sidebar.tsx). Replaces the `✕` literal.
 pub const PR_CLOSED: &str = "orch-pr-closed-symbolic";
+/// Linear issue mark — `LinearIcon` (Sidebar.tsx), a tilted square. Replaces
+/// the `◈` (WHITE DIAMOND CONTAINING BLACK SMALL DIAMOND) literal.
+pub const LINEAR: &str = "orch-linear-symbolic";
 
 // -- sidebar --------------------------------------------------------------
 /// Scratch-session bolt — `ZapIcon`. Replaces the `⚡` literal.
@@ -196,6 +199,7 @@ const NAMED: &[&str] = &[
     PR_OPEN,
     PR_MERGED,
     PR_CLOSED,
+    LINEAR,
 ];
 
 /// Register the embedded icon bundle with the default [`gtk::IconTheme`].
