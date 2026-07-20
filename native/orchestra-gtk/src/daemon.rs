@@ -55,7 +55,23 @@ impl DaemonCommand {
 /// Resolve the daemon command per the plan's order. `user_home` is the USER's
 /// home (shim location), not the orchestra home.
 pub fn locate_daemon_command(user_home: &Path) -> Option<DaemonCommand> {
-    if let Some(cmd) = std::env::var_os("ORCHESTRA_DAEMON_CMD") {
+    locate_daemon_command_with(user_home, std::env::var_os("ORCHESTRA_DAEMON_CMD"))
+}
+
+/// [`locate_daemon_command`] with the `$ORCHESTRA_DAEMON_CMD` override passed
+/// IN rather than read from the process environment.
+///
+/// Exists so tests can exercise the override without `set_var`: `cargo test`
+/// runs tests as parallel THREADS in one process, so a "just for this test" env
+/// mutation is not per-test — it leaks into siblings and races them. That
+/// pattern already cost a ~1-in-9 flake in orchestra-rpc (fixed by the same
+/// shape: `RpcClient::discover_at` taking an explicit pointer). Injecting the
+/// value keeps this latent instance from becoming the next one.
+pub fn locate_daemon_command_with(
+    user_home: &Path,
+    cmd_override: Option<std::ffi::OsString>,
+) -> Option<DaemonCommand> {
+    if let Some(cmd) = cmd_override {
         let cmd = cmd.to_string_lossy().trim().to_string();
         if !cmd.is_empty() {
             return Some(DaemonCommand::Shell(cmd));
@@ -422,14 +438,39 @@ mod tests {
 
     #[test]
     fn env_override_wins_location_order() {
-        // Env-var tests can't run in parallel with each other safely; this is
-        // the only test touching ORCHESTRA_DAEMON_CMD.
-        std::env::set_var("ORCHESTRA_DAEMON_CMD", "node /tmp/custom-daemon.js");
-        let got = locate_daemon_command(Path::new("/nonexistent-home"));
-        std::env::remove_var("ORCHESTRA_DAEMON_CMD");
+        // The override is INJECTED, not set in the process environment.
+        // `cargo test` runs tests as parallel THREADS in one process, so a
+        // "just for this test" env mutation is not per-test: it leaks into
+        // siblings and races them. The identical shape already cost a ~1-in-9
+        // flake in orchestra-rpc, so this instance is closed rather than left
+        // true-by-luck (M4 D3).
+        let got = locate_daemon_command_with(
+            Path::new("/nonexistent-home"),
+            Some("node /tmp/custom-daemon.js".into()),
+        );
         assert_eq!(
             got,
             Some(DaemonCommand::Shell("node /tmp/custom-daemon.js".into()))
         );
+    }
+
+    #[test]
+    fn absent_or_empty_override_falls_through_to_discovery() {
+        // Guards the fall-through the injection could silently break: an empty
+        // override must be IGNORED (not taken as a command), and a missing one
+        // must proceed to the shim / dev-checkout lookup.
+        //
+        // Asserts "did not short-circuit as Shell" rather than a concrete
+        // value: what discovery finds depends on where the test runs — from
+        // this repo it legitimately locates the checkout's
+        // dist-electron/daemon.js, so pinning `None` would encode the runner's
+        // cwd into the assertion and fail exactly where the code is correct.
+        for override_in in [Some("   ".into()), None] {
+            let got = locate_daemon_command_with(Path::new("/nonexistent-home"), override_in);
+            assert!(
+                !matches!(got, Some(DaemonCommand::Shell(_))),
+                "an absent/blank override must fall through, not become a Shell command: {got:?}"
+            );
+        }
     }
 }

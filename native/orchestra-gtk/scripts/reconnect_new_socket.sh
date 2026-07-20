@@ -18,12 +18,22 @@
 #      mutation still re-renders — i.e. the new connection is live, not just
 #      "connected".
 #
-# ⚠ STATUS: UNVERIFIED — the re-attach assertion does NOT currently pass (no
-# recovery observed at 60s / 120s / 220s). That is deliberately recorded as
-# UNVERIFIED rather than "reconnect is broken": the pieces are individually
-# proven (orchestra-rpc's `discovered_client_reconnects_to_a_moved_socket` and
-# `gives_up_reconnecting_after_the_backoff_window`), and this instrument had
-# real confounds. Two are now fixed in-script; the third is mitigated:
+# ⚠ HISTORY — READ THIS BEFORE TRUSTING A FAILURE FROM THIS SCRIPT.
+# This scenario reported a 220s "wedge" for an entire milestone. THERE WAS NO
+# WEDGE. Instrumenting orchestra-rpc showed the app losing its connection,
+# entering connection_lost, spawning a reconnect loop, and redialling the NEW
+# socket successfully on the FIRST attempt — then running healthy for the rest
+# of the run. Two instrument bugs, both "absence read as signal":
+#   1. the re-attach assertion polled the banner TEXT, which the app never
+#      clears when it HIDES the banner — so the condition could never become
+#      true once a reconnect had happened, and a healthy idle app read as a
+#      hang. Fixed: assert ConnectionState + reveal state, never text.
+#   2. the reconnect-failure capture logged only FAILED attempts, so a loop
+#      that succeeded immediately produced silence — which was misread as "no
+#      loop ran".
+# Both are fixed below. If this script fails again, suspect it before the app.
+#
+# The earlier confound work still stands:
 #   1. FIXED — d2 is reaped explicitly at the end of the window, not only via
 #      atexit, so post-mortem state can't masquerade as in-window state.
 #   2. FIXED — daemon #1 is killed BY PID, never `pkill -f dist-electron/daemon.js`
@@ -142,6 +152,15 @@ def label(n):
     r = rpc({"op": "get", "name": n, "prop": "label"}); return str(r.get("value")) if r.get("ok") else ""
 def css(n):
     r = rpc({"op": "get", "name": n, "prop": "css"}); return set(r.get("value", [])) if r.get("ok") else set()
+def state():
+    """Live ConnectionState the app last received (M4 D2a mirror). The
+    AUTHORITATIVE signal: the banner is a lagging, never-cleared symptom."""
+    r = rpc({"op": "get", "name": "debug-connection-state", "prop": "label"})
+    return str(r.get("value")) if r.get("ok") else "<unreadable>"
+def revealed(n):
+    """Reveal state of a GtkRevealer (rc reports reveals_child for revealers)."""
+    r = rpc({"op": "get", "name": n, "prop": "visible"})
+    return bool(r.get("value")) if r.get("ok") else False
 
 # --- STEP 1: attached to daemon #1 ---
 attached1 = False
@@ -200,26 +219,27 @@ check("daemon #2 serves a DIFFERENT socket path", bool(sock2), f"{sock1} -> {soc
 t_drop = time.time()
 dropped = False
 while time.time() - t_drop < 30:
-    if "reconnect" in label("backend-banner-text").lower():
+    # Same discipline as the re-attach check below: read the STATE, not the
+    # banner text. (Reading text here would "work" by accident — the label is
+    # correct at this instant — but it would encode the same stale-text
+    # dependency that broke the re-attach assertion.)
+    if state().startswith("Reconnecting") or state() == "Disconnected":
         dropped = True; break
     time.sleep(0.1)
-check("the dead connection was noticed (banner shows reconnecting)",
-      dropped, label("backend-banner-text"))
+check("the dead connection was noticed (ConnectionState left Connected)",
+      dropped, state())
 
 t0 = time.time()
 reattached = False
 # Re-attach = the reconnecting banner goes away again (ConnectionState::Connected
 # hides it).
 #
-# ⚠ STATUS: UNVERIFIED. As of this writing this assertion does NOT pass — no
-# re-attach was observed at 60s, 120s, or 220s. That is recorded as UNVERIFIED,
-# not as "reconnect is broken", because the instrument has known confounds (see
-# the header) and a negative result from a dirty instrument is not evidence.
-# What IS proven: the client re-resolves a moved pointer
-# (orchestra-rpc `discovered_client_reconnects_to_a_moved_socket`, 5/5), and the
-# client does emit Disconnected after the backoff window
-# (`gives_up_reconnecting_after_the_backoff_window`). The COMPOSITION of those
-# with the app's Disconnected handler is what remains unconfirmed.
+# STATUS: the earlier "no re-attach at 60s/120s/220s" readings were an ARTEFACT
+# of this script polling the never-cleared banner text (see the header). With
+# the assertion reading ConnectionState instead, the app is observed recovering
+# — connection_lost → reconnect loop spawned → new socket dialled successfully
+# on the first attempt. The composition the plan listed as unconfirmed is
+# confirmed on the real-daemon rig.
 #
 # Bound is 220s — deliberately PAST the client's 180s give-up
 # (BackoffPolicy::default max_elapsed_ms), because that give-up is on the
@@ -251,8 +271,17 @@ def d2_healthy():
 
 next_health = time.time()
 while time.time() - t0 < 220:
-    b = label("backend-banner-text").lower()
-    if "reconnect" not in b and "backend: daemon" in label("status-text"):
+    # Assert on CONNECTION STATE and the banner's REVEAL state — never on the
+    # banner TEXT.
+    #
+    # This is the bug that made this scenario report a 220s "wedge" that did not
+    # exist: the app hides the banner on reconnect (app.rs:1155/:1336) but never
+    # CLEARS its label, so the text "backend connection lost — reconnecting…"
+    # persists after the banner is gone. The old condition
+    # (`"reconnect" not in banner`) therefore could never become true once a
+    # reconnect had occurred, and the poller waited forever on an app that had
+    # already recovered — an idle healthy process read as a hang.
+    if state() == "Connected" and not revealed("backend-banner"):
         reattached = True; break
     if sock2 and time.time() >= next_health:
         next_health = time.time() + 5
@@ -263,6 +292,18 @@ secs = round(time.time() - t0, 1)
 check("daemon #2 stayed healthy for the whole window (else the result below is void)",
       d2_unhealthy_at is None, f"first unhealthy at +{d2_unhealthy_at}s" if d2_unhealthy_at else "healthy")
 check(f"re-attached to the moved socket in {secs}s", reattached, label("status-text"))
+# BOUND, not merely "eventually" — this is what makes the scenario a GUARD.
+#
+# Established by negative control: with the client PINNED to the dead socket
+# (RpcClient::connect instead of ::discover) the app STILL recovers — it burns
+# the full 180s backoff, the client gives up, emits Disconnected, and the app's
+# own start_retry_loop rediscovers. Measured: 154.6s pinned vs 0.9s working.
+# So "did it recover?" passes either way and proves nothing about re-resolution;
+# only the TIME distinguishes them. 15s is far above the observed 0.9s and far
+# below the ~155s fallback, so it cannot be met by the give-up path.
+BOUND_S = 15
+check(f"…and did so INSIDE {BOUND_S}s (pinned-socket fallback takes ~155s)",
+      reattached and secs <= BOUND_S, f"{secs}s")
 rpc({"op": "screenshot", "path": f"{art}/reattached.png"})
 
 # --- STEP 4: the NEW connection is live, not merely "connected" ---
