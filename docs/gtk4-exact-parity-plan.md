@@ -86,7 +86,7 @@ paired evidence at the same window size against the same backend state.
 | 8 | base branch / branch switcher display | GTK shows a raw UUID where Electron shows a repo name | **T4 chrome** |
 | 9 | unread workspaces blue-*labelled* | **confirmed at source, exact fix known** — see below | **T5 sidebar** |
 | 10 | list jumps to top when collapsing a repo | scroll position not preserved across rebuild | **T5 sidebar** |
-| 11 | VTE scrambled / buggy | suspected: not configured for Claude Code's TUI | **T6 terminal** |
+| 11 | VTE scrambled / buggy | **FIXED** — font internal-name mismatch, not TUI config; see below | **T6 terminal** |
 | 12 | (implicit) everything above under real data | fixtures never exercised these states | **all tracks** |
 
 Item 8 is visible in the live capture: the GTK repo header reads
@@ -114,6 +114,55 @@ Note the Electron rule EXISTS (`.ws-item.unread .ws-name`), so a check for
 GTK behaviour as correct. Only reading what the rule SETS finds the defect —
 the cited-rule-vs-operative-value trap, in the smallest possible form.
 
+### Item 11, and why every suspect in the brief was wrong
+
+The plan named three suspects — sync-output (DEC 2026), palette divergence,
+resize/reflow. The cause was none of them, and it was **two silent failures that
+are each a no-op alone**:
+
+1. `orchestra-symbols.ttf` declared `family="Adwaita Mono"` — inherited from the
+   face it was subset from. Fontconfig matches on the **internal** name, so
+   nothing could request it.
+2. `terminal_font()` asked for bare `"JetBrains Mono"`, never naming the subset,
+   so Pango had no reason to prefer it even once reachable.
+
+Registration returned success, the face *was* registered, the glyphs *did*
+paint. Only the **advance** was wrong: U+2460 measured 20.0px = 2.22 cells
+against a 9.0px cell, so each circled number overflowed and shifted the rest of
+the line — the user's "①②③ crushed together". After the fix: 1.00 cells, with
+U+0041 and U+2500 held at 1.00 as controls in both runs.
+
+**The transferable part:** every signal short of measuring an advance reported
+healthy, which is why it survived several review passes. And the Electron half
+*cannot* warn you — its `@font-face` **assigns** the family name, so the same
+mis-named file works there by accident of CSS semantics. A cross-frontend port
+inherits an asset whose correctness is framework-dependent.
+
+**Gate proven, not assumed:** the test asserts the *name*, not that registration
+succeeded — a registration test would have passed throughout this bug's life.
+Mutation-tested against the real pre-fix font: RC=0 fixed, RC=101 mutated, with
+the failure text naming the cause. *(My own first run of that mutation returned
+101 from a **build** failure — env not sourced, test never ran. A non-zero exit
+answering an adjacent question, agreeing with what I expected. Re-run properly
+before it was believed.)*
+
+**Deliberately not fixed, with reasons:**
+- *Emoji presentation* — Pango routes `Emoji_Presentation` codepoints (✅ ❌) to
+  an emoji font regardless of the fallback list; they paint ~19px in a 2-cell
+  slot. Those glyphs are width-2 in Claude's accounting too, so VTE reserving 2
+  cells is **correct**: a ~1px paint overflow, not a grid desync. Recorded in
+  code so nobody "fixes" it into a real bug.
+- *Cell size* — GTK 9.0×20.0px vs Electron 8.0×18.0px (**+12.5%**);
+  `mod.rs:31` "JetBrains Mono 11" (14.67 CSS px) vs `Terminal.tsx:100`
+  fontSize 13. Real, measured, and it changes how many columns fit a pane.
+  Tracked as its own defect — changing cell size without an Electron-side
+  visual pair trades one parity defect for another.
+
+**Still open on T6:** never driven with real Claude Code (the repro feeds
+Claude-shaped bytes to a real VTE); `bold_is_bright` / `allow_bold` /
+`audible_bell` / `text_blink` / `mouse_autohide` unassessed; no real user-path
+pane drive, since the mock does not serve `ptyStart`.
+
 ---
 
 ## 3. Method changes — the part that makes this different from M4
@@ -135,6 +184,41 @@ Required: a real seat (pointer + keyboard) under headless sway, driving
 hover/click/scroll and capturing before/after pairs. Items 5, 7 and 10 are
 unverifiable without it — and "unverifiable" must be reported as such, never as
 a pass.
+
+**3.3a When a check comes back agreeing with you, verify it answered the
+question you asked and not an adjacent one.** This is the general form of most
+false verdicts in this milestone, and unlike the oracle rule below it applies
+everywhere, including where no oracle exists.
+
+Two instances from one exchange, same defect, different instruments:
+
+| Asked | What the signal actually answered |
+|---|---|
+| "did the assertion fail?" | `cargo test` RC=101 — *did the command fail* (it was a **build** failure; the test never ran) |
+| "does this rule govern?" | a matching CSS selector — *does a rule with this name exist* (`.account-badge.inline` outranked it) |
+
+Both agreed with what the checker expected, neither failed loudly, and both fail
+**in the passing direction**. Expectation-agreement is the trigger for the
+check, not a reason to skip it.
+
+Corollary for mutation tests specifically: a non-zero exit is not evidence the
+gate fired. Confirm the harness *ran* — a `running N tests` line and a
+`test result:` line — and that the panic is in the intended test.
+
+**3.3b When an oracle exists, reading source instead is a downgrade that can
+invert the answer.** Not merely weaker — capable of returning the opposite
+result. A type-scale pass compared GTK against Electron's *bare* `.account-badge`
+rule (10.5px) and "fixed" a correct 10px, because `.account-badge.inline`
+outranks it and all five call sites emit `inline`. Zero bare instances: 10.5px
+is dead style that never governs. `getComputedStyle` returns the operative value
+with the cascade already resolved and would have said 10px on the first call.
+The failure is the *substitution*, not its execution — so the rule is about
+instrument choice, not care.
+
+Consequence for status: of the 34 type-scale selectors, **31 are measured and 3
+are argued** — `.pr-badge`, `.res-cell`, `.diff-indicator` were cleared by
+reading call sites and judging which variant dominates, which is the same step
+that produced the error above. They are OPEN, not verified.
 
 **3.4 The inventory is demoted from spec to lead list.**
 Its ABSENT/STUB verdicts are treated as unverified. Enumerate the real widget
@@ -204,6 +288,19 @@ The failure is directional: the survey searched a namespace it guessed, so
 renamed surfaces are invisible to it. **Sweep renames specifically.**
 
 ---
+
+## 5b. Unowned leads (carried so they are not lost between waves)
+
+- **Terminal cell size** — GTK 9.0×20.0px vs Electron 8.0×18.0px (+12.5%).
+  `terminal/mod.rs:31` vs `Terminal.tsx:100`. Needs an Electron-side visual pair
+  before changing.
+- **`.mini` pill strip** — GTK emits the class at `sidebar/widgets.rs:1105`,
+  `theme.css` has no `.mini` descendant rule. Electron renders those PR badges
+  at 8px, GTK at 9px.
+- **Focus and `:active` states** — never verified by anyone in M4 or M5.
+  Electron animates `transform` on `:active`; `transform` is inert in GTK4 CSS,
+  so this is **not** closable by adding a rule. Needs a design decision.
+- **3 argued type-scale selectors** — see §3.3b.
 
 ## 6. Definition of done
 
