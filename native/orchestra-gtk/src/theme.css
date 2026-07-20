@@ -2233,3 +2233,125 @@ button.welcome-help-btn:hover {
   /* styles.css:2493 `.modal-actions { margin-top: 12px }` + :533. */
   margin-top: 12px;
 }
+
+/* Empty-sidebar hint. Electron styles this inline rather than by class
+   (Sidebar.tsx:1420: padding 20px, color var(--text-dim), font-size 12px), so
+   the values come from that element, not from a `.ws-empty-hint` rule — there
+   is no such rule upstream to cite. Parity inventory row 32 flagged the class
+   as having no GTK rule at all, i.e. it was rendering at default label size. */
+.ws-empty-hint {
+  padding: 20px;
+  color: @text_dim;
+  font-size: 12px;
+}
+
+/* ── Sidebar header: the two button shapes Electron actually has ──────────
+   The port had ONE `.sidebar-header-btn` for everything, and the create
+   buttons carried no label — which is why Scratch and Orchestrator rendered
+   as two blank dark squares. Electron has two distinct classes; both are
+   ported here with their styles.css anchors. `.sidebar-header-btn` is left in
+   place above for any call site still using it. */
+
+/* styles.css:435-444 */
+.sidebar-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid @border;
+}
+
+/* styles.css:641-650. The Electron wordmark is a gradient-filled 15px title;
+   GTK4 CSS cannot clip a background gradient to glyphs (no
+   background-clip: text), so this takes the accent colour flat — the closest
+   available, and noted so nobody "fixes" it into a no-op gradient later. */
+.sidebar-title {
+  color: @accent;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.2px;
+  padding: 0;
+}
+
+/* styles.css:471-484 — icon-only, fixed 28x28 square. */
+.header-icon-btn {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  color: @text_dim;
+  border-radius: 8px;
+  box-shadow: none;
+}
+/* styles.css:486-490 */
+.header-icon-btn:hover {
+  background-color: @bg_3;
+  color: @text;
+  border-color: transparent;
+}
+
+/* styles.css:453-464 — icon + LABEL, the three create actions. */
+.header-repo-btn {
+  padding: 5px 8px;
+  background: transparent;
+  border: 1px solid @border;
+  color: @text_dim;
+  border-radius: 6px;
+  font-size: 12px;
+}
+/* styles.css:466-470 — note the accent border on hover, which is what marks
+   these out as the create actions rather than generic chrome. */
+.header-repo-btn:hover {
+  background-color: @bg_3;
+  color: @text;
+  border-color: @accent;
+}
+
+/* Symbolic recolouring for the new header buttons' icons, matching the
+   existing list at theme.css:1555-1564. Without this GTK may render the icon
+   in its own colour instead of inheriting the button's `color`. */
+.header-icon-btn image,
+.header-repo-btn image,
+.pill-icon {
+  -gtk-icon-style: symbolic;
+}
+
+/* ── Repo-header action buttons: gear / GitHub / remove ───────────────────
+   THE BUG THIS FIXES: these are built by `icon_button_named`, which adds
+   `ws-icon-btn` to every button it makes. That class is the HOVER-REVEALED
+   per-row strip — `.ws-icon-btn { opacity: 0 }` (theme.css:466), revealed by
+   `.ws-row:hover` (:468). A repo header is `.repo-header`, NOT `.ws-row`, so
+   nothing could ever reveal them: the gear and GitHub marks were permanently
+   invisible, at opacity 0, with no hover state that could bring them back.
+
+   They were present in the widget tree the whole time (confirmed over the
+   remote-control harness: visible=True for both) and even survived a
+   `list_widgets` audit — which is exactly why "the code that builds them is
+   right there" was not evidence they rendered. What caught it was that a
+   widget-scoped screenshot of each returned ok=false/0 bytes, i.e. zero
+   allocation, while their sibling `+` in the same box screenshotted fine.
+
+   Electron always shows them at `opacity: 0.6`, brightening to 1 on hover
+   (styles.css:2806-2831). It has no hover-gate on these at all. */
+.repo-header .ws-icon-btn,
+.repo-header-actions .ws-icon-btn,
+.repo-scripts-btn {
+  opacity: 0.6;           /* styles.css:2821 */
+  min-width: 18px;        /* styles.css:2815 */
+  min-height: 18px;       /* styles.css:2816 */
+  padding: 0;             /* styles.css:2813 */
+  background: transparent;
+  border: none;
+  box-shadow: none;       /* styles.css:2812 */
+  color: @text_dim;       /* styles.css:2820 */
+}
+.repo-header .ws-icon-btn:hover,
+.repo-header-actions .ws-icon-btn:hover,
+.repo-scripts-btn:hover {
+  opacity: 1;             /* styles.css:2829 */
+  color: @text;           /* styles.css:2830 */
+  background: transparent;
+}
+/* styles.css:2842 — destructive tone kept on the remove button. */
+.repo-header .ws-icon-btn.danger:hover,
+.repo-scripts-btn.danger:hover {
+  color: @red;
+}

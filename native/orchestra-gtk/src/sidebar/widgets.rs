@@ -90,7 +90,6 @@ fn icon_button_named(
     b
 }
 
-
 fn pill(text: &str, name_class: &str, tooltip: &str) -> gtk::Label {
     let p = label(text, &["pill", name_class]);
     p.set_tooltip_text(Some(tooltip));
@@ -112,6 +111,41 @@ fn pill_button(
     for c in classes {
         b.add_css_class(c);
     }
+    b.set_tooltip_text(Some(tooltip));
+    b.set_valign(gtk::Align::Center);
+    let sender = sender.clone();
+    b.connect_clicked(move |_| sender.emit(msg()));
+    b
+}
+
+/// A pill button whose leading mark is a real icon rather than a character in
+/// the label.
+///
+/// [`pill_button`] takes text only, so an icon could only be smuggled in as a
+/// glyph inside the label string — which is exactly the substitution this work
+/// removes. This gives the icon its own child widget, so it inherits the
+/// pill's CSS `color` (symbolic recolouring) and sizes independently of the
+/// font.
+fn pill_icon_button(
+    icon: &str,
+    text: &str,
+    classes: &[&str],
+    tooltip: &str,
+    sender: &Sender<Msg>,
+    msg: impl Fn() -> Msg + 'static,
+) -> gtk::Button {
+    let b = gtk::Button::new();
+    b.add_css_class("pill");
+    b.add_css_class("pill-btn");
+    for c in classes {
+        b.add_css_class(c);
+    }
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let img = crate::icons::image_sized(icon, 11);
+    img.add_css_class("pill-icon");
+    row.append(&img);
+    row.append(&gtk::Label::new(Some(text)));
+    b.set_child(Some(&row));
     b.set_tooltip_text(Some(tooltip));
     b.set_valign(gtk::Align::Center);
     let sender = sender.clone();
@@ -273,10 +307,28 @@ pub fn build_row(spec: &Row, sender: &Sender<Msg>) -> gtk::ListBoxRow {
 }
 
 fn build_empty_hint() -> gtk::ListBoxRow {
-    let l = label(
-        "No agents running. Click ⚡ Scratch for a quick throwaway session, or + Repo to map a git repo.",
-        &["ws-empty-hint"],
+    // Verbatim from Sidebar.tsx:1421, INCLUDING the emphasis:
+    //   No agents running. Click <strong>Scratch</strong> for a quick throwaway
+    //   session, or <strong>Repo</strong> to map a git repo.
+    //
+    // The port had rendered this as "Click ⚡ Scratch … or + Repo …", inventing
+    // a lightning bolt and a "+" that Electron does not draw here. Those were
+    // the glyphs the user saw in the empty sidebar.
+    //
+    // Note the fix is BOLD TEXT, not an icon: Electron marks these up with
+    // <strong>, so lifting the glyphs into icon widgets would have moved this
+    // AWAY from the reference while looking like the same class of fix as the
+    // rest of this work. Checked at the source before porting.
+    //
+    // Pango markup rather than CSS: this is emphasis on a SPAN of a label, and
+    // GTK CSS styles whole widgets — there is no selector for "these two words".
+    let l = gtk::Label::new(None);
+    l.set_markup(
+        "No agents running. Click <b>Scratch</b> for a quick throwaway session, \
+         or <b>Repo</b> to map a git repo.",
     );
+    l.add_css_class("ws-empty-hint");
+    l.set_xalign(0.0);
     l.set_wrap(true);
     let row = gtk::ListBoxRow::new();
     row.set_widget_name("ws-empty-hint");
@@ -345,8 +397,11 @@ fn build_repo_header(s: &RepoHeaderSpec, sender: &Sender<Msg>) -> gtk::ListBoxRo
     collapse.set_widget_name(&format!("repo-collapse-{}", s.label));
     collapse.add_css_class("repo-collapse");
     let cbox = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+    cbox.set_hexpand(true);
     cbox.append(&label(if s.collapsed { "▸" } else { "▾" }, &["caret"]));
-    cbox.append(&ellipsized(&s.label, &["repo-name"]));
+    let repo_name = ellipsized(&s.label, &["repo-name"]);
+    repo_name.set_hexpand(true);
+    cbox.append(&repo_name);
     if let Some(account) = &s.account_id {
         cbox.append(&label("·", &["ws-context-sep"]));
         let acc = label(account, &["ws-login-badge"]);
@@ -359,8 +414,18 @@ fn build_repo_header(s: &RepoHeaderSpec, sender: &Sender<Msg>) -> gtk::ListBoxRo
         let path = s.repo_path.clone();
         collapse.connect_clicked(move |_| sender.emit(Msg::ToggleRepoCollapsed(path.clone())));
     }
-    collapse.set_hexpand(true);
-    collapse.set_halign(gtk::Align::Start);
+    // hexpand goes on the ELLIPSIZING NAME LABEL inside the button, not on the
+    // button itself. A Button will not shrink below its child's natural width,
+    // so an hexpanding button claimed the whole row and pushed the GitHub/gear
+    // /remove actions off the right edge — they were constructed and present in
+    // the widget tree (verified via the remote-control harness) but had no
+    // space to lay out in, so the repo header rendered as a truncated
+    // "ORCHEST…" with only the count and "+" visible.
+    //
+    // This is why the gear and GitHub icons read as "missing" in a capture
+    // while the code that builds them is plainly there: a layout defect, not a
+    // missing asset. `build_section_header` above already does it this way.
+    collapse.set_halign(gtk::Align::Fill);
     hbox.append(&collapse);
 
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 2);
@@ -682,8 +747,13 @@ fn append_pills(strip: &gtk::Box, s: &WsRowSpec, sender: &Sender<Msg>) {
     }
     if let Some(issue) = &p.linear {
         let url = issue.url.clone();
-        strip.append(&pill_button(
-            &format!("◈ {}", issue.identifier),
+        // Electron renders `LinearIcon` here (Sidebar.tsx) — an SVG tilted
+        // square, not a character. The `◈` this replaces is U+25C8 WHITE
+        // DIAMOND CONTAINING BLACK SMALL DIAMOND, which is a different shape
+        // and resolves through whatever font carries it.
+        strip.append(&pill_icon_button(
+            crate::icons::LINEAR,
+            &issue.identifier,
             &["pr-badge", "linear"],
             &format!(
                 "Linear {}: {} — open in Linear",
@@ -694,14 +764,21 @@ fn append_pills(strip: &gtk::Box, s: &WsRowSpec, sender: &Sender<Msg>) {
         ));
     }
     for pr in &p.prs_visible {
-        let (glyph, cls) = match pr.state {
-            PrState::Open => ("⎇", "open"),
-            PrState::Merged => ("⌥", "merged"),
-            PrState::Closed => ("✕", "closed"),
+        // Electron draws three DISTINCT marks here (Sidebar.tsx `PROpenIcon` /
+        // `PRMergedIcon` / `PRClosedIcon`), so the STATE is carried by shape,
+        // not only by the `.pr-badge` colour — which is what keeps it readable
+        // in greyscale or to a colour-blind reader. The glyphs these replace
+        // were `⎇`/`⌥`/`✕`, and `⌥` (OPTION KEY) is not a merge symbol in any
+        // iconography; it merely looked arrow-ish in whatever font resolved it.
+        let (icon, cls) = match pr.state {
+            PrState::Open => (crate::icons::PR_OPEN, "open"),
+            PrState::Merged => (crate::icons::PR_MERGED, "merged"),
+            PrState::Closed => (crate::icons::PR_CLOSED, "closed"),
         };
         let url = pr.url.clone();
-        strip.append(&pill_button(
-            &format!("{glyph} #{}", pr.number),
+        strip.append(&pill_icon_button(
+            icon,
+            &format!("#{}", pr.number),
             &["pr-badge", cls],
             &format!(
                 "PR #{} · {} · {}",
@@ -1026,7 +1103,7 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
         let unread_on = s.ws.marked_unread == Some(true);
         let id = s.ws.id.clone();
         // Electron draws `BookmarkIcon`, filled when unread (Sidebar.tsx:144).
-    let toggle = icon_button_named(
+        let toggle = icon_button_named(
             if unread_on {
                 crate::icons::BOOKMARK
             } else {

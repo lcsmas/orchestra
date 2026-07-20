@@ -93,6 +93,23 @@ pub const PR: &str = "orch-pr-symbolic";
 /// External-link arrow — the `button.pr-link::after` mask (styles.css:210-217).
 pub const EXTERNAL: &str = "orch-external-symbolic";
 
+// -- PR state badges on sidebar rows --------------------------------------
+// Electron renders three DISTINCT marks here (Sidebar.tsx `PROpenIcon` /
+// `PRMergedIcon` / `PRClosedIcon`), not one icon recoloured: open is a branch
+// with an arrow, merged collapses the branch into the trunk, closed crosses it
+// out. Shape carries the state, so colour alone would not survive a greyscale
+// or colour-blind read. GTK had `⎇`/`⌥`/`✕` — and `⌥` (OPTION KEY) for
+// "merged" is not a merge symbol in any iconography.
+/// Open PR — `PROpenIcon` (Sidebar.tsx). Replaces the `⎇` literal.
+pub const PR_OPEN: &str = "orch-pr-open-symbolic";
+/// Merged PR — `PRMergedIcon` (Sidebar.tsx). Replaces the `⌥` literal.
+pub const PR_MERGED: &str = "orch-pr-merged-symbolic";
+/// Closed PR — `PRClosedIcon` (Sidebar.tsx). Replaces the `✕` literal.
+pub const PR_CLOSED: &str = "orch-pr-closed-symbolic";
+/// Linear issue mark — `LinearIcon` (Sidebar.tsx), a tilted square. Replaces
+/// the `◈` (WHITE DIAMOND CONTAINING BLACK SMALL DIAMOND) literal.
+pub const LINEAR: &str = "orch-linear-symbolic";
+
 // -- sidebar --------------------------------------------------------------
 /// Scratch-session bolt — `ZapIcon`. Replaces the `⚡` literal.
 pub const ZAP: &str = "orch-zap-symbolic";
@@ -179,6 +196,10 @@ const NAMED: &[&str] = &[
     BOOKMARK_OUTLINE,
     CHEVRON_DOWN,
     CHEVRON_UP,
+    PR_OPEN,
+    PR_MERGED,
+    PR_CLOSED,
+    LINEAR,
 ];
 
 /// Register the embedded icon bundle with the default [`gtk::IconTheme`].
