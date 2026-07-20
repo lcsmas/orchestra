@@ -63,8 +63,8 @@ headless `claude` mid-capture.
 
 **A reference set that cannot tell you it is out of date is a yardstick that
 lies quietly.** `CAPTURED-AT.json` records, per capture, the commit it was taken
-at plus its md5, and **`check-fresh.sh` exits non-zero when any capture's
-recorded commit is not `HEAD`**:
+at plus its md5, and **`check-fresh.sh` exits non-zero when rendering-affecting
+code changed since the captures were taken**:
 
 ```bash
 docs/visual-reference/check-fresh.sh          # is this set current?
@@ -75,6 +75,24 @@ docs/visual-reference/check-fresh.sh --at X   # is it evidence about commit X?
 > A capture taken at commit X is *valid evidence about X*. It becomes a lie only
 > when read as evidence about a **later** commit. The check reports which
 > surfaces were taken at which commit and never says "the set is stale" flatly.
+
+**What counts as stale is deliberately not "taken at a commit other than
+HEAD".** That rule is unusably strict: committing the captures necessarily
+creates a new HEAD, so a correctly-regenerated set would fail its own check one
+second after being written — and *a check that cries wolf is a check people
+learn to ignore*, which is the exact failure this tooling exists to prevent.
+(This is observed, not theorised — the first version of the script did it.)
+Instead the check asks whether anything under a **watched set of
+rendering-affecting paths** (`native/orchestra-gtk/src`, `src/renderer`,
+`src/main`, `src/shared`, `src/preload`, and the seed/driver scripts) changed
+between the capture commit and the target. The list is deliberately wide: a
+false "stale" costs one recapture, a false "fresh" costs a wrong verdict about
+whether a milestone landed. When it fails it **names the files that changed**,
+so the message is actionable rather than merely alarming.
+
+Fail-closed by design: a missing manifest, a capture missing from disk, a
+capture edited after the manifest was written, or a capture commit that is
+unreachable from the target all FAIL. An unanswerable question is not a pass.
 
 This is not hypothetical. Every GTK capture here was last written at `8924229`
 (M4-V2's own commit), and two milestones landed after it — `387c34f` (V3:
