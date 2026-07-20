@@ -25,6 +25,34 @@
 @define-color yellow #ffc857;
 
 /* 2 ── base chrome */
+/* font-family mirrors styles.css:94-95 (`html, body, #root`). Its ABSENCE was
+   the single largest type defect: with no family declared, every label in the
+   app inherited the gtk-font-name setting — Adwaita Sans on a stock Fedora —
+   while Electron renders Inter. Measured across the 21 text roles the two
+   frontends share, the family differed on ALL of them, which is the "font
+   style is not the same" report as distinct from the size complaints.
+   Inter is registered from the embedded faces at startup (terminal/fonts.rs),
+   so this does not depend on Inter being installed system-wide; the trailing
+   families are the fallback chain for a build where registration failed.
+
+   The rule goes on `*`, NOT on `window`: popovers, menus and dialogs are
+   separate GTK toplevels, so a window-scoped family never reaches them. With
+   it on `window` alone, 37 labels — the whole branch popover and the
+   usage-bars panel — still resolved Adwaita Sans while the main window
+   resolved Inter, i.e. the app rendered two typefaces at once (measured with
+   the harness's resolved-face probe, not inferred from the cascade).
+   font-size deliberately stays on `window`: on `*` it would override the
+   per-widget sizes every role sets. */
+* {
+  font-family: Inter, "Adwaita Sans", Cantarell, sans-serif;
+}
+/* NOTE on the mono roles: they name the face explicitly rather than saying
+   `monospace`, mirroring styles.css:108-109 (`--font-mono`). The port used the
+   generic keyword at 17 sites, which fontconfig resolved to Noto Sans Mono
+   here while Electron renders JetBrains Mono — a visibly different face in
+   branch chips, diffs and the sync line. JetBrains Mono is a system font on
+   this platform (the renderer bundles a woff2 only because a browser cannot
+   use the system copy), so naming it is enough; the tail is the fallback. */
 window {
   background-color: @bg;
   color: @text;
@@ -82,6 +110,14 @@ scrollbar slider {
 .sidebar {
   background-color: @bg_2;
 }
+/* DEAD RULE — kept deliberately, do not "fix" the values here.
+   A second `.sidebar-title` block near the end of this file (the sidebar-header
+   section) sets 15px/700/0.2px accent and WINS on source order, which is the
+   correct wordmark and matches Electron's measured 15px/700/0.2px. Measuring
+   the live widget reports 15px, so editing this block changes nothing; the
+   operative rule is the later one. Left in place because deleting it destroys
+   the finding, and because these padding values are the ones a section-label
+   variant would want if that role is ever reintroduced. */
 .sidebar-title {
   color: @text_dim;
   font-weight: 700;
@@ -107,9 +143,14 @@ list row:selected {
 list row:selected label {
   color: @text;
 }
+/* styles.css:1536-1538 — `font-weight: 500; font-size: 12px`. Both were wrong
+   here: 13px inherited from `window` because no size was set, and no weight was
+   set at all, so rows rendered a size larger and a weight lighter than Electron.
+   Measured Electron 12px/500 vs GTK 13px/400 (T2). */
 .ws-name {
   color: @text;
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 500;
 }
 .ws-branch {
   color: @text_dim;
@@ -205,11 +246,22 @@ list row:selected label {
    label); `font-weight: 600` is .repo-name's own (styles.css:987-992) and is
    kept. Applied directly to the label here because GTK inherits font
    properties but the values belong on the text node either way. */
-.repo-name, .host-name {
+.repo-name {
   color: @text_dim;
   font-weight: 600;
   font-size: 10px;
   letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+/* Split from .repo-name: measured Electron gives .host-name weight 500 and
+   0.6px tracking (its header sets a different scale from the repo header),
+   where .repo-name is 600/0.8px. Sharing one rule forced the host label a
+   weight heavier than the source. */
+.host-name {
+  color: @text_dim;
+  font-weight: 500;
+  font-size: 10px;
+  letter-spacing: 0.6px;
   text-transform: uppercase;
 }
 .scratch-glyph { font-size: 12px; }
@@ -221,7 +273,15 @@ list row:selected label {
   min-height: 0;
 }
 .repo-collapse:hover, .host-collapse:hover { background-color: @bg_3; }
-.caret { color: @text_dim; font-size: 10px; }
+/* The caret's SIZE is scoped by its parent in Electron, not set once on the
+   class: 9px under .repo-collapse (styles.css:1114), 8px under .host-collapse
+   (1171), 10px under .archived-toggle (1809), and 9px/500 from .ws-collapse
+   itself (1302-1314). A single 10px here rendered the repo and host carets a
+   size or two too large. */
+.caret { color: @text_dim; }
+.repo-collapse .caret { font-size: 9px; }
+.host-collapse .caret { font-size: 8px; }
+.archived-toggle .caret { font-size: 10px; }
 
 .host-dot {
   min-width: 7px;
@@ -257,7 +317,13 @@ list row:selected label {
 }
 .repo-sync:hover { background-color: @bg_4; }
 .repo-sync.error { border-color: @red; }
-.repo-sync-base { color: @text_dim; font-size: 11px; }
+/* styles.css:1239 sets `font-family: var(--font-mono)` — the base-branch name
+   is mono in Electron, like the branch chip beside it. */
+.repo-sync-base {
+  color: @text_dim;
+  font-size: 11px;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+}
 .repo-sync-status { font-size: 11px; }
 .repo-sync-status.muted { color: @text_dim; opacity: 0.7; }
 .repo-sync-status .behind { color: @yellow; }
@@ -293,7 +359,8 @@ list row:selected label {
   background-color: @bg_3;
   border-left-color: @accent;
 }
-.ws-tree-connector { color: @text_dim; opacity: 0.5; font-size: 12px; }
+/* styles.css:1295 — 11px, not 12px (measured). */
+.ws-tree-connector { color: @text_dim; opacity: 0.5; font-size: 11px; }
 /* The subtree caret / its placeholder are flat glyphs, NOT raised buttons. */
 .ws-collapse {
   background: transparent;
@@ -303,13 +370,19 @@ list row:selected label {
   min-height: 0;
   min-width: 14px;
   color: @text_dim;
+  /* styles.css:1310 — 9px, and weight 500 from the button default there.
+     Without this the caret label inherits the 13px window size. */
+  font-size: 9px;
+  font-weight: 500;
 }
 .ws-collapse:hover { color: @text; background: transparent; }
 .ws-collapse-spacer { min-width: 14px; }
 .ws-name-row { min-height: 20px; }
 
 /* Context / account / size mini-badges riding the name row. */
-.ws-context { color: @text_dim; font-size: 10px; }
+/* styles.css:1649-1650 sets `font-weight: 500` alongside the 10px; without it
+   the badge inherited 400 and read lighter than Electron's. */
+.ws-context { color: @text_dim; font-size: 10px; font-weight: 500; }
 .ws-context-sep { color: @text_dim; opacity: 0.5; }
 /* The workspace/repo-row login badge — DIFF-NOTES item C's real surface.
    The note points at `.account-badge` (theme.css:1056), but the sidebar rows
@@ -400,10 +473,20 @@ list row:selected label {
   padding: 0 5px;
   min-height: 0;
 }
+/* Count chips are NOT pills in Electron. `.repo-count`/`.host-count` set only
+   colour and tabular-nums (styles.css:1127-1130, 1194-1197), so they INHERIT
+   the section header's 10px/400 and its tracking — measured 10px/400 against
+   the .pill scale's 9px/600 here, i.e. a size smaller and two weights heavier.
+   The base .pill rule still supplies the rounded background, so the size and
+   weight are restored to the inherited values explicitly. */
 .pill.repo-count, .pill.host-count {
   background-color: @bg_4;
   color: @text_dim;
+  font-size: 10px;
+  font-weight: 400;
 }
+.pill.repo-count { letter-spacing: 0.8px; }
+.pill.host-count { letter-spacing: 0.6px; }
 /* The 1px translucent border is what makes Electron's pills read as objects
    rather than flat colour blocks; every tinted pill below carries one at the
    source's .32 alpha. Hues are the source's literals, not token aliases: the
@@ -495,6 +578,10 @@ list row:selected label {
   box-shadow: none;
   color: @text_dim;
   padding: 2px 6px;
+  /* styles.css:1792-1793 — the toggle's own 10px/500, which its caret and
+     count inherit. Weight was missing, so the caret rendered 400. */
+  font-size: 10px;
+  font-weight: 500;
 }
 .archived-toggle:hover { background-color: @bg_3; }
 .archived-bar { padding: 4px 6px; }
@@ -922,7 +1009,7 @@ entry:focus-within {
   margin: 0 6px 6px 20px;
   padding: 4px 8px;
 }
-.res-proc-comm { color: @text; font-family: monospace; font-size: 11px; }
+.res-proc-comm { color: @text; font-family: "JetBrains Mono", "Fira Code", monospace; font-size: 11px; }
 .res-procs-empty { color: @text_dim; font-size: 11px; font-style: italic; }
 .res-empty { color: @text_dim; font-size: 13px; }
 .res-account-card {
@@ -978,7 +1065,7 @@ entry:focus-within {
 .insights-diff-line.removed .insights-diff-sign { color: @red; }
 .insights-diff-line label { font-size: 11px; }
 .insights-transcript, .insights-lessons {
-  font-family: monospace;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 11px;
   color: @text;
   background-color: @bg;
@@ -1025,7 +1112,8 @@ entry:focus-within {
 .insights-row.active { background-color: @bg_4; }
 .insights-row-icon { color: @accent_2; }
 .insights-row-title { color: @text; font-size: 12px; font-weight: 600; }
-.insights-row-sub { color: @text_dim; font-size: 10px; }
+/* styles.css:3673 — 11px; the weight comes from the row's 500 inheritance. */
+.insights-row-sub { color: @text_dim; font-size: 11px; font-weight: 500; }
 .insights-step { padding: 1px 10px 1px 24px; }
 
 /* Help */
@@ -1133,7 +1221,7 @@ entry:focus-within {
 .branch-chip.orchestrator { border-color: @green; color: @green; }
 .branch-chip.scratch { border-color: @yellow; color: @yellow; }
 .branch-chip-icon { color: @text_dim; }
-.branch-chip-text { font-family: monospace; }
+.branch-chip-text { font-family: "JetBrains Mono", "Fira Code", monospace; }
 .branch-arrow { color: @text_dim; }
 
 /* Branch picker popover -------------------------------------- */
@@ -1149,7 +1237,7 @@ entry:focus-within {
   font-size: 0.8em;
 }
 .branch-item-icon { color: @text_dim; }
-.branch-item-name { font-family: monospace; }
+.branch-item-name { font-family: "JetBrains Mono", "Fira Code", monospace; }
 .branch-empty, .branch-error {
   padding: 8px 6px;
   color: @text_dim;
@@ -1170,7 +1258,7 @@ entry:focus-within {
 }
 .tab:hover { background-color: @bg_3; color: @text; }
 .tab:checked { background-color: @bg_4; color: @text; }
-.diff-indicator { font-family: monospace; font-size: 0.85em; }
+.diff-indicator { font-family: "JetBrains Mono", "Fira Code", monospace; font-size: 0.85em; }
 
 /* Action buttons -------------------------------------------- */
 .restart-btn, .run-toggle-btn, .pane-toggle {
@@ -1210,8 +1298,8 @@ entry:focus-within {
   font-size: 0.85em;
 }
 
-.add, .diff-add { color: @green; font-family: monospace; }
-.del, .diff-del { color: @red; font-family: monospace; }
+.add, .diff-add { color: @green; font-family: "JetBrains Mono", "Fira Code", monospace; }
+.del, .diff-del { color: @red; font-family: "JetBrains Mono", "Fira Code", monospace; }
 
 /* ============================================================
    §8  Diff view  (B3)
@@ -1223,7 +1311,7 @@ entry:focus-within {
 .diff-files row { padding: 4px 8px; border-radius: 4px; }
 .diff-files row:selected { background-color: @accent_strong; color: #fff; }
 .diff-file-status {
-  font-family: monospace;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
   font-weight: 700;
   min-width: 14px;
 }
@@ -1231,13 +1319,13 @@ entry:focus-within {
 .diff-file-status.modified { color: @yellow; }
 .diff-file-status.deleted { color: @red; }
 .diff-file-status.renamed { color: @accent; }
-.diff-file-name { font-family: monospace; font-size: 0.9em; }
+.diff-file-name { font-family: "JetBrains Mono", "Fira Code", monospace; font-size: 0.9em; }
 .diff-header {
   padding: 6px 10px;
   border-bottom: 1px solid @border;
   background-color: @bg_2;
 }
-.diff-header-path { font-family: monospace; color: @text; }
+.diff-header-path { font-family: "JetBrains Mono", "Fira Code", monospace; color: @text; }
 .diff-trunc-notice {
   padding: 4px 10px;
   background-color: @bg_3;
@@ -1263,7 +1351,7 @@ entry:focus-within {
   min-width: 18px;
 }
 .setup-banner-log {
-  font-family: monospace;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 0.85em;
   color: @text_dim;
   background-color: @bg;
@@ -1276,14 +1364,14 @@ entry:focus-within {
 .queue-banner-sub { color: @text_dim; font-size: 0.9em; }
 .queue-banner-list row { padding: 2px 4px; }
 .queue-banner-item-n {
-  font-family: monospace;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
   color: @text_dim;
   min-width: 16px;
 }
 .queue-banner-item-text { color: @text; font-size: 0.9em; }
 .queue-banner-item-x { padding: 0 6px; color: @text_dim; }
 .queue-banner-item-x:hover { color: @red; }
-.queue-banner-textarea { font-family: monospace; }
+.queue-banner-textarea { font-family: "JetBrains Mono", "Fira Code", monospace; }
 
 .sandbox-control-bar {
   padding: 6px 10px;
@@ -1759,7 +1847,7 @@ entry:focus-within {
 
 /* styles.css:1855-1859 — monospace label. */
 .branch-chip-text {
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
 }
 
 /* The dropdown caret inside the branch chip (BranchPicker.tsx renders it at
@@ -2070,7 +2158,7 @@ button.welcome-help-btn:hover {
   margin-top: 4px;
   font-size: 12px;
   color: @text_dim;
-  font-family: monospace;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
 }
 .modal-close {
   /* styles.css:2716-2724: transparent, dim, 20px glyph, 0 4px pad. */
@@ -2126,7 +2214,7 @@ button.welcome-help-btn:hover {
   /* styles.css:2764-2776: monospace 12.5px, inset dark fill, 1px border,
      --radius (8px), 8px/10px padding. min-height lives on the scroller
      (set_min_content_height(80), matching :2774). */
-  font-family: monospace;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 12.5px;
   background-color: alpha(#000000, 0.25);
   color: @text;
@@ -2214,7 +2302,7 @@ button.welcome-help-btn:hover {
   border: 1px solid @border;
   background-color: @bg_2;
   color: @text;
-  font-family: monospace;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 12.5px;
 }
 .linear-key-input:focus-within {

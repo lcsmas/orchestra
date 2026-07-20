@@ -3,7 +3,7 @@
 //!
 //! Protocol: newline-delimited JSON over a unix socket, one response line per
 //! request line. Ops: list_widgets / click / type / key / get / measure /
-//! screenshot
+//! screenshot (get supports label/visible/css/font)
 //! (see `Op`). Every meaningful widget carries a `widget_name`, and lookups
 //! walk ALL toplevels so dialogs are reachable too.
 //!
@@ -106,6 +106,22 @@ pub enum Prop {
     Label,
     Visible,
     Css,
+    /// The RESOLVED font of a text widget: family, size in px, weight, style
+    /// and letter-spacing, read back from Pango AFTER the CSS cascade.
+    ///
+    /// Reading `theme.css` cannot answer this. A rule can be outranked, can
+    /// name a family that is not installed (fontconfig silently substitutes),
+    /// or can omit `font-family` entirely — in which case the widget inherits
+    /// the gtk-font-name SETTING, which appears in no stylesheet at all. All
+    /// three produce a rendered face that no amount of source reading reveals,
+    /// and the third is exactly how the port ended up on a different typeface
+    /// from Electron with no selector conflict to show for it.
+    ///
+    /// So this asks Pango what it will actually shape with: the widget's own
+    /// PangoContext, whose description GTK populates from the resolved style.
+    /// Sizes come back in Pango units (1024ths) and are converted to px here so
+    /// the number is directly comparable to Electron's getComputedStyle.
+    Font,
 }
 
 pub fn parse_op(line: &str) -> Result<Op, serde_json::Error> {
@@ -415,6 +431,60 @@ fn handle_op(op: Op) -> Value {
                     .iter()
                     .map(|c| c.to_string())
                     .collect::<Vec<_>>()),
+                Prop::Font => {
+                    // pango_context() carries the style GTK resolved for THIS
+                    // widget, so an inherited size and a locally-set one are
+                    // both reported as what will be shaped.
+                    let ctx = w.pango_context();
+                    let desc = ctx.font_description();
+                    let Some(desc) = desc else {
+                        return err(format!("widget {name:?} has no font description"));
+                    };
+                    // Pango stores size in 1024ths; absolute-size descriptions
+                    // (what GTK CSS px produces) are already device units,
+                    // whereas point sizes must be scaled by the resolution.
+                    // Report both the px figure and which path produced it,
+                    // because a caller comparing against a CSS px value needs
+                    // to know it is not silently reading points.
+                    let size_is_absolute = desc.is_size_absolute();
+                    // GTK CSS `font-size: Npx` yields an ABSOLUTE description,
+                    // so size/SCALE is already device px. A point-sized
+                    // description would need the context resolution to convert,
+                    // and rather than assume 96dpi (which would silently emit a
+                    // plausible wrong number for the one case this cannot
+                    // handle), `size_is_absolute` is reported alongside so a
+                    // caller can reject the value instead of comparing it to
+                    // Electron's px figure as though the units matched.
+                    let size_px = desc.size() as f64 / gtk::pango::SCALE as f64;
+                    // NOTE: letter-spacing is deliberately NOT reported here.
+                    // It lives on Pango attributes, not the font description,
+                    // and there is no widget-level getter that reflects the
+                    // CSS-resolved value — so any number this op could cheaply
+                    // produce would be a constant 0, indistinguishable from
+                    // "the role sets no tracking" and wrong for the roles that
+                    // do. Compare letter-spacing from the stylesheet instead,
+                    // and treat that as READ rather than measured.
+                    // `desc.family()` is the DECLARED STACK ("Inter,Adwaita
+                    // Sans,…"), not the face that will paint — the same
+                    // request-vs-result gap getComputedStyle has on the
+                    // Electron side. Loading the description through the
+                    // context's font map resolves it the way rendering will,
+                    // so the caller learns which family actually won.
+                    let resolved_family = ctx
+                        .load_font(&desc)
+                        .map(|font| font.describe())
+                        .and_then(|d| d.family())
+                        .map(|f| f.to_string());
+                    json!({
+                        "resolved_family": resolved_family,
+                        "family": desc.family().map(|f| f.to_string()),
+                        "size_px": (size_px * 100.0).round() / 100.0,
+                        "size_is_absolute": size_is_absolute,
+                        "weight": format!("{:?}", desc.weight()),
+                        "style": format!("{:?}", desc.style()),
+                        "stretch": format!("{:?}", desc.stretch()),
+                    })
+                }
                 Prop::Label => {
                     if let Some(win) = w.downcast_ref::<gtk::Window>() {
                         json!(win.title().map(|t| t.to_string()))
