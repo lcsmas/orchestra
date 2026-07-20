@@ -19,7 +19,15 @@
 # Both work. The inbox directory did not even exist — not "empty", absent —
 # because nothing had ever failed to deliver.
 #
-# The real gaps are quieter, and none of them is a broken queue:
+# THE ACTUAL CAUSE, third try, and it was neither layer: MY SPAWN BRIEF NEVER
+# TOLD THE AGENTS HOW TO REPORT. It said "commit on your branch and report" —
+# six mentions of "report", not one `orchestra message <ws-id>`. Earlier waves
+# included the id; I dropped it rewriting the brief. The agents finished,
+# committed, and had nowhere to send anything. The verified-fanout skill now
+# carries a grep-your-own-brief check, because the requirement was already
+# written down and still got lost.
+#
+# The remaining gaps are quieter, and none of them is a broken queue:
 #   - An agent COMMITS BEFORE IT REPORTS. Work exists on a branch for minutes
 #     or hours before any message is sent — and if the agent is still working,
 #     no message is owed yet. "No report" often just means "not finished".
