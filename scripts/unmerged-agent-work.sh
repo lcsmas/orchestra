@@ -69,19 +69,41 @@ peers=$("$APP" cli peers 2>/dev/null) || exit 0
 DECLINED="port-b1-sidebar gtk4-port-verifier m4-visual-reference login-isolated-browser-session"
 
 out=""
+dirty=""
 while read -r _id branch _rest; do
   case "$branch" in ''|id|-*) continue ;; esac
   case " $DECLINED " in *" $branch "*) continue ;; esac
   git rev-parse --verify --quiet "$branch" >/dev/null 2>&1 || continue
   git merge-base HEAD "$branch" >/dev/null 2>&1 || continue
+
+  # UNCOMMITTED work is a SEPARATE question from unmerged commits, and the
+  # range check below is structurally blind to it. An agent whose last act
+  # generates artifacts (regenerated fixtures, captures, reports) routinely
+  # leaves them unstaged AFTER its final commit: the branch merges clean, the
+  # range reads 0, and the work is still missing. It then dies with the
+  # worktree. Cost a full set of regenerated reference captures once, and the
+  # resulting freshness-gate failure was misattributed to something else.
+  wt=$(git worktree list --porcelain 2>/dev/null |
+       awk -v b="refs/heads/$branch" '/^worktree /{w=$2} $0=="branch "b{print w; exit}')
+  if [ -n "$wt" ] && [ -d "$wt" ]; then
+    nd=$(git -C "$wt" status --porcelain 2>/dev/null | wc -l)
+    [ "${nd:-0}" -gt 0 ] && dirty="${dirty}  ${branch} — ${nd} uncommitted file(s) in ${wt}\n"
+  fi
+
   n=$(git rev-list --count "HEAD..$branch" 2>/dev/null) || continue
   [ "${n:-0}" -gt 0 ] || continue
   subject=$(git log --format=%s -1 "$branch" 2>/dev/null | cut -c1-58)
   out="${out}  ${branch} — ${n} commit(s), tip: ${subject}\n"
 done <<< "$(awk 'NR>2 {print $1, $2}' <<< "$peers")"
 
-[ -n "$out" ] || exit 0
+if [ -n "$out" ]; then
+  printf '[unmerged agent work] child branches with commits not on this branch:\n'
+  printf "%b" "$out"
+  printf 'Commits exist before a report is sent, and an agent may still be working. Check the tip; do not wait to be told.\n'
+fi
 
-printf '[unmerged agent work] child branches with commits not on this branch:\n'
-printf "%b" "$out"
-printf 'Commits exist before a report is sent, and an agent may still be working. Check the tip; do not wait to be told.\n'
+if [ -n "$dirty" ]; then
+  printf '[uncommitted agent work] child worktrees with unstaged changes:\n'
+  printf "%b" "$dirty"
+  printf 'A merged branch does NOT mean the work landed — this is invisible to the range check above, and it is lost when the worktree is removed.\n'
+fi
