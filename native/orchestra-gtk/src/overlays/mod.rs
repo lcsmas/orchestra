@@ -84,6 +84,18 @@ impl Overlays {
         overlays
     }
 
+    /// Remove all three overlays from the host they were added to.
+    ///
+    /// The counterpart to the `add_overlay` calls in [`Overlays::new`]: a
+    /// backend that disconnects tears its overlays down so the reconnect's
+    /// fresh attach can mount a new set, rather than stacking another three
+    /// on top of the main pane each time.
+    pub fn unmount(&self, host: &gtk::Overlay) {
+        host.remove_overlay(self.resources.widget());
+        host.remove_overlay(self.insights.widget());
+        host.remove_overlay(self.help.widget());
+    }
+
     pub fn active(&self) -> Option<OverlayKind> {
         self.active.get()
     }
