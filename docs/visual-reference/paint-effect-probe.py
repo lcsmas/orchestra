@@ -32,10 +32,26 @@ discarded, not interpreted.
 An OUTER `box-shadow` paints OUTSIDE the widget's bounds and WidgetPaintable
 CLIPS to those bounds, so a widget-scoped run reports it as no-change EVEN WHEN
 IT WORKS. Point this at theme.css unguarded and it will call every outer glow
-dead — including the working `.ws-dot.running/.waiting/.error` ones. Snapshot a
-PARENT container (or drive the app's --remote-control screenshot op) so the glow
-falls inside the captured region. The `inset` case registers normally, which is
-how you can tell the probe is otherwise healthy.
+dead — including the working `.ws-dot.running/.waiting/.error` ones.
+
+THIS CAVEAT USED TO LIVE ONLY HERE, AND THAT WAS THE BUG. The static path
+honoured it; the animated path never did, and reported the working
+`.ws-dot.running` pulse as "1/6 distinct frames — category (c)" with every
+sample rgba=(0,0,0,0). The file LOOKED audited, which is worse than an
+unwarned file: a reader sees the caveat and assumes it applies throughout.
+
+So the correction now lives IN CODE, in the one shared capture path:
+  * `pad_for()`   — wraps the probed widget in a SIZED parent (a margin is not
+                    enough; a Gtk.Box shrink-wraps, so a margined parent around
+                    an 8px dot is still 8px wide and clips the ring anyway).
+  * `_capture()`  — the ONLY caller of `_snapshot`. Both modes route through it,
+                    so a third mode added later cannot silently skip the fix.
+  * `assert_captured()` — HARD-FAILS the run if every frame is fully
+                    transparent. Not a warning: an all-transparent capture has
+                    no verdict to report, and a number printed beside a warning
+                    still gets acted on.
+
+Run `paint-effect-probe.py selftest` to watch the guard fire and pass.
 
 And for a DEAD-RULE SWEEP specifically: give every rule you believe dead its own
 POSITIVE CONTROL in the same run. A probe that cannot detect anything reports
@@ -47,6 +63,7 @@ fail your control-backed run too, and if it doesn't, say so.
 Usage:
   paint-effect-probe.py static   [theme.css]
   paint-effect-probe.py animated [theme.css] [css-class] [duration-ms] [frames]
+  paint-effect-probe.py selftest [theme.css]   # prove the empty-capture guard
 """
 
 import hashlib
@@ -68,6 +85,12 @@ DEFAULT_THEME = f"{REPO}/native/orchestra-gtk/src/theme.css"
 SAMPLE_FX, SAMPLE_FY = 0.5, 0.12
 WIDGET_PX = 40
 
+# Slack around the probed widget so an OUTER glow/shadow/pulse ring falls inside
+# the captured region instead of being clipped away. The pulse in
+# `@keyframes ws-dot-pulse` reaches 6px of spread plus a 10px blur, so 10px would
+# already clip the tail; 26 leaves headroom for the widest rule in theme.css.
+PAD_PX = 26
+
 
 def _provider(css: str):
     p = Gtk.CssProvider()
@@ -75,6 +98,93 @@ def _provider(css: str):
     p.connect("parsing-error", lambda _p, _s, e: errs.append(e.message))
     p.load_from_data(css.encode())
     return p, errs
+
+
+class EmptyCapture(Exception):
+    """Every sampled frame was fully transparent — the probe captured NOTHING.
+
+    Raised, not warned. A run that captured nothing has NO VERDICT to report:
+    the frame count is an artifact of the rig, not a measurement of the rule.
+    A warning printed beside "1/6 distinct frames" still leaves the number on
+    the page, and a number on the page gets acted on line by line while nobody
+    re-checks which lines came from a degraded run. So this aborts the run and
+    prints no verdict at all.
+    """
+
+
+def _capture(widget: Gtk.Widget):
+    """THE ONE SNAPSHOT PATH. Every mode must call this — see `pad_for`.
+
+    Deliberately the only function in this file that calls `_snapshot`. The
+    original bug was that the parent-scoping correction lived in a DOCSTRING
+    that only the static path honoured, so the animated path snapshotted the
+    bare widget and clipped the entire pulse ring away — reporting a live
+    animation as "1/6 distinct frames, category (c)" with every sample
+    rgba=(0,0,0,0). A correction attachable to one code path is a correction
+    the next code path will not inherit. Putting the scoping in the shared
+    helper is what makes that structurally impossible.
+    """
+    return _snapshot(widget)
+
+
+def pad_for(widget: Gtk.Widget, pad_px: int = PAD_PX) -> Gtk.Widget:
+    """Wrap `widget` in a SIZED container and return the thing to snapshot.
+
+    WidgetPaintable clips to the snapshotted widget's bounds, so an outer
+    box-shadow / glow / pulse ring paints entirely outside a widget-scoped
+    capture and reads as "no change" WHILE WORKING PERFECTLY.
+
+    A margin alone does NOT fix this, which is the part that cost real time:
+    a Gtk.Box shrink-wraps its child, so a margined parent around an 8px dot is
+    still 8px wide and the ring still has nowhere to land (measured: ink stays
+    0 and every frame hashes identically). The parent must be explicitly SIZED
+    LARGER than the child, with the child centred inside it. Measured on
+    .ws-dot.running: bare widget -> 1/6 identical all-transparent frames;
+    sized parent -> 8/8 distinct, ink 308..468.
+    """
+    pad = Gtk.Box()
+    pad.set_size_request(widget_natural(widget) + pad_px * 2,
+                         widget_natural(widget) + pad_px * 2)
+    pad.set_hexpand(False)
+    pad.set_vexpand(False)
+    widget.set_halign(Gtk.Align.CENTER)
+    widget.set_valign(Gtk.Align.CENTER)
+    pad.append(widget)
+    return pad
+
+
+def widget_natural(widget: Gtk.Widget) -> int:
+    """Natural size of `widget`, used to size the pad around it."""
+    _min_w, nat_w, _b1, _b2 = widget.measure(Gtk.Orientation.HORIZONTAL, -1)
+    _min_h, nat_h, _b3, _b4 = widget.measure(Gtk.Orientation.VERTICAL, -1)
+    return max(nat_w, nat_h, WIDGET_PX)
+
+
+def assert_captured(frames, label):
+    """HARD-FAIL if every frame is fully transparent. Raises EmptyCapture.
+
+    `frames` is a list of (buf, w, h, stride). The check is on the WHOLE
+    REGION ink count, never the point sample: the pulse ring is sparse enough
+    that a single sample point is legitimately (0,0,0,0) on most frames of a
+    perfectly healthy capture (measured — see pad_for). Keying the guard on
+    the point sample would hard-fail working runs.
+    """
+    total_ink = 0
+    for buf, w, h, stride in frames:
+        if buf is None or w == 0:
+            continue
+        for r in range(h):
+            row = buf[r * stride:r * stride + w * 4]
+            total_ink += sum(1 for i in range(0, len(row), 4) if row[i + 3] != 0)
+    if total_ink == 0:
+        raise EmptyCapture(
+            f"{label}: all {len(frames)} sampled frames were fully transparent "
+            f"(total ink=0 across the whole captured region). The probe captured "
+            f"NOTHING, so the frame count is not a verdict — not a low-confidence "
+            f"verdict, NOT A VERDICT. Most likely the capture is clipping an "
+            f"outer-painting effect: snapshot a SIZED parent via pad_for()."
+        )
+    return total_ink
 
 
 def _snapshot(widget: Gtk.Widget):
@@ -201,18 +311,23 @@ class Rig:
         self._extra = prov
         return errs
 
-    def render_sample(self, css_classes):
+    def render_sample(self, css_classes, size_request=True):
         w = Gtk.Box()
-        w.set_size_request(WIDGET_PX, WIDGET_PX)
+        if size_request:
+            w.set_size_request(WIDGET_PX, WIDGET_PX)
         for c in css_classes:
             w.add_css_class(c)
-        self.box.append(w)
-        _settle(w)
-        got = _snapshot(w)
+        # Both modes capture through pad_for + _capture. Snapshotting `w` here
+        # instead would silently clip outer-painting rules — the exact bug this
+        # file shipped in its animated path.
+        pad = pad_for(w)
+        self.box.append(pad)
+        _settle(pad)
+        got = _capture(pad)
         px = _sample(*got) if got[0] is not None else None
         dig, ink = _digest(*got)
-        self.box.remove(w)
-        return px, dig, ink
+        self.box.remove(pad)
+        return px, dig, ink, got
 
 
 def _delta(a, b):
@@ -245,14 +360,15 @@ def run_static(theme):
          ".paintprobe { background-color: rgb(255,0,0); }", "good"),
         ("KNOWN-INERT unknown property",
          ".paintprobe { -nonexistent-prop: 12px; }", "inert"),
-        # KNOWN LIMITATION, kept in the run as a documented negative: an OUTER
-        # box-shadow paints OUTSIDE the widget's bounds, and WidgetPaintable
-        # clips to those bounds — so this reads ink=0 here even though the glow
-        # renders fine in the app. Do NOT read that as category (c). For outer
-        # shadows, snapshot a PARENT container (or drive the real app's
-        # screenshot op) so the shadow falls inside the captured region.
-        ("box-shadow glow (clipped - see note)",
-         ".paintprobe { box-shadow: 0 0 8px 4px rgba(255,200,87,.9); }", "note"),
+        # WAS a documented negative ("clipped, reads ink=0, do not read as
+        # category (c)"). It is no longer clipped: routing this path through
+        # pad_for() gives the glow somewhere to land, and it now registers
+        # MOVED with ink well above the baseline. Kept as a POSITIVE control
+        # for outer-painting rules specifically — if this one ever reads
+        # "no change" again, the capture region has regressed and every
+        # outer-glow verdict in the run is untrustworthy.
+        ("box-shadow glow (outer, now captured)",
+         ".paintprobe { box-shadow: 0 0 8px 4px rgba(255,200,87,.9); }", "good"),
         ("box-shadow INSET (visible in bounds)",
          ".paintprobe { box-shadow: inset 0 0 8px 4px rgba(255,200,87,.9); }",
          "test"),
@@ -267,13 +383,16 @@ def run_static(theme):
     ]
 
     rig.style(OFF)
-    base, base_dig, base_ink = rig.render_sample(["paintprobe"])
+    base, base_dig, base_ink, base_got = rig.render_sample(["paintprobe"])
+    # Hard-fail before any verdict is printed: if the BASELINE captured nothing
+    # the whole run is uninterpretable, so emit no verdicts at all.
+    assert_captured([base_got], "static baseline")
     print(f"baseline sample rgba={base} region={base_dig} ink={base_ink}\n")
 
     verdicts = {}
     for name, css, kind in cases:
         errs = rig.style(OFF + "\n" + css)
-        px, dig, ink = rig.render_sample(["paintprobe"])
+        px, dig, ink, _got = rig.render_sample(["paintprobe"])
         d = _delta(px, base)
         # Region digest is authoritative; the point sample only says WHICH WAY.
         moved = dig != base_dig or ink != base_ink
@@ -295,29 +414,34 @@ def run_static(theme):
     return 0
 
 
-def run_animated(theme, cls="ws-dot running", duration_ms=1600, frames=6):
-    """Distinct frame hashes across an animation window + the sampled pixel."""
-    rig = Rig(theme)
-    classes = cls.split()
-    print(f"PURE-PAINT ANIMATION PROBE — .{'.'.join(classes)} "
-          f"over {duration_ms}ms, {frames} frames\n")
+def _sample_frames(rig, classes, extra_css, duration_ms, frames, size_request=False):
+    """Capture `frames` snapshots over `duration_ms`. Returns (rows, raws).
 
+    Captures through pad_for + _capture like every other path. `size_request` is
+    off by default here so a rule's own min-width/min-height governs the widget's
+    size — forcing 40x40 on an 8px dot would test a widget the CSS never sizes.
+    """
+    if extra_css is not None:
+        rig.style(extra_css)
     w = Gtk.Box()
-    w.set_size_request(WIDGET_PX, WIDGET_PX)
+    if size_request:
+        w.set_size_request(WIDGET_PX, WIDGET_PX)
     for c in classes:
         w.add_css_class(c)
-    rig.box.append(w)
-    _settle(w)
+    pad = pad_for(w)
+    rig.box.append(pad)
+    _settle(pad)
 
-    seen, rows = [], []
+    rows, raws = [], []
     step = duration_ms / frames
 
     def grab(_):
-        got = _snapshot(w)
+        got = _capture(pad)
         buf = got[0]
+        raws.append(got)
         h = hashlib.md5(buf).hexdigest()[:10] if buf else "EMPTY"
-        rows.append((len(rows), h, _sample(*got) if buf is not None else None))
-        seen.append(h)
+        _dig, ink = _digest(*got)
+        rows.append((len(rows), h, _sample(*got) if buf is not None else None, ink))
         return False
 
     loop = GLib.MainLoop()
@@ -325,11 +449,76 @@ def run_animated(theme, cls="ws-dot running", duration_ms=1600, frames=6):
         GLib.timeout_add(int(step * i) + 20, grab, None)
     GLib.timeout_add(int(step * frames) + 200, lambda _: (loop.quit(), False)[1], None)
     loop.run()
+    rig.box.remove(pad)
+    return rows, raws
 
-    for i, h, px in rows:
-        print(f"  frame {i}  hash={h}  sample rgba={px}")
-    distinct = len(set(seen))
-    print(f"\ndistinct frame hashes: {distinct}/{len(seen)}")
+
+def _report_frames(label, rows, raws):
+    """Print frames + distinct count. Hard-fails (raises) on an empty capture.
+
+    The guard runs BEFORE the distinct count is printed, so a degraded run
+    cannot leave a number on the page for someone to act on.
+    """
+    ink_total = assert_captured(raws, label)
+    for i, h, px, ink in rows:
+        print(f"  frame {i}  hash={h}  sample rgba={px}  region-ink={ink}")
+    distinct = len(set(h for _, h, _, _ in rows))
+    # Baseline printed alongside the verdict so "1/8 distinct" can be judged
+    # against how much was actually captured, without the reader having to know
+    # to ask. A rule that removes the need to spot nonsense beats one that asks.
+    print(f"  -> distinct frame hashes: {distinct}/{len(rows)}  "
+          f"(captured ink across all frames: {ink_total})")
+    return distinct
+
+
+def run_animated(theme, cls="ws-dot running", duration_ms=1600, frames=6):
+    """Distinct frame hashes across an animation window + the sampled pixel.
+
+    Runs BOTH controls in the SAME run as the subject, because they guard
+    opposite failures and neither substitutes for the other:
+      * KNOWN-GOOD  — an animation that must register. Without it, a probe that
+                      can detect nothing calls every animation dead.
+      * KNOWN-INERT — a static rule that must NOT register. Without it, timing
+                      jitter/antialiasing makes every rule look animated.
+    """
+    rig = Rig(theme)
+    classes = cls.split()
+    print(f"PURE-PAINT ANIMATION PROBE — .{'.'.join(classes)} "
+          f"over {duration_ms}ms, {frames} frames")
+    print(f"(capturing a {PAD_PX}px-padded parent so outer glows are not clipped)\n")
+
+    GOOD = ("@keyframes _probe_good { from { background-color: rgb(255,0,0); } "
+            "to { background-color: rgb(0,0,255); } } "
+            ".probegood { min-width: 20px; min-height: 20px; "
+            "animation: _probe_good 0.4s linear infinite; }")
+    INERT = (".probeinert { min-width: 20px; min-height: 20px; "
+             "background-color: rgb(0,128,0); }")
+
+    print("CONTROL known-good (animated background):")
+    good_rows, good_raws = _sample_frames(
+        rig, ["probegood"], rig.base_css + "\n" + GOOD, duration_ms, frames)
+    good_distinct = _report_frames("known-good control", good_rows, good_raws)
+
+    print("\nCONTROL known-inert (static background):")
+    inert_rows, inert_raws = _sample_frames(
+        rig, ["probeinert"], rig.base_css + "\n" + INERT, duration_ms, frames)
+    inert_distinct = _report_frames("known-inert control", inert_rows, inert_raws)
+
+    print(f"\nSUBJECT .{'.'.join(classes)}:")
+    rows, raws = _sample_frames(rig, classes, rig.base_css, duration_ms, frames)
+    distinct = _report_frames(f".{'.'.join(classes)}", rows, raws)
+
+    ok_good = good_distinct > 1
+    ok_inert = inert_distinct == 1
+    print(f"\nCONTROL known-good  animated  : {ok_good} "
+          f"({good_distinct}/{frames} distinct)")
+    print(f"CONTROL known-inert stayed still: {ok_inert} "
+          f"({inert_distinct}/{frames} distinct)")
+    if not (ok_good and ok_inert):
+        print("\n*** RUN INVALID — controls misbehaved; discard the verdict above ***")
+        return 1
+
+    print()
     if distinct <= 1:
         print("*** category (c): the rule parses but paints ONE unchanging frame ***")
         return 1
@@ -338,14 +527,68 @@ def run_animated(theme, cls="ws-dot running", duration_ms=1600, frames=6):
     return 0
 
 
+def run_selftest(theme):
+    """Prove the empty-capture guard fires AND that it can pass — same run.
+
+    A guard nobody has seen fail is not a guard, and that is precisely the
+    defect this file shipped. So the probe demonstrates its own guard in both
+    directions rather than asking the reader to trust it.
+    """
+    print("EMPTY-CAPTURE GUARD SELF-TEST (both directions)\n")
+    rig = Rig(theme)
+
+    print("direction 1 — point the probe at something that paints NOTHING;")
+    print("             the guard must fire and NO verdict may be printed.")
+    fired = False
+    try:
+        rows, raws = _sample_frames(
+            rig, ["probenothing"],
+            rig.base_css + "\n.probenothing { min-width: 20px; min-height: 20px; "
+                           "background: none; border: none; }",
+            400, 4)
+        _report_frames("nothing-painted", rows, raws)
+    except EmptyCapture as exc:
+        fired = True
+        print(f"  GUARD FIRED (no verdict emitted): {exc}")
+    if not fired:
+        print("  *** SELF-TEST FAILED: guard did NOT fire on an empty capture ***")
+        return 1
+
+    print("\ndirection 2 — point it at something that DOES paint;")
+    print("             the guard must stay silent and a verdict must appear.")
+    try:
+        rows, raws = _sample_frames(
+            rig, ["probepaints"],
+            rig.base_css + "\n.probepaints { min-width: 20px; min-height: 20px; "
+                           "background-color: rgb(255,0,0); }",
+            400, 4)
+        _report_frames("something-painted", rows, raws)
+    except EmptyCapture as exc:
+        print(f"  *** SELF-TEST FAILED: guard fired on a healthy capture: {exc} ***")
+        return 1
+    print("  GUARD SILENT, verdict emitted normally.")
+
+    print("\nSELF-TEST PASSED — the guard fires on empty and passes on painted.")
+    return 0
+
+
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "static"
     theme = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_THEME
-    if mode == "static":
-        rc = run_static(theme)
-    else:
-        cls = sys.argv[3] if len(sys.argv) > 3 else "ws-dot running"
-        dur = int(sys.argv[4]) if len(sys.argv) > 4 else 1600
-        fr = int(sys.argv[5]) if len(sys.argv) > 5 else 6
-        rc = run_animated(theme, cls, dur, fr)
+    try:
+        if mode == "static":
+            rc = run_static(theme)
+        elif mode == "selftest":
+            rc = run_selftest(theme)
+        else:
+            cls = sys.argv[3] if len(sys.argv) > 3 else "ws-dot running"
+            dur = int(sys.argv[4]) if len(sys.argv) > 4 else 1600
+            fr = int(sys.argv[5]) if len(sys.argv) > 5 else 6
+            rc = run_animated(theme, cls, dur, fr)
+    except EmptyCapture as exc:
+        # HARD FAIL, NO VERDICT. Deliberately not a warning: see EmptyCapture.
+        print(f"\n*** PROBE FAILED — EMPTY CAPTURE ***\n{exc}\n"
+              f"*** NO VERDICT EMITTED. Fix the capture region and re-run. ***",
+              file=sys.stderr)
+        sys.exit(2)
     sys.exit(rc)
