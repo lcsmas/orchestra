@@ -15,6 +15,29 @@ from the tip this pair was captured at — verify before editing, they drift.
 
 ## A. Sidebar rows and density — *highest visual impact*
 
+> **STATUS: DONE (M4-V1).** All five items were still unfixed at tip when V1
+> started — none had been silently resolved. Two corrections to the notes
+> below, both found while porting; they are left inline rather than rewritten
+> so the original claim and its correction stay comparable.
+>
+> - **A1 named the wrong rule.** `.ws-item { padding: 0 }` is not what governed
+>   row geometry. Sidebar rows are `ListBoxRow`s under the *generic*
+>   `listbox row { padding: 7px 12px; border-radius: 8px; margin: 1px 6px }`
+>   (theme.css:110-114) — so GTK rows were rounded, margined **cards** where
+>   Electron rows are full-bleed **strips**. Setting `.ws-item` padding alone
+>   would not have fixed it.
+> - **A2 was also a wrong-token bug.** Beyond the missing accent bar, the active
+>   background used `@bg_4` (#222933); `styles.css:1138` is `--bg-3` (#1a1f26).
+>   Confirmed by pixel sampling: (34,41,51) → (26,31,38).
+> - **A4 needs NO deviation.** The note speculates GTK CSS has no `animation`.
+>   It does: GTK4 CSS supports `@keyframes`, so `ws-dot-pulse` was ported
+>   verbatim and *proved* to animate (6 captures at 220 ms, 6 distinct hashes).
+>
+> Because a 2px left border on a rounded, margined card floats inset instead of
+> reading as an edge marker, the sidebar list opts out of the generic rule via
+> `#sidebar-list` — scoped, so the queue / diff file list / sound picker /
+> branch popover keep the card look.
+
 **A1. Rows have no vertical padding of their own.**
 Electron `.ws-item { padding: 4px 14px }` (styles.css:1128) gives every row 4px
 top/bottom and a 14px text inset. GTK `.ws-item { padding: 0 }`
