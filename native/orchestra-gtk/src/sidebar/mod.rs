@@ -1352,12 +1352,15 @@ impl Sidebar {
                 format!("Delete {n}"),
             )
         };
-        let _ = confirm; // dialog confirm label is fixed in our dialog system
         let backend = self.backend.clone();
         let win = self.window.clone();
         let sender = sender.clone();
         glib::spawn_future_local(async move {
-            let ok = dialogs::confirm(&win, &title, &body).await;
+            // Destructive confirm with the computed label ("Delete" / "Delete N"),
+            // matching Electron (Sidebar.tsx:893-894 sets tone 'danger' and the
+            // same confirmLabel). Wording and behaviour are unchanged — the label
+            // was already computed above and previously discarded.
+            let ok = dialogs::confirm_destructive(&win, &title, &body, &confirm).await;
             if !ok {
                 return;
             }
