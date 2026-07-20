@@ -47,8 +47,9 @@ impl TerminalStack {
         self.agent_stack.upcast_ref()
     }
 
-    /// Whether no agent pane exists yet for `ws_id` (so the caller seeds
-    /// scrollback + shows the pill exactly once, on first open).
+    /// Whether no agent pane exists yet for `ws_id` (so the caller shows the
+    /// pill exactly once, on first open). Scrollback is NOT replayed — see
+    /// `feed_scrollback` and `open_terminal`.
     pub fn is_new(&self, ws_id: &str) -> bool {
         !self.panes.contains_key(ws_id)
     }
@@ -89,6 +90,16 @@ impl TerminalStack {
     }
 
     /// Seed an agent pane's scrollback (backend bytes) before live feed.
+    ///
+    /// DELIBERATELY UNUSED — do not re-wire this into `open_terminal` without
+    /// reading why it was removed (`app.rs`, `open_terminal`). Replaying the raw
+    /// PTY log feeds back the child's own DA1/XTVERSION queries; VTE answers
+    /// them and the reply is forwarded as `ptyWrite` into the live Claude
+    /// session (measured: 17/15/6 bytes, `examples/scrollback_query_probe`).
+    /// The renderer refuses the same replay for the same reason
+    /// (`Terminal.tsx:366`). Kept because a future scrollback path that strips
+    /// query sequences first would reuse it.
+    #[allow(dead_code)]
     pub fn feed_scrollback(&mut self, ws_id: &str, bytes: &[u8]) {
         self.ensure(ws_id, PaneKind::Agent);
         if let Some(pane) = self.panes.get(ws_id) {

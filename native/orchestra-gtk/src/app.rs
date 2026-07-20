@@ -227,9 +227,9 @@ fn repo_has_run_script(ctx: &Rc<Ctx>, repo_path: &str) -> bool {
     .unwrap_or(false)
 }
 
-/// Open a workspace's terminal surfaces: make its agent pane active (seeding
-/// scrollback + the resume pill on first open), and mount its run surface into
-/// the main pane's run slot. The agent pane's first visible fit fires `ptyStart`.
+/// Open a workspace's terminal surfaces: make its agent pane active (showing
+/// the resume pill on first open), and mount its run surface into the main
+/// pane's run slot. The agent pane's first visible fit fires `ptyStart`.
 fn open_terminal(
     terminals: &mut TerminalStack,
     main_pane: &Rc<MainPane>,
@@ -238,13 +238,21 @@ fn open_terminal(
 ) {
     let ws_id = &ws.id;
     let fresh = terminals.is_new(ws_id);
-    if fresh {
-        if let Some(b) = ctx.backend() {
-            if let Ok(bytes) = b.pty_scrollback(ws_id) {
-                terminals.feed_scrollback(ws_id, &bytes);
-            }
-        }
-    }
+    // Do NOT replay the raw PTY scrollback log into the terminal — the same
+    // decision (and for the same reason) as the renderer's `Terminal.tsx:366`.
+    //
+    // The log is what the CHILD wrote, and that includes sequences the child
+    // sent expecting the TERMINAL to answer. A real 3 MB agent log contains
+    // DA1 (`ESC[c`) and XTVERSION (`ESC[>0q`). Feeding those back makes VTE
+    // answer a question nobody asked, and the answer goes out through the
+    // pane's `commit` handler as `ptyWrite` — i.e. straight into the LIVE
+    // Claude session's stdin, as if the user had typed it, while Claude is
+    // mid-frame. Measured against VTE 0.80.5 (examples/scrollback_query_probe):
+    // DA1 injects 17 bytes, XTVERSION 15, DSR 6; plain text injects 0.
+    //
+    // Agent context is preserved by Claude's own session store
+    // (`claude --continue`), so a fresh TUI simply repaints itself.
+    // (`set_active` creates the pane itself, so first open needs nothing here.)
     terminals.set_active(ws_id);
     // Mount this workspace's run surface into B3's run slot. With a run script
     // configured that's the kept-alive run pane (B3's toolbar Run button drives
