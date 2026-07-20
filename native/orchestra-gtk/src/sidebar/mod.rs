@@ -670,24 +670,22 @@ impl Component for Sidebar {
 
         // ---- header strip: title + action buttons -----------------------
         //
-        // VERTICAL, and that is the width constraint — not a style choice.
+        // VERTICAL because Electron's header WRAPS and this one could not.
         //
         // Electron's `.sidebar-header` is `flex-wrap: wrap` (styles.css:443) and
         // its `.sidebar-header-actions` likewise (styles.css:449), inside an
-        // `.app` grid whose sidebar track is a HARD `340px` (styles.css:390).
-        // At that width the row cannot fit, so it wraps onto three lines:
-        // wordmark / four icon buttons + Scratch + Orchestrator / Repo.
+        // `.app` grid whose sidebar track is `340px` (styles.css:390). At that
+        // width the controls cannot fit on one line, so Electron wraps them onto
+        // three: wordmark / icon buttons + Scratch + Orchestrator / Repo.
         //
-        // The port had this as one HORIZONTAL box, which has no wrap and
-        // therefore a natural minimum equal to the sum of every child. Because
-        // the root GtkPaned sets `shrink_start_child(false)`, that minimum
-        // becomes a FLOOR the paned position cannot go below — so
-        // `set_position(280)` was silently overridden and the sidebar measured
-        // 516px. The labels did not "push the boundary" through any styling
-        // rule; they raised the start child's minimum, and the paned obeyed it.
+        // The port had one HORIZONTAL box with no wrap, whose natural width is
+        // the sum of every child (measured: 449px for the actions alone). At the
+        // 340px default that overflows. Wrapping is what lets the same controls
+        // — labels intact — fit the Electron width.
         //
-        // Wrapping is what removes the floor: with the actions in a FlowBox the
-        // header's minimum is one button wide, so the requested width wins.
+        // This is NOT what caused the 518px sidebar; that was a stale persisted
+        // width leaking into the captures (see capture-gtk.sh). The wrap is
+        // needed on its own merits: without it the header cannot fit 340px.
         let header = gtk::Box::new(gtk::Orientation::Vertical, 8);
         header.add_css_class("sidebar-header");
         header.set_widget_name("sidebar-header");
@@ -731,9 +729,10 @@ impl Component for Sidebar {
         // Selection is a FlowBox default that would make these buttons look
         // like list items and steal their click; they are actions, not choices.
         actions.set_selection_mode(gtk::SelectionMode::None);
-        // Without this the FlowBox claims the full natural width of one line,
-        // reinstating the very floor this change exists to remove.
-        actions.set_hexpand(true);
+        // Homogeneous(false) keeps each button at its own width — otherwise the
+        // FlowBox pads every child to the widest ("Orchestrator"), which spreads
+        // four small icon buttons across a whole row.
+        actions.set_homogeneous(false);
 
         actions.append(&header_icon_button(
             crate::icons::HELP,
