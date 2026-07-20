@@ -160,7 +160,7 @@ with `Sidebar.tsx:1362–1385`) and route out as
 
 The CDP replacement (plan §8.4), compiled in always, activated by
 `--remote-control <sock>`. Newline-JSON over a unix socket:
-`list_widgets`/`click`/`type`/`key`/`get`/`measure`/`screenshot`. Events are
+`list_widgets`/`click`/`type`/`key`/`hover`/`get`/`measure`/`screenshot`. Events are
 synthesized GTK-side (headless sway advertises no seat input); screenshots render
 offscreen via `WidgetPaintable → GSK render_texture` (no visible frame needed).
 
@@ -175,6 +175,54 @@ supported. Widget
 names: `main-window`, `sidebar-list`, `ws-row-<id>`, `status-text`,
 `backend-banner`/`backend-banner-text`, `dialog-title|body|entry|confirm|cancel`.
 Consumed by `native/e2e/` and `orchestra-gtk/scripts/smoke.sh`.
+
+`hover` (`remote_control.rs`) sets or clears GTK's `PRELIGHT` flag — the flag
+CSS `:hover` actually selects on — and `get`'s `state` prop reads the runtime
+state flags (hover/active/focused/checked/…). Together they make hover
+verifiable at all: the headless seat has no pointer, and `get`'s `css` prop
+returns only AUTHOR-set classes, which say nothing about what state a widget is
+in. `hover` reports the ACHIEVED state and errors if the flag did not take, so a
+silent no-op cannot masquerade as "hover produced no visual change".
+
+What this does NOT cover: `PRELIGHT` bypasses hit-testing entirely, so it
+verifies STYLING, not whether a real cursor can reach a widget. A widget that is
+occluded or zero-sized still passes.
+
+### Hover/transition parity — theme.css §1b, e2e/hover-parity.mjs
+
+Electron eases every interactive state change (41 `transition` declarations);
+the port originally had 1, so all 54 GTK selectors carrying a `:hover` rule
+SNAPPED. Invisible in any still screenshot, which is why several static
+verification passes missed it. `theme.css` §1b now gives those selectors
+Electron's own recipe (140ms `cubic-bezier(0.3, 0.8, 0.3, 1)`).
+
+Which properties GTK 4.18 actually interpolates was MEASURED, not assumed —
+`orchestra-gtk/examples/transition_probe.rs` toggles a class and looks for
+frames that are a genuine blend of both endpoints. background, background-color,
+color, border-color, box-shadow and transform (translate/rotate/scale) all ease;
+GTK also accepts the `background` shorthand and the custom cubic-bezier. Run it
+before adding any animated property: GTK4 CSS parses-and-does-nothing as a third
+outcome, so "it parsed" only rules out a syntax error.
+
+`e2e/hover-parity.mjs` drives the real binary and captures each widget
+off/mid-transition/settled. It is mutation-tested: strip §1b, rebuild, and six
+surfaces flip to CHANGES-BUT-NO-MID-FRAME. Known limits, all reported in its
+output rather than hidden — the PNG byte-comparison is inconclusive on large
+widgets (`ws-row-ws-1`, `restart-btn`), `.ws-icon-btn` needs its ROW hovered
+first (it is `opacity: 0` revealed by `.ws-row:hover`), and `.tab:hover` is
+unverified because the inactive tab has no allocation in the mock fixture.
+
+### Button hierarchy
+
+Electron has ONE base `button` rule every button inherits; the port re-states
+padding/radius/border per selector, so a button with no orchestra class falls
+through to stock Adwaita. Two consequences were found by measuring the live app
+rather than reading CSS: a bare `.primary` in the Insights section was quietly
+governing every primary button outside `.empty-actions` (flat fill, radius 6px
+vs 8px, padding 4px 14px vs 6px 12px), and two unclassed buttons
+(`setup-view-log`, `queue-add`) rendered with Adwaita's wider padding. Both are
+fixed in `theme.css`; the general gap remains — a future unclassed button will
+miss the base look again, and the real fix is a shared constructor, not more CSS.
 
 ## Re-parenting surface (promote / demote / attach)
 
