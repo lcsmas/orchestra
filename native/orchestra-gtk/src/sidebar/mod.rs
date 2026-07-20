@@ -706,42 +706,39 @@ impl Component for Sidebar {
         // for the triggers, and — the defect the user reported — ⚡ and 🌿 alone
         // as the Scratch and Orchestrator buttons, which rendered as two blank
         // dark squares because an emoji in a Button label is not an icon.
-        // A FlowBox, not a Box: this is the GTK4 stand-in for Electron's
-        // `flex-wrap: wrap` (styles.css:449). GTK4 CSS has no `gap`, so the 6px
-        // of styles.css:451 is the row/column spacing set below, not a rule.
+        // TWO rows, not one wrapping container.
         //
-        // `max_children_per_line` must be large enough never to force a break of
-        // its own — the WIDTH decides where lines break, exactly as flex-wrap
-        // does. Left at the child count so the container never out-thinks the
-        // available space.
-        let actions = gtk::FlowBox::new();
+        // A single GtkFlowBox over all seven buttons was tried and rejected by
+        // measurement: a FlowBox allocates uniform CELLS, so the four 28x28 icon
+        // buttons were padded to the width of "Orchestrator" and sprawled across
+        // a row of their own, making the header ~17px taller than Electron's.
+        // `set_homogeneous(false)` does not change this — the uniform cell is
+        // the container's layout model, not an option.
+        //
+        // Electron's own wrap lands the same way (electron-sidebar.png, ink
+        // bands y=45..71 and y=85..104): icon triggers and the first create
+        // buttons on one line, the overflow on the next. Modelling that as two
+        // explicit boxes reproduces it without fighting FlowBox's cell sizing.
+        let actions = gtk::Box::new(gtk::Orientation::Vertical, 6);
         actions.add_css_class("sidebar-header-actions");
         actions.set_widget_name("sidebar-header-actions");
-        actions.set_orientation(gtk::Orientation::Horizontal);
-        actions.set_row_spacing(6); // gap: 6px, styles.css:451
-        actions.set_column_spacing(6);
-        actions.set_max_children_per_line(7);
-        actions.set_min_children_per_line(1);
-        // Electron right-aligns the wrapped rows (`justify-content: flex-end`,
-        // styles.css:450). GTK4 FlowBox has no per-line justification, so the
-        // box itself is end-aligned and packs its lines from the right edge.
         actions.set_halign(gtk::Align::End);
-        // Selection is a FlowBox default that would make these buttons look
-        // like list items and steal their click; they are actions, not choices.
-        actions.set_selection_mode(gtk::SelectionMode::None);
-        // Homogeneous(false) keeps each button at its own width — otherwise the
-        // FlowBox pads every child to the widest ("Orchestrator"), which spreads
-        // four small icon buttons across a whole row.
-        actions.set_homogeneous(false);
 
-        actions.append(&header_icon_button(
+        // Row 1: the icon-only triggers, at their natural 28x28.
+        let icon_row = gtk::Box::new(gtk::Orientation::Horizontal, 6); // styles.css:451
+        icon_row.set_halign(gtk::Align::End);
+        // Row 2: the three LABELLED create buttons.
+        let create_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        create_row.set_halign(gtk::Align::End);
+
+        icon_row.append(&header_icon_button(
             crate::icons::HELP,
             "open-help",
             "Help — what Orchestra can do",
             &input,
             || Msg::Header(HeaderAction::OpenHelp),
         ));
-        actions.append(&header_icon_button(
+        icon_row.append(&header_icon_button(
             crate::icons::BELL,
             "open-sound",
             "Notification sound settings",
@@ -752,14 +749,14 @@ impl Component for Sidebar {
         // reached from the footer / their own sections there). They are kept
         // here because this port currently has no other entry point for them —
         // flagged rather than silently dropped.
-        actions.append(&header_icon_button(
+        icon_row.append(&header_icon_button(
             crate::icons::RESOURCES,
             "open-resources",
             "Resources — CPU, memory, disk and token usage",
             &input,
             || Msg::Header(HeaderAction::OpenResources),
         ));
-        actions.append(&header_icon_button(
+        icon_row.append(&header_icon_button(
             crate::icons::INSIGHTS,
             "open-insights",
             "Insights — monthly self-tune runs",
@@ -767,7 +764,7 @@ impl Component for Sidebar {
             || Msg::Header(HeaderAction::OpenInsights),
         ));
 
-        actions.append(&header_repo_button(
+        create_row.append(&header_repo_button(
             crate::icons::ZAP,
             "Scratch",
             "header-new-scratch",
@@ -775,7 +772,7 @@ impl Component for Sidebar {
             &input,
             || Msg::NewScratch,
         ));
-        actions.append(&header_repo_button(
+        create_row.append(&header_repo_button(
             crate::icons::ORCHESTRATOR,
             "Orchestrator",
             "header-new-orchestrator",
@@ -783,7 +780,7 @@ impl Component for Sidebar {
             &input,
             || Msg::NewOrchestrator,
         ));
-        actions.append(&header_repo_button(
+        create_row.append(&header_repo_button(
             crate::icons::FOLDER_PLUS,
             "Repo",
             "header-add-repo",
@@ -791,6 +788,8 @@ impl Component for Sidebar {
             &input,
             || Msg::AddRepo,
         ));
+        actions.append(&icon_row);
+        actions.append(&create_row);
         header.append(&actions);
         root.append(&header);
 
