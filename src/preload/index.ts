@@ -57,6 +57,9 @@ const api: OrchestraAPI = {
   backupSandbox: (id) => ipcRenderer.invoke('sandbox:backup', id),
   markSeen: (id) => ipcRenderer.invoke('workspaces:markSeen', id),
   setUnread: (id, unread) => ipcRenderer.invoke('workspaces:setUnread', id, unread),
+  promoteWorkspace: (id) => ipcRenderer.invoke('workspaces:promote', id),
+  demoteWorkspace: (id) => ipcRenderer.invoke('workspaces:demote', id),
+  setWorkspaceParent: (id, parentId) => ipcRenderer.invoke('workspaces:setParent', id, parentId),
   renameBranch: (id, newBranch) => ipcRenderer.invoke('workspaces:renameBranch', id, newBranch),
   reorderWorkspaces: (ids) => ipcRenderer.invoke('workspaces:reorder', ids),
 

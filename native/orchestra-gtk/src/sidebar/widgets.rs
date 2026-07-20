@@ -14,7 +14,7 @@ use gtk::pango;
 use gtk::prelude::*;
 use relm4::Sender;
 
-use orchestra_rpc::types::{PrState, RepoSyncState, SetupStatus, WorkspaceStatus};
+use orchestra_rpc::types::{PrState, RepoSyncState, SetupStatus, WorkspaceKind, WorkspaceStatus};
 
 use crate::accounts::logic::login_color_hex;
 
@@ -105,15 +105,50 @@ fn non_selectable(row: &gtk::ListBoxRow) {
     row.set_activatable(false);
 }
 
+/// Where a drop landed within a row: the outer thirds reorder (before/after),
+/// the middle band re-parents ONTO the row. The middle band only exists on
+/// rows that accept children — see [`wire_dnd`]'s `adopts` flag — so on every
+/// other row the split stays the original half/half before-or-after.
+enum DropZone {
+    Before,
+    Onto,
+    After,
+}
+
+fn drop_zone(y: f64, height: f64, adopts: bool) -> DropZone {
+    if !adopts {
+        return if y < height / 2.0 {
+            DropZone::Before
+        } else {
+            DropZone::After
+        };
+    }
+    if y < height / 3.0 {
+        DropZone::Before
+    } else if y < height * 2.0 / 3.0 {
+        DropZone::Onto
+    } else {
+        DropZone::After
+    }
+}
+
 /// Attach a workspace-drag source ("ws:<id>") or repo-drag source
 /// ("repo:<path>") plus the row-level drop target that computes before/after
 /// from pointer y and reports the drop.
-fn wire_dnd(
+///
+/// `adopts` marks a row that may become a PARENT (only a workspace whose
+/// `can_orchestrate()` is true): it opens the middle re-parent band and routes
+/// those drops through `on_adopt`. A normal row passes false and can never be
+/// a re-parent target.
+#[allow(clippy::too_many_arguments)]
+fn wire_dnd_inner(
     row: &gtk::ListBoxRow,
     payload: String,
     accepts: &'static str,
     sender: &Sender<Msg>,
     on_drop: impl Fn(String, bool) -> Msg + 'static,
+    adopts: bool,
+    on_adopt: Option<Box<dyn Fn(String) -> Msg + 'static>>,
 ) {
     let source = gtk::DragSource::new();
     source.set_actions(gdk::DragAction::MOVE);
@@ -144,9 +179,14 @@ fn wire_dnd(
             if !value.starts_with(accepts) || value == self_payload {
                 return gdk::DragAction::empty();
             }
-            let before = y < row.height() as f64 / 2.0;
-            row.remove_css_class(if before { "drop-after" } else { "drop-before" });
-            row.add_css_class(if before { "drop-before" } else { "drop-after" });
+            row.remove_css_class("drop-before");
+            row.remove_css_class("drop-after");
+            row.remove_css_class("drop-onto");
+            match drop_zone(y, row.height() as f64, adopts) {
+                DropZone::Before => row.add_css_class("drop-before"),
+                DropZone::Onto => row.add_css_class("drop-onto"),
+                DropZone::After => row.add_css_class("drop-after"),
+            }
             gdk::DragAction::MOVE
         });
     }
@@ -155,6 +195,7 @@ fn wire_dnd(
         target.connect_leave(move |_| {
             row.remove_css_class("drop-before");
             row.remove_css_class("drop-after");
+            row.remove_css_class("drop-onto");
         });
     }
     {
@@ -163,6 +204,7 @@ fn wire_dnd(
         target.connect_drop(move |_, value, _x, y| {
             row.remove_css_class("drop-before");
             row.remove_css_class("drop-after");
+            row.remove_css_class("drop-onto");
             let Ok(dragged) = value.get::<String>() else {
                 return false;
             };
@@ -170,12 +212,31 @@ fn wire_dnd(
                 return false;
             }
             let dragged = dragged[accepts.len()..].to_string();
-            let before = y < row.height() as f64 / 2.0;
-            sender.emit(on_drop(dragged, before));
+            match drop_zone(y, row.height() as f64, adopts) {
+                DropZone::Onto => match on_adopt.as_ref() {
+                    Some(adopt) => sender.emit(adopt(dragged)),
+                    // `adopts` is only set together with `on_adopt`; fall back
+                    // to a reorder rather than swallowing the drop.
+                    None => sender.emit(on_drop(dragged, false)),
+                },
+                DropZone::Before => sender.emit(on_drop(dragged, true)),
+                DropZone::After => sender.emit(on_drop(dragged, false)),
+            }
             true
         });
     }
     row.add_controller(target);
+}
+
+/// Reorder-only DnD (repo rows, and workspace rows that cannot adopt).
+fn wire_dnd(
+    row: &gtk::ListBoxRow,
+    payload: String,
+    accepts: &'static str,
+    sender: &Sender<Msg>,
+    on_drop: impl Fn(String, bool) -> Msg + 'static,
+) {
+    wire_dnd_inner(row, payload, accepts, sender, on_drop, false, None);
 }
 
 pub fn build_row(spec: &Row, sender: &Sender<Msg>) -> gtk::ListBoxRow {
@@ -799,6 +860,24 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
         name_row.append(&hidden);
     }
 
+    // Coordinator indicator. The orchestrator-KIND root already reads as one
+    // from its section, but a PROMOTED WORKTREE keeps `kind: 'worktree'` and
+    // lives among ordinary repo rows, so without this the role is invisible.
+    // Reuses the existing `.pill` language rather than a new class.
+    if s.ws.can_orchestrate() {
+        let coord = pill(
+            "⌘",
+            "repo-tag-pill",
+            if s.ws.is_scratch_like() {
+                "Orchestrator — delegates work to agents it spawns"
+            } else {
+                "Coordinator — a git worktree promoted to spawn and adopt child agents"
+            },
+        );
+        coord.set_widget_name(&format!("ws-coordinator-{}", s.ws.id));
+        name_row.append(&coord);
+    }
+
     // Context badge (`agent:context`; 0-sentinel resets upstream).
     if let Some(tokens) = s.context_tokens {
         let ctx = label(&format!("· {}", format_tokens(tokens)), &["ws-context"]);
@@ -922,6 +1001,55 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
         hbox.append(&toggle);
 
         let scratch_like = s.ws.is_scratch_like();
+
+        // Re-parenting strip: promote/demote the coordinator role, then the
+        // "Attach to…" picker. Demote is offered ONLY for a promoted worktree
+        // — the backend refuses to demote an orchestrator-KIND session (it is
+        // repo-less by nature), so showing it there would be a dead button.
+        if s.ws.can_orchestrate() {
+            if s.ws.kind != Some(WorkspaceKind::Orchestrator) {
+                let id = s.ws.id.clone();
+                hbox.append(&icon_button(
+                    "⌄",
+                    &format!("ws-demote-{}", s.ws.id),
+                    "Demote — stop this worktree coordinating (its children detach to top level)",
+                    &[],
+                    sender,
+                    move || Msg::Demote(id.clone()),
+                ));
+            }
+        } else {
+            let id = s.ws.id.clone();
+            hbox.append(&icon_button(
+                "⌃",
+                &format!("ws-promote-{}", s.ws.id),
+                "Promote to coordinator — let this workspace spawn and adopt child agents",
+                &[],
+                sender,
+                move || Msg::Promote(id.clone()),
+            ));
+        }
+
+        {
+            // Anchored on the button itself so the popover points at the row.
+            let id = s.ws.id.clone();
+            let attach = gtk::Button::with_label("⇥");
+            attach.set_widget_name(&format!("ws-attach-{}", s.ws.id));
+            attach.add_css_class("ws-icon-btn");
+            attach.set_tooltip_text(Some(
+                "Attach to a coordinator — re-parent this workspace, or detach it to top level",
+            ));
+            attach.set_valign(gtk::Align::Center);
+            let sender_ = sender.clone();
+            attach.connect_clicked(move |b| {
+                sender_.emit(Msg::OpenAttachMenu {
+                    ws_id: id.clone(),
+                    anchor: b.clone().upcast::<gtk::Widget>(),
+                });
+            });
+            hbox.append(&attach);
+        }
+
         if !is_tree {
             // Repo rows: sandbox import/eject by ws.host, then archive.
             if s.ws.host.is_none() {
@@ -1016,9 +1144,15 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
     if s.pills.merged {
         row.add_css_class("merged");
     }
-    if s.draggable {
+    // A coordinator row must accept a re-parent drop even when it is not
+    // itself draggable (tree rows never reorder), so the controller is wired
+    // whenever EITHER applies. Only `can_orchestrate()` rows open the middle
+    // adopt band — a normal row is never a re-parent target.
+    let adopts = s.ws.can_orchestrate();
+    if s.draggable || adopts {
         let id = s.ws.id.clone();
-        wire_dnd(
+        let parent_id = s.ws.id.clone();
+        wire_dnd_inner(
             &row,
             format!("ws:{}", s.ws.id),
             "ws:",
@@ -1028,6 +1162,13 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
                 target: id.clone(),
                 before,
             },
+            adopts,
+            adopts.then(|| {
+                Box::new(move |dragged: String| Msg::DropOnto {
+                    dragged,
+                    parent: parent_id.clone(),
+                }) as Box<dyn Fn(String) -> Msg>
+            }),
         );
     }
     row
@@ -1210,4 +1351,33 @@ fn build_archived_row(s: &ArchivedRowSpec, sender: &Sender<Msg>) -> gtk::ListBox
     row.add_css_class("ws-row");
     row.add_css_class("archived-row");
     row
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{drop_zone, DropZone};
+
+    /// A row that cannot adopt keeps the original half/half split — the middle
+    /// band must not exist there, or an ordinary row would silently become a
+    /// re-parent target.
+    #[test]
+    fn non_adopting_row_has_no_onto_band() {
+        for y in [0.0, 9.0, 10.0, 15.0, 19.0] {
+            assert!(
+                !matches!(drop_zone(y, 20.0, false), DropZone::Onto),
+                "y={y} must never land in the adopt band on a normal row"
+            );
+        }
+        assert!(matches!(drop_zone(4.0, 20.0, false), DropZone::Before));
+        assert!(matches!(drop_zone(16.0, 20.0, false), DropZone::After));
+    }
+
+    /// An adopting row splits into thirds: reorder above and below, re-parent
+    /// through the middle.
+    #[test]
+    fn adopting_row_splits_into_thirds() {
+        assert!(matches!(drop_zone(2.0, 30.0, true), DropZone::Before));
+        assert!(matches!(drop_zone(15.0, 30.0, true), DropZone::Onto));
+        assert!(matches!(drop_zone(28.0, 30.0, true), DropZone::After));
+    }
 }

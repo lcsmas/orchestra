@@ -65,6 +65,25 @@ export interface Workspace {
    * `'orchestrator'` exactly like `'scratch'` for every git/diff/merge/delete
    * decision — use the `isScratchLike` helper rather than `=== 'scratch'`. */
   kind?: 'worktree' | 'scratch' | 'orchestrator';
+  /** Orchestrator CAPABILITY on a workspace that is not the `'orchestrator'`
+   * KIND — i.e. a real git worktree that also coordinates children. Set by
+   * `/promote` on a worktree and cleared by `/demote`.
+   *
+   * This exists because "orchestrator" is two separable things: a *tree role*
+   * (children may nest under me) and a *non-git nature* (no repo/branch/diff).
+   * The `'orchestrator'` kind fuses both, which is right for a repo-less
+   * coordinator but wrong for an integration branch that coordinates agents
+   * while carrying real commits. Flipping such a worktree's `kind` would strip
+   * its git identity everywhere — `isScratchLike` gates delete (the git
+   * worktree would leak, `workspaces.ts` `teardownWorkspace`), rename (`git
+   * branch -m` skipped, so the real branch desyncs from the label), and the
+   * whole diff/run/PR/merge/branch-picker UI on both frontends. So the
+   * capability is additive and orthogonal: `kind` stays `'worktree'` and every
+   * git path keeps working.
+   *
+   * Never read this directly to answer "can children nest under this?" — use
+   * {@link canOrchestrate}, which also covers the `'orchestrator'` kind. */
+  canOrchestrate?: boolean;
   /** Workspace id of the orchestrator this workspace nests under. Set at creation
    * by `/spawn` (the spawning orchestrator's `ORCHESTRA_WS_ID`), and afterwards
    * mutable via the `/attach` socket route, which re-parents an existing
@@ -226,6 +245,21 @@ export interface Workspace {
  * literal, so a new non-git kind stays correctly handled in one place. */
 export function isScratchLike(ws: Pick<Workspace, 'kind'>): boolean {
   return ws.kind === 'scratch' || ws.kind === 'orchestrator';
+}
+
+/** True when children may nest under this workspace — the single answer to
+ * "is this a tree root / a valid `/attach` parent?".
+ *
+ * Two disjoint routes reach it: the `'orchestrator'` KIND (a repo-less scratch
+ * coordinator) and the {@link Workspace.canOrchestrate} CAPABILITY (a git
+ * worktree that coordinates while doing its own work). Deliberately NOT the
+ * same question as `isScratchLike` — that one asks "is this non-git?", and the
+ * two answers diverge exactly on a promoted worktree, which orchestrates AND
+ * keeps its repo/branch/diff. Use this for tree/parent decisions and
+ * `isScratchLike` for git decisions; conflating them is what makes a promoted
+ * worktree lose its diff tab or leak its worktree on delete. */
+export function canOrchestrate(ws: Pick<Workspace, 'kind' | 'canOrchestrate'>): boolean {
+  return ws.kind === 'orchestrator' || ws.canOrchestrate === true;
 }
 
 export interface DiffFile {

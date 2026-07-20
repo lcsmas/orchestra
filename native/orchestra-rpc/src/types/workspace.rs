@@ -90,6 +90,11 @@ pub struct Workspace {
     pub has_input: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marked_unread: Option<bool>,
+    /// Set on a git worktree promoted to a coordinator. The `'orchestrator'`
+    /// KIND carries the same capability on its own, so read it via
+    /// [`Workspace::can_orchestrate`] rather than this field directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_orchestrate: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heavy_resume_pending: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -130,6 +135,14 @@ impl Workspace {
             self.kind,
             Some(WorkspaceKind::Scratch) | Some(WorkspaceKind::Orchestrator)
         )
+    }
+
+    /// Port of `canOrchestrate` (`types.ts`): true for the orchestrator KIND and
+    /// for any workspace carrying the capability flag — a promoted git worktree
+    /// stays `kind: 'worktree'` and gains `canOrchestrate` instead, so checking
+    /// the kind alone would miss it.
+    pub fn can_orchestrate(&self) -> bool {
+        self.kind == Some(WorkspaceKind::Orchestrator) || self.can_orchestrate == Some(true)
     }
 }
 

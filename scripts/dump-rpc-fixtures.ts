@@ -334,6 +334,17 @@ async function captureMethods(): Promise<void> {
   await captureMethod('checkLinearKey', ['']); // empty key → local validation error, no network
   await captureMethod('saveLinearKey', ['']); // empty → clears, no encryption path
   await captureMethod('clearLinearKey', []);
+  // Promote / re-parent / demote, as one round trip that lands back where it
+  // started. `ws-fixture-git` exercises the WORKTREE promotion path (keeps
+  // `kind: 'worktree'`, gains `canOrchestrate`) rather than the scratch kind
+  // swap, so the fixture pins the field the GTK sidebar reads. Attaching
+  // ws-fixture-tmp under it needs that promotion to have happened first, and
+  // demote then detaches the child again — leaving the store as the later
+  // archive/delete captures expect.
+  await captureMethod('promoteWorkspace', ['ws-fixture-git']);
+  await captureMethod('setWorkspaceParent', ['ws-fixture-tmp', 'ws-fixture-git']);
+  await captureMethod('setWorkspaceParent', ['ws-fixture-tmp', null], 'detach');
+  await captureMethod('demoteWorkspace', ['ws-fixture-git']);
   await captureMethod('archiveWorkspace', ['ws-fixture-tmp']);
   await captureMethod('unarchiveWorkspace', ['ws-fixture-tmp']);
   await captureMethod('deleteWorkspace', ['ws-fixture-tmp']);

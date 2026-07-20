@@ -142,6 +142,9 @@ fn check_method(method: &str, params: &[Value], result: &Value) -> Result<(), St
         | "renameBranch"
         | "queuePrompt"
         | "removeQueuedPrompt"
+        | "promoteWorkspace"
+        | "demoteWorkspace"
+        | "setWorkspaceParent"
         | "switchBranch" => roundtrip::<Workspace>(result, c)?,
         "flushQueuedPrompts" => roundtrip::<FlushQueuedPromptsResult>(result, c)?,
         "sandboxControlState" => roundtrip::<Option<SandboxControlState>>(result, c)?,

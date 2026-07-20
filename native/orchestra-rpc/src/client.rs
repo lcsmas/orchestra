@@ -1028,6 +1028,29 @@ impl RpcClient {
         self.call_unit("setUnread", vec![json!(id), json!(unread)])
     }
 
+    /// Make a workspace a coordinator children can nest under. A scratch session
+    /// swaps its kind; a git worktree keeps its kind and gains the capability.
+    /// Idempotent. Returns the updated record.
+    pub fn promote_workspace(&self, id: &str) -> Result<Workspace, RpcError> {
+        self.call_as("promoteWorkspace", vec![json!(id)])
+    }
+
+    /// Inverse of [`Self::promote_workspace`]: clears the capability and detaches
+    /// any children. An orchestrator-KIND scratch session cannot be demoted.
+    pub fn demote_workspace(&self, id: &str) -> Result<Workspace, RpcError> {
+        self.call_as("demoteWorkspace", vec![json!(id)])
+    }
+
+    /// Re-parent a workspace under an orchestrator, or pass `None` to detach it
+    /// back to its own repo section.
+    pub fn set_workspace_parent(
+        &self,
+        id: &str,
+        parent_id: Option<&str>,
+    ) -> Result<Workspace, RpcError> {
+        self.call_as("setWorkspaceParent", vec![json!(id), json!(parent_id)])
+    }
+
     pub fn rename_branch(&self, id: &str, new_branch: &str) -> Result<Workspace, RpcError> {
         self.call_as("renameBranch", vec![json!(id), json!(new_branch)])
     }

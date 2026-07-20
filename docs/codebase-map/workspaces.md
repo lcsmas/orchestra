@@ -30,10 +30,41 @@ A workspace is an isolated execution environment for one Claude Code agent.
   [hooks-cli-socket.md](hooks-cli-socket.md)), both gated on `ORCHESTRA_KIND`
   env or the `.orchestra/.orchestrator` sentinel (`markOrchestratorWorktree`,
   written at creation and by `/promote` so a mid-session promotion picks it up
-  without a pty restart).
+  without a pty restart; `unmarkOrchestratorWorktree` removes it on `/demote`).
+  The sentinel's **contents** select the reminder wording: `dual` (written when
+  a *worktree* is promoted) yields a dual-role reminder — coordinate children
+  *and* keep doing this branch's own work — while anything else (`1`, and every
+  historic sentinel) yields the absolute "you do not implement" text. The
+  PreToolUse guard needs no such split: it already allows writes inside the
+  workspace's **own** worktree and blocks only edits to *other* workspaces'
+  files, which is exactly the dual-role contract.
 
-Use the helper **`isScratchLike(ws)`** (`types.ts:143`) instead of comparing
+Use the helper **`isScratchLike(ws)`** (`types.ts:246`) instead of comparing
 `kind` to a literal — it covers both non-git kinds in one place.
+
+### Orchestrator: a KIND *and* a capability
+
+"Orchestrator" is two separable things — a **tree role** (children may nest
+under me) and a **non-git nature** (no repo/branch/diff). The `'orchestrator'`
+kind fuses both, which is right for a repo-less coordinator but wrong for an
+integration branch that coordinates agents *while carrying its own commits*. So
+a git worktree becomes a coordinator via the **`canOrchestrate?: boolean`**
+capability (`types.ts:86`) instead: `kind` stays `'worktree'` and every git path
+keeps working.
+
+Two helpers, two questions — do not conflate them:
+
+| Helper | Question | Promoted worktree |
+|---|---|---|
+| `isScratchLike(ws)` `types.ts:246` | is this **non-git**? (diff/merge/PR/delete/rename) | **false** |
+| `canOrchestrate(ws)` `types.ts:261` | can children **nest under** this? (tree/parent) | **true** |
+
+They diverge exactly on a promoted worktree, and that divergence *is* the
+feature. Flipping such a worktree's `kind` instead would make `isScratchLike`
+true and silently strip its git identity: `teardownWorkspace` (`:566`) returns
+early and never calls `removeWorktree` (the git worktree **leaks**),
+`renameWorkspaceBranch` (`:823`) stops running `git branch -m` (label desyncs
+from the real branch), and both frontends hide Diff/Run/PR/merge/branch-picker.
 
 Key per-record fields: `accountId` (pinned at creation, never changes —
 preserves `claude --continue` history), `parentId` (nesting), `port`
@@ -141,8 +172,9 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 | Handler | Line | Route | Purpose |
 |---|---|---|---|
 | `dispatchSpawnRequest` | `:932` | `/spawn` | Create child workspace + start headless. Inherits caller's repo (worktree callers) or requires explicit `repoPath` (scratch/orchestrator callers). Records `parentId` = caller, unless `detached:true` (parentless top-level workspace; repo inheritance from `from` still applies). |
-| `dispatchPromoteRequest` | `:1089` | `/promote` | scratch → orchestrator (idempotent; rejects worktrees). |
-| `dispatchAttachRequest` | `:1148` | `/attach` | Re-parent under an orchestrator, or clear `parentId` to detach. Cycle-checked. |
+| `dispatchPromoteRequest` | `:1309` | `/promote` | Make a workspace a coordinator (idempotent). **Two routes**: a scratch session swaps `kind` → `'orchestrator'`; a **git worktree keeps its kind and gains `canOrchestrate`**, so it parents children while keeping repo/branch/diff/merge/PR. |
+| `dispatchDemoteRequest` | `:1384` | `/demote` | Inverse of promote. Clears `canOrchestrate` and **detaches every child** (a `parentId` pointing at a non-orchestrator renders nowhere). Refuses the `'orchestrator'` KIND — it is repo-less by nature and has no worktree to fall back to. |
+| `dispatchAttachRequest` | `:1456` | `/attach` | Re-parent under a coordinator (`canOrchestrate`), or clear `parentId` to detach. **Full-ancestry cycle check**: a promoted worktree can itself have a parent, so A→B→A is reachable and the old bare self-check was no longer sufficient. |
 | `dispatchPeersRequest` | `:1239` | `/peers` | List other live workspaces (`PeerInfo[]`). |
 | `dispatchReadRequest` | `:1266` | `/read` | Peer branch + last ~80 transcript lines, ANSI-stripped. |
 | `dispatchMessageRequest` | `:1353` | `/message` | Deliver to peer: **live** (type into running TUI), **started** (wake with `--continue`), or **inbox** (park in `~/.orchestra/inbox/<id>.txt`). |

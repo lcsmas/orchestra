@@ -1460,3 +1460,8 @@ entry:focus-within {
   padding: 6px;
   min-height: 320px;
 }
+
+/* Re-parent drop band: a drag hovering the MIDDLE third of a coordinator row
+   adopts instead of reordering, so it reads as a filled target rather than the
+   insertion line `.drop-before`/`.drop-after` draw (theme.css:472). */
+.drop-onto { box-shadow: inset 0 0 0 2px @accent; }
