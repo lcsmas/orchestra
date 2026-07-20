@@ -999,14 +999,22 @@ entry:focus-within {
 }
 .insights-panel-title { color: @text; font-weight: 700; font-size: 13px; }
 .insights-panel-meta { color: @text_dim; font-size: 10px; }
-.insights-run-btn.primary, .primary {
-  background-color: @accent_strong;
-  color: #ffffff;
-  border-radius: 6px;
-  padding: 4px 14px;
-  border: none;
+/* NOTE: the real `.primary` recipe is the one below the welcome-screen block
+ * (`.primary, .empty-actions button.primary`). This rule used to define a
+ * SECOND, different primary here — flat @accent_strong, radius 6px, padding
+ * 4px 14px, no border, no shadow — and because it is a bare `.primary` it
+ * governed every primary button that was not inside `.empty-actions`:
+ * setup-retry, queue-send-now, insights-run-btn. Those rendered visibly
+ * unlike the welcome-screen primaries and unlike Electron, where a single
+ * `button` + `button.primary` pair gives every primary the same geometry.
+ * Only the disabled state is genuinely insights-specific, so only it stays. */
+.insights-run-btn.primary:disabled,
+.primary:disabled {
+  background-image: none;
+  background-color: @bg_4;
+  color: @text_dim;
+  box-shadow: none;
 }
-.insights-run-btn.primary:disabled { background-color: @bg_4; color: @text_dim; }
 .insights-step-label { color: @text; font-size: 12px; }
 .insights-step-meta { color: @text_dim; font-size: 10px; }
 .insights-step-icon.ok { color: @green; }
@@ -2036,6 +2044,7 @@ button.welcome-help-btn:hover {
  * 1px rgba(255,255,255,0.1) border, #081022 text, weight 600, and the three
  * stacked shadows (inset highlight + drop + accent glow). Base `button`
  * (styles.css:105) gives 13px / padding 6px 12px / radius 8px. */
+.primary,
 .empty-actions button.primary {
   background-image: linear-gradient(180deg, #7ab4ff 0%, #4a8cff 100%);
   background-color: #4a8cff;
@@ -2051,6 +2060,7 @@ button.welcome-help-btn:hover {
     0 4px 14px rgba(74, 140, 255, 0.25);
 }
 /* styles.css:148 */
+.primary:hover,
 .empty-actions button.primary:hover {
   background-image: linear-gradient(180deg, #89beff 0%, #5a98ff 100%);
   border-color: rgba(255, 255, 255, 0.15);
