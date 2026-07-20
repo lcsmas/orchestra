@@ -214,6 +214,28 @@ GTK's `build_footer` (`sidebar/mod.rs:1256`) creates **label-only**
   `svg:last-child { opacity: 0.6 }` external-link dimming have **no GTK counterpart**
   (0 occurrences each side of the other's name, controls verified).
 
+**Verified by allocation, not presence.** A widget can be present, enumerable and
+flagged `visible=True` while having **zero allocation and painting nothing** — that
+exact failure hid two repo-header icons elsewhere in this port. Re-checked every
+sidebar-body widget by **per-widget screenshot byte-size** with sibling controls in
+the same container:
+
+| Widget | in `list_widgets` | screenshot bytes | verdict |
+|---|---|---|---|
+| `sidebar-footer` | yes | 1464 | RENDERS |
+| `footer-github` | yes | 610 | RENDERS |
+| `footer-logs` | yes | 486 | RENDERS |
+| `footer-linear` | yes | 512 | RENDERS |
+| `env-notices` | yes | 17227 | RENDERS |
+| `sidebar-list` | yes | 68762 | RENDERS |
+| `insights-row` | yes | 2335 | RENDERS |
+| `accounts-open` | yes | 1009 | RENDERS |
+| `usage-bars-slot` | **no** | 0 | **ABSENT** — the dead mount point of inventory row 76, confirmed on a running app |
+
+No zero-allocation widgets in this region: D11 is genuinely about *missing icons and
+links*, not invisible ones. The rendered `footer-github` crop shows the text label
+with **no icon**, confirming D11 visually rather than by source reading alone.
+
 ### D12 — Two competing widgets both named `sidebar-footer`
 **DIFFERS (structural).** The live widget tree returns **`sidebar-footer` twice** —
 the sidebar's own footer and `app.rs`'s box where usage bars actually mount. This is
