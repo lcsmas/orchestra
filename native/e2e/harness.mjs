@@ -313,8 +313,21 @@ export class RemoteControl {
 
 /** Poll `fn` until it returns truthy or `timeoutMs` elapses. Returns the value
  *  or throws with `desc`. */
-export async function waitFor(fn, { timeoutMs = 8000, intervalMs = 150, desc = 'condition' } = {}) {
-  const deadline = Date.now() + timeoutMs;
+export async function waitFor(fn, { timeoutMs, intervalMs = 150, desc = 'condition' } = {}) {
+  // ONE CUT POINT, BY DEFAULT THE SCENARIO BUDGET.
+  //
+  // `timeoutMs` is deliberately opt-in rather than defaulted. An inner timeout
+  // that fires BEFORE the scenario budget steals the cut: the runner's
+  // state-capture (the whole point of D2a) only runs on budget exhaustion, so
+  // an inner waitFor winning the race produces exactly the uninformative
+  // "timed out (last value: null)" we spent a milestone misreading. That is the
+  // absence-channel gap one layer in — an instrument built to make silence
+  // informative, with a path left where silence is still silent.
+  //
+  // So: wait indefinitely unless a caller has a REASON to bound this specific
+  // step more tightly than the scenario, and let the budget do the cutting.
+  // Two timeouts racing is what created the gap; one is easier to reason about.
+  const deadline = timeoutMs == null ? Infinity : Date.now() + timeoutMs;
   let last;
   while (Date.now() < deadline) {
     last = await fn();

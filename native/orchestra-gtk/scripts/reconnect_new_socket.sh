@@ -292,6 +292,18 @@ secs = round(time.time() - t0, 1)
 check("daemon #2 stayed healthy for the whole window (else the result below is void)",
       d2_unhealthy_at is None, f"first unhealthy at +{d2_unhealthy_at}s" if d2_unhealthy_at else "healthy")
 check(f"re-attached to the moved socket in {secs}s", reattached, label("status-text"))
+# BOUND, not merely "eventually" — this is what makes the scenario a GUARD.
+#
+# Established by negative control: with the client PINNED to the dead socket
+# (RpcClient::connect instead of ::discover) the app STILL recovers — it burns
+# the full 180s backoff, the client gives up, emits Disconnected, and the app's
+# own start_retry_loop rediscovers. Measured: 154.6s pinned vs 0.9s working.
+# So "did it recover?" passes either way and proves nothing about re-resolution;
+# only the TIME distinguishes them. 15s is far above the observed 0.9s and far
+# below the ~155s fallback, so it cannot be met by the give-up path.
+BOUND_S = 15
+check(f"…and did so INSIDE {BOUND_S}s (pinned-socket fallback takes ~155s)",
+      reattached and secs <= BOUND_S, f"{secs}s")
 rpc({"op": "screenshot", "path": f"{art}/reattached.png"})
 
 # --- STEP 4: the NEW connection is live, not merely "connected" ---

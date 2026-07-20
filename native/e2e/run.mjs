@@ -181,7 +181,7 @@ scenario('version-mismatch-refusal', async ({ sway }) => {
         const r = await app.rc.get('dialog-title', 'label').catch(() => null);
         return r && r.ok && /Incompatible backend/i.test(r.value || '') ? r.value : null;
       },
-      { desc: 'refusal dialog title', timeoutMs: 12_000 },
+      { desc: 'refusal dialog title' },
     );
 
     const body = await app.rc.get('dialog-body', 'label');
@@ -227,7 +227,7 @@ scenario('appversion-warning-nonfatal', async ({ sway }) => {
         const r = await app.rc.get('dialog-title', 'label').catch(() => null);
         return r && r.ok && /Version mismatch/i.test(r.value || '') ? r.value : null;
       },
-      { desc: 'version-warning dialog', timeoutMs: 12_000 },
+      { desc: 'version-warning dialog' },
     );
 
     const body = await app.rc.get('dialog-body', 'label');
@@ -241,7 +241,7 @@ scenario('appversion-warning-nonfatal', async ({ sway }) => {
         const r = await app.rc.get('status-text', 'label').catch(() => null);
         return r && r.ok && /backend: electron/i.test(r.value || '') ? r.value : null;
       },
-      { desc: 'attached footer after warning', timeoutMs: 6000 },
+      { desc: 'attached footer after warning' },
     );
     return `attached despite version warning ("${title}"), footer: ${footer}`;
   } finally {
@@ -295,7 +295,7 @@ scenario('daemon-auto-spawn', async ({ sway }) => {
         const r = await app.rc.get('status-text', 'label').catch(() => null);
         return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
       },
-      { desc: 'attached-to-spawned-daemon footer', timeoutMs: 20_000 },
+      { desc: 'attached-to-spawned-daemon footer' },
     );
     // The spawn log must exist under the isolated home (proves we spawned it
     // there, not into the real ~/.orchestra).
@@ -345,7 +345,7 @@ scenario('missing-dependency-warning', async ({ sway }) => {
         const r = await app.rc.get('dialog-title', 'label').catch(() => null);
         return r && r.ok && /Missing Dependencies/i.test(r.value || '') ? r.value : null;
       },
-      { desc: 'missing-dependency dialog', timeoutMs: 15_000 },
+      { desc: 'missing-dependency dialog' },
     );
     const body = await app.rc.get('dialog-body', 'label');
     // Electron's exact message line + both backend-supplied detail messages.
@@ -370,7 +370,7 @@ scenario('missing-dependency-warning', async ({ sway }) => {
         const r = await app.rc.get('status-text', 'label').catch(() => null);
         return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
       },
-      { desc: 'still attached after Continue Anyway', timeoutMs: 8000 },
+      { desc: 'still attached after Continue Anyway' },
     );
     return `"${title}" shown with Electron's copy + buttons; Continue Anyway keeps it attached (${footer})`;
   } finally {
@@ -415,7 +415,7 @@ scenario(
           const r = await app.rc.get('status-text', 'label').catch(() => null);
           return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
         },
-        { desc: 'attach before hanging', timeoutMs: 20_000 },
+        { desc: 'attach before hanging' },
       );
       // Hang forever. The runner's budget must cut this and capture state.
       await new Promise(() => {});
@@ -487,7 +487,7 @@ scenario(
           const r = await app.rc.get('status-text', 'label').catch(() => null);
           return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
         },
-        { desc: 'initial attach', timeoutMs: 20_000 },
+        { desc: 'initial attach' },
       );
       await sample();
 
@@ -625,7 +625,7 @@ scenario(
           const r = await app.rc.get('status-text', 'label').catch(() => null);
           return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
         },
-        { desc: 'attach before dropping', timeoutMs: 20_000 },
+        { desc: 'attach before dropping' },
       );
       // KNOWN STATE #1: fully attached. Footer names the daemon, banner hidden.
       calibration.attached = await snapshot();
@@ -642,7 +642,7 @@ scenario(
             ? cap
             : null;
         },
-        { desc: 'the reconnecting window', timeoutMs: 30_000, intervalMs: 25 },
+        { desc: 'the reconnecting window', intervalMs: 25 },
       );
       await new Promise(() => {}); // hang; the budget cuts us here
     } finally {
@@ -690,7 +690,7 @@ scenario('footer-not-stale-while-reconnecting', async ({ sway }) => {
         const r = await app.rc.get('status-text', 'label').catch(() => null);
         return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
       },
-      { desc: 'initial attach', timeoutMs: 20_000 },
+      { desc: 'initial attach' },
     );
 
     // Drop the live connection WITHOUT closing the listener: the client goes to
@@ -706,7 +706,7 @@ scenario('footer-not-stale-while-reconnecting', async ({ sway }) => {
         const f = await app.rc.get('status-text', 'label').catch(() => null);
         return f && f.ok ? { banner: b.value, footer: f.value } : null;
       },
-      { desc: 'the reconnecting window', timeoutMs: 30_000, intervalMs: 50 },
+      { desc: 'the reconnecting window', intervalMs: 50 },
     );
 
     // THE BUG: footer claiming a live backend while the banner says reconnecting.
@@ -767,7 +767,7 @@ scenario(
         const r = await app.rc.get('status-text', 'label').catch(() => null);
         return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
       },
-      { desc: 'initial attach to socket A', timeoutMs: 20_000 },
+      { desc: 'initial attach to socket A' },
     );
 
     // Restart the backend on a DIFFERENT path and repoint the pointer file —
@@ -790,7 +790,7 @@ scenario(
         const r = await app.rc.get('status-text', 'label').catch(() => null);
         return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
       },
-      { desc: 're-attach after the socket moved', timeoutMs: 30_000 },
+      { desc: 're-attach after the socket moved' },
     );
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
     return `re-attached to the moved socket in ~${secs}s (old behavior: ~180s give-up)`;
@@ -830,7 +830,7 @@ scenario('reconnect-same-socket-path', async ({ sway }) => {
         const r = await app.rc.get('status-text', 'label').catch(() => null);
         return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
       },
-      { desc: 'initial attach', timeoutMs: 20_000 },
+      { desc: 'initial attach' },
     );
 
     // Bounce the backend on the SAME path (pointer unchanged).
@@ -849,7 +849,7 @@ scenario('reconnect-same-socket-path', async ({ sway }) => {
         const r = await app.rc.get('status-text', 'label').catch(() => null);
         return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
       },
-      { desc: 're-attach on the same path', timeoutMs: 30_000 },
+      { desc: 're-attach on the same path' },
     );
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
     return `same-path reconnect unregressed (~${secs}s)`;
@@ -873,10 +873,7 @@ scenario(
     // refuses with the "already owns" message and exits non-zero.
     const first = spawnDaemon(daemonJs, home);
     try {
-      await waitFor(() => fs.existsSync(path.join(home, 'ui-sock')), {
-        desc: 'first daemon ui-sock',
-        timeoutMs: 15_000,
-      });
+      await waitFor(() => fs.existsSync(path.join(home, 'ui-sock')), { desc: 'first daemon ui-sock' });
       const second = runDaemonToExit(daemonJs, home);
       assert(second.code !== 0, `second daemon exits non-zero (got ${second.code})`);
       assert(/already owns/i.test(second.output), `second daemon reports lock: ${second.output.slice(0, 400)}`);
