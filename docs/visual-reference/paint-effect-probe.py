@@ -206,11 +206,19 @@ def _delta(a, b):
 
 def run_static(theme):
     rig = Rig(theme)
-    # min-width/height are on the OFF state too: they guarantee an allocation
-    # regardless of the property under test, so the baseline is a real sample
-    # rather than None. Without this the OFF widget never sizes and every delta
-    # is None — which the controls correctly refuse to interpret.
-    OFF = (f".paintprobe {{ background: none; border: none; "
+    # THE OFF BASELINE MUST ITSELF PAINT (gtk4-port-verifier's invariant, and it
+    # closes a hole I shipped one iteration earlier). With a TRANSPARENT baseline
+    # the snapshot is node=None, and node=None is produced BOTH by "this property
+    # legitimately paints nothing" AND by "this property silently did nothing" —
+    # so None-vs-None reads as "no change" for a working-but-invisible rule just
+    # as it does for a dead one. A grey baseline makes the OFF state a KNOWN
+    # PAINTING state, so any real change shows up as a region-digest difference
+    # against something rather than against nothing.
+    #
+    # This is the known-inert control's logic applied to the baseline: the
+    # reference point has to be calibrated too, not just the deltas measured
+    # from it. min-width/height additionally guarantee allocation (see _settle).
+    OFF = (f".paintprobe {{ background-color: rgb(128,128,128); border: none; "
            f"min-width: {WIDGET_PX}px; min-height: {WIDGET_PX}px; }}")
     print("PURE-PAINT STATIC PROBE (pixel sample, not layout)\n")
 
@@ -233,6 +241,12 @@ def run_static(theme):
          "test"),
         ("border-color",
          ".paintprobe { border: 4px solid rgb(0,255,0); }", "test"),
+        # DEMONSTRATES THE NON-PAINTING-BASELINE HOLE (verifier's point): with a
+        # transparent OFF state this reads exactly like the clipped outer shadow
+        # above — both "no change" — yet one is a real no-op and the other works
+        # but paints out of frame. A non-painting baseline cannot tell them apart.
+        ("(hole demo) transparent colour",
+         ".paintprobe { color: rgba(0,0,0,0); }", "note"),
     ]
 
     rig.style(OFF)
