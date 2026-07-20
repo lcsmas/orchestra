@@ -1,0 +1,79 @@
+{
+  "results": [
+    [
+      "sound-settings",
+      "CAPTURED",
+      ""
+    ],
+    [
+      "linear-settings",
+      "CAPTURED",
+      ""
+    ],
+    [
+      "repo-scripts",
+      "CAPTURED",
+      ""
+    ],
+    [
+      "branch-popover",
+      "CAPTURED",
+      ""
+    ],
+    [
+      "accounts-settings",
+      "CAPTURED",
+      ""
+    ],
+    [
+      "account-login-modal",
+      "CAPTURED",
+      ""
+    ],
+    [
+      "base-branch-popover",
+      "CANNOT-VERIFY",
+      "base-picker only exists while the new-workspace form is open"
+    ],
+    [
+      "setup-banner-failed",
+      "CAPTURED",
+      "captured via main-window so the tint composites"
+    ],
+    [
+      "setup-banner-running",
+      "CAPTURED",
+      "captured via main-window so the tint composites"
+    ],
+    [
+      "queue-banner",
+      "CAPTURED",
+      "captured via main-window so the tint composites"
+    ],
+    [
+      "dialog-destructive",
+      "CAPTURED",
+      ""
+    ],
+    [
+      "backdrop-surround",
+      "CAPTURED",
+      ""
+    ]
+  ],
+  "hashes": {
+    "gtk-sound-settings.png": "cd2ec6f548a1f978120fa7589e56b92c",
+    "gtk-linear-settings.png": "454921fa7cf721c35262ccb2e0a04e92",
+    "gtk-linear-settings-title.png": "7f7b451c63ca7f6680158d36e2056347",
+    "gtk-repo-scripts.png": "217d7921cdb81a96aa760e7c13e1d9af",
+    "gtk-branch-popover.png": "e250f07a5cda625ea83c4a2470dde393",
+    "gtk-accounts-settings.png": "7ae863def3d45fba0099b86cd603eed5",
+    "gtk-account-login-modal.png": "383f2e04970e1d614d0900eb4f0cbb07",
+    "gtk-setup-banner-failed.png": "0bf28c2bcd8ace4b616565b45cae441c",
+    "gtk-setup-banner-running.png": "d394a577167b96eb955441cffd30a7b6",
+    "gtk-queue-banner.png": "d695b286d50f955b674874604f13a328",
+    "gtk-dialog-destructive.png": "4313653a6ca51c0d8f5a5ad07f197756",
+    "gtk-dialog-over-window.png": "d3f15b61ac16faa18b78864700d03108"
+  },
+  "duplicates": []
+}
