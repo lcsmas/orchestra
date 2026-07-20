@@ -83,6 +83,9 @@ pub enum Msg {
     /// Second half of AddRepo: the folder picker resolved to this path.
     DoAddRepo(String),
     RevealLogs,
+    /// A header button whose behaviour App owns — forwarded straight out as
+    /// [`SidebarOutput::HeaderAction`].
+    Header(HeaderAction),
     DismissNotice(String),
     // ---- rename ----------------------------------------------------------
     StartRename(String),
@@ -185,6 +188,20 @@ pub enum Msg {
 pub enum SidebarOutput {
     /// The active workspace changed to this id via a user row-select.
     WorkspaceActivated(String),
+    /// A header action button whose target App owns. The overlay triggers and
+    /// the sound picker live in the sidebar header for Electron parity
+    /// (`Sidebar.tsx:1359–1385`), but App holds the `Overlays` controller and
+    /// the `SoundPlayer`, so the click routes back out to it.
+    HeaderAction(HeaderAction),
+}
+
+/// The sidebar-header buttons whose behaviour lives in App.
+#[derive(Debug, Clone, Copy)]
+pub enum HeaderAction {
+    OpenResources,
+    OpenInsights,
+    OpenSoundPicker,
+    OpenHelp,
 }
 
 /// Widget cache entry: the last spec we built a row from (for PartialEq-based
@@ -606,6 +623,38 @@ impl Component for Sidebar {
         title.set_widget_name("sidebar-title");
         title.set_hexpand(true);
         header.append(&title);
+        // Overlay/settings triggers, in Electron's header order
+        // (`Sidebar.tsx:1362–1385`: help, bell, then the create buttons). These
+        // used to sit on the debug status strip; App owns what they open, so
+        // they route out through SidebarOutput::HeaderAction.
+        header.append(&header_button(
+            "📊",
+            "open-resources",
+            "Resources — CPU, memory, disk and token usage",
+            &input,
+            || Msg::Header(HeaderAction::OpenResources),
+        ));
+        header.append(&header_button(
+            "💡",
+            "open-insights",
+            "Insights — monthly self-tune runs",
+            &input,
+            || Msg::Header(HeaderAction::OpenInsights),
+        ));
+        header.append(&header_button(
+            "🔔",
+            "open-sound",
+            "Notification sound",
+            &input,
+            || Msg::Header(HeaderAction::OpenSoundPicker),
+        ));
+        header.append(&header_button(
+            "?",
+            "open-help",
+            "What Orchestra can do",
+            &input,
+            || Msg::Header(HeaderAction::OpenHelp),
+        ));
         header.append(&header_button(
             "+ Repo",
             "header-add-repo",
@@ -830,6 +879,11 @@ impl Component for Sidebar {
             }
             Msg::RevealLogs => {
                 self.fire_and_forget("revealLogs", vec![]);
+                rebuild = false;
+            }
+            Msg::Header(action) => {
+                // Nothing sidebar-side changes; App opens the overlay/picker.
+                let _ = sender.output(SidebarOutput::HeaderAction(action));
                 rebuild = false;
             }
             Msg::OpenRepoScripts(_path) => {

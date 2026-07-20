@@ -176,7 +176,7 @@ list row:selected label {
 /* 3b ── sidebar (M2-B1): header, sections, trees, pills, actions.
  * The full §5.1 surface; matches the Electron sidebar's compact look. */
 
-/* Header action strip (+ Repo / ⚡ / 🌿). */
+/* Header action strip (Resources / Insights / 🔔 / ? / + Repo / ⚡ / 🌿). */
 .sidebar-header {
   padding: 8px 8px 4px 12px;
 }
@@ -844,7 +844,6 @@ entry:focus-within {
   background-color: @bg_3;
   color: @text;
 }
-.strip-btn { font-size: 11px; }
 
 /* shared meter fills (width set widget-side; colors here) */
 .usage-bar-track {

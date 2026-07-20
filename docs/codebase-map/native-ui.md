@@ -88,6 +88,38 @@ banner text, attach (hide banner, build `RpcBackend`, record a spawned pid for
 vs the **appVersion warning** dialog (non-fatal, attach proceeds). The 3 s
 retry timer runs discovery-only (one auto-spawn attempt per launch).
 
+## Overlay lifecycle — app.rs + overlays/mod.rs
+
+Resources / Insights / Help are `gtk::Overlay` children layered over the main
+pane (`Overlays::new`, `overlays/mod.rs:48`, three `add_overlay` calls). They
+need a backend to poll and stream against, so **they are built on the attach
+path, not at init** (`app.rs:1333`).
+
+This is the part that is easy to get wrong: `make_backend()` (`app.rs:265`)
+returns `Some` only for the mock, so on every real launch there is no backend at
+init and the init-time construction (`app.rs:895`) is skipped. If the attach
+handler does not rebuild them, all three entry points are accepted-but-dead
+no-ops for the whole session — the clicks succeed and nothing appears, so
+nothing fails loudly. Under the mock a backend exists at init, which hides the
+bug entirely; **verify these surfaces against a real daemon, never the mock.**
+
+Symmetrically, `ConnectionState::Disconnected` (`app.rs:1098`) tears them down
+via `Overlays::unmount` (`overlays/mod.rs:93`), the counterpart to the
+`add_overlay` calls: the reconnect's attach builds a fresh set, so without the
+unmount every reconnect stacks another three overlays over the main pane. The
+accounts controller directly above it follows the same build-on-attach /
+drop-on-disconnect shape — match it rather than inventing a new one.
+
+Event routing: the overlays hold an `Rc<dyn Backend>` for request/response
+`call`s only. Their event input is **pushed** to them by App's single pump via
+`overlays.dispatch` (`app.rs:1156` → `overlays/mod.rs:145`). They must never
+open their own `events()` loop — `async_channel` is work-stealing MPMC, so a
+second consumer silently round-robins frames away from the sidebar.
+
+Entry points live in the **sidebar header** (`sidebar/mod.rs`, Electron parity
+with `Sidebar.tsx:1362–1385`) and route out as
+`SidebarOutput::HeaderAction` → `Msg::ToggleOverlay` (`app.rs:1211`).
+
 ## Remote-control harness — remote_control.rs
 
 The CDP replacement (plan §8.4), compiled in always, activated by

@@ -2,6 +2,18 @@
 
 **Status: report only. No UI code, CSS, or `*.rs` was modified.**
 
+> **Update (branch `fix-overlay-gating-sidebar-header`): ranked actions 1 and 2
+> are fixed.** Overlays are now built on the attach path (`app.rs`, alongside
+> the accounts controller) and torn down on `Disconnected`, so Resources /
+> Insights / Help open on a real launch; the entry points moved to the sidebar
+> header and the debug menu is deleted. Verified against a **real daemon** (not
+> the mock) with a before/after drive: pre-fix all three widgets were absent
+> from the tree and the clicks were accepted no-ops; post-fix each transitions
+> closed→open with 132/55/138 rendered descendants. Rows 27, 28, 33, 77, 87–89,
+> 91–101 and the "13 unreachable surfaces" count below are superseded by that
+> change; the rest of the document still stands. See
+> `docs/codebase-map/native-ui.md` § "Overlay lifecycle".
+
 Generated on branch `gtk4-parity-inventory`. Every status below was derived from
 reading source on both sides — Electron is the reference, the surface list is
 derived from it, and GTK had to produce evidence to move a row above ABSENT.

@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use relm4::prelude::*;
@@ -145,6 +144,10 @@ pub struct App {
     /// controller) — kept so a backend that attaches on retry can mount into it.
     sidebar_footer: gtk::Box,
     accounts_button: gtk::Button,
+    /// Overlay host the Resources/Insights/Help overlays mount into — kept for
+    /// the same reason as `sidebar_footer`: a backend arriving on the attach
+    /// path has to build them then, since there is none at init.
+    overlay_host: gtk::Overlay,
 }
 
 #[derive(Debug)]
@@ -546,67 +549,6 @@ fn attach_accounts(
     ctrl
 }
 
-/// Debug menu (status strip): demoes the promise-shaped dialog system.
-fn install_demo_actions(window: &gtk::ApplicationWindow) {
-    let group = gio::SimpleActionGroup::new();
-    let win = window.clone().upcast::<gtk::Window>();
-
-    let add = |name: &str, run: Box<dyn Fn(gtk::Window) + 'static>| {
-        let action = gio::SimpleAction::new(name, None);
-        let win = win.clone();
-        action.connect_activate(move |_, _| run(win.clone()));
-        group.add_action(&action);
-    };
-
-    add(
-        "alert",
-        Box::new(|win| {
-            glib::spawn_future_local(async move {
-                dialogs::alert(&win, "Alert", "This is the promise-shaped alert dialog.").await;
-                eprintln!("[demo] alert resolved");
-            });
-        }),
-    );
-    add(
-        "confirm",
-        Box::new(|win| {
-            glib::spawn_future_local(async move {
-                let yes = dialogs::confirm(&win, "Confirm", "Proceed with the demo action?").await;
-                eprintln!("[demo] confirm resolved: {yes}");
-            });
-        }),
-    );
-    add(
-        "prompt",
-        Box::new(|win| {
-            glib::spawn_future_local(async move {
-                let text = dialogs::prompt(&win, "Prompt", "Name this demo:", "type here…").await;
-                eprintln!("[demo] prompt resolved: {text:?}");
-            });
-        }),
-    );
-    add(
-        "error",
-        Box::new(|win| {
-            glib::spawn_future_local(async move {
-                dialogs::error(&win, "Error", "Something demo-shaped went wrong.").await;
-                eprintln!("[demo] error resolved");
-            });
-        }),
-    );
-    add(
-        "success",
-        Box::new(|win| {
-            glib::spawn_future_local(async move {
-                dialogs::success(&win, "Success", "The demo action completed.").await;
-                eprintln!("[demo] success resolved");
-            });
-        }),
-    );
-
-    window.insert_action_group("demo", Some(&group));
-}
-
 #[relm4::component(pub)]
 impl SimpleComponent for App {
     type Init = Init;
@@ -742,42 +684,10 @@ impl SimpleComponent for App {
                         set_opacity: 0.0,
                     },
 
-                    // Overlay triggers (Electron sidebar-header buttons). These
-                    // stay simple text buttons on the status strip until the M2
-                    // sidebar workstream gives them their final home.
-                    gtk::Button {
-                        set_widget_name: "open-resources",
-                        set_label: "Resources",
-                        add_css_class: "strip-btn",
-                        connect_clicked[sender] => move |_| sender.input(Msg::ToggleOverlay(OverlayKind::Resources)),
-                    },
-                    gtk::Button {
-                        set_widget_name: "open-insights",
-                        set_label: "Insights",
-                        add_css_class: "strip-btn",
-                        connect_clicked[sender] => move |_| sender.input(Msg::ToggleOverlay(OverlayKind::Insights)),
-                    },
-                    gtk::Button {
-                        set_widget_name: "open-sound",
-                        set_label: "🔔",
-                        add_css_class: "strip-btn",
-                        set_tooltip_text: Some("Notification sound"),
-                        connect_clicked[sender] => move |_| sender.input(Msg::OpenSoundPicker),
-                    },
-                    gtk::Button {
-                        set_widget_name: "open-help",
-                        set_label: "?",
-                        add_css_class: "strip-btn",
-                        set_tooltip_text: Some("What Orchestra can do"),
-                        connect_clicked[sender] => move |_| sender.input(Msg::ToggleOverlay(OverlayKind::Help)),
-                    },
-
-                    #[name = "debug_menu"]
-                    gtk::MenuButton {
-                        set_widget_name: "debug-menu",
-                        set_label: "debug",
-                        set_direction: gtk::ArrowType::Up,
-                    },
+                    // The overlay triggers (Resources / Insights / sound / Help)
+                    // and the demo dialog menu used to live here. They now sit in
+                    // the sidebar header where Electron puts them
+                    // (`Sidebar.tsx:1359–1385`); the strip is status text only.
                 },
             },
         }
@@ -873,15 +783,6 @@ impl SimpleComponent for App {
             });
         }
 
-        install_demo_actions(&widgets.main_window);
-        let menu = gio::Menu::new();
-        menu.append(Some("Alert demo"), Some("demo.alert"));
-        menu.append(Some("Confirm demo"), Some("demo.confirm"));
-        menu.append(Some("Prompt demo"), Some("demo.prompt"));
-        menu.append(Some("Error demo"), Some("demo.error"));
-        menu.append(Some("Success demo"), Some("demo.success"));
-        widgets.debug_menu.set_menu_model(Some(&menu));
-
         if let Some(sock) = init.remote_control {
             remote_control::serve(sock);
         }
@@ -931,6 +832,16 @@ impl SimpleComponent for App {
                 crate::sidebar::SidebarOutput::WorkspaceActivated(id) => {
                     Msg::WorkspaceActivated(id)
                 }
+                crate::sidebar::SidebarOutput::HeaderAction(action) => match action {
+                    crate::sidebar::HeaderAction::OpenResources => {
+                        Msg::ToggleOverlay(OverlayKind::Resources)
+                    }
+                    crate::sidebar::HeaderAction::OpenInsights => {
+                        Msg::ToggleOverlay(OverlayKind::Insights)
+                    }
+                    crate::sidebar::HeaderAction::OpenHelp => Msg::ToggleOverlay(OverlayKind::Help),
+                    crate::sidebar::HeaderAction::OpenSoundPicker => Msg::OpenSoundPicker,
+                },
             });
         widgets.sidebar_host.append(sidebar.widget());
 
@@ -1075,6 +986,7 @@ impl SimpleComponent for App {
             conn_state_label: widgets.conn_state_label.clone(),
             sidebar_footer: widgets.sidebar_footer.clone(),
             accounts_button: widgets.accounts_button.clone(),
+            overlay_host: widgets.overlay_host.clone(),
         };
         // Seed the sidebar Insights row with the current run history so it
         // shows the last outcome on launch, not just after the next event.
@@ -1193,6 +1105,16 @@ impl SimpleComponent for App {
                         // reconnect. Dropping it here stops its minute-tick timer.
                         if let Some(accounts) = self.accounts.take() {
                             self.sidebar_footer.remove(&accounts.usage_bars_root());
+                        }
+                        // Same teardown for the overlays, and for the same
+                        // reason: the reconnect's attach builds a FRESH set
+                        // against the new backend, so the old widgets have to
+                        // leave the host or every reconnect stacks another three
+                        // overlays on top of the main pane (the old ones holding
+                        // a backend that is gone). Dropping the controller also
+                        // stops the Resources 2 s poll.
+                        if let Some(overlays) = self.overlays.take() {
+                            overlays.unmount(&self.overlay_host);
                         }
                         self.banner_label.set_label(NO_BACKEND_BANNER);
                         self.banner.set_reveal_child(true);
@@ -1396,6 +1318,23 @@ impl App {
                     &self.window,
                     &self.sidebar_footer,
                     &self.accounts_button,
+                ));
+                // Same reason as `accounts` above: these need a backend to poll
+                // and stream against, and at init there is none on any non-mock
+                // path (`make_backend` returns None), so the init-time
+                // construction is skipped and Resources/Insights/Help would stay
+                // dead no-ops for the whole session. Build them here instead.
+                //
+                // This adds NO second consumer of events(): the overlays only
+                // hold an `Rc<dyn Backend>` for request/response `call`s, and
+                // their event input arrives push-style via `overlays.dispatch`
+                // from App's single pump (`spawn_backend_streams`). A second
+                // `events()` loop would work-steal frames away from the sidebar.
+                self.overlays = Some(Overlays::new(
+                    &self.overlay_host,
+                    backend.clone(),
+                    self.state.clone(),
+                    self.sound.clone(),
                 ));
                 self.ctx.set_backend(Some(backend.clone()));
                 self.backend = Some(backend.clone());
