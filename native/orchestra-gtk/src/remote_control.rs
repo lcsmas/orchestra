@@ -49,6 +49,27 @@ pub enum Op {
         name: String,
         prop: Prop,
     },
+    /// Set or clear the named widget's HOVER state (GTK's `PRELIGHT` flag,
+    /// which is what `:hover` in CSS selects on).
+    ///
+    /// This exists because hover was otherwise UNVERIFIABLE here. The headless
+    /// seat has no pointer, so `:hover` rules could not be exercised at all,
+    /// and hover is the largest visible parity gap against the Electron app
+    /// (54 GTK selectors carry a `:hover` rule; before this work none of them
+    /// eased). Static screenshots are structurally blind to it.
+    ///
+    /// `PRELIGHT` is the same flag a real pointer sets, so a CSS `:hover` rule
+    /// cannot tell the difference — which is precisely why this is sound as a
+    /// substitute for a pointer. What it does NOT reproduce is anything
+    /// upstream of the flag: pointer-position hit-testing, enter/leave event
+    /// ordering, or a `GtkEventControllerMotion` handler's own logic. Use it to
+    /// verify STYLING, not to prove a widget is reachable by a real cursor.
+    Hover {
+        name: String,
+        /// Defaults to true so `{"op":"hover","name":"x"}` means "hover it".
+        #[serde(default = "default_true")]
+        on: bool,
+    },
     /// Report the named widget's size-negotiation numbers: MINIMUM and NATURAL
     /// width, plus its current allocation.
     ///
@@ -140,6 +161,21 @@ pub enum Prop {
     /// Sizes come back in Pango units (1024ths) and are converted to px here so
     /// the number is directly comparable to Electron's getComputedStyle.
     Font,
+    /// The widget's RUNTIME state flags (hover/active/focus/checked/…), as a
+    /// list of lowercase names.
+    ///
+    /// Distinct from `Css`, and the distinction matters: `Css` reports the
+    /// classes an AUTHOR set, which say nothing about what state the widget is
+    /// currently in. A `:hover` rule is selected by GTK's PRELIGHT flag, not by
+    /// a class, so before this existed there was no way to confirm a hover had
+    /// actually been applied — a `hover` op could silently no-op and every
+    /// screenshot after it would look like a correct un-hovered widget.
+    State,
+}
+
+/// serde default for `Op::Hover::on`.
+fn default_true() -> bool {
+    true
 }
 
 pub fn parse_op(line: &str) -> Result<Op, serde_json::Error> {
@@ -503,6 +539,26 @@ fn handle_op(op: Op) -> Value {
                         "stretch": format!("{:?}", desc.stretch()),
                     })
                 }
+                Prop::State => {
+                    let f = w.state_flags();
+                    let mut out = Vec::new();
+                    for (flag, name) in [
+                        (gtk::StateFlags::ACTIVE, "active"),
+                        (gtk::StateFlags::PRELIGHT, "hover"),
+                        (gtk::StateFlags::SELECTED, "selected"),
+                        (gtk::StateFlags::INSENSITIVE, "insensitive"),
+                        (gtk::StateFlags::FOCUSED, "focused"),
+                        (gtk::StateFlags::BACKDROP, "backdrop"),
+                        (gtk::StateFlags::CHECKED, "checked"),
+                        (gtk::StateFlags::FOCUS_VISIBLE, "focus-visible"),
+                        (gtk::StateFlags::FOCUS_WITHIN, "focus-within"),
+                    ] {
+                        if f.contains(flag) {
+                            out.push(name);
+                        }
+                    }
+                    json!(out)
+                }
                 Prop::Label => {
                     if let Some(win) = w.downcast_ref::<gtk::Window>() {
                         json!(win.title().map(|t| t.to_string()))
@@ -558,6 +614,31 @@ fn handle_op(op: Op) -> Value {
                 ("upper".into(), json!(adj.upper())),
                 ("page_size".into(), json!(adj.page_size())),
             ]))
+        }
+        Op::Hover { name, on } => {
+            let Some(w) = find_widget(&name) else {
+                return err(format!("no widget named {name:?}"));
+            };
+            if on {
+                w.set_state_flags(gtk::StateFlags::PRELIGHT, false);
+            } else {
+                w.unset_state_flags(gtk::StateFlags::PRELIGHT);
+            }
+            // Report the ACHIEVED state, not the requested one. A caller that
+            // trusts `ok:true` alone cannot tell a real hover from a silent
+            // no-op, and a screenshot of a widget that was never hovered looks
+            // exactly like a correct un-hovered widget — a false negative that
+            // reads as a passing test.
+            let achieved = w.state_flags().contains(gtk::StateFlags::PRELIGHT);
+            if achieved != on {
+                return err(format!(
+                    "hover({on}) did not take on {name:?}: PRELIGHT is {achieved}"
+                ));
+            }
+            ok(serde_json::Map::from_iter([(
+                "hovered".into(),
+                json!(achieved),
+            )]))
         }
         Op::Measure { name } => {
             let Some(w) = find_widget(&name) else {

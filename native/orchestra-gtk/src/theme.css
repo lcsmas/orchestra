@@ -35,6 +35,98 @@
 @define-color scratch #e3b341;
 @define-color orchestrator #7ee787;
 
+/* 1b ── state transitions
+
+   Electron eases every interactive state change; the port did not, so every
+   hover, focus and press SNAPPED. That is invisible in a screenshot, which is
+   why several static verification passes missed it, and it is the largest part
+   of "hovers are not the same" / "it feels different".
+
+   Reference (src/renderer/styles.css): 41 transition declarations, of which
+   the dominant recipe is `140ms var(--ease)` over background / border-color /
+   color, with `0.12s ease` for the transform micro-motions. --ease is
+   cubic-bezier(0.3, 0.8, 0.3, 1). Timings and curve are copied, not invented.
+
+   Every property here was MEASURED as actually interpolating in GTK 4.18
+   before being written (examples/transition_probe.rs, three passing controls):
+   background, background-color, color, border-color, box-shadow and transform
+   all ease. GTK4 accepts the `background` shorthand and the custom
+   cubic-bezier, both verified rather than assumed — a declaration GTK parses
+   but ignores would leave these rules dead while looking correct in review.
+
+   Selectors are listed explicitly rather than applied with a blanket rule:
+   the set is exactly those that already carry a :hover rule, so this changes
+   only HOW those states arrive, never WHICH states exist or what they look
+   like. */
+#sidebar-list row, .account-inherit-chip, .account-menu-item,
+.accounts-open, .archived-toggle, .base-picker-item, .branch-chip.current,
+.branch-chip.head, .dlg-buttons button, .dlg-buttons button.destructive,
+.dlg-buttons button.suggested, .empty-actions button.primary,
+.empty-actions button.secondary, .env-notice-dismiss, .field-select,
+.footer-link, .header-icon-btn, .header-repo-btn, .host-collapse,
+.insights-history-row, .insights-row, .merge-btn, .modal-close,
+.overlay-close, .pane-toggle, .pane-toggle:checked, .pr-link,
+.queue-banner-item-x, .repo-add, .repo-collapse, .repo-header .ws-icon-btn,
+.repo-header .ws-icon-btn.danger, .repo-header-actions .ws-icon-btn,
+.repo-header-actions button, .repo-scripts-btn, .repo-scripts-btn.danger,
+.repo-sync, .res-agent-row, .res-stop-btn, .res-stop-btn .res-stop-icon,
+.restart-btn, .run-toggle-btn, .run-toggle-btn.running,
+.sidebar-header-btn, .sound-play, .status-strip button, .tab, .ws-collapse,
+.ws-icon-btn, .ws-icon-btn.danger, .ws-row .ws-icon-btn,
+button.welcome-help-btn, listbox row, popover modelbutton {
+  transition: background 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              background-color 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              border-color 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              color 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              box-shadow 140ms cubic-bezier(0.3, 0.8, 0.3, 1);
+}
+
+/* Base `button` recipe (styles.css:105) — Orchestra's DEFAULT button look, the
+ * one an unclassed `<button>` gets in the renderer.
+ *
+ * The port has no bare `button` rule, so a GTK button with no orchestra class
+ * falls through to stock ADWAITA rather than to Orchestra's default — a
+ * visible difference wherever the renderer relies on the base recipe. A live
+ * sweep of all 40 buttons in the app found exactly two in that state, and
+ * both are unclassed `<button>` in the renderer (SetupBanner "View log",
+ * PromptQueueBanner "Queue"), so both should be showing the base look.
+ *
+ * Scoped to those two widgets rather than written as a blanket `button {}`:
+ * a bare element selector in GTK also hits buttons this app does not own —
+ * VTE internals, popover children, scrollbar steppers, spin buttons — where
+ * Adwaita's own styling is correct and overriding it would be a regression.
+ * The tradeoff is that a future unclassed button will silently miss this and
+ * fall through again; the general fix is a shared constructor, not CSS. */
+#setup-view-log,
+#queue-add {
+  background-image: none;
+  background-color: @bg_3;
+  color: @text;
+  border: 1px solid @border;
+  border-radius: 8px;          /* --radius */
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.1px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);   /* --shadow-sm */
+  transition: background 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              background-color 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              border-color 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              color 140ms cubic-bezier(0.3, 0.8, 0.3, 1),
+              box-shadow 140ms cubic-bezier(0.3, 0.8, 0.3, 1);
+}
+/* styles.css:124 */
+#setup-view-log:hover,
+#queue-add:hover {
+  background-color: @bg_4;
+  border-color: @border_strong;
+}
+/* styles.css:133 */
+#setup-view-log:disabled,
+#queue-add:disabled {
+  opacity: 0.5;
+}
+
 /* 2 ── base chrome */
 /* font-family mirrors styles.css:94-95 (`html, body, #root`). Its ABSENCE was
    the single largest type defect: with no family declared, every label in the
@@ -1084,14 +1176,22 @@ entry:focus-within {
 }
 .insights-panel-title { color: @text; font-weight: 700; font-size: 13px; }
 .insights-panel-meta { color: @text_dim; font-size: 10px; }
-.insights-run-btn.primary, .primary {
-  background-color: @accent_strong;
-  color: #ffffff;
-  border-radius: 6px;
-  padding: 4px 14px;
-  border: none;
+/* NOTE: the real `.primary` recipe is the one below the welcome-screen block
+ * (`.primary, .empty-actions button.primary`). This rule used to define a
+ * SECOND, different primary here — flat @accent_strong, radius 6px, padding
+ * 4px 14px, no border, no shadow — and because it is a bare `.primary` it
+ * governed every primary button that was not inside `.empty-actions`:
+ * setup-retry, queue-send-now, insights-run-btn. Those rendered visibly
+ * unlike the welcome-screen primaries and unlike Electron, where a single
+ * `button` + `button.primary` pair gives every primary the same geometry.
+ * Only the disabled state is genuinely insights-specific, so only it stays. */
+.insights-run-btn.primary:disabled,
+.primary:disabled {
+  background-image: none;
+  background-color: @bg_4;
+  color: @text_dim;
+  box-shadow: none;
 }
-.insights-run-btn.primary:disabled { background-color: @bg_4; color: @text_dim; }
 .insights-step-label { color: @text; font-size: 12px; }
 .insights-step-meta { color: @text_dim; font-size: 10px; }
 .insights-step-icon.ok { color: @green; }
@@ -2135,6 +2235,7 @@ button.welcome-help-btn:hover {
  * 1px rgba(255,255,255,0.1) border, @accent_ink text, weight 600, and the three
  * stacked shadows (inset highlight + drop + accent glow). Base `button`
  * (styles.css:105) gives 13px / padding 6px 12px / radius 8px. */
+.primary,
 .empty-actions button.primary {
   background-image: linear-gradient(180deg, @accent_bright 0%, @accent_strong 100%);
   background-color: @accent_strong;
@@ -2150,6 +2251,7 @@ button.welcome-help-btn:hover {
     0 4px 14px alpha(@accent_strong, 0.25);
 }
 /* styles.css:148 */
+.primary:hover,
 .empty-actions button.primary:hover {
   background-image: linear-gradient(180deg, #89beff 0%, #5a98ff 100%);
   border-color: rgba(255, 255, 255, 0.15);

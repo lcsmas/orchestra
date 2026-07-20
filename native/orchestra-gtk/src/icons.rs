@@ -161,6 +161,13 @@ pub const CHEVRON_DOWN: &str = "orch-chevron-down-symbolic";
 /// Promote chevron (row action).
 pub const CHEVRON_UP: &str = "orch-chevron-up-symbolic";
 
+/// Lucide `info` — the sidebar's optional-setup notice marker.
+///
+/// A calm "heads up", not an alarm: the renderer deliberately uses `info`
+/// here rather than a warning glyph (components/Sidebar.tsx `SetupIcon`).
+/// Distinct from [`GEAR`], which is repo-scripts settings.
+pub const INFO: &str = "orch-info-symbolic";
+
 /// Every icon name this module exposes — the single list both tests
 /// enumerate, so a new constant cannot be added without being covered.
 #[cfg(test)]
@@ -200,6 +207,7 @@ const NAMED: &[&str] = &[
     PR_MERGED,
     PR_CLOSED,
     LINEAR,
+    INFO,
 ];
 
 /// Register the embedded icon bundle with the default [`gtk::IconTheme`].
