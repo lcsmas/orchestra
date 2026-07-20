@@ -135,6 +135,15 @@ pub const USERS: &str = "orch-users-symbolic";
 /// Logs — `LogsIcon`.
 pub const LOGS: &str = "orch-logs-symbolic";
 
+/// Unread bookmark, filled — `BookmarkIcon` with `filled` (Sidebar.tsx).
+pub const BOOKMARK: &str = "orch-bookmark-symbolic";
+/// Unread bookmark, outline — `BookmarkIcon` unfilled.
+pub const BOOKMARK_OUTLINE: &str = "orch-bookmark-outline-symbolic";
+/// Demote chevron (row action).
+pub const CHEVRON_DOWN: &str = "orch-chevron-down-symbolic";
+/// Promote chevron (row action).
+pub const CHEVRON_UP: &str = "orch-chevron-up-symbolic";
+
 /// Every icon name this module exposes — the single list both tests
 /// enumerate, so a new constant cannot be added without being covered.
 #[cfg(test)]
@@ -166,6 +175,10 @@ const NAMED: &[&str] = &[
     INSIGHTS,
     USERS,
     LOGS,
+    BOOKMARK,
+    BOOKMARK_OUTLINE,
+    CHEVRON_DOWN,
+    CHEVRON_UP,
 ];
 
 /// Register the embedded icon bundle with the default [`gtk::IconTheme`].
@@ -338,7 +351,11 @@ mod tests {
         app.run_with_args::<&str>(&[]);
 
         let bad = failures.borrow();
-        assert!(bad.is_empty(), "icon resolution failures:\n  {}", bad.join("\n  "));
+        assert!(
+            bad.is_empty(),
+            "icon resolution failures:\n  {}",
+            bad.join("\n  ")
+        );
     }
 
     /// Every shipped asset carries `currentColor`, the property GTK's symbolic

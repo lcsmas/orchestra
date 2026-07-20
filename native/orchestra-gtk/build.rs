@@ -116,7 +116,11 @@ fn main() {
     )
     .unwrap();
     for name in &icons {
-        writeln!(xml, "    <file preprocess=\"xml-stripblanks\">{name}</file>").unwrap();
+        writeln!(
+            xml,
+            "    <file preprocess=\"xml-stripblanks\">{name}</file>"
+        )
+        .unwrap();
     }
     xml.push_str("  </gresource>\n</gresources>\n");
     let xml_path = out_dir.join("icons.gresource.xml");
@@ -186,7 +190,11 @@ fn main() {
                  GLIB_COMPILE_RESOURCES to its full path."
             )
         });
-    assert!(status.success(), "{compiler} failed on {}", xml_path.display());
+    assert!(
+        status.success(),
+        "{compiler} failed on {}",
+        xml_path.display()
+    );
     // Fail the build rather than let an empty/missing bundle ship: an icon that
     // doesn't resolve draws nothing at run time, with no error to notice.
     let compiled = std::fs::metadata(&gresource).expect("icons.gresource was produced");
