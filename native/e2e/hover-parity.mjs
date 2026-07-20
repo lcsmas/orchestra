@@ -48,8 +48,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * existed as a widget name — every result would have been NOT-FOUND, which
  * reads exactly like a broken app rather than a wrong probe. */
 const CANDIDATES = [
-  'header-add-repo', // .header-icon-btn
-  'header-new-scratch', // .header-icon-btn
+  // `header-add-repo` and `header-new-scratch` used to live here and were
+  // REMOVED, not broken: T4 replaced the three separate header buttons with
+  // Electron's single "+ New" menu (sidebar/mod.rs sets `header-new-menu`),
+  // so both names now exist NOWHERE in the tree. They kept reporting
+  // NOT-FOUND — indistinguishable from a genuinely missing widget, and two
+  // permanently-red rows train a reader to skip NOT-FOUND entirely, which is
+  // where the next real one would hide. The menu's three items are children
+  // of `new-menu-popover` and only exist while it is open, so the hoverable
+  // header control is the button itself.
+  'header-new-menu', // .new-menu-btn
   'repo-add-orchestra', // .repo-add
   'repo-collapse-orchestra', // .repo-collapse
   'ws-row-ws-1', // #sidebar-list row
