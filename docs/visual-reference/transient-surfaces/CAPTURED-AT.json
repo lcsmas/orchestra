@@ -1,0 +1,10 @@
+{
+  "captured_at_utc": "2026-07-20T15:08:54Z",
+  "git_head": "6ca9a8319f06dfb4b97abd30f9e1bb7e35eafb56",
+  "gtk_binary_mtime": "2026-07-20T14:24:38Z",
+  "electron_main_mtime": "2026-07-20T14:35:45Z",
+  "gtk_fixture": "ORCHESTRA_GTK_MOCK=1 (compiled-in MockBackend)",
+  "electron_fixture": "docs/visual-reference/seed-store.mjs into throwaway ORCHESTRA_HOME",
+  "compositor": "headless sway 1600x1000, WLR_BACKENDS=headless WLR_RENDERER=pixman",
+  "window_geometry_at_capture": "1600x973 (both apps, asserted per capture)"
+}
