@@ -1130,6 +1130,15 @@ impl SimpleComponent for App {
             Msg::Connection(state) => {
                 // Mirror the CAUSE for the harness before acting on it, so a cut
                 // taken mid-handling still reads the state that arrived.
+                //
+                // STALENESS: this is the only writer besides the attach path
+                // (which re-points it at a new connection before that
+                // connection's stream can speak). The one residual window is a
+                // just-replaced backend whose pump future has not yet noticed
+                // its channel closed; it ends as soon as the dropped client
+                // closes. Documented rather than silent — a mirror that stops
+                // updating reads as authoritative, which is exactly the failure
+                // it exists to detect.
                 self.conn_state_label.set_label(
                     match &state {
                         ConnectionState::Connected => "Connected".into(),
@@ -1372,6 +1381,14 @@ impl App {
                         return;
                     }
                 };
+                // Re-point the state mirror at the NEW connection before its
+                // stream can report anything. Without this the mirror keeps the
+                // previous client's last state across an attach — stale, and
+                // stale reads as authoritative, which is the same disease as a
+                // footer claiming attached. The mirror must never describe a
+                // connection that no longer exists.
+                self.conn_state_label
+                    .set_label("Connected(attached, awaiting first stream event)");
                 spawn_backend_streams(sender, backend.as_ref());
                 backend.set_focused(self.window.is_active());
                 self.accounts = Some(attach_accounts(
