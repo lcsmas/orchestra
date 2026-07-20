@@ -131,17 +131,47 @@ list row:selected label {
   color: @text_dim;
   font-size: 10px;
 }
+/* Status dot — ported from styles.css:1223-1236 + the ws-dot-pulse keyframes
+ * (styles.css:1256-1260). 8px round, glow per status, and margin-top:4px so the
+ * dot tracks the FIRST text line of a wrapping row rather than centring against
+ * it (Electron pairs that offset with `.ws-item { align-items: flex-start }`;
+ * the GTK side sets valign=Start on the dot in widgets.rs). */
 .ws-dot {
-  min-width: 9px;
-  min-height: 9px;
-  border-radius: 5px;
+  min-width: 8px;
+  min-height: 8px;
+  border-radius: 50%;
+  margin-top: 4px;
 }
-.ws-dot.running { background-color: @green; }
-.ws-dot.waiting { background-color: @yellow; }
-.ws-dot.error   { background-color: @red; }
+.ws-dot.running {
+  background-color: @green;
+  animation: ws-dot-pulse 1.6s ease-out infinite;
+}
+.ws-dot.waiting { background-color: @yellow; box-shadow: 0 0 8px alpha(@yellow, 0.55); }
+.ws-dot.error   { background-color: @red; box-shadow: 0 0 8px alpha(@red, 0.5); }
 .ws-dot.idle    { background-color: @text_dim; opacity: 0.55; }
 .ws-dot.stopped { background-color: #555555; opacity: 0.6; }
-.ws-dot.unread  { background-color: @accent; box-shadow: 0 0 0 3px alpha(@accent, 0.25); }
+/* Unread overrides the status colour AND kills the pulse (styles.css:1242-1247). */
+.ws-dot.unread  {
+  background-color: @accent;
+  box-shadow: 0 0 6px alpha(@accent, 0.6);
+  opacity: 1;
+  animation: none;
+}
+
+/* The running dot's expanding ring — the sidebar's main sign of life.
+ * Values are styles.css:1256-1260 verbatim (@green is #5bd68b = rgb(91,214,139),
+ * the same colour the source hardcodes). */
+@keyframes ws-dot-pulse {
+  0% {
+    box-shadow: 0 0 0 0 alpha(@green, 0.55), 0 0 6px alpha(@green, 0.8);
+  }
+  70% {
+    box-shadow: 0 0 0 6px alpha(@green, 0), 0 0 10px alpha(@green, 0.5);
+  }
+  100% {
+    box-shadow: 0 0 0 0 alpha(@green, 0), 0 0 6px alpha(@green, 0.8);
+  }
+}
 
 /* 3b ── sidebar (M2-B1): header, sections, trees, pills, actions.
  * The full §5.1 surface; matches the Electron sidebar's compact look. */
@@ -229,8 +259,36 @@ list row:selected label {
 .repo-sync-status .behind { color: @yellow; }
 .repo-sync-status .ahead  { color: @green; }
 
-/* Workspace rows: item box, tree indent, collapse caret. */
-.ws-item { padding: 0; }
+/* Workspace rows: item box, tree indent, collapse caret.
+ *
+ * Geometry ported from `.ws-item` (styles.css:1128-1140). Electron rows are
+ * FULL-BLEED strips carrying an always-present `border-left: 2px solid
+ * transparent`, so selecting a row only recolours that border and never shifts
+ * the text. The generic `listbox row` rule above (rounded 8px card, margin
+ * 1px 6px) is the opposite shape and would make a 2px edge marker float inset
+ * and rounded — so the sidebar list opts out of it. Scoped to #sidebar-list
+ * because four other listboxes (queue, diff file list, sound, branch popover)
+ * still want the card look. */
+#sidebar-list row {
+  padding: 0;
+  margin: 0;
+  border-radius: 0;
+  border-left: 2px solid transparent;
+}
+/* styles.css:1128-1135 — 4px vertical rhythm and the 14px text inset. The
+ * inset is measured from the row's content edge, so it sits inside the 2px
+ * border for a total 16px to first glyph, exactly as Electron renders it. */
+.ws-item {
+  padding: 4px 14px;
+}
+/* Hover + active both use --bg-3 (#1a1f26 = @bg_3), styles.css:1136-1139 —
+ * NOT @bg_4, which is what the row previously used for active. */
+#sidebar-list row:hover { background-color: @bg_3; }
+#sidebar-list row.ws-row.active,
+#sidebar-list row.ws-row:selected {
+  background-color: @bg_3;
+  border-left-color: @accent;
+}
 .ws-tree-connector { color: @text_dim; opacity: 0.5; font-size: 12px; }
 /* The subtree caret / its placeholder are flat glyphs, NOT raised buttons. */
 .ws-collapse {
@@ -325,7 +383,8 @@ list row:selected label {
 .ws-icon-btn.danger:hover { color: @red; }
 .ws-icon-btn.unread-on { color: @accent; opacity: 1; }
 
-.ws-row.active { background-color: @bg_4; }
+/* .ws-row.active's background moved to the #sidebar-list block above, which
+ * pairs it with the accent border and corrects @bg_4 -> @bg_3 (styles.css:1138). */
 .ws-row.unread .ws-name { color: @accent; }
 .ws-name-input {
   background-color: @bg;

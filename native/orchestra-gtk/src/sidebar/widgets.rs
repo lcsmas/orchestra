@@ -679,7 +679,11 @@ fn build_ws_row(s: &WsRowSpec, sender: &Sender<Msg>) -> gtk::ListBoxRow {
     if s.ws.marked_unread == Some(true) {
         dot.add_css_class("unread");
     }
-    dot.set_valign(gtk::Align::Center);
+    // Top-aligned, not centred: Electron's `.ws-item { align-items: flex-start }`
+    // (styles.css:1133) pairs with the dot's `margin-top: 4px` (styles.css:1226)
+    // so the dot tracks the row's FIRST text line. Centring makes it drift to
+    // the middle on rows that wrap to a pill line.
+    dot.set_valign(gtk::Align::Start);
     dot.set_tooltip_text(Some(&dot_tooltip(s)));
     hbox.append(&dot);
 
@@ -1137,7 +1141,9 @@ fn build_archived_row(s: &ArchivedRowSpec, sender: &Sender<Msg>) -> gtk::ListBox
     let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     dot.add_css_class("ws-dot");
     dot.add_css_class(status_css(s.ws.status));
-    dot.set_valign(gtk::Align::Center);
+    // Top-aligned to match build_ws_row / styles.css:1133 (`.ws-item` is
+    // flex-start on both row kinds).
+    dot.set_valign(gtk::Align::Start);
     hbox.append(&dot);
 
     let meta = gtk::Box::new(gtk::Orientation::Vertical, 1);
