@@ -365,7 +365,22 @@ fn handle_op(op: Op) -> Value {
                 return err(format!("no widget named {name:?}"));
             };
             let value = match prop {
-                Prop::Visible => json!(w.is_visible()),
+                // For a GtkRevealer, `is_visible()` is ALWAYS true — the widget
+                // exists; what changes is whether its child is revealed. Asking
+                // "is the banner visible?" and getting an unconditional true is
+                // an answer that looks like evidence and constrains nothing, so
+                // revealers report their reveal state instead.
+                Prop::Visible => match w.downcast_ref::<gtk::Revealer>() {
+                    // `reveals_child()` is the INTENT (has it been asked to
+                    // show?), which is what a caller means. Deliberately not
+                    // OR'd with `is_child_revealed()`: that stays true through
+                    // the hide animation, so a probe taken right after an
+                    // attach would report a banner still showing when the app
+                    // has already dismissed it — a transient read masquerading
+                    // as state.
+                    Some(r) => json!(r.reveals_child()),
+                    None => json!(w.is_visible()),
+                },
                 Prop::Css => json!(w
                     .css_classes()
                     .iter()

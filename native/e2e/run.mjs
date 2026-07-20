@@ -35,7 +35,111 @@ const SHOT_DIR = process.env.E2E_SHOT_DIR || mkTmp('shots');
 // ---- scenario registry ------------------------------------------------------
 
 const scenarios = [];
-const scenario = (name, fn, { skip } = {}) => scenarios.push({ name, fn, skip });
+/// Per-scenario time budget (ms).
+///
+/// DELIBERATELY PER-SCENARIO, not one global number. A single budget has to be
+/// tuned for the slowest scenario (the reconnect drives legitimately need
+/// ~180s+ because they span the client's give-up), which means a hang in a
+/// 200ms scenario would wait three minutes to report. That is slow enough that
+/// someone eventually RAISES the global budget instead of fixing the hang — the
+/// timeout erodes itself. A per-scenario budget stays honest about what that
+/// scenario should actually cost, so exceeding it means something.
+const DEFAULT_BUDGET_MS = 60_000;
+
+const scenario = (name, fn, { skip, budgetMs } = {}) =>
+  scenarios.push({ name, fn, skip, budgetMs: budgetMs ?? DEFAULT_BUDGET_MS });
+
+/// Standard probe for a scenario driving the GTK app: registers a capture that
+/// reads the app's own surfaces at the cut. Pass extra fields (child pids, the
+/// sockets in play) via `extra`.
+///
+/// Reads the banner and the footer, and — critically — asks the app for its
+/// live ConnectionState, because banner-vs-state disagreement localises a
+/// wedge: state Disconnected + banner still "reconnecting" ⇒ app-side
+/// delivery/handling; state never left Reconnecting ⇒ client give-up path.
+function appProbe(app, extra = () => ({})) {
+  // FIELD PROVENANCE. "the rc socket was unreachable", "the widget was not
+  // found", and "the label really is an empty string" are THREE DIFFERENT
+  // FACTS. Collapsing them into one blank field is how an ambiguous capture
+  // produces a confident wrong diagnosis — "banner was empty at the cut" reads
+  // as "no banner was shown" when it may mean "we never managed to ask". Since
+  // D1b is diagnosed from exactly these fields, every one carries how it was
+  // obtained: {status: 'value'|'not-found'|'probe-failed', value?, error?}.
+  const field = async (widget, prop) => {
+    let r;
+    try {
+      r = await app.rc.get(widget, prop);
+    } catch (e) {
+      return { status: 'probe-failed', error: `rc call threw: ${e.message}` };
+    }
+    if (!r) return { status: 'probe-failed', error: 'no reply from rc socket' };
+    if (!r.ok) {
+      // The harness says "no widget named …" when it is absent; anything else
+      // is a genuine failure to ask.
+      return /no widget named/i.test(r.error || '')
+        ? { status: 'not-found', error: r.error }
+        : { status: 'probe-failed', error: r.error || 'rc returned ok:false' };
+    }
+    return { status: 'value', value: r.value };
+  };
+
+  return async () => {
+    const banner = await field('backend-banner-text', 'label');
+    const out = {
+      // rc liveness is itself a signal: a wedged GTK main loop stops answering.
+      // Derived from whether we could ASK, never from what we got back.
+      rcSocketAnswers: banner.status !== 'probe-failed',
+      banner,
+      // The banner LABEL is not reset when the banner is hidden on attach, so a
+      // stale string can linger invisibly — reveal state disambiguates "showing
+      // this to the user" from "hiding a leftover".
+      bannerRevealed: await field('backend-banner', 'visible'),
+      footer: await field('status-text', 'label'),
+      connectionState: await field('debug-connection-state', 'label'),
+      ...extra(),
+    };
+    // THE CAPTURE MUST FAIL LOUDLY TOO: a partial capture that looks complete
+    // is the same trap one layer in. Surface which fields we failed to obtain
+    // rather than emitting a block with quiet holes in it.
+    const broken = Object.entries(out)
+      .filter(([, v]) => v && v.status === 'probe-failed')
+      .map(([k, v]) => `${k}: ${v.error}`);
+    if (broken.length) out.CAPTURE_INCOMPLETE = broken;
+    return out;
+  };
+}
+
+/// A scenario that blew its budget. Carries the state captured at the cut.
+class ScenarioTimeout extends Error {
+  constructor(name, budgetMs, capture) {
+    super(`exceeded its ${budgetMs}ms budget`);
+    this.name = 'ScenarioTimeout';
+    this.scenario = name;
+    this.capture = capture;
+  }
+}
+
+/// State captured at the moment we stop waiting.
+///
+/// The point is to make the give-up a REPORT rather than a verdict. A wedge
+/// currently yields no signal at all (0.0% CPU, empty log), so the cut is the
+/// one guaranteed moment we can look at the app — this turns a lucky ad-hoc
+/// probe into an automatic one.
+///
+/// `connectionState` and `banner` are captured SIDE BY SIDE because their
+/// DISAGREEMENT is the diagnostic: banner is the symptom, ConnectionState is
+/// the cause, and which one is stale says where the fault lives.
+async function captureAtCut(probe) {
+  if (!probe) return { note: 'scenario registered no probe — nothing to capture' };
+  try {
+    return await Promise.race([
+      probe(),
+      new Promise((res) => setTimeout(() => res({ note: 'probe itself timed out' }), 5_000)),
+    ]);
+  } catch (e) {
+    return { note: `probe threw: ${e.message}` };
+  }
+}
 
 /** Find a widget node by name in the list_widgets tree. */
 function findNode(tree, name) {
@@ -276,6 +380,194 @@ scenario('missing-dependency-warning', async ({ sway }) => {
 });
 
 // ---------------------------------------------------------------------------
+// SELF-TEST of the timeout instrument (M4 D2a). Deliberately hangs with a live
+// app so the harness's own timeout+capture is exercised for real.
+//
+// This exists because the timeout is an INSTRUMENT, and the question that has
+// bitten this project repeatedly applies to it too: how would we know if it
+// were lying? A capture that silently recorded empty strings would look like
+// evidence and constrain nothing. So this scenario asserts the capture fires
+// AND that it read real values off a real app.
+//
+// It is opt-in (skipped unless E2E_SELFTEST=1) because a deliberate hang costs
+// its whole budget — but it must be RUNNABLE on demand, not deleted, so the
+// instrument can be re-proven whenever it changes.
+// ---------------------------------------------------------------------------
+scenario(
+  'selftest-timeout-capture',
+  async ({ sway, ctl }) => {
+    const home = mkTmp('selftest-home');
+    const uiSock = path.join(mkTmp('selftest-sock'), 'ui.sock');
+    const backend = await startFakeBackend(uiSock, {
+      proto: 1,
+      appVersion: APP_VERSION,
+      backendKind: 'daemon',
+    });
+    const app = await launchGtk({
+      sway,
+      label: 'selftest',
+      env: { ORCHESTRA_HOME: home, ORCHESTRA_UI_SOCK: uiSock },
+    });
+    ctl.probe = appProbe(app, () => ({ note: 'selftest: deliberate hang' }));
+    try {
+      await waitFor(
+        async () => {
+          const r = await app.rc.get('status-text', 'label').catch(() => null);
+          return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
+        },
+        { desc: 'attach before hanging', timeoutMs: 20_000 },
+      );
+      // Hang forever. The runner's budget must cut this and capture state.
+      await new Promise(() => {});
+    } finally {
+      app.stop();
+      await backend.close();
+    }
+  },
+  {
+    budgetMs: 8_000,
+    skip: () =>
+      process.env.E2E_SELFTEST === '1'
+        ? null
+        : 'instrument self-test — set E2E_SELFTEST=1 to run (deliberately hangs for its full budget)',
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POSITIVE CONTROL for the timeout capture (M4 D2a). Hangs deliberately while
+// the app sits in a state whose values are ALREADY KNOWN VERBATIM — D1a's
+// reconnecting window — and asserts the capture reports THOSE.
+//
+// "The capture ran without error" is not evidence; a fabricator returning
+// defaults would also run without error. Calibrating against known values is
+// the mutation-test shape applied to an INSTRUMENT: if it reports the real
+// strings it is reading live state, if it reports blanks or defaults it lies.
+// D1a conveniently left a target whose exact copy is pinned by its own test.
+// ---------------------------------------------------------------------------
+scenario(
+  'selftest-capture-reads-known-state',
+  async ({ sway, ctl }) => {
+    const home = mkTmp('cal-home');
+    const uiSock = path.join(mkTmp('cal-sock'), 'ui.sock');
+    const backend = await startFakeBackend(uiSock, {
+      proto: 1,
+      appVersion: APP_VERSION,
+      backendKind: 'daemon',
+    });
+    const app = await launchGtk({
+      sway,
+      label: 'cal',
+      env: { ORCHESTRA_HOME: home, ORCHESTRA_UI_SOCK: uiSock },
+    });
+    // TWO-STATE calibration. Reproducing ONE known state could just be echoing
+    // a constant — right answer, wrong reason. So we capture in the ATTACHED
+    // state first (footer names the daemon, banner hidden), then again mid
+    // RECONNECT (footer "reconnecting…", banner showing attempt copy), and
+    // require BOTH to match AND to differ from each other. A constant-emitter
+    // passes neither.
+    const calibration = { attached: null, reconnecting: null };
+    const snapshot = () => appProbe(app)();
+    ctl.probe = async () => {
+      // NOTE the reconnecting snapshot is taken WHILE that state holds (below),
+      // not here. The window is ~1s — the fake backend's listener stays up
+      // after dropConnections(), so the client redials almost immediately — and
+      // an earlier version of this calibration read at the cut 8s later, by
+      // which time the app had legitimately returned to Connected. The capture
+      // was correct; the calibration's assumption was not. Timing the read to
+      // the state you mean to calibrate against is the whole trick.
+      const cap = await snapshot();
+      cap.atCutState = 'captured after the app had already recovered (expected)';
+      const a = calibration.attached ?? {};
+      const r = calibration.reconnecting ?? {};
+
+      // Attached-state expectations. NOTE the banner there is HIDDEN, so the
+      // right answer is "not revealed" — NOT an empty string, and NOT a probe
+      // failure. If those three collapsed into one blank this check could not
+      // be written, which is why provenance had to land before the format did.
+      const attachedOk =
+        a.footer?.status === 'value' &&
+        /backend: daemon/i.test(a.footer.value) &&
+        a.connectionState?.status === 'value' &&
+        a.connectionState.value === 'Connected' &&
+        a.bannerRevealed?.status === 'value' &&
+        a.bannerRevealed.value === false;
+
+      // Reconnecting-state expectations. Deliberately NOT asserting the banner
+      // TEXT here: the snapshot is taken the moment the state label flips, and
+      // within that same handler the state label is written BEFORE the banner
+      // copy — so the banner can still hold the previous string for an instant.
+      // The banner is a lagging indicator; ConnectionState is authoritative.
+      // (Asserting the banner text here failed while the capture was perfectly
+      // correct — a calibration bug, not a capture bug.) D1a separately pins
+      // the banner copy itself, polling until it settles.
+      const reconnectingOk =
+        r.footer?.status === 'value' &&
+        /backend: reconnecting…/i.test(r.footer.value) &&
+        r.connectionState?.status === 'value' &&
+        /^Reconnecting\{/.test(r.connectionState.value);
+
+      // The two captures must actually DIFFER — a constant would match at most
+      // one, but this makes the requirement explicit rather than incidental.
+      const differ =
+        a.footer?.value !== r.footer.value ||
+        a.connectionState?.value !== r.connectionState.value;
+
+      cap.CALIBRATION = {
+        attachedState: calibration.attached,
+        // Show the judged snapshot, not just the verdict — a calibration that
+        // reports pass/fail without the evidence it judged is unauditable.
+        reconnectingState: calibration.reconnecting,
+        attachedMatchesKnown: attachedOk,
+        reconnectingMatchesKnown: reconnectingOk,
+        statesDiffer: differ,
+        verdict:
+          attachedOk && reconnectingOk && differ
+            ? 'READS LIVE STATE (two distinct known states reproduced)'
+            : 'DID NOT REPRODUCE BOTH KNOWN STATES',
+      };
+      return cap;
+    };
+    try {
+      await waitFor(
+        async () => {
+          const r = await app.rc.get('status-text', 'label').catch(() => null);
+          return r && r.ok && /backend: daemon/i.test(r.value || '') ? r.value : null;
+        },
+        { desc: 'attach before dropping', timeoutMs: 20_000 },
+      );
+      // KNOWN STATE #1: fully attached. Footer names the daemon, banner hidden.
+      calibration.attached = await snapshot();
+      // Enter KNOWN STATE #2 (D1a's window), then hang inside it so the cut
+      // lands there.
+      backend.dropConnections();
+      // Snapshot INSIDE the ~1s window, the moment the app reports it. Waiting
+      // for the cut would read a recovered app (see the note in ctl.probe).
+      calibration.reconnecting = await waitFor(
+        async () => {
+          const cap = await snapshot();
+          return cap.connectionState.status === 'value' &&
+            /^Reconnecting\{/.test(cap.connectionState.value)
+            ? cap
+            : null;
+        },
+        { desc: 'the reconnecting window', timeoutMs: 30_000, intervalMs: 25 },
+      );
+      await new Promise(() => {}); // hang; the budget cuts us here
+    } finally {
+      app.stop();
+      await backend.close();
+    }
+  },
+  {
+    budgetMs: 8_000,
+    skip: () =>
+      process.env.E2E_SELFTEST === '1'
+        ? null
+        : 'instrument self-test — set E2E_SELFTEST=1 to run (deliberately hangs for its full budget)',
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Scenario: the UI must not contradict itself while reconnecting (M4 D1a,
 // gate criterion 5). The client owns the retry, so `self.backend` stays Some
 // during a reconnect and only Disconnected clears it — which made the footer
@@ -348,7 +640,9 @@ scenario('footer-not-stale-while-reconnecting', async ({ sway }) => {
 // pointer — the app must re-attach within seconds, NOT sit on the dead path
 // for the client's full ~3 min give-up.
 // ---------------------------------------------------------------------------
-scenario('reconnect-new-socket-path', async ({ sway }) => {
+scenario(
+  'reconnect-new-socket-path',
+  async ({ sway, ctl }) => {
   const home = mkTmp('reattach-home');
   const sockA = path.join(home, 'ui-a.sock');
   const sockB = path.join(home, 'ui-b.sock');
@@ -364,6 +658,16 @@ scenario('reconnect-new-socket-path', async ({ sway }) => {
   // No ORCHESTRA_UI_SOCK: discovery must go through the POINTER file, which is
   // what moves when the backend restarts.
   const app = await launchGtk({ sway, label: 'reattach', env: { ORCHESTRA_HOME: home } });
+  // If this scenario hangs (the M4 D1b wedge), the runner's budget cuts it and
+  // this probe records WHY: ConnectionState and banner side by side.
+  ctl.probe = appProbe(app, () => ({
+    sockA,
+    sockB,
+    pointerNow: fs.existsSync(path.join(home, 'ui-sock'))
+      ? fs.readFileSync(path.join(home, 'ui-sock'), 'utf8').trim()
+      : '<pointer absent>',
+    sockBExists: fs.existsSync(sockB),
+  }));
 
   try {
     await waitFor(
@@ -398,11 +702,17 @@ scenario('reconnect-new-socket-path', async ({ sway }) => {
     );
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
     return `re-attached to the moved socket in ~${secs}s (old behavior: ~180s give-up)`;
-  } finally {
-    app.stop();
-    await backend.close();
-  }
-});
+    } finally {
+      app.stop();
+      await backend.close();
+    }
+  },
+  // Past the client's 180s give-up (BackoffPolicy max_elapsed_ms), because the
+  // give-up is ON the recovery path here: the app only drops the backend and
+  // re-runs discovery once Disconnected arrives. A budget under 180s would cut
+  // before the mechanism under test could possibly fire.
+  { budgetMs: 240_000 },
+);
 
 // ---------------------------------------------------------------------------
 // Scenario: same-path reconnect is UNREGRESSED (the other direction the M3 fix
@@ -594,15 +904,42 @@ async function main() {
       continue;
     }
     const t0 = Date.now();
+    // A scenario may register a probe (see `ctl.probe`) that the timeout calls
+    // to snapshot app state at the cut.
+    const ctl = { probe: null };
+    let timer = null;
     try {
-      const detail = await s.fn({ sway });
+      const detail = await Promise.race([
+        s.fn({ sway, ctl }),
+        new Promise((_, reject) => {
+          timer = setTimeout(async () => {
+            reject(new ScenarioTimeout(s.name, s.budgetMs, await captureAtCut(ctl.probe)));
+          }, s.budgetMs);
+        }),
+      ]);
       const ms = Date.now() - t0;
       console.log(`PASS  ${s.name}  (${ms}ms)\n      ${detail || ''}\n`);
       passed++;
     } catch (e) {
       const ms = Date.now() - t0;
-      console.log(`FAIL  ${s.name}  (${ms}ms)\n      ${e.message}\n`);
+      // A TIMED-OUT SCENARIO IS A FAILING SCENARIO — never a skip.
+      //
+      // Skipping is the tempting shortcut ("we couldn't test this, move on"),
+      // and it would recreate absence-read-as-signal ONE LEVEL UP inside the
+      // very tool built to remove it: the suite goes green, nobody notices the
+      // scenario stopped proving anything, and we are back to interpreting
+      // silence. So: FAIL, non-zero exit, and print what we saw at the cut.
+      if (e instanceof ScenarioTimeout) {
+        console.log(
+          `FAIL  ${s.name}  (${ms}ms)\n      TIMED OUT — ${e.message}\n` +
+            `      state at cut: ${JSON.stringify(e.capture, null, 2).replace(/\n/g, '\n      ')}\n`,
+        );
+      } else {
+        console.log(`FAIL  ${s.name}  (${ms}ms)\n      ${e.message}\n`);
+      }
       failed++;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
   if (sway) sway.stop();
