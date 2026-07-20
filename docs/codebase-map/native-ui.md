@@ -133,6 +133,35 @@ E2E drives it headlessly via the remote-control actions `sidebar.promote`,
 `sidebar.demote`, and `sidebar.set-parent` (param `"<ws>|<parent>"`; a bare
 `"<ws>"` detaches) — GTK cannot synthesize pointer drags without a seat.
 
+## Welcome / no-workspace screen — main_pane.rs
+
+`build_welcome()` (`main_pane.rs`) renders the Electron welcome branch
+(`src/renderer/App.tsx:381-418`): heading, tagline, a three-button CTA row, a
+3×2 feature-card grid, and the ghost help button. Values are ported from
+`src/renderer/styles.css` with the source line cited at each rule; the paint
+half lives in the `.welcome-*` block appended to `theme.css`, the layout half
+(gaps, margins, grid spacing) is set in Rust because GTK CSS has no flex/grid
+gap.
+
+Two non-obvious points:
+
+- **The CTAs are scoped to `.empty-actions`**, not styled as bare
+  `.primary`/`.secondary`. `theme.css` already defines a flat `.primary` for the
+  Insights run button that does *not* match Electron's gradient
+  `button.primary`; widening it would silently restyle Insights.
+- **`MainPane::welcome_ctas()`** exposes the four buttons so `app.rs` can route
+  them at its overlay/spawn `Msg`s. Until it does, they render correctly but do
+  nothing.
+
+`mainpane.clear-active` is a remote-control action that drops the active
+workspace so E2E can reach this screen — the app auto-selects a workspace at
+boot and no user affordance deselects, so the welcome screen is otherwise
+undrivable. The pane also reflects which stack branch is on stage as
+`showing-empty` / `showing-content` on `main-area`: GTK reports
+`is_visible() == true` for a `GtkStack`'s *off-screen* child as well as its
+current one (measured — both branches report true at once), so a drive that
+asserts on `visible` cannot fail and proves nothing. Assert on the css class.
+
 ## Packaging, CI, E2E
 
 - **Packaging** (`native/packaging/`): `orchestra-gtk.desktop`, `gen-icons.mjs`
