@@ -14,6 +14,7 @@ import {
   getCurrentBranch,
   isGitRepo,
   listBranches,
+  listUnmergedCommits,
   listWorktreePaths,
   removeWorktree,
   renameWorktreeBranch,
@@ -438,6 +439,8 @@ const ORCHESTRATOR_BRIEF =
   'You have no repo of your own, so every /spawn MUST include an explicit "repoPath" naming a repo orchestra already knows about (and optionally a "baseBranch"). ' +
   'Track the agents you spawn with /peers, read their progress with /read, and follow up with /message. ' +
   "Follow-up work in an area a child agent already owns goes back to THAT child via /message — never take it over yourself, however small. " +
+  'For a milestone-sized piece that itself needs several agents, you may create a SUB-orchestrator: spawn it, then run `orchestra promote <child-id>` — its branch becomes that milestone\'s integration branch and the agents IT spawns nest beneath it. Keep the tree shallow: at most one sub-orchestrator level. ' +
+  'Close the loop before reporting anything as done: a child\'s "done"/"merged" report is a claim, not a state — agents keep committing after they report. Run `orchestra verify-landed <child-id> --into <branch-it-merged-into>` for EVERY child and require LANDED (0 unmerged commits) before accepting its work or relaying completion to the user. ' +
   'Start by asking the user what they want orchestrated and which repo(s) the work belongs in.';
 
 /** Create a non-git session under `~/.orchestra/scratch`. `kind` selects the
@@ -1586,6 +1589,75 @@ export async function dispatchAttachRequest(input: {
   return { ok: true, id, parentId: rawParent, branch: ws.branch };
 }
 
+// ---------- Verify a delegated branch landed (coordinator close-out) ----------
+
+export interface VerifyLandedResult {
+  ok: boolean;
+  id?: string;
+  /** The branch whose commits were checked (the child workspace's branch). */
+  branch?: string;
+  /** The ref the branch was checked against, in the child's repo. */
+  target?: string;
+  /** Commits on `branch` that are NOT on `target`. 0 = fully landed. */
+  unmerged?: number;
+  /** One `<short-sha> <subject>` line per unmerged commit, newest first. */
+  commits?: string[];
+  error?: string;
+}
+
+/** Socket entry point for `/verifyLanded` — the mechanical close-out check for
+ * coordinators. A child's "done"/"merged" report is a claim, not a state:
+ * agents keep committing after they report (review feedback lands late), so a
+ * coordinator that trusts the report — or ancestry-checks a SHA the child
+ * named earlier — silently strands the late commits. This answers the only
+ * question that matters at close: is EVERY commit on the child's branch tip
+ * reachable from the target?
+ *
+ * Target resolution: an explicit `into` ref name (what a repo-less coordinator
+ * passes — it has no branch of its own to check against) wins; otherwise the
+ * calling workspace's own branch (`from`), the promoted-worktree /
+ * integration-branch case, which must live in the same repo as the child.
+ * Read-only — never mutates git state. Never throws; answers `{ ok }`. */
+export async function dispatchVerifyLandedRequest(input: {
+  id?: string;
+  from?: string;
+  into?: string;
+}): Promise<VerifyLandedResult> {
+  const id = input.id?.trim();
+  if (!id) return { ok: false, error: 'missing id' };
+  const ws = store.getWorkspace(id);
+  if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
+  if (isScratchLike(ws) || !ws.repoPath) {
+    return { ok: false, error: `workspace ${ws.branch} (${id}) has no git branch to verify` };
+  }
+  let target = input.into?.trim() ?? '';
+  if (!target) {
+    const from = input.from?.trim();
+    const caller = from ? store.getWorkspace(from) : undefined;
+    if (!caller || isScratchLike(caller) || !caller.repoPath) {
+      return {
+        ok: false,
+        error:
+          'no target branch: the calling workspace has no git branch of its own — pass one explicitly with --into <branch>',
+      };
+    }
+    if (caller.repoPath !== ws.repoPath) {
+      return {
+        ok: false,
+        error:
+          'caller and child live in different repos — pass the target explicitly with --into <branch>',
+      };
+    }
+    target = caller.branch;
+  }
+  try {
+    const commits = await listUnmergedCommits(ws.repoPath, target, ws.branch);
+    return { ok: true, id, branch: ws.branch, target, unmerged: commits.length, commits };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'verify failed' };
+  }
+}
+
 // ---------- Migrate a workspace to a different account ----------
 
 export interface MigrateAccountResult {
@@ -2312,6 +2384,21 @@ Optional flags:
   implies the new workspace is not yours to track — they asked for an
   "independent", "standalone", or "separate top-level" workspace. If genuinely
   ambiguous, ask.
+
+## Delegating a milestone to a sub-orchestrator
+
+For a piece that is itself several agents' worth of work, spawn it and then
+promote the NEW workspace so it can coordinate children of its own:
+
+\`\`\`bash
+orchestra spawn --task "<milestone brief>"   # prints the new <workspace-id>
+orchestra promote <workspace-id>
+\`\`\`
+
+Its branch becomes the milestone's integration branch, the agents IT spawns
+nest beneath it, and you hold it to the same close-out standard as any child
+(\`orchestra verify-landed <workspace-id>\` — see \`orchestra-comms\`). Keep the
+tree shallow: at most one sub-orchestrator level.
 `;
 
 const COMMS_SKILL = `---
@@ -2354,6 +2441,23 @@ orchestra message <peer-id> <your message...>
 Prints \`Delivered (live).\` if the peer was running, or \`Delivered (started).\`
 if it was stopped and got woken to handle it now. The peer sees the message came
 from you and can reply back to your workspace.
+
+## 4. Verify a delegated branch actually landed
+
+A peer's "done"/"merged" report is a claim, not a state — agents keep
+committing after they report (review feedback lands late), and nothing fails
+loudly when those late commits strand. Before accepting delegated work as
+complete, ask git instead of the agent:
+
+\`\`\`bash
+orchestra verify-landed <peer-id>                  # against YOUR branch (you are a git worktree)
+orchestra verify-landed <peer-id> --into <branch>  # against an explicit branch in the peer's repo
+\`\`\`
+
+Prints \`LANDED: … (0 unmerged)\` and exits 0 when every commit on the peer's
+branch TIP is on the target, or \`NOT LANDED: <n> commit(s) …\` listing the
+missing shas and exits 1. Require LANDED for EVERY child before reporting a
+milestone done.
 `;
 
 const REPO_ROUTES_SKILL = `---
@@ -2395,33 +2499,48 @@ Prints \`Deleted workspace <id> (<branch>)\`, or errors with \`unknown workspace
 
 const PROMOTE_SKILL = `---
 name: orchestra-promote
-description: Promote THIS scratch session into an orchestrator — a coordinator that delegates work to child agents it spawns instead of editing code itself. Use when the user wants this repo-less scratch session to start orchestrating parallel agents.
+description: Promote a workspace into an orchestrator — a coordinator that child agents nest under. Works on THIS session (scratch OR git worktree) and on any other workspace by id, e.g. a spawned child that should coordinate a milestone as a sub-orchestrator.
 ---
 
-# Promote this scratch session to an orchestrator
+# Promote a workspace to an orchestrator
 
-This applies ONLY to a **scratch** session (no repo, no branch). Promoting flips
-it to an *orchestrator*: the app moves it into the sidebar's "Orchestrators"
-section and nests every worktree you later spawn beneath it, so a whole fleet of
-child agents is visible at a glance under this session.
+Promoting makes a workspace a coordinator that children nest under: every
+workspace it later spawns (or you \`orchestra attach\` to it) renders beneath it
+in the sidebar, so a whole fleet of child agents is visible at a glance. Both
+workspace flavours can be promoted:
 
-Run this exact command (the \`orchestra\` CLI reads \$ORCHESTRA_SOCK /
-\$ORCHESTRA_WS_ID from your env, so it promotes THIS session):
+- A **scratch session** (no repo) becomes a pure coordinator: it delegates
+  everything and never edits code itself.
+- A **git worktree** keeps its repo, branch, and full diff/merge/PR flows, and
+  gains the coordinator role alongside them (dual role). This is the
+  integration-branch pattern: a branch that coordinates child agents AND
+  carries its own commits.
+
+Run this exact command (the \`orchestra\` CLI reads \$ORCHESTRA_SOCK from your
+env). Promote THIS session via \$ORCHESTRA_WS_ID, or any other workspace by its
+id (\`orchestra peers\` lists ids):
 
 \`\`\`bash
-orchestra promote "\$ORCHESTRA_WS_ID"
+orchestra promote "\$ORCHESTRA_WS_ID"   # promote this session
+orchestra promote <workspace-id>       # promote another workspace — e.g. a child
+                                       # you spawned, making it a sub-orchestrator
 \`\`\`
 
-Prints \`Promoted <id> (<branch>) to orchestrator\` on success (an
-already-promoted session also succeeds), or errors — e.g. if this is a git
-worktree, which can't be an orchestrator.
+Prints \`Promoted <id> (<branch>) to orchestrator\` on success; promoting an
+already-promoted workspace succeeds too.
 
 Once promoted, adopt the orchestrator role for the rest of this session:
 
 ${ORCHESTRATOR_BRIEF}
 
-Use the \`orchestra-spawn\` skill for each \`/spawn\`, and \`orchestra-comms\` to
-track and follow up with the agents you spawn.
+If this session is a promoted GIT WORKTREE, two lines above bend: you DO have a
+repo (spawns inherit it, so "repoPath" is only needed to target a different
+repo), and you keep doing the integration/implementation work that belongs to
+your own branch while delegating the rest — \`orchestra verify-landed <child-id>\`
+then checks children against THIS branch with no --into needed.
+
+Use the \`orchestra-spawn\` skill for each spawn, and \`orchestra-comms\` to
+track, follow up with, and verify the agents you spawn.
 `;
 
 const ATTACH_SKILL = `---
@@ -2436,9 +2555,11 @@ ALSO pull an existing workspace — one that wasn't spawned by this orchestrator
 under it after the fact, or pop one back out to its own repo section. Both use
 the \`orchestra\` CLI (reads \$ORCHESTRA_SOCK from your env).
 
-The parent MUST be an orchestrator. If you don't have one yet, promote a scratch
-session first with the \`orchestra-promote\` skill. Use \`orchestra-comms\`
-(\`orchestra peers\`) to discover the ids of existing workspaces.
+The parent MUST be an orchestrator. If you don't have one yet, promote one
+first with the \`orchestra-promote\` skill — a scratch session (pure
+coordinator) and a git worktree (dual-role integration branch) both qualify.
+Use \`orchestra-comms\` (\`orchestra peers\`) to discover the ids of existing
+workspaces.
 
 ## Attach a workspace under an orchestrator
 
@@ -2447,8 +2568,9 @@ orchestra attach <workspace-id> <orchestrator-id>
 \`\`\`
 
 Prints \`Attached <id> under orchestrator <parentId>\` and the sidebar re-nests it
-live; it errors if an id is unknown, the parent isn't an orchestrator, or you
-tried to parent a workspace under itself.
+live; it errors if an id is unknown, the parent isn't an orchestrator, or the
+edge would create a parent cycle (a workspace under itself, directly or through
+a chain of orchestrators).
 
 ## Detach a workspace (back to its own section)
 
@@ -2588,11 +2710,11 @@ sentinel="\${ORCHESTRA_WORKTREE:-.}/.orchestra/.orchestrator"
 # work it exists to do. Only the pure-coordinator text is absolute.
 if [ "\$(cat "\$sentinel" 2>/dev/null)" = "dual" ]; then
 cat <<'EOF'
-[orchestra] Standing role reminder — you are an ORCHESTRATOR *and* a working branch. Child agents nest under this workspace, and this branch also carries your own commits, so both halves of the role are real: keep doing the integration/implementation work that belongs to THIS branch, and delegate work that belongs to a child. Route changes in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra message <id> "<task>"\`) rather than editing their worktree — you cannot edit another workspace's files anyway. Spawn a NEW agent for independent work (orchestra-spawn skill), and keep tracking children (\`orchestra peers\`, \`orchestra read <id>\`) alongside your own work.
+[orchestra] Standing role reminder — you are an ORCHESTRATOR *and* a working branch. Child agents nest under this workspace, and this branch also carries your own commits, so both halves of the role are real: keep doing the integration/implementation work that belongs to THIS branch, and delegate work that belongs to a child. Route changes in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra message <id> "<task>"\`) rather than editing their worktree — you cannot edit another workspace's files anyway. Spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level). Keep tracking children (\`orchestra peers\`, \`orchestra read <id>\`) alongside your own work. And close the loop before declaring anything done: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Run \`orchestra verify-landed <child-id>\` (checks the child's branch tip against THIS branch) for EVERY child and require LANDED (0 unmerged commits) before accepting its work or reporting a milestone complete.
 EOF
 else
 cat <<'EOF'
-[orchestra] Standing role reminder — you are an ORCHESTRATOR. You coordinate child agents; you do not implement. Do NOT edit code, fix bugs, or take over follow-up work yourself — not even a "quick" fix, and regardless of what earlier (possibly compacted-away) context said: delegate it. Route work in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra message <id> "<task>"\`); spawn a NEW agent for independent work (orchestra-spawn skill). Reserve your own turns for planning, delegating, tracking children (\`orchestra peers\`, \`orchestra read <id>\`), reviewing their results, and reporting to the user.
+[orchestra] Standing role reminder — you are an ORCHESTRATOR. You coordinate child agents; you do not implement. Do NOT edit code, fix bugs, or take over follow-up work yourself — not even a "quick" fix, and regardless of what earlier (possibly compacted-away) context said: delegate it. Route work in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra message <id> "<task>"\`); spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level). Reserve your own turns for planning, delegating, tracking children (\`orchestra peers\`, \`orchestra read <id>\`), reviewing their results, and reporting to the user. And close the loop before relaying "done" upward: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Run \`orchestra verify-landed <child-id> --into <branch-it-merged-into>\` for EVERY child and require LANDED (0 unmerged commits) first.
 EOF
 fi
 exit 0

@@ -14,6 +14,7 @@ import {
   dispatchDeleteWorkspaceRequest,
   dispatchPromoteRequest,
   dispatchAttachRequest,
+  dispatchVerifyLandedRequest,
   dispatchMigrateAccountRequest,
   dispatchAccountsListRequest,
 } from './workspaces';
@@ -215,6 +216,19 @@ export async function startHooksServer(): Promise<void> {
                 await dispatchAttachRequest({
                   id: msg.id,
                   parentId: typeof msg.parentId === 'string' ? msg.parentId : null,
+                }),
+              );
+            } else {
+              send(200, { ok: false, error: 'missing id' });
+            }
+          } else if (route === '/verifyLanded') {
+            if (typeof msg.id === 'string') {
+              send(
+                200,
+                await dispatchVerifyLandedRequest({
+                  id: msg.id,
+                  from: typeof msg.from === 'string' ? msg.from : undefined,
+                  into: typeof msg.into === 'string' ? msg.into : undefined,
                 }),
               );
             } else {

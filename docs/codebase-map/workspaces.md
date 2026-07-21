@@ -37,7 +37,13 @@ A workspace is an isolated execution environment for one Claude Code agent.
   historic sentinel) yields the absolute "you do not implement" text. The
   PreToolUse guard needs no such split: it already allows writes inside the
   workspace's **own** worktree and blocks only edits to *other* workspaces'
-  files, which is exactly the dual-role contract.
+  files, which is exactly the dual-role contract. Both the brief and both
+  reminder variants carry the delegation loop's **close** as well as its open:
+  verify every child with `orchestra verify-landed` before accepting "done"
+  (see `dispatchVerifyLandedRequest` below), and the sanctioned
+  **sub-orchestrator** move — spawn a child, `orchestra promote <child-id>`,
+  at most one such level — so model-initiated recursion is a documented
+  pattern, not an accident of the attach machinery.
 
 Use the helper **`isScratchLike(ws)`** (`types.ts:246`) instead of comparing
 `kind` to a literal — it covers both non-git kinds in one place.
@@ -175,6 +181,7 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 | `dispatchPromoteRequest` | `:1309` | `/promote` | Make a workspace a coordinator (idempotent). **Two routes**: a scratch session swaps `kind` → `'orchestrator'`; a **git worktree keeps its kind and gains `canOrchestrate`**, so it parents children while keeping repo/branch/diff/merge/PR. |
 | `dispatchDemoteRequest` | `:1384` | `/demote` | Inverse of promote. Clears `canOrchestrate` and **detaches every child** (a `parentId` pointing at a non-orchestrator renders nowhere). Refuses the `'orchestrator'` KIND — it is repo-less by nature and has no worktree to fall back to. |
 | `dispatchAttachRequest` | `:1456` | `/attach` | Re-parent under a coordinator (`canOrchestrate`), or clear `parentId` to detach. **Full-ancestry cycle check**: a promoted worktree can itself have a parent, so A→B→A is reachable and the old bare self-check was no longer sufficient. |
+| `dispatchVerifyLandedRequest` | `~:1590` | `/verifyLanded` | **Coordinator close-out check** (read-only): are ALL commits on a child's branch **tip** reachable from the target? Target = explicit `into` ref (repo-less coordinators) or the caller's own branch (`from`, must share the child's repo — the integration-branch case). Backed by `listUnmergedCommits` (git.ts, ref-validates first so a deleted branch fails loudly instead of reading "0 unmerged"; tests in `git-verify-landed.test.ts`). Exists because a child's "done"/"merged" report decays — agents keep committing after they report. |
 | `dispatchPeersRequest` | `:1239` | `/peers` | List other live workspaces (`PeerInfo[]`). |
 | `dispatchReadRequest` | `:1266` | `/read` | Peer branch + last ~80 transcript lines, ANSI-stripped. |
 | `dispatchMessageRequest` | `:1353` | `/message` | Deliver to peer: **live** (type into running TUI), **started** (wake with `--continue`), or **inbox** (park in `~/.orchestra/inbox/<id>.txt`). |

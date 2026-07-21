@@ -1002,6 +1002,40 @@ export async function getCurrentBranch(worktreePath: string): Promise<string> {
   }
 }
 
+/** Commits reachable from `branch` but not from `targetRef` — `git log
+ *  targetRef..branch`, the close-out check a coordinator runs before accepting
+ *  a delegated branch's work as landed. Returns one `<short-sha> <subject>`
+ *  line per unmerged commit, newest first; an empty array means every commit
+ *  on the branch tip is on the target.
+ *
+ *  Both refs are verified to resolve BEFORE the log runs: a deleted or renamed
+ *  branch must fail loudly here, because `git log` against a missing ref would
+ *  error anyway but a typo'd target that happens to resolve (or a caller that
+ *  swallowed the error into an empty list) would read as "0 unmerged" — a
+ *  false LANDED verdict on the exact question this function exists to make
+ *  trustworthy. */
+export async function listUnmergedCommits(
+  repoPath: string,
+  targetRef: string,
+  branch: string,
+): Promise<string[]> {
+  try {
+    await runGit(repoPath, ['rev-parse', '--verify', '--quiet', `${targetRef}^{commit}`]);
+  } catch {
+    throw new Error(`target ref not found in repo: ${targetRef}`);
+  }
+  try {
+    await runGit(repoPath, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+  } catch {
+    throw new Error(`branch not found in repo: ${branch}`);
+  }
+  const out = await runGit(repoPath, ['log', '--format=%h %s', `${targetRef}..${branch}`]);
+  return out
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
 async function runGit(repoPath: string, args: string[]): Promise<string> {
   try {
     const { stdout } = await pexec('git', args, {

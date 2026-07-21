@@ -132,6 +132,9 @@ Usage:
   orchestra promote <id>                         Promote a scratch session into an orchestrator
   orchestra attach <id> <parentId>               Nest an existing workspace under an orchestrator
   orchestra detach <id>                          Pop a workspace back out to its own section
+  orchestra verify-landed <id> [--into <branch>] Check every commit on a workspace's branch tip
+                                                 landed on the target (default: YOUR branch);
+                                                 exit 0 = landed, 1 = unmerged commits remain
   orchestra add-repo <path>                       Register a repo by path
   orchestra delete <id> [--yes]                  Delete a workspace (worktree + branch)
   orchestra accounts                              List configured Claude accounts (id + label)
@@ -319,6 +322,34 @@ async function main(argv: string[]): Promise<void> {
       if (!res.ok) fail(res.error ?? 'failed to detach workspace');
       process.stdout.write(`Detached ${res.id as string}\n`);
       return;
+    }
+
+    case 'verify-landed': {
+      // The coordinator close-out check: a child's "done"/"merged" report is a
+      // claim, not a state (agents keep committing after they report), so this
+      // asks git the only question that matters at close — is every commit on
+      // the child's branch TIP reachable from the target branch? Exit code is
+      // the verdict (0 landed / 1 not), so scripts and briefs can gate on it.
+      const { value: into, rest } = takeFlag(args, '--into');
+      const id = rest[0];
+      if (!id) fail('usage: orchestra verify-landed <id> [--into <branch>]');
+      const res = await request('/verifyLanded', { id, from: selfWorkspaceId(), into });
+      if (!res.ok) fail(res.error ?? 'failed to verify');
+      const unmerged = (res.unmerged as number | undefined) ?? 0;
+      const branch = res.branch as string;
+      const target = res.target as string;
+      if (unmerged === 0) {
+        process.stdout.write(
+          `LANDED: every commit on ${branch} is on ${target} (0 unmerged)\n`,
+        );
+        return;
+      }
+      const commits = (res.commits as string[] | undefined) ?? [];
+      process.stdout.write(
+        `NOT LANDED: ${unmerged} commit(s) on ${branch} missing from ${target}:\n` +
+          `${commits.map((c) => `  ${c}`).join('\n')}\n`,
+      );
+      process.exit(1);
     }
 
     case 'add-repo': {

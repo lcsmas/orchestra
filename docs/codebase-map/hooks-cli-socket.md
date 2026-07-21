@@ -31,6 +31,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | `/deleteWorkspace` | `id` | `{ ok, id?, branch? }` |
 | `/promote` | `id` | `{ ok, id?, branch?, kind? }` |
 | `/attach` | `id` (+ `parentId?`) | `{ ok, id?, parentId? }` |
+| `/verifyLanded` | `id` (+ `from?`, `into?`) | `{ ok, id?, branch?, target?, unmerged?, commits? }` — coordinator close-out: are all commits on the child's branch tip on the target (explicit `into` ref, else the `from` caller's branch)? |
 | `/migrateAccount` | `id` (+ `accountId?` — null/'' = default login) | `{ ok, id?, branch?, accountId?, resumed? }` |
 | `/accounts` | — | `{ ok, accounts?: {id,label,configDir}[] }` |
 | `/loginUrl` | `accountId`, `url` | `{ ok, mode?: 'window'\|'external' }` — routes a login PTY's browser-open into the account's isolated OAuth window (`main/login-browser.ts`) |
@@ -113,7 +114,10 @@ Standalone Node HTTP client (no npm deps) that POSTs to the socket. Reads
 Subcommands: `peers`, `read <id> [--lines N]`, `message <id> <text…>`, `spawn
 --task <text> [--repo <path>] [--base <branch>] [--detached]` (`--detached`
 creates the workspace parentless — its own top-level section), `rename <id> <branch>`,
-`promote <id>`, `attach <id> <parentId>`, `detach <id>`, `add-repo <path>`,
+`promote <id>`, `attach <id> <parentId>`, `detach <id>`, `verify-landed <id>
+[--into <branch>]` (close-out check: exits 0 only when every commit on the
+workspace's branch tip is on the target — the caller's branch by default),
+`add-repo <path>`,
 `delete <id> --yes`, `accounts` (list configured accounts), `migrate-account <id>
 <accountId|--default>` (migrate a workspace to another login / back to default),
 `login-url <url>` (internal — invoked by the login-browser shim below; account id
