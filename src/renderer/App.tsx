@@ -18,6 +18,7 @@ import { playFinishedChime } from './chime';
 import { dlog } from './debug';
 import type { RepoEntry } from '../shared/types';
 import { isScratchLike } from '../shared/types';
+import { readDefaultAgentView, terminalTabLabel } from './default-agent-view';
 
 const NVIM_WIDTH_KEY = 'orchestra.nvimPaneWidthPx';
 const NVIM_WIDTH_DEFAULT = 520;
@@ -456,8 +457,13 @@ export function App() {
                 <button
                   className={`tab ${view === 'terminal' ? 'active' : ''}`}
                   onClick={() => setView('terminal')}
+                  title={
+                    readDefaultAgentView() === 'structured'
+                      ? 'Raw embedded terminal (Claude Code TUI) — the structured view is your default'
+                      : 'Embedded terminal (Claude Code TUI)'
+                  }
                 >
-                  Terminal
+                  {terminalTabLabel(readDefaultAgentView())}
                 </button>
                 {!isScratch && (
                 <button

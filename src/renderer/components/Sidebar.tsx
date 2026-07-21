@@ -10,6 +10,7 @@ import type {
 import { isScratchLike, canOrchestrate } from '../../shared/types';
 import { groupByHost, hostLabel } from '../host-grouping';
 import { SoundSettings } from './SoundSettings';
+import { AgentViewSettings } from './AgentViewSettings';
 import { LinearSettings } from './LinearSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
 import { NewWorkspaceBranchPopover } from './NewWorkspaceBranchPopover';
@@ -660,6 +661,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     }
   });
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
+  const [agentViewSettingsOpen, setAgentViewSettingsOpen] = useState(false);
   const setHelpOpen = useStore((s) => s.setHelpOpen);
   const [linearSettingsOpen, setLinearSettingsOpen] = useState(false);
   const [accountsSettingsOpen, setAccountsSettingsOpen] = useState(false);
@@ -1413,6 +1415,18 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           </button>
           <button
             className="header-icon-btn"
+            onClick={() => setAgentViewSettingsOpen(true)}
+            title="Default agent view — terminal or structured (SDK) pane"
+            aria-label="Default agent view settings"
+          >
+            {/* two-panes glyph: choosing which agent surface opens by default */}
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <line x1="12" y1="4" x2="12" y2="20" />
+            </svg>
+          </button>
+          <button
+            className="header-icon-btn"
             onClick={() => setAccountsSettingsOpen(true)}
             title="Claude accounts — usage badges per workspace"
             aria-label="Claude accounts settings"
@@ -2113,6 +2127,9 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         })}
 
         {soundSettingsOpen && <SoundSettings onClose={() => setSoundSettingsOpen(false)} />}
+        {agentViewSettingsOpen && (
+          <AgentViewSettings onClose={() => setAgentViewSettingsOpen(false)} />
+        )}
         {accountsSettingsOpen && (
           <AccountsSettings onClose={() => setAccountsSettingsOpen(false)} />
         )}

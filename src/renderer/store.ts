@@ -19,6 +19,7 @@ import { emptySession, foldEvents } from '../shared/agent-events';
 import { createAgentEventQueue } from './agent-event-queue';
 import { dialog } from './components/Dialog';
 import { dlog, debugEnabled } from './debug';
+import { readDefaultAgentView } from './default-agent-view';
 
 // How many workspace probes (each an IPC → git/gh subprocess in main) a poll
 // fans out at once. The polls used to `Promise.all` over every workspace, so a
@@ -171,7 +172,11 @@ export const useStore = create<State>((set, get) => ({
   insightsOpen: false,
   helpOpen: false,
   activeId: null,
-  view: 'terminal',
+  // Initial agent view honors the user's persisted default-view preference
+  // (Phase 6): 'structured' opens the SDK pane, else the classic terminal.
+  // 'diff'/'run' are only ever reached via an explicit tab click, so the
+  // default only ever picks between the two agent surfaces.
+  view: readDefaultAgentView() === 'structured' ? 'structured' : 'terminal',
   page: 'workspaces',
   loaded: false,
 

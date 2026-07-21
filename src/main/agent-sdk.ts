@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 // TYPE-ONLY import: erased at compile time, so it emits NO runtime require().
 // @anthropic-ai/claude-agent-sdk is a pure-ESM package (type:module, exports
 // only ./sdk.mjs, no CJS entry). Because it's externalized, a static value
@@ -15,6 +16,8 @@ import {
   workspaceAccountConfigDir,
 } from './workspaces';
 import { syncAccountInheritance } from './account-inherit';
+import { agentCliBinDir } from './cli-shim';
+import { getHookSocketPath } from './hooks-server';
 import {
   normalizeSdkMessage,
   makePermissionRequest,
@@ -143,6 +146,34 @@ function buildSdkEnv(ws: Workspace): Record<string, string> {
   if (configDir) env.CLAUDE_CONFIG_DIR = configDir;
   env.ORCHESTRA_BRANCH = ws.branch;
   env.ORCHESTRA_KIND = ws.kind ?? 'worktree';
+
+  // CLI-identity parity with startAgentPty — carefully NOT the spool trigger.
+  //
+  // The hazard is that ORCHESTRA_WS_ID is DUAL-PURPOSE. The generated activity
+  // hook writes the durable events spool for any process where it is set
+  // (`[ -n "$ORCHESTRA_WS_ID" ] || exit 0`, and ORCHESTRA_EVENTS_DIR *defaults*
+  // to ~/.orchestra/events when unset — so WS_ID alone is enough to write). The
+  // `orchestra` CLI ALSO reads ORCHESTRA_WS_ID for its own identity
+  // (cli/index.ts:167). So while a terminal PTY can coexist with this SDK
+  // session for the same workspace (phases 1–5), setting WS_ID here would make
+  // BOTH processes' hooks append to the same `<wsId>.jsonl` with independent
+  // `seq` counters and corrupt the sidebar dot.
+  //
+  // Until the SDK session is the SOLE driver (Phase 6: structured is default and
+  // the PTY isn't started for the workspace), we set only the spool-free
+  // identity/round-trip plumbing — the worktree root and the hook socket, plus
+  // the CLI shim on PATH. These let hooks resolve their scripts and reach the
+  // socket without writing the spool. Full WS_ID parity (and letting the SDK
+  // session's hooks drive the dot exactly like the PTY's did) lands with the
+  // default-flip that guarantees the two drivers are mutually exclusive.
+  const remote = ws.host?.kind === 'sandbox';
+  if (!remote) {
+    env.ORCHESTRA_WORKTREE = ws.worktreePath;
+    const binDir = agentCliBinDir();
+    env.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir;
+    const sock = getHookSocketPath();
+    if (sock) env.ORCHESTRA_SOCK = sock;
+  }
   return env;
 }
 
@@ -313,6 +344,10 @@ async function ensureSession(wsId: string): Promise<Session> {
       permissionMode,
       canUseTool: makeCanUseTool(session) as never,
       env: buildSdkEnv(ws),
+      // Start on the workspace's configured model (set by `orchestra spawn
+      // --model`, same field the terminal spawn passes as `--model`). Undefined
+      // falls back to the account's default model. `sdkSetModel` switches it live.
+      ...(ws.model ? { model: ws.model } : {}),
       // A large cap: real turns end on their own; this only backstops runaways.
       maxTurns: 200,
     },
