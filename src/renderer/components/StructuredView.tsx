@@ -29,6 +29,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import type { AgentSession, RenderMessage } from '../../shared/types';
+// A3: real presentational components (markdown bubbles, tool cards, diffs,
+// thinking spinner). AgentMessage routes tool→ToolCard else→MessageBubble and
+// owns the `av-message`/`av-tool-card` wrappers + thinking indicator, so it
+// fully replaces the placeholder MessageSlot/ToolSlot bodies below.
+import { AgentMessage } from './agent';
 
 interface Props {
   workspaceId: string;
@@ -194,58 +199,15 @@ function MeasuredRow({
   );
 }
 
-// ── Placeholder message renderer (A3 extension point) ────────────────────────
+// ── Message renderer (A3) ────────────────────────────────────────────────────
 //
-// A3 replaces the bodies below with real components: markdown bubbles, tool
-// cards with collapsible sections, Monaco diffs reconstructed from tool_use
-// input, etc. The structure (one `av-message` per RenderMessage, role in a
-// data attribute + class) and the field access are the contract A3 builds on.
+// A3's <AgentMessage> replaces the former placeholder MessageSlot/ToolSlot: it
+// routes a RenderMessage to a MessageBubble (streaming markdown + thinking
+// spinner) or a ToolCard (collapsible, per-tool bodies, Monaco diffs from
+// tool_use input), and owns the `av-message`/`av-tool-card` wrappers itself.
 
 function MessageSlot({ message }: { message: RenderMessage }) {
-  const role = message.role;
-  return (
-    <div className={`av-message av-message-${role}`} data-role={role}>
-      {message.thinking && (
-        // A3 may replace with a nicer spinner; thinking text is redacted on
-        // Opus 4.8 so this is a boolean indicator only.
-        <div className="av-thinking" aria-label="thinking">
-          <span className="av-thinking-dot" /> thinking…
-        </div>
-      )}
-
-      {message.role === 'tool' && message.toolUse ? (
-        <ToolSlot message={message} />
-      ) : (
-        typeof message.text === 'string' && (
-          <div className="av-message-text">{message.text}</div>
-        )
-      )}
-    </div>
-  );
-}
-
-function ToolSlot({ message }: { message: RenderMessage }) {
-  const tu = message.toolUse!;
-  const result = message.toolResult;
-  return (
-    <div className={`av-tool-card av-tool-${tu.name.toLowerCase()}`} data-tool={tu.name}>
-      <div className="av-tool-card-header">
-        <span className="av-tool-name">{tu.name}</span>
-        {!message.done && <span className="av-tool-streaming">…</span>}
-      </div>
-      {/* A3: render tool-specific bodies — Edit/Write → diff from input,
-          Bash → command+output, Read/Grep/Glob → summary, etc. Until then,
-          show the assembling/assembled input JSON as a compact default. */}
-      <pre className="av-tool-input">{tu.input ? JSON.stringify(tu.input, null, 2) : tu.inputJson}</pre>
-      {result && (
-        <div className={`av-tool-result ${result.isError ? 'av-tool-result-error' : ''}`}>
-          {typeof result.content === 'string'
-            ? result.content
-            : JSON.stringify(result.content)}
-        </div>
-      )}
-    </div>
-  );
+  return <AgentMessage message={message} />;
 }
 
 // ── Permission slot (A4 extension point) ─────────────────────────────────────
