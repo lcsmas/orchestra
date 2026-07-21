@@ -98,8 +98,8 @@
     --av-text: #1c2330; --av-text-dim: #5a6473; --av-text-faint: #6b7482;
     --av-assistant: #2f6fe0; --av-assistant-ink: #ffffff; --av-thinking: #8a5fa8;
     --av-tool: #667486; --av-tool-active: #2159c8; --av-user: #1f9d57; --av-task: #6d5cd6;
-    --av-add: #1f9d57; --av-add-bg: rgba(31,157,87,0.12);
-    --av-remove: #d64545; --av-remove-bg: rgba(214,69,69,0.10);
+    --av-add: #12703f; --av-add-bg: rgba(31,157,87,0.12);
+    --av-remove: #c62828; --av-remove-bg: rgba(214,69,69,0.10);
     --av-error: #cc3a3a; --av-error-bg: rgba(204,58,58,0.08); --av-error-border: rgba(204,58,58,0.40);
     --av-warn: #b7791f; --av-code-bg: rgba(20,30,50,0.045); --av-code-border: rgba(20,30,50,0.09);
     --av-focus-border: rgba(47,111,224,0.75); --av-focus-ring: rgba(47,111,224,0.22);
@@ -112,8 +112,8 @@
   --av-text: #1c2330; --av-text-dim: #5a6473; --av-text-faint: #6b7482;
   --av-assistant: #2f6fe0; --av-assistant-ink: #ffffff; --av-thinking: #8a5fa8;
   --av-tool: #667486; --av-tool-active: #2159c8; --av-user: #1f9d57; --av-task: #6d5cd6;
-  --av-add: #1f9d57; --av-add-bg: rgba(31,157,87,0.12);
-  --av-remove: #d64545; --av-remove-bg: rgba(214,69,69,0.10);
+  --av-add: #12703f; --av-add-bg: rgba(31,157,87,0.12);
+  --av-remove: #c62828; --av-remove-bg: rgba(214,69,69,0.10);
   --av-error: #cc3a3a; --av-error-bg: rgba(204,58,58,0.08); --av-error-border: rgba(204,58,58,0.40);
   --av-warn: #b7791f; --av-code-bg: rgba(20,30,50,0.045); --av-code-border: rgba(20,30,50,0.09);
   --av-focus-border: rgba(47,111,224,0.75); --av-focus-ring: rgba(47,111,224,0.22);
