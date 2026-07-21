@@ -134,6 +134,24 @@ function emit(wsId: string, event: AgentEvent): void {
   platform.broadcast('agent:event', wsId, event);
 }
 
+/** Find the `claude` executable on the session env's PATH (the shim dir the
+ *  env prepends holds only the `orchestra` CLI, so this lands on the user's
+ *  real install). Returns null when absent — callers fall back to the SDK's
+ *  bundled default, which only works outside the packaged asar. */
+function resolveClaudeBinary(env: Record<string, string>): string | null {
+  for (const dir of (env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, 'claude');
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      /* keep looking */
+    }
+  }
+  return null;
+}
+
 /** Normalize an SDK message and broadcast every event it produces. */
 function emitFrom(session: Session, msg: SdkMessage): void {
   for (const ev of normalizeSdkMessage(msg, session.ctx)) {
@@ -377,6 +395,14 @@ async function ensureSession(wsId: string): Promise<Session> {
   // Resolve the query factory: a test override, else the dynamically-imported
   // real ESM SDK (never a static require — that crashes Electron at boot).
   const query = queryOverride ?? (await loadSdk()).query;
+  const sdkEnv = buildSdkEnv(ws);
+  // The SDK's DEFAULT executable path resolves relative to its own module —
+  // which, in the packaged app, is a bundled chunk inside app.asar. Spawning
+  // through the asar (a file, not a directory) fails with `spawn ENOTDIR`,
+  // invisible in dev where there is no asar. Drive the user's real `claude`
+  // (the same binary the terminal path spawns from PATH) instead; only fall
+  // back to the SDK default when none is on PATH (dev-friendly).
+  const claudeBin = resolveClaudeBinary(sdkEnv);
   session.q = query({
     prompt: promptStream(session),
     options: {
@@ -385,7 +411,8 @@ async function ensureSession(wsId: string): Promise<Session> {
       settingSources: ['user', 'project'],
       permissionMode,
       canUseTool: makeCanUseTool(session) as never,
-      env: buildSdkEnv(ws),
+      env: sdkEnv,
+      ...(claudeBin ? { pathToClaudeCodeExecutable: claudeBin } : {}),
       // Start on the workspace's configured model (set by `orchestra spawn
       // --model` or the Model dropdown). Undefined falls back to the account's
       // default model. `sdkSetModel` switches it live.
@@ -416,16 +443,39 @@ const HISTORY_MAX_BYTES = 4 * 1024 * 1024;
  *  Fail-open: an unreadable transcript is a blank history, never an error. */
 export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
   const ws = store.getWorkspace(wsId);
-  if (!ws?.sdkSessionId || !ws.worktreePath) return [];
+  if (!ws?.worktreePath) return [];
   // Same resolution as `claude --continue` (see workspaces.ts): the PINNED
   // account's config dir, falling back to ~/.claude.
   const base = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
-  const file = path.join(
-    base,
-    'projects',
-    mangleProjectDir(ws.worktreePath),
-    `${ws.sdkSessionId}.jsonl`,
-  );
+  const dir = path.join(base, 'projects', mangleProjectDir(ws.worktreePath));
+
+  // Prefer the persisted structured-session transcript; workspaces that have
+  // only ever run the TERMINAL agent have no sdkSessionId but DO have
+  // transcripts — fall back to the newest .jsonl, which is exactly the session
+  // `claude --continue` (both drivers) resumes.
+  let file: string | null = null;
+  if (ws.sdkSessionId) {
+    const candidate = path.join(dir, `${ws.sdkSessionId}.jsonl`);
+    if (fs.existsSync(candidate)) file = candidate;
+  }
+  if (!file) {
+    try {
+      const entries = await fs.promises.readdir(dir);
+      let newest = 0;
+      for (const name of entries) {
+        if (!name.endsWith('.jsonl')) continue;
+        const p = path.join(dir, name);
+        const st = await fs.promises.stat(p);
+        if (st.mtimeMs > newest) {
+          newest = st.mtimeMs;
+          file = p;
+        }
+      }
+    } catch {
+      return [];
+    }
+  }
+  if (!file) return [];
   let text: string;
   try {
     const stat = await fs.promises.stat(file);

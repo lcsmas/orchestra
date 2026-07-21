@@ -63,15 +63,17 @@ export function StructuredView({ workspaceId, isActive }: Props) {
   );
   const injectEvent = useStore((s) => s.__injectAgentEvent);
 
-  // History backfill: a resumable workspace opens with the on-disk transcript
-  // rendered, not a blank pane. Main converts the session JSONL to AgentEvents
-  // (agent-sdk.ts sdkHistory); they fold through the same RAF queue as live
-  // events. Requested at most once per mount, and only while the folded
-  // session is still empty (a live stream that beat us to it wins).
+  // History backfill: a workspace with any prior session on disk opens with
+  // the transcript rendered, not a blank pane. Main resolves the file (the
+  // persisted SDK session, else the newest transcript — terminal-born sessions
+  // have no sdkSessionId) and converts it to AgentEvents (agent-sdk.ts
+  // sdkHistory); they fold through the same RAF queue as live events.
+  // Requested at most once per mount, only while the folded session is empty —
+  // and unconditionally on `canResume` (main returns [] when there is nothing).
   const historyRequested = useRef(false);
   const hasMessages = (session?.messages.length ?? 0) > 0;
   useEffect(() => {
-    if (historyRequested.current || hasMessages || !canResume) return;
+    if (historyRequested.current || hasMessages) return;
     historyRequested.current = true;
     void window.orchestra
       .agentSdkHistory(workspaceId)
@@ -83,7 +85,7 @@ export function StructuredView({ workspaceId, isActive }: Props) {
         for (const ev of events) injectEvent(workspaceId, ev);
       })
       .catch(() => {});
-  }, [canResume, hasMessages, workspaceId, injectEvent]);
+  }, [hasMessages, workspaceId, injectEvent]);
 
   return (
     <div className={`av-view ${isActive ? 'active' : ''}`} data-workspace={workspaceId}>
