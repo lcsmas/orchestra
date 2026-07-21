@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 // TYPE-ONLY import: erased at compile time, so it emits NO runtime require().
 // @anthropic-ai/claude-agent-sdk is a pure-ESM package (type:module, exports
 // only ./sdk.mjs, no CJS entry). Because it's externalized, a static value
@@ -15,7 +16,9 @@ import { log } from './logger';
 import {
   installOrchestraHooks,
   workspaceAccountConfigDir,
+  mangleProjectDir,
 } from './workspaces';
+import { transcriptToEvents } from '../shared/agent-transcript';
 import { syncAccountInheritance } from './account-inherit';
 import { agentCliBinDir } from './cli-shim';
 import { getHookSocketPath } from './hooks-server';
@@ -30,6 +33,7 @@ import type {
   AgentEvent,
   AgentPermissionMode,
   AgentPermissionReply,
+  AgentSkillInfo,
   Workspace,
 } from '../shared/types';
 
@@ -351,8 +355,11 @@ async function ensureSession(wsId: string): Promise<Session> {
   }
 
   // Honor the workspace's chosen permission mode (set by the Permissions
-  // dropdown, persisted so a pre-session choice sticks). Defaults to 'default'.
-  const permissionMode: AgentPermissionMode = ws.sdkPermissionMode ?? 'default';
+  // dropdown, persisted so a pre-session choice sticks). Defaults to BYPASS:
+  // Orchestra's whole model is autonomous agents in isolated worktrees — the
+  // terminal path runs claude with full permissions, and parity matters more
+  // than a per-tool prompt wall (explicit user decision, 2026-07-21).
+  const permissionMode: AgentPermissionMode = ws.sdkPermissionMode ?? 'bypassPermissions';
   const session: Session = {
     wsId,
     // q is assigned right after — the generator/canUseTool close over `session`,
@@ -397,6 +404,92 @@ async function ensureSession(wsId: string): Promise<Session> {
   // Fire-and-forget the consume loop; it self-cleans on end/throw.
   void consume(session);
   return session;
+}
+
+/** Max transcript bytes read for a history backfill — tail window; transcripts
+ *  reach 10MB+ and the fold shouldn't balloon on them. */
+const HISTORY_MAX_BYTES = 4 * 1024 * 1024;
+
+/** Read a workspace's persisted on-disk session transcript and convert it into
+ *  an AgentEvent stream for the structured view's history backfill. Returns []
+ *  when there is nothing to backfill (no persisted id, file missing/empty).
+ *  Fail-open: an unreadable transcript is a blank history, never an error. */
+export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
+  const ws = store.getWorkspace(wsId);
+  if (!ws?.sdkSessionId || !ws.worktreePath) return [];
+  // Same resolution as `claude --continue` (see workspaces.ts): the PINNED
+  // account's config dir, falling back to ~/.claude.
+  const base = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
+  const file = path.join(
+    base,
+    'projects',
+    mangleProjectDir(ws.worktreePath),
+    `${ws.sdkSessionId}.jsonl`,
+  );
+  let text: string;
+  try {
+    const stat = await fs.promises.stat(file);
+    if (stat.size > HISTORY_MAX_BYTES) {
+      const fh = await fs.promises.open(file, 'r');
+      try {
+        const buf = Buffer.alloc(HISTORY_MAX_BYTES);
+        await fh.read(buf, 0, HISTORY_MAX_BYTES, stat.size - HISTORY_MAX_BYTES);
+        // Drop the first (almost certainly partial) line of the tail window.
+        const s = buf.toString('utf8');
+        text = s.slice(s.indexOf('\n') + 1);
+      } finally {
+        await fh.close();
+      }
+    } else {
+      text = await fs.promises.readFile(file, 'utf8');
+    }
+  } catch {
+    return [];
+  }
+  // Fresh cursor: history seq-space is independent of the live session's (seq
+  // only feeds gap detection; message identity includes seq + index, and
+  // history block indexes start far above live ones so they never collide).
+  return transcriptToEvents(text, { seq: 0 });
+}
+
+/** List the skills (slash commands) available to a workspace: the worktree's
+ *  `.claude/skills/*` plus the pinned account config dir's (default ~/.claude)
+ *  `skills/*`. Project shadows user on a name clash. Cheap directory scan,
+ *  invoked when the composer's autocomplete opens. */
+export async function sdkListSkills(wsId: string): Promise<AgentSkillInfo[]> {
+  const ws = store.getWorkspace(wsId);
+  if (!ws) return [];
+  const configDir = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
+  const roots: { dir: string; source: AgentSkillInfo['source'] }[] = [];
+  if (ws.worktreePath) {
+    roots.push({ dir: path.join(ws.worktreePath, '.claude', 'skills'), source: 'project' });
+  }
+  roots.push({ dir: path.join(configDir, 'skills'), source: 'user' });
+
+  const byName = new Map<string, AgentSkillInfo>();
+  for (const { dir, source } of roots) {
+    let entries: string[] = [];
+    try {
+      entries = await fs.promises.readdir(dir);
+    } catch {
+      continue;
+    }
+    for (const name of entries) {
+      if (byName.has(name)) continue;
+      let description = '';
+      try {
+        const head = (
+          await fs.promises.readFile(path.join(dir, name, 'SKILL.md'), 'utf8')
+        ).slice(0, 2000);
+        const m = /^description:\s*(.+)$/m.exec(head);
+        if (m) description = m[1].trim().split(/(?<=\.)\s/)[0].slice(0, 140);
+      } catch {
+        continue; // not a skill dir
+      }
+      byName.set(name, { name, description, source });
+    }
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Enqueue a user turn (text) to a workspace's session, starting it lazily.

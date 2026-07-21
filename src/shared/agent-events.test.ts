@@ -419,9 +419,11 @@ test('fold: thinking block sets and clears the boolean indicator', () => {
   const think = s.messages.find((m) => m.index === 0)!;
   assert.equal(think.thinking, true);
   assert.equal(think.text, undefined, 'thinking carries NO text (redacted)');
-  // block-stop clears the indicator.
+  // block-stop clears the indicator AND retires the block's index (closed
+  // blocks must not absorb next-turn deltas at the same index).
   s = foldEvent(s, normalizeSdkMessage({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } }, { seq: 99, now: () => 1 })[0]);
-  assert.equal(s.messages.find((m) => m.index === 0)!.thinking, false);
+  assert.equal(s.messages[0].thinking, false);
+  assert.equal(s.messages[0].index, undefined);
 });
 
 // ─── fold: tool_use ↔ tool_result correlation (spike g) ──────────────────────

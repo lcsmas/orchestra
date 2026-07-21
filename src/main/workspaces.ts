@@ -94,8 +94,9 @@ const HEAVY_RESUME_TOKEN_THRESHOLD = (() => {
 
 /** Claude Code stores each conversation under
  * `<configDir>/projects/<mangled-cwd>/<sessionId>.jsonl`, where the cwd is
- * mangled by replacing every non-alphanumeric character with '-'. */
-function mangleProjectDir(cwd: string): string {
+ * mangled by replacing every non-alphanumeric character with '-'. Exported for
+ * the structured view's history backfill (agent-sdk.ts sdkHistory). */
+export function mangleProjectDir(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9]/g, '-');
 }
 

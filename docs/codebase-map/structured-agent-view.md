@@ -81,6 +81,25 @@ gated on the prior `result`), so the subprocess stays warm and `canUseTool` fire
   monaco })` with the bundled `monaco-editor` package + a local editor worker, so the
   editors never fetch from the jsDelivr CDN (offline-safe, like the self-hosted
   Inter/JetBrains Mono in `assets/fonts/`).
+- **`src/shared/agent-transcript.ts`** (+ `.test.ts`) — pure converter from the on-disk
+  Claude Code session JSONL to `AgentEvent[]` (**history backfill**). On-disk lines
+  differ from the live stream: assistant text is finalized (no stream_events → we
+  synthesize block-start/delta/stop triplets at indexes ≥100k), there are no `result`
+  lines (one quiet terminal `turn-end` is appended), and `isSidechain: true` lines
+  (Task-subagent transcripts) are skipped. `agent-sdk.ts sdkHistory(wsId)` locates the
+  file (`<configDir>/projects/<mangleProjectDir(worktreePath)>/<sdkSessionId>.jsonl`,
+  tail-capped at 4MB) and StructuredView requests it once per mount while the folded
+  session is empty, folding events through the normal RAF queue.
+- **Skills autocomplete** — `agent-sdk.ts sdkListSkills(wsId)` scans the worktree's
+  `.claude/skills/*` + the account config dir's `skills/*` (project shadows user) for
+  `AgentSkillInfo` (shared/types.ts); the Composer shows a popover when the input is a
+  pure `/prefix` (Tab/Enter complete, arrows navigate, Esc dismisses).
+- **Permission-mode default is `bypassPermissions`** (ensureSession + emptySession +
+  AgentControls fallbacks) — parity with the terminal path's autonomous agents;
+  a persisted `ws.sdkPermissionMode` still wins.
+- **`AvMenu`** (`components/agent/AvMenu.tsx`) — the custom dropdown replacing native
+  selects in AgentControls (portalled glass panel; see agent-view-design.md).
+- New IPC: `agentSdkHistory` (`agent:sdkHistory`), `agentSkills` (`agent:skills`).
 - **CSS** — three cascade layers imported in `main.tsx`: `agent-view-defaults.css` (A3
   structural) → `agent-view-structure.css` (A2 layout) → `agent-view-theme.css` (A5 design
   system, wins). Reference: `agent-view-design.md`.

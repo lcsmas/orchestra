@@ -92,6 +92,8 @@ import {
   sdkPermissionReply,
   sdkSetModel,
   sdkSetPermissionMode,
+  sdkHistory,
+  sdkListSkills,
   sdkStopMany,
 } from './agent-sdk';
 import { probeDependencies, type DepsStatus } from './deps';
@@ -216,6 +218,8 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   agentSdkPermissionReply: 'agent:sdkPermissionReply',
   agentSdkSetModel: 'agent:sdkSetModel',
   agentSdkSetPermissionMode: 'agent:sdkSetPermissionMode',
+  agentSdkHistory: 'agent:sdkHistory',
+  agentSkills: 'agent:skills',
   nvimStart: 'nvim:start',
   sandboxControlState: 'sandbox:controlState',
   takeSandboxControl: 'sandbox:takeControl',
@@ -751,6 +755,10 @@ export const apiHandlers: ApiHandlerTable = {
   agentSdkSetPermissionMode: async (wsId, mode) => {
     await sdkSetPermissionMode(wsId, mode);
   },
+
+  agentSdkHistory: async (wsId) => sdkHistory(wsId),
+
+  agentSkills: async (wsId) => sdkListSkills(wsId),
 
   nvimStart: async (id, cols, rows) => {
     const ws = store.getWorkspace(id);

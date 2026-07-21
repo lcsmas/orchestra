@@ -694,25 +694,119 @@
 .av-controls-interrupt-dot { width: 7px; height: 7px; border-radius: 2px; background: currentColor; }
 .av-controls-interrupt:not(:disabled) .av-controls-interrupt-dot { animation: av-pulse 1.4s var(--av-ease) infinite; }
 @media (prefers-reduced-motion: reduce) { .av-controls-interrupt:not(:disabled) .av-controls-interrupt-dot { animation: none; } }
-.av-controls-field { display: inline-flex; align-items: center; gap: 6px; margin-left: 4px; }
-.av-controls-label { color: var(--av-text-faint); font-size: var(--av-fs-caption); text-transform: uppercase; letter-spacing: 0.07em; font-family: var(--font-mono); }
-.av-controls-select {
-  appearance: none;
-  font: inherit; font-size: var(--av-fs-small); color: var(--av-text);
-  background-color: var(--av-surface-raised);
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 16 16' fill='none' stroke='%238b95a7' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 6l5 5 5-5'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 9px center;
-  border: 1px solid var(--av-hairline-strong);
-  border-radius: var(--radius-sm, 6px); padding: 4px 26px 4px 10px; cursor: pointer;
-  transition: border-color 140ms var(--av-ease), background-color 140ms var(--av-ease);
+/* Interrupt stays left; the switcher menus dock right. */
+.av-controls-menus { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
+
+/* ── AvMenu — the view's dropdown primitive ─────────────────────────────────
+   Borderless ghost trigger; portalled glass panel (the app's branch-popover
+   language on --av-* tokens) with tinted icons, descriptions and a check. */
+.av-menu-trigger {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 8px; border: none; border-radius: var(--radius-sm, 6px);
+  background: transparent; color: var(--av-text-dim);
+  font: inherit; font-size: var(--av-fs-small); font-weight: 550; cursor: pointer;
+  transition: background 140ms var(--av-ease), color 140ms var(--av-ease);
 }
-.av-controls-select:hover { background-color: var(--av-surface-overlay); border-color: var(--av-hairline-strong); }
-.av-controls-select:focus-visible { outline: none; border-color: var(--av-focus-border); box-shadow: 0 0 0 3px var(--av-focus-ring); }
-.av-controls-select option { background: var(--av-surface-raised); color: var(--av-text); }
-.av-controls-field:has(.av-controls-select):hover .av-controls-label { color: var(--av-text-dim); }
-/* Interrupt stays left; the selects dock right. */
-.av-controls-field:first-of-type { margin-left: auto; }
+.av-menu-trigger:hover, .av-menu-trigger-open {
+  background: color-mix(in srgb, var(--av-text) 6%, transparent);
+  color: var(--av-text);
+}
+.av-menu-trigger:disabled { opacity: 0.5; cursor: not-allowed; }
+.av-menu-trigger:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring); }
+.av-menu-trigger-icon { display: inline-flex; flex: none; }
+.av-menu-trigger-label { line-height: 1.2; white-space: nowrap; }
+.av-menu-chevron { color: var(--av-text-faint); flex: none; transition: transform 160ms var(--av-ease); }
+.av-menu-trigger-open .av-menu-chevron { transform: rotate(180deg); }
+
+.av-menu-panel {
+  position: fixed; z-index: 1000;
+  display: flex; flex-direction: column; gap: 1px; padding: 4px;
+  background: linear-gradient(180deg, rgba(26, 31, 40, 0.9) 0%, rgba(17, 20, 26, 0.94) 100%);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-lg, 12px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 18px 40px rgba(0, 0, 0, 0.55),
+    0 2px 4px rgba(0, 0, 0, 0.3);
+  animation: av-menu-in 140ms var(--av-ease-out);
+}
+@keyframes av-menu-in { from { opacity: 0; transform: translateY(4px) scale(0.985); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .av-menu-panel { animation: none; } }
+/* NOTE: the panel is portalled to <body>, OUTSIDE .av-view — --av-* tokens do
+   not resolve there. It uses raw dark-glass values (like every other app menu,
+   which are dark in all themes); item tints are literal hexes in AvMenu usage. */
+
+.av-menu-item {
+  display: flex; align-items: flex-start; gap: 9px; width: 100%;
+  padding: 7px 9px; border: none; border-radius: var(--radius-sm, 6px);
+  background: transparent; color: var(--av-text, #e8ebf1);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.av-menu-item-active { background: rgba(110, 168, 255, 0.13); }
+.av-menu-item-icon { display: inline-flex; flex: none; margin-top: 1px; }
+.av-menu-item-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.av-menu-item-label { font-size: 12px; font-weight: 600; color: #e8ebf1; }
+.av-menu-item-desc { font-size: 10.5px; color: #949eb0; }
+.av-menu-check { flex: none; margin-top: 3px; color: var(--accent, #6ea8ff); }
+
+/* ── Composer skills autocomplete — glass list above the field ───────────── */
+.av-composer-field { position: relative; }
+.av-ac {
+  position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30;
+  min-width: 320px; max-width: min(480px, 100%);
+  display: flex; flex-direction: column; gap: 1px; padding: 4px;
+  background: linear-gradient(180deg, rgba(26, 31, 40, 0.9) 0%, rgba(17, 20, 26, 0.94) 100%);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-lg, 12px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 18px 40px rgba(0, 0, 0, 0.55),
+    0 2px 4px rgba(0, 0, 0, 0.3);
+  animation: av-menu-in 140ms var(--av-ease-out);
+}
+@media (prefers-reduced-motion: reduce) { .av-ac { animation: none; } }
+.av-ac-item {
+  display: flex; align-items: baseline; gap: 10px; width: 100%; min-width: 0;
+  padding: 6px 9px; border: none; border-radius: var(--radius-sm, 6px);
+  background: transparent; color: var(--av-text);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.av-ac-item-active { background: rgba(110, 168, 255, 0.13); }
+.av-ac-name { font-family: var(--font-mono); font-size: var(--av-fs-code); font-weight: 640; color: var(--av-assistant); flex: none; }
+.av-ac-desc {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; color: var(--av-text-dim);
+}
+.av-ac-source {
+  flex: none; font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 1px 6px; border-radius: 999px;
+}
+.av-ac-source-project {
+  color: var(--av-assistant);
+  border: 1px solid color-mix(in srgb, var(--av-assistant) 30%, transparent);
+  background: color-mix(in srgb, var(--av-assistant) 8%, transparent);
+}
+.av-ac-source-user {
+  color: var(--av-text-faint);
+  border: 1px solid var(--av-hairline-strong);
+  background: transparent;
+}
+.av-ac-hint {
+  display: flex; align-items: center; gap: 4px;
+  padding: 5px 9px 3px; margin-top: 1px;
+  border-top: 1px solid var(--av-hairline-faint);
+  font-family: var(--font-mono); font-size: 9.5px; color: var(--av-text-faint);
+}
+.av-ac-hint kbd {
+  font-family: inherit; font-size: 9px; color: var(--av-text-dim);
+  padding: 0.5px 4px; border-radius: 4px;
+  background: var(--av-surface-raised); border: 1px solid var(--av-hairline-strong);
+}
 
 /* Turn footer — flight-data strip: mono, tabular, quiet. */
 .av-turn-footer {
@@ -776,10 +870,13 @@
   border-color: var(--av-focus-border);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12), 0 0 0 3px var(--av-focus-ring);
 }
+/* The prompt is set in mono at code size — it's a command line to the agent
+   (the terminal users are coming from), not a web form. */
 .av-composer-input {
   flex: 1 1 auto; resize: none; min-height: 24px; max-height: 200px;
   padding: 5px 0; border: none; background: none;
-  color: var(--av-text); font-family: inherit; font-size: var(--av-fs-body); line-height: 1.5;
+  color: var(--av-text); font-family: var(--font-mono); font-size: var(--av-fs-code);
+  line-height: 1.6;
 }
 .av-composer-input::placeholder { color: var(--av-text-faint); }
 .av-composer-input:focus, .av-composer-input:focus-visible { outline: none; border: none; box-shadow: none; }

@@ -125,8 +125,21 @@ Buttons: `.av-btn` + `.av-btn-{primary,danger,ghost}` (permission/question actio
 and the interrupt button share this family).
 
 Controls (`AgentControls.tsx`): `.av-controls` > `.av-controls-interrupt`
-(+`.av-controls-interrupt-dot`) + `.av-controls-field` (`.av-controls-label` +
-`.av-controls-select` `.av-controls-{model,mode}`).
+(+`.av-controls-interrupt-dot`) + `.av-controls-menus` holding two `AvMenu`s
+(model / permission mode — no field labels; tinted icons carry the meaning).
+
+AvMenu (`AvMenu.tsx` — the view's dropdown primitive): borderless trigger
+`.av-menu-trigger` (+`-open`, `-icon`, `-label`, `.av-menu-chevron`) opening a
+PORTALLED `.av-menu-panel` (fixed, opens upward, dark glass in every theme —
+it lives outside `.av-view`, so `--av-*` tokens do NOT resolve there; item
+tints are literal hexes) > `.av-menu-item` (+`-active`, `-icon`, `-body`,
+`-label`, `-desc`) + `.av-menu-check`. Keyboard: arrows/Enter/Escape, roving
+highlight while focus stays on the trigger.
+
+Composer skills autocomplete: `.av-ac` (absolute above `.av-composer-field`) >
+`.av-ac-item` (+`-active`) > `.av-ac-name` + `.av-ac-desc` +
+`.av-ac-source{,-project,-user}`; footer `.av-ac-hint` with kbd chips. The
+composer input is MONO at code size (a command line, not a web form).
 
 Turn footer (`TurnFooter.tsx`): `.av-turn-footer` (+`-running`/`-error`/`-live`) >
 `.av-turn-stat` (`.av-turn-stat-value` + `.av-turn-stat-label`); `.av-turn-spinner`;

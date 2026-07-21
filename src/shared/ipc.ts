@@ -6,6 +6,7 @@ import type {
   AgentEvent,
   AgentPermissionMode,
   AgentPermissionReply,
+  AgentSkillInfo,
   CreateWorkspaceInput,
   DiffFile,
   DiffStats,
@@ -259,6 +260,13 @@ export interface OrchestraAPI {
   agentSdkSetModel: (wsId: string, model: string | undefined) => Promise<void>;
   /** Switch the live SDK session's permission mode. */
   agentSdkSetPermissionMode: (wsId: string, mode: AgentPermissionMode) => Promise<void>;
+  /** History backfill: the workspace's persisted on-disk session transcript
+   *  converted to AgentEvents (empty when there is nothing to backfill). The
+   *  renderer folds these through the same queue as live events. */
+  agentSdkHistory: (wsId: string) => Promise<AgentEvent[]>;
+  /** Skills (slash commands) available to the workspace's agent, for the
+   *  composer's `/` autocomplete. */
+  agentSkills: (wsId: string) => Promise<AgentSkillInfo[]>;
 
   nvimStart: (id: string, cols: number, rows: number) => Promise<void>;
   onPtyData: (cb: (id: string, data: string) => void) => () => void;

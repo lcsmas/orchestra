@@ -28,7 +28,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
-import type { AgentSession, RenderMessage } from '../../shared/types';
+import type { AgentSession, AgentSkillInfo, RenderMessage } from '../../shared/types';
 // A3: real presentational components (markdown bubbles, tool cards, diffs,
 // thinking spinner). AgentMessage routes tool→ToolCard else→MessageBubble and
 // owns the `av-message`/`av-tool-card` wrappers + thinking indicator, so it
@@ -61,6 +61,29 @@ export function StructuredView({ workspaceId, isActive }: Props) {
   const canResume = useStore(
     (s) => !!s.workspaces.find((w) => w.id === workspaceId)?.sdkSessionId,
   );
+  const injectEvent = useStore((s) => s.__injectAgentEvent);
+
+  // History backfill: a resumable workspace opens with the on-disk transcript
+  // rendered, not a blank pane. Main converts the session JSONL to AgentEvents
+  // (agent-sdk.ts sdkHistory); they fold through the same RAF queue as live
+  // events. Requested at most once per mount, and only while the folded
+  // session is still empty (a live stream that beat us to it wins).
+  const historyRequested = useRef(false);
+  const hasMessages = (session?.messages.length ?? 0) > 0;
+  useEffect(() => {
+    if (historyRequested.current || hasMessages || !canResume) return;
+    historyRequested.current = true;
+    void window.orchestra
+      .agentSdkHistory(workspaceId)
+      .then((events) => {
+        // Re-check: if live events landed while we read the file, skip the
+        // backfill rather than appending stale history after fresh messages.
+        const live = useStore.getState().agentSessions[workspaceId];
+        if ((live?.messages.length ?? 0) > 0) return;
+        for (const ev of events) injectEvent(workspaceId, ev);
+      })
+      .catch(() => {});
+  }, [canResume, hasMessages, workspaceId, injectEvent]);
 
   return (
     <div className={`av-view ${isActive ? 'active' : ''}`} data-workspace={workspaceId}>
@@ -298,6 +321,10 @@ function SessionControls({
 
 // ── Composer ─────────────────────────────────────────────────────────────────
 
+/** The input is exactly a slash-command prefix ("/", "/shi") — the only state
+ *  in which the skills autocomplete shows. */
+const SLASH_PREFIX = /^\/([A-Za-z0-9_-]*)$/;
+
 function Composer({
   session,
   workspaceId,
@@ -310,6 +337,43 @@ function Composer({
   const [text, setText] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
   const running = !!session?.running;
+
+  // Skills autocomplete: loaded lazily on the first "/" (cheap dir scan in
+  // main), cached per mount. `acIndex` is the highlighted row.
+  const [skills, setSkills] = useState<AgentSkillInfo[] | null>(null);
+  const skillsRequested = useRef(false);
+  const [acIndex, setAcIndex] = useState(0);
+  // Escape dismisses the popover until the slash-prefix changes again.
+  const [acDismissed, setAcDismissed] = useState(false);
+
+  const slash = SLASH_PREFIX.exec(text);
+  const acQuery = slash?.[1]?.toLowerCase() ?? null;
+  const acItems =
+    acQuery !== null && !acDismissed && skills
+      ? skills
+          .filter((s) => s.name.toLowerCase().includes(acQuery))
+          .sort((a, b) => {
+            const ap = a.name.toLowerCase().startsWith(acQuery) ? 0 : 1;
+            const bp = b.name.toLowerCase().startsWith(acQuery) ? 0 : 1;
+            return ap - bp || a.name.localeCompare(b.name);
+          })
+          .slice(0, 8)
+      : [];
+  const acOpen = acQuery !== null && acItems.length > 0;
+
+  useEffect(() => {
+    if (acQuery === null || skillsRequested.current) return;
+    skillsRequested.current = true;
+    void window.orchestra
+      .agentSkills(workspaceId)
+      .then(setSkills)
+      .catch(() => setSkills([]));
+  }, [acQuery, workspaceId]);
+
+  // Clamp the highlight when the filtered list shrinks.
+  useEffect(() => {
+    if (acIndex >= acItems.length) setAcIndex(0);
+  }, [acItems.length, acIndex]);
 
   // Focus the composer when this tab becomes active, so the user can type
   // immediately after switching to the structured view.
@@ -330,17 +394,75 @@ function Composer({
     setText('');
   }, [text, workspaceId]);
 
+  const completeSkill = (name: string) => {
+    setText(`/${name} `);
+    taRef.current?.focus();
+  };
+
   return (
     <div className="av-composer">
       <div className="av-composer-field">
+        {acOpen && (
+          <div className="av-ac" role="listbox" aria-label="Skills">
+            {acItems.map((s, idx) => (
+              <button
+                key={s.name}
+                type="button"
+                role="option"
+                aria-selected={idx === acIndex}
+                className={`av-ac-item ${idx === acIndex ? 'av-ac-item-active' : ''}`}
+                onMouseEnter={() => setAcIndex(idx)}
+                // mousedown (not click) so the textarea never loses focus.
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  completeSkill(s.name);
+                }}
+              >
+                <span className="av-ac-name">/{s.name}</span>
+                {s.description && <span className="av-ac-desc">{s.description}</span>}
+                <span className={`av-ac-source av-ac-source-${s.source}`}>{s.source}</span>
+              </button>
+            ))}
+            <div className="av-ac-hint">
+              <kbd>↑</kbd>
+              <kbd>↓</kbd> navigate · <kbd>Tab</kbd> complete · <kbd>Esc</kbd> dismiss
+            </div>
+          </div>
+        )}
         <textarea
           ref={taRef}
           className="av-composer-input"
           value={text}
-          placeholder="Message the agent…"
+          placeholder="Message the agent — / for skills…"
           rows={1}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            setAcDismissed(false);
+          }}
           onKeyDown={(e) => {
+            if (acOpen) {
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setAcIndex((i) => (i + 1) % acItems.length);
+                return;
+              }
+              if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setAcIndex((i) => (i - 1 + acItems.length) % acItems.length);
+                return;
+              }
+              if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+                e.preventDefault();
+                const it = acItems[acIndex];
+                if (it) completeSkill(it.name);
+                return;
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                setAcDismissed(true);
+                return;
+              }
+            }
             // Enter submits; Shift+Enter inserts a newline (chat convention).
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();

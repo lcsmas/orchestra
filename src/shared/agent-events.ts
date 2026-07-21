@@ -126,12 +126,12 @@ function clockNow(ctx: NormalizeContext): number {
 /** All AgentEvent bodies without the `seq`/`at` envelope — the shapes callers
  *  pass to {@link stamp}. Distributes over the union so each variant keeps its
  *  own fields (a plain `Omit<AgentEvent,…>` would collapse to the shared keys). */
-type AgentEventBody = { [E in AgentEvent as E['type']]: Omit<E, 'seq' | 'at'> }[AgentEvent['type']];
+export type AgentEventBody = { [E in AgentEvent as E['type']]: Omit<E, 'seq' | 'at'> }[AgentEvent['type']];
 
 /** Assign the next seq/at envelope to a bare event body. Mutates `ctx.seq`. The
  *  generic keeps the specific variant type through the call, so a caller passing
  *  a `text-delta` body gets an `AgentTextDeltaEvent` back. */
-function stamp<B extends AgentEventBody>(ctx: NormalizeContext, body: B): B & { seq: number; at: number } {
+export function stamp<B extends AgentEventBody>(ctx: NormalizeContext, body: B): B & { seq: number; at: number } {
   const at = clockNow(ctx);
   const seq = ctx.seq++;
   return { ...body, seq, at };
@@ -318,7 +318,7 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
 /** A `tool_result.content` is usually a string but the SDK can send a content-
  *  block array; collapse the common text-block array to a string, otherwise pass
  *  the array through for the renderer to handle. */
-function normalizeResultContent(content: unknown): string | unknown[] {
+export function normalizeResultContent(content: unknown): string | unknown[] {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     // If every block is a `{type:'text', text}` block, join to a plain string.
@@ -366,7 +366,9 @@ export function emptySession(workspaceId: string): AgentSession {
     workspaceId,
     sessionId: '',
     model: '',
-    permissionMode: 'default',
+    // Mirrors the manager's session default (bypass — see ensureSession) so the
+    // Permissions dropdown reads correctly before the first init event lands.
+    permissionMode: 'bypassPermissions',
     running: false,
     messages: [],
     pendingPermissions: [],
@@ -375,9 +377,13 @@ export function emptySession(workspaceId: string): AgentSession {
   };
 }
 
-/** The stable render-message id for a content block at `index` in a session. */
-function blockMsgId(sessionId: string, index: number): string {
-  return `${sessionId || 'nosession'}:${index}`;
+/** The stable render-message id for a content block. `seq` is included because
+ *  SDK content-block indexes RESET each turn (and a history backfill reuses
+ *  low indexes too) — without it, turn 2's block 0 would collide with turn 1's
+ *  (duplicate React keys, corrupted height cache). Correlation between events
+ *  of one block happens via `index` lookup (findByIndex), never via this id. */
+function blockMsgId(sessionId: string, index: number, seq: number): string {
+  return `${sessionId || 'nosession'}:${seq}:${index}`;
 }
 
 /** Find the render message for a block index (text/thinking/tool), or -1. */
@@ -417,7 +423,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
 
     case 'block-start': {
       const messages = [...next.messages];
-      const id = blockMsgId(next.sessionId, event.index);
+      const id = blockMsgId(next.sessionId, event.index, event.seq);
       if (event.kind === 'tool_use') {
         // The tool message is created here (empty), filled by tool-input-delta
         // then finalized by the tool-use event.
@@ -442,7 +448,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       let i = findByIndex(messages, event.index);
       if (i === -1) {
         messages.push({
-          id: blockMsgId(next.sessionId, event.index),
+          id: blockMsgId(next.sessionId, event.index, event.seq),
           role: 'assistant',
           index: event.index,
           thinking: true,
@@ -459,7 +465,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       if (i === -1) {
         // Delta before its block-start: create the text message on the fly.
         messages.push({
-          id: blockMsgId(next.sessionId, event.index),
+          id: blockMsgId(next.sessionId, event.index, event.seq),
           role: 'assistant',
           index: event.index,
           text: event.text,
@@ -475,7 +481,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       let i = findByIndex(messages, event.index);
       if (i === -1) {
         messages.push({
-          id: blockMsgId(next.sessionId, event.index),
+          id: blockMsgId(next.sessionId, event.index, event.seq),
           role: 'tool',
           index: event.index,
           toolUse: { toolUseId: '', name: '', inputJson: event.partialJson },
@@ -492,7 +498,10 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       const messages = [...next.messages];
       const i = findByIndex(messages, event.index);
       if (i !== -1) {
-        messages[i] = { ...messages[i], thinking: false, done: true };
+        // Clearing `index` retires the block from findByIndex: SDK block
+        // indexes reset every turn, so a closed turn-1 block must never absorb
+        // a stray turn-2 delta arriving before its own block-start.
+        messages[i] = { ...messages[i], thinking: false, done: true, index: undefined };
         return { ...next, messages };
       }
       return next;

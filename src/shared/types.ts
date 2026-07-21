@@ -715,6 +715,19 @@ export type AgentPermissionReply =
   | { behavior: 'allow'; updatedInput?: Record<string, unknown> }
   | { behavior: 'deny'; message: string };
 
+/** One installed skill (slash command) visible to a workspace's agent — the
+ *  structured composer's autocomplete items. Listed by the manager from the
+ *  worktree's `.claude/skills/*` and the account config dir's `skills/*`
+ *  (agent-sdk.ts sdkListSkills). */
+export interface AgentSkillInfo {
+  /** Invocation name, without the leading slash. */
+  name: string;
+  /** First sentence of the SKILL.md frontmatter description ('' when absent). */
+  description: string;
+  /** Where it comes from — the worktree's .claude/skills or the user level. */
+  source: 'project' | 'user';
+}
+
 /** A user turn submitted to the session, echoed by the manager at enqueue time.
  *  The SDK stream does NOT echo plain user text back (its `user` messages only
  *  carry tool_result blocks), so without this event a sent prompt would never
