@@ -98,28 +98,25 @@ launcher's AppImage with the local build.
    only trivial commits, a one-line summary is fine.
 
 6. **Release + land on master + install locally.** One command does the push,
-   the master fast-forward, the tag/build, the local install, rebuilds the
-   native GTK frontend, and attaches your description to the GitHub release:
+   the master fast-forward, the tag/build, the local install, and attaches your
+   description to the GitHub release:
 
    ```bash
-   pnpm run release patch --to-master --install --with-gtk --notes-file /tmp/orchestra-release-notes.md
+   pnpm run release patch --to-master --install --notes-file /tmp/orchestra-release-notes.md
    ```
 
    Use `minor`/`major` or an explicit `X.Y.Z` instead of `patch` only if the
    user asks for a different bump. Omit `--notes-file` to fall back to
    auto-generated notes (gh's commit list).
 
-   **`--with-gtk` is not optional here.** The GTK binary bakes its version in at
-   compile time (`build.rs` reads `package.json` → `ORCHESTRA_APP_VERSION`), and
-   the launcher execs the worktree's `native/target/release/orchestra-gtk`. If a
-   ship bumps `package.json` without rebuilding GTK, the native frontend keeps
-   its *old* version while the Electron backend advances — the app then shows a
-   "Version mismatch" dialog on every launch because the two are genuinely out of
-   lockstep. `--with-gtk` rebuilds the binary in place so its baked version tracks
-   the bump. (`release.sh` sources `native/env.sh` itself for the localdeps link
-   chain, so no manual sourcing is needed.) On a box with no `.localdeps` and no
-   system GTK devel packages the build will fail loudly — drop `--with-gtk` only
-   then, and rebuild GTK separately once deps are available.
+   The GTK frontend is deliberately NOT rebuilt by a ship (no `--with-gtk`):
+   its build needs per-worktree localdeps (`native/setup-localdeps.sh`) and is
+   handled separately. Note the consequence: the GTK binary bakes its version
+   in at compile time, so a launcher that execs an old
+   `native/target/release/orchestra-gtk` will show a "Version mismatch" dialog
+   after the bump until someone rebuilds it (`source native/env.sh && cargo
+   build --release` in the worktree the launcher points at, or pass
+   `--with-gtk` explicitly when the user asks for a GTK rebuild).
 
 7. **Report back.** Show the new version/tag. The local AppImage is already
    swapped — tell the user to **relaunch Orchestra** to pick it up. CI then adds
