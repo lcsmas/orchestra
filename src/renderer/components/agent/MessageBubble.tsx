@@ -1,0 +1,63 @@
+import React, { useMemo } from 'react';
+import type { RenderMessage } from '../../../shared/types';
+import { parseMarkdown } from './markdown-parse';
+import { MarkdownProse } from './markdown';
+import { CodeBlock } from './CodeBlock';
+import { ThinkingIndicator } from './ThinkingIndicator';
+
+interface Props {
+  message: RenderMessage;
+}
+
+/**
+ * Renders a single assistant/user/system/error `RenderMessage`'s `text` as
+ * streaming markdown. Fenced code blocks become syntax-highlighted
+ * {@link CodeBlock}s; everything else is rendered by the lightweight markdown
+ * parser. A thinking spinner shows while the message's `thinking` flag is true
+ * (there is no thinking text — redacted on Opus 4.8).
+ *
+ * Memoized on the fields that actually affect this bubble's output (`text`,
+ * `thinking`, `role`, `done`) so an unrelated token delta elsewhere in the
+ * transcript — which produces a new session object every RAF flush — does NOT
+ * re-render or re-parse this bubble. This is the anti-jank guarantee the plan
+ * calls for.
+ */
+function MessageBubbleImpl({ message }: Props) {
+  const { text, thinking, role } = message;
+
+  const blocks = useMemo(() => (text ? parseMarkdown(text) : []), [text]);
+
+  return (
+    <div className={`av-message av-message-${role}`} data-role={role}>
+      <div className="av-message-text">
+        {blocks.map((b, i) =>
+          b.kind === 'code' ? (
+            <CodeBlock key={i} code={b.text} lang={b.lang} />
+          ) : (
+            <div key={i} className="av-md">
+              <MarkdownProse text={b.text} />
+            </div>
+          )
+        )}
+        {/* Streaming cursor: shown while the block is still open (not done) and
+            there is already some text. A5 styles the blink. */}
+        {!message.done && text ? <span className="av-cursor" aria-hidden /> : null}
+      </div>
+      {thinking ? <ThinkingIndicator /> : null}
+    </div>
+  );
+}
+
+function areEqual(a: Props, b: Props): boolean {
+  const x = a.message;
+  const y = b.message;
+  return (
+    x.text === y.text &&
+    x.thinking === y.thinking &&
+    x.role === y.role &&
+    x.done === y.done &&
+    x.id === y.id
+  );
+}
+
+export const MessageBubble = React.memo(MessageBubbleImpl, areEqual);
