@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import fs from 'node:fs';
 // TYPE-ONLY import: erased at compile time, so it emits NO runtime require().
 // @anthropic-ai/claude-agent-sdk is a pure-ESM package (type:module, exports
 // only ./sdk.mjs, no CJS entry). Because it's externalized, a static value
@@ -315,6 +316,25 @@ async function ensureSession(wsId: string): Promise<Session> {
   // inheritance + CLAUDE_CONFIG_DIR), skipped for remote/sandbox workspaces
   // whose worktree lives in the container.
   const remote = ws.host?.kind === 'sandbox';
+
+  // Validate the worktree BEFORE the SDK spawns `claude` there. The SDK's
+  // spawnLocalProcess passes this as cwd; a missing/non-directory path throws a
+  // cryptic `spawn ENOTDIR` deep in the SDK that our old silent catch hid ("send
+  // does nothing"). Mirror the terminal path (pty.ts) with a clear, actionable
+  // error the caller surfaces. Remote worktrees live in the container — skip.
+  if (!remote) {
+    let ok = false;
+    try {
+      ok = fs.statSync(ws.worktreePath).isDirectory();
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      throw new Error(
+        `Workspace directory not found: ${ws.worktreePath}. The worktree may have been removed — recreate it or delete this workspace from the sidebar.`,
+      );
+    }
+  }
   if (!remote) {
     await installOrchestraHooks(ws.worktreePath).catch((err) =>
       log.warn(`agent-sdk: hook install failed for ${wsId}`, err),
@@ -378,9 +398,36 @@ async function ensureSession(wsId: string): Promise<Session> {
   return session;
 }
 
-/** Enqueue a user turn (text) to a workspace's session, starting it lazily. */
+/** Enqueue a user turn (text) to a workspace's session, starting it lazily.
+ *  If starting the session fails (missing worktree, SDK spawn error, bad
+ *  resume), EMIT an error event so the structured view shows it — the old
+ *  behavior rejected silently and the composer swallowed it ("send does
+ *  nothing"). Still rethrows so the IPC caller can react too. */
 export async function sdkSend(wsId: string, text: string): Promise<void> {
-  const session = await ensureSession(wsId);
+  let session: Session;
+  try {
+    session = await ensureSession(wsId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn(`agent-sdk: could not start session for ${wsId}: ${message}`);
+    emit(wsId, {
+      type: 'error',
+      seq: 0,
+      at: Date.now(),
+      message: `Couldn't start the agent: ${message}`,
+      apiErrorStatus: null,
+      willRetry: false,
+    });
+    // If we were trying to RESUME, a stale/incompatible resume id can wedge every
+    // future send — clear it so the next attempt starts a fresh session instead of
+    // repeating the same failure. Only when a resume was in play (a
+    // missing-worktree failure isn't the resume id's fault; leave it).
+    const wsNow = store.getWorkspace(wsId);
+    if (wsNow?.sdkSessionId && !/directory not found/i.test(message)) {
+      await persistWorkspacePatch(wsId, { sdkSessionId: undefined }).catch(() => {});
+    }
+    throw err;
+  }
   const msg: SDKUserMessage = {
     type: 'user',
     parent_tool_use_id: null,

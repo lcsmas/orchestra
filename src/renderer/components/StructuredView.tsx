@@ -296,7 +296,12 @@ function Composer({
     const t = text.trim();
     if (!t) return;
     // First submit lazily starts the SDK session (no separate start IPC).
-    void window.orchestra.agentSdkSend(workspaceId, t).catch(() => {});
+    // Main emits an `error` agent event on failure (rendered in the list), so we
+    // don't need to surface it here — but log rather than silently swallow, so a
+    // failure is never invisible in devtools either.
+    void window.orchestra
+      .agentSdkSend(workspaceId, t)
+      .catch((e) => console.error('agentSdkSend failed', e));
     setText('');
   }, [text, workspaceId]);
 
