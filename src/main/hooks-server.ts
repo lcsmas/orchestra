@@ -15,6 +15,7 @@ import {
   dispatchPromoteRequest,
   dispatchAttachRequest,
   dispatchVerifyLandedRequest,
+  dispatchWhoamiRequest,
   dispatchMigrateAccountRequest,
   dispatchAccountsListRequest,
 } from './workspaces';
@@ -231,6 +232,12 @@ export async function startHooksServer(): Promise<void> {
                   into: typeof msg.into === 'string' ? msg.into : undefined,
                 }),
               );
+            } else {
+              send(200, { ok: false, error: 'missing id' });
+            }
+          } else if (route === '/whoami') {
+            if (typeof msg.id === 'string') {
+              send(200, dispatchWhoamiRequest({ id: msg.id }));
             } else {
               send(200, { ok: false, error: 'missing id' });
             }

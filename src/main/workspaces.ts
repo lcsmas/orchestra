@@ -440,7 +440,7 @@ const ORCHESTRATOR_BRIEF =
   'Track the agents you spawn with /peers, read their progress with /read, and follow up with /message. ' +
   "Follow-up work in an area a child agent already owns goes back to THAT child via /message — never take it over yourself, however small. " +
   'For a milestone-sized piece that itself needs several agents, you may create a SUB-orchestrator: spawn it, then run `orchestra promote <child-id>` — its branch becomes that milestone\'s integration branch and the agents IT spawns nest beneath it. Keep the tree shallow: at most one sub-orchestrator level. ' +
-  'Close the loop before reporting anything as done: a child\'s "done"/"merged" report is a claim, not a state — agents keep committing after they report. Run `orchestra verify-landed <child-id> --into <branch-it-merged-into>` for EVERY child and require LANDED (0 unmerged commits) before accepting its work or relaying completion to the user. ' +
+  'Close the loop before reporting anything as done: a child\'s "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child must end in one of two EXPLICIT states: LANDED — run `orchestra verify-landed <child-id> --into <branch-it-merged-into>` and require 0 unmerged commits — or INTENTIONALLY UNMERGED, for work whose brief said not to merge (a spike, an experiment, evidence-gathering); state that disposition when you close it. The only forbidden outcome is the silent third state: a child believed merged that isn\'t. ' +
   'Start by asking the user what they want orchestrated and which repo(s) the work belongs in.';
 
 /** Create a non-git session under `~/.orchestra/scratch`. `kind` selects the
@@ -1658,6 +1658,49 @@ export async function dispatchVerifyLandedRequest(input: {
   }
 }
 
+// ---------- Whoami (a workspace's own record) ----------
+
+export interface WhoamiResult {
+  ok: boolean;
+  id?: string;
+  name?: string;
+  branch?: string;
+  /** Effective kind — records predating the field are worktrees. */
+  kind?: 'worktree' | 'scratch' | 'orchestrator';
+  /** Whether children can nest under this workspace (kind OR capability route
+   * — the {@link canOrchestrate} helper, not the raw field). */
+  orchestrator?: boolean;
+  /** Parent orchestrator id, or null when top-level. Agents have no other
+   * in-band way to learn this: /peers excludes the caller and omits parentId,
+   * and a child promoted BY its parent never sees the promotion happen — so
+   * this is what makes tree-shape rules ("if you have a parent, you are the
+   * sub-orchestrator level") checkable by the agent they address. */
+  parentId?: string | null;
+  repoPath?: string;
+  baseBranch?: string;
+  error?: string;
+}
+
+/** Socket entry point for `/whoami`: a workspace's view of its OWN record.
+ * Read-only, synchronous store lookup. Never throws; answers `{ ok }`. */
+export function dispatchWhoamiRequest(input: { id?: string }): WhoamiResult {
+  const id = input.id?.trim();
+  if (!id) return { ok: false, error: 'missing id' };
+  const ws = store.getWorkspace(id);
+  if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
+  return {
+    ok: true,
+    id: ws.id,
+    name: ws.name,
+    branch: ws.branch,
+    kind: ws.kind ?? 'worktree',
+    orchestrator: canOrchestrate(ws),
+    parentId: ws.parentId ?? null,
+    repoPath: ws.repoPath,
+    baseBranch: ws.baseBranch,
+  };
+}
+
 // ---------- Migrate a workspace to a different account ----------
 
 export interface MigrateAccountResult {
@@ -2398,7 +2441,8 @@ orchestra promote <workspace-id>
 Its branch becomes the milestone's integration branch, the agents IT spawns
 nest beneath it, and you hold it to the same close-out standard as any child
 (\`orchestra verify-landed <workspace-id>\` — see \`orchestra-comms\`). Keep the
-tree shallow: at most one sub-orchestrator level.
+tree shallow: at most one sub-orchestrator level — check with
+\`orchestra whoami\`: if YOU already have a parent, you are that level.
 `;
 
 const COMMS_SKILL = `---
@@ -2456,8 +2500,24 @@ orchestra verify-landed <peer-id> --into <branch>  # against an explicit branch 
 
 Prints \`LANDED: … (0 unmerged)\` and exits 0 when every commit on the peer's
 branch TIP is on the target, or \`NOT LANDED: <n> commit(s) …\` listing the
-missing shas and exits 1. Require LANDED for EVERY child before reporting a
-milestone done.
+missing shas and exits 1.
+
+Require one of two EXPLICIT outcomes for every child before reporting a
+milestone done: **LANDED**, or **INTENTIONALLY UNMERGED** for work whose brief
+forbade merging (a spike, an experiment, evidence-gathering) — recorded as
+such at close-out, never assumed. NOT LANDED with no declared disposition
+means the work has silently stranded: chase it before closing.
+
+## 5. Identify yourself
+
+\`\`\`bash
+orchestra whoami
+\`\`\`
+
+Prints THIS workspace's own record: id, branch, kind, whether it can
+orchestrate, its parent orchestrator (if any), repo and base branch. Useful
+before tree decisions — e.g. if \`parent\` is set and you are an orchestrator,
+you are already a sub-orchestrator: don't create another level.
 `;
 
 const REPO_ROUTES_SKILL = `---
@@ -2710,11 +2770,11 @@ sentinel="\${ORCHESTRA_WORKTREE:-.}/.orchestra/.orchestrator"
 # work it exists to do. Only the pure-coordinator text is absolute.
 if [ "\$(cat "\$sentinel" 2>/dev/null)" = "dual" ]; then
 cat <<'EOF'
-[orchestra] Standing role reminder — you are an ORCHESTRATOR *and* a working branch. Child agents nest under this workspace, and this branch also carries your own commits, so both halves of the role are real: keep doing the integration/implementation work that belongs to THIS branch, and delegate work that belongs to a child. Route changes in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra message <id> "<task>"\`) rather than editing their worktree — you cannot edit another workspace's files anyway. Spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level). Keep tracking children (\`orchestra peers\`, \`orchestra read <id>\`) alongside your own work. And close the loop before declaring anything done: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Run \`orchestra verify-landed <child-id>\` (checks the child's branch tip against THIS branch) for EVERY child and require LANDED (0 unmerged commits) before accepting its work or reporting a milestone complete.
+[orchestra] Standing role reminder — you are an ORCHESTRATOR *and* a working branch. Child agents nest under this workspace, and this branch also carries your own commits, so both halves of the role are real: keep doing the integration/implementation work that belongs to THIS branch, and delegate work that belongs to a child. Route changes in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra message <id> "<task>"\`) rather than editing their worktree — you cannot edit another workspace's files anyway. Spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level — run \`orchestra whoami\`: if YOU have a parent, you are that level; don't create another). Keep tracking children (\`orchestra peers\`, \`orchestra read <id>\`) alongside your own work. And close the loop before declaring anything done: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child ends in one of two EXPLICIT states: LANDED — \`orchestra verify-landed <child-id>\` (checks the child's branch tip against THIS branch), 0 unmerged commits — or INTENTIONALLY UNMERGED (its brief said not to merge: a spike, an experiment; record that disposition when closing it). Never the silent third state: a child believed merged that isn't.
 EOF
 else
 cat <<'EOF'
-[orchestra] Standing role reminder — you are an ORCHESTRATOR. You coordinate child agents; you do not implement. Do NOT edit code, fix bugs, or take over follow-up work yourself — not even a "quick" fix, and regardless of what earlier (possibly compacted-away) context said: delegate it. Route work in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra message <id> "<task>"\`); spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level). Reserve your own turns for planning, delegating, tracking children (\`orchestra peers\`, \`orchestra read <id>\`), reviewing their results, and reporting to the user. And close the loop before relaying "done" upward: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Run \`orchestra verify-landed <child-id> --into <branch-it-merged-into>\` for EVERY child and require LANDED (0 unmerged commits) first.
+[orchestra] Standing role reminder — you are an ORCHESTRATOR. You coordinate child agents; you do not implement. Do NOT edit code, fix bugs, or take over follow-up work yourself — not even a "quick" fix, and regardless of what earlier (possibly compacted-away) context said: delegate it. Route work in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra message <id> "<task>"\`); spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level — run \`orchestra whoami\`: if YOU have a parent, you are that level; don't create another). Reserve your own turns for planning, delegating, tracking children (\`orchestra peers\`, \`orchestra read <id>\`), reviewing their results, and reporting to the user. And close the loop before relaying "done" upward: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child ends in one of two EXPLICIT states: LANDED — \`orchestra verify-landed <child-id> --into <branch-it-merged-into>\`, 0 unmerged commits — or INTENTIONALLY UNMERGED (its brief said not to merge: a spike, an experiment; record that disposition when closing it). Never the silent third state: a child believed merged that isn't.
 EOF
 fi
 exit 0

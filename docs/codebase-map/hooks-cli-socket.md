@@ -32,6 +32,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | `/promote` | `id` | `{ ok, id?, branch?, kind? }` |
 | `/attach` | `id` (+ `parentId?`) | `{ ok, id?, parentId? }` |
 | `/verifyLanded` | `id` (+ `from?`, `into?`) | `{ ok, id?, branch?, target?, unmerged?, commits? }` — coordinator close-out: are all commits on the child's branch tip on the target (explicit `into` ref, else the `from` caller's branch)? |
+| `/whoami` | `id` | `{ ok, id?, name?, branch?, kind?, orchestrator?, parentId?, repoPath?, baseBranch? }` — a workspace's own record; the only in-band way an agent learns its `parentId` (peers excludes the caller). |
 | `/migrateAccount` | `id` (+ `accountId?` — null/'' = default login) | `{ ok, id?, branch?, accountId?, resumed? }` |
 | `/accounts` | — | `{ ok, accounts?: {id,label,configDir}[] }` |
 | `/loginUrl` | `accountId`, `url` | `{ ok, mode?: 'window'\|'external' }` — routes a login PTY's browser-open into the account's isolated OAuth window (`main/login-browser.ts`) |
@@ -117,6 +118,7 @@ creates the workspace parentless — its own top-level section), `rename <id> <b
 `promote <id>`, `attach <id> <parentId>`, `detach <id>`, `verify-landed <id>
 [--into <branch>]` (close-out check: exits 0 only when every commit on the
 workspace's branch tip is on the target — the caller's branch by default),
+`whoami` (this workspace's own record: kind, orchestrator role, parent),
 `add-repo <path>`,
 `delete <id> --yes`, `accounts` (list configured accounts), `migrate-account <id>
 <accountId|--default>` (migrate a workspace to another login / back to default),

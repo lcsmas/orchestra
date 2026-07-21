@@ -135,6 +135,8 @@ Usage:
   orchestra verify-landed <id> [--into <branch>] Check every commit on a workspace's branch tip
                                                  landed on the target (default: YOUR branch);
                                                  exit 0 = landed, 1 = unmerged commits remain
+  orchestra whoami                               Print THIS workspace's own record (id, branch,
+                                                 kind, orchestrator role, parent, repo, base)
   orchestra add-repo <path>                       Register a repo by path
   orchestra delete <id> [--yes]                  Delete a workspace (worktree + branch)
   orchestra accounts                              List configured Claude accounts (id + label)
@@ -350,6 +352,36 @@ async function main(argv: string[]): Promise<void> {
           `${commits.map((c) => `  ${c}`).join('\n')}\n`,
       );
       process.exit(1);
+    }
+
+    case 'whoami': {
+      // A workspace's view of its own record. Notably `parent`: an agent has
+      // no other in-band way to learn it (peers excludes the caller, and a
+      // child promoted BY its parent never sees the promotion) — this is what
+      // makes tree-shape rules like "at most one sub-orchestrator level"
+      // checkable by the agent they address.
+      const id = selfWorkspaceId();
+      if (!id) fail('not inside an Orchestra workspace ($ORCHESTRA_WS_ID is not set)');
+      const res = await request('/whoami', { id });
+      if (!res.ok) fail(res.error ?? 'failed to look up this workspace');
+      const orchestrator = res.orchestrator === true;
+      const kind = (res.kind as string | undefined) ?? 'worktree';
+      const lines = [
+        ['id', res.id as string],
+        ['name', (res.name as string | undefined) ?? ''],
+        ['branch', (res.branch as string | undefined) ?? ''],
+        ['kind', kind],
+        [
+          'orchestrator',
+          orchestrator ? (kind === 'worktree' ? 'yes (dual role)' : 'yes') : 'no',
+        ],
+        ['parent', (res.parentId as string | null | undefined) ?? 'none (top-level)'],
+        ['repo', (res.repoPath as string | undefined) || '(none)'],
+        ['base', (res.baseBranch as string | undefined) || '(none)'],
+      ];
+      const w = Math.max(...lines.map(([k]) => k.length));
+      process.stdout.write(lines.map(([k, v]) => `${k.padEnd(w)}  ${v}`).join('\n') + '\n');
+      return;
     }
 
     case 'add-repo': {
