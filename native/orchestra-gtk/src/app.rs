@@ -188,6 +188,7 @@ pub enum Msg {
     EscapePressed,
     /// Open the notification-sound picker (B5).
     OpenSoundPicker,
+    OpenAccounts,
 }
 
 /// Depth-first search for a named widget under `root` — used to reach a mount
@@ -869,6 +870,7 @@ impl SimpleComponent for App {
                     }
                     crate::sidebar::HeaderAction::OpenHelp => Msg::ToggleOverlay(OverlayKind::Help),
                     crate::sidebar::HeaderAction::OpenSoundPicker => Msg::OpenSoundPicker,
+                    crate::sidebar::HeaderAction::OpenAccounts => Msg::OpenAccounts,
                 },
             });
         widgets.sidebar_host.append(sidebar.widget());
@@ -1246,6 +1248,15 @@ impl SimpleComponent for App {
                 if let Some(overlays) = &self.overlays {
                     overlays.on_escape();
                     self.sync_insights_active();
+                }
+            }
+            Msg::OpenAccounts => {
+                // Opens the same accounts settings window the footer usage-bar
+                // button does (accounts/mod.rs open_settings -> settings::open).
+                // Guarded because the controller is absent until the backend
+                // connects, exactly like the other self.accounts call sites.
+                if let Some(accounts) = &self.accounts {
+                    accounts.open_settings();
                 }
             }
             Msg::OpenSoundPicker => {

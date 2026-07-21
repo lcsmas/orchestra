@@ -2674,7 +2674,15 @@ button.welcome-help-btn:hover {
    Electron's rgba(110,168,255,α) literals are @accent (#6ea8ff) at α. GTK CSS
    has no colour-mix, so they stay as alpha() over the same hue. */
 .new-menu-btn {
-  padding: 5px 10px;
+  /* Electron's `padding: 5px 10px` (styles.css:551) is BORDER-BOX under the
+     global `* { box-sizing: border-box }`, so its 1px border eats INTO the
+     padding and the rendered box is 5+5 tall. GTK4 is content-box: the same
+     `5px 10px` puts the border OUTSIDE, rendering 2px taller and wider — the
+     same class the icon buttons hit (min-width 26 not 28). Subtract the border
+     from the padding so the rendered box matches. Verify by recapture against
+     the shared-backend pair, not by this arithmetic — see the cell-size fix for
+     why a computed value can still be wrong. */
+  padding: 4px 9px;
   background-color: alpha(@accent, 0.08);
   border: 1px solid alpha(@accent, 0.28);
   color: @accent;

@@ -209,6 +209,7 @@ pub enum HeaderAction {
     OpenResources,
     OpenInsights,
     OpenSoundPicker,
+    OpenAccounts,
     OpenHelp,
 }
 
@@ -851,6 +852,19 @@ impl Component for Sidebar {
             "Notification sound settings",
             &input,
             || Msg::Header(HeaderAction::OpenSoundPicker),
+        ));
+        // Accounts — Electron's third header icon (Sidebar.tsx:1415, UsersIcon).
+        // The port had NO header entry for it (only the footer usage-bar button
+        // opened the accounts window), so a user comparing headers saw Electron's
+        // accounts icon missing here. Placed right after Bell to match Electron's
+        // Help/Bell/Accounts order. Resources+Insights follow, kept per the note
+        // below, so GTK carries 4 header icons to Electron's 3 by design.
+        icon_row.append(&header_icon_button(
+            crate::icons::USERS,
+            "open-accounts",
+            "Claude accounts — usage badges per workspace",
+            &input,
+            || Msg::Header(HeaderAction::OpenAccounts),
         ));
         // Resources and Insights have no Electron header counterpart (they are
         // reached from the footer / their own sections there). They are kept
