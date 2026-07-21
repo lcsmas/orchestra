@@ -27,8 +27,21 @@ function MessageBubbleImpl({ message }: Props) {
 
   const blocks = useMemo(() => (text ? parseMarkdown(text) : []), [text]);
 
+  // A message with nothing to show — e.g. a thinking-only block after the
+  // spinner settles, or a text block whose first delta hasn't landed — must
+  // not paint an empty bubble/rail stub in the transcript.
+  if (!text && !thinking) return null;
+
   return (
     <div className={`av-message av-message-${role}`} data-role={role}>
+      {/* Quiet role eyebrow — only where the reader needs orientation: their own
+          turns and errors. Assistant prose stays unlabeled (it is the default
+          voice of the transcript). */}
+      {role === 'user' ? (
+        <div className="av-message-eyebrow">You</div>
+      ) : role === 'error' ? (
+        <div className="av-message-eyebrow">Error</div>
+      ) : null}
       <div className="av-message-text">
         {blocks.map((b, i) =>
           b.kind === 'code' ? (

@@ -16,6 +16,26 @@
   font-display: block;
 }
 
+/* Bundled UI face. Inter used to come from the Google Fonts CDN, which meant
+ * the whole app silently fell back to system fonts offline (Electron caches
+ * unreliably across restarts). Shipping the variable font (weights 100-900 in
+ * one file per style) guarantees the UI typography everywhere. OFL-1.1 —
+ * see Inter-OFL.txt. */
+@font-face {
+  font-family: "Inter";
+  src: url("./assets/fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Inter";
+  src: url("./assets/fonts/InterVariable-Italic.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: block;
+}
+
 /* Symbol face for codepoints JetBrains Mono lacks — the circled numbers and
  * dingbats Claude emits in its TUI (①②③, ❶❷❸, ☐, ✻). Without this they fall
  * back to a proportional symbol font (Noto Sans Symbols, ~1.67× the cell) that

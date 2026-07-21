@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import type { RenderMessage } from '../../../shared/types';
 import { Collapsible } from './Collapsible';
 import { ToolDiff } from './ToolDiff';
+import { ToolIcon } from './tool-icons';
 import {
   resultText,
   inputStr,
@@ -39,6 +40,7 @@ function ToolCardImpl({ message }: Props) {
 
   const header = (
     <span className="av-tool-header-inner">
+      <ToolIcon name={name} />
       <span className="av-tool-name">{name}</span>
       <span className="av-tool-summary" title={summarizeInput(name, input)}>
         {truncate(summarizeInput(name, input))}
@@ -46,13 +48,27 @@ function ToolCardImpl({ message }: Props) {
     </span>
   );
 
+  // TodoWrite gets a live progress fraction next to its status dot.
+  const todoProgress = useMemo(() => {
+    if (name !== 'TodoWrite') return null;
+    const todos = todosFrom(input);
+    if (todos.length === 0) return null;
+    const done = todos.filter((t) => t.status === 'completed').length;
+    return `${done}/${todos.length}`;
+  }, [name, input]);
+
+  const statusLabel = isError ? 'failed' : pending ? 'running' : 'done';
   const aside = (
     <span
       className={`av-tool-status ${
         isError ? 'av-tool-status-error' : pending ? 'av-tool-status-pending' : 'av-tool-status-ok'
       }`}
+      title={statusLabel}
     >
-      {isError ? 'error' : pending ? '…' : 'done'}
+      {todoProgress && <span className="av-tool-progress">{todoProgress}</span>}
+      {/* Status reads as a colored dot; errors also say it in words. */}
+      <span className="av-tool-status-dot" aria-hidden="true" />
+      {isError ? 'failed' : <span className="av-sr-only">{statusLabel}</span>}
     </span>
   );
 
@@ -175,7 +191,7 @@ function TodoBody({ input }: { input: Record<string, unknown> | undefined }) {
       {todos.map((t, i) => (
         <li key={i} className={`av-todo av-todo-${t.status}`}>
           <span className="av-todo-mark" aria-hidden>
-            {t.status === 'completed' ? '☑' : t.status === 'in_progress' ? '◐' : '☐'}
+            <TodoMark status={t.status} />
           </span>
           <span className="av-todo-text">
             {t.status === 'in_progress' && t.activeForm ? t.activeForm : t.content}
@@ -183,6 +199,40 @@ function TodoBody({ input }: { input: Record<string, unknown> | undefined }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+/** Check-circle / half-ring / open-ring marks (status is also in the li class
+ *  and the text styling, so these stay decorative). */
+function TodoMark({ status }: { status: string }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      {status === 'completed' ? (
+        <>
+          <circle cx="8" cy="8" r="6.25" fill="currentColor" />
+          <path
+            d="M5.4 8.2 7.2 10l3.4-3.6"
+            stroke="var(--av-surface-raised, #1a1f26)"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </>
+      ) : status === 'in_progress' ? (
+        <>
+          <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.5" opacity="0.35" />
+          <path
+            d="M8 2.5a5.5 5.5 0 0 1 5.5 5.5"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+          <circle cx="8" cy="8" r="2" fill="currentColor" />
+        </>
+      ) : (
+        <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.5" />
+      )}
+    </svg>
   );
 }
 

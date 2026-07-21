@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { DiffEditor } from '@monaco-editor/react';
 import { inputStr } from './tool-util';
 import { langFromPath } from './markdown-parse';
+import { defineOrchestraThemes, useMonacoTheme, MONACO_FONT } from './monaco-theme';
 
 interface Props {
   /** Tool name — 'Edit' or 'Write'. */
@@ -38,6 +39,8 @@ function ToolDiffImpl({ name, input }: Props) {
     modified.split('\n').length
   );
   const height = Math.min(lineCount * 18 + 24, 520);
+  const theme = useMonacoTheme();
+  const newLines = isWrite ? modified.split('\n').length : 0;
 
   return (
     <div className="av-diff">
@@ -45,16 +48,20 @@ function ToolDiffImpl({ name, input }: Props) {
         <span className="av-diff-path" title={filePath}>
           {filePath || '(unknown file)'}
         </span>
-        <span className="av-diff-kind">{isWrite ? 'new file' : 'edit'}</span>
+        <span className="av-diff-kind">
+          {isWrite ? `new file · ${newLines} ${newLines === 1 ? 'line' : 'lines'}` : 'edit'}
+        </span>
       </div>
       <div className="av-diff-editor" style={{ height }}>
         <DiffEditor
           original={original}
           modified={modified}
           language={language}
-          theme="vs-dark"
+          theme={theme}
+          beforeMount={defineOrchestraThemes}
           height="100%"
           options={{
+            ...MONACO_FONT,
             readOnly: true,
             domReadOnly: true,
             renderSideBySide: false,
@@ -64,7 +71,7 @@ function ToolDiffImpl({ name, input }: Props) {
             folding: false,
             scrollbar: { alwaysConsumeMouseWheel: false },
             overviewRulerLanes: 0,
-            fontSize: 12,
+            renderOverviewRuler: false,
             contextmenu: false,
           }}
         />

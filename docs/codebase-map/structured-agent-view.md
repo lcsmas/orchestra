@@ -44,10 +44,15 @@ gated on the prior `result`), so the subprocess stays warm and `canUseTool` fire
   `AgentPermissionReply`. Blocks keyed by numeric SDK content-block `index`. **Thinking is
   a boolean** (`thinking-start` only) — cleartext thinking is redacted on Opus 4.8
   (verified in `docs/spikes/phase0-sdk-findings.md`).
-- **`src/shared/agent-events.ts`** (+ `.test.ts`, 32 tests) — pure `normalizeSdkMessage`
+- **`src/shared/agent-events.ts`** (+ `.test.ts`, 35 tests) — pure `normalizeSdkMessage`
   (SDK message → `AgentEvent[]`) and immutable `foldEvent`/`foldEvents`/`emptySession`/
-  `clearPendingPermission`. The renderer store is a pure projection: replaying the event
-  stream from `emptySession` rebuilds the view. Testable without Electron.
+  `clearPendingPermission`/`makeUserMessage`. The renderer store is a pure projection:
+  replaying the event stream from `emptySession` rebuilds the view. Testable without
+  Electron. **User prompts are echoed as a `user-message` event** emitted by `sdkSend`
+  (agent-sdk.ts) — the SDK stream never repeats plain user text (its `user` messages
+  only carry `tool_result` blocks), so without this event a sent prompt would never
+  appear in the transcript. The fold also flips `running: true` on it so the
+  interrupt/footer react before the first SDK event lands.
 - **`src/main/agent-sdk.ts`** — per-workspace SDK session manager. Owns the `query`
   object, the async-generator prompt queue, the `canUseTool` bridge (parks the call, emits
   a `permission-request` event, resolves on the renderer's `agentSdkPermissionReply`), and
@@ -65,10 +70,17 @@ gated on the prior `result`), so the subprocess stays warm and `canUseTool` fire
   virtualized container + composer. Slots: `AgentMessage` (routes tool→`ToolCard` else
   `MessageBubble`), `PermissionDialog`, `AgentControls`, `TurnFooter`.
 - **`src/renderer/components/agent/*`** — `MessageBubble` (dep-free markdown +
-  Monaco code blocks), `ToolCard`/`ToolDiff` (Edit/Write diffs reconstructed from the
-  `tool_use` **input**, not the plain-text `tool_result`), `ThinkingIndicator` (spinner),
-  `PermissionDialog` (picks first *unanswered* pending request, not `pending[0]`),
-  `AskUserQuestionCard`, `AgentControls`, `TurnFooter`.
+  Monaco code blocks; renders `null` when a message has no text and isn't thinking),
+  `ToolCard`/`ToolDiff` (Edit/Write diffs reconstructed from the `tool_use` **input**,
+  not the plain-text `tool_result`; per-tool SVG icons in `tool-icons.tsx`),
+  `ThinkingIndicator` (shimmer label), `PermissionDialog` (picks first *unanswered*
+  pending request, not `pending[0]`), `AskUserQuestionCard`, `AgentControls`,
+  `TurnFooter`, plus `monaco-theme.ts` (the `orchestra-dark`/`orchestra-light`
+  editor themes + `useMonacoTheme`).
+- **`src/renderer/monaco-loader.ts`** — imported first in `main.tsx`; `loader.config({
+  monaco })` with the bundled `monaco-editor` package + a local editor worker, so the
+  editors never fetch from the jsDelivr CDN (offline-safe, like the self-hosted
+  Inter/JetBrains Mono in `assets/fonts/`).
 - **CSS** — three cascade layers imported in `main.tsx`: `agent-view-defaults.css` (A3
   structural) → `agent-view-structure.css` (A2 layout) → `agent-view-theme.css` (A5 design
   system, wins). Reference: `agent-view-design.md`.

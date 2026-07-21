@@ -7,47 +7,57 @@
  *   3. agent-view-theme.css      (this) — tokens + visual language, supersedes
  *
  * Keyed on the REAL `av-*` classes the components stamp (StructuredView +
- * components/agent/*.tsx), enumerated at integration — not on a guessed set.
- * It EXTENDS Orchestra's existing visual language (styles.css tokens: --accent
- * #6ea8ff, --space/--radius scale, JetBrains Mono / Inter) rather than
- * introducing a competing look.
+ * components/agent/*.tsx). It EXTENDS Orchestra's visual language (styles.css:
+ * glass chrome, hairline borders, --accent #6ea8ff, 140ms --ease hovers,
+ * Inter / JetBrains Mono) rather than introducing a competing look.
  *
  * DESIGN THESIS
- *   The view is a live transcript of an agent thinking and acting. Its signature
- *   is the TURN RAIL: a thin, role-tinted spine down the left edge of every
- *   message that ties each unit of the conversation back to Orchestra's identity
- *   colour (the same blue as the terminal cursor). Assistant prose is calm and
- *   readable; tool activity is mechanical and monospace; thinking is quiet and
- *   dim; errors are unmistakable but not alarmist. The streaming cursor reuses
- *   the terminal's blink cadence so the structured view reads as continuous with
- *   the terminal it replaces.
+ *   The view is a live transcript of an agent thinking and acting. Two ideas
+ *   carry the design:
+ *   • the TURN RAIL — a rounded role-tinted spine on the left edge of every
+ *     message, the same device as the sidebar's active-workspace rail, in the
+ *     same blue as the terminal cursor;
+ *   • the LIVE EDGE — while the agent works the view breathes: the streaming
+ *     message's rail glows softly, "Working…"/"Thinking…" shimmer, and the
+ *     pending tool's status dot pulses. When the turn ends, everything goes
+ *     still. Motion is spent HERE and almost nowhere else.
+ *   Assistant prose is calm, 14px, readable-measure. Tool activity is
+ *   mechanical, monospace, compact. Errors are unmistakable but not alarmist.
  *
  * THEMING
- *   The rest of the app is dark-only. This view is theme-aware: dark by default
- *   (matching the app), light when the OS asks (`prefers-color-scheme: light`)
- *   OR when `.av-view` / an ancestor carries `data-agent-theme="light"`. An
- *   explicit `data-agent-theme="dark"` re-asserts dark so a settings toggle beats
- *   the OS in both directions. All colour roles are `--av-*` tokens on `.av-view`;
- *   rules reference the tokens, never raw hex. Dark is the primary requirement;
- *   light is complete but best-effort.
+ *   Dark is the UNCONDITIONAL default — the rest of the app is dark-only, and
+ *   an OS-light user must not get a white transcript inside dark chrome (that
+ *   is exactly what happened when this file consulted prefers-color-scheme;
+ *   verified in a headless run, which reports light). Light applies ONLY via
+ *   an explicit `data-agent-theme="light"` on `.av-view`/an ancestor (the
+ *   future settings toggle's hook; monaco-theme.ts watches the same
+ *   attribute). All colour roles are `--av-*` tokens on `.av-view` — rules
+ *   reference tokens, never raw hex. The two token blocks (dark default /
+ *   light-explicit) must stay value-identical per theme.
  *
  * MEASUREMENT SAFETY (do not break the virtualized list)
- *   Rows are measured by `offsetHeight` and carry `contain: layout style`. Keep
- *   vertical margin on `.av-message` / `.av-tool-card` (the measured content),
- *   never on `.av-row`, so a row's height stays a pure function of its content.
+ *   Rows are measured by `offsetHeight` and carry `contain: layout style`.
+ *   Vertical margin lives on `.av-message` / `.av-tool-card` (the measured
+ *   content), never on `.av-row`. Never override the inline height/transform
+ *   on `.av-message-list-inner` / its child. Entrance motion animates
+ *   opacity/transform only, and only on the last row (a virtualized remount
+ *   mid-list must not replay it).
  * ==========================================================================*/
 
 /* --- Role tokens: DARK (default, matches app chrome) ---------------------- */
 .av-view {
-  --av-surface: var(--bg-2, #12151a);
-  --av-surface-raised: var(--bg-3, #1a1f26);
-  --av-surface-sunken: #0d1015;
-  --av-hairline: var(--border, #242a33);
-  --av-hairline-strong: var(--border-strong, #333b47);
+  --av-surface: #101318;
+  --av-surface-raised: #181d24;
+  --av-surface-sunken: #0b0e12;
+  --av-surface-overlay: #1d232c;
+  --av-hairline: #232a34;
+  --av-hairline-strong: #333b47;
+  --av-hairline-faint: rgba(255, 255, 255, 0.055);
+  --av-highlight: rgba(255, 255, 255, 0.04);
 
-  --av-text: var(--text, #e6e9ef);
-  --av-text-dim: var(--text-dim, #8b95a7);
-  --av-text-faint: #7a8496;
+  --av-text: #e8ebf1;
+  --av-text-dim: #949eb0;
+  --av-text-faint: #737e92;
 
   --av-assistant: var(--accent, #6ea8ff);
   --av-assistant-ink: var(--accent-ink, #081022);
@@ -62,215 +72,311 @@
   --av-remove: var(--red, #ff6b6b);
   --av-remove-bg: rgba(255, 107, 107, 0.12);
   --av-error: var(--red, #ff6b6b);
-  --av-error-bg: rgba(255, 107, 107, 0.10);
+  --av-error-bg: rgba(255, 107, 107, 0.09);
   --av-error-border: rgba(255, 107, 107, 0.45);
   --av-warn: var(--yellow, #ffc857);
 
-  --av-code-bg: rgba(255, 255, 255, 0.04);
+  --av-code-bg: rgba(255, 255, 255, 0.045);
   --av-code-border: rgba(255, 255, 255, 0.07);
 
+  --av-glow: rgba(110, 168, 255, 0.16);
   --av-focus-border: var(--focus-border, rgba(110, 168, 255, 0.75));
   --av-focus-ring: var(--focus-ring, rgba(110, 168, 255, 0.2));
 
   --av-ease: var(--ease, cubic-bezier(0.3, 0.8, 0.3, 1));
   --av-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
-  --av-fs-caption: 11px;
+  --av-fs-caption: 10.5px;
   --av-fs-small: 12px;
-  --av-fs-body: 13.5px;
-  --av-fs-code: 12.5px;
-  --av-fs-h: 15px;
-  --av-lh-prose: 1.6;
+  --av-fs-body: 14px;
+  --av-fs-code: 12px;
+  --av-fs-h: 15.5px;
+  --av-lh-prose: 1.65;
   --av-measure: 74ch;
+  --av-radius-xl: 14px;
 
-  background: var(--av-surface);
+  /* A whisper of light at the top of the canvas so the pane doesn't read as a
+     dead flat sheet — static paint, no per-frame cost. */
+  background:
+    radial-gradient(120% 90px at 50% -30px, rgba(110, 168, 255, 0.05), transparent 70%),
+    var(--av-surface);
   color: var(--av-text);
 }
 
-/* --- LIGHT palette, defined once, applied by two routes ------------------- *
- * (a) OS light AND no explicit theme forced; (b) explicit data-agent-theme=light
- * on .av-view or an ancestor. The explicit dark override below re-asserts dark so
- * a settings toggle wins over the OS in both directions. */
-@media (prefers-color-scheme: light) {
-  .av-view:not([data-agent-theme]) {
-    --av-surface: #ffffff; --av-surface-raised: #f6f7f9; --av-surface-sunken: #eef0f3;
-    --av-hairline: #e2e5ea; --av-hairline-strong: #cdd2da;
-    --av-text: #1c2330; --av-text-dim: #5a6473; --av-text-faint: #6b7482;
-    --av-assistant: #2f6fe0; --av-assistant-ink: #ffffff; --av-thinking: #8a5fa8;
-    --av-tool: #667486; --av-tool-active: #2159c8; --av-user: #1f9d57; --av-task: #6d5cd6;
-    --av-add: #12703f; --av-add-bg: rgba(31,157,87,0.12);
-    --av-remove: #c62828; --av-remove-bg: rgba(214,69,69,0.10);
-    --av-error: #cc3a3a; --av-error-bg: rgba(204,58,58,0.08); --av-error-border: rgba(204,58,58,0.40);
-    --av-warn: #b7791f; --av-code-bg: rgba(20,30,50,0.045); --av-code-border: rgba(20,30,50,0.09);
-    --av-focus-border: rgba(47,111,224,0.75); --av-focus-ring: rgba(47,111,224,0.22);
-  }
-}
+/* --- LIGHT palette — EXPLICIT opt-in only --------------------------------- *
+ * Applied solely via `data-agent-theme="light"` (on .av-view or an ancestor).
+ * The OS preference is deliberately NOT consulted: the surrounding app chrome
+ * is dark-only, so an OS-driven light pane would clash with everything around
+ * it. A future settings toggle sets this attribute. */
 .av-view[data-agent-theme="light"],
 [data-agent-theme="light"] .av-view {
-  --av-surface: #ffffff; --av-surface-raised: #f6f7f9; --av-surface-sunken: #eef0f3;
-  --av-hairline: #e2e5ea; --av-hairline-strong: #cdd2da;
-  --av-text: #1c2330; --av-text-dim: #5a6473; --av-text-faint: #6b7482;
-  --av-assistant: #2f6fe0; --av-assistant-ink: #ffffff; --av-thinking: #8a5fa8;
-  --av-tool: #667486; --av-tool-active: #2159c8; --av-user: #1f9d57; --av-task: #6d5cd6;
-  --av-add: #12703f; --av-add-bg: rgba(31,157,87,0.12);
-  --av-remove: #c62828; --av-remove-bg: rgba(214,69,69,0.10);
-  --av-error: #cc3a3a; --av-error-bg: rgba(204,58,58,0.08); --av-error-border: rgba(204,58,58,0.40);
-  --av-warn: #b7791f; --av-code-bg: rgba(20,30,50,0.045); --av-code-border: rgba(20,30,50,0.09);
-  --av-focus-border: rgba(47,111,224,0.75); --av-focus-ring: rgba(47,111,224,0.22);
+  --av-surface: #ffffff; --av-surface-raised: #f6f7f9; --av-surface-sunken: #eef1f4;
+  --av-surface-overlay: #ffffff;
+  --av-hairline: #e3e6eb; --av-hairline-strong: #ccd2db; --av-hairline-faint: rgba(20, 30, 50, 0.07);
+  --av-highlight: rgba(255, 255, 255, 0.6);
+  --av-text: #1b2330; --av-text-dim: #566175; --av-text-faint: #6d7787;
+  --av-assistant: #2f6fe0; --av-assistant-ink: #ffffff; --av-thinking: #7d55a3;
+  --av-tool: #64748b; --av-tool-active: #2159c8; --av-user: #178a4c; --av-task: #6250d0;
+  --av-add: #137a43; --av-add-bg: rgba(23, 138, 76, 0.12);
+  --av-remove: #c62828; --av-remove-bg: rgba(198, 40, 40, 0.09);
+  --av-error: #c93737; --av-error-bg: rgba(201, 55, 55, 0.08); --av-error-border: rgba(201, 55, 55, 0.38);
+  --av-warn: #a56a12; --av-code-bg: rgba(20, 30, 50, 0.05); --av-code-border: rgba(20, 30, 50, 0.09);
+  --av-glow: rgba(47, 111, 224, 0.14);
+  --av-focus-border: rgba(47, 111, 224, 0.75); --av-focus-ring: rgba(47, 111, 224, 0.22);
+  background: var(--av-surface);
 }
-/* Explicit DARK override — re-asserts dark under an OS-light preference. */
-.av-view[data-agent-theme="dark"],
-[data-agent-theme="dark"] .av-view {
-  --av-surface: var(--bg-2, #12151a); --av-surface-raised: var(--bg-3, #1a1f26); --av-surface-sunken: #0d1015;
-  --av-hairline: var(--border, #242a33); --av-hairline-strong: var(--border-strong, #333b47);
-  --av-text: var(--text, #e6e9ef); --av-text-dim: var(--text-dim, #8b95a7); --av-text-faint: #7a8496;
-  --av-assistant: var(--accent, #6ea8ff); --av-assistant-ink: var(--accent-ink, #081022);
-  --av-thinking: #b294bb; --av-tool: #7c8798; --av-tool-active: var(--accent, #6ea8ff);
-  --av-user: #7ee787; --av-task: var(--accent-2, #8b7cff);
-  --av-add: var(--green, #5bd68b); --av-add-bg: rgba(91,214,139,0.12);
-  --av-remove: var(--red, #ff6b6b); --av-remove-bg: rgba(255,107,107,0.12);
-  --av-error: var(--red, #ff6b6b); --av-error-bg: rgba(255,107,107,0.10); --av-error-border: rgba(255,107,107,0.45);
-  --av-warn: var(--yellow, #ffc857); --av-code-bg: rgba(255,255,255,0.04); --av-code-border: rgba(255,255,255,0.07);
-  --av-focus-border: var(--focus-border, rgba(110,168,255,0.75)); --av-focus-ring: var(--focus-ring, rgba(110,168,255,0.2));
-}
+/* (No explicit-dark block: dark IS the default, so `data-agent-theme="dark"`
+ * simply matches no light rule and falls through to the base tokens.) */
 
 /* ============================================================================
- * SHELL — view / scroll region / rows
+ * SHELL — view / scroll region / rows / scrollbar
  * ==========================================================================*/
 
 .av-view { font-size: var(--av-fs-body); }
 
-/* Scroll region — a centered reading column via inner padding; the virtualized
-   inner keeps its absolute-positioning contract (do not add layout here). */
 .av-message-list {
-  padding: 16px 0 8px;
+  padding: 20px 0 12px;
   scroll-behavior: smooth;
 }
 @media (prefers-reduced-motion: reduce) { .av-message-list { scroll-behavior: auto; } }
-/* Centered measure without touching the measured rows: pad the inner wrapper. */
+/* Centered measure without touching the measured rows: constrain the inner
+   wrapper only. (Its inline height/position are the virtualization contract.) */
 .av-message-list-inner { max-width: 900px; margin: 0 auto; }
 .av-row { contain: layout style; }
 
+/* Scrollbar — the app hides scrollbars globally (styles.css `*` rules), which
+   left this view with none at all. Opt back in with a slim, track-less thumb.
+   (The terminal's gutter-free thumb is TSX-synced; here a native 10px gutter
+   is invisible inside the centered column, so native wins on simplicity.) */
+.av-message-list { scrollbar-width: thin !important; scrollbar-color: rgba(125, 135, 154, 0.35) transparent; }
+.av-message-list::-webkit-scrollbar { display: block !important; width: 10px !important; }
+.av-message-list::-webkit-scrollbar-track,
+.av-message-list::-webkit-scrollbar-corner { background: transparent !important; }
+.av-message-list::-webkit-scrollbar-thumb {
+  background-color: rgba(125, 135, 154, 0.22) !important;
+  border: 3px solid transparent !important;
+  background-clip: padding-box !important;
+  border-radius: 999px !important;
+  min-height: 40px !important;
+}
+.av-message-list::-webkit-scrollbar-thumb:hover { background-color: rgba(125, 135, 154, 0.45) !important; }
+
+/* Entrance: only the newest row fades in (a virtualized remount mid-list must
+   not replay motion — rows scrolled back into view enter without ceremony). */
+.av-row:last-child :is(.av-message, .av-tool-card) {
+  animation: av-enter 240ms var(--av-ease-out);
+}
+@keyframes av-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .av-row:last-child :is(.av-message, .av-tool-card) { animation: none; }
+}
+
+/* Screen-reader-only utility (status dots carry sr text). */
+.av-sr-only {
+  position: absolute; width: 1px; height: 1px; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+
 /* ============================================================================
- * MESSAGE + TURN RAIL (the signature). Rail = role-tinted left border on the
- * message; supersedes A2/A3's flat bubble + their user left-border.
+ * MESSAGE + TURN RAIL (signature #1). The rail is a rounded role-tinted spine
+ * drawn as ::before so it can float off the text and glow while streaming.
  * ==========================================================================*/
 
 .av-message {
   position: relative;
-  margin: 2px 20px 8px;
-  padding: 8px 14px 8px 16px;
+  margin: 2px 24px 10px;
+  padding: 8px 16px 8px 18px;
   border: none;
-  border-left: 2px solid var(--av-rail, var(--av-assistant));
-  border-radius: 0 var(--radius-sm, 6px) var(--radius-sm, 6px) 0;
+  border-left: none;
+  border-radius: var(--radius-sm, 6px);
   background: transparent;
   color: var(--av-text);
   font-size: var(--av-fs-body);
   line-height: var(--av-lh-prose);
   --av-rail: var(--av-assistant);
-  transition: border-color 160ms var(--av-ease), background 160ms var(--av-ease);
 }
+.av-message::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 5px;
+  bottom: 5px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--av-rail);
+  opacity: 0.85;
+  transition: opacity 140ms var(--av-ease), box-shadow 140ms var(--av-ease);
+}
+
 .av-message-assistant { --av-rail: var(--av-assistant); }
 .av-message-user {
   --av-rail: var(--av-user);
-  background: color-mix(in srgb, var(--av-user) 7%, transparent);
-  border-radius: 0 var(--radius-sm, 6px) var(--radius-sm, 6px) 0;
+  margin-top: 14px;
+  background: linear-gradient(180deg, var(--av-highlight), transparent 80%),
+    var(--av-surface-raised);
+  border: 1px solid var(--av-hairline);
+  border-radius: var(--radius, 8px);
+  padding: 10px 16px 10px 18px;
 }
+.av-message-user::before { top: 8px; bottom: 8px; }
 .av-message-system { --av-rail: var(--av-tool); color: var(--av-text-dim); font-size: var(--av-fs-small); }
 .av-message-error {
   --av-rail: var(--av-error);
   background: var(--av-error-bg);
+  border-radius: var(--radius, 8px);
   color: var(--av-text);
 }
-/* An open (still-streaming) message brightens its rail so the eye finds the
-   live edge. A2 flags streaming by omitting `done`; the cursor's presence is our
-   only DOM signal, so brighten via :has(.av-cursor). */
-.av-message:has(.av-cursor) { --av-rail: var(--av-tool-active); }
-.av-message:has(.av-cursor) { border-left-color: var(--av-tool-active); }
+
+/* Role eyebrow — mono microlabel above user/error bodies. */
+.av-message-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--av-fs-caption);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--av-rail);
+  margin-bottom: 3px;
+  user-select: none;
+}
+.av-message-error .av-message-eyebrow { color: var(--av-error); }
+
+/* LIVE EDGE (signature #2): a message that is still streaming (cursor present)
+   or still thinking breathes — the rail brightens and carries a soft glow that
+   swells and settles. */
+.av-message:is(:has(.av-cursor), :has(.av-thinking)) { --av-rail: var(--av-tool-active); }
+.av-message:is(:has(.av-cursor), :has(.av-thinking))::before {
+  opacity: 1;
+  animation: av-breathe 2.2s var(--av-ease) infinite;
+}
+@keyframes av-breathe {
+  0%, 100% { box-shadow: 0 0 6px 0 var(--av-glow); }
+  50% { box-shadow: 0 0 14px 1px var(--av-glow); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .av-message:is(:has(.av-cursor), :has(.av-thinking))::before { animation: none; box-shadow: 0 0 8px 0 var(--av-glow); }
+}
 
 .av-message-text { white-space: normal; word-break: normal; overflow-wrap: break-word; max-width: var(--av-measure); }
 
 /* ============================================================================
- * MARKDOWN prose — supersede A3's defaults with reading-tuned type
+ * MARKDOWN prose — reading-tuned type
  * ==========================================================================*/
 
 .av-md { font-size: var(--av-fs-body); line-height: var(--av-lh-prose); }
-.av-md-p { margin: 0 0 0.7em; }
+.av-md-p { margin: 0 0 0.75em; }
 .av-md-p:last-child { margin-bottom: 0; }
-.av-md-h { margin: 1.1em 0 0.5em; font-weight: 650; line-height: 1.3; letter-spacing: -0.01em; color: var(--av-text); }
-.av-md-ul, .av-md-ol { margin: 0.3em 0 0.7em; padding-left: 1.4em; }
-.av-md-ul li, .av-md-ol li { margin: 0.2em 0; }
-.av-md-ul li::marker, .av-md-ol li::marker { color: var(--av-text-dim); }
+.av-md-h {
+  margin: 1.25em 0 0.5em;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.011em;
+  font-size: var(--av-fs-h);
+  color: var(--av-text);
+}
+.av-md-h:first-child { margin-top: 0.1em; }
+.av-md-ul, .av-md-ol { margin: 0.35em 0 0.75em; padding-left: 1.5em; }
+.av-md-ul li, .av-md-ol li { margin: 0.22em 0; }
+.av-md-ul li::marker, .av-md-ol li::marker { color: var(--av-text-faint); }
 .av-md-quote {
-  margin: 0.6em 0; padding: 0.1em 0 0.1em 0.9em;
+  margin: 0.7em 0; padding: 0.15em 0 0.15em 1em;
   border-left: 2px solid var(--av-hairline-strong); color: var(--av-text-dim);
 }
-.av-md-hr { border: none; border-top: 1px solid var(--av-hairline); margin: 1.1em 0; }
+.av-md-hr { border: none; border-top: 1px solid var(--av-hairline); margin: 1.2em 0; }
 .av-md-code-inline {
-  font-family: var(--font-mono); font-size: 0.9em; padding: 0.12em 0.4em;
-  border-radius: 4px; background: var(--av-code-bg); border: 1px solid var(--av-code-border); color: var(--av-text);
+  font-family: var(--font-mono); font-size: 0.88em; padding: 0.13em 0.42em;
+  border-radius: 5px; background: var(--av-code-bg); border: 1px solid var(--av-code-border); color: var(--av-text);
 }
 .av-md-link {
-  color: var(--av-assistant); text-decoration: none;
-  border-bottom: 1px solid color-mix(in srgb, var(--av-assistant) 35%, transparent);
+  color: var(--av-assistant); text-decoration: underline; text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, var(--av-assistant) 40%, transparent);
+  border-bottom: none;
+  transition: text-decoration-color 140ms var(--av-ease);
 }
-.av-md-link:hover { border-bottom-color: var(--av-assistant); text-decoration: none; }
-.av-md-strong { font-weight: 650; color: var(--av-text); }
+.av-md-link:hover { text-decoration-color: var(--av-assistant); }
+.av-md-strong { font-weight: 640; color: var(--av-text); }
 .av-md-em { font-style: italic; }
 
 /* ============================================================================
- * STREAMING CURSOR — supersede A3's steps(2) blink with the terminal cadence
+ * STREAMING CURSOR — terminal cadence, terminal blue
  * ==========================================================================*/
 
 .av-cursor {
-  display: inline-block; width: 0.5em; height: 1.05em; margin-left: 1px;
-  vertical-align: text-bottom; border-radius: 1px; background: var(--av-assistant);
+  display: inline-block; width: 0.52em; height: 1.05em; margin-left: 2px;
+  vertical-align: text-bottom; border-radius: 1.5px; background: var(--av-assistant);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--av-assistant) 45%, transparent);
   animation: av-blink 1.06s steps(1) infinite;
 }
-@keyframes av-blink { 0%,50% { opacity: 1; } 50.01%,100% { opacity: 0; } }
+@keyframes av-blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .av-cursor { animation: none; opacity: 0.7; } }
 
 /* ============================================================================
- * THINKING indicator — supersede A3's italic default with a crisp dim pill
+ * THINKING — a quiet shimmering microlabel (part of the live edge)
  * ==========================================================================*/
 
 .av-thinking {
-  display: inline-flex; align-items: center; gap: 8px; padding: 2px 0;
-  color: var(--av-thinking); font-size: var(--av-fs-caption); font-style: normal;
-  letter-spacing: 0.06em; text-transform: uppercase; font-family: var(--font-mono);
+  display: inline-flex; align-items: center; gap: 0; padding: 3px 0 1px;
+  font-size: var(--av-fs-caption); font-style: normal;
+  letter-spacing: 0.08em; text-transform: uppercase; font-family: var(--font-mono);
+  color: var(--av-thinking);
 }
-.av-thinking-label { color: var(--av-thinking); }
-.av-thinking-dots { display: inline-flex; gap: 3px; }
-.av-thinking-dot { width: 4px; height: 4px; border-radius: 50%; background: currentColor; animation: av-think 1.2s ease-in-out infinite; }
-.av-thinking-dot:nth-child(2) { animation-delay: 0.15s; }
-.av-thinking-dot:nth-child(3) { animation-delay: 0.3s; }
-@keyframes av-think {
-  0%,100% { opacity: 0.25; transform: translateY(0); }
-  40% { opacity: 1; transform: translateY(-2px); }
+/* The shimmer IS the motion — the legacy dots would double it. */
+.av-thinking-dots { display: none; }
+.av-thinking-label {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--av-thinking) 55%, transparent) 0%,
+    var(--av-thinking) 50%,
+    color-mix(in srgb, var(--av-thinking) 55%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: av-shimmer 2s linear infinite;
 }
-@media (prefers-reduced-motion: reduce) { .av-thinking-dot { animation: none; opacity: 0.7; transform: none; } }
+@keyframes av-shimmer {
+  from { background-position: 130% 0; }
+  to { background-position: -70% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .av-thinking-label { animation: none; background: none; color: var(--av-thinking); }
+}
 
 /* ============================================================================
- * TOOL CARDS — the card wraps a Collapsible. Style both.
+ * TOOL CARDS — compact machinery. Raised chip frame, icon + mono name,
+ * status dot; the pending card is the only accent-loud element at rest.
  * ==========================================================================*/
 
-.av-tool-card { margin: 6px 20px 8px; font-size: var(--av-fs-small); }
+/* The A2 structure layer paints .av-tool-card with the app-dark `--bg` and its
+   own border; neutralize both — the collapsible inside owns the frame. (The
+   bleed was invisible until the errored card's tint went translucent.) */
+.av-tool-card {
+  margin: 4px 24px 8px; font-size: var(--av-fs-small);
+  background: transparent; border: none; border-radius: 0;
+}
 
 .av-collapsible {
   border: 1px solid var(--av-hairline);
-  border-radius: var(--radius, 8px);
-  background: var(--av-surface-raised);
+  border-radius: 10px;
+  background: linear-gradient(180deg, var(--av-highlight), transparent 55%),
+    var(--av-surface-raised);
   overflow: hidden;
-  transition: border-color 160ms var(--av-ease), box-shadow 160ms var(--av-ease);
+  transition: border-color 140ms var(--av-ease);
 }
 .av-collapsible:hover { border-color: var(--av-hairline-strong); }
-/* Errored tool card — supersede A3's border tint with our error treatment. */
-.av-tool-errored > .av-collapsible { border-color: var(--av-error-border); background: var(--av-error-bg); }
+/* Opaque error tint (a translucent one would show whatever is behind the card). */
+.av-tool-errored > .av-collapsible {
+  border-color: var(--av-error-border);
+  background: color-mix(in srgb, var(--av-error) 9%, var(--av-surface-raised));
+}
 
 .av-collapsible-header {
   display: flex; align-items: center; gap: 8px; width: 100%;
-  padding: 8px 12px; background: none; border: none; color: var(--av-text);
-  font: inherit; text-align: left; cursor: pointer;
+  padding: 7px 12px; background: none; border: none; color: var(--av-text);
+  font: inherit; font-size: var(--av-fs-small); text-align: left; cursor: pointer;
   transition: background 120ms var(--av-ease);
 }
 .av-collapsible-header:hover { background: color-mix(in srgb, var(--av-text) 4%, transparent); }
@@ -278,45 +384,78 @@
 .av-collapsible-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .av-collapsible-aside { flex: none; }
 
-/* Disclosure caret — supersede A3's, keep its rotate. */
+/* Disclosure chevron (SVG) — rotates to point down when open. */
 .av-caret {
-  display: inline-block; font-size: 9px; color: var(--av-text-faint); flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 12px; height: 12px; color: var(--av-text-faint); flex: none;
   transition: transform 200ms var(--av-ease), color 120ms var(--av-ease);
 }
 .av-collapsible-header:hover .av-caret { color: var(--av-text-dim); }
 .av-caret-open { transform: rotate(90deg); }
 
-/* Collapsible body reveal — the body is conditionally mounted (not height-
-   animated in the DOM), so animate its entrance. */
 .av-collapsible-body {
-  padding: 10px 12px; border-top: 1px solid var(--av-hairline);
+  padding: 10px 12px; border-top: 1px solid var(--av-hairline-faint);
   animation: av-reveal 200ms var(--av-ease-out);
 }
 @keyframes av-reveal { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .av-collapsible-body { animation: none; } }
 
-/* Tool header contents. */
-.av-tool-header-inner { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.av-tool-name { font-family: var(--font-mono); font-weight: 650; color: var(--av-tool-active); flex: none; }
-.av-tool-summary { color: var(--av-text-dim); font-family: var(--font-mono); font-size: var(--av-fs-small); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* Status pill. */
-.av-tool-status {
-  font-size: var(--av-fs-caption); font-family: var(--font-mono);
-  padding: 1px 8px; border-radius: 999px;
-  border: 1px solid transparent;
+/* Header contents: icon, name, one-line summary. */
+.av-tool-header-inner { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.av-tool-icon { flex: none; color: var(--av-text-faint); transition: color 140ms var(--av-ease); }
+.av-tool-name { font-family: var(--font-mono); font-size: var(--av-fs-small); font-weight: 640; color: var(--av-text); flex: none; }
+.av-tool-summary {
+  color: var(--av-text-dim); font-family: var(--font-mono); font-size: 11.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.av-tool-status-ok { color: var(--av-add); border-color: color-mix(in srgb, var(--av-add) 30%, transparent); }
-.av-tool-status-error { color: var(--av-error); border-color: color-mix(in srgb, var(--av-error) 35%, transparent); }
-.av-tool-status-pending { color: var(--av-warn); border-color: color-mix(in srgb, var(--av-warn) 30%, transparent); }
 
-/* Monospace output blocks (bash cmd/out, detail, generic json, task prompt). */
+/* Status: a colored dot (words only for failures). Pending pulses — live edge. */
+.av-tool-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--av-fs-caption); font-family: var(--font-mono);
+  padding: 0; border: none; border-radius: 0;
+}
+.av-tool-status-dot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; flex: none; }
+.av-tool-status-ok { color: var(--av-add); }
+.av-tool-status-ok .av-tool-status-dot { opacity: 0.9; }
+.av-tool-status-error { color: var(--av-error); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.av-tool-status-pending { color: var(--av-warn); }
+.av-tool-status-pending .av-tool-status-dot { animation: av-pulse 1.4s var(--av-ease) infinite; }
+@keyframes av-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 35%, transparent); }
+  50% { opacity: 0.55; box-shadow: 0 0 0 3px transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .av-tool-status-pending .av-tool-status-dot { animation: none; } }
+.av-tool-progress { color: var(--av-text-dim); }
+
+/* A running tool card joins the live edge: accent-tinted border + icon. */
+.av-tool-card:has(.av-tool-status-pending) > .av-collapsible {
+  border-color: color-mix(in srgb, var(--av-tool-active) 35%, var(--av-hairline));
+}
+.av-tool-card:has(.av-tool-status-pending) .av-tool-icon { color: var(--av-tool-active); }
+
+/* Monospace output wells (bash cmd/out, detail, generic json, task prompt). */
 .av-tool-bash-cmd, .av-tool-bash-out, .av-tool-detail,
 .av-tool-generic-json, .av-tool-task-prompt {
-  font-family: var(--font-mono); font-size: var(--av-fs-code); line-height: 1.5;
-  margin: 4px 0 0; padding: 10px 12px; border-radius: var(--radius-sm, 6px);
-  background: var(--av-surface-sunken); border: 1px solid var(--av-hairline);
+  font-family: var(--font-mono); font-size: var(--av-fs-code); line-height: 1.55;
+  margin: 4px 0 0; padding: 9px 12px; border-radius: var(--radius, 8px);
+  background: var(--av-surface-sunken); border: 1px solid var(--av-hairline-faint);
   white-space: pre-wrap; word-break: break-word; overflow-x: auto; color: var(--av-text);
+}
+/* Long output scrolls inside its well instead of stretching the card. */
+.av-tool-bash-out, .av-tool-detail, .av-tool-generic-json, .av-tool-task-prompt {
+  max-height: 320px; overflow-y: auto;
+}
+:is(.av-tool-bash-out, .av-tool-detail, .av-tool-generic-json, .av-tool-task-prompt)::-webkit-scrollbar {
+  display: block !important; width: 8px !important; height: 8px !important;
+}
+:is(.av-tool-bash-out, .av-tool-detail, .av-tool-generic-json, .av-tool-task-prompt)::-webkit-scrollbar-thumb {
+  background-color: rgba(125, 135, 154, 0.25) !important;
+  border: 2px solid transparent !important; background-clip: padding-box !important;
+  border-radius: 999px !important;
+}
+:is(.av-tool-bash-out, .av-tool-detail, .av-tool-generic-json, .av-tool-task-prompt)::-webkit-scrollbar-track {
+  background: transparent !important;
 }
 .av-tool-bash-desc { color: var(--av-text-dim); margin-bottom: 4px; font-size: var(--av-fs-small); }
 .av-tool-bash-prompt { color: var(--av-add); user-select: none; }
@@ -324,137 +463,171 @@
 .av-tool-summary-line { font-family: var(--font-mono); color: var(--av-text-dim); font-size: var(--av-fs-small); margin-bottom: 4px; }
 .av-tool-detail-toggle { color: var(--av-text-dim); font-size: var(--av-fs-small); }
 .av-tool-generic-label {
-  font-size: var(--av-fs-caption); text-transform: uppercase; letter-spacing: 0.06em;
+  font-size: var(--av-fs-caption); text-transform: uppercase; letter-spacing: 0.08em;
   color: var(--av-text-faint); margin-top: 8px; font-family: var(--font-mono);
 }
 .av-tool-generic-section:first-child .av-tool-generic-label { margin-top: 0; }
 .av-tool-empty { color: var(--av-text-faint); font-size: var(--av-fs-small); }
 
-/* Todos. */
+/* Todos — modern checklist with drawn marks. */
 .av-tool-todos { list-style: none; margin: 0; padding: 0; }
-.av-todo { display: flex; gap: 8px; padding: 3px 0; align-items: flex-start; font-size: var(--av-fs-small); }
-.av-todo-mark { flex: none; color: var(--av-text-dim); font-family: var(--font-mono); }
+.av-todo { display: flex; gap: 9px; padding: 3.5px 0; align-items: flex-start; font-size: var(--av-fs-small); }
+.av-todo-mark { flex: none; display: inline-flex; margin-top: 1px; color: var(--av-text-faint); }
 .av-todo-text { color: var(--av-text); }
 .av-todo-completed .av-todo-mark { color: var(--av-add); }
-.av-todo-completed .av-todo-text { color: var(--av-text-dim); text-decoration: line-through; }
+.av-todo-completed .av-todo-text { color: var(--av-text-dim); text-decoration: line-through; text-decoration-color: var(--av-text-faint); }
 .av-todo-in_progress .av-todo-mark { color: var(--av-warn); }
+.av-todo-in_progress .av-todo-mark svg { animation: av-spin 2.4s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .av-todo-in_progress .av-todo-mark svg { animation: none; } }
 .av-todo-in_progress .av-todo-text { color: var(--av-text); font-weight: 600; }
 
-/* Task (nested subagent) — supersede A3, keep its violet spine idea. */
+/* Task (nested subagent) — violet spine. */
 .av-tool-task { border-left: 2px solid var(--av-task); padding-left: 12px; }
 .av-tool-task-meta { display: flex; gap: 8px; align-items: baseline; }
 .av-tool-task-agent { font-weight: 650; color: var(--av-task); font-family: var(--font-mono); }
 .av-tool-task-desc { color: var(--av-text-dim); }
-.av-tool-task-result pre { margin: 4px 0 0; padding: 10px 12px; border-radius: var(--radius-sm, 6px); background: var(--av-surface-sunken); border: 1px solid var(--av-hairline); font-family: var(--font-mono); font-size: var(--av-fs-code); white-space: pre-wrap; }
+.av-tool-task-result pre {
+  margin: 4px 0 0; padding: 9px 12px; border-radius: var(--radius, 8px);
+  background: var(--av-surface-sunken); border: 1px solid var(--av-hairline-faint);
+  font-family: var(--font-mono); font-size: var(--av-fs-code); white-space: pre-wrap;
+  max-height: 320px; overflow-y: auto;
+}
 
 /* ============================================================================
- * DIFF + CODE — Monaco surfaces; skin their frames to match.
+ * DIFF + CODE — Monaco paints the content (orchestra-dark/-light themes,
+ * see monaco-theme.ts); this skins the frames.
  * ==========================================================================*/
 
 .av-diff, .av-code-block {
   margin: 6px 0; border: 1px solid var(--av-hairline);
-  border-radius: var(--radius, 8px); overflow: hidden;
+  border-radius: 10px; overflow: hidden;
+  background: var(--av-surface-sunken);
 }
 .av-diff-head, .av-code-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 5px 12px; font-size: var(--av-fs-caption);
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 5px 10px 5px 12px; font-size: var(--av-fs-caption);
   background: var(--av-surface-raised); border-bottom: 1px solid var(--av-hairline); color: var(--av-text-dim);
 }
 .av-diff-path, .av-code-lang { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--av-text-dim); }
 .av-diff-kind {
   flex: none; font-family: var(--font-mono); font-size: var(--av-fs-caption);
-  color: var(--av-text-faint); padding: 0 6px; border-radius: 999px;
+  color: var(--av-text-faint); padding: 1px 8px; border-radius: 999px;
   border: 1px solid var(--av-hairline);
+}
+/* "new file" pill reads additive. */
+.av-tool-write .av-diff-kind {
+  color: var(--av-add);
+  border-color: color-mix(in srgb, var(--av-add) 30%, transparent);
+  background: color-mix(in srgb, var(--av-add) 8%, transparent);
 }
 .av-code-copy {
   background: none; border: 1px solid var(--av-hairline); border-radius: var(--radius-sm, 6px);
-  color: var(--av-text-dim); font-size: var(--av-fs-caption); padding: 1px 8px; cursor: pointer;
+  color: var(--av-text-dim); font-size: var(--av-fs-caption); font-family: var(--font-mono);
+  padding: 1px 8px; cursor: pointer;
   transition: border-color 120ms var(--av-ease), color 120ms var(--av-ease);
 }
 .av-code-copy:hover { color: var(--av-text); border-color: var(--av-hairline-strong); }
 .av-code-copy:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring); }
+.av-code-copy.av-code-copied {
+  color: var(--av-add);
+  border-color: color-mix(in srgb, var(--av-add) 35%, transparent);
+}
 .av-diff-editor { background: var(--av-surface-sunken); }
 
 /* ============================================================================
- * PERMISSION DIALOG — supersede A2's overlay; high emphasis, not alarmist.
- * Backdrop dims the view; dialog animates in; Deny is the safe first action.
+ * PERMISSION DIALOG — the app's glass dialog language. High emphasis, calm.
  * ==========================================================================*/
 
 .av-permission-backdrop {
   position: absolute; inset: 0; z-index: 20;
   display: flex; align-items: flex-end; justify-content: center;
-  padding: 0 16px 92px;
-  background: color-mix(in srgb, var(--av-surface-sunken) 55%, transparent);
+  padding: 0 16px 96px;
+  background: rgba(6, 8, 12, 0.45);
+  backdrop-filter: blur(6px) saturate(120%);
   animation: av-fade 160ms var(--av-ease-out);
 }
 @keyframes av-fade { from { opacity: 0; } to { opacity: 1; } }
 .av-permission-dialog {
   position: static; transform: none; left: auto; bottom: auto;
-  width: 100%; max-width: 560px;
-  background: var(--av-surface-raised);
-  border: 1px solid color-mix(in srgb, var(--av-tool-active) 40%, var(--av-hairline));
-  border-radius: var(--radius-lg, 12px);
-  box-shadow: var(--shadow-md, 0 8px 32px rgba(0,0,0,0.4));
+  width: 100%; max-width: 580px;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--av-surface-overlay) 94%, white) 0%,
+    var(--av-surface-overlay) 100%);
+  border: 1px solid color-mix(in srgb, var(--av-tool-active) 30%, var(--av-hairline-strong));
+  border-radius: var(--av-radius-xl);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 20px 60px rgba(0, 0, 0, 0.5),
+    0 2px 8px rgba(0, 0, 0, 0.35);
   padding: 14px 16px;
-  animation: av-dialog-in 220ms var(--av-ease-out);
+  animation: av-dialog-in 200ms var(--av-ease-out);
 }
-@keyframes av-dialog-in { from { opacity: 0; transform: translateY(8px) scale(0.99); } to { opacity: 1; transform: none; } }
+@keyframes av-dialog-in { from { opacity: 0; transform: translateY(10px) scale(0.985); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .av-permission-backdrop, .av-permission-dialog { animation: none; } }
 
-.av-permission-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.av-permission-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .av-permission-eyebrow {
+  display: inline-flex; align-items: center; gap: 7px;
   font-family: var(--font-mono); font-size: var(--av-fs-caption); font-weight: 600;
-  letter-spacing: 0.06em; text-transform: uppercase; color: var(--av-tool-active);
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--av-tool-active);
+}
+.av-permission-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 7px;
+  background: color-mix(in srgb, var(--av-tool-active) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--av-tool-active) 30%, transparent);
+  color: var(--av-tool-active);
 }
 .av-permission-queue { font-size: var(--av-fs-caption); color: var(--av-text-faint); font-family: var(--font-mono); }
-.av-permission-title { font-size: var(--av-fs-h); font-weight: 650; margin: 0 0 4px; color: var(--av-text); }
-.av-permission-tool { font-family: var(--font-mono); color: var(--av-tool-active); background: var(--av-code-bg); padding: 0.05em 0.35em; border-radius: 4px; border: 1px solid var(--av-code-border); }
+.av-permission-title { font-size: var(--av-fs-h); font-weight: 650; margin: 0 0 4px; color: var(--av-text); letter-spacing: -0.011em; }
+.av-permission-tool { font-family: var(--font-mono); font-size: 0.9em; color: var(--av-tool-active); background: var(--av-code-bg); padding: 0.08em 0.4em; border-radius: 5px; border: 1px solid var(--av-code-border); }
 .av-permission-subtitle { color: var(--av-text-dim); font-size: var(--av-fs-small); margin: 0 0 8px; }
 .av-permission-input {
-  margin: 0 0 10px; font-family: var(--font-mono); font-size: var(--av-fs-code);
+  margin: 0 0 12px; font-family: var(--font-mono); font-size: var(--av-fs-code);
   max-height: 220px; overflow: auto; padding: 10px 12px;
-  background: var(--av-surface-sunken); border: 1px solid var(--av-hairline); border-radius: var(--radius-sm, 6px);
+  background: var(--av-surface-sunken); border: 1px solid var(--av-hairline); border-radius: var(--radius, 8px);
 }
 .av-permission-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .av-permission-deny { display: flex; flex-direction: column; gap: 8px; }
-.av-permission-deny-label { font-size: var(--av-fs-small); color: var(--av-text-dim); }
+.av-permission-deny-label { font-size: var(--av-fs-caption); color: var(--av-text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
 .av-permission-reason {
-  resize: vertical; min-height: 44px; padding: 8px 10px; font-family: inherit; font-size: var(--av-fs-small);
+  resize: vertical; min-height: 48px; padding: 8px 10px; font-family: inherit; font-size: var(--av-fs-small);
   color: var(--av-text); background: var(--av-surface-sunken);
-  border: 1px solid var(--av-hairline-strong); border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--av-hairline-strong); border-radius: var(--radius, 8px);
 }
 .av-permission-reason:focus-visible { outline: none; border-color: var(--av-focus-border); box-shadow: 0 0 0 3px var(--av-focus-ring); }
 
 /* ============================================================================
- * ASK-USER-QUESTION — first-class question UI
+ * ASK-USER-QUESTION — option cards
  * ==========================================================================*/
 
 .av-question { display: flex; flex-direction: column; gap: 12px; }
-.av-question-title { font-size: var(--av-fs-h); font-weight: 650; color: var(--av-text); }
+.av-question-title { font-size: var(--av-fs-h); font-weight: 650; color: var(--av-text); letter-spacing: -0.011em; }
 .av-question-block { display: flex; flex-direction: column; gap: 6px; }
 .av-question-header {
   font-family: var(--font-mono); font-size: var(--av-fs-caption); font-weight: 600;
-  letter-spacing: 0.05em; text-transform: uppercase; color: var(--av-tool-active);
-  align-self: flex-start; padding: 1px 7px; border-radius: 999px;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--av-tool-active);
+  align-self: flex-start; padding: 1px 8px; border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--av-tool-active) 30%, transparent);
+  background: color-mix(in srgb, var(--av-tool-active) 8%, transparent);
 }
-.av-question-text { margin: 0; font-size: var(--av-fs-body); color: var(--av-text); line-height: 1.45; }
+.av-question-text { margin: 0; font-size: var(--av-fs-body); color: var(--av-text); line-height: 1.5; }
 .av-question-options { display: flex; flex-direction: column; gap: 6px; }
 .av-question-option {
   display: flex; flex-direction: column; gap: 2px; align-items: flex-start; text-align: left;
-  padding: 8px 12px; border-radius: var(--radius, 8px);
+  padding: 9px 12px; border-radius: var(--radius, 8px);
   border: 1px solid var(--av-hairline-strong); background: var(--av-surface-sunken);
-  color: var(--av-text); cursor: pointer; font: inherit;
+  color: var(--av-text); cursor: pointer; font: inherit; font-size: var(--av-fs-small);
   transition: border-color 130ms var(--av-ease), background 130ms var(--av-ease), box-shadow 130ms var(--av-ease);
 }
-.av-question-option:hover { border-color: var(--av-tool-active); }
+.av-question-option:hover { border-color: color-mix(in srgb, var(--av-tool-active) 55%, var(--av-hairline-strong)); }
 .av-question-option:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring); }
 .av-question-option-active {
   border-color: var(--av-tool-active);
-  background: color-mix(in srgb, var(--av-tool-active) 12%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--av-tool-active) 40%, transparent);
+  background: color-mix(in srgb, var(--av-tool-active) 10%, transparent);
+  box-shadow: inset 0 0 0 1px var(--av-tool-active);
 }
-.av-question-option-label { font-weight: 600; }
+.av-question-option-label { font-weight: 600; font-size: var(--av-fs-small); }
 .av-question-option-desc { color: var(--av-text-dim); font-size: var(--av-fs-small); }
 .av-question-option-other { border-style: dashed; }
 .av-question-other-input {
@@ -465,75 +638,110 @@
 .av-question-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
 /* ============================================================================
- * BUTTONS — the shared av-btn family (permission/question actions, interrupt)
+ * BUTTONS — the av-btn family, matched to the app's button language
  * ==========================================================================*/
 
 .av-btn {
   font-family: inherit; font-size: var(--av-fs-small); font-weight: 550;
-  padding: 6px 14px; border-radius: var(--radius-sm, 6px);
+  padding: 6px 14px; border-radius: var(--radius, 8px);
   border: 1px solid var(--av-hairline-strong); background: var(--av-surface-raised);
   color: var(--av-text); cursor: pointer;
-  transition: background 130ms var(--av-ease), border-color 130ms var(--av-ease),
-    box-shadow 130ms var(--av-ease), transform 90ms var(--av-ease), filter 130ms var(--av-ease);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.4));
+  transition: background 140ms var(--av-ease), border-color 140ms var(--av-ease),
+    box-shadow 140ms var(--av-ease), transform 90ms var(--av-ease), filter 140ms var(--av-ease);
 }
-.av-btn:hover { border-color: var(--av-tool-active); }
+.av-btn:hover { border-color: var(--av-hairline-strong); background: var(--av-surface-overlay); }
 .av-btn:active { transform: translateY(0.5px); }
 .av-btn:focus-visible { outline: none; border-color: var(--av-focus-border); box-shadow: 0 0 0 3px var(--av-focus-ring); }
 .av-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .av-btn-primary {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--av-assistant) 92%, white) 0%, var(--av-assistant) 100%);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--av-assistant) 88%, white) 0%,
+    var(--av-assistant) 100%);
   border-color: transparent; color: var(--av-assistant-ink); font-weight: 600;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    0 1px 2px rgba(0, 0, 0, 0.35),
+    0 0 12px var(--av-glow);
 }
-.av-btn-primary:hover { filter: brightness(1.05); border-color: transparent; }
+.av-btn-primary:hover { filter: brightness(1.06); border-color: transparent; background: linear-gradient(180deg,
+    color-mix(in srgb, var(--av-assistant) 88%, white) 0%,
+    var(--av-assistant) 100%); }
 .av-btn-danger { border-color: var(--av-error-border); color: var(--av-error); background: var(--av-surface-raised); }
 .av-btn-danger:hover { background: var(--av-error-bg); border-color: var(--av-error); }
-.av-btn-ghost { background: none; border-color: transparent; color: var(--av-text-dim); }
+.av-btn-ghost { background: none; border-color: transparent; color: var(--av-text-dim); box-shadow: none; }
 .av-btn-ghost:hover { background: color-mix(in srgb, var(--av-text) 6%, transparent); color: var(--av-text); border-color: transparent; }
 
 /* ============================================================================
- * CONTROLS BAR — interrupt + model/mode selects
+ * BOTTOM DECK — controls bar, turn footer, composer read as ONE surface:
+ * hairline top, then a quiet gradient that anchors the interactive chrome.
+ * (No backdrop-filter: these are flex siblings of the list — nothing scrolls
+ * behind them, so blur would cost paint and change nothing.)
  * ==========================================================================*/
 
 .av-controls {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   justify-content: flex-start;
-  padding: 8px 20px; border-top: 1px solid var(--av-hairline);
-  background: var(--av-surface); font-size: var(--av-fs-small); color: var(--av-text-dim);
+  padding: 8px 20px 6px; border-top: 1px solid var(--av-hairline);
+  background: linear-gradient(180deg, var(--av-highlight), transparent 70%),
+    var(--av-surface-raised);
+  font-size: var(--av-fs-small); color: var(--av-text-dim);
 }
-.av-controls-interrupt { display: inline-flex; align-items: center; gap: 6px; }
+.av-controls-interrupt {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: var(--av-fs-small); padding: 4px 12px;
+}
 .av-controls-interrupt-dot { width: 7px; height: 7px; border-radius: 2px; background: currentColor; }
+.av-controls-interrupt:not(:disabled) .av-controls-interrupt-dot { animation: av-pulse 1.4s var(--av-ease) infinite; }
+@media (prefers-reduced-motion: reduce) { .av-controls-interrupt:not(:disabled) .av-controls-interrupt-dot { animation: none; } }
 .av-controls-field { display: inline-flex; align-items: center; gap: 6px; margin-left: 4px; }
-.av-controls-label { color: var(--av-text-faint); font-size: var(--av-fs-caption); text-transform: uppercase; letter-spacing: 0.05em; font-family: var(--font-mono); }
+.av-controls-label { color: var(--av-text-faint); font-size: var(--av-fs-caption); text-transform: uppercase; letter-spacing: 0.07em; font-family: var(--font-mono); }
 .av-controls-select {
+  appearance: none;
   font: inherit; font-size: var(--av-fs-small); color: var(--av-text);
-  background: var(--av-surface-raised); border: 1px solid var(--av-hairline-strong);
-  border-radius: var(--radius-sm, 6px); padding: 4px 8px; cursor: pointer;
-  transition: border-color 130ms var(--av-ease);
+  background-color: var(--av-surface-raised);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 16 16' fill='none' stroke='%238b95a7' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 6l5 5 5-5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  border: 1px solid var(--av-hairline-strong);
+  border-radius: var(--radius-sm, 6px); padding: 4px 26px 4px 10px; cursor: pointer;
+  transition: border-color 140ms var(--av-ease), background-color 140ms var(--av-ease);
 }
-.av-controls-select:hover { border-color: var(--av-hairline-strong); }
+.av-controls-select:hover { background-color: var(--av-surface-overlay); border-color: var(--av-hairline-strong); }
 .av-controls-select:focus-visible { outline: none; border-color: var(--av-focus-border); box-shadow: 0 0 0 3px var(--av-focus-ring); }
+.av-controls-select option { background: var(--av-surface-raised); color: var(--av-text); }
 .av-controls-field:has(.av-controls-select):hover .av-controls-label { color: var(--av-text-dim); }
-/* push the selects to the right, interrupt stays left */
+/* Interrupt stays left; the selects dock right. */
 .av-controls-field:first-of-type { margin-left: auto; }
 
-/* ============================================================================
- * TURN FOOTER — cost / tokens / duration; running + error variants
- * ==========================================================================*/
-
+/* Turn footer — flight-data strip: mono, tabular, quiet. */
 .av-turn-footer {
   display: flex; align-items: center; gap: 16px;
-  padding: 7px 20px; margin: 0;
-  border-top: 1px dashed var(--av-hairline);
+  padding: 6px 20px 7px; margin: 0;
+  border-top: 1px solid var(--av-hairline-faint);
+  background: var(--av-surface-raised);
   font-family: var(--font-mono); font-size: var(--av-fs-caption); color: var(--av-text-faint);
+  font-variant-numeric: tabular-nums;
 }
 .av-turn-stat { display: inline-flex; align-items: baseline; gap: 5px; }
 .av-turn-stat-value { color: var(--av-text-dim); font-weight: 600; }
-.av-turn-stat-label { color: var(--av-text-faint); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; }
-.av-turn-footer-running, .av-turn-running-label { color: var(--av-text-dim); }
-.av-turn-running-label { font-style: normal; }
+.av-turn-stat-label { color: var(--av-text-faint); text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; }
+.av-turn-footer-running { color: var(--av-text-dim); }
+.av-turn-running-label {
+  font-style: normal; letter-spacing: 0.08em; text-transform: uppercase;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--av-text-dim) 55%, transparent) 0%,
+    var(--av-text-dim) 50%,
+    color-mix(in srgb, var(--av-text-dim) 55%, transparent) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: av-shimmer 2s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .av-turn-running-label { animation: none; background: none; color: var(--av-text-dim); }
+}
 .av-turn-footer-live { margin-left: auto; }
 
-/* Spinner shared by footer + boot. */
 .av-turn-spinner {
   display: inline-block; width: 12px; height: 12px; border-radius: 50%;
   border: 2px solid var(--av-hairline-strong); border-top-color: var(--av-tool-active);
@@ -542,59 +750,83 @@
 @keyframes av-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .av-turn-spinner { animation-duration: 1.6s; } }
 
-/* Error footer — transient 500 → retrying reads informative, not apologetic. */
 .av-turn-footer-error { border-top-color: var(--av-error-border); color: var(--av-text); }
 .av-turn-error-icon { color: var(--av-error); }
-.av-turn-error-label { color: var(--av-text); font-family: inherit; font-weight: 600; }
+.av-turn-error-label { color: var(--av-text); font-family: var(--font-ui, inherit); font-weight: 600; }
 .av-turn-error-detail { color: var(--av-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
 .av-turn-error-spinner { border-top-color: var(--av-warn); }
 
-/* ============================================================================
- * COMPOSER — supersede A2's plain row with the framed input
- * ==========================================================================*/
-
+/* Composer — a floating field with the send action docked inside. */
 .av-composer {
   display: flex; gap: 8px; align-items: flex-end;
-  padding: 12px 20px calc(12px + env(safe-area-inset-bottom, 0px));
-  border-top: 1px solid var(--av-hairline); background: var(--av-surface);
+  padding: 10px 20px calc(14px + env(safe-area-inset-bottom, 0px));
+  border-top: none;
+  background: var(--av-surface-raised);
 }
-.av-composer-input {
-  flex: 1 1 auto; resize: none; min-height: 38px; max-height: 200px;
-  padding: 9px 12px; border-radius: var(--radius, 8px);
-  border: 1px solid var(--av-hairline-strong); background: var(--av-surface-raised);
-  color: var(--av-text); font-family: inherit; font-size: var(--av-fs-body); line-height: 1.5;
+.av-composer-field {
+  flex: 1 1 auto; display: flex; align-items: flex-end; gap: 8px;
+  padding: 6px 6px 6px 14px;
+  border-radius: var(--av-radius-xl);
+  border: 1px solid var(--av-hairline-strong);
+  background: var(--av-surface);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.18);
   transition: border-color 140ms var(--av-ease), box-shadow 140ms var(--av-ease);
 }
+.av-composer-field:focus-within {
+  border-color: var(--av-focus-border);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12), 0 0 0 3px var(--av-focus-ring);
+}
+.av-composer-input {
+  flex: 1 1 auto; resize: none; min-height: 24px; max-height: 200px;
+  padding: 5px 0; border: none; background: none;
+  color: var(--av-text); font-family: inherit; font-size: var(--av-fs-body); line-height: 1.5;
+}
 .av-composer-input::placeholder { color: var(--av-text-faint); }
-.av-composer-input:focus, .av-composer-input:focus-visible {
-  outline: none; border-color: var(--av-focus-border); box-shadow: 0 0 0 3px var(--av-focus-ring);
-}
+.av-composer-input:focus, .av-composer-input:focus-visible { outline: none; border: none; box-shadow: none; }
 .av-composer-send {
-  flex: none; padding: 9px 18px; border-radius: var(--radius, 8px); border: none;
-  background: var(--av-assistant); color: var(--av-assistant-ink); font-weight: 600; font-size: var(--av-fs-body);
-  cursor: pointer; transition: filter 120ms var(--av-ease), transform 90ms var(--av-ease), opacity 120ms;
+  flex: none; display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-radius: 10px; border: none;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--av-assistant) 88%, white) 0%,
+    var(--av-assistant) 100%);
+  color: var(--av-assistant-ink); font-weight: 600; font-size: var(--av-fs-small);
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: filter 120ms var(--av-ease), transform 90ms var(--av-ease), opacity 120ms, box-shadow 140ms var(--av-ease);
 }
-.av-composer-send:hover { filter: brightness(1.08); }
+.av-composer-send:hover { filter: brightness(1.07); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 12px var(--av-glow); }
 .av-composer-send:active { transform: translateY(0.5px); }
-.av-composer-send:disabled { opacity: 0.4; cursor: not-allowed; }
+.av-composer-send:disabled { opacity: 0.35; cursor: not-allowed; filter: saturate(0.4); box-shadow: none; }
 .av-composer-send:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring); }
+.av-composer-send-label { line-height: 1; }
 
 /* ============================================================================
- * EMPTY STATE — supersede A2's plain text with an invitation
+ * EMPTY STATE — an invitation, not a void
  * ==========================================================================*/
 
 .av-empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 12px; min-height: 240px; padding: 48px 24px; text-align: center;
+  gap: 10px; min-height: 260px; height: 100%; padding: 48px 24px; text-align: center;
   color: var(--av-text-dim); font-size: var(--av-fs-small);
 }
-.av-empty::before {
-  content: "";
-  width: 44px; height: 44px; border-radius: 12px;
-  background: color-mix(in srgb, var(--av-assistant) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--av-assistant) 30%, transparent);
-  /* a caret glyph via mask would need an asset; a simple accent tile reads as
-     "session slot" without importing anything. */
+.av-empty-mark {
+  display: flex; align-items: center; justify-content: center;
+  width: 46px; height: 46px; border-radius: 13px; margin-bottom: 2px;
+  color: var(--av-assistant);
+  background: color-mix(in srgb, var(--av-assistant) 10%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--av-assistant) 28%, transparent),
+    0 0 24px var(--av-glow);
+}
+.av-empty-title { font-size: var(--av-fs-h); font-weight: 650; color: var(--av-text); letter-spacing: -0.011em; }
+.av-empty-desc { max-width: 46ch; line-height: 1.55; }
+.av-empty-hint { margin-top: 6px; font-family: var(--font-mono); font-size: var(--av-fs-caption); color: var(--av-text-faint); }
+.av-empty-hint kbd {
+  font-family: inherit; font-size: 10px; color: var(--av-text-dim);
+  padding: 1.5px 6px; border-radius: 5px;
+  background: var(--av-surface-raised);
+  border: 1px solid var(--av-hairline-strong);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
 }
 
 /* ============================================================================
@@ -606,3 +838,5 @@
   box-shadow: 0 0 0 3px var(--av-focus-ring);
   border-radius: var(--radius-sm, 6px);
 }
+/* The borderless composer textarea signals focus through its field frame. */
+.av-view .av-composer-input:focus-visible { box-shadow: none; }

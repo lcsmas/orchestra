@@ -149,11 +149,36 @@ function MessageList({
     <div ref={scrollRef} className="av-message-list" onScroll={onScroll}>
       {messages.length === 0 ? (
         <div className="av-empty">
-          {session
-            ? 'Session ready — send a message to start the agent.'
-            : canResume
-              ? 'Previous session found — send a message to resume it (the agent keeps its memory; earlier messages aren’t re-shown here).'
-              : 'No structured session yet. Send a message to start the agent.'}
+          <div className="av-empty-mark" aria-hidden="true">
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M3 5.5 6 8l-3 2.5" />
+              <path d="M8.5 11H13" />
+            </svg>
+          </div>
+          <div className="av-empty-title">
+            {session
+              ? 'Session ready'
+              : canResume
+                ? 'Resume your session'
+                : 'Start a structured session'}
+          </div>
+          <div className="av-empty-desc">
+            {!session && canResume
+              ? 'Previous session found — your next message resumes it. The agent keeps its memory; earlier messages aren’t re-shown here.'
+              : 'Send a message to start the agent — replies, tool activity and diffs render natively here.'}
+          </div>
+          <div className="av-empty-hint">
+            <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line
+          </div>
         </div>
       ) : (
         <div className="av-message-list-inner" style={{ height: totalHeight, position: 'relative' }}>
@@ -307,24 +332,45 @@ function Composer({
 
   return (
     <div className="av-composer">
-      <textarea
-        ref={taRef}
-        className="av-composer-input"
-        value={text}
-        placeholder="Message the agent…"
-        rows={1}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          // Enter submits; Shift+Enter inserts a newline (chat convention).
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            submit();
-          }
-        }}
-      />
-      <button className="av-composer-send" onClick={submit} disabled={!text.trim()}>
-        {running ? 'Queue' : 'Send'}
-      </button>
+      <div className="av-composer-field">
+        <textarea
+          ref={taRef}
+          className="av-composer-input"
+          value={text}
+          placeholder="Message the agent…"
+          rows={1}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter submits; Shift+Enter inserts a newline (chat convention).
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+        />
+        <button
+          className="av-composer-send"
+          onClick={submit}
+          disabled={!text.trim()}
+          title={running ? 'Agent is working — message will queue' : 'Send (Enter)'}
+        >
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M8 13V3" />
+            <path d="M3.5 7.5 8 3l4.5 4.5" />
+          </svg>
+          <span className="av-composer-send-label">{running ? 'Queue' : 'Send'}</span>
+        </button>
+      </div>
     </div>
   );
 }

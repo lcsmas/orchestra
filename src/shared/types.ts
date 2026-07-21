@@ -715,6 +715,18 @@ export type AgentPermissionReply =
   | { behavior: 'allow'; updatedInput?: Record<string, unknown> }
   | { behavior: 'deny'; message: string };
 
+/** A user turn submitted to the session, echoed by the manager at enqueue time.
+ *  The SDK stream does NOT echo plain user text back (its `user` messages only
+ *  carry tool_result blocks), so without this event a sent prompt would never
+ *  appear in the transcript. Emitting it through the same broadcast/fold path
+ *  keeps the renderer a pure projection of the event stream and shows the echo
+ *  to every attached UI (Electron + ui-rpc clients). */
+export interface AgentUserMessageEvent extends AgentEventBase {
+  type: 'user-message';
+  /** The prompt text as submitted. */
+  text: string;
+}
+
 /** A turn finished — the SDK `result` message (spike f). Carries the cost/usage
  *  accounting the UI shows, plus the stop reason. A successful turn has
  *  `isError: false`; a graceful transient failure (500) has `isError: true` and
@@ -769,6 +781,7 @@ export type AgentEvent =
   | AgentToolUseEvent
   | AgentToolResultEvent
   | AgentPermissionRequestEvent
+  | AgentUserMessageEvent
   | AgentTurnEndEvent
   | AgentErrorEvent;
 

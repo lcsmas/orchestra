@@ -22,6 +22,7 @@ import { getHookSocketPath } from './hooks-server';
 import {
   normalizeSdkMessage,
   makePermissionRequest,
+  makeUserMessage,
   type NormalizeContext,
   type SdkMessage,
 } from '../shared/agent-events';
@@ -434,6 +435,9 @@ export async function sdkSend(wsId: string, text: string): Promise<void> {
     message: { role: 'user', content: text },
   };
   session.queue.push(msg);
+  // Echo the prompt to every attached UI — the SDK stream never repeats plain
+  // user text, so this event is the transcript's only record of it.
+  emit(session.wsId, makeUserMessage(session.ctx, text));
   session.pump?.();
 }
 

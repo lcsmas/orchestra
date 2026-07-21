@@ -1,4 +1,11 @@
-# Bundled terminal fonts
+# Bundled fonts
+
+## InterVariable{,-Italic}.woff2
+
+**Inter** (OFL-1.1, see `Inter-OFL.txt`) — the app's UI face, as a variable font
+(weights 100–900 in one file per style), from <https://rsms.me/inter/>. Bundled
+so UI typography never depends on the Google Fonts CDN being reachable; the
+`@font-face` in `styles.css` registers it as family `"Inter"`.
 
 ## jetbrains-mono-{regular,bold}.woff2
 

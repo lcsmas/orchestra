@@ -6,6 +6,7 @@ import {
   foldEvents,
   emptySession,
   makePermissionRequest,
+  makeUserMessage,
   clearPendingPermission,
   type NormalizeContext,
   type SdkMessage,
@@ -593,4 +594,48 @@ test('fold: replaying the same events twice yields deep-equal sessions', () => {
   const a = foldEvents(emptySession('ws1'), evs);
   const b = foldEvents(emptySession('ws1'), evs);
   assert.deepEqual(a, b);
+});
+
+// ─── user-message echo (the transcript's only record of a sent prompt) ────────
+
+test('fold: user-message echoes the prompt as a done user bubble and marks running', () => {
+  const c = ctx();
+  const s = foldEvent(emptySession('ws1'), makeUserMessage(c, 'Fix the login bug'));
+  assert.equal(s.messages.length, 1);
+  const m = s.messages[0];
+  assert.equal(m.role, 'user');
+  assert.equal(m.text, 'Fix the login bug');
+  assert.equal(m.done, true);
+  assert.equal(s.running, true);
+});
+
+test('fold: user-message then turn-end orders the transcript prompt-first', () => {
+  const c = ctx();
+  const evs: AgentEvent[] = [
+    makeUserMessage(c, 'hello'),
+    ...normalizeSdkMessage(
+      { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } } },
+      c,
+    ),
+    ...normalizeSdkMessage(
+      { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hi!' } } },
+      c,
+    ),
+    ...normalizeSdkMessage(
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 1, session_id: 'S', total_cost_usd: 0 },
+      c,
+    ),
+  ];
+  const s = foldEvents(emptySession('ws1'), evs);
+  assert.deepEqual(s.messages.map((m) => m.role), ['user', 'assistant']);
+  assert.equal(s.running, false);
+});
+
+test('fold: error message is terminal (done: true — no streaming cursor)', () => {
+  const evs = normalizeAll([
+    { type: 'result', subtype: 'error', is_error: true, api_error_status: 500, result: 'boom', session_id: 'S', num_turns: 1 },
+  ]);
+  const s = foldEvents(emptySession('ws1'), evs);
+  const err = s.messages.find((m) => m.role === 'error')!;
+  assert.equal(err.done, true);
 });

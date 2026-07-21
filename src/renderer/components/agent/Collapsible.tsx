@@ -30,7 +30,18 @@ export function Collapsible({ header, children, defaultOpen = false, className, 
         onClick={() => setOpen((o) => !o)}
       >
         <span className={`av-caret ${open ? 'av-caret-open' : ''}`} aria-hidden>
-          ▶
+          <svg
+            width="10"
+            height="10"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M5.5 3 10.5 8 5.5 13" />
+          </svg>
         </span>
         <span className="av-collapsible-title">{header}</span>
         {aside != null && <span className="av-collapsible-aside">{aside}</span>}

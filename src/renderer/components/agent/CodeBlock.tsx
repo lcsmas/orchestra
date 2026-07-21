@@ -1,6 +1,7 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import Editor from '@monaco-editor/react';
 import { monacoLang } from './markdown-parse';
+import { defineOrchestraThemes, useMonacoTheme, MONACO_FONT } from './monaco-theme';
 
 interface Props {
   code: string;
@@ -23,6 +24,8 @@ function CodeBlockImpl({ code, lang, chrome = true }: Props) {
   const lineCount = useMemo(() => Math.max(1, code.split('\n').length), [code]);
   // ~18px per line + a little padding; capped so long blocks scroll internally.
   const height = Math.min(lineCount * 18 + 16, 420);
+  const theme = useMonacoTheme();
+  const [copied, setCopied] = useState(false);
 
   return (
     <div className="av-code-block">
@@ -30,22 +33,26 @@ function CodeBlockImpl({ code, lang, chrome = true }: Props) {
         <div className="av-code-head">
           <span className="av-code-lang">{lang || language}</span>
           <button
-            className="av-code-copy"
-            title="Copy"
+            className={`av-code-copy ${copied ? 'av-code-copied' : ''}`}
+            title="Copy code"
             onClick={() => {
               void navigator.clipboard?.writeText(code);
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1200);
             }}
           >
-            Copy
+            {copied ? 'Copied' : 'Copy'}
           </button>
         </div>
       )}
       <Editor
         value={code}
         language={language}
-        theme="vs-dark"
+        theme={theme}
+        beforeMount={defineOrchestraThemes}
         height={height}
         options={{
+          ...MONACO_FONT,
           readOnly: true,
           domReadOnly: true,
           minimap: { enabled: false },
@@ -55,7 +62,6 @@ function CodeBlockImpl({ code, lang, chrome = true }: Props) {
           renderLineHighlight: 'none',
           scrollbar: { alwaysConsumeMouseWheel: false },
           overviewRulerLanes: 0,
-          fontSize: 12,
           padding: { top: 6, bottom: 6 },
           wordWrap: 'on',
           contextmenu: false,

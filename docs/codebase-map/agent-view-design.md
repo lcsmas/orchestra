@@ -15,31 +15,68 @@ structural layers. Everything extends Orchestra's existing token system
 > Companion to `docs/plans/sdk-structured-agent-view.md` (Phase 5). The theme
 > file's header comment carries the design thesis (the **turn rail** signature).
 
-## Theming — light/dark
+## Theming — dark unconditional, light explicit
 
-Dark is the default and matches the app exactly. The view goes light when EITHER
-the OS asks (`prefers-color-scheme: light`) OR `.av-view` / an ancestor carries
-`data-agent-theme="light"`. An explicit `data-agent-theme="dark"` re-asserts dark
-so a settings toggle beats the OS in both directions. Dark is the primary
-requirement; light is complete but best-effort (the rest of the app is dark-only).
+Dark is the UNCONDITIONAL default and matches the app exactly. The OS
+preference (`prefers-color-scheme`) is deliberately **not** consulted — the
+surrounding chrome is dark-only, and the OS route put a white transcript inside
+dark chrome on OS-light machines (caught in a headless verification run, which
+reports light). Light applies ONLY when `.av-view` / an ancestor carries
+`data-agent-theme="light"` — the hook a future settings toggle sets. There is
+no writer today. `monaco-theme.ts` watches the same attribute (MutationObserver)
+and switches the editors between `orchestra-dark`/`orchestra-light` live.
 
 All colours are `--av-*` tokens defined on `.av-view`. **Reference the tokens,
-never raw hex.** Roles: `--av-surface{,-raised,-sunken}`, `--av-hairline{,-strong}`,
+never raw hex.** Roles: `--av-surface{,-raised,-sunken,-overlay}`,
+`--av-hairline{,-strong,-faint}`, `--av-highlight` (inset top sheen),
 `--av-text{,-dim,-faint}`, conversation hues `--av-{assistant,thinking,tool,
 tool-active,user,task}`, states `--av-{add,remove,error,warn}` (+ `-bg`),
-`--av-code-{bg,border}`, `--av-focus-{border,ring}`, motion `--av-ease{,-out}`,
-type `--av-fs-*` / `--av-lh-prose` / `--av-measure`.
+`--av-code-{bg,border}`, `--av-glow` (live-edge halo), `--av-focus-{border,ring}`,
+motion `--av-ease{,-out}`, type `--av-fs-*` / `--av-lh-prose` / `--av-measure`,
+`--av-radius-xl` (composer field / dialog).
+
+### The live edge (signature)
+
+While the agent works, the view breathes: the streaming/thinking message's rail
+glows (`av-breathe` on the `::before` rail, keyed off `:has(.av-cursor)` /
+`:has(.av-thinking)`), "Thinking…"/"Working…" shimmer (`av-shimmer`,
+background-clip text), the pending tool's status dot and the enabled interrupt
+dot pulse (`av-pulse`). Turn end goes still. Row entrance (`av-enter`) animates
+ONLY `.av-row:last-child` — a virtualized remount mid-list must not replay it.
+All of it sits behind `prefers-reduced-motion` guards.
+
+### Monaco
+
+`components/agent/monaco-theme.ts` defines `orchestra-dark`/`orchestra-light`
+(Tomorrow Night syntax over app surfaces, JetBrains Mono, 18px lines to match
+the TSX height math) — registered idempotently via each editor's `beforeMount`.
+Monaco itself is BUNDLED (`src/renderer/monaco-loader.ts`, imported first in
+`main.tsx`): `loader.config({ monaco })` + a local editor worker, so no jsDelivr
+CDN fetch at runtime (verified: 0 CDN requests in the e2e run). Inter is also
+self-hosted now (`assets/fonts/InterVariable*.woff2`) — no Google Fonts links.
+
+### Scrollbar
+
+The app hides scrollbars globally; `.av-message-list` opts back in with a slim
+track-less native thumb (the terminal's gutter-free thumb is TSX-synced; here a
+native 10px gutter is invisible inside the centered column). Long tool-output
+wells (`av-tool-bash-out` etc., max-height 320px) get an 8px variant.
 
 ## The real class contract (enumerated at integration)
 
 Shell (`StructuredView.tsx`): `.av-view` (+`.active`) → `.av-message-list` →
-`.av-message-list-inner` → `.av-row`. Composer `.av-composer` / `.av-composer-input`
-/ `.av-composer-send`. Empty state `.av-empty`.
+`.av-message-list-inner` → `.av-row`. Composer `.av-composer` >
+`.av-composer-field` (textarea + send live inside one framed field) >
+`.av-composer-input` + `.av-composer-send` (arrow icon + `.av-composer-send-label`
+"Send"/"Queue"). Empty state `.av-empty` > `.av-empty-{mark,title,desc,hint}`
+(kbd chips in the hint).
 
 Message (`MessageBubble.tsx`): `.av-message` + role `.av-message-{assistant,user,
-system,error}`; body `.av-message-text`; streaming caret `.av-cursor`. The **turn
-rail** is the role-tinted left border on `.av-message`. Markdown (`markdown.tsx`):
-`.av-md`, `.av-md-{p,h,ul,ol,quote,hr,code-inline,link,strong,em}`.
+system,error}`; role microlabel `.av-message-eyebrow` ("You"/"Error" only); body
+`.av-message-text`; streaming caret `.av-cursor`. The **turn rail** is a rounded
+role-tinted `::before` spine on `.av-message` (no longer a border). A message
+with no text and no thinking renders `null` (no empty stub). Markdown
+(`markdown.tsx`): `.av-md`, `.av-md-{p,h,ul,ol,quote,hr,code-inline,link,strong,em}`.
 
 Thinking (`ThinkingIndicator.tsx`): `.av-thinking` > `.av-thinking-dots` >
 `.av-thinking-dot` ×3 + `.av-thinking-label`. (Indicator, not a text panel —
@@ -47,13 +84,16 @@ Phase 0 finding #1: Opus redacts cleartext thinking.)
 
 Collapsible (`Collapsible.tsx` — every tool card wraps one): `.av-collapsible`
 (`.av-open`/`.av-closed`) > `.av-collapsible-header` (button) > `.av-caret`
-(`.av-caret-open`) + `.av-collapsible-title` + `.av-collapsible-aside`; body
-`.av-collapsible-body` (conditionally mounted → entrance-animated, not height-
-animated).
+(SVG chevron, `.av-caret-open` rotates it) + `.av-collapsible-title` +
+`.av-collapsible-aside`; body `.av-collapsible-body` (conditionally mounted →
+entrance-animated, not height-animated). Todo marks are drawn SVGs
+(`TodoMark` in ToolCard.tsx), colored via `currentColor` on `.av-todo-mark`.
 
 Tool card (`ToolCard.tsx`): `.av-tool-card` + `.av-tool-<name-lowercased>` +
-`.av-tool-errored`. Header `.av-tool-header-inner` > `.av-tool-name` +
-`.av-tool-summary`; status `.av-tool-status` + `.av-tool-status-{ok,error,pending}`.
+`.av-tool-errored`. Header `.av-tool-header-inner` > `.av-tool-icon` (SVG per
+tool, `tool-icons.tsx`) + `.av-tool-name` + `.av-tool-summary`; status
+`.av-tool-status` + `.av-tool-status-{ok,error,pending}` > `.av-tool-status-dot`
+(+ `.av-tool-progress` "n/m" for TodoWrite, `.av-sr-only` text for a11y).
 Bodies: `.av-tool-bash{,-desc,-cmd,-out,-prompt}`, `.av-tool-summary{-body,-line}`,
 `.av-tool-detail{,-toggle}`, `.av-tool-generic{,-section,-label,-json}`,
 `.av-tool-out-error`, `.av-tool-empty`. Todos `.av-tool-todos` > `.av-todo` +
@@ -61,12 +101,17 @@ Bodies: `.av-tool-bash{,-desc,-cmd,-out,-prompt}`, `.av-tool-summary{-body,-line
 Task `.av-tool-task{,-meta,-agent,-desc,-prompt,-result}`.
 
 Diff (`ToolDiff.tsx` — **Monaco**, `renderSideBySide:false`): `.av-diff` >
-`.av-diff-head` (`.av-diff-path` + `.av-diff-kind`) + `.av-diff-editor`. Code
-(`CodeBlock.tsx` — **Monaco**): `.av-code-block` > `.av-code-head` (`.av-code-lang`
-+ `.av-code-copy`). The theme skins the frames; Monaco paints the content.
+`.av-diff-head` (`.av-diff-path` + `.av-diff-kind`, which reads
+"new file · N lines" for Write) + `.av-diff-editor`. Code (`CodeBlock.tsx` —
+**Monaco**): `.av-code-block` > `.av-code-head` (`.av-code-lang` +
+`.av-code-copy`, `.av-code-copied` flash). The theme skins the frames; Monaco
+paints the content with the `orchestra-dark`/`orchestra-light` themes from
+`monaco-theme.ts` (never stock `vs-dark`).
 
-Permission (`PermissionDialog.tsx`): `.av-permission-backdrop` > `.av-permission-dialog`
-> `.av-permission-header` (`.av-permission-eyebrow` + `.av-permission-queue`) /
+Permission (`PermissionDialog.tsx`): `.av-permission-backdrop` (blurred) >
+`.av-permission-dialog` (glass panel, app `.dialog` language)
+> `.av-permission-header` (`.av-permission-eyebrow` with `.av-permission-icon`
+chip + `.av-permission-queue`) /
 `.av-permission-title` (`.av-permission-tool`) / `.av-permission-subtitle` /
 `.av-permission-input` / `.av-permission-actions` / `.av-permission-deny{,-label}`
 / `.av-permission-reason`. **Deny is the safe first action; Allow is never

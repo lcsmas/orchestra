@@ -29,6 +29,7 @@ import type {
   AgentPermissionRequestEvent,
   AgentSession,
   AgentStopReason,
+  AgentUserMessageEvent,
   RenderMessage,
   TokenUsage,
 } from './types';
@@ -351,6 +352,12 @@ export function makePermissionRequest(
   });
 }
 
+/** Build a stamped user-message echo (see {@link AgentUserMessageEvent}) — the
+ *  manager emits one per sdkSend so the submitted prompt renders immediately. */
+export function makeUserMessage(ctx: NormalizeContext, text: string): AgentUserMessageEvent {
+  return stamp(ctx, { type: 'user-message', text });
+}
+
 // ─── fold: AgentEvent → AgentSession ─────────────────────────────────────────
 
 /** A fresh, empty session for a workspace — the fold identity. */
@@ -558,6 +565,20 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       return { ...next, pendingPermissions: [...next.pendingPermissions, event] };
     }
 
+    case 'user-message': {
+      const messages = [...next.messages];
+      // `running: true` from the moment a prompt is submitted — the turn is in
+      // flight before the first SDK event lands, and the composer/interrupt
+      // should reflect that immediately.
+      messages.push({
+        id: `user:${event.seq}`,
+        role: 'user',
+        text: event.text,
+        done: true,
+      });
+      return { ...next, messages, running: true };
+    }
+
     case 'turn-end':
       return {
         ...next,
@@ -575,6 +596,9 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         id: `error:${event.seq}`,
         role: 'error',
         text: event.message,
+        // Terminal by construction — without `done` the bubble would show a
+        // live streaming cursor on a finished error.
+        done: true,
       });
       return { ...next, messages };
     }

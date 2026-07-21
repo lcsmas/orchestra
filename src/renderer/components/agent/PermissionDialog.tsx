@@ -85,6 +85,36 @@ export function PermissionDialog({
       >
         <div className="av-permission-header">
           <span className="av-permission-eyebrow">
+            <span className="av-permission-icon" aria-hidden="true">
+              {isQuestion ? (
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M5.6 5.8a2.4 2.4 0 1 1 3.3 2.9c-.6.3-.9.7-.9 1.3v.3" />
+                  <circle cx="8" cy="12.6" r="0.4" fill="currentColor" stroke="none" />
+                </svg>
+              ) : (
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M8 1.8 13 3.6v3.6c0 3.2-2 5.6-5 7-3-1.4-5-3.8-5-7V3.6z" />
+                </svg>
+              )}
+            </span>
             {isQuestion ? 'The agent is asking' : 'Permission required'}
           </span>
           {remaining > 1 && (
