@@ -700,6 +700,10 @@ list row:selected label {
 .pr-badge.merged { color: @accent; }
 .pr-badge.closed { color: @red; }
 .pr-badge.linear { color: @accent; }
+/* `PR?` — the gh query failed, PR status unknown. Amber, matching Electron's
+   `.pr-badge.error` literal (#e8b96a, styles.css:1494) rather than this file's
+   @yellow (#ffc857), which is deliberately a different tone. */
+.pr-badge.error  { color: #e8b96a; }
 
 /* Hover-revealed per-row action strip. */
 .ws-icon-btn {
