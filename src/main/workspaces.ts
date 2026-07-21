@@ -514,39 +514,72 @@ export function createOrchestratorWorkspace(): Promise<Workspace> {
   return createScratchLikeWorkspace('orchestrator');
 }
 
-export async function archiveWorkspace(id: string): Promise<void> {
-  const ws = store.getWorkspace(id);
-  if (!ws) return;
-  forgetWorkspaceProbes(id);
-  log.info(`archiving workspace ${ws.branch} (${id})`);
-  // Soft archive: stop the agent but keep the workspace record (flagged
-  // archived), the worktree, and the scrollback log. The sidebar hides
-  // archived workspaces from the main list and surfaces them under a
-  // dedicated Archived section where they can be restored or hard-deleted.
-  stopPty(id);
-  stopPty(`${id}:run`);
-  stopPty(`${id}:nvim`);
-  const updated: Workspace = {
-    ...ws,
-    archived: true,
-    archivedAt: Date.now(),
-    status: 'stopped',
-  };
-  await store.upsertWorkspace(updated);
-  platform.broadcast('workspace:update', updated);
+/** Collect `id` plus every workspace transitively parented under it (children,
+ *  grandchildren, …) so an orchestrator archives/unarchives as a whole tree. The
+ *  root is always first; descendants follow in breadth-first order. Guards
+ *  against a `parentId` cycle so a corrupt store can't spin here. */
+function collectWorkspaceTree(id: string): Workspace[] {
+  const root = store.getWorkspace(id);
+  if (!root) return [];
+  const collected: Workspace[] = [root];
+  const seen = new Set<string>([id]);
+  for (let i = 0; i < collected.length; i++) {
+    const parent = collected[i];
+    for (const w of store.workspaces) {
+      if (w.parentId === parent.id && !seen.has(w.id)) {
+        seen.add(w.id);
+        collected.push(w);
+      }
+    }
+  }
+  return collected;
 }
 
+/** Archive a workspace — and, when it is an orchestrator, its whole subtree.
+ *  A child archived on its own stays archived independently; unarchiving the
+ *  parent later brings back every descendant that was live at archive time
+ *  along with any that were archived while nested (see {@link unarchiveWorkspace}). */
+export async function archiveWorkspace(id: string): Promise<void> {
+  const tree = collectWorkspaceTree(id);
+  if (tree.length === 0) return;
+  for (const ws of tree) {
+    if (ws.archived) continue;
+    forgetWorkspaceProbes(ws.id);
+    log.info(`archiving workspace ${ws.branch} (${ws.id})`);
+    // Soft archive: stop the agent but keep the workspace record (flagged
+    // archived), the worktree, and the scrollback log. The sidebar hides
+    // archived workspaces from the main list and surfaces them under a
+    // dedicated Archived section where they can be restored or hard-deleted.
+    stopPty(ws.id);
+    stopPty(`${ws.id}:run`);
+    stopPty(`${ws.id}:nvim`);
+    const updated: Workspace = {
+      ...ws,
+      archived: true,
+      archivedAt: Date.now(),
+      status: 'stopped',
+    };
+    await store.upsertWorkspace(updated);
+    platform.broadcast('workspace:update', updated);
+  }
+}
+
+/** Unarchive a workspace — and, when it is an orchestrator, its whole subtree,
+ *  so restoring a coordinator brings its children back with it. */
 export async function unarchiveWorkspace(id: string): Promise<void> {
-  const ws = store.getWorkspace(id);
-  if (!ws) return;
-  const updated: Workspace = {
-    ...ws,
-    archived: false,
-    archivedAt: undefined,
-    status: 'idle',
-  };
-  await store.upsertWorkspace(updated);
-  platform.broadcast('workspace:update', updated);
+  const tree = collectWorkspaceTree(id);
+  if (tree.length === 0) return;
+  for (const ws of tree) {
+    if (!ws.archived) continue;
+    const updated: Workspace = {
+      ...ws,
+      archived: false,
+      archivedAt: undefined,
+      status: 'idle',
+    };
+    await store.upsertWorkspace(updated);
+    platform.broadcast('workspace:update', updated);
+  }
 }
 
 /** Tear down everything a delete owns EXCEPT the store record and the renderer

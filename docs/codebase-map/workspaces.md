@@ -125,8 +125,8 @@ endpoint}` = agent lives in an always-on container, see
   the task, submits with `\r`, retries up to 4× confirming status left `idle`.
 
 ### Archive / unarchive / delete
-- **`archiveWorkspace`** `:415` (soft: stop PTYs, keep worktree+logs),
-  **`unarchiveWorkspace`** `:437`, **`deleteWorkspace`** `:450` (hard: runs the
+- **`archiveWorkspace`** `:534` (soft: stop PTYs, keep worktree+logs),
+  **`unarchiveWorkspace`** `:559`, **`deleteWorkspace`** `:450` (hard: runs the
   per-repo archive script best-effort, clears scrollback+inbox, `removeWorktree`,
   removes record, broadcasts `workspace:removed`). Directory removal is
   hard-confined to `ORCHESTRA_ROOT`/`SCRATCH_ROOT`. **Sandbox-hosted** records
@@ -134,6 +134,13 @@ endpoint}` = agent lives in an always-on container, see
   The reap steps are factored into **`teardownWorkspace(ws)`** (everything
   except the store-remove + broadcast) so both `deleteWorkspace` and the bulk
   path share them.
+- **Cascade:** archive/unarchive an orchestrator and its whole subtree moves
+  with it. **`collectWorkspaceTree(id)`** `:517` gathers the root plus every
+  transitively `parentId`-nested descendant (BFS, cycle-guarded); both
+  `archiveWorkspace`/`unarchiveWorkspace` iterate it, skipping records already in
+  the target state, and broadcast a `workspace:update` per changed child so the
+  renderer's tree updates live. A child archived on its own stays independent
+  until its parent is unarchived.
 - **`deleteWorkspaces(ids, window, onProgress?)`** — bulk hard-delete. Reaps
   every worktree sequentially (gentle disk I/O; archive scripts + `git worktree
   remove` per id), then **one** `store.removeWorkspaces(ids)` write + **one**
