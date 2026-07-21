@@ -156,6 +156,18 @@ error `.av-turn-{error-icon,error-label,error-detail,error-spinner,running-label
   `role="dialog"`/`aria-modal` on the permission dialog, `role="status"` on the
   footer); the theme only styles.
 
+## Inactive-pane hiding (Monaco leak guard)
+
+An inactive `.av-view` is `display: none` (`agent-view-theme.css`), NOT just the
+A2 layer's `visibility: hidden`. xterm respects ancestor `visibility`, but
+Monaco's editors paint into overlay/view layers that set their own `visibility`
+and sit in a GPU stacking context — so a Read/Edit tool card's diff kept
+painting ON TOP of the terminal when the Structured tab was backgrounded.
+`display: none` is the only reliable cross-compositor stop; the pane is inactive
+so nothing needs measuring while hidden, and Monaco relayouts from its
+ResizeObserver on re-show (verified in the packaged app: diff re-renders full
+width after a tab round-trip).
+
 ## Perf / measurement safety
 
 - Rows are measured by `offsetHeight` and carry `contain: layout style`. Keep

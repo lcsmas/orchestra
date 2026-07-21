@@ -134,6 +134,16 @@
 
 .av-view { font-size: var(--av-fs-body); }
 
+/* Monaco leak guard. The A2 structure layer hides an inactive pane with
+   `visibility: hidden`, which xterm respects — but Monaco's editors paint into
+   overlay/view layers that set their OWN `visibility` and live in a GPU
+   stacking context, so a Read/Edit tool card's diff kept painting ON TOP of
+   the terminal when the Structured tab was in the background. `display: none`
+   is the only reliable cross-compositor way to stop those layers; the pane is
+   inactive so there's nothing to measure while hidden, and Monaco relayouts
+   from its ResizeObserver when the pane shows again. */
+.av-view:not(.active) { display: none; }
+
 .av-message-list {
   padding: 20px 0 12px;
   scroll-behavior: smooth;
