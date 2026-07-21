@@ -180,6 +180,27 @@ workspaces (SDK carries it in-band). Keep the PTY-exit reconciliation *concept* 
 backstop. This phase is gated on Phases 1–5 being trusted in real use — do it as its own
 task, not now.
 
+**Phase 6 MUST also fix the `buildSdkEnv` env-parity gap (confirmed at source, flagged by
+the closeout-verification orchestrator 2026-07-21).** Today `buildSdkEnv` (agent-sdk.ts:136)
+sets ONLY `ORCHESTRA_BRANCH` + `ORCHESTRA_KIND`. `pty.ts` additionally sets
+`ORCHESTRA_WS_ID`, `ORCHESTRA_EVENTS_DIR`, `ORCHESTRA_SOCK`, `ORCHESTRA_WORKTREE`. This
+minimalism is **deliberate and correct for phases 1–5**: the PTY session coexists and already
+drives the hooks/events-spool, so an SDK session ALSO setting `ORCHESTRA_WS_ID`/`EVENTS_DIR`
+would double-write the spool → double status events, corrupted dot. But in Phase 6 the SDK
+session becomes the SOLE driver, so it MUST set the full pty.ts env block (copy it) or every
+`.orchestra` hook self-silences (they guard on `ORCHESTRA_WS_ID`) and the `orchestra` CLI
+loses identity inside structured sessions (`whoami` fails, `spawn` doesn't nest,
+`verify-landed` needs explicit `--into`, inbox/reminders never fire). Also on master as of
+v0.5.98/99: `/verifyLanded` + `/whoami` socket routes, `orchestra verify-landed`/`whoami`
+subcommands, a two-state close-out contract (LANDED | INTENTIONALLY-UNMERGED).
+
+**Model parity (do NOW-ish, small): init `query` options.model from `ws.model`.** Master is
+landing a `Workspace.model` field set by `orchestra spawn --model` (pty passes `--model` at
+launch). `agent-sdk.ts` already has `sdkSetModel` for live switching — it should ALSO
+initialize the SDK session's model from `ws.model` when starting, so a workspace spawned
+`--model opus` runs its SDK session on Opus. This is the lever that makes the "always Opus"
+directive satisfiable at spawn.
+
 ## Verified-fanout work breakdown
 
 5 implementation agents in isolated worktrees + 1 verifier that owns a fully-installed

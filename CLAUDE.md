@@ -28,6 +28,7 @@ design decisions, so you get accurate context without grepping the tree first.
 | Sandbox/remote agents: wire protocol, shim, Docker image, transports, reconnect, ownership lock, import/eject/backups | `docs/codebase-map/sandbox-transport.md` |
 | Vite/electron-builder build, release pipeline, CI, bundled skills | `docs/codebase-map/build-release.md` |
 | Native GTK4 frontend (`orchestra-gtk`): backend discovery/attach probe, daemon auto-spawn, version lockstep, remote-control harness, packaging/CI/E2E | `docs/codebase-map/native-ui.md` |
+| Structured agent view: SDK-driven agent pane — `agent-sdk.ts` session manager, `AgentEvent` contract, normalize/fold, `agent:event` channel, StructuredView + tool cards / diffs / permission dialog | `docs/codebase-map/structured-agent-view.md` |
 | Structured agent-view design system: the 3 `av-*` CSS layers, tokens, theming, states, a11y contract the SDK-view components render against | `docs/codebase-map/agent-view-design.md` |
 
 The map is reference material — verify a `file:line` against live source before
