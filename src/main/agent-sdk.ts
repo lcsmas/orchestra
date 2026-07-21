@@ -206,13 +206,24 @@ function buildSdkEnv(ws: Workspace): Record<string, string> {
 }
 
 /** The canUseTool bridge: park the call, emit a permission-request event, and
- *  wait for the renderer's reply (or the turn/session ending). */
+ *  wait for the renderer's reply (or the turn/session ending).
+ *
+ *  In `bypassPermissions` mode we auto-allow here rather than parking a prompt.
+ *  The SDK requires `allowDangerouslySkipPermissions` for the CLI to honor
+ *  bypass at all, but `canUseTool` — once supplied — is still invoked per tool,
+ *  so without this short-circuit a "bypass" session would silently fall back to
+ *  prompting (the reported "behaves like auto-accept" symptom). Reading
+ *  `session.permissionMode` (not a captured value) means a *live* switch to
+ *  bypass via `sdkSetPermissionMode` takes effect on the very next tool call. */
 function makeCanUseTool(session: Session) {
   return (
     toolName: string,
     input: Record<string, unknown>,
     opts: { toolUseID: string; requestId: string; title?: string; signal: AbortSignal },
   ): Promise<PermissionResult> => {
+    if (session.permissionMode === 'bypassPermissions') {
+      return Promise.resolve({ behavior: 'allow', updatedInput: input });
+    }
     const requestId = opts.requestId || randomUUID();
     emit(
       session.wsId,
@@ -411,6 +422,12 @@ async function ensureSession(wsId: string): Promise<Session> {
       includePartialMessages: true,
       settingSources: ['user', 'project'],
       permissionMode,
+      // Required by the SDK whenever permissionMode is (or is switched to)
+      // 'bypassPermissions' — without it the CLI ignores bypass and falls back
+      // to prompting/accept-edits. Safe to always set: it only *enables* bypass
+      // to be honored; the active mode is still governed by `permissionMode`
+      // (and live changes via `setPermissionMode`).
+      allowDangerouslySkipPermissions: true,
       canUseTool: makeCanUseTool(session) as never,
       env: sdkEnv,
       ...(claudeBin ? { pathToClaudeCodeExecutable: claudeBin } : {}),
