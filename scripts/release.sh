@@ -268,6 +268,16 @@ if [ "$CI_ONLY" = 0 ]; then
   # binary next to the AppImage so the publish step can attach it.
   if [ "$WITH_GTK" = 1 ]; then
     say "Build native GTK frontend (--with-gtk)"
+    # Source the localdeps link chain ourselves rather than relying on the
+    # caller to have done it — env.sh is a documented no-op when .localdeps is
+    # absent (system-installed devel packages), so this is safe on any box and
+    # removes the "must remember to source env.sh first" failure mode that
+    # silently left the GTK binary un-rebuilt (and thus out of version lockstep
+    # with the freshly-bumped AppImage).
+    if [ -f native/env.sh ]; then
+      # shellcheck source=/dev/null
+      . native/env.sh
+    fi
     if ! run "pnpm run build:gtk"; then
       echo "error: GTK build failed. If this is a rootless dev box, 'source" >&2
       echo "       native/env.sh' first so the localdeps link chain is on PATH." >&2
