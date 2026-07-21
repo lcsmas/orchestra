@@ -26,6 +26,7 @@ import {
   normalizeSdkMessage,
   makePermissionRequest,
   makeUserMessage,
+  stamp,
   type NormalizeContext,
   type SdkMessage,
 } from '../shared/agent-events';
@@ -641,6 +642,10 @@ export async function sdkSetModel(wsId: string, model: string | undefined): Prom
   await persistWorkspacePatch(wsId, { model });
   const session = sessions.get(wsId);
   if (!session) return; // choice is persisted; it applies on next start
+  // Reflect the switch in the folded session — session/init (the only other
+  // source of session.model) fires once, so without this the dropdown snaps
+  // back to the init value. '' conveys "session default".
+  emit(wsId, stamp(session.ctx, { type: 'session/update', model: model ?? '' }));
   try {
     await session.q.setModel(model);
   } catch (err) {
@@ -659,6 +664,7 @@ export async function sdkSetPermissionMode(
   const session = sessions.get(wsId);
   if (!session) return; // choice is persisted; it applies on next start
   session.permissionMode = mode;
+  emit(wsId, stamp(session.ctx, { type: 'session/update', permissionMode: mode }));
   try {
     await session.q.setPermissionMode(mode as never);
   } catch (err) {

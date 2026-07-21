@@ -100,6 +100,10 @@ gated on the prior `result`), so the subprocess stays warm and `canUseTool` fire
 - **`AvMenu`** (`components/agent/AvMenu.tsx`) — the custom dropdown replacing native
   selects in AgentControls (portalled glass panel; see agent-view-design.md).
 - New IPC: `agentSdkHistory` (`agent:sdkHistory`), `agentSkills` (`agent:skills`).
+- **`session/update` event** — `sdkSetModel`/`sdkSetPermissionMode` emit it so the
+  folded `session.model`/`permissionMode` (otherwise set only once by `session/init`)
+  reflect a live switch; without it the AvMenu trigger snapped back to the init value
+  on a running session.
 - **CSS** — three cascade layers imported in `main.tsx`: `agent-view-defaults.css` (A3
   structural) → `agent-view-structure.css` (A2 layout) → `agent-view-theme.css` (A5 design
   system, wins). Reference: `agent-view-design.md`.

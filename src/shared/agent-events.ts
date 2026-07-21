@@ -574,6 +574,13 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       return { ...next, pendingPermissions: [...next.pendingPermissions, event] };
     }
 
+    case 'session/update':
+      return {
+        ...next,
+        ...(event.model !== undefined ? { model: event.model } : {}),
+        ...(event.permissionMode !== undefined ? { permissionMode: event.permissionMode } : {}),
+      };
+
     case 'user-message': {
       const messages = [...next.messages];
       // `running: true` from the moment a prompt is submitted — the turn is in

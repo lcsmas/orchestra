@@ -728,6 +728,18 @@ export interface AgentSkillInfo {
   source: 'project' | 'user';
 }
 
+/** A live change to the session's model or permission mode, emitted by the
+ *  manager when the renderer's dropdowns switch one (agent-sdk.ts
+ *  sdkSetModel/sdkSetPermissionMode). Without it the folded session keeps the
+ *  values from `session/init` (which fires only once per query), so the
+ *  dropdown trigger would snap back to the old value after a switch. Either
+ *  field may be absent (only the changed one is sent). */
+export interface AgentSessionUpdateEvent extends AgentEventBase {
+  type: 'session/update';
+  model?: string;
+  permissionMode?: AgentPermissionMode;
+}
+
 /** A user turn submitted to the session, echoed by the manager at enqueue time.
  *  The SDK stream does NOT echo plain user text back (its `user` messages only
  *  carry tool_result blocks), so without this event a sent prompt would never
@@ -795,6 +807,7 @@ export type AgentEvent =
   | AgentToolResultEvent
   | AgentPermissionRequestEvent
   | AgentUserMessageEvent
+  | AgentSessionUpdateEvent
   | AgentTurnEndEvent
   | AgentErrorEvent;
 

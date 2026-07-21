@@ -641,3 +641,18 @@ test('fold: error message is terminal (done: true — no streaming cursor)', () 
   const err = s.messages.find((m) => m.role === 'error')!;
   assert.equal(err.done, true);
 });
+
+// ─── session/update reflects a live model/mode switch ────────────────────────
+
+test('fold: session/update overrides the init model without touching messages', () => {
+  const c = ctx();
+  let s = foldEvents(emptySession('ws1'), normalizeAll([
+    { type: 'system', subtype: 'init', session_id: 'S', model: 'claude-opus-4-8' },
+  ]));
+  s = foldEvent(s, { seq: 5, at: 1, type: 'session/update', model: 'claude-sonnet-5' });
+  assert.equal(s.model, 'claude-sonnet-5');
+  s = foldEvent(s, { seq: 6, at: 1, type: 'session/update', permissionMode: 'plan' });
+  assert.equal(s.permissionMode, 'plan');
+  // Model untouched by the mode-only update.
+  assert.equal(s.model, 'claude-sonnet-5');
+});
