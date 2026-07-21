@@ -6,6 +6,7 @@ import { DiffView } from './components/DiffView';
 import { BranchPicker } from './components/BranchPicker';
 import { NvimView } from './components/NvimView';
 import { RunTerminal } from './components/RunTerminal';
+import { StructuredView } from './components/StructuredView';
 import { SetupBanner } from './components/SetupBanner';
 import { PromptQueueBanner } from './components/PromptQueueBanner';
 import { SandboxControlBar } from './components/SandboxControlBar';
@@ -496,6 +497,15 @@ export function App() {
                     </button>
                   );
                 })()}
+                {!isScratch && (
+                <button
+                  className={`tab ${view === 'structured' ? 'active' : ''}`}
+                  onClick={() => setView('structured')}
+                  title="Structured agent view (Claude Agent SDK) — streaming messages, tool cards, diffs"
+                >
+                  Structured
+                </button>
+                )}
               </div>
               <button
                 className={`pane-toggle ${nvimOpen ? 'active' : ''}`}
@@ -636,6 +646,21 @@ export function App() {
                     isActive={ws.id === activeId && view === 'terminal'}
                   />
                 ))}
+                {/* Structured view is kept always-mounted per workspace (like
+                    TerminalView above) so the folded session and scroll
+                    position survive tab switches — its store state persists
+                    regardless, but keeping the component mounted preserves the
+                    virtualized list's scroll offset. Scratch sessions have no
+                    agent SDK session, so they are excluded. */}
+                {liveWorkspaces
+                  .filter((ws) => !isScratchLike(ws))
+                  .map((ws) => (
+                    <StructuredView
+                      key={`structured-${ws.id}`}
+                      workspaceId={ws.id}
+                      isActive={ws.id === activeId && view === 'structured'}
+                    />
+                  ))}
                 {view === 'diff' && <DiffView workspaceId={active.id} />}
                 {view === 'run' && (
                   <RunTerminal

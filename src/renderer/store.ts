@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import type {
   Account,
   AccountUsageStatus,
+  AgentEvent,
+  AgentSession,
   CreateWorkspaceInput,
   DiffStats,
   LinearIssue,
@@ -13,6 +15,8 @@ import type {
   WorkspaceAccount,
 } from '../shared/types';
 import type { SelfTuneRun } from '../shared/self-tune';
+import { emptySession, foldEvents } from '../shared/agent-events';
+import { createAgentEventQueue } from './agent-event-queue';
 import { dialog } from './components/Dialog';
 import { dlog, debugEnabled } from './debug';
 
@@ -65,6 +69,14 @@ interface State {
    *  which overwrite the seed the moment the agent next takes a turn. Absent for
    *  a workspace that has never completed a turn. */
   contextTokens: Record<string, number>;
+  /** Folded structured-agent-view session per workspace, keyed by workspace id.
+   *  Built by replaying the `agent:event` stream (the Claude Agent SDK channel)
+   *  through the pure `foldEvent`/`foldEvents` reducer. Absent until a workspace's
+   *  structured tab is opened and the first event lands. This is the hottest
+   *  channel in the app (streaming token deltas), so events are RAF-batched — one
+   *  `setState` per animation frame regardless of how many deltas arrived — via
+   *  the module-scope queue below. See `agent-event-queue.ts`. */
+  agentSessions: Record<string, AgentSession>;
   /** Per-repo base-branch sync state (behind/ahead of origin/<base>),
    *  keyed by repoPath. Updated by `repo:syncState` events. */
   repoSync: Record<string, RepoSyncState>;
@@ -93,7 +105,7 @@ interface State {
    *  the two panes are mutually exclusive. */
   helpOpen: boolean;
   activeId: string | null;
-  view: 'terminal' | 'diff' | 'run';
+  view: 'terminal' | 'diff' | 'run' | 'structured';
   /** Which top-level surface fills the main pane: the normal workspace panes,
    *  or the full-page Resources view (opened from the sidebar footer). The
    *  workspace panes stay mounted underneath so xterm scrollback survives a
@@ -102,7 +114,13 @@ interface State {
   loaded: boolean;
 
   setActive: (id: string | null) => void;
-  setView: (v: 'terminal' | 'diff' | 'run') => void;
+  setView: (v: 'terminal' | 'diff' | 'run' | 'structured') => void;
+  /** Dev/verifier seam: inject a synthetic {@link AgentEvent} for a workspace
+   *  through the SAME RAF-batched fold path as a real `agent:event`. Lets the
+   *  E2E verifier drive the structured view deterministically (assert
+   *  token-by-token rendering, RAF batching) without a live network turn. Not
+   *  used in normal operation. */
+  __injectAgentEvent: (workspaceId: string, event: AgentEvent) => void;
   setInsightsOpen: (open: boolean) => void;
   setPage: (p: 'workspaces' | 'resources') => void;
   setHelpOpen: (open: boolean) => void;
@@ -143,6 +161,7 @@ export const useStore = create<State>((set, get) => ({
   linear: {},
   tools: {},
   contextTokens: {},
+  agentSessions: {},
   repoSync: {},
   accountUsage: {},
   workspaceAccounts: {},
@@ -172,6 +191,7 @@ export const useStore = create<State>((set, get) => ({
     }
   },
   setView: (v) => set({ view: v }),
+  __injectAgentEvent: (workspaceId, event) => enqueueAgentEvent(workspaceId, event),
   // The Insights/Help panes and the Resources page are all full-pane surfaces —
   // opening any one dismisses the others so they can never stack.
   setInsightsOpen: (open) =>
@@ -514,7 +534,8 @@ window.orchestra.onWorkspaceRemoved((id) => {
     const { [id]: _goneStat, ...stats } = s.stats;
     const { [id]: _goneTool, ...tools } = s.tools;
     const { [id]: _goneCtx, ...contextTokens } = s.contextTokens;
-    return { workspaces, activeId, prs, linear, stats, tools, contextTokens };
+    const { [id]: _goneSession, ...agentSessions } = s.agentSessions;
+    return { workspaces, activeId, prs, linear, stats, tools, contextTokens, agentSessions };
   });
 });
 window.orchestra.onWorkspacesRemoved((ids) => {
@@ -535,6 +556,7 @@ window.orchestra.onWorkspacesRemoved((ids) => {
       stats: prune(s.stats),
       tools: prune(s.tools),
       contextTokens: prune(s.contextTokens),
+      agentSessions: prune(s.agentSessions),
     };
   });
 });
@@ -571,6 +593,41 @@ window.orchestra.onAgentContext((id, tokens) => {
   }
   if (s.contextTokens[id] === tokens) return;
   useStore.setState({ contextTokens: { ...s.contextTokens, [id]: tokens } });
+});
+
+// `agent:event` — the structured-agent-view stream (Claude Agent SDK). This is
+// the app's hottest channel: streaming `text-delta`s can fire dozens of times
+// per assistant turn, all sharing the one ordered main→renderer IPC channel. A
+// setState per delta would re-render the message list on every token and jank
+// the stream (the same failure the terminal's `term-write-queue` solves). So
+// events are RAF-batched: the queue accumulates every event that arrives within
+// an animation frame, then flushes them here in ONE store commit — each touched
+// workspace's frame-slice folded in a single `foldEvents` call. `foldEvent`/
+// `foldEvents` are pure and immutable (src/shared/agent-events.ts), so a
+// workspace with no prior session starts from `emptySession`.
+const agentEventQueue = createAgentEventQueue((batches) => {
+  const s = useStore.getState();
+  const next: Record<string, AgentSession> = { ...s.agentSessions };
+  let changed = false;
+  for (const { workspaceId, events } of batches) {
+    if (events.length === 0) continue;
+    const prev = next[workspaceId] ?? emptySession(workspaceId);
+    next[workspaceId] = foldEvents(prev, events);
+    changed = true;
+  }
+  // Guard before setState — same discipline as onAgentContext/onAgentTool — so
+  // an empty flush (nothing folded) can't churn subscribers.
+  if (changed) useStore.setState({ agentSessions: next });
+});
+
+/** Route one event (real or synthetic) into the RAF-batched fold path. Shared
+ *  by the live `onAgentEvent` subscription and the `__injectAgentEvent` seam. */
+function enqueueAgentEvent(workspaceId: string, event: AgentEvent): void {
+  agentEventQueue.push(workspaceId, event);
+}
+
+window.orchestra.onAgentEvent((id, event) => {
+  enqueueAgentEvent(id, event);
 });
 window.orchestra.onWorkspaceFocus((id) => {
   const s = useStore.getState();

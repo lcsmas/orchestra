@@ -1,0 +1,215 @@
+/* Structured agent view — STRUCTURAL defaults only (A2).
+ *
+ * A5 owns the visual design system in this file, keyed on the `av-*` classes
+ * that StructuredView.tsx stamps. Everything here is intentionally minimal:
+ * just the layout, the always-mounted show/hide (mirrors `.terminal-pane`), and
+ * enough default styling that the view is legible and non-broken before the
+ * design pass lands. A5 may replace any of these rules. */
+
+/* Always-mounted per workspace (like .terminal-pane): all structured panes
+   share the one pane box via absolute positioning; only the active one is
+   visible, so tab switches never unmount and the folded session/scroll survive. */
+.av-view {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-3);
+  color: var(--text);
+  visibility: hidden;
+  pointer-events: none;
+}
+.av-view.active {
+  visibility: visible;
+  pointer-events: auto;
+}
+
+/* Scrollable, virtualized message list fills the space above the composer. */
+.av-message-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.av-empty {
+  color: var(--text-dim);
+  padding: 24px 12px;
+  font-size: 13px;
+}
+
+.av-row {
+  /* Rows are measured by offsetHeight — keep the box model simple (margin on
+     the message, not the row) so measurements are stable. */
+  contain: layout style;
+}
+
+.av-message {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.av-message-user {
+  background: rgba(110, 168, 255, 0.08);
+  border-color: rgba(110, 168, 255, 0.25);
+}
+.av-message-error {
+  border-color: #a3423b;
+}
+.av-message-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.av-thinking {
+  color: var(--text-dim);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.av-thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: inline-block;
+}
+
+.av-tool-card {
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.av-tool-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+.av-tool-input,
+.av-tool-result {
+  margin: 0;
+  padding: 8px;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+.av-tool-result {
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.av-tool-result-error {
+  color: #e08b84;
+}
+
+/* Permission dialog (A4 replaces this) — overlay above the list. */
+.av-permission-dialog {
+  position: absolute;
+  left: 50%;
+  bottom: 96px;
+  transform: translateX(-50%);
+  max-width: 90%;
+  z-index: 5;
+  background: var(--bg-4);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+.av-permission-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.av-permission-input {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  max-height: 200px;
+  overflow: auto;
+}
+.av-permission-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Controls + turn footer (A4 replaces this). */
+.av-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.av-turn-footer {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+/* Composer at the bottom. */
+.av-composer {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--border);
+}
+.av-composer-input {
+  flex: 1 1 auto;
+  resize: none;
+  min-height: 36px;
+  max-height: 200px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-2);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+}
+.av-composer-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Shared button defaults for the structured view (A4/A5 restyle). */
+.av-composer-send,
+.av-interrupt,
+.av-permission-allow,
+.av-permission-deny {
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-4);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.av-composer-send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.av-permission-allow {
+  border-color: rgba(110, 168, 255, 0.4);
+  color: var(--accent);
+}
+.av-interrupt {
+  border-color: #a3423b;
+  color: #e08b84;
+}

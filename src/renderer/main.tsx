@@ -2,6 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import './styles.css';
+import './agent-view.css';
 import '../shared/ipc';
 
 const root = createRoot(document.getElementById('root')!);

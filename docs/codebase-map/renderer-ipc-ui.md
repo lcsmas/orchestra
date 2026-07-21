@@ -76,6 +76,28 @@ Refreshers (`refreshAllStats`/`Sizes`/`AllPRs`/`AllLinear`, `:292+`) are driven
 by **visibility-aware polls** and commit once. Live event subscriptions `:381+`
 patch state (note `onWorkspaceUpdate` merges to avoid clobbering a local create).
 
+`agentSessions: Record<wsId, AgentSession>` holds the folded structured-agent-view
+state (Claude Agent SDK). The `agent:event` channel is the app's **hottest** —
+streaming token deltas — so the `onAgentEvent` subscription does **not** setState
+per event: it pushes into a module-scope **RAF-batched queue**
+(`agent-event-queue.ts`, pure + node-tested) that coalesces a frame's events and
+folds them via pure `foldEvents` (`src/shared/agent-events.ts`) in one commit.
+`__injectAgentEvent(wsId, event)` is a dev/verifier seam routing a synthetic event
+through the same fold path. `view` union includes `'structured'`; sessions are
+pruned in `onWorkspaceRemoved`/`onWorkspacesRemoved` alongside `contextTokens`.
+
+## StructuredView.tsx — structured agent view (renderer skeleton)
+Container for the SDK-driven agent view, kept **always-mounted per workspace**
+(like `TerminalView`, hidden via `.av-view`/`.active`) so folded session + scroll
+survive tab switches. A **virtualized** (windowed, measured-height + overscan)
+message list reads `store.agentSessions[wsId]`; a composer calls
+`agentSdkSend` (which **lazily starts** the session — no separate start IPC);
+`agentSdkInterrupt` wires the Stop button. Message/tool/permission bodies are
+**placeholder slots** (extension points): message+tool bubbles, permission
+dialog, and the model/mode/turn-footer controls are filled by later swarm
+agents. All classes are `av-*`-prefixed; structural defaults live in
+`agent-view.css` (design system owned separately).
+
 ## App.tsx (~606 lines)
 Grid layout `[sidebar | resizer | main]` + `DialogHost`. Persists sidebar/nvim
 widths to localStorage; resizes via rAF. `startVisiblePoll` runs a fn on an
