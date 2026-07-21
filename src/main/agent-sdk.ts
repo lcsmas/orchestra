@@ -116,6 +116,9 @@ interface Session {
   stopping: boolean;
   /** The live permission mode, echoed into new-turn behavior. */
   permissionMode: AgentPermissionMode;
+  /** The SDK session id last persisted to `ws.sdkSessionId`, to avoid rewriting
+   *  the store on every message (the id is stable across a session's turns). */
+  persistedSessionId?: string;
 }
 
 const sessions = new Map<string, Session>();
@@ -253,6 +256,15 @@ async function consume(session: Session): Promise<void> {
     for await (const raw of session.q) {
       const msg = raw as unknown as SdkMessage;
       emitFrom(session, msg);
+      // Persist the SDK session id the first time the stream reports it, so
+      // re-opening the structured view resumes THIS conversation (see the
+      // `resume` option in ensureSession). The id is stable across a session's
+      // turns; only write on change to avoid needless store saves.
+      const sid = (msg as { session_id?: string }).session_id;
+      if (sid && sid !== session.persistedSessionId) {
+        session.persistedSessionId = sid;
+        void persistSessionId(session.wsId, sid);
+      }
       if (msg.type === 'result') {
         // Turn boundary — resolve any parked permission (belt & suspenders) and
         // open the gate so the next queued turn can proceed.
@@ -317,7 +329,9 @@ async function ensureSession(wsId: string): Promise<Session> {
     }
   }
 
-  const permissionMode: AgentPermissionMode = 'default';
+  // Honor the workspace's chosen permission mode (set by the Permissions
+  // dropdown, persisted so a pre-session choice sticks). Defaults to 'default'.
+  const permissionMode: AgentPermissionMode = ws.sdkPermissionMode ?? 'default';
   const session: Session = {
     wsId,
     // q is assigned right after — the generator/canUseTool close over `session`,
@@ -345,9 +359,14 @@ async function ensureSession(wsId: string): Promise<Session> {
       canUseTool: makeCanUseTool(session) as never,
       env: buildSdkEnv(ws),
       // Start on the workspace's configured model (set by `orchestra spawn
-      // --model`, same field the terminal spawn passes as `--model`). Undefined
-      // falls back to the account's default model. `sdkSetModel` switches it live.
+      // --model` or the Model dropdown). Undefined falls back to the account's
+      // default model. `sdkSetModel` switches it live.
       ...(ws.model ? { model: ws.model } : {}),
+      // Resume the workspace's prior structured session so re-opening the view
+      // continues the conversation with its memory intact, instead of starting
+      // blank. The captured session id is persisted on `ws.sdkSessionId` as the
+      // stream reports it (see consume()). Absent → a fresh session.
+      ...(ws.sdkSessionId ? { resume: ws.sdkSessionId } : {}),
       // A large cap: real turns end on their own; this only backstops runaways.
       maxTurns: 200,
     },
@@ -401,10 +420,33 @@ export function sdkPermissionReply(
   }
 }
 
-/** Switch the live session's model (spike/plan setModel). No-op if no session. */
+/** Persist a partial workspace change and broadcast it so the renderer's store
+ *  (and the GTK client) update. Used to make the Model/Permissions dropdowns
+ *  and the resume session-id stick even when no live session exists. */
+async function persistWorkspacePatch(
+  wsId: string,
+  patch: Partial<Workspace>,
+): Promise<void> {
+  const ws = store.getWorkspace(wsId);
+  if (!ws) return;
+  const updated = { ...ws, ...patch };
+  await store.upsertWorkspace(updated).catch((err) =>
+    log.warn(`agent-sdk: persist workspace patch failed for ${wsId}`, err),
+  );
+  platform.broadcast('workspace:update', updated);
+}
+
+function persistSessionId(wsId: string, sessionId: string): Promise<void> {
+  return persistWorkspacePatch(wsId, { sdkSessionId: sessionId });
+}
+
+/** Set the workspace's model. Persists to `ws.model` so the Model dropdown
+ *  sticks and the choice applies when the session (re)starts, AND switches a
+ *  live session immediately if one exists. Works before the first message. */
 export async function sdkSetModel(wsId: string, model: string | undefined): Promise<void> {
+  await persistWorkspacePatch(wsId, { model });
   const session = sessions.get(wsId);
-  if (!session) return;
+  if (!session) return; // choice is persisted; it applies on next start
   try {
     await session.q.setModel(model);
   } catch (err) {
@@ -412,13 +454,16 @@ export async function sdkSetModel(wsId: string, model: string | undefined): Prom
   }
 }
 
-/** Switch the live session's permission mode. No-op if no session. */
+/** Set the workspace's permission mode. Persists to `ws.sdkPermissionMode` so
+ *  the dropdown sticks and the mode applies when the session (re)starts, AND
+ *  switches a live session immediately. Works before the first message. */
 export async function sdkSetPermissionMode(
   wsId: string,
   mode: AgentPermissionMode,
 ): Promise<void> {
+  await persistWorkspacePatch(wsId, { sdkPermissionMode: mode });
   const session = sessions.get(wsId);
-  if (!session) return;
+  if (!session) return; // choice is persisted; it applies on next start
   session.permissionMode = mode;
   try {
     await session.q.setPermissionMode(mode as never);

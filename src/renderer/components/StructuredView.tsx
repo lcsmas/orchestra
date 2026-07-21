@@ -56,10 +56,15 @@ const OVERSCAN = 6;
 
 export function StructuredView({ workspaceId, isActive }: Props) {
   const session = useStore((s) => s.agentSessions[workspaceId]);
+  // A prior SDK session on disk means the next message RESUMES it (the agent
+  // keeps its memory), even though the message list starts empty this render.
+  const canResume = useStore(
+    (s) => !!s.workspaces.find((w) => w.id === workspaceId)?.sdkSessionId,
+  );
 
   return (
     <div className={`av-view ${isActive ? 'active' : ''}`} data-workspace={workspaceId}>
-      <MessageList session={session} />
+      <MessageList session={session} canResume={canResume} />
       {/* A4 extension point: permission dialog(s) for parked canUseTool calls.
           Rendered as an overlay above the list. */}
       <PermissionSlot session={session} workspaceId={workspaceId} />
@@ -73,7 +78,13 @@ export function StructuredView({ workspaceId, isActive }: Props) {
 
 // ── Virtualized message list ─────────────────────────────────────────────────
 
-function MessageList({ session }: { session: AgentSession | undefined }) {
+function MessageList({
+  session,
+  canResume,
+}: {
+  session: AgentSession | undefined;
+  canResume?: boolean;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState({ scrollTop: 0, height: 0 });
   // Measured row heights, keyed by message id — falls back to the estimate for
@@ -140,7 +151,9 @@ function MessageList({ session }: { session: AgentSession | undefined }) {
         <div className="av-empty">
           {session
             ? 'Session ready — send a message to start the agent.'
-            : 'No structured session yet. Send a message to start the agent.'}
+            : canResume
+              ? 'Previous session found — send a message to resume it (the agent keeps its memory; earlier messages aren’t re-shown here).'
+              : 'No structured session yet. Send a message to start the agent.'}
         </div>
       ) : (
         <div className="av-message-list-inner" style={{ height: totalHeight, position: 'relative' }}>
@@ -242,9 +255,17 @@ function SessionControls({
   session: AgentSession | undefined;
   workspaceId: string;
 }) {
+  // Persisted per-workspace SDK settings source the dropdowns so a choice made
+  // before the session starts sticks (reflected back via workspace:update).
+  const ws = useStore((s) => s.workspaces.find((w) => w.id === workspaceId));
   return (
     <>
-      <AgentControls workspaceId={workspaceId} session={session} />
+      <AgentControls
+        workspaceId={workspaceId}
+        session={session}
+        wsModel={ws?.model}
+        wsPermissionMode={ws?.sdkPermissionMode}
+      />
       <TurnFooter session={session} />
     </>
   );

@@ -110,6 +110,16 @@ export interface Workspace {
    * agents consume most of a swarm's tokens, so orchestrators plan on a strong
    * model and spawn leaves on a cheaper one. */
   model?: string;
+  /** Structured-view permission mode chosen for this workspace's SDK session.
+   *  Persisted so the Permissions dropdown sticks and the mode applies even when
+   *  picked BEFORE the first message starts the session (the session reads it in
+   *  ensureSession). Defaults to 'default' when unset. */
+  sdkPermissionMode?: AgentPermissionMode;
+  /** Last Claude Agent SDK session id for this workspace's structured session.
+   *  Captured from the SDK stream and persisted so re-opening the structured view
+   *  RESUMES the prior conversation (query({ resume }) — the agent keeps its
+   *  memory) instead of starting a blank session. */
+  sdkSessionId?: string;
   repoPath: string;
   worktreePath: string;
   branch: string;

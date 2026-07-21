@@ -27,13 +27,23 @@ const MODELS: { value: string; label: string }[] = [
 export function AgentControls({
   workspaceId,
   session,
+  wsModel,
+  wsPermissionMode,
 }: {
   workspaceId: string;
   session: AgentSession | undefined;
+  /** Persisted workspace model — the dropdown's source of truth before a session
+   *  exists, so a pre-session choice sticks. A live session's model (once known)
+   *  takes precedence as the actually-active value. */
+  wsModel?: string;
+  wsPermissionMode?: AgentPermissionMode;
 }) {
   const running = session?.running ?? false;
-  const mode = session?.permissionMode ?? 'default';
-  const model = session?.model ?? '';
+  // Prefer the live session's value when present (it's what's actually active),
+  // else the persisted workspace choice, else the default. This makes the
+  // dropdowns reflect a selection made before the first message is sent.
+  const mode = session?.permissionMode ?? wsPermissionMode ?? 'default';
+  const model = session?.model ?? wsModel ?? '';
 
   const modelOptions = MODELS.some((m) => m.value === model)
     ? MODELS
