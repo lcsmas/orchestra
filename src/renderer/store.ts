@@ -680,13 +680,23 @@ window.orchestra.onWorkspaceAccountsUpdate((byId) => {
 // `accountUsage` through this to render the usage strip against synthetic data.
 // It only wraps the same `useStore.setState` the IPC handlers above call, and
 // the renderer loads solely local content, so it adds no reachable surface.
+// Companion seam for the structured agent view: inject a synthetic AgentEvent
+// from CDP page scope. Unlike `__orchestraSetState` it must NOT set state
+// directly — it routes through the store's `__injectAgentEvent` action, i.e.
+// the SAME enqueue → foldEvents → RAF-batched setState path a real
+// `agent:event` takes. That's the whole point for the E2E gate: proving
+// token-by-token folding and per-frame coalescing requires driving the real
+// queue, not bypassing it (a bypass would make the batching gate vacuous).
 declare global {
   interface Window {
     __orchestraSetState?: (patch: Partial<State>) => void;
+    __injectAgentEvent?: (workspaceId: string, event: AgentEvent) => void;
   }
 }
 try {
   window.__orchestraSetState = (patch) => useStore.setState(patch);
+  window.__injectAgentEvent = (workspaceId, event) =>
+    useStore.getState().__injectAgentEvent(workspaceId, event);
 } catch {
   /* non-browser context (tests) — no window to attach to */
 }
