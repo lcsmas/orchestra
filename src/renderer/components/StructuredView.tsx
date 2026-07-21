@@ -33,7 +33,9 @@ import type { AgentSession, RenderMessage } from '../../shared/types';
 // thinking spinner). AgentMessage routes tool→ToolCard else→MessageBubble and
 // owns the `av-message`/`av-tool-card` wrappers + thinking indicator, so it
 // fully replaces the placeholder MessageSlot/ToolSlot bodies below.
-import { AgentMessage } from './agent';
+// A4: interaction surfaces mounted into the slots below (permission dialog,
+// AskUserQuestion UI, model/permission-mode controls, rich turn footer).
+import { AgentMessage, PermissionDialog, AgentControls, TurnFooter } from './agent';
 
 interface Props {
   workspaceId: string;
@@ -210,11 +212,13 @@ function MessageSlot({ message }: { message: RenderMessage }) {
   return <AgentMessage message={message} />;
 }
 
-// ── Permission slot (A4 extension point) ─────────────────────────────────────
+// ── Permission slot (A4) ─────────────────────────────────────────────────────
 //
-// A4 replaces this with the native approve/deny dialog + AskUserQuestion UI. It
-// reads `session.pendingPermissions` and answers via
-// `window.orchestra.agentSdkPermissionReply(wsId, requestId, reply)`.
+// The native approve/deny dialog + AskUserQuestion UI. Reads
+// `session.pendingPermissions`, shows the oldest first (one at a time), and
+// answers via `agentSdkPermissionReply(wsId, requestId, reply)`. Its own
+// answered-set guards against a lagging fold resurrecting a resolved prompt, so
+// no store callback is required.
 
 function PermissionSlot({
   session,
@@ -223,50 +227,13 @@ function PermissionSlot({
   session: AgentSession | undefined;
   workspaceId: string;
 }) {
-  const pending = session?.pendingPermissions ?? [];
-  if (pending.length === 0) return null;
-  return (
-    <div className="av-permission-dialog" role="dialog" aria-label="Permission request">
-      {pending.map((p) => (
-        <div key={p.requestId} className="av-permission-request" data-request={p.requestId}>
-          <div className="av-permission-title">{p.title ?? `Allow ${p.name}?`}</div>
-          <pre className="av-permission-input">{JSON.stringify(p.input, null, 2)}</pre>
-          {/* Default approve/deny so the view is usable before A4's dialog lands. */}
-          <div className="av-permission-actions">
-            <button
-              className="av-permission-allow"
-              onClick={() =>
-                void window.orchestra
-                  .agentSdkPermissionReply(workspaceId, p.requestId, { behavior: 'allow' })
-                  .catch(() => {})
-              }
-            >
-              Allow
-            </button>
-            <button
-              className="av-permission-deny"
-              onClick={() =>
-                void window.orchestra
-                  .agentSdkPermissionReply(workspaceId, p.requestId, {
-                    behavior: 'deny',
-                    message: 'Denied by user',
-                  })
-                  .catch(() => {})
-              }
-            >
-              Deny
-            </button>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
+  return <PermissionDialog workspaceId={workspaceId} session={session} />;
 }
 
-// ── Session controls + turn footer (A4 extension point) ──────────────────────
+// ── Session controls + turn footer (A4) ──────────────────────────────────────
 //
-// A4 replaces this with model/permission-mode switches and a rich cost/token/
-// duration footer. For now: an interrupt button (wired) + a minimal footer.
+// Model / permission-mode switches + interrupt (AgentControls) above the rich
+// cost/token/duration/error turn footer (TurnFooter).
 
 function SessionControls({
   session,
@@ -275,31 +242,11 @@ function SessionControls({
   session: AgentSession | undefined;
   workspaceId: string;
 }) {
-  const running = !!session?.running;
-  const lastTurn = session?.lastTurn;
   return (
-    <div className="av-controls">
-      <div className="av-turn-footer">
-        {session?.model && <span className="av-model">{session.model}</span>}
-        {typeof session?.totalCostUsd === 'number' && session.totalCostUsd > 0 && (
-          <span className="av-cost">${session.totalCostUsd.toFixed(4)}</span>
-        )}
-        {lastTurn?.usage && (
-          <span className="av-tokens">
-            {lastTurn.usage.inputTokens + lastTurn.usage.outputTokens} tok
-          </span>
-        )}
-      </div>
-      {running && (
-        <button
-          className="av-interrupt"
-          onClick={() => void window.orchestra.agentSdkInterrupt(workspaceId).catch(() => {})}
-          title="Interrupt the current turn"
-        >
-          Stop
-        </button>
-      )}
-    </div>
+    <>
+      <AgentControls workspaceId={workspaceId} session={session} />
+      <TurnFooter session={session} />
+    </>
   );
 }
 

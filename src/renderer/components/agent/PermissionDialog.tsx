@@ -36,14 +36,18 @@ export function PermissionDialog({
   onReplied?: (requestId: string) => void;
 }) {
   const pending = session?.pendingPermissions ?? [];
-  // Show the OLDEST pending request first (arrival order).
-  const current: AgentPermissionRequestEvent | undefined = pending[0];
 
   // Track requestIds we have already answered so a lagging fold can't resurrect
   // a prompt we just resolved.
   const [answered, setAnswered] = useState<Set<string>>(() => new Set());
-  const active =
-    current && !answered.has(current.requestId) ? current : undefined;
+  // Show the first UNANSWERED pending request (arrival order). Using the first
+  // *unanswered* one — not simply pending[0] — matters when the store's clear
+  // lags our reply: pending[0] can still be the request we just answered, and
+  // the next queued prompt must surface immediately rather than wait for main
+  // to fold the clear.
+  const active: AgentPermissionRequestEvent | undefined = pending.find(
+    (p) => !answered.has(p.requestId),
+  );
 
   const reply = (requestId: string, r: AgentPermissionReply) => {
     setAnswered((prev) => new Set(prev).add(requestId));
