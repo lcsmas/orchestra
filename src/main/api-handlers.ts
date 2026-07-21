@@ -86,6 +86,14 @@ import {
   startSelfTuneRun,
 } from './self-tune';
 import { dispatchLoginUrlRequest } from './login-url';
+import {
+  sdkSend,
+  sdkInterrupt,
+  sdkPermissionReply,
+  sdkSetModel,
+  sdkSetPermissionMode,
+  sdkStopMany,
+} from './agent-sdk';
 import { probeDependencies, type DepsStatus } from './deps';
 import { log, revealLogs, getLogFile } from './logger';
 import type { OrchestraAPI } from '../shared/ipc';
@@ -203,6 +211,11 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   saveClipboardImage: 'clipboard:saveImage',
   restartAgent: 'agent:restart',
   stopAgent: 'agent:stop',
+  agentSdkSend: 'agent:sdkSend',
+  agentSdkInterrupt: 'agent:sdkInterrupt',
+  agentSdkPermissionReply: 'agent:sdkPermissionReply',
+  agentSdkSetModel: 'agent:sdkSetModel',
+  agentSdkSetPermissionMode: 'agent:sdkSetPermissionMode',
   nvimStart: 'nvim:start',
   sandboxControlState: 'sandbox:controlState',
   takeSandboxControl: 'sandbox:takeControl',
@@ -497,16 +510,24 @@ export const apiHandlers: ApiHandlerTable = {
 
   createOrchestratorWorkspace: () => createOrchestratorWorkspace(),
 
-  archiveWorkspace: (id) => archiveWorkspace(id),
+  archiveWorkspace: (id) => {
+    sdkStopMany([id]);
+    return archiveWorkspace(id);
+  },
 
   unarchiveWorkspace: (id) => unarchiveWorkspace(id),
 
-  deleteWorkspace: (id) => deleteWorkspace(id),
+  deleteWorkspace: (id) => {
+    sdkStopMany([id]);
+    return deleteWorkspace(id);
+  },
 
-  deleteWorkspaces: (ids) =>
-    deleteWorkspaces(ids, (done, total) => {
+  deleteWorkspaces: (ids) => {
+    sdkStopMany(ids);
+    return deleteWorkspaces(ids, (done, total) => {
       platform.broadcast('workspaces:deleteProgress', done, total);
-    }),
+    });
+  },
 
   importToSandbox: (id, endpoint) => importWorkspaceToSandbox(id, endpoint),
 
@@ -704,6 +725,31 @@ export const apiHandlers: ApiHandlerTable = {
     stopPty(id);
     reconcileExited(id);
     platform.broadcast('pty:stopped', id);
+  },
+
+  // ---------- Structured agent view (Claude Agent SDK) ----------
+  // The reverse path into the per-workspace SDK session manager (agent-sdk.ts).
+  // Each starts/reuses the workspace's lazy session; the forward event stream
+  // is broadcast on `agent:event` from that module.
+
+  agentSdkSend: async (wsId, text) => {
+    await sdkSend(wsId, text);
+  },
+
+  agentSdkInterrupt: async (wsId) => {
+    await sdkInterrupt(wsId);
+  },
+
+  agentSdkPermissionReply: async (wsId, requestId, reply) => {
+    sdkPermissionReply(wsId, requestId, reply);
+  },
+
+  agentSdkSetModel: async (wsId, model) => {
+    await sdkSetModel(wsId, model);
+  },
+
+  agentSdkSetPermissionMode: async (wsId, mode) => {
+    await sdkSetPermissionMode(wsId, mode);
   },
 
   nvimStart: async (id, cols, rows) => {

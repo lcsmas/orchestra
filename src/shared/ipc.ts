@@ -3,6 +3,9 @@ import type { WorktreeSizes } from './worktree-sizes';
 import type {
   Account,
   AccountUsageStatus,
+  AgentEvent,
+  AgentPermissionMode,
+  AgentPermissionReply,
   CreateWorkspaceInput,
   DiffFile,
   DiffStats,
@@ -232,6 +235,31 @@ export interface OrchestraAPI {
    * stop). The conversation isn't lost: the terminal relaunches the agent with
    * `claude --continue` on the next activation or keystroke. */
   stopAgent: (id: string) => Promise<void>;
+
+  // ---------- Structured agent view (Claude Agent SDK) ----------
+  // The reverse (user → agent) path for the structured view. The forward path
+  // (agent → UI) is the `onAgentEvent` subscription in the events block below.
+  // The SDK session is lazily started by the first `agentSdkSend`.
+
+  /** Send a user turn to a workspace's structured SDK session, starting the
+   *  session lazily on the first call. Uses the streaming-input pattern so the
+   *  subprocess stays warm across turns (docs/spikes/phase0-sdk-findings.md h). */
+  agentSdkSend: (wsId: string, text: string) => Promise<void>;
+  /** Interrupt the in-flight turn of a workspace's SDK session. Surfaces to the
+   *  UI as a `turn-end`/`error` event (the SDK iterator throws, spike d). */
+  agentSdkInterrupt: (wsId: string) => Promise<void>;
+  /** Resolve a parked `canUseTool` permission request with the user's decision
+   *  (allow, optionally with edited input, or deny with a message). */
+  agentSdkPermissionReply: (
+    wsId: string,
+    requestId: string,
+    reply: AgentPermissionReply,
+  ) => Promise<void>;
+  /** Switch the live SDK session's model (undefined → the session default). */
+  agentSdkSetModel: (wsId: string, model: string | undefined) => Promise<void>;
+  /** Switch the live SDK session's permission mode. */
+  agentSdkSetPermissionMode: (wsId: string, mode: AgentPermissionMode) => Promise<void>;
+
   nvimStart: (id: string, cols: number, rows: number) => Promise<void>;
   onPtyData: (cb: (id: string, data: string) => void) => () => void;
   onPtyExit: (cb: (id: string, code: number) => void) => () => void;
@@ -334,6 +362,12 @@ export interface OrchestraAPI {
    *  latest main-chain assistant usage (the `/context` "used" figure). Not
    *  persisted — purely a live UI label. */
   onAgentContext: (cb: (id: string, tokens: number) => void) => () => void;
+  /** The structured-agent-view event stream: fires once per normalized
+   *  {@link AgentEvent} the SDK session produces, keyed to the workspace. The
+   *  renderer folds these into an AgentSession (src/shared/agent-events.ts).
+   *  This is the hottest event channel (token deltas) — subscribers MUST batch
+   *  (RAF-coalesce) rather than setState per event. */
+  onAgentEvent: (cb: (wsId: string, event: AgentEvent) => void) => () => void;
   /** Fires whenever a repo's base-branch sync state changes (started a
    *  fetch, finished a fetch, ahead/behind count moved). One event per
    *  state transition, keyed by repoPath. */

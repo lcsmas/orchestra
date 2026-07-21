@@ -74,6 +74,13 @@ const api: OrchestraAPI = {
   saveClipboardImage: (mime, bytes) => ipcRenderer.invoke('clipboard:saveImage', mime, bytes),
   restartAgent: (id) => ipcRenderer.invoke('agent:restart', id),
   stopAgent: (id) => ipcRenderer.invoke('agent:stop', id),
+  agentSdkSend: (wsId, text) => ipcRenderer.invoke('agent:sdkSend', wsId, text),
+  agentSdkInterrupt: (wsId) => ipcRenderer.invoke('agent:sdkInterrupt', wsId),
+  agentSdkPermissionReply: (wsId, requestId, reply) =>
+    ipcRenderer.invoke('agent:sdkPermissionReply', wsId, requestId, reply),
+  agentSdkSetModel: (wsId, model) => ipcRenderer.invoke('agent:sdkSetModel', wsId, model),
+  agentSdkSetPermissionMode: (wsId, mode) =>
+    ipcRenderer.invoke('agent:sdkSetPermissionMode', wsId, mode),
   nvimStart: (id, cols, rows) => ipcRenderer.invoke('nvim:start', id, cols, rows),
 
   getRepoScripts: (repoPath) => ipcRenderer.invoke('repos:getScripts', repoPath),
@@ -184,6 +191,11 @@ const api: OrchestraAPI = {
     const listener = (_e: unknown, id: string, tokens: number) => cb(id, tokens);
     ipcRenderer.on('agent:context', listener);
     return () => ipcRenderer.off('agent:context', listener);
+  },
+  onAgentEvent: (cb) => {
+    const listener = (_e: unknown, wsId: string, event: unknown) => cb(wsId, event as never);
+    ipcRenderer.on('agent:event', listener);
+    return () => ipcRenderer.off('agent:event', listener);
   },
   onRepoSyncState: (cb) => {
     const listener = (_e: unknown, s: unknown) => cb(s as never);

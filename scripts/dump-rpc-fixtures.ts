@@ -382,6 +382,7 @@ const EVENT_IPC_CHANNELS: Record<EventMember, string> = {
   onAgentNeedsInput: 'agent:needs-input',
   onAgentTool: 'agent:tool',
   onAgentContext: 'agent:context',
+  onAgentEvent: 'agent:event',
   onRepoSyncState: 'repo:syncState',
   onUsageUpdate: 'usage:update',
   onAccountUsageUpdate: 'accounts:usageUpdate',
@@ -412,6 +413,10 @@ async function captureEvents(): Promise<void> {
     onAgentNeedsInput: ['ws-fixture-git', false],
     onAgentTool: ['ws-fixture-git', 'Bash'],
     onAgentContext: ['ws-fixture-git', 123456],
+    onAgentEvent: [
+      'ws-fixture-git',
+      { type: 'text-delta', seq: 0, at: 1_700_000_000_000, index: 0, text: 'Hello' },
+    ],
     onRepoSyncState: [
       {
         repoPath: REPO,

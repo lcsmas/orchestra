@@ -479,3 +479,347 @@ export interface WorkspaceAccount {
    *  fallback like 'default login' when `accountId` is null. */
   label: string;
 }
+
+// ─── Structured agent view (Claude Agent SDK) ────────────────────────────────
+//
+// The structured-agent-view feature runs a workspace's agent through the
+// `@anthropic-ai/claude-agent-sdk` `query()` API instead of scraping the raw
+// terminal, so the renderer can show first-class messages, streaming text,
+// tool calls with diffs, permission prompts, and cost/usage — none of which are
+// recoverable from PTY bytes. The types below are THE CONTRACT between the main
+// process (which owns the SDK subprocess, src/main/agent-sdk.ts) and the
+// renderer (which folds events into a view, via the `agent:event` channel).
+//
+// Two layers:
+//   • {@link AgentEvent} — the flat, on-the-wire event stream. Every event is a
+//     small immutable fact about the session, emitted in order. The main
+//     process normalizes raw SDK messages into these (src/shared/agent-events.ts
+//     `normalizeSdkMessage`) so the renderer never sees SDK-internal shapes.
+//   • {@link AgentSession} / {@link RenderMessage} — the FOLDED view. Pure
+//     `foldEvents` (same module) accumulates the event stream into coherent
+//     messages: streaming `text-delta`s coalesce into one assistant message,
+//     `tool-input-delta`s assemble a tool call's JSON, and `tool-use` ↔
+//     `tool-result` are correlated by id so a file diff can be reconstructed.
+//
+// Phase 0 spike constraints baked into these types (docs/spikes/
+// phase0-sdk-findings.md — VERIFIED, they override assumptions):
+//   • Thinking text is REDACTED on Opus 4.8: `thinking_delta` events fire but
+//     carry empty text. So thinking is modelled as a BOOLEAN indicator
+//     ({@link AgentThinkingStartEvent} + {@link RenderMessage.thinking}), never
+//     a text stream. Do not add a thinking-text field.
+//   • Diffs are RECONSTRUCTED: a Write/Edit `tool_result` is plain success
+//     text, so the content/old_string/new_string lives on the `tool_use` INPUT.
+//     `toolUseId` correlates the two ({@link AgentToolUseEvent} ↔
+//     {@link AgentToolResultEvent}).
+//   • Interrupt surfaces as the SDK iterator THROWING (`error_during_execution`)
+//     — the manager treats it as an expected terminal state and emits a normal
+//     {@link AgentTurnEndEvent} with `stopReason: 'interrupted'`.
+//   • Transient API 500s arrive as `result` messages with `is_error: true` and
+//     `apiErrorStatus` set (NOT thrown) — see {@link AgentErrorEvent}.
+
+/** Which permission gate the session runs under, mirroring Claude Code's own
+ *  modes. `default` prompts per tool via the `canUseTool` round-trip;
+ *  `acceptEdits` auto-allows file edits; `bypassPermissions` allows everything
+ *  (no prompts); `plan` runs read-only planning. Settable live from the UI
+ *  (`agent:sdkSetPermissionMode`). */
+export type AgentPermissionMode =
+  | 'default'
+  | 'acceptEdits'
+  | 'bypassPermissions'
+  | 'plan';
+
+/** Why a turn ended, normalized from the SDK result's `subtype`/`stop_reason`.
+ *  `end_turn` is a clean finish; `interrupted` is a user interrupt (the SDK
+ *  iterator threw `error_during_execution`); `max_turns` hit the turn cap;
+ *  `error` is any other terminal failure carried on the result. */
+export type AgentStopReason =
+  | 'end_turn'
+  | 'interrupted'
+  | 'max_turns'
+  | 'error';
+
+/** Token accounting for one turn, lifted verbatim from the SDK result's
+ *  `usage`. `cacheCreationInputTokens`/`cacheReadInputTokens` are the prompt-
+ *  cache split; the renderer sums them for a context-size read the same way the
+ *  PTY-scraping `agent:context` event does today. All counts are for the single
+ *  turn the {@link AgentTurnEndEvent} closes, not cumulative. */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  /** Anthropic service tier the turn ran under (e.g. 'standard'), or null when
+   *  the SDK did not report one. */
+  serviceTier: string | null;
+}
+
+// ── AgentEvent — the flat, ordered event stream ──────────────────────────────
+//
+// A discriminated union on `type`. Each event is keyed to a workspace by the
+// channel envelope (`agent:event` broadcasts `(wsId, event)`), so the wsId is
+// NOT repeated on every event. `seq` is a per-session monotonic counter the
+// manager stamps so the renderer can detect a dropped event and reconcile.
+
+/** Fields every event carries. */
+export interface AgentEventBase {
+  /** Per-session monotonic sequence number, from the manager. Lets the renderer
+   *  order events and notice a gap. */
+  seq: number;
+  /** Epoch ms the manager emitted the event. */
+  at: number;
+}
+
+/** Session bootstrapped — the SDK `system`/`init` message. Carries the session
+ *  identity and the environment the agent actually loaded (model, tools, cwd),
+ *  so the UI can show which model/permission mode is live from the first frame.
+ *  Fires once per `query()` (a new one after a stop+restart). */
+export interface AgentInitEvent extends AgentEventBase {
+  type: 'session/init';
+  /** The SDK's `session_id` — stable across turns of one `query()` (spike h). */
+  sessionId: string;
+  /** Model the session resolved to (e.g. 'claude-opus-4-8'). */
+  model: string;
+  /** Absolute cwd the agent runs in (the worktree path). */
+  cwd: string;
+  /** Live permission mode at init. */
+  permissionMode: AgentPermissionMode;
+  /** Tool names the session loaded (proves user/project settings are active). */
+  tools: string[];
+}
+
+/** One incremental chunk of assistant TEXT (`text_delta`). `index` is the SDK
+ *  content-block index the delta belongs to, so `foldEvents` appends deltas of
+ *  the same block into one contiguous text run even when tool blocks interleave
+ *  at other indices. */
+export interface AgentTextDeltaEvent extends AgentEventBase {
+  type: 'text-delta';
+  index: number;
+  text: string;
+}
+
+/** An assistant `thinking` content block STARTED. Thinking text is redacted on
+ *  Opus 4.8 (spike b), so this is a pure indicator — there is intentionally no
+ *  text field. `foldEvents` flips {@link RenderMessage.thinking} true on this
+ *  and leaves it (a block-stop or turn-end settles the spinner). */
+export interface AgentThinkingStartEvent extends AgentEventBase {
+  type: 'thinking-start';
+  index: number;
+}
+
+/** One incremental chunk of a tool call's INPUT JSON (`input_json_delta`).
+ *  Concatenated across all deltas at the same `index` this yields the full
+ *  argument JSON string; `foldEvents` accumulates it against the matching
+ *  {@link AgentToolUseEvent} at that block index so the UI can show arguments
+ *  assembling live. */
+export interface AgentToolInputDeltaEvent extends AgentEventBase {
+  type: 'tool-input-delta';
+  index: number;
+  /** A raw JSON fragment (`partial_json`) — NOT valid JSON on its own. */
+  partialJson: string;
+}
+
+/** A content block STARTED (`content_block_start`). `kind` distinguishes the
+ *  block so the renderer can open the right UI slot at `index` before deltas
+ *  arrive. `thinking` blocks also emit a {@link AgentThinkingStartEvent}; this
+ *  event exists so text/tool blocks have an explicit start too. */
+export interface AgentBlockStartEvent extends AgentEventBase {
+  type: 'block-start';
+  index: number;
+  kind: 'text' | 'thinking' | 'tool_use';
+}
+
+/** A content block STOPPED (`content_block_stop`). Closes the block at `index`
+ *  — the renderer finalizes that text run / tool-input buffer. */
+export interface AgentBlockStopEvent extends AgentEventBase {
+  type: 'block-stop';
+  index: number;
+}
+
+/** A completed assistant `tool_use` — the tool call as the model finalized it.
+ *  This carries the FULL parsed `input`, which for Write/Edit is the only place
+ *  the file content/diff lives (spike g). Correlate with the matching
+ *  {@link AgentToolResultEvent} by `toolUseId`. */
+export interface AgentToolUseEvent extends AgentEventBase {
+  type: 'tool-use';
+  /** The SDK `tool_use.id` (e.g. 'toolu_01…') — the correlation key. */
+  toolUseId: string;
+  /** Tool name (Bash, Write, Edit, Read, …). */
+  name: string;
+  /** The finalized tool input. `content` (Write) / `old_string`+`new_string`
+   *  (Edit) here are the source of the rendered diff. */
+  input: Record<string, unknown>;
+}
+
+/** A `tool_result` for a prior {@link AgentToolUseEvent}. For Write/Edit this is
+ *  just success/failure TEXT, not structured diff data (spike g) — the diff is
+ *  built from the tool_use input plus the on-disk before. `isError` marks a
+ *  failed or denied tool. */
+export interface AgentToolResultEvent extends AgentEventBase {
+  type: 'tool-result';
+  /** Matches {@link AgentToolUseEvent.toolUseId}. */
+  toolUseId: string;
+  /** The result payload — usually a string; the SDK may send a content-block
+   *  array for richer results, passed through verbatim. */
+  content: string | unknown[];
+  /** True when the tool errored or was denied (`is_error` on the result). */
+  isError: boolean;
+}
+
+/** The agent wants to run a tool and the session's permission mode requires a
+ *  decision — the SDK `canUseTool` callback fired (spike c). The manager parks
+ *  the callback and emits this; the renderer answers via
+ *  `agent:sdkPermissionReply(wsId, requestId, result)`. Exactly one reply per
+ *  `requestId` resolves the pending call. */
+export interface AgentPermissionRequestEvent extends AgentEventBase {
+  type: 'permission-request';
+  /** The manager's key for the parked `canUseTool` call — echo it back in the
+   *  reply. Distinct from `toolUseId`. */
+  requestId: string;
+  /** The SDK-provided tool-use id for this call, when known. */
+  toolUseId: string | null;
+  /** Tool the agent is asking to run. */
+  name: string;
+  /** The tool's proposed input, for the confirmation UI. */
+  input: Record<string, unknown>;
+  /** Optional human-readable title the SDK supplies for the prompt. */
+  title?: string;
+}
+
+/** How the renderer answered a {@link AgentPermissionRequestEvent}. `allow`
+ *  lets the call run (optionally with an edited `input`); `deny` blocks it with
+ *  a message the model sees as the tool result. Mirrors the SDK `canUseTool`
+ *  return shape. */
+export type AgentPermissionReply =
+  | { behavior: 'allow'; updatedInput?: Record<string, unknown> }
+  | { behavior: 'deny'; message: string };
+
+/** A turn finished — the SDK `result` message (spike f). Carries the cost/usage
+ *  accounting the UI shows, plus the stop reason. A successful turn has
+ *  `isError: false`; a graceful transient failure (500) has `isError: true` and
+ *  an {@link AgentErrorEvent} is emitted alongside for the surfaced error. */
+export interface AgentTurnEndEvent extends AgentEventBase {
+  type: 'turn-end';
+  /** Whether this result is an error result (`is_error`). */
+  isError: boolean;
+  /** Normalized stop reason. */
+  stopReason: AgentStopReason;
+  /** Turns the SDK ran to produce this result (`num_turns`). */
+  numTurns: number;
+  /** Full-turn cost in USD (`total_cost_usd`), or null when absent. */
+  costUsd: number | null;
+  /** Token usage for the turn, or null on an error result that lacks it. */
+  usage: TokenUsage | null;
+  /** The final assistant text (`result`), when the SDK provided it. */
+  resultText: string | null;
+  /** The session id this turn belongs to. */
+  sessionId: string;
+  /** Wall-clock duration of the turn in ms (`duration_ms`), when reported. */
+  durationMs: number | null;
+}
+
+/** A surfaced error. Two sources: (1) an `is_error` RESULT message — a
+ *  transient API failure (typically a 500) that arrives as a normal result, NOT
+ *  a thrown exception, with `apiErrorStatus` set (spike, note 6); (2) a
+ *  subprocess/transport failure the manager caught. The renderer shows it
+ *  inline; the manager decides whether to retry (transient 500s) per its own
+ *  backoff. */
+export interface AgentErrorEvent extends AgentEventBase {
+  type: 'error';
+  /** Human-readable error message. */
+  message: string;
+  /** The HTTP status when this came from an API error result (e.g. 500), else
+   *  null (a transport/subprocess error). */
+  apiErrorStatus: number | null;
+  /** Whether the manager considers this transient and will retry. */
+  willRetry: boolean;
+}
+
+/** The full agent event stream — a discriminated union on `type`. The main
+ *  process emits these in order over the `agent:event` channel; the renderer
+ *  folds them via {@link foldEventsInto} (src/shared/agent-events.ts). */
+export type AgentEvent =
+  | AgentInitEvent
+  | AgentTextDeltaEvent
+  | AgentThinkingStartEvent
+  | AgentToolInputDeltaEvent
+  | AgentBlockStartEvent
+  | AgentBlockStopEvent
+  | AgentToolUseEvent
+  | AgentToolResultEvent
+  | AgentPermissionRequestEvent
+  | AgentTurnEndEvent
+  | AgentErrorEvent;
+
+/** The `type` discriminants of {@link AgentEvent}, for exhaustive switches. */
+export type AgentEventType = AgentEvent['type'];
+
+// ── The folded view — AgentSession / RenderMessage ───────────────────────────
+
+/** One rendered message in the folded transcript. `foldEvents` produces these
+ *  from the event stream: an assistant text run becomes one message with
+ *  `text` growing as deltas fold in; a tool call becomes one message whose
+ *  `toolUse` fills from the tool-use event and whose `toolResult` fills when the
+ *  correlated result arrives. */
+export interface RenderMessage {
+  /** Stable id for React keys — `${sessionId}:${index}` for block-derived
+   *  messages, or the toolUseId for tool messages. */
+  id: string;
+  /** Who authored it. `assistant` text, `tool` a tool call+result pair, `user`
+   *  a submitted prompt, `system` an init/notice, `error` a surfaced failure. */
+  role: 'assistant' | 'tool' | 'user' | 'system' | 'error';
+  /** The content-block index this message came from, when block-derived. Lets
+   *  deltas at the same index fold into the same message. */
+  index?: number;
+  /** Assistant/user/system/error text, accumulated from deltas. */
+  text?: string;
+  /** True while a thinking block is open on this message — a spinner indicator,
+   *  never rendered text (redacted on Opus 4.8). */
+  thinking?: boolean;
+  /** For a `tool` message: the tool call. `inputJson` is the raw streaming
+   *  buffer (assembling); `input` is the finalized parsed input once the
+   *  tool-use event lands. */
+  toolUse?: {
+    toolUseId: string;
+    name: string;
+    /** Streaming raw JSON fragments concatenated (may be partial). */
+    inputJson: string;
+    /** Finalized parsed input (present once the tool-use event arrives). */
+    input?: Record<string, unknown>;
+  };
+  /** For a `tool` message: the correlated result, once it arrives. */
+  toolResult?: {
+    content: string | unknown[];
+    isError: boolean;
+  };
+  /** True once the block that produced this message has stopped. */
+  done?: boolean;
+}
+
+/** The whole folded session state the renderer holds per workspace. Rebuilt by
+ *  replaying every {@link AgentEvent} through `foldEvents`, so it is a pure
+ *  function of the event stream — no hidden state. */
+export interface AgentSession {
+  /** Owning workspace id. */
+  workspaceId: string;
+  /** SDK session id, set on the init event; '' until then. */
+  sessionId: string;
+  /** Resolved model, from init. */
+  model: string;
+  /** Live permission mode. */
+  permissionMode: AgentPermissionMode;
+  /** Whether a turn is currently in flight (between a prompt and its turn-end).
+   *  Drives the interrupt button and input gating. */
+  running: boolean;
+  /** The folded transcript, in order. */
+  messages: RenderMessage[];
+  /** Pending permission requests awaiting a renderer reply, keyed by requestId
+   *  so the UI can show one prompt per parked call. */
+  pendingPermissions: AgentPermissionRequestEvent[];
+  /** The most recent turn-end, for the cost/usage footer. */
+  lastTurn?: AgentTurnEndEvent;
+  /** Cumulative cost in USD across every turn this session, for a running
+   *  total. */
+  totalCostUsd: number;
+  /** The highest `seq` folded in, so a caller can detect a gap. */
+  lastSeq: number;
+}

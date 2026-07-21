@@ -31,6 +31,13 @@ export default defineConfig({
                 'electron',
                 'node-pty',
                 'simple-git',
+                // The Agent SDK is a heavy dep tree that spawns a bundled
+                // native `claude` CLI; inlining it into main.js fails rollup.
+                // Externalizing keeps it a runtime `require` resolved from
+                // node_modules, which electron-builder then auto-ships into
+                // app.asar (same mechanism as simple-git) — verified in the
+                // Phase 0 spike (docs/spikes/phase0-sdk-findings.md, Q1).
+                '@anthropic-ai/claude-agent-sdk',
                 'bufferutil',
                 'utf-8-validate',
               ],

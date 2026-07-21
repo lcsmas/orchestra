@@ -178,6 +178,10 @@ export const WIRE_EVENT_CHANNELS: Readonly<Record<string, string>> = {
   'agent:needs-input': 'agentNeedsInput',
   'agent:tool': 'agentTool',
   'agent:context': 'agentContext',
+  // The structured-agent-view SDK event stream (one AgentEvent per frame,
+  // keyed to a workspace by the `(wsId, event)` args). Broadcast from
+  // src/main/agent-sdk.ts; folded into an AgentSession renderer-side.
+  'agent:event': 'agentEvent',
   'repo:syncState': 'repoSyncState',
   'usage:update': 'usageUpdate',
   'accounts:usageUpdate': 'accountUsageUpdate',
