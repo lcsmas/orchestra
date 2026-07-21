@@ -23,8 +23,8 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | Route | Required body | Response |
 |---|---|---|
 | `/rename` | `id`, `branch` | `{ ok, branch? }` |
-| `/spawn` | `task` (+ optional `repoPath`,`baseBranch`,`from`,`detached` — `detached:true` skips parent nesting; `from` still drives repo inheritance) | `{ ok, id?, branch? }` |
-| `/peers` | — | `{ ok, peers?: PeerInfo[] }` |
+| `/spawn` | `task` (+ optional `repoPath`,`baseBranch`,`from`,`detached`,`model` — `detached:true` skips parent nesting; `from` still drives repo inheritance; `model` pins the agent's model, passed as `claude --model` on every launch) | `{ ok, id?, branch? }` |
+| `/peers` | — (+ `stats?: true` — adds each git peer's committed three-dot diff vs base as `diff: {files,insertions,deletions}\|null`; one git subprocess per peer, so opt-in — the comms-resurface hook hits `/peers` on every prompt) | `{ ok, peers?: PeerInfo[] }` |
 | `/read` | `id` (+ `lines?`) | `{ ok, branch?, transcript? }` |
 | `/message` | `to`, `text` (+ `from`) | `{ ok, delivery?: 'live'|'started'|'inbox' }` |
 | `/addRepo` | `path` | `{ ok, repo? }` |
@@ -39,7 +39,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | default (no match) | `id`, `event` | `{}` 200 — legacy activity-event path |
 
 ## Hooks installed into each worktree
-`installOrchestraHooks(worktreePath)` writes into `<worktree>/.orchestra/` (7
+`installOrchestraHooks(worktreePath)` writes into `<worktree>/.orchestra/` (8
 shell scripts, mode 0755) and merges commands into
 `<worktree>/.claude/settings.local.json`. Idempotent via a `HOOKS_VERSION` hash.
 **Every script guards on `[ -n "${ORCHESTRA_WS_ID:-}" ] || exit 0`** — running
@@ -86,6 +86,13 @@ Scripts and the Claude Code events they fire on:
   or `scratch/*` outside its own worktree), with a stderr message that
   redirects the agent to `orchestra message` / spawn. Own-worktree writes
   (notes, plans), relative paths, and parse misses fail open.
+- **`fieldguide-instruction.sh`** — SessionStart ONLY. Injects the parent
+  orchestrator's **swarm field guide** (`<orchestra-home>/fieldguide/
+  <orchestrator-id>.md`, written by the orchestrator per the `orchestra-spawn`
+  skill) into every child, hard-capped at 60 lines. Parent is resolved LIVE
+  via `orchestra whoami` each fire — `parentId` is mutable (`/attach`), so
+  baking it into env/sentinel would go stale. Self-silences without a
+  parent/guide/CLI.
 - **`self-modify-instruction.sh`** — SessionStart ONLY. Self-modification
   notice for agents working on **Orchestra's own repo**: tells the agent this
   repo is the app currently running it, that changes only land after a
@@ -112,8 +119,10 @@ prepended with `~/.orchestra/bin` so bare `orchestra` resolves.
 Standalone Node HTTP client (no npm deps) that POSTs to the socket. Reads
 `$ORCHESTRA_SOCK`/pointer for the socket and `$ORCHESTRA_WS_ID` for self-identity
 (sent as `from`). Exit 0 on `{ok:true}`, 1 otherwise (error to stderr).
-Subcommands: `peers`, `read <id> [--lines N]`, `message <id> <text…>`, `spawn
---task <text> [--repo <path>] [--base <branch>] [--detached]` (`--detached`
+Subcommands: `peers [--stats]` (`--stats` adds per-peer committed diff vs base),
+`read <id> [--lines N]`, `message <id> <text…>`, `spawn
+--task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]`
+(`--model` pins the agent's model — alias or full id; `--detached`
 creates the workspace parentless — its own top-level section), `rename <id> <branch>`,
 `promote <id>`, `attach <id> <parentId>`, `detach <id>`, `verify-landed <id>
 [--into <branch>]` (close-out check: exits 0 only when every commit on the

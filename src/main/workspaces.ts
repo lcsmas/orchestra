@@ -14,6 +14,7 @@ import {
   getCurrentBranch,
   isGitRepo,
   listBranches,
+  getBranchDiffShortstat,
   listUnmergedCommits,
   listWorktreePaths,
   removeWorktree,
@@ -385,6 +386,9 @@ export async function createWorkspace(input: CreateWorkspaceInput): Promise<Work
     // Persist where the agent runs. Absent input → local (field left unset, the
     // default everywhere). Only a sandbox host is recorded explicitly.
     ...(input.host && input.host.kind !== 'local' ? { host: input.host } : {}),
+    // Model pin (spawn --model). Absent = login default, like every
+    // pre-existing workspace record.
+    ...(input.model ? { model: input.model } : {}),
   };
   await store.upsertWorkspace(ws);
   platform.broadcast('workspace:update', ws);
@@ -440,6 +444,7 @@ const ORCHESTRATOR_BRIEF =
   'Track the agents you spawn with /peers, read their progress with /read, and follow up with /message. ' +
   "Follow-up work in an area a child agent already owns goes back to THAT child via /message — never take it over yourself, however small. " +
   'For a milestone-sized piece that itself needs several agents, you may create a SUB-orchestrator: spawn it, then run `orchestra promote <child-id>` — its branch becomes that milestone\'s integration branch and the agents IT spawns nest beneath it. Keep the tree shallow: at most one sub-orchestrator level. ' +
+  'Match model to role: workers consume most of a swarm\'s tokens, so spawn implementation leaves on a cheaper model (spawn\'s "model" param) and keep frontier capacity for planning and verification. Maintain a swarm FIELD GUIDE (see the orchestra-spawn skill) — a line-budgeted notes file injected into every child at session start — so conventions and pitfalls reach all siblings without per-child messages. ' +
   'Close the loop before reporting anything as done: a child\'s "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child must end in one of two EXPLICIT states: LANDED — run `orchestra verify-landed <child-id> --into <branch-it-merged-into>` and require 0 unmerged commits — or INTENTIONALLY UNMERGED, for work whose brief said not to merge (a spike, an experiment, evidence-gathering); state that disposition when you close it. The only forbidden outcome is the silent third state: a child believed merged that isn\'t. ' +
   'Start by asking the user what they want orchestrated and which repo(s) the work belongs in.';
 
@@ -1228,10 +1233,18 @@ export async function dispatchSpawnRequest(
     task: string;
     agent?: 'claude';
     detached?: boolean;
+    model?: string;
   },
 ): Promise<SpawnResult> {
   const task = input.task.trim();
   if (!task) return { ok: false, error: 'empty task' };
+  // Model pin: passed verbatim to `claude --model` (args array, no shell), so
+  // the only validation needed is a sanity charset/length guard — a typo'd
+  // model errors loudly at the agent's own launch, which is the right place.
+  const model = input.model?.trim() || undefined;
+  if (model && !/^[A-Za-z0-9._:/-]{1,64}$/.test(model)) {
+    return { ok: false, error: `invalid model: ${model.slice(0, 80)}` };
+  }
   let repoPath = input.repoPath?.trim() || undefined;
   if (repoPath) {
     // Only repos the user has already added — never let an agent point a new
@@ -1257,6 +1270,7 @@ export async function dispatchSpawnRequest(
       task,
       agent: input.agent,
       parentId: input.detached ? undefined : input.from,
+      model,
     });
     await startWorkspaceAgentHeadless(ws.id);
     return { ok: true, id: ws.id, branch: ws.branch };
@@ -1937,6 +1951,11 @@ export interface PeerInfo {
   status: WorkspaceStatus;
   running: boolean;
   lastTask?: string;
+  /** Committed diff vs the workspace's base (three-dot shortstat). Present
+   * only when the caller asked for `stats`; `null` = couldn't be computed
+   * (missing ref / non-git workspace), which is distinct from an all-zero
+   * stat (an agent that committed nothing). */
+  diff?: { files: number; insertions: number; deletions: number } | null;
 }
 
 export interface PeersResult {
@@ -1946,18 +1965,39 @@ export interface PeersResult {
 }
 
 /** List the other live workspaces so an agent can discover who to talk to.
- * Excludes the caller (`from`) and any archived workspace. */
-export function dispatchPeersRequest(input: { from?: string }): PeersResult {
-  const peers: PeerInfo[] = store.workspaces
-    .filter((w) => !w.archived && w.id !== input.from)
-    .map((w) => ({
-      id: w.id,
-      branch: w.branch,
-      repo: path.basename(w.repoPath),
-      status: w.status,
-      running: isRunning(w.id),
-      lastTask: w.lastTask ? w.lastTask.slice(0, 200) : undefined,
-    }));
+ * Excludes the caller (`from`) and any archived workspace.
+ *
+ * `stats: true` additionally computes each git peer's committed diff size vs
+ * its base — one `git diff --shortstat` subprocess per peer, so it is opt-in:
+ * the comms-resurface hook calls `/peers` on EVERY prompt of EVERY agent, and
+ * putting N git spawns on that path would melt the main process (the classic
+ * per-workspace × per-poll trap). Coordinators ask for stats explicitly
+ * (`orchestra peers --stats`) when sizing up a swarm: a child whose diff
+ * dwarfs its siblings' is a coordination smell (duplication), not extra
+ * productivity. */
+export async function dispatchPeersRequest(input: {
+  from?: string;
+  stats?: boolean;
+}): Promise<PeersResult> {
+  const live = store.workspaces.filter((w) => !w.archived && w.id !== input.from);
+  const peers: PeerInfo[] = live.map((w) => ({
+    id: w.id,
+    branch: w.branch,
+    repo: path.basename(w.repoPath),
+    status: w.status,
+    running: isRunning(w.id),
+    lastTask: w.lastTask ? w.lastTask.slice(0, 200) : undefined,
+  }));
+  if (input.stats) {
+    await Promise.all(
+      live.map(async (w, i) => {
+        peers[i].diff =
+          isScratchLike(w) || !w.repoPath
+            ? null
+            : await getBranchDiffShortstat(w.repoPath, w.baseBranch, w.branch);
+      }),
+    );
+  }
   return { ok: true, peers };
 }
 
@@ -2291,6 +2331,13 @@ const HOOK_INBOX_DELIVER_CMD =
 const HOOK_ORCHESTRATOR_INSTRUCTION_CMD =
   'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestrator-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
 
+// Field-guide injection for spawned children, SessionStart only (same cadence
+// rationale as the orchestrator reminder: per-turn injections compound in the
+// transcript, while SessionStart covers startup/resume/clear/post-compaction —
+// exactly when previously-injected context was lost).
+const HOOK_FIELDGUIDE_CMD =
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/fieldguide-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
+
 // Hard enforcement of the orchestrator contract: a PreToolUse hook on the
 // file-editing tools that DENIES the call (exit 2 → the agent sees the stderr
 // and must change course) when an orchestrator edits files belonging to
@@ -2402,6 +2449,10 @@ description: Delegate independent work to a NEW parallel agent in a fresh git wo
 You can start a brand-new agent in its own git worktree, on a fresh branch cut
 from the base branch. It begins working immediately and shares none of this
 conversation's context, so the task must be a complete, standalone instruction.
+The task text is the scarce resource — the agent is only as good as its brief.
+State the INTENT (what and why), the BOUNDARIES (what it must not touch), and
+the CLOSE-OUT DISPOSITION (which branch the work merges into, or that it is
+deliberately not for merging — a spike/experiment) before spawning.
 
 Use this only for work that does NOT depend on your current uncommitted changes
 — the new worktree is cut from the base branch and will not see them. Only spawn
@@ -2421,6 +2472,12 @@ exits non-zero.
 Optional flags:
 - \`--repo <abs path of another repo already added to orchestra>\` — spawn in a different repo.
 - \`--base <branch>\` — cut the new branch from a specific base.
+- \`--model <model>\` — pin the new agent to a model (an alias like \`haiku\`/
+  \`sonnet\`/\`opus\` or a full model id; omit for the login's default). Match
+  model to role: workers consume most of a swarm's tokens, so spawn
+  implementation leaves on a cheaper tier and reserve frontier models for
+  planning/verification-heavy children — unless the task itself is
+  frontier-hard.
 - \`--detached\` — create the workspace with NO parent, so it appears as its own
   top-level section grouped under its repo instead of nesting under you.
   Default to nesting (no flag). Pass \`--detached\` only when the user's request
@@ -2443,6 +2500,22 @@ nest beneath it, and you hold it to the same close-out standard as any child
 (\`orchestra verify-landed <workspace-id>\` — see \`orchestra-comms\`). Keep the
 tree shallow: at most one sub-orchestrator level — check with
 \`orchestra whoami\`: if YOU already have a parent, you are that level.
+
+## Swarm field guide (orchestrators only)
+
+Knowledge one child discovers (a convention, a pitfall, a decided interface)
+rarely reaches its siblings. As an orchestrator you own a FIELD GUIDE — a
+notes file injected into EVERY child at its session start (and after every
+context reset), so write once, reach all:
+
+\`\`\`bash
+mkdir -p "\$(dirname "\$ORCHESTRA_EVENTS_DIR")/fieldguide"
+\$EDITOR "\$(dirname "\$ORCHESTRA_EVENTS_DIR")/fieldguide/\$ORCHESTRA_WS_ID.md"   # or Write to it directly
+\`\`\`
+
+Keep it under 40 lines (injection hard-caps at 60) — the budget is what keeps
+it trustworthy. Curate: fold in what children report, delete what expired.
+Children read it as background context; only you write it.
 `;
 
 const COMMS_SKILL = `---
@@ -2461,11 +2534,16 @@ share your conversation.
 ## 1. List the other agents
 
 \`\`\`bash
-orchestra peers
+orchestra peers            # id  branch  repo  status
+orchestra peers --stats    # + each git peer's committed diff vs its base (files/+/-)
 \`\`\`
 
-Prints a table of \`id  branch  repo  status\` (yourself excluded), or
-\`No peer workspaces.\` when you are alone.
+Prints a table (yourself excluded), or \`No peer workspaces.\` when you are
+alone. \`--stats\` costs one git subprocess per peer, so use it deliberately —
+when sizing up a swarm, not on every glance. Read the numbers as a
+coordination signal: a child whose diff dwarfs its siblings' for similar-sized
+tasks usually means duplicated scaffolding, not extra productivity — read its
+transcript before merging it.
 
 ## 2. Read a peer's recent transcript
 
@@ -2518,6 +2596,16 @@ Prints THIS workspace's own record: id, branch, kind, whether it can
 orchestrate, its parent orchestrator (if any), repo and base branch. Useful
 before tree decisions — e.g. if \`parent\` is set and you are an orchestrator,
 you are already a sub-orchestrator: don't create another level.
+
+## 6. Neutral merge arbitration
+
+When TWO children's branches conflict, do not let either child resolve the
+conflict — each is invested in its own reading of the seam, and the winner is
+decided by politeness or timing instead of correctness. Spawn a NEUTRAL
+arbiter agent with no stake in either branch (orchestra-spawn skill): its task
+names both branches, the conflicting files, and each child's stated intent,
+and it owns the resolution. Both children then review the arbiter's merge of
+their own seam.
 `;
 
 const REPO_ROUTES_SKILL = `---
@@ -2780,6 +2868,35 @@ fi
 exit 0
 `;
 
+// Swarm "field guide" — stigmergy for a swarm: an orchestrator-owned,
+// line-budgeted notes file injected into every child at SessionStart, so
+// shared conventions, discovered pitfalls, and decided interfaces reach all
+// siblings without per-child messages. The guide lives OUTSIDE any worktree
+// (<orchestra-home>/fieldguide/<orchestrator-id>.md) so the orchestrator can
+// write it — the PreToolUse guard blocks only OTHER workspaces' files — and
+// every child can read it. Parent resolution is LIVE via `orchestra whoami`
+// each SessionStart: `parentId` is mutable (`/attach`), so baking it into pty
+// env or a sentinel would go stale on re-parenting. Self-silences when not an
+// orchestra workspace, the CLI is missing, there is no parent, or the parent
+// has written no guide. Hard-capped at injection so a runaway guide cannot
+// flood every child's context: the cap is what keeps the channel trustworthy.
+const FIELDGUIDE_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
+# Auto-installed by orchestra. Injects the parent orchestrator's swarm field
+# guide on SessionStart. Safe no-op outside orchestra / no parent / no guide.
+[ -n "\${ORCHESTRA_WS_ID:-}" ] || exit 0
+command -v orchestra >/dev/null 2>&1 || exit 0
+parent="\$(orchestra whoami 2>/dev/null | awk '\$1=="parent"{print \$2}')"
+case "\$parent" in ""|none) exit 0 ;; esac
+guide="\$(dirname "\${ORCHESTRA_EVENTS_DIR:-\$HOME/.orchestra/events}")/fieldguide/\$parent.md"
+[ -s "\$guide" ] || exit 0
+echo "[orchestra] Swarm field guide from your orchestrator (curated background context shared with all sibling agents):"
+head -n 60 "\$guide"
+if [ "\$(wc -l < "\$guide")" -gt 60 ]; then
+  echo "[orchestra] (guide truncated at 60 lines — over budget; tell your orchestrator to trim it)"
+fi
+exit 0
+`;
+
 // Orchestra can modify itself: registering this repo as a spawn target and
 // pointing agents at it is a first-class use case (that is how Orchestra is
 // developed). But an agent editing the app that is currently running it has
@@ -3013,6 +3130,10 @@ export async function startAgentPty(ws: Workspace, cols: number, rows: number): 
   const claudeArgs = resuming
     ? ['--continue', '--dangerously-skip-permissions']
     : ['--dangerously-skip-permissions'];
+  // Model pin (spawn --model): passed on EVERY launch — fresh and resume — so
+  // the pin survives pty restarts instead of silently reverting to the login
+  // default. The SDK structured-session path mirrors this via options.model.
+  if (ws.model) claudeArgs.push('--model', ws.model);
   // Heavy-resume gate: if `claude --continue` is about to reload a large
   // session, Claude Code shows its compaction menu — but a typed task would
   // proceed the FULL resume and drain the usage pool. Flag the workspace so
@@ -3131,6 +3252,7 @@ const HOOKS_VERSION = createHash('sha256')
       ORCHESTRATOR_INSTRUCTION_SCRIPT,
       ORCHESTRATOR_GUARD_SCRIPT,
       SELF_MODIFY_INSTRUCTION_SCRIPT,
+      FIELDGUIDE_INSTRUCTION_SCRIPT,
       SPAWN_SKILL,
       COMMS_SKILL,
       REPO_ROUTES_SKILL,
@@ -3151,6 +3273,7 @@ const HOOKS_VERSION = createHash('sha256')
       HOOK_ORCHESTRATOR_INSTRUCTION_CMD,
       HOOK_ORCHESTRATOR_GUARD_CMD,
       HOOK_SELF_MODIFY_CMD,
+      HOOK_FIELDGUIDE_CMD,
       ORCHESTRATOR_GUARD_MATCHER,
     ].join(' '),
   )
@@ -3194,6 +3317,7 @@ export async function installOrchestraHooks(
       w('orchestrator-instruction.sh', ORCHESTRATOR_INSTRUCTION_SCRIPT),
       w('orchestrator-guard.sh', ORCHESTRATOR_GUARD_SCRIPT),
       w('self-modify-instruction.sh', SELF_MODIFY_INSTRUCTION_SCRIPT),
+      w('fieldguide-instruction.sh', FIELDGUIDE_INSTRUCTION_SCRIPT),
     ]);
 
     // Evict the per-session capability instruction scripts + the ungated spawn
@@ -3334,6 +3458,9 @@ export async function installOrchestraHooks(
     upsertHookCommand(sessionStartList, HOOK_INBOX_DELIVER_CMD);
     upsertHookCommand(sessionStartList, HOOK_ORCHESTRATOR_INSTRUCTION_CMD);
     upsertHookCommand(sessionStartList, HOOK_SELF_MODIFY_CMD);
+    // Parent's swarm field guide, re-injected at every context reset (the
+    // script self-silences without a parent or a guide file).
+    upsertHookCommand(sessionStartList, HOOK_FIELDGUIDE_CMD);
     hooks.SessionStart = sessionStartList;
 
     settings.hooks = hooks;

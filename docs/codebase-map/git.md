@@ -93,7 +93,7 @@ keying on just (branch, base) pinned a stale `↑N` badge across a push.
   fast on auth rather than hang on `gnome-ssh-askpass`.
 
 ## Merge is delegated to the agent
-The `git:merge` IPC handler (`index.ts:832`) does **not** merge in the main
+The `git:merge` IPC handler (`api-handlers.ts:217`, `mergeWorktree`) does **not** merge in the main
 process. It injects a prompt into the agent's PTY telling it to run `git -C
 <repoPath> merge … && git push`. Rationale: keeps the checked-out worktree HEAD
 stable, and lets the agent write a meaningful commit message with full context.

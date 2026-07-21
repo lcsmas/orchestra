@@ -1002,6 +1002,41 @@ export async function getCurrentBranch(worktreePath: string): Promise<string> {
   }
 }
 
+export interface BranchDiffShortstat {
+  files: number;
+  insertions: number;
+  deletions: number;
+}
+
+/** Committed size of a branch's work: `git diff --shortstat <base>...<branch>`
+ *  (three-dot = against the merge base, so an advanced base never reads as the
+ *  branch's own changes). Null when either ref is missing or the diff fails —
+ *  callers render that as "unknown", never as zero, because 0 changed files is
+ *  itself a meaningful reading (an agent that committed nothing).
+ *
+ *  Consumer: `/peers?stats` — a child whose diff dwarfs its siblings' is a
+ *  coordination smell (duplicated scaffolding), not extra productivity. */
+export async function getBranchDiffShortstat(
+  repoPath: string,
+  baseBranch: string,
+  branch: string,
+): Promise<BranchDiffShortstat | null> {
+  try {
+    const out = await runGit(repoPath, ['diff', '--shortstat', `${baseBranch}...${branch}`]);
+    // Empty output = no diff at all (identical trees) — a real zero.
+    const files = /(\d+) files? changed/.exec(out);
+    const ins = /(\d+) insertions?\(\+\)/.exec(out);
+    const del = /(\d+) deletions?\(-\)/.exec(out);
+    return {
+      files: files ? Number(files[1]) : 0,
+      insertions: ins ? Number(ins[1]) : 0,
+      deletions: del ? Number(del[1]) : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Commits reachable from `branch` but not from `targetRef` — `git log
  *  targetRef..branch`, the close-out check a coordinator runs before accepting
  *  a delegated branch's work as landed. Returns one `<short-sha> <subject>`

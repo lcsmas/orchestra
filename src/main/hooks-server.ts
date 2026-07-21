@@ -160,13 +160,20 @@ export async function startHooksServer(): Promise<void> {
                   task: msg.task,
                   agent: 'claude',
                   detached: msg.detached === true,
+                  model: typeof msg.model === 'string' ? msg.model : undefined,
                 }),
               );
             } else {
               send(200, { ok: false, error: 'missing task' });
             }
           } else if (route === '/peers') {
-            send(200, dispatchPeersRequest({ from: typeof msg.from === 'string' ? msg.from : undefined }));
+            send(
+              200,
+              await dispatchPeersRequest({
+                from: typeof msg.from === 'string' ? msg.from : undefined,
+                stats: msg.stats === true,
+              }),
+            );
           } else if (route === '/read') {
             if (typeof msg.id === 'string') {
               send(

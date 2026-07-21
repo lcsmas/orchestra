@@ -32,7 +32,7 @@ The shim has **no auth** — private networks only (documented in
 | `EXIT_CONNECTION_LOST` | `sandbox-connection.ts:311` | −1 exit synthesized when a connection is abandoned. |
 | `getSandboxConnection` | `sandbox-manager.ts:331` | Lazy, cached per endpoint; 10s dial timeout (`:211`). Sends `hello` after open. |
 | `dispatchRpc` | `sandbox-manager.ts:77` | Mirrors hooks-server's route table (rename/spawn/peers/read/message) for remote agents. |
-| `closeAllSandboxConnections` | `sandbox-manager.ts:400` | Shutdown; aborts reconnect loops. |
+| `closeAllSandboxConnections` | `sandbox-manager.ts:384` | Shutdown; aborts reconnect loops. |
 
 ### Reconnect/backoff (item D)
 An unexpected drop with live sessions does NOT unwind them: the connection

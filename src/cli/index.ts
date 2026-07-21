@@ -28,6 +28,8 @@ interface PeerInfo {
   status: string;
   running?: boolean;
   lastTask?: string;
+  /** Present only when `--stats` was requested; null = not computable. */
+  diff?: { files: number; insertions: number; deletions: number } | null;
 }
 
 /**
@@ -121,12 +123,14 @@ function table(rows: Array<Record<string, string>>, columns: string[]): string {
 const USAGE = `Orchestra CLI — talk to a running Orchestra app over its Unix socket.
 
 Usage:
-  orchestra peers                                List the other agent workspaces
+  orchestra peers [--stats]                      List the other agent workspaces
+                                                 (--stats: + committed diff vs base per peer)
   orchestra read <id> [--lines N]                Print a workspace's transcript
   orchestra message <id> <text...>               Send a prompt to a workspace
-  orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--detached]
+  orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]
                                                  Spawn a new worktree + agent
-                                                 (--detached: top-level, not nested under the caller)
+                                                 (--model: pin the agent's model, e.g. haiku/sonnet/opus;
+                                                  --detached: top-level, not nested under the caller)
   orchestra rename <id> <branch>                 Rename a workspace's branch
   orchestra set-base <id> <branch>               Retarget the base branch (Diff/merge target)
   orchestra promote <id>                         Promote a scratch session into an orchestrator
@@ -195,7 +199,9 @@ async function main(argv: string[]): Promise<void> {
 
   switch (command) {
     case 'peers': {
-      const res = await request('/peers', { from: selfWorkspaceId() });
+      const { present: stats, rest } = takeBoolFlag(args, '--stats');
+      void rest;
+      const res = await request('/peers', { from: selfWorkspaceId(), stats });
       if (!res.ok) fail(res.error ?? 'failed to list peers');
       const peers = (res.peers as PeerInfo[] | undefined) ?? [];
       if (peers.length === 0) {
@@ -207,8 +213,19 @@ async function main(argv: string[]): Promise<void> {
         branch: p.branch,
         repo: p.repo,
         status: p.status,
+        // `--stats` columns: committed diff vs the peer's base. '?' = not
+        // computable (non-git peer or missing ref) — distinct from real zeros.
+        ...(stats
+          ? {
+              files: p.diff ? String(p.diff.files) : '?',
+              '+/-': p.diff ? `+${p.diff.insertions}/-${p.diff.deletions}` : '?',
+            }
+          : {}),
       }));
-      process.stdout.write(`${table(rows, ['id', 'branch', 'repo', 'status'])}\n`);
+      const columns = stats
+        ? ['id', 'branch', 'repo', 'status', 'files', '+/-']
+        : ['id', 'branch', 'repo', 'status'];
+      process.stdout.write(`${table(rows, columns)}\n`);
       return;
     }
 
@@ -244,15 +261,19 @@ async function main(argv: string[]): Promise<void> {
       const { value: task, rest: r1 } = takeFlag(args, '--task');
       const { value: repo, rest: r2 } = takeFlag(r1, '--repo');
       const { value: base, rest: r3 } = takeFlag(r2, '--base');
-      const { present: detached, rest: r4 } = takeBoolFlag(r3, '--detached');
-      void r4;
+      const { value: model, rest: r4 } = takeFlag(r3, '--model');
+      const { present: detached, rest: r5 } = takeBoolFlag(r4, '--detached');
+      void r5;
       if (!task)
-        fail('usage: orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--detached]');
+        fail(
+          'usage: orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]',
+        );
       // `from` is always sent (it also drives repo inheritance server-side);
       // `detached` tells the server to skip only the parent nesting.
       const body: Record<string, unknown> = { task, from: selfWorkspaceId() };
       if (repo !== undefined) body.repoPath = path.resolve(repo);
       if (base !== undefined) body.baseBranch = base;
+      if (model !== undefined) body.model = model;
       if (detached) body.detached = true;
       const res = await request('/spawn', body);
       if (!res.ok) fail(res.error ?? 'failed to spawn workspace');

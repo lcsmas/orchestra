@@ -191,8 +191,8 @@ the store slice and every accounts window. It calls the backend only via
   `<home>/gtk-login-partitions/<id>` (isolated cookie jar per account) and the
   UA-marker strip. Consent wall is manual (attestation).
 - **badge.rs** — `WorkspaceAccountMenu` (migrate) + context-size badge.
-- E2E: `scripts/smoke-accounts.sh` (strip/settings/login modal) and
-  `scripts/smoke-webkit.sh` + `examples/webkit_isolation.rs` (two accounts →
+- E2E: `native/orchestra-gtk/scripts/smoke-accounts.sh` (strip/settings/login modal) and
+  `native/orchestra-gtk/scripts/smoke-webkit.sh` + `examples/webkit_isolation.rs` (two accounts →
   two on-disk partition dirs), both under headless sway.
 
 ## Tests

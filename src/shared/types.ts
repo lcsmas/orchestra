@@ -100,6 +100,16 @@ export interface Workspace {
    * the default for every existing workspace; only an explicitly sandbox-hosted
    * workspace uses the RemoteTransport. */
   host?: WorkspaceHost;
+  /** Model this workspace's agent runs on (a Claude Code model arg: an alias
+   * like `haiku`/`sonnet`/`opus` or a full model id). Set at creation by
+   * `/spawn`'s `model` param (`orchestra spawn --model`); absent = the login's
+   * default model, the behaviour of every pre-existing workspace. The pty path
+   * passes it as `claude --model` on every launch (fresh AND resume, so the
+   * pin survives restarts); the SDK structured-session path must equally init
+   * its `query()` `options.model` from this field. The economics lever: worker
+   * agents consume most of a swarm's tokens, so orchestrators plan on a strong
+   * model and spawn leaves on a cheaper one. */
+  model?: string;
   repoPath: string;
   worktreePath: string;
   branch: string;
@@ -291,6 +301,8 @@ export interface CreateWorkspaceInput {
   /** Where the new workspace's agent should run. Omitted = local (the default).
    * A sandbox host makes it stream over the wire via the RemoteTransport. */
   host?: WorkspaceHost;
+  /** Model for the new workspace's agent (see {@link Workspace.model}). */
+  model?: string;
 }
 
 export interface RepoScripts {

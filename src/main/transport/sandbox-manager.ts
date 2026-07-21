@@ -107,7 +107,7 @@ async function dispatchRpc(
     }
     case 'peers': {
       const p = payload as RpcRequestPayloads['peers'];
-      return reply(dispatchPeersRequest({ from: typeof p.from === 'string' ? p.from : undefined }));
+      return reply(await dispatchPeersRequest({ from: typeof p.from === 'string' ? p.from : undefined }));
     }
     case 'read': {
       const p = payload as RpcRequestPayloads['read'];
