@@ -95,6 +95,12 @@ pub struct RowPills {
     /// PR badges, open-first, capped at 3.
     pub prs_visible: Vec<PrInfo>,
     pub prs_hidden: usize,
+    /// The `gh` query FAILED (gh missing, bad token, rate limit, network) —
+    /// carries the first stderr line for the tooltip. Drives the amber `PR?`
+    /// badge (`Sidebar.tsx:411`), which says "PR status unknown, not absent".
+    /// Independent of `prs_visible`: a failed query yields empty `all` AND a
+    /// present error, and the badge must show even though there are no PRs.
+    pub pr_error: Option<String>,
     /// Verified Linear issue badge.
     pub linear: Option<LinearIssue>,
     /// Repo tag pill for a child spawned into a different repo than the
@@ -136,6 +142,9 @@ pub fn row_pills(
         .setup_status
         .filter(|s| matches!(s, SetupStatus::Failed | SetupStatus::Running));
     let linear = linear.cloned();
+    // The `PR?` error badge is independent of the PR list: a failed gh query
+    // yields empty `all` AND a present `error`, and the badge must still show.
+    let pr_error = pr_record.and_then(|r| r.error.clone());
 
     let has_pills = cross_repo_child
         || merged
@@ -144,6 +153,7 @@ pub fn row_pills(
         || diff.is_some()
         || setup.is_some()
         || !prs_visible.is_empty()
+        || pr_error.is_some()
         || linear.is_some();
     let size = size_bytes.filter(|b| *b >= SIZE_BADGE_MIN_BYTES);
 
@@ -155,6 +165,7 @@ pub fn row_pills(
         setup,
         prs_visible,
         prs_hidden,
+        pr_error,
         linear,
         cross_repo_child,
         size,
@@ -201,6 +212,7 @@ mod tests {
             open: None,
             latest: None,
             merged_count,
+            error: None,
         }
     }
 
@@ -235,6 +247,33 @@ mod tests {
         assert_eq!(nums, vec![2, 4, 3]);
         assert_eq!(hidden, 1);
         assert_eq!(ordered_visible_prs(None), (vec![], 0));
+    }
+
+    #[test]
+    fn pr_error_drives_the_badge_even_with_no_prs() {
+        let w = ws(json!({}));
+        // No PR record → no error badge.
+        assert_eq!(row_pills(&w, None, None, None, None, false).pr_error, None);
+        // A clean record (no error) → no error badge, even with PRs present.
+        let clean = prs(vec![pr(1, "OPEN")]);
+        assert_eq!(
+            row_pills(&w, None, None, Some(&clean), None, false).pr_error,
+            None
+        );
+        // A failed gh query yields EMPTY `all` AND a present error — the badge
+        // must show anyway (that is the whole point: "unknown, not absent").
+        let failed = PrsForBranch {
+            all: vec![],
+            open: None,
+            latest: None,
+            merged_count: 0,
+            error: Some("gh: Bad credentials".into()),
+        };
+        let p = row_pills(&w, None, None, Some(&failed), None, false);
+        assert_eq!(p.pr_error.as_deref(), Some("gh: Bad credentials"));
+        assert!(p.prs_visible.is_empty());
+        // The error badge counts as a pill for the layout decision.
+        assert!(p.size_in_strip);
     }
 
     #[test]

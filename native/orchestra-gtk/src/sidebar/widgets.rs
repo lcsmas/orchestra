@@ -774,6 +774,26 @@ fn append_pills(strip: &gtk::Box, s: &WsRowSpec, sender: &Sender<Msg>) {
         }
         _ => {}
     }
+    // The `PR?` error badge (Sidebar.tsx:411) — the gh query failed, so PR
+    // status is UNKNOWN, not absent. Rendered before the Linear/PR badges to
+    // match Electron's order, non-clickable (it has no onClick there), amber via
+    // `.pr-badge.error`. Shows even with no visible PRs: a failed query yields
+    // empty `all` AND a present error.
+    if let Some(err) = &p.pr_error {
+        let badge = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        badge.add_css_class("pill");
+        badge.add_css_class("pr-badge");
+        badge.add_css_class("error");
+        badge.set_valign(gtk::Align::Center);
+        let img = crate::icons::image_sized(crate::icons::PR, 11);
+        img.add_css_class("pill-icon");
+        badge.append(&img);
+        badge.append(&gtk::Label::new(Some("PR?")));
+        badge.set_tooltip_text(Some(&format!(
+            "Could not query GitHub for PRs — PR status is unknown, not absent.\n{err}"
+        )));
+        strip.append(&badge);
+    }
     if let Some(issue) = &p.linear {
         let url = issue.url.clone();
         // Electron renders `LinearIcon` here (Sidebar.tsx) — an SVG tilted

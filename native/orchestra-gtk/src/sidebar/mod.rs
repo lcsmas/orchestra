@@ -28,8 +28,8 @@ use relm4::prelude::*;
 
 use orchestra_rpc::events::{Event, UiEvent};
 use orchestra_rpc::types::{
-    AccountUsageStatus, CreateWorkspaceInput, EnvStatusItem, MigrateAccountResult, RepoSyncState,
-    UsageSnapshot, Workspace, WorkspaceStatus,
+    AccountUsageStatus, CreateWorkspaceInput, EnvStatusItem, MigrateAccountResult, PrsForBranch,
+    RepoSyncState, UsageSnapshot, Workspace, WorkspaceStatus,
 };
 use serde_json::{json, Value};
 
@@ -39,6 +39,10 @@ use crate::dialogs;
 use crate::state::UiState;
 
 use rows::{compute_rows, env_notices, Row, SidebarData, SidebarUi};
+
+/// PR-badge poll cadence — matches `main_pane.rs`'s `PR_POLL_SECS` and
+/// Electron's `App.tsx` `startVisiblePoll(refreshAllPRs, 12000)`.
+const PR_POLL_SECS: u32 = 12;
 
 /// The sidebar owns a shared [`Backend`] (the app shell hands it an `Rc` so a
 /// later terminal/diff workstream can share the same connection) plus the
@@ -85,6 +89,17 @@ pub enum Msg {
     /// Linear modal changes the stored key, so the "Linear not configured"
     /// notice clears without waiting for a full refresh.
     RefreshEnvStatus,
+    /// Kick the batched per-workspace PR poll (mirrors Electron's
+    /// `App.tsx` `startVisiblePoll(refreshAllPRs, 12000)`). Emitted on the 12 s
+    /// visible-poll timer set up at init. The work runs off the update() call —
+    /// one bounded pass over the repo-backed rows — and folds back via
+    /// [`Msg::ApplyPrs`], so this arm itself does no blocking I/O.
+    RefreshPrs,
+    /// Fold a completed PR poll's results into `data.prs` and rebuild the
+    /// affected rows once. Keyed by workspace id; a workspace absent from the
+    /// map keeps its previous entry (a transient `findPR` failure must not blank
+    /// a good badge — same "don't cache failures" intent as `git.ts`).
+    ApplyPrs(HashMap<String, PrsForBranch>),
     RemoveRepo(String),
     SyncRepoBase(String),
     AddRepo,
@@ -259,6 +274,11 @@ pub struct Sidebar {
     /// A cloneable input handle so widget-construction callbacks (built outside
     /// `init`'s `sender` scope) can emit messages.
     sender_handle: relm4::Sender<Msg>,
+    /// Whether the 12 s PR-badge visible-poll timer has been installed. The
+    /// real backend arrives via `Msg::Attach` (which re-fires on every
+    /// reconnect), so this guards against stacking a fresh timer per reconnect —
+    /// install exactly one for the sidebar's lifetime.
+    pr_poll_started: Cell<bool>,
 }
 
 impl std::fmt::Debug for Sidebar {
@@ -563,6 +583,95 @@ impl Sidebar {
             }
         }
         self.refresh_accounts_snapshot();
+    }
+
+    /// Install the 12 s PR-badge visible-poll (mirrors Electron's App.tsx
+    /// `startVisiblePoll(refreshAllPRs, 12000)`) and fire one immediate pass.
+    /// Idempotent: the real backend arrives via `Msg::Attach`, which re-fires
+    /// on every reconnect, so this installs exactly ONE timer for the sidebar's
+    /// lifetime and every later call just re-kicks an immediate refresh. Gated
+    /// on window visibility like `main_pane.rs`'s polls — a backgrounded window
+    /// spawns no `gh` traffic.
+    fn start_pr_poll(&self) {
+        // One immediate pass regardless — a reconnect wants fresh badges now,
+        // not in up to 12 s.
+        self.sender_handle.emit(Msg::RefreshPrs);
+        if self.pr_poll_started.replace(true) {
+            return; // timer already running
+        }
+        let window = self.window.clone();
+        let poll = self.sender_handle.clone();
+        glib::timeout_add_seconds_local(PR_POLL_SECS, move || {
+            if window.is_visible() {
+                poll.emit(Msg::RefreshPrs);
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
+    /// Batched per-workspace PR poll — the sidebar's `data.prs` is otherwise
+    /// never populated, so no row can render a PR badge (only the selected-ws
+    /// TOOLBAR polls `findPR`, in `main_pane.rs`). Mirrors Electron's
+    /// `App.tsx` `startVisiblePoll(refreshAllPRs, 12000)` →
+    /// `store.ts` `refreshAllPRs`: ONE bounded pass over the repo-backed rows
+    /// per poll, committed once — NOT a per-row `findPR` on the rebuild path,
+    /// which would spawn a `gh` child per row on every wholesale rebuild
+    /// (an unbounded process leak).
+    ///
+    /// Runs on the GTK main context (`spawn_future_local`) rather than an OS
+    /// worker: the `Backend` seam is `Rc`-based and synchronous by design (see
+    /// `ctx.rs` — the async transport "slots in later"), exactly like
+    /// `main_pane.rs`'s single-ws `poll_pr`. To keep the loop painting across
+    /// the batch we YIELD (`timeout_future`) between calls, and we bound the
+    /// pass the way `mapBounded(POLL_CONCURRENCY=4)` does — but since every call
+    /// serialises over the one ui-rpc socket anyway, the bound here is a small
+    /// yield cadence rather than real parallelism. Results fold back via
+    /// [`Msg::ApplyPrs`] so this never touches `data`/widgets off the main loop.
+    ///
+    /// Repo-less and scratch/orchestrator rows are skipped: the backend returns
+    /// an empty result for them (`api-handlers.ts` findPR), so polling them is
+    /// pure waste and they correctly show no badge on either frontend.
+    fn poll_prs(&self, sender: &ComponentSender<Self>) {
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        let ids: Vec<String> = self
+            .data
+            .workspaces
+            .iter()
+            .filter(|w| {
+                w.archived != Some(true) && !w.is_scratch_like() && !w.repo_path.is_empty()
+            })
+            .map(|w| w.id.clone())
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let input = sender.input_sender().clone();
+        glib::spawn_future_local(async move {
+            let mut out: HashMap<String, PrsForBranch> = HashMap::new();
+            for (i, id) in ids.iter().enumerate() {
+                // A `findPR` failure (gh down, no remote) is dropped, not
+                // recorded — same "don't cache failures" intent as `git.ts`, so
+                // the next poll retries and a good badge is never blanked by a
+                // transient error. On the shared/real backend a nonexistent repo
+                // makes findPR RETURN Ok with an `error` field set (git.ts), so
+                // that IS captured and drives the `PR?` badge; only a transport
+                // failure lands in the Err arm here.
+                if let Ok(v) = backend.call("findPR", vec![json!(id)]) {
+                    if let Ok(prs) = serde_json::from_value::<PrsForBranch>(v) {
+                        out.insert(id.clone(), prs);
+                    }
+                }
+                // Yield every few calls so the main loop paints between the
+                // blocking round-trips (POLL_CONCURRENCY=4 is the Electron
+                // cadence; here it is a yield boundary, not parallelism).
+                if (i + 1) % 4 == 0 {
+                    glib::timeout_future(Duration::from_millis(0)).await;
+                }
+            }
+            input.emit(Msg::ApplyPrs(out));
+        });
     }
 
     /// Accounts + usage for the row badges (label to show, utilization to tint
@@ -1077,6 +1186,7 @@ impl Component for Sidebar {
             row_cache: HashMap::new(),
             window,
             sender_handle: input.clone(),
+            pr_poll_started: Cell::new(false),
         };
         model.active_id = model.state.borrow().last_active_workspace.clone();
 
@@ -1086,6 +1196,7 @@ impl Component for Sidebar {
         // channel are competing consumers and would each miss half the events.
         if model.backend.is_some() {
             model.refresh_snapshot();
+            model.start_pr_poll();
         }
         model.rebuild();
 
@@ -1223,6 +1334,22 @@ impl Component for Sidebar {
                     }
                 }
                 // Falls through to the rebuild so the notice tray repaints.
+            }
+            Msg::RefreshPrs => {
+                self.poll_prs(&sender);
+                // The poll is async (spawn_future_local); results arrive as
+                // ApplyPrs. Nothing to repaint yet.
+                rebuild = false;
+            }
+            Msg::ApplyPrs(map) => {
+                if map.is_empty() {
+                    rebuild = false;
+                } else {
+                    self.data.prs.extend(map);
+                    // Falls through to the rebuild so the PR badges paint. Row
+                    // widget reuse keeps this cheap — only rows whose spec
+                    // changed (gained/changed a PR pill) are rebuilt.
+                }
             }
             Msg::RemoveRepo(path) => {
                 self.remove_repo(&sender, path);
@@ -1382,6 +1509,10 @@ impl Component for Sidebar {
                 // reconnect: it just re-hydrates the snapshot.
                 self.backend = Some(backend);
                 self.refresh_snapshot();
+                // The REAL backend arrives here (init runs backend-less for
+                // non-mock), so this is where the sidebar PR poll actually
+                // starts in production. Idempotent across reconnects.
+                self.start_pr_poll();
             }
             Msg::Rebuild => self.persist(),
         }

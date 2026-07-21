@@ -52,7 +52,7 @@ pub struct PrInfo {
     pub title: String,
 }
 
-/// `PRsForBranch` (`types.ts:306`).
+/// `PRsForBranch` (`types.ts:340`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrsForBranch {
@@ -65,4 +65,12 @@ pub struct PrsForBranch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest: Option<PrInfo>,
     pub merged_count: u64,
+    /// Set when the `gh` query itself FAILED (gh missing, bad/expired token,
+    /// rate limit, network) — carries the first stderr line for the badge
+    /// tooltip. Distinguishes "we could not ask" from "we asked and there are
+    /// no PRs": both yield empty `all`, and without this the PR badge silently
+    /// vanishes on a broken `gh`, reading as "no PR exists". Absent on every
+    /// successful query. Mirrors `PRsForBranch.error` (`types.ts:356`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
