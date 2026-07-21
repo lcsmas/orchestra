@@ -173,12 +173,31 @@ plan changes — surface it before proceeding.**
   states, the streaming cursor, syntax theme matching `TERM_THEME`. Verify at 60fps with a
   long session (perf trace).
 
-### Phase 6 — Flip default (separate, later; NOT in the swarm)
-Behind a settings flag, make `structured` the default agent view and demote terminal to a
-"Raw" tab. Retire the status/context role of `activity.ts`/`events-spool.ts` for structured
-workspaces (SDK carries it in-band). Keep the PTY-exit reconciliation *concept* as a
-backstop. This phase is gated on Phases 1–5 being trusted in real use — do it as its own
-task, not now.
+### Phase 6 — Flip default (LANDED 2026-07-21, opt-in)
+
+**Done (commit `feat(agent-view): Phase 6 …`):**
+- **Default-view flag** — a `localStorage` preference (`orchestra:defaultAgentView`,
+  default `'terminal'` so existing users are unaffected) chooses whether a workspace opens
+  on the terminal or the structured pane. When `'structured'`, the embedded terminal tab is
+  relabeled **"Raw"**. Toggle via a new sidebar Settings modal (`AgentViewSettings.tsx`).
+  Pure pref module `src/renderer/default-agent-view.ts` (+ 6 tests). E2E-verified in the
+  real app (CDP): modal opens, pref persists, tab relabels Terminal→Raw.
+- **Model init** — the SDK session starts on `ws.model` (set by `orchestra spawn --model`),
+  not always the account default. `sdkSetModel` still switches live.
+- **Env parity (partial, by hazard)** — `buildSdkEnv` now sets the spool-FREE identity
+  plumbing (`ORCHESTRA_WORKTREE`, `ORCHESTRA_SOCK`, CLI shim on PATH).
+
+**Deferred to a Phase 6.1 follow-up (needs the mutual-exclusion guarantee):**
+- Full `ORCHESTRA_WS_ID` env parity — it is the events-spool WRITE trigger (the hook writes
+  for any process where it is set; `EVENTS_DIR` defaults), so setting it while a terminal
+  PTY coexists double-drives the sidebar dot. Safe only once the PTY is NOT started for a
+  structured-primary workspace (mutual exclusion), at which point the SDK session's hooks
+  drive the dot exactly like the PTY's did. Alternatively, drive `ws.status` in-band from
+  the `agent:event` stream (the Strategy-1 way) and never give the SDK session the spool.
+- Actually NOT starting the PTY for a structured-primary workspace (today both can run;
+  the flag only changes the initial tab).
+- Retiring the status/context role of `activity.ts`/`events-spool.ts` for structured
+  workspaces; keep the PTY-exit reconciliation *concept* as a backstop.
 
 **Phase 6 MUST also fix the `buildSdkEnv` env-parity gap (confirmed at source, flagged by
 the closeout-verification orchestrator 2026-07-21).** Today `buildSdkEnv` (agent-sdk.ts:136)

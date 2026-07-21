@@ -73,6 +73,19 @@ gated on the prior `result`), so the subprocess stays warm and `canUseTool` fire
   structural) → `agent-view-structure.css` (A2 layout) → `agent-view-theme.css` (A5 design
   system, wins). Reference: `agent-view-design.md`.
 
+## Default-view preference (Phase 6)
+
+- **`src/renderer/default-agent-view.ts`** (+ `.test.ts`) — pure, localStorage-backed
+  preference (`orchestra:defaultAgentView`, default `'terminal'`). `readDefaultAgentView()`
+  seeds the store's initial `view` (store.ts); `terminalTabLabel()` relabels the embedded
+  terminal tab to **"Raw"** when structured is the default. Toggled via
+  **`src/renderer/components/AgentViewSettings.tsx`** (a sidebar Settings modal, opened from
+  Sidebar.tsx next to the sound-settings button).
+- **`buildSdkEnv`** (`agent-sdk.ts`) sets the spool-FREE identity plumbing
+  (`ORCHESTRA_WORKTREE`/`ORCHESTRA_SOCK`/PATH shim) but deliberately NOT `ORCHESTRA_WS_ID`
+  (the events-spool write trigger) while a terminal PTY can coexist — see the plan's Phase
+  6.1 follow-up. The SDK session also inits its model from `ws.model`.
+
 ## Channel wiring (to add a new agent broadcast)
 
 `platform.broadcast('agent:event', …)` (seam `src/main/platform/index.ts`) →
