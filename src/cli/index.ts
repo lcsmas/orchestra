@@ -128,6 +128,7 @@ Usage:
                                                  Spawn a new worktree + agent
                                                  (--detached: top-level, not nested under the caller)
   orchestra rename <id> <branch>                 Rename a workspace's branch
+  orchestra set-base <id> <branch>               Retarget the base branch (Diff/merge target)
   orchestra promote <id>                         Promote a scratch session into an orchestrator
   orchestra attach <id> <parentId>               Nest an existing workspace under an orchestrator
   orchestra detach <id>                          Pop a workspace back out to its own section
@@ -272,6 +273,18 @@ async function main(argv: string[]): Promise<void> {
       const res = await request('/rename', { id, branch });
       if (!res.ok) fail(res.error ?? 'failed to rename workspace');
       process.stdout.write(`Renamed to ${res.branch as string}\n`);
+      return;
+    }
+
+    case 'set-base': {
+      const id = args[0];
+      const baseBranch = args[1];
+      if (!id || !baseBranch) fail('usage: orchestra set-base <id> <branch>');
+      // Retargets what the Diff view, diff stats and "merge into X" prompt
+      // compute against. Stored state only — does NOT rebase the worktree.
+      const res = await request('/setBase', { id, baseBranch });
+      if (!res.ok) fail(res.error ?? 'failed to set base branch');
+      process.stdout.write(`Base branch set to ${res.baseBranch as string}\n`);
       return;
     }
 

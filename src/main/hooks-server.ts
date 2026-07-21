@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import { dispatchHookEvent } from './activity';
 import {
   dispatchRenameRequest,
+  dispatchSetBaseRequest,
   dispatchSpawnRequest,
   dispatchPeersRequest,
   dispatchReadRequest,
@@ -139,6 +140,12 @@ export async function startHooksServer(): Promise<void> {
               send(200, await dispatchRenameRequest(msg.id, msg.branch));
             } else {
               send(200, { ok: false, error: 'missing id or branch' });
+            }
+          } else if (route === '/setBase') {
+            if (typeof msg.id === 'string' && typeof msg.baseBranch === 'string') {
+              send(200, await dispatchSetBaseRequest(msg.id, msg.baseBranch));
+            } else {
+              send(200, { ok: false, error: 'missing id or baseBranch' });
             }
           } else if (route === '/spawn') {
             if (typeof msg.task === 'string') {

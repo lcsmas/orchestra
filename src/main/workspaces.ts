@@ -928,6 +928,41 @@ export async function dispatchRenameRequest(
   }
 }
 
+export interface SetBaseResult {
+  ok: boolean;
+  baseBranch?: string;
+  error?: string;
+}
+
+/** Retarget a workspace's recorded `baseBranch`.
+ *
+ * `baseBranch` is captured once at spawn (the branch the worktree was created
+ * from) and never updated, so a workspace spawned off an exploratory branch
+ * keeps pointing at it long after that branch is subsumed by master. This
+ * matters beyond the toolbar label: `baseBranch` is the ref the Diff view, the
+ * diff stats and the "merge into X" instruction all compute against
+ * (`api-handlers.ts` getDiff/getDiffStats, activity.ts getRefShas), so a stale
+ * base silently shows the wrong changeset and merge target.
+ *
+ * This only edits stored state — it does NOT rebase the worktree. Callers who
+ * want the git base moved too must rebase separately; this fixes what Orchestra
+ * DISPLAYS and DIFFS against, which is the common case (the branch already
+ * descends from the new base). */
+export async function dispatchSetBaseRequest(
+  id: string,
+  baseBranch: string,
+): Promise<SetBaseResult> {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
+  const target = baseBranch.trim();
+  if (!target) return { ok: false, error: 'empty base branch' };
+  if (ws.baseBranch === target) return { ok: true, baseBranch: target };
+  const updated: Workspace = { ...ws, baseBranch: target };
+  await store.upsertWorkspace(updated);
+  platform.broadcast('workspace:update', updated);
+  return { ok: true, baseBranch: target };
+}
+
 /** Record how many times the agent has auto-renamed, in a worktree sentinel the
  * rename-instruction hook reads. Fresher than the per-pty env var, so the nudge
  * advances to the next stage (or self-disables) the instant a rename lands —
