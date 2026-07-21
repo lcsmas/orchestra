@@ -1,6 +1,12 @@
-import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { query, type Query, type SDKUserMessage, type PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+// TYPE-ONLY import: erased at compile time, so it emits NO runtime require().
+// @anthropic-ai/claude-agent-sdk is a pure-ESM package (type:module, exports
+// only ./sdk.mjs, no CJS entry). Because it's externalized, a static value
+// import would become `require("…")` in the CJS main bundle and crash Electron
+// at boot with ERR_REQUIRE_ESM. The `query` VALUE is loaded via a cached
+// dynamic import() instead (see {@link loadSdk}) — the one form Node can use to
+// pull ESM from CJS.
+import type { Query, SDKUserMessage, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import { platform } from './platform';
 import { store } from './store';
 import { log } from './logger';
@@ -55,12 +61,33 @@ import type {
 // (or explicitly starts one) to a workspace. It stays alive across turns until
 // stopped, interrupted, or the workspace is removed.
 
+/** The SDK's `query` factory signature (mirrors the module's export). Declared
+ *  locally so nothing here depends on a runtime import of the ESM package. */
+type QueryFactory = (params: {
+  prompt: string | AsyncIterable<SDKUserMessage>;
+  options?: Record<string, unknown>;
+}) => Query;
+
+/** Cached dynamic import of the pure-ESM SDK. `import()` is the only construct
+ *  that can pull an ESM package from this CJS bundle; a static import would
+ *  compile to `require()` and crash Electron at boot (ERR_REQUIRE_ESM). Cached
+ *  so the subprocess-heavy module loads exactly once. */
+let sdkModule: { query: QueryFactory } | null = null;
+async function loadSdk(): Promise<{ query: QueryFactory }> {
+  if (!sdkModule) {
+    sdkModule = (await import('@anthropic-ai/claude-agent-sdk')) as unknown as {
+      query: QueryFactory;
+    };
+  }
+  return sdkModule;
+}
+
 /** Test seam: override the SDK `query` factory (so e2e/tests can inject a fake
- *  that yields canned SDK messages without spawning a real `claude`). */
-type QueryFactory = typeof query;
-let queryFactory: QueryFactory = query;
+ *  that yields canned SDK messages without spawning a real `claude`). When set,
+ *  {@link ensureSession} uses it instead of the dynamically-imported real one. */
+let queryOverride: QueryFactory | null = null;
 export function __setQueryFactoryForTests(factory: QueryFactory | null): void {
-  queryFactory = factory ?? query;
+  queryOverride = factory;
 }
 
 interface Session {
@@ -274,7 +301,10 @@ async function ensureSession(wsId: string): Promise<Session> {
     permissionMode,
   };
 
-  session.q = queryFactory({
+  // Resolve the query factory: a test override, else the dynamically-imported
+  // real ESM SDK (never a static require — that crashes Electron at boot).
+  const query = queryOverride ?? (await loadSdk()).query;
+  session.q = query({
     prompt: promptStream(session),
     options: {
       cwd: remote ? '/workspace' : ws.worktreePath,
