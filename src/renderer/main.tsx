@@ -10,6 +10,10 @@ import './styles.css';
 import './agent-view-defaults.css';
 import './agent-view-structure.css';
 import './agent-view-theme.css';
+// Flat (Claude-Code-desktop) finish — removes the remaining hardcoded "glass"
+// (gradients / backdrop-filters / gradient buttons) that don't route through the
+// theme's --av-glow/--av-highlight tokens. Imported last so it wins the cascade.
+import './agent-view-flat.css';
 import '../shared/ipc';
 
 const root = createRoot(document.getElementById('root')!);

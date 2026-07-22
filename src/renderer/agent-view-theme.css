@@ -51,14 +51,20 @@
  * and LAYOUT (16px prose, system-mono code, framed tables, card rhythm) — only
  * the surface HUES revert to Orchestra so the two darks agree. */
 .av-view {
-  --av-surface: var(--bg, #0b0d10);          /* app canvas */
-  --av-surface-raised: var(--bg-3, #1a1f26); /* cards / chrome */
-  --av-surface-sunken: var(--bg-2, #12151a); /* code / output wells */
+  /* Canvas: a raised warm-neutral dark that sits a step ABOVE the app's darkest
+     surface, so the transcript reads as a lifted panel over the sidebar rather
+     than a black void (the "Slate B3" look — matched the sidebar tone family and
+     then lifted one notch lighter for separation). */
+  --av-surface: #1a1f26;                     /* app canvas (raised, not --bg) */
+  --av-surface-raised: #1f242c;              /* cards / chrome — a step above canvas */
+  --av-surface-sunken: #14181e;              /* code / output wells — recessed below canvas */
   --av-surface-overlay: var(--bg-4, #222933);/* dialogs / menus */
   --av-hairline: var(--border, #242a33);
   --av-hairline-strong: var(--border-strong, #333b47);
   --av-hairline-faint: rgba(255, 255, 255, 0.055);
-  --av-highlight: rgba(255, 255, 255, 0.04);
+  /* Flat look: no white top-edge sheen on raised surfaces (was the "glass"
+     highlight). Kept as a token so any rule referencing it just no-ops. */
+  --av-highlight: transparent;
 
   --av-text: var(--text, #e6e9ef);
   --av-text-dim: var(--text-dim, #8b95a7);
@@ -86,7 +92,10 @@
   --av-code-bg: rgba(255, 255, 255, 0.045);
   --av-code-border: rgba(255, 255, 255, 0.07);
 
-  --av-glow: rgba(110, 168, 255, 0.16);
+  /* Flat look: no accent glow. Kept as a token (transparent) so the many rules
+     that reference it — button/composer shadows, the empty-state mark, the live
+     rail — collapse to nothing without needing per-rule edits. */
+  --av-glow: transparent;
   --av-focus-border: var(--focus-border, rgba(110, 168, 255, 0.75));
   --av-focus-ring: var(--focus-ring, rgba(110, 168, 255, 0.2));
 
@@ -107,11 +116,9 @@
   --av-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas,
     "Liberation Mono", "JetBrains Mono", "Courier New", monospace;
 
-  /* A whisper of light at the top of the canvas so the pane doesn't read as a
-     dead flat sheet — static paint, no per-frame cost. */
-  background:
-    radial-gradient(120% 90px at 50% -30px, rgba(110, 168, 255, 0.05), transparent 70%),
-    var(--av-surface);
+  /* Flat matte canvas — the Claude-Code-desktop look. No accent glow at the top;
+     the pane is a calm document surface, not a glassy sheet. */
+  background: var(--av-surface);
   color: var(--av-text);
 }
 

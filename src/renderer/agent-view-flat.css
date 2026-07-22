@@ -1,0 +1,91 @@
+/* ============================================================================
+ * agent-view-flat.css — the FLAT (Claude-Code-desktop) finish for the
+ * structured agent view. Imported AFTER agent-view-theme.css (last wins).
+ *
+ * The base theme historically carried a "glass" language (blur panels, gradient
+ * sheens, accent glows, gradient buttons, a blue turn-rail, breathing
+ * animations). The chosen design is the opposite: a FLAT MATTE DOCUMENT, like
+ * the Claude Code desktop app — solid surfaces, thin solid borders, no blur, no
+ * glow, no gradient sheen. Most of that is already handled in the theme by
+ * setting `--av-glow` and `--av-highlight` to transparent; this file removes the
+ * remaining HARDCODED glass (gradients / backdrop-filters / gradient buttons
+ * that don't route through those tokens) and settles the user pill to a quiet
+ * neutral chip.
+ *
+ * Everything here is unconditional on `.av-view` — no variant attribute. (The
+ * canvas tone, type scale and token palette live in agent-view-theme.css's base
+ * `.av-view` block; this file only kills glass mechanics + the pill.)
+ *
+ * MEASUREMENT SAFETY: unchanged from the theme — never touch the inline
+ * height/transform on `.av-message-list-inner`; margins stay on
+ * `.av-message`/`.av-tool-card`, never `.av-row`.
+ * ==========================================================================*/
+
+/* ── Tool cards / groups: flat matte chip, solid hairline, no gradient sheen,
+ *    no glow on the running state (just a stronger border). ─────────────────*/
+.av-view .av-collapsible,
+.av-view .av-tool-group {
+  background: var(--av-surface-raised);
+  box-shadow: none;
+}
+.av-view .av-tool-card:has(.av-tool-status-pending) > .av-collapsible {
+  border-color: var(--av-hairline-strong);
+}
+
+/* ── Assistant prose: no rail spine, no breathing glow (rail is already off in
+ *    the theme; this belts-and-braces kills any residual glow on ::before). ──*/
+.av-view .av-message::before,
+.av-view .av-message:is(:has(.av-cursor), :has(.av-thinking))::before {
+  animation: none;
+  box-shadow: none;
+}
+
+/* ── Buttons: solid fills, thin solid borders, no inset sheen, no glow. ──────*/
+.av-view .av-btn {
+  box-shadow: none;
+  background: var(--av-surface-raised);
+  border: 1px solid var(--av-hairline-strong);
+}
+.av-view .av-btn:hover { background: var(--av-surface-overlay); }
+.av-view .av-btn-primary {
+  background: var(--av-assistant);
+  color: var(--av-assistant-ink);
+  border-color: var(--av-assistant);
+  box-shadow: none;
+}
+.av-view .av-btn-primary:hover { filter: brightness(0.96); background: var(--av-assistant); }
+
+/* ── Composer: solid accent send, flat framed field (no inset shadow). ───────*/
+.av-view .av-composer-send { background: var(--av-assistant); box-shadow: none; }
+.av-view .av-composer-send:hover { filter: brightness(0.96); box-shadow: none; }
+.av-view .av-composer-field { box-shadow: none; background: var(--av-surface); }
+.av-view .av-composer-field:focus-within { box-shadow: 0 0 0 3px var(--av-focus-ring); }
+
+/* ── Menus / autocomplete are portalled to <body>, OUTSIDE .av-view — target
+ *    them globally. Kill the blur; keep them as flat dark popovers. ──────────*/
+.av-menu-panel,
+.av-ac {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.av-view .av-bgtask-toggle { backdrop-filter: none; }
+
+/* ── Permission dialog: no backdrop blur, flat matte panel, plain drop shadow.*/
+.av-view .av-permission-backdrop {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.av-view .av-permission-dialog {
+  background: var(--av-surface-overlay);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+}
+
+/* ── User turn: a quiet neutral PILL (not the green-tinted gradient card).
+ *    Told apart from the assistant by shape + tint, right-aligned. ───────────*/
+.av-view .av-message-user {
+  background: var(--bg-4, #222933);
+  border: 1px solid var(--border-strong, #333b47);
+  color: var(--av-text);
+  border-radius: 16px;
+}
+.av-view .av-message-user .av-message-eyebrow { display: none; }

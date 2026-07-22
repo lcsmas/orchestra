@@ -1,16 +1,34 @@
 # Agent-view design system
 
-Styling for the structured (SDK-driven) agent view. Three cascade layers in
+Styling for the structured (SDK-driven) agent view. FOUR cascade layers in
 `src/renderer/`, imported in this order in `main.tsx` (**last wins**):
 
 1. `agent-view-defaults.css` (A3) — component structural defaults
 2. `agent-view-structure.css` (A2) — view layout / DOM scaffolding
 3. `agent-view-theme.css` (A5) — the design system: tokens + visual language
+4. `agent-view-flat.css` — the FLAT (Claude-Code-desktop) finish: strips the
+   remaining hardcoded "glass" (gradient sheens, `backdrop-filter` blurs,
+   gradient buttons, the green user-pill gradient) that don't route through the
+   theme's now-transparent `--av-glow` / `--av-highlight` tokens. Unconditional
+   on `.av-view` — no variant attribute.
 
 The components (`StructuredView.tsx` + `components/agent/*.tsx`) stamp `av-*`
 classes; the theme layer keys on those real classes and supersedes the two
 structural layers. Everything extends Orchestra's existing token system
 (`styles.css`) — it does not introduce a competing look.
+
+## Flat, matte finish (no glass)
+
+The view is a **flat matte document**, like the Claude Code desktop app — solid
+surfaces, thin solid borders, **no blur, no glow, no gradient sheen**. The base
+theme delivers most of this by setting `--av-glow` and `--av-highlight` to
+`transparent` (so every rule referencing them collapses to nothing); the
+`agent-view-flat.css` layer removes the rest, which was hardcoded. The canvas
+(`--av-surface`) is a raised warm-neutral dark (`#1a1f26`) that sits a step
+ABOVE the app's darkest `--bg`, so the transcript reads as a lifted panel over
+the sidebar rather than a black void. Assistant responses are plain full-width
+prose (no rail spine); user turns are a quiet neutral right-aligned pill; tool
+runs collapse to a muted one-line summary.
 
 > Companion to `docs/plans/sdk-structured-agent-view.md` (Phase 5). The theme
 > file's header comment carries the design thesis (the **turn rail** signature).
@@ -33,21 +51,25 @@ a system mono stack** (`--av-mono`, claude.ai ships no custom mono) while chrome
 microlabels keep JetBrains (`--font-mono`); framed/striped GFM tables; the card
 rhythm. Prose stays **Inter** (we do not bundle Anthropic Sans).
 
-The SURFACE colours stay **Orchestra dark** on purpose — the `--av-surface*`,
-`--av-text*`, `--av-hairline*` and accent tokens are pinned to the app's global
-`--bg` / `--text` / `--accent` family (`styles.css`), so the transcript blends
-with the surrounding chrome (sidebar/toolbar) instead of reading as a separate
-warm surface. (An earlier pass used CC's warm greige `#262624` + clay accent;
-that made the transcript disagree with Orchestra's cool blue-black chrome, so it
-was reverted to the app palette while keeping all the type/layout work.) Light
-is Orchestra's cool light, an internal opt-in matching the app.
+The SURFACE colours stay **Orchestra dark** on purpose — the `--av-text*`,
+`--av-hairline*` and accent tokens are pinned to the app's global `--text` /
+`--accent` family (`styles.css`), so the transcript blends with the surrounding
+chrome (sidebar/toolbar) instead of reading as a separate warm surface. The
+canvas `--av-surface` is the one deliberate exception: it's a raised `#1a1f26`
+(a step lighter than `--bg`) rather than the app's darkest surface, chosen so
+the pane doesn't read as a black void beside the sidebar. (An earlier pass used
+CC's warm greige `#262624` + clay accent; that made the transcript disagree with
+Orchestra's cool blue-black chrome, so it was reverted to the app palette while
+keeping all the type/layout work.) Light is Orchestra's cool light, an internal
+opt-in matching the app.
 
 All colours are `--av-*` tokens defined on `.av-view`. **Reference the tokens,
 never raw hex.** Roles: `--av-surface{,-raised,-sunken,-overlay}`,
-`--av-hairline{,-strong,-faint}`, `--av-highlight` (inset top sheen),
-`--av-text{,-dim,-faint}`, conversation hues `--av-{assistant,thinking,tool,
-tool-active,user,task}`, states `--av-{add,remove,error,warn}` (+ `-bg`),
-`--av-code-{bg,border}`, `--av-glow` (live-edge halo), `--av-focus-{border,ring}`,
+`--av-hairline{,-strong,-faint}`, `--av-highlight` (inset top sheen — now
+`transparent` for the flat finish), `--av-text{,-dim,-faint}`, conversation hues
+`--av-{assistant,thinking,tool,tool-active,user,task}`, states
+`--av-{add,remove,error,warn}` (+ `-bg`), `--av-code-{bg,border}`, `--av-glow`
+(live-edge halo — now `transparent` for the flat finish), `--av-focus-{border,ring}`,
 motion `--av-ease{,-out}`, type `--av-fs-*` / `--av-lh-prose` / `--av-measure` /
 `--av-mono` (code stack), `--av-radius-xl` (composer field / dialog).
 
