@@ -360,9 +360,12 @@ function ItemSlot({ item }: { item: RenderItem }) {
 //
 // The native approve/deny dialog + AskUserQuestion UI. Reads
 // `session.pendingPermissions`, shows the oldest first (one at a time), and
-// answers via `agentSdkPermissionReply(wsId, requestId, reply)`. Its own
-// answered-set guards against a lagging fold resurrecting a resolved prompt, so
-// no store callback is required.
+// answers via `agentSdkPermissionReply(wsId, requestId, reply)`. On reply we
+// ALSO clear the request from the folded store session (`resolveAgentPermission`)
+// — main resolves the parked call but emits no clearing event, so without this
+// the answered request lingers in `pendingPermissions` until the turn ends and
+// reappears as a stale modal when the view is left and re-entered (the dialog's
+// local answered-set resets on unmount, but the store survives).
 
 function PermissionSlot({
   session,
@@ -371,7 +374,14 @@ function PermissionSlot({
   session: AgentSession | undefined;
   workspaceId: string;
 }) {
-  return <PermissionDialog workspaceId={workspaceId} session={session} />;
+  const resolveAgentPermission = useStore((s) => s.resolveAgentPermission);
+  return (
+    <PermissionDialog
+      workspaceId={workspaceId}
+      session={session}
+      onReplied={(requestId) => resolveAgentPermission(workspaceId, requestId)}
+    />
+  );
 }
 
 // ── Session controls + turn footer (A4) ──────────────────────────────────────

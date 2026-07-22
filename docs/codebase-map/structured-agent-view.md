@@ -154,7 +154,8 @@ to the unchanged PTY path.
   not the plain-text `tool_result`; per-tool SVG icons in `tool-icons.tsx`; **ToolDiff
   still uses Monaco's `DiffEditor`** — the diff surface is deliberately unchanged),
   `ThinkingIndicator` (shimmer label), `PermissionDialog` (picks first *unanswered*
-  pending request, not `pending[0]`), `AskUserQuestionCard` (**pages
+  pending request, not `pending[0]`; on reply calls `onReplied(requestId)` so the
+  store clears the entry — see below), `AskUserQuestionCard` (**pages
   multi-question requests one at a time — Back/Next/step-dots — so the dialog
   never overflows the viewport; single questions render directly**),
   `AgentControls`,
@@ -191,6 +192,20 @@ to the unchanged PTY path.
   tool with no `answers`, so the harness returns "The user did not answer the
   questions" and the prompt appears to auto-close (guarded by
   `agent-events.test.ts`).
+- **Answered permissions are cleared from the STORE, not just the dialog.**
+  `sdkPermissionReply` (agent-sdk.ts) resolves the parked `canUseTool` call but
+  emits NO event, so the folded `session.pendingPermissions` would otherwise
+  hold the answered request until the next `turn-end` clears it. For an
+  AskUserQuestion answered mid-turn, that leaves the request pending in the store
+  while the turn keeps running — and `PermissionDialog`'s local `answered` set
+  (a `useState`) resets whenever the dialog unmounts (e.g. leaving to the
+  Resources page / no active workspace, which unmounts `StructuredView` at
+  App.tsx `loaded && active && …`), so the stale prompt **reappeared on return**.
+  Fix: `PermissionSlot` passes `onReplied` → the store's `resolveAgentPermission`
+  action (store.ts) folds `clearPendingPermission` immediately, making the clear
+  durable across remounts (the store is the source of truth). Verified with a
+  discriminating CDP mutation test (inject AskUserQuestion → answer → unmount via
+  Resources → remount: modal must NOT reappear and `pendingPermissions` must be 0).
 - **`AvMenu`** (`components/agent/AvMenu.tsx`) — the custom dropdown replacing native
   selects in AgentControls (portalled glass panel; see agent-view-design.md).
 - New IPC: `agentSdkHistory` (`agent:sdkHistory`), `agentSkills` (`agent:skills`).

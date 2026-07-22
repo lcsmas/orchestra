@@ -15,7 +15,7 @@ import type {
   WorkspaceAccount,
 } from '../shared/types';
 import type { SelfTuneRun } from '../shared/self-tune';
-import { emptySession, foldEvents } from '../shared/agent-events';
+import { clearPendingPermission, emptySession, foldEvents } from '../shared/agent-events';
 import { createAgentEventQueue } from './agent-event-queue';
 import { dialog } from './components/Dialog';
 import { dlog, debugEnabled } from './debug';
@@ -122,6 +122,14 @@ interface State {
    *  token-by-token rendering, RAF batching) without a live network turn. Not
    *  used in normal operation. */
   __injectAgentEvent: (workspaceId: string, event: AgentEvent) => void;
+  /** Remove a permission request from a workspace's folded session the instant
+   *  the user answers it. Main resolves the parked `canUseTool` call but emits
+   *  NO clearing event, so the request would otherwise linger in
+   *  `pendingPermissions` until the turn ends — and reappear as a stale modal if
+   *  the structured view is left and re-entered (the PermissionDialog's local
+   *  `answered` set resets on unmount). Clearing it in the store is durable
+   *  across remounts because the store IS the source of truth. */
+  resolveAgentPermission: (workspaceId: string, requestId: string) => void;
   setInsightsOpen: (open: boolean) => void;
   setPage: (p: 'workspaces' | 'resources') => void;
   setHelpOpen: (open: boolean) => void;
@@ -197,6 +205,14 @@ export const useStore = create<State>((set, get) => ({
   },
   setView: (v) => set({ view: v }),
   __injectAgentEvent: (workspaceId, event) => enqueueAgentEvent(workspaceId, event),
+  resolveAgentPermission: (workspaceId, requestId) => {
+    const s = useStore.getState();
+    const prev = s.agentSessions[workspaceId];
+    if (!prev) return;
+    const nextSession = clearPendingPermission(prev, requestId);
+    if (nextSession === prev) return; // nothing pending with that id
+    useStore.setState({ agentSessions: { ...s.agentSessions, [workspaceId]: nextSession } });
+  },
   // The Insights/Help panes and the Resources page are all full-pane surfaces —
   // opening any one dismisses the others so they can never stack.
   setInsightsOpen: (open) =>
