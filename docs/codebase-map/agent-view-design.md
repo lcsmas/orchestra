@@ -66,9 +66,14 @@ wells (`av-tool-bash-out` etc., max-height 320px) get an 8px variant.
 
 Shell (`StructuredView.tsx`): `.av-view` (+`.active`) → `.av-message-list` →
 `.av-message-list-inner` → `.av-row`. Composer `.av-composer` >
-`.av-composer-field` (textarea + send live inside one framed field) >
-`.av-composer-input` + `.av-composer-send` (arrow icon + `.av-composer-send-label`
-"Send"/"Queue"). The `.av-composer-input` textarea **auto-grows** — `Composer`
+`.av-composer-field` (textarea + send live inside one framed field). The field is
+a flex row of `.av-composer-stack` (a flex **column**, `flex:1 1 auto`) + `.av-composer-send`
+(arrow icon + `.av-composer-send-label` "Send"/"Queue"). The stack holds the pasted-image
+strip above `.av-composer-input`; the column's `gap:4px` is the ONLY vertical space
+between thumbnails and text — attachments used to be a `width:100%` wrapping sibling of
+the field row, where the row's `align-items:flex-end` mis-stacked the wrapped strip and
+the textarea and the parent `gap` double-applied, producing an oversized/odd gap. The
+`.av-composer-input` textarea **auto-grows** — `Composer`
 resets its height to `auto` then sets it to `scrollHeight` on every text change
 (a `useLayoutEffect`, so it fires on skill-completion `setText` too, not just
 keystrokes); CSS gives it `box-sizing:border-box` + `overflow-y:auto` so it scrolls

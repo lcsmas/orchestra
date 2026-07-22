@@ -1027,11 +1027,21 @@
 .av-composer-send:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring); }
 .av-composer-send-label { line-height: 1; }
 
+/* Attachments + textarea stack vertically as one flex-column item, so the
+   send button stays bottom-aligned beside them. Keeping them in a dedicated
+   column (rather than wrapping siblings of the field's flex row) means the
+   only vertical space between the thumbnails and the text is this column's
+   own `gap` — the field's row `gap` no longer double-applies across a wrap. */
+.av-composer-stack {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+
 /* Pasted-image attachments — a thumbnail strip above the input, inside the
    framed field. Each thumb has a hover × to remove it before sending. */
 .av-composer-attachments {
   display: flex; flex-wrap: wrap; gap: 8px;
-  width: 100%; margin-bottom: 6px;
+  width: 100%;
 }
 .av-composer-attachment {
   position: relative; flex: none;

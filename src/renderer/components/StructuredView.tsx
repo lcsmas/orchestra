@@ -576,28 +576,29 @@ function Composer({
             </div>
           </div>
         )}
-        {pendingImages.length > 0 && (
-          <div className="av-composer-attachments" aria-label="Pasted images">
-            {pendingImages.map((img) => (
-              <div key={img.id} className="av-composer-attachment">
-                <img src={img.url} alt="Pasted attachment" />
-                <button
-                  type="button"
-                  className="av-composer-attachment-remove"
-                  aria-label="Remove image"
-                  title="Remove"
-                  onClick={() => removePendingImage(img.id)}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        <textarea
-          ref={taRef}
-          className="av-composer-input"
-          value={text}
+        <div className="av-composer-stack">
+          {pendingImages.length > 0 && (
+            <div className="av-composer-attachments" aria-label="Pasted images">
+              {pendingImages.map((img) => (
+                <div key={img.id} className="av-composer-attachment">
+                  <img src={img.url} alt="Pasted attachment" />
+                  <button
+                    type="button"
+                    className="av-composer-attachment-remove"
+                    aria-label="Remove image"
+                    title="Remove"
+                    onClick={() => removePendingImage(img.id)}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <textarea
+            ref={taRef}
+            className="av-composer-input"
+            value={text}
           placeholder="Message the agent — / for skills, paste an image…"
           rows={1}
           onPaste={(e) => {
@@ -641,7 +642,8 @@ function Composer({
               submit();
             }
           }}
-        />
+          />
+        </div>
         <button
           className="av-composer-send"
           onClick={submit}
