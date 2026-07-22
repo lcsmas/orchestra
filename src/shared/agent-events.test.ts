@@ -7,6 +7,7 @@ import {
   emptySession,
   makePermissionRequest,
   makeUserMessage,
+  makeLocalCommand,
   clearPendingPermission,
   shouldAutoApprovePermission,
   sdkEventToStatusEvent,
@@ -445,9 +446,64 @@ test('sdkEventToStatusEvent: pure-render events do NOT move status (→ null)', 
     'session/update',
     'session/remote-control',
     'error',
+    // A `!command` bash-mode run is LOCAL, not a model turn — it must never move
+    // the status dot (it's not "the agent working").
+    'local-command',
   ]) {
     assert.equal(sdkEventToStatusEvent(at(type)), null, `${type} must not move status`);
   }
+});
+
+// ─── fold: local-command (bash mode `!command`) ──────────────────────────────
+
+test('fold: local-command start then completion fold into ONE row keyed by commandId', () => {
+  const c = ctx();
+  const start = makeLocalCommand(c, { commandId: 'abc', command: 'ls -a', running: true });
+  const done = makeLocalCommand(c, {
+    commandId: 'abc',
+    command: 'ls -a',
+    running: false,
+    output: '.\n..\nREADME.md',
+    exitCode: 0,
+  });
+  const s = foldEvents(emptySession('ws1'), [start, done]);
+  // Exactly one message — the completion replaced the running row, not appended.
+  assert.equal(s.messages.length, 1);
+  const m = s.messages[0];
+  assert.equal(m.role, 'local-command');
+  assert.equal(m.id, 'bash:abc');
+  assert.equal(m.done, true);
+  assert.deepEqual(m.localCommand, {
+    command: 'ls -a',
+    running: false,
+    output: '.\n..\nREADME.md',
+    exitCode: 0,
+  });
+});
+
+test('fold: local-command does NOT start a model turn (running stays false)', () => {
+  const c = ctx();
+  const start = makeLocalCommand(c, { commandId: 'x', command: 'pwd', running: true });
+  const s = foldEvents(emptySession('ws1'), [start]);
+  // Bash mode runs locally — the turn state (running / turnStartedAt) is untouched.
+  assert.equal(s.running, false);
+  assert.equal(s.turnStartedAt, undefined);
+  // While running, the row shows the command with no output yet.
+  assert.equal(s.messages[0].localCommand?.running, true);
+  assert.equal(s.messages[0].done, false);
+});
+
+test('fold: a non-zero exit code is carried through', () => {
+  const c = ctx();
+  const done = makeLocalCommand(c, {
+    commandId: 'y',
+    command: 'false',
+    running: false,
+    output: '',
+    exitCode: 1,
+  });
+  const s = foldEvents(emptySession('ws1'), [done]);
+  assert.equal(s.messages[0].localCommand?.exitCode, 1);
 });
 
 // ─── fold: streaming text into one message ───────────────────────────────────

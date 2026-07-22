@@ -1252,6 +1252,88 @@
 .av-composer-send:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring); }
 .av-composer-send-label { line-height: 1; }
 
+/* ── Bash mode (composer `!command`, parity with Claude Code) ─────────────────
+   A leading `!` switches the composer into bash mode: the field gets a purple
+   accent ring, a `bash` chip leads the input, and the send button reads "Run".
+   The command runs locally in the worktree; its output is shared with the agent. */
+.av-composer-field-bash {
+  border-color: color-mix(in srgb, var(--av-task) 55%, var(--av-hairline-strong));
+}
+.av-composer-field-bash:focus-within {
+  border-color: var(--av-task);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12),
+    0 0 0 3px color-mix(in srgb, var(--av-task) 26%, transparent);
+}
+.av-composer-bash-chip {
+  flex: none; align-self: center;
+  padding: 2px 8px; border-radius: 6px;
+  background: color-mix(in srgb, var(--av-task) 22%, transparent);
+  color: var(--av-task);
+  font-family: var(--font-mono); font-size: var(--av-fs-small); font-weight: 700;
+  letter-spacing: 0.02em; line-height: 1.5;
+  text-transform: none;
+}
+.av-composer-field-bash .av-composer-input { color: var(--av-text); }
+
+/* ── Local-command card (a `!command` bash-mode run in the transcript) ────────
+   The command line with a `bash` chip, a running spinner while it executes, then
+   its captured stdout/stderr in a recessed mono well, and an exit-code badge on
+   failure. Reads as a quiet terminal echo distinct from the agent's prose. */
+.av-localcmd {
+  margin: 8px 24px;
+  border: 1px solid var(--av-hairline);
+  border-left: 2px solid var(--av-task);
+  border-radius: 10px;
+  background: var(--av-surface-raised);
+  overflow: hidden;
+}
+.av-localcmd[data-failed='true'] { border-left-color: var(--av-error); }
+.av-localcmd-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px;
+  font-family: var(--font-mono); font-size: var(--av-fs-code);
+}
+.av-localcmd-chip {
+  flex: none;
+  padding: 1px 7px; border-radius: 5px;
+  background: color-mix(in srgb, var(--av-task) 20%, transparent);
+  color: var(--av-task);
+  font-size: var(--av-fs-small); font-weight: 700; letter-spacing: 0.02em;
+}
+.av-localcmd-cmd {
+  flex: 1 1 auto; min-width: 0;
+  color: var(--av-text);
+  white-space: pre-wrap; word-break: break-word;
+}
+.av-localcmd-exit {
+  flex: none;
+  padding: 1px 7px; border-radius: 5px;
+  background: var(--av-error-bg); color: var(--av-error);
+  font-size: var(--av-fs-small); font-weight: 600;
+}
+.av-localcmd-spinner {
+  flex: none; width: 11px; height: 11px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--av-task) 35%, transparent);
+  border-top-color: var(--av-task);
+  animation: av-localcmd-spin 0.7s linear infinite;
+}
+@keyframes av-localcmd-spin { to { transform: rotate(360deg); } }
+.av-localcmd-output {
+  margin: 0; padding: 9px 12px;
+  border-top: 1px solid var(--av-hairline);
+  background: var(--av-surface-sunken);
+  color: var(--av-text-dim);
+  font-family: var(--font-mono); font-size: var(--av-fs-code); line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 340px; overflow: auto;
+}
+.av-localcmd-output code { font: inherit; color: inherit; background: none; }
+.av-localcmd-empty {
+  padding: 7px 12px; border-top: 1px solid var(--av-hairline);
+  color: var(--av-text-faint); font-family: var(--font-mono); font-size: var(--av-fs-small);
+  font-style: italic;
+}
+
 /* Attachments + textarea stack vertically as one flex-column item, so the
    send button stays bottom-aligned beside them. Keeping them in a dedicated
    column (rather than wrapping siblings of the field's flex row) means the

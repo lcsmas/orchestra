@@ -246,6 +246,12 @@ export interface OrchestraAPI {
    *  session lazily on the first call. Uses the streaming-input pattern so the
    *  subprocess stays warm across turns (docs/spikes/phase0-sdk-findings.md h). */
   agentSdkSend: (wsId: string, text: string, images?: AgentImage[]) => Promise<void>;
+  /** Run a `!command` bash-mode command (composer bash mode — parity with Claude
+   *  Code). Runs the command LOCALLY in the workspace's worktree (never the
+   *  model), renders command+output inline as a `local-command` event, and queues
+   *  the pair as context for the agent's NEXT real turn. Resolves when the command
+   *  exits. Starts the session lazily so the context/echo have somewhere to live. */
+  agentSdkRunBash: (wsId: string, command: string) => Promise<void>;
   /** Interrupt the in-flight turn of a workspace's SDK session. Surfaces to the
    *  UI as a `turn-end`/`error` event (the SDK iterator throws, spike d). */
   agentSdkInterrupt: (wsId: string) => Promise<void>;

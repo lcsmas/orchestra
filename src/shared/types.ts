@@ -803,6 +803,31 @@ export interface AgentUserMessageEvent extends AgentEventBase {
   images?: AgentImage[];
 }
 
+/** A local shell command run from the composer's **bash mode** (`!command`,
+ *  parity with Claude Code). Unlike a normal turn, the command runs directly in
+ *  the workspace's worktree — NOT the model — and its command+output are both
+ *  shown inline in the transcript AND fed into the SDK session's context (so the
+ *  agent sees them on its next turn, exactly like CC's `<local-command-stdout>`).
+ *  The manager emits ONE of these per run: `running:true` when the command
+ *  starts (so a spinner shows), then a final replace with the captured output +
+ *  exit code. Folded into a single `local-command` RenderMessage keyed by
+ *  `commandId` so the start event and the completion event update the same row. */
+export interface AgentLocalCommandEvent extends AgentEventBase {
+  type: 'local-command';
+  /** Stable id correlating the `running` start event with its completion, so the
+   *  fold updates one row rather than appending two. */
+  commandId: string;
+  /** The shell command as typed (without the leading `!`). */
+  command: string;
+  /** Whether the command is still running (start event) or finished (completion). */
+  running: boolean;
+  /** Combined stdout+stderr captured so far, present on the completion event. */
+  output?: string;
+  /** Process exit code on completion (null if the process was killed by a signal
+   *  or never spawned). */
+  exitCode?: number | null;
+}
+
 /** A turn finished — the SDK `result` message (spike f). Carries the cost/usage
  *  accounting the UI shows, plus the stop reason. A successful turn has
  *  `isError: false`; a graceful transient failure (500) has `isError: true` and
@@ -915,6 +940,7 @@ export type AgentEvent =
   | AgentToolResultEvent
   | AgentPermissionRequestEvent
   | AgentUserMessageEvent
+  | AgentLocalCommandEvent
   | AgentSessionUpdateEvent
   | AgentRemoteControlEvent
   | AgentTaskEvent
@@ -936,8 +962,9 @@ export interface RenderMessage {
    *  messages, or the toolUseId for tool messages. */
   id: string;
   /** Who authored it. `assistant` text, `tool` a tool call+result pair, `user`
-   *  a submitted prompt, `system` an init/notice, `error` a surfaced failure. */
-  role: 'assistant' | 'tool' | 'user' | 'system' | 'error';
+   *  a submitted prompt, `system` an init/notice, `error` a surfaced failure,
+   *  `local-command` a `!command` bash-mode run (its command + captured output). */
+  role: 'assistant' | 'tool' | 'user' | 'system' | 'error' | 'local-command';
   /** The content-block index this message came from, when block-derived. Lets
    *  deltas at the same index fold into the same message. */
   index?: number;
@@ -963,6 +990,14 @@ export interface RenderMessage {
   toolResult?: {
     content: string | unknown[];
     isError: boolean;
+  };
+  /** For a `local-command` message (`!command` bash mode): the command, its
+   *  captured stdout+stderr, exit code, and whether it's still running. */
+  localCommand?: {
+    command: string;
+    running: boolean;
+    output?: string;
+    exitCode?: number | null;
   };
   /** True once the block that produced this message has stopped. */
   done?: boolean;

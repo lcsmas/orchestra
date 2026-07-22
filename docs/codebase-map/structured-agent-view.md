@@ -30,8 +30,25 @@ renderer store: agentSessions[wsId] = foldEvent(prev, event)   src/renderer/stor
          → virtualized message list of typed components (components/agent/*)
 ```
 
+**Bash mode (`!command`, parity with Claude Code).** Typing a leading `!` in the
+composer switches it into **bash mode** (a purple `bash` chip leads the input, the
+send button reads "Run"). On submit the command runs LOCALLY in the workspace's
+worktree — never the model — via **`agentSdkRunBash(wsId, command)`** →
+`sdkRunBash` (agent-sdk.ts): it `spawn`s `$SHELL -l -c <cmd>` in `ws.worktreePath`
+with the session env, captures stdout+stderr (capped at `BASH_OUTPUT_CAP` 30k),
+and emits an **`AgentLocalCommandEvent`** (`type:'local-command'`, `{commandId,
+command, running, output?, exitCode?}`) — one `running:true` start (spinner row)
+then a completion — folded into ONE `local-command` `RenderMessage` keyed by
+`bash:<commandId>` (`LocalCommandCard.tsx`). The command+output are ALSO queued on
+`session.pendingLocalContext` and prepended to the NEXT real `sdkSend` as a
+`<local-command-stdout>` block, so the agent sees what the user ran (CC's
+mechanism). A bash run never starts a model turn — the fold leaves `running`/
+`turnStartedAt` untouched and `sdkEventToStatusEvent` maps `local-command`→null so
+the status dot doesn't move. Sandbox workspaces surface a "not available" notice
+(bash runs on the local machine; the sandbox worktree lives in a remote container).
+
 **Reverse path (user → agent):** `window.orchestra.agentSdk*` invoke handlers call into
-the live `query` object in main — `agentSdkSend(wsId, text, images?)`, `agentSdkInterrupt(wsId)`,
+the live `query` object in main — `agentSdkSend(wsId, text, images?)`, `agentSdkRunBash(wsId, command)`, `agentSdkInterrupt(wsId)`,
 `agentSdkPermissionReply(wsId, requestId, reply)`, `agentSdkSetModel`,
 `agentSdkSetPermissionMode`, `agentSdkSetRemoteControl(wsId, enabled)`. Multi-turn uses the
 **streaming-input pattern**: one long-lived `query()` per session fed by an async-generator

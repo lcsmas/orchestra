@@ -88,6 +88,7 @@ import {
 import { dispatchLoginUrlRequest } from './login-url';
 import {
   sdkSend,
+  sdkRunBash,
   sdkInterrupt,
   sdkPermissionReply,
   sdkSetModel,
@@ -221,6 +222,7 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   restartAgent: 'agent:restart',
   stopAgent: 'agent:stop',
   agentSdkSend: 'agent:sdkSend',
+  agentSdkRunBash: 'agent:sdkRunBash',
   agentSdkInterrupt: 'agent:sdkInterrupt',
   agentSdkPermissionReply: 'agent:sdkPermissionReply',
   agentSdkSetModel: 'agent:sdkSetModel',
@@ -747,6 +749,10 @@ export const apiHandlers: ApiHandlerTable = {
 
   agentSdkSend: async (wsId, text, images) => {
     await sdkSend(wsId, text, images);
+  },
+
+  agentSdkRunBash: async (wsId, command) => {
+    await sdkRunBash(wsId, command);
   },
 
   agentSdkInterrupt: async (wsId) => {

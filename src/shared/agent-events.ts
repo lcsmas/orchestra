@@ -31,6 +31,7 @@ import type {
   AgentPermissionRequestEvent,
   AgentSession,
   AgentStopReason,
+  AgentLocalCommandEvent,
   AgentTaskEvent,
   AgentTaskUsage,
   AgentUserMessageEvent,
@@ -549,6 +550,17 @@ export function makeUserMessage(
   });
 }
 
+/** Build a stamped local-command event (see {@link AgentLocalCommandEvent}) — the
+ *  manager emits one when a `!command` bash-mode run starts (`running:true`) and
+ *  one when it completes (`running:false` + output + exitCode), both sharing the
+ *  same `commandId` so they fold into one transcript row. */
+export function makeLocalCommand(
+  ctx: NormalizeContext,
+  fields: Omit<AgentLocalCommandEvent, 'type' | 'seq' | 'at'>,
+): AgentLocalCommandEvent {
+  return stamp(ctx, { type: 'local-command', ...fields });
+}
+
 // ─── fold: AgentEvent → AgentSession ─────────────────────────────────────────
 
 /** A fresh, empty session for a workspace — the fold identity. */
@@ -802,6 +814,33 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       // A fresh prompt starts a new turn: start the live clock and reset the
       // per-turn output-char counter that feeds the live token estimate.
       return { ...next, messages, running: true, turnStartedAt: event.at, liveOutputChars: 0 };
+    }
+
+    case 'local-command': {
+      // A `!command` bash-mode run. Two events share one `commandId`: a start
+      // (`running:true`) that appends the row, and a completion (`running:false`
+      // + output + exitCode) that updates it in place. Keyed by commandId so the
+      // completion finds and replaces the running row rather than appending.
+      const id = `bash:${event.commandId}`;
+      const messages = [...next.messages];
+      const idx = messages.findIndex((m) => m.id === id);
+      const localCommand = {
+        command: event.command,
+        running: event.running,
+        ...(event.output !== undefined ? { output: event.output } : {}),
+        ...(event.exitCode !== undefined ? { exitCode: event.exitCode } : {}),
+      };
+      const row: RenderMessage = {
+        id,
+        role: 'local-command',
+        localCommand,
+        done: !event.running,
+      };
+      if (idx >= 0) messages[idx] = row;
+      else messages.push(row);
+      // A bash-mode run does NOT start a model turn (it runs locally), so it
+      // must not flip `running`/`turnStartedAt` — leave the turn state untouched.
+      return { ...next, messages };
     }
 
     case 'turn-end':

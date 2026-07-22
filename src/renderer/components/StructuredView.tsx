@@ -559,6 +559,14 @@ function Composer({
   const taRef = useRef<HTMLTextAreaElement>(null);
   const running = !!session?.running;
 
+  // Bash mode (parity with Claude Code's `!command`): a leading `!` switches the
+  // composer into bash mode — the command runs LOCALLY in the worktree and its
+  // output is fed to the agent as context, instead of the text being sent to the
+  // model. The `!` is the mode trigger; the command is everything after it.
+  // Deleting back to empty exits the mode (the chip/placeholder update live).
+  const bashMode = text.startsWith('!');
+  const bashCommand = bashMode ? text.slice(1) : '';
+
   // Accept image data from a clipboard/paste event: read each image item as a
   // data URL, split off the base64 payload, and stash it for send + preview.
   const addPastedImages = useCallback((items: DataTransferItemList | null) => {
@@ -655,6 +663,17 @@ function Composer({
   }, [isActive]);
 
   const submit = useCallback(() => {
+    // Bash mode: run the command locally instead of sending a turn to the model.
+    // The `!` prefix is the mode trigger; strip it. Empty command → no-op.
+    if (text.startsWith('!')) {
+      const cmd = text.slice(1).trim();
+      if (!cmd) return;
+      void window.orchestra
+        .agentSdkRunBash(workspaceId, cmd)
+        .catch((e) => console.error('agentSdkRunBash failed', e));
+      setText('');
+      return;
+    }
     const t = text.trim();
     // Allow send when there's text OR at least one pasted image (an image with
     // no caption is a valid turn).
@@ -681,7 +700,7 @@ function Composer({
 
   return (
     <div className="av-composer">
-      <div className="av-composer-field">
+      <div className={`av-composer-field ${bashMode ? 'av-composer-field-bash' : ''}`}>
         {acOpen && (
           <div className="av-ac" role="listbox" aria-label="Skills">
             {acItems.map((s, idx) => (
@@ -710,6 +729,11 @@ function Composer({
           </div>
         )}
         <div className="av-composer-stack">
+          {bashMode && (
+            <span className="av-composer-bash-chip" aria-hidden="true">
+              bash
+            </span>
+          )}
           {pendingImages.length > 0 && (
             <div className="av-composer-attachments" aria-label="Pasted images">
               {pendingImages.map((img) => (
@@ -732,7 +756,11 @@ function Composer({
             ref={taRef}
             className="av-composer-input"
             value={text}
-          placeholder="Message the agent — / for skills, paste an image…"
+          placeholder={
+            bashMode
+              ? 'Enter a shell command — runs in the worktree, output shared with the agent'
+              : 'Message the agent — / for skills, ! for bash, paste an image…'
+          }
           rows={1}
           onPaste={(e) => {
             // If the clipboard carries image data, capture it and stop it from
@@ -780,24 +808,49 @@ function Composer({
         <button
           className="av-composer-send"
           onClick={submit}
-          disabled={!text.trim() && pendingImages.length === 0}
-          title={running ? 'Agent is working — message will queue' : 'Send (Enter)'}
+          disabled={bashMode ? !bashCommand.trim() : !text.trim() && pendingImages.length === 0}
+          title={
+            bashMode
+              ? 'Run the shell command locally (Enter)'
+              : running
+                ? 'Agent is working — message will queue'
+                : 'Send (Enter)'
+          }
         >
-          <svg
-            width="13"
-            height="13"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M8 13V3" />
-            <path d="M3.5 7.5 8 3l4.5 4.5" />
-          </svg>
-          <span className="av-composer-send-label">{running ? 'Queue' : 'Send'}</span>
+          {bashMode ? (
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M4 4l4 4-4 4" />
+              <path d="M9 12h4" />
+            </svg>
+          ) : (
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M8 13V3" />
+              <path d="M3.5 7.5 8 3l4.5 4.5" />
+            </svg>
+          )}
+          <span className="av-composer-send-label">
+            {bashMode ? 'Run' : running ? 'Queue' : 'Send'}
+          </span>
         </button>
       </div>
     </div>

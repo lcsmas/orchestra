@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -32,6 +33,7 @@ import {
   normalizeSdkMessage,
   makePermissionRequest,
   makeUserMessage,
+  makeLocalCommand,
   shouldAutoApprovePermission,
   sdkEventToStatusEvent,
   stamp,
@@ -154,6 +156,12 @@ interface Session {
    *  (e.g. after the view re-mounts and re-sends) can re-broadcast it and the
    *  toggle survives. Undefined until the user first enables it. */
   remoteControl?: RemoteControlState;
+  /** Output from `!command` bash-mode runs (composer bash mode) not yet handed to
+   *  the model. Parity with Claude Code: a local command runs immediately and its
+   *  command+output are added to the conversation as CONTEXT, seen by the agent on
+   *  its NEXT real turn (never a turn of their own). {@link sdkSend} drains this and
+   *  prepends it (as `<local-command-stdout>` blocks) to the next user message. */
+  pendingLocalContext: string[];
 }
 
 const sessions = new Map<string, Session>();
@@ -607,6 +615,7 @@ async function ensureSession(wsId: string): Promise<Session> {
     stopping: false,
     permissionMode,
     driveStatus,
+    pendingLocalContext: [],
   };
 
   // Resolve the query factory: a test override, else the dynamically-imported
@@ -837,6 +846,14 @@ export async function sdkSend(
     }
     throw err;
   }
+  // Bash-mode parity (Claude Code `!command`): any local-command output run since
+  // the last turn is prepended to THIS message as `<local-command-stdout>` context
+  // so the agent sees what the user ran. Drained once — it belongs to exactly one
+  // turn. The blocks precede the user's own text, matching CC's ordering.
+  const localContext = session.pendingLocalContext;
+  session.pendingLocalContext = [];
+  const contextPrefix = localContext.length > 0 ? localContext.join('\n') + (text ? '\n\n' : '') : '';
+  const sendText = contextPrefix + text;
   // With pasted images, the SDK message content becomes an ARRAY of content
   // blocks — image blocks (base64 source, per the Messages API vision shape)
   // followed by the text block. Plain text stays a bare string (the common path).
@@ -851,9 +868,9 @@ export async function sdkSend(
               data: img.dataBase64,
             },
           })),
-          ...(text ? [{ type: 'text' as const, text }] : []),
+          ...(sendText ? [{ type: 'text' as const, text: sendText }] : []),
         ]
-      : text;
+      : sendText;
   const msg: SDKUserMessage = {
     type: 'user',
     parent_tool_use_id: null,
@@ -872,6 +889,110 @@ export async function sdkSend(
   emit(session.wsId, userMsg);
   driveStatusFromEvent(session, userMsg);
   session.pump?.();
+}
+
+/** Cap on captured bash output so a runaway command (e.g. `yes`, `cat bigfile`)
+ *  can't blow up the transcript or the context we feed the model. Matches the
+ *  spirit of Claude Code's own bash-output truncation. */
+const BASH_OUTPUT_CAP = 30_000;
+
+/** Run a `!command` bash-mode command (composer bash mode — parity with Claude
+ *  Code). The command runs LOCALLY in the workspace's worktree (never the model),
+ *  its command+output render inline in the transcript, and the pair is queued as
+ *  context for the agent's NEXT real turn (drained by {@link sdkSend}). Returns
+ *  when the command has exited.
+ *
+ *  Lazily ensures the session so the context has somewhere to live and the
+ *  transcript echo reaches every attached UI — but does NOT start a model turn. */
+export async function sdkRunBash(wsId: string, command: string): Promise<void> {
+  const cmd = command.trim();
+  if (!cmd) return;
+  let session: Session;
+  try {
+    session = await ensureSession(wsId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn(`agent-sdk: could not start session for bash run ${wsId}: ${message}`);
+    emit(wsId, {
+      type: 'error',
+      seq: 0,
+      at: Date.now(),
+      message: `Couldn't run the command: ${message}`,
+      apiErrorStatus: null,
+      willRetry: false,
+    });
+    throw err;
+  }
+
+  const ws = store.getWorkspace(wsId);
+  const remote = ws?.host?.kind === 'sandbox';
+  if (remote) {
+    // Bash mode runs on the LOCAL machine; a sandbox worktree lives in a remote
+    // container we don't have a shell into here. Surface a clear message rather
+    // than silently running against the wrong filesystem.
+    const startEv = makeLocalCommand(session.ctx, { commandId: randomUUID(), command: cmd, running: false, output: 'Bash mode is not available for sandbox workspaces.', exitCode: null });
+    emit(wsId, startEv);
+    return;
+  }
+
+  const commandId = randomUUID();
+  // Start event — renders the command row with a running spinner immediately.
+  emit(wsId, makeLocalCommand(session.ctx, { commandId, command: cmd, running: true }));
+
+  const { env } = buildSdkEnv(ws!);
+  const cwd = ws!.worktreePath;
+  const shell = process.env.SHELL || '/bin/bash';
+
+  const output = await new Promise<{ text: string; exitCode: number | null }>((resolve) => {
+    let buf = '';
+    let capped = false;
+    const append = (chunk: Buffer) => {
+      if (capped) return;
+      buf += chunk.toString('utf8');
+      if (buf.length > BASH_OUTPUT_CAP) {
+        buf = buf.slice(0, BASH_OUTPUT_CAP) + '\n… (output truncated)';
+        capped = true;
+      }
+    };
+    let child: ReturnType<typeof spawn>;
+    try {
+      // `-l -c` so the user's login shell config (aliases, PATH) is honored,
+      // matching what the terminal path gives them. stdin closed (bash mode is
+      // non-interactive).
+      child = spawn(shell, ['-l', '-c', cmd], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (err) {
+      resolve({ text: err instanceof Error ? err.message : String(err), exitCode: null });
+      return;
+    }
+    child.stdout?.on('data', append);
+    child.stderr?.on('data', append);
+    child.on('error', (err) => {
+      append(Buffer.from(`\n${err instanceof Error ? err.message : String(err)}`));
+      resolve({ text: buf, exitCode: null });
+    });
+    child.on('close', (code) => resolve({ text: buf, exitCode: code }));
+  });
+
+  // Completion event — replaces the running row with the captured output.
+  emit(
+    wsId,
+    makeLocalCommand(session.ctx, {
+      commandId,
+      command: cmd,
+      running: false,
+      output: output.text,
+      exitCode: output.exitCode,
+    }),
+  );
+
+  // Queue the command+output as context for the agent's NEXT real turn — the
+  // Claude Code `<local-command-stdout>` mechanism. The agent never sees a turn
+  // of its own from this; it just gains awareness of what the user ran.
+  const exitLine =
+    output.exitCode !== null && output.exitCode !== 0 ? ` (exit ${output.exitCode})` : '';
+  session.pendingLocalContext.push(
+    `<local-command-stdout command=${JSON.stringify(cmd)}${exitLine}>\n${output.text}\n</local-command-stdout>`,
+  );
 }
 
 /** Interrupt the in-flight turn (spike d: the consume loop will throw and the

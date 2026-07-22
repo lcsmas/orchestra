@@ -2,6 +2,7 @@ import React from 'react';
 import type { RenderMessage } from '../../../shared/types';
 import { MessageBubble } from './MessageBubble';
 import { ToolCard } from './ToolCard';
+import { LocalCommandCard } from './LocalCommandCard';
 
 interface Props {
   message: RenderMessage;
@@ -20,6 +21,9 @@ interface Props {
 function AgentMessageImpl({ message }: Props) {
   if (message.role === 'tool') {
     return <ToolCard message={message} />;
+  }
+  if (message.role === 'local-command') {
+    return <LocalCommandCard message={message} />;
   }
   return <MessageBubble message={message} />;
 }
