@@ -2446,21 +2446,26 @@ const RENAME_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
 # .branch-renamed sentinel (written by the /rename handler, fresher than the
 # per-pty env) when present, else ORCHESTRA_AUTO_RENAME_COUNT — so the wording
 # advances and the nudge self-disables the instant a rename lands, before any
-# pty restart.
+# pty restart. The branch NAME is likewise read live from git (the per-pty
+# ORCHESTRA_BRANCH env is frozen at spawn and goes stale the moment a rename
+# lands mid-session), falling back to that env only if git can't be reached.
 [ "\${ORCHESTRA_BRANCH_AUTO:-0}" = "1" ] || exit 0
 [ -n "\${ORCHESTRA_SOCK:-}" ] || exit 0
-sentinel="\${ORCHESTRA_WORKTREE:-.}/.orchestra/.branch-renamed"
+worktree="\${ORCHESTRA_WORKTREE:-.}"
+sentinel="\$worktree/.orchestra/.branch-renamed"
 count="\${ORCHESTRA_AUTO_RENAME_COUNT:-0}"
 if [ -f "\$sentinel" ]; then
   s="\$(cat "\$sentinel" 2>/dev/null)"
   case "\$s" in ''|*[!0-9]*) : ;; *) count="\$s" ;; esac
 fi
+branch="\$(git -C "\$worktree" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+[ -n "\$branch" ] && [ "\$branch" != "HEAD" ] || branch="\${ORCHESTRA_BRANCH:-unknown}"
 # Budget spent → retire the nudge mid-session (belt-and-braces; the env gate
 # also flips off on the next pty restart).
 [ "\$count" -ge ${MAX_AUTO_RENAMES} ] 2>/dev/null && exit 0
 if [ "\$count" -ge 1 ]; then
 cat <<EOF
-[orchestra] The work for this workspace should now be coming into focus. Its branch is '\${ORCHESTRA_BRANCH:-unknown}', named early before the task was fully defined. Now that the work to implement is well-defined, REFINE the branch name to match it precisely. Run this exact command (do NOT use 'git branch -m'):
+[orchestra] The work for this workspace should now be coming into focus. Its branch is '\$branch', named early before the task was fully defined. Now that the work to implement is well-defined, REFINE the branch name to match it precisely. Run this exact command (do NOT use 'git branch -m'):
 
   orchestra rename "\\\$ORCHESTRA_WS_ID" "<refined-branch-name>"
 
@@ -2468,7 +2473,7 @@ On success it prints "Renamed to <final-name>". Pick a short kebab-case name (3-
 EOF
 else
 cat <<EOF
-[orchestra] This workspace is on the auto-generated branch '\${ORCHESTRA_BRANCH:-unknown}'. Rename it NOW, on this very first prompt, to a provisional name reflecting your best current understanding of the work — do not wait until the task is fully specified. You'll get one more chance to refine the name once the work is well-defined. Run this exact command (do NOT use 'git branch -m'):
+[orchestra] This workspace is on the auto-generated branch '\$branch'. Rename it NOW, on this very first prompt, to a provisional name reflecting your best current understanding of the work — do not wait until the task is fully specified. You'll get one more chance to refine the name once the work is well-defined. Run this exact command (do NOT use 'git branch -m'):
 
   orchestra rename "\\\$ORCHESTRA_WS_ID" "<new-branch-name>"
 
