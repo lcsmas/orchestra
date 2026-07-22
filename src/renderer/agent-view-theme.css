@@ -783,56 +783,102 @@
 .av-permission-reason:focus-visible { outline: none; border-color: var(--av-focus-border); box-shadow: 0 0 0 3px var(--av-focus-ring); }
 
 /* ============================================================================
- * ASK-USER-QUESTION — option cards
+ * ASK-USER-QUESTION — Claude Code desktop style card
+ *
+ * DOCKED above the composer (rendered by PermissionDialog, NOT modal): no
+ * backdrop, background stays fully visible. Spans the composer's width, blends
+ * with the composer surface (--av-surface-raised), and reads as a panel that
+ * belongs to the input area rather than a floating dialog.
  * ==========================================================================*/
+.av-q {
+  display: flex; flex-direction: column; gap: 12px;
+  margin: 0 20px; padding: 14px 16px;
+  border-radius: var(--av-radius-xl);
+  border: 1px solid var(--av-hairline-strong);
+  background: var(--av-surface-raised);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  animation: av-dialog-in 180ms var(--av-ease-out);
+}
+@media (prefers-reduced-motion: reduce) { .av-q { animation: none; } }
 
-/* The question card fills the dialog's remaining height. Its option list
-   scrolls; the step-dots (top) and actions (bottom) stay pinned. */
-.av-question { display: flex; flex-direction: column; gap: 12px; min-height: 0; flex: 1; overflow: hidden; }
-.av-question-title { font-size: var(--av-fs-h); font-weight: 650; color: var(--av-text); letter-spacing: -0.011em; }
-.av-question-block { display: flex; flex-direction: column; gap: 6px; min-height: 0; flex: 1; overflow-y: auto; padding-right: 2px; }
-.av-question-steps { display: flex; gap: 6px; align-items: center; }
-.av-question-step {
-  height: 4px; flex: 1; border-radius: 999px;
-  background: var(--av-hairline-strong);
-  transition: background 160ms var(--av-ease);
+/* Header: "1/N" pill + heading + collapse/close icon buttons. */
+.av-q-head { display: flex; align-items: center; gap: 10px; }
+.av-q-pill {
+  flex: none; font-family: var(--font-mono); font-size: var(--av-fs-caption); font-weight: 700;
+  padding: 2px 8px; border-radius: 999px; letter-spacing: 0.02em;
+  color: var(--av-warn);
+  background: color-mix(in srgb, var(--av-warn) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--av-warn) 34%, transparent);
 }
-.av-question-step-done { background: color-mix(in srgb, var(--av-tool-active) 45%, var(--av-hairline-strong)); }
-.av-question-step-current { background: var(--av-tool-active); }
-.av-question-header {
-  font-family: var(--font-mono); font-size: var(--av-fs-caption); font-weight: 600;
-  letter-spacing: 0.06em; text-transform: uppercase; color: var(--av-tool-active);
-  align-self: flex-start; padding: 1px 8px; border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--av-tool-active) 30%, transparent);
-  background: color-mix(in srgb, var(--av-tool-active) 8%, transparent);
+.av-q-heading {
+  flex: 1 1 auto; min-width: 0;
+  font-size: var(--av-fs-body); font-weight: 650; color: var(--av-text);
+  letter-spacing: -0.011em; line-height: 1.35;
 }
-.av-question-text { margin: 0; font-size: var(--av-fs-body); color: var(--av-text); line-height: 1.5; }
-.av-question-options { display: flex; flex-direction: column; gap: 6px; }
-.av-question-option {
-  display: flex; flex-direction: column; gap: 2px; align-items: flex-start; text-align: left;
-  padding: 9px 12px; border-radius: var(--radius, 8px);
+.av-q-icon-btn {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0; border-radius: 7px;
+  border: 1px solid transparent; background: transparent;
+  color: var(--av-text-dim); cursor: pointer;
+  transition: background 120ms var(--av-ease), color 120ms var(--av-ease), border-color 120ms var(--av-ease);
+}
+.av-q-icon-btn:hover {
+  background: var(--av-surface-sunken); color: var(--av-text);
+  border-color: var(--av-hairline-strong);
+}
+.av-q-icon-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring); }
+
+.av-q-prompt { margin: 0; font-size: var(--av-fs-body); color: var(--av-text-dim); line-height: 1.5; }
+
+/* Option rows: full-width, bold label + gray description, right number badge. */
+.av-q-options {
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: min(46vh, 420px); overflow-y: auto; padding-right: 2px;
+}
+.av-q-option {
+  display: flex; align-items: flex-start; gap: 12px; text-align: left;
+  width: 100%; padding: 11px 12px 11px 14px; border-radius: 10px;
   border: 1px solid var(--av-hairline-strong); background: var(--av-surface-sunken);
-  color: var(--av-text); cursor: pointer; font: inherit; font-size: var(--av-fs-small);
+  color: var(--av-text); cursor: pointer; font: inherit;
   transition: border-color 130ms var(--av-ease), background 130ms var(--av-ease), box-shadow 130ms var(--av-ease);
 }
-.av-question-option:hover { border-color: color-mix(in srgb, var(--av-tool-active) 55%, var(--av-hairline-strong)); }
-.av-question-option:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring); }
-.av-question-option-active {
+.av-q-option:hover { border-color: color-mix(in srgb, var(--av-tool-active) 55%, var(--av-hairline-strong)); }
+.av-q-option:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring); }
+.av-q-option-active {
   border-color: var(--av-tool-active);
-  background: color-mix(in srgb, var(--av-tool-active) 10%, transparent);
+  background: color-mix(in srgb, var(--av-tool-active) 12%, transparent);
   box-shadow: inset 0 0 0 1px var(--av-tool-active);
 }
-.av-question-option-label { font-weight: 600; font-size: var(--av-fs-small); }
-.av-question-option-desc { color: var(--av-text-dim); font-size: var(--av-fs-small); }
-.av-question-option-other { border-style: dashed; }
-.av-question-other-input {
-  padding: 8px 10px; font: inherit; font-size: var(--av-fs-small); color: var(--av-text);
-  background: var(--av-surface-sunken); border: 1px solid var(--av-hairline-strong); border-radius: var(--radius-sm, 6px);
+.av-q-option-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.av-q-option-label { font-weight: 600; font-size: var(--av-fs-body); line-height: 1.35; }
+.av-q-option-desc { color: var(--av-text-dim); font-size: var(--av-fs-small); line-height: 1.45; }
+.av-q-option-key {
+  flex: none; align-self: flex-start; margin-top: 1px;
+  min-width: 18px; height: 18px; padding: 0 4px; border-radius: 5px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono); font-size: var(--av-fs-caption); font-weight: 600;
+  color: var(--av-text-faint); background: color-mix(in srgb, var(--av-text) 8%, transparent);
 }
-.av-question-other-input:focus-visible { outline: none; border-color: var(--av-focus-border); box-shadow: 0 0 0 3px var(--av-focus-ring); }
-.av-question-actions { display: flex; gap: 8px; align-items: center; }
-.av-question-actions-spacer { flex: 1; }
-.av-question-progress { font-size: var(--av-fs-caption); color: var(--av-text-faint); font-family: var(--font-mono); }
+.av-q-option-active .av-q-option-key { color: var(--av-tool-active); background: color-mix(in srgb, var(--av-tool-active) 18%, transparent); }
+
+.av-q-other-input {
+  width: 100%; box-sizing: border-box;
+  padding: 9px 12px; font: inherit; font-size: var(--av-fs-body); color: var(--av-text);
+  background: var(--av-surface-sunken); border: 1px solid var(--av-hairline-strong); border-radius: 8px;
+}
+.av-q-other-input::placeholder { color: var(--av-text-faint); }
+.av-q-other-input:focus-visible { outline: none; border-color: var(--av-focus-border); box-shadow: 0 0 0 3px var(--av-focus-ring); }
+
+/* Footer: right-aligned Skip + Next, each with a keybind hint chip. */
+.av-q-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+.av-q-next { display: inline-flex; align-items: center; gap: 8px; }
+.av-q-kbd {
+  font-family: var(--font-mono); font-size: 9px; font-weight: 600; line-height: 1;
+  padding: 3px 5px; border-radius: 5px;
+  color: color-mix(in srgb, currentColor 78%, transparent);
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
 
 /* ============================================================================
  * BUTTONS — the av-btn family, matched to the app's button language

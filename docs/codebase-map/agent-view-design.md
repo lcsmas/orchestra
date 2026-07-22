@@ -188,18 +188,29 @@ as a safety net) > `.av-permission-header` (`.av-permission-eyebrow` with
 `.av-permission-title` (`.av-permission-tool`) / `.av-permission-subtitle` /
 `.av-permission-input` / `.av-permission-actions` / `.av-permission-deny{,-label}`
 / `.av-permission-reason`. **Deny is the safe first action; Allow is never
-auto-focused and Escape denies** (component-enforced). The dialog gets
-`.av-permission-dialog-question` (wider, `max-width:720px`) when it hosts an
-AskUserQuestion.
+auto-focused and Escape denies** (component-enforced). This modal + backdrop
+path is used ONLY for real tool permissions. **AskUserQuestion takes a separate,
+non-modal path** — `PermissionDialog` returns the `AskUserQuestionCard` directly
+(no backdrop, no scrim, background stays fully visible), since a question is not
+a dangerous action.
 
-AskUserQuestion (`AskUserQuestionCard.tsx`): `.av-question{,-title,-block,-header,
--text,-options,-option,-option-active,-option-label,-option-desc,-option-other,
--other-input,-actions}` plus paging chrome `.av-question-{steps,step,step-current,
-step-done,progress,actions-spacer}`. **Multiple questions PAGE one at a time**
-(step-dot rail up top, `N of M` + Back/Next in the footer, Submit only on the
-last page once every page is answered); a **single** question renders directly
-with no paging chrome. `.av-question-block` is the scrolling region so the
-step-rail and actions stay pinned.
+AskUserQuestion (`AskUserQuestionCard.tsx`, Claude Code desktop style):
+`.av-q{,-head,-pill,-heading,-icon-btn,-prompt,-options,-option,-option-active,
+-option-main,-option-label,-option-desc,-option-key,-other-input,-actions,-next,
+-kbd}`. **DOCKED above the composer** (rendered in the `PermissionSlot` position,
+between the message list and `SessionControls`/`Composer`); `.av-q` uses
+`margin:0 20px` + `--av-surface-raised` so it spans and blends with the composer
+FIELD width. Header row: amber `1/N` progress pill (`--av-warn`) + question
+heading + collapse-chevron and dismiss-✕ icon buttons. Options are full-width
+numbered rows (bold label + gray desc + right-aligned `.av-q-option-key` badge);
+**"Other" is the last numbered row** and reveals `.av-q-other-input`. Footer:
+right-aligned Skip (ghost) + Next/Submit with an `.av-q-kbd` "Enter" hint chip.
+**Keyboard: 1–9 select on the current page, Enter advances/submits, Escape
+dismisses** — but the card YIELDS these keys when focus is in a text input
+(composer, the Other field) via `isTypingTarget`, so typing a free-text turn
+still works. **Multiple questions PAGE one at a time** (pill shows `page/N`,
+Next advances, Submit on the last page); a **single** question shows `1/1` and
+Next submits directly.
 
 Buttons: `.av-btn` + `.av-btn-{primary,danger,ghost}` (permission/question actions
 and the interrupt button share this family).
