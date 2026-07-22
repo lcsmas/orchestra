@@ -44,51 +44,51 @@
  *   mid-list must not replay it).
  * ==========================================================================*/
 
-/* --- Role tokens: DARK (default) — Claude-Code warm-neutral palette --------
- * Values traced from the Claude Desktop app's shipped token sheet
- * (window-shared.css `.darkTheme`, "taken from claude.ai"): a warm greige
- * canvas (#262624) instead of the old cool blue-black, cream text, and the
- * CLAY brand accent (#d97757) carrying the interactive/streaming voice. This
- * is what makes the transcript read like Claude Code rather than a cool IDE. */
+/* --- Role tokens: DARK (default) — Orchestra's cool dark, so the transcript
+ * blends with the app chrome (sidebar/toolbar) instead of reading as a separate
+ * warm surface. Surfaces/text/accent are pinned to the global --bg/--text/
+ * --accent family in styles.css. The CLAUDE-CODE work that survives is the TYPE
+ * and LAYOUT (16px prose, system-mono code, framed tables, card rhythm) — only
+ * the surface HUES revert to Orchestra so the two darks agree. */
 .av-view {
-  --av-surface: #262624;          /* CC --claude-background / bg-100 */
-  --av-surface-raised: #2f2f2c;   /* bg-000-ish — cards sit a touch lighter */
-  --av-surface-sunken: #1f1e1d;   /* bg-200 — code / output wells */
-  --av-surface-overlay: #34332f;  /* dialogs / menus */
-  --av-hairline: rgba(233, 221, 216, 0.11);        /* CC warm border tint */
-  --av-hairline-strong: rgba(233, 221, 216, 0.2);
-  --av-hairline-faint: rgba(233, 221, 216, 0.06);
-  --av-highlight: rgba(255, 253, 247, 0.03);
+  --av-surface: var(--bg, #0b0d10);          /* app canvas */
+  --av-surface-raised: var(--bg-3, #1a1f26); /* cards / chrome */
+  --av-surface-sunken: var(--bg-2, #12151a); /* code / output wells */
+  --av-surface-overlay: var(--bg-4, #222933);/* dialogs / menus */
+  --av-hairline: var(--border, #242a33);
+  --av-hairline-strong: var(--border-strong, #333b47);
+  --av-hairline-faint: rgba(255, 255, 255, 0.055);
+  --av-highlight: rgba(255, 255, 255, 0.04);
 
-  --av-text: #faf9f5;             /* text-100 */
-  --av-text-dim: #c2c0b6;         /* text-200 */
-  --av-text-faint: #9c9a92;       /* text-400 */
+  --av-text: var(--text, #e6e9ef);
+  --av-text-dim: var(--text-dim, #8b95a7);
+  --av-text-faint: #737e92;
 
-  /* Clay is Claude's brand accent — it carries the assistant/interactive voice
-     and the live edge, exactly as claude.ai uses it. */
-  --av-assistant: var(--accent, #d97757);
-  --av-assistant-ink: #1c1712;
-  --av-thinking: #b09cd6;         /* CC accent-pro (purple), warmed */
-  --av-tool: #a6a39a;
-  --av-tool-active: #d97757;
-  --av-user: #c99a6a;             /* warm sand — the user bubble */
-  --av-task: #8f7fd6;             /* subagent violet */
+  /* Blue is Orchestra's identity accent (sidebar rail, terminal cursor) — the
+     assistant/interactive voice and live edge use it so the view is one app. */
+  --av-assistant: var(--accent, #6ea8ff);
+  --av-assistant-ink: var(--accent-ink, #081022);
+  --av-thinking: #b294bb;
+  --av-tool: #7c8798;
+  --av-tool-active: var(--accent, #6ea8ff);
+  --av-user: #7ee787;
+  --av-task: var(--accent-2, #8b7cff);
 
-  --av-add: #6fbf5f;              /* CC success, legible on warm surfaces */
-  --av-add-bg: rgba(111, 191, 95, 0.13);
-  --av-remove: #e0685f;           /* CC danger */
-  --av-remove-bg: rgba(224, 104, 95, 0.13);
-  --av-error: #e0685f;
-  --av-error-bg: rgba(224, 104, 95, 0.1);
-  --av-error-border: rgba(224, 104, 95, 0.5);
-  --av-warn: #d9a441;
+  --av-add: var(--green, #5bd68b);
+  --av-add-bg: rgba(91, 214, 139, 0.12);
+  --av-remove: var(--red, #ff6b6b);
+  --av-remove-bg: rgba(255, 107, 107, 0.12);
+  --av-error: var(--red, #ff6b6b);
+  --av-error-bg: rgba(255, 107, 107, 0.09);
+  --av-error-border: rgba(255, 107, 107, 0.45);
+  --av-warn: var(--yellow, #ffc857);
 
-  --av-code-bg: rgba(255, 253, 247, 0.04);
-  --av-code-border: rgba(233, 221, 216, 0.08);
+  --av-code-bg: rgba(255, 255, 255, 0.045);
+  --av-code-border: rgba(255, 255, 255, 0.07);
 
-  --av-glow: rgba(217, 119, 87, 0.18);
-  --av-focus-border: rgba(217, 119, 87, 0.7);
-  --av-focus-ring: rgba(217, 119, 87, 0.22);
+  --av-glow: rgba(110, 168, 255, 0.16);
+  --av-focus-border: var(--focus-border, rgba(110, 168, 255, 0.75));
+  --av-focus-ring: var(--focus-ring, rgba(110, 168, 255, 0.2));
 
   --av-ease: var(--ease, cubic-bezier(0.3, 0.8, 0.3, 1));
   --av-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
@@ -121,21 +121,21 @@
  * it. A future settings toggle sets this attribute. */
 .av-view[data-agent-theme="light"],
 [data-agent-theme="light"] .av-view {
-  /* CC light — warm cream paper (#faf9f5), ink-brown text, clay accent. */
-  --av-surface: #faf9f5; --av-surface-raised: #ffffff; --av-surface-sunken: #f0eee7;
+  /* Cool light, consistent with Orchestra (not CC warm) — the app is dark-only
+     chrome, so this stays an internal opt-in matching the app's own palette. */
+  --av-surface: #ffffff; --av-surface-raised: #f6f7f9; --av-surface-sunken: #eef1f4;
   --av-surface-overlay: #ffffff;
-  --av-hairline: rgba(112, 107, 87, 0.22); --av-hairline-strong: rgba(112, 107, 87, 0.42);
-  --av-hairline-faint: rgba(112, 107, 87, 0.12);
-  --av-highlight: rgba(255, 255, 255, 0.7);
-  --av-text: #29261b; --av-text-dim: #535146; --av-text-faint: #75736a;
-  --av-assistant: #b5562f; --av-assistant-ink: #ffffff; --av-thinking: #6a4fa0;
-  --av-tool: #75736a; --av-tool-active: #b5562f; --av-user: #9a6a2e; --av-task: #6250d0;
-  --av-add: #3f8a2c; --av-add-bg: rgba(63, 138, 44, 0.12);
-  --av-remove: #c0392b; --av-remove-bg: rgba(192, 57, 43, 0.09);
-  --av-error: #c0392b; --av-error-bg: rgba(192, 57, 43, 0.08); --av-error-border: rgba(192, 57, 43, 0.38);
-  --av-warn: #a56a12; --av-code-bg: rgba(112, 107, 87, 0.06); --av-code-border: rgba(112, 107, 87, 0.14);
-  --av-glow: rgba(193, 95, 60, 0.14);
-  --av-focus-border: rgba(193, 95, 60, 0.75); --av-focus-ring: rgba(193, 95, 60, 0.22);
+  --av-hairline: #e3e6eb; --av-hairline-strong: #ccd2db; --av-hairline-faint: rgba(20, 30, 50, 0.07);
+  --av-highlight: rgba(255, 255, 255, 0.6);
+  --av-text: #1b2330; --av-text-dim: #566175; --av-text-faint: #6d7787;
+  --av-assistant: #2f6fe0; --av-assistant-ink: #ffffff; --av-thinking: #7d55a3;
+  --av-tool: #64748b; --av-tool-active: #2159c8; --av-user: #178a4c; --av-task: #6250d0;
+  --av-add: #137a43; --av-add-bg: rgba(23, 138, 76, 0.12);
+  --av-remove: #c62828; --av-remove-bg: rgba(198, 40, 40, 0.09);
+  --av-error: #c93737; --av-error-bg: rgba(201, 55, 55, 0.08); --av-error-border: rgba(201, 55, 55, 0.38);
+  --av-warn: #a56a12; --av-code-bg: rgba(20, 30, 50, 0.05); --av-code-border: rgba(20, 30, 50, 0.09);
+  --av-glow: rgba(47, 111, 224, 0.14);
+  --av-focus-border: rgba(47, 111, 224, 0.75); --av-focus-ring: rgba(47, 111, 224, 0.22);
   background: var(--av-surface);
 }
 /* (No explicit-dark block: dark IS the default, so `data-agent-theme="dark"`

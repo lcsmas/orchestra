@@ -22,42 +22,41 @@ interface MonacoLike {
   };
 }
 
-/** Syntax ink tuned to Claude-Code's warm palette. Chrome sits on the agent
- *  view's warm sunken surface (#1f1e1d) so a diff, a code block (Shiki
- *  github-dark) and the terminal read as one warm instrument rather than a cool
- *  IDE dropped into cream chrome. */
+/** Tomorrow Night syntax ink over Orchestra's cool sunken surface, so a diff,
+ *  a code block and the embedded terminal read as one instrument matching the
+ *  app chrome (the transcript surfaces are Orchestra dark, not CC warm). */
 const DARK = {
-  bg: '#1f1e1d', // --av-surface-sunken (CC bg-200)
-  fg: '#e6e3da', // warm off-white, matches --av-text-dim family
-  lineNo: '#6b675d',
-  selection: '#4a453d',
-  comment: '#8c877a',
-  string: '#a7c080', // warm green
-  number: '#e0a458', // amber
-  keyword: '#c98a6a', // clay-leaning magenta/orange
-  fn: '#7fa8c9', // muted blue
-  type: '#d9a441', // gold
-  tag: '#d97757', // clay
-  cyan: '#83c0b8', // teal
-  add: '#6fbf5f',
-  remove: '#e0685f',
+  bg: '#12151a', // --av-surface-sunken (--bg-2)
+  fg: '#d3dae4',
+  lineNo: '#414b5c',
+  selection: '#334155',
+  comment: '#5d6b80',
+  string: '#b5bd68', // TN green
+  number: '#f0c674', // TN yellow
+  keyword: '#b294bb', // TN magenta
+  fn: '#81a2be', // TN blue
+  type: '#e7c547', // TN bright yellow
+  tag: '#cc6666', // TN red
+  cyan: '#8abeb7', // TN cyan
+  add: '#5bd68b',
+  remove: '#ff6b6b',
 };
 
 const LIGHT = {
-  bg: '#f0eee7', // --av-surface-sunken (warm cream)
-  fg: '#29261b',
-  lineNo: '#a8a498',
-  selection: '#e4dcc8',
-  comment: '#8f8b7d',
-  string: '#3f7a34',
+  bg: '#eef1f4', // --av-surface-sunken (cool light)
+  fg: '#1f2735',
+  lineNo: '#9aa4b2',
+  selection: '#cfe0fb',
+  comment: '#8a93a2',
+  string: '#22733f',
   number: '#a05e03',
-  keyword: '#b8562f', // clay-leaning
+  keyword: '#8a5fa8',
   fn: '#2159c8',
   type: '#8f6400',
-  tag: '#c15f3c',
+  tag: '#c62828',
   cyan: '#0e7490',
-  add: '#3f8a2c',
-  remove: '#c0392b',
+  add: '#12703f',
+  remove: '#c62828',
 };
 
 function rules(c: typeof DARK) {
@@ -92,7 +91,7 @@ function colors(c: typeof DARK) {
     'editorLineNumber.activeForeground': c.lineNo,
     'editor.selectionBackground': c.selection,
     'editor.inactiveSelectionBackground': c.selection,
-    'editorCursor.foreground': '#d97757',
+    'editorCursor.foreground': '#6ea8ff',
     'editorWidget.background': c.bg,
     'editorGutter.background': c.bg,
     'scrollbarSlider.background': '#7d879a33',

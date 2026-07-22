@@ -26,16 +26,20 @@ reports light). Light applies ONLY when `.av-view` / an ancestor carries
 no writer today. `monaco-theme.ts` watches the same attribute (MutationObserver)
 and switches the editors between `orchestra-dark`/`orchestra-light` live.
 
-The palette matches the **Claude Code / claude.ai desktop** look: a warm greige
-canvas (`--av-surface: #262624`), cream text (`#faf9f5` / `#c2c0b6` / `#9c9a92`),
-and the **clay** brand accent (`#d97757`) carrying the assistant/interactive
-voice and the live edge — NOT a cool blue IDE. Values were traced from the
-Claude Desktop app's shipped token sheet (`window-shared.css .darkTheme`). Light
-is CC's warm cream paper (`#faf9f5`). Type follows CC's roomier rhythm: 16px
-prose, 13px small/code, generous line-height; **code content uses a system mono
-stack** (`--av-mono`, claude.ai ships no custom mono), while chrome microlabels
-keep JetBrains (`--font-mono`). Prose stays **Inter** (per product decision — we
-do not bundle Anthropic Sans).
+What we adopted from **Claude Code desktop** is its TYPE and LAYOUT, not its
+palette: 16px prose, 13px small/code, generous line-height; **code content uses
+a system mono stack** (`--av-mono`, claude.ai ships no custom mono) while chrome
+microlabels keep JetBrains (`--font-mono`); framed/striped GFM tables; the card
+rhythm. Prose stays **Inter** (we do not bundle Anthropic Sans).
+
+The SURFACE colours stay **Orchestra dark** on purpose — the `--av-surface*`,
+`--av-text*`, `--av-hairline*` and accent tokens are pinned to the app's global
+`--bg` / `--text` / `--accent` family (`styles.css`), so the transcript blends
+with the surrounding chrome (sidebar/toolbar) instead of reading as a separate
+warm surface. (An earlier pass used CC's warm greige `#262624` + clay accent;
+that made the transcript disagree with Orchestra's cool blue-black chrome, so it
+was reverted to the app palette while keeping all the type/layout work.) Light
+is Orchestra's cool light, an internal opt-in matching the app.
 
 All colours are `--av-*` tokens defined on `.av-view`. **Reference the tokens,
 never raw hex.** Roles: `--av-surface{,-raised,-sunken,-overlay}`,
@@ -59,7 +63,7 @@ All of it sits behind `prefers-reduced-motion` guards.
 ### Monaco
 
 `components/agent/monaco-theme.ts` defines `orchestra-dark`/`orchestra-light`
-(warm CC-tuned syntax over the `#1f1e1d` sunken surface, system-mono
+(Tomorrow Night syntax over the app's cool sunken surface `#12151a`, system-mono
 `MONACO_FONT`, **20px lines** — `ToolDiff` derives its frame height from
 `MONACO_FONT.lineHeight`, so keep those in sync, never hard-code the row px) —
 registered idempotently via each editor's `beforeMount`.
