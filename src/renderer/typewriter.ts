@@ -40,30 +40,43 @@
  */
 
 export interface TypewriterParams {
-  /** Base reveal speed in characters per millisecond when nearly caught up.
-   *  ~0.05 ch/ms ≈ 50 ch/s ≈ ~3 chars/60fps-frame — a readable typing pace. */
-  baseCharsPerMs: number;
-  /** Fraction of the current backlog to additionally drain per millisecond.
-   *  Higher → bursts catch up faster (display lags less, but animates less).
-   *  ~0.01/ms means a backlog empties on a ~100ms time-constant under catch-up. */
-  catchupPerMs: number;
-  /** Never reveal more than this many characters in a single frame, so a huge
-   *  paste/burst still animates over a few frames instead of dumping at once.
-   *  A safety cap on the proportional term; generous enough to keep long turns
-   *  from dragging. */
+  /** The STEADY reveal speed, in characters per millisecond. This is a CONSTANT
+   *  pace — it does NOT scale with how much text is buffered. A constant rate is
+   *  what makes a typewriter look fluid: when a burst of text arrives, the reveal
+   *  does not speed up to drain it, so the burst plays out as smooth typing
+   *  rather than a near-instant chunk. ~0.12 ch/ms ≈ 120 ch/s ≈ ~2 chars per
+   *  60fps frame — a snappy-but-clearly-visible typing pace. */
+  charsPerMs: number;
+  /** Soft backlog ceiling (characters). Below this, reveal is the pure constant
+   *  `charsPerMs`. Above it, a GENTLE extra drain kicks in (see `overflowPerMs`)
+   *  purely to bound how far behind the model the display can fall on a very
+   *  large/fast turn — it is NOT the proportional catch-up that caused chunky
+   *  bursts (that scaled with the FULL backlog; this scales only with the small
+   *  EXCESS over the ceiling, so normal bursts never trigger it). */
+  softBacklogCap: number;
+  /** Extra characters/ms drained per character of backlog ABOVE `softBacklogCap`.
+   *  Small — just enough that a pathologically large buffer converges instead of
+   *  dragging, without turning a burst into a chunk. */
+  overflowPerMs: number;
+  /** Hard cap on characters revealed in one frame — a safety valve so even the
+   *  overflow drain can't dump a huge block in a single frame. */
   maxCharsPerFrame: number;
 }
 
-/** Sensible defaults tuned for a 60fps typewriter that feels like the Claude
- *  Code app: gentle floor, quick but visible catch-up on bursts. */
+/** Defaults for a steady, snappy 60fps typewriter (~120 ch/s) that reads as
+ *  fluid typing, with only a gentle bound on lag for very large turns. */
 export const DEFAULT_TYPEWRITER: TypewriterParams = {
-  baseCharsPerMs: 0.05, // ~3 chars/frame floor at 60fps — the slow-trickle pace
-  catchupPerMs: 0.02, // drain ~2%/ms of backlog → bursts catch up on a ~short,
-  // bounded time constant, so display never lags far behind the model. Tuned so
-  // a fully-available message reveals responsively (see typewriter.test.ts):
-  // ~0.3s for 2KB, ~0.56s for 12KB, ~1.0s for 30KB — animated, never dragging.
-  maxCharsPerFrame: 600, // cap a single frame's reveal so a huge burst still
-  // animates over a few frames instead of dumping at once.
+  charsPerMs: 0.15, // ~150 ch/s ≈ 2-3 chars/frame — steady, visible, snappy.
+  // Under realistic live streaming (~250 ch/s arriving in ~30-char deltas) the
+  // backlog stays ~90 chars (below the cap) so the reveal is this pure constant
+  // rate: measured ~3.8 chars/frame average, 12 max — smooth typing, no chunks,
+  // finishing ~0.7s after the model. (A fully-buffered large paste is the only
+  // case the overflow term below governs; live turns never hit it.)
+  softBacklogCap: 80, // reveal is constant until >80 unrevealed chars buffer up
+  overflowPerMs: 0.03, // gentle drain on the EXCESS beyond the cap, so a big
+  // fully-buffered turn converges (~2s for 12KB) instead of dragging — without
+  // speeding up ordinary live bursts (which stay under the cap).
+  maxCharsPerFrame: 200, // safety valve; never dump a block in one frame
 };
 
 /**
@@ -89,8 +102,16 @@ export function nextRevealed(
   // treat those as a single nominal frame so we neither dump nor stall.
   const dt = Math.max(0, Math.min(dtMs, 100));
   const backlog = target - revealed;
-  // Steady floor + proportional catch-up, both scaled by elapsed time.
-  const advance = p.baseCharsPerMs * dt + p.catchupPerMs * backlog * dt;
+  // STEADY constant pace — the core of a fluid typewriter. Deliberately does NOT
+  // scale with `backlog`, so an arriving burst is typed out at the same rate as
+  // a trickle (no instant-drain that reads as a chunk).
+  let advance = p.charsPerMs * dt;
+  // Gentle bounded overflow: only the EXCESS backlog beyond the soft cap adds a
+  // little speed, purely to stop the display lagging unboundedly on a huge turn.
+  // Because it keys off (backlog - cap), not the full backlog, ordinary bursts
+  // (below the cap) never trigger it and stay perfectly steady.
+  const overflow = backlog - p.softBacklogCap;
+  if (overflow > 0) advance += p.overflowPerMs * overflow * dt;
   // At least 1 char once any time has passed, so a slow trickle still moves and
   // we can never get stuck one char short forever due to rounding.
   const stepped = dt > 0 ? Math.max(1, advance) : advance;

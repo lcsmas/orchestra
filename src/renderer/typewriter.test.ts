@@ -30,10 +30,29 @@ test('monotonic — never un-reveals', () => {
   }
 });
 
-test('bigger backlog drains faster (proportional catch-up)', () => {
-  const small = nextRevealed(0, 100, 16, P) - 0;
-  const big = nextRevealed(0, 100000, 16, P) - 0;
-  assert.ok(big > small, `big backlog ${big} should reveal more than small ${small}`);
+test('STEADY rate below the soft cap — a burst does NOT drain in one frame (anti-chunk)', () => {
+  // The core anti-chunkiness property: for backlogs up to the soft cap, the
+  // per-frame reveal is the SAME constant regardless of how much is buffered.
+  // (This is what a proportional catch-up would violate — and that violation is
+  // exactly what made bursts read as blocks.)
+  const smallBacklog = nextRevealed(0, 50, 16, P);
+  const capBacklog = nextRevealed(0, P.softBacklogCap, 16, P);
+  assert.equal(
+    smallBacklog,
+    capBacklog,
+    `reveal should be constant below the cap: ${smallBacklog} vs ${capBacklog}`,
+  );
+  // And it must be a small, typing-sized step — not a whole burst at once.
+  assert.ok(capBacklog < 50, `a single frame revealed ${capBacklog} chars — too chunky`);
+});
+
+test('overflow drain only engages ABOVE the soft cap, and only gently', () => {
+  // Just below the cap = pure constant rate.
+  const atCap = nextRevealed(0, P.softBacklogCap, 16, P);
+  // Far above the cap = somewhat faster (bounded lag), but still not a chunk.
+  const wayOver = nextRevealed(0, P.softBacklogCap + 5000, 16, P);
+  assert.ok(wayOver > atCap, 'huge backlog should drain a bit faster than at-cap');
+  assert.ok(wayOver <= P.maxCharsPerFrame, `overflow still capped at ${P.maxCharsPerFrame}`);
 });
 
 test('single-frame reveal is capped', () => {
@@ -53,19 +72,57 @@ test('zero dt reveals nothing', () => {
   assert.equal(nextRevealed(10, 1000, 0, P), 10);
 });
 
-test('converges to target within a bounded number of frames on a steady stream', () => {
-  // Simulate a 12KB message fully available, drained at 60fps (~16ms/frame).
+test('a fully-buffered large message still converges in bounded time (overflow drain)', () => {
+  // The rare "all text at once" case (e.g. a very fast cached turn). The gentle
+  // overflow keeps it from dragging: ~2s for 12KB, not the ~100s a pure constant
+  // rate would take. (Live turns never hit this — see the realistic-live test.)
   let r = 0;
   const target = 12000;
   let frames = 0;
-  while (r < target && frames < 10000) {
+  while (r < target && frames < 100000) {
     r = nextRevealed(r, target, 16, P);
     frames++;
   }
   assert.equal(r, target);
-  // With catch-up, a fully-available 12KB message should finish in well under a
-  // second (~0.56s ≈ 35 frames at 60fps), not drag for many seconds.
-  assert.ok(frames < 60, `took ${frames} frames to reveal 12KB — too slow`);
+  const seconds = (frames * 16) / 1000;
+  assert.ok(seconds < 3, `12KB fully buffered took ${seconds.toFixed(1)}s — too slow`);
+});
+
+test('REALISTIC live streaming reveals in small typing-sized steps (no chunks)', () => {
+  // The scenario the user actually sees: the model emits ~250 ch/s in ~30-char
+  // deltas over a multi-second turn; the display drains every 16ms frame. The
+  // reveal must advance in small, steady steps — NEVER a whole delta/burst at
+  // once (that is the "block by block" complaint).
+  let revealed = 0;
+  let target = 0;
+  let t = 0;
+  const deltaEveryMs = 120;
+  const deltaSize = 30;
+  const totalChars = 3000;
+  let nextDelta = deltaEveryMs;
+  let emitted = 0;
+  const steps: number[] = [];
+  let maxBacklog = 0;
+  while (revealed < totalChars && t < 60000) {
+    t += 16;
+    if (t >= nextDelta && emitted < totalChars) {
+      target += deltaSize;
+      emitted += deltaSize;
+      nextDelta += deltaEveryMs;
+    }
+    const before = revealed;
+    revealed = nextRevealed(revealed, target, 16, P);
+    if (revealed > before) steps.push(revealed - before);
+    maxBacklog = Math.max(maxBacklog, target - revealed);
+  }
+  assert.equal(revealed, totalChars);
+  const maxStep = Math.max(...steps);
+  // No frame revealed a whole delta (30) or more — i.e. never a chunk. A steady
+  // typewriter reveals a few chars/frame; a chunky one dumps the delta.
+  assert.ok(maxStep < 30, `max single-frame reveal was ${maxStep} chars — chunky`);
+  // Backlog stayed small (below the cap), confirming we ran on the CONSTANT rate,
+  // not the overflow drain — the whole point.
+  assert.ok(maxBacklog < 200, `backlog reached ${maxBacklog} — display lagged`);
 });
 
 test('keeps up with a realistic bursty arrival without lagging unboundedly', () => {
