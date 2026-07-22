@@ -16,6 +16,7 @@ import type {
 } from '../shared/types';
 import type { SelfTuneRun } from '../shared/self-tune';
 import { clearPendingPermission, emptySession, foldEvents } from '../shared/agent-events';
+import { pickFallbackActive, pushHistory } from './active-fallback';
 import { createAgentEventQueue } from './agent-event-queue';
 import { dialog } from './components/Dialog';
 import { dlog, debugEnabled } from './debug';
@@ -106,6 +107,12 @@ interface State {
    *  the two panes are mutually exclusive. */
   helpOpen: boolean;
   activeId: string | null;
+  /** Most-recently-opened-first stack of workspace ids the user has focused
+   *  this session (deduped). When the active workspace disappears — archived,
+   *  deleted, or removed out from under us — the fallback selection walks this
+   *  list to reopen the *previous* workspace rather than snapping to the first
+   *  row in sidebar order. Session-only; not persisted. */
+  openHistory: string[];
   view: 'terminal' | 'run' | 'structured';
   /** Which top-level surface fills the main pane: the normal workspace panes,
    *  or the full-page Resources view (opened from the sidebar footer). The
@@ -180,6 +187,7 @@ export const useStore = create<State>((set, get) => ({
   insightsOpen: false,
   helpOpen: false,
   activeId: null,
+  openHistory: [],
   // Initial agent view honors the user's persisted default-view preference
   // (Phase 6): 'structured' opens the SDK pane, else the classic terminal.
   // 'run' is only ever reached via an explicit tab click, so the default only
@@ -192,7 +200,13 @@ export const useStore = create<State>((set, get) => ({
     // Picking a workspace dismisses the full-pane surfaces (Insights, Help,
     // Resources) — they cover the main pane, so leaving one up would eclipse
     // the terminal the user just chose.
-    set({ activeId: id, insightsOpen: false, helpOpen: false, page: 'workspaces' });
+    set((s) => ({
+      activeId: id,
+      openHistory: id ? pushHistory(s.openHistory, id) : s.openHistory,
+      insightsOpen: false,
+      helpOpen: false,
+      page: 'workspaces',
+    }));
     if (id) {
       const ws = get().workspaces.find((w) => w.id === id);
       if (ws && ws.status === 'waiting') {
@@ -340,7 +354,7 @@ export const useStore = create<State>((set, get) => ({
     );
     const activeId =
       s.activeId === id
-        ? workspaces.find((w) => !w.archived)?.id ?? null
+        ? pickFallbackActive(workspaces, s.openHistory, id)
         : s.activeId;
     set({ workspaces, activeId });
   },
@@ -389,7 +403,7 @@ export const useStore = create<State>((set, get) => ({
     const workspaces = s.workspaces.filter((w) => w.id !== id);
     const activeId =
       s.activeId === id
-        ? workspaces.find((w) => !w.archived)?.id ?? null
+        ? pickFallbackActive(workspaces, s.openHistory, id)
         : s.activeId;
     const { [id]: _gone, ...rest } = s.stats;
     set({ workspaces, activeId, stats: rest });
@@ -548,7 +562,7 @@ window.orchestra.onWorkspaceRemoved((id) => {
     const workspaces = s.workspaces.filter((w) => w.id !== id);
     const activeId =
       s.activeId === id
-        ? workspaces.find((w) => !w.archived)?.id ?? null
+        ? pickFallbackActive(workspaces, s.openHistory, id)
         : s.activeId;
     const { [id]: _gonePr, ...prs } = s.prs;
     const { [id]: _goneLinear, ...linear } = s.linear;
@@ -565,7 +579,7 @@ window.orchestra.onWorkspacesRemoved((ids) => {
     const workspaces = s.workspaces.filter((w) => !drop.has(w.id));
     const activeId =
       s.activeId && drop.has(s.activeId)
-        ? workspaces.find((w) => !w.archived)?.id ?? null
+        ? pickFallbackActive(workspaces, s.openHistory, s.activeId)
         : s.activeId;
     const prune = <T,>(m: Record<string, T>): Record<string, T> =>
       Object.fromEntries(Object.entries(m).filter(([k]) => !drop.has(k)));

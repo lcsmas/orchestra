@@ -84,7 +84,12 @@ Single source of truth; **atomic selectors** so high-frequency events
 flag, drives the size-badge tooltip; active rows hide the badge below
 `SIZE_BADGE_MIN_BYTES` (50 MB) so the wrapping badge doesn't add a line of
 noise per row)/`prs`/`linear`/`tools`/`contextTokens`/`repoSync`/`accountUsage`/
-`workspaceAccounts`, plus UI (`activeId`, `view`, `loaded`). `load()` `:115`
+`workspaceAccounts`, plus UI (`activeId`, `openHistory`, `view`, `loaded`).
+`openHistory` is a session-only most-recently-opened-first stack of workspace
+ids (pushed in `setActive` via `pushHistory`); when the active workspace
+disappears (archive/delete/`onWorkspace(s)Removed`), the fallback selection uses
+`pickFallbackActive` (`active-fallback.ts`, pure + node-tested) to reopen the
+*previous* workspace instead of snapping to the first sidebar row. `load()` `:115`
 hydrates in parallel and seeds context badges from persisted `contextTokens`.
 Refreshers (`refreshAllStats`/`Sizes`/`AllPRs`/`AllLinear`, `:292+`) are driven
 by **visibility-aware polls** and commit once. Live event subscriptions `:381+`
