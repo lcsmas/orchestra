@@ -34,6 +34,7 @@ import {
 } from '../shared/agent-events';
 import type {
   AgentEvent,
+  AgentImage,
   AgentPermissionMode,
   AgentPermissionReply,
   AgentSkillInfo,
@@ -576,7 +577,11 @@ export async function sdkListSkills(wsId: string): Promise<AgentSkillInfo[]> {
  *  resume), EMIT an error event so the structured view shows it — the old
  *  behavior rejected silently and the composer swallowed it ("send does
  *  nothing"). Still rethrows so the IPC caller can react too. */
-export async function sdkSend(wsId: string, text: string): Promise<void> {
+export async function sdkSend(
+  wsId: string,
+  text: string,
+  images?: AgentImage[],
+): Promise<void> {
   let session: Session;
   try {
     session = await ensureSession(wsId);
@@ -601,15 +606,34 @@ export async function sdkSend(wsId: string, text: string): Promise<void> {
     }
     throw err;
   }
+  // With pasted images, the SDK message content becomes an ARRAY of content
+  // blocks — image blocks (base64 source, per the Messages API vision shape)
+  // followed by the text block. Plain text stays a bare string (the common path).
+  const content =
+    images && images.length > 0
+      ? [
+          ...images.map((img) => ({
+            type: 'image' as const,
+            source: {
+              type: 'base64' as const,
+              media_type: img.mediaType,
+              data: img.dataBase64,
+            },
+          })),
+          ...(text ? [{ type: 'text' as const, text }] : []),
+        ]
+      : text;
   const msg: SDKUserMessage = {
     type: 'user',
     parent_tool_use_id: null,
-    message: { role: 'user', content: text },
+    // The SDK's content-block union is wider than our narrowed shape; the base64
+    // image + text blocks match the Messages API vision contract exactly.
+    message: { role: 'user', content: content as SDKUserMessage['message']['content'] },
   };
   session.queue.push(msg);
-  // Echo the prompt to every attached UI — the SDK stream never repeats plain
-  // user text, so this event is the transcript's only record of it.
-  emit(session.wsId, makeUserMessage(session.ctx, text));
+  // Echo the prompt (text + images) to every attached UI — the SDK stream never
+  // repeats plain user content, so this event is the transcript's only record.
+  emit(session.wsId, makeUserMessage(session.ctx, text, images));
   session.pump?.();
 }
 

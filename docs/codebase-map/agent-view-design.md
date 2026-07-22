@@ -72,16 +72,21 @@ Shell (`StructuredView.tsx`): `.av-view` (+`.active`) → `.av-message-list` →
 resets its height to `auto` then sets it to `scrollHeight` on every text change
 (a `useLayoutEffect`, so it fires on skill-completion `setText` too, not just
 keystrokes); CSS gives it `box-sizing:border-box` + `overflow-y:auto` so it scrolls
-past the `max-height:200px` cap. Empty state `.av-empty` >
+past the `max-height:200px` cap. **Pasted images** show as a thumbnail strip inside
+the field: `.av-composer-attachments` > `.av-composer-attachment` (img +
+`.av-composer-attachment-remove` hover ×). Empty state `.av-empty` >
 `.av-empty-{mark,title,desc,hint}` (kbd chips in the hint).
 
 Message (`MessageBubble.tsx`): `.av-message` + role `.av-message-{assistant,user,
 system,error}`; role microlabel `.av-message-eyebrow` (**"Error" only** now — the
 user turn carries NO "You" label, told apart from the agent by bubble shape/tint,
 Claude-Code-app style); body `.av-message-text` (prose caps at `--av-measure`);
-streaming caret `.av-cursor`. The **turn rail** is a rounded role-tinted `::before`
-spine on `.av-message` (no longer a border) — the **assistant's** signature; the
-**user** turn drops the rail (`::before { display:none }`) and instead renders as a
+streaming caret `.av-cursor`. Attached user images render in a
+`.av-message-images` > `.av-message-image` strip. The **turn rail** is a rounded
+role-tinted `::before` spine on `.av-message` (no longer a border). It is now
+**hidden on the assistant** too (`.av-message-assistant::before { display:none }`,
+`padding-left` reclaimed) — the agent voice reads as plain prose; the blue rail was
+noise. The **user** turn also drops the rail (`::before { display:none }`) and renders as a
 self-sized, right-aligned, `--av-user`-tinted bubble (`width: fit-content`,
 `margin-left:auto`, capped `max-width`). A message with no text and no thinking
 renders `null` (no empty stub). The transcript is **full-width**:
@@ -101,13 +106,14 @@ Collapsible (`Collapsible.tsx` — every tool card wraps one): `.av-collapsible`
 entrance-animated, not height-animated). Todo marks are drawn SVGs
 (`TodoMark` in ToolCard.tsx), colored via `currentColor` on `.av-todo-mark`.
 
-**Aggregated tool runs**: a run of consecutive `tool` messages fuses into one
-connected stack (Claude-Code style). `StructuredView.MeasuredRow` stamps each
-row's position in its run on `data-tool-group` (`solo`/`first`/`middle`/`last`,
-computed over the FULL message list so it's scroll-stable); the theme keys on it
-to collapse inter-card margins and square the joined corners (`middle`/`last`
-`.av-collapsible` also `margin-top:-1px` so adjacent borders overlap into one
-hairline). `solo` keeps the standalone card look.
+**Aggregated tool runs** (`ToolGroup.tsx`): a run of consecutive `tool` messages
+collapses into ONE summary row (Claude-Code style), **collapsed by default**.
+`.av-tool-group` (`.av-open`/`.av-closed`) > `.av-tool-group-header` (button) >
+`.av-caret` + `.av-tool-group-icons` (deduped per-tool SVGs) +
+`.av-tool-group-summary` ("2 Read · 1 Bash") + `.av-tool-group-status`
+(`-ok`/`-error`/`-pending` > `.av-tool-group-status-dot`) + `.av-tool-group-count`;
+expanded body `.av-tool-group-body` holds the individual `.av-tool-card`s. A lone
+tool renders as a plain card (no wrapper).
 
 Tool card (`ToolCard.tsx`): `.av-tool-card` + `.av-tool-<name-lowercased>` +
 `.av-tool-errored`. Header `.av-tool-header-inner` > `.av-tool-icon` (SVG per

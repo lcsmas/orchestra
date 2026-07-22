@@ -28,14 +28,14 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
-import type { AgentSession, AgentSkillInfo, RenderMessage } from '../../shared/types';
+import type { AgentImage, AgentSession, AgentSkillInfo, RenderMessage } from '../../shared/types';
 // A3: real presentational components (markdown bubbles, tool cards, diffs,
 // thinking spinner). AgentMessage routes tool→ToolCard else→MessageBubble and
 // owns the `av-message`/`av-tool-card` wrappers + thinking indicator, so it
 // fully replaces the placeholder MessageSlot/ToolSlot bodies below.
 // A4: interaction surfaces mounted into the slots below (permission dialog,
 // AskUserQuestion UI, model/permission-mode controls, rich turn footer).
-import { AgentMessage, PermissionDialog, AgentControls, TurnFooter } from './agent';
+import { AgentMessage, ToolGroup, PermissionDialog, AgentControls, TurnFooter } from './agent';
 
 interface Props {
   workspaceId: string;
@@ -120,13 +120,26 @@ function MessageList({
   // Stick to bottom while the user hasn't scrolled up — streaming output should
   // keep the latest message in view, like a terminal.
   const stickBottom = useRef(true);
+  // Initial-open pin: force the view to the LAST message when content first
+  // appears, and keep forcing it while row heights are still settling (they
+  // refine asynchronously over several RAF-batched measure passes, growing
+  // scrollHeight after each programmatic scroll). Without this the async height
+  // refinement leaves the transcript stranded mid-list on open, and a programmatic
+  // scroll firing onScroll mid-settle can even flip stickBottom off. Cleared once
+  // the user scrolls, or once the layout has settled at the bottom.
+  const initialPin = useRef(true);
 
   const messages = session?.messages ?? [];
 
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
+    // While the initial pin is active, a scroll event is the programmatic
+    // scroll-to-bottom (or the user hasn't intervened yet) — don't let it flip
+    // stickBottom off before the layout settles. A real user wheel/drag also
+    // releases the pin so they can scroll up.
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    if (!atBottom) initialPin.current = false;
     stickBottom.current = atBottom;
     setViewport({ scrollTop: el.scrollTop, height: el.clientHeight });
   }, []);
@@ -143,47 +156,59 @@ function MessageList({
     return () => ro.disconnect();
   }, []);
 
-  // Auto-scroll to bottom when a new message lands and we're stuck to bottom.
+  // Auto-scroll to bottom when a new message lands and we're stuck to bottom, or
+  // while the initial-open pin is active (open at the LAST message — task: the
+  // structured view should open scrolled to the latest message). The pin keeps
+  // firing across the async measure passes; it releases once we're genuinely at
+  // the bottom AND the layout has stopped growing (scrollHeight stable), or when
+  // the user scrolls up (handled in onScroll).
+  const lastScrollHeight = useRef(0);
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (el && stickBottom.current) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (initialPin.current) {
+      el.scrollTop = el.scrollHeight;
+      // Release the pin once the layout has settled: we're at the bottom and the
+      // total height didn't change since the previous measure pass.
+      const settled =
+        el.scrollHeight === lastScrollHeight.current &&
+        el.scrollHeight - el.scrollTop - el.clientHeight < 2;
+      lastScrollHeight.current = el.scrollHeight;
+      if (settled && messages.length > 0) initialPin.current = false;
+      return;
+    }
+    if (stickBottom.current) el.scrollTop = el.scrollHeight;
   }, [messages.length, measureTick]);
 
+  // Fold the flat message list into RENDER ITEMS: a run of consecutive `tool`
+  // messages collapses into ONE `tool-group` item (rendered by ToolGroup, which
+  // shows a "2 Read · 1 Bash" summary and expands to the individual cards). Every
+  // other message is its own item. Virtualization then windows over ITEMS, so a
+  // whole collapsed tool run is a single measured row — heights stay a pure
+  // function of item content. The group's id is stable (its first tool's id) so
+  // its expand/collapse state and height cache survive re-renders and scrolling.
+  const items = buildRenderItems(messages);
+
   // Compute cumulative offsets from cached/estimated heights, then the visible
-  // window [start, end). O(n) per layout — n is message count; the win is that
-  // only the sliced rows actually mount as DOM.
-  const rowH = (m: RenderMessage) => heights.current.get(m.id) ?? ESTIMATED_ROW_H;
-  const offsets: number[] = new Array(messages.length + 1);
+  // window [start, end). O(n) per layout — n is item count; only the sliced rows
+  // actually mount as DOM.
+  const itemH = (it: RenderItem) => heights.current.get(it.id) ?? ESTIMATED_ROW_H;
+  const offsets: number[] = new Array(items.length + 1);
   offsets[0] = 0;
-  for (let i = 0; i < messages.length; i++) offsets[i + 1] = offsets[i] + rowH(messages[i]);
-  const totalHeight = offsets[messages.length] ?? 0;
+  for (let i = 0; i < items.length; i++) offsets[i + 1] = offsets[i] + itemH(items[i]);
+  const totalHeight = offsets[items.length] ?? 0;
 
   const top = viewport.scrollTop;
   const bottom = top + (viewport.height || 1);
   let start = 0;
-  while (start < messages.length && offsets[start + 1] < top) start++;
+  while (start < items.length && offsets[start + 1] < top) start++;
   let end = start;
-  while (end < messages.length && offsets[end] < bottom) end++;
+  while (end < items.length && offsets[end] < bottom) end++;
   start = Math.max(0, start - OVERSCAN);
-  end = Math.min(messages.length, end + OVERSCAN);
+  end = Math.min(items.length, end + OVERSCAN);
 
-  const visible = messages.slice(start, end);
+  const visible = items.slice(start, end);
   const padTop = offsets[start] ?? 0;
-
-  // Aggregate consecutive tool calls (Claude Code style): a run of adjacent
-  // `tool` messages renders as one connected stack rather than N separate cards.
-  // We compute each tool row's position in its run — 'solo' | 'first' | 'middle'
-  // | 'last' — over the FULL list (not the visible slice) so grouping is stable
-  // as the window scrolls; CSS keys on `data-tool-group` to fuse the run.
-  const toolGroup = (i: number): 'solo' | 'first' | 'middle' | 'last' | null => {
-    if (messages[i]?.role !== 'tool') return null;
-    const prevTool = i > 0 && messages[i - 1]?.role === 'tool';
-    const nextTool = i < messages.length - 1 && messages[i + 1]?.role === 'tool';
-    if (prevTool && nextTool) return 'middle';
-    if (prevTool) return 'last';
-    if (nextTool) return 'first';
-    return 'solo';
-  };
 
   return (
     <div ref={scrollRef} className="av-message-list" onScroll={onScroll}>
@@ -223,21 +248,20 @@ function MessageList({
       ) : (
         <div className="av-message-list-inner" style={{ height: totalHeight, position: 'relative' }}>
           <div style={{ transform: `translateY(${padTop}px)` }}>
-            {visible.map((m, i) => (
+            {visible.map((it, i) => (
               <MeasuredRow
-                key={m.id}
-                message={m}
+                key={it.id}
+                item={it}
                 onHeight={(h) => {
-                  if (heights.current.get(m.id) !== h) {
-                    heights.current.set(m.id, h);
+                  if (heights.current.get(it.id) !== h) {
+                    heights.current.set(it.id, h);
                     // Coalesce measure-driven recomputes to the next frame so a
                     // batch of newly-mounted rows triggers one window recompute.
                     scheduleMeasureFlush(() => setMeasureTick((t) => t + 1));
                   }
                 }}
-                // Index in the full list, for debugging/keys downstream.
+                // Index in the full item list, for debugging/keys downstream.
                 dataIndex={start + i}
-                toolGroup={toolGroup(start + i)}
               />
             ))}
           </div>
@@ -260,18 +284,13 @@ function scheduleMeasureFlush(cb: () => void) {
 }
 
 function MeasuredRow({
-  message,
+  item,
   onHeight,
   dataIndex,
-  toolGroup,
 }: {
-  message: RenderMessage;
+  item: RenderItem;
   onHeight: (h: number) => void;
   dataIndex: number;
-  /** Position of this row within a run of consecutive tool cards, or null when
-   *  the row isn't a tool. Drives the CSS that fuses adjacent tool cards into a
-   *  single connected stack. */
-  toolGroup: 'solo' | 'first' | 'middle' | 'last' | null;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -279,26 +298,62 @@ function MeasuredRow({
     if (el) onHeight(el.offsetHeight);
   });
   return (
-    <div
-      ref={ref}
-      className="av-row"
-      data-index={dataIndex}
-      data-tool-group={toolGroup ?? undefined}
-    >
-      <MessageSlot message={message} />
+    <div ref={ref} className="av-row" data-index={dataIndex}>
+      <ItemSlot item={item} />
     </div>
   );
 }
 
-// ── Message renderer (A3) ────────────────────────────────────────────────────
+// ── Render-item model ────────────────────────────────────────────────────────
 //
-// A3's <AgentMessage> replaces the former placeholder MessageSlot/ToolSlot: it
-// routes a RenderMessage to a MessageBubble (streaming markdown + thinking
-// spinner) or a ToolCard (collapsible, per-tool bodies, Monaco diffs from
-// tool_use input), and owns the `av-message`/`av-tool-card` wrappers itself.
+// The transcript is a flat RenderMessage[]; we present it as RenderItem[] where a
+// run of consecutive `tool` messages becomes ONE `tool-group` item (collapsed by
+// default). A group's id is its first tool message's id — stable across renders,
+// so its measured height and expand state survive scrolling.
 
-function MessageSlot({ message }: { message: RenderMessage }) {
-  return <AgentMessage message={message} />;
+type RenderItem =
+  | { kind: 'message'; id: string; message: RenderMessage }
+  | { kind: 'tool-group'; id: string; tools: RenderMessage[] };
+
+/** Tools that must NOT be folded into a collapsed group — they own a first-class,
+ *  always-visible surface. TodoWrite is the live task list (Claude-Code shows it
+ *  expanded, never buried); it renders as its own always-open ToolCard. */
+function isStandaloneTool(m: RenderMessage): boolean {
+  return m.role === 'tool' && m.toolUse?.name === 'TodoWrite';
+}
+
+function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
+  const items: RenderItem[] = [];
+  let run: RenderMessage[] | null = null;
+  const flush = () => {
+    if (run && run.length > 0) {
+      items.push({ kind: 'tool-group', id: `tg:${run[0].id}`, tools: run });
+    }
+    run = null;
+  };
+  for (const m of messages) {
+    if (m.role === 'tool' && !isStandaloneTool(m)) {
+      (run ??= []).push(m);
+    } else {
+      // A standalone tool (TodoWrite) and any non-tool message both break the
+      // current run and render as their own item.
+      flush();
+      items.push({ kind: 'message', id: m.id, message: m });
+    }
+  }
+  flush();
+  return items;
+}
+
+// ── Item renderer (A3) ───────────────────────────────────────────────────────
+//
+// A `message` item routes through <AgentMessage> (markdown bubble / thinking /
+// lone tool card). A `tool-group` item routes through <ToolGroup>, which shows
+// the collapsed "2 Read · 1 Bash" summary and expands to individual ToolCards.
+
+function ItemSlot({ item }: { item: RenderItem }) {
+  if (item.kind === 'tool-group') return <ToolGroup tools={item.tools} />;
+  return <AgentMessage message={item.message} />;
 }
 
 // ── Permission slot (A4) ─────────────────────────────────────────────────────
@@ -363,8 +418,52 @@ function Composer({
   isActive: boolean;
 }) {
   const [text, setText] = useState('');
+  // Images pasted into the composer, pending send. Each carries the base64 for
+  // the wire plus a data URL for the thumbnail preview.
+  const [pendingImages, setPendingImages] = useState<
+    { id: string; mediaType: string; dataBase64: string; url: string }[]
+  >([]);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const running = !!session?.running;
+
+  // Accept image data from a clipboard/paste event: read each image item as a
+  // data URL, split off the base64 payload, and stash it for send + preview.
+  const addPastedImages = useCallback((items: DataTransferItemList | null) => {
+    if (!items) return false;
+    const files: File[] = [];
+    for (const it of Array.from(items)) {
+      if (it.kind === 'file' && it.type.startsWith('image/')) {
+        const f = it.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length === 0) return false;
+    for (const [i, f] of files.entries()) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const url = typeof reader.result === 'string' ? reader.result : '';
+        // data:<mediaType>;base64,<data>
+        const m = /^data:([^;]+);base64,(.*)$/.exec(url);
+        if (!m) return;
+        setPendingImages((prev) => [
+          ...prev,
+          {
+            // A stable-ish id from load time + index + size (no Date.now in a
+            // render path is fine here — this is an event handler).
+            id: `img:${f.size}:${i}:${prev.length}`,
+            mediaType: m[1],
+            dataBase64: m[2],
+            url,
+          },
+        ]);
+      };
+      reader.readAsDataURL(f);
+    }
+    return true;
+  }, []);
+
+  const removePendingImage = (id: string) =>
+    setPendingImages((prev) => prev.filter((p) => p.id !== id));
 
   // Auto-grow: the textarea height tracks its content up to the CSS max-height
   // (then it scrolls). Reset to `auto` first so it can SHRINK when lines are
@@ -424,16 +523,23 @@ function Composer({
 
   const submit = useCallback(() => {
     const t = text.trim();
-    if (!t) return;
+    // Allow send when there's text OR at least one pasted image (an image with
+    // no caption is a valid turn).
+    if (!t && pendingImages.length === 0) return;
+    const images: AgentImage[] | undefined =
+      pendingImages.length > 0
+        ? pendingImages.map(({ mediaType, dataBase64 }) => ({ mediaType, dataBase64 }))
+        : undefined;
     // First submit lazily starts the SDK session (no separate start IPC).
     // Main emits an `error` agent event on failure (rendered in the list), so we
     // don't need to surface it here — but log rather than silently swallow, so a
     // failure is never invisible in devtools either.
     void window.orchestra
-      .agentSdkSend(workspaceId, t)
+      .agentSdkSend(workspaceId, t, images)
       .catch((e) => console.error('agentSdkSend failed', e));
     setText('');
-  }, [text, workspaceId]);
+    setPendingImages([]);
+  }, [text, pendingImages, workspaceId]);
 
   const completeSkill = (name: string) => {
     setText(`/${name} `);
@@ -470,12 +576,37 @@ function Composer({
             </div>
           </div>
         )}
+        {pendingImages.length > 0 && (
+          <div className="av-composer-attachments" aria-label="Pasted images">
+            {pendingImages.map((img) => (
+              <div key={img.id} className="av-composer-attachment">
+                <img src={img.url} alt="Pasted attachment" />
+                <button
+                  type="button"
+                  className="av-composer-attachment-remove"
+                  aria-label="Remove image"
+                  title="Remove"
+                  onClick={() => removePendingImage(img.id)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <textarea
           ref={taRef}
           className="av-composer-input"
           value={text}
-          placeholder="Message the agent — / for skills…"
+          placeholder="Message the agent — / for skills, paste an image…"
           rows={1}
+          onPaste={(e) => {
+            // If the clipboard carries image data, capture it and stop it from
+            // also inserting a filename/text into the textarea.
+            if (addPastedImages(e.clipboardData?.items ?? null)) {
+              e.preventDefault();
+            }
+          }}
           onChange={(e) => {
             setText(e.target.value);
             setAcDismissed(false);
@@ -514,7 +645,7 @@ function Composer({
         <button
           className="av-composer-send"
           onClick={submit}
-          disabled={!text.trim()}
+          disabled={!text.trim() && pendingImages.length === 0}
           title={running ? 'Agent is working — message will queue' : 'Send (Enter)'}
         >
           <svg

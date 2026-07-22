@@ -736,8 +736,8 @@ export const apiHandlers: ApiHandlerTable = {
   // Each starts/reuses the workspace's lazy session; the forward event stream
   // is broadcast on `agent:event` from that module.
 
-  agentSdkSend: async (wsId, text) => {
-    await sdkSend(wsId, text);
+  agentSdkSend: async (wsId, text, images) => {
+    await sdkSend(wsId, text, images);
   },
 
   agentSdkInterrupt: async (wsId) => {

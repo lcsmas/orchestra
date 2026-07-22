@@ -31,7 +31,7 @@ renderer store: agentSessions[wsId] = foldEvent(prev, event)   src/renderer/stor
 ```
 
 **Reverse path (user → agent):** `window.orchestra.agentSdk*` invoke handlers call into
-the live `query` object in main — `agentSdkSend(wsId, text)`, `agentSdkInterrupt(wsId)`,
+the live `query` object in main — `agentSdkSend(wsId, text, images?)`, `agentSdkInterrupt(wsId)`,
 `agentSdkPermissionReply(wsId, requestId, reply)`, `agentSdkSetModel`,
 `agentSdkSetPermissionMode`. Multi-turn uses the **streaming-input pattern**: one
 long-lived `query()` per session fed by an async-generator prompt (each follow-up turn
@@ -52,7 +52,12 @@ gated on the prior `result`), so the subprocess stays warm and `canUseTool` fire
   (agent-sdk.ts) — the SDK stream never repeats plain user text (its `user` messages
   only carry `tool_result` blocks), so without this event a sent prompt would never
   appear in the transcript. The fold also flips `running: true` on it so the
-  interrupt/footer react before the first SDK event lands.
+  interrupt/footer react before the first SDK event lands. **Pasted images** ride
+  the same path: `AgentImage[]` (`{mediaType,dataBase64}`, shared/types.ts) on
+  `agentSdkSend`/`AgentUserMessageEvent`/`makeUserMessage`/`RenderMessage.images`.
+  When present, `sdkSend` builds the SDK `content` as an array of `image` (base64
+  source) + `text` blocks instead of a bare string; the echo carries the images so
+  the user bubble renders them (MessageBubble `.av-message-image`).
 - **`src/main/agent-sdk.ts`** — per-workspace SDK session manager. Owns the `query`
   object, the async-generator prompt queue, the `canUseTool` bridge (parks the call, emits
   a `permission-request` event, resolves on the renderer's `agentSdkPermissionReply`), and
@@ -72,8 +77,21 @@ gated on the prior `result`), so the subprocess stays warm and `canUseTool` fire
   a frame of events and folds them in one `setState` (test asserts batched-fold ==
   sequential-fold). ~1600 events/commit under load; holds 60fps at 600+ messages.
 - **`src/renderer/components/StructuredView.tsx`** — always-mounted-per-workspace
-  virtualized container + composer. Slots: `AgentMessage` (routes tool→`ToolCard` else
-  `MessageBubble`), `PermissionDialog`, `AgentControls`, `TurnFooter`.
+  virtualized container + composer. It folds the flat `RenderMessage[]` into
+  **render items** (`buildRenderItems`): a run of consecutive `tool` messages
+  becomes ONE `tool-group` item, every other message its own item; virtualization
+  windows over items so a collapsed tool run is a single measured row. Items route
+  through `ItemSlot` → `ToolGroup` (tool runs) or `AgentMessage`
+  (`MessageBubble`, else a lone `ToolCard`). The list **opens scrolled to the last
+  message** (an `initialPin` ref force-scrolls to bottom across the async
+  height-settle passes). The **composer** auto-grows and accepts **pasted images**
+  (`onPaste` → base64 via FileReader → thumbnail strip → sent on submit as
+  `AgentImage[]`). Slots: `PermissionDialog`, `AgentControls`, `TurnFooter`.
+- **`src/renderer/components/agent/ToolGroup.tsx`** — the aggregated tool run:
+  collapsed by default to a "2 Read · 1 Bash" summary row (deduped icon strip,
+  overall status dot, count), expanding to the individual `ToolCard`s. A lone tool
+  renders as a plain `ToolCard` (no wrapper). `summarizeToolRun` counts per tool
+  name in first-seen order.
 - **`src/renderer/components/agent/*`** — `MessageBubble` (dep-free markdown +
   Monaco code blocks; renders `null` when a message has no text and isn't thinking),
   `ToolCard`/`ToolDiff` (Edit/Write diffs reconstructed from the `tool_use` **input**,
@@ -116,7 +134,9 @@ gated on the prior `result`), so the subprocess stays warm and `canUseTool` fire
 ## Default-view preference (Phase 6)
 
 - **`src/renderer/default-agent-view.ts`** (+ `.test.ts`) — pure, localStorage-backed
-  preference (`orchestra:defaultAgentView`, default `'terminal'`). `readDefaultAgentView()`
+  preference (`orchestra:defaultAgentView`, **default `'structured'`** — the SDK pane
+  is the primary surface; only an explicit `'terminal'` opts back into the classic
+  TUI, and `terminalTabLabel` then relabels that tab "Raw"). `readDefaultAgentView()`
   seeds the store's initial `view` (store.ts); `terminalTabLabel()` relabels the embedded
   terminal tab to **"Raw"** when structured is the default. Toggled via
   **`src/renderer/components/AgentViewSettings.tsx`** (a sidebar Settings modal, opened from

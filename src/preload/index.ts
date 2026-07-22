@@ -74,7 +74,7 @@ const api: OrchestraAPI = {
   saveClipboardImage: (mime, bytes) => ipcRenderer.invoke('clipboard:saveImage', mime, bytes),
   restartAgent: (id) => ipcRenderer.invoke('agent:restart', id),
   stopAgent: (id) => ipcRenderer.invoke('agent:stop', id),
-  agentSdkSend: (wsId, text) => ipcRenderer.invoke('agent:sdkSend', wsId, text),
+  agentSdkSend: (wsId, text, images) => ipcRenderer.invoke('agent:sdkSend', wsId, text, images),
   agentSdkInterrupt: (wsId) => ipcRenderer.invoke('agent:sdkInterrupt', wsId),
   agentSdkPermissionReply: (wsId, requestId, reply) =>
     ipcRenderer.invoke('agent:sdkPermissionReply', wsId, requestId, reply),

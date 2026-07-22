@@ -23,14 +23,16 @@ interface Props {
  * calls for.
  */
 function MessageBubbleImpl({ message }: Props) {
-  const { text, thinking, role } = message;
+  const { text, thinking, role, images } = message;
 
   const blocks = useMemo(() => (text ? parseMarkdown(text) : []), [text]);
 
+  const hasImages = !!images && images.length > 0;
   // A message with nothing to show — e.g. a thinking-only block after the
   // spinner settles, or a text block whose first delta hasn't landed — must
-  // not paint an empty bubble/rail stub in the transcript.
-  if (!text && !thinking) return null;
+  // not paint an empty bubble/rail stub in the transcript. (Images alone are
+  // enough to render, though.)
+  if (!text && !thinking && !hasImages) return null;
 
   return (
     <div className={`av-message av-message-${role}`} data-role={role}>
@@ -39,6 +41,18 @@ function MessageBubbleImpl({ message }: Props) {
           bubble for the user; plain prose for the agent). Only errors keep an
           eyebrow, where the word carries real information. */}
       {role === 'error' ? <div className="av-message-eyebrow">Error</div> : null}
+      {hasImages ? (
+        <div className="av-message-images">
+          {images!.map((img, i) => (
+            <img
+              key={i}
+              className="av-message-image"
+              src={`data:${img.mediaType};base64,${img.dataBase64}`}
+              alt="Attached"
+            />
+          ))}
+        </div>
+      ) : null}
       <div className="av-message-text">
         {blocks.map((b, i) =>
           b.kind === 'code' ? (
@@ -66,7 +80,10 @@ function areEqual(a: Props, b: Props): boolean {
     x.thinking === y.thinking &&
     x.role === y.role &&
     x.done === y.done &&
-    x.id === y.id
+    x.id === y.id &&
+    // Images are set once at message creation and never mutate, so an identity
+    // (length) check is sufficient and cheap.
+    (x.images?.length ?? 0) === (y.images?.length ?? 0)
   );
 }
 

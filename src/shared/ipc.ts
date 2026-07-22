@@ -4,6 +4,7 @@ import type {
   Account,
   AccountUsageStatus,
   AgentEvent,
+  AgentImage,
   AgentPermissionMode,
   AgentPermissionReply,
   AgentSkillInfo,
@@ -245,7 +246,7 @@ export interface OrchestraAPI {
   /** Send a user turn to a workspace's structured SDK session, starting the
    *  session lazily on the first call. Uses the streaming-input pattern so the
    *  subprocess stays warm across turns (docs/spikes/phase0-sdk-findings.md h). */
-  agentSdkSend: (wsId: string, text: string) => Promise<void>;
+  agentSdkSend: (wsId: string, text: string, images?: AgentImage[]) => Promise<void>;
   /** Interrupt the in-flight turn of a workspace's SDK session. Surfaces to the
    *  UI as a `turn-end`/`error` event (the SDK iterator throws, spike d). */
   agentSdkInterrupt: (wsId: string) => Promise<void>;

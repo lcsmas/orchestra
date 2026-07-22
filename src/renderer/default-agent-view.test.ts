@@ -16,28 +16,28 @@ function fakeStorage(initial: Record<string, string> = {}) {
   };
 }
 
-test('readDefaultAgentView defaults to terminal when unset', () => {
-  assert.equal(readDefaultAgentView(fakeStorage()), 'terminal');
+test('readDefaultAgentView defaults to structured when unset', () => {
+  assert.equal(readDefaultAgentView(fakeStorage()), 'structured');
 });
 
-test('readDefaultAgentView returns structured only for the exact value', () => {
+test('readDefaultAgentView returns terminal only for the exact value', () => {
   assert.equal(
-    readDefaultAgentView(fakeStorage({ [DEFAULT_AGENT_VIEW_KEY]: 'structured' })),
-    'structured',
-  );
-  // Any other/garbage value falls back to the safe classic view.
-  assert.equal(
-    readDefaultAgentView(fakeStorage({ [DEFAULT_AGENT_VIEW_KEY]: 'STRUCTURED' })),
+    readDefaultAgentView(fakeStorage({ [DEFAULT_AGENT_VIEW_KEY]: 'terminal' })),
     'terminal',
+  );
+  // Any other/garbage value falls back to the primary structured view.
+  assert.equal(
+    readDefaultAgentView(fakeStorage({ [DEFAULT_AGENT_VIEW_KEY]: 'TERMINAL' })),
+    'structured',
   );
   assert.equal(
     readDefaultAgentView(fakeStorage({ [DEFAULT_AGENT_VIEW_KEY]: 'garbage' })),
-    'terminal',
+    'structured',
   );
 });
 
 test('readDefaultAgentView tolerates missing storage', () => {
-  assert.equal(readDefaultAgentView(undefined), 'terminal');
+  assert.equal(readDefaultAgentView(undefined), 'structured');
 });
 
 test('write then read round-trips', () => {

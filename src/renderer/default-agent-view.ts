@@ -1,8 +1,9 @@
 // The user's preferred DEFAULT agent view — 'terminal' (the classic embedded
 // Claude Code TUI) or 'structured' (the SDK-driven native pane). A renderer-side
 // UI preference, persisted in localStorage exactly like the chime/theme prefs
-// (chime.ts). Defaults to 'terminal' so existing users see no change until they
-// opt in; the Settings toggle flips it.
+// (chime.ts). Defaults to 'structured' — the SDK-driven pane is the primary
+// agent surface; users can opt back into the classic terminal via the Settings
+// toggle, which persists 'terminal'.
 //
 // Phase 6 of the structured-agent-view rollout: when set to 'structured', a
 // workspace opens on the Structured tab and the embedded terminal is demoted to
@@ -13,14 +14,16 @@ export type DefaultAgentView = 'terminal' | 'structured';
 
 export const DEFAULT_AGENT_VIEW_KEY = 'orchestra:defaultAgentView';
 
-/** Read the persisted preference. Returns 'terminal' when unset or invalid, so
- *  the classic view is always the safe fallback. `storage` is injectable for
- *  tests; defaults to window.localStorage when present. */
+/** Read the persisted preference. Defaults to 'structured' — the SDK-driven
+ *  native pane is now the primary agent surface — and only returns 'terminal'
+ *  when the user has explicitly opted back into the classic embedded TUI.
+ *  `storage` is injectable for tests; defaults to window.localStorage when
+ *  present. */
 export function readDefaultAgentView(
   storage: Pick<Storage, 'getItem'> | undefined = safeLocalStorage(),
 ): DefaultAgentView {
   const raw = storage?.getItem(DEFAULT_AGENT_VIEW_KEY);
-  return raw === 'structured' ? 'structured' : 'terminal';
+  return raw === 'terminal' ? 'terminal' : 'structured';
 }
 
 /** Persist the preference. No-op if localStorage is unavailable. */

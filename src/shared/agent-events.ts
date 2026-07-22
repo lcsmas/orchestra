@@ -26,6 +26,7 @@
 
 import type {
   AgentEvent,
+  AgentImage,
   AgentPermissionRequestEvent,
   AgentSession,
   AgentStopReason,
@@ -354,8 +355,16 @@ export function makePermissionRequest(
 
 /** Build a stamped user-message echo (see {@link AgentUserMessageEvent}) — the
  *  manager emits one per sdkSend so the submitted prompt renders immediately. */
-export function makeUserMessage(ctx: NormalizeContext, text: string): AgentUserMessageEvent {
-  return stamp(ctx, { type: 'user-message', text });
+export function makeUserMessage(
+  ctx: NormalizeContext,
+  text: string,
+  images?: AgentImage[],
+): AgentUserMessageEvent {
+  return stamp(ctx, {
+    type: 'user-message',
+    text,
+    ...(images && images.length > 0 ? { images } : {}),
+  });
 }
 
 // ─── fold: AgentEvent → AgentSession ─────────────────────────────────────────
@@ -590,6 +599,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         id: `user:${event.seq}`,
         role: 'user',
         text: event.text,
+        ...(event.images && event.images.length > 0 ? { images: event.images } : {}),
         done: true,
       });
       return { ...next, messages, running: true };

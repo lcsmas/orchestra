@@ -742,6 +742,16 @@ export interface AgentSessionUpdateEvent extends AgentEventBase {
   permissionMode?: AgentPermissionMode;
 }
 
+/** An image attached to a user turn (pasted into the composer). Carried to the
+ *  SDK as an `image` content block and echoed into the transcript so the sent
+ *  image renders in the user's bubble. */
+export interface AgentImage {
+  /** IANA media type, e.g. `image/png`, `image/jpeg`. */
+  mediaType: string;
+  /** Raw base64 of the image bytes (no `data:` prefix). */
+  dataBase64: string;
+}
+
 /** A user turn submitted to the session, echoed by the manager at enqueue time.
  *  The SDK stream does NOT echo plain user text back (its `user` messages only
  *  carry tool_result blocks), so without this event a sent prompt would never
@@ -752,6 +762,8 @@ export interface AgentUserMessageEvent extends AgentEventBase {
   type: 'user-message';
   /** The prompt text as submitted. */
   text: string;
+  /** Images pasted into the composer alongside the text, if any. */
+  images?: AgentImage[];
 }
 
 /** A turn finished — the SDK `result` message (spike f). Carries the cost/usage
@@ -835,6 +847,8 @@ export interface RenderMessage {
   index?: number;
   /** Assistant/user/system/error text, accumulated from deltas. */
   text?: string;
+  /** For a `user` message: images pasted into the composer with this turn. */
+  images?: AgentImage[];
   /** True while a thinking block is open on this message — a spinner indicator,
    *  never rendered text (redacted on Opus 4.8). */
   thinking?: boolean;

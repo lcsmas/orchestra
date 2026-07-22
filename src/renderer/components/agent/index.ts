@@ -12,6 +12,7 @@
 export { AgentMessage } from './AgentMessage';
 export { MessageBubble } from './MessageBubble';
 export { ToolCard } from './ToolCard';
+export { ToolGroup } from './ToolGroup';
 export { ToolDiff } from './ToolDiff';
 export { ThinkingIndicator } from './ThinkingIndicator';
 export { Collapsible } from './Collapsible';
