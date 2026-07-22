@@ -27,6 +27,7 @@
 import type {
   AgentEvent,
   AgentImage,
+  AgentPermissionMode,
   AgentPermissionRequestEvent,
   AgentSession,
   AgentStopReason,
@@ -351,6 +352,25 @@ export function makePermissionRequest(
     input,
     ...(opts?.title ? { title: opts.title } : {}),
   });
+}
+
+/** The `AskUserQuestion` tool name. Shared source of truth: the renderer's
+ *  question UI (src/renderer/components/agent/askUserQuestion.ts) re-exports it,
+ *  and agent-sdk.ts's canUseTool bridge tests against it. */
+export const ASK_USER_QUESTION = 'AskUserQuestion';
+
+/** Whether a `canUseTool` call should be auto-approved WITHOUT prompting, given
+ *  the session's permission mode. `bypassPermissions` auto-approves every tool —
+ *  EXCEPT `AskUserQuestion`, which is interactive by nature and must always park
+ *  for a real human answer (auto-approving it resolves the tool with no
+ *  `answers`, so the harness returns "The user did not answer the questions" and
+ *  the prompt appears to close by itself). Pure so it is unit-testable without
+ *  Electron — the regression guard for that auto-close bug. */
+export function shouldAutoApprovePermission(
+  permissionMode: AgentPermissionMode,
+  toolName: string,
+): boolean {
+  return permissionMode === 'bypassPermissions' && toolName !== ASK_USER_QUESTION;
 }
 
 /** Build a stamped user-message echo (see {@link AgentUserMessageEvent}) — the

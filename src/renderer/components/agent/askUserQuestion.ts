@@ -13,7 +13,11 @@
 //   input, and the tool reads `answers`. This mirrors how the interactive
 //   AskUserQuestion permission component answers.
 
-export const ASK_USER_QUESTION = 'AskUserQuestion';
+// Single source of truth lives in the shared contract; imported + re-exported
+// here so the renderer's question UI and main's canUseTool bridge agree on the
+// tool name (and existing importers of this module keep working).
+import { ASK_USER_QUESTION } from '../../../shared/agent-events.ts';
+export { ASK_USER_QUESTION };
 
 /** One option within an AskUserQuestion question. */
 export interface AskOption {

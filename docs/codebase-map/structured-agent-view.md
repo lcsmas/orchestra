@@ -180,7 +180,14 @@ to the unchanged PTY path.
   pure `/prefix` (Tab/Enter complete, arrows navigate, Esc dismisses).
 - **Permission-mode default is `bypassPermissions`** (ensureSession + emptySession +
   AgentControls fallbacks) — parity with the terminal path's autonomous agents;
-  a persisted `ws.sdkPermissionMode` still wins.
+  a persisted `ws.sdkPermissionMode` still wins. **Exception: `AskUserQuestion`
+  always parks for a real reply, in every mode** — the pure
+  `shouldAutoApprovePermission(mode, toolName)` (agent-events.ts) excludes it from
+  the bypass auto-approve path. Bypass skips approval of the agent's *actions*, not
+  a question addressed to the user; auto-approving AskUserQuestion resolves the
+  tool with no `answers`, so the harness returns "The user did not answer the
+  questions" and the prompt appears to auto-close (guarded by
+  `agent-events.test.ts`).
 - **`AvMenu`** (`components/agent/AvMenu.tsx`) — the custom dropdown replacing native
   selects in AgentControls (portalled glass panel; see agent-view-design.md).
 - New IPC: `agentSdkHistory` (`agent:sdkHistory`), `agentSkills` (`agent:skills`).

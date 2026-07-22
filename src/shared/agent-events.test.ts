@@ -8,6 +8,8 @@ import {
   makePermissionRequest,
   makeUserMessage,
   clearPendingPermission,
+  shouldAutoApprovePermission,
+  ASK_USER_QUESTION,
   type NormalizeContext,
   type SdkMessage,
 } from './agent-events.ts';
@@ -379,6 +381,28 @@ test('makePermissionRequest builds a permission-request event', () => {
     input: { command: 'ls' },
     title: 'Run a command',
   });
+});
+
+// ─── shouldAutoApprovePermission (bypass never auto-answers AskUserQuestion) ──
+
+test('shouldAutoApprovePermission: bypass auto-approves ordinary tools', () => {
+  assert.equal(shouldAutoApprovePermission('bypassPermissions', 'Bash'), true);
+  assert.equal(shouldAutoApprovePermission('bypassPermissions', 'Edit'), true);
+  assert.equal(shouldAutoApprovePermission('bypassPermissions', 'Write'), true);
+});
+
+test('shouldAutoApprovePermission: AskUserQuestion is NEVER auto-approved, even in bypass', () => {
+  // The regression guard: auto-approving AskUserQuestion resolves the tool with
+  // no `answers`, so the harness returns "The user did not answer the questions"
+  // and the prompt appears to close by itself. It must always park for a reply.
+  assert.equal(shouldAutoApprovePermission('bypassPermissions', ASK_USER_QUESTION), false);
+});
+
+test('shouldAutoApprovePermission: non-bypass modes never auto-approve', () => {
+  for (const mode of ['default', 'plan', 'acceptEdits'] as const) {
+    assert.equal(shouldAutoApprovePermission(mode, 'Bash'), false);
+    assert.equal(shouldAutoApprovePermission(mode, ASK_USER_QUESTION), false);
+  }
 });
 
 // ─── fold: streaming text into one message ───────────────────────────────────

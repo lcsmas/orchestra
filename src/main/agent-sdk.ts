@@ -32,6 +32,7 @@ import {
   normalizeSdkMessage,
   makePermissionRequest,
   makeUserMessage,
+  shouldAutoApprovePermission,
   stamp,
   type NormalizeContext,
   type SdkMessage,
@@ -259,20 +260,45 @@ function buildSdkEnv(ws: Workspace): Record<string, string> {
 /** The canUseTool bridge: park the call, emit a permission-request event, and
  *  wait for the renderer's reply (or the turn/session ending).
  *
- *  In `bypassPermissions` mode we auto-allow here rather than parking a prompt.
- *  The SDK requires `allowDangerouslySkipPermissions` for the CLI to honor
- *  bypass at all, but `canUseTool` — once supplied — is still invoked per tool,
- *  so without this short-circuit a "bypass" session would silently fall back to
- *  prompting (the reported "behaves like auto-accept" symptom). Reading
- *  `session.permissionMode` (not a captured value) means a *live* switch to
- *  bypass via `sdkSetPermissionMode` takes effect on the very next tool call. */
+ *  In `bypassPermissions` mode we auto-allow here rather than parking a prompt
+ *  — EXCEPT for `AskUserQuestion`, which is interactive by nature and always
+ *  parks for a real answer (see the note inside). The SDK requires
+ *  `allowDangerouslySkipPermissions` for the CLI to honor bypass at all, but
+ *  `canUseTool` — once supplied — is still invoked per tool, so without this
+ *  short-circuit a "bypass" session would silently fall back to prompting (the
+ *  reported "behaves like auto-accept" symptom). Reading `session.permissionMode`
+ *  (not a captured value) means a *live* switch to bypass via
+ *  `sdkSetPermissionMode` takes effect on the very next tool call. */
 function makeCanUseTool(session: Session) {
   return (
     toolName: string,
     input: Record<string, unknown>,
     opts: { toolUseID: string; requestId: string; title?: string; signal: AbortSignal },
   ): Promise<PermissionResult> => {
-    if (session.permissionMode === 'bypassPermissions') {
+    // AskUserQuestion must ALWAYS park for a real human reply, in every mode —
+    // it is NOT a permission to bypass. Grounded in the SDK's OWN documented
+    // intent for the two mechanisms that collide here:
+    //   • bypassPermissions (SDK warning text): "auto-approves every tool call
+    //     … before the callback is consulted" — i.e. skip approval of the AGENT's
+    //     dangerous ACTIONS (writes, Bash) so it runs unattended.
+    //   • askUserQuestionTimeout (SDK setting): "Idle time before Claude's
+    //     questions auto-continue with any answers selected so far. Defaults to
+    //     never." So a question is INTENDED to WAIT for the human indefinitely by
+    //     default; auto-continuing with nothing is opt-in, not the default.
+    // In a normal interactive CLI these never collide — the CLI renders the
+    // question in its own UI and waits regardless of bypass. But Orchestra runs
+    // the SDK HEADLESS with no interactive question renderer, so if bypass
+    // auto-approves the AskUserQuestion *tool call*, it resolves instantly with
+    // the original input (no `answers`) → the harness returns "The user did not
+    // answer the questions" and the prompt appears to close by itself (the
+    // reported bug — reproduced live). Orchestra provides the question UI
+    // (AskUserQuestionCard), so AskUserQuestion has to stay OUT of the bypass
+    // auto-approve path and park for the user, matching the CLI's wait-for-human
+    // default. (Verified against SDK 0.3.216: bypass auto-approval yields the
+    // "did not answer" tool_result; parking + real answer records the choice.)
+    // The decision is the pure `shouldAutoApprovePermission` — unit-tested in
+    // agent-events.test.ts as the regression guard for this auto-close bug.
+    if (shouldAutoApprovePermission(session.permissionMode, toolName)) {
       return Promise.resolve({ behavior: 'allow', updatedInput: input });
     }
     const requestId = opts.requestId || randomUUID();
