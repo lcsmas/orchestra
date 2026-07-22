@@ -955,6 +955,18 @@ export interface AgentSession {
   /** Cumulative cost in USD across every turn this session, for a running
    *  total. */
   totalCostUsd: number;
+  /** Epoch ms the current turn started (set when `running` flips true on a
+   *  `user-message`/`session/init`), or undefined between turns. Backs the
+   *  live-ticking elapsed timer in the TurnFooter's "working" state — the SDK
+   *  stream carries no live duration, so the renderer derives elapsed from
+   *  `Date.now() - turnStartedAt`. Cleared to `undefined` at `turn-end`. */
+  turnStartedAt?: number;
+  /** Count of assistant output characters streamed in the CURRENT turn (summed
+   *  from `text-delta`s), reset to 0 when a turn starts. The SDK delivers exact
+   *  token usage only at `turn-end`, so while a turn is in flight the footer
+   *  shows an approximate live token count derived from this (~chars/4) that
+   *  ticks up, then snaps to the exact `lastTurn.usage.outputTokens` at end. */
+  liveOutputChars: number;
   /** Background tasks (Task-tool subagents, shells, monitors, workflows) the
    *  session has spawned, keyed by `task_id`, in first-seen (insertion) order.
    *  Folded from {@link AgentTaskEvent}. Backs the "Background tasks" panel. */

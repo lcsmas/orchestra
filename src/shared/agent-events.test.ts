@@ -925,3 +925,40 @@ test('fold: replaying the whole task stream from empty rebuilds the same tasks (
   assert.equal(a.tasks.t1.status, 'completed');
   assert.deepEqual(a.tasks.t1.usage, { totalTokens: 200, toolUses: 3, durationMs: 2000 });
 });
+
+test('fold: live turn clock + output-char counter track a turn', () => {
+  let s = emptySession('ws');
+  // A user prompt starts the turn: clock set, live chars reset.
+  s = foldEvent(s, { type: 'user-message', seq: 0, at: 1000, text: 'hi' });
+  assert.equal(s.running, true);
+  assert.equal(s.turnStartedAt, 1000);
+  assert.equal(s.liveOutputChars, 0);
+
+  // Streamed assistant text accumulates the live char count.
+  s = foldEvent(s, { type: 'block-start', seq: 1, at: 1100, index: 0, kind: 'text' });
+  s = foldEvent(s, { type: 'text-delta', seq: 2, at: 1200, index: 0, text: 'hello' });
+  s = foldEvent(s, { type: 'text-delta', seq: 3, at: 1300, index: 0, text: ' world' });
+  assert.equal(s.liveOutputChars, 'hello world'.length);
+
+  // Turn-end stops the clock; the live counter is frozen (footer reads lastTurn).
+  s = foldEvent(s, {
+    type: 'turn-end',
+    seq: 4,
+    at: 2000,
+    isError: false,
+    stopReason: 'end_turn',
+    numTurns: 1,
+    durationMs: 1000,
+    costUsd: 0.01,
+    usage: null,
+    resultText: null,
+    sessionId: '',
+  });
+  assert.equal(s.running, false);
+  assert.equal(s.turnStartedAt, undefined);
+
+  // A second prompt resets the char counter and restarts the clock.
+  s = foldEvent(s, { type: 'user-message', seq: 5, at: 3000, text: 'again' });
+  assert.equal(s.turnStartedAt, 3000);
+  assert.equal(s.liveOutputChars, 0);
+});

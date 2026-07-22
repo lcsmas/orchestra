@@ -21,10 +21,12 @@
  * `.av-message`/`.av-tool-card`, never `.av-row`.
  * ==========================================================================*/
 
-/* ── Tool cards / groups: flat matte chip, solid hairline, no gradient sheen,
- *    no glow on the running state (just a stronger border). ─────────────────*/
+/* ── Tool cards / runs: flat matte chip, solid hairline, no gradient sheen,
+ *    no glow on the running state (just a stronger border). The collapsed tool
+ *    run is borderless/transparent at rest (set in the theme layer); only the
+ *    EXPANDED run gets the flat surface. ─────────────────────────────────────*/
 .av-view .av-collapsible,
-.av-view .av-tool-group {
+.av-view .av-tool-run.av-open {
   background: var(--av-surface-raised);
   box-shadow: none;
 }

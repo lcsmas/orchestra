@@ -153,14 +153,20 @@ Collapsible (`Collapsible.tsx` — every tool card wraps one): `.av-collapsible`
 entrance-animated, not height-animated). Todo marks are drawn SVGs
 (`TodoMark` in ToolCard.tsx), colored via `currentColor` on `.av-todo-mark`.
 
-**Aggregated tool runs** (`ToolGroup.tsx`): a run of consecutive `tool` messages
-collapses into ONE summary row (Claude-Code style), **collapsed by default**.
-`.av-tool-group` (`.av-open`/`.av-closed`) > `.av-tool-group-header` (button) >
-`.av-caret` + `.av-tool-group-icons` (deduped per-tool SVGs) +
-`.av-tool-group-summary` ("2 Read · 1 Bash") + `.av-tool-group-status`
-(`-ok`/`-error`/`-pending` > `.av-tool-group-status-dot`) + `.av-tool-group-count`;
-expanded body `.av-tool-group-body` holds the individual `.av-tool-card`s. A lone
-tool renders as a plain card (no wrapper).
+**Tool runs** (`ToolGroup.tsx`): EVERY run of consecutive `tool` messages —
+including a single tool — collapses into ONE quiet, muted, **borderless**
+one-line row (Claude-Code desktop style), **collapsed by default**, so tool
+detail recedes behind the assistant's prose. `.av-tool-run` (`.av-open`/
+`.av-closed`; borderless/transparent at rest, framed surface only when
+`.av-open`) > `.av-tool-run-header` (button) > `.av-caret` +
+`.av-tool-run-icons` (deduped per-tool SVGs, muted) + `.av-tool-run-label` (verb
+summary — "Created 5 files", "Used 6 tools", "Ran a command, used a tool") +
+`.av-tool-run-diff` (inline `.av-diff-add`/`.av-diff-del` red/green counts) +
+optional `.av-tool-run-status` (`-pending`/`-error` > `.av-tool-run-status-dot`,
+pushed right); expanded body `.av-tool-run-body` holds the individual
+`.av-tool-card`s. The ONLY tool that renders as a standalone always-open card is
+TodoWrite (`isStandaloneTool` in StructuredView). (Replaced the older
+`.av-tool-group*` name-count row.)
 
 Tool card (`ToolCard.tsx`): `.av-tool-card` + `.av-tool-<name-lowercased>` +
 `.av-tool-errored`. Header `.av-tool-header-inner` > `.av-tool-icon` (SVG per
@@ -242,9 +248,14 @@ Composer skills autocomplete: `.av-ac` (absolute above `.av-composer-field`) >
 `.av-ac-source{,-project,-user}`; footer `.av-ac-hint` with kbd chips. The
 composer input is MONO at code size (a command line, not a web form).
 
-Turn footer (`TurnFooter.tsx`): `.av-turn-footer` (+`-running`/`-error`/`-live`) >
-`.av-turn-stat` (`.av-turn-stat-value` + `.av-turn-stat-label`); `.av-turn-spinner`;
-error `.av-turn-{error-icon,error-label,error-detail,error-spinner,running-label}`.
+Turn footer (`TurnFooter.tsx`): `.av-turn-footer` (+`-running`/`-error`) >
+`.av-turn-stat` (`.av-turn-stat-value` + `.av-turn-stat-label`). The **running**
+variant is the real-time "working" readout: `.av-turn-spark` (rotating spark) +
+`.av-turn-running-label` ("Working", shimmer) + `.av-turn-live-sep` + live
+`.av-turn-live-time` / `.av-turn-live-tokens` (tabular-nums so ticking digits
+don't reflow). Error `.av-turn-{error-icon,error-label,error-detail,error-spinner}`.
+(`.av-turn-spinner` retained for the error-spinner; the running state uses the
+spark, not the ring.)
 
 ## Accessibility contract
 

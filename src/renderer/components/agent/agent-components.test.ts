@@ -16,7 +16,16 @@ import {
   summarizeInput,
   truncate,
   todosFrom,
+  describeToolRun,
+  aggregateDiff,
+  fileBase,
+  type ToolLike,
 } from './tool-util.ts';
+
+/** Terse ToolLike builder for the run-summary tests. */
+function tl(name: string, input: Record<string, unknown> = {}): ToolLike {
+  return { name, input };
+}
 
 test('parseMarkdown splits fenced code from prose', () => {
   const blocks = parseMarkdown('intro\n\n```ts\nconst x = 1;\n```\n\nafter');
@@ -97,4 +106,42 @@ test('todosFrom parses and defaults a TodoWrite input', () => {
   assert.equal(todos[2].status, 'pending');
   assert.deepEqual(todosFrom(undefined), []);
   assert.deepEqual(todosFrom({ todos: 'not-array' }), []);
+});
+
+test('describeToolRun uses claude.ai verb style', () => {
+  // All creates → "Created N files"; single create names the file.
+  assert.equal(
+    describeToolRun([tl('Write', { file_path: 'a.ts' }), tl('Edit', { file_path: 'b.ts' })]),
+    'Created 2 files',
+  );
+  assert.equal(describeToolRun([tl('Write', { file_path: 'src/types.ts' })]), 'Created types.ts');
+  // All reads.
+  assert.equal(describeToolRun([tl('Read'), tl('Read'), tl('Read')]), 'Read 3 files');
+  assert.equal(describeToolRun([tl('Read', { file_path: 'x/y.ts' })]), 'Read y.ts');
+  // Bash-only.
+  assert.equal(describeToolRun([tl('Bash')]), 'Ran a command');
+  assert.equal(describeToolRun([tl('Bash'), tl('Bash')]), 'Ran 2 commands');
+  // Bash + one other → the "Ran a command, used a tool" phrasing.
+  assert.equal(describeToolRun([tl('Bash'), tl('Read')]), 'Ran a command, used a tool');
+  // Mixed / unknown → plain tool count.
+  assert.equal(describeToolRun([tl('Read'), tl('Grep'), tl('Task')]), 'Used 3 tools');
+  assert.equal(describeToolRun([tl('Mystery')]), 'Used a tool');
+  assert.equal(describeToolRun([]), 'Used a tool');
+});
+
+test('aggregateDiff sums added/removed lines across Edit/Write only', () => {
+  const run = [
+    tl('Write', { content: 'a\nb\nc' }), // +3 -0
+    tl('Edit', { old_string: 'x\ny', new_string: 'x\ny\nz\nw' }), // +4 -2
+    tl('Bash', { command: 'ls' }), // ignored
+  ];
+  assert.deepEqual(aggregateDiff(run), { added: 7, removed: 2 });
+  assert.deepEqual(aggregateDiff([tl('Read')]), { added: 0, removed: 0 });
+});
+
+test('fileBase returns the last path segment', () => {
+  assert.equal(fileBase('src/a/b.ts'), 'b.ts');
+  assert.equal(fileBase('b.ts'), 'b.ts');
+  assert.equal(fileBase(''), '');
+  assert.equal(fileBase('trailing/'), 'trailing');
 });

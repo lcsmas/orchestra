@@ -53,7 +53,11 @@ to the unchanged PTY path.
 
 - **`src/shared/types.ts`** — the `AgentEvent` discriminated union (on `type`),
   `AgentSession`, `RenderMessage`, `TokenUsage`, `AgentPermissionMode`,
-  `AgentPermissionReply`. Blocks keyed by numeric SDK content-block `index`. **Thinking is
+  `AgentPermissionReply`. `AgentSession` also carries **`turnStartedAt?`** (epoch
+  ms the current turn started, set on `user-message`/`session/init`, cleared at
+  `turn-end`) and **`liveOutputChars`** (assistant output chars streamed this
+  turn, reset at turn start) — the two fields that back the TurnFooter's live
+  elapsed timer + live token estimate. Blocks keyed by numeric SDK content-block `index`. **Thinking is
   a boolean** (`thinking-start` only) — cleartext thinking is redacted on Opus 4.8
   (verified in `docs/spikes/phase0-sdk-findings.md`). **Background tasks:** an
   `AgentTaskEvent` variant (`type:'task'`, `kind: started|progress|updated|
@@ -170,11 +174,23 @@ to the unchanged PTY path.
   on the task's `outputFile`. `runningTaskCount`/`totalTaskCount` helpers drive the
   toggle. CSS lives in `agent-view-theme.css` (`av-bgtask-*`; the `--av-task`
   accent-2 token). Pinned inside `.av-view` (position:absolute/inset:0) as an overlay.
-- **`src/renderer/components/agent/ToolGroup.tsx`** — the aggregated tool run:
-  collapsed by default to a "2 Read · 1 Bash" summary row (deduped icon strip,
-  overall status dot, count), expanding to the individual `ToolCard`s. A lone tool
-  renders as a plain `ToolCard` (no wrapper). `summarizeToolRun` counts per tool
-  name in first-seen order.
+- **`src/renderer/components/agent/ToolGroup.tsx`** — the aggregated tool run,
+  rendered in the **Claude-Code-desktop compact style**: EVERY tool run (even a
+  single tool) collapses to ONE quiet, muted, **borderless** one-line row —
+  chevron + deduped tool-icon strip + a **verb label** (`describeToolRun`) +
+  inline **red/green diff counts** (`aggregateDiff`) + a live status dot while
+  running. There is no card frame at rest, so the row recedes behind the
+  assistant's prose; expanding reveals the individual `ToolCard`s inside a framed
+  `.av-tool-run-body`. The verb label groups by ACTION, not tool name — "Created
+  5 files", "Read 3 files", "Ran a command, used a tool", "Used 6 tools" (a
+  single create/read names the file: "Created types.ts"). `describeToolRun` /
+  `aggregateDiff` / `diffCounts` / `fileBase` are pure helpers in **`tool-util.ts`**
+  (unit-tested in `agent-components.test.ts`). A lone tool is NO LONGER a plain
+  `ToolCard` — the only exception is `isStandaloneTool` (TodoWrite), which
+  `buildRenderItems` breaks out as its own always-open `ToolCard`. The legacy
+  name-count `summarizeToolRun` ("2 Read · 1 Bash") is retained (exported, unused
+  by the UI) for any caller wanting the per-name breakdown. CSS: `.av-tool-run*`
+  (replaced the old `.av-tool-group*`).
 - **`src/renderer/components/agent/*`** — `MessageBubble` (renders text via
   `MarkdownView`; renders `null` when a message has no text and isn't thinking;
   **streaming assistant text reveals via a typewriter** — `useTypewriter` +
@@ -216,7 +232,15 @@ to the unchanged PTY path.
   multi-question requests one at a time — Back/Next/step-dots — so the dialog
   never overflows the viewport; single questions render directly**),
   `AgentControls`,
-  `TurnFooter`, plus `agent-theme.ts` (a dependency-free `useAgentTheme` hook returning
+  **`TurnFooter`** (turn cost/token/duration once a turn ends; while a turn is in
+  flight it renders the **real-time "working" readout** — animated spark icon,
+  **elapsed time counting up** from `session.turnStartedAt`, and a **live token
+  estimate** from `session.liveOutputChars` (~chars/4) that ticks up and snaps to
+  the exact `lastTurn.usage.outputTokens` at turn-end. A `useTick` hook
+  re-renders it every second while `session.running`. The SDK stream carries no
+  live duration/usage, so both live values are derived in the renderer — the
+  duration is exact, the token count is approximate-until-close by construction),
+  plus `agent-theme.ts` (a dependency-free `useAgentTheme` hook returning
   `'dark'|'light'` off the `data-agent-theme` attribute, used to pick the light/dark
   Shiki theme — formerly monaco-theme.ts, now Monaco-free).
 - **`src/shared/agent-transcript.ts`** (+ `.test.ts`) — pure converter from the on-disk

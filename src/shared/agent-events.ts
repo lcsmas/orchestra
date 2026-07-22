@@ -564,6 +564,7 @@ export function emptySession(workspaceId: string): AgentSession {
     messages: [],
     pendingPermissions: [],
     totalCostUsd: 0,
+    liveOutputChars: 0,
     tasks: {},
     lastSeq: -1,
   };
@@ -611,6 +612,11 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         model: event.model,
         permissionMode: event.permissionMode,
         running: true,
+        // Start the live turn clock unless a user-message already started it
+        // (init and the first prompt can arrive either order); reset the live
+        // output-char counter for the fresh turn.
+        turnStartedAt: next.turnStartedAt ?? event.at,
+        liveOutputChars: 0,
       };
 
     case 'block-start': {
@@ -665,7 +671,10 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       } else {
         messages[i] = { ...messages[i], text: (messages[i].text ?? '') + event.text };
       }
-      return { ...next, messages };
+      // Track streamed output length for the live token estimate (see
+      // AgentSession.liveOutputChars). Text deltas are the assistant's visible
+      // output; the exact token count still arrives at turn-end.
+      return { ...next, messages, liveOutputChars: next.liveOutputChars + event.text.length };
     }
 
     case 'tool-input-delta': {
@@ -785,7 +794,9 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         ...(event.images && event.images.length > 0 ? { images: event.images } : {}),
         done: true,
       });
-      return { ...next, messages, running: true };
+      // A fresh prompt starts a new turn: start the live clock and reset the
+      // per-turn output-char counter that feeds the live token estimate.
+      return { ...next, messages, running: true, turnStartedAt: event.at, liveOutputChars: 0 };
     }
 
     case 'turn-end':
@@ -794,6 +805,9 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         running: false,
         lastTurn: event,
         totalCostUsd: next.totalCostUsd + (event.costUsd ?? 0),
+        // The turn is over — stop the live clock; the footer now reads the exact
+        // duration/token usage off `lastTurn` instead of the live estimate.
+        turnStartedAt: undefined,
         // A finished turn resolves any still-pending permission prompts (the
         // turn cannot end with a live canUseTool call outstanding).
         pendingPermissions: [],

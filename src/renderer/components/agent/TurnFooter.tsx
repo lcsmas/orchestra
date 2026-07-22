@@ -4,6 +4,7 @@
 // result was an is_error / api_error result (a transient 500 shows as
 // "API error — retrying", not a crash; see spike note 6).
 
+import { useEffect, useState } from 'react';
 import type { AgentSession, AgentTurnEndEvent } from '../../../shared/types';
 
 /** k/M token formatter, mirroring AccountBadge.formatTokens for consistency. */
@@ -15,6 +16,26 @@ function formatTokens(n: number): string {
   }
   const m = n / 1_000_000;
   return `${m < 10 ? m.toFixed(1) : Math.round(m)}M`;
+}
+
+/** Rough chars→tokens estimate for the LIVE counter (~4 chars/token for English
+ *  prose + code). Approximate by design — the exact count arrives at turn-end and
+ *  the footer snaps to it. Kept deliberately simple; a fancier tokenizer isn't
+ *  worth shipping on the streaming hot path. */
+function estimateTokens(chars: number): number {
+  return Math.max(0, Math.round(chars / 4));
+}
+
+/** Live clock: re-renders every `ms` while `active`, so a derived value like
+ *  elapsed time or a live token estimate ticks up. Returns a monotonically
+ *  increasing tick counter (unused by callers — they read Date.now()/props). */
+function useTick(active: boolean, ms = 1000): void {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setTick((t) => t + 1), ms);
+    return () => clearInterval(id);
+  }, [active, ms]);
 }
 
 /** Cost in USD, cents-precise for small amounts. */
@@ -44,21 +65,22 @@ function Stat({ label, value, title }: { label: string; value: string; title?: s
 }
 
 export function TurnFooter({ session }: { session: AgentSession | undefined }) {
+  // Tick every second while a turn is in flight so the live elapsed/token
+  // readout updates in real time. (Called unconditionally to satisfy the rules
+  // of hooks; a no-op when the session is absent/idle.)
+  useTick(!!session?.running);
+
   if (!session) return null;
   const turn = session.lastTurn;
 
-  // Running turn, no result yet: a slim live indicator.
-  if (!turn) {
-    if (session.running) {
-      return (
-        <div className="av-turn-footer av-turn-footer-running" role="status">
-          <span className="av-turn-spinner" aria-hidden="true" />
-          <span className="av-turn-running-label">Working…</span>
-        </div>
-      );
-    }
-    return null;
+  // A turn in flight: the real-time "working" readout — animated icon, elapsed
+  // time counting up, and an estimated live token count (snaps to exact at
+  // turn-end). Mirrors the Claude-Code desktop footer.
+  if (session.running) {
+    return <TurnFooterRunning session={session} />;
   }
+
+  if (!turn) return null;
 
   // Error result — surfaced gracefully (transient 500 is common, not a crash).
   if (turn.isError) {
@@ -96,10 +118,44 @@ export function TurnFooter({ session }: { session: AgentSession | undefined }) {
       {typeof turn.durationMs === 'number' && (
         <Stat label="took" value={formatDuration(turn.durationMs)} />
       )}
-      {session.running && (
-        <span className="av-turn-footer-live" aria-hidden="true">
-          <span className="av-turn-spinner" />
+    </div>
+  );
+}
+
+/**
+ * The real-time "working" footer, styled like the Claude-Code desktop app: an
+ * animated spark icon, elapsed time counting up (from `session.turnStartedAt`),
+ * and a live token estimate (from `session.liveOutputChars`, ~chars/4). Both
+ * refresh via the parent's `useTick`; the token number is approximate until the
+ * turn closes, when the footer swaps to the exact `lastTurn.usage`.
+ */
+function TurnFooterRunning({ session }: { session: AgentSession }) {
+  const startedAt = session.turnStartedAt;
+  const elapsedMs = startedAt !== undefined ? Date.now() - startedAt : -1;
+  // Only show the live clock when the elapsed reads as a sane in-progress turn:
+  // ≥ 0 and under a day. A bogus/future `turnStartedAt` (should never happen —
+  // the manager stamps real Date.now()) would otherwise print a nonsense
+  // duration; guard it rather than trust the timestamp blindly.
+  const showTime = elapsedMs >= 0 && elapsedMs < 24 * 60 * 60 * 1000;
+  const liveTokens = estimateTokens(session.liveOutputChars);
+
+  return (
+    <div className="av-turn-footer av-turn-footer-running" role="status">
+      <span className="av-turn-spark" aria-hidden="true">✳</span>
+      <span className="av-turn-running-label">Working</span>
+      {showTime && <span className="av-turn-live-sep" aria-hidden="true">·</span>}
+      {showTime && (
+        <span className="av-turn-live-time" title="Elapsed">
+          {formatDuration(elapsedMs)}
         </span>
+      )}
+      {liveTokens > 0 && (
+        <>
+          <span className="av-turn-live-sep" aria-hidden="true">·</span>
+          <span className="av-turn-live-tokens" title="Estimated output tokens (exact at turn end)">
+            {formatTokens(liveTokens)} tokens
+          </span>
+        </>
       )}
     </div>
   );

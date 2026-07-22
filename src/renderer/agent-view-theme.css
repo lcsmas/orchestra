@@ -422,59 +422,66 @@
   transition: border-color 140ms var(--av-ease);
 }
 
-/* ── Aggregated tool run (Claude-Code style) ─────────────────────────────────
-   A run of consecutive `tool` messages collapses into ONE summary row
-   (<ToolGroup>): "2 Read · 1 Bash", one status dot, a count, expanding to the
-   individual cards. A lone tool renders as a plain card (no wrapper). */
-.av-tool-group {
+/* ── Tool run (Claude-Code desktop style) ────────────────────────────────────
+   A run of tool calls — even a single one — collapses into ONE quiet, muted
+   one-line row (<ToolGroup>): a chevron, a small tool-icon strip, a verb label
+   ("Created 5 files", "Used 6 tools", "Ran a command, used a tool"), an inline
+   red/green diff count, and a live dot while running. NO card frame at rest —
+   the row is borderless and low-contrast so it recedes behind the assistant's
+   prose; expanding reveals the individual ToolCards inside a framed body. */
+.av-tool-run {
+  margin: 1px 24px;
+  border: none; border-radius: 8px; background: none;
+}
+.av-tool-run.av-open {
   margin: 4px 24px 8px;
   border: 1px solid var(--av-hairline);
-  border-radius: 10px;
   background: linear-gradient(180deg, var(--av-highlight), transparent 55%),
     var(--av-surface-raised);
   overflow: hidden;
-  transition: border-color 140ms var(--av-ease);
 }
-.av-tool-group:hover { border-color: var(--av-hairline-strong); }
-.av-tool-group-header {
-  display: flex; align-items: center; gap: 9px; width: 100%;
-  padding: 8px 12px; background: none; border: none; color: var(--av-text);
+.av-tool-run-header {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 3px 8px; background: none; border: none; color: var(--av-text-faint);
   font: inherit; font-size: var(--av-fs-small); text-align: left; cursor: pointer;
-  transition: background 120ms var(--av-ease);
+  border-radius: 7px;
+  transition: background 120ms var(--av-ease), color 120ms var(--av-ease);
 }
-.av-tool-group-header:hover { background: color-mix(in srgb, var(--av-text) 4%, transparent); }
-.av-tool-group-header:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--av-focus-border); }
-/* Distinct per-tool icons, deduped, in run order. */
-.av-tool-group-icons { display: inline-flex; align-items: center; gap: 5px; flex: none; color: var(--av-tool); }
-.av-tool-group-icons svg { width: 14px; height: 14px; }
-.av-tool-group-summary {
-  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-weight: 600; color: var(--av-text-dim); letter-spacing: 0.01em;
+.av-tool-run-header:hover { background: color-mix(in srgb, var(--av-text) 4%, transparent); color: var(--av-text-dim); }
+.av-tool-run-header:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--av-focus-border); }
+.av-tool-run.av-open > .av-tool-run-header { border-radius: 7px 7px 0 0; }
+/* Distinct per-tool icons, deduped, in run order — muted to match the row. */
+.av-tool-run-icons { display: inline-flex; align-items: center; gap: 4px; flex: none; color: var(--av-text-faint); }
+.av-tool-run-icons svg { width: 13px; height: 13px; }
+.av-tool-run-header:hover .av-tool-run-icons { color: var(--av-text-dim); }
+.av-tool-run-label {
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 500; letter-spacing: 0.005em; color: inherit;
 }
-/* Overall status dot (ok / running / error). */
-.av-tool-group-status { flex: none; display: inline-flex; align-items: center; }
-.av-tool-group-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--av-add); }
-.av-tool-group-status-error .av-tool-group-status-dot { background: var(--av-error); }
-.av-tool-group-status-pending .av-tool-group-status-dot {
-  background: var(--av-tool-active); animation: av-pulse 1.4s var(--av-ease) infinite;
+/* Inline diff counts (+134 −0), same red/green as ToolDiff. */
+.av-tool-run-diff {
+  flex: none; display: inline-flex; gap: 6px;
+  font-family: var(--font-mono); font-size: var(--av-fs-caption);
+  font-variant-numeric: tabular-nums;
 }
-@media (prefers-reduced-motion: reduce) { .av-tool-group-status-pending .av-tool-group-status-dot { animation: none; } }
-.av-tool-group-count {
-  flex: none; min-width: 18px; text-align: center;
-  font-family: var(--font-mono); font-size: var(--av-fs-caption); font-variant-numeric: tabular-nums;
-  color: var(--av-text-faint);
-  padding: 1px 6px; border-radius: 999px;
-  background: color-mix(in srgb, var(--av-text) 6%, transparent);
+/* Push the status dot to the far right; the label owns the slack. */
+.av-tool-run-status { flex: none; margin-left: auto; display: inline-flex; align-items: center; }
+.av-tool-run-status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--av-tool-active); }
+.av-tool-run-status-error .av-tool-run-status-dot { background: var(--av-error); }
+.av-tool-run-status-pending .av-tool-run-status-dot {
+  animation: av-pulse 1.4s var(--av-ease) infinite;
 }
-/* Expanded body: the individual cards stack with a hairline between them and no
-   extra outer margin (the group frame already provides it). */
-.av-tool-group-body {
+@media (prefers-reduced-motion: reduce) { .av-tool-run-status-pending .av-tool-run-status-dot { animation: none; } }
+/* Errored run: the label reads in the error color so a failure isn't buried. */
+.av-tool-run-error > .av-tool-run-header { color: var(--av-error); }
+/* Expanded body: the individual cards stack with a hairline between them. */
+.av-tool-run-body {
   border-top: 1px solid var(--av-hairline-faint);
   padding: 4px 4px 6px;
   animation: av-reveal 180ms var(--av-ease-out);
 }
-@media (prefers-reduced-motion: reduce) { .av-tool-group-body { animation: none; } }
-.av-tool-group-body > .av-tool-card { margin: 4px 6px; }
+@media (prefers-reduced-motion: reduce) { .av-tool-run-body { animation: none; } }
+.av-tool-run-body > .av-tool-card { margin: 4px 6px; }
 .av-collapsible:hover { border-color: var(--av-hairline-strong); }
 /* Opaque error tint (a translucent one would show whatever is behind the card). */
 .av-tool-errored > .av-collapsible {
@@ -1075,9 +1082,22 @@
 .av-turn-stat { display: inline-flex; align-items: baseline; gap: 5px; }
 .av-turn-stat-value { color: var(--av-text-dim); font-weight: 600; }
 .av-turn-stat-label { color: var(--av-text-faint); text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; }
-.av-turn-footer-running { color: var(--av-text-dim); }
+/* Real-time "working" readout (Claude-Code desktop style): animated spark,
+   shimmering "Working", then live elapsed · token estimate, all tabular so the
+   ticking digits don't reflow the row. */
+.av-turn-footer-running { color: var(--av-text-dim); gap: 8px; }
+.av-turn-spark {
+  flex: none; color: var(--av-tool-active); font-size: 13px; line-height: 1;
+  display: inline-block; animation: av-spark-spin 1.8s var(--av-ease) infinite;
+}
+@keyframes av-spark-spin {
+  0% { transform: rotate(0deg); opacity: 0.85; }
+  50% { opacity: 1; }
+  100% { transform: rotate(180deg); opacity: 0.85; }
+}
+@media (prefers-reduced-motion: reduce) { .av-turn-spark { animation: none; } }
 .av-turn-running-label {
-  font-style: normal; letter-spacing: 0.08em; text-transform: uppercase;
+  font-style: normal; letter-spacing: 0.04em;
   background: linear-gradient(90deg,
     color-mix(in srgb, var(--av-text-dim) 55%, transparent) 0%,
     var(--av-text-dim) 50%,
@@ -1088,6 +1108,10 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .av-turn-running-label { animation: none; background: none; color: var(--av-text-dim); }
+}
+.av-turn-live-sep { color: var(--av-text-faint); }
+.av-turn-live-time, .av-turn-live-tokens {
+  color: var(--av-text-dim); font-variant-numeric: tabular-nums;
 }
 /* Live spinner sits right after the stats inside the deck bar — no auto-margin
    (that would shove it against the docked menus instead of trailing the stats). */

@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import type { RenderMessage } from '../../../shared/types';
 import { ToolCard } from './ToolCard';
 import { ToolIcon } from './tool-icons';
+import { describeToolRun, aggregateDiff, type ToolLike } from './tool-util';
 
 interface Props {
   /** A run of consecutive `tool` messages (length ≥ 1). */
@@ -9,30 +10,32 @@ interface Props {
 }
 
 /**
- * A run of consecutive tool calls, rendered collapsed by default (Claude-Code
- * app style): a single summary row — "2 Read · 1 Bash · 1 Skill" — with one
- * overall status, that expands to reveal every individual {@link ToolCard}.
+ * A run of tool calls, rendered collapsed by default in the Claude-Code desktop
+ * style: ONE muted, low-contrast one-line row —
  *
- * A single tool in the run is shown expanded-as-a-plain-card (no summary
- * wrapper) so a lone tool call still reads exactly as before. Two or more fold
- * into the collapsible summary.
+ *   › Created 5 files  +134 −0
+ *   › Used 6 tools
+ *   › Ran a command, used a tool
+ *
+ * — with a small leading tool icon, an inline red/green diff count when any
+ * Edit/Write is in the run, and a live status dot while a tool is running. The
+ * whole row is a disclosure button; expanding reveals the individual
+ * {@link ToolCard}s. A LONE tool renders the same compact row (not a full card),
+ * so a single tool call is just as quiet as a run — the transcript stays about
+ * the assistant's prose, and tool detail is one click away.
  *
  * Memoized on the tools' identity + result/done state so an unrelated delta
  * elsewhere doesn't re-render the whole group.
  */
 function ToolGroupImpl({ tools }: Props) {
-  // A lone tool renders as its own card — nothing to aggregate.
-  if (tools.length === 1) {
-    return <ToolCard message={tools[0]} />;
-  }
-  return <ToolGroupMany tools={tools} />;
-}
-
-function ToolGroupMany({ tools }: Props) {
   const [open, setOpen] = useState(false);
 
-  // Count by tool name in run order, e.g. [["Read",2],["Bash",1]] → "2 Read · 1 Bash".
-  const summary = useMemo(() => summarizeToolRun(tools), [tools]);
+  const toolLikes: ToolLike[] = useMemo(
+    () => tools.map((t) => ({ name: t.toolUse?.name ?? 'tool', input: t.toolUse?.input })),
+    [tools],
+  );
+  const label = useMemo(() => describeToolRun(toolLikes), [toolLikes]);
+  const diff = useMemo(() => aggregateDiff(toolLikes), [toolLikes]);
 
   const anyError = tools.some((t) => t.toolResult?.isError === true);
   const anyPending = tools.some((t) => !t.toolResult && !t.done);
@@ -40,10 +43,10 @@ function ToolGroupMany({ tools }: Props) {
   const statusLabel = anyError ? 'failed' : anyPending ? 'running' : 'done';
 
   return (
-    <div className={`av-tool-group ${open ? 'av-open' : 'av-closed'}`}>
+    <div className={`av-tool-run ${open ? 'av-open' : 'av-closed'} av-tool-run-${statusKind}`}>
       <button
         type="button"
-        className="av-tool-group-header"
+        className="av-tool-run-header"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
       >
@@ -61,24 +64,35 @@ function ToolGroupMany({ tools }: Props) {
             <path d="M5.5 3 10.5 8 5.5 13" />
           </svg>
         </span>
-        {/* Distinct tool-type icons in run order (deduped), so the row reads at
-            a glance even before the text. */}
-        <span className="av-tool-group-icons" aria-hidden>
+        {/* Distinct tool-type icons in run order (deduped) — a small glanceable
+            cue before the text, muted like the rest of the row. */}
+        <span className="av-tool-run-icons" aria-hidden>
           {distinctNames(tools).map((n) => (
             <ToolIcon key={n} name={n} />
           ))}
         </span>
-        <span className="av-tool-group-summary">{summary}</span>
-        <span
-          className={`av-tool-group-status av-tool-group-status-${statusKind}`}
-        >
-          <span className="av-tool-group-status-dot" aria-hidden />
-          <span className="av-sr-only">{statusLabel}</span>
-        </span>
-        <span className="av-tool-group-count">{tools.length}</span>
+        <span className="av-tool-run-label">{label}</span>
+        {(diff.added > 0 || diff.removed > 0) && (
+          <span className="av-tool-run-diff">
+            {diff.added > 0 && <span className="av-diff-add">{`+${diff.added}`}</span>}
+            {diff.removed > 0 && <span className="av-diff-del">{`−${diff.removed}`}</span>}
+          </span>
+        )}
+        {anyPending && (
+          <span className="av-tool-run-status av-tool-run-status-pending">
+            <span className="av-tool-run-status-dot" aria-hidden />
+            <span className="av-sr-only">{statusLabel}</span>
+          </span>
+        )}
+        {anyError && (
+          <span className="av-tool-run-status av-tool-run-status-error">
+            <span className="av-tool-run-status-dot" aria-hidden />
+            <span className="av-sr-only">{statusLabel}</span>
+          </span>
+        )}
       </button>
       {open && (
-        <div className="av-tool-group-body">
+        <div className="av-tool-run-body">
           {tools.map((t) => (
             <ToolCard key={t.id} message={t} />
           ))}
@@ -102,7 +116,8 @@ function distinctNames(tools: RenderMessage[]): string[] {
   return out;
 }
 
-/** "2 Read · 1 Bash · 1 Skill" — counts per tool name, in first-seen order. */
+/** "2 Read · 1 Bash · 1 Skill" — counts per tool name, in first-seen order.
+ *  Retained for tests / callers that want the name-count breakdown. */
 export function summarizeToolRun(tools: RenderMessage[]): string {
   const order: string[] = [];
   const counts = new Map<string, number>();
@@ -124,7 +139,9 @@ function areEqual(a: Props, b: Props): boolean {
       x.done !== y.done ||
       x.toolResult?.isError !== y.toolResult?.isError ||
       !!x.toolResult !== !!y.toolResult ||
-      x.toolUse?.name !== y.toolUse?.name
+      x.toolUse?.name !== y.toolUse?.name ||
+      // input identity affects the label/diff counts (finalized once).
+      x.toolUse?.input !== y.toolUse?.input
     ) {
       return false;
     }

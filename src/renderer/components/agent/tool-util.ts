@@ -96,6 +96,126 @@ export function todosFrom(input: Record<string, unknown> | undefined): TodoItem[
     }));
 }
 
+/** Count non-empty lines in a string (empty → 0, not 1). Shared with ToolDiff. */
+export function countLines(s: string): number {
+  return s === '' ? 0 : s.split('\n').length;
+}
+
+/** Added/removed line counts for a Write/Edit tool, reconstructed from the input
+ *  (the tool_result is plain success text — see the Phase-0 spike). A Write is a
+ *  brand-new file so every line is added; an Edit diffs old_string→new_string. */
+export function diffCounts(
+  name: string,
+  input: Record<string, unknown> | undefined,
+): { added: number; removed: number } {
+  const isWrite = name === 'Write';
+  const original = isWrite ? '' : inputStr(input, 'old_string');
+  const modified = isWrite ? inputStr(input, 'content') : inputStr(input, 'new_string');
+  return { added: countLines(modified), removed: countLines(original) };
+}
+
+/** A minimal view of a tool for summarizing a run — just its name and input.
+ *  RenderMessage satisfies it via `{ name: toolUse?.name, input: toolUse?.input }`. */
+export interface ToolLike {
+  name: string;
+  input: Record<string, unknown> | undefined;
+}
+
+/** Aggregate red/green diff counts across a run of tools (only Edit/Write
+ *  contribute). Backs the inline "+134 −0" on the collapsed summary row. */
+export function aggregateDiff(tools: ToolLike[]): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  for (const t of tools) {
+    if (t.name === 'Edit' || t.name === 'Write') {
+      const c = diffCounts(t.name, t.input);
+      added += c.added;
+      removed += c.removed;
+    }
+  }
+  return { added, removed };
+}
+
+/** Pluralize a noun by count: `plural(1,'file') → '1 file'`, `plural(3,'file') → '3 files'`. */
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`;
+}
+
+/**
+ * A Claude-Code-desktop-style verb summary for a run of tool calls — the muted
+ * one-line label on a collapsed tool row. Groups by the *action*, not the tool
+ * name:
+ *
+ *   • all Write/Edit          → "Created 5 files"  /  "Created types.ts"  (single, named)
+ *   • all Read                → "Read 3 files"     /  "Read types.ts"
+ *   • all Bash                → "Ran 2 commands"   /  "Ran a command"
+ *   • Bash + exactly one more → "Ran a command, used a tool"
+ *   • anything else / mixed   → "Used 6 tools"     /  "Used a tool"
+ *
+ * The diff counts (from {@link aggregateDiff}) are rendered separately by the
+ * caller so they can carry their own red/green color, so this returns text only.
+ */
+export function describeToolRun(tools: ToolLike[]): string {
+  if (tools.length === 0) return 'Used a tool';
+
+  const names = tools.map((t) => t.name || 'tool');
+  const allSame = (n: string) => names.every((x) => x === n);
+  const isCreate = (n: string) => n === 'Write' || n === 'Edit';
+
+  // Single file/command reads nicer with its name than "1 file".
+  const singleName = (): string => {
+    const only = tools[0];
+    return (
+      inputStr(only.input, 'file_path') ||
+      inputStr(only.input, 'pattern') ||
+      inputStr(only.input, 'command') ||
+      ''
+    );
+  };
+
+  if (names.every(isCreate)) {
+    if (tools.length === 1) {
+      const f = fileBase(inputStr(tools[0].input, 'file_path'));
+      return f ? `Created ${f}` : 'Created a file';
+    }
+    return `Created ${plural(tools.length, 'file')}`;
+  }
+  if (allSame('Read')) {
+    if (tools.length === 1) {
+      const f = fileBase(inputStr(tools[0].input, 'file_path'));
+      return f ? `Read ${f}` : 'Read a file';
+    }
+    return `Read ${plural(tools.length, 'file')}`;
+  }
+  if (allSame('Bash')) {
+    return tools.length === 1 ? 'Ran a command' : `Ran ${plural(tools.length, 'command')}`;
+  }
+  // Bash + exactly one other tool → the claude.ai "Ran a command, used a tool".
+  const bashCount = names.filter((n) => n === 'Bash').length;
+  if (bashCount >= 1 && tools.length - bashCount >= 1) {
+    const others = tools.length - bashCount;
+    const cmdPart = bashCount === 1 ? 'Ran a command' : `Ran ${plural(bashCount, 'command')}`;
+    const toolPart = others === 1 ? 'used a tool' : `used ${plural(others, 'tool')}`;
+    return `${cmdPart}, ${toolPart}`;
+  }
+  if (allSame('Grep') || allSame('Glob')) {
+    if (tools.length === 1) {
+      const only = singleName();
+      return only ? `Searched for ${only}` : 'Searched';
+    }
+    return `Searched ${tools.length} times`;
+  }
+  // Everything else: a plain tool count.
+  return tools.length === 1 ? 'Used a tool' : `Used ${plural(tools.length, 'tool')}`;
+}
+
+/** Last path segment of a file path (`src/a/b.ts` → `b.ts`); '' when empty. */
+export function fileBase(p: string): string {
+  if (!p) return '';
+  const parts = p.replace(/\/+$/, '').split('/');
+  return parts[parts.length - 1] || p;
+}
+
 /** Whether two RenderMessages are equivalent for a tool card's render output. */
 export function toolMessageEqual(a: RenderMessage, b: RenderMessage): boolean {
   if (a.id !== b.id || a.done !== b.done) return false;
