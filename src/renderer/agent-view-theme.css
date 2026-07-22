@@ -93,13 +93,14 @@
   --av-ease: var(--ease, cubic-bezier(0.3, 0.8, 0.3, 1));
   --av-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
-  /* Type — CC's roomier rhythm: 16px prose, generous line-height, a system
-     mono stack for code (claude.ai ships no custom mono). Prose stays Inter. */
-  --av-fs-caption: 11px;
-  --av-fs-small: 13px;
-  --av-fs-body: 16px;
-  --av-fs-code: 13px;
-  --av-fs-h: 18px;
+  /* Type — CC's rhythm scaled down a notch: 13px prose, generous line-height,
+     a system mono stack for code (claude.ai ships no custom mono). Prose stays
+     Inter. */
+  --av-fs-caption: 10px;
+  --av-fs-small: 11px;
+  --av-fs-body: 13px;
+  --av-fs-code: 12px;
+  --av-fs-h: 15px;
   --av-lh-prose: 1.6;
   --av-measure: 78ch;
   --av-radius-xl: 14px;
