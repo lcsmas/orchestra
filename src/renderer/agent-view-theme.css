@@ -44,56 +44,67 @@
  *   mid-list must not replay it).
  * ==========================================================================*/
 
-/* --- Role tokens: DARK (default, matches app chrome) ---------------------- */
+/* --- Role tokens: DARK (default) — Claude-Code warm-neutral palette --------
+ * Values traced from the Claude Desktop app's shipped token sheet
+ * (window-shared.css `.darkTheme`, "taken from claude.ai"): a warm greige
+ * canvas (#262624) instead of the old cool blue-black, cream text, and the
+ * CLAY brand accent (#d97757) carrying the interactive/streaming voice. This
+ * is what makes the transcript read like Claude Code rather than a cool IDE. */
 .av-view {
-  --av-surface: #101318;
-  --av-surface-raised: #181d24;
-  --av-surface-sunken: #0b0e12;
-  --av-surface-overlay: #1d232c;
-  --av-hairline: #232a34;
-  --av-hairline-strong: #333b47;
-  --av-hairline-faint: rgba(255, 255, 255, 0.055);
-  --av-highlight: rgba(255, 255, 255, 0.04);
+  --av-surface: #262624;          /* CC --claude-background / bg-100 */
+  --av-surface-raised: #2f2f2c;   /* bg-000-ish — cards sit a touch lighter */
+  --av-surface-sunken: #1f1e1d;   /* bg-200 — code / output wells */
+  --av-surface-overlay: #34332f;  /* dialogs / menus */
+  --av-hairline: rgba(233, 221, 216, 0.11);        /* CC warm border tint */
+  --av-hairline-strong: rgba(233, 221, 216, 0.2);
+  --av-hairline-faint: rgba(233, 221, 216, 0.06);
+  --av-highlight: rgba(255, 253, 247, 0.03);
 
-  --av-text: #e8ebf1;
-  --av-text-dim: #949eb0;
-  --av-text-faint: #737e92;
+  --av-text: #faf9f5;             /* text-100 */
+  --av-text-dim: #c2c0b6;         /* text-200 */
+  --av-text-faint: #9c9a92;       /* text-400 */
 
-  --av-assistant: var(--accent, #6ea8ff);
-  --av-assistant-ink: var(--accent-ink, #081022);
-  --av-thinking: #b294bb;
-  --av-tool: #7c8798;
-  --av-tool-active: var(--accent, #6ea8ff);
-  --av-user: #7ee787;
-  --av-task: var(--accent-2, #8b7cff);
+  /* Clay is Claude's brand accent — it carries the assistant/interactive voice
+     and the live edge, exactly as claude.ai uses it. */
+  --av-assistant: var(--accent, #d97757);
+  --av-assistant-ink: #1c1712;
+  --av-thinking: #b09cd6;         /* CC accent-pro (purple), warmed */
+  --av-tool: #a6a39a;
+  --av-tool-active: #d97757;
+  --av-user: #c99a6a;             /* warm sand — the user bubble */
+  --av-task: #8f7fd6;             /* subagent violet */
 
-  --av-add: var(--green, #5bd68b);
-  --av-add-bg: rgba(91, 214, 139, 0.12);
-  --av-remove: var(--red, #ff6b6b);
-  --av-remove-bg: rgba(255, 107, 107, 0.12);
-  --av-error: var(--red, #ff6b6b);
-  --av-error-bg: rgba(255, 107, 107, 0.09);
-  --av-error-border: rgba(255, 107, 107, 0.45);
-  --av-warn: var(--yellow, #ffc857);
+  --av-add: #6fbf5f;              /* CC success, legible on warm surfaces */
+  --av-add-bg: rgba(111, 191, 95, 0.13);
+  --av-remove: #e0685f;           /* CC danger */
+  --av-remove-bg: rgba(224, 104, 95, 0.13);
+  --av-error: #e0685f;
+  --av-error-bg: rgba(224, 104, 95, 0.1);
+  --av-error-border: rgba(224, 104, 95, 0.5);
+  --av-warn: #d9a441;
 
-  --av-code-bg: rgba(255, 255, 255, 0.045);
-  --av-code-border: rgba(255, 255, 255, 0.07);
+  --av-code-bg: rgba(255, 253, 247, 0.04);
+  --av-code-border: rgba(233, 221, 216, 0.08);
 
-  --av-glow: rgba(110, 168, 255, 0.16);
-  --av-focus-border: var(--focus-border, rgba(110, 168, 255, 0.75));
-  --av-focus-ring: var(--focus-ring, rgba(110, 168, 255, 0.2));
+  --av-glow: rgba(217, 119, 87, 0.18);
+  --av-focus-border: rgba(217, 119, 87, 0.7);
+  --av-focus-ring: rgba(217, 119, 87, 0.22);
 
   --av-ease: var(--ease, cubic-bezier(0.3, 0.8, 0.3, 1));
   --av-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
-  --av-fs-caption: 10.5px;
-  --av-fs-small: 12px;
-  --av-fs-body: 14px;
-  --av-fs-code: 12px;
-  --av-fs-h: 15.5px;
-  --av-lh-prose: 1.65;
-  --av-measure: 92ch;
+  /* Type — CC's roomier rhythm: 16px prose, generous line-height, a system
+     mono stack for code (claude.ai ships no custom mono). Prose stays Inter. */
+  --av-fs-caption: 11px;
+  --av-fs-small: 13px;
+  --av-fs-body: 16px;
+  --av-fs-code: 13px;
+  --av-fs-h: 18px;
+  --av-lh-prose: 1.6;
+  --av-measure: 78ch;
   --av-radius-xl: 14px;
+  --av-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas,
+    "Liberation Mono", "JetBrains Mono", "Courier New", monospace;
 
   /* A whisper of light at the top of the canvas so the pane doesn't read as a
      dead flat sheet — static paint, no per-frame cost. */
@@ -110,19 +121,21 @@
  * it. A future settings toggle sets this attribute. */
 .av-view[data-agent-theme="light"],
 [data-agent-theme="light"] .av-view {
-  --av-surface: #ffffff; --av-surface-raised: #f6f7f9; --av-surface-sunken: #eef1f4;
+  /* CC light — warm cream paper (#faf9f5), ink-brown text, clay accent. */
+  --av-surface: #faf9f5; --av-surface-raised: #ffffff; --av-surface-sunken: #f0eee7;
   --av-surface-overlay: #ffffff;
-  --av-hairline: #e3e6eb; --av-hairline-strong: #ccd2db; --av-hairline-faint: rgba(20, 30, 50, 0.07);
-  --av-highlight: rgba(255, 255, 255, 0.6);
-  --av-text: #1b2330; --av-text-dim: #566175; --av-text-faint: #6d7787;
-  --av-assistant: #2f6fe0; --av-assistant-ink: #ffffff; --av-thinking: #7d55a3;
-  --av-tool: #64748b; --av-tool-active: #2159c8; --av-user: #178a4c; --av-task: #6250d0;
-  --av-add: #137a43; --av-add-bg: rgba(23, 138, 76, 0.12);
-  --av-remove: #c62828; --av-remove-bg: rgba(198, 40, 40, 0.09);
-  --av-error: #c93737; --av-error-bg: rgba(201, 55, 55, 0.08); --av-error-border: rgba(201, 55, 55, 0.38);
-  --av-warn: #a56a12; --av-code-bg: rgba(20, 30, 50, 0.05); --av-code-border: rgba(20, 30, 50, 0.09);
-  --av-glow: rgba(47, 111, 224, 0.14);
-  --av-focus-border: rgba(47, 111, 224, 0.75); --av-focus-ring: rgba(47, 111, 224, 0.22);
+  --av-hairline: rgba(112, 107, 87, 0.22); --av-hairline-strong: rgba(112, 107, 87, 0.42);
+  --av-hairline-faint: rgba(112, 107, 87, 0.12);
+  --av-highlight: rgba(255, 255, 255, 0.7);
+  --av-text: #29261b; --av-text-dim: #535146; --av-text-faint: #75736a;
+  --av-assistant: #b5562f; --av-assistant-ink: #ffffff; --av-thinking: #6a4fa0;
+  --av-tool: #75736a; --av-tool-active: #b5562f; --av-user: #9a6a2e; --av-task: #6250d0;
+  --av-add: #3f8a2c; --av-add-bg: rgba(63, 138, 44, 0.12);
+  --av-remove: #c0392b; --av-remove-bg: rgba(192, 57, 43, 0.09);
+  --av-error: #c0392b; --av-error-bg: rgba(192, 57, 43, 0.08); --av-error-border: rgba(192, 57, 43, 0.38);
+  --av-warn: #a56a12; --av-code-bg: rgba(112, 107, 87, 0.06); --av-code-border: rgba(112, 107, 87, 0.14);
+  --av-glow: rgba(193, 95, 60, 0.14);
+  --av-focus-border: rgba(193, 95, 60, 0.75); --av-focus-ring: rgba(193, 95, 60, 0.22);
   background: var(--av-surface);
 }
 /* (No explicit-dark block: dark IS the default, so `data-agent-theme="dark"`
@@ -319,7 +332,7 @@
 }
 .av-md-hr { border: none; border-top: 1px solid var(--av-hairline); margin: 1.2em 0; }
 .av-md-code-inline {
-  font-family: var(--font-mono); font-size: 0.88em; padding: 0.13em 0.42em;
+  font-family: var(--av-mono); font-size: 0.875em; font-weight: 600; padding: 0.12em 0.4em;
   border-radius: 5px; background: var(--av-code-bg); border: 1px solid var(--av-code-border); color: var(--av-text);
 }
 .av-md-link {
@@ -490,9 +503,9 @@
 /* Header contents: icon, name, one-line summary. */
 .av-tool-header-inner { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .av-tool-icon { flex: none; color: var(--av-text-faint); transition: color 140ms var(--av-ease); }
-.av-tool-name { font-family: var(--font-mono); font-size: var(--av-fs-small); font-weight: 640; color: var(--av-text); flex: none; }
+.av-tool-name { font-family: var(--font-mono); font-size: var(--av-fs-small); font-weight: 660; color: var(--av-text); flex: none; }
 .av-tool-summary {
-  color: var(--av-text-dim); font-family: var(--font-mono); font-size: 11.5px;
+  color: var(--av-text-dim); font-family: var(--av-mono); font-size: 12.5px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
@@ -524,7 +537,7 @@
 /* Monospace output wells (bash cmd/out, detail, generic json, task prompt). */
 .av-tool-bash-cmd, .av-tool-bash-out, .av-tool-detail,
 .av-tool-generic-json, .av-tool-task-prompt {
-  font-family: var(--font-mono); font-size: var(--av-fs-code); line-height: 1.55;
+  font-family: var(--av-mono); font-size: var(--av-fs-code); line-height: 1.55;
   margin: 4px 0 0; padding: 9px 12px; border-radius: var(--radius, 8px);
   background: var(--av-surface-sunken); border: 1px solid var(--av-hairline-faint);
   white-space: pre-wrap; word-break: break-word; overflow-x: auto; color: var(--av-text);
@@ -576,7 +589,7 @@
 .av-tool-task-result pre {
   margin: 4px 0 0; padding: 9px 12px; border-radius: var(--radius, 8px);
   background: var(--av-surface-sunken); border: 1px solid var(--av-hairline-faint);
-  font-family: var(--font-mono); font-size: var(--av-fs-code); white-space: pre-wrap;
+  font-family: var(--av-mono); font-size: var(--av-fs-code); white-space: pre-wrap;
   max-height: 320px; overflow-y: auto;
 }
 
@@ -628,31 +641,44 @@
  * it 1:1 so a still-streaming block doesn't jump when it upgrades to highlight. */
 .av-code-shiki pre.shiki,
 .av-code-plain {
-  margin: 0; padding: 10px 12px; overflow-x: auto;
-  font-family: var(--font-mono); font-size: var(--av-fs-code, 12.5px);
-  line-height: 1.55; tab-size: 2;
+  margin: 0; padding: 12px 14px; overflow-x: auto;
+  font-family: var(--av-mono); font-size: var(--av-fs-code, 13px);
+  line-height: 1.6; tab-size: 2;
 }
 .av-code-shiki pre.shiki { background: transparent !important; }
 .av-code-plain { color: var(--av-text); background: transparent; white-space: pre; }
 .av-code-plain code { font: inherit; color: inherit; }
 .av-code-shiki code { font: inherit; }
 
-/* GFM tables — the headline gap the old dep-free parser couldn't render at all. */
-.av-md-table-wrap { overflow-x: auto; margin: 0.5em 0 0.85em; }
+/* GFM tables — Claude-Code style: a rounded, hairline-framed grid with a warm
+   header band and quiet zebra striping. Cells read one step below body prose
+   (CC uses ~text-sm here) so a wide table stays compact. The wrapper owns the
+   rounded outer frame; border-collapse would clip the radius, so the cells use
+   only inner hairlines and the wrap paints the outer border. */
+.av-md-table-wrap {
+  overflow-x: auto; margin: 0.75em 0 1em;
+  border: 1px solid var(--av-hairline);
+  border-radius: 10px;
+  background: var(--av-surface-sunken);
+}
 .av-md-table {
   border-collapse: collapse; width: max-content; max-width: 100%;
-  font-size: var(--av-fs-body, inherit);
+  font-size: var(--av-fs-small, inherit); line-height: 1.5;
 }
 .av-md-table th, .av-md-table td {
-  border: 1px solid var(--av-hairline); padding: 5px 10px; text-align: left;
-  vertical-align: top;
+  border-right: 1px solid var(--av-hairline-faint);
+  border-bottom: 1px solid var(--av-hairline-faint);
+  padding: 8px 14px; text-align: left; vertical-align: top;
 }
+.av-md-table th:last-child, .av-md-table td:last-child { border-right: none; }
+.av-md-table tr:last-child td { border-bottom: none; }
 .av-md-table th {
   background: var(--av-surface-raised); color: var(--av-text);
-  font-weight: 600;
+  font-weight: 650; letter-spacing: -0.005em;
+  border-bottom-color: var(--av-hairline);
 }
 .av-md-table tr:nth-child(even) td {
-  background: color-mix(in srgb, var(--av-surface-raised) 45%, transparent);
+  background: color-mix(in srgb, var(--av-surface-raised) 40%, transparent);
 }
 /* GFM strikethrough. */
 .av-md-del { color: var(--av-text-faint); text-decoration: line-through; }
@@ -717,7 +743,7 @@
 .av-permission-tool { font-family: var(--font-mono); font-size: 0.9em; color: var(--av-tool-active); background: var(--av-code-bg); padding: 0.08em 0.4em; border-radius: 5px; border: 1px solid var(--av-code-border); }
 .av-permission-subtitle { color: var(--av-text-dim); font-size: var(--av-fs-small); margin: 0 0 8px; }
 .av-permission-input {
-  margin: 0 0 12px; font-family: var(--font-mono); font-size: var(--av-fs-code);
+  margin: 0 0 12px; font-family: var(--av-mono); font-size: var(--av-fs-code);
   max-height: 220px; overflow: auto; padding: 10px 12px;
   background: var(--av-surface-sunken); border: 1px solid var(--av-hairline); border-radius: var(--radius, 8px);
 }

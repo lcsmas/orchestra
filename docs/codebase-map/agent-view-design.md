@@ -26,14 +26,25 @@ reports light). Light applies ONLY when `.av-view` / an ancestor carries
 no writer today. `monaco-theme.ts` watches the same attribute (MutationObserver)
 and switches the editors between `orchestra-dark`/`orchestra-light` live.
 
+The palette matches the **Claude Code / claude.ai desktop** look: a warm greige
+canvas (`--av-surface: #262624`), cream text (`#faf9f5` / `#c2c0b6` / `#9c9a92`),
+and the **clay** brand accent (`#d97757`) carrying the assistant/interactive
+voice and the live edge — NOT a cool blue IDE. Values were traced from the
+Claude Desktop app's shipped token sheet (`window-shared.css .darkTheme`). Light
+is CC's warm cream paper (`#faf9f5`). Type follows CC's roomier rhythm: 16px
+prose, 13px small/code, generous line-height; **code content uses a system mono
+stack** (`--av-mono`, claude.ai ships no custom mono), while chrome microlabels
+keep JetBrains (`--font-mono`). Prose stays **Inter** (per product decision — we
+do not bundle Anthropic Sans).
+
 All colours are `--av-*` tokens defined on `.av-view`. **Reference the tokens,
 never raw hex.** Roles: `--av-surface{,-raised,-sunken,-overlay}`,
 `--av-hairline{,-strong,-faint}`, `--av-highlight` (inset top sheen),
 `--av-text{,-dim,-faint}`, conversation hues `--av-{assistant,thinking,tool,
 tool-active,user,task}`, states `--av-{add,remove,error,warn}` (+ `-bg`),
 `--av-code-{bg,border}`, `--av-glow` (live-edge halo), `--av-focus-{border,ring}`,
-motion `--av-ease{,-out}`, type `--av-fs-*` / `--av-lh-prose` / `--av-measure`,
-`--av-radius-xl` (composer field / dialog).
+motion `--av-ease{,-out}`, type `--av-fs-*` / `--av-lh-prose` / `--av-measure` /
+`--av-mono` (code stack), `--av-radius-xl` (composer field / dialog).
 
 ### The live edge (signature)
 
@@ -48,8 +59,10 @@ All of it sits behind `prefers-reduced-motion` guards.
 ### Monaco
 
 `components/agent/monaco-theme.ts` defines `orchestra-dark`/`orchestra-light`
-(Tomorrow Night syntax over app surfaces, JetBrains Mono, 18px lines to match
-the TSX height math) — registered idempotently via each editor's `beforeMount`.
+(warm CC-tuned syntax over the `#1f1e1d` sunken surface, system-mono
+`MONACO_FONT`, **20px lines** — `ToolDiff` derives its frame height from
+`MONACO_FONT.lineHeight`, so keep those in sync, never hard-code the row px) —
+registered idempotently via each editor's `beforeMount`.
 Monaco itself is BUNDLED (`src/renderer/monaco-loader.ts`, imported first in
 `main.tsx`): `loader.config({ monaco })` + a local editor worker, so no jsDelivr
 CDN fetch at runtime (verified: 0 CDN requests in the e2e run). Inter is also

@@ -22,39 +22,42 @@ interface MonacoLike {
   };
 }
 
-/** Tomorrow Night syntax ink, tuned toward the app's text tokens. */
+/** Syntax ink tuned to Claude-Code's warm palette. Chrome sits on the agent
+ *  view's warm sunken surface (#1f1e1d) so a diff, a code block (Shiki
+ *  github-dark) and the terminal read as one warm instrument rather than a cool
+ *  IDE dropped into cream chrome. */
 const DARK = {
-  bg: '#0d1015', // --av-surface-sunken
-  fg: '#d3dae4', // between terminal white and --text
-  lineNo: '#414b5c',
-  selection: '#334155', // TERM_THEME.selectionBackground
-  comment: '#5d6b80',
-  string: '#b5bd68', // TN green
-  number: '#f0c674', // TN yellow
-  keyword: '#b294bb', // TN magenta
-  fn: '#81a2be', // TN blue
-  type: '#e7c547', // TN bright yellow
-  tag: '#cc6666', // TN red
-  cyan: '#8abeb7', // TN cyan
-  add: '#5bd68b',
-  remove: '#ff6b6b',
+  bg: '#1f1e1d', // --av-surface-sunken (CC bg-200)
+  fg: '#e6e3da', // warm off-white, matches --av-text-dim family
+  lineNo: '#6b675d',
+  selection: '#4a453d',
+  comment: '#8c877a',
+  string: '#a7c080', // warm green
+  number: '#e0a458', // amber
+  keyword: '#c98a6a', // clay-leaning magenta/orange
+  fn: '#7fa8c9', // muted blue
+  type: '#d9a441', // gold
+  tag: '#d97757', // clay
+  cyan: '#83c0b8', // teal
+  add: '#6fbf5f',
+  remove: '#e0685f',
 };
 
 const LIGHT = {
-  bg: '#fbfcfd',
-  fg: '#1f2735',
-  lineNo: '#9aa4b2',
-  selection: '#cfe0fb',
-  comment: '#8a93a2',
-  string: '#22733f',
+  bg: '#f0eee7', // --av-surface-sunken (warm cream)
+  fg: '#29261b',
+  lineNo: '#a8a498',
+  selection: '#e4dcc8',
+  comment: '#8f8b7d',
+  string: '#3f7a34',
   number: '#a05e03',
-  keyword: '#8a5fa8',
+  keyword: '#b8562f', // clay-leaning
   fn: '#2159c8',
   type: '#8f6400',
-  tag: '#c62828',
+  tag: '#c15f3c',
   cyan: '#0e7490',
-  add: '#12703f',
-  remove: '#c62828',
+  add: '#3f8a2c',
+  remove: '#c0392b',
 };
 
 function rules(c: typeof DARK) {
@@ -89,7 +92,7 @@ function colors(c: typeof DARK) {
     'editorLineNumber.activeForeground': c.lineNo,
     'editor.selectionBackground': c.selection,
     'editor.inactiveSelectionBackground': c.selection,
-    'editorCursor.foreground': '#6ea8ff',
+    'editorCursor.foreground': '#d97757',
     'editorWidget.background': c.bg,
     'editorGutter.background': c.bg,
     'scrollbarSlider.background': '#7d879a33',
@@ -130,10 +133,12 @@ export function defineOrchestraThemes(monaco: unknown): void {
 /** Shared editor typography — matches --font-mono and the 18px row math the
  *  height estimates in CodeBlock/ToolDiff rely on. */
 export const MONACO_FONT = {
-  fontFamily: '"JetBrains Mono", "Fira Code", ui-monospace, "SF Mono", Menlo, Consolas, monospace',
-  fontSize: 12,
-  lineHeight: 18,
-  fontLigatures: true,
+  // CC's code stack — a system mono (claude.ai ships no custom mono face), so a
+  // diff reads like the Shiki code blocks and the composer's mono input.
+  fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "JetBrains Mono", "Courier New", monospace',
+  fontSize: 13,
+  lineHeight: 20,
+  fontLigatures: false,
 } as const;
 
 /** Dark is the unconditional default, exactly like agent-view-theme.css: the

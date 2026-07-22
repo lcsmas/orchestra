@@ -38,7 +38,9 @@ function ToolDiffImpl({ name, input }: Props) {
     original.split('\n').length,
     modified.split('\n').length
   );
-  const height = Math.min(lineCount * 18 + 24, 520);
+  // Row height tracks MONACO_FONT.lineHeight so the frame never clips (magic
+  // 18 here silently under-sized the editor once the line-height grew).
+  const height = Math.min(lineCount * MONACO_FONT.lineHeight + 24, 560);
   const theme = useMonacoTheme();
   const newLines = isWrite ? modified.split('\n').length : 0;
 
