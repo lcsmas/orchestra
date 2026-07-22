@@ -264,6 +264,11 @@ export interface OrchestraAPI {
    *  converted to AgentEvents (empty when there is nothing to backfill). The
    *  renderer folds these through the same queue as live events. */
   agentSdkHistory: (wsId: string) => Promise<AgentEvent[]>;
+  /** Open a finished background-task's transcript file (the SDK
+   *  `task_notification.output_file`) with the OS handler. Resolves `true` when
+   *  opened, `false` when the path is missing/not a file. Backs the "Background
+   *  tasks" panel's "View transcript" link. */
+  agentSdkOpenTaskTranscript: (filePath: string) => Promise<boolean>;
   /** Skills (slash commands) available to the workspace's agent, for the
    *  composer's `/` autocomplete. */
   agentSkills: (wsId: string) => Promise<AgentSkillInfo[]>;

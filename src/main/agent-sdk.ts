@@ -589,6 +589,14 @@ async function ensureSession(wsId: string): Promise<Session> {
     options: {
       cwd: remote ? '/workspace' : ws.worktreePath,
       includePartialMessages: true,
+      // Emit periodic AI-generated one-line progress summaries for running
+      // subagents (SDK `task_progress.summary`, e.g. "Analyzing auth module").
+      // Drives the summary line on the "Background tasks" panel cards. The fork
+      // reuses the subagent's model + prompt cache, so cost is typically
+      // minimal (sdk.d.ts). The default `task_started`/`task_progress`/
+      // `task_notification` heartbeats (usage + tool count) fire regardless —
+      // this only adds the human-readable summary.
+      agentProgressSummaries: true,
       // MUST include 'local': Orchestra writes ALL its per-workspace hooks
       // (auto-rename nudge, inbox delivery, comms-resurface, orchestrator
       // reminder, field-guide, activity spool) into

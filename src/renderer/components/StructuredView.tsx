@@ -35,7 +35,16 @@ import type { AgentImage, AgentSession, AgentSkillInfo, RenderMessage } from '..
 // fully replaces the placeholder MessageSlot/ToolSlot bodies below.
 // A4: interaction surfaces mounted into the slots below (permission dialog,
 // AskUserQuestion UI, model/permission-mode controls, rich turn footer).
-import { AgentMessage, ToolGroup, PermissionDialog, AgentControls, TurnFooter } from './agent';
+import {
+  AgentMessage,
+  ToolGroup,
+  PermissionDialog,
+  AgentControls,
+  TurnFooter,
+  BackgroundTasksPanel,
+  runningTaskCount,
+  totalTaskCount,
+} from './agent';
 
 interface Props {
   workspaceId: string;
@@ -63,6 +72,20 @@ export function StructuredView({ workspaceId, isActive }: Props) {
   );
   const injectEvent = useStore((s) => s.__injectAgentEvent);
 
+  // The "Background tasks" slide-over. Auto-opens the first time a task appears
+  // (so a fan-out surfaces without a click, like Claude Desktop), but respects a
+  // manual close thereafter — `panelOpen` is user-owned once toggled.
+  const [panelOpen, setPanelOpen] = useState(false);
+  const runningTasks = runningTaskCount(session);
+  const totalTasks = totalTaskCount(session);
+  const hadTasks = useRef(false);
+  useEffect(() => {
+    if (totalTasks > 0 && !hadTasks.current) {
+      hadTasks.current = true;
+      setPanelOpen(true);
+    }
+  }, [totalTasks]);
+
   // History backfill: a workspace with any prior session on disk opens with
   // the transcript rendered, not a blank pane. Main resolves the file (the
   // persisted SDK session, else the newest transcript — terminal-born sessions
@@ -89,6 +112,22 @@ export function StructuredView({ workspaceId, isActive }: Props) {
 
   return (
     <div className={`av-view ${isActive ? 'active' : ''}`} data-workspace={workspaceId}>
+      {/* Toolbar toggle for the Background tasks panel — only shown once the
+          session has spawned at least one task. Mirrors Claude Desktop's panel
+          affordance; the running count rides as a badge. */}
+      {totalTasks > 0 && (
+        <button
+          type="button"
+          className={`av-bgtask-toggle ${panelOpen ? 'av-bgtask-toggle-open' : ''}`}
+          onClick={() => setPanelOpen((v) => !v)}
+          aria-pressed={panelOpen}
+          aria-label="Background tasks"
+          title="Background tasks"
+        >
+          <BgTaskIcon />
+          {runningTasks > 0 && <span className="av-bgtask-toggle-badge">{runningTasks}</span>}
+        </button>
+      )}
       <MessageList session={session} canResume={canResume} />
       {/* A4 extension point: permission dialog(s) for parked canUseTool calls.
           Rendered as an overlay above the list. */}
@@ -97,7 +136,27 @@ export function StructuredView({ workspaceId, isActive }: Props) {
           controls. Given the last turn-end and running state. */}
       <SessionControls session={session} workspaceId={workspaceId} />
       <Composer session={session} workspaceId={workspaceId} isActive={isActive} />
+      {/* The Background tasks slide-over, over the transcript. */}
+      {panelOpen && (
+        <BackgroundTasksPanel session={session} onClose={() => setPanelOpen(false)} />
+      )}
     </div>
+  );
+}
+
+/** The Background-tasks toggle glyph — a small stacked-layers mark reading as
+ *  "parallel tasks". Inherits color via currentColor. */
+function BgTaskIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="2.5" y="2.5" width="7.5" height="7.5" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M6 12.2v.3A1.5 1.5 0 0 0 7.5 14h5A1.5 1.5 0 0 0 14 12.5v-5A1.5 1.5 0 0 0 12.2 6"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
   );
 }
 

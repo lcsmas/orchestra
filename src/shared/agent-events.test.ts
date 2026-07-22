@@ -724,3 +724,204 @@ test('fold: session/update overrides the init model without touching messages', 
   // Model untouched by the mode-only update.
   assert.equal(s.model, 'claude-sonnet-5');
 });
+
+// ─── background tasks: normalize ─────────────────────────────────────────────
+
+test('normalize: task_started → task/started event', () => {
+  const [ev] = normalizeSdkMessage(
+    {
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 't1',
+      tool_use_id: 'toolu_1',
+      task_type: 'subagent',
+      subagent_type: 'general-purpose',
+      description: 'Peek at .claude json',
+    },
+    ctx(),
+  );
+  assert.deepEqual(ev, {
+    type: 'task',
+    kind: 'started',
+    seq: 0,
+    at: 1000,
+    taskId: 't1',
+    toolUseId: 'toolu_1',
+    taskType: 'subagent',
+    subagentType: 'general-purpose',
+    description: 'Peek at .claude json',
+  });
+});
+
+test('normalize: task_progress lifts usage/last-tool/summary', () => {
+  const [ev] = normalizeSdkMessage(
+    {
+      type: 'system',
+      subtype: 'task_progress',
+      task_id: 't1',
+      description: 'Peek at .claude json',
+      usage: { total_tokens: 60300, tool_uses: 1 },
+      last_tool_name: 'Bash',
+      summary: 'Reading config',
+    },
+    ctx(),
+  );
+  assert.equal(ev.type, 'task');
+  assert.equal(ev.kind, 'progress');
+  assert.deepEqual(ev.usage, { totalTokens: 60300, toolUses: 1 });
+  assert.equal(ev.lastToolName, 'Bash');
+  assert.equal(ev.summary, 'Reading config');
+});
+
+test('normalize: task_notification carries terminal status + transcript', () => {
+  const [ev] = normalizeSdkMessage(
+    {
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 't1',
+      status: 'completed',
+      usage: { total_tokens: 60300, tool_uses: 1, duration_ms: 11000 },
+      output_file: '/tmp/agent-t1.jsonl',
+    },
+    ctx(),
+  );
+  assert.equal(ev.kind, 'notification');
+  assert.equal(ev.status, 'completed');
+  assert.deepEqual(ev.usage, { totalTokens: 60300, toolUses: 1, durationMs: 11000 });
+  assert.equal(ev.outputFile, '/tmp/agent-t1.jsonl');
+});
+
+test('normalize: task_notification killed → stopped', () => {
+  const [ev] = normalizeSdkMessage(
+    { type: 'system', subtype: 'task_notification', task_id: 't1', status: 'killed' },
+    ctx(),
+  );
+  assert.equal(ev.status, 'stopped');
+});
+
+test('normalize: task_updated patch maps terminal status, ignores running', () => {
+  const [running] = normalizeSdkMessage(
+    { type: 'system', subtype: 'task_updated', task_id: 't1', patch: { status: 'running' } },
+    ctx(),
+  );
+  assert.equal(running.status, undefined);
+  const [failed] = normalizeSdkMessage(
+    { type: 'system', subtype: 'task_updated', task_id: 't1', patch: { status: 'failed' } },
+    ctx(),
+  );
+  assert.equal(failed.status, 'failed');
+});
+
+test('normalize: background_tasks_changed → live id set', () => {
+  const [ev] = normalizeSdkMessage(
+    {
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [
+        { task_id: 't1', task_type: 'subagent', description: 'a' },
+        { task_id: 't2', task_type: 'shell', description: 'b' },
+      ],
+    },
+    ctx(),
+  );
+  assert.equal(ev.kind, 'changed');
+  assert.deepEqual(ev.liveIds, ['t1', 't2']);
+});
+
+// ─── background tasks: fold ──────────────────────────────────────────────────
+
+function taskEvent(over: Partial<Extract<AgentEvent, { type: 'task' }>>): AgentEvent {
+  return { type: 'task', kind: 'started', seq: 0, at: 1000, ...over } as AgentEvent;
+}
+
+test('fold: started creates a running card in insertion order', () => {
+  let s = emptySession('ws');
+  s = foldEvent(s, taskEvent({ kind: 'started', taskId: 't1', description: 'Peek', subagentType: 'gp' }));
+  s = foldEvent(s, taskEvent({ seq: 1, kind: 'started', taskId: 't2', description: 'Uptime' }));
+  assert.deepEqual(Object.keys(s.tasks), ['t1', 't2']);
+  assert.equal(s.tasks.t1.status, 'running');
+  assert.equal(s.tasks.t1.description, 'Peek');
+  assert.equal(s.tasks.t1.subagentType, 'gp');
+  assert.equal(s.tasks.t1.startedAt, 1000);
+});
+
+test('fold: progress merges usage without clobbering started fields', () => {
+  let s = emptySession('ws');
+  s = foldEvent(s, taskEvent({ kind: 'started', taskId: 't1', description: 'Peek', subagentType: 'gp' }));
+  s = foldEvent(
+    s,
+    taskEvent({ seq: 1, kind: 'progress', taskId: 't1', usage: { totalTokens: 100, toolUses: 2 }, lastToolName: 'Bash' }),
+  );
+  assert.equal(s.tasks.t1.description, 'Peek'); // preserved
+  assert.equal(s.tasks.t1.subagentType, 'gp'); // preserved
+  assert.deepEqual(s.tasks.t1.usage, { totalTokens: 100, toolUses: 2 });
+  assert.equal(s.tasks.t1.lastToolName, 'Bash');
+  assert.equal(s.tasks.t1.status, 'running');
+});
+
+test('fold: notification finalizes with status/usage/endedAt/transcript', () => {
+  let s = emptySession('ws');
+  s = foldEvent(s, taskEvent({ kind: 'started', taskId: 't1', description: 'Peek' }));
+  s = foldEvent(
+    s,
+    taskEvent({
+      seq: 1,
+      at: 12000,
+      kind: 'notification',
+      taskId: 't1',
+      status: 'completed',
+      usage: { totalTokens: 60300, toolUses: 1, durationMs: 11000 },
+      outputFile: '/tmp/t1.jsonl',
+    }),
+  );
+  assert.equal(s.tasks.t1.status, 'completed');
+  assert.equal(s.tasks.t1.endedAt, 12000);
+  assert.equal(s.tasks.t1.usage?.durationMs, 11000);
+  assert.equal(s.tasks.t1.outputFile, '/tmp/t1.jsonl');
+});
+
+test('fold: progress before started backfills (out-of-order tolerance)', () => {
+  let s = emptySession('ws');
+  s = foldEvent(s, taskEvent({ kind: 'progress', taskId: 't1', usage: { totalTokens: 5, toolUses: 0 } }));
+  assert.equal(s.tasks.t1.status, 'running');
+  assert.equal(s.tasks.t1.startedAt, 1000);
+  s = foldEvent(s, taskEvent({ seq: 1, kind: 'started', taskId: 't1', description: 'Late start' }));
+  assert.equal(s.tasks.t1.description, 'Late start');
+  assert.deepEqual(s.tasks.t1.usage, { totalTokens: 5, toolUses: 0 });
+});
+
+test('fold: changed finalizes a running task missing from the live set (missed bookend)', () => {
+  let s = emptySession('ws');
+  s = foldEvent(s, taskEvent({ kind: 'started', taskId: 't1', description: 'a' }));
+  s = foldEvent(s, taskEvent({ seq: 1, kind: 'started', taskId: 't2', description: 'b' }));
+  // Level signal: only t2 is still live → t1's finish bookend was missed.
+  s = foldEvent(s, taskEvent({ seq: 2, at: 9000, kind: 'changed', liveIds: ['t2'] }));
+  assert.equal(s.tasks.t1.status, 'stopped');
+  assert.equal(s.tasks.t1.endedAt, 9000);
+  assert.equal(s.tasks.t2.status, 'running');
+});
+
+test('fold: changed never resurrects a finished task nor creates one', () => {
+  let s = emptySession('ws');
+  s = foldEvent(s, taskEvent({ kind: 'started', taskId: 't1', description: 'a' }));
+  s = foldEvent(s, taskEvent({ seq: 1, at: 5000, kind: 'notification', taskId: 't1', status: 'completed' }));
+  // A later level signal that omits t1 must not reopen it, and an unknown id
+  // in liveIds must not spawn a phantom card.
+  s = foldEvent(s, taskEvent({ seq: 2, kind: 'changed', liveIds: ['ghost'] }));
+  assert.equal(s.tasks.t1.status, 'completed');
+  assert.equal(s.tasks.t1.endedAt, 5000);
+  assert.equal(s.tasks.ghost, undefined);
+});
+
+test('fold: replaying the whole task stream from empty rebuilds the same tasks (purity)', () => {
+  const events: AgentEvent[] = [
+    taskEvent({ kind: 'started', taskId: 't1', description: 'Peek', subagentType: 'gp' }),
+    taskEvent({ seq: 1, kind: 'progress', taskId: 't1', usage: { totalTokens: 100, toolUses: 1 }, lastToolName: 'Bash' }),
+    taskEvent({ seq: 2, at: 3000, kind: 'notification', taskId: 't1', status: 'completed', usage: { totalTokens: 200, toolUses: 3, durationMs: 2000 } }),
+  ];
+  const a = foldEvents(emptySession('ws'), events);
+  const b = foldEvents(emptySession('ws'), events);
+  assert.deepEqual(a.tasks, b.tasks);
+  assert.equal(a.tasks.t1.status, 'completed');
+  assert.deepEqual(a.tasks.t1.usage, { totalTokens: 200, toolUses: 3, durationMs: 2000 });
+});

@@ -55,12 +55,25 @@ to the unchanged PTY path.
   `AgentSession`, `RenderMessage`, `TokenUsage`, `AgentPermissionMode`,
   `AgentPermissionReply`. Blocks keyed by numeric SDK content-block `index`. **Thinking is
   a boolean** (`thinking-start` only) — cleartext thinking is redacted on Opus 4.8
-  (verified in `docs/spikes/phase0-sdk-findings.md`).
-- **`src/shared/agent-events.ts`** (+ `.test.ts`, 35 tests) — pure `normalizeSdkMessage`
+  (verified in `docs/spikes/phase0-sdk-findings.md`). **Background tasks:** an
+  `AgentTaskEvent` variant (`type:'task'`, `kind: started|progress|updated|
+  notification|changed`) carries the SDK's Task-subagent lifecycle; the folded
+  `BackgroundTask` (id, description, status, `AgentTaskUsage`, lastToolName,
+  summary, outputFile, startedAt/endedAt) lives on `AgentSession.tasks`
+  (`Record<id, BackgroundTask>`, first-seen order).
+- **`src/shared/agent-events.ts`** (+ `.test.ts`) — pure `normalizeSdkMessage`
   (SDK message → `AgentEvent[]`) and immutable `foldEvent`/`foldEvents`/`emptySession`/
   `clearPendingPermission`/`makeUserMessage`. The renderer store is a pure projection:
   replaying the event stream from `emptySession` rebuilds the view. Testable without
-  Electron. **User prompts are echoed as a `user-message` event** emitted by `sdkSend`
+  Electron. **Background-task normalization** (`normalizeTaskSystem`) maps the SDK
+  `system`/`task_started|task_progress|task_updated|task_notification` messages and
+  the `background_tasks_changed` level signal into `AgentTaskEvent`s; `foldTaskEvent`
+  merges them into `session.tasks` — `started` creates, `progress`/`updated` merge,
+  `notification` finalizes (status + duration + `output_file` transcript path), and
+  `changed` reconciles the running set (any still-`running` task absent from the live
+  ids is finalized to `stopped`, so a missed finish bookend can't wedge a stuck card;
+  it never resurrects a finished task nor creates one). Out-of-order tolerant (a
+  `progress` before its `started` backfills). **User prompts are echoed as a `user-message` event** emitted by `sdkSend`
   (agent-sdk.ts) — the SDK stream never repeats plain user text (its `user` messages
   only carry `tool_result` blocks), so without this event a sent prompt would never
   appear in the transcript. The fold also flips `running: true` on it so the
@@ -141,7 +154,21 @@ to the unchanged PTY path.
   message** (an `initialPin` ref force-scrolls to bottom across the async
   height-settle passes). The **composer** auto-grows and accepts **pasted images**
   (`onPaste` → base64 via FileReader → thumbnail strip → sent on submit as
-  `AgentImage[]`). Slots: `PermissionDialog`, `AgentControls`, `TurnFooter`.
+  `AgentImage[]`). Slots: `PermissionDialog`, `AgentControls`, `TurnFooter`,
+  **`BackgroundTasksPanel`**. A floating top-right **toggle** (`av-bgtask-toggle`,
+  running-count badge) appears once `session.tasks` is non-empty and opens/closes
+  the panel; the panel **auto-opens the first time a task appears** (respecting a
+  manual close after).
+- **`src/renderer/components/agent/BackgroundTasksPanel.tsx`** — the right-side
+  slide-over listing the session's background tasks (Task-tool subagents, shells,
+  monitors, workflows), mirroring the Claude Desktop app. Reads `session.tasks`;
+  Running/Finished groups with header counts; each **card** shows title, task-type
+  label, live elapsed (a 1s `setInterval`, active only while a task is running),
+  `usage` tokens + tool-uses, `lastToolName`, an optional progress `summary`, and a
+  **"View transcript"** button that calls `window.orchestra.agentSdkOpenTaskTranscript`
+  on the task's `outputFile`. `runningTaskCount`/`totalTaskCount` helpers drive the
+  toggle. CSS lives in `agent-view-theme.css` (`av-bgtask-*`; the `--av-task`
+  accent-2 token). Pinned inside `.av-view` (position:absolute/inset:0) as an overlay.
 - **`src/renderer/components/agent/ToolGroup.tsx`** — the aggregated tool run:
   collapsed by default to a "2 Read · 1 Bash" summary row (deduped icon strip,
   overall status dot, count), expanding to the individual `ToolCard`s. A lone tool
@@ -234,7 +261,15 @@ to the unchanged PTY path.
   Resources → remount: modal must NOT reappear and `pendingPermissions` must be 0).
 - **`AvMenu`** (`components/agent/AvMenu.tsx`) — the custom dropdown replacing native
   selects in AgentControls (portalled glass panel; see agent-view-design.md).
-- New IPC: `agentSdkHistory` (`agent:sdkHistory`), `agentSkills` (`agent:skills`).
+- New IPC: `agentSdkHistory` (`agent:sdkHistory`), `agentSkills` (`agent:skills`),
+  `agentSdkOpenTaskTranscript` (`agent:sdkOpenTaskTranscript`) — opens a finished
+  task's `output_file` transcript with the OS handler (`platform.openPath`, guarded
+  to a real file; returns `false` when missing), like `openSelfTuneReport`.
+- **`agent-sdk.ts` sets `agentProgressSummaries: true`** in the `query` options so
+  the SDK emits one-line `task_progress.summary` strings for running subagents
+  (drives the card summary line; fork reuses the subagent's model + prompt cache,
+  ~free). The `task_started`/`task_progress`/`task_notification` heartbeats fire
+  regardless; this only adds the human-readable summary.
 - **`session/update` event** — `sdkSetModel`/`sdkSetPermissionMode` emit it so the
   folded `session.model`/`permissionMode` (otherwise set only once by `session/init`)
   reflect a live switch; without it the AvMenu trigger snapped back to the init value

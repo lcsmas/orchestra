@@ -82,6 +82,8 @@ const api: OrchestraAPI = {
   agentSdkSetPermissionMode: (wsId, mode) =>
     ipcRenderer.invoke('agent:sdkSetPermissionMode', wsId, mode),
   agentSdkHistory: (wsId) => ipcRenderer.invoke('agent:sdkHistory', wsId),
+  agentSdkOpenTaskTranscript: (filePath) =>
+    ipcRenderer.invoke('agent:sdkOpenTaskTranscript', filePath),
   agentSkills: (wsId) => ipcRenderer.invoke('agent:skills', wsId),
   nvimStart: (id, cols, rows) => ipcRenderer.invoke('nvim:start', id, cols, rows),
 

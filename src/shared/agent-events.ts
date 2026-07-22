@@ -31,7 +31,10 @@ import type {
   AgentPermissionRequestEvent,
   AgentSession,
   AgentStopReason,
+  AgentTaskEvent,
+  AgentTaskUsage,
   AgentUserMessageEvent,
+  BackgroundTask,
   RenderMessage,
   TokenUsage,
 } from './types';
@@ -113,10 +116,27 @@ export interface SdkMessage {
   api_error_status?: number | null;
   num_turns?: number;
   total_cost_usd?: number;
-  usage?: RawUsage;
+  /** `result` messages carry a Messages-API usage; `task_*` messages carry a
+   *  distinct `{ total_tokens, tool_uses, duration_ms }` counter. Widened to
+   *  both — normalize reads the right subset by message subtype. */
+  usage?: RawUsage & { total_tokens?: number; tool_uses?: number; duration_ms?: number };
   result?: string;
   stop_reason?: string;
   duration_ms?: number;
+  // system/task_* + background_tasks_changed (see sdk.d.ts):
+  task_id?: string;
+  tool_use_id?: string;
+  description?: string;
+  task_type?: string;
+  subagent_type?: string;
+  last_tool_name?: string;
+  summary?: string;
+  output_file?: string;
+  status?: string; // 'completed' | 'failed' | 'stopped' (task_notification)
+  /** task_updated patch (wire-safe subset that changed). */
+  patch?: { status?: string; description?: string; end_time?: number };
+  /** background_tasks_changed: the full live set (replace-semantics). */
+  tasks?: { task_id: string; task_type?: string; description?: string }[];
 }
 
 // ─── normalize: SDK message → AgentEvent[] ───────────────────────────────────
@@ -168,6 +188,109 @@ function toUsage(u: RawUsage | undefined): TokenUsage | null {
     cacheReadInputTokens: u.cache_read_input_tokens ?? 0,
     serviceTier: u.service_tier ?? null,
   };
+}
+
+/** Lift the SDK task-usage counter (`{ total_tokens, tool_uses, duration_ms }`,
+ *  distinct from the Messages-API `usage`) into our {@link AgentTaskUsage}.
+ *  Returns undefined when absent so `foldEvent` keeps the prior counters. */
+function toTaskUsage(u: SdkMessage['usage']): AgentTaskUsage | undefined {
+  if (!u || (u.total_tokens == null && u.tool_uses == null && u.duration_ms == null)) {
+    return undefined;
+  }
+  return {
+    totalTokens: u.total_tokens ?? 0,
+    toolUses: u.tool_uses ?? 0,
+    ...(u.duration_ms != null ? { durationMs: u.duration_ms } : {}),
+  };
+}
+
+/** Normalize the background-task system messages — `task_started`,
+ *  `task_progress`, `task_updated`, `task_notification`, and the
+ *  `background_tasks_changed` level signal — into {@link AgentTaskEvent}s.
+ *  Non-task subtypes return `[]`. These drive the "Background tasks" panel;
+ *  see sdk.d.ts for the exact wire shapes. */
+function normalizeTaskSystem(ctx: NormalizeContext, msg: SdkMessage): AgentEvent[] {
+  switch (msg.subtype) {
+    case 'task_started':
+      return [
+        stamp(ctx, {
+          type: 'task',
+          kind: 'started',
+          taskId: msg.task_id,
+          toolUseId: msg.tool_use_id,
+          taskType: msg.task_type,
+          subagentType: msg.subagent_type,
+          description: msg.description ?? '',
+        }),
+      ];
+    case 'task_progress':
+      return [
+        stamp(ctx, {
+          type: 'task',
+          kind: 'progress',
+          taskId: msg.task_id,
+          toolUseId: msg.tool_use_id,
+          subagentType: msg.subagent_type,
+          description: msg.description,
+          usage: toTaskUsage(msg.usage),
+          lastToolName: msg.last_tool_name,
+          summary: msg.summary,
+        }),
+      ];
+    case 'task_updated':
+      return [
+        stamp(ctx, {
+          type: 'task',
+          kind: 'updated',
+          taskId: msg.task_id,
+          description: msg.patch?.description,
+          // A running/completed/failed/killed/paused patch status; the fold maps
+          // it onto our narrower AgentTaskStatus. Only terminal states here set
+          // an end.
+          status: toTerminalTaskStatus(msg.patch?.status),
+        }),
+      ];
+    case 'task_notification':
+      return [
+        stamp(ctx, {
+          type: 'task',
+          kind: 'notification',
+          taskId: msg.task_id,
+          toolUseId: msg.tool_use_id,
+          status: toTerminalTaskStatus(msg.status),
+          usage: toTaskUsage(msg.usage),
+          summary: msg.summary,
+          outputFile: msg.output_file,
+        }),
+      ];
+    case 'background_tasks_changed':
+      return [
+        stamp(ctx, {
+          type: 'task',
+          kind: 'changed',
+          liveIds: Array.isArray(msg.tasks) ? msg.tasks.map((t) => t.task_id) : [],
+        }),
+      ];
+    default:
+      return [];
+  }
+}
+
+/** Map an SDK task status string onto our terminal {@link AgentTaskStatus}
+ *  subset, or undefined for a non-terminal ('running'/'pending'/'paused') or
+ *  missing value. `killed` maps to `stopped`. */
+function toTerminalTaskStatus(s: string | undefined): 'completed' | 'failed' | 'stopped' | undefined {
+  switch (s) {
+    case 'completed':
+      return 'completed';
+    case 'failed':
+      return 'failed';
+    case 'stopped':
+    case 'killed':
+      return 'stopped';
+    default:
+      return undefined;
+  }
 }
 
 /** Normalize one raw `stream_event` (the token-streaming envelope). Returns 0..n
@@ -229,7 +352,7 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
           }),
         ];
       }
-      return [];
+      return normalizeTaskSystem(ctx, msg);
 
     case 'stream_event':
       return msg.event ? normalizeStreamEvent(ctx, msg.event) : [];
@@ -441,6 +564,7 @@ export function emptySession(workspaceId: string): AgentSession {
     messages: [],
     pendingPermissions: [],
     totalCostUsd: 0,
+    tasks: {},
     lastSeq: -1,
   };
 }
@@ -688,10 +812,103 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       return { ...next, messages };
     }
 
+    case 'task':
+      return { ...next, tasks: foldTaskEvent(next.tasks, event) };
+
     default:
       // Exhaustiveness guard — a new AgentEvent variant must be handled here.
       return assertNever(event);
   }
+}
+
+/** Fold one {@link AgentTaskEvent} into the session's `tasks` map immutably.
+ *  Split out so `foldEvent` stays flat.
+ *
+ *  Lifecycle:
+ *   • `started`      — create the card (or, if a `progress`/`changed` raced
+ *                      ahead of it, backfill the started-only fields).
+ *   • `progress`     — merge live usage/last-tool/summary/description.
+ *   • `updated`      — merge a patch; a terminal status finalizes.
+ *   • `notification` — finalize: terminal status + final usage + transcript.
+ *   • `changed`      — REPLACE-semantics reconcile of the running set: any task
+ *                      still marked `running` but absent from `liveIds` is
+ *                      finalized to `stopped`, so a missed finish bookend can't
+ *                      wedge a permanently-spinning card (sdk.d.ts calls this a
+ *                      "level signal"). It never creates a card (the payload
+ *                      carries ids only) nor resurrects a finished one.
+ *
+ *  All merges preserve first-seen insertion order (object key order), which the
+ *  panel relies on for a stable card list. */
+function foldTaskEvent(
+  tasks: Record<string, BackgroundTask>,
+  event: AgentTaskEvent,
+): Record<string, BackgroundTask> {
+  if (event.kind === 'changed') {
+    const live = new Set(event.liveIds ?? []);
+    let mutated = false;
+    const out: Record<string, BackgroundTask> = {};
+    for (const [id, task] of Object.entries(tasks)) {
+      if (task.status === 'running' && !live.has(id)) {
+        out[id] = { ...task, status: 'stopped', endedAt: task.endedAt ?? event.at };
+        mutated = true;
+      } else {
+        out[id] = task;
+      }
+    }
+    return mutated ? out : tasks;
+  }
+
+  const id = event.taskId;
+  if (!id) return tasks;
+
+  const prev = tasks[id];
+  const base: BackgroundTask = prev ?? {
+    id,
+    description: '',
+    status: 'running',
+    startedAt: event.at,
+  };
+
+  // Merge only the fields this event carries; leave the rest as-was.
+  const merged: BackgroundTask = {
+    ...base,
+    ...(event.toolUseId !== undefined ? { toolUseId: event.toolUseId } : {}),
+    ...(event.taskType !== undefined ? { taskType: event.taskType } : {}),
+    ...(event.subagentType !== undefined ? { subagentType: event.subagentType } : {}),
+    ...(event.description !== undefined ? { description: event.description } : {}),
+    ...(event.usage !== undefined ? { usage: mergeTaskUsage(base.usage, event.usage) } : {}),
+    ...(event.lastToolName !== undefined ? { lastToolName: event.lastToolName } : {}),
+    ...(event.summary !== undefined ? { summary: event.summary } : {}),
+    ...(event.outputFile !== undefined ? { outputFile: event.outputFile } : {}),
+  };
+
+  // A terminal status (from `notification` or a terminal `updated` patch)
+  // freezes the card and stamps its end time once.
+  if (event.status) {
+    merged.status = event.status;
+    merged.endedAt = merged.endedAt ?? event.at;
+  }
+
+  return { ...tasks, [id]: merged };
+}
+
+/** Merge an incoming task-usage counter over the prior one. The SDK reports
+ *  cumulative counters, so a later report simply supersedes; but a
+ *  `notification`'s `durationMs` should stick even if a subsequent (unlikely)
+ *  event omits it. */
+function mergeTaskUsage(
+  prev: AgentTaskUsage | undefined,
+  next: AgentTaskUsage,
+): AgentTaskUsage {
+  return {
+    totalTokens: next.totalTokens,
+    toolUses: next.toolUses,
+    ...(next.durationMs != null
+      ? { durationMs: next.durationMs }
+      : prev?.durationMs != null
+        ? { durationMs: prev.durationMs }
+        : {}),
+  };
 }
 
 /** Fold a whole ordered event list into a session (test/replay helper). */

@@ -225,6 +225,7 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   agentSdkSetModel: 'agent:sdkSetModel',
   agentSdkSetPermissionMode: 'agent:sdkSetPermissionMode',
   agentSdkHistory: 'agent:sdkHistory',
+  agentSdkOpenTaskTranscript: 'agent:sdkOpenTaskTranscript',
   agentSkills: 'agent:skills',
   nvimStart: 'nvim:start',
   sandboxControlState: 'sandbox:controlState',
@@ -763,6 +764,24 @@ export const apiHandlers: ApiHandlerTable = {
   },
 
   agentSdkHistory: async (wsId) => sdkHistory(wsId),
+
+  // Open a finished background-task's transcript file (the SDK
+  // `task_notification.output_file`) with the OS handler, mirroring how
+  // self-tune reports open. Returns false when the path is missing or not a
+  // real file (a stale/incomplete task) so the caller can no-op quietly rather
+  // than surfacing an error. Guarded to a regular file to avoid opening a
+  // directory or a non-existent path the renderer happened to hold.
+  agentSdkOpenTaskTranscript: async (filePath) => {
+    if (typeof filePath !== 'string' || filePath.length === 0) return false;
+    try {
+      if (!fs.statSync(filePath).isFile()) return false;
+    } catch {
+      return false;
+    }
+    const err = await platform.openPath(filePath);
+    if (err) throw new Error(err);
+    return true;
+  },
 
   agentSkills: async (wsId) => sdkListSkills(wsId),
 

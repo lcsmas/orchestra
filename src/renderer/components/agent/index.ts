@@ -25,6 +25,11 @@ export type { MdBlock } from './markdown-parse';
 export { PermissionDialog } from './PermissionDialog';
 export { AgentControls } from './AgentControls';
 export { TurnFooter } from './TurnFooter';
+export {
+  BackgroundTasksPanel,
+  runningTaskCount,
+  totalTaskCount,
+} from './BackgroundTasksPanel';
 export { AskUserQuestionCard } from './AskUserQuestionCard';
 export { ToolInput } from './toolInput';
 export {

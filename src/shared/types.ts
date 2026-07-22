@@ -807,6 +807,63 @@ export interface AgentErrorEvent extends AgentEventBase {
   willRetry: boolean;
 }
 
+/** Live usage counters for a background task, mirrored from the SDK's
+ *  `task_progress` / `task_notification` `usage` field. Drives the
+ *  "60.3k tokens · 1 tool use" line on a task card. */
+export interface AgentTaskUsage {
+  /** Total tokens the subagent has consumed so far. */
+  totalTokens: number;
+  /** Number of tool calls the subagent has made. */
+  toolUses: number;
+  /** Wall-clock duration in ms. Only reported on the terminal
+   *  `task_notification`; while running the card derives elapsed from
+   *  `startedAt` instead. */
+  durationMs?: number;
+}
+
+/** A terminal status for a background task, from `task_notification.status`.
+ *  A `running` task has no terminal status yet. */
+export type AgentTaskStatus = 'running' | 'completed' | 'failed' | 'stopped';
+
+/** A background task (Task-tool subagent, shell, monitor, or workflow) the
+ *  session spawned. Emitted by the SDK's `task_started` / `task_progress` /
+ *  `task_updated` / `task_notification` system messages and the
+ *  `background_tasks_changed` level signal. The renderer's "Background tasks"
+ *  panel (BackgroundTasksPanel.tsx) renders one card per task. */
+export interface AgentTaskEvent extends AgentEventBase {
+  type: 'task';
+  /** Which lifecycle message produced this event. `changed` carries the full
+   *  live set (replace-semantics) rather than a single task. */
+  kind: 'started' | 'progress' | 'updated' | 'notification' | 'changed';
+  /** The SDK `task_id`. Absent only on `changed` (which carries `liveIds`). */
+  taskId?: string;
+  /** The parent Task tool_use id, when the SDK reports it, so the card can be
+   *  correlated with the inline tool call. */
+  toolUseId?: string;
+  /** Task-type label — 'subagent' | 'shell' | 'monitor' | 'workflow' | … */
+  taskType?: string;
+  /** Subagent type name (e.g. 'general-purpose'), for 'subagent' tasks. */
+  subagentType?: string;
+  /** Free-text description shown as the card title. */
+  description?: string;
+  /** Terminal status, on `notification`. */
+  status?: Exclude<AgentTaskStatus, 'running'>;
+  /** Live usage counters, on `progress` / `notification`. */
+  usage?: AgentTaskUsage;
+  /** Name of the most recent tool the subagent invoked, on `progress`. */
+  lastToolName?: string;
+  /** A short AI-generated present-tense summary, when `agentProgressSummaries`
+   *  is enabled (e.g. "Analyzing authentication module"). */
+  summary?: string;
+  /** Path to the finished task's transcript file, on `notification` — backs the
+   *  "View transcript" link. */
+  outputFile?: string;
+  /** `background_tasks_changed`: every task id currently live. The fold uses
+   *  this to reconcile the running set so a missed start/finish bookend can't
+   *  wedge a stale "running" card. Only present on `kind: 'changed'`. */
+  liveIds?: string[];
+}
+
 /** The full agent event stream — a discriminated union on `type`. The main
  *  process emits these in order over the `agent:event` channel; the renderer
  *  folds them via {@link foldEventsInto} (src/shared/agent-events.ts). */
@@ -822,6 +879,7 @@ export type AgentEvent =
   | AgentPermissionRequestEvent
   | AgentUserMessageEvent
   | AgentSessionUpdateEvent
+  | AgentTaskEvent
   | AgentTurnEndEvent
   | AgentErrorEvent;
 
@@ -897,6 +955,41 @@ export interface AgentSession {
   /** Cumulative cost in USD across every turn this session, for a running
    *  total. */
   totalCostUsd: number;
+  /** Background tasks (Task-tool subagents, shells, monitors, workflows) the
+   *  session has spawned, keyed by `task_id`, in first-seen (insertion) order.
+   *  Folded from {@link AgentTaskEvent}. Backs the "Background tasks" panel. */
+  tasks: Record<string, BackgroundTask>;
   /** The highest `seq` folded in, so a caller can detect a gap. */
   lastSeq: number;
+}
+
+/** The folded state of one background task — the projection the "Background
+ *  tasks" panel renders. Built by `foldEvent` from the {@link AgentTaskEvent}
+ *  stream: `started` creates it, `progress`/`updated` merge into it,
+ *  `notification` finalizes it. */
+export interface BackgroundTask {
+  /** The SDK `task_id`. Stable key. */
+  id: string;
+  /** Parent Task tool_use id, when known. */
+  toolUseId?: string;
+  /** Task-type label ('subagent' | 'shell' | 'monitor' | 'workflow' | …). */
+  taskType?: string;
+  /** Subagent type name, for 'subagent' tasks. */
+  subagentType?: string;
+  /** Card title. */
+  description: string;
+  /** `running` until a terminal `notification` arrives. */
+  status: AgentTaskStatus;
+  /** Latest usage counters. */
+  usage?: AgentTaskUsage;
+  /** Most recent tool the subagent invoked. */
+  lastToolName?: string;
+  /** Latest AI-generated progress summary, if enabled. */
+  summary?: string;
+  /** Finished-transcript path (backs "View transcript"). */
+  outputFile?: string;
+  /** Epoch ms the task first appeared, for the live elapsed timer. */
+  startedAt: number;
+  /** Epoch ms the task reached a terminal state, for the frozen elapsed. */
+  endedAt?: number;
 }
