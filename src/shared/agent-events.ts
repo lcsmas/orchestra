@@ -373,6 +373,45 @@ export function shouldAutoApprovePermission(
   return permissionMode === 'bypassPermissions' && toolName !== ASK_USER_QUESTION;
 }
 
+/** The spool-event names the activity status machine (`applyAgentEvent`,
+ *  src/main/activity.ts) consumes — the same lexicon the terminal path's shell
+ *  hooks append to the durable events spool. */
+export type StatusSpoolEvent = 'submit' | 'pretool' | 'posttool' | 'notify' | 'stop';
+
+/** Map one live SDK {@link AgentEvent} onto the spool event that should drive
+ *  the sidebar status dot, or `null` when the event doesn't move status.
+ *
+ *  WHY: the terminal agent's dot is fed by Claude Code's shell lifecycle hooks
+ *  (UserPromptSubmit/PreToolUse/PostToolUse/Notification/Stop). The Claude Agent
+ *  SDK runs turns programmatically and does NOT fire those per-turn hooks, so a
+ *  structured-only session's spool never gets `submit`/`pretool`/`stop` lines
+ *  and the dot stays `idle` while the agent works. The SDK manager
+ *  (agent-sdk.ts) feeds `applyAgentEvent` itself using this mapping, so ONE
+ *  status state machine serves both surfaces. Pure so the mapping is unit-tested
+ *  without Electron (the SDK-view "idle while working" regression guard). */
+export function sdkEventToStatusEvent(ev: AgentEvent): StatusSpoolEvent | null {
+  switch (ev.type) {
+    case 'user-message':
+      // A submitted turn — the agent is now working (↔ UserPromptSubmit).
+      return 'submit';
+    case 'tool-use':
+      // A tool is about to run: `running` + the active-tool label (↔ PreToolUse).
+      return 'pretool';
+    case 'tool-result':
+      // Tool finished: stay `running`, clear the label (↔ PostToolUse).
+      return 'posttool';
+    case 'permission-request':
+      // The agent parked a permission / AskUserQuestion — it needs the user
+      // (↔ Notification → `waiting`).
+      return 'notify';
+    case 'turn-end':
+      // Turn boundary: finished, waiting for the next prompt (↔ Stop → `waiting`).
+      return 'stop';
+    default:
+      return null;
+  }
+}
+
 /** Build a stamped user-message echo (see {@link AgentUserMessageEvent}) — the
  *  manager emits one per sdkSend so the submitted prompt renders immediately. */
 export function makeUserMessage(

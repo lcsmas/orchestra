@@ -9,6 +9,7 @@ import {
   makeUserMessage,
   clearPendingPermission,
   shouldAutoApprovePermission,
+  sdkEventToStatusEvent,
   ASK_USER_QUESTION,
   type NormalizeContext,
   type SdkMessage,
@@ -402,6 +403,49 @@ test('shouldAutoApprovePermission: non-bypass modes never auto-approve', () => {
   for (const mode of ['default', 'plan', 'acceptEdits'] as const) {
     assert.equal(shouldAutoApprovePermission(mode, 'Bash'), false);
     assert.equal(shouldAutoApprovePermission(mode, ASK_USER_QUESTION), false);
+  }
+});
+
+// ─── sdkEventToStatusEvent (SDK-view "idle while working" regression guard) ──
+//
+// The terminal path's dot is fed by shell lifecycle hooks; the SDK runs turns
+// programmatically and never fires them, so the manager must drive status from
+// this mapping instead. Ground truth for the bug: a live structured session's
+// spool held only `session/startup` while the agent worked → dot stuck `idle`.
+
+const at = (type: string, extra: Record<string, unknown> = {}): AgentEvent =>
+  ({ seq: 0, at: 0, type, ...extra }) as unknown as AgentEvent;
+
+test('sdkEventToStatusEvent: a submitted turn → submit (→ running)', () => {
+  assert.equal(sdkEventToStatusEvent(at('user-message', { text: 'go' })), 'submit');
+});
+
+test('sdkEventToStatusEvent: tool-use → pretool, tool-result → posttool (stay running)', () => {
+  assert.equal(sdkEventToStatusEvent(at('tool-use', { name: 'Bash', toolUseId: 't', input: {} })), 'pretool');
+  assert.equal(sdkEventToStatusEvent(at('tool-result', { toolUseId: 't' })), 'posttool');
+});
+
+test('sdkEventToStatusEvent: a parked permission → notify (→ waiting for the user)', () => {
+  assert.equal(sdkEventToStatusEvent(at('permission-request', { requestId: 'r' })), 'notify');
+});
+
+test('sdkEventToStatusEvent: turn-end → stop (→ waiting)', () => {
+  assert.equal(sdkEventToStatusEvent(at('turn-end', { isError: false })), 'stop');
+});
+
+test('sdkEventToStatusEvent: pure-render events do NOT move status (→ null)', () => {
+  // These must map to null: firing a spool event for them would thrash the dot.
+  for (const type of [
+    'session/init',
+    'text-delta',
+    'thinking-start',
+    'tool-input-delta',
+    'block-start',
+    'block-stop',
+    'session/update',
+    'error',
+  ]) {
+    assert.equal(sdkEventToStatusEvent(at(type)), null, `${type} must not move status`);
   }
 });
 

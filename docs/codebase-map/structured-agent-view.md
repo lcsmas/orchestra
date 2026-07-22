@@ -86,9 +86,28 @@ to the unchanged PTY path.
   three by default; matching it requires `'local'`. `buildSdkEnv` sets
   `ORCHESTRA_BRANCH`/`KIND` **plus `ORCHESTRA_BRANCH_AUTO`/`AUTO_RENAME_COUNT`** (the
   rename-hook's gate/stage vars, from `autoRenameActive(ws)`), the spool-free identity
-  plumbing, and **sets `ORCHESTRA_WS_ID`/`EVENTS_DIR`
-  (→ the sidebar status dot fires in structured view) ONLY when no terminal PTY is
-  running for the workspace** (`isPtyRunning(ws.id)` gate). **Identity is decoupled
+  plumbing, and **sets `ORCHESTRA_WS_ID`/`EVENTS_DIR` ONLY when no terminal PTY is
+  running for the workspace** (`isPtyRunning(ws.id)`, sampled once at spawn). It returns
+  that decision as **`ownsSpool`** — the single-writer key for the **sidebar status dot**:
+    - **`ownsSpool=true`** (no coexisting PTY): the SDK subprocess got `ORCHESTRA_WS_ID`,
+      so ITS own shell lifecycle hooks (UserPromptSubmit/PreToolUse/PostToolUse/Stop) fire
+      and write `submit`/`pretool`/`stop` spool lines that the tailer replays into
+      `applyAgentEvent` — the terminal path's mechanism, reused as-is.
+    - **`ownsSpool=false`** (a terminal/Raw PTY coexists, so `ORCHESTRA_WS_ID` is withheld):
+      the SDK's hooks no-op, and that PTY is usually an **idle Raw tab** running no turns, so
+      NOBODY writes the running/tool/turn-end spool lines and the dot stuck `idle` while the
+      SDK worked (the reported bug — verified live: the PTY-coexist spool held only
+      `session/startup`). Here **the dot is driven directly from the SDK event stream:**
+      `emitFrom`/`sdkSend` call `driveStatusFromEvent` (agent-sdk.ts), which maps each
+      `AgentEvent` onto the same spool event via the pure `sdkEventToStatusEvent`
+      (agent-events.ts, unit-tested): `user-message`→`submit`, `tool-use`→`pretool`,
+      `tool-result`→`posttool`, `permission-request`→`notify`, `turn-end`→`stop`.
+  So exactly ONE writer drives the dot per session (gate is `session.ownsSpool`, fixed at
+  spawn — NOT a per-event `isPtyRunning` read, which both missed the PTY-coexist case and
+  double-drove the no-PTY case). Remote/sandbox sessions never direct-drive (their dot comes
+  from the container's spool tail via sandbox-manager). Verified e2e on the built app: dot
+  flips `idle→running→waiting` in both the no-PTY and PTY-coexist cases, with the spool
+  never double-written. **Identity is decoupled
   from that spool gate**: `buildSdkEnv` ALSO sets `ORCHESTRA_WS_ID_IDENTITY = ws.id`
   **unconditionally**, and the CLI's `resolveSelfWorkspaceId` (`cli/index.ts`) falls
   back to it when `ORCHESTRA_WS_ID` is withheld — so `orchestra rename`/`peers`/
@@ -237,10 +256,12 @@ to the unchanged PTY path.
 - **`buildSdkEnv`** (`agent-sdk.ts`) sets the identity plumbing
   (`ORCHESTRA_WORKTREE`/`ORCHESTRA_SOCK`/PATH shim) and — when no terminal PTY is
   running for the workspace (`isPtyRunning(ws.id)`) — the events-spool trigger
-  `ORCHESTRA_WS_ID`/`ORCHESTRA_EVENTS_DIR`, so the status dot fires for a
-  structured-only session without a PTY coexisting to double-write. Phase 6's
-  default-flip guarantees mutual exclusivity. The SDK session also inits its model
-  from `ws.model`.
+  `ORCHESTRA_WS_ID`/`ORCHESTRA_EVENTS_DIR`, returning that decision as `ownsSpool`. That
+  flag is the single-writer key for the status dot (see the `driveStatusFromEvent`
+  discussion above): `ownsSpool=true` → the SDK's own hooks + the spool tailer drive it;
+  `ownsSpool=false` → the SDK direct-drives it. Phase 6's default-flip (no PTY when
+  structured is default) makes `ownsSpool` reliably true. The SDK session also inits its
+  model from `ws.model`.
 
 ## Channel wiring (to add a new agent broadcast)
 
