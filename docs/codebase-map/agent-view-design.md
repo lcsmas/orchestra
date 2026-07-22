@@ -164,10 +164,13 @@ background; only the text color brightens on hover. The app's base `button` rule
 in `styles.css` stamps every `<button>` with a `--shadow-sm` drop shadow +
 `button:hover` fill, so the header explicitly resets `box-shadow:none` and
 `:hover{background:none}` — otherwise it reads as a raised button, not CC-desktop
-label) > `.av-caret` +
-`.av-tool-run-icons` (deduped per-tool SVGs, muted) + `.av-tool-run-label` (verb
-summary — "Created 5 files", "Used 6 tools", "Ran a command, used a tool") +
-`.av-tool-run-diff` (inline `.av-diff-add`/`.av-diff-del` red/green counts) +
+label) > `.av-caret` + `.av-tool-run-label` (verb summary — "Created 5 files",
+"Used 6 tools", "Ran a command, used a tool", "Used a skill ship" — the verb text
+is the only glyph; there is NO per-tool icon strip on the collapsed row, the label
+carries the meaning, CC-desktop style. `describeToolRun` in `tool-util.ts` builds
+the verb; a single `Skill` run reads "Used a skill <name>" where the name comes
+from `skillName(input)` — the SDK carries it on the `skill` field, e.g.
+`{skill:'ship'}`) + `.av-tool-run-diff` (inline `.av-diff-add`/`.av-diff-del` red/green counts) +
 optional `.av-tool-run-status` (`-pending`/`-error` > `.av-tool-run-status-dot`,
 pushed right); expanded body `.av-tool-run-body` holds the individual
 `.av-tool-card`s. The ONLY tool that renders as a standalone always-open card is

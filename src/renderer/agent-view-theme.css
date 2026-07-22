@@ -457,10 +457,6 @@
 .av-tool-run-header:active { transform: none; }
 .av-tool-run-header:focus-visible { outline: none; box-shadow: none; color: var(--av-text-dim); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--av-hairline-strong); }
 .av-tool-run.av-open > .av-tool-run-header { border-radius: 7px 7px 0 0; }
-/* Distinct per-tool icons, deduped, in run order — muted to match the row. */
-.av-tool-run-icons { display: inline-flex; align-items: center; gap: 4px; flex: none; color: var(--av-text-faint); }
-.av-tool-run-icons svg { width: 13px; height: 13px; }
-.av-tool-run-header:hover .av-tool-run-icons { color: var(--av-text-dim); }
 .av-tool-run-label {
   flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-weight: 500; letter-spacing: 0.005em; color: inherit;

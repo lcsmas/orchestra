@@ -1,7 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import type { RenderMessage } from '../../../shared/types';
 import { ToolCard } from './ToolCard';
-import { ToolIcon } from './tool-icons';
 import { describeToolRun, aggregateDiff, type ToolLike } from './tool-util';
 
 interface Props {
@@ -17,9 +16,10 @@ interface Props {
  *   › Used 6 tools
  *   › Ran a command, used a tool
  *
- * — with a small leading tool icon, an inline red/green diff count when any
- * Edit/Write is in the run, and a live status dot while a tool is running. The
- * whole row is a disclosure button; expanding reveals the individual
+ * — with an inline red/green diff count when any Edit/Write is in the run, and a
+ * live status dot while a tool is running (no per-tool icons — the verb label
+ * carries the meaning, Claude-Code-desktop style). The whole row is a plain
+ * clickable label; expanding reveals the individual
  * {@link ToolCard}s. A LONE tool renders the same compact row (not a full card),
  * so a single tool call is just as quiet as a run — the transcript stays about
  * the assistant's prose, and tool detail is one click away.
@@ -64,13 +64,6 @@ function ToolGroupImpl({ tools }: Props) {
             <path d="M5.5 3 10.5 8 5.5 13" />
           </svg>
         </span>
-        {/* Distinct tool-type icons in run order (deduped) — a small glanceable
-            cue before the text, muted like the rest of the row. */}
-        <span className="av-tool-run-icons" aria-hidden>
-          {distinctNames(tools).map((n) => (
-            <ToolIcon key={n} name={n} />
-          ))}
-        </span>
         <span className="av-tool-run-label">{label}</span>
         {(diff.added > 0 || diff.removed > 0) && (
           <span className="av-tool-run-diff">
@@ -100,20 +93,6 @@ function ToolGroupImpl({ tools }: Props) {
       )}
     </div>
   );
-}
-
-/** Distinct tool names in first-seen order (for the icon strip). */
-function distinctNames(tools: RenderMessage[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const t of tools) {
-    const n = t.toolUse?.name ?? 'tool';
-    if (!seen.has(n)) {
-      seen.add(n);
-      out.push(n);
-    }
-  }
-  return out;
 }
 
 /** "2 Read · 1 Bash · 1 Skill" — counts per tool name, in first-seen order.

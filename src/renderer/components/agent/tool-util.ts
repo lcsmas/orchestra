@@ -57,6 +57,8 @@ export function summarizeInput(name: string, input: Record<string, unknown> | un
       return inputStr(input, 'pattern');
     case 'Task':
       return inputStr(input, 'description') || inputStr(input, 'subagent_type');
+    case 'Skill':
+      return skillName(input);
     case 'WebFetch':
       return inputStr(input, 'url');
     default: {
@@ -205,8 +207,28 @@ export function describeToolRun(tools: ToolLike[]): string {
     }
     return `Searched ${tools.length} times`;
   }
+  if (allSame('Skill')) {
+    if (tools.length === 1) {
+      const n = skillName(tools[0].input);
+      return n ? `Used a skill ${n}` : 'Used a skill';
+    }
+    return `Used ${plural(tools.length, 'skill')}`;
+  }
   // Everything else: a plain tool count.
   return tools.length === 1 ? 'Used a tool' : `Used ${plural(tools.length, 'tool')}`;
+}
+
+/** The skill name from a Skill tool input. The SDK carries it on `skill` (e.g.
+ *  `{skill:'ship'}`, sometimes with `args`); fall back to `command`/`name` and
+ *  then the first string arg so a shape change doesn't blank the label. */
+export function skillName(input: Record<string, unknown> | undefined): string {
+  return (
+    inputStr(input, 'skill') ||
+    inputStr(input, 'command') ||
+    inputStr(input, 'name') ||
+    (Object.values(input ?? {}).find((v) => typeof v === 'string') as string | undefined) ||
+    ''
+  );
 }
 
 /** Last path segment of a file path (`src/a/b.ts` → `b.ts`); '' when empty. */

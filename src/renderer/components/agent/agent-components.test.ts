@@ -81,6 +81,9 @@ test('summarizeInput picks the right field per tool', () => {
     summarizeInput('Task', { subagent_type: 'Explore', description: 'search' }),
     'search'
   );
+  // Skill → the skill name off `skill` (the SDK's real field; `args` may ride along).
+  assert.equal(summarizeInput('Skill', { skill: 'ship' }), 'ship');
+  assert.equal(summarizeInput('Skill', { skill: 'orchestra-spawn', args: 'do X' }), 'orchestra-spawn');
   // Unknown tool → first string arg.
   assert.equal(summarizeInput('Mystery', { a: 1, b: 'hi' }), 'hi');
 });
@@ -123,6 +126,13 @@ test('describeToolRun uses claude.ai verb style', () => {
   assert.equal(describeToolRun([tl('Bash'), tl('Bash')]), 'Ran 2 commands');
   // Bash + one other → the "Ran a command, used a tool" phrasing.
   assert.equal(describeToolRun([tl('Bash'), tl('Read')]), 'Ran a command, used a tool');
+  // Skill → "Used a skill <name>" (single, named off `skill`); count when many.
+  assert.equal(describeToolRun([tl('Skill', { skill: 'ship' })]), 'Used a skill ship');
+  assert.equal(describeToolRun([tl('Skill', {})]), 'Used a skill');
+  assert.equal(
+    describeToolRun([tl('Skill', { skill: 'ship' }), tl('Skill', { skill: 'verify' })]),
+    'Used 2 skills',
+  );
   // Mixed / unknown → plain tool count.
   assert.equal(describeToolRun([tl('Read'), tl('Grep'), tl('Task')]), 'Used 3 tools');
   assert.equal(describeToolRun([tl('Mystery')]), 'Used a tool');
