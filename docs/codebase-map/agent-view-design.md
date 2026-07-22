@@ -179,6 +179,16 @@ step-rail and actions stay pinned.
 Buttons: `.av-btn` + `.av-btn-{primary,danger,ghost}` (permission/question actions
 and the interrupt button share this family).
 
+Deck bar (`SessionControls` in `StructuredView.tsx`): `.av-deck-bar` is the ONE
+bordered row above the composer, sharing a single y-axis. It wraps
+`AgentControls` (`.av-controls`) then `TurnFooter` (`.av-turn-footer`), which are
+dissolved via `.av-controls { display: contents }` so their children become
+direct flex items; `order` interleaves them left→right as **interrupt (1) ·
+turn-footer stats (2, `flex:1 1 auto`) · menus (3, `margin-left:auto`)**. The
+deck bar owns the `border-top` / gradient background; the footer keeps no border
+or block padding of its own now (previously the controls + footer stacked as two
+separate bordered rows).
+
 Controls (`AgentControls.tsx`): `.av-controls` > `.av-controls-interrupt`
 (+`.av-controls-interrupt-dot`) + `.av-controls-menus` holding two `AvMenu`s
 (model / permission mode — no field labels; tinted icons carry the meaning).

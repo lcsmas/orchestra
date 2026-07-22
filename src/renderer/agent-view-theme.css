@@ -865,23 +865,31 @@
  * behind them, so blur would cost paint and change nothing.)
  * ==========================================================================*/
 
-.av-controls {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  justify-content: flex-start;
-  padding: 8px 20px 6px; border-top: 1px solid var(--av-hairline);
+/* One horizontal deck bar: interrupt (left) · turn-footer stats (middle, grows)
+   · model/permission menus (right). AgentControls + TurnFooter used to stack as
+   two bordered rows; they now share a single y-axis here, reclaiming a row. The
+   two components render as `.av-controls` then `.av-turn-footer`; `display:
+   contents` dissolves those wrappers so interrupt / stats / menus become direct
+   flex items of the deck bar, and `order` interleaves the stats between the
+   interrupt and the menus regardless of DOM order. */
+.av-deck-bar {
+  display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap;
+  padding: 7px 20px; border-top: 1px solid var(--av-hairline);
   background: linear-gradient(180deg, var(--av-highlight), transparent 70%),
     var(--av-surface-raised);
   font-size: var(--av-fs-small); color: var(--av-text-dim);
 }
+.av-controls { display: contents; }
 .av-controls-interrupt {
+  order: 1;
   display: inline-flex; align-items: center; gap: 7px;
   font-size: var(--av-fs-small); padding: 4px 12px;
 }
 .av-controls-interrupt-dot { width: 7px; height: 7px; border-radius: 2px; background: currentColor; }
 .av-controls-interrupt:not(:disabled) .av-controls-interrupt-dot { animation: av-pulse 1.4s var(--av-ease) infinite; }
 @media (prefers-reduced-motion: reduce) { .av-controls-interrupt:not(:disabled) .av-controls-interrupt-dot { animation: none; } }
-/* Interrupt stays left; the switcher menus dock right. */
-.av-controls-menus { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
+/* The switcher menus dock to the far right of the deck bar. */
+.av-controls-menus { order: 3; display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
 
 /* ── AvMenu — the view's dropdown primitive ─────────────────────────────────
    Borderless ghost trigger; portalled glass panel (the app's branch-popover
@@ -994,12 +1002,16 @@
   background: var(--av-surface-raised); border: 1px solid var(--av-hairline-strong);
 }
 
-/* Turn footer — flight-data strip: mono, tabular, quiet. */
+/* Turn footer — flight-data strip: mono, tabular, quiet. Now an inline group
+   inside `.av-deck-bar` (order 2, between interrupt and menus): no border /
+   background / block padding of its own, and it flex-grows so the stats fill the
+   gap and the menus stay pinned right. */
 .av-turn-footer {
+  order: 2; flex: 1 1 auto;
   display: flex; align-items: center; gap: 16px;
-  padding: 6px 20px 7px; margin: 0;
-  border-top: 1px solid var(--av-hairline-faint);
-  background: var(--av-surface-raised);
+  padding: 0; margin: 0;
+  border-top: none;
+  background: none;
   font-family: var(--font-mono); font-size: var(--av-fs-caption); color: var(--av-text-faint);
   font-variant-numeric: tabular-nums;
 }
@@ -1020,7 +1032,9 @@
 @media (prefers-reduced-motion: reduce) {
   .av-turn-running-label { animation: none; background: none; color: var(--av-text-dim); }
 }
-.av-turn-footer-live { margin-left: auto; }
+/* Live spinner sits right after the stats inside the deck bar — no auto-margin
+   (that would shove it against the docked menus instead of trailing the stats). */
+.av-turn-footer-live { margin-left: 0; }
 
 .av-turn-spinner {
   display: inline-block; width: 12px; height: 12px; border-radius: 50%;

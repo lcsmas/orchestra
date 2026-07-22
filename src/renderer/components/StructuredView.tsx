@@ -445,8 +445,10 @@ function PermissionSlot({
 
 // ── Session controls + turn footer (A4) ──────────────────────────────────────
 //
-// Model / permission-mode switches + interrupt (AgentControls) above the rich
-// cost/token/duration/error turn footer (TurnFooter).
+// One horizontal deck bar sharing a single y-axis: interrupt (left) + the rich
+// cost/token/duration/error turn footer (TurnFooter, middle) + model /
+// permission-mode switches (AgentControls, right). Previously these stacked as
+// two rows; collapsing them reclaims a row of vertical space at the bottom.
 
 function SessionControls({
   session,
@@ -459,7 +461,7 @@ function SessionControls({
   // before the session starts sticks (reflected back via workspace:update).
   const ws = useStore((s) => s.workspaces.find((w) => w.id === workspaceId));
   return (
-    <>
+    <div className="av-deck-bar">
       <AgentControls
         workspaceId={workspaceId}
         session={session}
@@ -467,7 +469,7 @@ function SessionControls({
         wsPermissionMode={ws?.sdkPermissionMode}
       />
       <TurnFooter session={session} />
-    </>
+    </div>
   );
 }
 
