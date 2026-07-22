@@ -157,8 +157,9 @@ to the unchanged PTY path.
   `AgentImage[]`). Slots: `PermissionDialog`, `AgentControls`, `TurnFooter`,
   **`BackgroundTasksPanel`**. A floating top-right **toggle** (`av-bgtask-toggle`,
   running-count badge) appears once `session.tasks` is non-empty and opens/closes
-  the panel; the panel **auto-opens the first time a task appears** (respecting a
-  manual close after).
+  the panel; the panel **stays closed by default** when a task spins up (it never
+  steals the transcript view) — the toggle + badge surface the task and the user
+  opens the panel on demand (`panelOpen` is fully user-owned).
 - **`src/renderer/components/agent/BackgroundTasksPanel.tsx`** — the right-side
   slide-over listing the session's background tasks (Task-tool subagents, shells,
   monitors, workflows), mirroring the Claude Desktop app. Reads `session.tasks`;

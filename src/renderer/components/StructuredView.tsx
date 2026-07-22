@@ -72,19 +72,13 @@ export function StructuredView({ workspaceId, isActive }: Props) {
   );
   const injectEvent = useStore((s) => s.__injectAgentEvent);
 
-  // The "Background tasks" slide-over. Auto-opens the first time a task appears
-  // (so a fan-out surfaces without a click, like Claude Desktop), but respects a
-  // manual close thereafter — `panelOpen` is user-owned once toggled.
+  // The "Background tasks" slide-over. Stays closed by default when a task
+  // spins up — a background task should not steal the transcript view; its
+  // presence is surfaced by the toolbar toggle + running-count badge instead,
+  // and the user opens the panel on demand. `panelOpen` is fully user-owned.
   const [panelOpen, setPanelOpen] = useState(false);
   const runningTasks = runningTaskCount(session);
   const totalTasks = totalTaskCount(session);
-  const hadTasks = useRef(false);
-  useEffect(() => {
-    if (totalTasks > 0 && !hadTasks.current) {
-      hadTasks.current = true;
-      setPanelOpen(true);
-    }
-  }, [totalTasks]);
 
   // History backfill: a workspace with any prior session on disk opens with
   // the transcript rendered, not a blank pane. Main resolves the file (the
