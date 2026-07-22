@@ -26,7 +26,7 @@ import { agentCliBinDir } from './cli-shim';
 import { getHookSocketPath } from './hooks-server';
 import { isRunning as isPtyRunning } from './pty';
 import { getEventsDir } from './events-spool';
-import { reconcileExited, applyAgentEvent } from './activity';
+import { reconcileExited, applyAgentEvent, fireNeedsInput, resumeRunning } from './activity';
 import { registerSdkDelivery } from './sdk-delivery';
 import {
   normalizeSdkMessage,
@@ -401,13 +401,28 @@ function makeCanUseTool(session: Session) {
         title: opts.title,
       }),
     );
+    // The agent is now blocked on the user: flip the sidebar dot to `waiting`
+    // (orange) and — if the window is unfocused — raise the "needs input"
+    // toast/chime, matching the terminal path's Notification hook. The
+    // structured view's parked question rides a renderer-only `agent:event`
+    // channel that never reaches the events spool, so activity.ts wouldn't
+    // otherwise know the turn stopped to ask. Restored to `running` the moment
+    // the promise settles (reply, interrupt-abort, or turn-end).
+    fireNeedsInput(session.wsId);
     return new Promise<PermissionResult>((resolve) => {
-      session.pending.set(requestId, resolve);
+      // Wrap resolve so EVERY exit from the parked state (renderer reply,
+      // abort, or the turn-end sweep in consume()) restores the dot to
+      // `running` — a live PTY owner is respected by resumeRunning's guard.
+      const settle = (result: PermissionResult) => {
+        resumeRunning(session.wsId);
+        resolve(result);
+      };
+      session.pending.set(requestId, settle);
       // If the turn is aborted (interrupt) the parked promise must not dangle:
       // deny on abort so the SDK unwinds.
       const onAbort = () => {
         if (session.pending.delete(requestId)) {
-          resolve({ behavior: 'deny', message: 'interrupted' });
+          settle({ behavior: 'deny', message: 'interrupted' });
         }
       };
       if (opts.signal.aborted) onAbort();

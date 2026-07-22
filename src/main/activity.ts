@@ -88,7 +88,14 @@ function fireFinished(id: string): void {
   });
 }
 
-function fireNeedsInput(id: string): void {
+/** Flip a workspace to `waiting` because the agent is blocked on the user, and
+ *  raise the "needs input" toast/chime if the window is unfocused. The terminal
+ *  path reaches this via the Claude Code `Notification` hook → the events spool
+ *  → `applyAgentEvent('notify')`. The structured (SDK) path has no spool signal
+ *  for a parked question — its `canUseTool` bridge (agent-sdk.ts) emits a
+ *  renderer-only `permission-request` event — so it calls this directly when it
+ *  parks an interactive tool call. Exported for that caller. */
+export function fireNeedsInput(id: string): void {
   const focused = platform.isFocused();
   void setStatus(id, 'waiting').then((res) => {
     if (!res) return;
@@ -304,6 +311,20 @@ export function reconcileExited(id: string): void {
   if (!ws || ws.archived) return;
   if (ws.status !== 'running') return;
   void setStatus(id, 'waiting');
+}
+
+/** Restore `running` after a parked interactive tool call is answered (the
+ *  structured/SDK path's inverse of {@link fireNeedsInput}). The agent stopped
+ *  to ask; once the user replies it resumes work, so the dot must go back to
+ *  green. Guarded to only act on the `waiting` we set when parking — never
+ *  resurrect a session that legitimately reached `idle`/`stopped`, and a
+ *  redundant call when already `running` is a no-op (`setStatus` short-circuits
+ *  on an unchanged status). No toast/chime on this direction. */
+export function resumeRunning(id: string): void {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived) return;
+  if (ws.status !== 'waiting') return;
+  void setStatus(id, 'running');
 }
 
 /** Push the agent's currently-running tool (or null to clear) to the renderer.

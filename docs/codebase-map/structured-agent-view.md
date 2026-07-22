@@ -259,6 +259,23 @@ to the unchanged PTY path.
   durable across remounts (the store is the source of truth). Verified with a
   discriminating CDP mutation test (inject AskUserQuestion → answer → unmount via
   Resources → remount: modal must NOT reappear and `pendingPermissions` must be 0).
+- **Parked-prompt status dot** — when `makeCanUseTool` (agent-sdk.ts) parks ANY
+  interactive tool call (AskUserQuestion, or an allow/deny permission prompt in a
+  non-bypass mode) it calls `fireNeedsInput(wsId)` (activity.ts) to flip the
+  sidebar dot to `waiting` (orange) + raise the "needs input" toast/chime,
+  matching the terminal path's Claude Code `Notification` hook. This is needed in
+  BOTH spool cases and does NOT overlap `driveStatusFromEvent`: the park event is
+  `emit()`ed directly from `makeCanUseTool`, never through `emitFrom` →
+  `driveStatusFromEvent`, so `sdkEventToStatusEvent`'s `permission-request→notify`
+  mapping is unreachable for a real park — and the SDK subprocess's own Claude
+  Code `Notification` hook does NOT fire for a programmatic `canUseTool` park
+  (verified e2e: on master alone the no-PTY dot stuck `running` with a pending
+  permission). So `fireNeedsInput` here is the sole driver of the parked-question
+  dot. The parked promise is wrapped so EVERY exit (renderer reply via
+  `sdkPermissionReply`, interrupt-abort, or the turn-end sweep in `consume()`)
+  calls `resumeRunning(wsId)` — a guarded `waiting → running` flip (no-op unless
+  currently `waiting`, so it never resurrects an idle/stopped session or fights a
+  live PTY owner or `driveStatusFromEvent`'s own transitions).
 - **`AvMenu`** (`components/agent/AvMenu.tsx`) — the custom dropdown replacing native
   selects in AgentControls (portalled glass panel; see agent-view-design.md).
 - New IPC: `agentSdkHistory` (`agent:sdkHistory`), `agentSkills` (`agent:skills`),
