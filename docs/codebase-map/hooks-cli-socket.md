@@ -117,8 +117,12 @@ prepended with `~/.orchestra/bin` so bare `orchestra` resolves.
 
 ## The `orchestra` CLI (src/cli/index.ts, ~349 lines)
 Standalone Node HTTP client (no npm deps) that POSTs to the socket. Reads
-`$ORCHESTRA_SOCK`/pointer for the socket and `$ORCHESTRA_WS_ID` for self-identity
-(sent as `from`). Exit 0 on `{ok:true}`, 1 otherwise (error to stderr).
+`$ORCHESTRA_SOCK`/pointer for the socket and, for self-identity (sent as `from`),
+`$ORCHESTRA_WS_ID` with a fallback to `$ORCHESTRA_WS_ID_IDENTITY`
+(`resolveSelfWorkspaceId`) — the latter is set unconditionally by the SDK session's
+`buildSdkEnv` so identity survives even when the spool gate withholds
+`$ORCHESTRA_WS_ID` in a structured-view session. Exit 0 on `{ok:true}`, 1 otherwise
+(error to stderr).
 Subcommands: `peers [--stats]` (`--stats` adds per-peer committed diff vs base),
 `read <id> [--lines N]`, `message <id> <text…>`, `spawn
 --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]`

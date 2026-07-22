@@ -163,9 +163,30 @@ Socket discovery (in order):
  * has no such env var, so `from` is simply omitted — unchanged behaviour. The
  * route layer (hooks-server) treats a missing `from` as "no caller identity".
  */
-function selfWorkspaceId(): string | undefined {
-  const id = process.env.ORCHESTRA_WS_ID;
+/**
+ * Resolve the caller's workspace id from an env bag (pure; exported for tests).
+ *
+ * ORCHESTRA_WS_ID is the primary identity source in a terminal PTY. But in a
+ * structured-view (SDK) session it is spool-ownership-gated — buildSdkEnv
+ * (agent-sdk.ts) withholds it whenever a terminal PTY already owns the activity
+ * spool for this workspace, to avoid two writers corrupting the sidebar status
+ * dot. When withheld, identity must still resolve, or `orchestra rename`/`peers`/
+ * `message`/`spawn` break in the structured view (the empty-`$ORCHESTRA_WS_ID` →
+ * `usage:` failure). ORCHESTRA_WS_ID_IDENTITY is set UNCONDITIONALLY by
+ * buildSdkEnv and is never read by the spool hook, so it decouples identity from
+ * spool ownership. Precedence: ORCHESTRA_WS_ID wins when both are present (they
+ * agree; the PTY case sets only the former), else fall back to the identity var.
+ */
+export function resolveSelfWorkspaceId(env: {
+  ORCHESTRA_WS_ID?: string;
+  ORCHESTRA_WS_ID_IDENTITY?: string;
+}): string | undefined {
+  const id = env.ORCHESTRA_WS_ID || env.ORCHESTRA_WS_ID_IDENTITY;
   return id && id.trim() ? id.trim() : undefined;
+}
+
+function selfWorkspaceId(): string | undefined {
+  return resolveSelfWorkspaceId(process.env);
 }
 
 /** Pull `--flag value` out of args, returning the value and the leftover args. */
@@ -516,6 +537,17 @@ export async function runCli(argv: string[]): Promise<void> {
 // this module is bundled into the Electron main process, `runCli()` is called
 // explicitly from there instead — and `process.versions.electron` is set, so we
 // must NOT also auto-run here (that would fire the CLI on every GUI launch).
-if (!process.versions.electron && require.main === module) {
+//
+// The `typeof require` guard keeps this inert under a raw-ESM loader (node
+// --test --experimental-strip-types, where `require` is undefined and a bare
+// reference would ReferenceError at import) so this module — and its exported
+// pure helpers like resolveSelfWorkspaceId — stay unit-testable. Production
+// ships as CJS (vite.cli.config.ts formats:['cjs']), where `require` exists and
+// this fires exactly as before.
+if (
+  typeof require !== 'undefined' &&
+  !process.versions.electron &&
+  require.main === module
+) {
   void runCli(process.argv.slice(2));
 }

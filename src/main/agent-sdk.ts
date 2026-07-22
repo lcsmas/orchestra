@@ -194,25 +194,36 @@ function buildSdkEnv(ws: Workspace): Record<string, string> {
   // CLI-identity parity with startAgentPty, PLUS the activity spool when this SDK
   // session is the SOLE driver of the workspace.
   //
-  // ORCHESTRA_WS_ID is DUAL-PURPOSE. The generated activity hook writes the
-  // durable events spool for any process where it is set (`[ -n "$ORCHESTRA_WS_ID"
-  // ] || exit 0`), keyed by `<wsId>.jsonl` + a `<wsId>.seq` counter; the
-  // `orchestra` CLI ALSO reads it for identity (cli/index.ts). The hazard is a
-  // COEXISTING terminal PTY for the SAME workspace: if both its hooks and this
-  // SDK session's hooks set the same WS_ID, they interleave writes to one spool
-  // with independent seq counters and corrupt the sidebar status dot.
+  // ORCHESTRA_WS_ID USED TO BE DUAL-PURPOSE and that overload was a bug. The
+  // generated activity hook writes the durable events spool for any process
+  // where ORCHESTRA_WS_ID is set (`[ -n "$ORCHESTRA_WS_ID" ] || exit 0` — its
+  // ONLY gate), keyed by `<wsId>.jsonl` + a `<wsId>.seq` counter; the `orchestra`
+  // CLI ALSO read it for identity. The hazard is a COEXISTING terminal PTY for
+  // the SAME workspace: if both its hooks and this SDK session's hooks set the
+  // same WS_ID, they interleave writes to one spool with independent seq counters
+  // and corrupt the sidebar status dot. So the spool half MUST be gated on
+  // `isPtyRunning(ws.id)`.
+  //
+  // But gating identity ALONGSIDE the spool broke `orchestra rename`/`peers`/
+  // `message`/`spawn` in a structured session whenever a PTY happened to own the
+  // spool — the reported empty-`$ORCHESTRA_WS_ID` → `usage:` rename failure.
+  // Note ORCHESTRA_EVENTS_DIR cannot decouple them: the hook DEFAULTS it to the
+  // same getEventsDir() path when unset, so withholding it alone still lets the
+  // hook write. The fix is a dedicated identity var (ORCHESTRA_WS_ID_IDENTITY,
+  // set unconditionally below, never read by the hook), leaving ORCHESTRA_WS_ID
+  // to mean spool ownership only.
   //
   // The terminal PTY lazy-starts only when the user actually opens the Terminal
   // tab (Terminal.tsx `allowStartRef`), so in a structured-view session there is
   // usually NO PTY — and we can safely own the spool so the status dot works in
   // the structured view too. We gate on `isPtyRunning(ws.id)` at session-start
   // time: no live PTY → set WS_ID/EVENTS_DIR (the SDK session drives the dot);
-  // a PTY is already running → stay spool-free and let the PTY keep ownership,
-  // exactly as before. Worst case if the user opens the Terminal tab AFTER the
-  // SDK session started is a brief double-writer until one ends — no worse than
-  // the pre-existing behavior for a user who ran both, and avoided in the common
-  // (single-view) path. Full Phase 6 makes the two mutually exclusive by not
-  // starting the PTY at all when structured is the default.
+  // a PTY is already running → stay spool-free and let the PTY keep ownership.
+  // Worst case if the user opens the Terminal tab AFTER the SDK session started
+  // is a brief double-writer until one ends — no worse than the pre-existing
+  // behavior for a user who ran both, and avoided in the common (single-view)
+  // path. Full Phase 6 makes the two mutually exclusive by not starting the PTY
+  // at all when structured is the default; identity no longer depends on it.
   const remote = ws.host?.kind === 'sandbox';
   if (!remote) {
     env.ORCHESTRA_WORKTREE = ws.worktreePath;
@@ -220,8 +231,23 @@ function buildSdkEnv(ws: Workspace): Record<string, string> {
     env.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir;
     const sock = getHookSocketPath();
     if (sock) env.ORCHESTRA_SOCK = sock;
-    // Own the activity spool (→ sidebar status dot) only when no terminal PTY is
-    // already writing it for this workspace.
+    // CLI IDENTITY, always. `orchestra rename`/`peers`/`message`/`spawn` resolve
+    // the caller's workspace via selfWorkspaceId() (cli/index.ts), which reads
+    // ORCHESTRA_WS_ID first and falls back to ORCHESTRA_WS_ID_IDENTITY. We set
+    // the identity var UNCONDITIONALLY here so those commands work in a
+    // structured session even when the spool gate below withholds
+    // ORCHESTRA_WS_ID — the spool hook (workspaces.ts ORCHESTRA_HOOK_SCRIPT)
+    // never reads the identity var, so this cannot cause a double-writer.
+    // Without it, the rename-instruction hook's `orchestra rename
+    // "$ORCHESTRA_WS_ID" ...` collapses to a single arg and prints `usage:`.
+    env.ORCHESTRA_WS_ID_IDENTITY = ws.id;
+    // SPOOL OWNERSHIP, gated. The activity hook writes `<wsId>.jsonl` whenever
+    // ORCHESTRA_WS_ID is set (its ONLY gate; ORCHESTRA_EVENTS_DIR merely picks
+    // the dir and DEFAULTS to the same getEventsDir() path when unset — so
+    // withholding EVENTS_DIR alone does NOT stop the write). To keep the sidebar
+    // status dot single-writer we must withhold ORCHESTRA_WS_ID itself when a
+    // terminal PTY already owns the spool for this workspace; otherwise the SDK
+    // session claims it (drives the dot in the structured view too).
     if (!isPtyRunning(ws.id)) {
       env.ORCHESTRA_WS_ID = ws.id;
       env.ORCHESTRA_EVENTS_DIR = getEventsDir();

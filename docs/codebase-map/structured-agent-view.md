@@ -88,7 +88,16 @@ to the unchanged PTY path.
   rename-hook's gate/stage vars, from `autoRenameActive(ws)`), the spool-free identity
   plumbing, and **sets `ORCHESTRA_WS_ID`/`EVENTS_DIR`
   (→ the sidebar status dot fires in structured view) ONLY when no terminal PTY is
-  running for the workspace** (`isPtyRunning(ws.id)` gate). An **orchestrator** workspace
+  running for the workspace** (`isPtyRunning(ws.id)` gate). **Identity is decoupled
+  from that spool gate**: `buildSdkEnv` ALSO sets `ORCHESTRA_WS_ID_IDENTITY = ws.id`
+  **unconditionally**, and the CLI's `resolveSelfWorkspaceId` (`cli/index.ts`) falls
+  back to it when `ORCHESTRA_WS_ID` is withheld — so `orchestra rename`/`peers`/
+  `message`/`spawn` work in a structured session even while a PTY owns the spool
+  (previously the rename hook's `orchestra rename "$ORCHESTRA_WS_ID" …` collapsed to
+  one arg → `usage:` error). The spool hook (`ORCHESTRA_HOOK_SCRIPT`) gates only on
+  `ORCHESTRA_WS_ID` and never reads the identity var; note `ORCHESTRA_EVENTS_DIR`
+  alone can't decouple them since the hook defaults it to the same `getEventsDir()`
+  path. An **orchestrator** workspace
   also gets its standing brief appended to the Claude Code system prompt on a FRESH
   session (`systemPrompt: {preset:'claude_code', append: ORCHESTRATOR_BRIEF}`, gated on
   `!ws.sdkSessionId` so a resume doesn't duplicate it) — parity with the terminal path's
