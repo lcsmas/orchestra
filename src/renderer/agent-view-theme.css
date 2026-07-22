@@ -92,7 +92,7 @@
   --av-fs-code: 12px;
   --av-fs-h: 15.5px;
   --av-lh-prose: 1.65;
-  --av-measure: 74ch;
+  --av-measure: 92ch;
   --av-radius-xl: 14px;
 
   /* A whisper of light at the top of the canvas so the pane doesn't read as a
@@ -149,9 +149,12 @@
   scroll-behavior: smooth;
 }
 @media (prefers-reduced-motion: reduce) { .av-message-list { scroll-behavior: auto; } }
-/* Centered measure without touching the measured rows: constrain the inner
-   wrapper only. (Its inline height/position are the virtualization contract.) */
-.av-message-list-inner { max-width: 900px; margin: 0 auto; }
+/* The transcript fills the available width (no narrow centered column) — the
+   inner wrapper stretches edge to edge and side padding keeps prose off the
+   frame. (Its inline height/position are the virtualization contract; only
+   width/padding are ours to set.) The per-message `--av-measure` cap below still
+   keeps assistant prose to a readable line length inside this full-width lane. */
+.av-message-list-inner { max-width: none; margin: 0; padding: 0 8px; }
 .av-row { contain: layout style; }
 
 /* Scrollbar — the app hides scrollbars globally (styles.css `*` rules), which
@@ -222,16 +225,29 @@
 }
 
 .av-message-assistant { --av-rail: var(--av-assistant); }
+
+/* USER turn — a distinct, self-sized bubble the reader instantly reads as
+   "mine" (Claude-Code-app style), told apart from the agent by SHAPE and TINT
+   rather than a "You" label. It drops the rail spine (that is the assistant's
+   signature), sizes to its content instead of spanning the lane, and carries an
+   accent-tinted fill. */
 .av-message-user {
   --av-rail: var(--av-user);
   margin-top: 14px;
-  background: linear-gradient(180deg, var(--av-highlight), transparent 80%),
-    var(--av-surface-raised);
-  border: 1px solid var(--av-hairline);
-  border-radius: var(--radius, 8px);
-  padding: 10px 16px 10px 18px;
+  /* Shrink-wrap the bubble to its content, capped so a long paragraph still
+     wraps at a readable width; sits on the right like a chat "sent" message. */
+  width: fit-content;
+  max-width: min(88%, calc(var(--av-measure) - 8ch));
+  margin-left: auto;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--av-user) 22%, var(--av-surface-raised)) 0%,
+    color-mix(in srgb, var(--av-user) 12%, var(--av-surface-raised)) 100%);
+  border: 1px solid color-mix(in srgb, var(--av-user) 35%, var(--av-hairline));
+  border-radius: var(--av-radius-xl, 14px);
+  padding: 9px 15px;
 }
-.av-message-user::before { top: 8px; bottom: 8px; }
+/* No rail spine on the user bubble — the shape/tint carries the identity. */
+.av-message-user::before { display: none; }
 .av-message-system { --av-rail: var(--av-tool); color: var(--av-text-dim); font-size: var(--av-fs-small); }
 .av-message-error {
   --av-rail: var(--av-error);
@@ -375,6 +391,32 @@
     var(--av-surface-raised);
   overflow: hidden;
   transition: border-color 140ms var(--av-ease);
+}
+
+/* ── Aggregated tool run (Claude-Code style) ─────────────────────────────────
+   Consecutive `tool` messages fuse into ONE connected stack instead of N
+   separate cards. StructuredView stamps each row's position in the run on
+   `data-tool-group` (first/middle/last/solo). We collapse the inter-card
+   margins and square off the joined corners, then pull each subsequent card up
+   by 1px so its top border overlaps the previous card's bottom border (one
+   hairline between cards, not two). A `solo` group keeps the standalone look. */
+.av-row[data-tool-group="first"] > .av-tool-card { margin-bottom: 0; }
+.av-row[data-tool-group="middle"] > .av-tool-card { margin-top: 0; margin-bottom: 0; }
+.av-row[data-tool-group="last"] > .av-tool-card { margin-top: 0; }
+
+.av-row[data-tool-group="first"] > .av-tool-card > .av-collapsible {
+  border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+}
+.av-row[data-tool-group="middle"] > .av-tool-card > .av-collapsible {
+  border-radius: 0; margin-top: -1px;
+}
+.av-row[data-tool-group="last"] > .av-tool-card > .av-collapsible {
+  border-top-left-radius: 0; border-top-right-radius: 0; margin-top: -1px;
+}
+/* Hovering one card in a fused run raises the whole run's border relationship
+   subtly without breaking the seam; keep the strong border only where it reads. */
+.av-row[data-tool-group]:not([data-tool-group="solo"]) > .av-tool-card > .av-collapsible:hover {
+  z-index: 1; position: relative;
 }
 .av-collapsible:hover { border-color: var(--av-hairline-strong); }
 /* Opaque error tint (a translucent one would show whatever is behind the card). */
@@ -887,6 +929,10 @@
   padding: 5px 0; border: none; background: none;
   color: var(--av-text); font-family: var(--font-mono); font-size: var(--av-fs-code);
   line-height: 1.6;
+  /* Auto-grow (JS sets height to scrollHeight): border-box so the measured
+     scrollHeight and the applied height agree, and once content passes
+     max-height the field scrolls instead of clipping. */
+  box-sizing: border-box; overflow-y: auto;
 }
 .av-composer-input::placeholder { color: var(--av-text-faint); }
 .av-composer-input:focus, .av-composer-input:focus-visible { outline: none; border: none; box-shadow: none; }

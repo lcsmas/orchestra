@@ -59,10 +59,15 @@ gated on the prior `result`), so the subprocess stays warm and `canUseTool` fire
   lifecycle (lazy start on first `agentSdkSend`, interrupt, `sdkStopMany` teardown on
   workspace delete). **The SDK is pure ESM — loaded via a cached dynamic `import()`, NOT a
   static import** (a static import + vite `external` emits `require()` in the CJS main
-  bundle → `ERR_REQUIRE_ESM` boot crash). `buildSdkEnv` (:136) sets only
-  `ORCHESTRA_BRANCH`/`KIND` — deliberate for phases 1–5 (the coexisting PTY session drives
-  the hooks/events-spool; an SDK session also setting `ORCHESTRA_WS_ID`/`EVENTS_DIR` would
-  double-write the spool). **Phase 6 must copy the full `pty.ts` env block** (see plan).
+  bundle → `ERR_REQUIRE_ESM` boot crash). `buildSdkEnv` sets `ORCHESTRA_BRANCH`/`KIND`
+  plus the spool-free identity plumbing, and **sets `ORCHESTRA_WS_ID`/`EVENTS_DIR`
+  (→ the sidebar status dot fires in structured view) ONLY when no terminal PTY is
+  running for the workspace** (`isPtyRunning(ws.id)` gate). The terminal PTY
+  lazy-starts just when the Terminal tab is opened (`Terminal.tsx allowStartRef`), so
+  a structured-only session safely owns the spool; a live PTY keeps ownership and the
+  SDK session stays spool-free — avoiding the double-writer that corrupts the dot's
+  per-`wsId` `seq` counter. **Phase 6 makes the two mutually exclusive** (don't start
+  the PTY when structured is default) so the gate is always satisfied — see plan.
 - **`src/renderer/agent-event-queue.ts`** (+ `.test.ts`) — pure RAF-batch queue; coalesces
   a frame of events and folds them in one `setState` (test asserts batched-fold ==
   sequential-fold). ~1600 events/commit under load; holds 60fps at 600+ messages.
@@ -116,10 +121,13 @@ gated on the prior `result`), so the subprocess stays warm and `canUseTool` fire
   terminal tab to **"Raw"** when structured is the default. Toggled via
   **`src/renderer/components/AgentViewSettings.tsx`** (a sidebar Settings modal, opened from
   Sidebar.tsx next to the sound-settings button).
-- **`buildSdkEnv`** (`agent-sdk.ts`) sets the spool-FREE identity plumbing
-  (`ORCHESTRA_WORKTREE`/`ORCHESTRA_SOCK`/PATH shim) but deliberately NOT `ORCHESTRA_WS_ID`
-  (the events-spool write trigger) while a terminal PTY can coexist — see the plan's Phase
-  6.1 follow-up. The SDK session also inits its model from `ws.model`.
+- **`buildSdkEnv`** (`agent-sdk.ts`) sets the identity plumbing
+  (`ORCHESTRA_WORKTREE`/`ORCHESTRA_SOCK`/PATH shim) and — when no terminal PTY is
+  running for the workspace (`isPtyRunning(ws.id)`) — the events-spool trigger
+  `ORCHESTRA_WS_ID`/`ORCHESTRA_EVENTS_DIR`, so the status dot fires for a
+  structured-only session without a PTY coexisting to double-write. Phase 6's
+  default-flip guarantees mutual exclusivity. The SDK session also inits its model
+  from `ws.model`.
 
 ## Channel wiring (to add a new agent broadcast)
 

@@ -34,14 +34,11 @@ function MessageBubbleImpl({ message }: Props) {
 
   return (
     <div className={`av-message av-message-${role}`} data-role={role}>
-      {/* Quiet role eyebrow — only where the reader needs orientation: their own
-          turns and errors. Assistant prose stays unlabeled (it is the default
-          voice of the transcript). */}
-      {role === 'user' ? (
-        <div className="av-message-eyebrow">You</div>
-      ) : role === 'error' ? (
-        <div className="av-message-eyebrow">Error</div>
-      ) : null}
+      {/* No "You" label — user turns are told apart from the agent by their
+          distinct bubble treatment (Claude-Code-app style: a tinted, contained
+          bubble for the user; plain prose for the agent). Only errors keep an
+          eyebrow, where the word carries real information. */}
+      {role === 'error' ? <div className="av-message-eyebrow">Error</div> : null}
       <div className="av-message-text">
         {blocks.map((b, i) =>
           b.kind === 'code' ? (

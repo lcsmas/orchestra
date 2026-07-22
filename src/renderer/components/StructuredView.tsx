@@ -170,6 +170,21 @@ function MessageList({
   const visible = messages.slice(start, end);
   const padTop = offsets[start] ?? 0;
 
+  // Aggregate consecutive tool calls (Claude Code style): a run of adjacent
+  // `tool` messages renders as one connected stack rather than N separate cards.
+  // We compute each tool row's position in its run — 'solo' | 'first' | 'middle'
+  // | 'last' — over the FULL list (not the visible slice) so grouping is stable
+  // as the window scrolls; CSS keys on `data-tool-group` to fuse the run.
+  const toolGroup = (i: number): 'solo' | 'first' | 'middle' | 'last' | null => {
+    if (messages[i]?.role !== 'tool') return null;
+    const prevTool = i > 0 && messages[i - 1]?.role === 'tool';
+    const nextTool = i < messages.length - 1 && messages[i + 1]?.role === 'tool';
+    if (prevTool && nextTool) return 'middle';
+    if (prevTool) return 'last';
+    if (nextTool) return 'first';
+    return 'solo';
+  };
+
   return (
     <div ref={scrollRef} className="av-message-list" onScroll={onScroll}>
       {messages.length === 0 ? (
@@ -222,6 +237,7 @@ function MessageList({
                 }}
                 // Index in the full list, for debugging/keys downstream.
                 dataIndex={start + i}
+                toolGroup={toolGroup(start + i)}
               />
             ))}
           </div>
@@ -247,10 +263,15 @@ function MeasuredRow({
   message,
   onHeight,
   dataIndex,
+  toolGroup,
 }: {
   message: RenderMessage;
   onHeight: (h: number) => void;
   dataIndex: number;
+  /** Position of this row within a run of consecutive tool cards, or null when
+   *  the row isn't a tool. Drives the CSS that fuses adjacent tool cards into a
+   *  single connected stack. */
+  toolGroup: 'solo' | 'first' | 'middle' | 'last' | null;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -258,7 +279,12 @@ function MeasuredRow({
     if (el) onHeight(el.offsetHeight);
   });
   return (
-    <div ref={ref} className="av-row" data-index={dataIndex}>
+    <div
+      ref={ref}
+      className="av-row"
+      data-index={dataIndex}
+      data-tool-group={toolGroup ?? undefined}
+    >
       <MessageSlot message={message} />
     </div>
   );
@@ -339,6 +365,19 @@ function Composer({
   const [text, setText] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
   const running = !!session?.running;
+
+  // Auto-grow: the textarea height tracks its content up to the CSS max-height
+  // (then it scrolls). Reset to `auto` first so it can SHRINK when lines are
+  // removed, not just grow — measuring scrollHeight off a stale taller box would
+  // ratchet the height up permanently. Runs on every text change (incl. skill
+  // completion / programmatic setText, not just keystrokes) via the effect below.
+  const autosize = useCallback(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, []);
+  useLayoutEffect(autosize, [text, autosize]);
 
   // Skills autocomplete: loaded lazily on the first "/" (cheap dir scan in
   // main), cached per mount. `acIndex` is the highlighted row.

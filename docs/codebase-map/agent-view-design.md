@@ -68,14 +68,26 @@ Shell (`StructuredView.tsx`): `.av-view` (+`.active`) → `.av-message-list` →
 `.av-message-list-inner` → `.av-row`. Composer `.av-composer` >
 `.av-composer-field` (textarea + send live inside one framed field) >
 `.av-composer-input` + `.av-composer-send` (arrow icon + `.av-composer-send-label`
-"Send"/"Queue"). Empty state `.av-empty` > `.av-empty-{mark,title,desc,hint}`
-(kbd chips in the hint).
+"Send"/"Queue"). The `.av-composer-input` textarea **auto-grows** — `Composer`
+resets its height to `auto` then sets it to `scrollHeight` on every text change
+(a `useLayoutEffect`, so it fires on skill-completion `setText` too, not just
+keystrokes); CSS gives it `box-sizing:border-box` + `overflow-y:auto` so it scrolls
+past the `max-height:200px` cap. Empty state `.av-empty` >
+`.av-empty-{mark,title,desc,hint}` (kbd chips in the hint).
 
 Message (`MessageBubble.tsx`): `.av-message` + role `.av-message-{assistant,user,
-system,error}`; role microlabel `.av-message-eyebrow` ("You"/"Error" only); body
-`.av-message-text`; streaming caret `.av-cursor`. The **turn rail** is a rounded
-role-tinted `::before` spine on `.av-message` (no longer a border). A message
-with no text and no thinking renders `null` (no empty stub). Markdown
+system,error}`; role microlabel `.av-message-eyebrow` (**"Error" only** now — the
+user turn carries NO "You" label, told apart from the agent by bubble shape/tint,
+Claude-Code-app style); body `.av-message-text` (prose caps at `--av-measure`);
+streaming caret `.av-cursor`. The **turn rail** is a rounded role-tinted `::before`
+spine on `.av-message` (no longer a border) — the **assistant's** signature; the
+**user** turn drops the rail (`::before { display:none }`) and instead renders as a
+self-sized, right-aligned, `--av-user`-tinted bubble (`width: fit-content`,
+`margin-left:auto`, capped `max-width`). A message with no text and no thinking
+renders `null` (no empty stub). The transcript is **full-width**:
+`.av-message-list-inner` has `max-width:none` (no narrow centered column), so tool
+cards/diffs span the lane while prose stays readable via the per-message
+`--av-measure` cap. Markdown
 (`markdown.tsx`): `.av-md`, `.av-md-{p,h,ul,ol,quote,hr,code-inline,link,strong,em}`.
 
 Thinking (`ThinkingIndicator.tsx`): `.av-thinking` > `.av-thinking-dots` >
@@ -88,6 +100,14 @@ Collapsible (`Collapsible.tsx` — every tool card wraps one): `.av-collapsible`
 `.av-collapsible-aside`; body `.av-collapsible-body` (conditionally mounted →
 entrance-animated, not height-animated). Todo marks are drawn SVGs
 (`TodoMark` in ToolCard.tsx), colored via `currentColor` on `.av-todo-mark`.
+
+**Aggregated tool runs**: a run of consecutive `tool` messages fuses into one
+connected stack (Claude-Code style). `StructuredView.MeasuredRow` stamps each
+row's position in its run on `data-tool-group` (`solo`/`first`/`middle`/`last`,
+computed over the FULL message list so it's scroll-stable); the theme keys on it
+to collapse inter-card margins and square the joined corners (`middle`/`last`
+`.av-collapsible` also `margin-top:-1px` so adjacent borders overlap into one
+hairline). `solo` keeps the standalone card look.
 
 Tool card (`ToolCard.tsx`): `.av-tool-card` + `.av-tool-<name-lowercased>` +
 `.av-tool-errored`. Header `.av-tool-header-inner` > `.av-tool-icon` (SVG per

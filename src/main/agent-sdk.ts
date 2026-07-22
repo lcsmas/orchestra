@@ -22,6 +22,8 @@ import { transcriptToEvents } from '../shared/agent-transcript';
 import { syncAccountInheritance } from './account-inherit';
 import { agentCliBinDir } from './cli-shim';
 import { getHookSocketPath } from './hooks-server';
+import { isRunning as isPtyRunning } from './pty';
+import { getEventsDir } from './events-spool';
 import {
   normalizeSdkMessage,
   makePermissionRequest,
@@ -175,25 +177,28 @@ function buildSdkEnv(ws: Workspace): Record<string, string> {
   env.ORCHESTRA_BRANCH = ws.branch;
   env.ORCHESTRA_KIND = ws.kind ?? 'worktree';
 
-  // CLI-identity parity with startAgentPty — carefully NOT the spool trigger.
+  // CLI-identity parity with startAgentPty, PLUS the activity spool when this SDK
+  // session is the SOLE driver of the workspace.
   //
-  // The hazard is that ORCHESTRA_WS_ID is DUAL-PURPOSE. The generated activity
-  // hook writes the durable events spool for any process where it is set
-  // (`[ -n "$ORCHESTRA_WS_ID" ] || exit 0`, and ORCHESTRA_EVENTS_DIR *defaults*
-  // to ~/.orchestra/events when unset — so WS_ID alone is enough to write). The
-  // `orchestra` CLI ALSO reads ORCHESTRA_WS_ID for its own identity
-  // (cli/index.ts:167). So while a terminal PTY can coexist with this SDK
-  // session for the same workspace (phases 1–5), setting WS_ID here would make
-  // BOTH processes' hooks append to the same `<wsId>.jsonl` with independent
-  // `seq` counters and corrupt the sidebar dot.
+  // ORCHESTRA_WS_ID is DUAL-PURPOSE. The generated activity hook writes the
+  // durable events spool for any process where it is set (`[ -n "$ORCHESTRA_WS_ID"
+  // ] || exit 0`), keyed by `<wsId>.jsonl` + a `<wsId>.seq` counter; the
+  // `orchestra` CLI ALSO reads it for identity (cli/index.ts). The hazard is a
+  // COEXISTING terminal PTY for the SAME workspace: if both its hooks and this
+  // SDK session's hooks set the same WS_ID, they interleave writes to one spool
+  // with independent seq counters and corrupt the sidebar status dot.
   //
-  // Until the SDK session is the SOLE driver (Phase 6: structured is default and
-  // the PTY isn't started for the workspace), we set only the spool-free
-  // identity/round-trip plumbing — the worktree root and the hook socket, plus
-  // the CLI shim on PATH. These let hooks resolve their scripts and reach the
-  // socket without writing the spool. Full WS_ID parity (and letting the SDK
-  // session's hooks drive the dot exactly like the PTY's did) lands with the
-  // default-flip that guarantees the two drivers are mutually exclusive.
+  // The terminal PTY lazy-starts only when the user actually opens the Terminal
+  // tab (Terminal.tsx `allowStartRef`), so in a structured-view session there is
+  // usually NO PTY — and we can safely own the spool so the status dot works in
+  // the structured view too. We gate on `isPtyRunning(ws.id)` at session-start
+  // time: no live PTY → set WS_ID/EVENTS_DIR (the SDK session drives the dot);
+  // a PTY is already running → stay spool-free and let the PTY keep ownership,
+  // exactly as before. Worst case if the user opens the Terminal tab AFTER the
+  // SDK session started is a brief double-writer until one ends — no worse than
+  // the pre-existing behavior for a user who ran both, and avoided in the common
+  // (single-view) path. Full Phase 6 makes the two mutually exclusive by not
+  // starting the PTY at all when structured is the default.
   const remote = ws.host?.kind === 'sandbox';
   if (!remote) {
     env.ORCHESTRA_WORKTREE = ws.worktreePath;
@@ -201,6 +206,12 @@ function buildSdkEnv(ws: Workspace): Record<string, string> {
     env.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir;
     const sock = getHookSocketPath();
     if (sock) env.ORCHESTRA_SOCK = sock;
+    // Own the activity spool (→ sidebar status dot) only when no terminal PTY is
+    // already writing it for this workspace.
+    if (!isPtyRunning(ws.id)) {
+      env.ORCHESTRA_WS_ID = ws.id;
+      env.ORCHESTRA_EVENTS_DIR = getEventsDir();
+    }
   }
   return env;
 }
