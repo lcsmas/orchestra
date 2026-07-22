@@ -2,6 +2,7 @@ import React from 'react';
 import type { RenderMessage } from '../../../shared/types';
 import { MarkdownView } from './MarkdownView';
 import { ThinkingIndicator } from './ThinkingIndicator';
+import { useTypewriter } from './useTypewriter';
 
 interface Props {
   message: RenderMessage;
@@ -22,6 +23,17 @@ interface Props {
  */
 function MessageBubbleImpl({ message }: Props) {
   const { text, thinking, role, images } = message;
+  const fullText = text ?? '';
+
+  // Typewriter reveal for STREAMING ASSISTANT text: the SDK delivers tokens in
+  // bursts, so revealing each burst instantly (however cheaply) reads as chunky
+  // "block by block" output. Instead we reveal a growing prefix at a steady
+  // frame-paced cadence (renderer/typewriter.ts) so text flows in fluidly.
+  // Only while the assistant message is still streaming (`!done`) — a finished
+  // message, or any user/system/error text, shows in full immediately (the hook
+  // returns the full text when `enabled` is false, no animation).
+  const animate = role === 'assistant' && !message.done && fullText.length > 0;
+  const shown = useTypewriter(fullText, !!message.done, animate);
 
   const hasImages = !!images && images.length > 0;
   // A message with nothing to show — e.g. a thinking-only block after the
@@ -50,14 +62,17 @@ function MessageBubbleImpl({ message }: Props) {
         </div>
       ) : null}
       <div className="av-message-text">
-        {text ? (
+        {shown ? (
           <div className="av-md">
-            <MarkdownView text={text} done={!!message.done} />
+            {/* Render the typewriter-revealed PREFIX (== full text once done or
+                for non-assistant roles). MarkdownView handles partial markdown
+                and keeps the per-frame render cheap (block-split memoization). */}
+            <MarkdownView text={shown} done={!!message.done} />
           </div>
         ) : null}
         {/* Streaming cursor: shown while the block is still open (not done) and
-            there is already some text. A5 styles the blink. */}
-        {!message.done && text ? <span className="av-cursor" aria-hidden /> : null}
+            there is already some revealed text. A5 styles the blink. */}
+        {!message.done && shown ? <span className="av-cursor" aria-hidden /> : null}
       </div>
       {thinking ? <ThinkingIndicator /> : null}
     </div>

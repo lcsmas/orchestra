@@ -129,7 +129,14 @@ to the unchanged PTY path.
   renders as a plain `ToolCard` (no wrapper). `summarizeToolRun` counts per tool
   name in first-seen order.
 - **`src/renderer/components/agent/*`** — `MessageBubble` (renders text via
-  `MarkdownView`; renders `null` when a message has no text and isn't thinking),
+  `MarkdownView`; renders `null` when a message has no text and isn't thinking;
+  **streaming assistant text reveals via a typewriter** — `useTypewriter` +
+  the pure `renderer/typewriter.ts` scheduler decouple bursty SDK arrival from
+  display by revealing a growing prefix at a steady frame-paced, backlog-adaptive
+  cadence, so output flows fluidly instead of snapping in chunk-by-chunk; only
+  while `role==='assistant' && !done` (finished/user/system/error text and SSR
+  render in full), and the revealed prefix still goes through the block-split
+  `MarkdownView` so per-frame render stays cheap),
   **`MarkdownView.tsx`** (full CommonMark + GFM via **react-markdown + remark-gfm** —
   tables, strikethrough, task/nested lists — replacing the former hand-rolled dep-free
   subset parser that silently dropped all of those, the "bad markdown reader"; fenced
