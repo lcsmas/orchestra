@@ -440,15 +440,22 @@
     var(--av-surface-raised);
   overflow: hidden;
 }
+/* Collapsed run reads as a plain clickable LABEL (Claude-Code-desktop style),
+   NOT a button: no fill box, no drop shadow, no chip radius — just muted text
+   that brightens on hover. The app's base `button` rule (styles.css) gives every
+   <button> a `--shadow-sm` drop shadow + a `button:hover` background fill; both
+   must be explicitly cancelled here or the row reads as a raised button. The
+   framed/box treatment applies ONLY once the run is open (below). */
 .av-tool-run-header {
   display: flex; align-items: center; gap: 8px; width: 100%;
-  padding: 3px 8px; background: none; border: none; color: var(--av-text-faint);
+  padding: 3px 8px; background: none; border: none; box-shadow: none;
+  color: var(--av-text-faint);
   font: inherit; font-size: var(--av-fs-small); text-align: left; cursor: pointer;
-  border-radius: 7px;
-  transition: background 120ms var(--av-ease), color 120ms var(--av-ease);
+  transition: color 120ms var(--av-ease);
 }
-.av-tool-run-header:hover { background: color-mix(in srgb, var(--av-text) 4%, transparent); color: var(--av-text-dim); }
-.av-tool-run-header:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--av-focus-border); }
+.av-tool-run-header:hover { background: none; box-shadow: none; color: var(--av-text-dim); }
+.av-tool-run-header:active { transform: none; }
+.av-tool-run-header:focus-visible { outline: none; box-shadow: none; color: var(--av-text-dim); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--av-hairline-strong); }
 .av-tool-run.av-open > .av-tool-run-header { border-radius: 7px 7px 0 0; }
 /* Distinct per-tool icons, deduped, in run order — muted to match the row. */
 .av-tool-run-icons { display: inline-flex; align-items: center; gap: 4px; flex: none; color: var(--av-text-faint); }
@@ -491,10 +498,12 @@
 
 .av-collapsible-header {
   display: flex; align-items: center; gap: 8px; width: 100%;
-  padding: 7px 12px; background: none; border: none; color: var(--av-text);
+  padding: 7px 12px; background: none; border: none; box-shadow: none;
+  color: var(--av-text);
   font: inherit; font-size: var(--av-fs-small); text-align: left; cursor: pointer;
   transition: background 120ms var(--av-ease);
 }
+.av-collapsible-header:active { transform: none; }
 .av-collapsible-header:hover { background: color-mix(in srgb, var(--av-text) 4%, transparent); }
 .av-collapsible-header:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--av-focus-border); }
 .av-collapsible-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

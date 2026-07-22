@@ -158,7 +158,13 @@ including a single tool — collapses into ONE quiet, muted, **borderless**
 one-line row (Claude-Code desktop style), **collapsed by default**, so tool
 detail recedes behind the assistant's prose. `.av-tool-run` (`.av-open`/
 `.av-closed`; borderless/transparent at rest, framed surface only when
-`.av-open`) > `.av-tool-run-header` (button) > `.av-caret` +
+`.av-open`) > `.av-tool-run-header` (a `<button>`, but the COLLAPSED row is
+styled as a plain clickable LABEL — no fill box, no drop shadow, no hover
+background; only the text color brightens on hover. The app's base `button` rule
+in `styles.css` stamps every `<button>` with a `--shadow-sm` drop shadow +
+`button:hover` fill, so the header explicitly resets `box-shadow:none` and
+`:hover{background:none}` — otherwise it reads as a raised button, not CC-desktop
+label) > `.av-caret` +
 `.av-tool-run-icons` (deduped per-tool SVGs, muted) + `.av-tool-run-label` (verb
 summary — "Created 5 files", "Used 6 tools", "Ran a command, used a tool") +
 `.av-tool-run-diff` (inline `.av-diff-add`/`.av-diff-del` red/green counts) +
