@@ -23,8 +23,9 @@ surrounding chrome is dark-only, and the OS route put a white transcript inside
 dark chrome on OS-light machines (caught in a headless verification run, which
 reports light). Light applies ONLY when `.av-view` / an ancestor carries
 `data-agent-theme="light"` — the hook a future settings toggle sets. There is
-no writer today. `monaco-theme.ts` watches the same attribute (MutationObserver)
-and switches the editors between `orchestra-dark`/`orchestra-light` live.
+no writer today. `agent-theme.ts`'s `useAgentTheme` hook watches the same
+attribute (MutationObserver) and switches the Shiki code theme between
+dark/light live.
 
 What we adopted from **Claude Code desktop** is its TYPE and LAYOUT, not its
 palette: 16px prose, 13px small/code, generous line-height; **code content uses
@@ -60,17 +61,16 @@ dot pulse (`av-pulse`). Turn end goes still. Row entrance (`av-enter`) animates
 ONLY `.av-row:last-child` — a virtualized remount mid-list must not replay it.
 All of it sits behind `prefers-reduced-motion` guards.
 
-### Monaco
+### No Monaco (removed)
 
-`components/agent/monaco-theme.ts` defines `orchestra-dark`/`orchestra-light`
-(Tomorrow Night syntax over the app's cool sunken surface `#12151a`, system-mono
-`MONACO_FONT`, **20px lines** — `ToolDiff` derives its frame height from
-`MONACO_FONT.lineHeight`, so keep those in sync, never hard-code the row px) —
-registered idempotently via each editor's `beforeMount`.
-Monaco itself is BUNDLED (`src/renderer/monaco-loader.ts`, imported first in
-`main.tsx`): `loader.config({ monaco })` + a local editor worker, so no jsDelivr
-CDN fetch at runtime (verified: 0 CDN requests in the e2e run). Inter is also
-self-hosted now (`assets/fonts/InterVariable*.woff2`) — no Google Fonts links.
+Monaco was removed from the app entirely. It was the single heaviest thing the
+structured view mounted (a full `DiffEditor` per default-open Edit/Write card)
+and the dominant driver of the GPU-process-crash black screen. `ToolDiff` now
+renders a one-line summary (path · kind · +added/−removed); code blocks use
+**Shiki** (static highlighted HTML). The Electron Diff tab was removed too (the
+native GTK frontend keeps its own diff, served by the backend `getDiff` method).
+Inter is self-hosted (`assets/fonts/InterVariable*.woff2`) — no Google Fonts
+links.
 
 ### Scrollbar
 
@@ -148,13 +148,12 @@ Bodies: `.av-tool-bash{,-desc,-cmd,-out,-prompt}`, `.av-tool-summary{-body,-line
 `.av-todo-{completed,in_progress,pending}` > `.av-todo-mark` + `.av-todo-text`.
 Task `.av-tool-task{,-meta,-agent,-desc,-prompt,-result}`.
 
-Diff (`ToolDiff.tsx` — **Monaco**, `renderSideBySide:false`): `.av-diff` >
-`.av-diff-head` (`.av-diff-path` + `.av-diff-kind`, which reads
-"new file · N lines" for Write) + `.av-diff-editor`. Code (`CodeBlock.tsx` —
-**Monaco**): `.av-code-block` > `.av-code-head` (`.av-code-lang` +
-`.av-code-copy`, `.av-code-copied` flash). The theme skins the frames; Monaco
-paints the content with the `orchestra-dark`/`orchestra-light` themes from
-`monaco-theme.ts` (never stock `vs-dark`).
+Diff summary (`ToolDiff.tsx` — **one-line summary, no editor**): a single
+`.av-diff.av-diff-summary` row > `.av-diff-path` + `.av-diff-kind` ("edit" or
+"new file") + `.av-diff-counts` (`.av-diff-add` `+N` / `.av-diff-del` `−M`).
+Code (`CodeBlock.tsx` — **Shiki**, static highlighted HTML): `.av-code-block` >
+`.av-code-head` (`.av-code-lang` + `.av-code-copy`, `.av-code-copied` flash).
+The Shiki theme follows `data-agent-theme` via `useAgentTheme` (`agent-theme.ts`).
 
 Permission (`PermissionDialog.tsx`): `.av-permission-backdrop` (blurred) >
 `.av-permission-dialog` (glass panel, app `.dialog` language; `max-height:
@@ -212,17 +211,13 @@ error `.av-turn-{error-icon,error-label,error-detail,error-spinner,running-label
   `role="dialog"`/`aria-modal` on the permission dialog, `role="status"` on the
   footer); the theme only styles.
 
-## Inactive-pane hiding (Monaco leak guard)
+## Inactive-pane hiding
 
 An inactive `.av-view` is `display: none` (`agent-view-theme.css`), NOT just the
-A2 layer's `visibility: hidden`. xterm respects ancestor `visibility`, but
-Monaco's editors paint into overlay/view layers that set their own `visibility`
-and sit in a GPU stacking context — so a Read/Edit tool card's diff kept
-painting ON TOP of the terminal when the Structured tab was backgrounded.
-`display: none` is the only reliable cross-compositor stop; the pane is inactive
-so nothing needs measuring while hidden, and Monaco relayouts from its
-ResizeObserver on re-show (verified in the packaged app: diff re-renders full
-width after a tab round-trip).
+A2 layer's `visibility: hidden`. This originally guarded against Monaco's GPU
+overlay layers painting over the terminal from a backgrounded tab; Monaco is
+gone now, but `display: none` remains the cleanest way to keep an inactive pane
+from contributing any paint/measure work while hidden.
 
 ## Perf / measurement safety
 

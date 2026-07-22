@@ -50,9 +50,9 @@ const SECTIONS: HelpSection[] = [
   },
   {
     title: 'Review & ship',
-    intro: 'Diff-first review, straight to a PR — without leaving the dashboard.',
+    intro: 'Track changes and go straight to a PR — without leaving the dashboard.',
     items: [
-      { name: 'Diff tab', desc: 'Side-by-side Monaco diff of the workspace vs. its base, refreshing live while the agent works. +/− counts on every sidebar row.' },
+      { name: 'Change counts', desc: '+/− line counts on every sidebar row show how much each workspace has changed vs. its base, refreshed live while the agent works.' },
       { name: 'One-click PR', desc: 'Commit → push → `gh pr create`, from the toolbar. The sidebar then tracks the PR’s state.' },
       { name: 'Merge & release pills', desc: 'Sidebar pills show merged / diverged / unpushed work, and the earliest release that contains the branch’s commits.' },
       { name: 'Base sync', desc: 'Behind/ahead counts vs. origin’s base branch, refreshed on focus — stale branches are visible at a glance.' },

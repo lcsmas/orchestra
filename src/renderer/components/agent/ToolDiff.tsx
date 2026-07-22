@@ -1,8 +1,5 @@
-import React, { useMemo } from 'react';
-import { DiffEditor } from '@monaco-editor/react';
+import React from 'react';
 import { inputStr } from './tool-util';
-import { langFromPath } from './markdown-parse';
-import { defineOrchestraThemes, useMonacoTheme, MONACO_FONT } from './monaco-theme';
 
 interface Props {
   /** Tool name — 'Edit' or 'Write'. */
@@ -11,73 +8,47 @@ interface Props {
 }
 
 /**
- * A real before→after diff for a Write/Edit tool call, reconstructed entirely
- * from the tool_use INPUT (per Phase 0 spike finding g: the tool_result is plain
- * success text, so the diff MUST come from the input).
+ * A compact summary of a Write/Edit tool call, reconstructed from the tool_use
+ * INPUT (per Phase 0 spike finding g: the tool_result is plain success text, so
+ * the change info MUST come from the input).
  *
- *  • **Edit** — `old_string` → `new_string` are both present in the input, so we
- *    show a genuine old→new diff of the edited region. No disk read is needed:
- *    the "before" IS `old_string`. (Orchestra exposes no renderer-side file-read
- *    IPC, so reading the whole on-disk file as context isn't available here; the
- *    edited region is the meaningful diff anyway.)
- *  • **Write** — only `content` (the new file body) exists in the input; there is
- *    no "before" to diff against, so this renders as an all-new file (empty
- *    original). Flagged in the header as "new file".
+ * This used to render a full Monaco `DiffEditor`, but every mounted Edit/Write
+ * card (they default-open) spun up an editor instance — Monaco is by far the
+ * heaviest thing the structured view mounts, and with many workspaces mounted
+ * at once it was the dominant driver of the GPU-process crash that turned the
+ * whole content area black. We now show just the file path and a +added/−removed
+ * line count; no editor, no diff body, effectively zero GPU/memory cost. (Monaco
+ * has been removed from the app entirely.)
  *
- * Memoized so streaming deltas elsewhere never re-mount the Monaco diff editor.
+ *  • **Edit** — `old_string` → `new_string` are both in the input, so the line
+ *    counts are the added/removed lines of the edited region.
+ *  • **Write** — only `content` exists (a brand-new file body), so every line
+ *    counts as added; flagged as "new file".
  */
 function ToolDiffImpl({ name, input }: Props) {
   const filePath = inputStr(input, 'file_path');
-  const language = useMemo(() => langFromPath(filePath), [filePath]);
-
   const isWrite = name === 'Write';
   const original = isWrite ? '' : inputStr(input, 'old_string');
   const modified = isWrite ? inputStr(input, 'content') : inputStr(input, 'new_string');
 
-  const lineCount = Math.max(
-    original.split('\n').length,
-    modified.split('\n').length
-  );
-  // Row height tracks MONACO_FONT.lineHeight so the frame never clips (magic
-  // 18 here silently under-sized the editor once the line-height grew).
-  const height = Math.min(lineCount * MONACO_FONT.lineHeight + 24, 560);
-  const theme = useMonacoTheme();
-  const newLines = isWrite ? modified.split('\n').length : 0;
+  // An empty string splits to `['']` (1 element), so treat "no text" as 0 lines
+  // rather than 1 — otherwise a pure insertion/deletion reads as "1 line" off.
+  const countLines = (s: string) => (s === '' ? 0 : s.split('\n').length);
+  const added = countLines(modified);
+  const removed = countLines(original);
 
   return (
-    <div className="av-diff">
-      <div className="av-diff-head">
-        <span className="av-diff-path" title={filePath}>
-          {filePath || '(unknown file)'}
-        </span>
-        <span className="av-diff-kind">
-          {isWrite ? `new file · ${newLines} ${newLines === 1 ? 'line' : 'lines'}` : 'edit'}
-        </span>
-      </div>
-      <div className="av-diff-editor" style={{ height }}>
-        <DiffEditor
-          original={original}
-          modified={modified}
-          language={language}
-          theme={theme}
-          beforeMount={defineOrchestraThemes}
-          height="100%"
-          options={{
-            ...MONACO_FONT,
-            readOnly: true,
-            domReadOnly: true,
-            renderSideBySide: false,
-            minimap: { enabled: false },
-            scrollBeyondLastLine: false,
-            lineNumbers: 'on',
-            folding: false,
-            scrollbar: { alwaysConsumeMouseWheel: false },
-            overviewRulerLanes: 0,
-            renderOverviewRuler: false,
-            contextmenu: false,
-          }}
-        />
-      </div>
+    <div className="av-diff av-diff-summary">
+      <span className="av-diff-path" title={filePath}>
+        {filePath || '(unknown file)'}
+      </span>
+      <span className="av-diff-kind">
+        {isWrite ? 'new file' : 'edit'}
+      </span>
+      <span className="av-diff-counts">
+        {added > 0 && <span className="av-diff-add">{`+${added}`}</span>}
+        {removed > 0 && <span className="av-diff-del">{`−${removed}`}</span>}
+      </span>
     </div>
   );
 }

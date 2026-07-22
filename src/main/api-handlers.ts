@@ -99,7 +99,7 @@ import {
 import { probeDependencies, type DepsStatus } from './deps';
 import { log, revealLogs, getLogFile } from './logger';
 import type { OrchestraAPI } from '../shared/ipc';
-import type { Account, CreateWorkspaceInput, RepoScripts, Workspace } from '../shared/types';
+import type { Account, CreateWorkspaceInput, DiffFile, RepoScripts, Workspace } from '../shared/types';
 
 // The single shared request/response surface of the backend, extracted from
 // index.ts's inline `ipcMain.handle` registrations. The table is keyed by
@@ -145,6 +145,12 @@ export interface ExtraApiMethods {
   /** Base64 of a PTY's scrollback tail (pty.ts readScrollback) — the GTK
    *  terminal replays it through feed() on (re)mount. */
   'pty:scrollback': (id: string) => Promise<string>;
+  /** Full working-tree diff vs. the base branch. No longer used by the Electron
+   *  renderer (its Diff tab was removed — Monaco was too heavy), but the native
+   *  GTK frontend still has a diff view that calls this over ui-rpc, so it stays
+   *  a served backend method rather than part of the renderer-facing
+   *  `OrchestraAPI`. */
+  getDiff: (id: string) => Promise<DiffFile[]>;
 }
 
 export type ApiHandlerTable = ServableApi & ExtraApiMethods;
@@ -795,6 +801,8 @@ export const apiHandlers: ApiHandlerTable = {
 
   // ---------- Git / Diff ----------
 
+  // Served for the native GTK frontend's diff view (the Electron renderer no
+  // longer has a Diff tab). See the ExtraApiMethods declaration above.
   getDiff: async (id) => {
     const ws = store.getWorkspace(id);
     if (!ws) throw new Error('workspace not found');

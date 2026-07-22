@@ -176,21 +176,21 @@ to the unchanged PTY path.
   + JS regex engine + **dynamically-imported** curated grammars/`github-dark`/`-light`
   themes — so none of Shiki's registry lands in the main renderer chunk; it splits into
   async chunks fetched on first highlight),
-  `ToolCard`/`ToolDiff` (Edit/Write diffs reconstructed from the `tool_use` **input**,
+  `ToolCard`/`ToolDiff` (Edit/Write change info reconstructed from the `tool_use` **input**,
   not the plain-text `tool_result`; per-tool SVG icons in `tool-icons.tsx`; **ToolDiff
-  still uses Monaco's `DiffEditor`** — the diff surface is deliberately unchanged),
+  renders a one-line summary — file path · kind · +added/−removed — NOT a full editor**.
+  Monaco was removed from the app entirely: it was the heaviest thing this view mounted
+  and the dominant driver of the GPU-process-crash black screen. No Diff tab in the
+  Electron renderer anymore either),
   `ThinkingIndicator` (shimmer label), `PermissionDialog` (picks first *unanswered*
   pending request, not `pending[0]`; on reply calls `onReplied(requestId)` so the
   store clears the entry — see below), `AskUserQuestionCard` (**pages
   multi-question requests one at a time — Back/Next/step-dots — so the dialog
   never overflows the viewport; single questions render directly**),
   `AgentControls`,
-  `TurnFooter`, plus `monaco-theme.ts` (the `orchestra-dark`/`orchestra-light` themes +
-  `useMonacoTheme`, still used by ToolDiff and to pick the light/dark Shiki theme).
-- **`src/renderer/monaco-loader.ts`** — imported first in `main.tsx`; `loader.config({
-  monaco })` with the bundled `monaco-editor` package + a local editor worker, so the
-  editors never fetch from the jsDelivr CDN (offline-safe, like the self-hosted
-  Inter/JetBrains Mono in `assets/fonts/`).
+  `TurnFooter`, plus `agent-theme.ts` (a dependency-free `useAgentTheme` hook returning
+  `'dark'|'light'` off the `data-agent-theme` attribute, used to pick the light/dark
+  Shiki theme — formerly monaco-theme.ts, now Monaco-free).
 - **`src/shared/agent-transcript.ts`** (+ `.test.ts`) — pure converter from the on-disk
   Claude Code session JSONL to `AgentEvent[]` (**history backfill**). On-disk lines
   differ from the live stream: assistant text is finalized (no stream_events → we

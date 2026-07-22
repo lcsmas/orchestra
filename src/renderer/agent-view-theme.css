@@ -30,7 +30,7 @@
  *   is exactly what happened when this file consulted prefers-color-scheme;
  *   verified in a headless run, which reports light). Light applies ONLY via
  *   an explicit `data-agent-theme="light"` on `.av-view`/an ancestor (the
- *   future settings toggle's hook; monaco-theme.ts watches the same
+ *   future settings toggle's hook; agent-theme.ts watches the same
  *   attribute). All colour roles are `--av-*` tokens on `.av-view` — rules
  *   reference tokens, never raw hex. The two token blocks (dark default /
  *   light-explicit) must stay value-identical per theme.
@@ -147,14 +147,11 @@
 
 .av-view { font-size: var(--av-fs-body); }
 
-/* Monaco leak guard. The A2 structure layer hides an inactive pane with
-   `visibility: hidden`, which xterm respects — but Monaco's editors paint into
-   overlay/view layers that set their OWN `visibility` and live in a GPU
-   stacking context, so a Read/Edit tool card's diff kept painting ON TOP of
-   the terminal when the Structured tab was in the background. `display: none`
-   is the only reliable cross-compositor way to stop those layers; the pane is
-   inactive so there's nothing to measure while hidden, and Monaco relayouts
-   from its ResizeObserver when the pane shows again. */
+/* Inactive structured panes are fully removed from layout, not just
+   `visibility: hidden`. This originally guarded against Monaco's GPU overlay
+   layers painting over the terminal from a background tab; Monaco is gone now,
+   but `display: none` remains the cleanest way to keep an inactive pane from
+   contributing any paint/measure work while hidden. */
 .av-view:not(.active) { display: none; }
 
 .av-message-list {
@@ -594,21 +591,31 @@
 }
 
 /* ============================================================================
- * DIFF + CODE — Monaco paints the content (orchestra-dark/-light themes,
- * see monaco-theme.ts); this skins the frames.
+ * DIFF SUMMARY + CODE — Edit/Write cards show a one-line summary (path · kind ·
+ * +added/−removed), not a full editor. Monaco was removed from the app: it was
+ * the heaviest thing the structured view mounted and the dominant driver of the
+ * GPU-crash black-screen. Code blocks below are Shiki-highlighted static HTML.
  * ==========================================================================*/
 
-.av-diff, .av-code-block {
+.av-code-block {
   margin: 6px 0; border: 1px solid var(--av-hairline);
   border-radius: 10px; overflow: hidden;
   background: var(--av-surface-sunken);
 }
-.av-diff-head, .av-code-head {
+.av-code-head {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   padding: 5px 10px 5px 12px; font-size: var(--av-fs-caption);
   background: var(--av-surface-raised); border-bottom: 1px solid var(--av-hairline); color: var(--av-text-dim);
 }
+/* Diff summary: a single compact row, no editor frame. */
+.av-diff-summary {
+  display: flex; align-items: center; gap: 10px;
+  margin: 6px 0; padding: 6px 10px 6px 12px;
+  border: 1px solid var(--av-hairline); border-radius: 10px;
+  background: var(--av-surface-sunken); font-size: var(--av-fs-caption);
+}
 .av-diff-path, .av-code-lang { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--av-text-dim); }
+.av-diff-summary .av-diff-path { flex: 1 1 auto; min-width: 0; }
 .av-diff-kind {
   flex: none; font-family: var(--font-mono); font-size: var(--av-fs-caption);
   color: var(--av-text-faint); padding: 1px 8px; border-radius: 999px;
@@ -620,6 +627,9 @@
   border-color: color-mix(in srgb, var(--av-add) 30%, transparent);
   background: color-mix(in srgb, var(--av-add) 8%, transparent);
 }
+.av-diff-counts { flex: none; display: flex; gap: 8px; font-family: var(--font-mono); }
+.av-diff-add { color: var(--av-add); }
+.av-diff-del { color: var(--av-remove, #ff6b6b); }
 .av-code-copy {
   background: none; border: 1px solid var(--av-hairline); border-radius: var(--radius-sm, 6px);
   color: var(--av-text-dim); font-size: var(--av-fs-caption); font-family: var(--font-mono);
@@ -632,8 +642,6 @@
   color: var(--av-add);
   border-color: color-mix(in srgb, var(--av-add) 35%, transparent);
 }
-.av-diff-editor { background: var(--av-surface-sunken); }
-
 /* Shiki-highlighted code (replaces the Monaco display block in message bubbles).
  * Shiki emits a self-contained <pre class="shiki"><code> with inline color
  * styles from the bundled github-dark/light theme; we own the box (padding,

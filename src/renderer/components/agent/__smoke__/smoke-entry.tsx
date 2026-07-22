@@ -1,8 +1,8 @@
 // Render smoke entry: mounts every A3 component against a mock RenderMessage of
 // each type and asserts (via react-dom/server renderToString) that nothing
-// throws and that the Edit/Write diffs carry the real old→new content. Bundled +
-// run by run-smoke.mjs. NOT part of the node:test suite (that runner can't do
-// JSX). Exits non-zero on any failure.
+// throws and that the Edit/Write cards render a diff SUMMARY (path + kind + +N/−M
+// counts; Monaco was removed). Bundled + run by run-smoke.mjs. NOT part of the
+// node:test suite (that runner can't do JSX). Exits non-zero on any failure.
 import React from 'react';
 import { renderToString } from 'react-dom/server';
 import ReactMarkdown from 'react-markdown';
@@ -61,9 +61,10 @@ check('user bubble', () => renderToString(<AgentMessage message={msg({ role: 'us
 check('system bubble', () => renderToString(<AgentMessage message={msg({ role: 'system', text: 'session init' })} />));
 check('error bubble', () => renderToString(<AgentMessage message={msg({ role: 'error', text: 'boom' })} />));
 
-// 5. Edit tool card — real old→new diff from input.
+// 5. Edit tool card — one-line summary (path + edit kind + +N/−M counts).
+// (No longer a Monaco diff: the summary shows change SIZE, not file content.)
 check(
-  'Edit tool card renders real old→new diff',
+  'Edit tool card renders a diff summary',
   () =>
     renderToString(
       <AgentMessage
@@ -82,14 +83,17 @@ check(
       />
     ),
   (html) => {
-    if (!html.includes('const a = 1;')) throw new Error('missing old content');
-    if (!html.includes('const a = 2;')) throw new Error('missing new content');
+    if (!html.includes('/a/b.ts')) throw new Error('missing file path');
+    if (!html.includes('edit')) throw new Error('missing edit kind');
+    // one line each → +1 added, −1 removed
+    if (!html.includes('+1')) throw new Error('missing added count');
+    if (!html.includes('−1')) throw new Error('missing removed count');
   }
 );
 
-// 6. Write tool card — new-only diff from content.
+// 6. Write tool card — summary flags a new file with an added-line count.
 check(
-  'Write tool card renders new content',
+  'Write tool card renders a new-file summary',
   () =>
     renderToString(
       <AgentMessage
@@ -108,7 +112,9 @@ check(
       />
     ),
   (html) => {
-    if (!html.includes('export const y = 42;')) throw new Error('missing written content');
+    if (!html.includes('/new.ts')) throw new Error('missing file path');
+    if (!html.includes('new file')) throw new Error('missing new-file label');
+    if (!html.includes('+1')) throw new Error('missing added count');
   }
 );
 

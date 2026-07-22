@@ -106,7 +106,7 @@ interface State {
    *  the two panes are mutually exclusive. */
   helpOpen: boolean;
   activeId: string | null;
-  view: 'terminal' | 'diff' | 'run' | 'structured';
+  view: 'terminal' | 'run' | 'structured';
   /** Which top-level surface fills the main pane: the normal workspace panes,
    *  or the full-page Resources view (opened from the sidebar footer). The
    *  workspace panes stay mounted underneath so xterm scrollback survives a
@@ -115,7 +115,7 @@ interface State {
   loaded: boolean;
 
   setActive: (id: string | null) => void;
-  setView: (v: 'terminal' | 'diff' | 'run' | 'structured') => void;
+  setView: (v: 'terminal' | 'run' | 'structured') => void;
   /** Dev/verifier seam: inject a synthetic {@link AgentEvent} for a workspace
    *  through the SAME RAF-batched fold path as a real `agent:event`. Lets the
    *  E2E verifier drive the structured view deterministically (assert
@@ -182,8 +182,8 @@ export const useStore = create<State>((set, get) => ({
   activeId: null,
   // Initial agent view honors the user's persisted default-view preference
   // (Phase 6): 'structured' opens the SDK pane, else the classic terminal.
-  // 'diff'/'run' are only ever reached via an explicit tab click, so the
-  // default only ever picks between the two agent surfaces.
+  // 'run' is only ever reached via an explicit tab click, so the default only
+  // ever picks between the two agent surfaces.
   view: readDefaultAgentView() === 'structured' ? 'structured' : 'terminal',
   page: 'workspaces',
   loaded: false,

@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { useStore } from './store';
 import { Sidebar, OrchestratorIcon, ZapIcon } from './components/Sidebar';
 import { TerminalView } from './components/Terminal';
-import { DiffView } from './components/DiffView';
 import { BranchPicker } from './components/BranchPicker';
 import { NvimView } from './components/NvimView';
 import { RunTerminal } from './components/RunTerminal';
@@ -104,7 +103,6 @@ export function App() {
   const addRepoOnly = useStore((s) => s.addRepoOnly);
   const createScratchWorkspace = useStore((s) => s.createScratchWorkspace);
   const createOrchestratorWorkspace = useStore((s) => s.createOrchestratorWorkspace);
-  const stats = useStore((s) => s.stats);
   const refreshAllStats = useStore((s) => s.refreshAllStats);
   const refreshSizes = useStore((s) => s.refreshSizes);
   const prs = useStore((s) => s.prs);
@@ -506,24 +504,6 @@ export function App() {
                 >
                   {terminalTabLabel(readDefaultAgentView())}
                 </button>
-                {!isScratch && (
-                <button
-                  className={`tab ${view === 'diff' ? 'active' : ''}`}
-                  onClick={() => setView('diff')}
-                >
-                  Diff
-                  {stats[active.id] && (stats[active.id].additions > 0 || stats[active.id].deletions > 0) && (
-                    <span className="diff-indicator">
-                      {stats[active.id].additions > 0 && (
-                        <span className="add">+{stats[active.id].additions}</span>
-                      )}
-                      {stats[active.id].deletions > 0 && (
-                        <span className="del">−{stats[active.id].deletions}</span>
-                      )}
-                    </span>
-                  )}
-                </button>
-                )}
                 {!isScratch && (() => {
                   const repo = findRepo(active.repoPath);
                   const hasRun = !!repo?.scripts?.run;
@@ -712,7 +692,6 @@ export function App() {
                       isActive={ws.id === activeId && view === 'structured'}
                     />
                   ))}
-                {view === 'diff' && <DiffView workspaceId={active.id} />}
                 {view === 'run' && (
                   <RunTerminal
                     // Prefix avoids colliding with the sibling TerminalView's

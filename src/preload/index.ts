@@ -122,7 +122,6 @@ const api: OrchestraAPI = {
     return () => ipcRenderer.off('sandbox:control', listener);
   },
 
-  getDiff: (id) => ipcRenderer.invoke('git:diff', id),
   getDiffStats: (id) => ipcRenderer.invoke('git:stats', id),
   getWorktreeSizes: () => ipcRenderer.invoke('workspaces:sizes'),
   sampleResources: () => ipcRenderer.invoke('resources:sample'),

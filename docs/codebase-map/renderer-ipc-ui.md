@@ -177,8 +177,12 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   generic so new integration checks need no renderer change.
 
 ## Other components
-- **DiffView.tsx** — Monaco `DiffEditor` (read-only, side-by-side), file list
-  with +/- badges, 4s poll preserving selection, `guessLanguage` by extension.
+- **(removed) Diff tab / DiffView.tsx** — the Electron renderer's Monaco-based
+  diff viewer was removed (Monaco was the heaviest thing the agent view mounted
+  and drove the GPU-crash black screen). Change size still shows as `+N −M`
+  badges on every sidebar row (from the separate `getDiffStats` poll, kept). The
+  backend `getDiff` method survives as an `ExtraApiMethods` entry because the
+  native GTK frontend still has its own diff view.
 - **BranchPicker.tsx** — toolbar branch-switch dropdown, fetches `listBranches`,
   current branch first. Its searchable list is the exported
   `BranchPopoverPanel`, reused by every branch-choosing surface.

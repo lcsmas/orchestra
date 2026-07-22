@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import type { HighlighterCore } from 'shiki/core';
-import { useMonacoTheme } from './monaco-theme';
+import { useAgentTheme } from './agent-theme';
 import {
   getHighlighter,
   highlighterReady,
@@ -34,8 +34,8 @@ interface Props {
  * Memoized so a token delta on the surrounding message doesn't re-highlight.
  */
 function CodeBlockImpl({ code, lang, chrome = true, done = true }: Props) {
-  const theme = useMonacoTheme(); // 'orchestra-dark' | 'orchestra-light'
-  const shikiTheme = theme === 'orchestra-light' ? SHIKI_LIGHT : SHIKI_DARK;
+  const theme = useAgentTheme(); // 'dark' | 'light'
+  const shikiTheme = theme === 'light' ? SHIKI_LIGHT : SHIKI_DARK;
   const language = useMemo(() => shikiLang(lang), [lang]);
   const [copied, setCopied] = useState(false);
 

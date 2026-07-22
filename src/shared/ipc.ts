@@ -9,7 +9,6 @@ import type {
   AgentPermissionReply,
   AgentSkillInfo,
   CreateWorkspaceInput,
-  DiffFile,
   DiffStats,
   EnvStatusItem,
   LinearIssue,
@@ -289,7 +288,6 @@ export interface OrchestraAPI {
   onSandboxControl: (cb: (state: SandboxControlState) => void) => () => void;
 
   // Git / Diff
-  getDiff: (id: string) => Promise<DiffFile[]>;
   getDiffStats: (id: string) => Promise<DiffStats>;
   /** On-disk size (bytes) of every workspace's worktree, keyed by workspace
    *  id; absent ids have no worktree. One `btrfs filesystem du` pass reporting

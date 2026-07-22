@@ -14,7 +14,7 @@
  * It deliberately does NOT own the pretty message/tool/permission components —
  * those are extension points other swarm agents fill:
  *   • A3 replaces {@link MessageSlot}'s per-role bodies with real markdown
- *     bubbles, collapsible tool cards, and Monaco diffs.
+ *     bubbles, collapsible tool cards, and diff summaries.
  *   • A4 replaces {@link PermissionSlot} and {@link SessionControls} with the
  *     native approve/deny dialog, AskUserQuestion UI, model/mode controls, and
  *     the cost/token turn footer.

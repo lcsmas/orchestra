@@ -1,8 +1,5 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-// Must run before any component renders an editor: points @monaco-editor/react
-// at the BUNDLED monaco instead of its jsDelivr CDN fallback.
-import './monaco-loader';
 import { App } from './App';
 import './styles.css';
 // Structured agent-view styles — three cascade layers, LAST WINS:

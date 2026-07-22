@@ -302,20 +302,18 @@
   color: var(--text-dim, #8b95a7);
 }
 
-/* ── Diff ────────────────────────────────────────────────────────────────── */
+/* ── Diff summary (Edit/Write) ───────────────────────────────────────────────
+ * A one-line summary (path · kind · +/− counts), not a full editor — Monaco was
+ * removed from the app. Structural defaults; the theme layer skins it. */
 .av-diff {
   border: 1px solid var(--border, #242a33);
   border-radius: var(--radius, 8px);
   overflow: hidden;
 }
-.av-diff-head {
+.av-diff-summary {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 4px 10px;
-  font-size: 11px;
-  background: var(--bg-3, #1a1f26);
-  border-bottom: 1px solid var(--border, #242a33);
+  gap: 10px;
 }
 .av-diff-path {
   font-family: var(--font-mono, monospace);
