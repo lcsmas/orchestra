@@ -278,6 +278,24 @@ to the unchanged PTY path.
   structural) → `agent-view-structure.css` (A2 layout) → `agent-view-theme.css` (A5 design
   system, wins). Reference: `agent-view-design.md`.
 
+## Availability by workspace kind
+
+The structured view is available for **every** workspace kind — `worktree`
+(including promoted `canOrchestrate` worktrees), `scratch`, AND `orchestrator`.
+The main-process SDK path is kind-agnostic: `ensureSession` never checks
+`ws.kind`/`isScratchLike`, `buildSdkEnv` derives everything from
+`ws.branch`/`ws.worktreePath`/`ws.id` (scratch and orchestrator dirs live under
+`~/.orchestra/scratch` and get `installOrchestraHooks` at creation, so their
+`.claude/settings.local.json` carries the same comms/inbox/rename/spawn hooks),
+and orchestrator sessions additionally get the `ORCHESTRATOR_BRIEF` appended
+(agent-sdk.ts, `ws.kind === 'orchestrator'`). The renderer used to hide the
+Structured tab + component for `isScratchLike` workspaces (App.tsx) — that gate
+was removed; only the **git-only** surfaces (Run, Diff, PR) stay gated off for
+scratch-like. So an orchestrator can coordinate (brief, `orchestra`
+CLI = rename/peers/message/spawn/promote/attach, skills, peer-comms delivery via
+`sdk-delivery.ts`) entirely from the structured view, at parity with the
+terminal path.
+
 ## Default-view preference (Phase 6)
 
 - **`src/renderer/default-agent-view.ts`** (+ `.test.ts`) — pure, localStorage-backed

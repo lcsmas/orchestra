@@ -123,14 +123,23 @@ widths to localStorage; resizes via rAF. `startVisiblePoll` runs a fn on an
 interval but **stops when the document is hidden** (re-fires on visible) — this
 is what pauses git/gh/du/Linear polling when minimized. Toolbar is grouped by
 function: the base→feature branch chip (with `BranchPicker`) on the left, then
-a **views group** (`.toolbar-views`: Terminal/Diff/Run tabs + the nvim
+a **views group** (`.toolbar-views`: Terminal/Structured/Run tabs + the nvim
 pane-toggle), a hairline `.toolbar-sep`, and an **actions group**
 (`.toolbar-actions`: restart-agent, run play/stop, PR button as the rightmost
-CTA). Each `TerminalView` for the **12 most-recently-used** workspaces is kept
-mounted (preserves xterm scrollback across switches) — capped by the LRU
-`computeMountedIds` / `MAX_MOUNTED_PANES` to bound live WebGL contexts (see
-crash-recovery note above); older panes unmount and cold-boot on reopen.
-Diff/Run mount only when selected.
+CTA). **Tab availability by kind** (`isScratch = isScratchLike(active)`, true for
+BOTH scratch and orchestrator): Terminal and **Structured** show for EVERY kind —
+the structured/SDK path is kind-agnostic (agent-sdk.ts appends the
+`ORCHESTRATOR_BRIEF` for orchestrators), so scratch and orchestrator sessions get
+the structured agent view too. Only the **git-only** surfaces are gated off for
+scratch-like: the **Run** tab/button, the **Diff/PR** actions. The
+force-view effect only redirects away from `view === 'run'` on a scratch-like
+session (not from `structured`, which is always valid). Each `TerminalView`/
+`StructuredView` for the **12 most-recently-used** workspaces is kept mounted
+(preserves xterm scrollback / structured scroll offset across switches) — capped
+by the LRU `computeMountedIds` / `MAX_MOUNTED_PANES` to bound live WebGL contexts
+(see crash-recovery note above); older panes unmount and cold-boot on reopen. The
+StructuredView panes mount for every mounted workspace regardless of kind; Run
+mounts only when selected.
 
 ## Sidebar.tsx (~2100 lines — the big one)
 Workspace list with orchestrator nesting, drag-reorder, archive, delete.

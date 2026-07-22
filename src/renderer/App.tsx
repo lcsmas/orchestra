@@ -322,18 +322,22 @@ export function App() {
   });
   const mountedWorkspaces = liveWorkspaces.filter((w) => mountedIds.has(w.id));
   // Both scratch and orchestrator sessions are non-git and repo-less, so they
-  // get the same terminal-only treatment (no Diff/Run/Merge/PR). `isScratch`
-  // here means "scratch-like", covering both kinds.
+  // get the same treatment for the GIT-ONLY surfaces (no Diff/Run/Merge/PR).
+  // `isScratch` here means "scratch-like", covering both kinds. NOTE: the
+  // structured (SDK) agent view is NOT git-gated — the main-process SDK path is
+  // kind-agnostic (agent-sdk.ts even appends the ORCHESTRATOR_BRIEF for
+  // orchestrators), so scratch and orchestrator sessions get the Terminal AND
+  // Structured tabs, only lacking Run.
   const isScratch = !!active && isScratchLike(active);
   const isOrchestrator = active?.kind === 'orchestrator';
   const openPR = active ? prs[active.id]?.open ?? null : null;
 
-  // A scratch-like session is non-git and has no repo, so only the Terminal tab
-  // is shown (no Diff, no Run). If the user had one of those selected and then
-  // switches to such a session, fall back to the terminal so the pane isn't
-  // left blank.
+  // A scratch-like session is non-git and has no repo, so the git-only `run`
+  // view is unavailable. If the user had it selected and then switches to such a
+  // session, fall back to the terminal so the pane isn't left blank. The
+  // `structured` view stays valid for every kind, so it is NOT forced away.
   useEffect(() => {
-    if (isScratch && view !== 'terminal') setView('terminal');
+    if (isScratch && view === 'run') setView('terminal');
   }, [isScratch, view, setView]);
   const onRestart = async () => {
     if (!active) return;
@@ -524,7 +528,6 @@ export function App() {
                     </button>
                   );
                 })()}
-                {!isScratch && (
                 <button
                   className={`tab ${view === 'structured' ? 'active' : ''}`}
                   onClick={() => setView('structured')}
@@ -532,7 +535,6 @@ export function App() {
                 >
                   Structured
                 </button>
-                )}
               </div>
               <button
                 className={`pane-toggle ${nvimOpen ? 'active' : ''}`}
@@ -681,17 +683,16 @@ export function App() {
                     folded session and scroll position survive tab switches — its
                     store state persists regardless, but keeping the component
                     mounted preserves the virtualized list's scroll offset.
-                    Scratch sessions have no agent SDK session, so they are
-                    excluded. */}
-                {mountedWorkspaces
-                  .filter((ws) => !isScratchLike(ws))
-                  .map((ws) => (
-                    <StructuredView
-                      key={`structured-${ws.id}`}
-                      workspaceId={ws.id}
-                      isActive={ws.id === activeId && view === 'structured'}
-                    />
-                  ))}
+                    Every workspace kind (worktree, scratch, orchestrator) has an
+                    SDK session — the main-process path is kind-agnostic — so none
+                    are excluded here. */}
+                {mountedWorkspaces.map((ws) => (
+                  <StructuredView
+                    key={`structured-${ws.id}`}
+                    workspaceId={ws.id}
+                    isActive={ws.id === activeId && view === 'structured'}
+                  />
+                ))}
                 {view === 'run' && (
                   <RunTerminal
                     // Prefix avoids colliding with the sibling TerminalView's

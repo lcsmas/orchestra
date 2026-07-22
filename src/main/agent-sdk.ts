@@ -247,6 +247,21 @@ function buildSdkEnv(ws: Workspace): { env: Record<string, string>; driveStatus:
     if (typeof v === 'string') env[k] = v;
   }
   delete env.CLAUDE_CONFIG_DIR;
+  // Orchestra-launched-from-Orchestra (or from any agent shell) inherits the
+  // PARENT session's ORCHESTRA_WS_ID / ORCHESTRA_EVENTS_DIR through process.env.
+  // These are spool-ownership vars we assign deliberately below (only when
+  // `ownsSpool`), so a stale inherited value must NOT survive: the `orchestra`
+  // CLI resolves the caller via ORCHESTRA_WS_ID FIRST (resolveSelfWorkspaceId),
+  // so a leaked parent id makes `whoami`/`peers`/`rename`/`message`/`spawn`
+  // resolve to the WRONG workspace (the parent's) — observed live as
+  // `orchestra whoami` printing `id  <parent-id>` (→ empty record) from an
+  // orchestrator's structured session. Delete them up front (like
+  // CLAUDE_CONFIG_DIR) so ONLY the explicit `if (ownsSpool)` assignment governs
+  // them; identity always flows through ORCHESTRA_WS_ID_IDENTITY (set
+  // unconditionally below). Mirrors the terminal path, which always overwrites
+  // ORCHESTRA_WS_ID with this workspace's id (pty.ts) and so never leaks.
+  delete env.ORCHESTRA_WS_ID;
+  delete env.ORCHESTRA_EVENTS_DIR;
   const configDir = workspaceAccountConfigDir(ws, undefined);
   if (configDir) env.CLAUDE_CONFIG_DIR = configDir;
   env.ORCHESTRA_BRANCH = ws.branch;
