@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from './platform';
 import { store } from './store';
+import { sdkDeliver, sdkStopIfLive, sdkSessionLive } from './sdk-delivery';
 import {
   createWorktree,
   detectDefaultBranch,
@@ -438,7 +439,7 @@ export async function createWorkspace(input: CreateWorkspaceInput): Promise<Work
  * the children nest under it in the sidebar. Kept short on purpose: the
  * spawn/peers/message command reference is already injected by the
  * session-start hooks. */
-const ORCHESTRATOR_BRIEF =
+export const ORCHESTRATOR_BRIEF =
   "You are an orchestrator. Your job is to coordinate work across other agents rather than edit code yourself. " +
   "Break the user's goal into independent pieces and delegate each to a fresh worktree+agent using the /spawn socket command shown above. " +
   'You have no repo of your own, so every /spawn MUST include an explicit "repoPath" naming a repo orchestra already knows about (and optionally a "baseBranch"). ' +
@@ -1873,6 +1874,16 @@ export async function dispatchMigrateAccountRequest(input: {
 
   try {
     const wasRunning = isRunning(id);
+    // A structured (SDK) session captured the OLD account's CLAUDE_CONFIG_DIR at
+    // start (buildSdkEnv), so it would keep running on the stale account and may
+    // point at a transcript that moveWorkspaceTranscripts is about to move out
+    // from under it. Stop it before the move; the next time the user opens the
+    // structured view it starts fresh under the new account (resuming
+    // ws.sdkSessionId from the now-relocated transcript). Structured sessions are
+    // reopened by the renderer on demand, so there is no main-side auto-resume to
+    // mirror the PTY one below.
+    const hadSdkSession = sdkSessionLive(id);
+    if (hadSdkSession) await sdkStopIfLive(id);
     // Capture the live winsize before the stop: the resume below happens
     // main-side (no renderer round-trip), and an already-visible terminal
     // won't re-assert its size, so respawning at the old size is what keeps
@@ -2092,6 +2103,10 @@ function formatPeerMessage(fromBranch: string, fromId: string, text: string): st
 export async function wakeAgentWithPrompt(id: string, prompt: string): Promise<boolean> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || isRunning(id)) return false;
+  // A live structured (SDK) session is the active agent even with no PTY: deliver
+  // the prompt as its next turn rather than spawning a raw `claude` PTY beside it.
+  // Returns true (delivered) so callers treat it exactly like a successful wake.
+  if (await sdkDeliver(id, prompt)) return true;
   const resuming = ws.hasInput === true;
   const readyFile = readyFilePath(id);
   await clearReadyFile(id);
@@ -2158,6 +2173,17 @@ export async function dispatchMessageRequest(
   // Normalize newlines: a bare \r submits Claude's TUI prematurely, so keep
   // only \n inside the body and let the explicit carriage return below submit.
   const body = formatPeerMessage(fromBranch, fromId, text).replace(/\r/g, '');
+
+  // A workspace running in the STRUCTURED (SDK) view has no PTY, so isRunning()
+  // is false and the wake path below would spawn a stray second raw `claude`
+  // agent that never receives this message. Deliver to the live SDK session
+  // instead — it becomes that session's next turn, the same "live" semantics as
+  // typing into a running TUI. Checked first so a structured session always wins
+  // over a wake-spawn. (sdkDeliver reports false when no structured session is
+  // live, so the PTY path below is unchanged for terminal-mode workspaces.)
+  if (await sdkDeliver(input.to, body)) {
+    return { ok: true, delivery: 'live', branch: target.branch };
+  }
 
   if (isRunning(input.to)) {
     // Type the message, then a SEPARATE carriage return a beat later — same

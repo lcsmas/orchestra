@@ -17,6 +17,8 @@ import {
   installOrchestraHooks,
   workspaceAccountConfigDir,
   mangleProjectDir,
+  autoRenameActive,
+  ORCHESTRATOR_BRIEF,
 } from './workspaces';
 import { transcriptToEvents } from '../shared/agent-transcript';
 import { syncAccountInheritance } from './account-inherit';
@@ -24,6 +26,8 @@ import { agentCliBinDir } from './cli-shim';
 import { getHookSocketPath } from './hooks-server';
 import { isRunning as isPtyRunning } from './pty';
 import { getEventsDir } from './events-spool';
+import { reconcileExited } from './activity';
+import { registerSdkDelivery } from './sdk-delivery';
 import {
   normalizeSdkMessage,
   makePermissionRequest,
@@ -177,6 +181,15 @@ function buildSdkEnv(ws: Workspace): Record<string, string> {
   if (configDir) env.CLAUDE_CONFIG_DIR = configDir;
   env.ORCHESTRA_BRANCH = ws.branch;
   env.ORCHESTRA_KIND = ws.kind ?? 'worktree';
+  // Auto-rename gate parity with startAgentPty (workspaces.ts): the SessionStart
+  // /UserPromptSubmit rename-instruction hook hard-gates on
+  // `ORCHESTRA_BRANCH_AUTO=1` and reads `ORCHESTRA_AUTO_RENAME_COUNT` to pick the
+  // stage-appropriate wording. Without these the nudge self-suppresses (defaults
+  // to 0/off) even once the `'local'` hooks load — so a structured session's
+  // branch would never get auto-renamed. autoRenameActive() is the single source
+  // of truth (a human-pinned name or a spent rename budget turns it off).
+  env.ORCHESTRA_BRANCH_AUTO = autoRenameActive(ws) ? '1' : '0';
+  env.ORCHESTRA_AUTO_RENAME_COUNT = String(ws.autoRenameCount ?? 0);
 
   // CLI-identity parity with startAgentPty, PLUS the activity spool when this SDK
   // session is the SOLE driver of the workspace.
@@ -347,6 +360,15 @@ async function consume(session: Session): Promise<void> {
     session.pump?.();
     session.turnGate?.();
     sessions.delete(session.wsId);
+    // Status-dot reconciliation floor, mirroring the terminal PTY's exit handler
+    // (pty.ts reconcileExited): once the SDK subprocess is gone — natural end,
+    // interrupt, crash, or kill — the agent can't be `running`, so self-heal a
+    // dot the activity `stop` hook may not have flipped (a crash never fires it).
+    // Guard on no live PTY: if a terminal PTY owns the dot for this workspace,
+    // let ITS exit handler reconcile — knocking it to `waiting` here would fight
+    // a still-live terminal agent. reconcileExited itself no-ops unless status is
+    // currently `running`, so this is safe when the agent legitimately idled.
+    if (!isPtyRunning(session.wsId)) reconcileExited(session.wsId);
   }
 }
 
@@ -432,7 +454,20 @@ async function ensureSession(wsId: string): Promise<Session> {
     options: {
       cwd: remote ? '/workspace' : ws.worktreePath,
       includePartialMessages: true,
-      settingSources: ['user', 'project'],
+      // MUST include 'local': Orchestra writes ALL its per-workspace hooks
+      // (auto-rename nudge, inbox delivery, comms-resurface, orchestrator
+      // reminder, field-guide, activity spool) into
+      // `<worktree>/.claude/settings.local.json` — the SDK's `'local'` setting
+      // source (sdk.d.ts: "'local' - Local settings (.claude/settings.local.json)").
+      // The terminal path spawns `claude` with NO source restriction, so it
+      // loads all three by default and those hooks fire. Passing only
+      // ['user','project'] here silently EXCLUDED the file every Orchestra hook
+      // lives in — so in structured mode the branch was never auto-renamed, peer
+      // messages were never delivered into context, and the orchestrator brief
+      // reminder never re-surfaced. Matching the terminal path means loading all
+      // three. (Skills are `.claude/skills/` — project-discovered — so they load
+      // regardless; only the settings-file hooks needed 'local'.)
+      settingSources: ['user', 'project', 'local'],
       permissionMode,
       // Required by the SDK whenever permissionMode is (or is switched to)
       // 'bypassPermissions' — without it the CLI ignores bypass and falls back
@@ -452,6 +487,24 @@ async function ensureSession(wsId: string): Promise<Session> {
       // blank. The captured session id is persisted on `ws.sdkSessionId` as the
       // stream reports it (see consume()). Absent → a fresh session.
       ...(ws.sdkSessionId ? { resume: ws.sdkSessionId } : {}),
+      // Orchestrator brief parity with startAgentPty (workspaces.ts): an
+      // orchestrator's standing delegation brief is appended to the Claude Code
+      // system prompt on a FRESH session only — on resume the persisted session
+      // already carries it, so re-appending would duplicate it (mirrors the
+      // terminal path's `!resuming` gate; `ws.sdkSessionId` present === resuming).
+      // The `preset: 'claude_code'` keeps the full default system prompt and only
+      // APPENDS the brief. Durable enforcement across compaction is still the
+      // orchestrator-instruction SessionStart hook (now loaded via the 'local'
+      // source above); this is the richer one-time onboarding.
+      ...(!ws.sdkSessionId && ws.kind === 'orchestrator'
+        ? {
+            systemPrompt: {
+              type: 'preset' as const,
+              preset: 'claude_code' as const,
+              append: ORCHESTRATOR_BRIEF,
+            },
+          }
+        : {}),
       // A large cap: real turns end on their own; this only backstops runaways.
       maxTurns: 200,
     },
@@ -757,3 +810,16 @@ export function sdkStopMany(wsIds: readonly string[]): void {
     if (sessions.has(wsId)) void sdkStop(wsId);
   }
 }
+
+// Register the delivery seam so the lifecycle dispatchers in workspaces.ts /
+// prompt-queue.ts can route a peer message, a usage-limit-parked prompt, or an
+// account migration to a LIVE structured session — instead of blindly spawning a
+// raw `claude` PTY (a stray second agent that never receives the message). The
+// seam breaks the import cycle (workspaces.ts can't import agent-sdk.ts back).
+// `send` maps to sdkSend (enqueues a live turn); the echo it emits also renders
+// the delivered text in the structured transcript, exactly like a typed turn.
+registerSdkDelivery({
+  hasSession: sdkHasSession,
+  send: (wsId, text) => sdkSend(wsId, text),
+  stop: sdkStop,
+});

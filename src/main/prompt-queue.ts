@@ -4,6 +4,7 @@ import { log } from './logger';
 import { store } from './store';
 import { isRunning, writePty } from './pty';
 import { wakeAgentWithPrompt } from './workspaces';
+import { sdkSessionLive } from './sdk-delivery';
 import { getAccountUsage, refreshAccountsNow } from './account-usage';
 import { getLastUsage } from './usage';
 import {
@@ -158,9 +159,12 @@ export async function flushQueuedPrompts(
     if (await wakeAgentWithPrompt(id, body)) {
       // Insurance mirrored from dispatchMessageRequest: a woken agent that
       // dies almost immediately lost the injected prompt — restore the queue
-      // so the user still sees (and can re-send) it.
+      // so the user still sees (and can re-send) it. A structured (SDK) session
+      // has no PTY, so isRunning is always false for it: treat a live SDK
+      // session as "still up" too, or the insurance would wrongly re-queue an
+      // already-delivered structured turn.
       setTimeout(() => {
-        if (!isRunning(id)) void requeue();
+        if (!isRunning(id) && !sdkSessionLive(id)) void requeue();
       }, 5000);
       return { ok: true, delivered: queue.length };
     }

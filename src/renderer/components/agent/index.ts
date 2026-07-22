@@ -17,8 +17,8 @@ export { ToolDiff } from './ToolDiff';
 export { ThinkingIndicator } from './ThinkingIndicator';
 export { Collapsible } from './Collapsible';
 export { CodeBlock } from './CodeBlock';
-export { MarkdownProse, renderInline } from './markdown';
-export { parseMarkdown, monacoLang, langFromPath } from './markdown-parse';
+export { MarkdownView } from './MarkdownView';
+export { parseMarkdown, langFromPath } from './markdown-parse';
 export type { MdBlock } from './markdown-parse';
 
 // ── A4: interaction ──────────────────────────────────────────────────────────

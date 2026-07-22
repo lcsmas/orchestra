@@ -1,8 +1,6 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import type { RenderMessage } from '../../../shared/types';
-import { parseMarkdown } from './markdown-parse';
-import { MarkdownProse } from './markdown';
-import { CodeBlock } from './CodeBlock';
+import { MarkdownView } from './MarkdownView';
 import { ThinkingIndicator } from './ThinkingIndicator';
 
 interface Props {
@@ -24,8 +22,6 @@ interface Props {
  */
 function MessageBubbleImpl({ message }: Props) {
   const { text, thinking, role, images } = message;
-
-  const blocks = useMemo(() => (text ? parseMarkdown(text) : []), [text]);
 
   const hasImages = !!images && images.length > 0;
   // A message with nothing to show — e.g. a thinking-only block after the
@@ -54,15 +50,11 @@ function MessageBubbleImpl({ message }: Props) {
         </div>
       ) : null}
       <div className="av-message-text">
-        {blocks.map((b, i) =>
-          b.kind === 'code' ? (
-            <CodeBlock key={i} code={b.text} lang={b.lang} />
-          ) : (
-            <div key={i} className="av-md">
-              <MarkdownProse text={b.text} />
-            </div>
-          )
-        )}
+        {text ? (
+          <div className="av-md">
+            <MarkdownView text={text} done={!!message.done} />
+          </div>
+        ) : null}
         {/* Streaming cursor: shown while the block is still open (not done) and
             there is already some text. A5 styles the blink. */}
         {!message.done && text ? <span className="av-cursor" aria-hidden /> : null}

@@ -24,7 +24,7 @@
  * Pure data-in/data-out (no node/electron imports) so `node --test` covers it.
  */
 
-import type { AgentEvent } from './types';
+import type { AgentEvent, AgentImage } from './types';
 // Explicit .ts extension: the `node --test` strip-types runner resolves this
 // import at runtime (vite/esbuild don't care either way).
 import {
@@ -53,6 +53,9 @@ interface TranscriptBlock {
   tool_use_id?: string;
   content?: unknown;
   is_error?: unknown;
+  /** Present on `image` blocks — the base64 vision source the user pasted, in
+   *  the Messages API shape (`{type:'base64', media_type, data}`). */
+  source?: { type?: string; media_type?: string; data?: string };
 }
 
 /** Convert raw transcript JSONL text into an ordered AgentEvent list. Unparsable
@@ -80,7 +83,27 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
       if (typeof content === 'string') {
         if (content.trim()) out.push(stamp(ctx, { type: 'user-message', text: content }));
       } else if (Array.isArray(content)) {
-        for (const b of content as TranscriptBlock[]) {
+        const blocks = content as TranscriptBlock[];
+        // Reconstruct pasted images so a reopened workspace shows them instead of
+        // silently dropping them (the live echo carried them via makeUserMessage,
+        // but the on-disk backfill used to skip `image` blocks entirely). The SDK
+        // serializes a user turn as `[...image blocks, text block]`; we gather the
+        // images and attach them to the turn's user-message.
+        const images: AgentImage[] = [];
+        for (const b of blocks) {
+          if (
+            b?.type === 'image' &&
+            b.source?.type === 'base64' &&
+            typeof b.source.media_type === 'string' &&
+            typeof b.source.data === 'string'
+          ) {
+            images.push({ mediaType: b.source.media_type, dataBase64: b.source.data });
+          }
+        }
+        let imagesAttached = false;
+        // Attach the images to the FIRST text block so they render on the same
+        // bubble; emit any remaining text blocks plain.
+        for (const b of blocks) {
           if (b?.type === 'tool_result' && typeof b.tool_use_id === 'string') {
             out.push(
               stamp(ctx, {
@@ -93,8 +116,19 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
               }),
             );
           } else if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
-            out.push(stamp(ctx, { type: 'user-message', text: b.text }));
+            out.push(
+              stamp(ctx, {
+                type: 'user-message',
+                text: b.text,
+                ...(!imagesAttached && images.length > 0 ? { images } : {}),
+              }),
+            );
+            imagesAttached = true;
           }
+        }
+        // An image-only turn (no caption) still renders a bubble with the images.
+        if (!imagesAttached && images.length > 0) {
+          out.push(stamp(ctx, { type: 'user-message', text: '', images }));
         }
       }
       continue;

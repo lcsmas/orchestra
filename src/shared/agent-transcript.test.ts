@@ -81,6 +81,45 @@ test('transcript: garbage lines and empty input yield no events', () => {
   assert.deepEqual(transcriptToEvents('not json\n{broken', ctx()), []);
 });
 
+test('transcript: a pasted image + caption reconstructs on the user bubble', () => {
+  // The SDK serializes a user turn with an image as [imageBlock, textBlock].
+  const jsonl = lines([
+    {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+          { type: 'text', text: 'what is this' },
+        ],
+      },
+    },
+  ]);
+  const s = foldEvents(emptySession('ws1'), transcriptToEvents(jsonl, ctx()));
+  const user = s.messages.find((m) => m.role === 'user')!;
+  assert.equal(user.text, 'what is this');
+  assert.equal(user.images?.length, 1);
+  assert.equal(user.images![0].mediaType, 'image/png');
+  assert.equal(user.images![0].dataBase64, 'AAAA');
+});
+
+test('transcript: an image-only turn (no caption) still renders a bubble', () => {
+  const jsonl = lines([
+    {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'BBBB' } }],
+      },
+    },
+  ]);
+  const s = foldEvents(emptySession('ws1'), transcriptToEvents(jsonl, ctx()));
+  const user = s.messages.find((m) => m.role === 'user' && (m.images?.length ?? 0) > 0);
+  assert.ok(user, 'an image-only user turn should produce a user message');
+  assert.equal(user!.images![0].mediaType, 'image/jpeg');
+  assert.equal(user!.images![0].dataBase64, 'BBBB');
+});
+
 test('transcript: history block ids never collide with a live session at low indexes', () => {
   const jsonl = lines([
     { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'old history' }] } },

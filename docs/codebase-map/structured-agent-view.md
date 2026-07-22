@@ -37,6 +37,18 @@ the live `query` object in main — `agentSdkSend(wsId, text, images?)`, `agentS
 long-lived `query()` per session fed by an async-generator prompt (each follow-up turn
 gated on the prior `result`), so the subprocess stays warm and `canUseTool` fires in-loop.
 
+**Peer/queue delivery to a live session:** the lifecycle dispatchers in
+`workspaces.ts`/`prompt-queue.ts` (peer `dispatchMessageRequest`, the usage-limit
+prompt-queue flusher, `wakeAgentWithPrompt`, account migration) live "below" agent-sdk in
+the import graph, so they reach a live structured session through the
+**`src/main/sdk-delivery.ts`** seam (a registration indirection that breaks the cycle,
+like `sdkStopMany`). agent-sdk registers `{hasSession, send, stop}` at load;
+`sdkDeliver(wsId, text)` routes a message/queued prompt to the live session as its next
+turn instead of blindly spawning a raw `claude` PTY beside it, and account migration
+calls `sdkStopIfLive` so the session doesn't keep running under the old account's
+`CLAUDE_CONFIG_DIR`. When no structured session is live these no-op and callers fall back
+to the unchanged PTY path.
+
 ## Key files
 
 - **`src/shared/types.ts`** — the `AgentEvent` discriminated union (on `type`),
@@ -64,10 +76,25 @@ gated on the prior `result`), so the subprocess stays warm and `canUseTool` fire
   lifecycle (lazy start on first `agentSdkSend`, interrupt, `sdkStopMany` teardown on
   workspace delete). **The SDK is pure ESM — loaded via a cached dynamic `import()`, NOT a
   static import** (a static import + vite `external` emits `require()` in the CJS main
-  bundle → `ERR_REQUIRE_ESM` boot crash). `buildSdkEnv` sets `ORCHESTRA_BRANCH`/`KIND`
-  plus the spool-free identity plumbing, and **sets `ORCHESTRA_WS_ID`/`EVENTS_DIR`
+  bundle → `ERR_REQUIRE_ESM` boot crash). **`settingSources` is
+  `['user','project','local']`** — the `'local'` source (`.claude/settings.local.json`)
+  is where Orchestra installs EVERY per-workspace hook (auto-rename nudge, inbox
+  delivery, comms-resurface, orchestrator reminder, field-guide, activity spool), so
+  omitting it (the pre-fix `['user','project']`) silently disabled all of them in
+  structured mode — the branch never auto-renamed and peer messages never reached the
+  agent. The terminal path spawns `claude` with no source restriction, so it loads all
+  three by default; matching it requires `'local'`. `buildSdkEnv` sets
+  `ORCHESTRA_BRANCH`/`KIND` **plus `ORCHESTRA_BRANCH_AUTO`/`AUTO_RENAME_COUNT`** (the
+  rename-hook's gate/stage vars, from `autoRenameActive(ws)`), the spool-free identity
+  plumbing, and **sets `ORCHESTRA_WS_ID`/`EVENTS_DIR`
   (→ the sidebar status dot fires in structured view) ONLY when no terminal PTY is
-  running for the workspace** (`isPtyRunning(ws.id)` gate). The terminal PTY
+  running for the workspace** (`isPtyRunning(ws.id)` gate). An **orchestrator** workspace
+  also gets its standing brief appended to the Claude Code system prompt on a FRESH
+  session (`systemPrompt: {preset:'claude_code', append: ORCHESTRATOR_BRIEF}`, gated on
+  `!ws.sdkSessionId` so a resume doesn't duplicate it) — parity with the terminal path's
+  `--append-system-prompt`. When the consume loop ends/throws, a `reconcileExited(wsId)`
+  floor (guarded on no live PTY) self-heals a stuck `running` status dot, mirroring the
+  PTY exit handler. The terminal PTY
   lazy-starts just when the Terminal tab is opened (`Terminal.tsx allowStartRef`), so
   a structured-only session safely owns the spool; a live PTY keeps ownership and the
   SDK session stays spool-free — avoiding the double-writer that corrupts the dot's
@@ -92,14 +119,26 @@ gated on the prior `result`), so the subprocess stays warm and `canUseTool` fire
   overall status dot, count), expanding to the individual `ToolCard`s. A lone tool
   renders as a plain `ToolCard` (no wrapper). `summarizeToolRun` counts per tool
   name in first-seen order.
-- **`src/renderer/components/agent/*`** — `MessageBubble` (dep-free markdown +
-  Monaco code blocks; renders `null` when a message has no text and isn't thinking),
+- **`src/renderer/components/agent/*`** — `MessageBubble` (renders text via
+  `MarkdownView`; renders `null` when a message has no text and isn't thinking),
+  **`MarkdownView.tsx`** (full CommonMark + GFM via **react-markdown + remark-gfm** —
+  tables, strikethrough, task/nested lists — replacing the former hand-rolled dep-free
+  subset parser that silently dropped all of those, the "bad markdown reader"; fenced
+  blocks route to `CodeBlock`), **`CodeBlock.tsx`** (syntax highlighting via
+  **Shiki** — `shiki-highlighter.ts` — not Monaco: a static highlighted-HTML surface,
+  far lighter on the streaming hot path; highlights ONLY a finalized block, showing
+  plain mono while `done===false` so a token delta never re-highlights),
+  **`shiki-highlighter.ts`** (lazy singleton via the fine-grained `createHighlighterCore`
+  + JS regex engine + **dynamically-imported** curated grammars/`github-dark`/`-light`
+  themes — so none of Shiki's registry lands in the main renderer chunk; it splits into
+  async chunks fetched on first highlight),
   `ToolCard`/`ToolDiff` (Edit/Write diffs reconstructed from the `tool_use` **input**,
-  not the plain-text `tool_result`; per-tool SVG icons in `tool-icons.tsx`),
+  not the plain-text `tool_result`; per-tool SVG icons in `tool-icons.tsx`; **ToolDiff
+  still uses Monaco's `DiffEditor`** — the diff surface is deliberately unchanged),
   `ThinkingIndicator` (shimmer label), `PermissionDialog` (picks first *unanswered*
   pending request, not `pending[0]`), `AskUserQuestionCard`, `AgentControls`,
-  `TurnFooter`, plus `monaco-theme.ts` (the `orchestra-dark`/`orchestra-light`
-  editor themes + `useMonacoTheme`).
+  `TurnFooter`, plus `monaco-theme.ts` (the `orchestra-dark`/`orchestra-light` themes +
+  `useMonacoTheme`, still used by ToolDiff and to pick the light/dark Shiki theme).
 - **`src/renderer/monaco-loader.ts`** — imported first in `main.tsx`; `loader.config({
   monaco })` with the bundled `monaco-editor` package + a local editor worker, so the
   editors never fetch from the jsDelivr CDN (offline-safe, like the self-hosted
@@ -109,7 +148,11 @@ gated on the prior `result`), so the subprocess stays warm and `canUseTool` fire
   differ from the live stream: assistant text is finalized (no stream_events → we
   synthesize block-start/delta/stop triplets at indexes ≥100k), there are no `result`
   lines (one quiet terminal `turn-end` is appended), and `isSidechain: true` lines
-  (Task-subagent transcripts) are skipped. `agent-sdk.ts sdkHistory(wsId)` locates the
+  (Task-subagent transcripts) are skipped. **A user turn's `image` content blocks are
+  reconstructed into the `user-message`'s `images`** (Messages-API `{source:{base64}}`
+  shape → `AgentImage[]`), so pasted images survive a reopen — the live echo carried
+  them but the backfill formerly dropped `image` blocks, so they vanished on reload.
+  `agent-sdk.ts sdkHistory(wsId)` locates the
   file (`<configDir>/projects/<mangleProjectDir(worktreePath)>/<sdkSessionId>.jsonl`,
   tail-capped at 4MB) and StructuredView requests it once per mount while the folded
   session is empty, folding events through the normal RAF queue.

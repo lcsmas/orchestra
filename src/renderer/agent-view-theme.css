@@ -621,6 +621,45 @@
 }
 .av-diff-editor { background: var(--av-surface-sunken); }
 
+/* Shiki-highlighted code (replaces the Monaco display block in message bubbles).
+ * Shiki emits a self-contained <pre class="shiki"><code> with inline color
+ * styles from the bundled github-dark/light theme; we own the box (padding,
+ * scroll, font) and let Shiki own the token colors. The plain fallback matches
+ * it 1:1 so a still-streaming block doesn't jump when it upgrades to highlight. */
+.av-code-shiki pre.shiki,
+.av-code-plain {
+  margin: 0; padding: 10px 12px; overflow-x: auto;
+  font-family: var(--font-mono); font-size: var(--av-fs-code, 12.5px);
+  line-height: 1.55; tab-size: 2;
+}
+.av-code-shiki pre.shiki { background: transparent !important; }
+.av-code-plain { color: var(--av-text); background: transparent; white-space: pre; }
+.av-code-plain code { font: inherit; color: inherit; }
+.av-code-shiki code { font: inherit; }
+
+/* GFM tables — the headline gap the old dep-free parser couldn't render at all. */
+.av-md-table-wrap { overflow-x: auto; margin: 0.5em 0 0.85em; }
+.av-md-table {
+  border-collapse: collapse; width: max-content; max-width: 100%;
+  font-size: var(--av-fs-body, inherit);
+}
+.av-md-table th, .av-md-table td {
+  border: 1px solid var(--av-hairline); padding: 5px 10px; text-align: left;
+  vertical-align: top;
+}
+.av-md-table th {
+  background: var(--av-surface-raised); color: var(--av-text);
+  font-weight: 600;
+}
+.av-md-table tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--av-surface-raised) 45%, transparent);
+}
+/* GFM strikethrough. */
+.av-md-del { color: var(--av-text-faint); text-decoration: line-through; }
+/* GFM task-list checkboxes render as disabled inputs; keep them inline + calm. */
+.av-md li input[type='checkbox'] { margin: 0 0.4em 0 0; vertical-align: middle; }
+.av-md li:has(> input[type='checkbox']) { list-style: none; margin-left: -1.1em; }
+
 /* ============================================================================
  * PERMISSION DIALOG — the app's glass dialog language. High emphasis, calm.
  * ==========================================================================*/
