@@ -20,14 +20,28 @@ Bootstrap order matters; several steps run *before* the window:
   preload. Starts subsystems: hooks server `:292`, events spool `:294`, usage
   pollers `:296`/`:298`; background: orphan prune `:317`, agent resume `:338`,
   base-branch sync, Linear watchers.
-- **Renderer crash recovery** (`render-process-gone` handler in
-  `createMainWindow`) — a dead renderer (typically OOM: every opened workspace
-  keeps a 10k-line xterm + WebGL canvas mounted) used to leave Chromium's white
-  "sad tab" page until a manual relaunch. Now: log reason/exitCode, wait 1s,
-  `webContents.reload()` — main-side state (store, PTYs, spool) survives, so
-  the UI rehydrates in place. Crash-loop guard: >3 crashes in 60s stops
-  auto-reloading. `app.on('child-process-gone')` logs GPU/utility deaths as
-  breadcrumbs (no recovery needed — Chromium respawns those itself).
+- **Renderer/GPU crash recovery** (in `createMainWindow`) — handles two
+  distinct "the content area went black" failure modes via a shared
+  `guardedReload(why)` helper (log, wait 1s, `webContents.reload()`; main-side
+  state — store, PTYs, spool — survives so the UI rehydrates in place):
+  - `render-process-gone` — the renderer PROCESS died (OOM SIGKILL, segfault);
+    Chromium otherwise leaves its white "sad tab" page until manual relaunch.
+  - `child-process-gone` with `type === 'GPU'` (registered inside
+    `createMainWindow`, torn down on `mainWindow 'closed'`) — the renderer
+    survives but every WebGL context is lost at once and the compositor leaves a
+    BLACK content surface (window chrome still painted). This is the reported
+    "app turns black, must restart" and logs NOTHING under the old handler (no
+    process died). Reloading re-establishes the GL contexts.
+  - `unresponsive`/`responsive` — logged only (a wedged-but-live renderer also
+    paints black; no safe auto-reload, but the log dates the occurrence).
+  Shared crash-loop guard: >3 reloads in 60s stops auto-reloading. A SECOND,
+  diagnostic-only `app.on('child-process-gone')` outside `createMainWindow`
+  logs every helper death as a breadcrumb.
+  The root stressor — one WebGL context per open workspace — is bounded on the
+  renderer side by the mounted-pane LRU cap (see `computeMountedIds` /
+  `MAX_MOUNTED_PANES` in App.tsx + `src/shared/mounted-panes.ts`): only the 12
+  most-recently-used workspaces keep a `TerminalView`/`StructuredView` mounted;
+  older ones unmount (releasing their WebGL context) and cold-boot on reopen.
 - **Single-instance lock** `:1011` — second instance `app.exit(0)`; primary
   focuses. Dev `ORCHESTRA_HOME` gets a separate lock so dev+packaged coexist.
 - **IPC wrapper** `handle()` `:228` — logs every handler failure with its channel
@@ -107,8 +121,11 @@ function: the base→feature branch chip (with `BranchPicker`) on the left, then
 a **views group** (`.toolbar-views`: Terminal/Diff/Run tabs + the nvim
 pane-toggle), a hairline `.toolbar-sep`, and an **actions group**
 (`.toolbar-actions`: restart-agent, run play/stop, PR button as the rightmost
-CTA). Each `TerminalView` is kept mounted per workspace (preserves xterm
-scrollback across switches); Diff/Run mount only when selected.
+CTA). Each `TerminalView` for the **12 most-recently-used** workspaces is kept
+mounted (preserves xterm scrollback across switches) — capped by the LRU
+`computeMountedIds` / `MAX_MOUNTED_PANES` to bound live WebGL contexts (see
+crash-recovery note above); older panes unmount and cold-boot on reopen.
+Diff/Run mount only when selected.
 
 ## Sidebar.tsx (~2100 lines — the big one)
 Workspace list with orchestrator nesting, drag-reorder, archive, delete.

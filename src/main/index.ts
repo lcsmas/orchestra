@@ -285,39 +285,87 @@ async function createMainWindow() {
     void openUrlExternally(url);
   });
 
-  // Renderer crash recovery. A dead renderer otherwise leaves Chromium's white
-  // "sad tab" page in the window until the user quits and relaunches by hand —
-  // and the renderer is the process most likely to die: every opened workspace
-  // keeps a 10k-line xterm (plus WebGL canvas) mounted for scrollback, so a
-  // long session with many workspaces can push it past Chromium's per-process
-  // memory limits. Everything the renderer holds is rebuildable from main
-  // (store hydration, PTY scrollback replay, live event resubscription), so a
-  // reload restores a working UI in place — agents keep running throughout;
-  // pty.ts already retains undeliverable output while the window can't
-  // receive. Guard against a crash loop (e.g. reload → restore same state →
-  // OOM again): after 3 crashes in 60s, stop reloading and leave the sad page.
-  let rendererCrashes: number[] = [];
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    if (details.reason === 'clean-exit') return;
+  // Renderer/GPU crash recovery. Two distinct "the window went black" failure
+  // modes are handled here, because they log and recover differently:
+  //
+  //  1. render-process-gone — the renderer PROCESS died (OOM SIGKILL, segfault).
+  //     Chromium leaves its white "sad tab" page until the user quits and
+  //     relaunches by hand.
+  //  2. GPU-process crash — the renderer JS stays ALIVE but every WebGL/canvas
+  //     context in the page is lost at once (they all share the one GPU
+  //     process), and the compositor can leave a BLACK content surface with the
+  //     window chrome still painted. This mode logs NOTHING today: the observed
+  //     black-screen reports have no render-process-gone line and no Crashpad
+  //     dump, i.e. no process died — a live renderer painting black. A stack of
+  //     ~40 mounted xterm WebGL contexts (one per open workspace) is the likely
+  //     GPU-process stressor; the pane-mount LRU cap in the renderer bounds that,
+  //     and reloading re-establishes the GL contexts here.
+  //
+  // Everything the renderer holds is rebuildable from main (store hydration, a
+  // fresh xterm that repaints via `claude --continue`, live event
+  // resubscription), so a reload restores a working UI in place — agents keep
+  // running throughout; pty.ts retains undeliverable output while the window
+  // can't receive. Guard against a reload loop (reload → same heavy state →
+  // crash again): after 3 crash-triggered reloads in 60s, stop and leave the
+  // window as-is rather than thrash.
+  let recentReloads: number[] = [];
+  const guardedReload = (why: string) => {
     const now = Date.now();
-    rendererCrashes = rendererCrashes.filter((t) => now - t < 60_000);
-    rendererCrashes.push(now);
-    log.error(
-      `renderer process gone: reason=${details.reason} exitCode=${details.exitCode} (crash ${rendererCrashes.length} in the last 60s)`,
-    );
-    if (rendererCrashes.length > 3) {
-      log.error('renderer crash loop — giving up on auto-reload; restart Orchestra manually');
+    recentReloads = recentReloads.filter((t) => now - t < 60_000);
+    recentReloads.push(now);
+    if (recentReloads.length > 3) {
+      log.error(
+        `${why}: reload loop (${recentReloads.length} in 60s) — giving up on auto-reload; restart Orchestra manually`,
+      );
       return;
     }
     // Small delay so a system-wide event (OOM killer sweep, GPU reset) settles
-    // before we ask Chromium to spin up a fresh renderer.
+    // before we ask Chromium to spin up a fresh renderer / GPU context.
     setTimeout(() => {
       const w = mainWindow;
       if (w && !w.isDestroyed()) {
-        log.info('reloading renderer after crash');
+        log.info(`reloading renderer after ${why}`);
         w.webContents.reload();
       }
     }, 1000);
+  };
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    if (details.reason === 'clean-exit') return;
+    log.error(
+      `renderer process gone: reason=${details.reason} exitCode=${details.exitCode}`,
+    );
+    guardedReload('renderer crash');
+  });
+
+  // GPU-process crash: the renderer survives but its GL contexts are gone, which
+  // is the "black content, live window" signature. The deprecated
+  // `gpu-process-crashed` event is gone from this Electron's typings, so we key
+  // off the app-level `child-process-gone` with type 'GPU'. Reloading the window
+  // makes the renderer re-establish its WebGL contexts against the freshly
+  // respawned GPU process. (A second, diagnostic-only child-process-gone handler
+  // outside createMainWindow logs every helper death; this one recovers.)
+  const onGpuGone = (_event: Electron.Event, details: Electron.Details) => {
+    if (details.type !== 'GPU' || details.reason === 'clean-exit') return;
+    log.error(
+      `gpu process gone: reason=${details.reason} exitCode=${details.exitCode} — recovering renderer GL contexts`,
+    );
+    guardedReload('gpu crash');
+  };
+  app.on('child-process-gone', onGpuGone);
+  mainWindow.on('closed', () => app.off('child-process-gone', onGpuGone));
+
+  // A renderer that is ALIVE but wedged (event loop blocked, or a GPU stall that
+  // never surfaces as a crash) paints nothing new — another route to a black
+  // window. We can't safely auto-reload here (a reload would discard an
+  // in-progress operation), but logging the transition turns a silent "it went
+  // black" into a dated, diagnosable event; if `responsive` never follows an
+  // `unresponsive`, that IS the black-screen occurrence.
+  mainWindow.webContents.on('unresponsive', () => {
+    log.error('renderer unresponsive — window may appear black/frozen until it recovers');
+  });
+  mainWindow.webContents.on('responsive', () => {
+    log.info('renderer responsive again');
   });
 
   // Drop workspaces whose worktree was deleted out-of-band BEFORE the renderer

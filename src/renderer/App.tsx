@@ -18,7 +18,19 @@ import { playFinishedChime } from './chime';
 import { dlog } from './debug';
 import type { RepoEntry } from '../shared/types';
 import { isScratchLike } from '../shared/types';
+import { computeMountedIds } from '../shared/mounted-panes';
 import { readDefaultAgentView, terminalTabLabel } from './default-agent-view';
+
+// Max number of workspace panes (TerminalView + StructuredView) kept mounted at
+// once. Each mounted TerminalView holds a WebGL context; Chromium force-loses
+// WebGL contexts past ~16 per page and the shared GPU process buckles well
+// before dozens are live, which is what turned the whole content area black
+// (GL contexts lost, renderer still alive → nothing recovers it → manual
+// restart). 12 stays comfortably under the WebGL cap with headroom for the
+// occasional RunTerminal/login WebGL context, while keeping the dozen
+// most-recent workspaces instantly switchable. Older panes unmount and cold-
+// boot (~1-2s) on reopen — identical to opening a workspace for the first time.
+const MAX_MOUNTED_PANES = 12;
 
 const NVIM_WIDTH_KEY = 'orchestra.nvimPaneWidthPx';
 const NVIM_WIDTH_DEFAULT = 520;
@@ -118,6 +130,23 @@ export function App() {
     const t = setTimeout(() => setWsSetRev((r) => r + 1), 400);
     return () => clearTimeout(t);
   }, [wsSetKey]);
+  // LRU of workspace ids by most-recent activation, newest first. Drives which
+  // panes stay mounted (see MAX_MOUNTED_PANES below): keeping every open
+  // workspace's TerminalView mounted means one WebGL context + 10k-line xterm
+  // per workspace, and with dozens of workspaces that overruns Chromium's
+  // ~16-context-per-page WebGL limit and stresses the shared GPU process until
+  // it crashes — the renderer survives but its GL contexts are lost and the
+  // content composites BLACK (the reported "app turns black, must restart"). We
+  // therefore mount only the most-recently-used panes; the rest unmount and
+  // rebuild instantly on reopen (a fresh xterm repaints from `claude
+  // --continue`, no agent state lost — that is already how first-open works).
+  const [lruOrder, setLruOrder] = useState<string[]>([]);
+  useEffect(() => {
+    if (!activeId) return;
+    setLruOrder((prev) =>
+      prev[0] === activeId ? prev : [activeId, ...prev.filter((id) => id !== activeId)],
+    );
+  }, [activeId]);
   const [nvimOpen, setNvimOpen] = useState(false);
   const [nvimWidth, setNvimWidth] = useState<number>(() => loadNvimWidth());
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => loadSidebarWidth());
@@ -282,6 +311,18 @@ export function App() {
 
   const liveWorkspaces = workspaces.filter((w) => !w.archived);
   const active = liveWorkspaces.find((w) => w.id === activeId);
+
+  // Which panes stay mounted: the MAX_MOUNTED_PANES most-recently-active
+  // workspaces (LRU order), plus the active one unconditionally. Anything else
+  // unmounts to release its WebGL context. See computeMountedIds for the full
+  // rationale and its unit tests.
+  const mountedIds = computeMountedIds({
+    liveIds: liveWorkspaces.map((w) => w.id),
+    lruOrder,
+    activeId,
+    max: MAX_MOUNTED_PANES,
+  });
+  const mountedWorkspaces = liveWorkspaces.filter((w) => mountedIds.has(w.id));
   // Both scratch and orchestrator sessions are non-git and repo-less, so they
   // get the same terminal-only treatment (no Diff/Run/Merge/PR). `isScratch`
   // here means "scratch-like", covering both kinds.
@@ -637,28 +678,32 @@ export function App() {
                 banners above. Shows only while the active workspace's account
                 is over its usage limit or prompts are still queued. */}
             <PromptQueueBanner key={`queue-${active.id}`} workspace={active} />
-            {/* Render a TerminalView for every workspace but only show the active one.
-                This keeps each xterm.js instance alive (preserving its scrollback buffer)
-                even when the user switches to a different workspace tab. */}
+            {/* Render a TerminalView for the recently-used workspaces (see
+                mountedWorkspaces / MAX_MOUNTED_PANES) but only show the active
+                one. Keeping each xterm.js instance mounted preserves its
+                scrollback buffer across tab switches; capping the set at the LRU
+                bounds the number of live WebGL contexts so the GPU process
+                doesn't crash the whole content area to black. */}
             <div
               ref={paneRowRef}
               className={`pane-row ${nvimOpen ? 'with-nvim' : ''}`}
             >
               <div className="pane">
-                {liveWorkspaces.map((ws) => (
+                {mountedWorkspaces.map((ws) => (
                   <TerminalView
                     key={ws.id}
                     workspaceId={ws.id}
                     isActive={ws.id === activeId && view === 'terminal'}
                   />
                 ))}
-                {/* Structured view is kept always-mounted per workspace (like
-                    TerminalView above) so the folded session and scroll
-                    position survive tab switches — its store state persists
-                    regardless, but keeping the component mounted preserves the
-                    virtualized list's scroll offset. Scratch sessions have no
-                    agent SDK session, so they are excluded. */}
-                {liveWorkspaces
+                {/* Structured view is kept mounted for the same recently-used
+                    workspaces as the terminals above (mountedWorkspaces) so the
+                    folded session and scroll position survive tab switches — its
+                    store state persists regardless, but keeping the component
+                    mounted preserves the virtualized list's scroll offset.
+                    Scratch sessions have no agent SDK session, so they are
+                    excluded. */}
+                {mountedWorkspaces
                   .filter((ws) => !isScratchLike(ws))
                   .map((ws) => (
                     <StructuredView
