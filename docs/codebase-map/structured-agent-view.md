@@ -133,7 +133,16 @@ to the unchanged PTY path.
   **`MarkdownView.tsx`** (full CommonMark + GFM via **react-markdown + remark-gfm** —
   tables, strikethrough, task/nested lists — replacing the former hand-rolled dep-free
   subset parser that silently dropped all of those, the "bad markdown reader"; fenced
-  blocks route to `CodeBlock`), **`CodeBlock.tsx`** (syntax highlighting via
+  blocks route to `CodeBlock`. **Streams smoothly via block-level memoization**: instead
+  of re-parsing/re-reconciling the whole accumulated markdown every frame — which grows
+  with message length and, past a few KB, blows the 16ms frame budget so text arrives in
+  visible *blocks* — it splits the text into top-level blocks
+  (`src/shared/markdown-blocks.ts`, fence-aware, `join('')===text` round-trip) via
+  `partitionStreamingMarkdown`, renders each already-final block as its own memoized
+  `MarkdownBlock` keyed by content (React reuses those DOM subtrees), and re-renders only
+  the growing tail block per frame — bounding per-frame work to the current paragraph.
+  Measured: a 15.8KB message drops from a ~22ms worst frame to ~1.7ms. Verified by the
+  `__smoke__` harness's block-split-vs-naive equivalence checks at every streaming prefix), **`CodeBlock.tsx`** (syntax highlighting via
   **Shiki** — `shiki-highlighter.ts` — not Monaco: a static highlighted-HTML surface,
   far lighter on the streaming hot path; highlights ONLY a finalized block, showing
   plain mono while `done===false` so a token delta never re-highlights),

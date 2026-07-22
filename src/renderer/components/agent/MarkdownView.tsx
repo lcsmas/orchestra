@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { CodeBlock } from './CodeBlock';
+import { partitionStreamingMarkdown } from '../../../shared/markdown-blocks';
 
 interface Props {
   /** The raw markdown text (may be a partial stream). */
@@ -24,11 +25,22 @@ interface Props {
  * react-markdown never renders raw HTML from the source (no `rehype-raw`), so
  * model output can't inject markup.
  *
- * The whole thing is memoized on `(text, done)` in {@link MarkdownView} so a
- * token delta elsewhere in the transcript doesn't re-parse this block; the
- * heavier guard lives in MessageBubble's `React.memo`.
+ * ## Smooth streaming — block-level memoization
+ *
+ * While a message streams, a naive `<ReactMarkdown>{text}</ReactMarkdown>` would
+ * re-parse the ENTIRE accumulated markdown and reconcile the whole rebuilt tree
+ * on every animation frame (every ~token). That cost grows with message length
+ * and, past a few KB, blows the frame budget so text arrives in visible BLOCKS
+ * instead of streaming smoothly. Fix: split the markdown into top-level blocks
+ * (fence-aware — see `shared/markdown-blocks.ts`); every block but the last is
+ * already FINAL, so render each as its own {@link MarkdownBlock} keyed by its
+ * text. React reuses those DOM subtrees untouched, and only the growing tail
+ * block re-parses/re-renders each frame — bounding per-frame work to the current
+ * paragraph regardless of transcript length. When `done`, there's no live tail;
+ * the whole message is stable blocks. `MarkdownView` is still memoized on
+ * `(text, done)` so an unrelated delta elsewhere never reaches this bubble at all.
  */
-function MarkdownViewImpl({ text, done }: Props) {
+function MarkdownBlockImpl({ text, done }: Props) {
   const components: Components = useMemo(
     () => ({
       // Fenced blocks (`className` carries `language-xxx`) → CodeBlock. Inline
@@ -92,6 +104,43 @@ function MarkdownViewImpl({ text, done }: Props) {
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
       {text}
     </ReactMarkdown>
+  );
+}
+
+/**
+ * One top-level markdown block. Memoized on `(text, done)` so a FINISHED block
+ * (its text never changes again once the stream moves past it) is parsed and
+ * reconciled exactly once — React reuses its DOM subtree on every later frame.
+ * This is the unit that makes streaming smooth: only the active tail block's
+ * `text` changes per frame, so only it re-renders.
+ */
+const MarkdownBlock = React.memo(
+  MarkdownBlockImpl,
+  (a, b) => a.text === b.text && a.done === b.done,
+);
+
+function MarkdownViewImpl({ text, done }: Props) {
+  // Split into already-final "stable" blocks + the still-growing "active" tail.
+  // Only the tail changes as tokens arrive, so only it re-renders each frame;
+  // the stable blocks are memoized by their (unchanging) text. See
+  // `shared/markdown-blocks.ts` for why this is the fix for block-y streaming.
+  const { stable, active } = useMemo(
+    () => partitionStreamingMarkdown(text, done),
+    [text, done],
+  );
+
+  return (
+    <>
+      {stable.map((block, i) => (
+        // A stable block's text is immutable once emitted, so keying by its
+        // content is safe and lets React skip re-rendering unchanged blocks even
+        // if an earlier block's length shifts the index. Finished blocks always
+        // render with done=true (they will not stream further), so fenced code
+        // in them highlights immediately.
+        <MarkdownBlock key={`s:${i}:${block.length}`} text={block} done />
+      ))}
+      {active !== '' ? <MarkdownBlock key="active" text={active} done={done} /> : null}
+    </>
   );
 }
 

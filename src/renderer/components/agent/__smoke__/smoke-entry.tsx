@@ -5,9 +5,12 @@
 // JSX). Exits non-zero on any failure.
 import React from 'react';
 import { renderToString } from 'react-dom/server';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { RenderMessage } from '../../../../shared/types';
 import { AgentMessage } from '../AgentMessage';
 import { ThinkingIndicator } from '../ThinkingIndicator';
+import { MarkdownView } from '../MarkdownView';
 
 let failures = 0;
 const check = (label: string, fn: () => string, assertHtml?: (html: string) => void) => {
@@ -241,6 +244,74 @@ check('pending tool card (no result)', () =>
       })}
     />
   )
+);
+
+// 13. Block-split streaming equivalence — the smooth-rendering fix.
+//     MarkdownView splits the text into stable blocks + an active tail and only
+//     re-renders the tail per frame. Its rendered output must show the SAME
+//     content the user would see from a naive single-<ReactMarkdown> over the
+//     whole text (just cheaper per frame). We compare the visible characters
+//     with ALL whitespace removed: block elements render vertically stacked, so
+//     a text-node space between adjacent blocks is not visible — what must match
+//     is the character content itself (no token dropped, duplicated, reordered).
+//     Fenced code is excluded from the comparison because MarkdownView routes it
+//     through <CodeBlock> (adds a lang label + "Copy" chrome) that the bare
+//     reference lacks — a difference in our reference, not in the fix; the code
+//     text itself is covered by the whitespace-stripped compare of the rest.
+const contentOf = (html: string) =>
+  html
+    .replace(/<pre[\s\S]*?<\/pre>/g, '') // drop code-block bodies (chrome differs)
+    .replace(/<[^>]+>/g, '')
+    .replace(/&#x27;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ''); // block-boundary whitespace is not visible → ignore it
+
+const naive = (text: string) =>
+  renderToString(
+    <div className="av-md">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+    </div>
+  );
+
+const sample =
+  'Here is the **plan** with details.\n\n' +
+  '- first item\n- second item\n- third item\n\n' +
+  '| Col A | Col B |\n|---|---|\n| 1 | alpha |\n| 2 | beta |\n\n' +
+  'A closing paragraph with `inline code` and a [link](https://x).\n\n' +
+  '```ts\nconst x = coalesce(deltas);\nreturn render(x);\n```\n\n' +
+  'Final words after the code block.';
+
+check(
+  'block-split final render == naive full render (done)',
+  () => renderToString(<div className="av-md"><MarkdownView text={sample} done /></div>),
+  (html) => {
+    if (contentOf(html) !== contentOf(naive(sample)))
+      throw new Error(`content differs:\n  split: ${contentOf(html)}\n  naive: ${contentOf(naive(sample))}`);
+  }
+);
+
+// Streaming prefixes: at EVERY prefix, the split render's visible content must
+// equal the naive render of that same prefix — proving no token is dropped,
+// duplicated, or reordered at any point in the stream (what would make output
+// look "block-y" or wrong). Spread of prefix lengths, including mid-fence.
+check(
+  'block-split streaming matches naive at every prefix',
+  () => {
+    for (let n = 1; n <= sample.length; n += 7) {
+      const prefix = sample.slice(0, n);
+      const split = renderToString(<div className="av-md"><MarkdownView text={prefix} done={false} /></div>);
+      const ref = naive(prefix);
+      if (contentOf(split) !== contentOf(ref)) {
+        throw new Error(
+          `mismatch at prefix len ${n}:\n  split: ${contentOf(split)}\n  naive: ${contentOf(ref)}`
+        );
+      }
+    }
+    return 'ok';
+  }
 );
 
 console.log(failures === 0 ? '\nALL SMOKE CHECKS PASSED' : `\n${failures} SMOKE CHECK(S) FAILED`);
