@@ -665,6 +665,11 @@
    rounded outer frame; border-collapse would clip the radius, so the cells use
    only inner hairlines and the wrap paints the outer border. */
 .av-md-table-wrap {
+  /* Shrink the framed wrapper to the table's own width so the rounded border
+     HUGS the grid instead of stretching the full lane (which left a big empty
+     framed strip to the right of a narrow table). Still caps at the lane width
+     and scrolls horizontally when the table is genuinely wider. */
+  width: fit-content; max-width: 100%;
   overflow-x: auto; margin: 0.75em 0 1em;
   border: 1px solid var(--av-hairline);
   border-radius: 10px;
