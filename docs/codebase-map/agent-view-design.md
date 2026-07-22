@@ -140,17 +140,25 @@ paints the content with the `orchestra-dark`/`orchestra-light` themes from
 `monaco-theme.ts` (never stock `vs-dark`).
 
 Permission (`PermissionDialog.tsx`): `.av-permission-backdrop` (blurred) >
-`.av-permission-dialog` (glass panel, app `.dialog` language)
-> `.av-permission-header` (`.av-permission-eyebrow` with `.av-permission-icon`
-chip + `.av-permission-queue`) /
+`.av-permission-dialog` (glass panel, app `.dialog` language; `max-height:
+min(80vh,720px)` + flex column so it never overflows the viewport, body scrolls
+as a safety net) > `.av-permission-header` (`.av-permission-eyebrow` with
+`.av-permission-icon` chip + `.av-permission-queue`) /
 `.av-permission-title` (`.av-permission-tool`) / `.av-permission-subtitle` /
 `.av-permission-input` / `.av-permission-actions` / `.av-permission-deny{,-label}`
 / `.av-permission-reason`. **Deny is the safe first action; Allow is never
-auto-focused and Escape denies** (component-enforced).
+auto-focused and Escape denies** (component-enforced). The dialog gets
+`.av-permission-dialog-question` (wider, `max-width:720px`) when it hosts an
+AskUserQuestion.
 
 AskUserQuestion (`AskUserQuestionCard.tsx`): `.av-question{,-title,-block,-header,
 -text,-options,-option,-option-active,-option-label,-option-desc,-option-other,
--other-input,-actions}`.
+-other-input,-actions}` plus paging chrome `.av-question-{steps,step,step-current,
+step-done,progress,actions-spacer}`. **Multiple questions PAGE one at a time**
+(step-dot rail up top, `N of M` + Back/Next in the footer, Submit only on the
+last page once every page is answered); a **single** question renders directly
+with no paging chrome. `.av-question-block` is the scrolling region so the
+step-rail and actions stay pinned.
 
 Buttons: `.av-btn` + `.av-btn-{primary,danger,ghost}` (permission/question actions
 and the interrupt button share this family).

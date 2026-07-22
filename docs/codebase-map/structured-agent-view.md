@@ -154,7 +154,10 @@ to the unchanged PTY path.
   not the plain-text `tool_result`; per-tool SVG icons in `tool-icons.tsx`; **ToolDiff
   still uses Monaco's `DiffEditor`** — the diff surface is deliberately unchanged),
   `ThinkingIndicator` (shimmer label), `PermissionDialog` (picks first *unanswered*
-  pending request, not `pending[0]`), `AskUserQuestionCard`, `AgentControls`,
+  pending request, not `pending[0]`), `AskUserQuestionCard` (**pages
+  multi-question requests one at a time — Back/Next/step-dots — so the dialog
+  never overflows the viewport; single questions render directly**),
+  `AgentControls`,
   `TurnFooter`, plus `monaco-theme.ts` (the `orchestra-dark`/`orchestra-light` themes +
   `useMonacoTheme`, still used by ToolDiff and to pick the light/dark Shiki theme).
 - **`src/renderer/monaco-loader.ts`** — imported first in `main.tsx`; `loader.config({

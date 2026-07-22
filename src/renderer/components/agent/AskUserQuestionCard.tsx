@@ -2,6 +2,12 @@
 // permission path). Renders each question with its options as buttons, supports
 // multiSelect and an "Other" free-text answer, and replies with an allow +
 // updatedInput carrying the selections (see askUserQuestion.ts for the shape).
+//
+// LAYOUT: when the agent asks MORE THAN ONE question, we page through them one
+// at a time (Back / Next, with Submit only on the last page). This keeps the
+// dialog from growing past the viewport when several questions each carry many
+// options — the old design stacked every question vertically and overflowed.
+// A single question renders directly with no paging chrome.
 
 import { useState } from 'react';
 import type { AgentPermissionRequestEvent } from '../../../shared/types';
@@ -12,6 +18,19 @@ import {
 } from './askUserQuestion';
 
 const OTHER = '__other__';
+
+/** True when this question has a valid answer (a selection, and if "Other" is
+ *  chosen, some free text for it). */
+function isAnswered(
+  q: AskQuestion,
+  selections: Record<string, Set<string>>,
+  otherText: Record<string, string>,
+): boolean {
+  const chosen = selections[q.question];
+  if (!chosen || chosen.size === 0) return false;
+  if (chosen.has(OTHER) && !(otherText[q.question] ?? '').trim()) return false;
+  return true;
+}
 
 export function AskUserQuestionCard({
   request,
@@ -34,6 +53,12 @@ export function AskUserQuestionCard({
   const [selections, setSelections] = useState<Record<string, Set<string>>>({});
   // free text per question, used when "Other" is picked.
   const [otherText, setOtherText] = useState<Record<string, string>>({});
+  // Which question page is visible (only meaningful when paged, i.e. 2+ Qs).
+  const [page, setPage] = useState(0);
+
+  const paged = questions.length > 1;
+  const current = questions[page];
+  const onLastPage = page >= questions.length - 1;
 
   const toggle = (q: AskQuestion, label: string) => {
     setSelections((prev) => {
@@ -50,12 +75,9 @@ export function AskUserQuestionCard({
   };
 
   // Every question needs at least one answer (or an "Other" with text).
-  const complete = questions.every((q) => {
-    const chosen = selections[q.question];
-    if (!chosen || chosen.size === 0) return false;
-    if (chosen.has(OTHER) && !(otherText[q.question] ?? '').trim()) return false;
-    return true;
-  });
+  const complete = questions.every((q) => isAnswered(q, selections, otherText));
+  // The current page must be answered before you can advance to the next.
+  const currentAnswered = current ? isAnswered(current, selections, otherText) : false;
 
   const submit = () => {
     const resolved: Record<string, string[]> = {};
@@ -79,10 +101,31 @@ export function AskUserQuestionCard({
     });
   };
 
+  const dismiss = () =>
+    onReply({ behavior: 'deny', message: 'User dismissed the question.' });
+
+  // In paged mode we show only the current question; otherwise all of them
+  // (which is just the single question).
+  const visible = paged ? (current ? [current] : []) : questions;
+
   return (
     <div className="av-question" role="group" aria-label="Question from the agent">
       {request.title && <div className="av-question-title">{request.title}</div>}
-      {questions.map((q) => {
+
+      {paged && (
+        <div className="av-question-steps" aria-hidden="true">
+          {questions.map((q, i) => (
+            <span
+              key={q.question}
+              className={`av-question-step${
+                i === page ? ' av-question-step-current' : ''
+              }${isAnswered(q, selections, otherText) ? ' av-question-step-done' : ''}`}
+            />
+          ))}
+        </div>
+      )}
+
+      {visible.map((q) => {
         const chosen = selections[q.question] ?? new Set<string>();
         return (
           <div className="av-question-block" key={q.question}>
@@ -133,22 +176,45 @@ export function AskUserQuestionCard({
           </div>
         );
       })}
+
       <div className="av-question-actions">
-        <button
-          type="button"
-          className="av-btn av-btn-ghost"
-          onClick={() => onReply({ behavior: 'deny', message: 'User dismissed the question.' })}
-        >
+        {paged && (
+          <span className="av-question-progress" aria-live="polite">
+            {page + 1} of {questions.length}
+          </span>
+        )}
+        <span className="av-question-actions-spacer" />
+        {paged && page > 0 && (
+          <button
+            type="button"
+            className="av-btn av-btn-ghost"
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+          >
+            Back
+          </button>
+        )}
+        <button type="button" className="av-btn av-btn-ghost" onClick={dismiss}>
           Dismiss
         </button>
-        <button
-          type="button"
-          className="av-btn av-btn-primary"
-          disabled={!complete}
-          onClick={submit}
-        >
-          Submit answer
-        </button>
+        {paged && !onLastPage ? (
+          <button
+            type="button"
+            className="av-btn av-btn-primary"
+            disabled={!currentAnswered}
+            onClick={() => setPage((p) => Math.min(questions.length - 1, p + 1))}
+          >
+            Next
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="av-btn av-btn-primary"
+            disabled={!complete}
+            onClick={submit}
+          >
+            Submit answer
+          </button>
+        )}
       </div>
     </div>
   );

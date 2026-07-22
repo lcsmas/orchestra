@@ -676,6 +676,11 @@
 .av-permission-dialog {
   position: static; transform: none; left: auto; bottom: auto;
   width: 100%; max-width: 580px;
+  /* Never taller than the viewport: cap height and let the body scroll as a
+     safety net (paging keeps most dialogs short, but a single question with
+     many long options can still exceed the height). */
+  max-height: min(80vh, 720px);
+  display: flex; flex-direction: column;
   background: linear-gradient(180deg,
     color-mix(in srgb, var(--av-surface-overlay) 94%, white) 0%,
     var(--av-surface-overlay) 100%);
@@ -688,10 +693,13 @@
   padding: 14px 16px;
   animation: av-dialog-in 200ms var(--av-ease-out);
 }
+/* Question dialogs get more horizontal room so option descriptions read on
+   fewer lines and the paged layout feels roomier. */
+.av-permission-dialog.av-permission-dialog-question { max-width: 720px; }
 @keyframes av-dialog-in { from { opacity: 0; transform: translateY(10px) scale(0.985); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .av-permission-backdrop, .av-permission-dialog { animation: none; } }
 
-.av-permission-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.av-permission-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; flex-shrink: 0; }
 .av-permission-eyebrow {
   display: inline-flex; align-items: center; gap: 7px;
   font-family: var(--font-mono); font-size: var(--av-fs-caption); font-weight: 600;
@@ -727,9 +735,19 @@
  * ASK-USER-QUESTION — option cards
  * ==========================================================================*/
 
-.av-question { display: flex; flex-direction: column; gap: 12px; }
+/* The question card fills the dialog's remaining height. Its option list
+   scrolls; the step-dots (top) and actions (bottom) stay pinned. */
+.av-question { display: flex; flex-direction: column; gap: 12px; min-height: 0; flex: 1; overflow: hidden; }
 .av-question-title { font-size: var(--av-fs-h); font-weight: 650; color: var(--av-text); letter-spacing: -0.011em; }
-.av-question-block { display: flex; flex-direction: column; gap: 6px; }
+.av-question-block { display: flex; flex-direction: column; gap: 6px; min-height: 0; flex: 1; overflow-y: auto; padding-right: 2px; }
+.av-question-steps { display: flex; gap: 6px; align-items: center; }
+.av-question-step {
+  height: 4px; flex: 1; border-radius: 999px;
+  background: var(--av-hairline-strong);
+  transition: background 160ms var(--av-ease);
+}
+.av-question-step-done { background: color-mix(in srgb, var(--av-tool-active) 45%, var(--av-hairline-strong)); }
+.av-question-step-current { background: var(--av-tool-active); }
 .av-question-header {
   font-family: var(--font-mono); font-size: var(--av-fs-caption); font-weight: 600;
   letter-spacing: 0.06em; text-transform: uppercase; color: var(--av-tool-active);
@@ -761,7 +779,9 @@
   background: var(--av-surface-sunken); border: 1px solid var(--av-hairline-strong); border-radius: var(--radius-sm, 6px);
 }
 .av-question-other-input:focus-visible { outline: none; border-color: var(--av-focus-border); box-shadow: 0 0 0 3px var(--av-focus-ring); }
-.av-question-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.av-question-actions { display: flex; gap: 8px; align-items: center; }
+.av-question-actions-spacer { flex: 1; }
+.av-question-progress { font-size: var(--av-fs-caption); color: var(--av-text-faint); font-family: var(--font-mono); }
 
 /* ============================================================================
  * BUTTONS — the av-btn family, matched to the app's button language

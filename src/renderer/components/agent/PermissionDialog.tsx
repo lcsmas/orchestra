@@ -78,7 +78,7 @@ export function PermissionDialog({
   return (
     <div className="av-permission-backdrop" role="presentation">
       <div
-        className="av-permission-dialog"
+        className={`av-permission-dialog${isQuestion ? ' av-permission-dialog-question' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="av-permission-title"
