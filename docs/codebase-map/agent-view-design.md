@@ -102,7 +102,8 @@ the field: `.av-composer-attachments` > `.av-composer-attachment` (img +
 Message (`MessageBubble.tsx`): `.av-message` + role `.av-message-{assistant,user,
 system,error}`; role microlabel `.av-message-eyebrow` (**"Error" only** now — the
 user turn carries NO "You" label, told apart from the agent by bubble shape/tint,
-Claude-Code-app style); body `.av-message-text` (prose caps at `--av-measure`);
+Claude-Code-app style); body `.av-message-text` (**no width cap** — agent prose
+fills the full lane width edge-to-edge; `--av-measure` is no longer applied here);
 streaming caret `.av-cursor`. Attached user images render in a
 `.av-message-images` > `.av-message-image` strip. The **turn rail** is a rounded
 role-tinted `::before` spine on `.av-message` (no longer a border). It is now
@@ -113,8 +114,10 @@ self-sized, right-aligned, `--av-user`-tinted bubble (`width: fit-content`,
 `margin-left:auto`, capped `max-width`). A message with no text and no thinking
 renders `null` (no empty stub). The transcript is **full-width**:
 `.av-message-list-inner` has `max-width:none` (no narrow centered column), so tool
-cards/diffs span the lane while prose stays readable via the per-message
-`--av-measure` cap. Markdown
+cards/diffs AND agent prose all span the full lane (the `--av-measure` reading-column
+cap on `.av-message-text` was removed — the user wanted output to use the whole
+viewport width; `--av-measure` now only bounds the user bubble's fit-content max).
+Markdown
 (`markdown.tsx`): `.av-md`, `.av-md-{p,h,ul,ol,quote,hr,code-inline,link,strong,em}`.
 
 Thinking (`ThinkingIndicator.tsx`): `.av-thinking` > `.av-thinking-dots` >

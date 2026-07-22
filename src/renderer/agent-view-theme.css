@@ -303,7 +303,11 @@
   .av-message:is(:has(.av-cursor), :has(.av-thinking))::before { animation: none; box-shadow: 0 0 8px 0 var(--av-glow); }
 }
 
-.av-message-text { white-space: normal; word-break: normal; overflow-wrap: break-word; max-width: var(--av-measure); }
+/* Agent prose fills the full lane width (no reading-measure cap) — the user
+   wants agent output to span the whole viewport, matching the tool cards, rather
+   than wrapping at a narrow readable column. (`--av-measure` is still used by the
+   user bubble's fit-content cap below.) */
+.av-message-text { white-space: normal; word-break: normal; overflow-wrap: break-word; }
 
 /* ============================================================================
  * MARKDOWN prose — reading-tuned type
