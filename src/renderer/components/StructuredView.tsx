@@ -40,6 +40,7 @@ import {
   ToolGroup,
   PermissionDialog,
   AgentControls,
+  RemoteControl,
   TurnFooter,
   BackgroundTasksPanel,
   runningTaskCount,
@@ -528,6 +529,7 @@ function SessionControls({
         wsModel={ws?.model}
         wsPermissionMode={ws?.sdkPermissionMode}
       />
+      <RemoteControl workspaceId={workspaceId} session={session} />
       <TurnFooter session={session} />
     </div>
   );

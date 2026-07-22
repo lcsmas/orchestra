@@ -443,6 +443,7 @@ test('sdkEventToStatusEvent: pure-render events do NOT move status (→ null)', 
     'block-start',
     'block-stop',
     'session/update',
+    'session/remote-control',
     'error',
   ]) {
     assert.equal(sdkEventToStatusEvent(at(type)), null, `${type} must not move status`);
@@ -474,6 +475,44 @@ test('fold: session/init sets running true and model', () => {
   );
   assert.equal(s.running, true);
   assert.equal(s.model, 'claude-opus-4-8');
+});
+
+// ─── fold: Remote Control state ──────────────────────────────────────────────
+
+test('fold: session/remote-control replaces the whole remoteControl state', () => {
+  const base = emptySession('ws1');
+  assert.equal(base.remoteControl, undefined);
+
+  // Enable → active with the shareable URL.
+  const enabled = foldEvent(base, {
+    type: 'session/remote-control',
+    seq: 0,
+    at: 0,
+    state: { active: true, sessionUrl: 'https://claude.ai/code/abc123', pending: false },
+  } as AgentEvent);
+  assert.equal(enabled.remoteControl?.active, true);
+  assert.equal(enabled.remoteControl?.sessionUrl, 'https://claude.ai/code/abc123');
+
+  // Disable → active:false, URL cleared (full-state replace, not a merge).
+  const disabled = foldEvent(enabled, {
+    type: 'session/remote-control',
+    seq: 1,
+    at: 1,
+    state: { active: false, pending: false },
+  } as AgentEvent);
+  assert.equal(disabled.remoteControl?.active, false);
+  assert.equal(disabled.remoteControl?.sessionUrl, undefined);
+});
+
+test('fold: session/remote-control surfaces an enable error without going active', () => {
+  const s = foldEvent(emptySession('ws1'), {
+    type: 'session/remote-control',
+    seq: 0,
+    at: 0,
+    state: { active: false, pending: false, error: 'Remote Control is disabled by your organization.' },
+  } as AgentEvent);
+  assert.equal(s.remoteControl?.active, false);
+  assert.equal(s.remoteControl?.error, 'Remote Control is disabled by your organization.');
 });
 
 // ─── fold: thinking indicator ────────────────────────────────────────────────

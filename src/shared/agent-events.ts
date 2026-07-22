@@ -782,6 +782,11 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         ...(event.permissionMode !== undefined ? { permissionMode: event.permissionMode } : {}),
       };
 
+    case 'session/remote-control':
+      // Full-state replace (the manager always emits the complete state), so a
+      // replay from emptySession reconstructs the current toggle state.
+      return { ...next, remoteControl: event.state };
+
     case 'user-message': {
       const messages = [...next.messages];
       // `running: true` from the moment a prompt is submitted — the turn is in

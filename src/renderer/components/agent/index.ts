@@ -24,6 +24,7 @@ export type { MdBlock } from './markdown-parse';
 // ── A4: interaction ──────────────────────────────────────────────────────────
 export { PermissionDialog } from './PermissionDialog';
 export { AgentControls } from './AgentControls';
+export { RemoteControl } from './RemoteControl';
 export { TurnFooter } from './TurnFooter';
 export {
   BackgroundTasksPanel,

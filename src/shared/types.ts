@@ -742,6 +742,43 @@ export interface AgentSessionUpdateEvent extends AgentEventBase {
   permissionMode?: AgentPermissionMode;
 }
 
+/** The live Remote Control state of a structured session — Orchestra's parity
+ *  with Claude Code's `/remote-control` feature. When ACTIVE, the SDK worker has
+ *  opened a bridge to Anthropic's relay and the session can be driven from
+ *  `claude.ai/code` or the Claude mobile app via `sessionUrl`. Enabling calls the
+ *  SDK's `enableRemoteControl(true)` control request, which returns the
+ *  `session_url`/`connect_url`/`environment_id` mirrored here (verified against
+ *  the CLI 2.1.x worker handler + SDK 0.3.216 `Query.enableRemoteControl`). */
+export interface RemoteControlState {
+  /** True once the bridge is connected (the session is remotely controllable). */
+  active: boolean;
+  /** The shareable link to open on another device (claude.ai/code/<id>) — set
+   *  only while `active`. This is what the CC app surfaces to "Control this
+   *  session from claude.ai/code or the Claude mobile app". */
+  sessionUrl?: string;
+  /** The deep-link/connect URL the SDK returns alongside `session_url`. */
+  connectUrl?: string;
+  /** The bridge environment id, for display/debugging. */
+  environmentId?: string;
+  /** Set when enabling failed (org policy, rollout not enabled, network) so the
+   *  UI can show why instead of silently staying off. Cleared on the next
+   *  successful toggle. */
+  error?: string;
+  /** True while an enable/disable request is in flight, so the toggle can show a
+   *  pending state and disable itself against double-clicks. */
+  pending?: boolean;
+}
+
+/** Emitted by the manager (agent-sdk.ts `sdkSetRemoteControl`) whenever a
+ *  session's Remote Control state changes — on enable (carries the URLs), on
+ *  disable, on failure (carries `error`), and to reflect the in-flight `pending`
+ *  transition. Folded into `AgentSession.remoteControl` so the toggle in the
+ *  structured view reflects the live state and survives a view remount. */
+export interface AgentRemoteControlEvent extends AgentEventBase {
+  type: 'session/remote-control';
+  state: RemoteControlState;
+}
+
 /** An image attached to a user turn (pasted into the composer). Carried to the
  *  SDK as an `image` content block and echoed into the transcript so the sent
  *  image renders in the user's bubble. */
@@ -879,6 +916,7 @@ export type AgentEvent =
   | AgentPermissionRequestEvent
   | AgentUserMessageEvent
   | AgentSessionUpdateEvent
+  | AgentRemoteControlEvent
   | AgentTaskEvent
   | AgentTurnEndEvent
   | AgentErrorEvent;
@@ -971,6 +1009,10 @@ export interface AgentSession {
    *  session has spawned, keyed by `task_id`, in first-seen (insertion) order.
    *  Folded from {@link AgentTaskEvent}. Backs the "Background tasks" panel. */
   tasks: Record<string, BackgroundTask>;
+  /** Live Remote Control state (parity with Claude Code's `/remote-control`).
+   *  Undefined until the first `session/remote-control` event; `active:false`
+   *  once toggled off. Backs the Remote Control toggle in the structured view. */
+  remoteControl?: RemoteControlState;
   /** The highest `seq` folded in, so a caller can detect a gap. */
   lastSeq: number;
 }

@@ -260,6 +260,12 @@ export interface OrchestraAPI {
   agentSdkSetModel: (wsId: string, model: string | undefined) => Promise<void>;
   /** Switch the live SDK session's permission mode. */
   agentSdkSetPermissionMode: (wsId: string, mode: AgentPermissionMode) => Promise<void>;
+  /** Enable/disable Remote Control for the workspace's structured session
+   *  (parity with Claude Code's `/remote-control`). Starts the session lazily if
+   *  needed. State surfaces back on `agent:event` as a `session/remote-control`
+   *  event folded into `AgentSession.remoteControl` (URL to open on another
+   *  device on enable, or an error). */
+  agentSdkSetRemoteControl: (wsId: string, enabled: boolean) => Promise<void>;
   /** History backfill: the workspace's persisted on-disk session transcript
    *  converted to AgentEvents (empty when there is nothing to backfill). The
    *  renderer folds these through the same queue as live events. */

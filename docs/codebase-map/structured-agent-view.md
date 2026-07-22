@@ -33,9 +33,30 @@ renderer store: agentSessions[wsId] = foldEvent(prev, event)   src/renderer/stor
 **Reverse path (user → agent):** `window.orchestra.agentSdk*` invoke handlers call into
 the live `query` object in main — `agentSdkSend(wsId, text, images?)`, `agentSdkInterrupt(wsId)`,
 `agentSdkPermissionReply(wsId, requestId, reply)`, `agentSdkSetModel`,
-`agentSdkSetPermissionMode`. Multi-turn uses the **streaming-input pattern**: one
-long-lived `query()` per session fed by an async-generator prompt (each follow-up turn
-gated on the prior `result`), so the subprocess stays warm and `canUseTool` fires in-loop.
+`agentSdkSetPermissionMode`, `agentSdkSetRemoteControl(wsId, enabled)`. Multi-turn uses the
+**streaming-input pattern**: one long-lived `query()` per session fed by an async-generator
+prompt (each follow-up turn gated on the prior `result`), so the subprocess stays warm and
+`canUseTool` fires in-loop.
+
+**Remote Control (parity with Claude Code's `/remote-control`).** The structured
+view carries a Remote Control toggle in the deck bar
+(`components/agent/RemoteControl.tsx`) that connects the session to Anthropic's
+relay so it can be driven from `claude.ai/code` or the Claude mobile app —
+Orchestra's parity with the CC app's in-session toggle. `sdkSetRemoteControl(wsId,
+enabled)` (agent-sdk.ts) calls the SDK query object's **`enableRemoteControl(enabled,
+name?)`** — an internal control-request method present on the concrete `Query`
+(sdk.mjs) but NOT in the public `Query` d.ts, so it's typed locally
+(`QueryWithRemoteControl`). On enable the worker opens the bridge and returns
+`{ session_url, connect_url, environment_id }` (the `claude.ai/code/<id>` link);
+disable resolves empty. The manager emits a **`session/remote-control`** event
+carrying the full `RemoteControlState` (`{active, sessionUrl?, connectUrl?,
+environmentId?, error?, pending?}`, shared/types.ts), folded into
+`AgentSession.remoteControl` (full-state replace, so a replay reconstructs the
+toggle). Failures (org policy, rollout-not-enabled, network) surface as
+`state.error` rather than silently staying off. The account's
+`remoteControlAtStartup` setting may auto-enable it at session start, so the
+toggle can read active without a user click (verified e2e: full disable→re-enable
+round-trip against the live relay flips `active` and mints a fresh `session_url`).
 
 **Peer/queue delivery to a live session:** the lifecycle dispatchers in
 `workspaces.ts`/`prompt-queue.ts` (peer `dispatchMessageRequest`, the usage-limit

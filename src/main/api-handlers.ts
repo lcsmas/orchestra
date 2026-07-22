@@ -92,6 +92,7 @@ import {
   sdkPermissionReply,
   sdkSetModel,
   sdkSetPermissionMode,
+  sdkSetRemoteControl,
   sdkHistory,
   sdkListSkills,
   sdkStopMany,
@@ -224,6 +225,7 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   agentSdkPermissionReply: 'agent:sdkPermissionReply',
   agentSdkSetModel: 'agent:sdkSetModel',
   agentSdkSetPermissionMode: 'agent:sdkSetPermissionMode',
+  agentSdkSetRemoteControl: 'agent:sdkSetRemoteControl',
   agentSdkHistory: 'agent:sdkHistory',
   agentSdkOpenTaskTranscript: 'agent:sdkOpenTaskTranscript',
   agentSkills: 'agent:skills',
@@ -761,6 +763,10 @@ export const apiHandlers: ApiHandlerTable = {
 
   agentSdkSetPermissionMode: async (wsId, mode) => {
     await sdkSetPermissionMode(wsId, mode);
+  },
+
+  agentSdkSetRemoteControl: async (wsId, enabled) => {
+    await sdkSetRemoteControl(wsId, enabled);
   },
 
   agentSdkHistory: async (wsId) => sdkHistory(wsId),

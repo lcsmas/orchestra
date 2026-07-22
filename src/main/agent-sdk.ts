@@ -44,6 +44,7 @@ import type {
   AgentPermissionMode,
   AgentPermissionReply,
   AgentSkillInfo,
+  RemoteControlState,
   Workspace,
 } from '../shared/types';
 
@@ -149,6 +150,10 @@ interface Session {
    *  what env THIS subprocess was given. `= !remote && isPtyRunning(ws.id)` at
    *  spawn, i.e. local-and-spool-withheld (see buildSdkEnv, which returns it). */
   driveStatus: boolean;
+  /** Last Remote Control state emitted for this session, so a fresh `ensureSession`
+   *  (e.g. after the view re-mounts and re-sends) can re-broadcast it and the
+   *  toggle survives. Undefined until the user first enables it. */
+  remoteControl?: RemoteControlState;
 }
 
 const sessions = new Map<string, Session>();
@@ -953,6 +958,93 @@ export async function sdkSetPermissionMode(
     await session.q.setPermissionMode(mode as never);
   } catch (err) {
     log.warn(`agent-sdk: setPermissionMode failed for ${wsId}`, err);
+  }
+}
+
+/** The shape of the SDK worker's `remote_control` control-request response. The
+ *  `Query.enableRemoteControl(enabled, name?)` method exists on the concrete
+ *  query object (sdk.mjs) but is not in the public `Query` d.ts, so we type it
+ *  locally. On enable the worker returns `{ session_url, connect_url,
+ *  environment_id }` (the claude.ai/code link to drive the session from another
+ *  device); disable resolves with no payload. */
+interface RemoteControlResponse {
+  session_url?: string;
+  connect_url?: string;
+  environment_id?: string;
+}
+type QueryWithRemoteControl = Query & {
+  enableRemoteControl?: (enabled: boolean, name?: string) => Promise<RemoteControlResponse | void>;
+};
+
+/** Emit (and remember on the session) a Remote Control state change, folded into
+ *  `AgentSession.remoteControl`. */
+function emitRemoteControl(session: Session, state: RemoteControlState): void {
+  session.remoteControl = state;
+  emit(session.wsId, stamp(session.ctx, { type: 'session/remote-control', state }));
+}
+
+/** Enable or disable Remote Control for a workspace's structured session —
+ *  Orchestra's parity with Claude Code's `/remote-control`. Starts the session
+ *  lazily (enabling before the first turn is valid, matching CC's
+ *  `remoteControlAtStartup`). On enable, calls the SDK's `enableRemoteControl(true)`
+ *  control request; the worker opens a bridge to Anthropic's relay and returns
+ *  the `session_url` (claude.ai/code/<id>) the user opens on another device / the
+ *  Claude mobile app. Failures (org policy, rollout-not-enabled, network) surface
+ *  as `state.error` instead of silently staying off. */
+export async function sdkSetRemoteControl(wsId: string, enabled: boolean): Promise<void> {
+  let session: Session;
+  try {
+    session = await ensureSession(wsId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn(`agent-sdk: could not start session for remote control ${wsId}: ${message}`);
+    emit(wsId, {
+      type: 'error',
+      seq: 0,
+      at: Date.now(),
+      message: `Couldn't start the agent: ${message}`,
+      apiErrorStatus: null,
+      willRetry: false,
+    });
+    throw err;
+  }
+  const q = session.q as QueryWithRemoteControl;
+  if (typeof q.enableRemoteControl !== 'function') {
+    emitRemoteControl(session, {
+      active: false,
+      error: 'Remote Control is not available in this Claude Code version.',
+    });
+    return;
+  }
+  // Optimistic pending state so the toggle disables itself against double-clicks.
+  emitRemoteControl(session, {
+    ...(session.remoteControl ?? { active: false }),
+    pending: true,
+    error: undefined,
+  });
+  try {
+    const res = (await q.enableRemoteControl(enabled)) || {};
+    if (enabled) {
+      emitRemoteControl(session, {
+        active: true,
+        sessionUrl: res.session_url,
+        connectUrl: res.connect_url,
+        environmentId: res.environment_id,
+        pending: false,
+      });
+    } else {
+      emitRemoteControl(session, { active: false, pending: false });
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn(`agent-sdk: enableRemoteControl(${enabled}) failed for ${wsId}`, err);
+    // On a failed ENABLE the bridge did not come up → stay inactive with the
+    // reason. A failed DISABLE leaves the prior state but surfaces the error.
+    emitRemoteControl(session, {
+      ...(enabled ? { active: false } : (session.remoteControl ?? { active: false })),
+      pending: false,
+      error: message || 'Remote Control request failed.',
+    });
   }
 }
 

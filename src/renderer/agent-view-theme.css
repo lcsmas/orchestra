@@ -964,6 +964,71 @@
 /* The switcher menus dock to the far right of the deck bar. */
 .av-controls-menus { order: 3; display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
 
+/* ── Remote Control — parity with Claude Code's /remote-control ─────────────
+   A ghost trigger in the deck bar (order 2, right after interrupt). Off: quiet.
+   On: green "connected" accent + a live dot; clicking opens a small popover with
+   the claude.ai/code link (copy / open) and a Disconnect. */
+.av-rc { order: 2; position: relative; display: inline-flex; align-items: center; gap: 6px; }
+.av-rc-trigger { gap: 7px; }
+.av-rc-label { font-size: var(--av-fs-small); }
+.av-rc-dot {
+  width: 7px; height: 7px; border-radius: 999px;
+  background: var(--av-text-dim); opacity: 0.5; flex: none;
+  transition: background 160ms var(--av-ease), opacity 160ms var(--av-ease);
+}
+.av-rc-dot-on {
+  background: var(--av-user); opacity: 1;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--av-user) 22%, transparent);
+  animation: av-pulse 2s var(--av-ease) infinite;
+}
+@media (prefers-reduced-motion: reduce) { .av-rc-dot-on { animation: none; } }
+.av-rc-trigger.av-rc-active {
+  color: var(--av-user);
+  background: color-mix(in srgb, var(--av-user) 12%, transparent);
+}
+.av-rc-trigger.av-rc-active:hover {
+  background: color-mix(in srgb, var(--av-user) 18%, transparent);
+  color: var(--av-user);
+}
+.av-rc-error {
+  font-size: var(--av-fs-tiny, 11px); color: var(--av-error);
+  max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Popover shown while active — the app's branch-popover language on --av-* tokens. */
+.av-rc-panel {
+  position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 40;
+  width: max(280px, 100%); max-width: 380px;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px; border-radius: var(--radius, 8px);
+  border: 1px solid var(--av-hairline-strong);
+  background: var(--av-surface-overlay, var(--av-surface-raised));
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+  color: var(--av-text);
+}
+.av-rc-panel-head { display: inline-flex; align-items: center; gap: 8px; }
+.av-rc-panel-title { font-size: var(--av-fs-small); font-weight: 600; color: var(--av-text); }
+.av-rc-panel-desc { margin: 0; font-size: var(--av-fs-small); color: var(--av-text-dim); line-height: 1.4; }
+.av-rc-muted { opacity: 0.8; }
+.av-rc-url-row { display: flex; align-items: center; gap: 6px; }
+.av-rc-url {
+  flex: 1 1 auto; min-width: 0;
+  font-family: var(--av-mono, ui-monospace, monospace); font-size: var(--av-fs-small);
+  color: var(--av-text); background: var(--av-code-bg, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--av-code-border); border-radius: var(--radius-sm, 6px);
+  padding: 5px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.av-rc-iconbtn {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0;
+  border: 1px solid var(--av-hairline-strong); border-radius: var(--radius-sm, 6px);
+  background: var(--av-surface-raised); color: var(--av-text-dim); cursor: pointer;
+  transition: background 140ms var(--av-ease), color 140ms var(--av-ease), border-color 140ms var(--av-ease);
+}
+.av-rc-iconbtn:hover { background: var(--av-surface-overlay); color: var(--av-text); border-color: var(--av-hairline-strong); }
+.av-rc-copied { font-size: var(--av-fs-tiny, 11px); color: var(--av-user); }
+.av-rc-disconnect { align-self: flex-start; margin-top: 2px; padding: 4px 10px; }
+
 /* ── AvMenu — the view's dropdown primitive ─────────────────────────────────
    Borderless ghost trigger; portalled glass panel (the app's branch-popover
    language on --av-* tokens) with tinted icons, descriptions and a check. */
