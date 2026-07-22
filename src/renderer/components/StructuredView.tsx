@@ -164,6 +164,13 @@ function MessageList({
   canResume?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  // The sized inner wrapper. A ResizeObserver on it drives follow-mode scrolling
+  // directly off REAL content-height changes (streaming typewriter growth, async
+  // row re-measures) instead of routing through the coalesced `measureTick` RAF —
+  // that indirection lagged the follow scroll ≥1 frame behind the content and
+  // dropped intermediate growths, so the viewport fell progressively further
+  // behind fast streaming output. See `pinToBottom` / the observer below.
+  const innerRef = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState({ scrollTop: 0, height: 0 });
   // Measured row heights, keyed by message id — falls back to the estimate for
   // rows not yet measured. A ref (not state) so measuring doesn't re-render;
@@ -173,6 +180,16 @@ function MessageList({
   // Stick to bottom while the user hasn't scrolled up — streaming output should
   // keep the latest message in view, like a terminal.
   const stickBottom = useRef(true);
+  // Last scrollTop we observed, to tell a USER scroll-up apart from a programmatic
+  // pin or a content-growth reflow. Key insight: a user scrolling up is the ONLY
+  // thing that DECREASES scrollTop. `pinToBottom` only ever increases it (toward
+  // the bottom), and a row growing taller during streaming pushes the bottom
+  // further down without moving scrollTop up. So follow-mode releases iff
+  // scrollTop dropped meaningfully below the previous value — a comparison immune
+  // to the pin-vs-growth race that a naive `atBottom` threshold got wrong (it read
+  // the few px a row grew between the pin's write and the event as "user scrolled
+  // up" and disengaged follow mid-stream — the gradual-streaming e2e divergence).
+  const lastScrollTop = useRef(0);
   // Initial-open pin: force the view to the LAST message when content first
   // appears, and keep forcing it while row heights are still settling (they
   // refine asynchronously over several RAF-batched measure passes, growing
@@ -184,18 +201,60 @@ function MessageList({
 
   const messages = session?.messages ?? [];
 
+  // Scroll the viewport to the bottom IMMEDIATELY (no smooth easing). Follow-mode
+  // must snap to the true bottom every time content grows: CSS `scroll-behavior:
+  // smooth` animates a programmatic `scrollTop = scrollHeight` over ~hundreds of
+  // ms, and because streaming grows the content every frame the animation forever
+  // chases a moving target and never lands — the accumulating lag the user saw.
+  // `scrollTo({ behavior: 'instant' })` forces a jump regardless of the CSS
+  // `scroll-behavior: smooth` (a bare `scrollTop =` assignment, and `behavior:
+  // 'auto'`, both DEFER to the stylesheet's smooth value — only 'instant' overrides).
+  const pinToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'instant' as ScrollBehavior });
+    // Remember where we left it so the next onScroll can tell "content grew / we
+    // pinned" (scrollTop unchanged or up) from "user dragged up" (scrollTop down).
+    lastScrollTop.current = el.scrollTop;
+  }, []);
+
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    // While the initial pin is active, a scroll event is the programmatic
-    // scroll-to-bottom (or the user hasn't intervened yet) — don't let it flip
-    // stickBottom off before the layout settles. A real user wheel/drag also
-    // releases the pin so they can scroll up.
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-    if (!atBottom) initialPin.current = false;
-    stickBottom.current = atBottom;
-    setViewport({ scrollTop: el.scrollTop, height: el.clientHeight });
+    const prev = lastScrollTop.current;
+    const cur = el.scrollTop;
+    lastScrollTop.current = cur;
+    // A meaningful DECREASE in scrollTop is the unmistakable signature of a user
+    // scroll-up — neither a pin nor content growth ever moves it up. Release
+    // follow so the user can read earlier output without being yanked back.
+    if (cur < prev - 2) {
+      stickBottom.current = false;
+      initialPin.current = false;
+    } else if (el.scrollHeight - cur - el.clientHeight < 24) {
+      // At (or scrolled back to) the bottom — re-engage follow.
+      stickBottom.current = true;
+    }
+    setViewport({ scrollTop: cur, height: el.clientHeight });
   }, []);
+
+  // Follow-mode: whenever the REAL rendered content resizes (typewriter reveal,
+  // async row re-measure, a new row mounting), snap to the bottom synchronously if
+  // the user is stuck to the bottom (or the initial pin is still active). Observing
+  // the sized inner wrapper reacts to the actual DOM height — this is the direct,
+  // per-resize path that replaces the laggy `measureTick`-gated scroll for the
+  // steady-streaming case. It runs in the ResizeObserver callback (a frame after
+  // layout), so `scrollHeight` already reflects the new content.
+  useLayoutEffect(() => {
+    const inner = innerRef.current;
+    if (!inner) return;
+    const ro = new ResizeObserver(() => {
+      if (stickBottom.current || initialPin.current) pinToBottom();
+    });
+    ro.observe(inner);
+    return () => ro.disconnect();
+    // Re-attach when the inner element is (re)created — it only exists once there
+    // are messages (the empty state renders a different subtree).
+  }, [pinToBottom, messages.length > 0]);
 
   // Track viewport height (resize) so the window recomputes on layout changes.
   useLayoutEffect(() => {
@@ -220,7 +279,7 @@ function MessageList({
     const el = scrollRef.current;
     if (!el) return;
     if (initialPin.current) {
-      el.scrollTop = el.scrollHeight;
+      pinToBottom();
       // Release the pin once the layout has settled: we're at the bottom and the
       // total height didn't change since the previous measure pass.
       const settled =
@@ -230,8 +289,8 @@ function MessageList({
       if (settled && messages.length > 0) initialPin.current = false;
       return;
     }
-    if (stickBottom.current) el.scrollTop = el.scrollHeight;
-  }, [messages.length, measureTick]);
+    if (stickBottom.current) pinToBottom();
+  }, [messages.length, measureTick, pinToBottom]);
 
   // Fold the flat message list into RENDER ITEMS: a run of consecutive `tool`
   // messages collapses into ONE `tool-group` item (rendered by ToolGroup, which
@@ -300,7 +359,14 @@ function MessageList({
         </div>
       ) : (
         <div className="av-message-list-inner" style={{ height: totalHeight, position: 'relative' }}>
-          <div style={{ transform: `translateY(${padTop}px)` }}>
+          {/* Observe THIS wrapper (the actually-mounted rows) for follow-mode
+              resize, not the sized parent: its height reflects real streaming
+              growth the instant the typewriter reveals more text, whereas the
+              parent's explicit `totalHeight` only refreshes after the coalesced
+              `measureTick` recompute. The overflowing content still extends the
+              scroll container's `scrollHeight`, so pinToBottom reaches the true
+              bottom immediately. */}
+          <div ref={innerRef} style={{ transform: `translateY(${padTop}px)` }}>
             {visible.map((it, i) => (
               <MeasuredRow
                 key={it.id}

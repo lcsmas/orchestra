@@ -156,7 +156,24 @@ to the unchanged PTY path.
   through `ItemSlot` → `ToolGroup` (tool runs) or `AgentMessage`
   (`MessageBubble`, else a lone `ToolCard`). The list **opens scrolled to the last
   message** (an `initialPin` ref force-scrolls to bottom across the async
-  height-settle passes). The **composer** auto-grows and accepts **pasted images**
+  height-settle passes). **Follow-mode (stick-to-bottom during streaming)** is
+  driven by a **`ResizeObserver` on the sized inner wrapper** that calls
+  `pinToBottom` the instant the rendered content grows (typewriter reveal, async
+  row re-measure, new row) — NOT the coalesced `measureTick` RAF, which lagged the
+  follow scroll ≥1 frame behind and let the viewport fall progressively behind fast
+  output (the "accumulating scroll lag" bug). `pinToBottom` uses
+  `scrollTo({behavior:'instant'})` to override the stylesheet's
+  `scroll-behavior: smooth` — a bare `scrollTop=` (or `behavior:'auto'`) would
+  animate the jump and, because content grows every frame, forever chase a moving
+  target. Follow-mode releases **only on a genuine user scroll-UP**, detected by
+  `scrollTop` DECREASING vs the previous value (`lastScrollTop`) — a pin or a
+  content-growth reflow never moves scrollTop up, so this is immune to the
+  pin-vs-growth race a naive `atBottom` threshold got wrong (it read the few px a
+  row grew between the pin and its `scroll` event as "user scrolled up" and
+  disengaged follow mid-stream). Verified e2e (CDP under headless sway) against a
+  positive control: baseline streamMaxGap ~6666px vs fixed 0px, with user
+  scroll-up still releasing (a real wheel event leaves the viewport where the user
+  put it while more text streams in). The **composer** auto-grows and accepts **pasted images**
   (`onPaste` → base64 via FileReader → thumbnail strip → sent on submit as
   `AgentImage[]`). Slots: `PermissionDialog`, `AgentControls`, `TurnFooter`,
   **`BackgroundTasksPanel`**. A floating top-right **toggle** (`av-bgtask-toggle`,
