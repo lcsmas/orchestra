@@ -21,7 +21,7 @@ import {
   fileBase,
   type ToolLike,
 } from './tool-util.ts';
-import { MODEL_CHOICES, describeLiveModel } from './model-util.ts';
+import { MODEL_CHOICES, describeLiveModel, effectiveModel } from './model-util.ts';
 
 /** Terse ToolLike builder for the run-summary tests. */
 function tl(name: string, input: Record<string, unknown> = {}): ToolLike {
@@ -205,4 +205,30 @@ test('describeLiveModel resolves Claude Code short aliases', () => {
   assert.equal(describeLiveModel('fable').label, 'Fable 5');
   // Case-insensitive on the alias.
   assert.equal(describeLiveModel('OPUS').label, 'Opus 4.8');
+});
+
+test('effectiveModel: a backfilled (un-inited) session must not mask the ws choice', () => {
+  // The 0.5.153 bug: reopened workspace folds history with NO session/init, so
+  // the session exists with sessionId '' and model '' — and a freshly-picked
+  // ws.model looked like a no-op because '' ??-masked it.
+  const backfilled = { sessionId: '', model: '' };
+  assert.equal(effectiveModel(backfilled, 'claude-fable-5', 'opus[1m]'), 'claude-fable-5');
+  // No ws choice either → account default.
+  assert.equal(effectiveModel(backfilled, undefined, 'opus[1m]'), 'opus[1m]');
+});
+
+test('effectiveModel: an inited session is the live truth', () => {
+  const inited = { sessionId: 'sess-1', model: 'claude-opus-4-8[1m]' };
+  // Live model wins over both ws choice and default.
+  assert.equal(effectiveModel(inited, 'claude-fable-5', 'opus[1m]'), 'claude-opus-4-8[1m]');
+  // Inited but model cleared ('' = session default) → fall to ws, then default.
+  const cleared = { sessionId: 'sess-1', model: '' };
+  assert.equal(effectiveModel(cleared, 'claude-fable-5', 'opus[1m]'), 'claude-fable-5');
+  assert.equal(effectiveModel(cleared, undefined, 'opus[1m]'), 'opus[1m]');
+});
+
+test('effectiveModel: no session at all → ws choice, then default, then empty', () => {
+  assert.equal(effectiveModel(undefined, 'claude-sonnet-5', 'opus[1m]'), 'claude-sonnet-5');
+  assert.equal(effectiveModel(undefined, undefined, 'opus[1m]'), 'opus[1m]');
+  assert.equal(effectiveModel(undefined, undefined, ''), '');
 });

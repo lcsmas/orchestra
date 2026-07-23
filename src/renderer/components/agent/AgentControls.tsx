@@ -12,7 +12,7 @@
 import React from 'react';
 import type { AgentPermissionMode, AgentSession } from '../../../shared/types';
 import { AvMenu, type AvMenuItem } from './AvMenu';
-import { MODEL_CHOICES, describeLiveModel } from './model-util';
+import { MODEL_CHOICES, describeLiveModel, effectiveModel } from './model-util';
 
 function icon(paths: React.ReactNode, viewBox = '0 0 16 16') {
   return (
@@ -143,11 +143,17 @@ export function AgentControls({
   wsPermissionMode?: AgentPermissionMode;
 }) {
   const running = session?.running ?? false;
-  // Prefer the live session's value when present (it's what's actually active),
-  // else the persisted workspace choice. This makes the dropdowns reflect a
-  // selection made before the first message is sent.
-  const mode = session?.permissionMode ?? wsPermissionMode ?? 'bypassPermissions';
-  const explicitModel = session?.model ?? wsModel ?? '';
+  // Trust the folded session's model/mode only once it has actually INITED
+  // (`session/init` is the only setter of sessionId). A history-backfilled
+  // session (reopened workspace, no live subprocess) folds from emptySession —
+  // model '' / permissionMode bypass — and those PLACEHOLDER values must not
+  // mask the persisted ws choice: `session?.model ?? wsModel` never falls
+  // through '', so picking a model on a reopened workspace looked like a no-op
+  // (persisted fine, display never moved).
+  const inited = Boolean(session?.sessionId);
+  const mode =
+    (inited ? session?.permissionMode : undefined) ?? wsPermissionMode ?? 'bypassPermissions';
+  const explicitModel = effectiveModel(session, wsModel, '');
 
   // When nothing is explicitly chosen, show the account's DEFAULT model (read
   // from Claude Code's settings.json) instead of an opaque placeholder, so the

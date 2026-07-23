@@ -32,6 +32,26 @@ const MODEL_ALIASES: Record<string, string> = {
   fable: 'claude-fable-5',
 };
 
+/** The model the switcher should display, given the three candidate sources.
+ *
+ *  Precedence: live session (only once it has actually INITED) → persisted
+ *  workspace choice → account default. The `inited` gate is the load-bearing
+ *  part: a history-backfilled session (reopened workspace, no live subprocess)
+ *  folds from `emptySession` with `model: ''` and NO `session/init` ever fires,
+ *  and `session?.model ?? wsModel` does not fall through an empty string — so
+ *  the placeholder masked a freshly-picked `ws.model` and selecting a model on
+ *  a reopened workspace appeared to do nothing (the 0.5.153 bug). Only a live
+ *  `session/init` sets `session.sessionId`, so that is the discriminator for
+ *  "this session actually knows its model". */
+export function effectiveModel(
+  session: { sessionId: string; model: string } | undefined,
+  wsModel: string | undefined,
+  accountDefault: string,
+): string {
+  const live = session?.sessionId ? session.model : '';
+  return live || wsModel || accountDefault || '';
+}
+
 /** Turn a raw model id/alias the switcher has no card for into a friendly label +
  *  description. Covers the common case where the account's default model is a
  *  context-suffixed alias or full id (e.g. `opus[1m]` or `claude-opus-4-8[1m]`):
