@@ -497,6 +497,32 @@ export function shouldAutoApprovePermission(
   return permissionMode === 'bypassPermissions' && toolName !== ASK_USER_QUESTION;
 }
 
+/** Whether a session-start error means the persisted `resume` session id is
+ *  itself bad/unusable — as opposed to a TRANSIENT failure (network loss, API
+ *  500, spawn hiccup, interrupt/abort) that leaves the on-disk transcript intact.
+ *
+ *  WHY this matters: on a failed resume, `sdkSend` used to clear
+ *  `ws.sdkSessionId` for ANY error except "directory not found", so the next
+ *  send would start a BLANK session. That over-broad rule discards a perfectly
+ *  good session id whenever the resume attempt fails for a reason unrelated to
+ *  the id — e.g. the exact internet-loss case (reboot / dropped connection):
+ *  a transient error would silently throw away the conversation resume even
+ *  though the transcript on disk was fine. We now clear ONLY when the error
+ *  POSITIVELY indicates the resume target is bad, and preserve the id otherwise
+ *  so a later send resumes the same conversation.
+ *
+ *  The signals come from the Claude Code CLI/SDK's own error text (verified
+ *  against the shipped `sdk.mjs`): `Session <id> not found` (no transcript for
+ *  that id) and `Invalid sessionId: <id>` (malformed id). Pure so it is
+ *  unit-testable without Electron. */
+export function isBadResumeError(message: string): boolean {
+  return (
+    /session\s+\S+\s+not\s+found/i.test(message) ||
+    /invalid\s+session\s*id/i.test(message) ||
+    /no\s+conversation\s+found/i.test(message)
+  );
+}
+
 /** The spool-event names the activity status machine (`applyAgentEvent`,
  *  src/main/activity.ts) consumes — the same lexicon the terminal path's shell
  *  hooks append to the durable events spool. */

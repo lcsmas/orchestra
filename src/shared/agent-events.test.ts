@@ -10,6 +10,7 @@ import {
   makeLocalCommand,
   clearPendingPermission,
   shouldAutoApprovePermission,
+  isBadResumeError,
   sdkEventToStatusEvent,
   ASK_USER_QUESTION,
   type NormalizeContext,
@@ -405,6 +406,36 @@ test('shouldAutoApprovePermission: non-bypass modes never auto-approve', () => {
     assert.equal(shouldAutoApprovePermission(mode, 'Bash'), false);
     assert.equal(shouldAutoApprovePermission(mode, ASK_USER_QUESTION), false);
   }
+});
+
+// ─── isBadResumeError (preserve session id across transient resume failures) ─
+//
+// Regression guard: on a failed resume, `sdkSend` must clear `ws.sdkSessionId`
+// ONLY when the id itself is bad (transcript gone / malformed), NOT on a
+// transient failure (network loss on reboot/internet drop, 500, abort). Clearing
+// on a transient error silently discards the conversation resume this feature
+// exists to survive. Signals are the CLI/SDK's own error text (verified in sdk.mjs).
+
+test('isBadResumeError: true for a genuinely bad/missing resume id', () => {
+  assert.equal(isBadResumeError('Session abc-123 not found'), true);
+  assert.equal(isBadResumeError('Invalid sessionId: abc-123'), true);
+  assert.equal(isBadResumeError('No conversation found with session ID abc-123'), true);
+  // case-insensitive
+  assert.equal(isBadResumeError('SESSION abc NOT FOUND'), true);
+});
+
+test('isBadResumeError: false for transient failures (id must be preserved)', () => {
+  // The internet-loss cases this fix protects — the transcript on disk is fine.
+  assert.equal(isBadResumeError('fetch failed'), false);
+  assert.equal(isBadResumeError('ECONNRESET'), false);
+  assert.equal(isBadResumeError('getaddrinfo ENOTFOUND api.anthropic.com'), false);
+  assert.equal(isBadResumeError('network error'), false);
+  assert.equal(isBadResumeError('socket hang up'), false);
+  assert.equal(isBadResumeError('Internal server error (500)'), false);
+  assert.equal(isBadResumeError('overloaded_error'), false);
+  assert.equal(isBadResumeError('The operation was aborted'), false);
+  assert.equal(isBadResumeError('Claude Code process exited with code 1'), false);
+  assert.equal(isBadResumeError(''), false);
 });
 
 // ─── sdkEventToStatusEvent (SDK-view "idle while working" regression guard) ──

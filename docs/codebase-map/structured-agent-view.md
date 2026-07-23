@@ -327,6 +327,21 @@ to the unchanged PTY path.
   `.claude/skills/*` + the account config dir's `skills/*` (project shadows user) for
   `AgentSkillInfo` (shared/types.ts); the Composer shows a popover when the input is a
   pure `/prefix` (Tab/Enter complete, arrows navigate, Esc dismisses).
+- **Resume durability across reboot / internet loss.** A structured session is
+  NOT a live process that survives a restart — it's a *resume by id*. The SDK
+  session id is captured from the stream (`consume()`) and persisted to the
+  on-disk store as `ws.sdkSessionId` (types.ts); the next `sdkSend` passes
+  `resume: ws.sdkSessionId` (ensureSession) with `cwd: ws.worktreePath`, so the
+  same conversation continues on the same worktree. Resume is **lazy** (fires on
+  the next send, not at app launch) and a turn interrupted by the cut is lost.
+  On a *failed* resume, `sdkSend` clears `ws.sdkSessionId` (→ next send starts
+  blank) **only when `isBadResumeError(message)` (agent-events.ts) matches** —
+  i.e. the id is genuinely bad (`Session <id> not found` / `Invalid sessionId` /
+  `No conversation found`, verified against `sdk.mjs`). A TRANSIENT failure
+  (network loss on reboot/internet drop, 500, abort) PRESERVES the id so a later
+  send resumes the same conversation. The prior rule cleared on any error but
+  "directory not found", which silently discarded a good session id on exactly
+  the internet-loss case (guarded by `agent-events.test.ts`).
 - **Permission-mode default is `bypassPermissions`** (ensureSession + emptySession +
   AgentControls fallbacks) — parity with the terminal path's autonomous agents;
   a persisted `ws.sdkPermissionMode` still wins. **Exception: `AskUserQuestion`

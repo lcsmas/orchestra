@@ -36,6 +36,7 @@ import {
   makeUserMessage,
   makeLocalCommand,
   shouldAutoApprovePermission,
+  isBadResumeError,
   sdkEventToStatusEvent,
   stamp,
   type NormalizeContext,
@@ -844,12 +845,17 @@ export async function sdkSend(
       apiErrorStatus: null,
       willRetry: false,
     });
-    // If we were trying to RESUME, a stale/incompatible resume id can wedge every
-    // future send — clear it so the next attempt starts a fresh session instead of
-    // repeating the same failure. Only when a resume was in play (a
-    // missing-worktree failure isn't the resume id's fault; leave it).
+    // If we were trying to RESUME, a genuinely BAD resume id (its transcript is
+    // gone or the id is malformed) can wedge every future send — clear it so the
+    // next attempt starts a fresh session instead of repeating the same failure.
+    // But clear ONLY on that positive signal: a TRANSIENT failure (network loss
+    // on reboot/internet drop, API 500, spawn hiccup, interrupt/abort) leaves the
+    // on-disk transcript intact, so preserving the id lets a later send resume the
+    // SAME conversation. The old rule cleared on any error but "directory not
+    // found", which silently discarded a good session id on exactly the
+    // internet-loss case this resume exists to survive (isBadResumeError guards it).
     const wsNow = store.getWorkspace(wsId);
-    if (wsNow?.sdkSessionId && !/directory not found/i.test(message)) {
+    if (wsNow?.sdkSessionId && isBadResumeError(message)) {
       await persistWorkspacePatch(wsId, { sdkSessionId: undefined }).catch(() => {});
     }
     throw err;
