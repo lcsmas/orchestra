@@ -117,6 +117,7 @@ export function App() {
   const prs = useStore((s) => s.prs);
   const refreshAllPRs = useStore((s) => s.refreshAllPRs);
   const refreshAllLinear = useStore((s) => s.refreshAllLinear);
+  const refreshTickets = useStore((s) => s.refreshTickets);
   const findRepo = (path: string): RepoEntry | undefined => repos.find((r) => r.path === path);
   // Whether the active workspace's `run` script PTY is live. Drives the
   // toolbar Play/Stop button so the app can be launched without opening the
@@ -303,6 +304,16 @@ export function App() {
     if (!loaded) return;
     return startVisiblePoll(refreshAllLinear, 60000);
   }, [loaded, wsSetRev, refreshAllLinear]);
+
+  // Pinned tickets change slowly (a human moves a Linear issue), so poll well
+  // below the badge cadence. Visibility-gated like every other poll. This does
+  // NOT reuse the badge path: that caches by key for the whole session, which
+  // would freeze a ticket's mutable workflow state — the very thing the row
+  // exists to show.
+  useEffect(() => {
+    if (!loaded) return;
+    return startVisiblePoll(refreshTickets, 120000);
+  }, [loaded, refreshTickets]);
 
   useEffect(() => {
     return window.orchestra.onAgentFinished((finishedId, focused) => {

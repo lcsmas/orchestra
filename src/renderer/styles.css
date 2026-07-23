@@ -1521,6 +1521,111 @@ input:focus, textarea:focus, select:focus {
   border-color: rgba(232, 185, 106, 0.65);
 }
 /* Linear issue link — Linear's indigo brand color. */
+/* ---------------------------------------------------------------------------
+   Pinned Linear tickets — the sidebar's Tickets section.
+
+   A ticket row is NOT a workspace row: it has no agent, no status, and nothing
+   to select. The geometry deliberately matches .ws-item (same padding, same
+   8px leading glyph, same gap) so the section reads as part of the same list,
+   while the GLYPH SHAPE differs — a hollow diamond, never the round .ws-dot —
+   so a ticket can never be misread as an agent that is running or waiting.
+   --------------------------------------------------------------------------- */
+.ticket-item {
+  padding: 4px 14px;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.ticket-item:hover { background: var(--bg-3); }
+.ticket-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  margin-top: 4px;
+  transform: rotate(45deg);
+  border-radius: 1.5px;
+  border: 1.5px solid var(--text-dim);
+  background: transparent;
+}
+/* Tinted by Linear's own coarse state TYPE (backlog/unstarted/started/…), never
+   by state.name — that is workspace-configurable free text ("In Progress",
+   "Doing", "En cours") and cannot be matched on. */
+.ticket-dot.started { border-color: var(--yellow); background: rgba(255, 200, 87, 0.25); }
+.ticket-dot.unstarted { border-color: var(--text-dim); }
+.ticket-dot.backlog { border-color: #4a5262; }
+.ticket-dot.triage { border-color: var(--accent); }
+.ticket-dot.completed { border-color: var(--green); background: rgba(91, 214, 139, 0.25); }
+.ticket-dot.canceled { border-color: #4a5262; opacity: 0.6; }
+
+.ticket-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ticket-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ticket-id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: #8b91f0;
+  flex-shrink: 0;
+}
+.ticket-title {
+  font-size: 12px;
+  color: var(--text);
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.state-chip {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  height: 15px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  color: var(--text-dim);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+}
+.state-chip.started { color: var(--yellow); background: rgba(255, 200, 87, 0.1); border-color: rgba(255, 200, 87, 0.35); }
+.state-chip.completed { color: var(--green); background: rgba(91, 214, 139, 0.1); border-color: rgba(91, 214, 139, 0.35); }
+.state-chip.triage { color: var(--accent); background: rgba(110, 168, 255, 0.1); border-color: rgba(110, 168, 255, 0.35); }
+
+/* Row actions. Hidden until hover/focus so the queue stays quiet at rest, but
+   always reachable by keyboard (:focus-visible) rather than hover-only. */
+.ticket-btn {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-3);
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms var(--ease), color 120ms var(--ease),
+    border-color 120ms var(--ease);
+}
+.ticket-item:hover .ticket-btn,
+.ticket-btn:focus-visible { opacity: 1; }
+.ticket-btn:hover { color: var(--accent); border-color: rgba(110, 168, 255, 0.5); }
+.ticket-btn.remove:hover { color: var(--red); border-color: rgba(255, 107, 107, 0.5); }
+/* A disabled spawn button must still be legible about WHY (its title says so),
+   so it stays visible on hover rather than vanishing. */
+.ticket-btn:disabled { cursor: not-allowed; opacity: 0; }
+.ticket-item:hover .ticket-btn:disabled { opacity: 0.35; }
+
 .pr-badge.linear {
   color: #8b91f0;
   border-color: rgba(94, 106, 210, 0.4);

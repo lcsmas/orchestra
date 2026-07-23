@@ -7,6 +7,7 @@ import type {
   CreateWorkspaceInput,
   DiffStats,
   LinearIssue,
+  PinnedTicket,
   PRsForBranch,
   RepoEntry,
   RepoSyncState,
@@ -60,6 +61,10 @@ interface State {
    *  workspace id. Absent until verified; explicit null means "checked, no real
    *  issue" — so the sidebar shows a badge only on a present, non-null value. */
   linear: Record<string, LinearIssue | null>;
+  /** Pinned Linear tickets — the sidebar's Tickets section. Ordered as the
+   *  main process stores them (pin order), and replaced wholesale on every
+   *  `tickets:update` push, so the renderer never merges ticket state. */
+  tickets: PinnedTicket[];
   /** Ephemeral name of the tool each agent is currently running (Bash, Edit,
    *  …), keyed by workspace id. Driven by `agent:tool` events; absent when the
    *  agent is between tools or idle. Never persisted. */
@@ -165,6 +170,9 @@ interface State {
   refreshAllPRs: () => Promise<void>;
   refreshLinear: (id: string) => Promise<void>;
   refreshAllLinear: () => Promise<void>;
+  refreshTickets: () => Promise<void>;
+  removeTicket: (identifier: string) => Promise<void>;
+  spawnFromTicket: (identifier: string, repoPath: string) => Promise<void>;
 }
 
 export const useStore = create<State>((set, get) => ({
@@ -175,6 +183,7 @@ export const useStore = create<State>((set, get) => ({
   sizesExclusive: false,
   prs: {},
   linear: {},
+  tickets: [],
   tools: {},
   contextTokens: {},
   agentSessions: {},
@@ -237,7 +246,7 @@ export const useStore = create<State>((set, get) => ({
     set(p === 'resources' ? { page: p, insightsOpen: false, helpOpen: false } : { page: p }),
 
   load: async () => {
-    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns] =
+    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns, tickets] =
       await Promise.all([
         window.orchestra.listRepos(),
         window.orchestra.listWorkspaces(),
@@ -247,6 +256,9 @@ export const useStore = create<State>((set, get) => ({
         window.orchestra.listAccounts().catch(() => []),
         window.orchestra.getUsage().catch(() => null),
         window.orchestra.listSelfTuneRuns().catch(() => []),
+        // Reads the STORED list (no network) so the section paints instantly at
+        // boot; the 120s poll refreshes state from Linear afterwards.
+        window.orchestra.listTickets().catch(() => []),
       ]);
     const repoSync: Record<string, RepoSyncState> = {};
     for (const s of syncStates) repoSync[s.repoPath] = s;
@@ -258,6 +270,7 @@ export const useStore = create<State>((set, get) => ({
     }
     set({
       repos,
+      tickets,
       workspaces,
       repoSync,
       contextTokens,
@@ -530,9 +543,46 @@ export const useStore = create<State>((set, get) => ({
     const next = Object.fromEntries(entries.filter((e) => e !== null));
     if (Object.keys(next).length) set((s) => ({ linear: { ...s.linear, ...next } }));
   },
+
+  refreshTickets: async () => {
+    try {
+      const tickets = await window.orchestra.refreshTickets();
+      set({ tickets });
+    } catch {
+      /* no API key / offline — keep the current list rather than emptying the
+         section, which would read as "you have no tickets". */
+    }
+  },
+
+  removeTicket: async (identifier) => {
+    // Optimistic: the row disappears immediately, and the authoritative
+    // `tickets:update` push follows. On failure we re-fetch to undo.
+    set((s) => ({ tickets: s.tickets.filter((t) => t.identifier !== identifier) }));
+    try {
+      await window.orchestra.removeTicket(identifier);
+    } catch {
+      try {
+        set({ tickets: await window.orchestra.listTickets() });
+      } catch {
+        /* leave the optimistic removal in place if we can't re-read */
+      }
+    }
+  },
+
+  spawnFromTicket: async (identifier, repoPath) => {
+    // Graduation is driven entirely by main: it creates the workspace, sets
+    // `workspaceId` on the ticket and broadcasts both `workspace:update` and
+    // `tickets:update`, so there is nothing to patch here.
+    await window.orchestra.spawnFromTicket(identifier, repoPath);
+  },
 }));
 
 // Live updates from main process.
+window.orchestra.onTicketsUpdate((tickets) => {
+  // Authoritative wholesale replacement — same shape as the initial fetch, so
+  // no merge logic is needed (the pattern `repos:update` already uses).
+  useStore.setState({ tickets });
+});
 window.orchestra.onWorkspaceUpdate((w) => {
   // Debug: trace what status the renderer actually receives. A dot stuck on the
   // wrong colour is either a transition that never arrived (main-side) or one

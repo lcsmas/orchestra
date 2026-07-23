@@ -4,6 +4,8 @@ import type {
   EnvStatusItem,
   LinearIssue,
   PRsForBranch,
+  PinnedTicket,
+  RepoEntry,
   Workspace,
   WorkspaceStatus,
 } from '../../shared/types';
@@ -335,6 +337,83 @@ function LinearIcon() {
   );
 }
 
+/**
+ * One pinned Linear ticket in the sidebar's Tickets section.
+ *
+ * Deliberately NOT a workspace row, in two ways that matter:
+ *  - the leading glyph is a hollow DIAMOND, not the round `.ws-dot`, so a
+ *    ticket can never be misread as an agent that is running or waiting;
+ *  - clicking opens the issue in Linear and never calls `setActive`, which
+ *    keys off the workspace list — a ticket id there would resolve to no
+ *    workspace and blank the main pane.
+ */
+function TicketRow({
+  ticket,
+  repos,
+  onOpen,
+  onSpawn,
+  onRemove,
+}: {
+  ticket: PinnedTicket;
+  repos: RepoEntry[];
+  onOpen: () => void;
+  onSpawn: (ticket: PinnedTicket) => void;
+  onRemove: (identifier: string) => void;
+}) {
+  // Linear's `state.type` is the coarse category Linear itself defines
+  // (backlog/unstarted/started/…); `state.name` is workspace-configurable free
+  // text ("In Progress", "Doing", "En cours"), so tint on type and DISPLAY name.
+  const stateType = ticket.state?.type ?? 'unstarted';
+  const stateName = ticket.state?.name ?? '';
+  // Spawning needs a repo. Prefer the ticket's earmarked one; fall back to the
+  // only registered repo when there is exactly one (unambiguous). Otherwise the
+  // button is disabled with a title saying why, rather than guessing.
+  const repoPath = ticket.repoPath ?? (repos.length === 1 ? repos[0].path : undefined);
+  return (
+    <div
+      className="ticket-item"
+      onClick={onOpen}
+      title={`${ticket.identifier} — ${ticket.title}\nOpen in Linear`}
+    >
+      <span className={`ticket-dot ${stateType}`} aria-hidden="true" />
+      <div className="ticket-body">
+        <div className="ticket-name-row">
+          <span className="ticket-id">{ticket.identifier}</span>
+          <span className="ticket-title">{ticket.title}</span>
+          {stateName && <span className={`state-chip ${stateType}`}>{stateName}</span>}
+          <button
+            className="ticket-btn"
+            title={
+              repoPath
+                ? `Start an agent on ${ticket.identifier}`
+                : 'Pick a repo first (orchestra linear add --repo <path>)'
+            }
+            aria-label={`Start an agent on ${ticket.identifier}`}
+            disabled={!repoPath}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (repoPath) onSpawn(ticket);
+            }}
+          >
+            →
+          </button>
+          <button
+            className="ticket-btn remove"
+            title={`Un-pin ${ticket.identifier} (does not change the issue in Linear)`}
+            aria-label={`Un-pin ${ticket.identifier}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove(ticket.identifier);
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GitHubIcon() {
   return (
     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
@@ -589,6 +668,9 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     sizesExclusive,
     prs,
     linear,
+    tickets,
+    removeTicket,
+    spawnFromTicket,
     tools,
     repoSync,
     setActive,
@@ -907,6 +989,31 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   // `workspaces` identity skips rebuilding three Maps and walking the forest on
   // each of those high-frequency ticks; it only recomputes when the workspace
   // set actually changes.
+  // Only NOT-yet-started tickets form the queue. A ticket carrying a live
+  // `workspaceId` has graduated — its work is already visible as a workspace
+  // row with the branch-derived badge, so listing it here too would show the
+  // same issue twice. The workspace must still EXIST: main clears a dangling
+  // pointer on its next refresh, but re-checking here means a just-deleted
+  // workspace brings its ticket back into the queue immediately.
+  const queuedTickets = useMemo(() => {
+    const live = new Set(workspaces.map((w) => w.id));
+    return tickets.filter((t) => !t.workspaceId || !live.has(t.workspaceId));
+  }, [tickets, workspaces]);
+
+  const onSpawnFromTicket = useCallback(
+    (ticket: PinnedTicket) => {
+      // Mirrors TicketRow's own resolution, which is what decides whether the
+      // button is enabled at all.
+      const repoPath = ticket.repoPath ?? (repos.length === 1 ? repos[0].path : undefined);
+      if (!repoPath) return;
+      void spawnFromTicket(ticket.identifier, repoPath).catch(() => {
+        /* main owns the authoritative state and re-broadcasts; on failure the
+           row simply stays in the queue. */
+      });
+    },
+    [repos, spawnFromTicket],
+  );
+
   const { active, archived, forest, orchestratorTrees, scratchTrees } = useMemo(() => {
     const active = workspaces.filter((w) => !w.archived);
     const archived = workspaces.filter((w) => w.archived);
@@ -1532,6 +1639,34 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               </span>
             </div>
             {renderSpawnTreeRows(orchestratorTrees, 'orchestrator')}
+          </div>
+        )}
+        {/* Tickets — Linear issues pinned into the sidebar, i.e. work that has
+            NOT started yet, sitting above the running sections as a queue. A
+            ticket that has a workspace has "graduated": it drops out of here
+            and its workspace row's branch-derived badge takes over, so a ticket
+            is never shown twice. Section vanishes entirely when empty. */}
+        {queuedTickets.length > 0 && (
+          <div className="repo-section tickets-section">
+            <div className="repo-header">
+              <div className="repo-collapse" style={{ cursor: 'default' }}>
+                <span className="scratch-glyph" aria-hidden="true"><LinearIcon /></span>
+                <span className="repo-name">Tickets</span>
+              </div>
+              <span className="repo-header-actions">
+                <span className="repo-count">{queuedTickets.length}</span>
+              </span>
+            </div>
+            {queuedTickets.map((t) => (
+              <TicketRow
+                key={t.identifier}
+                ticket={t}
+                repos={repos}
+                onOpen={() => window.orchestra.openExternal(t.url)}
+                onSpawn={onSpawnFromTicket}
+                onRemove={removeTicket}
+              />
+            ))}
           </div>
         )}
         {scratchTrees.length > 0 && (

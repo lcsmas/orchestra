@@ -24,6 +24,11 @@ import {
   fetchMyLinearIssues,
 } from './linear';
 import { platform } from './platform';
+// Routed through the same dispatch `/spawn` uses rather than calling
+// createWorkspace directly: it already pairs creation with the headless agent
+// start (which is module-private), so a ticket spawn and an agent spawn stay
+// one code path instead of two that can drift.
+import { dispatchSpawnRequest } from './workspaces';
 import { store } from './store';
 import { log } from './logger';
 
@@ -157,9 +162,6 @@ export interface TicketSpawnResult {
  * existing branch-derived badge take over on the new workspace row — the
  * ticket's identity survives the transition without being stored twice.
  *
- * Imported lazily: workspaces.ts pulls in the Electron/PTY world, and this
- * module is also reached from the socket dispatch path during startup. A static
- * import would drag that graph in earlier than it needs to be.
  */
 export async function spawnWorkspaceForTicket(
   identifier: string,
@@ -178,11 +180,6 @@ export async function spawnWorkspaceForTicket(
     return { ok: false, error: `unknown repoPath: ${repoPath}` };
   }
 
-  // Routed through the same dispatch `/spawn` uses rather than calling
-  // createWorkspace directly: it already pairs creation with the headless agent
-  // start (which is module-private), so a ticket spawn and an agent spawn stay
-  // one code path instead of two that can drift.
-  const { dispatchSpawnRequest } = await import('./workspaces');
   const branch = ticketBranchName(ticket.identifier, ticket.title);
   // The opening prompt carries the ticket itself, so the agent starts with the
   // issue in front of it rather than just a branch name.
