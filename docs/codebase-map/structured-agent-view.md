@@ -410,7 +410,14 @@ to the unchanged PTY path.
   `session/init` — so `describeLiveModel`'s alias map is what lets the pre-session
   trigger read the same friendly label. Returns `''` when nothing configures it
   (the CLI's own built-in default, resolvable only once a session inits) — the
-  `"Account default"` placeholder remains only in that case.
+  `"Account default"` placeholder remains only in that case. **Display precedence
+  gates on `session.sessionId`** (`effectiveModel` in model-util.ts): a folded
+  session's model/permissionMode count only once `session/init` actually landed —
+  a history-backfilled session (reopened workspace, no live subprocess) folds
+  from `emptySession` with placeholder `model:''` / `permissionMode:bypass`, and
+  `session?.model ?? wsModel` never falls through `''`, so those placeholders
+  used to mask a freshly-picked `ws.model`/mode (selection looked like a no-op —
+  the v0.5.153 bug, fixed v0.5.154, e2e-proven via `__injectAgentEvent`).
 - New IPC: `agentSdkHistory` (`agent:sdkHistory`), `agentSdkDefaultModel`
   (`agent:sdkDefaultModel`), `agentSkills` (`agent:skills`),
   `agentSdkOpenTaskTranscript` (`agent:sdkOpenTaskTranscript`) — opens a finished
