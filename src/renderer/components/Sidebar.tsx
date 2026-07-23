@@ -348,7 +348,7 @@ function LinearIcon() {
  *    keys off the workspace list — a ticket id there would resolve to no
  *    workspace and blank the main pane.
  */
-function TicketRow({
+export function TicketRow({
   ticket,
   repos,
   onOpen,
