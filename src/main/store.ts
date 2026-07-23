@@ -2,7 +2,7 @@ import { platform } from './platform';
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import type { Account, RepoEntry, RepoScripts, Workspace } from '../shared/types';
+import type { Account, PinnedTicket, RepoEntry, RepoScripts, Workspace } from '../shared/types';
 import { sanitizeAccountInherit } from '../shared/accounts';
 import type { SelfTuneRun } from '../shared/self-tune';
 
@@ -21,6 +21,11 @@ interface StoreShape {
    *  transcripts, those live in files). Bounded; newest last. Absent on stores
    *  predating the feature → treated as `[]`. */
   selfTuneRuns?: SelfTuneRun[];
+  /** Linear tickets pinned into the sidebar's Tickets section. A ticket is NOT
+   *  a workspace (see PinnedTicket in shared/types.ts for why) so it lives in
+   *  its own collection. Absent on stores predating the feature → treated as
+   *  `[]`, which renders no section at all. */
+  tickets?: PinnedTicket[];
 }
 
 const DEFAULT: StoreShape = { repos: [], workspaces: [], accounts: [] };
@@ -251,6 +256,70 @@ class Store {
     }
     await this.save();
     return cleaned;
+  }
+
+  get tickets(): PinnedTicket[] {
+    return this.data.tickets ?? [];
+  }
+
+  /** Upsert one pinned ticket, keyed by canonical identifier — pinning the same
+   *  issue twice updates it in place rather than duplicating the row. Ordering
+   *  is stable: an existing ticket keeps its position (so a refresh never
+   *  reshuffles the sidebar), a new one appends. */
+  async upsertTicket(ticket: PinnedTicket): Promise<PinnedTicket> {
+    const tickets = this.data.tickets ?? [];
+    const i = tickets.findIndex((t) => t.identifier === ticket.identifier);
+    if (i >= 0) tickets[i] = ticket;
+    else tickets.push(ticket);
+    this.data.tickets = tickets;
+    await this.save();
+    return ticket;
+  }
+
+  /** Replace every pinned ticket in one atomic save — the batched refresh uses
+   *  this so updating N tickets costs one store.json rewrite, not N. */
+  async setTickets(tickets: PinnedTicket[]): Promise<void> {
+    this.data.tickets = tickets;
+    await this.save();
+  }
+
+  /** Un-pin by identifier. Returns the removed ticket, or undefined if no such
+   *  ticket was pinned (so the caller can report "not pinned" rather than a
+   *  misleading success). */
+  async removeTicket(identifier: string): Promise<PinnedTicket | undefined> {
+    const tickets = this.data.tickets ?? [];
+    const i = tickets.findIndex((t) => t.identifier === identifier);
+    if (i < 0) return undefined;
+    const [removed] = tickets.splice(i, 1);
+    this.data.tickets = tickets;
+    await this.save();
+    return removed;
+  }
+
+  getTicket(identifier: string): PinnedTicket | undefined {
+    return (this.data.tickets ?? []).find((t) => t.identifier === identifier);
+  }
+
+  /** Clear any ticket's `workspaceId` that points at a workspace that no longer
+   *  exists. Without this a ticket whose workspace was deleted stays
+   *  "graduated" forever: hidden from the Tickets section, yet still pinned —
+   *  invisible state the user cannot see or act on. Returns true if anything
+   *  changed (so the caller knows whether to broadcast). */
+  async reconcileTicketWorkspaces(): Promise<boolean> {
+    const tickets = this.data.tickets ?? [];
+    const live = new Set(this.data.workspaces.map((w) => w.id));
+    let mutated = false;
+    for (const t of tickets) {
+      if (t.workspaceId && !live.has(t.workspaceId)) {
+        delete t.workspaceId;
+        mutated = true;
+      }
+    }
+    if (mutated) {
+      this.data.tickets = tickets;
+      await this.save();
+    }
+    return mutated;
   }
 
   get selfTuneRuns(): SelfTuneRun[] {

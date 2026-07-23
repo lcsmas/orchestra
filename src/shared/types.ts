@@ -315,6 +315,15 @@ export interface CreateWorkspaceInput {
   host?: WorkspaceHost;
   /** Model for the new workspace's agent (see {@link Workspace.model}). */
   model?: string;
+  /** Branch name for the new worktree. Omitted → an auto-generated
+   * adjective-noun name (`randomBranchName`), which is what every hand-created
+   * and `/spawn`ed workspace uses. Supplied only when the name carries meaning
+   * the badge pipeline depends on — spawning from a pinned Linear ticket names
+   * the branch key-first (`nmc-305-…`) so the branch-derived Linear badge
+   * recognises the issue with no extra bookkeeping. Sanitized and deduped
+   * against existing branches exactly like a rename, so a collision suffixes
+   * rather than failing. */
+  branch?: string;
 }
 
 export interface RepoScripts {
@@ -391,6 +400,63 @@ export interface LinearIssue {
   url: string;
   /** Issue title, for the badge tooltip. */
   title: string;
+  /** Workflow state, when the caller asked for it. The badge path doesn't
+   *  need it (a badge shows only that the issue exists), but a pinned TICKET
+   *  row renders it as a chip — so it is optional rather than required, and
+   *  every pre-existing badge call site keeps working untouched. */
+  state?: LinearIssueState;
+  /** Assignee display name, when known. `null` = explicitly unassigned;
+   *  absent = not requested by this query. */
+  assignee?: { name: string } | null;
+}
+
+/** A Linear workflow state. `type` is Linear's own coarse category — one of
+ *  `triage`/`backlog`/`unstarted`/`started`/`completed`/`canceled` — and is
+ *  what the UI tints against, because `name` is workspace-configurable free
+ *  text ("In Progress", "Doing", "En cours") and cannot be matched on. */
+export interface LinearIssueState {
+  name: string;
+  type: string;
+}
+
+/** A Linear ticket the user has pinned into Orchestra's sidebar, so work that
+ *  has not started yet is visible next to running agents.
+ *
+ *  Deliberately NOT a {@link Workspace}. `Workspace.kind` selects an execution
+ *  environment (a worktree / a scratch dir / a coordinator session), and every
+ *  consumer branches on it via `isScratchLike`/`canOrchestrate`. Modelling a
+ *  ticket as a fourth kind would silently enrol it in `pruneOrphanedWorkspaces`
+ *  (reconciled against `git worktree list`), `startAgentPty`, `allocatePort`,
+ *  and the delete/archive/rename paths — none of which mean anything for a
+ *  ticket. A separate collection cannot leak into any of them.
+ *
+ *  Lifecycle: pinned by `orchestra linear add` → rendered in the sidebar's
+ *  Tickets section → once a workspace is spawned for it (`workspaceId` set) it
+ *  "graduates": it leaves the Tickets section and the existing branch-derived
+ *  Linear badge on that workspace row takes over. A ticket is never shown
+ *  twice, so the queue only ever holds work that hasn't started. */
+export interface PinnedTicket {
+  /** Canonical Linear identifier (e.g. `NMC-261`) — the primary key. Pinning
+   *  the same issue twice updates in place rather than duplicating. */
+  identifier: string;
+  /** Canonical Linear URL (authoritative — returned by the API, not built). */
+  url: string;
+  title: string;
+  state?: LinearIssueState;
+  assignee?: { name: string } | null;
+  /** Repo this ticket is earmarked for. Used as the default `--repo` when
+   *  spawning from the row. Absent = ask/none. */
+  repoPath?: string;
+  /** Set once a workspace has been created for this ticket. Its presence is
+   *  what "graduates" the ticket out of the Tickets section, so it must be
+   *  cleared if that workspace is later deleted (else the ticket vanishes from
+   *  the sidebar while still being pinned — invisible state). */
+  workspaceId?: string;
+  /** Epoch ms when the user pinned it. Drives the stable sidebar ordering. */
+  pinnedAt: number;
+  /** Epoch ms of the last successful refresh from Linear. Absent = never
+   *  refreshed since pinning. */
+  refreshedAt?: number;
 }
 
 /** One optional-setup check surfaced to the user — e.g. "Linear badges need an

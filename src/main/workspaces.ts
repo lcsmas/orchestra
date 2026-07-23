@@ -346,7 +346,16 @@ export async function createWorkspace(input: CreateWorkspaceInput): Promise<Work
   const repoName = path.basename(input.repoPath);
   const repo = store.repos.find((r) => r.path === input.repoPath);
   const baseBranch = input.baseBranch || repo?.defaultBranch || 'main';
-  const branch = randomBranchName();
+  // An explicit branch name is sanitized and deduped the same way a rename is,
+  // so a caller-supplied name (today: a ticket's key-first branch) can never
+  // fail creation on a collision — it suffixes, matching `freeBranchName`'s
+  // contract everywhere else. Falling back to the random name keeps every
+  // existing caller byte-identical.
+  const requested = input.branch ? sanitizeBranchName(input.branch) : '';
+  // No `current` branch to exempt — nothing exists yet — so pass ''.
+  const branch = requested
+    ? (await freeBranchName(input.repoPath, requested, '')) || randomBranchName()
+    : randomBranchName();
   const agent = input.agent ?? 'claude';
   const safeBranch = branch.replace(/[^a-zA-Z0-9._-]/g, '-');
   const worktreePath = path.join(ORCHESTRA_ROOT, `${repoName}-${safeBranch}-${id.slice(0, 8)}`);
@@ -1272,6 +1281,11 @@ export async function dispatchSpawnRequest(
     agent?: 'claude';
     detached?: boolean;
     model?: string;
+    /** Explicit branch name for the new worktree (see
+     * {@link CreateWorkspaceInput.branch}). Omitted → the usual random name.
+     * Used when spawning from a pinned Linear ticket, whose branch must lead
+     * with the issue key for the badge pipeline to recognise it. */
+    branch?: string;
   },
 ): Promise<SpawnResult> {
   const task = input.task.trim();
@@ -1309,6 +1323,7 @@ export async function dispatchSpawnRequest(
       agent: input.agent,
       parentId: input.detached ? undefined : input.from,
       model,
+      branch: input.branch,
     });
     await startWorkspaceAgentHeadless(ws.id);
     return { ok: true, id: ws.id, branch: ws.branch };
