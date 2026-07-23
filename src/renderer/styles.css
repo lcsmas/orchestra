@@ -1721,6 +1721,11 @@ input:focus, textarea:focus, select:focus {
   z-index: 1000;
   min-width: 160px;
   max-width: min(280px, calc(100vw - 16px));
+  /* Enough accounts to outgrow the viewport scroll INSIDE the menu rather than
+     off the edge — the JS flip picks the roomier side, but with many logins
+     neither side may fit. */
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   padding: 4px;

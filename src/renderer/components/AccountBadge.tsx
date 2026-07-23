@@ -157,7 +157,11 @@ function WorkspaceAccountMenu({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   // Fixed viewport coords for the portalled popover, measured from the trigger.
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  // Anchored by `top` when it drops DOWN, by `bottom` when it flips UP (see
+  // `place`), so the menu grows away from the edge it would otherwise overflow.
+  const [pos, setPos] = useState<{ top?: number; bottom?: number; left: number } | null>(
+    null,
+  );
 
   // The popover is rendered in a portal on <body> (not inside the row) so the
   // sidebar's `overflow: hidden` — which clips the scrolling workspace list —
@@ -165,6 +169,15 @@ function WorkspaceAccountMenu({
   // viewport rect. Measure on open (and on scroll/resize) so it tracks the
   // badge. Left-align to the trigger, but clamp within the viewport so a
   // near-edge badge doesn't push the menu off-screen.
+  //
+  // VERTICAL FLIP: this badge renders both in the sidebar (plenty of room
+  // below) and in the structured view's deck bar, which sits at the BOTTOM of
+  // the window — there, a menu anchored at `t.bottom + 4` opened past the
+  // viewport and its options were unreachable. So pick the side by measured
+  // space rather than assuming downward: drop down when the menu fits below,
+  // otherwise flip above the trigger. Anchoring the flipped case by `bottom`
+  // (not a computed `top`) keeps it pinned to the trigger while the list grows
+  // upward, so adding accounts can't push it off the top either.
   useLayoutEffect(() => {
     if (!open) return;
     const place = () => {
@@ -172,15 +185,35 @@ function WorkspaceAccountMenu({
       if (!t) return;
       const width = popoverRef.current?.offsetWidth ?? 160;
       const margin = 8;
+      const gap = 4;
       const left = Math.min(t.left, window.innerWidth - width - margin);
-      setPos({ top: t.bottom + 4, left: Math.max(margin, left) });
+      const clampedLeft = Math.max(margin, left);
+      // Measured height once rendered; fall back to a sane guess on first pass.
+      const height = popoverRef.current?.offsetHeight ?? 0;
+      const spaceBelow = window.innerHeight - t.bottom - gap - margin;
+      const spaceAbove = t.top - gap - margin;
+      // Flip up only when it genuinely doesn't fit below AND there's more room
+      // above — a cramped viewport otherwise flips to an equally-clipped side.
+      const flipUp = height > spaceBelow && spaceAbove > spaceBelow;
+      setPos(
+        flipUp
+          ? { bottom: window.innerHeight - t.top + gap, left: clampedLeft }
+          : { top: t.bottom + gap, left: clampedLeft },
+      );
     };
     place();
+    // The first pass runs BEFORE the popover has laid out, so `offsetHeight` is
+    // still 0 and the flip test can't fire (it would always read "fits below").
+    // Re-place on the next frame, once the panel has a real height — same
+    // reason the width fallback above exists. Without this the deck-bar menu
+    // renders downward off-screen for a frame and then never corrects.
+    const raf = requestAnimationFrame(place);
     // A scroll inside the sidebar or a window resize moves the trigger — keep up,
     // and close on scroll of the list to avoid a detached floating menu.
     window.addEventListener('resize', place);
     window.addEventListener('scroll', place, true);
     return () => {
+      cancelAnimationFrame(raf);
       window.removeEventListener('resize', place);
       window.removeEventListener('scroll', place, true);
     };
@@ -254,7 +287,15 @@ function WorkspaceAccountMenu({
             ref={popoverRef}
             className="ws-account-popover"
             role="menu"
-            style={{ top: pos?.top ?? -9999, left: pos?.left ?? -9999 }}
+            // Anchor by `bottom` when flipped up, `top` otherwise — exactly one
+            // is set, so the unused edge must stay `auto` rather than inherit a
+            // stale value from the previous placement. Before the first measure
+            // (pos === null) park it off-screen, as the width pass already did.
+            style={
+              pos?.bottom !== undefined
+                ? { top: 'auto', bottom: pos.bottom, left: pos.left }
+                : { bottom: 'auto', top: pos?.top ?? -9999, left: pos?.left ?? -9999 }
+            }
             onClick={(e) => e.stopPropagation()}
           >
             <button

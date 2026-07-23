@@ -252,6 +252,16 @@ by stylesheet order. Colour is deliberately NOT overridden — the account's
 identity tint is an inline `loginColor` style and the usage severity classes
 carry the rest, both shared with the sidebar.
 
+Its `.ws-account-popover` (portalled to `<body>`, `AccountBadge.tsx`) picks its
+vertical side FROM MEASURED SPACE rather than always dropping down: it anchors
+by `top` below the trigger when it fits, else by `bottom` above it. That matters
+because the same component renders in the sidebar (room below) AND in this deck
+bar, which sits at the BOTTOM of the window — anchored downward there, the menu
+opened past the viewport and its options were unclickable. The flip test needs
+the panel's real height, which is 0 on the first `useLayoutEffect` pass, so
+`place()` re-runs on the next animation frame. `max-height`/`overflow-y` on the
+popover cover the case where neither side fits (many accounts).
+
 Controls (`AgentControls.tsx`): `.av-controls` > `.av-controls-interrupt`
 (+`.av-controls-interrupt-dot`) + `.av-controls-menus` holding two `AvMenu`s
 (model / permission mode — no field labels; tinted icons carry the meaning).
