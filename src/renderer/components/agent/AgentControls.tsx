@@ -10,8 +10,10 @@
 // field labels, the tinted icon + value carry the meaning.
 
 import React from 'react';
-import type { AgentPermissionMode, AgentSession } from '../../../shared/types';
+import type { AgentEffortLevel, AgentPermissionMode, AgentSession } from '../../../shared/types';
 import { AvMenu, type AvMenuItem } from './AvMenu';
+import { EffortSlider } from './EffortSlider';
+import { DEFAULT_EFFORT } from './effort-util';
 import { MODEL_CHOICES, describeLiveModel, effectiveModel } from './model-util';
 
 function icon(paths: React.ReactNode, viewBox = '0 0 16 16') {
@@ -133,6 +135,7 @@ export function AgentControls({
   session,
   wsModel,
   wsPermissionMode,
+  wsEffort,
 }: {
   workspaceId: string;
   session: AgentSession | undefined;
@@ -141,6 +144,10 @@ export function AgentControls({
    *  takes precedence as the actually-active value. */
   wsModel?: string;
   wsPermissionMode?: AgentPermissionMode;
+  /** Persisted reasoning-effort choice (ws.sdkEffort). The SDK never reports
+   *  effort back on the stream, so this IS the source of truth — unset means
+   *  the model default ({@link DEFAULT_EFFORT}). */
+  wsEffort?: AgentEffortLevel;
 }) {
   const running = session?.running ?? false;
   // Trust the folded session's model/mode only once it has actually INITED
@@ -203,6 +210,10 @@ export function AgentControls({
           placeholder="Account default"
           ariaLabel="Model"
           onSelect={(v) => void window.orchestra.agentSdkSetModel(workspaceId, v || undefined)}
+        />
+        <EffortSlider
+          value={wsEffort ?? DEFAULT_EFFORT}
+          onChange={(level) => void window.orchestra.agentSdkSetEffort(workspaceId, level)}
         />
         <AvMenu
           items={PERMISSION_ITEMS}

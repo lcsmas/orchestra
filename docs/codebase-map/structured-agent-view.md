@@ -50,7 +50,7 @@ the status dot doesn't move. Sandbox workspaces surface a "not available" notice
 **Reverse path (user → agent):** `window.orchestra.agentSdk*` invoke handlers call into
 the live `query` object in main — `agentSdkSend(wsId, text, images?)`, `agentSdkRunBash(wsId, command)`, `agentSdkInterrupt(wsId)`,
 `agentSdkPermissionReply(wsId, requestId, reply)`, `agentSdkSetModel`,
-`agentSdkSetPermissionMode`, `agentSdkSetRemoteControl(wsId, enabled)`. Multi-turn uses the
+`agentSdkSetEffort`, `agentSdkSetPermissionMode`, `agentSdkSetRemoteControl(wsId, enabled)`. Multi-turn uses the
 **streaming-input pattern**: one long-lived `query()` per session fed by an async-generator
 prompt (each follow-up turn gated on the prior `result`), so the subprocess stays warm and
 `canUseTool` fires in-loop.
@@ -385,6 +385,26 @@ to the unchanged PTY path.
   live PTY owner or `driveStatusFromEvent`'s own transitions).
 - **`AvMenu`** (`components/agent/AvMenu.tsx`) — the custom dropdown replacing native
   selects in AgentControls (portalled glass panel; see agent-view-design.md).
+- **`EffortSlider`** (`components/agent/EffortSlider.tsx`, pure logic in
+  `effort-util.ts` + tests) — the deck bar's reasoning-effort control, modeled
+  on the Claude Code desktop popover: ghost trigger (gauge icon + level label)
+  → portalled glass panel ("Effort <Level>", Faster/Smarter, a five-stop
+  low→max slider). The thumb tracks the pointer 1:1 while dragging
+  (`.av-effort-dragging` kills the CSS transition) and snaps to the nearest
+  stop with a short ease on release/click; header + description preview the
+  would-be level during the drag, and the choice commits on release only.
+  Keyboard: `role="slider"`, arrows/Home/End. The value is **`ws.sdkEffort`**
+  (persisted like `sdkPermissionMode`; unset = the model default `high` —
+  `DEFAULT_EFFORT`) — the SDK stream never reports effort back, so no
+  `AgentSession` field / `session/update` variant exists for it; reactivity
+  rides the `workspace:update` broadcast from `persistWorkspacePatch`.
+  `sdkSetEffort(wsId, effort)` (agent-sdk.ts) persists + live-applies via the
+  SDK's `applyFlagSettings({effortLevel})` (accepts `'max'`, which CC's own
+  settings file can't persist — Orchestra's store can, and `ensureSession`
+  re-applies it at start via `options.effort`). Unsupported levels are silently
+  downgraded per model by the CLI, so the slider always offers all five. CSS:
+  `av-effort-*` in agent-view-theme.css (raw dark-glass — portalled outside
+  `.av-view`), blur killed in agent-view-flat.css.
 - **`model-util.ts`** (`components/agent/`, + tests in `agent-components.test.ts`) —
   pure, React-free model-switcher data/logic so `node --test` can exercise it.
   `MODEL_CHOICES` is the switcher's model list (**Fable 5, Opus 4.8, Sonnet 5,
@@ -418,7 +438,7 @@ to the unchanged PTY path.
   `session?.model ?? wsModel` never falls through `''`, so those placeholders
   used to mask a freshly-picked `ws.model`/mode (selection looked like a no-op —
   the v0.5.153 bug, fixed v0.5.154, e2e-proven via `__injectAgentEvent`).
-- New IPC: `agentSdkHistory` (`agent:sdkHistory`), `agentSdkDefaultModel`
+- New IPC: `agentSdkSetEffort` (`agent:sdkSetEffort`), `agentSdkHistory` (`agent:sdkHistory`), `agentSdkDefaultModel`
   (`agent:sdkDefaultModel`), `agentSkills` (`agent:skills`),
   `agentSdkOpenTaskTranscript` (`agent:sdkOpenTaskTranscript`) — opens a finished
   task's `output_file` transcript with the OS handler (`platform.openPath`, guarded

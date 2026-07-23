@@ -1193,6 +1193,86 @@ h6.av-md-h {
 .av-menu-item-desc { font-size: 10.5px; color: #949eb0; }
 .av-menu-check { flex: none; margin-top: 3px; color: var(--accent, #6ea8ff); }
 
+/* ── EffortSlider — reasoning-effort popover (CC-desktop style) ─────────────
+   Ghost trigger reuses .av-menu-trigger; the panel is portalled to <body>
+   (OUTSIDE .av-view, so raw dark-glass values like .av-menu-panel). The slider
+   is the point: a five-stop track whose thumb rides the pointer 1:1 while
+   dragging (.av-effort-dragging kills the transition) and snaps to the nearest
+   stop with a short ease on release/click. */
+.av-effort-trigger-icon { color: #f0b429; }
+.av-effort-panel {
+  position: fixed; z-index: 1000;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 14px 10px;
+  background: linear-gradient(180deg, rgba(26, 31, 40, 0.9) 0%, rgba(17, 20, 26, 0.94) 100%);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-lg, 12px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 18px 40px rgba(0, 0, 0, 0.55),
+    0 2px 4px rgba(0, 0, 0, 0.3);
+  animation: av-menu-in 140ms var(--av-ease-out);
+}
+@media (prefers-reduced-motion: reduce) { .av-effort-panel { animation: none; } }
+.av-effort-head { display: flex; align-items: baseline; gap: 7px; }
+.av-effort-title { font-size: 12px; font-weight: 650; color: #949eb0; }
+.av-effort-value { font-size: 12.5px; font-weight: 650; color: #e8ebf1; }
+.av-effort-scale {
+  display: flex; justify-content: space-between;
+  font-size: 10.5px; color: #949eb0; letter-spacing: 0.01em;
+}
+.av-effort-track {
+  position: relative; height: 28px; cursor: pointer;
+  touch-action: none; /* the track owns horizontal pointer gestures */
+  border-radius: 8px;
+}
+.av-effort-track:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring, rgba(110, 168, 255, 0.35)); }
+/* Inner strip inset to match the component's TRACK_PAD (10px), so % positions
+   of fill/dots/thumb align with the pointer math. */
+.av-effort-inner { position: absolute; inset: 0 10px; }
+.av-effort-rail {
+  position: absolute; left: 0; right: 0; top: 50%; height: 4px;
+  transform: translateY(-50%);
+  border-radius: 999px; background: rgba(255, 255, 255, 0.1);
+}
+.av-effort-fill {
+  position: absolute; left: 0; top: 50%; height: 4px;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(110, 168, 255, 0.55), #6ea8ff);
+  transition: width 160ms var(--av-ease-out, ease-out);
+}
+.av-effort-dot {
+  position: absolute; top: 50%; width: 5px; height: 5px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%; background: rgba(255, 255, 255, 0.28);
+  transition: background 160ms var(--av-ease, ease);
+}
+.av-effort-dot-lit { background: rgba(232, 235, 241, 0.85); }
+/* The far "max" stop keeps a violet identity even unlit — the CC tell that the
+   end of the track is a different beast. */
+.av-effort-dot-max { background: rgba(139, 124, 255, 0.55); }
+.av-effort-dot-max.av-effort-dot-lit { background: #8b7cff; }
+.av-effort-thumb {
+  position: absolute; top: 50%; width: 16px; height: 16px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%; background: #f4f6f9;
+  box-shadow:
+    0 1px 4px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(0, 0, 0, 0.18);
+  transition: left 160ms var(--av-ease-out, ease-out);
+  pointer-events: none; /* the track owns the gesture; the thumb is chrome */
+}
+.av-effort-track:active .av-effort-thumb { transform: translate(-50%, -50%) scale(1.08); }
+.av-effort-dragging .av-effort-thumb,
+.av-effort-dragging .av-effort-fill { transition: none; } /* 1:1 pointer tracking */
+@media (prefers-reduced-motion: reduce) {
+  .av-effort-thumb, .av-effort-fill, .av-effort-dot { transition: none; }
+}
+.av-effort-desc { font-size: 10.5px; color: #949eb0; min-height: 14px; }
+
 /* ── Composer skills autocomplete — glass list above the field ───────────── */
 .av-composer-field { position: relative; }
 .av-ac {

@@ -80,6 +80,7 @@ const api: OrchestraAPI = {
   agentSdkPermissionReply: (wsId, requestId, reply) =>
     ipcRenderer.invoke('agent:sdkPermissionReply', wsId, requestId, reply),
   agentSdkSetModel: (wsId, model) => ipcRenderer.invoke('agent:sdkSetModel', wsId, model),
+  agentSdkSetEffort: (wsId, effort) => ipcRenderer.invoke('agent:sdkSetEffort', wsId, effort),
   agentSdkSetPermissionMode: (wsId, mode) =>
     ipcRenderer.invoke('agent:sdkSetPermissionMode', wsId, mode),
   agentSdkSetRemoteControl: (wsId, enabled) =>

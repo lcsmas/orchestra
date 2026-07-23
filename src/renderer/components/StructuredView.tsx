@@ -537,6 +537,7 @@ function SessionControls({
         session={session}
         wsModel={ws?.model}
         wsPermissionMode={ws?.sdkPermissionMode}
+        wsEffort={ws?.sdkEffort}
       />
       <RemoteControl workspaceId={workspaceId} session={session} />
       <TurnFooter session={session} />

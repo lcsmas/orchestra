@@ -3,6 +3,7 @@ import type { WorktreeSizes } from './worktree-sizes';
 import type {
   Account,
   AccountUsageStatus,
+  AgentEffortLevel,
   AgentEvent,
   AgentImage,
   AgentPermissionMode,
@@ -267,6 +268,9 @@ export interface OrchestraAPI {
   ) => Promise<void>;
   /** Switch the live SDK session's model (undefined → the session default). */
   agentSdkSetModel: (wsId: string, model: string | undefined) => Promise<void>;
+  /** Set the workspace's reasoning-effort level (the deck bar's Effort slider).
+   *  Persists to `ws.sdkEffort` and switches a live session immediately. */
+  agentSdkSetEffort: (wsId: string, effort: AgentEffortLevel) => Promise<void>;
   /** Switch the live SDK session's permission mode. */
   agentSdkSetPermissionMode: (wsId: string, mode: AgentPermissionMode) => Promise<void>;
   /** Enable/disable Remote Control for the workspace's structured session

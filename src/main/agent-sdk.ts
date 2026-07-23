@@ -43,6 +43,7 @@ import {
   type SdkMessage,
 } from '../shared/agent-events';
 import type {
+  AgentEffortLevel,
   AgentEvent,
   AgentImage,
   AgentPermissionMode,
@@ -678,6 +679,12 @@ async function ensureSession(wsId: string): Promise<Session> {
       // --model` or the Model dropdown). Undefined falls back to the account's
       // default model. `sdkSetModel` switches it live.
       ...(ws.model ? { model: ws.model } : {}),
+      // Start on the workspace's chosen reasoning effort (the deck bar's Effort
+      // slider, persisted like the model). Undefined falls back to the model's
+      // own default (`high`). `options.effort` accepts 'max' (unlike the
+      // persisted Settings.effortLevel, which is why Orchestra stores the choice
+      // in ITS OWN store). `sdkSetEffort` switches it live.
+      ...(ws.sdkEffort ? { effort: ws.sdkEffort } : {}),
       // Resume the workspace's prior structured session so re-opening the view
       // continues the conversation with its memory intact, instead of starting
       // blank. The captured session id is persisted on `ws.sdkSessionId` as the
@@ -1128,6 +1135,28 @@ export async function sdkSetModel(wsId: string, model: string | undefined): Prom
     await session.q.setModel(model);
   } catch (err) {
     log.warn(`agent-sdk: setModel failed for ${wsId}`, err);
+  }
+}
+
+/** Set the workspace's reasoning-effort level. Persists to `ws.sdkEffort` so
+ *  the Effort slider sticks and the level applies when the session (re)starts
+ *  (ensureSession's `options.effort`), AND switches a live session immediately
+ *  via the SDK's `applyFlagSettings({effortLevel})` — the mid-session
+ *  equivalent of the inline settings option, which accepts 'max'
+ *  (session-scoped in CC's own settings; Orchestra re-applies it from its own
+ *  store on restart). Works before the first message. The renderer reads the
+ *  value straight from `ws.sdkEffort` (broadcast by persistWorkspacePatch), so
+ *  no session/update event is needed — the SDK never reports effort back. */
+export async function sdkSetEffort(wsId: string, effort: AgentEffortLevel): Promise<void> {
+  await persistWorkspacePatch(wsId, { sdkEffort: effort });
+  const session = sessions.get(wsId);
+  if (!session) return; // choice is persisted; it applies on next start
+  try {
+    await session.q.applyFlagSettings({ effortLevel: effort });
+  } catch (err) {
+    // An older installed `claude` CLI may not know apply_flag_settings; the
+    // persisted choice still applies on the next session start.
+    log.warn(`agent-sdk: setEffort failed for ${wsId}`, err);
   }
 }
 

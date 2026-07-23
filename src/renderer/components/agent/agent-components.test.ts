@@ -22,6 +22,15 @@ import {
   type ToolLike,
 } from './tool-util.ts';
 import { MODEL_CHOICES, describeLiveModel, effectiveModel } from './model-util.ts';
+import {
+  EFFORT_LEVELS,
+  EFFORT_LABELS,
+  DEFAULT_EFFORT,
+  effortIndex,
+  effortFraction,
+  effortAtFraction,
+  stepEffort,
+} from './effort-util.ts';
 
 /** Terse ToolLike builder for the run-summary tests. */
 function tl(name: string, input: Record<string, unknown> = {}): ToolLike {
@@ -231,4 +240,47 @@ test('effectiveModel: no session at all → ws choice, then default, then empty'
   assert.equal(effectiveModel(undefined, 'claude-sonnet-5', 'opus[1m]'), 'claude-sonnet-5');
   assert.equal(effectiveModel(undefined, undefined, 'opus[1m]'), 'opus[1m]');
   assert.equal(effectiveModel(undefined, undefined, ''), '');
+});
+
+// ── effort-util (EffortSlider's pure logic) ──────────────────────────────────
+
+test('effort track: index/fraction round-trip across all five stops', () => {
+  assert.equal(EFFORT_LEVELS.length, 5);
+  for (const level of EFFORT_LEVELS) {
+    // Snapping the level's own fraction must return the same level (the
+    // click-a-dot path), and every level must carry a label.
+    assert.equal(effortAtFraction(effortFraction(level)), level);
+    assert.ok(EFFORT_LABELS[level].length > 0);
+  }
+  assert.equal(effortIndex('low'), 0);
+  assert.equal(effortIndex('max'), 4);
+});
+
+test('effort defaults: unset/unknown values land on the model default (high)', () => {
+  assert.equal(DEFAULT_EFFORT, 'high');
+  assert.equal(effortIndex(undefined), 2);
+  // A corrupt persisted value can't park the thumb off-track.
+  assert.equal(effortIndex('turbo' as never), 2);
+  // Degenerate track math (0-width → NaN fraction) degrades to the default.
+  assert.equal(effortAtFraction(Number.NaN), 'high');
+});
+
+test('effortAtFraction snaps to the nearest stop and clamps overshoot', () => {
+  assert.equal(effortAtFraction(0), 'low');
+  assert.equal(effortAtFraction(1), 'max');
+  // A drag released past either end clamps instead of indexing off the array.
+  assert.equal(effortAtFraction(-0.4), 'low');
+  assert.equal(effortAtFraction(1.7), 'max');
+  // Midpoints round to the nearest stop (0.3 → idx 1.2 → medium; 0.6 → idx 2.4 → high).
+  assert.equal(effortAtFraction(0.3), 'medium');
+  assert.equal(effortAtFraction(0.6), 'high');
+});
+
+test('stepEffort steps one stop and clamps at the track ends', () => {
+  assert.equal(stepEffort('high', 1), 'xhigh');
+  assert.equal(stepEffort('high', -1), 'medium');
+  assert.equal(stepEffort('max', 1), 'max');
+  assert.equal(stepEffort('low', -1), 'low');
+  // Undefined (no persisted choice) steps from the default.
+  assert.equal(stepEffort(undefined, 1), 'xhigh');
 });

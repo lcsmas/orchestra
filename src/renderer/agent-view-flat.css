@@ -66,6 +66,7 @@
 /* ── Menus / autocomplete are portalled to <body>, OUTSIDE .av-view — target
  *    them globally. Kill the blur; keep them as flat dark popovers. ──────────*/
 .av-menu-panel,
+.av-effort-panel,
 .av-ac {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;

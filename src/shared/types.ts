@@ -117,6 +117,13 @@ export interface Workspace {
    *  autonomous agents in isolated worktrees, matching the terminal path which
    *  runs claude with full permissions (see agent-sdk.ts ensureSession). */
   sdkPermissionMode?: AgentPermissionMode;
+  /** Structured-view reasoning-effort level chosen for this workspace's SDK
+   *  session (the deck bar's Effort slider). Persisted so the choice sticks and
+   *  applies even when picked BEFORE the first message starts the session
+   *  (ensureSession passes it as `options.effort`); a live session switches
+   *  immediately via `applyFlagSettings({effortLevel})`. Unset = the model's
+   *  own default (`high`). */
+  sdkEffort?: AgentEffortLevel;
   /** Last Claude Agent SDK session id for this workspace's structured session.
    *  Captured from the SDK stream and persisted so re-opening the structured view
    *  RESUMES the prior conversation (query({ resume }) — the agent keeps its
@@ -617,6 +624,15 @@ export type AgentPermissionMode =
   | 'acceptEdits'
   | 'bypassPermissions'
   | 'plan';
+
+/** Reasoning-effort level for a structured session — how hard the model thinks
+ *  per turn, mirroring Claude Code's effort setting (the SDK's `EffortLevel`).
+ *  `high` is the model default; `max` is session-scoped in Claude Code's own
+ *  settings but Orchestra persists it in ITS store (ws.sdkEffort) and re-applies
+ *  it via `query()` `options.effort`, which accepts it. Unsupported levels are
+ *  silently downgraded per model by the CLI (sdk.d.ts), so the UI can always
+ *  offer all five. Settable live from the UI (`agent:sdkSetEffort`). */
+export type AgentEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /** Why a turn ended, normalized from the SDK result's `subtype`/`stop_reason`.
  *  `end_turn` is a clean finish; `interrupted` is a user interrupt (the SDK
