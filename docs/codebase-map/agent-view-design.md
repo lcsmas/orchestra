@@ -235,10 +235,22 @@ bordered row above the composer, sharing a single y-axis. It wraps
 `AgentControls` (`.av-controls`) then `TurnFooter` (`.av-turn-footer`), which are
 dissolved via `.av-controls { display: contents }` so their children become
 direct flex items; `order` interleaves them left→right as **interrupt (1) ·
-turn-footer stats (2, `flex:1 1 auto`) · menus (3, `margin-left:auto`)**. The
-deck bar owns the `border-top` / gradient background; the footer keeps no border
-or block padding of its own now (previously the controls + footer stacked as two
-separate bordered rows).
+turn-footer stats (2, `flex:1 1 auto`) · menus (3, `margin-left:auto`) · account
+badge (4)**. The deck bar owns the `border-top` / gradient background; the footer
+keeps no border or block padding of its own now (previously the controls +
+footer stacked as two separate bordered rows).
+
+Account badge (`.av-deck-account`, order 4 — last chip): reuses the sidebar's
+`WorkspaceAccountBadge` with `migratable`, so it shows which login the agent
+runs as (the pin that drives the SDK session's `CLAUDE_CONFIG_DIR` in
+`agent-sdk.ts buildSdkEnv`) and clicking it opens the same migrate menu. The
+deck-bar rules re-scale the badge to this row's type/hover language and are
+written at `.av-deck-account .account-badge.inline` specificity ON PURPOSE:
+`styles.css` styles `.account-badge.inline` (+ `.usage`/`.err`/`.default`/
+`.pending`) at 2–3 classes, so a 2-class selector here would TIE and be resolved
+by stylesheet order. Colour is deliberately NOT overridden — the account's
+identity tint is an inline `loginColor` style and the usage severity classes
+carry the rest, both shared with the sidebar.
 
 Controls (`AgentControls.tsx`): `.av-controls` > `.av-controls-interrupt`
 (+`.av-controls-interrupt-dot`) + `.av-controls-menus` holding two `AvMenu`s

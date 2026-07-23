@@ -28,6 +28,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
+import { WorkspaceAccountBadge } from './AccountBadge';
 import type { AgentImage, AgentSession, AgentSkillInfo, RenderMessage } from '../../shared/types';
 // A3: real presentational components (markdown bubbles, tool cards, diffs,
 // thinking spinner). AgentMessage routes tool→ToolCard else→MessageBubble and
@@ -507,9 +508,17 @@ function PermissionSlot({
 // ── Session controls + turn footer (A4) ──────────────────────────────────────
 //
 // One horizontal deck bar sharing a single y-axis: interrupt (left) + the rich
-// cost/token/duration/error turn footer (TurnFooter, middle) + model /
-// permission-mode switches (AgentControls, right). Previously these stacked as
-// two rows; collapsing them reclaims a row of vertical space at the bottom.
+// cost/token/duration/error turn footer (TurnFooter, middle) + the account badge
+// and model / permission-mode switches (AgentControls, right). Previously these
+// stacked as two rows; collapsing them reclaims a row of vertical space at the
+// bottom.
+//
+// The account badge answers "which login is this agent spending?" right where
+// the cost/token figures are read — the SDK session's CLAUDE_CONFIG_DIR comes
+// from exactly this pin (agent-sdk.ts buildSdkEnv). It's the same migratable
+// control as the sidebar's, so clicking it moves the workspace to another
+// account (auto-stops the session; the next send restarts it under the new
+// login).
 
 function SessionControls({
   session,
@@ -531,6 +540,9 @@ function SessionControls({
       />
       <RemoteControl workspaceId={workspaceId} session={session} />
       <TurnFooter session={session} />
+      <span className="av-deck-account" title="Account this agent runs as — click to migrate">
+        <WorkspaceAccountBadge workspaceId={workspaceId} migratable />
+      </span>
     </div>
   );
 }

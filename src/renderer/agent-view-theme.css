@@ -960,6 +960,44 @@
 /* The switcher menus dock to the far right of the deck bar. */
 .av-controls-menus { order: 3; display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
 
+/* ── Account badge — which login this agent runs as ────────────────────────
+   Last chip in the deck bar (order 4, after the model/permission menus), so
+   the reading order is cost → model → permissions → account. Reuses the
+   sidebar's WorkspaceAccountBadge (same migrate-on-click menu) but re-scales
+   it to the deck bar's own type/hover language: the sidebar sizes it against a
+   dense list row, which reads undersized next to these chips. The account's
+   identity colour (loginColor) and usage tint pass through untouched — that
+   cross-app consistency is the point of the badge. */
+.av-deck-account { order: 4; display: inline-flex; align-items: center; flex: none; }
+.av-deck-account .ws-account-menu { display: inline-flex; align-items: center; }
+.av-deck-account .ws-account-trigger {
+  display: inline-flex; align-items: center;
+  padding: 4px 8px; border: none; border-radius: var(--radius-sm, 6px);
+  background: transparent; cursor: pointer;
+  transition: background 140ms var(--av-ease);
+}
+.av-deck-account .ws-account-trigger:hover {
+  background: color-mix(in srgb, var(--av-text) 6%, transparent);
+}
+.av-deck-account .ws-account-trigger:disabled { opacity: 0.5; cursor: not-allowed; }
+.av-deck-account .ws-account-trigger:focus-visible {
+  outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring);
+}
+/* Match the neighbouring chips' label size/weight. `.account-badge.inline` (and
+   its .usage/.err/.default/.pending siblings) sets font-size/weight at 2-3
+   class specificity in styles.css, so match that here — a bare
+   `.av-deck-account .account-badge` would TIE on specificity and be decided by
+   stylesheet order, which is not a contract worth depending on. The badge's
+   COLOUR is deliberately not touched: account identity (an inline
+   loginColor style, which wins outright) and the usage-severity tint are the
+   badge's whole point and must stay consistent with the sidebar. */
+.av-deck-account .account-badge.inline {
+  font-size: var(--av-fs-small);
+  font-weight: 550;
+  line-height: 1.2;
+  max-width: 160px;
+}
+
 /* ── Remote Control — parity with Claude Code's /remote-control ─────────────
    A ghost trigger in the deck bar (order 2, right after interrupt). Off: quiet.
    On: green "connected" accent + a live dot; clicking opens a small popover with
