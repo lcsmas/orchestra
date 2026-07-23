@@ -271,6 +271,17 @@ function syncMcpServers(loginDir: string, desired: string[], prevKeys: string[])
     /* no global servers available */
   }
   const want = desired.filter((k) => k in globalMcp);
+  // A server can be selected in the Accounts UI yet no longer exist in the
+  // global `~/.claude.json` (renamed, removed, or never defined there). Those
+  // are dropped from `want` above — WARN rather than silently discard, since the
+  // account then never gets that MCP server in any workspace (SDK view AND
+  // terminal alike) with no other signal that it went missing.
+  const dropped = desired.filter((k) => !(k in globalMcp));
+  if (dropped.length > 0) {
+    log.warn(
+      `account-inherit: ${dropped.length} selected MCP server(s) not defined in the global config and were skipped for ${loginDir}: ${dropped.join(', ')}`,
+    );
+  }
   const toRemove = prevKeys.filter((k) => !want.includes(k));
   // Nothing to add and nothing to remove → don't even touch (or create) the file.
   if (want.length === 0 && toRemove.length === 0) return [];
