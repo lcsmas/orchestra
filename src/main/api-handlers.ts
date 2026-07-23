@@ -100,6 +100,7 @@ import {
   sdkSetPermissionMode,
   sdkSetRemoteControl,
   sdkHistory,
+  sdkDefaultModel,
   sdkListSkills,
   sdkStopMany,
 } from './agent-sdk';
@@ -243,6 +244,7 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   agentSdkSetPermissionMode: 'agent:sdkSetPermissionMode',
   agentSdkSetRemoteControl: 'agent:sdkSetRemoteControl',
   agentSdkHistory: 'agent:sdkHistory',
+  agentSdkDefaultModel: 'agent:sdkDefaultModel',
   agentSdkOpenTaskTranscript: 'agent:sdkOpenTaskTranscript',
   agentSkills: 'agent:skills',
   browserShow: 'browser:show',
@@ -804,6 +806,8 @@ export const apiHandlers: ApiHandlerTable = {
   },
 
   agentSdkHistory: async (wsId) => sdkHistory(wsId),
+
+  agentSdkDefaultModel: async (wsId) => sdkDefaultModel(wsId),
 
   // Open a finished background-task's transcript file (the SDK
   // `task_notification.output_file`) with the OS handler, mirroring how

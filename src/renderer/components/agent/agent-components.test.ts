@@ -21,6 +21,7 @@ import {
   fileBase,
   type ToolLike,
 } from './tool-util.ts';
+import { MODEL_CHOICES, describeLiveModel } from './model-util.ts';
 
 /** Terse ToolLike builder for the run-summary tests. */
 function tl(name: string, input: Record<string, unknown> = {}): ToolLike {
@@ -154,4 +155,54 @@ test('fileBase returns the last path segment', () => {
   assert.equal(fileBase('b.ts'), 'b.ts');
   assert.equal(fileBase(''), '');
   assert.equal(fileBase('trailing/'), 'trailing');
+});
+
+// --- Model switcher (model-util) --------------------------------------------
+
+test('MODEL_CHOICES offers Fable and uses date-suffix-free aliases', () => {
+  const values = MODEL_CHOICES.map((c) => c.value);
+  assert.ok(values.includes('claude-fable-5'), 'Fable 5 must be selectable');
+  assert.ok(values.includes('claude-opus-4-8'));
+  // Canonical aliases only — never date-suffixed (e.g. not claude-haiku-4-5-20251001).
+  for (const v of values) {
+    assert.ok(!/-\d{8}$/.test(v), `${v} should not carry a date suffix`);
+  }
+});
+
+test('describeLiveModel maps a known base to its card label', () => {
+  assert.deepEqual(describeLiveModel('claude-opus-4-8'), {
+    label: 'Opus 4.8',
+    description: 'Highly capable — deep work',
+  });
+});
+
+test('describeLiveModel surfaces a [1m] context suffix as a friendly note', () => {
+  // The reported bug: the account default resolves to `claude-opus-4-8[1m]`,
+  // which is NOT a menu entry, so it fell through to showing the raw id.
+  const d = describeLiveModel('claude-opus-4-8[1m]');
+  assert.equal(d.label, 'Opus 4.8 · 1M context');
+  assert.equal(d.description, 'Highly capable — deep work');
+});
+
+test('describeLiveModel handles a [200k] suffix and unknown bases', () => {
+  assert.equal(describeLiveModel('claude-haiku-4-5[200k]').label, 'Haiku 4.5 · 200K context');
+  // Unknown id with no suffix falls back to the id itself.
+  const unknown = describeLiveModel('claude-mystery-9');
+  assert.equal(unknown.label, 'claude-mystery-9');
+  assert.equal(unknown.description, 'Account default model');
+  // Unknown base but a recognizable suffix still surfaces the context note.
+  assert.equal(describeLiveModel('claude-mystery-9[1m]').description, '1M context');
+});
+
+test('describeLiveModel resolves Claude Code short aliases', () => {
+  // settings.json stores the DEFAULT as an alias (e.g. `opus[1m]`), not a full id.
+  assert.deepEqual(describeLiveModel('opus[1m]'), {
+    label: 'Opus 4.8 · 1M context',
+    description: 'Highly capable — deep work',
+  });
+  assert.equal(describeLiveModel('sonnet').label, 'Sonnet 5');
+  assert.equal(describeLiveModel('haiku').label, 'Haiku 4.5');
+  assert.equal(describeLiveModel('fable').label, 'Fable 5');
+  // Case-insensitive on the alias.
+  assert.equal(describeLiveModel('OPUS').label, 'Opus 4.8');
 });

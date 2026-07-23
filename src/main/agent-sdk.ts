@@ -781,6 +781,60 @@ export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
   return transcriptToEvents(text, { seq: 0 });
 }
 
+/** Read the `model` key from a Claude Code `settings.json`, or '' if absent /
+ *  unreadable / not a string. Fail-open: a missing or malformed file is "no
+ *  setting here", never an error. */
+function readSettingsModel(file: string): string {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+    if (parsed && typeof parsed === 'object') {
+      const m = (parsed as { model?: unknown }).model;
+      if (typeof m === 'string' && m.trim()) return m.trim();
+    }
+  } catch {
+    /* absent / unparseable → no setting */
+  }
+  return '';
+}
+
+/** The model this workspace's structured session WILL start on when no explicit
+ *  `ws.model` is set — i.e. the account's default, so the Model dropdown can show
+ *  a real value (e.g. `opus[1m]`) BEFORE the first turn instead of an opaque
+ *  "Account default" placeholder. An explicit `ws.model` (set by `orchestra
+ *  spawn --model` or the dropdown) always wins and is returned verbatim.
+ *
+ *  Otherwise this reads Claude Code's `settings.json` `model` in the SAME
+ *  precedence the SDK loads (`settingSources: ['user','project','local']`, where
+ *  a later source wins): worktree `.claude/settings.local.json` (local) →
+ *  worktree `.claude/settings.json` (project) → the pinned account config dir's
+ *  `settings.json` (user, default `~/.claude`). Returns the raw setting string
+ *  (an ALIAS like `opus[1m]`, which the SDK later resolves to a full id such as
+ *  `claude-opus-4-8[1m]` at `session/init`), or '' when nothing sets it (the
+ *  account/CLI built-in default, which only the SDK can resolve — the renderer
+ *  keeps the placeholder then). Cheap: a few small JSON reads, invoked when the
+ *  structured view mounts without a live session. */
+export function sdkDefaultModel(wsId: string): string {
+  const ws = store.getWorkspace(wsId);
+  if (!ws) return '';
+  if (ws.model?.trim()) return ws.model.trim();
+
+  const configDir = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
+  // Last writer wins → check in reverse precedence and let a higher-priority
+  // source overwrite. local > project > user.
+  const layers = [
+    path.join(configDir, 'settings.json'), // user (lowest)
+    ws.worktreePath ? path.join(ws.worktreePath, '.claude', 'settings.json') : '', // project
+    ws.worktreePath ? path.join(ws.worktreePath, '.claude', 'settings.local.json') : '', // local (highest)
+  ];
+  let model = '';
+  for (const file of layers) {
+    if (!file) continue;
+    const m = readSettingsModel(file);
+    if (m) model = m;
+  }
+  return model;
+}
+
 /** List the skills (slash commands) available to a workspace: the worktree's
  *  `.claude/skills/*` plus the pinned account config dir's (default ~/.claude)
  *  `skills/*`. Project shadows user on a name clash. Cheap directory scan,

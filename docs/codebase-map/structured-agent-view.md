@@ -385,7 +385,34 @@ to the unchanged PTY path.
   live PTY owner or `driveStatusFromEvent`'s own transitions).
 - **`AvMenu`** (`components/agent/AvMenu.tsx`) — the custom dropdown replacing native
   selects in AgentControls (portalled glass panel; see agent-view-design.md).
-- New IPC: `agentSdkHistory` (`agent:sdkHistory`), `agentSkills` (`agent:skills`),
+- **`model-util.ts`** (`components/agent/`, + tests in `agent-components.test.ts`) —
+  pure, React-free model-switcher data/logic so `node --test` can exercise it.
+  `MODEL_CHOICES` is the switcher's model list (**Fable 5, Opus 4.8, Sonnet 5,
+  Haiku 4.5**; canonical aliases, never date-suffixed) — `AgentControls` zips it
+  with `MODEL_ICONS` into `AvMenuItem`s. `describeLiveModel(id)` renders a model
+  the list has no card for into a friendly `{label, description}`: it strips a
+  bracketed context suffix (`[1m]`/`[200k]` → "· 1M context"), maps Claude Code
+  short aliases (`opus`→`claude-opus-4-8`, `sonnet`/`haiku`/`fable`) to a card,
+  and reuses that card's label — so `opus[1m]` / `claude-opus-4-8[1m]` both read
+  "Opus 4.8 · 1M context". Unknown ids fall back to the raw string. The
+  `model`-not-in-list branch in `AgentControls` prepends the result as a `gear`
+  fallback item.
+- **Account-default model in the switcher (pre-session).** Before a turn starts
+  there's no `session.model`; rather than an opaque placeholder, `AgentControls`
+  fetches the model a fresh session *will* run on via **`agentSdkDefaultModel`**
+  (`agent:sdkDefaultModel` → `sdkDefaultModel(wsId)` in agent-sdk.ts) and shows it
+  (through `describeLiveModel`). The resolver returns an explicit `ws.model` if set,
+  else reads Claude Code's `settings.json` `model` in the SDK's load precedence
+  (`['user','project','local']`, last wins): worktree `.claude/settings.local.json`
+  → worktree `.claude/settings.json` → the pinned account config dir's
+  `settings.json` (default `~/.claude`). The stored value is an ALIAS
+  (`opus[1m]`), which the SDK resolves to a full id (`claude-opus-4-8[1m]`) only at
+  `session/init` — so `describeLiveModel`'s alias map is what lets the pre-session
+  trigger read the same friendly label. Returns `''` when nothing configures it
+  (the CLI's own built-in default, resolvable only once a session inits) — the
+  `"Account default"` placeholder remains only in that case.
+- New IPC: `agentSdkHistory` (`agent:sdkHistory`), `agentSdkDefaultModel`
+  (`agent:sdkDefaultModel`), `agentSkills` (`agent:skills`),
   `agentSdkOpenTaskTranscript` (`agent:sdkOpenTaskTranscript`) — opens a finished
   task's `output_file` transcript with the OS handler (`platform.openPath`, guarded
   to a real file; returns `false` when missing), like `openSelfTuneReport`.

@@ -12,6 +12,7 @@
 import React from 'react';
 import type { AgentPermissionMode, AgentSession } from '../../../shared/types';
 import { AvMenu, type AvMenuItem } from './AvMenu';
+import { MODEL_CHOICES, describeLiveModel } from './model-util';
 
 function icon(paths: React.ReactNode, viewBox = '0 0 16 16') {
   return (
@@ -109,31 +110,23 @@ const PERMISSION_ITEMS: (AvMenuItem & { value: AgentPermissionMode })[] = [
   },
 ];
 
+/** Per-model icon + tint, zipped onto the pure {@link MODEL_CHOICES} data
+ *  (kept in model-util.ts so it's unit-testable without React). */
+const MODEL_ICONS: Record<string, { icon: React.ReactNode; tint: string }> = {
+  'claude-fable-5': { icon: sparkles, tint: '#e0a3ff' },
+  'claude-opus-4-8': { icon: sparkles, tint: '#8b7cff' },
+  'claude-sonnet-5': { icon: zap, tint: '#6ea8ff' },
+  'claude-haiku-4-5': { icon: feather, tint: '#7ee787' },
+};
+
 /** Model choices offered in the switcher. The live model is shown even if not
- *  in this list (from session.model). */
-const MODEL_ITEMS: AvMenuItem[] = [
-  {
-    value: 'claude-opus-4-8',
-    label: 'Opus 4.8',
-    description: 'Most capable — deep work',
-    icon: sparkles,
-    tint: '#8b7cff',
-  },
-  {
-    value: 'claude-sonnet-5',
-    label: 'Sonnet 5',
-    description: 'Balanced speed and depth',
-    icon: zap,
-    tint: '#6ea8ff',
-  },
-  {
-    value: 'claude-haiku-4-5-20251001',
-    label: 'Haiku 4.5',
-    description: 'Fastest — light tasks',
-    icon: feather,
-    tint: '#7ee787',
-  },
-];
+ *  in this list (from session.model — e.g. the account default resolves to a
+ *  context-suffixed variant like `claude-opus-4-8[1m]`, surfaced verbatim by
+ *  the `model`-not-in-list fallback below via {@link describeLiveModel}). */
+const MODEL_ITEMS: AvMenuItem[] = MODEL_CHOICES.map((c) => ({
+  ...c,
+  ...(MODEL_ICONS[c.value] ?? { icon: gear, tint: '#949eb0' }),
+}));
 
 export function AgentControls({
   workspaceId,
@@ -151,15 +144,37 @@ export function AgentControls({
 }) {
   const running = session?.running ?? false;
   // Prefer the live session's value when present (it's what's actually active),
-  // else the persisted workspace choice, else the default. This makes the
-  // dropdowns reflect a selection made before the first message is sent.
+  // else the persisted workspace choice. This makes the dropdowns reflect a
+  // selection made before the first message is sent.
   const mode = session?.permissionMode ?? wsPermissionMode ?? 'bypassPermissions';
-  const model = session?.model ?? wsModel ?? '';
+  const explicitModel = session?.model ?? wsModel ?? '';
+
+  // When nothing is explicitly chosen, show the account's DEFAULT model (read
+  // from Claude Code's settings.json) instead of an opaque placeholder, so the
+  // dropdown tells the user which model will actually run. Fetched once per
+  // workspace and only while no explicit model is set; the live `session.model`
+  // (once a turn starts) always supersedes it.
+  const [defaultModel, setDefaultModel] = React.useState('');
+  React.useEffect(() => {
+    if (explicitModel) return; // an explicit choice already answers the question
+    let alive = true;
+    void window.orchestra.agentSdkDefaultModel(workspaceId).then((m) => {
+      if (alive) setDefaultModel(m);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [workspaceId, explicitModel]);
+
+  const model = explicitModel || defaultModel;
 
   const modelItems = MODEL_ITEMS.some((m) => m.value === model)
     ? MODEL_ITEMS
     : model
-      ? [{ value: model, label: model, icon: gear, tint: '#949eb0' }, ...MODEL_ITEMS]
+      ? [
+          { value: model, ...describeLiveModel(model), icon: gear, tint: '#949eb0' },
+          ...MODEL_ITEMS,
+        ]
       : MODEL_ITEMS;
 
   return (
@@ -179,7 +194,7 @@ export function AgentControls({
         <AvMenu
           items={modelItems}
           value={model}
-          placeholder="Default model"
+          placeholder="Account default"
           ariaLabel="Model"
           onSelect={(v) => void window.orchestra.agentSdkSetModel(workspaceId, v || undefined)}
         />

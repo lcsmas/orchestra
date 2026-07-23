@@ -279,6 +279,13 @@ export interface OrchestraAPI {
    *  converted to AgentEvents (empty when there is nothing to backfill). The
    *  renderer folds these through the same queue as live events. */
   agentSdkHistory: (wsId: string) => Promise<AgentEvent[]>;
+  /** The model a fresh structured session WILL start on when no explicit
+   *  `ws.model` is set — the account's default, read from Claude Code's
+   *  `settings.json` precedence. Lets the Model dropdown show the real value
+   *  (e.g. `opus[1m]`) before the first turn instead of a placeholder. '' when
+   *  nothing configures it (the CLI's own built-in default, only resolvable once
+   *  a session inits). */
+  agentSdkDefaultModel: (wsId: string) => Promise<string>;
   /** Open a finished background-task's transcript file (the SDK
    *  `task_notification.output_file`) with the OS handler. Resolves `true` when
    *  opened, `false` when the path is missing/not a file. Backs the "Background

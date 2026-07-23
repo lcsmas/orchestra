@@ -85,6 +85,7 @@ const api: OrchestraAPI = {
   agentSdkSetRemoteControl: (wsId, enabled) =>
     ipcRenderer.invoke('agent:sdkSetRemoteControl', wsId, enabled),
   agentSdkHistory: (wsId) => ipcRenderer.invoke('agent:sdkHistory', wsId),
+  agentSdkDefaultModel: (wsId) => ipcRenderer.invoke('agent:sdkDefaultModel', wsId),
   agentSdkOpenTaskTranscript: (filePath) =>
     ipcRenderer.invoke('agent:sdkOpenTaskTranscript', filePath),
   agentSkills: (wsId) => ipcRenderer.invoke('agent:skills', wsId),
