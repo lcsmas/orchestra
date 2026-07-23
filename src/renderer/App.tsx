@@ -4,6 +4,7 @@ import { Sidebar, OrchestratorIcon, ZapIcon } from './components/Sidebar';
 import { TerminalView } from './components/Terminal';
 import { BranchPicker } from './components/BranchPicker';
 import { NvimView } from './components/NvimView';
+import { BrowserPanel } from './components/BrowserPanel';
 import { RunTerminal } from './components/RunTerminal';
 import { StructuredView } from './components/StructuredView';
 import { SetupBanner } from './components/SetupBanner';
@@ -34,6 +35,14 @@ const MAX_MOUNTED_PANES = 12;
 const NVIM_WIDTH_KEY = 'orchestra.nvimPaneWidthPx';
 const NVIM_WIDTH_DEFAULT = 520;
 const NVIM_WIDTH_MIN = 280;
+
+const BROWSER_WIDTH_KEY = 'orchestra.browserPaneWidthPx';
+const BROWSER_WIDTH_DEFAULT = 640;
+const BROWSER_WIDTH_MIN = 360;
+function loadBrowserWidth(): number {
+  const raw = Number(localStorage.getItem(BROWSER_WIDTH_KEY));
+  return Number.isFinite(raw) && raw >= BROWSER_WIDTH_MIN ? raw : BROWSER_WIDTH_DEFAULT;
+}
 function loadNvimWidth(): number {
   const raw = Number(localStorage.getItem(NVIM_WIDTH_KEY));
   return Number.isFinite(raw) && raw >= NVIM_WIDTH_MIN ? raw : NVIM_WIDTH_DEFAULT;
@@ -147,6 +156,8 @@ export function App() {
   }, [activeId]);
   const [nvimOpen, setNvimOpen] = useState(false);
   const [nvimWidth, setNvimWidth] = useState<number>(() => loadNvimWidth());
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const [browserWidth, setBrowserWidth] = useState<number>(() => loadBrowserWidth());
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => loadSidebarWidth());
   const paneRowRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<HTMLDivElement>(null);
@@ -178,6 +189,37 @@ export function App() {
       document.body.style.userSelect = '';
       setNvimWidth((w) => {
         localStorage.setItem(NVIM_WIDTH_KEY, String(w));
+        return w;
+      });
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
+
+  // Drag to resize the browser pane (mirrors the nvim resizer). Width is clamped
+  // so the primary pane keeps at least BROWSER_WIDTH_MIN too, persisted on end.
+  const onBrowserResizerMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const row = paneRowRef.current;
+    if (!row) return;
+    const startX = e.clientX;
+    const startWidth = browserWidth;
+    const rowRect = row.getBoundingClientRect();
+    const maxWidth = Math.max(BROWSER_WIDTH_MIN, rowRect.width - BROWSER_WIDTH_MIN);
+    const onMove = (ev: MouseEvent) => {
+      const delta = startX - ev.clientX;
+      const next = Math.max(BROWSER_WIDTH_MIN, Math.min(maxWidth, startWidth + delta));
+      setBrowserWidth(next);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      setBrowserWidth((w) => {
+        localStorage.setItem(BROWSER_WIDTH_KEY, String(w));
         return w;
       });
     };
@@ -560,6 +602,23 @@ export function App() {
                   />
                 </svg>
               </button>
+              <button
+                className={`pane-toggle ${browserOpen ? 'active' : ''}`}
+                onClick={() => setBrowserOpen((v) => !v)}
+                title={browserOpen ? 'Hide browser pane' : 'Show browser pane'}
+                aria-label={browserOpen ? 'Hide browser pane' : 'Show browser pane'}
+                aria-pressed={browserOpen}
+              >
+                <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                  <circle cx="8" cy="8" r="5.75" fill="none" stroke="currentColor" strokeWidth="1.3" />
+                  <path
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.1"
+                    d="M2.4 8h11.2M8 2.25c1.6 1.5 2.5 3.6 2.5 5.75S9.6 12.25 8 13.75C6.4 12.25 5.5 10.15 5.5 8S6.4 3.75 8 2.25Z"
+                  />
+                </svg>
+              </button>
               </div>
               <div className="toolbar-sep" aria-hidden="true" />
               {/* Actions — things that DO something to the workspace: restart
@@ -721,6 +780,32 @@ export function App() {
                     style={{ flex: `0 0 ${nvimWidth}px` }}
                   >
                     <NvimView workspaceId={active.id} isActive={nvimOpen} />
+                  </div>
+                </>
+              )}
+              {browserOpen && (
+                <>
+                  <div
+                    className="pane-resizer"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize browser pane"
+                    onMouseDown={onBrowserResizerMouseDown}
+                  />
+                  <div
+                    className="browser-pane"
+                    style={{ flex: `0 0 ${browserWidth}px` }}
+                  >
+                    {/* Hide the native view (isActive=false) whenever a full-page
+                        overlay covers the pane row — the WebContentsView
+                        composits ABOVE the DOM and would otherwise show through
+                        Insights/Resources/Help. */}
+                    <BrowserPanel
+                      workspaceId={active.id}
+                      isActive={
+                        browserOpen && !insightsOpen && !helpOpen && page !== 'resources'
+                      }
+                    />
                   </div>
                 </>
               )}

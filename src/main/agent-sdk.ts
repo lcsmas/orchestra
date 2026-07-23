@@ -29,6 +29,7 @@ import { isRunning as isPtyRunning } from './pty';
 import { getEventsDir } from './events-spool';
 import { reconcileExited, applyAgentEvent, fireNeedsInput, resumeRunning } from './activity';
 import { registerSdkDelivery } from './sdk-delivery';
+import { buildBrowserToolServer } from './agent-browser-tools';
 import {
   normalizeSdkMessage,
   makePermissionRequest,
@@ -628,9 +629,16 @@ async function ensureSession(wsId: string): Promise<Session> {
   // (the same binary the terminal path spawns from PATH) instead; only fall
   // back to the SDK default when none is on PATH (dev-friendly).
   const claudeBin = resolveClaudeBinary(sdkEnv);
+  // In-process browser tools: give the agent an embedded Browser pane it can
+  // drive (navigate/read_page/screenshot/click/type), scoped to THIS wsId so it
+  // can only touch its own workspace's panel. Built via the SDK's
+  // createSdkMcpServer (no subprocess/port). Local (non-remote) sessions only —
+  // a sandboxed/remote agent has no WebContentsView on this host to drive.
+  const browserServer = remote ? null : await buildBrowserToolServer(wsId);
   session.q = query({
     prompt: promptStream(session),
     options: {
+      ...(browserServer ? { mcpServers: { browser: browserServer } } : {}),
       cwd: remote ? '/workspace' : ws.worktreePath,
       includePartialMessages: true,
       // Emit periodic AI-generated one-line progress summaries for running

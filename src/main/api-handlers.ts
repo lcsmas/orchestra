@@ -100,8 +100,17 @@ import {
 } from './agent-sdk';
 import { probeDependencies, type DepsStatus } from './deps';
 import { log, revealLogs, getLogFile } from './logger';
+import * as browserPanel from './browser-panel';
 import type { OrchestraAPI } from '../shared/ipc';
-import type { Account, CreateWorkspaceInput, DiffFile, RepoScripts, Workspace } from '../shared/types';
+import type {
+  Account,
+  BrowserBounds,
+  BrowserPanelState,
+  CreateWorkspaceInput,
+  DiffFile,
+  RepoScripts,
+  Workspace,
+} from '../shared/types';
 
 // The single shared request/response surface of the backend, extracted from
 // index.ts's inline `ipcMain.handle` registrations. The table is keyed by
@@ -231,6 +240,14 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   agentSdkHistory: 'agent:sdkHistory',
   agentSdkOpenTaskTranscript: 'agent:sdkOpenTaskTranscript',
   agentSkills: 'agent:skills',
+  browserShow: 'browser:show',
+  browserHide: 'browser:hide',
+  browserNavigate: 'browser:navigate',
+  browserBack: 'browser:back',
+  browserForward: 'browser:forward',
+  browserReload: 'browser:reload',
+  browserSetBounds: 'browser:setBounds',
+  browserState: 'browser:state',
   nvimStart: 'nvim:start',
   sandboxControlState: 'sandbox:controlState',
   takeSandboxControl: 'sandbox:takeControl',
@@ -534,11 +551,13 @@ export const apiHandlers: ApiHandlerTable = {
 
   deleteWorkspace: (id) => {
     sdkStopMany([id]);
+    browserPanel.destroyPanel(id);
     return deleteWorkspace(id);
   },
 
   deleteWorkspaces: (ids) => {
     sdkStopMany(ids);
+    for (const id of ids) browserPanel.destroyPanel(id);
     return deleteWorkspaces(ids, (done, total) => {
       platform.broadcast('workspaces:deleteProgress', done, total);
     });
@@ -796,6 +815,20 @@ export const apiHandlers: ApiHandlerTable = {
   },
 
   agentSkills: async (wsId) => sdkListSkills(wsId),
+
+  // --- Embedded browser panel (see browser-panel.ts) ---
+  // The renderer opens/positions the native WebContentsView; navigation can also
+  // come from the agent's browser tools, which reach the same panel directly.
+  browserShow: async (wsId: string): Promise<BrowserPanelState> => browserPanel.showPanel(wsId),
+  browserHide: async (wsId: string): Promise<void> => browserPanel.hidePanel(wsId),
+  browserNavigate: (wsId: string, url: string): Promise<BrowserPanelState> =>
+    browserPanel.navigate(wsId, url),
+  browserBack: async (wsId: string): Promise<void> => browserPanel.goBack(wsId),
+  browserForward: async (wsId: string): Promise<void> => browserPanel.goForward(wsId),
+  browserReload: async (wsId: string): Promise<void> => browserPanel.reload(wsId),
+  browserSetBounds: async (wsId: string, bounds: BrowserBounds): Promise<void> =>
+    browserPanel.setBounds(wsId, bounds),
+  browserState: async (wsId: string): Promise<BrowserPanelState> => browserPanel.getState(wsId),
 
   nvimStart: async (id, cols, rows) => {
     const ws = store.getWorkspace(id);

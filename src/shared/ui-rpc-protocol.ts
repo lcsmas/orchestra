@@ -182,6 +182,11 @@ export const WIRE_EVENT_CHANNELS: Readonly<Record<string, string>> = {
   // keyed to a workspace by the `(wsId, event)` args). Broadcast from
   // src/main/agent-sdk.ts; folded into an AgentSession renderer-side.
   'agent:event': 'agentEvent',
+  // The embedded browser panel's navigation state (URL/title/loading/nav),
+  // keyed to a workspace. Broadcast from src/main/browser-panel.ts; drives the
+  // panel's URL bar. Electron-only surface today, but wired here so the event
+  // rides the ui-rpc contract like every other broadcast.
+  'browser:event': 'browserEvent',
   'repo:syncState': 'repoSyncState',
   'usage:update': 'usageUpdate',
   'accounts:usageUpdate': 'accountUsageUpdate',

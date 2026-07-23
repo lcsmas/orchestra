@@ -1082,3 +1082,45 @@ export interface BackgroundTask {
   /** Epoch ms the task reached a terminal state, for the frozen elapsed. */
   endedAt?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Embedded browser panel
+// ---------------------------------------------------------------------------
+//
+// A per-workspace in-window browser (an Electron `WebContentsView` overlaid on
+// the React renderer) that BOTH the user drives manually (URL bar / back /
+// forward) AND the agent drives via native Electron `webContents.debugger`
+// (in-process CDP) — no external Chrome, no debug port, no puppeteer. Modeled
+// on the Claude Code desktop app's "Browser pane". One independent browser per
+// workspace: the main-process registry keys every view by `wsId`, and the
+// agent's browser tools close over their own session's `wsId`, so a workspace's
+// agent can only ever drive that workspace's panel.
+
+/** The live navigation state of one workspace's browser panel, pushed to the
+ *  renderer over `browser:event` so the URL bar / title / nav buttons reflect
+ *  BOTH manual and agent-driven navigation. */
+export interface BrowserPanelState {
+  /** Workspace the panel belongs to. */
+  wsId: string;
+  /** Current committed URL (empty before the first navigation). */
+  url: string;
+  /** Page title, for the tab label. */
+  title: string;
+  /** True while a navigation is in flight (spinner). */
+  loading: boolean;
+  /** Whether history back/forward are available (drives the nav buttons). */
+  canGoBack: boolean;
+  canGoForward: boolean;
+  /** Last navigation error, if the load failed (e.g. DNS/connection). */
+  error?: string;
+}
+
+/** Pixel bounds of the DOM placeholder the native `WebContentsView` must track.
+ *  The renderer measures its `.browser-pane` rect and sends this to main so the
+ *  native view is positioned/sized exactly over the placeholder. */
+export interface BrowserBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}

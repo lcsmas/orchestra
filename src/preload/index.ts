@@ -88,6 +88,14 @@ const api: OrchestraAPI = {
   agentSdkOpenTaskTranscript: (filePath) =>
     ipcRenderer.invoke('agent:sdkOpenTaskTranscript', filePath),
   agentSkills: (wsId) => ipcRenderer.invoke('agent:skills', wsId),
+  browserShow: (wsId) => ipcRenderer.invoke('browser:show', wsId),
+  browserHide: (wsId) => ipcRenderer.invoke('browser:hide', wsId),
+  browserNavigate: (wsId, url) => ipcRenderer.invoke('browser:navigate', wsId, url),
+  browserBack: (wsId) => ipcRenderer.invoke('browser:back', wsId),
+  browserForward: (wsId) => ipcRenderer.invoke('browser:forward', wsId),
+  browserReload: (wsId) => ipcRenderer.invoke('browser:reload', wsId),
+  browserSetBounds: (wsId, bounds) => ipcRenderer.invoke('browser:setBounds', wsId, bounds),
+  browserState: (wsId) => ipcRenderer.invoke('browser:state', wsId),
   nvimStart: (id, cols, rows) => ipcRenderer.invoke('nvim:start', id, cols, rows),
 
   getRepoScripts: (repoPath) => ipcRenderer.invoke('repos:getScripts', repoPath),
@@ -202,6 +210,11 @@ const api: OrchestraAPI = {
     const listener = (_e: unknown, wsId: string, event: unknown) => cb(wsId, event as never);
     ipcRenderer.on('agent:event', listener);
     return () => ipcRenderer.off('agent:event', listener);
+  },
+  onBrowserEvent: (cb) => {
+    const listener = (_e: unknown, wsId: string, state: unknown) => cb(wsId, state as never);
+    ipcRenderer.on('browser:event', listener);
+    return () => ipcRenderer.off('browser:event', listener);
   },
   onRepoSyncState: (cb) => {
     const listener = (_e: unknown, s: unknown) => cb(s as never);

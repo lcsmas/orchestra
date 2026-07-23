@@ -8,6 +8,8 @@ import type {
   AgentPermissionMode,
   AgentPermissionReply,
   AgentSkillInfo,
+  BrowserBounds,
+  BrowserPanelState,
   CreateWorkspaceInput,
   DiffStats,
   EnvStatusItem,
@@ -285,6 +287,25 @@ export interface OrchestraAPI {
    *  composer's `/` autocomplete. */
   agentSkills: (wsId: string) => Promise<AgentSkillInfo[]>;
 
+  // --- Embedded browser panel ---
+  // A per-workspace in-window browser (an Electron WebContentsView) the user
+  // drives manually AND the agent drives via its browser tools. The renderer
+  // owns opening/positioning; navigation state pushes back on `onBrowserEvent`.
+  /** Show the panel for `wsId` (creating the native view on first call) and
+   *  return its current state. Hides any other workspace's panel. */
+  browserShow: (wsId: string) => Promise<BrowserPanelState>;
+  /** Hide the panel (stops compositing) without destroying its page/history. */
+  browserHide: (wsId: string) => Promise<void>;
+  /** Navigate the panel to a URL / bare domain (opens it if needed). */
+  browserNavigate: (wsId: string, url: string) => Promise<BrowserPanelState>;
+  browserBack: (wsId: string) => Promise<void>;
+  browserForward: (wsId: string) => Promise<void>;
+  browserReload: (wsId: string) => Promise<void>;
+  /** Position/size the native view over the renderer's `.browser-pane` rect. */
+  browserSetBounds: (wsId: string, bounds: BrowserBounds) => Promise<void>;
+  /** Current navigation state (a freshly-mounted panel re-requests this). */
+  browserState: (wsId: string) => Promise<BrowserPanelState>;
+
   nvimStart: (id: string, cols: number, rows: number) => Promise<void>;
   onPtyData: (cb: (id: string, data: string) => void) => () => void;
   onPtyExit: (cb: (id: string, code: number) => void) => () => void;
@@ -392,6 +413,10 @@ export interface OrchestraAPI {
    *  This is the hottest event channel (token deltas) — subscribers MUST batch
    *  (RAF-coalesce) rather than setState per event. */
   onAgentEvent: (cb: (wsId: string, event: AgentEvent) => void) => () => void;
+  /** Fires whenever a workspace's embedded browser panel navigates (manually or
+   *  agent-driven): URL, title, loading, and back/forward availability. Drives
+   *  the panel's URL bar / tab / nav buttons. Keyed by workspace id. */
+  onBrowserEvent: (cb: (wsId: string, state: BrowserPanelState) => void) => () => void;
   /** Fires whenever a repo's base-branch sync state changes (started a
    *  fetch, finished a fetch, ahead/behind count moved). One event per
    *  state transition, keyed by repoPath. */

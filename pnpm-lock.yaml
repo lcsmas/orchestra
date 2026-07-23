@@ -53,6 +53,9 @@ importers:
       ws:
         specifier: ^8.21.0
         version: 8.21.0
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
       zustand:
         specifier: ^5.0.2
         version: 5.0.14(@types/react@19.2.17)(react@19.2.7)

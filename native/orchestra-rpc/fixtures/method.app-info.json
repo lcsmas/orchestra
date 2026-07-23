@@ -2,7 +2,7 @@
   "method": "app:info",
   "params": [],
   "result": {
-    "version": "0.5.84",
+    "version": "0.5.137",
     "backendKind": "daemon",
     "orchestraHome": "/tmp/orchestra-rpc-fixtures/home/.orchestra",
     "logPath": ""

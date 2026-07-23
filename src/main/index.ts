@@ -137,6 +137,7 @@ if (!ORCHESTRA_CLI_MODE && process.env.ORCHESTRA_HOME) {
 }
 import { initPlatform } from './platform';
 import { createElectronPlatform } from './platform/electron';
+import { initBrowserPanels } from './browser-panel';
 import { store } from './store';
 import {
   ensureRoot,
@@ -168,6 +169,10 @@ let uiRpcServer: UiRpcServer | null = null;
 // Electron implementation targets the main window via this live accessor —
 // installed at module scope so it is in place before the first store access.
 initPlatform(createElectronPlatform(() => mainWindow));
+
+// The embedded browser panel attaches its per-workspace WebContentsView to the
+// main window's content view; give it the same live accessor.
+initBrowserPanels(() => mainWindow);
 
 // Wrap ipcMain.handle so any error thrown by a handler is logged with its
 // channel before being re-thrown back to the renderer. Without this, a failing

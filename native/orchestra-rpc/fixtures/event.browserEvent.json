@@ -1,0 +1,14 @@
+{
+  "channel": "browserEvent",
+  "args": [
+    "ws-fixture-git",
+    {
+      "wsId": "ws-fixture-git",
+      "url": "https://example.com/",
+      "title": "Example Domain",
+      "loading": false,
+      "canGoBack": false,
+      "canGoForward": false
+    }
+  ]
+}

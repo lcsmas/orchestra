@@ -30,6 +30,7 @@ design decisions, so you get accurate context without grepping the tree first.
 | Native GTK4 frontend (`orchestra-gtk`): backend discovery/attach probe, daemon auto-spawn, version lockstep, remote-control harness, packaging/CI/E2E | `docs/codebase-map/native-ui.md` |
 | Structured agent view: SDK-driven agent pane — `agent-sdk.ts` session manager, `AgentEvent` contract, normalize/fold, `agent:event` channel, StructuredView + tool cards / diffs / permission dialog | `docs/codebase-map/structured-agent-view.md` |
 | Structured agent-view design system: the 3 `av-*` CSS layers, tokens, theming, states, a11y contract the SDK-view components render against | `docs/codebase-map/agent-view-design.md` |
+| Embedded browser panel: per-workspace `WebContentsView`, user + agent shared surface, `webContents.debugger` driving, `mcp__browser__*` SDK tools, URL bar / pane wiring | `docs/codebase-map/browser-panel.md` |
 
 The map is reference material — verify a `file:line` against live source before
 relying on it, since line numbers drift.

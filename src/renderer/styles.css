@@ -2358,6 +2358,114 @@ input:focus, textarea:focus, select:focus {
   display: flex;
   min-height: 0;
 }
+
+/* Embedded browser pane. The web content itself is a native WebContentsView
+   composited over `.browser-holder`; everything here is the surrounding chrome,
+   styled with the app's own tokens so it blends with the rest of the window. */
+.browser-pane {
+  flex: 0 0 640px; /* overridden by inline style once the resizer runs */
+  min-width: 360px;
+  position: relative;
+  display: flex;
+  min-height: 0;
+}
+.browser-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+}
+.browser-panel-hidden {
+  /* Inactive (an overlay covers the pane row): the native view is already
+     hidden from main; collapse the chrome too so nothing bleeds through. */
+  visibility: hidden;
+}
+.browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+  flex: 0 0 auto;
+}
+.browser-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 120ms var(--ease), color 120ms var(--ease);
+}
+.browser-nav-btn:hover:not(:disabled) {
+  background: var(--bg-4);
+  color: var(--text);
+}
+.browser-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.browser-url-form {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.browser-url-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-3);
+  color: var(--text);
+  font-size: 12.5px;
+  font-family: inherit;
+  outline: none;
+}
+.browser-url-input:focus {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+.browser-spinner {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: browser-spin 0.7s linear infinite;
+}
+@keyframes browser-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.browser-error {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: #ffb4b4;
+  background: rgba(220, 80, 80, 0.12);
+  border-bottom: 1px solid rgba(220, 80, 80, 0.25);
+}
+.browser-holder {
+  flex: 1;
+  min-height: 0;
+  /* The native WebContentsView paints here; the white keeps a blank load from
+     flashing the dark app background through before the first frame. */
+  background: #fff;
+}
 .pane-resizer {
   flex: 0 0 6px;
   cursor: col-resize;

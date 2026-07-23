@@ -1,0 +1,13 @@
+{
+  "channel": "agentEvent",
+  "args": [
+    "ws-fixture-git",
+    {
+      "type": "text-delta",
+      "seq": 0,
+      "at": 1700000000000,
+      "index": 0,
+      "text": "Hello"
+    }
+  ]
+}
