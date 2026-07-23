@@ -267,7 +267,19 @@ to the unchanged PTY path.
   `MarkdownBlock` keyed by content (React reuses those DOM subtrees), and re-renders only
   the growing tail block per frame — bounding per-frame work to the current paragraph.
   Measured: a 15.8KB message drops from a ~22ms worst frame to ~1.7ms. Verified by the
-  `__smoke__` harness's block-split-vs-naive equivalence checks at every streaming prefix), **`CodeBlock.tsx`** (syntax highlighting via
+  `__smoke__` harness's block-split-vs-naive equivalence checks at every streaming prefix.
+  **Dangling inline tokens** are closed by **`remend`** (zero-dep, Apache-2.0) applied
+  ONLY to the still-streaming tail block, so a half-written `**bold` / `[link` /
+  `` `code `` renders formatted instead of flashing raw markers; stable blocks and
+  `done` messages skip it (complete by construction). This is an INLINE-only fix —
+  CommonMark already handles unterminated BLOCK constructs correctly (verified: an
+  unclosed ```` ``` ```` fence and a partial GFM table both parse fine), which is why the
+  common "streaming parsers break on unterminated fences" claim does not apply here.
+  Note `remend` marks an unfinished link with `href="streamdown:incomplete-link"`, but
+  react-markdown's protocol allowlist rejects that unknown scheme and rewrites it to an
+  **empty string** before the `a` component sees it — so `isIncompleteLink` tests for a
+  falsy href, and such links render as plain text until the URL arrives),
+  **`CodeBlock.tsx`** (syntax highlighting via
   **Shiki** — `shiki-highlighter.ts` — not Monaco: a static highlighted-HTML surface,
   far lighter on the streaming hot path; highlights ONLY a finalized block, showing
   plain mono while `done===false` so a token delta never re-highlights),

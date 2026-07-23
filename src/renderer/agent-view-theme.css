@@ -320,39 +320,115 @@
  * MARKDOWN prose — reading-tuned type
  * ==========================================================================*/
 
-.av-md { font-size: var(--av-fs-body); line-height: var(--av-lh-prose); }
-.av-md-p { margin: 0 0 0.75em; }
+.av-md { font-size: var(--av-fs-body); line-height: 1.65; }
+.av-md-p { margin: 0 0 0.8em; }
 .av-md-p:last-child { margin-bottom: 0; }
+
+/* Headings — a REAL type scale.
+ *
+ * Every level used to render at the single `--av-fs-h` (15px), so an h1, an h2
+ * and an h3 were pixel-identical and a document's structure was invisible
+ * against 13px body text. Each level now gets its own size/weight, with h5/h6
+ * switching to a dimmer uppercase label rather than shrinking into illegibility.
+ * Shared properties live on `.av-md-h`; per-level rules are tag-qualified, which
+ * also keeps specificity above the defaults layer. */
 .av-md-h {
-  margin: 1.25em 0 0.5em;
   font-weight: 650;
-  line-height: 1.3;
-  letter-spacing: -0.011em;
-  font-size: var(--av-fs-h);
+  line-height: 1.28;
+  letter-spacing: -0.014em;
   color: var(--av-text);
 }
-.av-md-h:first-child { margin-top: 0.1em; }
-.av-md-ul, .av-md-ol { margin: 0.35em 0 0.75em; padding-left: 1.5em; }
-.av-md-ul li, .av-md-ol li { margin: 0.22em 0; }
-.av-md-ul li::marker, .av-md-ol li::marker { color: var(--av-text-faint); }
-.av-md-quote {
-  margin: 0.7em 0; padding: 0.15em 0 0.15em 1em;
-  border-left: 2px solid var(--av-hairline-strong); color: var(--av-text-dim);
+h1.av-md-h { font-size: 19px; font-weight: 680; margin: 1.5em 0 0.55em; letter-spacing: -0.022em; }
+/* h2 is the main section break: a hairline that fades OUT of the accent, so
+   sections are scannable without shouting. */
+h2.av-md-h {
+  font-size: 16px; font-weight: 670; margin: 1.75em 0 0.6em; letter-spacing: -0.017em;
+  padding-bottom: 0.4em;
+  border-bottom: 1px solid transparent;
+  border-image: linear-gradient(90deg,
+      color-mix(in srgb, var(--av-assistant) 55%, transparent) 0%,
+      var(--av-hairline) 42%,
+      transparent 100%) 1;
 }
-.av-md-hr { border: none; border-top: 1px solid var(--av-hairline); margin: 1.2em 0; }
+/* h3 carries a small accent tick instead of a rule — enough to anchor a
+   subsection without competing with the h2 band above it. */
+h3.av-md-h {
+  font-size: 14px; font-weight: 660; margin: 1.5em 0 0.62em;
+  display: flex; align-items: baseline; gap: 0.5em;
+}
+h3.av-md-h::before {
+  content: ''; flex: 0 0 auto;
+  width: 3px; height: 0.82em; border-radius: 2px;
+  background: color-mix(in srgb, var(--av-assistant) 70%, transparent);
+  transform: translateY(0.04em);
+}
+h4.av-md-h { font-size: 13px; font-weight: 660; margin: 1.35em 0 0.5em; }
+/* h5/h6 are uppercase LABELS — they need a touch more air beneath them than
+   their small size suggests, or they collide with the text they introduce. */
+h5.av-md-h {
+  font-size: 12px; font-weight: 650; margin: 1.3em 0 0.45em;
+  color: var(--av-text-dim); text-transform: uppercase; letter-spacing: 0.06em;
+}
+h6.av-md-h {
+  font-size: 11px; font-weight: 640; margin: 1.25em 0 0.42em;
+  color: var(--av-text-faint); text-transform: uppercase; letter-spacing: 0.07em;
+}
+.av-md-h:first-child { margin-top: 0.1em; }
+
+.av-md-ul, .av-md-ol { margin: 0.4em 0 0.85em; padding-left: 1.35em; }
+.av-md-ul li, .av-md-ol li { margin: 0.26em 0; padding-left: 0.1em; }
+/* Accent-tinted markers so a list reads as structure, not grey mush. Nested
+   levels fall back to the faint ink so depth still de-emphasises. */
+.av-md-ul li::marker { color: color-mix(in srgb, var(--av-assistant) 62%, transparent); }
+.av-md-ol li::marker {
+  color: color-mix(in srgb, var(--av-assistant) 70%, transparent);
+  font-weight: 640; font-size: 0.92em;
+}
+.av-md-ul ul li::marker, .av-md-ol ul li::marker { color: var(--av-text-faint); }
+.av-md-ul ul, .av-md-ol ol, .av-md-ul ol, .av-md-ol ul { margin: 0.26em 0 0.1em; }
+/* Blockquote: an accent rail over a tint that fades out to the right, so it
+   reads as a called-out aside rather than an indented paragraph. */
+.av-md-quote {
+  margin: 0.95em 0; padding: 0.55em 0.9em 0.55em 1.05em;
+  border-left: 2px solid color-mix(in srgb, var(--av-assistant) 60%, transparent);
+  border-radius: 0 8px 8px 0;
+  color: var(--av-text-dim);
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--av-assistant) 7%, transparent) 0%,
+    transparent 68%);
+}
+.av-md-quote p { margin-bottom: 0.45em; }
+.av-md-quote p:last-child { margin-bottom: 0; }
+/* A centred fade reads softer than a full-width flat line. */
+.av-md-hr {
+  border: none; height: 1px; margin: 1.7em 0;
+  background: linear-gradient(90deg,
+    transparent 0%, var(--av-hairline-strong) 18%,
+    var(--av-hairline-strong) 82%, transparent 100%);
+}
 .av-md-code-inline {
-  font-family: var(--av-mono); font-size: 0.875em; font-weight: 600; padding: 0.12em 0.4em;
-  border-radius: 5px; background: var(--av-code-bg); border: 1px solid var(--av-code-border); color: var(--av-text);
+  font-family: var(--av-mono); font-size: 0.86em; font-weight: 600; padding: 0.14em 0.42em;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--av-assistant) 11%, var(--av-code-bg));
+  border: 1px solid color-mix(in srgb, var(--av-assistant) 20%, var(--av-code-border));
+  color: color-mix(in srgb, var(--av-assistant) 30%, var(--av-text));
 }
 .av-md-link {
   color: var(--av-assistant); text-decoration: underline; text-underline-offset: 3px;
-  text-decoration-color: color-mix(in srgb, var(--av-assistant) 40%, transparent);
+  text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in srgb, var(--av-assistant) 45%, transparent);
   border-bottom: none;
   transition: text-decoration-color 140ms var(--av-ease);
 }
 .av-md-link:hover { text-decoration-color: var(--av-assistant); }
-.av-md-strong { font-weight: 640; color: var(--av-text); }
-.av-md-em { font-style: italic; }
+/* Bold leans a touch toward the accent so emphasis pops out of the paragraph.
+   Kept at 16% — enough to read as deliberate, low enough that it stays body
+   text rather than looking like a link (which is a full-accent underline). */
+.av-md-strong {
+  font-weight: 670;
+  color: color-mix(in srgb, var(--av-assistant) 16%, var(--av-text));
+}
+.av-md-em { font-style: italic; color: var(--av-text-dim); }
 
 /* ============================================================================
  * STREAMING CURSOR — terminal cadence, terminal blue

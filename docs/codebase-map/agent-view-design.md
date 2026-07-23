@@ -142,6 +142,19 @@ viewport width; `--av-measure` now only bounds the user bubble's fit-content max
 Markdown
 (`markdown.tsx`): `.av-md`, `.av-md-{p,h,ul,ol,quote,hr,code-inline,link,strong,em}`.
 
+**Heading scale.** All six levels share the `.av-md-h` class, but the size ladder
+is **tag-qualified** (`h1.av-md-h` … `h6.av-md-h`) in both
+`agent-view-defaults.css:41` (bare sizes) and `agent-view-theme.css:326` (the real
+scale + accent treatment). Before this, every level rendered at the single
+`--av-fs-h` (15px), so h1/h2/h3 were pixel-identical and document structure was
+invisible. Scale: 19/16/14/13px, with h5–h6 as dimmed uppercase labels (12/11px).
+Accent treatments, all `color-mix`-ed off `--av-assistant` so they follow the
+light theme automatically: h2 has a `border-image` hairline that fades out of the
+accent, h3 a 3px accent tick via `::before` (the h3 rule is `display:flex` to lay
+it out), list `::marker`s are accent-tinted (nested levels fall back to faint),
+`.av-md-quote` is an accent rail over a fading tint, and `.av-md-code-inline` /
+`.av-md-strong` carry a light accent tint.
+
 Thinking (`ThinkingIndicator.tsx`): `.av-thinking` > `.av-thinking-dots` >
 `.av-thinking-dot` ×3 + `.av-thinking-label`. (Indicator, not a text panel —
 Phase 0 finding #1: Opus redacts cleartext thinking.)

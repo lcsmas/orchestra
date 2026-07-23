@@ -2,8 +2,21 @@ import React, { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remend from 'remend';
 import { CodeBlock } from './CodeBlock';
 import { partitionStreamingMarkdown } from '../../../shared/markdown-blocks';
+
+/**
+ * A link whose destination hasn't finished streaming is closed by `remend` with
+ * the placeholder href `streamdown:incomplete-link`. react-markdown's own
+ * protocol allowlist (http/https/irc/mailto/xmpp) rejects that unknown scheme
+ * and rewrites it to an EMPTY string before our `a` component ever sees it —
+ * verified against the real pipeline, the component receives `""`. So an empty
+ * href is the signal to render plain text rather than a dead link.
+ */
+function isIncompleteLink(href: string | undefined): boolean {
+  return !href;
+}
 
 interface Props {
   /** The raw markdown text (may be a partial stream). */
@@ -69,6 +82,10 @@ function MarkdownBlockImpl({ text, done }: Props) {
       // Links open externally, never navigate the renderer away from the app.
       a(props) {
         const { href, children } = props as { href?: string; children?: React.ReactNode };
+        // A link whose destination hasn't streamed in yet renders as plain text
+        // so a mid-stream click can't hit a dead href; it becomes a real link on
+        // the next delta once the `](url)` arrives. See {@link isIncompleteLink}.
+        if (isIncompleteLink(href)) return <>{children}</>;
         return (
           <a className="av-md-link" href={href} target="_blank" rel="noreferrer">
             {children}
@@ -100,9 +117,20 @@ function MarkdownBlockImpl({ text, done }: Props) {
     [done],
   );
 
+  // Close dangling INLINE tokens while this block is still streaming, so a
+  // half-written `**bold` / `[link` / `` `code `` renders as formatted text
+  // instead of flashing its raw markers on screen for a frame. Only the active
+  // tail block is ever incomplete — a stable block is final by construction, so
+  // it skips this work entirely (and `done` messages skip it altogether).
+  //
+  // Note this is an INLINE-only fix: CommonMark already handles unterminated
+  // BLOCK constructs correctly (an unclosed ```fence``` and a partial GFM table
+  // both parse fine), so `remend` deliberately leaves those alone.
+  const source = useMemo(() => (done ? text : remend(text)), [text, done]);
+
   return (
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-      {text}
+      {source}
     </ReactMarkdown>
   );
 }
