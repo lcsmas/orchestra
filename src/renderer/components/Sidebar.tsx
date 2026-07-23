@@ -11,6 +11,7 @@ import type {
 } from '../../shared/types';
 import { isScratchLike, canOrchestrate } from '../../shared/types';
 import { groupByHost, hostLabel } from '../host-grouping';
+import { queuedTickets as selectQueuedTickets } from '../../shared/linear-tickets-queue';
 import { SoundSettings } from './SoundSettings';
 import { AgentViewSettings } from './AgentViewSettings';
 import { LinearSettings } from './LinearSettings';
@@ -995,10 +996,10 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   // same issue twice. The workspace must still EXIST: main clears a dangling
   // pointer on its next refresh, but re-checking here means a just-deleted
   // workspace brings its ticket back into the queue immediately.
-  const queuedTickets = useMemo(() => {
-    const live = new Set(workspaces.map((w) => w.id));
-    return tickets.filter((t) => !t.workspaceId || !live.has(t.workspaceId));
-  }, [tickets, workspaces]);
+  const queuedTickets = useMemo(
+    () => selectQueuedTickets(tickets, workspaces.map((w) => w.id)),
+    [tickets, workspaces],
+  );
 
   const onSpawnFromTicket = useCallback(
     (ticket: PinnedTicket) => {
