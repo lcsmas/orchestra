@@ -140,6 +140,11 @@ const api: OrchestraAPI = {
   sampleResources: () => ipcRenderer.invoke('resources:sample'),
   findPR: (id) => ipcRenderer.invoke('git:findPR', id),
   verifyLinear: (id) => ipcRenderer.invoke('linear:verify', id),
+  listTickets: () => ipcRenderer.invoke('tickets:list'),
+  refreshTickets: () => ipcRenderer.invoke('tickets:refresh'),
+  removeTicket: (identifier) => ipcRenderer.invoke('tickets:remove', identifier),
+  spawnFromTicket: (identifier, repoPath) =>
+    ipcRenderer.invoke('tickets:spawn', identifier, repoPath),
   listBranches: (id) => ipcRenderer.invoke('git:listBranches', id),
   switchBranch: (id, branch) => ipcRenderer.invoke('git:switchBranch', id, branch),
   mergeWorktree: (id) => ipcRenderer.invoke('git:merge', id),
@@ -161,6 +166,11 @@ const api: OrchestraAPI = {
     return () => ipcRenderer.off('selfTune:output', listener);
   },
 
+  onTicketsUpdate: (cb) => {
+    const listener = (_e: unknown, tickets: unknown) => cb(tickets as never);
+    ipcRenderer.on('tickets:update', listener);
+    return () => ipcRenderer.off('tickets:update', listener);
+  },
   onWorkspaceUpdate: (cb) => {
     const listener = (_e: unknown, w: unknown) => cb(w as never);
     ipcRenderer.on('workspace:update', listener);

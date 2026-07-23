@@ -141,6 +141,13 @@ Usage:
                                                  exit 0 = landed, 1 = unmerged commits remain
   orchestra whoami                               Print THIS workspace's own record (id, branch,
                                                  kind, orchestrator role, parent, repo, base)
+  orchestra linear add <url|TEAM-123> [--repo <path>] [--spawn] [--model <m>]
+                                                 Pin a Linear ticket into the sidebar
+                                                 (--spawn: also create a worktree + agent for it)
+  orchestra linear list [--mine]                 List pinned tickets (--mine: your open Linear issues)
+  orchestra linear rm <url|TEAM-123>             Un-pin a ticket (never touches Linear)
+  orchestra linear pin <url|TEAM-123> [--workspace <id>]
+                                                 Attach a ticket to an existing workspace
   orchestra add-repo <path>                       Register a repo by path
   orchestra delete <id> [--yes]                  Delete a workspace (worktree + branch)
   orchestra accounts                              List configured Claude accounts (id + label)
@@ -424,6 +431,120 @@ async function main(argv: string[]): Promise<void> {
       const w = Math.max(...lines.map(([k]) => k.length));
       process.stdout.write(lines.map(([k, v]) => `${k.padEnd(w)}  ${v}`).join('\n') + '\n');
       return;
+    }
+
+    case 'linear': {
+      // Noun-first namespace: Linear is a second noun with several verbs, so
+      // nesting keeps `orchestra --help` legible. Every other CLI verb acts on
+      // workspaces.
+      const [sub, ...subArgs] = args;
+      switch (sub) {
+        case 'add': {
+          const { value: repo, rest: r1 } = takeFlag(subArgs, '--repo');
+          const { value: model, rest: r2 } = takeFlag(r1, '--model');
+          const { present: spawn, rest: r3 } = takeBoolFlag(r2, '--spawn');
+          const ref = r3[0];
+          if (!ref) {
+            fail(
+              'usage: orchestra linear add <ticket-url|TEAM-123> [--repo <path>] [--spawn] [--model <m>]',
+            );
+          }
+          const body: Record<string, unknown> = { ref, from: selfWorkspaceId() };
+          if (repo !== undefined) body.repoPath = path.resolve(repo);
+          if (model !== undefined) body.model = model;
+          if (spawn) body.spawn = true;
+          const res = await request('/linearAdd', body);
+          if (!res.ok) fail(res.error ?? 'failed to pin ticket');
+          const ticket = res.ticket as { identifier?: string; title?: string } | undefined;
+          process.stdout.write(
+            `Pinned ${ticket?.identifier ?? ref}${ticket?.title ? ` — ${ticket.title}` : ''}\n`,
+          );
+          if (res.workspaceId) {
+            process.stdout.write(
+              `Spawned ${res.workspaceId as string} on branch ${res.branch as string}\n`,
+            );
+          } else if (res.error) {
+            // Pinned, but the requested spawn did not happen — surface the
+            // reason instead of printing an unqualified success.
+            process.stderr.write(`${res.error as string}\n`);
+          }
+          return;
+        }
+        case 'list': {
+          const { present: mine, rest } = takeBoolFlag(subArgs, '--mine');
+          void rest;
+          const res = await request('/linearList', { mine });
+          if (!res.ok) fail(res.error ?? 'failed to list tickets');
+          if (mine) {
+            const issues =
+              (res.issues as Array<{
+                identifier: string;
+                title: string;
+                state?: { name?: string };
+              }> | undefined) ?? [];
+            if (issues.length === 0) {
+              process.stdout.write('No open Linear issues assigned to you.\n');
+              return;
+            }
+            const rows = issues.map((i) => ({
+              id: i.identifier,
+              state: i.state?.name ?? '',
+              title: i.title,
+            }));
+            process.stdout.write(`${table(rows, ['id', 'state', 'title'])}\n`);
+            return;
+          }
+          const tickets =
+            (res.tickets as Array<{
+              identifier: string;
+              title: string;
+              state?: { name?: string };
+              workspaceId?: string;
+            }> | undefined) ?? [];
+          if (tickets.length === 0) {
+            process.stdout.write('No pinned tickets.\n');
+            return;
+          }
+          const rows = tickets.map((t) => ({
+            id: t.identifier,
+            state: t.state?.name ?? '',
+            // A graduated ticket (one with a workspace) is not in the sidebar
+            // queue any more — say so rather than showing it as pending.
+            workspace: t.workspaceId ? t.workspaceId.slice(0, 8) : '-',
+            title: t.title,
+          }));
+          process.stdout.write(`${table(rows, ['id', 'state', 'workspace', 'title'])}\n`);
+          return;
+        }
+        case 'rm': {
+          const ref = subArgs[0];
+          if (!ref) fail('usage: orchestra linear rm <ticket-url|TEAM-123>');
+          const res = await request('/linearRemove', { ref });
+          if (!res.ok) fail(res.error ?? 'failed to un-pin ticket');
+          process.stdout.write(`Un-pinned ${res.identifier as string}\n`);
+          return;
+        }
+        case 'pin': {
+          const { value: workspaceId, rest } = takeFlag(subArgs, '--workspace');
+          const ref = rest[0];
+          if (!ref) fail('usage: orchestra linear pin <ticket-url|TEAM-123> [--workspace <id>]');
+          const res = await request('/linearPin', {
+            ref,
+            workspaceId,
+            from: selfWorkspaceId(),
+          });
+          if (!res.ok) fail(res.error ?? 'failed to pin ticket to workspace');
+          process.stdout.write(
+            `Pinned ${res.identifier as string} to workspace ${res.workspaceId as string}\n`,
+          );
+          return;
+        }
+        default:
+          fail(
+            `unknown linear subcommand: ${sub ?? '(none)'}\n\n` +
+              'usage: orchestra linear <add|list|rm|pin> …',
+          );
+      }
     }
 
     case 'add-repo': {

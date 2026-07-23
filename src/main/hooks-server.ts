@@ -19,6 +19,12 @@ import {
   dispatchMigrateAccountRequest,
   dispatchAccountsListRequest,
 } from './workspaces';
+import {
+  dispatchLinearAddRequest,
+  dispatchLinearListRequest,
+  dispatchLinearPinRequest,
+  dispatchLinearRemoveRequest,
+} from './linear-tickets';
 import { dispatchLoginUrlRequest } from './login-url';
 import { log } from './logger';
 
@@ -269,6 +275,42 @@ export async function startHooksServer(): Promise<void> {
               send(200, dispatchLoginUrlRequest({ accountId: msg.accountId, url: msg.url }));
             } else {
               send(200, { ok: false, error: 'missing accountId or url' });
+            }
+          } else if (route === '/linearAdd') {
+            if (typeof msg.ref === 'string') {
+              send(
+                200,
+                await dispatchLinearAddRequest({
+                  ref: msg.ref,
+                  repoPath: typeof msg.repoPath === 'string' ? msg.repoPath : undefined,
+                  spawn: msg.spawn === true,
+                  model: typeof msg.model === 'string' ? msg.model : undefined,
+                  from: typeof msg.from === 'string' ? msg.from : undefined,
+                }),
+              );
+            } else {
+              send(200, { ok: false, error: 'missing ref' });
+            }
+          } else if (route === '/linearList') {
+            send(200, await dispatchLinearListRequest({ mine: msg.mine === true }));
+          } else if (route === '/linearRemove') {
+            if (typeof msg.ref === 'string') {
+              send(200, await dispatchLinearRemoveRequest({ ref: msg.ref }));
+            } else {
+              send(200, { ok: false, error: 'missing ref' });
+            }
+          } else if (route === '/linearPin') {
+            if (typeof msg.ref === 'string') {
+              send(
+                200,
+                await dispatchLinearPinRequest({
+                  ref: msg.ref,
+                  workspaceId: typeof msg.workspaceId === 'string' ? msg.workspaceId : undefined,
+                  from: typeof msg.from === 'string' ? msg.from : undefined,
+                }),
+              );
+            } else {
+              send(200, { ok: false, error: 'missing ref' });
             }
           } else if (route === '/accounts') {
             send(200, dispatchAccountsListRequest());

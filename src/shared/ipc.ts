@@ -14,6 +14,7 @@ import type {
   DiffStats,
   EnvStatusItem,
   LinearIssue,
+  PinnedTicket,
   LinearKeyCheck,
   LinearKeySource,
   PRsForBranch,
@@ -342,6 +343,17 @@ export interface OrchestraAPI {
    *  Resolves the real issue, or null if the branch encodes no issue, the issue
    *  doesn't exist, or there's no/invalid LINEAR_API_KEY. */
   verifyLinear: (id: string) => Promise<LinearIssue | null>;
+  /** Pinned Linear tickets — the sidebar's Tickets section. */
+  listTickets: () => Promise<PinnedTicket[]>;
+  /** Re-fetch every pinned ticket from Linear in ONE batched request and
+   *  return the refreshed list. Throws if Linear is unreachable / unauthorized,
+   *  so the caller can distinguish that from "nothing pinned". */
+  refreshTickets: () => Promise<PinnedTicket[]>;
+  /** Un-pin a ticket by identifier. Never modifies the issue in Linear. */
+  removeTicket: (identifier: string) => Promise<void>;
+  /** Create a worktree + agent for a pinned ticket and graduate it out of the
+   *  Tickets section. `repoPath` must be a registered repo. */
+  spawnFromTicket: (identifier: string, repoPath: string) => Promise<{ workspaceId: string }>;
   listBranches: (id: string) => Promise<string[]>;
   switchBranch: (id: string, branch: string) => Promise<Workspace>;
   mergeWorktree: (id: string) => Promise<{ status: 'requested' }>;
@@ -384,6 +396,9 @@ export interface OrchestraAPI {
   onSelfTuneOutput: (cb: (runId: string, chunk: string) => void) => () => void;
 
   // Events
+  /** Pushed whenever the pinned-ticket list changes (pin/un-pin/refresh/graduate). */
+  onTicketsUpdate: (cb: (tickets: PinnedTicket[]) => void) => () => void;
+
   onWorkspaceUpdate: (cb: (w: Workspace) => void) => () => void;
   onWorkspaceRemoved: (cb: (id: string) => void) => () => void;
   /** Batched removal: fires once with all ids from a `deleteWorkspaces` call so

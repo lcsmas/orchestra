@@ -16,6 +16,11 @@ import {
   getLinearKeySource,
   resetLinearAuthState,
 } from './linear';
+import {
+  dispatchLinearRemoveRequest,
+  refreshPinnedTickets,
+  spawnWorkspaceForTicket,
+} from './linear-tickets';
 import { setLinearApiKey, clearLinearApiKey } from './secrets';
 import { getEnvStatus } from './env-status';
 import {
@@ -257,6 +262,10 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   sampleResources: 'resources:sample',
   findPR: 'git:findPR',
   verifyLinear: 'linear:verify',
+  listTickets: 'tickets:list',
+  refreshTickets: 'tickets:refresh',
+  removeTicket: 'tickets:remove',
+  spawnFromTicket: 'tickets:spawn',
   listBranches: 'git:listBranches',
   switchBranch: 'git:switchBranch',
   mergeWorktree: 'git:merge',
@@ -902,6 +911,23 @@ export const apiHandlers: ApiHandlerTable = {
     // poll; the underlying computation is memoized on (branch tip, releases).
     void detectAndUpdateReleaseState(id).catch(() => {});
     return findPullRequest(ws.repoPath, ws.branch);
+  },
+
+  listTickets: async () => store.tickets,
+
+  refreshTickets: async () => refreshPinnedTickets(),
+
+  removeTicket: async (identifier) => {
+    const res = await dispatchLinearRemoveRequest({ ref: identifier });
+    if (!res.ok) throw new Error(res.error ?? 'failed to un-pin ticket');
+  },
+
+  spawnFromTicket: async (identifier, repoPath) => {
+    const res = await spawnWorkspaceForTicket(identifier, repoPath);
+    if (!res.ok || !res.workspaceId) {
+      throw new Error(res.error ?? 'failed to spawn workspace for ticket');
+    }
+    return { workspaceId: res.workspaceId };
   },
 
   verifyLinear: async (id) => {

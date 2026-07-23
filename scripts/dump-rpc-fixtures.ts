@@ -389,6 +389,7 @@ const EVENT_IPC_CHANNELS: Record<EventMember, string> = {
   onAccountUsageUpdate: 'accounts:usageUpdate',
   onWorkspaceAccountsUpdate: 'accounts:workspaceAccounts',
   onReposUpdate: 'repos:update',
+  onTicketsUpdate: 'tickets:update',
 };
 
 async function captureEvents(): Promise<void> {
@@ -467,6 +468,7 @@ async function captureEvents(): Promise<void> {
       },
     ],
     onReposUpdate: [store.repos],
+    onTicketsUpdate: [store.tickets],
   };
 
   const captured = new Map<string, { channel: string; args: unknown[] }>();
