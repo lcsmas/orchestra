@@ -159,6 +159,18 @@ export function App() {
   const [nvimWidth, setNvimWidth] = useState<number>(() => loadNvimWidth());
   const [browserOpen, setBrowserOpen] = useState(false);
   const [browserWidth, setBrowserWidth] = useState<number>(() => loadBrowserWidth());
+
+  // Auto-open the browser pane when the ACTIVE workspace's agent navigates it
+  // (the agent's `navigate` tool opens the WebContentsView main-side, but the
+  // renderer pane only mounts when `browserOpen` is true). A navigation with a
+  // real URL that lands while the pane is closed is the agent — the user can't
+  // drive a closed pane — so reveal it. Scoped to the active workspace so a
+  // background agent's browsing doesn't yank the pane open on an unrelated one.
+  useEffect(() => {
+    return window.orchestra.onBrowserEvent((wsId, state) => {
+      if (wsId === useStore.getState().activeId && state.url) setBrowserOpen(true);
+    });
+  }, []);
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => loadSidebarWidth());
   const paneRowRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<HTMLDivElement>(null);

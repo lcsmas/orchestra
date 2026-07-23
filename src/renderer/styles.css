@@ -2506,21 +2506,21 @@ input:focus, textarea:focus, select:focus {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: var(--text-dim);
+  color: var(--text);
   cursor: pointer;
   transition: background 120ms var(--ease), color 120ms var(--ease);
 }
 .browser-nav-btn:hover:not(:disabled) {
   background: var(--bg-4);
-  color: var(--text);
+  color: var(--accent);
 }
 .browser-nav-btn:disabled {
-  opacity: 0.35;
+  opacity: 0.3;
   cursor: default;
 }
 .browser-url-form {
