@@ -146,9 +146,9 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   new status/compact-boundary/command-output events render the result. The
   composer autocomplete merges on-disk skills with `session.slashCommands`
   (now captured from init, along with `session.mcpServers`).
-- **CC-desktop parity in the UI** — `ContextGauge` in TurnFooter ("N% context
-  left", amber ≤25% / red ≤10%, from turn-end's `contextWindow`/
-  `contextUsedTokens` lifted off `modelUsage`); **Esc interrupts** the
+- **CC-desktop parity in the UI** — `ContextGauge` in TurnFooter ("N% used" +
+  a small progress bar, amber ≥75% used / red ≥90%, from turn-end's
+  `contextWindow`/`contextUsedTokens` lifted off `modelUsage`); **Esc interrupts** the
   in-flight turn from the composer; **drag-and-drop** files onto the composer
   (images → attachments, other files → absolute path inserted);
   **ExitPlanMode renders a plan-review card** (markdown plan +
@@ -405,7 +405,9 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   multi-question requests one at a time — Back/Next/step-dots — so the dialog
   never overflows the viewport; single questions render directly**),
   `AgentControls`,
-  **`TurnFooter`** (turn cost/token/duration once a turn ends; while a turn is in
+  **`TurnFooter`** (slim single-row footer once a turn ends — cost, turn count,
+  context-used gauge; token/duration detail lives in the cost chip's tooltip;
+  while a turn is in
   flight it renders the **real-time "working" readout** — animated spark icon,
   **elapsed time counting up** from `session.turnStartedAt`, and a **live token
   estimate** from `session.liveOutputChars` (~chars/4) that ticks up and snaps to

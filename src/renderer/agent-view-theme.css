@@ -1892,9 +1892,23 @@ h6.av-md-h {
   color: var(--av-text-faint); margin-bottom: 3px;
 }
 
-/* Context-left gauge in the turn footer (CC parity). */
+/* Context-used gauge in the turn footer: "N% used" + a small progress bar. */
+.av-turn-context { gap: 7px; }
+.av-turn-context-bar {
+  align-self: center;
+  width: 64px; height: 4px; border-radius: 2px;
+  background: var(--av-hairline-strong);
+  overflow: hidden;
+}
+.av-turn-context-fill {
+  display: block; height: 100%; border-radius: inherit;
+  background: var(--av-text-faint);
+  transition: width 300ms var(--av-ease);
+}
 .av-turn-context-low .av-turn-stat-value { color: var(--av-warn); }
+.av-turn-context-low .av-turn-context-fill { background: var(--av-warn); }
 .av-turn-context-critical .av-turn-stat-value { color: var(--av-error); }
+.av-turn-context-critical .av-turn-context-fill { background: var(--av-error); }
 
 /* Transient turn status in the running footer ("Compacting…", "API 529 —
    retrying in 8s"). */

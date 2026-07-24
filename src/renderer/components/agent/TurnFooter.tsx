@@ -1,8 +1,10 @@
 // Turn footer for the structured agent view: renders AgentSession.lastTurn —
-// total cost, token usage (input/output/cache), turns, duration — plus a
-// running session total. Renders a clear, non-crashing ERROR state when the last
-// result was an is_error / api_error result (a transient 500 shows as
-// "API error — retrying", not a crash; see spike note 6).
+// deliberately slim (one row): cost, turn count, and a context-used gauge with
+// a progress bar. Token/duration details live in the stats' tooltips rather
+// than as their own chips — the user reads them rarely, and the extra chips
+// used to wrap the deck bar onto a second row. Renders a clear, non-crashing
+// ERROR state when the last result was an is_error / api_error result (a
+// transient 500 shows as "API error — retrying", not a crash; see spike note 6).
 
 import { useEffect, useState } from 'react';
 import type { AgentSession, AgentTurnEndEvent } from '../../../shared/types';
@@ -91,32 +93,24 @@ export function TurnFooter({ session }: { session: AgentSession | undefined }) {
   const cacheTotal = usage
     ? usage.cacheCreationInputTokens + usage.cacheReadInputTokens
     : 0;
+  // Token + duration detail rides on the cost chip's tooltip instead of
+  // rendering as separate chips (slim single-row footer).
+  const costDetail = [
+    `Session total ${formatCost(session.totalCostUsd)}`,
+    usage &&
+      `Tokens: ${formatTokens(usage.inputTokens)} in · ${formatTokens(usage.outputTokens)} out · ${formatTokens(cacheTotal)} cache`,
+    typeof turn.durationMs === 'number' && `Last turn took ${formatDuration(turn.durationMs)}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   return (
     <div className="av-turn-footer" role="status">
       {typeof turn.costUsd === 'number' && (
-        <Stat
-          label="cost"
-          value={formatCost(turn.costUsd)}
-          title={`Session total ${formatCost(session.totalCostUsd)}`}
-        />
-      )}
-      {usage && (
-        <>
-          <Stat label="in" value={formatTokens(usage.inputTokens)} title="Input tokens" />
-          <Stat label="out" value={formatTokens(usage.outputTokens)} title="Output tokens" />
-          <Stat
-            label="cache"
-            value={formatTokens(cacheTotal)}
-            title={`Cache: ${usage.cacheReadInputTokens} read + ${usage.cacheCreationInputTokens} written`}
-          />
-        </>
+        <Stat label="cost" value={formatCost(turn.costUsd)} title={costDetail} />
       )}
       {turn.numTurns > 0 && (
         <Stat label={turn.numTurns === 1 ? 'turn' : 'turns'} value={String(turn.numTurns)} />
-      )}
-      {typeof turn.durationMs === 'number' && (
-        <Stat label="took" value={formatDuration(turn.durationMs)} />
       )}
       <ContextGauge turn={turn} />
     </div>
@@ -124,27 +118,30 @@ export function TurnFooter({ session }: { session: AgentSession | undefined }) {
 }
 
 /**
- * "Context left" readout — CC-desktop parity, and the most-felt daily gap: long
- * sessions used to hit the context ceiling with zero warning. Data comes free
- * on every result message (`contextUsedTokens` ≈ the final API call's total
- * input+output; `contextWindow` from modelUsage). Quiet by default; turns
- * amber under 25% left and red under 10%.
+ * Context-used gauge — the most-felt daily gap: long sessions used to hit the
+ * context ceiling with zero warning. Data comes free on every result message
+ * (`contextUsedTokens` ≈ the final API call's total input+output;
+ * `contextWindow` from modelUsage). Reads as "N% used" plus a small progress
+ * bar; quiet by default, amber past 75% used and red past 90%.
  */
 function ContextGauge({ turn }: { turn: AgentTurnEndEvent }) {
   const used = turn.contextUsedTokens;
   const window = turn.contextWindow;
   if (!used || !window || window <= 0) return null;
-  const leftPct = Math.max(0, Math.min(100, Math.round((1 - used / window) * 100)));
-  const level = leftPct <= 10 ? 'critical' : leftPct <= 25 ? 'low' : 'ok';
+  const usedPct = Math.max(0, Math.min(100, Math.round((used / window) * 100)));
+  const level = usedPct >= 90 ? 'critical' : usedPct >= 75 ? 'low' : 'ok';
   return (
     <div
       className={`av-turn-stat av-turn-context av-turn-context-${level}`}
-      title={`${formatTokens(used)} of ${formatTokens(window)} context tokens in use${
+      title={`Context: ${formatTokens(used)} of ${formatTokens(window)} tokens in use${
         level !== 'ok' ? ' — consider /compact' : ''
       }`}
     >
-      <span className="av-turn-stat-value">{leftPct}%</span>
-      <span className="av-turn-stat-label">context left</span>
+      <span className="av-turn-stat-value">{usedPct}%</span>
+      <span className="av-turn-stat-label">used</span>
+      <span className="av-turn-context-bar" aria-hidden="true">
+        <span className="av-turn-context-fill" style={{ width: `${usedPct}%` }} />
+      </span>
     </div>
   );
 }
