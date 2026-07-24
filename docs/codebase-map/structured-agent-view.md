@@ -75,17 +75,28 @@ toggle). Failures (org policy, rollout-not-enabled, network) surface as
 toggle can read active without a user click (verified e2e: full disable→re-enable
 round-trip against the live relay flips `active` and mints a fresh `session_url`).
 
-**Peer/queue delivery to a live session:** the lifecycle dispatchers in
+**Peer/queue delivery + STRUCTURED-FIRST spawn/wake:** the lifecycle dispatchers in
 `workspaces.ts`/`prompt-queue.ts` (peer `dispatchMessageRequest`, the usage-limit
-prompt-queue flusher, `wakeAgentWithPrompt`, account migration) live "below" agent-sdk in
-the import graph, so they reach a live structured session through the
+prompt-queue flusher, `wakeAgentWithPrompt`, `/spawn`'s `startWorkspaceAgentHeadless`,
+account migration) live "below" agent-sdk in
+the import graph, so they reach the structured session manager through the
 **`src/main/sdk-delivery.ts`** seam (a registration indirection that breaks the cycle,
-like `sdkStopMany`). agent-sdk registers `{hasSession, send, stop}` at load;
-`sdkDeliver(wsId, text)` routes a message/queued prompt to the live session as its next
-turn instead of blindly spawning a raw `claude` PTY beside it, and account migration
-calls `sdkStopIfLive` so the session doesn't keep running under the old account's
-`CLAUDE_CONFIG_DIR`. When no structured session is live these no-op and callers fall back
-to the unchanged PTY path.
+like `sdkStopMany`). agent-sdk registers `{hasSession, send, start, stop}` at load:
+`sdkDeliver(wsId, text)` routes a message/queued prompt to a LIVE session as its next
+turn instead of blindly spawning a raw `claude` PTY beside it;
+**`sdkStartAndDeliver(wsId, text)`** (→ agent-sdk's **`sdkWake`**) is the spawn/wake
+entry — it lazy-STARTS a session and enqueues `text` as its opening turn, so
+**`orchestra spawn` runs its child as a structured SDK session** and a stopped agent
+woken by a peer message / queued prompt resumes structured (`ws.sdkSessionId`; a
+terminal-only workspace first ADOPTS its newest on-disk transcript as the resume id —
+the same session `--continue` picks — so context survives the switch). Account
+migration calls `sdkStopIfLive` so the session doesn't keep running under the old
+account's `CLAUDE_CONFIG_DIR`. The raw-PTY spawn/wake machinery (headless TUI typing,
+readiness sentinel, submit retries) survives only as a fallback when the seam is
+unregistered or the SDK start fails (`sdkStartAndDeliver` returns false and logs).
+Post-wake insurance checks in the callers gate on `sdkSessionLive` too, since
+`isRunning` is PTY-only and a structured wake would otherwise read as "died" and
+double-deliver (inbox park / prompt re-queue).
 
 ## Silent-failure hardening + CC/PTY parity (2026-07 gap audit)
 

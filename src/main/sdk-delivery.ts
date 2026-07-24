@@ -15,6 +15,8 @@
 // module has registered (or no session is live) the hooks report "no session"
 // and callers fall back to their existing PTY path unchanged.
 
+import { log } from './logger';
+
 /** The subset of the SDK session manager the lifecycle dispatchers need. */
 export interface SdkDelivery {
   /** True iff a live (non-stopping) structured session owns this workspace. */
@@ -22,6 +24,11 @@ export interface SdkDelivery {
   /** Enqueue a text turn to a live structured session (becomes its next turn,
    *  same "live" semantics as typing into a running TUI). Resolves when queued. */
   send(wsId: string, text: string): Promise<void>;
+  /** START a structured session (or reuse a live one) and deliver `text` as its
+   *  next turn — the spawn/wake entry point. Unlike `send` this does not require
+   *  a live session: it lazy-starts one, resuming the workspace's prior
+   *  conversation when there is one (agent-sdk's `sdkWake`). */
+  start(wsId: string, text: string): Promise<void>;
   /** Tear down a live structured session (used by account migration, which must
    *  stop the session running under the OLD account/config dir). */
   stop(wsId: string): Promise<void>;
@@ -46,6 +53,22 @@ export async function sdkDeliver(wsId: string, text: string): Promise<boolean> {
   if (!impl?.hasSession(wsId)) return false;
   await impl.send(wsId, text);
   return true;
+}
+
+/** Start a structured session for the workspace (resuming prior context when
+ *  there is any) and deliver `text` as its opening turn — the structured-first
+ *  spawn/wake path. Returns false when the SDK module hasn't registered OR the
+ *  start failed (logged; the start error also surfaces as an error event in the
+ *  structured view), so callers can fall back to the legacy raw-PTY path. */
+export async function sdkStartAndDeliver(wsId: string, text: string): Promise<boolean> {
+  if (!impl) return false;
+  try {
+    await impl.start(wsId, text);
+    return true;
+  } catch (err) {
+    log.warn(`sdk-delivery: structured start failed for ${wsId} — falling back to PTY`, err);
+    return false;
+  }
 }
 
 /** Stop a live structured session if one exists (best-effort). No-op otherwise. */

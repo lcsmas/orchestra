@@ -810,6 +810,37 @@ async function ensureSession(wsId: string): Promise<Session> {
  *  reach 10MB+ and the fold shouldn't balloon on them. */
 const HISTORY_MAX_BYTES = 4 * 1024 * 1024;
 
+/** The workspace's on-disk Claude Code transcript directory — the PINNED
+ *  account's config dir (falling back to ~/.claude) + the mangled worktree
+ *  path. Same resolution as `claude --continue` (see workspaces.ts). */
+function transcriptDir(ws: Workspace): string {
+  const base = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
+  return path.join(base, 'projects', mangleProjectDir(ws.worktreePath));
+}
+
+/** Absolute path of the newest `.jsonl` transcript in `dir`, or null when the
+ *  directory is missing/empty. The newest transcript is exactly the session
+ *  `claude --continue` (both drivers) resumes. */
+async function newestTranscriptFile(dir: string): Promise<string | null> {
+  let file: string | null = null;
+  try {
+    const entries = await fs.promises.readdir(dir);
+    let newest = 0;
+    for (const name of entries) {
+      if (!name.endsWith('.jsonl')) continue;
+      const p = path.join(dir, name);
+      const st = await fs.promises.stat(p);
+      if (st.mtimeMs > newest) {
+        newest = st.mtimeMs;
+        file = p;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return file;
+}
+
 /** Read a workspace's persisted on-disk session transcript and convert it into
  *  an AgentEvent stream for the structured view's history backfill. Returns []
  *  when there is nothing to backfill (no persisted id, file missing/empty).
@@ -817,10 +848,7 @@ const HISTORY_MAX_BYTES = 4 * 1024 * 1024;
 export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
   const ws = store.getWorkspace(wsId);
   if (!ws?.worktreePath) return [];
-  // Same resolution as `claude --continue` (see workspaces.ts): the PINNED
-  // account's config dir, falling back to ~/.claude.
-  const base = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
-  const dir = path.join(base, 'projects', mangleProjectDir(ws.worktreePath));
+  const dir = transcriptDir(ws);
 
   // `''` is sdkClear's explicit "conversation cleared" marker — no backfill
   // until a new session mints a fresh id (the newest-.jsonl fallback below
@@ -835,23 +863,7 @@ export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
     const candidate = path.join(dir, `${ws.sdkSessionId}.jsonl`);
     if (fs.existsSync(candidate)) file = candidate;
   }
-  if (!file) {
-    try {
-      const entries = await fs.promises.readdir(dir);
-      let newest = 0;
-      for (const name of entries) {
-        if (!name.endsWith('.jsonl')) continue;
-        const p = path.join(dir, name);
-        const st = await fs.promises.stat(p);
-        if (st.mtimeMs > newest) {
-          newest = st.mtimeMs;
-          file = p;
-        }
-      }
-    } catch {
-      return [];
-    }
-  }
+  if (!file) file = await newestTranscriptFile(dir);
   if (!file) return [];
   let text: string;
   let truncated = false;
@@ -1079,6 +1091,30 @@ export async function sdkSend(
   session.recentEchoes.push(sendText);
   if (session.recentEchoes.length > 8) session.recentEchoes.shift();
   session.pump?.();
+}
+
+/** Start (or reuse) a structured session for `wsId` and deliver `text` as its
+ *  next turn — the spawn/wake entry point behind the sdk-delivery seam
+ *  (`sdkStartAndDeliver`). Unlike `sdkDeliver` this does NOT require a live
+ *  session: {@link sdkSend} lazy-starts one, resuming `ws.sdkSessionId` when
+ *  present. A workspace that has only ever run the TERMINAL agent (`hasInput`
+ *  set but no `sdkSessionId`) first ADOPTS its newest on-disk transcript as the
+ *  resume id, so a structured wake continues the same conversation the old PTY
+ *  wake's `claude --continue` would have — instead of silently starting blank.
+ *  (`sdkSessionId === ''` is sdkClear's explicit "cleared" marker and starts
+ *  fresh; a genuinely bad adopted id is cleared by sdkSend's isBadResumeError
+ *  guard, so a corrupt transcript can't wedge future sends.) */
+export async function sdkWake(wsId: string, text: string): Promise<void> {
+  const ws = store.getWorkspace(wsId);
+  if (ws?.worktreePath && ws.hasInput && ws.sdkSessionId === undefined && !sessions.has(wsId)) {
+    const file = await newestTranscriptFile(transcriptDir(ws));
+    const adopted = file ? path.basename(file, '.jsonl') : '';
+    if (adopted) {
+      log.info(`agent-sdk: wake ${wsId} adopting terminal transcript ${adopted} as resume id`);
+      await persistWorkspacePatch(wsId, { sdkSessionId: adopted });
+    }
+  }
+  await sdkSend(wsId, text);
 }
 
 /** Cap on captured bash output so a runaway command (e.g. `yes`, `cat bigfile`)
@@ -1549,8 +1585,12 @@ export function sdkStopMany(wsIds: readonly string[]): void {
 // seam breaks the import cycle (workspaces.ts can't import agent-sdk.ts back).
 // `send` maps to sdkSend (enqueues a live turn); the echo it emits also renders
 // the delivered text in the structured transcript, exactly like a typed turn.
+// `start` maps to sdkWake — the structured-FIRST spawn/wake entry: it lazy-starts
+// a session (resuming prior context) when none is live, so `orchestra spawn` and
+// wake-on-message run the agent in the structured view instead of a raw PTY.
 registerSdkDelivery({
   hasSession: sdkHasSession,
   send: (wsId, text) => sdkSend(wsId, text),
+  start: (wsId, text) => sdkWake(wsId, text),
   stop: sdkStop,
 });

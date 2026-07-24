@@ -117,12 +117,27 @@ endpoint}` = agent lives in an always-on container, see
   install, uses cwd `SANDBOX_WORKSPACE_DIR` (`/workspace`), and **strips
   `CLAUDE_CONFIG_DIR`** (a host path would shadow the container's seeded
   login); `startPty` routes to the remote transport via `ws.host`.
-- **`startWorkspaceAgentHeadless(id, window)`** — `workspaces.ts:807`. Used by
-  spawn: starts the agent with no UI terminal (default 120×32), injects
-  `lastTask` once the TUI is ready.
-- **`submitTaskWhenReady(...)`** — `workspaces.ts:851`. Waits on the SessionStart
+- **`startWorkspaceAgentHeadless(id)`** — `workspaces.ts` (used by spawn).
+  **STRUCTURED-FIRST**: starts the delegated agent as an SDK session via the
+  `sdk-delivery.ts` seam (`sdkStartAndDeliver` → agent-sdk's `sdkWake`/`sdkSend`),
+  enqueuing `lastTask` as the opening turn — so a spawned child runs in the
+  structured view, and no TUI typing/readiness machinery is involved. Flips
+  `hasInput` so a later Raw-tab open resumes (`--continue`) instead of
+  re-injecting the task. The legacy headless raw-PTY spawn (below) survives only
+  as a fallback when the SDK seam is unregistered or the session fails to start.
+- **`submitTaskWhenReady(...)`** — PTY-fallback only. Waits on the SessionStart
   readiness sentinel (`$ORCHESTRA_READY_FILE`, 15s timeout, 1.2s fallback), types
   the task, submits with `\r`, retries up to 4× confirming status left `idle`.
+- **`wakeAgentWithPrompt(id, prompt)`** — the live-or-wake delivery used by peer
+  messages and the prompt-queue flusher. Order: live SDK session (`sdkDeliver`)
+  → live PTY (typed) happens in the callers → **structured wake**
+  (`sdkStartAndDeliver`: lazy SDK session resuming `ws.sdkSessionId`, or — for a
+  terminal-only workspace — the newest on-disk transcript, adopted as the resume
+  id by agent-sdk's `sdkWake`, the same session `--continue` picks) → raw-PTY
+  wake with `--continue` as the last fallback. Post-wake "did it survive"
+  insurance checks (`dispatchMessageRequest`'s inbox park, prompt-queue's
+  re-queue) treat a live SDK session as "still up" (`sdkSessionLive`), since
+  `isRunning` is PTY-only and always false for a structured wake.
 
 ### Archive / unarchive / delete
 - **`archiveWorkspace`** `:534` (soft: stop PTYs, keep worktree+logs),
@@ -187,7 +202,7 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 
 | Handler | Line | Route | Purpose |
 |---|---|---|---|
-| `dispatchSpawnRequest` | `:932` | `/spawn` | Create child workspace + start headless. Inherits caller's repo (worktree callers) or requires explicit `repoPath` (scratch/orchestrator callers). Records `parentId` = caller, unless `detached:true` (parentless top-level workspace; repo inheritance from `from` still applies). Optional `model` pins the agent's model on the record (`Workspace.model`, `types.ts`) — the pty passes `claude --model` on every launch, and the SDK structured-session path must mirror it via `options.model`. |
+| `dispatchSpawnRequest` | `:932` | `/spawn` | Create child workspace + start it as a **structured SDK session** (`startWorkspaceAgentHeadless`; raw-PTY only as fallback). Inherits caller's repo (worktree callers) or requires explicit `repoPath` (scratch/orchestrator callers). Records `parentId` = caller, unless `detached:true` (parentless top-level workspace; repo inheritance from `from` still applies). Optional `model` pins the agent's model on the record (`Workspace.model`, `types.ts`) — the pty passes `claude --model` on every launch, and the SDK structured-session path must mirror it via `options.model`. |
 | `dispatchPromoteRequest` | `:1309` | `/promote` | Make a workspace a coordinator (idempotent). **Two routes**: a scratch session swaps `kind` → `'orchestrator'`; a **git worktree keeps its kind and gains `canOrchestrate`**, so it parents children while keeping repo/branch/diff/merge/PR. |
 | `dispatchDemoteRequest` | `:1384` | `/demote` | Inverse of promote. Clears `canOrchestrate` and **detaches every child** (a `parentId` pointing at a non-orchestrator renders nowhere). Refuses the `'orchestrator'` KIND — it is repo-less by nature and has no worktree to fall back to. |
 | `dispatchAttachRequest` | `:1456` | `/attach` | Re-parent under a coordinator (`canOrchestrate`), or clear `parentId` to detach. **Full-ancestry cycle check**: a promoted worktree can itself have a parent, so A→B→A is reachable and the old bare self-check was no longer sufficient. |
@@ -195,7 +210,7 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 | `dispatchWhoamiRequest` | `~:1660` | `/whoami` | A workspace's own record (id/name/branch/kind, `orchestrator` via the `canOrchestrate` helper, `parentId`, repo/base). The only in-band way an agent learns its `parentId` — `/peers` excludes the caller, and a child promoted BY its parent never observes the promotion — which is what makes "at most one sub-orchestrator level" checkable by its addressee. |
 | `dispatchPeersRequest` | `:1239` | `/peers` | List other live workspaces (`PeerInfo[]`). `stats: true` adds each git peer's committed three-dot diff vs base (`getBranchDiffShortstat`, git.ts) — opt-in because the comms-resurface hook hits `/peers` every prompt and N git spawns on that path is the per-workspace × per-poll trap. |
 | `dispatchReadRequest` | `:1266` | `/read` | Peer branch + last ~80 transcript lines, ANSI-stripped. |
-| `dispatchMessageRequest` | `:1353` | `/message` | Deliver to peer: **live** (type into running TUI), **started** (wake with `--continue`), or **inbox** (park in `~/.orchestra/inbox/<id>.txt`). |
+| `dispatchMessageRequest` | `:1353` | `/message` | Deliver to peer: **live** (next turn of a live SDK session, else typed into a running TUI), **started** (structured wake via `wakeAgentWithPrompt`, PTY `--continue` only as fallback), or **inbox** (park in `~/.orchestra/inbox/<id>.txt`; the 5s post-wake insurance counts a live SDK session as delivered). |
 | `dispatchRenameRequest` | `:722` | `/rename` | see Branch management. |
 | `dispatchAddRepoRequest` | `:1024` | `/addRepo` | Register repo. |
 | `dispatchDeleteWorkspaceRequest` | `:1054` | `/deleteWorkspace` | Hard-delete. |

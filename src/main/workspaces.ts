@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from './platform';
 import { store } from './store';
-import { sdkDeliver, sdkStopIfLive, sdkSessionLive } from './sdk-delivery';
+import { sdkDeliver, sdkStartAndDeliver, sdkStopIfLive, sdkSessionLive } from './sdk-delivery';
 import {
   createWorktree,
   detectDefaultBranch,
@@ -1104,21 +1104,40 @@ const SUBMIT_MAX_ATTEMPTS = 4;
 // TUI would retype indefinitely.
 const SUBMIT_TYPE_ROUNDS = 2;
 
-/** Spawn a freshly-created workspace's agent straight from the main process,
- * without waiting for the renderer's TerminalView to become visible. The
- * renderer only kicks `pty:start` once a pane has real dimensions, so a
- * workspace created in the background would otherwise sit idle until clicked.
- * The agent-driven /spawn flow wants the delegated worktree working *now*, so
- * we start it here and inject its task.
+/** Start a freshly-created workspace's agent straight from the main process,
+ * without waiting for any renderer pane to become visible — the agent-driven
+ * /spawn flow wants the delegated worktree working *now*. The agent runs as a
+ * STRUCTURED (SDK) session, so the child shows up live in the structured view;
+ * the legacy headless raw-PTY spawn (TUI typing + readiness sentinel + submit
+ * retries) remains below only as a fallback when the SDK path is unavailable.
  *
  * Safe against the renderer's later `pty:start`: that handler early-returns on
  * `isRunning(id)` (just resizing to the real geometry), so there's no
- * double-spawn. We also flip `hasInput` after injecting the task so that if the
- * agent's process later exits and the user reopens the pane, the renderer
- * resumes with `--continue` instead of re-injecting the task into a fresh run. */
+ * double-spawn. We also flip `hasInput` after delivering the task so that if
+ * the user later opens the Raw pane, the renderer resumes with `--continue`
+ * instead of re-injecting the task into a fresh run. */
 async function startWorkspaceAgentHeadless(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || isRunning(id)) return;
+  // STRUCTURED-FIRST: run the delegated agent as an SDK session, so the child
+  // works in the structured view (the default agent surface) instead of a raw
+  // `claude` TUI hidden in the "Raw" tab. sdkStartAndDeliver lazy-starts the
+  // session and enqueues the task as its opening turn — no readiness sentinel,
+  // no TUI typing/retry machinery needed (the queue can't drop a keystroke).
+  // The raw-PTY path below survives ONLY as a fallback for when the SDK seam
+  // is unregistered or the session fails to start (sdk-delivery logs why).
+  if (ws.lastTask && (await sdkStartAndDeliver(id, ws.lastTask))) {
+    // Delivered. Flip hasInput so a later Raw-tab open resumes the conversation
+    // (`claude --continue`) instead of re-injecting the task into a fresh TUI
+    // (see the `!resuming && ws.lastTask` branch in api-handlers' ptyStart).
+    const fresh = store.getWorkspace(id);
+    if (fresh && !fresh.hasInput) {
+      const updated: Workspace = { ...fresh, hasInput: true };
+      await store.upsertWorkspace(updated);
+      platform.broadcast('workspace:update', updated);
+    }
+    return;
+  }
   const readyFile = readyFilePath(id);
   // Drop any stale sentinel from a prior run before the agent starts, so the
   // wait below can't be short-circuited by an old file.
@@ -2106,15 +2125,18 @@ function formatPeerMessage(fromBranch: string, fromId: string, text: string): st
   return `[message from agent '${fromBranch}' (${fromId})]\n${text}\n\nReply with: orchestra message ${fromId} "<reply>"`;
 }
 
-/** Wake a stopped agent and hand it `prompt` as a live turn. Resumes the prior
- * conversation with `--continue` when the workspace has run before (mirrors the
- * renderer's resume path) so the woken agent keeps its context; otherwise it
- * starts fresh and the prompt becomes its opening turn. Safe against the
- * renderer's later `pty:start`, which early-returns on `isRunning`. Returns
- * false when the agent can't be woken (missing / archived / already running) so
- * the caller can fall back. Throws only if the PTY spawn itself fails.
- * Exported for the prompt-queue flusher, which delivers usage-limit-parked
- * prompts through the exact same live-or-wake path as peer messages. */
+/** Wake a stopped agent and hand it `prompt` as a live turn. Wakes it as a
+ * STRUCTURED (SDK) session — resuming the prior conversation (`ws.sdkSessionId`,
+ * or a terminal-only workspace's newest on-disk transcript, the same session
+ * `--continue` picks) so the woken agent keeps its context; a workspace that
+ * never ran starts fresh with the prompt as its opening turn. The raw-PTY wake
+ * below survives only as a fallback when the SDK path is unavailable. Safe
+ * against the renderer's later `pty:start`, which early-returns on `isRunning`.
+ * Returns false when the agent can't be woken (missing / archived / already
+ * running) so the caller can fall back. Throws only if the PTY spawn itself
+ * fails. Exported for the prompt-queue flusher, which delivers
+ * usage-limit-parked prompts through the exact same live-or-wake path as peer
+ * messages. */
 export async function wakeAgentWithPrompt(id: string, prompt: string): Promise<boolean> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || isRunning(id)) return false;
@@ -2122,6 +2144,18 @@ export async function wakeAgentWithPrompt(id: string, prompt: string): Promise<b
   // the prompt as its next turn rather than spawning a raw `claude` PTY beside it.
   // Returns true (delivered) so callers treat it exactly like a successful wake.
   if (await sdkDeliver(id, prompt)) return true;
+  // No live session — STRUCTURED-FIRST wake: start an SDK session (resuming the
+  // prior conversation) and hand it the prompt as its opening turn, so the woken
+  // agent runs in the structured view instead of respawning the raw TUI.
+  if (await sdkStartAndDeliver(id, prompt)) {
+    if (!ws.hasInput) {
+      const updated: Workspace = { ...ws, hasInput: true };
+      void store.upsertWorkspace(updated).then(() => {
+        platform.broadcast('workspace:update', updated);
+      });
+    }
+    return true;
+  }
   const resuming = ws.hasInput === true;
   const readyFile = readyFilePath(id);
   await clearReadyFile(id);
@@ -2215,10 +2249,14 @@ export async function dispatchMessageRequest(
       // Insurance: if the woken agent exits almost immediately (e.g. a resume
       // with --continue that finds no session and bails), the live inject was
       // lost. Park it so the next successful start still delivers it. A healthy
-      // woken agent keeps running, so this is a no-op in the normal case.
+      // woken agent keeps running, so this is a no-op in the normal case. A
+      // structured (SDK) wake has no PTY — isRunning is always false for it —
+      // so also treat a live SDK session as "still up", or this insurance would
+      // double-deliver an already-queued structured turn via the inbox (same
+      // guard as the prompt-queue flusher's re-queue insurance).
       const to = input.to;
       setTimeout(() => {
-        if (!isRunning(to)) void queueInbox(to, body);
+        if (!isRunning(to) && !sdkSessionLive(to)) void queueInbox(to, body);
       }, 5000);
       return { ok: true, delivery: 'started', branch: target.branch };
     }

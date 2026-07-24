@@ -195,7 +195,13 @@ plan changes — surface it before proceeding.**
   drive the dot exactly like the PTY's did. Alternatively, drive `ws.status` in-band from
   the `agent:event` stream (the Strategy-1 way) and never give the SDK session the spool.
 - Actually NOT starting the PTY for a structured-primary workspace (today both can run;
-  the flag only changes the initial tab).
+  the flag only changes the initial tab). **Partially LANDED 2026-07-24 (structured-first
+  spawn/wake):** `orchestra spawn` (`startWorkspaceAgentHeadless`) and
+  `wakeAgentWithPrompt` (peer-message wake, prompt-queue flusher) now start a structured
+  SDK session via the `sdk-delivery` seam (`sdkStartAndDeliver` → `sdkWake`) instead of
+  a raw headless `claude` PTY — the PTY spawn/typing machinery survives only as a
+  fallback. The renderer's Raw-tab `pty:start` remains the one path that still launches
+  a PTY, and only on explicit user action.
 - Retiring the status/context role of `activity.ts`/`events-spool.ts` for structured
   workspaces; keep the PTY-exit reconciliation *concept* as a backstop.
 
