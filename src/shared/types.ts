@@ -691,6 +691,68 @@ export interface AgentInitEvent extends AgentEventBase {
   permissionMode: AgentPermissionMode;
   /** Tool names the session loaded (proves user/project settings are active). */
   tools: string[];
+  /** Built-in + custom slash commands the CLI reports (`slash_commands`) — the
+   *  composer's autocomplete merges these with the on-disk skills list so typed
+   *  built-ins (/compact, /usage, …) are discoverable. */
+  slashCommands?: string[];
+  /** MCP servers the session connected, with their status — CC's `/mcp` surface. */
+  mcpServers?: { name: string; status: string }[];
+}
+
+/** Category of a {@link AgentNoticeEvent} — drives the row's icon/accent and
+ *  lets the UI treat some kinds specially (e.g. `rate-limit` formats
+ *  `resetsAt`). Open-ended by design: unknown kinds render as `info`. */
+export type AgentNoticeKind =
+  | 'rate-limit' // usage limit warning/rejection (SDK rate_limit_event)
+  | 'auth' // authentication problem (SDK auth_status with error)
+  | 'compact-boundary' // conversation was compacted (manual or auto)
+  | 'compact-error' // a compaction attempt failed
+  | 'refusal' // model refused; fallback retry or hard stop (model_refusal_*)
+  | 'permission-denied' // a tool call was auto-denied without a prompt
+  | 'notification' // loop-side text notification (system/notification)
+  | 'warning' // informational message at warning prominence
+  | 'info' // informational message (system/informational, low prominence)
+  | 'command-output'; // output of a built-in slash command (/compact, /usage …)
+
+/** A user-relevant system notice the SDK surfaced outside the assistant text
+ *  stream. Before this event existed, `normalizeSdkMessage` silently dropped
+ *  every such message (rate limits, auth failures, compaction, refusals,
+ *  auto-denied tools, slash-command output) — the turn just stalled or lied.
+ *  Folded into a `system`-role {@link RenderMessage} row. */
+export interface AgentNoticeEvent extends AgentEventBase {
+  type: 'notice';
+  kind: AgentNoticeKind;
+  /** Human-readable notice text (plaintext; `command-output` may be multi-line). */
+  text: string;
+  /** For `rate-limit`: epoch seconds the limit resets, when reported. */
+  resetsAt?: number;
+}
+
+/** A transient status line for the in-flight turn — "Compacting conversation…",
+ *  "API 529 — retry 3/10 in 8s". Shown live in the TurnFooter's working readout,
+ *  NEVER appended to the transcript. `status: null` clears it; the fold also
+ *  clears it when output resumes (text/tool events) and at turn end, so a stale
+ *  line can't outlive the condition it described. */
+export interface AgentStatusEvent extends AgentEventBase {
+  type: 'session/status';
+  status: string | null;
+}
+
+/** Live thinking-token estimate during redacted thinking (SDK
+ *  `system/thinking_tokens`) — the only signal that moves while Opus thinks, so
+ *  the working readout can show progress instead of a frozen spinner. Running
+ *  total for the current thinking block; cleared at turn boundaries. */
+export interface AgentThinkingTokensEvent extends AgentEventBase {
+  type: 'thinking-tokens';
+  tokens: number;
+}
+
+/** The conversation was cleared (composer `/clear`, parity with Claude Code):
+ *  the manager stopped the SDK session and discarded the persisted session id.
+ *  The fold resets the whole session to {@link emptySession} so every attached
+ *  client (Electron + ui-rpc/GTK) starts a fresh transcript in lockstep. */
+export interface AgentSessionClearEvent extends AgentEventBase {
+  type: 'session/clear';
 }
 
 /** One incremental chunk of assistant TEXT (`text_delta`). `index` is the SDK
@@ -893,6 +955,11 @@ export interface AgentUserMessageEvent extends AgentEventBase {
   text: string;
   /** Images pasted into the composer alongside the text, if any. */
   images?: AgentImage[];
+  /** Where an externally-originated turn came from, when it did NOT come from
+   *  this composer — e.g. 'claude.ai' (Remote Control from phone/web) or
+   *  'peer: <name>'. Locally-typed prompts omit it. Rendered as a small badge
+   *  on the user bubble so a remotely-driven session reads coherently. */
+  origin?: string;
 }
 
 /** A local shell command run from the composer's **bash mode** (`!command`,
@@ -942,6 +1009,14 @@ export interface AgentTurnEndEvent extends AgentEventBase {
   sessionId: string;
   /** Wall-clock duration of the turn in ms (`duration_ms`), when reported. */
   durationMs: number | null;
+  /** The model's context-window size in tokens, from the result's
+   *  `modelUsage[*].contextWindow` (largest entry — the main model). Backs the
+   *  context-left gauge; null when the SDK didn't report it. */
+  contextWindow?: number | null;
+  /** Approximate context tokens in use after this turn: the final API call's
+   *  input + cache-read + cache-creation + output tokens. Pairs with
+   *  {@link contextWindow} for the "context left" readout. */
+  contextUsedTokens?: number | null;
 }
 
 /** A surfaced error. Two sources: (1) an `is_error` RESULT message — a
@@ -1036,6 +1111,10 @@ export type AgentEvent =
   | AgentSessionUpdateEvent
   | AgentRemoteControlEvent
   | AgentTaskEvent
+  | AgentNoticeEvent
+  | AgentStatusEvent
+  | AgentThinkingTokensEvent
+  | AgentSessionClearEvent
   | AgentTurnEndEvent
   | AgentErrorEvent;
 
@@ -1062,6 +1141,14 @@ export interface RenderMessage {
   index?: number;
   /** Assistant/user/system/error text, accumulated from deltas. */
   text?: string;
+  /** For a `system` notice row: the notice category (icon/accent + special
+   *  formatting, e.g. rate-limit reset time). */
+  noticeKind?: AgentNoticeKind;
+  /** For a `rate-limit` notice row: epoch seconds the limit resets. */
+  noticeResetsAt?: number;
+  /** For a `user` message: where an externally-originated turn came from
+   *  (Remote Control, peer delivery) — rendered as a badge. */
+  origin?: string;
   /** For a `user` message: images pasted into the composer with this turn. */
   images?: AgentImage[];
   /** True while a thinking block is open on this message — a spinner indicator,
@@ -1140,6 +1227,18 @@ export interface AgentSession {
    *  Undefined until the first `session/remote-control` event; `active:false`
    *  once toggled off. Backs the Remote Control toggle in the structured view. */
   remoteControl?: RemoteControlState;
+  /** Transient status line for the in-flight turn ("Compacting conversation…",
+   *  "API 529 — retry 3/10 in 8s"), from {@link AgentStatusEvent}. Shown in the
+   *  TurnFooter working readout; cleared when output resumes or the turn ends. */
+  statusNotice?: string;
+  /** Live thinking-token estimate for the current (redacted) thinking block,
+   *  from {@link AgentThinkingTokensEvent}. Cleared at turn boundaries. */
+  liveThinkingTokens?: number;
+  /** Slash commands the CLI reported at init (built-ins + custom), for the
+   *  composer autocomplete. */
+  slashCommands?: string[];
+  /** MCP servers the session connected at init, with status. */
+  mcpServers?: { name: string; status: string }[];
   /** The highest `seq` folded in, so a caller can detect a gap. */
   lastSeq: number;
 }

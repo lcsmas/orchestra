@@ -77,6 +77,7 @@ const api: OrchestraAPI = {
   agentSdkSend: (wsId, text, images) => ipcRenderer.invoke('agent:sdkSend', wsId, text, images),
   agentSdkRunBash: (wsId, command) => ipcRenderer.invoke('agent:sdkRunBash', wsId, command),
   agentSdkInterrupt: (wsId) => ipcRenderer.invoke('agent:sdkInterrupt', wsId),
+  agentSdkClear: (wsId) => ipcRenderer.invoke('agent:sdkClear', wsId),
   agentSdkPermissionReply: (wsId, requestId, reply) =>
     ipcRenderer.invoke('agent:sdkPermissionReply', wsId, requestId, reply),
   agentSdkSetModel: (wsId, model) => ipcRenderer.invoke('agent:sdkSetModel', wsId, model),

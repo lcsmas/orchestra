@@ -171,9 +171,13 @@ export function AgentControls({
   React.useEffect(() => {
     if (explicitModel) return; // an explicit choice already answers the question
     let alive = true;
-    void window.orchestra.agentSdkDefaultModel(workspaceId).then((m) => {
-      if (alive) setDefaultModel(m);
-    });
+    void window.orchestra
+      .agentSdkDefaultModel(workspaceId)
+      .then((m) => {
+        if (alive) setDefaultModel(m);
+      })
+      // Fail-soft: the badge keeps its placeholder; never an unhandled rejection.
+      .catch(() => {});
     return () => {
       alive = false;
     };

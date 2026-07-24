@@ -103,7 +103,17 @@ export function StructuredView({ workspaceId, isActive }: Props) {
         if ((live?.messages.length ?? 0) > 0) return;
         for (const ev of events) injectEvent(workspaceId, ev);
       })
-      .catch(() => {});
+      .catch(() => {
+        // A failed backfill used to be a silently blank transcript — say so
+        // (the conversation still resumes fine; only the display is missing).
+        injectEvent(workspaceId, {
+          type: 'notice',
+          kind: 'warning',
+          text: "Couldn't load the conversation history — the session will still resume.",
+          seq: 0,
+          at: Date.now(),
+        });
+      });
   }, [hasMessages, workspaceId, injectEvent]);
 
   return (
@@ -569,6 +579,27 @@ function SessionControls({
  *  in which the skills autocomplete shows. */
 const SLASH_PREFIX = /^\/([A-Za-z0-9_-]*)$/;
 
+/** One autocomplete row: an on-disk skill, or a built-in CLI slash command
+ *  (from `session/init`'s `slash_commands` — /compact, /usage, …), or the
+ *  Orchestra-side /clear. */
+interface AcItem {
+  name: string;
+  description: string;
+  source: AgentSkillInfo['source'] | 'builtin';
+}
+
+/** Descriptions for the built-ins worth explaining; the rest show bare. */
+const BUILTIN_DESC: Record<string, string> = {
+  clear: 'Start a fresh conversation (clears the transcript)',
+  compact: 'Compact the conversation to free context',
+  usage: 'Show plan usage / rate-limit status',
+};
+
+/** Commands Orchestra guarantees regardless of what the CLI reports. `clear`
+ *  is handled Orchestra-side (agentSdkClear); `compact` is sent to the CLI,
+ *  which executes it as a built-in and reports back via status/compact events. */
+const ALWAYS_COMMANDS = ['clear', 'compact'];
+
 function Composer({
   session,
   workspaceId,
@@ -657,17 +688,28 @@ function Composer({
 
   const slash = SLASH_PREFIX.exec(text);
   const acQuery = slash?.[1]?.toLowerCase() ?? null;
-  const acItems =
-    acQuery !== null && !acDismissed && skills
-      ? skills
-          .filter((s) => s.name.toLowerCase().includes(acQuery))
-          .sort((a, b) => {
-            const ap = a.name.toLowerCase().startsWith(acQuery) ? 0 : 1;
-            const bp = b.name.toLowerCase().startsWith(acQuery) ? 0 : 1;
-            return ap - bp || a.name.localeCompare(b.name);
-          })
-          .slice(0, 8)
-      : [];
+  // Merge on-disk skills with the CLI's built-in slash commands (reported at
+  // session/init) plus the always-available /clear + /compact, so typed
+  // built-ins are discoverable — CC-desktop parity. Skills win a name clash.
+  const acItems: AcItem[] = (() => {
+    if (acQuery === null || acDismissed) return [];
+    const items: AcItem[] = [...(skills ?? [])];
+    const have = new Set(items.map((s) => s.name.toLowerCase()));
+    for (const name of [...ALWAYS_COMMANDS, ...(session?.slashCommands ?? [])]) {
+      const clean = name.replace(/^\//, '');
+      if (!clean || have.has(clean.toLowerCase())) continue;
+      have.add(clean.toLowerCase());
+      items.push({ name: clean, description: BUILTIN_DESC[clean] ?? '', source: 'builtin' });
+    }
+    return items
+      .filter((s) => s.name.toLowerCase().includes(acQuery))
+      .sort((a, b) => {
+        const ap = a.name.toLowerCase().startsWith(acQuery) ? 0 : 1;
+        const bp = b.name.toLowerCase().startsWith(acQuery) ? 0 : 1;
+        return ap - bp || a.name.localeCompare(b.name);
+      })
+      .slice(0, 8);
+  })();
   const acOpen = acQuery !== null && acItems.length > 0;
 
   useEffect(() => {
@@ -703,6 +745,18 @@ function Composer({
       return;
     }
     const t = text.trim();
+    // `/clear` is handled ORCHESTRA-side (parity with Claude Code): stop the
+    // session, drop the resume id, reset every client's transcript. Any other
+    // slash command (e.g. /compact) is sent through — the CLI executes its
+    // built-ins itself and reports back via status/compact/command-output
+    // events, which now render.
+    if (t === '/clear') {
+      void window.orchestra
+        .agentSdkClear(workspaceId)
+        .catch((e) => console.error('agentSdkClear failed', e));
+      setText('');
+      return;
+    }
     // Allow send when there's text OR at least one pasted image (an image with
     // no caption is a valid turn).
     if (!t && pendingImages.length === 0) return;
@@ -726,9 +780,34 @@ function Composer({
     taRef.current?.focus();
   };
 
+  // Drag-and-drop into the composer (CC-desktop parity): image files become
+  // attachments (same pipeline as paste); other files insert their absolute
+  // path into the text (Electron exposes File.path).
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      const dt = e.dataTransfer;
+      if (!dt) return;
+      addPastedImages(dt.items);
+      const paths = Array.from(dt.files)
+        .filter((f) => !f.type.startsWith('image/'))
+        .map((f) => (f as File & { path?: string }).path)
+        .filter((p): p is string => !!p);
+      if (paths.length > 0) {
+        setText((prev) => (prev ? `${prev.trimEnd()} ` : '') + paths.join(' '));
+        taRef.current?.focus();
+      }
+    },
+    [addPastedImages],
+  );
+
   return (
     <div className="av-composer">
-      <div className={`av-composer-field ${bashMode ? 'av-composer-field-bash' : ''}`}>
+      <div
+        className={`av-composer-field ${bashMode ? 'av-composer-field-bash' : ''}`}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={onDrop}
+      >
         {acOpen && (
           <div className="av-ac" role="listbox" aria-label="Skills">
             {acItems.map((s, idx) => (
@@ -824,6 +903,15 @@ function Composer({
                 setAcDismissed(true);
                 return;
               }
+            }
+            // Esc interrupts the in-flight turn — terminal-path muscle memory
+            // (the popover's own Escape handling ran above when it was open).
+            if (e.key === 'Escape' && running) {
+              e.preventDefault();
+              void window.orchestra
+                .agentSdkInterrupt(workspaceId)
+                .catch((err) => console.error('agentSdkInterrupt failed', err));
+              return;
             }
             // Enter submits; Shift+Enter inserts a newline (chat convention).
             if (e.key === 'Enter' && !e.shiftKey) {

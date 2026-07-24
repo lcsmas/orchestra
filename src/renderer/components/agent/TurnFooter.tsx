@@ -84,7 +84,7 @@ export function TurnFooter({ session }: { session: AgentSession | undefined }) {
 
   // Error result — surfaced gracefully (transient 500 is common, not a crash).
   if (turn.isError) {
-    return <TurnFooterError turn={turn} running={session.running} />;
+    return <TurnFooterError turn={turn} />;
   }
 
   const usage = turn.usage;
@@ -118,6 +118,33 @@ export function TurnFooter({ session }: { session: AgentSession | undefined }) {
       {typeof turn.durationMs === 'number' && (
         <Stat label="took" value={formatDuration(turn.durationMs)} />
       )}
+      <ContextGauge turn={turn} />
+    </div>
+  );
+}
+
+/**
+ * "Context left" readout — CC-desktop parity, and the most-felt daily gap: long
+ * sessions used to hit the context ceiling with zero warning. Data comes free
+ * on every result message (`contextUsedTokens` ≈ the final API call's total
+ * input+output; `contextWindow` from modelUsage). Quiet by default; turns
+ * amber under 25% left and red under 10%.
+ */
+function ContextGauge({ turn }: { turn: AgentTurnEndEvent }) {
+  const used = turn.contextUsedTokens;
+  const window = turn.contextWindow;
+  if (!used || !window || window <= 0) return null;
+  const leftPct = Math.max(0, Math.min(100, Math.round((1 - used / window) * 100)));
+  const level = leftPct <= 10 ? 'critical' : leftPct <= 25 ? 'low' : 'ok';
+  return (
+    <div
+      className={`av-turn-stat av-turn-context av-turn-context-${level}`}
+      title={`${formatTokens(used)} of ${formatTokens(window)} context tokens in use${
+        level !== 'ok' ? ' — consider /compact' : ''
+      }`}
+    >
+      <span className="av-turn-stat-value">{leftPct}%</span>
+      <span className="av-turn-stat-label">context left</span>
     </div>
   );
 }
@@ -138,6 +165,10 @@ function TurnFooterRunning({ session }: { session: AgentSession }) {
   // duration; guard it rather than trust the timestamp blindly.
   const showTime = elapsedMs >= 0 && elapsedMs < 24 * 60 * 60 * 1000;
   const liveTokens = estimateTokens(session.liveOutputChars);
+  // Redacted thinking streams no visible output — the SDK's thinking-token
+  // estimate is the only number that moves, so show it while it's the freshest
+  // signal (cleared at turn boundaries by the fold).
+  const thinkingTokens = session.liveThinkingTokens ?? 0;
 
   return (
     <div className="av-turn-footer av-turn-footer-running" role="status">
@@ -157,20 +188,34 @@ function TurnFooterRunning({ session }: { session: AgentSession }) {
           </span>
         </>
       )}
+      {liveTokens === 0 && thinkingTokens > 0 && (
+        <>
+          <span className="av-turn-live-sep" aria-hidden="true">·</span>
+          <span className="av-turn-live-tokens" title="Estimated thinking tokens">
+            thinking · {formatTokens(thinkingTokens)} tokens
+          </span>
+        </>
+      )}
+      {session.statusNotice && (
+        <>
+          <span className="av-turn-live-sep" aria-hidden="true">·</span>
+          {/* Transient turn status ("Compacting conversation…", "API 529 —
+              retrying in 8s") — the multi-minute silent stall, now named. */}
+          <span className="av-turn-status-notice">{session.statusNotice}</span>
+        </>
+      )}
     </div>
   );
 }
 
-/** The error variant of the footer. A transient API error advertises a retry
- *  (from the agent-events note); other errors read as a plain failure. */
-function TurnFooterError({ turn, running }: { turn: AgentTurnEndEvent; running: boolean }) {
-  const transient = turn.stopReason === 'error' || turn.stopReason === 'interrupted';
+/** The error variant of the footer. (The old "API error — retrying" branch was
+ *  UNREACHABLE — this component only renders when `running` is false, and the
+ *  manager never auto-retries — and would have promised a retry that doesn't
+ *  exist. Mid-turn API retries now surface live via `session.statusNotice`
+ *  in the running footer instead.) */
+function TurnFooterError({ turn }: { turn: AgentTurnEndEvent }) {
   const interrupted = turn.stopReason === 'interrupted';
-  const label = interrupted
-    ? 'Turn interrupted'
-    : running
-      ? 'API error — retrying'
-      : 'Turn ended with an error';
+  const label = interrupted ? 'Turn interrupted' : 'Turn ended with an error';
   return (
     <div className="av-turn-footer av-turn-footer-error" role="status">
       <span className="av-turn-error-icon" aria-hidden="true">
@@ -178,9 +223,6 @@ function TurnFooterError({ turn, running }: { turn: AgentTurnEndEvent; running: 
       </span>
       <span className="av-turn-error-label">{label}</span>
       {turn.resultText && <span className="av-turn-error-detail">{turn.resultText}</span>}
-      {transient && running && (
-        <span className="av-turn-spinner av-turn-error-spinner" aria-hidden="true" />
-      )}
     </div>
   );
 }

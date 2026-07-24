@@ -49,6 +49,7 @@ import type {
   AgentPermissionMode,
   AgentPermissionReply,
   AgentSkillInfo,
+  AgentStopReason,
   RemoteControlState,
   Workspace,
 } from '../shared/types';
@@ -165,6 +166,22 @@ interface Session {
    *  its NEXT real turn (never a turn of their own). {@link sdkSend} drains this and
    *  prepends it (as `<local-command-stdout>` blocks) to the next user message. */
   pendingLocalContext: string[];
+  /** Set by {@link sdkInterrupt} just before calling the SDK's `interrupt()`, so
+   *  the consume loop's catch can label the resulting throw "interrupted" from
+   *  OUR OWN action instead of pattern-matching /abort/ against arbitrary error
+   *  text (which relabeled genuine crashes as interrupts). */
+  interruptRequested?: boolean;
+  /** The last few user texts sdkSend fed the generator, so emitFrom can drop a
+   *  hypothetical stream replay of a LOCALLY-sent prompt (the spike says the
+   *  stream never replays them; this is the belt-and-braces for a future SDK
+   *  that does). Externally-originated user text (Remote Control, channel) is
+   *  never in here and always renders. */
+  recentEchoes: string[];
+  /** Set by {@link sdkClear}: the user cleared the conversation, so the dying
+   *  session's tail events (interrupt error, synthetic turn-end, stray stream
+   *  messages) must NOT be emitted — they'd land AFTER the `session/clear`
+   *  reset and dirty the fresh transcript. */
+  cleared?: boolean;
 }
 
 const sessions = new Map<string, Session>();
@@ -241,7 +258,21 @@ function driveStatusFromEvent(session: Session, ev: AgentEvent): void {
  *  session must, i.e. its spool hooks are withheld) drive the sidebar status dot
  *  off the same stream — see driveStatusFromEvent for the single-writer gate. */
 function emitFrom(session: Session, msg: SdkMessage): void {
+  // A cleared session's tail must stay silent — the transcript was reset.
+  if (session.cleared) return;
   for (const ev of normalizeSdkMessage(msg, session.ctx)) {
+    // Drop a stream replay of a LOCALLY-sent prompt: sdkSend already echoed it
+    // (the transcript's record), so re-rendering it would duplicate the bubble.
+    // Normalize only surfaces stream user TEXT for externally-originated turns
+    // (Remote Control, channel, CLI-injected) — this guard is for the case
+    // where a future SDK starts replaying local input too.
+    if (ev.type === 'user-message' && !ev.origin) {
+      const i = session.recentEchoes.indexOf(ev.text);
+      if (i !== -1) {
+        session.recentEchoes.splice(i, 1);
+        continue;
+      }
+    }
     emit(session.wsId, ev);
     driveStatusFromEvent(session, ev);
   }
@@ -488,6 +519,7 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
 
 /** Consume the SDK message stream for a session until it ends or throws. */
 async function consume(session: Session): Promise<void> {
+  let endedByInterrupt = false;
   try {
     for await (const raw of session.q) {
       const msg = raw as unknown as SdkMessage;
@@ -515,21 +547,75 @@ async function consume(session: Session): Promise<void> {
     }
   } catch (err) {
     // interrupt() surfaces here as a throw (spike d) — expected terminal state,
-    // not a crash. Emit a normal error event; the session is done.
+    // not a crash. Emit a normal error event; the session is done. "Interrupted"
+    // is keyed on OUR OWN interrupt request first — a bare /abort/ text match
+    // relabeled genuine crashes "Turn interrupted." and skipped their log line.
     const message = err instanceof Error ? err.message : String(err);
-    const interrupted = /error_during_execution|ede_diagnostic|abort/i.test(message);
-    emit(session.wsId, {
-      type: 'error',
-      seq: session.ctx.seq++,
-      at: (session.ctx.now ?? Date.now)(),
-      message: interrupted ? 'Turn interrupted.' : message,
-      apiErrorStatus: null,
-      willRetry: false,
-    });
+    const interrupted =
+      session.interruptRequested || /error_during_execution|ede_diagnostic/i.test(message);
+    endedByInterrupt = interrupted;
+    if (!session.cleared) {
+      emit(session.wsId, {
+        type: 'error',
+        seq: session.ctx.seq++,
+        at: (session.ctx.now ?? Date.now)(),
+        message: interrupted ? 'Turn interrupted.' : message,
+        apiErrorStatus: null,
+        willRetry: false,
+      });
+    }
     if (!interrupted) {
       log.warn(`agent-sdk: session ${session.wsId} consume loop errored`, err);
     }
+    // A stream-surfaced BAD-RESUME error (the transcript for ws.sdkSessionId is
+    // gone / the id is malformed) would otherwise wedge EVERY future send into
+    // the same failure: ensureSession never awaits the subprocess, so the resume
+    // failure surfaces HERE, not in sdkSend's catch where the original guard
+    // lived (silent-failure audit H3). Clear the id on the positive signal only;
+    // transient failures keep it so a later send resumes the same conversation.
+    if (isBadResumeError(message)) {
+      const wsNow = store.getWorkspace(session.wsId);
+      if (wsNow?.sdkSessionId) {
+        void persistWorkspacePatch(session.wsId, { sdkSessionId: undefined });
+      }
+    }
   } finally {
+    // ── Close the ledger BEFORE dropping the session (silent-failure audit
+    // H1/H2). Without this, an iterator that ends mid-turn (subprocess died,
+    // worker shutdown, kill) left the folded view `running` forever — elapsed
+    // timer counting up, composer stuck on "Queue", interrupt a dead button.
+    const hadOpenTurn = session.turnGate !== null && !session.cleared;
+    const undelivered = session.cleared ? 0 : session.queue.length;
+    if (undelivered > 0) {
+      // Queued turns that never reached the model: their user-message echoes
+      // are already in the transcript, so say plainly that they were dropped —
+      // a transcript that LOOKS sent but never was is the worst kind of lie.
+      session.queue.length = 0;
+      emit(
+        session.wsId,
+        stamp(session.ctx, {
+          type: 'error',
+          message: `${undelivered} queued message${undelivered === 1 ? ' was' : 's were'} not delivered because the session ended — send again.`,
+          apiErrorStatus: null,
+          willRetry: false,
+        }),
+      );
+    }
+    if (hadOpenTurn || undelivered > 0) {
+      const turnEnd = stamp(session.ctx, {
+        type: 'turn-end' as const,
+        isError: !endedByInterrupt,
+        stopReason: (endedByInterrupt ? 'interrupted' : 'error') as AgentStopReason,
+        numTurns: 0,
+        costUsd: null,
+        usage: null,
+        resultText: null,
+        sessionId: session.persistedSessionId ?? '',
+        durationMs: null,
+      });
+      emit(session.wsId, turnEnd);
+      driveStatusFromEvent(session, turnEnd);
+    }
     // Release any waiter and drop the session; the renderer can restart it.
     session.stopping = true;
     session.pump?.();
@@ -619,6 +705,7 @@ async function ensureSession(wsId: string): Promise<Session> {
     permissionMode,
     driveStatus,
     pendingLocalContext: [],
+    recentEchoes: [],
   };
 
   // Resolve the query factory: a test override, else the dynamically-imported
@@ -735,6 +822,10 @@ export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
   const base = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
   const dir = path.join(base, 'projects', mangleProjectDir(ws.worktreePath));
 
+  // `''` is sdkClear's explicit "conversation cleared" marker — no backfill
+  // until a new session mints a fresh id (the newest-.jsonl fallback below
+  // would otherwise resurrect the cleared conversation on remount).
+  if (ws.sdkSessionId === '') return [];
   // Prefer the persisted structured-session transcript; workspaces that have
   // only ever run the TERMINAL agent have no sdkSessionId but DO have
   // transcripts — fall back to the newest .jsonl, which is exactly the session
@@ -763,6 +854,7 @@ export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
   }
   if (!file) return [];
   let text: string;
+  let truncated = false;
   try {
     const stat = await fs.promises.stat(file);
     if (stat.size > HISTORY_MAX_BYTES) {
@@ -773,19 +865,37 @@ export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
         // Drop the first (almost certainly partial) line of the tail window.
         const s = buf.toString('utf8');
         text = s.slice(s.indexOf('\n') + 1);
+        truncated = true;
       } finally {
         await fh.close();
       }
     } else {
       text = await fs.promises.readFile(file, 'utf8');
     }
-  } catch {
+  } catch (err) {
+    // Fail-open (a blank history, never an error) — but not SILENTLY: an
+    // unreadable transcript used to vanish with no log at all (audit M5).
+    log.warn(`agent-sdk: history backfill read failed for ${wsId} (${file})`, err);
     return [];
   }
   // Fresh cursor: history seq-space is independent of the live session's (seq
   // only feeds gap detection; message identity includes seq + index, and
   // history block indexes start far above live ones so they never collide).
-  return transcriptToEvents(text, { seq: 0 });
+  const ctx: NormalizeContext = { seq: 0 };
+  const events: AgentEvent[] = [];
+  if (truncated) {
+    // A tail-cut backfill used to render with no marker — the missing early
+    // history read as "that's the whole conversation".
+    events.push(
+      stamp(ctx, {
+        type: 'notice',
+        kind: 'info',
+        text: 'Earlier history not shown (transcript too large — showing the most recent part).',
+      }),
+    );
+  }
+  events.push(...transcriptToEvents(text, ctx));
+  return events;
 }
 
 /** Read the `model` key from a Claude Code `settings.json`, or '' if absent /
@@ -963,6 +1073,11 @@ export async function sdkSend(
   const userMsg = makeUserMessage(session.ctx, text, images);
   emit(session.wsId, userMsg);
   driveStatusFromEvent(session, userMsg);
+  // Remember what we fed the generator so emitFrom can drop a stream replay of
+  // this exact text (see the guard there). `sendText` is what a replay would
+  // carry (context prefix included). Bounded — this is a dedupe window, not a log.
+  session.recentEchoes.push(sendText);
+  if (session.recentEchoes.length > 8) session.recentEchoes.shift();
   session.pump?.();
 }
 
@@ -970,6 +1085,19 @@ export async function sdkSend(
  *  can't blow up the transcript or the context we feed the model. Matches the
  *  spirit of Claude Code's own bash-output truncation. */
 const BASH_OUTPUT_CAP = 30_000;
+
+/** Hard wall-clock limit for a `!command` bash-mode run. Bash mode is
+ *  non-interactive (stdin closed) and has no cancel affordance, so without a
+ *  timeout a never-exiting command (`tail -f`, a prompt waiting on stdin, a hung
+ *  login shell) left the spinner row running forever and the child alive
+ *  (silent-failure audit H7). */
+const BASH_TIMEOUT_MS = 5 * 60_000;
+
+/** Total chars of pending `<local-command-stdout>` context queued for the next
+ *  turn. N back-to-back bash runs used to accumulate unbounded (30k each) and
+ *  all prepend to one send — a silent context blowout. Oldest entries drop
+ *  first; the transcript rows still show everything. */
+const LOCAL_CONTEXT_CAP = 60_000;
 
 /** Run a `!command` bash-mode command (composer bash mode — parity with Claude
  *  Code). The command runs LOCALLY in the workspace's worktree (never the model),
@@ -1021,31 +1149,52 @@ export async function sdkRunBash(wsId: string, command: string): Promise<void> {
   const output = await new Promise<{ text: string; exitCode: number | null }>((resolve) => {
     let buf = '';
     let capped = false;
+    let child: ReturnType<typeof spawn> | null = null;
+    const kill = () => {
+      try {
+        child?.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    };
     const append = (chunk: Buffer) => {
       if (capped) return;
       buf += chunk.toString('utf8');
       if (buf.length > BASH_OUTPUT_CAP) {
-        buf = buf.slice(0, BASH_OUTPUT_CAP) + '\n… (output truncated)';
+        buf = buf.slice(0, BASH_OUTPUT_CAP) + '\n… (output truncated; command killed)';
         capped = true;
+        // A command that blew the cap is a runaway — capturing more is pointless
+        // and letting it run leaks a live child behind a "truncated" row.
+        kill();
       }
     };
-    let child: ReturnType<typeof spawn>;
+    // Hard timeout: no cancel affordance exists, so this is the only way a hung
+    // command's spinner row ever resolves.
+    const timer = setTimeout(() => {
+      if (!capped) buf += `\n… (timed out after ${BASH_TIMEOUT_MS / 60_000} minutes; command killed)`;
+      kill();
+    }, BASH_TIMEOUT_MS);
     try {
       // `-l -c` so the user's login shell config (aliases, PATH) is honored,
       // matching what the terminal path gives them. stdin closed (bash mode is
       // non-interactive).
       child = spawn(shell, ['-l', '-c', cmd], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (err) {
+      clearTimeout(timer);
       resolve({ text: err instanceof Error ? err.message : String(err), exitCode: null });
       return;
     }
     child.stdout?.on('data', append);
     child.stderr?.on('data', append);
     child.on('error', (err) => {
+      clearTimeout(timer);
       append(Buffer.from(`\n${err instanceof Error ? err.message : String(err)}`));
       resolve({ text: buf, exitCode: null });
     });
-    child.on('close', (code) => resolve({ text: buf, exitCode: code }));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ text: buf, exitCode: code });
+    });
   });
 
   // Completion event — replaces the running row with the captured output.
@@ -1068,17 +1217,54 @@ export async function sdkRunBash(wsId: string, command: string): Promise<void> {
   session.pendingLocalContext.push(
     `<local-command-stdout command=${JSON.stringify(cmd)}${exitLine}>\n${output.text}\n</local-command-stdout>`,
   );
+  // Bound the queued context (oldest-first drop): the transcript rows keep the
+  // full record; only what's prepended to the NEXT model turn is capped.
+  let total = session.pendingLocalContext.reduce((n, s) => n + s.length, 0);
+  while (total > LOCAL_CONTEXT_CAP && session.pendingLocalContext.length > 1) {
+    total -= session.pendingLocalContext.shift()!.length;
+  }
 }
 
 /** Interrupt the in-flight turn (spike d: the consume loop will throw and the
- *  session ends). No-op if there is no live session. */
+ *  session ends). When NO live session exists but the folded view still reads
+ *  `running` (a wedged state — e.g. the consume loop died without a result
+ *  before the H1 ledger-close existed, or a history backfill ended mid-turn),
+ *  the click used to be a silent no-op; now it emits a synthetic turn-end so
+ *  the view self-heals (silent-failure audit M4). */
 export async function sdkInterrupt(wsId: string): Promise<void> {
   const session = sessions.get(wsId);
-  if (!session) return;
+  if (!session) {
+    emit(wsId, {
+      type: 'turn-end',
+      seq: 0,
+      at: Date.now(),
+      isError: false,
+      stopReason: 'interrupted',
+      numTurns: 0,
+      costUsd: null,
+      usage: null,
+      resultText: null,
+      sessionId: '',
+      durationMs: null,
+    });
+    return;
+  }
+  // Mark BEFORE calling: the consume loop's catch reads this to label the
+  // resulting throw an interrupt (not a crash) without text-matching /abort/.
+  session.interruptRequested = true;
   try {
     await session.q.interrupt();
   } catch (err) {
     log.warn(`agent-sdk: interrupt failed for ${wsId}`, err);
+    emit(
+      wsId,
+      stamp(session.ctx, {
+        type: 'error',
+        message: `Couldn't interrupt the turn: ${err instanceof Error ? err.message : String(err)}`,
+        apiErrorStatus: null,
+        willRetry: false,
+      }),
+    );
   }
 }
 
@@ -1135,6 +1321,17 @@ export async function sdkSetModel(wsId: string, model: string | undefined): Prom
     await session.q.setModel(model);
   } catch (err) {
     log.warn(`agent-sdk: setModel failed for ${wsId}`, err);
+    // The dropdown already shows the NEW value (persisted; applies on restart) —
+    // say out loud that the LIVE session kept the old model instead of letting
+    // the UI silently lie about what's running (silent-failure audit M3).
+    emit(
+      wsId,
+      stamp(session.ctx, {
+        type: 'notice',
+        kind: 'warning',
+        text: 'Model switch could not be applied to the running session — it will apply on the next session start.',
+      }),
+    );
   }
 }
 
@@ -1157,6 +1354,14 @@ export async function sdkSetEffort(wsId: string, effort: AgentEffortLevel): Prom
     // An older installed `claude` CLI may not know apply_flag_settings; the
     // persisted choice still applies on the next session start.
     log.warn(`agent-sdk: setEffort failed for ${wsId}`, err);
+    emit(
+      wsId,
+      stamp(session.ctx, {
+        type: 'notice',
+        kind: 'warning',
+        text: 'Effort change could not be applied to the running session — it will apply on the next session start.',
+      }),
+    );
   }
 }
 
@@ -1175,7 +1380,18 @@ export async function sdkSetPermissionMode(
   try {
     await session.q.setPermissionMode(mode as never);
   } catch (err) {
+    // Orchestra's own canUseTool bridge honors the new mode regardless (it reads
+    // session.permissionMode live), but the CLI-side mode (plan-mode read-only
+    // enforcement, edit auto-accept) did NOT switch — surface it.
     log.warn(`agent-sdk: setPermissionMode failed for ${wsId}`, err);
+    emit(
+      wsId,
+      stamp(session.ctx, {
+        type: 'notice',
+        kind: 'warning',
+        text: 'Permission-mode switch could not be fully applied to the running session — it will apply on the next session start.',
+      }),
+    );
   }
 }
 
@@ -1281,6 +1497,32 @@ export async function sdkStop(wsId: string): Promise<void> {
     // interrupt on an already-ended query throws; ignore.
   }
   sessions.delete(wsId);
+}
+
+/** Clear the conversation (composer `/clear` — parity with Claude Code): tear
+ *  down any live session WITHOUT letting its tail events dirty the view, drop
+ *  the persisted resume id, and broadcast `session/clear` so every attached
+ *  client resets its folded transcript. The next send starts a brand-new
+ *  conversation in the same worktree.
+ *
+ *  The resume id is set to `''` (not `undefined`): `''` is the explicit
+ *  "cleared" marker that also disables sdkHistory's newest-.jsonl fallback —
+ *  otherwise a remount after /clear would backfill the just-cleared
+ *  conversation right back. Both values are falsy where it matters
+ *  (ensureSession's `resume` gate), and the next live session overwrites it
+ *  with the fresh id. */
+export async function sdkClear(wsId: string): Promise<void> {
+  const session = sessions.get(wsId);
+  if (session) {
+    session.cleared = true;
+    await sdkStop(wsId);
+  }
+  await persistWorkspacePatch(wsId, { sdkSessionId: '' });
+  emit(wsId, {
+    type: 'session/clear',
+    seq: session ? session.ctx.seq++ : 0,
+    at: Date.now(),
+  });
 }
 
 /** Whether a workspace currently has a live SDK session. */

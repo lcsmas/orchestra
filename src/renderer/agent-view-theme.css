@@ -1837,3 +1837,83 @@ h6.av-md-h {
   cursor: pointer;
 }
 .av-bgtask-transcript:hover { text-decoration: underline; }
+
+/* ── System notices (rate limit / auth / compaction / refusal / denials /
+   command output) — the render surface for AgentNoticeEvent. Quiet rows that
+   inform without shouting over the conversation. ─────────────────────────── */
+.av-notice {
+  display: flex; align-items: baseline; gap: 8px;
+  margin: 6px 0; padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--av-hairline);
+  background: var(--av-surface-raised);
+  font-size: var(--av-fs-caption); color: var(--av-text-dim);
+  line-height: 1.5;
+}
+.av-notice-dot {
+  flex: none; align-self: center;
+  width: 6px; height: 6px; border-radius: 999px;
+  background: var(--av-text-faint);
+}
+.av-notice-label {
+  flex: none; font-weight: 640; letter-spacing: 0.04em; text-transform: uppercase;
+  font-size: 9.5px; color: var(--av-text-faint);
+}
+.av-notice-text { min-width: 0; overflow-wrap: anywhere; }
+.av-notice-pre {
+  flex: 1; min-width: 0; margin: 0;
+  font-family: var(--font-mono); font-size: var(--av-fs-code);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  color: var(--av-text-dim);
+}
+.av-notice-warning, .av-notice-rate-limit, .av-notice-compact-error {
+  border-color: color-mix(in srgb, var(--av-warn) 34%, transparent);
+  background: color-mix(in srgb, var(--av-warn) 7%, var(--av-surface-raised));
+  color: var(--av-text);
+}
+.av-notice-warning .av-notice-dot,
+.av-notice-rate-limit .av-notice-dot,
+.av-notice-compact-error .av-notice-dot { background: var(--av-warn); }
+.av-notice-auth, .av-notice-refusal, .av-notice-permission-denied {
+  border-color: color-mix(in srgb, var(--av-error) 30%, transparent);
+  background: color-mix(in srgb, var(--av-error) 6%, var(--av-surface-raised));
+  color: var(--av-text);
+}
+.av-notice-auth .av-notice-dot,
+.av-notice-refusal .av-notice-dot,
+.av-notice-permission-denied .av-notice-dot { background: var(--av-error); }
+.av-notice-compact-boundary .av-notice-dot { background: var(--av-assistant); }
+.av-notice-command-output { background: var(--av-surface-sunken); }
+
+/* Origin badge on an externally-originated user turn (Remote Control / peer). */
+.av-message-origin {
+  font-family: var(--font-mono); font-size: 9.5px; font-weight: 600;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--av-text-faint); margin-bottom: 3px;
+}
+
+/* Context-left gauge in the turn footer (CC parity). */
+.av-turn-context-low .av-turn-stat-value { color: var(--av-warn); }
+.av-turn-context-critical .av-turn-stat-value { color: var(--av-error); }
+
+/* Transient turn status in the running footer ("Compacting…", "API 529 —
+   retrying in 8s"). */
+.av-turn-status-notice { color: var(--av-warn); }
+
+/* Built-in slash commands in the composer autocomplete. */
+.av-ac-source-builtin {
+  color: var(--av-text-faint);
+  border: 1px solid var(--av-hairline-strong);
+  background: var(--av-surface-sunken);
+}
+
+/* ExitPlanMode plan-review dialog: a wider, scrollable markdown body. */
+.av-plan-dialog { max-width: 720px; width: min(720px, calc(100% - 48px)); }
+.av-plan-body {
+  max-height: min(52vh, 560px); overflow-y: auto;
+  margin: 10px 0 14px; padding: 12px 14px;
+  border: 1px solid var(--av-hairline);
+  border-radius: 8px;
+  background: var(--av-surface-sunken);
+  font-size: var(--av-fs-body);
+}

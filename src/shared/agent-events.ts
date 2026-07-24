@@ -27,6 +27,7 @@
 import type {
   AgentEvent,
   AgentImage,
+  AgentNoticeKind,
   AgentPermissionMode,
   AgentPermissionRequestEvent,
   AgentSession,
@@ -100,7 +101,7 @@ interface RawUsage {
 
 /** The subset of any SDK message we ever read. */
 export interface SdkMessage {
-  type?: string; // system | assistant | user | stream_event | result
+  type?: string; // system | assistant | user | stream_event | result | auth_status | rate_limit_event
   subtype?: string; // init | success | error_during_execution | ...
   session_id?: string;
   // system/init:
@@ -108,15 +109,56 @@ export interface SdkMessage {
   cwd?: string;
   permissionMode?: string;
   tools?: string[];
+  slash_commands?: string[];
+  mcp_servers?: { name?: string; status?: string }[];
   // stream_event:
   event?: RawStreamEvent;
-  // assistant / user:
-  message?: { role?: string; content?: RawContentBlock[] | string };
+  // assistant / user (an object); system/permission_denied reuses the key as a
+  // plain STRING (the rejection text) — every reader must typeof-guard.
+  message?: { role?: string; content?: RawContentBlock[] | string } | string;
+  // user (externally-originated turn provenance / synthetic filtering):
+  isSynthetic?: boolean;
+  parent_tool_use_id?: string | null;
+  origin?: { kind?: string; from?: string; name?: string; body?: string };
+  tool_use_result?: unknown;
+  // system/status:
+  compact_result?: string; // 'success' | 'failed'
+  compact_error?: string;
+  // system/api_retry:
+  attempt?: number;
+  max_retries?: number;
+  retry_delay_ms?: number;
+  error_status?: number | null;
+  // system/compact_boundary:
+  compact_metadata?: { trigger?: string; pre_tokens?: number; post_tokens?: number };
+  // system/local_command_output + informational + refusal messages:
+  content?: string;
+  level?: string; // informational: 'info' | 'notice' | 'suggestion' | 'warning'
+  // system/notification:
+  text?: string;
+  priority?: string;
+  // system/permission_denied:
+  tool_name?: string;
+  decision_reason?: string;
+  // system/thinking_tokens:
+  estimated_tokens?: number;
+  // auth_status:
+  error?: string;
+  isAuthenticating?: boolean;
+  // rate_limit_event:
+  rate_limit_info?: {
+    status?: string; // 'allowed' | 'allowed_warning' | 'rejected'
+    resetsAt?: number;
+    rateLimitType?: string;
+    utilization?: number;
+  };
   // result:
   is_error?: boolean;
   api_error_status?: number | null;
   num_turns?: number;
   total_cost_usd?: number;
+  /** result: per-model usage — `contextWindow` backs the context-left gauge. */
+  modelUsage?: Record<string, { contextWindow?: number }>;
   /** `result` messages carry a Messages-API usage; `task_*` messages carry a
    *  distinct `{ total_tokens, tool_uses, duration_ms }` counter. Widened to
    *  both — normalize reads the right subset by message subtype. */
@@ -365,10 +407,21 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
             cwd: msg.cwd ?? '',
             permissionMode: toPermissionMode(msg.permissionMode),
             tools: Array.isArray(msg.tools) ? msg.tools : [],
+            ...(Array.isArray(msg.slash_commands)
+              ? { slashCommands: msg.slash_commands.filter((c): c is string => typeof c === 'string') }
+              : {}),
+            ...(Array.isArray(msg.mcp_servers)
+              ? {
+                  mcpServers: msg.mcp_servers.map((s) => ({
+                    name: s?.name ?? '',
+                    status: s?.status ?? '',
+                  })),
+                }
+              : {}),
           }),
         ];
       }
-      return normalizeTaskSystem(ctx, msg);
+      return normalizeSystemNotice(ctx, msg) ?? normalizeTaskSystem(ctx, msg);
 
     case 'stream_event':
       return msg.event ? normalizeStreamEvent(ctx, msg.event) : [];
@@ -377,7 +430,7 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
       // Finalized assistant blocks. The token-level text already streamed via
       // stream_event; here we only lift `tool_use` blocks, which carry the FULL
       // parsed input the diff is reconstructed from (spike g).
-      const content = msg.message?.content;
+      const content = typeof msg.message === 'object' ? msg.message?.content : undefined;
       if (!Array.isArray(content)) return [];
       const out: AgentEvent[] = [];
       for (const b of content) {
@@ -399,18 +452,42 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
     }
 
     case 'user': {
-      // Tool results come back as `tool_result` blocks on a synthetic user msg.
-      const content = msg.message?.content;
-      if (!Array.isArray(content)) return [];
       const out: AgentEvent[] = [];
-      for (const b of content) {
-        if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+      const raw = typeof msg.message === 'object' ? msg.message : undefined;
+      const content = raw?.content;
+      if (Array.isArray(content)) {
+        // Tool results come back as `tool_result` blocks on a synthetic user msg.
+        for (const b of content) {
+          if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+            out.push(
+              stamp(ctx, {
+                type: 'tool-result',
+                toolUseId: b.tool_use_id,
+                content: normalizeResultContent(b.content),
+                isError: b.is_error === true,
+              }),
+            );
+          }
+        }
+      }
+      // EXTERNALLY-ORIGINATED USER TEXT (Remote Control turns typed on
+      // claude.ai/mobile, channel/peer deliveries the CLI injected itself).
+      // Locally-typed prompts are echoed by sdkSend and — per the Phase 0
+      // spike — are NEVER replayed by the stream, so a text-bearing `user`
+      // message here is one the local composer never saw. Without this branch
+      // it was dropped and a phone-driven session showed assistant replies
+      // answering nothing. Filters: synthetic/meta frames, subagent
+      // sidechains (parent_tool_use_id), and pure tool_result messages.
+      // The manager additionally drops any text matching a just-sent local
+      // echo (belt-and-braces against future SDK replay behavior).
+      if (msg.isSynthetic !== true && msg.parent_tool_use_id == null) {
+        const text = userTextFrom(content);
+        if (text) {
           out.push(
             stamp(ctx, {
-              type: 'tool-result',
-              toolUseId: b.tool_use_id,
-              content: normalizeResultContent(b.content),
-              isError: b.is_error === true,
+              type: 'user-message',
+              text,
+              ...(originLabel(msg.origin) ? { origin: originLabel(msg.origin) } : {}),
             }),
           );
         }
@@ -446,13 +523,221 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
           resultText: typeof msg.result === 'string' ? msg.result : null,
           sessionId: msg.session_id ?? '',
           durationMs: typeof msg.duration_ms === 'number' ? msg.duration_ms : null,
+          contextWindow: contextWindowFrom(msg.modelUsage),
+          contextUsedTokens: contextUsedFrom(msg.usage),
         }),
       );
       return out;
     }
 
+    // ── Previously-dropped top-level message types (silent-failure audit) ──
+    case 'auth_status':
+      // Auth died mid-session (token expired/revoked). Without this the turn
+      // just stalls with no hint that a re-login is needed.
+      if (typeof msg.error === 'string' && msg.error) {
+        return [stamp(ctx, { type: 'notice', kind: 'auth', text: `Authentication problem: ${msg.error}` })];
+      }
+      return [];
+
+    case 'rate_limit_event': {
+      const info = msg.rate_limit_info;
+      if (!info) return [];
+      if (info.status === 'rejected') {
+        return [
+          stamp(ctx, {
+            type: 'notice',
+            kind: 'rate-limit',
+            text: 'Usage limit reached',
+            ...(typeof info.resetsAt === 'number' ? { resetsAt: info.resetsAt } : {}),
+          }),
+        ];
+      }
+      if (info.status === 'allowed_warning') {
+        const pct = typeof info.utilization === 'number' ? ` (${Math.round(info.utilization * 100)}% used)` : '';
+        return [
+          stamp(ctx, {
+            type: 'notice',
+            kind: 'rate-limit',
+            text: `Approaching usage limit${pct}`,
+            ...(typeof info.resetsAt === 'number' ? { resetsAt: info.resetsAt } : {}),
+          }),
+        ];
+      }
+      return []; // 'allowed' — nothing to show
+    }
+
     default:
       return [];
+  }
+}
+
+/** Normalize the user-relevant `system` subtypes that used to fall through to
+ *  `[]` (the silent-failure audit's biggest class). Returns null for subtypes
+ *  this function doesn't own (task_* — handled by {@link normalizeTaskSystem}),
+ *  so the caller can chain. */
+function normalizeSystemNotice(ctx: NormalizeContext, msg: SdkMessage): AgentEvent[] | null {
+  switch (msg.subtype) {
+    case 'status': {
+      const out: AgentEvent[] = [];
+      // 'compacting' is the only status worth a live line; 'requesting' fires
+      // per API call (noise) and `null` is an explicit clear — both map to
+      // clearing the transient status.
+      out.push(
+        stamp(ctx, {
+          type: 'session/status',
+          status: msg.status === 'compacting' ? 'Compacting conversation…' : null,
+        }),
+      );
+      if (msg.compact_result === 'failed' || msg.compact_error) {
+        out.push(
+          stamp(ctx, {
+            type: 'notice',
+            kind: 'compact-error',
+            text: `Compaction failed${msg.compact_error ? `: ${msg.compact_error}` : ''}`,
+          }),
+        );
+      }
+      // A status message can carry a CLI-side permission-mode change (e.g.
+      // plan-mode exit switching to acceptEdits) — reflect it live.
+      if (typeof msg.permissionMode === 'string') {
+        out.push(stamp(ctx, { type: 'session/update', permissionMode: toPermissionMode(msg.permissionMode) }));
+      }
+      return out;
+    }
+
+    case 'api_retry': {
+      // Mid-turn retryable API failure. This is the multi-minute "Working…"
+      // stall the spike documented — now it names itself.
+      const status = msg.error_status != null ? `API ${msg.error_status}` : 'Connection error';
+      const delay = typeof msg.retry_delay_ms === 'number' ? ` in ${Math.max(1, Math.round(msg.retry_delay_ms / 1000))}s` : '';
+      const nth = msg.attempt != null && msg.max_retries != null ? ` (${msg.attempt}/${msg.max_retries})` : '';
+      return [stamp(ctx, { type: 'session/status', status: `${status} — retrying${delay}${nth}` })];
+    }
+
+    case 'compact_boundary': {
+      const m = msg.compact_metadata;
+      const trigger = m?.trigger === 'auto' ? 'auto' : 'manual';
+      const sizes =
+        m?.pre_tokens != null
+          ? ` — ${formatTokens(m.pre_tokens)}${m.post_tokens != null ? ` → ${formatTokens(m.post_tokens)}` : ''} tokens`
+          : '';
+      return [
+        stamp(ctx, { type: 'session/status', status: null }),
+        stamp(ctx, { type: 'notice', kind: 'compact-boundary', text: `Conversation compacted (${trigger})${sizes}` }),
+      ];
+    }
+
+    case 'local_command_output':
+      // Output of a built-in slash command (/compact ack, /usage, …) — CC
+      // renders these as assistant-style text; we use a command-output notice.
+      return typeof msg.content === 'string' && msg.content.trim()
+        ? [stamp(ctx, { type: 'notice', kind: 'command-output', text: msg.content })]
+        : [];
+
+    case 'informational': {
+      if (typeof msg.content !== 'string' || !msg.content.trim()) return [];
+      const kind: AgentNoticeKind = msg.level === 'warning' ? 'warning' : 'info';
+      return [stamp(ctx, { type: 'notice', kind, text: msg.content })];
+    }
+
+    case 'notification':
+      return typeof msg.text === 'string' && msg.text.trim()
+        ? [stamp(ctx, { type: 'notice', kind: 'notification', text: msg.text })]
+        : [];
+
+    case 'permission_denied': {
+      // A tool call auto-denied WITHOUT a prompt (deny rule, classifier, mode).
+      // Without this row the agent's tool just "fails" with no visible why.
+      const reason = msg.decision_reason ? ` — ${msg.decision_reason}` : '';
+      const rejection = typeof msg.message === 'string' && msg.message ? `: ${msg.message}` : '';
+      return [
+        stamp(ctx, {
+          type: 'notice',
+          kind: 'permission-denied',
+          text: `${msg.tool_name ?? 'Tool'} was denied${reason}${rejection}`,
+        }),
+      ];
+    }
+
+    case 'model_refusal_fallback':
+    case 'model_refusal_no_fallback':
+      // The model refused. Without a row, retracted/hung output reads as a
+      // truncated answer with no explanation.
+      return typeof msg.content === 'string' && msg.content
+        ? [stamp(ctx, { type: 'notice', kind: 'refusal', text: msg.content })]
+        : [];
+
+    case 'thinking_tokens':
+      return typeof msg.estimated_tokens === 'number'
+        ? [stamp(ctx, { type: 'thinking-tokens', tokens: msg.estimated_tokens })]
+        : [];
+
+    case 'worker_shutting_down':
+      // Session-death forewarning: clear any transient status so a stale
+      // "retrying…" line can't outlive the process. The consume loop's own
+      // finally emits the terminal turn-end.
+      return [stamp(ctx, { type: 'session/status', status: null })];
+
+    default:
+      return null; // not ours — let normalizeTaskSystem try
+  }
+}
+
+/** Compact human token count for notice rows (52.3k / 998). */
+function formatTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+/** The largest reported context window across the result's per-model usage —
+ *  the main model's window (subagent models may report smaller ones). */
+function contextWindowFrom(mu: SdkMessage['modelUsage']): number | null {
+  if (!mu || typeof mu !== 'object') return null;
+  let max = 0;
+  for (const v of Object.values(mu)) {
+    if (v && typeof v.contextWindow === 'number' && v.contextWindow > max) max = v.contextWindow;
+  }
+  return max > 0 ? max : null;
+}
+
+/** Approximate context tokens in use after a turn: the final API call's input
+ *  (fresh + cached) plus its output. */
+function contextUsedFrom(u: RawUsage | undefined): number | null {
+  if (!u) return null;
+  const used =
+    (u.input_tokens ?? 0) +
+    (u.cache_read_input_tokens ?? 0) +
+    (u.cache_creation_input_tokens ?? 0) +
+    (u.output_tokens ?? 0);
+  return used > 0 ? used : null;
+}
+
+/** Extract renderable user TEXT from a stream `user` message's content —
+ *  a plain string, or the joined `text` blocks of an array (ignoring
+ *  tool_result/image blocks). Returns '' when there is none. */
+function userTextFrom(content: RawContentBlock[] | string | undefined): string {
+  if (typeof content === 'string') return content.trim();
+  if (!Array.isArray(content)) return '';
+  const texts: string[] = [];
+  for (const b of content) {
+    if (b.type === 'text' && typeof (b as { text?: unknown }).text === 'string') {
+      texts.push((b as { text: string }).text);
+    }
+  }
+  return texts.join('\n').trim();
+}
+
+/** Short display label for an SDK user-message origin. */
+function originLabel(origin: SdkMessage['origin']): string | undefined {
+  if (!origin || typeof origin !== 'object') return undefined;
+  switch (origin.kind) {
+    case 'channel':
+      return 'claude.ai';
+    case 'peer':
+      return origin.name || origin.from ? `peer: ${origin.name ?? origin.from}` : 'peer';
+    case 'task-notification':
+      return 'task notification';
+    default:
+      return undefined; // 'human' / unknown → no badge
   }
 }
 
@@ -664,12 +949,16 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         sessionId: event.sessionId,
         model: event.model,
         permissionMode: event.permissionMode,
-        running: true,
-        // Start the live turn clock unless a user-message already started it
-        // (init and the first prompt can arrive either order); reset the live
-        // output-char counter for the fresh turn.
-        turnStartedAt: next.turnStartedAt ?? event.at,
-        liveOutputChars: 0,
+        // A session can boot WITHOUT a turn in flight (lazy start from a bash
+        // run or the Remote Control toggle), so init must NOT flip `running` —
+        // that wedged a perpetual "Working…" footer with no result ever coming
+        // (silent-failure audit H8). The user-message echo is what opens a
+        // turn; it precedes init whenever a prompt caused the boot.
+        running: next.running,
+        turnStartedAt: next.turnStartedAt,
+        liveOutputChars: next.running ? next.liveOutputChars : 0,
+        ...(event.slashCommands !== undefined ? { slashCommands: event.slashCommands } : {}),
+        ...(event.mcpServers !== undefined ? { mcpServers: event.mcpServers } : {}),
       };
 
     case 'block-start': {
@@ -730,8 +1019,14 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       }
       // Track streamed output length for the live token estimate (see
       // AgentSession.liveOutputChars). Text deltas are the assistant's visible
-      // output; the exact token count still arrives at turn-end.
-      return { ...next, messages, liveOutputChars: next.liveOutputChars + event.text.length };
+      // output; the exact token count still arrives at turn-end. Output
+      // resuming also retires any transient status line ("retrying…").
+      return {
+        ...next,
+        messages,
+        liveOutputChars: next.liveOutputChars + event.text.length,
+        statusNotice: undefined,
+      };
     }
 
     case 'tool-input-delta': {
@@ -771,17 +1066,18 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       // toolUseId already (the streaming content_block_start carries it).
       let i = findByToolUseId(messages, event.toolUseId);
       if (i === -1) {
-        // Legacy/defensive fallbacks (a stream whose block-start carried no
-        // id): match a partial tool message awaiting finalization.
+        // Legacy/defensive fallback (a stream whose block-start carried no id):
+        // tool-use events arrive in content-block order, so the FIRST tool row
+        // still awaiting finalization is the one this event completes. (A
+        // last-unfinalized rule here swapped names/inputs across parallel tool
+        // blocks streamed in one assistant message — audit M6.)
         i = messages.findIndex(
           (m) =>
-            m.role === 'tool' && m.toolUse && m.toolUse.toolUseId === '' && m.toolUse.name === '',
+            m.role === 'tool' &&
+            m.toolUse !== undefined &&
+            m.toolUse.input === undefined &&
+            m.toolUse.toolUseId === '',
         );
-        const byIdx = messages
-          .map((m, idx) => ({ m, idx }))
-          .filter(({ m }) => m.role === 'tool' && m.toolUse && m.toolUse.input === undefined)
-          .pop();
-        if (byIdx) i = byIdx.idx;
       }
 
       if (i === -1) {
@@ -808,7 +1104,9 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
           toolUse: { ...tu, toolUseId: event.toolUseId, name: event.name, input: event.input },
         };
       }
-      return { ...next, messages };
+      // A finalized tool call means the model is producing again — retire any
+      // transient "retrying…" status line.
+      return { ...next, messages, statusNotice: undefined };
     }
 
     case 'tool-result': {
@@ -861,12 +1159,21 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         id: `user:${event.seq}`,
         role: 'user',
         text: event.text,
+        ...(event.origin ? { origin: event.origin } : {}),
         ...(event.images && event.images.length > 0 ? { images: event.images } : {}),
         done: true,
       });
       // A fresh prompt starts a new turn: start the live clock and reset the
       // per-turn output-char counter that feeds the live token estimate.
-      return { ...next, messages, running: true, turnStartedAt: event.at, liveOutputChars: 0 };
+      return {
+        ...next,
+        messages,
+        running: true,
+        turnStartedAt: event.at,
+        liveOutputChars: 0,
+        statusNotice: undefined,
+        liveThinkingTokens: undefined,
+      };
     }
 
     case 'local-command': {
@@ -908,6 +1215,9 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         // A finished turn resolves any still-pending permission prompts (the
         // turn cannot end with a live canUseTool call outstanding).
         pendingPermissions: [],
+        // …and retires the transient working-readout extras.
+        statusNotice: undefined,
+        liveThinkingTokens: undefined,
       };
 
     case 'error': {
@@ -926,9 +1236,40 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
     case 'task':
       return { ...next, tasks: foldTaskEvent(next.tasks, event) };
 
-    default:
-      // Exhaustiveness guard — a new AgentEvent variant must be handled here.
-      return assertNever(event);
+    case 'notice': {
+      const messages = [...next.messages];
+      messages.push({
+        id: `notice:${event.seq}`,
+        role: 'system',
+        text: event.text,
+        noticeKind: event.kind,
+        ...(event.resetsAt !== undefined ? { noticeResetsAt: event.resetsAt } : {}),
+        done: true,
+      });
+      return { ...next, messages };
+    }
+
+    case 'session/status':
+      return { ...next, statusNotice: event.status ?? undefined };
+
+    case 'thinking-tokens':
+      return { ...next, liveThinkingTokens: event.tokens };
+
+    case 'session/clear':
+      // Full reset (composer /clear): a fresh transcript for every client. The
+      // fold identity keeps only the workspace binding.
+      return emptySession(next.workspaceId);
+
+    default: {
+      // Compile-time exhaustiveness (the `never` assignment errors if a variant
+      // is unhandled) WITHOUT the runtime throw: an unknown event from a newer
+      // main / ui-rpc peer must degrade to a skip, not poison the whole RAF
+      // batch — `drain()` clears the queue before folding, so a throw here used
+      // to drop every event in the frame for every workspace (audit H5).
+      const _exhaustive: never = event;
+      void _exhaustive;
+      return next;
+    }
   }
 }
 
@@ -1032,8 +1373,4 @@ export function clearPendingPermission(session: AgentSession, requestId: string)
   const pendingPermissions = session.pendingPermissions.filter((p) => p.requestId !== requestId);
   if (pendingPermissions.length === session.pendingPermissions.length) return session;
   return { ...session, pendingPermissions };
-}
-
-function assertNever(x: never): never {
-  throw new Error(`unhandled AgentEvent: ${JSON.stringify(x)}`);
 }

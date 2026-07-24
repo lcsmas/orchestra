@@ -80,10 +80,13 @@ function TaskCard({
   task,
   now,
   onOpenTranscript,
+  transcriptMissing = false,
 }: {
   task: BackgroundTask;
   now: number;
   onOpenTranscript: (path: string) => void;
+  /** True when a prior open attempt reported the transcript file missing. */
+  transcriptMissing?: boolean;
 }) {
   const usage = task.usage;
   const elapsed = formatElapsed(taskElapsedMs(task, now));
@@ -127,9 +130,11 @@ function TaskCard({
           <button
             type="button"
             className="av-bgtask-transcript"
+            disabled={transcriptMissing}
+            title={transcriptMissing ? 'The transcript file is missing or was removed' : undefined}
             onClick={() => onOpenTranscript(task.outputFile as string)}
           >
-            View transcript
+            {transcriptMissing ? 'Transcript unavailable' : 'View transcript'}
           </button>
         )}
       </div>
@@ -160,8 +165,16 @@ export function BackgroundTasksPanel({
     return () => clearInterval(id);
   }, [hasRunning]);
 
+  // Track transcript paths whose open FAILED (file missing/moved) so the click
+  // gives feedback instead of doing nothing — the handler returns false then.
+  const [missingTranscripts, setMissingTranscripts] = useState<Set<string>>(() => new Set());
   const openTranscript = (path: string) => {
-    void window.orchestra.agentSdkOpenTaskTranscript(path);
+    void window.orchestra
+      .agentSdkOpenTaskTranscript(path)
+      .then((ok) => {
+        if (!ok) setMissingTranscripts((prev) => new Set(prev).add(path));
+      })
+      .catch(() => setMissingTranscripts((prev) => new Set(prev).add(path)));
   };
 
   return (
@@ -192,7 +205,7 @@ export function BackgroundTasksPanel({
                   Running <span className="av-bgtask-group-count">{running.length}</span>
                 </div>
                 {running.map((t) => (
-                  <TaskCard key={t.id} task={t} now={now} onOpenTranscript={openTranscript} />
+                  <TaskCard key={t.id} task={t} now={now} onOpenTranscript={openTranscript} transcriptMissing={!!t.outputFile && missingTranscripts.has(t.outputFile)} />
                 ))}
               </section>
             )}
@@ -202,7 +215,7 @@ export function BackgroundTasksPanel({
                   Finished <span className="av-bgtask-group-count">{finished.length}</span>
                 </div>
                 {finished.map((t) => (
-                  <TaskCard key={t.id} task={t} now={now} onOpenTranscript={openTranscript} />
+                  <TaskCard key={t.id} task={t} now={now} onOpenTranscript={openTranscript} transcriptMissing={!!t.outputFile && missingTranscripts.has(t.outputFile)} />
                 ))}
               </section>
             )}

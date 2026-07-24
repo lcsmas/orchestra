@@ -23,6 +23,7 @@ import type {
 import { ToolInput } from './toolInput';
 import { AskUserQuestionCard } from './AskUserQuestionCard';
 import { ASK_USER_QUESTION, parseAskUserQuestion } from './askUserQuestion';
+import { MarkdownView } from './MarkdownView';
 
 export function PermissionDialog({
   workspaceId,
@@ -85,6 +86,102 @@ export function PermissionDialog({
         request={active}
         onReply={(r) => reply(active.requestId, r)}
       />
+    );
+  }
+
+  // ExitPlanMode gets a first-class PLAN REVIEW card (CC-desktop parity): the
+  // plan rendered as markdown with approve / approve-and-accept-edits / keep-
+  // planning actions — not the generic dialog dumping raw input JSON. Reachable
+  // in `plan`/`default` modes, where canUseTool parks the call.
+  const planText =
+    active.name === 'ExitPlanMode' && typeof active.input.plan === 'string'
+      ? active.input.plan
+      : null;
+  if (planText !== null) {
+    const decide = (choice: 'auto' | 'accept-edits' | 'keep-planning') => {
+      if (choice === 'keep-planning') {
+        reply(active.requestId, {
+          behavior: 'deny',
+          message:
+            'The user wants to keep planning — do not start implementing yet. Refine the plan based on their feedback.',
+        });
+        return;
+      }
+      reply(active.requestId, { behavior: 'allow' });
+      // Leaving plan mode: pick the follow-on mode the user chose. `auto` is
+      // Orchestra's autonomous default (bypass); `accept-edits` keeps prompts
+      // for non-edit tools. Persisted + live-applied by main.
+      const target = choice === 'accept-edits' ? 'acceptEdits' : 'bypassPermissions';
+      void window.orchestra
+        .agentSdkSetPermissionMode(workspaceId, target)
+        .catch((e) => console.error('agentSdkSetPermissionMode failed', e));
+    };
+    return (
+      <div className="av-permission-backdrop" role="presentation">
+        <div
+          className="av-permission-dialog av-plan-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="av-plan-title"
+        >
+          <div className="av-permission-header">
+            <span className="av-permission-eyebrow">
+              <span className="av-permission-icon" aria-hidden="true">
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M3 2.5h10v11H3z" />
+                  <path d="M5.5 5.5h5M5.5 8h5M5.5 10.5h3" />
+                </svg>
+              </span>
+              Plan ready for review
+            </span>
+            {remaining > 1 && (
+              <span className="av-permission-queue" aria-label={`${remaining} pending requests`}>
+                1 of {remaining}
+              </span>
+            )}
+          </div>
+          <h2 id="av-plan-title" className="av-permission-title">
+            Approve this plan?
+          </h2>
+          <div className="av-plan-body av-md">
+            <MarkdownView text={planText} done />
+          </div>
+          <div className="av-permission-actions">
+            <button
+              type="button"
+              className="av-btn av-btn-ghost"
+              onClick={() => decide('keep-planning')}
+            >
+              Keep planning
+            </button>
+            <button
+              type="button"
+              className="av-btn"
+              onClick={() => decide('accept-edits')}
+              title="Approve and auto-accept file edits (other tools still prompt)"
+            >
+              Approve · accept edits
+            </button>
+            <button
+              type="button"
+              className="av-btn av-btn-primary"
+              onClick={() => decide('auto')}
+              title="Approve and run autonomously (bypass permissions)"
+            >
+              Approve &amp; run
+            </button>
+          </div>
+        </div>
+      </div>
     );
   }
 

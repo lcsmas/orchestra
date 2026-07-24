@@ -555,13 +555,26 @@ test('fold: text deltas at one index coalesce into a single assistant message', 
   assert.equal(s.messages[0].done, true);
 });
 
-test('fold: session/init sets running true and model', () => {
+test('fold: session/init sets model but does NOT flip running (audit H8)', () => {
+  // A session can boot with NO turn in flight (lazy start from a bash run or
+  // the Remote Control toggle) — init flipping `running` wedged a perpetual
+  // "Working…" footer with no result ever coming.
   const s = foldEvents(
     emptySession('ws1'),
     normalizeAll([{ type: 'system', subtype: 'init', session_id: 'S', model: 'claude-opus-4-8' }]),
   );
-  assert.equal(s.running, true);
+  assert.equal(s.running, false);
+  assert.equal(s.turnStartedAt, undefined);
   assert.equal(s.model, 'claude-opus-4-8');
+});
+
+test('fold: session/init preserves the turn a user-message opened', () => {
+  const c = ctx();
+  const echo = makeUserMessage(c, 'go');
+  const [init] = normalizeSdkMessage({ type: 'system', subtype: 'init', model: 'm' }, c);
+  const s = foldEvents(emptySession('ws1'), [echo, init]);
+  assert.equal(s.running, true);
+  assert.notEqual(s.turnStartedAt, undefined);
 });
 
 // ─── fold: Remote Control state ──────────────────────────────────────────────
@@ -793,7 +806,9 @@ test('fold: permission-request queues; turn-end clears pending; explicit clear w
 
 test('fold: turn-end sets lastTurn, sums cost, running=false', () => {
   let s = emptySession('ws1');
-  s = foldEvent(s, normalizeSdkMessage({ type: 'system', subtype: 'init', session_id: 'S' }, { seq: 0, now: () => 1 })[0]);
+  // The user-message echo (not init) is what opens a turn — see audit H8.
+  s = foldEvent(s, makeUserMessage({ seq: 0, now: () => 1 }, 'go'));
+  s = foldEvent(s, normalizeSdkMessage({ type: 'system', subtype: 'init', session_id: 'S' }, { seq: 1, now: () => 1 })[0]);
   assert.equal(s.running, true);
   const te = normalizeSdkMessage(
     { type: 'result', subtype: 'success', is_error: false, num_turns: 3, session_id: 'S', total_cost_usd: 0.25 },
@@ -1177,4 +1192,334 @@ test('fold: live turn clock + output-char counter track a turn', () => {
   s = foldEvent(s, { type: 'user-message', seq: 5, at: 3000, text: 'again' });
   assert.equal(s.turnStartedAt, 3000);
   assert.equal(s.liveOutputChars, 0);
+});
+
+// ─── normalize: previously-dropped SDK messages → notices (silent-failure audit) ──
+
+test('normalize: rate_limit_event rejected → rate-limit notice with resetsAt', () => {
+  const [ev] = normalizeSdkMessage(
+    {
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: 1_753_500_000, rateLimitType: 'five_hour' },
+    } as SdkMessage,
+    ctx(),
+  ) as [Extract<AgentEvent, { type: 'notice' }>];
+  assert.equal(ev.type, 'notice');
+  assert.equal(ev.kind, 'rate-limit');
+  assert.equal(ev.resetsAt, 1_753_500_000);
+});
+
+test('normalize: rate_limit_event allowed → no event', () => {
+  assert.deepEqual(
+    normalizeSdkMessage(
+      { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } } as SdkMessage,
+      ctx(),
+    ),
+    [],
+  );
+});
+
+test('normalize: auth_status with error → auth notice', () => {
+  const [ev] = normalizeSdkMessage(
+    { type: 'auth_status', error: 'OAuth token expired', isAuthenticating: false } as SdkMessage,
+    ctx(),
+  ) as [Extract<AgentEvent, { type: 'notice' }>];
+  assert.equal(ev.kind, 'auth');
+  assert.match(ev.text, /OAuth token expired/);
+});
+
+test('normalize: system/api_retry → transient session/status line', () => {
+  const [ev] = normalizeSdkMessage(
+    {
+      type: 'system',
+      subtype: 'api_retry',
+      attempt: 3,
+      max_retries: 10,
+      retry_delay_ms: 8000,
+      error_status: 529,
+    } as SdkMessage,
+    ctx(),
+  ) as [Extract<AgentEvent, { type: 'session/status' }>];
+  assert.equal(ev.type, 'session/status');
+  assert.match(ev.status ?? '', /API 529/);
+  assert.match(ev.status ?? '', /8s/);
+  assert.match(ev.status ?? '', /3\/10/);
+});
+
+test('normalize: system/status compacting → status; compact_error → notice; permissionMode → session/update', () => {
+  const evs = normalizeSdkMessage(
+    {
+      type: 'system',
+      subtype: 'status',
+      status: 'compacting',
+      permissionMode: 'acceptEdits',
+    } as SdkMessage,
+    ctx(),
+  );
+  assert.equal(evs[0].type, 'session/status');
+  assert.match((evs[0] as { status?: string }).status ?? '', /Compacting/);
+  const upd = evs.find((e) => e.type === 'session/update');
+  assert.equal((upd as { permissionMode?: string } | undefined)?.permissionMode, 'acceptEdits');
+
+  const errEvs = normalizeSdkMessage(
+    { type: 'system', subtype: 'status', status: null, compact_result: 'failed', compact_error: 'too big' } as SdkMessage,
+    ctx(),
+  );
+  const notice = errEvs.find((e) => e.type === 'notice') as Extract<AgentEvent, { type: 'notice' }>;
+  assert.equal(notice.kind, 'compact-error');
+  assert.match(notice.text, /too big/);
+});
+
+test('normalize: system/compact_boundary → status clear + compact-boundary notice', () => {
+  const evs = normalizeSdkMessage(
+    {
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'auto', pre_tokens: 150_000, post_tokens: 12_000 },
+    } as SdkMessage,
+    ctx(),
+  );
+  assert.equal(evs[0].type, 'session/status');
+  assert.equal((evs[0] as { status?: string | null }).status, null);
+  const notice = evs[1] as Extract<AgentEvent, { type: 'notice' }>;
+  assert.equal(notice.kind, 'compact-boundary');
+  assert.match(notice.text, /auto/);
+  assert.match(notice.text, /150\.0k/);
+});
+
+test('normalize: local_command_output / informational / notification / permission_denied → notices', () => {
+  const out = normalizeSdkMessage(
+    { type: 'system', subtype: 'local_command_output', content: 'Usage: 42%' } as SdkMessage,
+    ctx(),
+  )[0] as Extract<AgentEvent, { type: 'notice' }>;
+  assert.equal(out.kind, 'command-output');
+
+  const info = normalizeSdkMessage(
+    { type: 'system', subtype: 'informational', content: 'hook says hi', level: 'warning' } as SdkMessage,
+    ctx(),
+  )[0] as Extract<AgentEvent, { type: 'notice' }>;
+  assert.equal(info.kind, 'warning');
+
+  const notif = normalizeSdkMessage(
+    { type: 'system', subtype: 'notification', text: 'look here', priority: 'immediate' } as SdkMessage,
+    ctx(),
+  )[0] as Extract<AgentEvent, { type: 'notice' }>;
+  assert.equal(notif.kind, 'notification');
+
+  const denied = normalizeSdkMessage(
+    {
+      type: 'system',
+      subtype: 'permission_denied',
+      tool_name: 'Bash',
+      decision_reason: 'deny rule',
+      message: 'blocked by settings',
+    } as unknown as SdkMessage,
+    ctx(),
+  )[0] as Extract<AgentEvent, { type: 'notice' }>;
+  assert.equal(denied.kind, 'permission-denied');
+  assert.match(denied.text, /Bash/);
+  assert.match(denied.text, /deny rule/);
+});
+
+test('normalize: model refusal messages → refusal notice', () => {
+  for (const subtype of ['model_refusal_fallback', 'model_refusal_no_fallback']) {
+    const [ev] = normalizeSdkMessage(
+      { type: 'system', subtype, content: 'The model declined.' } as SdkMessage,
+      ctx(),
+    ) as [Extract<AgentEvent, { type: 'notice' }>];
+    assert.equal(ev.kind, 'refusal');
+  }
+});
+
+test('normalize: system/thinking_tokens → thinking-tokens event', () => {
+  const [ev] = normalizeSdkMessage(
+    { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 1234 } as SdkMessage,
+    ctx(),
+  ) as [Extract<AgentEvent, { type: 'thinking-tokens' }>];
+  assert.equal(ev.type, 'thinking-tokens');
+  assert.equal(ev.tokens, 1234);
+});
+
+test('normalize: init carries slash commands and MCP servers when present', () => {
+  const [ev] = normalizeSdkMessage(
+    {
+      type: 'system',
+      subtype: 'init',
+      slash_commands: ['compact', 'usage'],
+      mcp_servers: [{ name: 'browser', status: 'connected' }],
+    } as SdkMessage,
+    ctx(),
+  ) as [Extract<AgentEvent, { type: 'session/init' }>];
+  assert.deepEqual(ev.slashCommands, ['compact', 'usage']);
+  assert.deepEqual(ev.mcpServers, [{ name: 'browser', status: 'connected' }]);
+});
+
+// ─── normalize: externally-originated user text (audit H4) ───────────────────
+
+test('normalize: stream user TEXT renders (Remote Control / channel origin)', () => {
+  const [ev] = normalizeSdkMessage(
+    {
+      type: 'user',
+      message: { role: 'user', content: 'do the thing' },
+      parent_tool_use_id: null,
+      origin: { kind: 'channel', server: 'claude.ai' },
+    } as unknown as SdkMessage,
+    ctx(),
+  ) as [Extract<AgentEvent, { type: 'user-message' }>];
+  assert.equal(ev.type, 'user-message');
+  assert.equal(ev.text, 'do the thing');
+  assert.equal(ev.origin, 'claude.ai');
+});
+
+test('normalize: synthetic / sidechain / tool_result-only user messages emit no user-message', () => {
+  // Synthetic frame (hook-injected context).
+  assert.deepEqual(
+    normalizeSdkMessage(
+      { type: 'user', isSynthetic: true, message: { role: 'user', content: 'ctx' }, parent_tool_use_id: null } as unknown as SdkMessage,
+      ctx(),
+    ).filter((e) => e.type === 'user-message'),
+    [],
+  );
+  // Subagent sidechain.
+  assert.deepEqual(
+    normalizeSdkMessage(
+      { type: 'user', message: { role: 'user', content: 'sub' }, parent_tool_use_id: 'toolu_1' } as unknown as SdkMessage,
+      ctx(),
+    ).filter((e) => e.type === 'user-message'),
+    [],
+  );
+  // tool_result-only content still yields ONLY the tool-result.
+  const evs = normalizeSdkMessage(
+    {
+      type: 'user',
+      parent_tool_use_id: null,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] },
+    } as unknown as SdkMessage,
+    ctx(),
+  );
+  assert.deepEqual(evs.map((e) => e.type), ['tool-result']);
+});
+
+// ─── normalize: turn-end context fields ──────────────────────────────────────
+
+test('normalize: result carries contextWindow (max modelUsage) + contextUsedTokens', () => {
+  const evs = normalizeSdkMessage(
+    {
+      type: 'result',
+      subtype: 'success',
+      usage: {
+        input_tokens: 1000,
+        output_tokens: 500,
+        cache_read_input_tokens: 90_000,
+        cache_creation_input_tokens: 2000,
+      },
+      modelUsage: {
+        'claude-opus-4-8': { contextWindow: 200_000 },
+        'claude-haiku-4-5': { contextWindow: 100_000 },
+      },
+    } as SdkMessage,
+    ctx(),
+  );
+  const end = evs.find((e) => e.type === 'turn-end') as Extract<AgentEvent, { type: 'turn-end' }>;
+  assert.equal(end.contextWindow, 200_000);
+  assert.equal(end.contextUsedTokens, 93_500);
+});
+
+// ─── fold: notices, transient status, thinking tokens, clear ─────────────────
+
+test('fold: notice → system row with noticeKind; statusNotice lifecycle', () => {
+  const c = ctx();
+  let s = emptySession('ws1');
+  s = foldEvents(s, normalizeSdkMessage(
+    { type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 10, retry_delay_ms: 4000, error_status: 500 } as SdkMessage,
+    c,
+  ));
+  assert.match(s.statusNotice ?? '', /API 500/);
+  // Output resuming clears the transient status.
+  s = foldEvents(s, normalizeSdkMessage(
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hi' } } },
+    c,
+  ));
+  assert.equal(s.statusNotice, undefined);
+
+  s = foldEvents(s, normalizeSdkMessage(
+    { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 123 } } as SdkMessage,
+    c,
+  ));
+  const row = s.messages[s.messages.length - 1];
+  assert.equal(row.role, 'system');
+  assert.equal(row.noticeKind, 'rate-limit');
+  assert.equal(row.noticeResetsAt, 123);
+  assert.equal(row.done, true);
+});
+
+test('fold: thinking-tokens tracks live estimate, cleared at turn end', () => {
+  const c = ctx();
+  let s = emptySession('ws1');
+  s = foldEvents(s, normalizeSdkMessage(
+    { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 900 } as SdkMessage,
+    c,
+  ));
+  assert.equal(s.liveThinkingTokens, 900);
+  s = foldEvents(s, normalizeSdkMessage({ type: 'result', subtype: 'success' } as SdkMessage, c));
+  assert.equal(s.liveThinkingTokens, undefined);
+  assert.equal(s.statusNotice, undefined);
+});
+
+test('fold: session/clear resets the whole session (composer /clear)', () => {
+  const c = ctx();
+  let s = foldEvents(emptySession('ws1'), [
+    makeUserMessage(c, 'hello'),
+    ...normalizeSdkMessage({ type: 'system', subtype: 'init', session_id: 'S', model: 'm' }, c),
+  ]);
+  assert.equal(s.messages.length, 1);
+  s = foldEvent(s, { type: 'session/clear', seq: 99, at: 5 });
+  assert.equal(s.messages.length, 0);
+  assert.equal(s.sessionId, '');
+  assert.equal(s.running, false);
+  assert.equal(s.workspaceId, 'ws1');
+});
+
+test('fold: unknown event type is skipped, not thrown (audit H5)', () => {
+  const s = emptySession('ws1');
+  const bogus = { type: 'from-the-future', seq: 7, at: 1, payload: 42 } as unknown as AgentEvent;
+  const out = foldEvent(s, bogus);
+  assert.equal(out.messages.length, 0);
+  assert.equal(out.lastSeq, 7);
+});
+
+// ─── fold: parallel tool_use association (audit M6) ──────────────────────────
+
+test('fold: two parallel tool blocks finalize in order (first-unfinalized match)', () => {
+  const c = ctx();
+  const events = normalizeAll([
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', name: 'Read' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"file":"a"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', name: 'Bash' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"cmd":"ls"}' } } },
+  ]);
+  // Finalized tool_use events arrive in content-block order on the assistant msg.
+  const finals = normalizeSdkMessage(
+    {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'tu_A', name: 'Read', input: { file: 'a' } },
+          { type: 'tool_use', id: 'tu_B', name: 'Bash', input: { cmd: 'ls' } },
+        ],
+      },
+    } as SdkMessage,
+    c,
+  );
+  const s = foldEvents(emptySession('ws1'), [...events, ...finals]);
+  const tools = s.messages.filter((m) => m.role === 'tool');
+  assert.equal(tools.length, 2);
+  // The FIRST streamed block (inputJson {"file":"a"}) must carry tu_A/Read —
+  // the old last-unfinalized rule swapped them.
+  assert.equal(tools[0].toolUse?.toolUseId, 'tu_A');
+  assert.equal(tools[0].toolUse?.name, 'Read');
+  assert.equal(tools[0].toolUse?.inputJson, '{"file":"a"}');
+  assert.equal(tools[1].toolUse?.toolUseId, 'tu_B');
+  assert.equal(tools[1].toolUse?.name, 'Bash');
 });

@@ -87,6 +87,83 @@ calls `sdkStopIfLive` so the session doesn't keep running under the old account'
 `CLAUDE_CONFIG_DIR`. When no structured session is live these no-op and callers fall back
 to the unchanged PTY path.
 
+## Silent-failure hardening + CC/PTY parity (2026-07 gap audit)
+
+A three-axis audit (PTY-vs-structured, silent failures, CC-desktop parity)
+closed these gaps — the regression guards live in `agent-events.test.ts`:
+
+- **Notices** — `normalizeSdkMessage` used to consume only 5 of the SDK's ~39
+  message variants and silently dropped the rest. Now an **`AgentNoticeEvent`**
+  (`type:'notice'`, `kind`: rate-limit / auth / compact-boundary / compact-error
+  / refusal / permission-denied / notification / warning / info /
+  command-output) surfaces `rate_limit_event`, `auth_status`,
+  `system/{compact_boundary, local_command_output, informational, notification,
+  permission_denied, model_refusal_*}` as quiet system rows
+  (`NoticeRow.tsx`, `.av-notice-*`). **`AgentStatusEvent`**
+  (`session/status`, transient — never a transcript row) carries
+  `system/api_retry` ("API 529 — retrying in 8s (3/10)") and
+  `status:'compacting'`; folded into `session.statusNotice`, shown in the
+  running TurnFooter, cleared when output resumes / at turn end.
+  **`AgentThinkingTokensEvent`** (`system/thinking_tokens`) drives a live
+  "thinking · N tokens" readout while redacted thinking streams nothing else.
+  A `status` message's `permissionMode` also emits `session/update` (CLI-side
+  mode changes reflect live).
+- **Turn-lifecycle ledger close (consume())** — the loop's `catch`/`finally`
+  now (a) emits an error for undelivered `session.queue` entries ("N queued
+  messages were not delivered"), (b) emits a **synthetic `turn-end`** whenever
+  a turn was open (`turnGate` armed) so the pane can never wedge on a
+  perpetual "Working…" after the subprocess dies, (c) runs `isBadResumeError`
+  on stream-surfaced errors and clears `ws.sdkSessionId` (the resume failure
+  surfaces in consume, NOT in sdkSend's catch — ensureSession never awaits the
+  subprocess), and (d) keys "interrupted" on `session.interruptRequested`
+  (set by sdkInterrupt) instead of matching /abort/ against arbitrary text.
+  `session/init` no longer flips `running` — only the `user-message` echo
+  opens a turn (a lazy boot from bash mode / Remote Control used to wedge
+  "Working…" forever). `sdkInterrupt` with NO live session emits a synthetic
+  turn-end so a wedged view self-heals; interrupt failures surface as errors.
+- **Externally-originated user text** — stream `user` messages carrying TEXT
+  (Remote Control turns typed on claude.ai/mobile, channel/peer injections)
+  now emit `user-message` (with an `origin` badge, `.av-message-origin`);
+  synthetic frames, subagent sidechains (`parent_tool_use_id`) and
+  tool_result-only messages stay filtered. `emitFrom` drops replays matching
+  `session.recentEchoes` (belt-and-braces vs future SDK replay behavior).
+- **Fold robustness** — the fold's default case tolerates unknown event types
+  at runtime (compile-time exhaustiveness kept via a `never` assignment); the
+  store's RAF flush try/catches per workspace so one bad event can't discard a
+  whole frame for every workspace. Parallel `tool_use` blocks finalize onto
+  the FIRST unfinalized streaming row (the old last-match rule swapped
+  names/inputs across parallel calls).
+- **Bash mode hardening** — `sdkRunBash` kills the child on output-cap
+  overflow and on a 5-min timeout (`BASH_TIMEOUT_MS`), so a hung `tail -f`
+  can't spin forever; `pendingLocalContext` is capped (`LOCAL_CONTEXT_CAP`,
+  oldest dropped) so N bash runs can't blow the next turn's context.
+- **`/clear` + `/compact`** — the composer intercepts `/clear` →
+  `agentSdkClear` (`agent:sdkClear` → `sdkClear`): stops the session with
+  `session.cleared` suppressing its tail events, persists `sdkSessionId: ''`
+  (the explicit cleared marker that also disables sdkHistory's newest-.jsonl
+  fallback), and broadcasts **`session/clear`** (fold → `emptySession`).
+  `/compact` (and any built-in) is sent through — the CLI executes it and the
+  new status/compact-boundary/command-output events render the result. The
+  composer autocomplete merges on-disk skills with `session.slashCommands`
+  (now captured from init, along with `session.mcpServers`).
+- **CC-desktop parity in the UI** — `ContextGauge` in TurnFooter ("N% context
+  left", amber ≤25% / red ≤10%, from turn-end's `contextWindow`/
+  `contextUsedTokens` lifted off `modelUsage`); **Esc interrupts** the
+  in-flight turn from the composer; **drag-and-drop** files onto the composer
+  (images → attachments, other files → absolute path inserted);
+  **ExitPlanMode renders a plan-review card** (markdown plan +
+  Keep planning / Approve·accept edits / Approve&run, the latter two calling
+  `agentSdkSetPermissionMode`) instead of the generic raw-JSON dialog.
+- **Misc surfacing** — setModel/setEffort/setPermissionMode live-apply
+  failures emit a warning notice (the dropdown no longer silently lies);
+  history backfill logs read failures, renders a "couldn't load history"
+  notice on IPC rejection and an "earlier history not shown" marker on the
+  4MB tail cut; BackgroundTasksPanel's "View transcript" reports a missing
+  file ("Transcript unavailable") instead of a dead click; the unreachable
+  "API error — retrying" footer branch was removed (mid-turn retries surface
+  via `statusNotice`). `switchWorkspaceBranch` (workspaces.ts) now calls
+  `sdkStopIfLive` so a live structured session can't keep stale branch context.
+
 ## Key files
 
 - **`src/shared/types.ts`** — the `AgentEvent` discriminated union (on `type`),

@@ -2304,6 +2304,12 @@ export async function switchWorkspaceBranch(id: string, branch: string): Promise
   stopPty(id);
   stopPty(nvimId);
   clearScrollback(id);
+  // The STRUCTURED session is a live subprocess with the OLD branch baked into
+  // its env (ORCHESTRA_BRANCH) and its context — parity with the PTY restart
+  // above: stop it so the next send starts against the new branch. Lazy
+  // restart (the renderer's next send re-opens it) matches the SDK lifecycle
+  // everywhere else; without this the live session kept stale branch context.
+  await sdkStopIfLive(id);
 
   const repoName = path.basename(ws.repoPath);
   const updated: Workspace = {

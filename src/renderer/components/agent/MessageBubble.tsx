@@ -1,6 +1,7 @@
 import React from 'react';
 import type { RenderMessage } from '../../../shared/types';
 import { MarkdownView } from './MarkdownView';
+import { NoticeRow } from './NoticeRow';
 import { ThinkingIndicator } from './ThinkingIndicator';
 import { useTypewriter } from './useTypewriter';
 
@@ -40,6 +41,9 @@ function MessageBubbleImpl({ message }: Props) {
   const shown = useTypewriter(fullText, !!message.done, animate);
 
   const hasImages = !!images && images.length > 0;
+  // System NOTICES (rate limit, compaction, refusal, command output, …) get
+  // their own quiet row treatment instead of a prose bubble.
+  if (message.noticeKind) return <NoticeRow message={message} />;
   // A message with nothing to show — e.g. a thinking-only block after the
   // spinner settles, or a text block whose first delta hasn't landed — must
   // not paint an empty bubble/rail stub in the transcript. (Images alone are
@@ -48,6 +52,12 @@ function MessageBubbleImpl({ message }: Props) {
 
   return (
     <div className={`av-message av-message-${role}`} data-role={role}>
+      {/* Externally-originated turn (Remote Control from claude.ai/mobile, a
+          peer delivery): badge WHERE it came from so a remotely-driven session
+          reads coherently. */}
+      {role === 'user' && message.origin ? (
+        <div className="av-message-origin">via {message.origin}</div>
+      ) : null}
       {/* No "You" label — user turns are told apart from the agent by their
           distinct bubble treatment (Claude-Code-app style: a tinted, contained
           bubble for the user; plain prose for the agent). Only errors keep an

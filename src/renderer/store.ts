@@ -697,8 +697,17 @@ const agentEventQueue = createAgentEventQueue((batches) => {
   for (const { workspaceId, events } of batches) {
     if (events.length === 0) continue;
     const prev = next[workspaceId] ?? emptySession(workspaceId);
-    next[workspaceId] = foldEvents(prev, events);
-    changed = true;
+    // Per-workspace isolation: `drain()` clears the queue before this callback,
+    // so a fold throw here would silently discard EVERY workspace's frame-slice
+    // (silent-failure audit H5). The fold itself now tolerates unknown event
+    // types, but one malformed event must still cost at most its own workspace's
+    // batch — never the whole frame.
+    try {
+      next[workspaceId] = foldEvents(prev, events);
+      changed = true;
+    } catch (err) {
+      console.error(`agent-event fold failed for ${workspaceId} (batch of ${events.length} dropped)`, err);
+    }
   }
   // Guard before setState — same discipline as onAgentContext/onAgentTool — so
   // an empty flush (nothing folded) can't churn subscribers.

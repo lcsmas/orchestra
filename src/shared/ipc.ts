@@ -259,6 +259,10 @@ export interface OrchestraAPI {
   /** Interrupt the in-flight turn of a workspace's SDK session. Surfaces to the
    *  UI as a `turn-end`/`error` event (the SDK iterator throws, spike d). */
   agentSdkInterrupt: (wsId: string) => Promise<void>;
+  /** Clear the structured conversation (composer /clear): stop the live SDK
+   *  session, drop the resume id, and broadcast `session/clear` so every
+   *  client resets its folded transcript. */
+  agentSdkClear: (wsId: string) => Promise<void>;
   /** Resolve a parked `canUseTool` permission request with the user's decision
    *  (allow, optionally with edited input, or deny with a message). */
   agentSdkPermissionReply: (
