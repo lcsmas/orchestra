@@ -84,12 +84,13 @@ export function TurnFooter({ session }: { session: AgentSession | undefined }) {
   const cacheTotal = usage
     ? usage.cacheCreationInputTokens + usage.cacheReadInputTokens
     : 0;
-  // Token + duration detail rides on the cost chip's tooltip instead of
-  // rendering as separate chips (slim single-row footer).
+  // Token / turn-count / duration detail rides on the cost chip's tooltip
+  // instead of rendering as separate chips (slim single-row footer).
   const costDetail = [
     `Session total ${formatCost(session.totalCostUsd)}`,
     usage &&
       `Tokens: ${formatTokens(usage.inputTokens)} in · ${formatTokens(usage.outputTokens)} out · ${formatTokens(cacheTotal)} cache`,
+    turn.numTurns > 0 && `${turn.numTurns} turn${turn.numTurns === 1 ? '' : 's'}`,
     typeof turn.durationMs === 'number' && `Last turn took ${formatDuration(turn.durationMs)}`,
   ]
     .filter(Boolean)
@@ -99,9 +100,6 @@ export function TurnFooter({ session }: { session: AgentSession | undefined }) {
     <div className="av-turn-footer" role="status">
       {typeof turn.costUsd === 'number' && (
         <Stat label="cost" value={formatCost(turn.costUsd)} title={costDetail} />
-      )}
-      {turn.numTurns > 0 && (
-        <Stat label={turn.numTurns === 1 ? 'turn' : 'turns'} value={String(turn.numTurns)} />
       )}
       <ContextGauge turn={turn} />
     </div>

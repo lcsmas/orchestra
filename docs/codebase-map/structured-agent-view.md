@@ -405,8 +405,8 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   multi-question requests one at a time — Back/Next/step-dots — so the dialog
   never overflows the viewport; single questions render directly**),
   `AgentControls`,
-  **`TurnFooter`** (slim single-row footer — cost, turn count, context-used
-  gauge; token/duration detail lives in the cost chip's tooltip; the previous
+  **`TurnFooter`** (slim single-row footer — cost and context-used gauge;
+  token/turn-count/duration detail lives in the cost chip's tooltip; the previous
   turn's stats persist while a new turn runs). The **real-time "working"
   readout** is the sibling export **`WorkingIndicator`** — animated spark icon,
   **elapsed time counting up** from `session.turnStartedAt`, and a **live token
