@@ -1350,10 +1350,12 @@ h6.av-md-h {
    shimmering "Working", then live elapsed · token estimate, all tabular so the
    ticking digits don't reflow the row. Lives INSIDE the transcript, below the
    streaming output (inside the virtualized rows' translated container) — left
-   padding lines it up with message prose (message margin 24px + padding 18px). */
+   padding lines the spark up with ASSISTANT prose: message margin 24px +
+   .av-message-assistant's 2px padding-left (the rail-less assistant rows drop
+   the default 18px rail inset, so 42px here reads visibly indented). */
 .av-working-line {
   display: flex; align-items: center; gap: 8px;
-  padding: 4px 32px 10px 42px;
+  padding: 4px 32px 10px 26px;
   font-family: var(--font-mono); font-size: var(--av-fs-caption);
   color: var(--av-text-dim); font-variant-numeric: tabular-nums;
 }
