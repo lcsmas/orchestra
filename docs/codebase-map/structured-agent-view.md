@@ -405,14 +405,19 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   multi-question requests one at a time — Back/Next/step-dots — so the dialog
   never overflows the viewport; single questions render directly**),
   `AgentControls`,
-  **`TurnFooter`** (slim single-row footer once a turn ends — cost, turn count,
-  context-used gauge; token/duration detail lives in the cost chip's tooltip;
-  while a turn is in
-  flight it renders the **real-time "working" readout** — animated spark icon,
+  **`TurnFooter`** (slim single-row footer — cost, turn count, context-used
+  gauge; token/duration detail lives in the cost chip's tooltip; the previous
+  turn's stats persist while a new turn runs). The **real-time "working"
+  readout** is the sibling export **`WorkingIndicator`** — animated spark icon,
   **elapsed time counting up** from `session.turnStartedAt`, and a **live token
   estimate** from `session.liveOutputChars` (~chars/4) that ticks up and snaps to
-  the exact `lastTurn.usage.outputTokens` at turn-end. A `useTick` hook
-  re-renders it every second while `session.running`. The SDK stream carries no
+  the exact `lastTurn.usage.outputTokens` at turn-end. It renders **inside the
+  transcript, below the streaming output** (CC-desktop placement): MessageList
+  mounts it inside the virtualized rows' translated container after the last
+  mounted row, only when the window reaches the list end — NOT after the sized
+  wrapper, whose estimate-based `totalHeight` lags typewriter growth and would
+  let streamed text overlap it. A self-owned `useTick` hook
+  re-renders it every second while mounted. The SDK stream carries no
   live duration/usage, so both live values are derived in the renderer — the
   duration is exact, the token count is approximate-until-close by construction),
   plus `agent-theme.ts` (a dependency-free `useAgentTheme` hook returning

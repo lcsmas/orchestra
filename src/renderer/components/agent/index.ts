@@ -27,7 +27,7 @@ export { PermissionDialog } from './PermissionDialog';
 export { AgentControls } from './AgentControls';
 export { EffortSlider } from './EffortSlider';
 export { RemoteControl } from './RemoteControl';
-export { TurnFooter } from './TurnFooter';
+export { TurnFooter, WorkingIndicator } from './TurnFooter';
 export {
   BackgroundTasksPanel,
   runningTaskCount,

@@ -43,6 +43,7 @@ import {
   AgentControls,
   RemoteControl,
   TurnFooter,
+  WorkingIndicator,
   BackgroundTasksPanel,
   runningTaskCount,
   totalTaskCount,
@@ -302,7 +303,9 @@ function MessageList({
       return;
     }
     if (stickBottom.current) pinToBottom();
-  }, [messages.length, measureTick, pinToBottom]);
+    // `session?.running` is a dep so the WorkingIndicator mounting/unmounting
+    // (it renders outside the ResizeObserver'd wrapper) re-pins the bottom.
+  }, [messages.length, measureTick, pinToBottom, session?.running]);
 
   // Fold the flat message list into RENDER ITEMS: a run of consecutive `tool`
   // messages collapses into ONE `tool-group` item (rendered by ToolGroup, which
@@ -410,6 +413,21 @@ function MessageList({
                 dataIndex={start + i}
               />
             ))}
+            {/* Live "Working…" readout BELOW the streaming output, inside the
+                transcript (CC-desktop placement). It must live INSIDE this
+                translated row container, directly after the last mounted row:
+                the sized wrapper's `totalHeight` is built from height
+                ESTIMATES that lag real typewriter growth, so anything placed
+                after the wrapper in normal flow sits at the stale estimated
+                bottom and gets overlapped by the overflowing streamed text
+                (measured: child 193px vs wrapper 142px mid-stream). Only
+                rendered when the window reaches the list's end — scrolled up,
+                the indicator belongs below the fold, not after row N of M.
+                Mounting here also grows the ResizeObserver'd child, so
+                follow-mode re-pins automatically. */}
+            {session?.running && end === items.length && (
+              <WorkingIndicator session={session} />
+            )}
           </div>
         </div>
       )}

@@ -67,26 +67,17 @@ function Stat({ label, value, title }: { label: string; value: string; title?: s
 }
 
 export function TurnFooter({ session }: { session: AgentSession | undefined }) {
-  // Tick every second while a turn is in flight so the live elapsed/token
-  // readout updates in real time. (Called unconditionally to satisfy the rules
-  // of hooks; a no-op when the session is absent/idle.)
-  useTick(!!session?.running);
-
   if (!session) return null;
   const turn = session.lastTurn;
-
-  // A turn in flight: the real-time "working" readout — animated icon, elapsed
-  // time counting up, and an estimated live token count (snaps to exact at
-  // turn-end). Mirrors the Claude-Code desktop footer.
-  if (session.running) {
-    return <TurnFooterRunning session={session} />;
-  }
-
   if (!turn) return null;
 
-  // Error result — surfaced gracefully (transient 500 is common, not a crash).
+  // While a new turn is in flight the live "Working…" readout renders INSIDE
+  // the transcript (WorkingIndicator, mounted by MessageList below the
+  // streaming output — CC-desktop style). The deck bar keeps showing the
+  // PREVIOUS turn's stats so cost/context don't blink out mid-run; a stale
+  // error result is the one thing not worth persisting.
   if (turn.isError) {
-    return <TurnFooterError turn={turn} />;
+    return session.running ? null : <TurnFooterError turn={turn} />;
   }
 
   const usage = turn.usage;
@@ -147,13 +138,17 @@ function ContextGauge({ turn }: { turn: AgentTurnEndEvent }) {
 }
 
 /**
- * The real-time "working" footer, styled like the Claude-Code desktop app: an
+ * The real-time "working" readout, styled like the Claude-Code desktop app: an
  * animated spark icon, elapsed time counting up (from `session.turnStartedAt`),
- * and a live token estimate (from `session.liveOutputChars`, ~chars/4). Both
- * refresh via the parent's `useTick`; the token number is approximate until the
- * turn closes, when the footer swaps to the exact `lastTurn.usage`.
+ * and a live token estimate (from `session.liveOutputChars`, ~chars/4). Rendered
+ * by MessageList INSIDE the transcript, below the streaming output (CC-desktop
+ * placement), not in the deck bar. Ticks itself once a second; the token number
+ * is approximate until the turn closes, when the exact `lastTurn.usage` lands
+ * in the deck-bar footer.
  */
-function TurnFooterRunning({ session }: { session: AgentSession }) {
+export function WorkingIndicator({ session }: { session: AgentSession }) {
+  // Self-ticking: this component only mounts while a turn is in flight.
+  useTick(true);
   const startedAt = session.turnStartedAt;
   const elapsedMs = startedAt !== undefined ? Date.now() - startedAt : -1;
   // Only show the live clock when the elapsed reads as a sane in-progress turn:
@@ -168,7 +163,7 @@ function TurnFooterRunning({ session }: { session: AgentSession }) {
   const thinkingTokens = session.liveThinkingTokens ?? 0;
 
   return (
-    <div className="av-turn-footer av-turn-footer-running" role="status">
+    <div className="av-working-line" role="status">
       <span className="av-turn-spark" aria-hidden="true">✳</span>
       <span className="av-turn-running-label">Working</span>
       {showTime && <span className="av-turn-live-sep" aria-hidden="true">·</span>}

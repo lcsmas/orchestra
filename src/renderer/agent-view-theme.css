@@ -1348,8 +1348,15 @@ h6.av-md-h {
 .av-turn-stat-label { color: var(--av-text-faint); text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; }
 /* Real-time "working" readout (Claude-Code desktop style): animated spark,
    shimmering "Working", then live elapsed · token estimate, all tabular so the
-   ticking digits don't reflow the row. */
-.av-turn-footer-running { color: var(--av-text-dim); gap: 8px; }
+   ticking digits don't reflow the row. Lives INSIDE the transcript, below the
+   streaming output (inside the virtualized rows' translated container) — left
+   padding lines it up with message prose (message margin 24px + padding 18px). */
+.av-working-line {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 32px 10px 42px;
+  font-family: var(--font-mono); font-size: var(--av-fs-caption);
+  color: var(--av-text-dim); font-variant-numeric: tabular-nums;
+}
 .av-turn-spark {
   flex: none; color: var(--av-tool-active); font-size: 13px; line-height: 1;
   display: inline-block; animation: av-spark-spin 1.8s var(--av-ease) infinite;
