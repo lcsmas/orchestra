@@ -148,7 +148,11 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   (now captured from init, along with `session.mcpServers`).
 - **CC-desktop parity in the UI** — `ContextGauge` in TurnFooter ("N% used" +
   a small progress bar, amber ≥75% used / red ≥90%, from turn-end's
-  `contextWindow`/`contextUsedTokens` lifted off `modelUsage`); **Esc interrupts** the
+  `contextWindow` (max `modelUsage` entry) and `contextUsedTokens` (the LAST
+  top-level assistant message's per-call usage, tracked in
+  `NormalizeContext.lastApiCallUsage` and refreshed by compact_boundary
+  `post_tokens` — never the `result` message's `usage`, which is
+  session-cumulative and pinned the gauge at 100%); **Esc interrupts** the
   in-flight turn from the composer; **drag-and-drop** files onto the composer
   (images → attachments, other files → absolute path inserted);
   **ExitPlanMode renders a plan-review card** (markdown plan +

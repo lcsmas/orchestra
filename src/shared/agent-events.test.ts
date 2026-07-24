@@ -1422,7 +1422,67 @@ test('normalize: result carries contextWindow (max modelUsage) + contextUsedToke
   );
   const end = evs.find((e) => e.type === 'turn-end') as Extract<AgentEvent, { type: 'turn-end' }>;
   assert.equal(end.contextWindow, 200_000);
+  // No assistant call seen on this stream → falls back to the result usage
+  // (which, on a first-and-only call, coincides with the per-call figure).
   assert.equal(end.contextUsedTokens, 93_500);
+});
+
+test('normalize: contextUsedTokens = LAST per-call assistant usage, not the cumulative result usage', () => {
+  const c = ctx();
+  const evs = [
+    // Two top-level API calls; the second is the live context size (150k)...
+    {
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { role: 'assistant', content: [], usage: { input_tokens: 100, cache_read_input_tokens: 99_000, output_tokens: 400 } },
+    },
+    {
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { role: 'assistant', content: [], usage: { input_tokens: 200, cache_read_input_tokens: 149_000, output_tokens: 800 } },
+    },
+    // ...a SIDECHAIN (subagent) call must NOT override it...
+    {
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_task1',
+      message: { role: 'assistant', content: [], usage: { input_tokens: 5, cache_read_input_tokens: 10, output_tokens: 5 } },
+    },
+    // ...and the result's own usage is session-CUMULATIVE (the bug: reading it
+    // pinned the gauge at 100% — 350M >> any window).
+    {
+      type: 'result',
+      subtype: 'success',
+      usage: { input_tokens: 60_000, cache_read_input_tokens: 350_000_000, output_tokens: 90_000 },
+      modelUsage: { 'claude-opus-4-8': { contextWindow: 200_000 } },
+    },
+  ].flatMap((m) => normalizeSdkMessage(m as SdkMessage, c));
+  const end = evs.find((e) => e.type === 'turn-end') as Extract<AgentEvent, { type: 'turn-end' }>;
+  assert.equal(end.contextUsedTokens, 200 + 149_000 + 800);
+});
+
+test('normalize: compact_boundary resets the context gauge to post_tokens', () => {
+  const c = ctx();
+  const evs = [
+    {
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { role: 'assistant', content: [], usage: { input_tokens: 500, cache_read_input_tokens: 180_000, output_tokens: 700 } },
+    },
+    {
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'auto', pre_tokens: 181_200, post_tokens: 30_000 },
+    },
+    // Turn ends before the next API call: gauge must show the compacted size.
+    {
+      type: 'result',
+      subtype: 'success',
+      usage: { input_tokens: 9_999, cache_read_input_tokens: 9_999_999, output_tokens: 9_999 },
+      modelUsage: { 'claude-opus-4-8': { contextWindow: 200_000 } },
+    },
+  ].flatMap((m) => normalizeSdkMessage(m as SdkMessage, c));
+  const end = evs.find((e) => e.type === 'turn-end') as Extract<AgentEvent, { type: 'turn-end' }>;
+  assert.equal(end.contextUsedTokens, 30_000);
 });
 
 // ─── fold: notices, transient status, thinking tokens, clear ─────────────────

@@ -109,7 +109,8 @@ export function TurnFooter({ session }: { session: AgentSession | undefined }) {
 /**
  * Context-used gauge — the most-felt daily gap: long sessions used to hit the
  * context ceiling with zero warning. Data comes free on every result message
- * (`contextUsedTokens` ≈ the final API call's total input+output;
+ * (`contextUsedTokens` ≈ the last API call's total input+output — the per-call
+ * usage, NOT the result's cumulative one, which once pinned this at 100%;
  * `contextWindow` from modelUsage). Reads as "N% used" plus a small progress
  * bar; quiet by default, amber past 75% used and red past 90%.
  */

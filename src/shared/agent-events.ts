@@ -64,6 +64,15 @@ export interface NormalizeContext {
    *  routes canUseTool through here. Optional — permission events are usually
    *  emitted directly by the manager, not via normalize. */
   nextRequestId?: () => string;
+  /** Usage of the LAST top-level (non-sidechain) assistant API call seen on this
+   *  stream. Mutated by normalize on every `assistant` message and read at
+   *  `result` time to compute `contextUsedTokens` — the `result` message's own
+   *  `usage` is a SESSION-CUMULATIVE accumulator (the CLI merges every API
+   *  call's usage on message_stop), so summing it reads hundreds of millions of
+   *  tokens on a long session and pinned the context gauge at 100%. Only the
+   *  final call's `input + cache + output` measures what's actually in the
+   *  window. */
+  lastApiCallUsage?: RawUsage | null;
 }
 
 interface RawDelta {
@@ -115,7 +124,9 @@ export interface SdkMessage {
   event?: RawStreamEvent;
   // assistant / user (an object); system/permission_denied reuses the key as a
   // plain STRING (the rejection text) — every reader must typeof-guard.
-  message?: { role?: string; content?: RawContentBlock[] | string } | string;
+  // Assistant messages are full API BetaMessages, so they carry the PER-CALL
+  // `usage` (unlike `result`'s session-cumulative one — see lastApiCallUsage).
+  message?: { role?: string; content?: RawContentBlock[] | string; usage?: RawUsage } | string;
   // user (externally-originated turn provenance / synthetic filtering):
   isSynthetic?: boolean;
   parent_tool_use_id?: string | null;
@@ -427,6 +438,12 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
       return msg.event ? normalizeStreamEvent(ctx, msg.event) : [];
 
     case 'assistant': {
+      // Track the newest top-level API call's usage for the context gauge —
+      // sidechain (subagent) calls are excluded: their context is not this
+      // session's window.
+      if (msg.parent_tool_use_id == null && typeof msg.message === 'object' && msg.message?.usage) {
+        ctx.lastApiCallUsage = msg.message.usage;
+      }
       // Finalized assistant blocks. The token-level text already streamed via
       // stream_event; here we only lift `tool_use` blocks, which carry the FULL
       // parsed input the diff is reconstructed from (spike g).
@@ -524,7 +541,12 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
           sessionId: msg.session_id ?? '',
           durationMs: typeof msg.duration_ms === 'number' ? msg.duration_ms : null,
           contextWindow: contextWindowFrom(msg.modelUsage),
-          contextUsedTokens: contextUsedFrom(msg.usage),
+          // NOT msg.usage: the result's usage is session-cumulative (every API
+          // call summed), which pinned the gauge at 100% after a few calls.
+          // The last per-call usage is the real context in use; fall back to
+          // the cumulative figure only when no assistant call was ever seen
+          // (first-result edge, where the two coincide).
+          contextUsedTokens: contextUsedFrom(ctx.lastApiCallUsage ?? msg.usage),
         }),
       );
       return out;
@@ -616,6 +638,12 @@ function normalizeSystemNotice(ctx: NormalizeContext, msg: SdkMessage): AgentEve
 
     case 'compact_boundary': {
       const m = msg.compact_metadata;
+      // Compaction just shrank the window contents — refresh the gauge's
+      // source so a turn-end before the next API call doesn't report the
+      // pre-compact size.
+      if (typeof m?.post_tokens === 'number') {
+        ctx.lastApiCallUsage = { input_tokens: m.post_tokens };
+      }
       const trigger = m?.trigger === 'auto' ? 'auto' : 'manual';
       const sizes =
         m?.pre_tokens != null
@@ -699,9 +727,11 @@ function contextWindowFrom(mu: SdkMessage['modelUsage']): number | null {
   return max > 0 ? max : null;
 }
 
-/** Approximate context tokens in use after a turn: the final API call's input
- *  (fresh + cached) plus its output. */
-function contextUsedFrom(u: RawUsage | undefined): number | null {
+/** Approximate context tokens in use after a turn: ONE API call's input
+ *  (fresh + cached) plus its output. Callers must pass a per-call usage
+ *  (`ctx.lastApiCallUsage`), never the `result` message's session-cumulative
+ *  one — summing that pinned the gauge at 100% (fixed 2026-07-24). */
+function contextUsedFrom(u: RawUsage | null | undefined): number | null {
   if (!u) return null;
   const used =
     (u.input_tokens ?? 0) +
