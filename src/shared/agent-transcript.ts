@@ -145,7 +145,12 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
           out.push(stamp(ctx, { type: 'block-stop', index }));
         } else if (b?.type === 'tool_use' && typeof b.id === 'string') {
           const index = blockIndex++;
-          out.push(stamp(ctx, { type: 'block-start', index, kind: 'tool_use' }));
+          // Carry the tool id/name like the live stream's content_block_start
+          // does, so the fold mints the message with its final id up front
+          // (stable React key — see agent-events.ts block-start).
+          out.push(
+            stamp(ctx, { type: 'block-start', index, kind: 'tool_use', toolUseId: b.id, name: b.name ?? '' }),
+          );
           out.push(
             stamp(ctx, {
               type: 'tool-use',

@@ -29,10 +29,14 @@ function MessageBubbleImpl({ message }: Props) {
   // bursts, so revealing each burst instantly (however cheaply) reads as chunky
   // "block by block" output. Instead we reveal a growing prefix at a steady
   // frame-paced cadence (renderer/typewriter.ts) so text flows in fluidly.
-  // Only while the assistant message is still streaming (`!done`) — a finished
-  // message, or any user/system/error text, shows in full immediately (the hook
-  // returns the full text when `enabled` is false, no animation).
-  const animate = role === 'assistant' && !message.done && fullText.length > 0;
+  // NOTE `animate` deliberately does NOT include `!done`: when the block
+  // closes (the model moves on to a tool call / the turn ends) the hook keeps
+  // animating to DRAIN the unrevealed tail smoothly — gating on `!done` here
+  // would flip the hook inactive and dump the tail in one frame, the exact
+  // "sudden output right as a tool card appears" jump this fixes. Messages
+  // that mount already-done (history) still render in full instantly — the
+  // hook checks done-at-mount itself.
+  const animate = role === 'assistant' && fullText.length > 0;
   const shown = useTypewriter(fullText, !!message.done, animate);
 
   const hasImages = !!images && images.length > 0;
@@ -66,13 +70,20 @@ function MessageBubbleImpl({ message }: Props) {
           <div className="av-md">
             {/* Render the typewriter-revealed PREFIX (== full text once done or
                 for non-assistant roles). MarkdownView handles partial markdown
-                and keeps the per-frame render cheap (block-split memoization). */}
-            <MarkdownView text={shown} done={!!message.done} />
+                and keeps the per-frame render cheap (block-split memoization).
+                `done` here means "the SHOWN text is final": while the drain is
+                still revealing a finished block's tail, the prefix is partial
+                markdown and must keep the streaming treatment (remend on the
+                tail block) or half-open `**bold`/`[link` flashes raw. */}
+            <MarkdownView text={shown} done={!!message.done && shown.length >= fullText.length} />
           </div>
         ) : null}
-        {/* Streaming cursor: shown while the block is still open (not done) and
-            there is already some revealed text. A5 styles the blink. */}
-        {!message.done && shown ? <span className="av-cursor" aria-hidden /> : null}
+        {/* Streaming cursor: shown while the block is still open OR the
+            typewriter is still draining a finished block's tail (the text is
+            visibly typing either way). A5 styles the blink. */}
+        {shown && (!message.done || shown.length < fullText.length) ? (
+          <span className="av-cursor" aria-hidden />
+        ) : null}
       </div>
       {thinking ? <ThinkingIndicator /> : null}
     </div>

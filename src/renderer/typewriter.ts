@@ -63,6 +63,32 @@ export interface TypewriterParams {
   maxCharsPerFrame: number;
 }
 
+/**
+ * Catch-up cadence for a message that just FINISHED (its block closed — e.g.
+ * the model moved on to a tool call, or the turn ended) while the typewriter
+ * still holds an unrevealed tail.
+ *
+ * At realistic live rates (~250 ch/s arriving vs the ~150 ch/s base reveal)
+ * the steady-state backlog is ~80 chars — so when `done` flips, snapping to
+ * the full text dumps that whole tail in ONE frame. That snap lands at the
+ * exact moment a tool card appears below it, which is precisely the "sudden
+ * output / instant jump when tool calls are output" complaint: the reader
+ * sees half a sentence materialize + a new row pop in the same frame.
+ *
+ * Instead, a finished message DRAINS: same constant base rate, but the gentle
+ * overflow term engages from backlog 0 (softBacklogCap: 0) with a stronger
+ * coefficient, so a typical 80-char tail finishes in ~7 frames (~115ms) —
+ * read as a quick fluid flourish, not a dump — while a huge finalized tail
+ * (interrupt, tab-hidden catch-up) still converges fast and stays bounded by
+ * `maxCharsPerFrame`.
+ */
+export const FINISH_TYPEWRITER: TypewriterParams = {
+  charsPerMs: 0.15,
+  softBacklogCap: 0, // drain engages immediately — the message is over
+  overflowPerMs: 0.02, // ~80-char tail → 28,19,12,9,6,4,2 ch/frame ≈ 7 frames (~115ms)
+  maxCharsPerFrame: 200,
+};
+
 /** Defaults for a steady, snappy 60fps typewriter (~120 ch/s) that reads as
  *  fluid typing, with only a gentle bound on lag for very large turns. */
 export const DEFAULT_TYPEWRITER: TypewriterParams = {

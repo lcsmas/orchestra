@@ -732,6 +732,16 @@ export interface AgentBlockStartEvent extends AgentEventBase {
   type: 'block-start';
   index: number;
   kind: 'text' | 'thinking' | 'tool_use';
+  /** For `tool_use` blocks: the SDK `content_block.id` (`toolu_…`), when the
+   *  stream provides it. Lets the fold mint the tool's RenderMessage with its
+   *  FINAL id up front, so the later {@link AgentToolUseEvent} updates the same
+   *  message in place instead of re-identifying it — a message id must NEVER
+   *  change once rendered (it's the React key + measured-height cache key; a
+   *  change unmounts/remounts the row mid-stream, which flickers). */
+  toolUseId?: string;
+  /** For `tool_use` blocks: the tool name, when the stream provides it — shows
+   *  the real verb label while the input is still streaming. */
+  name?: string;
 }
 
 /** A content block STOPPED (`content_block_stop`). Closes the block at `index`

@@ -77,7 +77,7 @@ interface RawStreamEvent {
   type?: string; // content_block_start | content_block_delta | content_block_stop | message_delta | ...
   index?: number;
   delta?: RawDelta;
-  content_block?: { type?: string; name?: string };
+  content_block?: { type?: string; id?: string; name?: string };
 }
 
 interface RawContentBlock {
@@ -304,7 +304,22 @@ function normalizeStreamEvent(ctx: NormalizeContext, ev: RawStreamEvent): AgentE
   if (ev.type === 'content_block_start') {
     const blockType = ev.content_block?.type;
     if (blockType === 'text' || blockType === 'thinking' || blockType === 'tool_use') {
-      out.push(stamp(ctx, { type: 'block-start', index, kind: blockType }));
+      // A tool_use block-start carries the tool's id + name up front (the
+      // Messages-API streaming shape). Lifting them lets the fold create the
+      // tool message with its FINAL id and real name immediately — so the
+      // later finalizing tool-use event updates in place (stable React key,
+      // no remount flicker) and the collapsed run label reads "Bash…" while
+      // the input is still streaming, not a generic "used a tool".
+      const cb = ev.content_block;
+      out.push(
+        stamp(ctx, {
+          type: 'block-start',
+          index,
+          kind: blockType,
+          ...(blockType === 'tool_use' && typeof cb?.id === 'string' ? { toolUseId: cb.id } : {}),
+          ...(blockType === 'tool_use' && typeof cb?.name === 'string' ? { name: cb.name } : {}),
+        }),
+      );
       if (blockType === 'thinking') {
         out.push(stamp(ctx, { type: 'thinking-start', index }));
       }
@@ -662,12 +677,16 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       const id = blockMsgId(next.sessionId, event.index, event.seq);
       if (event.kind === 'tool_use') {
         // The tool message is created here (empty), filled by tool-input-delta
-        // then finalized by the tool-use event.
+        // then finalized by the tool-use event. When the stream gave us the
+        // tool's real id/name at block-start, mint the message with its FINAL
+        // id + name immediately: the id is the React key + measured-height
+        // cache key downstream, and it must never change once rendered (a
+        // change remounts the row mid-stream — the tool-card flicker bug).
         messages.push({
-          id,
+          id: event.toolUseId || id,
           role: 'tool',
           index: event.index,
-          toolUse: { toolUseId: '', name: '', inputJson: '' },
+          toolUse: { toolUseId: event.toolUseId ?? '', name: event.name ?? '', inputJson: '' },
         });
       } else if (event.kind === 'thinking') {
         // Thinking text is redacted on Opus 4.8 (spike b) — the message is a
@@ -748,18 +767,22 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
 
     case 'tool-use': {
       const messages = [...next.messages];
-      // Prefer the block message at the streaming index; else match a partial
-      // tool message that already has this id; else create a fresh one.
-      let i = messages.findIndex(
-        (m) => m.role === 'tool' && m.toolUse && m.toolUse.toolUseId === '' && m.toolUse.name === '',
-      );
-      // The most recent index-tracked tool block is the one being finalized;
-      // fall back to the last tool message with no finalized input.
-      const byIdx = messages
-        .map((m, idx) => ({ m, idx }))
-        .filter(({ m }) => m.role === 'tool' && m.toolUse && m.toolUse.input === undefined)
-        .pop();
-      if (byIdx) i = byIdx.idx;
+      // Prefer the exact match: block-start minted the message with this
+      // toolUseId already (the streaming content_block_start carries it).
+      let i = findByToolUseId(messages, event.toolUseId);
+      if (i === -1) {
+        // Legacy/defensive fallbacks (a stream whose block-start carried no
+        // id): match a partial tool message awaiting finalization.
+        i = messages.findIndex(
+          (m) =>
+            m.role === 'tool' && m.toolUse && m.toolUse.toolUseId === '' && m.toolUse.name === '',
+        );
+        const byIdx = messages
+          .map((m, idx) => ({ m, idx }))
+          .filter(({ m }) => m.role === 'tool' && m.toolUse && m.toolUse.input === undefined)
+          .pop();
+        if (byIdx) i = byIdx.idx;
+      }
 
       if (i === -1) {
         messages.push({
@@ -775,9 +798,13 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       } else {
         const m = messages[i];
         const tu = m.toolUse ?? { toolUseId: '', name: '', inputJson: '' };
+        // NEVER rewrite `m.id` here: the message id is the React key and the
+        // virtualizer's measured-height cache key. Rewriting it (the old code
+        // set it to event.toolUseId) unmounted + remounted the row — and the
+        // whole ToolGroup when this was the run's first tool — exactly when
+        // the card finalized: the mid-stream flicker/jump the user saw.
         messages[i] = {
           ...m,
-          id: event.toolUseId,
           toolUse: { ...tu, toolUseId: event.toolUseId, name: event.name, input: event.input },
         };
       }

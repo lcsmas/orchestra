@@ -374,10 +374,25 @@ function MessageList({
                 key={it.id}
                 item={it}
                 onHeight={(h) => {
-                  if (heights.current.get(it.id) !== h) {
-                    heights.current.set(it.id, h);
-                    // Coalesce measure-driven recomputes to the next frame so a
-                    // batch of newly-mounted rows triggers one window recompute.
+                  const known = heights.current.get(it.id);
+                  if (known === h) return;
+                  heights.current.set(it.id, h);
+                  if (known === undefined) {
+                    // FIRST measure of a newly-mounted row: recompute the
+                    // window synchronously (we're inside a layout effect, so
+                    // this re-renders BEFORE paint). Until measured, offsets
+                    // use ESTIMATED_ROW_H (72px) — letting that paint makes
+                    // the pinned viewport overshoot by the estimate error and
+                    // correct itself a frame later, a per-new-row vertical
+                    // bounce that reads as flicker exactly when a tool row or
+                    // message lands. React batches these across rows, so N
+                    // new rows in one commit still cost one extra render.
+                    setMeasureTick((t) => t + 1);
+                  } else {
+                    // RESIZE of an already-measured row (typewriter growth,
+                    // image load): coalesce to the next frame — the follow
+                    // pin tracks real growth via the ResizeObserver, so the
+                    // window recompute is not paint-critical here.
                     scheduleMeasureFlush(() => setMeasureTick((t) => t + 1));
                   }
                 }}

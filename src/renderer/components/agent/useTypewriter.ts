@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { nextRevealed, DEFAULT_TYPEWRITER } from '../../typewriter';
+import { nextRevealed, DEFAULT_TYPEWRITER, FINISH_TYPEWRITER } from '../../typewriter';
 
 /**
  * Progressively reveal `text` at a steady typewriter cadence while a message is
@@ -14,12 +14,19 @@ import { nextRevealed, DEFAULT_TYPEWRITER } from '../../typewriter';
  *
  * Invariants:
  * - **Monotonic within a message**: revealed length only grows as `text` grows.
- * - **Finishes complete**: once `done` is true we snap to the full text on the
- *   next frame and stop the loop — a finished message is NEVER left truncated.
- * - **No animation when disabled or already-complete**: if `!enabled` (e.g. a
- *   non-streaming/finished message on first render) the full text is returned
+ * - **Finishes complete AND smooth**: once `done` is true the remaining tail
+ *   DRAINS at the accelerated-but-still-frame-paced `FINISH_TYPEWRITER`
+ *   cadence, then the loop stops — a finished message is never left
+ *   truncated, and it is never dumped in one frame either. (The old rule
+ *   snapped to full text on the done flip; at live streaming rates the
+ *   typewriter runs ~80 chars behind arrival, so every block boundary — which
+ *   is exactly when a tool card appears — dumped half a sentence at once: the
+ *   "sudden output / instant jump when tool cards show" complaint.)
+ * - **No animation when disabled or already-complete-at-mount**: if `!enabled`,
+ *   or the message MOUNTS with `done` already true (history backfill, a
+ *   virtualization remount of an old row), the full text is returned
  *   immediately with no RAF loop, so historical transcript messages don't
- *   re-type themselves on mount.
+ *   re-type themselves.
  *
  * The loop is driven off the real frame clock (via `performance.now()` deltas)
  * so it stays smooth independent of how often `text` updates.
@@ -30,7 +37,12 @@ import { nextRevealed, DEFAULT_TYPEWRITER } from '../../typewriter';
 const canAnimate = typeof requestAnimationFrame === 'function';
 
 export function useTypewriter(text: string, done: boolean, enabled: boolean): string {
-  const active = enabled && canAnimate;
+  // Captured ONCE at mount: a message that mounts already finished (history
+  // backfill, a remount of an old row) shows in full — only a message this
+  // hook instance observed live-streaming animates. A message that streams and
+  // THEN finishes keeps `active` true so the tail drains smoothly (see tick).
+  const mountedDoneRef = useRef(done);
+  const active = enabled && canAnimate && !mountedDoneRef.current;
   // How many characters are currently shown. Ref drives the loop; state forces
   // the re-render. Kept in sync. Seeded to the full length when we're not going
   // to animate (finished/historical/SSR) so nothing flashes empty.
@@ -65,8 +77,11 @@ export function useTypewriter(text: string, done: boolean, enabled: boolean): st
       const isDone = doneRef.current;
       const cur = revealedRef.current;
 
-      // A finished message must show in full immediately — no lingering tail.
-      const next = isDone ? target : nextRevealed(cur, target, dt, DEFAULT_TYPEWRITER);
+      // A finished message DRAINS its remaining tail at the accelerated
+      // finish cadence — still frame-paced, so a block boundary reads as a
+      // quick fluid flourish instead of dumping the ~80-char steady-state
+      // backlog in one frame right as the next tool card pops in.
+      const next = nextRevealed(cur, target, dt, isDone ? FINISH_TYPEWRITER : DEFAULT_TYPEWRITER);
 
       if (next !== cur) {
         revealedRef.current = next;

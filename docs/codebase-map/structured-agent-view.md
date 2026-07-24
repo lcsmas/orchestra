@@ -107,7 +107,17 @@ to the unchanged PTY path.
   (SDK message → `AgentEvent[]`) and immutable `foldEvent`/`foldEvents`/`emptySession`/
   `clearPendingPermission`/`makeUserMessage`. The renderer store is a pure projection:
   replaying the event stream from `emptySession` rebuilds the view. Testable without
-  Electron. **Background-task normalization** (`normalizeTaskSystem`) maps the SDK
+  Electron. **A message's `id` NEVER changes once created** — it is the React key
+  and the virtualizer's measured-height cache key, so a rewrite unmounts+remounts
+  the row (and the whole ToolGroup when it's the run's first tool) mid-stream:
+  the tool-card flicker bug. To keep tool ids stable, `block-start` for
+  `tool_use` lifts the stream's `content_block.id`/`name` (normalizeStreamEvent
+  + agent-transcript backfill) so the fold mints the message with its FINAL id
+  (`toolu_…`) and real name up front (the collapsed run label reads "Ran a
+  command…" while the input is still streaming), and the finalizing `tool-use`
+  fold matches by `toolUseId` and updates IN PLACE — it never rewrites an
+  existing `id` (guarded by agent-events.test.ts id-stability tests; verified
+  e2e: same DOM node across finalize). **Background-task normalization** (`normalizeTaskSystem`) maps the SDK
   `system`/`task_started|task_progress|task_updated|task_notification` messages and
   the `background_tasks_changed` level signal into `AgentTaskEvent`s; `foldTaskEvent`
   merges them into `session.tasks` — `started` creates, `progress`/`updated` merge,
@@ -190,7 +200,14 @@ to the unchanged PTY path.
   virtualized container + composer. It folds the flat `RenderMessage[]` into
   **render items** (`buildRenderItems`): a run of consecutive `tool` messages
   becomes ONE `tool-group` item, every other message its own item; virtualization
-  windows over items so a collapsed tool run is a single measured row. Items route
+  windows over items so a collapsed tool run is a single measured row. **A new
+  row's FIRST height measurement flushes synchronously** (setState inside
+  MeasuredRow's layout effect → re-render before paint): until measured, offsets
+  use `ESTIMATED_ROW_H` (72px), and letting that estimate paint made the pinned
+  viewport overshoot by the error and correct a frame later — a per-new-row
+  vertical bounce that read as flicker whenever a tool row landed (verified e2e:
+  scrollHeight now monotonic, 0px drop while pinned; resizes of already-measured
+  rows still coalesce via `scheduleMeasureFlush`). Items route
   through `ItemSlot` → `ToolGroup` (tool runs) or `AgentMessage`
   (`MessageBubble`, else a lone `ToolCard`). The list **opens scrolled to the last
   message** (an `initialPin` ref force-scrolls to bottom across the async
@@ -251,10 +268,22 @@ to the unchanged PTY path.
   **streaming assistant text reveals via a typewriter** — `useTypewriter` +
   the pure `renderer/typewriter.ts` scheduler decouple bursty SDK arrival from
   display by revealing a growing prefix at a steady frame-paced, backlog-adaptive
-  cadence, so output flows fluidly instead of snapping in chunk-by-chunk; only
-  while `role==='assistant' && !done` (finished/user/system/error text and SSR
-  render in full), and the revealed prefix still goes through the block-split
-  `MarkdownView` so per-frame render stays cheap),
+  cadence, so output flows fluidly instead of snapping in chunk-by-chunk.
+  **A finished block DRAINS, never snaps**: at live rates (~250 ch/s arriving vs
+  the ~150 ch/s base reveal) the typewriter runs a ~80-char backlog, and the old
+  `done → snap to full` rule dumped that tail in ONE frame at every block
+  boundary — exactly when a tool card pops in below, the "sudden output /
+  instant jump when tool cards appear" bug. Now `done` switches the scheduler to
+  `FINISH_TYPEWRITER` (typewriter.ts: overflow drain from backlog 0 — ~80 chars
+  over ~7 frames ≈ 115ms, still `maxCharsPerFrame`-capped) and the loop stops
+  once caught up; `MarkdownView` keeps the streaming treatment (tail remend)
+  until the shown prefix reaches the full text. Only messages that mount
+  already-`done` (history backfill, remounted rows) render in full instantly —
+  the hook captures done-at-mount (finished/user/system/error text and SSR
+  render in full). The revealed prefix still goes through the block-split
+  `MarkdownView` so per-frame render stays cheap. Verified e2e at the real
+  operating point (28-char deltas / 120ms): backlog 72 at block-stop drained
+  over 7 frames, max 24 ch/frame),
   **`MarkdownView.tsx`** (full CommonMark + GFM via **react-markdown + remark-gfm** —
   tables, strikethrough, task/nested lists — replacing the former hand-rolled dep-free
   subset parser that silently dropped all of those, the "bad markdown reader"; fenced

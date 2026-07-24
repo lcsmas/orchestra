@@ -661,6 +661,96 @@ test('fold: tool input streams then finalizes then result correlates by id', () 
   assert.equal(s.messages.filter((m) => m.role === 'tool').length, 1);
 });
 
+// ─── fold: tool message IDENTITY is stable across finalize ───────────────────
+//
+// The message id is the React key + the virtualizer's measured-height cache
+// key. The old fold REWROTE it to toolUseId when the finalizing tool-use event
+// landed — unmounting/remounting the row (and the whole ToolGroup when it was
+// the run's first tool) exactly when a card finalized: the mid-stream tool-card
+// flicker/jump. These tests pin the invariant: an existing message's id NEVER
+// changes, on both the modern path (block-start carries the id) and the legacy
+// path (it doesn't).
+
+test('normalize: content_block_start for tool_use lifts toolUseId + name', () => {
+  const [ev] = normalizeSdkMessage(
+    {
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 1,
+        content_block: { type: 'tool_use', id: 'toolu_X1', name: 'Bash' },
+      },
+    },
+    ctx(),
+  ) as [Extract<AgentEvent, { type: 'block-start' }>];
+  assert.equal(ev.type, 'block-start');
+  assert.equal(ev.kind, 'tool_use');
+  assert.equal(ev.toolUseId, 'toolu_X1');
+  assert.equal(ev.name, 'Bash');
+});
+
+test('fold: tool message id is stable from block-start through finalize (id in stream)', () => {
+  const evs = normalizeAll([
+    { type: 'system', subtype: 'init', session_id: 'S' },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_stable', name: 'Write' } } },
+  ]);
+  let s = foldEvents(emptySession('ws1'), evs);
+  const created = s.messages.find((m) => m.role === 'tool')!;
+  // Minted with its FINAL id + real name immediately (label reads "Write…"
+  // while the input still streams, not a generic "used a tool").
+  assert.equal(created.id, 'toolu_stable');
+  assert.equal(created.toolUse!.name, 'Write');
+
+  const c: NormalizeContext = { seq: 100, now: () => 2 };
+  for (const msg of [
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"file_path":"/a"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 1 } },
+    {
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_stable', name: 'Write', input: { file_path: '/a' } }] },
+    },
+  ] as SdkMessage[]) {
+    for (const ev of normalizeSdkMessage(msg, c)) {
+      const before = s.messages.map((m) => m.id);
+      s = foldEvent(s, ev);
+      // No existing message's id may change on ANY fold step (React-key law).
+      for (let i = 0; i < before.length; i++) {
+        assert.equal(s.messages[i].id, before[i], `id changed at fold of ${ev.type}`);
+      }
+    }
+  }
+  const tool = s.messages.find((m) => m.role === 'tool')!;
+  assert.equal(tool.id, 'toolu_stable');
+  assert.deepEqual(tool.toolUse!.input, { file_path: '/a' });
+  assert.equal(s.messages.filter((m) => m.role === 'tool').length, 1, 'no duplicate from finalize');
+});
+
+test('fold: legacy block-start without id — finalize updates in place, id NOT rewritten', () => {
+  const evs = normalizeAll([
+    { type: 'system', subtype: 'init', session_id: 'S' },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'tool_use' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 1 } },
+  ]);
+  let s = foldEvents(emptySession('ws1'), evs);
+  const idBefore = s.messages.find((m) => m.role === 'tool')!.id;
+  s = foldEvent(
+    s,
+    normalizeSdkMessage(
+      {
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_late', name: 'Bash', input: {} }] },
+      },
+      { seq: 50, now: () => 2 },
+    )[0],
+  );
+  const tool = s.messages.find((m) => m.role === 'tool')!;
+  assert.equal(tool.id, idBefore, 'existing message id must survive finalize');
+  assert.equal(tool.toolUse!.toolUseId, 'toolu_late', 'correlation key still lands');
+  assert.equal(tool.toolUse!.name, 'Bash');
+  assert.equal(s.messages.filter((m) => m.role === 'tool').length, 1);
+});
+
 test('fold: a tool_result before its tool_use still shows (out-of-order safe)', () => {
   const evs = normalizeAll([
     { type: 'system', subtype: 'init', session_id: 'S' },

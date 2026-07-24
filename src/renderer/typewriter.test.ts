@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { nextRevealed, DEFAULT_TYPEWRITER } from './typewriter.ts';
+import { nextRevealed, DEFAULT_TYPEWRITER, FINISH_TYPEWRITER } from './typewriter.ts';
 
 const P = DEFAULT_TYPEWRITER;
+const F = FINISH_TYPEWRITER;
 
 test('nothing to reveal when caught up', () => {
   assert.equal(nextRevealed(100, 100, 16, P), 100);
@@ -123,6 +124,58 @@ test('REALISTIC live streaming reveals in small typing-sized steps (no chunks)',
   // Backlog stayed small (below the cap), confirming we ran on the CONSTANT rate,
   // not the overflow drain — the whole point.
   assert.ok(maxBacklog < 200, `backlog reached ${maxBacklog} — display lagged`);
+});
+
+// ─── FINISH drain (message done, tail still unrevealed) ──────────────────────
+//
+// When a block closes (the model moves to a tool call) the typewriter holds a
+// steady-state backlog of ~80 chars. The old behavior snapped it to full text
+// in ONE frame — the "sudden output / instant jump right as a tool card
+// appears" complaint. The finish cadence must drain it over SEVERAL frames
+// (fluid flourish) yet converge fast (no lingering tail delaying the turn).
+
+test('FINISH: a typical ~80-char tail drains over several frames, never one', () => {
+  const tail = 80;
+  let r = 0;
+  let frames = 0;
+  const steps: number[] = [];
+  while (r < tail && frames < 1000) {
+    const n = nextRevealed(r, tail, 16, F);
+    steps.push(n - r);
+    r = n;
+    frames++;
+  }
+  assert.equal(r, tail);
+  assert.ok(frames >= 3, `drained in ${frames} frame(s) — that IS the snap this replaces`);
+  assert.ok(frames <= 15, `took ${frames} frames (~${frames * 16}ms) — tail lingers too long`);
+  assert.ok(Math.max(...steps) < tail, 'no single frame dumped the whole tail');
+});
+
+test('FINISH: converges quickly even on a large finalized tail, still frame-capped', () => {
+  // e.g. the tab was hidden (RAF suspended) and the message finished meanwhile.
+  let r = 0;
+  const target = 5000;
+  let frames = 0;
+  while (r < target && frames < 10000) {
+    const n = nextRevealed(r, target, 16, F);
+    assert.ok(n - r <= F.maxCharsPerFrame, `frame revealed ${n - r} > cap`);
+    r = n;
+    frames++;
+  }
+  assert.equal(r, target);
+  const seconds = (frames * 16) / 1000;
+  assert.ok(seconds < 2, `5KB finished tail took ${seconds.toFixed(1)}s — too slow`);
+});
+
+test('FINISH: drains faster than the streaming cadence (it is a catch-up mode)', () => {
+  // Same 80-char backlog: finish mode must advance more per frame than the
+  // steady streaming rate (which deliberately ignores backlog below its cap).
+  const streaming = nextRevealed(0, 80, 16, P);
+  const finishing = nextRevealed(0, 80, 16, F);
+  assert.ok(
+    finishing > streaming,
+    `finish (${finishing}) should outpace streaming (${streaming}) on a done tail`,
+  );
 });
 
 test('keeps up with a realistic bursty arrival without lagging unboundedly', () => {
