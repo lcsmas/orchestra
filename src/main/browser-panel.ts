@@ -31,6 +31,13 @@ interface Panel {
   view: WebContentsView;
   /** True while the panel is visible (bounds set, added to the window). */
   visible: boolean;
+  /** Whether setBounds has ever run for this view. Until the renderer measures
+   *  the `.browser-pane` placeholder the view has no meaningful rect, so adding
+   *  it to the window would composite it at a garbage position over the app. */
+  bounded: boolean;
+  /** A show was requested before any bounds existed (agent-driven open while the
+   *  pane is closed); the attach happens on the first setBounds instead. */
+  pendingShow: boolean;
   /** Whether this view's debugger has been attached for agent driving. */
   debuggerAttached: boolean;
   /** Last computed navigation state, for a fresh renderer to re-request. */
@@ -128,10 +135,17 @@ export function ensurePanel(wsId: string): Panel {
     },
   });
 
+  // An unpainted WebContentsView composites BLACK by default, which is what an
+  // orphaned/zero-bounds view looks like on screen. Give it the app's canvas
+  // colour so any such gap reads as a normal empty pane instead of a black hole.
+  view.setBackgroundColor('#1a1f26');
+
   const panel: Panel = {
     wsId,
     view,
     visible: false,
+    bounded: false,
+    pendingShow: false,
     debuggerAttached: false,
     state: emptyState(wsId),
   };
@@ -179,6 +193,14 @@ export function getPanel(wsId: string): Panel | undefined {
 export function showPanel(wsId: string): BrowserPanelState {
   const panel = ensurePanel(wsId);
   const win = getWindow?.();
+  // Never composite a view that has never been positioned: an agent can call
+  // this (via its MCP browser tools) while the renderer's pane is closed, so no
+  // placeholder has been measured and the view would land at a garbage rect
+  // over the app. Defer the attach to the first setBounds.
+  if (!panel.bounded) {
+    panel.pendingShow = true;
+    return panel.state;
+  }
   if (win && !panel.visible) {
     // Hide every OTHER workspace's panel first: only the active workspace's
     // browser should be composited (they'd otherwise stack).
@@ -196,7 +218,11 @@ export function showPanel(wsId: string): BrowserPanelState {
 export function hidePanel(wsId: string): void {
   const panel = panels.get(wsId);
   const win = getWindow?.();
-  if (panel && win && panel.visible) {
+  if (!panel) return;
+  // Cancel a deferred attach too, or a later setBounds would show a panel the
+  // caller has since hidden.
+  panel.pendingShow = false;
+  if (win && panel.visible) {
     win.contentView.removeChildView(panel.view);
     panel.visible = false;
   }
@@ -213,6 +239,13 @@ export function setBounds(wsId: string, bounds: BrowserBounds): void {
     width: Math.round(bounds.width),
     height: Math.round(bounds.height),
   });
+  panel.bounded = true;
+  // A panel opened by an agent (showPanel with no renderer mounted) defers its
+  // attach until now, when it finally has a real rect to sit in.
+  if (panel.pendingShow) {
+    panel.pendingShow = false;
+    showPanel(wsId);
+  }
 }
 
 /** Navigate the panel. `to` is a URL (http/https/file); a bare host gets

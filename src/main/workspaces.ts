@@ -38,6 +38,7 @@ import { refreshAccountsNow } from './account-usage';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
 import { forgetWorkspaceProbes } from './activity';
+import { destroyPanel as destroyBrowserPanel } from './browser-panel';
 import type { CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
 import { canOrchestrate, isScratchLike, SANDBOX_WORKSPACE_DIR } from '../shared/types';
 import { parseBtrfsDuSizes, parseDuSizes, type WorktreeSizes } from '../shared/worktree-sizes';
@@ -567,6 +568,15 @@ export async function archiveWorkspace(id: string): Promise<void> {
     stopPty(ws.id);
     stopPty(`${ws.id}:run`);
     stopPty(`${ws.id}:nvim`);
+    // Tear down the embedded browser panel as well. Its content is a native
+    // WebContentsView composited ABOVE the renderer, so it is invisible to both
+    // React and CSS: an archived workspace that still has one attached paints an
+    // opaque rectangle over the app (a fresh view with no page loaded paints
+    // BLACK). The renderer's BrowserPanel hides the view on unmount, but an
+    // AGENT can open a panel through its MCP browser tools with no renderer
+    // component ever mounted (agent-browser-tools.ts calls showPanel directly),
+    // and in that case nothing on the renderer side ever tears it down.
+    destroyBrowserPanel(ws.id);
     const updated: Workspace = {
       ...ws,
       archived: true,

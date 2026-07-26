@@ -100,13 +100,30 @@ both ipcMain and ui-rpc. The `browser:event` broadcast is declared as
 `onBrowserEvent` (`shared/ipc.ts`), registered in `WIRE_EVENT_CHANNELS`
 (`shared/ui-rpc-protocol.ts` → `browserEvent`), and subscribed in preload. Panel
 teardown rides the workspace-delete handlers (`browserPanel.destroyPanel(id)`
-beside `sdkStopMany`).
+beside `sdkStopMany`) **and the archive path** — `archiveWorkspace`
+(`workspaces.ts:579`) calls `destroyPanel` for every workspace in the archived
+subtree, so an orchestrator archives its children's panels too.
 
 ## Gotchas
 
 - The native view paints **above** the renderer DOM — it ignores React
   z-index. Hide it (drive `isActive=false`) whenever an overlay covers the pane
   row; `BrowserPanel` already does this.
+- **A leaked view paints BLACK over the app.** The renderer's `BrowserPanel`
+  hides the view on unmount, but an AGENT can open a panel through its MCP
+  browser tools (`agent-browser-tools.ts` calls `showPanel` directly) with **no
+  renderer component ever mounted** — so there is no React cleanup, and any
+  main-side lifecycle event that removes the workspace from the UI must tear the
+  panel down explicitly. Missing that on `archiveWorkspace` is what made
+  archiving paint a black rectangle over the whole window (fixed; regression
+  harness: `scripts/verify-archive-browser-panel.mjs`). The main process logs
+  **nothing** when this happens — no crash, no `render-process-gone` — so an
+  archive followed by a user-forced restart is the only trace in the log.
+- `showPanel` refuses to attach a view that has never been positioned
+  (`panel.bounded`), deferring to the first `setBounds`; otherwise an
+  agent-opened panel composites at a garbage rect while the pane is closed.
+  Views also get an explicit `setBackgroundColor`, since an unpainted
+  `WebContentsView` composites black by default.
 - The SDK MCP builder must be loaded via dynamic `import()` — a static import of
   `@anthropic-ai/claude-agent-sdk` crashes the packaged app at boot
   (`ERR_REQUIRE_ESM`). Verify the emitted bundle has **0**

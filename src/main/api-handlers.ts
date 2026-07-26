@@ -561,6 +561,9 @@ export const apiHandlers: ApiHandlerTable = {
 
   archiveWorkspace: (id) => {
     sdkStopMany([id]);
+    // NOTE: the browser panel is torn down inside archiveWorkspace() itself, so
+    // the whole orchestrator subtree is covered and every caller (IPC, ui-rpc,
+    // remote-control) gets it — not just this handler.
     return archiveWorkspace(id);
   },
 
