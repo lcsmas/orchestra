@@ -545,74 +545,133 @@ async function computeUnpushedAhead(
   }
 }
 
-/** Per-(repo, branch) cache of resolved PR state. The renderer polls
- *  `git:findPR` for every workspace every 12s (plus an on-focus refresh), and
- *  each miss spawns a `gh pr list` — a child process *and* a network round-trip.
- *  PR state changes on human timescales (opening/merging a PR), so a short TTL
- *  collapses the poll + focus bursts (and any branch shared across workspaces)
- *  into roughly one `gh` call per branch per TTL while keeping the badge fresh
- *  within seconds. Mirrors `releaseCache` right below. */
-const prCache = new Map<string, { at: number; prs: import('../shared/types').PRsForBranch }>();
-const PR_CACHE_TTL = 20_000;
+type PRRecord = import('../shared/types').PRsForBranch;
 
-export async function findPullRequest(
-  repoPath: string,
-  branch: string,
-): Promise<import('../shared/types').PRsForBranch> {
-  const cacheKey = `${repoPath} ${branch}`;
-  const cached = prCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < PR_CACHE_TTL) return cached.prs;
+/** Per-REPO cache of every PR in the repo, indexed by head branch.
+ *
+ *  Keyed by repo, NOT by (repo, branch) — that is the whole point. The renderer
+ *  polls `git:findPR` once per workspace, and this machine routinely runs 45+
+ *  active workspaces spread over only ~5 distinct repos. The old per-branch
+ *  `gh pr list --head <branch>` therefore issued ~45 network calls to answer a
+ *  question ~5 calls answer completely: 62 workspaces at the old 20s TTL works
+ *  out to ~11k calls/hour against a 5k/hour budget, so the sidebar alone burned
+ *  the quota in ~27 minutes and then rendered "PR?" on every row for the rest of
+ *  the hour. The badge was not lying — it faithfully reported a limit we spent
+ *  on ourselves.
+ *
+ *  Three changes fix it at the source rather than by polling slower:
+ *   1. ONE repo-wide fetch per TTL, shared by every workspace on that repo, so
+ *      cost scales with REPO count (~5) instead of WORKSPACE count (~45+).
+ *   2. The REST `/pulls` endpoint instead of `gh pr list`. `gh pr list` is a
+ *      GraphQL query, and GraphQL has its own separate 5k/hr budget — the one
+ *      that was actually drained (measured during this fix: graphql 0/5000
+ *      remaining while core sat at 4977/5000, untouched). REST answers are also
+ *      conditional-request cached by gh, so repeat polls of an unchanged repo
+ *      frequently cost no quota at all.
+ *   3. In-flight de-duplication, so N workspaces polling the same repo in one
+ *      tick collapse into a single request instead of N racing past a cold cache.
+ */
+const repoPRCache = new Map<string, { at: number; byBranch: Map<string, PRRecord> }>();
+const PR_CACHE_TTL = 60_000;
+
+/** Repo fetches currently in flight, keyed by repoPath. */
+const repoPRInflight = new Map<string, Promise<RepoPRFetch>>();
+
+interface RepoPRFetch {
+  byBranch: Map<string, PRRecord>;
+  error?: string;
+}
+
+const EMPTY_PRS: PRRecord = { all: [], open: null, latest: null, mergedCount: 0 };
+
+/** Fetch every PR in the repo in one REST call and index it by head branch. */
+async function fetchRepoPRs(repoPath: string): Promise<RepoPRFetch> {
   try {
-    // Run from `repoPath` (the canonical repo), NOT the workspace's worktree.
-    // `gh pr list --head` only needs to resolve the repo's remote — it doesn't
-    // need the branch checked out — and the worktree can be missing/broken
-    // (e.g. removed out-of-band), in which case `gh` would bail with "not a git
-    // repository" and we'd silently report zero PRs. The main repo is always a
-    // valid git dir, so PR state stays visible even for a stale worktree.
+    // Run from `repoPath` (the canonical repo), NOT a workspace worktree: the
+    // worktree can be missing/broken (removed out-of-band), in which case `gh`
+    // bails with "not a git repository" and we would report zero PRs. `{owner}`
+    // and `{repo}` are resolved by gh from the repo's own origin remote.
+    //
+    // `--paginate` matters: a repo with more than 100 PRs would otherwise
+    // silently truncate to the first page and blank the badge for older branches.
     const { stdout } = await pexec(
       'gh',
       [
-        'pr',
-        'list',
-        '--head',
-        branch,
-        '--state',
-        'all',
-        '--json',
-        'url,number,state,title',
-        '--limit',
-        '50',
+        'api',
+        '--paginate',
+        'repos/{owner}/{repo}/pulls?state=all&per_page=100',
+        '--jq',
+        // One compact object per PR. REST reports merged-ness via `merged_at`
+        // (its own `state` is only open/closed), so map it here into the
+        // OPEN/CLOSED/MERGED shape `PRInfo` and the badge already expect.
+        '.[] | {url: .html_url, number, title, head: .head.ref, state: ' +
+          '(if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}',
       ],
-      { cwd: repoPath },
+      { cwd: repoPath, maxBuffer: 32 * 1024 * 1024 },
     );
-    const all = JSON.parse(stdout.trim() || '[]') as Array<{
-      url: string;
-      number: number;
-      state: 'OPEN' | 'CLOSED' | 'MERGED';
-      title: string;
-    }>;
-    // gh returns newest-first.
-    const open = all.find((p) => p.state === 'OPEN') ?? null;
-    const latest = all[0] ?? null;
-    const mergedCount = all.filter((p) => p.state === 'MERGED').length;
-    const prs = { all, open, latest, mergedCount };
-    prCache.set(cacheKey, { at: Date.now(), prs });
-    return prs;
+    const byBranch = new Map<string, PRRecord>();
+    // `--jq` streams one JSON object per line, and `--paginate` concatenates pages.
+    for (const line of stdout.split('\n')) {
+      const s = line.trim();
+      if (!s) continue;
+      const p = JSON.parse(s) as {
+        url: string;
+        number: number;
+        title: string;
+        head: string;
+        state: 'OPEN' | 'CLOSED' | 'MERGED';
+      };
+      let rec = byBranch.get(p.head);
+      if (!rec) {
+        rec = { all: [], open: null, latest: null, mergedCount: 0 };
+        byBranch.set(p.head, rec);
+      }
+      rec.all.push({ url: p.url, number: p.number, state: p.state, title: p.title });
+    }
+    // REST returns oldest-first; `latest` and the badge order assume newest-first.
+    for (const rec of byBranch.values()) {
+      rec.all.sort((a, b) => b.number - a.number);
+      rec.open = rec.all.find((p) => p.state === 'OPEN') ?? null;
+      rec.latest = rec.all[0] ?? null;
+      rec.mergedCount = rec.all.filter((p) => p.state === 'MERGED').length;
+    }
+    return { byBranch };
   } catch (err) {
-    // Don't cache failures (gh missing, transient network) — let the next poll
-    // retry rather than serving an empty result for the whole TTL.
-    //
     // Report the failure rather than returning a bare empty result: an empty
     // `all` is indistinguishable from "this branch has no PRs", so a broken
     // `gh` (missing binary, invalid GITHUB_TOKEN, rate limit) used to make the
     // PR badge silently disappear — failing in the passing direction, which
     // sends the user looking for a lost PR instead of a broken credential.
     const e = err as { stderr?: string; message?: string };
-    // gh puts its actual diagnostic on stderr ("gh: Bad credentials", "API rate
-    // limit exceeded…"); `message` is just the exec wrapper's "Command failed".
+    // gh puts its real diagnostic on stderr ("gh: Bad credentials", "API rate
+    // limit exceeded…"); `message` is only the exec wrapper's "Command failed".
     const detail = (e.stderr || e.message || '').trim().split('\n')[0] || 'gh query failed';
-    return { all: [], open: null, latest: null, mergedCount: 0, error: detail };
+    return { byBranch: new Map(), error: detail };
   }
+}
+
+export async function findPullRequest(repoPath: string, branch: string): Promise<PRRecord> {
+  const cached = repoPRCache.get(repoPath);
+  if (cached && Date.now() - cached.at < PR_CACHE_TTL) {
+    return cached.byBranch.get(branch) ?? EMPTY_PRS;
+  }
+
+  let inflight = repoPRInflight.get(repoPath);
+  if (!inflight) {
+    inflight = fetchRepoPRs(repoPath).then((res) => {
+      // Cache successes for the full TTL. Do NOT cache failures — a rate-limit
+      // window or transient network blip should be retried by the next poll
+      // rather than pinning "PR?" on every row for the whole TTL.
+      if (!res.error) repoPRCache.set(repoPath, { at: Date.now(), byBranch: res.byBranch });
+      return res;
+    });
+    repoPRInflight.set(repoPath, inflight);
+    void inflight.catch(() => {}).finally(() => repoPRInflight.delete(repoPath));
+  }
+
+  const res = await inflight;
+  if (res.error) return { ...EMPTY_PRS, error: res.error };
+  return res.byBranch.get(branch) ?? EMPTY_PRS;
 }
 
 interface ReleaseRef {
@@ -646,17 +705,37 @@ async function getPublishedReleases(repoPath: string): Promise<ReleaseRef[]> {
   if (cached && Date.now() - cached.at < RELEASE_CACHE_TTL) return cached.releases;
   let releases: ReleaseRef[] = [];
   try {
+    // REST, not `gh release list` — the latter is a GraphQL query, and GraphQL
+    // has its own separate 5k/hr budget that the PR poll used to exhaust (see
+    // `repoPRCache`). Keeping every polled `gh` call on REST means one drained
+    // budget can no longer blank both the PR badge and the release pill.
+    // `--jq` reshapes the REST field names into the same object this code
+    // already parses, so the logic below is unchanged.
     const { stdout } = await pexec(
       'gh',
-      ['release', 'list', '--json', 'tagName,isDraft,isPrerelease,publishedAt', '--limit', '50'],
-      { cwd: repoPath },
+      [
+        'api',
+        'repos/{owner}/{repo}/releases?per_page=50',
+        '--jq',
+        '.[] | {tagName: .tag_name, isDraft: .draft, isPrerelease: .prerelease, ' +
+          'publishedAt: .published_at}',
+      ],
+      { cwd: repoPath, maxBuffer: 32 * 1024 * 1024 },
     );
-    const raw = JSON.parse(stdout.trim() || '[]') as Array<{
-      tagName: string;
-      isDraft: boolean;
-      isPrerelease: boolean;
-      publishedAt: string;
-    }>;
+    // `--jq` streams one object per line rather than a JSON array.
+    const raw = stdout
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map(
+        (l) =>
+          JSON.parse(l) as {
+            tagName: string;
+            isDraft: boolean;
+            isPrerelease: boolean;
+            publishedAt: string;
+          },
+      );
     const git = simpleGit(repoPath);
     let shaByTag = tagShaCache.get(repoPath);
     if (!shaByTag) {

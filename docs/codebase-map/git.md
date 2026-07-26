@@ -55,10 +55,24 @@ because a `git push` moves only `origin/<branch>` (branch/base tips stay put);
 keying on just (branch, base) pinned a stale `↑N` badge across a push.
 
 ## PRs & releases (gh CLI, cached)
-- **`findPullRequest(repoPath, branch)`** `:543` — `gh pr list --head <branch>
-  --state all --json …`, returns `PRsForBranch` (`all/open/latest/mergedCount`,
-  `types.ts:212`). 20s cache; runs from repo root so PR state survives a missing
-  worktree. Misses aren't cached (retry immediately). On failure it returns the
+- **`findPullRequest(repoPath, branch)`** — one **REST** `gh api
+  repos/{owner}/{repo}/pulls?state=all --paginate` fetch **per repo**, indexed by
+  head branch (`fetchRepoPRs`), returning `PRsForBranch`
+  (`all/open/latest/mergedCount`, `types.ts:212`). 60s cache keyed by **repo**,
+  plus in-flight de-duplication so N workspaces sharing a repo collapse into one
+  request. Runs from repo root so PR state survives a missing worktree.
+  **Why repo-wide REST and not `gh pr list --head`:** the renderer polls per
+  workspace, and this machine runs 45+ workspaces over ~5 repos, so the old
+  per-branch call made ~45 requests to answer what ~5 answer — ~11k calls/hr
+  against a 5k/hr budget, exhausting it in ~27 min, after which every row showed
+  "PR?". `gh pr list` is also a **GraphQL** query, and GraphQL has its own
+  separate 5k/hr budget — the one that was actually drained (measured: graphql
+  0/5000 while core sat at 4977/5000). REST additionally answers from gh's
+  conditional-request cache, so repeat polls of an unchanged repo often cost no
+  quota at all. REST reports merged-ness via `merged_at` (its `state` is only
+  open/closed), mapped to `OPEN/CLOSED/MERGED` in the `--jq`; results are sorted
+  newest-first since REST returns oldest-first. Misses aren't cached (retry
+  immediately). On failure it returns the
   empty result **plus `error: <first stderr line>`** (`PRsForBranch.error`): an
   empty `all` alone is indistinguishable from "this branch has no PRs", so a
   broken `gh` (missing binary, invalid `GITHUB_TOKEN`, rate limit) used to make
@@ -73,7 +87,12 @@ keying on just (branch, base) pinned a stale `↑N` badge across a push.
   branch itself cut (it authored the tag's version-bump commit). Ancestry alone
   would credit the whole history; per-commit first-containing-release would let a
   stray follow-up commit earn another branch's release pill (both were prior
-  bugs). `gh release list` cached 30s per repo.
+  bugs). Releases come from **REST** `gh api repos/{owner}/{repo}/releases`
+  (`--jq` reshapes the field names to the `tagName/isDraft/isPrerelease/
+  publishedAt` shape this code already parsed), cached 30s per repo. It was
+  `gh release list`, which is GraphQL — keeping every *polled* `gh` call on REST
+  means one drained budget can no longer blank both the PR badge and the release
+  pill at once.
 - **Release-pill cost model** (a per-(release × commit) `merge-base
   --is-ancestor` storm here once pegged the main process at 70% CPU): ancestry
   is asked per authored commit via one `git tag --contains` (`tagsContaining`
