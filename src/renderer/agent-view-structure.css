@@ -25,6 +25,17 @@
   pointer-events: auto;
 }
 
+/* Positioned shell around the scroller — it takes over the flex sizing so the
+   follow-mode pill can be absolutely positioned over the transcript without
+   joining the scrolled content (which would make it scroll away). */
+.av-list-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
 /* Scrollable, virtualized message list fills the space above the composer. */
 .av-message-list {
   flex: 1 1 auto;

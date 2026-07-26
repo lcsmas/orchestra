@@ -173,6 +173,50 @@
    width/padding are ours to set.) The per-message `--av-measure` cap below still
    keeps assistant prose to a readable line length inside this full-width lane. */
 .av-message-list-inner { max-width: none; margin: 0; padding: 0 8px; }
+
+/* Follow-mode pill — floats over the bottom of the transcript when follow has
+   been released, so "the view stopped following" is visible rather than silent,
+   and re-engaging is one click instead of a manual drag to the very bottom.
+   Deliberately discreet: dim by default, accent only on hover. It sits in the
+   positioned `.av-list-shell`, NOT in the scrolled content, so it stays put. */
+.av-follow-pill {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--av-hairline-strong);
+  background: var(--av-surface-raised);
+  color: var(--av-text-dim);
+  font: inherit;
+  font-size: var(--av-fs-small);
+  line-height: 1.4;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+  animation: av-reveal 180ms var(--av-ease-out);
+  transition:
+    color 120ms var(--av-ease),
+    border-color 120ms var(--av-ease),
+    background 120ms var(--av-ease);
+}
+.av-follow-pill:hover {
+  color: var(--av-text);
+  border-color: var(--av-tool-active);
+  background: var(--av-surface-overlay);
+}
+.av-follow-pill:focus-visible {
+  outline: none;
+  border-color: var(--av-focus-border);
+  box-shadow: 0 0 0 3px var(--av-focus-ring);
+}
+@media (prefers-reduced-motion: reduce) {
+  .av-follow-pill { animation: none; }
+}
 .av-row { contain: layout style; }
 
 /* Scrollbar — the app hides scrollbars globally (styles.css `*` rules), which

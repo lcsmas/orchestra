@@ -304,20 +304,46 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   (`MessageBubble`, else a lone `ToolCard`). The list **opens scrolled to the last
   message** (an `initialPin` ref force-scrolls to bottom across the async
   height-settle passes). **Follow-mode (stick-to-bottom during streaming)** is
-  driven by a **`ResizeObserver` on the sized inner wrapper** that calls
-  `pinToBottom` the instant the rendered content grows (typewriter reveal, async
-  row re-measure, new row) — NOT the coalesced `measureTick` RAF, which lagged the
-  follow scroll ≥1 frame behind and let the viewport fall progressively behind fast
-  output (the "accumulating scroll lag" bug). `pinToBottom` uses
-  `scrollTo({behavior:'instant'})` to override the stylesheet's
+  driven by a **`ResizeObserver` watching BOTH the translated row container AND
+  the sized wrapper**, calling `pinToBottom` the instant rendered content grows
+  (typewriter reveal, async row re-measure, new row) — NOT the coalesced
+  `measureTick` RAF, which lagged the follow scroll ≥1 frame behind and let the
+  viewport fall progressively behind fast output (the "accumulating scroll lag"
+  bug). Observing the row container ALONE silently stalls follow: the scroller's
+  `scrollHeight` is max(sized wrapper, overflowing rows), so when the wrapper is
+  the taller of the two, content can grow — a row *below the window* measuring
+  taller than its 72px estimate, or the window sliding so a tall row unmounts —
+  without the row container's own box changing, firing no resize entry and no pin
+  (measured in a real browser: scrollHeight 2400→2700 with the row container flat
+  at 1200px opened a 300px gap with ZERO callbacks). `measureTick` does not cover
+  it either — it only bumps when a MOUNTED row's measured height changes.
+  `pinToBottom` uses `scrollTo({behavior:'instant'})` to override the stylesheet's
   `scroll-behavior: smooth` — a bare `scrollTop=` (or `behavior:'auto'`) would
   animate the jump and, because content grows every frame, forever chase a moving
-  target. Follow-mode releases **only on a genuine user scroll-UP**, detected by
-  `scrollTop` DECREASING vs the previous value (`lastScrollTop`) — a pin or a
-  content-growth reflow never moves scrollTop up, so this is immune to the
-  pin-vs-growth race a naive `atBottom` threshold got wrong (it read the few px a
-  row grew between the pin and its `scroll` event as "user scrolled up" and
-  disengaged follow mid-stream). Verified e2e (CDP under headless sway) against a
+  target. Follow-mode releases **only on a genuine user scroll-UP**: a `scrollTop`
+  DECREASE vs `lastScrollTop` **that also leaves the viewport ≥24px off the
+  bottom**. The decrease alone is NOT sufficient — the browser also CLAMPS
+  `scrollTop` down whenever the scrollable range shrinks, firing an ordinary
+  `scroll` event indistinguishable from a drag. That happens routinely: the
+  composer auto-grows/shrinks as the user types or clears a draft (changing the
+  LIST's `clientHeight`), and content shrinks when a tool group collapses or a
+  turn ends. The old bare `cur < prev - 2` test read those clamps as a scroll-up
+  and silently disengaged follow mid-stream (reproduced e2e: clearing a draft grew
+  `clientHeight` 366→537 and released follow, leaving a 71px gap). The
+  discriminator is WHERE the scroll landed, not merely that it moved up — a clamp
+  leaves the viewport still parked at the bottom.
+
+  **Follow indicator.** `MessageList` mirrors `stickBottom` into render state
+  (`following`, updated only on a real transition so the hot scroll/resize paths
+  stay render-free) and shows a discreet **"Resume following" pill**
+  (`.av-follow-pill`) over the bottom of the transcript whenever follow is
+  released and there is output. Clicking it re-pins and re-engages — otherwise
+  reachable only by dragging to the very bottom. It lives in the positioned
+  `.av-list-shell` wrapper (NOT the scrolled content, which would scroll it away).
+  Gate: `scripts/verify-followmode.mjs` drives the built app over CDP and asserts
+  pin-during-streaming, pill show/hide, click-to-resume, and the composer-clamp
+  regression; it has been mutation-tested (reverting the `onScroll` fix turns the
+  two clamp guards red). Verified e2e (CDP under headless sway) against a
   positive control: baseline streamMaxGap ~6666px vs fixed 0px, with user
   scroll-up still releasing (a real wheel event leaves the viewport where the user
   put it while more text streams in). The **composer** auto-grows and accepts **pasted images**

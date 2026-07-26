@@ -184,6 +184,10 @@ function MessageList({
   // dropped intermediate growths, so the viewport fell progressively further
   // behind fast streaming output. See `pinToBottom` / the observer below.
   const innerRef = useRef<HTMLDivElement>(null);
+  // The sized wrapper carrying the virtualization's explicit `totalHeight`. Also
+  // observed for follow-mode: it is the growth path for content OUTSIDE the mounted
+  // window, which `innerRef` structurally cannot see (see the ResizeObserver below).
+  const sizedRef = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState({ scrollTop: 0, height: 0 });
   // Measured row heights, keyed by message id — falls back to the estimate for
   // rows not yet measured. A ref (not state) so measuring doesn't re-render;
@@ -211,6 +215,17 @@ function MessageList({
   // scroll firing onScroll mid-settle can even flip stickBottom off. Cleared once
   // the user scrolls, or once the layout has settled at the bottom.
   const initialPin = useRef(true);
+  // Mirror of `stickBottom` as RENDER state, purely so the UI can show whether
+  // follow-mode is engaged. `stickBottom` stays a ref because the scroll/resize
+  // hot paths read and write it every frame and must not trigger re-renders; this
+  // flag is updated only on an actual transition (see `setFollowing`), so the
+  // indicator re-renders at most once per engage/disengage rather than per event.
+  const [following, setFollowingState] = useState(true);
+  const setFollowing = useCallback((next: boolean) => {
+    if (stickBottom.current === next) return; // no transition — skip the render
+    stickBottom.current = next;
+    setFollowingState(next);
+  }, []);
 
   const messages = session?.messages ?? [];
 
@@ -237,18 +252,40 @@ function MessageList({
     const prev = lastScrollTop.current;
     const cur = el.scrollTop;
     lastScrollTop.current = cur;
-    // A meaningful DECREASE in scrollTop is the unmistakable signature of a user
-    // scroll-up — neither a pin nor content growth ever moves it up. Release
-    // follow so the user can read earlier output without being yanked back.
-    if (cur < prev - 2) {
-      stickBottom.current = false;
+    const distanceFromBottom = el.scrollHeight - cur - el.clientHeight;
+    // A meaningful DECREASE in scrollTop is the signature of a user scroll-up —
+    // a pin never moves it up, and content GROWING pushes the bottom further away
+    // without moving scrollTop. But a decrease alone is NOT sufficient: the browser
+    // also CLAMPS scrollTop down to `scrollHeight - clientHeight` whenever the
+    // scrollable range shrinks, and that clamp fires an ordinary scroll event
+    // indistinguishable from a drag. It happens routinely here — the composer
+    // auto-grows/shrinks as the user types or clears a draft (and the attachment
+    // strip mounts/unmounts), which changes the LIST's clientHeight; content also
+    // shrinks when a tool group collapses or a turn ends. Measured in a real
+    // browser: clearing a 200px draft grew clientHeight 300→460 and clamped
+    // scrollTop 600→440, which the old bare `cur < prev - 2` test read as a
+    // scroll-up and silently disengaged follow mid-stream.
+    //
+    // The discriminator is WHERE we ended up, not merely that we moved up: a clamp
+    // leaves the viewport still parked AT the bottom, whereas a real scroll-up moves
+    // away from it. So only release follow when the decrease actually took us off
+    // the bottom.
+    const AT_BOTTOM_PX = 24;
+    if (cur < prev - 2 && distanceFromBottom >= AT_BOTTOM_PX) {
+      setFollowing(false);
       initialPin.current = false;
-    } else if (el.scrollHeight - cur - el.clientHeight < 24) {
+    } else if (distanceFromBottom < AT_BOTTOM_PX) {
       // At (or scrolled back to) the bottom — re-engage follow.
-      stickBottom.current = true;
+      setFollowing(true);
     }
     setViewport({ scrollTop: cur, height: el.clientHeight });
-  }, []);
+  }, [setFollowing]);
+
+  // Re-engage follow from the indicator: jump to the newest output and resume.
+  const resumeFollow = useCallback(() => {
+    setFollowing(true);
+    pinToBottom();
+  }, [setFollowing, pinToBottom]);
 
   // Follow-mode: whenever the REAL rendered content resizes (typewriter reveal,
   // async row re-measure, a new row mounting), snap to the bottom synchronously if
@@ -257,16 +294,31 @@ function MessageList({
   // per-resize path that replaces the laggy `measureTick`-gated scroll for the
   // steady-streaming case. It runs in the ResizeObserver callback (a frame after
   // layout), so `scrollHeight` already reflects the new content.
+  //
+  // We observe BOTH the translated row container (`innerRef`, whose box tracks the
+  // mounted rows' real height) AND the sized wrapper (`sizedRef`, whose explicit
+  // `totalHeight` carries the estimated height of rows OUTSIDE the window). Watching
+  // only the row container silently stalls follow-mode: the scroll container's
+  // `scrollHeight` is max(sized wrapper, overflowing content), so when the wrapper is
+  // the taller of the two, content can grow — a row below the window being measured
+  // taller than its 72px estimate, the window sliding so a tall row unmounts — WITHOUT
+  // the row container's own box changing at all. No resize entry fires, no pin runs,
+  // and the viewport falls behind while `stickBottom` is still true (measured in a real
+  // browser: scrollHeight 2400→2700 with the row container flat at 1200px left a 300px
+  // gap and ZERO observer callbacks). `measureTick` doesn't cover it either — it only
+  // bumps when a MOUNTED row's measured height changes.
   useLayoutEffect(() => {
     const inner = innerRef.current;
-    if (!inner) return;
+    const sized = sizedRef.current;
+    if (!inner && !sized) return;
     const ro = new ResizeObserver(() => {
       if (stickBottom.current || initialPin.current) pinToBottom();
     });
-    ro.observe(inner);
+    if (inner) ro.observe(inner);
+    if (sized) ro.observe(sized);
     return () => ro.disconnect();
-    // Re-attach when the inner element is (re)created — it only exists once there
-    // are messages (the empty state renders a different subtree).
+    // Re-attach when the observed elements are (re)created — they only exist once
+    // there are messages (the empty state renders a different subtree).
   }, [pinToBottom, messages.length > 0]);
 
   // Track viewport height (resize) so the window recomputes on layout changes.
@@ -338,7 +390,32 @@ function MessageList({
   const padTop = offsets[start] ?? 0;
 
   return (
-    <div ref={scrollRef} className="av-message-list" onScroll={onScroll}>
+    <div className="av-list-shell">
+      {/* Follow-mode indicator. Only shown once there IS output and follow has been
+          released — while following it stays out of the way entirely (the transcript
+          scrolling itself is the affordance). Clicking jumps to the newest output and
+          re-engages, which is otherwise only reachable by manually dragging to the
+          very bottom. */}
+      {messages.length > 0 && !following && (
+        <button
+          type="button"
+          className="av-follow-pill"
+          onClick={resumeFollow}
+          title="Jump to the latest output and resume following"
+        >
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path
+              d="M8 3v9m0 0 3.5-3.5M8 12 4.5 8.5"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          Resume following
+        </button>
+      )}
+      <div ref={scrollRef} className="av-message-list" onScroll={onScroll}>
       {messages.length === 0 ? (
         <div className="av-empty">
           <div className="av-empty-mark" aria-hidden="true">
@@ -373,7 +450,11 @@ function MessageList({
           </div>
         </div>
       ) : (
-        <div className="av-message-list-inner" style={{ height: totalHeight, position: 'relative' }}>
+        <div
+          ref={sizedRef}
+          className="av-message-list-inner"
+          style={{ height: totalHeight, position: 'relative' }}
+        >
           {/* Observe THIS wrapper (the actually-mounted rows) for follow-mode
               resize, not the sized parent: its height reflects real streaming
               growth the instant the typewriter reveals more text, whereas the
@@ -431,6 +512,7 @@ function MessageList({
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
