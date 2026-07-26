@@ -24,8 +24,14 @@ import { log } from './logger';
 // pushes on `browser:event`.
 
 /** How the native view is attached to the window + kept in sync with the DOM
- *  placeholder the renderer draws. `null` view means the panel exists in state
- *  but its native view was torn down (workspace deleted / window closed). */
+ *  placeholder the renderer draws.
+ *
+ *  `view` is always assigned at construction and never reassigned — but the
+ *  `WebContentsView` it points at can OUTLIVE its own `webContents`: Electron
+ *  sets `view.webContents` to `undefined` once the underlying WebContents is
+ *  destroyed, even though its typing declares the property non-nullable
+ *  (`readonly webContents: WebContents`). So `panel.view.webContents` must be
+ *  treated as possibly-absent at every dereference — see {@link liveContents}. */
 interface Panel {
   wsId: string;
   view: WebContentsView;
@@ -45,6 +51,45 @@ interface Panel {
 }
 
 const panels = new Map<string, Panel>();
+
+/** The panel's live `webContents`, or `undefined` if the view has none any more.
+ *
+ *  Electron drops `WebContentsView.webContents` (to `undefined`) once the
+ *  underlying WebContents is destroyed — by us via {@link destroyPanel}, or
+ *  EXTERNALLY (renderer/GPU crash of the sandboxed panel page, Chromium
+ *  reclaiming it, window teardown). Its typing says `readonly webContents:
+ *  WebContents`, so TypeScript happily lets `panel.view.webContents.isDestroyed()`
+ *  through — and that expression throws `Cannot read properties of undefined
+ *  (reading 'isDestroyed')` in exactly that case: the guard meant to detect a
+ *  dead view is itself what crashes on one.
+ *
+ *  Routing every dereference through here makes the absent case representable
+ *  and checkable. Callers that get `undefined` should treat the panel as dead. */
+function liveContents(panel: Panel | undefined): Electron.WebContents | undefined {
+  const wc = panel?.view?.webContents as Electron.WebContents | undefined;
+  return wc && !wc.isDestroyed() ? wc : undefined;
+}
+
+/** Drop a panel whose native view is gone, so the next call recreates it
+ *  cleanly instead of tripping over a husk left in the map. */
+function reapIfDead(wsId: string): Panel | undefined {
+  const panel = panels.get(wsId);
+  if (!panel) return undefined;
+  if (liveContents(panel)) return panel;
+  // The view lost its webContents (destroyed by us or externally). Detach the
+  // husk from the window if it is still attached, then forget it.
+  if (panel.visible) {
+    const win = getWindow?.();
+    try {
+      win?.contentView.removeChildView(panel.view);
+    } catch {
+      /* already detached / window gone */
+    }
+    panel.visible = false;
+  }
+  panels.delete(wsId);
+  return undefined;
+}
 
 /** The live main-window accessor. Installed by index.ts at startup so this
  *  module (which must not import the window directly) can attach views to it. */
@@ -84,7 +129,10 @@ function emptyState(wsId: string): BrowserPanelState {
 /** Recompute the panel's navigation state from the live webContents and push it
  *  to the renderer (URL bar / title / nav buttons). */
 function emitState(panel: Panel, patch: Partial<BrowserPanelState>): void {
-  const wc = panel.view.webContents;
+  // Reachable from webContents event handlers, which can still fire while the
+  // contents are being torn down — so the view may already have lost them.
+  const wc = liveContents(panel);
+  if (!wc) return;
   const nav = wc.navigationHistory;
   panel.state = {
     ...panel.state,
@@ -100,7 +148,9 @@ function emitState(panel: Panel, patch: Partial<BrowserPanelState>): void {
 /** Right-click escape hatches, mirroring login-browser.ts. */
 function attachContextMenu(view: WebContentsView, win: Electron.BaseWindow): void {
   view.webContents.on('context-menu', () => {
-    const wc = view.webContents;
+    // Fires from the native view; by the time it lands the contents may be gone.
+    const wc = view.webContents as Electron.WebContents | undefined;
+    if (!wc || wc.isDestroyed()) return;
     const url = wc.getURL();
     Menu.buildFromTemplate([
       { label: 'Back', enabled: wc.navigationHistory.canGoBack(), click: () => wc.navigationHistory.goBack() },
@@ -116,8 +166,10 @@ function attachContextMenu(view: WebContentsView, win: Electron.BaseWindow): voi
 /** Create (or return) the panel for `wsId`. The native view is created lazily
  *  on first open and reused thereafter. Throws if the window isn't ready. */
 export function ensurePanel(wsId: string): Panel {
-  const existing = panels.get(wsId);
-  if (existing && !existing.view.webContents.isDestroyed()) return existing;
+  // reapIfDead returns the panel only if its view still has live contents;
+  // otherwise it evicts the husk so we fall through and build a fresh one.
+  const existing = reapIfDead(wsId);
+  if (existing) return existing;
 
   const win = getWindow?.();
   if (!win) throw new Error('browser-panel: main window not ready');
@@ -180,12 +232,7 @@ export function ensurePanel(wsId: string): Panel {
 /** Look up an existing panel (does NOT create). Used by the agent tools, which
  *  should only drive a panel the user/agent has already opened. */
 export function getPanel(wsId: string): Panel | undefined {
-  const p = panels.get(wsId);
-  if (p && p.view.webContents.isDestroyed()) {
-    panels.delete(wsId);
-    return undefined;
-  }
-  return p;
+  return reapIfDead(wsId);
 }
 
 /** Add the view to the window (if not already) and mark it visible. Bounds are
@@ -231,8 +278,11 @@ export function hidePanel(wsId: string): void {
 /** Position/size the native view over the renderer's `.browser-pane` rect.
  *  Bounds are device-independent pixels relative to the window content. */
 export function setBounds(wsId: string, bounds: BrowserBounds): void {
-  const panel = panels.get(wsId);
-  if (!panel || panel.view.webContents.isDestroyed()) return;
+  // The renderer pushes bounds continuously (ResizeObserver + window resize), so
+  // this is the call most likely to land on a panel whose view died underneath
+  // it — the burst of `browser:setBounds failed` TypeErrors this guard fixes.
+  const panel = reapIfDead(wsId);
+  if (!panel) return;
   panel.view.setBounds({
     x: Math.round(bounds.x),
     y: Math.round(bounds.y),
@@ -254,8 +304,10 @@ export function setBounds(wsId: string, bounds: BrowserBounds): void {
 export async function navigate(wsId: string, to: string): Promise<BrowserPanelState> {
   const panel = ensurePanel(wsId);
   const url = normalizeUrl(to);
+  const wc = liveContents(panel);
+  if (!wc) return panel.state;
   try {
-    await panel.view.webContents.loadURL(url);
+    await wc.loadURL(url);
   } catch (err) {
     // loadURL rejects on ERR_ABORTED for a superseded nav; state is emitted by
     // did-fail-load for real failures. Swallow so callers don't see spurious
@@ -281,21 +333,17 @@ export function normalizeUrl(input: string): string {
 }
 
 export function goBack(wsId: string): void {
-  const panel = getPanel(wsId);
-  if (panel?.view.webContents.navigationHistory.canGoBack()) {
-    panel.view.webContents.navigationHistory.goBack();
-  }
+  const wc = liveContents(getPanel(wsId));
+  if (wc?.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
 }
 
 export function goForward(wsId: string): void {
-  const panel = getPanel(wsId);
-  if (panel?.view.webContents.navigationHistory.canGoForward()) {
-    panel.view.webContents.navigationHistory.goForward();
-  }
+  const wc = liveContents(getPanel(wsId));
+  if (wc?.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
 }
 
 export function reload(wsId: string): void {
-  getPanel(wsId)?.view.webContents.reload();
+  liveContents(getPanel(wsId))?.reload();
 }
 
 /** Current state snapshot (a freshly-mounted renderer requests this). */
@@ -309,14 +357,15 @@ export function destroyPanel(wsId: string): void {
   if (!panel) return;
   hidePanel(wsId);
   panels.delete(wsId);
-  if (!panel.view.webContents.isDestroyed()) {
+  const wc = liveContents(panel);
+  if (wc) {
     try {
-      if (panel.debuggerAttached) panel.view.webContents.debugger.detach();
+      if (panel.debuggerAttached) wc.debugger.detach();
     } catch {
       /* already detached */
     }
     // WebContentsView has no close(); destroying its webContents releases it.
-    (panel.view.webContents as unknown as { close?: () => void }).close?.();
+    (wc as unknown as { close?: () => void }).close?.();
   }
 }
 
@@ -332,7 +381,11 @@ export function destroyPanel(wsId: string): void {
  *  need. Returns the panel or throws if the workspace has no open panel. */
 export function attachDebugger(wsId: string): Panel {
   const panel = getPanel(wsId) ?? ensurePanel(wsId);
-  const dbg = panel.view.webContents.debugger;
+  const wc = liveContents(panel);
+  // A dead view surfaces to the agent as a clear error rather than a TypeError
+  // about `isDestroyed` — the agent can act on "panel is gone", not on a crash.
+  if (!wc) throw new Error(`browser panel for workspace ${wsId} has no live view`);
+  const dbg = wc.debugger;
   if (!panel.debuggerAttached) {
     if (!dbg.isAttached()) dbg.attach('1.3');
     panel.debuggerAttached = true;
@@ -342,16 +395,18 @@ export function attachDebugger(wsId: string): Panel {
 
 async function cdp(wsId: string, method: string, params?: Record<string, unknown>): Promise<any> {
   const panel = attachDebugger(wsId);
-  return panel.view.webContents.debugger.sendCommand(method, params ?? {});
+  const wc = liveContents(panel);
+  if (!wc) throw new Error(`browser panel for workspace ${wsId} has no live view`);
+  return wc.debugger.sendCommand(method, params ?? {});
 }
 
 /** Capture the panel as a JPEG (base64) — the agent's "screenshot" primitive.
  *  Uses the native `capturePage()` (simpler + faster than `Page.captureScreenshot`),
  *  matching the Claude Code desktop app's screenshot tool. */
 export async function capture(wsId: string, quality = 75): Promise<string> {
-  const panel = getPanel(wsId);
-  if (!panel) throw new Error(`no browser panel open for workspace ${wsId}`);
-  const image = await panel.view.webContents.capturePage();
+  const wc = liveContents(getPanel(wsId));
+  if (!wc) throw new Error(`no browser panel open for workspace ${wsId}`);
+  const image = await wc.capturePage();
   return image.toJPEG(Math.max(0, Math.min(100, quality))).toString('base64');
 }
 

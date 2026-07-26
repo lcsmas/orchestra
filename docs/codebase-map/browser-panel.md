@@ -118,6 +118,24 @@ in the archived subtree, so an orchestrator archives its children's panels too.
   harness: `scripts/verify-archive-browser-panel.mjs`). The main process logs
   **nothing** when this happens — no crash, no `render-process-gone` — so an
   archive followed by a user-forced restart is the only trace in the log.
+- **`view.webContents` can become `undefined` — the typing lies.** Electron
+  declares `readonly webContents: WebContents` (non-nullable) on
+  `WebContentsView`, but sets it to `undefined` once the underlying WebContents
+  is destroyed. Verified against real Electron 33: after `webContents.close()`,
+  `typeof view.webContents === 'undefined'`. So the natural guard
+  `panel.view.webContents.isDestroyed()` **throws on exactly the case it exists
+  to detect** (`TypeError: Cannot read properties of undefined (reading
+  'isDestroyed')`) — and TypeScript cannot catch it, because the declared type
+  says the property is always there. A view can lose its contents WITHOUT
+  `destroyPanel` running (renderer/GPU crash of the sandboxed panel page,
+  Chromium reclaiming it, window teardown), leaving a husk in the `panels` map.
+  Because the renderer pushes bounds continuously (`ResizeObserver` + window
+  resize), one dead view produced a **burst** of failures — 98 in a single
+  v0.5.161 session. Every dereference now goes through **`liveContents(panel)`**
+  (returns the contents or `undefined`) and lookups go through
+  **`reapIfDead(wsId)`**, which detaches the husk from the window and evicts it
+  so the next call rebuilds a fresh panel. Regression harness:
+  `scripts/verify-browser-panel-dead-view.mjs`.
 - `showPanel` refuses to attach a view that has never been positioned
   (`panel.bounded`), deferring to the first `setBounds`; otherwise an
   agent-opened panel composites at a garbage rect while the pane is closed.
