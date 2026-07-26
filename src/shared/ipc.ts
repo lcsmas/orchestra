@@ -145,8 +145,17 @@ export interface OrchestraAPI {
   revealLogs: () => Promise<void>;
   /** Absolute path to the active diagnostic log file. */
   logPath: () => Promise<string>;
-  /** Forward a renderer-side log line into the shared diagnostic log file. */
-  log: (level: 'debug' | 'info' | 'warn' | 'error', message: string, meta?: unknown) => Promise<void>;
+  /** Active minimum log level in the main process, so the renderer's logger can
+   *  mirror it (the renderer cannot read `$ORCHESTRA_LOG_LEVEL` itself). */
+  logLevel: () => Promise<string>;
+  /** Forward a renderer-side log line into the shared diagnostic log file.
+   *  Renderer code should use `src/renderer/log.ts` rather than calling this
+   *  directly — it adds scope tags, level gating and error serialization. */
+  log: (
+    level: 'trace' | 'debug' | 'info' | 'warn' | 'error',
+    message: string,
+    meta?: unknown,
+  ) => Promise<void>;
 
   // Workspaces
   listWorkspaces: () => Promise<Workspace[]>;

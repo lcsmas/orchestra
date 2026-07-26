@@ -5,6 +5,12 @@ import path from 'node:path';
 import type { Account, PinnedTicket, RepoEntry, RepoScripts, Workspace } from '../shared/types';
 import { sanitizeAccountInherit } from '../shared/accounts';
 import type { SelfTuneRun } from '../shared/self-tune';
+import { scoped } from './logger';
+
+/** Store-scoped logger. Persistence failures are invisible at runtime — every
+ *  reader uses the in-memory copy — so the damage only appears at the NEXT
+ *  launch, long after the evidence would otherwise be gone. */
+const slog = scoped('store');
 
 const PORT_RANGE_START = 55100;
 const PORT_RANGE_END = 55600; // exclusive — keeps 500 slots, well above realistic concurrency
@@ -66,7 +72,23 @@ class Store {
       const raw = await readFile(this.file, 'utf8');
       const parsed = JSON.parse(raw);
       this.data = { ...DEFAULT, ...parsed };
-    } catch {
+      slog.info(
+        `loaded ${this.data.workspaces?.length ?? 0} workspace(s), ${this.data.repos?.length ?? 0} repo(s) from ${this.file}`,
+      );
+    } catch (e) {
+      // This resets EVERY workspace, repo and account to defaults — from the
+      // user's perspective the app "lost everything". It must never happen
+      // quietly. Preserve the unreadable file so the data is recoverable and so
+      // the corruption itself can be examined rather than overwritten by the
+      // first save that follows.
+      slog.error(`store.json unreadable — falling back to EMPTY defaults (user data not loaded)`, e);
+      try {
+        const salvage = `${this.file}.corrupt-${Date.now()}`;
+        await rename(this.file, salvage);
+        slog.error(`preserved the unreadable store at ${salvage}`);
+      } catch (e2) {
+        slog.error('could not preserve the unreadable store; it will be overwritten', e2);
+      }
       this.data = DEFAULT;
     }
     // `running` across a restart can only be stale state from a prior PTY
@@ -93,13 +115,26 @@ class Store {
     // (tmp + rename) so a mid-write crash or overlapping write can't leave a
     // truncated / interleaved store.json on disk.
     const next = this.writeChain.then(async () => {
+      const started = Date.now();
       const payload = JSON.stringify(this.data, null, 2);
       const tmp = `${this.file}.tmp`;
       await writeFile(tmp, payload, 'utf8');
       await rename(tmp, this.file);
+      const ms = Date.now() - started;
+      // The store is rewritten WHOLE on every save and the 8s stats poll queues
+      // one per workspace onto this single chain, so a slow save is a real
+      // source of UI latency (the status dot queues behind it). Surface the
+      // outliers; the payload size explains them.
+      if (ms >= 250) {
+        slog.debug(`slow save: ${ms}ms for ${Math.round(payload.length / 1024)}KiB`);
+      }
     });
-    // Never let one failure poison subsequent saves.
-    this.writeChain = next.catch(() => undefined);
+    // Never let one failure poison subsequent saves — but a failed save means
+    // the change the user just made is NOT on disk and will vanish on restart,
+    // which is invisible at runtime because everything reads the in-memory copy.
+    this.writeChain = next.catch((e) => {
+      slog.error('store save FAILED — in-memory state is not persisted', e);
+    });
     return next;
   }
 

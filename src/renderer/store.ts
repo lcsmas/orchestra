@@ -1,4 +1,11 @@
 import { create } from 'zustand';
+import { scoped } from './log';
+
+/** Store-scoped renderer logger. The store is where backend data becomes UI
+ *  state, so a swallowed failure here is exactly what surfaces as a section
+ *  that "just doesn't show anything". */
+const slog = scoped('store');
+
 import type {
   Account,
   AccountUsageStatus,
@@ -246,20 +253,33 @@ export const useStore = create<State>((set, get) => ({
     set(p === 'resources' ? { page: p, insightsOpen: false, helpOpen: false } : { page: p }),
 
   load: async () => {
+    // Each of these falls back to an EMPTY value on failure, so a broken backend
+    // call renders as a legitimately-empty UI section (no accounts, no tickets,
+    // no usage bars) rather than an error. That ambiguity — "is this empty or
+    // broken?" — is the single most common source of "the UI just doesn't show
+    // X" reports, and it left no trace at all. `orNull` names the failing call.
+    const orEmpty = <T>(what: string, p: Promise<T>, fallback: T): Promise<T> =>
+      p.catch((e) => {
+        slog.warn(`startup load: ${what} failed — rendering as empty`, e);
+        return fallback;
+      });
     const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns, tickets] =
       await Promise.all([
         window.orchestra.listRepos(),
         window.orchestra.listWorkspaces(),
-        window.orchestra.listRepoSyncStates().catch(() => []),
-        window.orchestra.getAllAccountUsage().catch(() => ({})),
-        window.orchestra.getWorkspaceAccounts().catch(() => ({})),
-        window.orchestra.listAccounts().catch(() => []),
-        window.orchestra.getUsage().catch(() => null),
-        window.orchestra.listSelfTuneRuns().catch(() => []),
+        orEmpty('listRepoSyncStates', window.orchestra.listRepoSyncStates(), []),
+        orEmpty('getAllAccountUsage', window.orchestra.getAllAccountUsage(), {}),
+        orEmpty('getWorkspaceAccounts', window.orchestra.getWorkspaceAccounts(), {}),
+        orEmpty('listAccounts', window.orchestra.listAccounts(), []),
+        orEmpty('getUsage', window.orchestra.getUsage(), null),
+        orEmpty('listSelfTuneRuns', window.orchestra.listSelfTuneRuns(), []),
         // Reads the STORED list (no network) so the section paints instantly at
         // boot; the 120s poll refreshes state from Linear afterwards.
-        window.orchestra.listTickets().catch(() => []),
+        orEmpty('listTickets', window.orchestra.listTickets(), []),
       ]);
+    slog.info(
+      `loaded ${workspaces.length} workspace(s), ${repos.length} repo(s), ${accounts.length} account(s), ${tickets.length} ticket(s)`,
+    );
     const repoSync: Record<string, RepoSyncState> = {};
     for (const s of syncStates) repoSync[s.repoPath] = s;
     // Seed the context badge from each workspace's persisted turn-end figure so
@@ -706,7 +726,15 @@ const agentEventQueue = createAgentEventQueue((batches) => {
       next[workspaceId] = foldEvents(prev, events);
       changed = true;
     } catch (err) {
-      console.error(`agent-event fold failed for ${workspaceId} (batch of ${events.length} dropped)`, err);
+      // Went only to the DevTools console until now — i.e. nowhere, in a
+      // packaged build. A dropped batch means the structured agent view is
+      // missing messages/tool cards with no on-screen indication, which reads as
+      // "the agent view is broken/stuck". Include the event types: the fold
+      // throwing is almost always one unexpected event shape.
+      slog.error(
+        `agent-event fold failed for ${workspaceId} — DROPPED a batch of ${events.length} event(s) [${[...new Set(events.map((e) => (e as { type?: string }).type ?? '?'))].join(',')}]`,
+        err,
+      );
     }
   }
   // Guard before setState — same discipline as onAgentContext/onAgentTool — so

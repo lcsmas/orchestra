@@ -42,6 +42,7 @@ const api: OrchestraAPI = {
 
   revealLogs: () => ipcRenderer.invoke('logs:reveal'),
   logPath: () => ipcRenderer.invoke('logs:path'),
+  logLevel: () => ipcRenderer.invoke('logs:level'),
   log: (level, message, meta) => ipcRenderer.invoke('logs:write', level, message, meta),
 
   listWorkspaces: () => ipcRenderer.invoke('workspaces:list'),

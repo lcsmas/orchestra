@@ -206,9 +206,57 @@ restarted via the Run button. Start/Stop buttons drive a
 `<wsId>:run` PTY (`bash -lc <script>` with `$ORCHESTRA_PORT`); Ctrl+C copies if
 there's a selection else forwards to the script.
 
-## logger.ts (~163 lines)
-Synchronous (`appendFileSync`) lifecycle/error log — low volume, so blocking I/O
-guarantees lines survive a crash. Dual sinks: `~/.orchestra/logs/orchestra.log`
-+ platform Electron logs dir; rotate at 5 MB with one `.1` backup. `initLogger`
-`:132` attaches uncaught-exception/rejection handlers. `revealLogs` opens it in
-the file manager.
+## logger.ts (~320 lines)
+Synchronous (`appendFileSync`) lifecycle/error log — low volume at the default
+level, so blocking I/O guarantees lines survive a crash. Dual sinks:
+`<ORCHESTRA_HOME>/logs/orchestra.log` + platform Electron logs dir; rotate at
+5 MB with one `.1` backup. `initLogger` attaches uncaught-exception/rejection
+handlers. `revealLogs` opens it in the file manager.
+
+**Levels + `$ORCHESTRA_LOG_LEVEL`.** Five levels
+(`trace|debug|info|warn|error`), threshold from the env var, default `info`;
+an unknown value warns and falls back to `info` (a typo must never silence the
+log). `trace` is the per-event firehose (every IPC call, status transition,
+spool event, SDK event); `debug` adds slow-operation and fallback detail. The
+instrumentation is compiled in but dormant, so reproducing a bug is
+`ORCHESTRA_LOG_LEVEL=trace orchestra` with no rebuild. `isLevelEnabled(level)`
+lets a caller skip building an expensive meta payload; `ScopedLogger.traceEnabled()`
+lets one take a costlier diagnostic path (git.ts evaluates each merge signal
+separately under trace so the log names which one decided the verdict). The
+startup banner prints the active level — so an absent line reads as "not
+recorded at this level" rather than "the event didn't happen" — plus version,
+pid, runtime and home.
+
+**Scopes.** `scoped('pty')` tags every line `[pty]`, `.child('sub')` nests to
+`[pty:sub]`. Tags are what make a verbose log greppable (`grep '\[spool\]'`
+isolates one subsystem out of an interleaved trace). Live scopes: `activity`,
+`pty`, `spool`, `store`, `git`, `sdk`, `ipc`, plus `[renderer] [<scope>]` for
+renderer-originated lines.
+
+`ScopedLogger.swallow(what, err)` is the explicit replacement for a silent
+`catch {}` — it records at `warn` and continues. `time(what, fn)` brackets an
+async op with entry/exit and a duration (or logs the throw with its elapsed
+time). Meta formatting surfaces what `.stack` omits: errno fields
+(`code`/`syscall`/`path`), `cause` chains, cycle-safe serialization, and a
+4000-char clamp so one huge payload can't evict the history around a bug.
+
+### Instrumented seams (added for bug-catching)
+- **IPC** (`index.ts` `handle()`): every renderer→main call traced with args;
+  calls ≥250 ms logged as `SLOW` at `debug`; failures always log args. Keystroke
+  and secret channels are redacted by name (`NO_ARG_LOG`) — timing/counts only.
+- **Renderer** (`src/renderer/log.ts`): previously there was **no** persistent
+  renderer logging at all. `scoped()` mirrors the main API over the `logs:write`
+  IPC into the same file; `installRendererCrashHandlers()` captures `error` and
+  `unhandledrejection`; `initRendererLog()` mirrors the backend level via
+  `logs:level`, overridable live from DevTools with `window.__orchestraLogLevel`.
+  Errors are flattened before the IPC hop (an `Error` structured-clones to `{}`).
+  `components/ErrorBoundary.tsx` logs the React **component stack** (which
+  `window.onerror` never sees) and renders a readable fallback instead of the
+  blank window a render throw otherwise produces.
+- **Silent-failure removals:** store load/save (a corrupt `store.json` now logs
+  at `error` and is preserved as `.corrupt-<ts>` instead of silently resetting
+  all user data), spool read/parse failures, the pty output-drop path (the cause
+  of "scattered word" garble), writes to a dead PTY, unhandled agent-event
+  types, the events-dir startup wipe (fingerprint of the multi-instance
+  stuck-dot bug), and the renderer store's startup fallbacks (which render a
+  failed backend call as a legitimately-empty UI section).

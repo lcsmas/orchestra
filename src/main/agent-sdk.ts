@@ -13,7 +13,12 @@ import os from 'node:os';
 import type { Query, SDKUserMessage, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import { platform } from './platform';
 import { store } from './store';
-import { log } from './logger';
+import { log, scoped } from './logger';
+
+/** SDK-scoped logger. The structured agent view spans two processes (events are
+ *  produced here, folded in the renderer), so attributing a wrong pane to the
+ *  producer or the consumer needs a record of what was actually emitted. */
+const slog = scoped('sdk');
 import {
   installOrchestraHooks,
   workspaceAccountConfigDir,
@@ -188,6 +193,19 @@ const sessions = new Map<string, Session>();
 
 /** Broadcast one normalized event to the renderer. */
 function emit(wsId: string, event: AgentEvent): void {
+  // Single choke point for the whole structured-view event stream. Tracing here
+  // gives an exact, ordered record of what the renderer's fold was fed — which
+  // is the only way to tell a BACKEND bug (never emitted) from a RENDERER bug
+  // (emitted, mis-folded) when the agent pane shows something wrong. Those two
+  // are otherwise indistinguishable from the UI, and they live in different
+  // processes. Errors are always logged: they are low-volume and load-bearing.
+  if (event.type === 'error') {
+    slog.warn(
+      `emit error event ws=${wsId} seq=${event.seq}: ${(event as { message?: string }).message ?? ''}`,
+    );
+  } else if (slog.traceEnabled()) {
+    slog.trace(`emit ${event.type} ws=${wsId} seq=${(event as { seq?: number }).seq ?? '?'}`);
+  }
   platform.broadcast('agent:event', wsId, event);
 }
 

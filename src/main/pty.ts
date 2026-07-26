@@ -6,7 +6,12 @@ import { getHookSocketPath } from './hooks-server';
 import { agentCliBinDir } from './cli-shim';
 import { getEventsDir } from './events-spool';
 import { reconcileExited } from './activity';
-import { log } from './logger';
+import { log, scoped } from './logger';
+
+/** PTY-scoped logger. Terminal desync/garble bugs are historically the hardest
+ *  to diagnose after the fact because the evidence (dropped output, a resize
+ *  race) leaves no trace; these lines are that trace. */
+const plog = scoped('pty');
 import type { SessionTransport, TransportDisposable, TransportSpawnOptions } from './transport/types';
 import { createLocalPtyTransport } from './transport/local-pty';
 import { createRemoteTransport } from './transport/remote';
@@ -182,7 +187,22 @@ function flushPtyData(s: Session): void {
   }
   if (!s.outBuf) return;
   if (!platform.broadcastPtyData(s.id, s.outBuf)) {
-    if (s.outBuf.length > MAX_PENDING_BYTES) s.outBuf = s.outBuf.slice(-(MAX_PENDING_BYTES / 2));
+    if (s.outBuf.length > MAX_PENDING_BYTES) {
+      // We are about to DISCARD the oldest half of this session's output. That
+      // guarantees the renderer's xterm buffer diverges from the child's
+      // diff-render model, whose visible symptom is the "scattered word" garble
+      // that has been misdiagnosed as a parser/unicode bug before. It is the one
+      // event that makes later terminal corruption expected rather than
+      // mysterious, so it is logged at `warn` unconditionally.
+      plog.warn(
+        `${s.id}: renderer unreachable, dropping ${Math.round(MAX_PENDING_BYTES / 2 / 1024)}KiB of buffered output (buffer ${Math.round(s.outBuf.length / 1024)}KiB > cap) — terminal will need a repaint`,
+      );
+      s.outBuf = s.outBuf.slice(-(MAX_PENDING_BYTES / 2));
+    } else {
+      plog.trace(
+        `${s.id}: delivery deferred, retaining ${Math.round(s.outBuf.length / 1024)}KiB`,
+      );
+    }
     return;
   }
   s.outBuf = '';
@@ -431,10 +451,27 @@ function disposeSession(s: Session) {
 
 export function writePty(id: string, data: string) {
   const s = sessions.get(id);
-  if (!s || s.stopped) return;
+  if (!s || s.stopped) {
+    // Input aimed at a dead/absent session is DISCARDED. To the user this looks
+    // like "I typed and nothing happened" — a silent no-op with no other
+    // evidence. Never log `data` itself (it's keystrokes, possibly secrets);
+    // the length and the reason are enough to identify the bug.
+    plog.debug(
+      `writePty(${id}) dropped ${data.length}B — session ${s ? 'stopped' : 'not found'}`,
+    );
+    return;
+  }
   // Enter the echo window so the redraw this write provokes flushes promptly.
   s.echoUntil = Date.now() + ECHO_WINDOW_MS;
-  s.transport.write(data);
+  try {
+    s.transport.write(data);
+  } catch (e) {
+    // A transport write throwing (broken pipe, dead socket to a sandbox shim)
+    // used to propagate as an opaque IPC rejection with no indication of which
+    // session died.
+    plog.error(`writePty(${id}) transport write failed`, e);
+    throw e;
+  }
 }
 
 export function resizePty(id: string, cols: number, rows: number) {
@@ -443,10 +480,18 @@ export function resizePty(id: string, cols: number, rows: number) {
   const c = Math.max(20, cols);
   const r = Math.max(5, rows);
   if (s.cols === c && s.rows === r) return; // no-op — don't churn SIGWINCH/repaint
+  // Size mismatches between the renderer's xterm and the pty winsize are a
+  // direct cause of wrapped/garbled TUI output, so the resize history is the
+  // first thing worth reading when a terminal looks wrong.
+  plog.trace(`${id}: resize ${s.cols}x${s.rows} → ${c}x${r}`);
   s.cols = c;
   s.rows = r;
   lastSizes.set(id, { cols: c, rows: r });
-  s.transport.resize(c, r);
+  try {
+    s.transport.resize(c, r);
+  } catch (e) {
+    plog.warn(`${id}: transport resize to ${c}x${r} failed`, e);
+  }
 }
 
 /** Force the child TUI to fully repaint by bouncing the pty winsize (cols−1,

@@ -15,10 +15,22 @@ import './agent-view-theme.css';
 // theme's --av-glow/--av-highlight tokens. Imported last so it wins the cascade.
 import './agent-view-flat.css';
 import '../shared/ipc';
+import { installRendererCrashHandlers, initRendererLog, log } from './log';
+import { ErrorBoundary } from './components/ErrorBoundary';
+
+// Install BEFORE the first render so an exception thrown during initial mount
+// is captured rather than lost — that's precisely the failure that leaves a
+// blank window with no diagnosis. The level sync is async and best-effort;
+// until it resolves we log at the `info` default, so nothing is dropped.
+installRendererCrashHandlers();
+void initRendererLog();
+log.info(`renderer starting (ua=${navigator.userAgent})`);
 
 const root = createRoot(document.getElementById('root')!);
 root.render(
   <React.StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </React.StrictMode>,
 );

@@ -4709,3 +4709,51 @@ button.danger-primary:active {
   box-shadow: none;
 }
 .welcome-help-btn:hover { color: var(--text); border-color: var(--accent); }
+
+/* Fallback UI for ErrorBoundary (components/ErrorBoundary.tsx). Without a
+   boundary a render throw unmounts the whole tree into a blank window; this
+   makes the failure visible and reportable. Uses the app's own tokens so it
+   doesn't read as an unstyled browser error page. */
+.error-boundary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 680px;
+  margin: 48px auto;
+  padding: 24px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  color: var(--text);
+}
+.error-boundary h1 { font-size: 16px; font-weight: 600; margin: 0; }
+.error-boundary-msg {
+  margin: 0;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 13px;
+  color: var(--red);
+  word-break: break-word;
+}
+.error-boundary-hint { margin: 0; font-size: 13px; color: var(--text-dim); }
+.error-boundary details { width: 100%; font-size: 12px; color: var(--text-dim); }
+.error-boundary summary { cursor: pointer; }
+.error-boundary pre {
+  overflow: auto;
+  max-height: 260px;
+  padding: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.error-boundary button {
+  padding: 6px 14px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+}
+.error-boundary button:hover { border-color: var(--accent); }

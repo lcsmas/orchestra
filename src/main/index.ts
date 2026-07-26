@@ -157,7 +157,7 @@ import { startPromptQueueFlusher, stopPromptQueueFlusher } from './prompt-queue'
 import { startSelfTuneScheduler, stopSelfTuneScheduler } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
 import { probeDependencies } from './deps';
-import { initLogger, log } from './logger';
+import { initLogger, log, isLevelEnabled } from './logger';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -176,13 +176,44 @@ initBrowserPanels(() => mainWindow);
 // IPC call surfaces only as a rejected promise in the renderer with no
 // main-process trace — exactly the kind of bug that's impossible to diagnose
 // from a desktop-launched build.
+// Additionally, at `trace` level every call is recorded with its arguments and
+// at `debug` every SLOW call is — so a hang or a jank spike can be attributed to
+// a specific channel after the fact, instead of needing a live profiler attached
+// at the moment it happens.
 type IpcHandler = (event: Electron.IpcMainInvokeEvent, ...args: any[]) => unknown;
+
+/** Calls slower than this are always reported (at `debug`), even when per-call
+ *  tracing is off: an IPC handler blocking the main process this long is a bug
+ *  or a symptom of one, and it's the class that's hardest to catch live. */
+const SLOW_IPC_MS = 250;
+
+/** Channels whose args are high-volume or sensitive and must never be spilled
+ *  into the log: keystrokes (`pty:write`) would record everything typed,
+ *  including secrets pasted into an agent. Their calls are still counted and
+ *  timed — only the payload is withheld. */
+const NO_ARG_LOG = new Set(['pty:write', 'pty:data', 'secrets:set', 'linear:setApiKey']);
+
+function redactArgs(channel: string, args: unknown[]): unknown {
+  if (NO_ARG_LOG.has(channel)) return `<${args.length} arg(s) redacted>`;
+  return args;
+}
+
 function handle(channel: string, fn: IpcHandler): void {
   ipcMain.handle(channel, async (event, ...args) => {
+    const started = Date.now();
+    if (isLevelEnabled('trace')) log.trace(`[ipc] → ${channel}`, redactArgs(channel, args));
     try {
-      return await fn(event, ...args);
+      const result = await fn(event, ...args);
+      const ms = Date.now() - started;
+      if (ms >= SLOW_IPC_MS) log.debug(`[ipc] ${channel} SLOW ${ms}ms`);
+      else if (isLevelEnabled('trace')) log.trace(`[ipc] ← ${channel} ${ms}ms`);
+      return result;
     } catch (err) {
-      log.error(`ipc ${channel} failed`, err);
+      // Include the args on failure regardless of level: a failing call's
+      // inputs are the single most useful thing for reproducing it, and errors
+      // are rare enough that the volume is irrelevant.
+      log.error(`[ipc] ${channel} failed after ${Date.now() - started}ms`, err);
+      log.error(`[ipc] ${channel} args`, redactArgs(channel, args));
       throw err;
     }
   });

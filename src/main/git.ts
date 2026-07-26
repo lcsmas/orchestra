@@ -5,8 +5,30 @@ import { rm } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { DiffFile, DiffStats } from '../shared/types';
+// Explicit `.ts` extension: git.ts is pulled into Node's type-stripping test
+// runner (git-merge-state.test.ts et al.), which does not resolve extensionless
+// relative specifiers. Same reason logger.ts imports './platform/index.ts'.
+import { scoped } from './logger.ts';
 
 const pexec = promisify(execFile);
+
+/** Git-scoped logger.
+ *
+ *  Most catches in this file intentionally fall back to a neutral value ("no
+ *  remote", "no branches"). The danger is that a fallback returned because of a
+ *  REAL failure (a corrupt repo, a missing worktree, git not on PATH, a hung
+ *  credential prompt) is indistinguishable from one returned because the answer
+ *  is genuinely empty — and the wrong answer then drives a visibly wrong merge
+ *  pill or PR badge with no evidence anywhere. These lines make the two cases
+ *  distinguishable after the fact. They sit at `debug` because expected-empty is
+ *  the common case and would otherwise be noise. */
+const glog = scoped('git');
+
+/** Log a swallowed git failure at `debug`, tagged with the repo it came from. */
+function gitFallback(op: string, repoPath: string, err: unknown, fallback: string): void {
+  const msg = err instanceof Error ? err.message.split('\n')[0] : String(err);
+  glog.debug(`${op} failed in ${repoPath} → using ${fallback}: ${msg}`);
+}
 
 /** Read the `origin` remote URL and normalize it to a browser-friendly form.
  * Handles the three forms git emits: scp-style (`git@host:owner/repo.git`),
@@ -18,7 +40,8 @@ export async function detectRemoteUrl(repoPath: string): Promise<string | undefi
   let raw: string;
   try {
     raw = (await git.raw(['config', '--get', 'remote.origin.url'])).trim();
-  } catch {
+  } catch (e) {
+    gitFallback('detectRemoteUrl', repoPath, e, 'no remote link');
     return undefined;
   }
   if (!raw) return undefined;
@@ -68,7 +91,10 @@ export async function listBranches(repoPath: string): Promise<string[]> {
   try {
     const res = await git.branchLocal();
     return res.all.slice().sort((a, b) => a.localeCompare(b));
-  } catch {
+  } catch (e) {
+    // An empty branch list renders as "this repo has no branches", which is
+    // almost never true — it means the repo is unreadable/not a repo.
+    gitFallback('listBranches', repoPath, e, 'an EMPTY branch list');
     return [];
   }
 }
@@ -365,15 +391,36 @@ export async function getBranchMergeState(
       git.raw(['rev-parse', branch]).then((s) => s.trim()),
       git.raw(['rev-parse', baseBranch]).then((s) => s.trim()),
     ]);
-    const merged =
-      (branchSha !== baseSha && (await branchTipWasMergedInto(git, branchSha, baseSha))) ||
-      (await baseReflogRecordsMerge(git, baseBranch, branch)) ||
-      (await branchAuthoredItsTip(git, branch));
+    // Evaluate the three merge signals separately rather than relying on `||`
+    // short-circuit, ONLY when tracing: which signal fired is the whole
+    // diagnosis for a wrong merge pill, and the boolean alone never tells you.
+    // (This detection has been rewritten three times; "merged shows wrong" is
+    // unfalsifiable from the outside without knowing which signal decided it.)
+    let merged: boolean;
+    if (glog.traceEnabled()) {
+      const viaMergeCommit =
+        branchSha !== baseSha && (await branchTipWasMergedInto(git, branchSha, baseSha));
+      const viaReflog = await baseReflogRecordsMerge(git, baseBranch, branch);
+      const viaAuthored = await branchAuthoredItsTip(git, branch);
+      merged = viaMergeCommit || viaReflog || viaAuthored;
+      glog.trace(
+        `mergeState ${branch}→${baseBranch}: merged=${merged} (mergeCommit=${viaMergeCommit} reflog=${viaReflog} authoredTip=${viaAuthored}) branchSha=${branchSha.slice(0, 8)} baseSha=${baseSha.slice(0, 8)} unpushed=${unpushedAhead}`,
+      );
+    } else {
+      merged =
+        (branchSha !== baseSha && (await branchTipWasMergedInto(git, branchSha, baseSha))) ||
+        (await baseReflogRecordsMerge(git, baseBranch, branch)) ||
+        (await branchAuthoredItsTip(git, branch));
+    }
     // Not merged + refs differ → the tip is a stale old commit on base's
     // history; clears any false-positive `mergedAt`. Not merged + equal refs →
     // a fresh branch still pointing at base, nothing to clear.
     return { merged, diverged: false, unpushedAhead, stalePointer: !merged && branchSha !== baseSha };
-  } catch {
+  } catch (e) {
+    // This fallback claims "not merged, not diverged, nothing unpushed" — a
+    // confident-looking answer manufactured from a failure. It clears merge
+    // pills and ↑N badges, so a broken repo looks like a clean, in-sync one.
+    gitFallback(`getBranchMergeState(${branch}→${baseBranch})`, repoPath, e, 'a NEUTRAL state (no pills)');
     return { merged: false, diverged: false, unpushedAhead: 0, stalePointer: false };
   }
 }

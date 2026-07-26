@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { platform } from './platform';
-import { log } from './logger';
+import { log, scoped } from './logger';
 import { store } from './store';
 import {
   getBranchMergeState,
@@ -10,6 +10,13 @@ import {
   getReleaseVersionsContaining,
 } from './git';
 import type { Workspace, WorkspaceStatus } from '../shared/types';
+
+// Status transitions are the most bug-prone surface in the app (a stuck or wrong
+// dot has been the visible symptom of spool wipes, missed turn-end events, and
+// dead PTYs). At `trace` every transition is logged with its cause, so a stuck
+// dot is diagnosable from the log alone: you can see the last event that
+// arrived and whether it moved the status or was a no-op.
+const alog = scoped('activity');
 
 // Hook-driven activity tracker.
 //
@@ -39,8 +46,22 @@ async function setStatus(
   status: WorkspaceStatus,
 ): Promise<{ ws: Workspace; changed: boolean } | null> {
   const ws = store.getWorkspace(id);
-  if (!ws || ws.archived) return null;
-  if (ws.status === status) return { ws, changed: false };
+  if (!ws) {
+    // A status arriving for an unknown workspace means an orphaned agent is
+    // still emitting events after its workspace was deleted — worth a line,
+    // since it usually means a PTY/hook outlived its owner.
+    alog.debug(`setStatus(${status}) for unknown workspace ${id} — dropped`);
+    return null;
+  }
+  if (ws.archived) {
+    alog.trace(`setStatus(${status}) for archived ${ws.name} — dropped`);
+    return null;
+  }
+  if (ws.status === status) {
+    alog.trace(`${ws.name}: status already ${status} (no-op)`);
+    return { ws, changed: false };
+  }
+  alog.trace(`${ws.name}: ${ws.status} → ${status}`);
   const updated: Workspace = { ...ws, status };
   // Broadcast to the renderer first, then persist. upsertWorkspace mutates the
   // in-memory store synchronously (before its first await), so state is already
@@ -50,7 +71,7 @@ async function setStatus(
   // would make the status dot wait behind a batch of unrelated full-file
   // writes — the visible latency. The dot is ephemeral UI; it must not block on
   // durability, so fire the persist and let it flush in the background.
-  void store.upsertWorkspace(updated).catch(() => {});
+  void store.upsertWorkspace(updated).catch((e) => alog.swallow("persist status", e));
   platform.broadcast('workspace:update', updated);
   return { ws: updated, changed: true };
 }
@@ -175,7 +196,7 @@ export async function detectAndUpdateMergeState(id: string): Promise<void> {
   };
   // Broadcast before persisting — see setStatus: the renderer must not wait on
   // the serialized store-write chain to reflect the merge pill / ↑N badge.
-  void store.upsertWorkspace(updated).catch(() => {});
+  void store.upsertWorkspace(updated).catch((e) => alog.swallow("persist status", e));
   platform.broadcast('workspace:update', updated);
 }
 
@@ -230,7 +251,7 @@ export async function detectAndUpdateBranchName(id: string): Promise<void> {
   };
   // Broadcast before persisting — see setStatus: don't gate the renamed-branch
   // UI on the serialized store-write chain.
-  void store.upsertWorkspace(updated).catch(() => {});
+  void store.upsertWorkspace(updated).catch((e) => alog.swallow("persist status", e));
   platform.broadcast('workspace:update', updated);
 }
 
@@ -279,7 +300,7 @@ export async function detectAndUpdateReleaseState(id: string): Promise<void> {
       releasedVersion: undefined,
       releasedVersions: undefined,
     };
-    void store.upsertWorkspace(cleared).catch(() => {});
+    void store.upsertWorkspace(cleared).catch((e) => alog.swallow("persist cleared context", e));
     platform.broadcast('workspace:update', cleared);
     return;
   }
@@ -294,7 +315,7 @@ export async function detectAndUpdateReleaseState(id: string): Promise<void> {
   };
   // Broadcast before persisting — see setStatus: don't gate the released-version
   // pill on the serialized store-write chain.
-  void store.upsertWorkspace(updated).catch(() => {});
+  void store.upsertWorkspace(updated).catch((e) => alog.swallow("persist status", e));
   platform.broadcast('workspace:update', updated);
 }
 
@@ -446,7 +467,7 @@ async function emitContext(
     const ws = store.getWorkspace(id);
     const persisted = tokens > 0 ? tokens : undefined;
     if (ws && !ws.archived && ws.contextTokens !== persisted) {
-      void store.upsertWorkspace({ ...ws, contextTokens: persisted }).catch(() => {});
+      void store.upsertWorkspace({ ...ws, contextTokens: persisted }).catch((e) => alog.swallow("persist contextTokens", e));
     }
   }
   if (lastContext.get(id) === tokens) return;
@@ -463,7 +484,7 @@ async function emitContext(
 function resetContext(id: string): void {
   const ws = store.getWorkspace(id);
   if (ws && !ws.archived && ws.contextTokens != null) {
-    void store.upsertWorkspace({ ...ws, contextTokens: undefined }).catch(() => {});
+    void store.upsertWorkspace({ ...ws, contextTokens: undefined }).catch((e) => alog.swallow("clear contextTokens", e));
   }
   if (lastContext.get(id) === 0) return;
   lastContext.set(id, 0);
@@ -481,6 +502,7 @@ export function applyAgentEvent(
   tool: string | undefined,
   transcript?: string,
 ): void {
+  alog.trace(`event ${event}${tool ? ` tool=${tool}` : ''} ws=${id}`);
   switch (event) {
     case 'submit':
       emitTool(id, null);
@@ -527,6 +549,12 @@ export function applyAgentEvent(
         void emitContext(id, transcript, true);
       }
       break;
+    default:
+      // An event name we don't handle falls through to NOTHING — the status
+      // simply never moves, which surfaces as a stuck dot with no other clue.
+      // A Claude Code upgrade renaming/adding a hook event is exactly how this
+      // happens, so name the unknown event rather than ignoring it silently.
+      alog.warn(`unhandled agent event "${event}" (ws=${id}) — status unchanged`);
   }
 }
 

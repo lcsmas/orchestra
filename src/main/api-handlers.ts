@@ -107,7 +107,7 @@ import {
   sdkListModels,
   sdkStopMany,
 } from './agent-sdk';
-import { log, revealLogs, getLogFile } from './logger';
+import { log, revealLogs, getLogFile, getLogLevel } from './logger';
 import * as browserPanel from './browser-panel';
 import type { OrchestraAPI } from '../shared/ipc';
 import type {
@@ -186,6 +186,7 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   listGlobalInheritables: 'accounts:listGlobalInheritables',
   revealLogs: 'logs:reveal',
   logPath: 'logs:path',
+  logLevel: 'logs:level',
   log: 'logs:write',
   listWorkspaces: 'workspaces:list',
   createWorkspace: 'workspaces:create',
@@ -508,8 +509,12 @@ export const apiHandlers: ApiHandlerTable = {
 
   logPath: async () => getLogFile(),
 
+  logLevel: async () => getLogLevel(),
+
   // Forward renderer/frontend logs into the same file so a single artifact
-  // captures every process. Level is clamped to the known set.
+  // captures every process. Level is clamped to the known set; the renderer
+  // already tags its own subsystem scope, so `[renderer]` prefixes it to keep
+  // the origin process unambiguous when reading an interleaved log.
   log: async (level, message, meta) => {
     const fn =
       level === 'error'
@@ -518,7 +523,9 @@ export const apiHandlers: ApiHandlerTable = {
           ? log.warn
           : level === 'debug'
             ? log.debug
-            : log.info;
+            : level === 'trace'
+              ? log.trace
+              : log.info;
     fn(`[renderer] ${message}`, meta);
   },
 

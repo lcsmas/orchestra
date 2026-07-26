@@ -3,7 +3,12 @@ import path from 'node:path';
 import os from 'node:os';
 import { platform } from './platform';
 import { applyAgentEvent } from './activity';
-import { log } from './logger';
+import { log, scoped } from './logger';
+
+/** Spool-scoped logger. The spool is the sole source of agent status, so every
+ *  silent drop here (unreadable file, corrupt line, deduped seq) shows up to the
+ *  user as a wrong or stuck status dot with no other evidence. */
+const slog = scoped('spool');
 
 // Durable activity-event spool tailer.
 //
@@ -146,7 +151,11 @@ function drain(id: string): void {
     } finally {
       fs.closeSync(fd);
     }
-  } catch {
+  } catch (e) {
+    // Failing to read the spool means status events stop being applied entirely
+    // while everything else keeps working — the dot freezes with no other
+    // symptom. Silent until now.
+    slog.warn(`${id}: spool read failed at offset ${cur.offset}/${size}`, e);
     return;
   }
   cur.offset = size;
@@ -167,9 +176,16 @@ function drain(id: string): void {
         transcript?: unknown;
       };
     } catch {
-      continue; // skip a corrupt/partial line rather than wedge the tail
+      // Skip a corrupt line rather than wedge the tail — but say so. A run of
+      // these means the hook writer is producing malformed JSON (or interleaved
+      // writes are tearing lines), which silently loses status events.
+      slog.debug(`${id}: skipping unparseable spool line (${trimmed.length}B)`);
+      continue;
     }
-    if (typeof ev.event !== 'string') continue;
+    if (typeof ev.event !== 'string') {
+      slog.debug(`${id}: spool line has no string "event" field — ignored`);
+      continue;
+    }
     // Exactly-once: a sequenced line we've already applied (overlapping
     // watcher+poll drain, or a re-read after rotation) is dropped. seq 0 is the
     // flock-less writer's "unsequenced" marker — those always apply, matching
@@ -247,17 +263,30 @@ export function startEventsSpool(): void {
   // a clean slate; this is the one moment we can wipe with zero race risk. The
   // counters reset to 0, so the new run's seq restarts from 1 against a fresh
   // cursor whose lastSeq is also 0 — consistent on both ends.
+  // Record the wipe with a count and the dir. This is the known multi-instance
+  // hazard: if a SECOND Orchestra starts against the same events dir, this wipe
+  // zeroes the FIRST instance's live spools and its dots freeze forever. A
+  // non-zero count in a log whose banner says the app just started is the
+  // fingerprint of that bug — and it was previously invisible.
+  let wiped = 0;
   try {
     for (const name of fs.readdirSync(EVENTS_DIR)) {
       try {
         fs.unlinkSync(path.join(EVENTS_DIR, name));
-      } catch {
-        /* ignore */
+        wiped++;
+      } catch (e) {
+        slog.debug(`could not remove stale spool file ${name}`, e);
       }
     }
-  } catch {
-    /* dir unreadable — nothing to clear */
+  } catch (e) {
+    slog.debug(`events dir unreadable at startup (${EVENTS_DIR})`, e);
   }
+  slog.info(
+    `startup wipe: removed ${wiped} stale file(s) from ${EVENTS_DIR}` +
+      (wiped > 0
+        ? ' — if another Orchestra instance is running against this dir, its status dots are now stuck'
+        : ''),
+  );
 
   try {
     watcher = fs.watch(EVENTS_DIR, (_event, filename) => {
@@ -268,10 +297,14 @@ export function startEventsSpool(): void {
       const id = idFromFilename(filename.toString());
       if (id) drain(id);
     });
-    watcher.on('error', () => {
-      /* keep the poll going as the fallback even if the watcher dies */
+    watcher.on('error', (e) => {
+      // Keep the poll going as the fallback even if the watcher dies — but a
+      // dead watcher means status now updates on the 1s poll instead of
+      // instantly, which reads as "the dot is laggy".
+      slog.warn('fs.watch died; falling back to poll-only (status will be up to 1s late)', e);
     });
-  } catch {
+  } catch (e) {
+    slog.warn('fs.watch unavailable; poll-only spool draining', e);
     watcher = null; // platform without fs.watch — poll-only still works
   }
 
