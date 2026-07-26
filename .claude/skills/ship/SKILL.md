@@ -55,13 +55,13 @@ launcher's AppImage with the local build.
    rule that black-screens the app, an element that exists in the DOM and paints
    nothing. All of those pass a green suite.
 
-   If the diff touches ANY user-facing surface — `src/renderer/**`, `*.css`,
-   `native/orchestra-gtk/src/**`, or a main-process change with a visible
-   result — run the `verify` skill and produce BOTH artifacts:
+   If the diff touches ANY user-facing surface — `src/renderer/**`, `*.css`, or
+   a main-process change with a visible result — run the `verify` skill and
+   produce BOTH artifacts:
 
-   - **State assertions** over the real user path, driven with trusted CDP input
-     (or the GTK remote-control ops). Assert the CHANGE — capture pre-state and
-     require it to differ — not a state that may already have been true.
+   - **State assertions** over the real user path, driven with trusted CDP
+     input. Assert the CHANGE — capture pre-state and require it to differ —
+     not a state that may already have been true.
    - **A screenshot** of the changed surface, saved to a stated path. This is
      the only thing that catches "rendered nothing".
 
@@ -136,15 +136,6 @@ launcher's AppImage with the local build.
    Use `minor`/`major` or an explicit `X.Y.Z` instead of `patch` only if the
    user asks for a different bump. Omit `--notes-file` to fall back to
    auto-generated notes (gh's commit list).
-
-   The GTK frontend is deliberately NOT rebuilt by a ship (no `--with-gtk`):
-   its build needs per-worktree localdeps (`native/setup-localdeps.sh`) and is
-   handled separately. Note the consequence: the GTK binary bakes its version
-   in at compile time, so a launcher that execs an old
-   `native/target/release/orchestra-gtk` will show a "Version mismatch" dialog
-   after the bump until someone rebuilds it (`source native/env.sh && cargo
-   build --release` in the worktree the launcher points at, or pass
-   `--with-gtk` explicitly when the user asks for a GTK rebuild).
 
 8. **Report back.** Show the new version/tag. The local AppImage is already
    swapped — tell the user to **relaunch Orchestra** to pick it up. CI then adds

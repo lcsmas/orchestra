@@ -167,10 +167,9 @@ export function clearScrollback(id: string) {
 const MAX_PENDING_BYTES = 8 * 1024 * 1024;
 
 /** Send whatever output has accumulated for this session as one delivery —
- *  the Electron renderer's `pty:data` IPC AND binary ptyData frames to every
- *  attached ui-rpc client, via the platform seam, AFTER coalescing (spec §6:
- *  clients see the same 8 ms/64 KiB cadence the renderer does; no second
- *  buffer layer) — and clear the buffer + pending timer. Safe to call when
+ *  the renderer's `pty:data` IPC via the platform seam, AFTER coalescing (an
+ *  8 ms/64 KiB cadence; no second buffer layer) — and clear the buffer +
+ *  pending timer. Safe to call when
  *  empty. If the primary target can't receive right now (Electron window
  *  destroyed/being recreated), the seam reports undelivered and we RETAIN the
  *  buffer instead of dropping it — a drop desyncs the renderer's xterm from

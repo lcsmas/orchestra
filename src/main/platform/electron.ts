@@ -1,18 +1,10 @@
 import { app, safeStorage, shell, BrowserWindow, Notification } from 'electron';
 import path from 'node:path';
-import {
-  anyUiClientFocused,
-  sinkEvent,
-  sinkPtyData,
-  uiClientCount,
-  type OrchestraPlatform,
-  type UiNotification,
-} from './index';
+import { type OrchestraPlatform, type UiNotification } from './index';
 import { closeLoginBrowser, openLoginBrowser } from '../login-browser';
 
-// The Electron implementation of the platform seam: byte-for-byte today's
-// behavior, aimed at the real main window — plus the fan-out to any attached
-// ui-rpc clients, which is a pure addition (no client attached ⇒ no-ops).
+// The Electron implementation of the platform seam, aimed at the real main
+// window.
 
 /** The old pty.ts / activity.ts guard, verbatim: a window that is destroyed or
  *  whose webContents is mid-teardown cannot receive sends. */
@@ -30,7 +22,6 @@ export function createElectronPlatform(getWindow: () => BrowserWindow | null): O
     broadcast(channel, ...args) {
       const win = getWindow();
       if (canSend(win)) win.webContents.send(channel, ...args);
-      sinkEvent(channel, args);
     },
 
     broadcastPtyData(id, data) {
@@ -38,12 +29,9 @@ export function createElectronPlatform(getWindow: () => BrowserWindow | null): O
       // Preserve pty.ts's retention contract exactly: while the window can't
       // receive, report undelivered so the caller keeps its buffer — a
       // renderer rebuild must never lose bytes (that permanently desyncs
-      // xterm from the child's diff-render model). Attached rpc clients get
-      // the retained batch on the next successful flush; a client that
-      // attaches later replays scrollback anyway.
+      // xterm from the child's diff-render model).
       if (!canSend(win)) return false;
       win.webContents.send('pty:data', id, data);
-      sinkPtyData(id, data);
       return true;
     },
 
@@ -53,11 +41,11 @@ export function createElectronPlatform(getWindow: () => BrowserWindow | null): O
 
     isFocused() {
       const win = getWindow();
-      return (!!win && !win.isDestroyed() && win.isFocused()) || anyUiClientFocused();
+      return !!win && !win.isDestroyed() && win.isFocused();
     },
 
     hasAttachedUi() {
-      return canSend(getWindow()) || uiClientCount() > 0;
+      return canSend(getWindow());
     },
 
     notify(n: UiNotification) {
@@ -71,17 +59,12 @@ export function createElectronPlatform(getWindow: () => BrowserWindow | null): O
             win.show();
             win.focus();
           }
-          // Through the seam so an attached GTK client focuses too.
           this.broadcast('workspace:focus', n.wsId);
         });
         toast.show();
       } catch {
         /* notifications unsupported on this platform */
       }
-      // Alongside (not instead of) the native toast: let external frontends
-      // post their own. No Electron-renderer listener exists for this
-      // channel, so sinks are the only real consumers.
-      sinkEvent('ui:notify', [n]);
     },
 
     async openExternal(url) {
@@ -98,9 +81,6 @@ export function createElectronPlatform(getWindow: () => BrowserWindow | null): O
 
     openAccountLoginUrl(accountId, url, label) {
       openLoginBrowser(accountId, url, label);
-      // The event still goes out so a GTK client attached to this Electron
-      // backend can mirror the flow (spec §5 accountsLoginUrl).
-      sinkEvent('accounts:loginUrl', [{ accountId, url }]);
     },
 
     closeAccountLogin(accountId) {

@@ -1,7 +1,0 @@
-{
-  "channel": "agentNeedsInput",
-  "args": [
-    "ws-fixture-git",
-    false
-  ]
-}

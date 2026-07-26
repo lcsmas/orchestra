@@ -47,10 +47,9 @@ sub-ms); the file is the source of truth.
   `<wsid>.jsonl` (+ `.seq` counter, `.jsonl.old` after rotation). `getEventsDir`
   `:88`.
 - `drain(id)` `:106` guarantees: **(1)** never consume without an attached UI —
-  the old "no renderer window" guard, generalized through the platform seam to
-  `platform.hasAttachedUi()` (Electron window alive OR ≥1 ui-rpc client), so
-  the daemon replays events once a frontend attaches (early-return preserves
-  the cursor for replay); **(2)** exactly-once via
+  `platform.hasAttachedUi()` (the Electron window is alive), so events are
+  replayed once the window returns (early-return preserves the cursor for
+  replay); **(2)** exactly-once via
   monotonic `seq` (skip ≤ lastSeq); **(3)** per-event try/catch so one throw
   can't abort the batch and strand a trailing `stop`. `maybeRotate` `:206`
   rotates only when quiescent (≥256 KiB, no partial line, size unchanged).
@@ -85,10 +84,8 @@ and **coalesces output** before delivery: `queuePtyData` buffers into the
 `outBuf`, flushing at 8 ms or 64 KiB (`FLUSH_MS`/`FLUSH_BYTES`) — one tiny
 IPC per pty chunk would head-of-line-block the status-dot updates on the shared
 renderer channel. Each flush goes through `platform.broadcastPtyData` — the
-renderer's `pty:data` IPC plus binary ptyData frames to any attached ui-rpc
-client (same post-coalescing cadence; see
-[ui-rpc-backend.md](ui-rpc-backend.md)); a false return (window mid-recreate)
-keeps the retention behavior below. **Echo fast-path:** every `writePty` stamps `echoUntil =
+renderer's `pty:data` IPC; a false return (window mid-recreate) keeps the
+retention behavior below. **Echo fast-path:** every `writePty` stamps `echoUntil =
 now + ECHO_WINDOW_MS` (150 ms); while inside that window flushes use
 `FLUSH_MS_ECHO` (2 ms) instead of 8 ms, so a keystroke's redraw isn't held the
 full throughput window (the "small freeze while typing" fix). Sustained output

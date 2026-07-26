@@ -63,8 +63,7 @@ import type {
 // a subprocess through the SDK and gets typed, structured messages back. We
 // normalize each SDK message into Orchestra's own {@link AgentEvent} contract
 // (src/shared/agent-events.ts — pure + tested) and broadcast it on the
-// `agent:event` channel so both the Electron renderer and any GTK ui-rpc client
-// can fold it into a live view.
+// `agent:event` channel so the renderer can fold it into a live view.
 //
 // Design decisions, all grounded in the Phase 0 spike (docs/spikes/
 // phase0-sdk-findings.md), which the plan's assumptions defer to:
@@ -187,7 +186,7 @@ interface Session {
 
 const sessions = new Map<string, Session>();
 
-/** Broadcast one normalized event to every attached UI (Electron + ui-rpc). */
+/** Broadcast one normalized event to the renderer. */
 function emit(wsId: string, event: AgentEvent): void {
   platform.broadcast('agent:event', wsId, event);
 }
@@ -1373,8 +1372,8 @@ export function sdkPermissionReply(
 }
 
 /** Persist a partial workspace change and broadcast it so the renderer's store
- *  (and the GTK client) update. Used to make the Model/Permissions dropdowns
- *  and the resume session-id stick even when no live session exists. */
+ *  updates. Used to make the Model/Permissions dropdowns and the resume
+ *  session-id stick even when no live session exists. */
 async function persistWorkspacePatch(
   wsId: string,
   patch: Partial<Workspace>,

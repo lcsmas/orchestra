@@ -52,18 +52,14 @@ IPC handlers: the request/response BODIES live in the shared table
 workspaces CRUD, sandbox, PTY (`ptyStart` idempotent + heavy-resume gate;
 `ptyWrite` flips `hasInput` and applies the heavy-resume keystroke
 suppression), git (stats poll piggybacks merge+branch refresh; findPR
-piggybacks release detection), scripts, linear, accounts, usage, plus the
-ui-rpc-added `deps:status`/`app:info`/`pty:scrollback`). index.ts wires the
-table to its historical channels in one loop over `METHOD_IPC_CHANNELS`
-(every registration still goes through the logging `handle` wrapper);
-`dialog:pickDir` stays an inline Electron-only handler. The SAME table backs
-the ui-rpc socket server for external frontends — see
-[ui-rpc-backend.md](ui-rpc-backend.md). Startup also acquires the shared
-backend lock (app↔daemon mutual exclusion), starts the ui-rpc server, wires
-`startSandboxAutoBackup`, probes dependencies (deps.ts → warning dialog), and
-closes all sandbox connections on quit. Main-side modules broadcast via
-`platform.broadcast(channel, …)` (the seam) instead of `webContents.send` —
-no module takes a `BrowserWindow` parameter anymore.
+piggybacks release detection), scripts, linear, accounts, usage, deps).
+index.ts wires the table to its historical channels in one loop over
+`METHOD_IPC_CHANNELS` (every registration still goes through the logging
+`handle` wrapper); `dialog:pickDir` stays an inline handler. Startup also
+wires `startSandboxAutoBackup`, probes dependencies (deps.ts → warning
+dialog), and closes all sandbox connections on quit. Main-side modules
+broadcast via `platform.broadcast(channel, …)` (the seam) instead of
+`webContents.send` — no module takes a `BrowserWindow` parameter anymore.
 
 ## IPC contract — preload + ipc.ts
 `src/shared/ipc.ts` defines the `OrchestraAPI` interface (the full renderer↔main
@@ -191,12 +187,12 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   generic so new integration checks need no renderer change.
 
 ## Other components
-- **(removed) Diff tab / DiffView.tsx** — the Electron renderer's Monaco-based
-  diff viewer was removed (Monaco was the heaviest thing the agent view mounted
-  and drove the GPU-crash black screen). Change size still shows as `+N −M`
-  badges on every sidebar row (from the separate `getDiffStats` poll, kept). The
-  backend `getDiff` method survives as an `ExtraApiMethods` entry because the
-  native GTK frontend still has its own diff view.
+- **(removed) Diff tab / DiffView.tsx** — the renderer's Monaco-based diff
+  viewer was removed (Monaco was the heaviest thing the agent view mounted and
+  drove the GPU-crash black screen). Change size still shows as `+N −M` badges
+  on every sidebar row (from the separate `getDiffStats` poll, kept). The
+  backend `getDiff` method survives as an `ExtraApiMethods` entry — a served
+  method with no renderer caller, behind the `git:diff` channel.
 - **BranchPicker.tsx** — toolbar branch-switch dropdown, fetches `listBranches`,
   current branch first. Its searchable list is the exported
   `BranchPopoverPanel`, reused by every branch-choosing surface.

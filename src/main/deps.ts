@@ -1,10 +1,9 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-// External-tool dependency probe (git / gh / claude). Extracted from index.ts
-// so the same check backs BOTH the Electron startup warning dialog and the
-// ui-rpc `deps:status` method (a GTK frontend renders its own dialog from
-// this result — docs/ui-rpc-protocol.md §4).
+// External-tool dependency probe (git / gh / claude), backing the Electron
+// startup warning dialog. Kept out of index.ts so the check is unit-testable
+// without booting the app.
 
 const pExecFile = promisify(execFile);
 

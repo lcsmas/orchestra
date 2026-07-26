@@ -10,7 +10,7 @@ import path from 'node:path';
 // loudly when they rot instead of being quietly wrong.
 //
 // Deliberately checked:
-//   • every path-shaped reference (src/..., docs/..., scripts/..., native/...)
+//   • every path-shaped reference (src/..., docs/..., scripts/...)
 //     names a file that EXISTS;
 //   • every bare `<file>.ts:<line>` reference resolves to exactly one file in
 //     the tree, and the cited line (range end for `:100-200`) is ≤ the file's

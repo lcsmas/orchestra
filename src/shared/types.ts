@@ -749,8 +749,8 @@ export interface AgentThinkingTokensEvent extends AgentEventBase {
 
 /** The conversation was cleared (composer `/clear`, parity with Claude Code):
  *  the manager stopped the SDK session and discarded the persisted session id.
- *  The fold resets the whole session to {@link emptySession} so every attached
- *  client (Electron + ui-rpc/GTK) starts a fresh transcript in lockstep. */
+ *  The fold resets the whole session to {@link emptySession} so the renderer
+ *  starts a fresh transcript. */
 export interface AgentSessionClearEvent extends AgentEventBase {
   type: 'session/clear';
 }
@@ -965,8 +965,8 @@ export interface AgentImage {
  *  The SDK stream does NOT echo plain user text back (its `user` messages only
  *  carry tool_result blocks), so without this event a sent prompt would never
  *  appear in the transcript. Emitting it through the same broadcast/fold path
- *  keeps the renderer a pure projection of the event stream and shows the echo
- *  to every attached UI (Electron + ui-rpc clients). */
+ *  keeps the renderer a pure projection of the event stream and shows the
+ *  echo. */
 export interface AgentUserMessageEvent extends AgentEventBase {
   type: 'user-message';
   /** The prompt text as submitted. */

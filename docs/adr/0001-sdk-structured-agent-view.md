@@ -28,17 +28,15 @@ SDK as native React components (streaming markdown, collapsible tool cards, real
 native permission dialogs, thinking blocks, a cost/token turn footer) — **not** a
 terminal.
 
-### Why Electron, not the GTK/Rust rewrite
+### Why this stays in Electron
 
-The GTK rewrite's sole justification was *native terminal rendering performance*. This
-decision **deletes the terminal** from the agent view, so that justification evaporates:
-rendering a chat log of message bubbles + tool cards + diffs is not a workload where
-native beats Chromium in any human-perceptible way. Electron additionally keeps the SDK
-for free (TS), iterates the large UI surface far faster (React + HMR), and reuses the
-entire existing app (sidebar, store, diffs, dialogs). The **incoherent middle** — a full
-Rust rewrite *and* going structured — is explicitly rejected: it pays the full cost of a
-native rewrite for a workload that doesn't need native. GTK/VTE is kept only for genuine
-terminals (Run-script pane, `nvim`, login OAuth).
+Rendering a chat log of message bubbles + tool cards + diffs is not a workload where a
+native toolkit would beat Chromium in any human-perceptible way — and the one workload
+that *was* rendering-sensitive, the embedded terminal, is exactly what this decision
+**deletes** from the agent view. Electron keeps the SDK for free (TS), iterates the large
+UI surface far faster (React + HMR), and reuses the entire existing app (sidebar, store,
+diffs, dialogs). An embedded terminal is kept only for genuine terminals (Run-script pane,
+`nvim`, login OAuth).
 
 ### Coexistence & rollout (resolves the scope/coexistence tension)
 
@@ -68,7 +66,7 @@ not by picking one:
   transcript re-reads redundant for the structured view.
 - **We now own the agent-view UI forever** and must render each Claude Code block type as
   it ships. This is the accepted, permanent cost. If it ever becomes unacceptable, the
-  fallback is "keep embedding the terminal in Electron" (status quo), NOT GTK.
+  fallback is "keep embedding the terminal" (status quo).
 - **Fidelity risk**: our reconstruction can drift from the exact TUI rendering. Phases 1–5
   being opt-in-alongside-terminal is the mitigation — users compare directly.
 

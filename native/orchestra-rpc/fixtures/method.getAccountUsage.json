@@ -1,7 +1,0 @@
-{
-  "method": "getAccountUsage",
-  "params": [
-    "acct-fixture-1"
-  ],
-  "result": null
-}

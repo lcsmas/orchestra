@@ -59,7 +59,7 @@ User ── URL bar / nav buttons ──► window.orchestra.browser{Navigate,Ba
   `typeText`/`formInput`, `scrollBy`. `initBrowserPanels(accessor)` is called
   once from `index.ts` with the live main-window accessor. Reuses
   `login-browser.ts`'s session-partition + UA-normalization + context-menu
-  pattern. Electron-only (the daemon bundle never imports it).
+  pattern.
 - **`src/main/agent-browser-tools.ts`** — `buildBrowserToolServer(wsId)` returns
   an **in-process SDK MCP server** (`createSdkMcpServer` + `tool()`), loaded via
   a **cached dynamic `import()`** (the SDK is pure-ESM; a static value import
@@ -96,13 +96,12 @@ Request/response methods (`browserShow`/`Hide`/`Navigate`/`Back`/`Forward`/
 `Reload`/`SetBounds`/`State`) are declared in `OrchestraAPI` (`shared/ipc.ts`),
 registered in the `apiHandlers` table + `METHOD_IPC_CHANNELS`
 (`api-handlers.ts`), and closured in `preload/index.ts` — wired mechanically to
-both ipcMain and ui-rpc. The `browser:event` broadcast is declared as
-`onBrowserEvent` (`shared/ipc.ts`), registered in `WIRE_EVENT_CHANNELS`
-(`shared/ui-rpc-protocol.ts` → `browserEvent`), and subscribed in preload. Panel
-teardown rides the workspace-delete handlers (`browserPanel.destroyPanel(id)`
-beside `sdkStopMany`) **and the archive path** — `archiveWorkspace`
-(`workspaces.ts:579`) calls `destroyPanel` for every workspace in the archived
-subtree, so an orchestrator archives its children's panels too.
+ipcMain. The `browser:event` broadcast is declared as `onBrowserEvent`
+(`shared/ipc.ts`), pushed through `platform.broadcast`, and subscribed in
+preload. Panel teardown rides the workspace-delete handlers
+(`browserPanel.destroyPanel(id)` beside `sdkStopMany`) **and the archive path** —
+`archiveWorkspace` (`workspaces.ts:579`) calls `destroyPanel` for every workspace
+in the archived subtree, so an orchestrator archives its children's panels too.
 
 ## Gotchas
 

@@ -3,8 +3,8 @@
 // in main, so a closed page costs nothing. The pure math (stat parsing, tree
 // walking, jiffy→percent) lives in ../shared/resources.ts; this module owns
 // the platform I/O: /proc (Linux) or `ps` (elsewhere), the backend's own
-// process metrics (via the platform seam — Electron's app metrics, or the
-// daemon's self-sample), and a cached `du` pass over Orchestra's data dirs.
+// process metrics (Electron's app metrics via the platform seam), and a cached
+// `du` pass over Orchestra's data dirs.
 import { platform } from './platform';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -133,9 +133,8 @@ export async function sampleResources(): Promise<ResourceSnapshot> {
     aggregateSession({ ptyId: s.id, remote: s.remote, pid: s.pid }, table, cpuPcts),
   );
 
-  // The backend's own processes (Electron's app metrics, or the daemon's
-  // single self-sample). Both measure CPU since the previous call, which
-  // matches the page's own tick cadence.
+  // The backend's own processes (Electron's app metrics), measuring CPU since
+  // the previous call, which matches the page's own tick cadence.
   const metrics = platform.getAppMetrics();
 
   maybeRefreshDisk(); // fire-and-forget; this tick serves the cached figures

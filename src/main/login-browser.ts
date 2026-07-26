@@ -18,7 +18,7 @@ import { BrowserWindow, Menu, clipboard, session, shell } from 'electron';
 // browser-open, and the login modal's link handler for the printed fallback
 // URL. Non-Claude URLs fall through to the system browser before reaching
 // this module. This file is Electron-only — imported solely by the electron
-// platform implementation and index.ts, never by the daemon bundle.
+// platform implementation and index.ts.
 
 const windows = new Map<string, BrowserWindow>();
 

@@ -1,7 +1,0 @@
-{
-  "method": "deleteWorkspace",
-  "params": [
-    "ws-fixture-tmp"
-  ],
-  "result": null
-}

@@ -5,7 +5,7 @@
  * SDK messages (`system`/`init`, `assistant`, `user`, `stream_event`, `result`).
  * Those shapes are the SDK's internal, volatile contract. This module maps them
  * ONCE, in one place, into Orchestra's own {@link AgentEvent} union (the wire
- * contract the renderer and the GTK frontend consume) and then folds that flat
+ * contract the renderer consumes) and then folds that flat
  * event stream into a coherent {@link AgentSession} for rendering.
  *
  * WHY it lives in `src/shared/` and imports NOTHING from electron/node beyond
@@ -1293,7 +1293,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
     default: {
       // Compile-time exhaustiveness (the `never` assignment errors if a variant
       // is unhandled) WITHOUT the runtime throw: an unknown event from a newer
-      // main / ui-rpc peer must degrade to a skip, not poison the whole RAF
+      // main process must degrade to a skip, not poison the whole RAF
       // batch — `drain()` clears the queue before folding, so a throw here used
       // to drop every event in the frame for every workspace (audit H5).
       const _exhaustive: never = event;

@@ -157,12 +157,9 @@ import { startPromptQueueFlusher, stopPromptQueueFlusher } from './prompt-queue'
 import { startSelfTuneScheduler, stopSelfTuneScheduler } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
 import { probeDependencies } from './deps';
-import { startUiRpcServer, type UiRpcServer } from './ui-rpc';
-import { acquireBackendLock, releaseBackendLock } from './backend-lock';
 import { initLogger, log } from './logger';
 
 let mainWindow: BrowserWindow | null = null;
-let uiRpcServer: UiRpcServer | null = null;
 
 // The platform seam (src/main/platform/): every subsystem broadcasts, opens
 // URLs, reads app paths, etc. through it instead of touching Electron. The
@@ -250,19 +247,6 @@ async function createMainWindow() {
   await startHooksServer();
   // Primary activity path: tail the durable per-workspace hook event spools.
   startEventsSpool();
-  // Serve the ui-rpc socket so external frontends (the GTK app, tests) can
-  // attach to THIS running app as their backend — same store, same PTYs, two
-  // faces one state (docs/ui-rpc-protocol.md). Failure is non-fatal: the
-  // Electron UI is fully functional without it.
-  try {
-    uiRpcServer = await startUiRpcServer({
-      handlers: apiHandlers,
-      appVersion: app.getVersion(),
-      backendKind: 'electron',
-    });
-  } catch (e) {
-    log.warn('ui-rpc server failed to start (external frontends unavailable)', e);
-  }
   // Poll the signed-in account's rolling 5h/7d usage windows for the sidebar bars.
   startUsagePolling();
   // Poll each *configured* account's usage for the per-workspace badges.
@@ -419,8 +403,7 @@ function getMainWindow(): BrowserWindow {
 // Every request/response handler lives in the shared table
 // (src/main/api-handlers.ts), keyed by OrchestraAPI member name; here it is
 // wired MECHANICALLY to its historical ipcMain channel, so the renderer and
-// preload are untouched by the extraction. The ui-rpc server dispatches into
-// the very same table — one behavior, two transports, zero drift.
+// preload are untouched by the extraction.
 
 for (const [method, channel] of Object.entries(METHOD_IPC_CHANNELS)) {
   const handler = apiHandlers[method as keyof typeof apiHandlers] as (
@@ -429,9 +412,8 @@ for (const [method, channel] of Object.entries(METHOD_IPC_CHANNELS)) {
   handle(channel, (_e, ...args) => handler(...args));
 }
 
-// Frontend-local by design (docs/ui-rpc-protocol.md §4): the native directory
-// picker needs a host window, so it is NOT part of the shared table — the GTK
-// frontend implements its own (GtkFileDialog).
+// Frontend-local by design: the native directory picker needs a host window,
+// so it is NOT part of the shared table.
 handle('dialog:pickDir', async () => {
   const res = await dialog.showOpenDialog(getMainWindow(), {
     properties: ['openDirectory'],
@@ -447,8 +429,7 @@ handle('dialog:pickDir', async () => {
 // ---------- Dependency Check ----------
 
 async function checkDependencies(): Promise<void> {
-  // Same probe the ui-rpc `deps:status` method serves; here it feeds the
-  // Electron-native warning dialog.
+  // Feeds the Electron-native startup warning dialog.
   const status = await probeDependencies();
   if (status.messages.length > 0) {
     await dialog
@@ -481,11 +462,6 @@ function shutdownSubsystems(): void {
   stopPromptQueueFlusher();
   stopSelfTuneScheduler();
   closeAllSandboxConnections();
-  if (uiRpcServer) {
-    void uiRpcServer.close().catch(() => {});
-    uiRpcServer = null;
-  }
-  releaseBackendLock();
 }
 
 if (!ORCHESTRA_CLI_MODE) {
@@ -503,6 +479,9 @@ if (!ORCHESTRA_CLI_MODE) {
   // separate events dir) via ORCHESTRA_HOME can still run alongside a packaged
   // app — they take different locks. The CLI path returned above never reaches
   // here; it talks to the running app over the socket and must not take a lock.
+  //
+  // This is the only backend fence: Orchestra's backend runs exclusively inside
+  // the Electron main process, so app-vs-app is the whole hazard space.
   if (!app.requestSingleInstanceLock()) {
     // We lost the race: a primary instance already holds the lock and will get
     // our launch via its `second-instance` handler (focusing its window). Exit
@@ -511,23 +490,6 @@ if (!ORCHESTRA_CLI_MODE) {
     // wipe the events dir. Mirrors the ozone-relaunch bail above.
     log.info('another Orchestra instance is already running — focusing it and exiting');
     app.exit(0);
-  }
-
-  // Backend lock: the Electron single-instance lock only fences app-vs-app.
-  // The HEADLESS DAEMON (src/main/daemon.ts) is an equal backend over the
-  // same ORCHESTRA_HOME — the same events-spool wipe hazard applies — so both
-  // take this shared lockfile (liveness = pid probe). Refuse to run while a
-  // daemon owns the home.
-  const lock = acquireBackendLock('electron');
-  if (!lock.ok) {
-    log.info(
-      `an orchestra ${lock.holder.kind} backend (pid ${lock.holder.pid}) already owns this ORCHESTRA_HOME — exiting`,
-    );
-    dialog.showErrorBox(
-      'Orchestra backend already running',
-      `An Orchestra ${lock.holder.kind === 'daemon' ? 'daemon' : 'app'} (pid ${lock.holder.pid}) is already running for this data directory.\n\nStop it first, then relaunch Orchestra.`,
-    );
-    app.exit(1);
   }
 
   app.on('second-instance', () => {

@@ -1,7 +1,0 @@
-{
-  "method": "archiveWorkspace",
-  "params": [
-    "ws-fixture-tmp"
-  ],
-  "result": null
-}

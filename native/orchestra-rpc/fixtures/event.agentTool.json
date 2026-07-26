@@ -1,7 +1,0 @@
-{
-  "channel": "agentTool",
-  "args": [
-    "ws-fixture-git",
-    "Bash"
-  ]
-}

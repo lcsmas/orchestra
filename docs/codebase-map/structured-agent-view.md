@@ -19,7 +19,7 @@ main:  @anthropic-ai/claude-agent-sdk query()   src/main/agent-sdk.ts
          │  → AgentEvent[]  (discriminated union on `type`, {seq,at} per event)
          ▼
        platform.broadcast('agent:event', wsId, event)   platform seam
-         │  → Electron window + ui-rpc clients (wired in ui-rpc-protocol.ts)
+         │  → the Electron window
          ▼
 preload: window.orchestra.onAgentEvent(cb)       src/preload/index.ts
          ▼
@@ -676,8 +676,8 @@ terminal path.
 ## Channel wiring (to add a new agent broadcast)
 
 `platform.broadcast('agent:event', …)` (seam `src/main/platform/index.ts`) →
-`WIRE_EVENT_CHANNELS` row in `src/shared/ui-rpc-protocol.ts` (so ui-rpc/GTK clients get it)
-→ `onAgentEvent` in `src/shared/ipc.ts` + preload closure → store subscription.
+`onAgentEvent` in `src/shared/ipc.ts` + its `src/preload/index.ts` closure →
+store subscription.
 
 ## Verified SDK behavior (from the Phase 0 spike)
 

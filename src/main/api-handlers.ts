@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
-import { platform, orchestraHome } from './platform';
+import { platform } from './platform';
 import { store } from './store';
 import {
   detectRemoteUrl,
@@ -107,7 +107,6 @@ import {
   sdkListModels,
   sdkStopMany,
 } from './agent-sdk';
-import { probeDependencies, type DepsStatus } from './deps';
 import { log, revealLogs, getLogFile } from './logger';
 import * as browserPanel from './browser-panel';
 import type { OrchestraAPI } from '../shared/ipc';
@@ -123,22 +122,13 @@ import type {
 
 // The single shared request/response surface of the backend, extracted from
 // index.ts's inline `ipcMain.handle` registrations. The table is keyed by
-// `OrchestraAPI` MEMBER NAMES (src/shared/ipc.ts), not IPC channel names, and
-// is consumed by BOTH transports:
+// `OrchestraAPI` MEMBER NAMES (src/shared/ipc.ts), not IPC channel names:
+// index.ts wires each entry to its historical ipcMain channel via
+// {@link METHOD_IPC_CHANNELS}, so the renderer and preload never notice the
+// extraction.
 //
-//   • index.ts wires each entry to its historical ipcMain channel via
-//     {@link METHOD_IPC_CHANNELS} — channel names unchanged, so the renderer
-//     and preload never notice the extraction;
-//   • the ui-rpc server (src/main/ui-rpc.ts) dispatches `req` frames straight
-//     into the same entries, method name = table key, per
-//     docs/ui-rpc-protocol.md §4.
-//
-// One source of truth, so the two surfaces cannot drift. `pickDirectory` is
-// deliberately NOT here: it is frontend-local by design (native file chooser)
-// and stays an Electron-only handler in index.ts. The three trailing entries
-// ('deps:status' / 'app:info' / 'pty:scrollback') are the protocol's M1
-// additions — they ride the same table (and get IPC channels of the same
-// name, unused by today's renderer).
+// `pickDirectory` is deliberately NOT here: it is frontend-local by design
+// (native file chooser) and stays an Electron-only handler in index.ts.
 
 /** The `OrchestraAPI` member names that are request/response methods — every
  *  member except the `on*` event subscriptions. */
@@ -150,26 +140,12 @@ type ApiMethodName = {
  *  `pickDirectory`. */
 type ServableApi = Omit<Pick<OrchestraAPI, ApiMethodName>, 'pickDirectory'>;
 
-/** Methods added by the ui-rpc protocol (docs/ui-rpc-protocol.md §4/§6) that
- *  are not (yet) part of the renderer-facing `OrchestraAPI`. */
+/** Served backend methods that are not part of the renderer-facing
+ *  `OrchestraAPI`. */
 export interface ExtraApiMethods {
-  /** The git/gh/claude dependency probe, for frontend-rendered warnings. */
-  'deps:status': () => Promise<DepsStatus>;
-  /** Backend identity: version, host kind, home dir, diagnostic log path. */
-  'app:info': () => Promise<{
-    version: string;
-    backendKind: 'electron' | 'daemon';
-    orchestraHome: string;
-    logPath: string;
-  }>;
-  /** Base64 of a PTY's scrollback tail (pty.ts readScrollback) — the GTK
-   *  terminal replays it through feed() on (re)mount. */
-  'pty:scrollback': (id: string) => Promise<string>;
-  /** Full working-tree diff vs. the base branch. No longer used by the Electron
-   *  renderer (its Diff tab was removed — Monaco was too heavy), but the native
-   *  GTK frontend still has a diff view that calls this over ui-rpc, so it stays
-   *  a served backend method rather than part of the renderer-facing
-   *  `OrchestraAPI`. */
+  /** Full working-tree diff vs. the base branch. Not used by the renderer (its
+   *  Diff tab was removed — Monaco was too heavy); kept as a served backend
+   *  method behind the `git:diff` channel. */
   getDiff: (id: string) => Promise<DiffFile[]>;
 }
 
@@ -291,9 +267,6 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   listSelfTuneReports: 'selfTune:reports',
   openSelfTuneReport: 'selfTune:openReport',
   readSelfTuneLessons: 'selfTune:lessons',
-  'deps:status': 'deps:status',
-  'app:info': 'app:info',
-  'pty:scrollback': 'pty:scrollback',
 };
 
 // Only allow http(s) URLs out to the OS. Other schemes are ignored to avoid
@@ -562,8 +535,8 @@ export const apiHandlers: ApiHandlerTable = {
   archiveWorkspace: (id) => {
     sdkStopMany([id]);
     // NOTE: the browser panel is torn down inside archiveWorkspace() itself, so
-    // the whole orchestrator subtree is covered and every caller (IPC, ui-rpc,
-    // remote-control) gets it — not just this handler.
+    // the whole orchestrator subtree is covered and every caller gets it — not
+    // just this handler.
     return archiveWorkspace(id);
   },
 
@@ -896,8 +869,8 @@ export const apiHandlers: ApiHandlerTable = {
 
   // ---------- Git / Diff ----------
 
-  // Served for the native GTK frontend's diff view (the Electron renderer no
-  // longer has a Diff tab). See the ExtraApiMethods declaration above.
+  // Served behind the `git:diff` channel; the renderer no longer has a Diff
+  // tab. See the ExtraApiMethods declaration above.
   getDiff: async (id) => {
     const ws = store.getWorkspace(id);
     if (!ws) throw new Error('workspace not found');
@@ -1051,17 +1024,4 @@ export const apiHandlers: ApiHandlerTable = {
   openSelfTuneReport: (loginId) => openSelfTuneReport(loginId),
 
   readSelfTuneLessons: async () => readSelfTuneLessons(),
-
-  // ---------- Protocol-added methods (docs/ui-rpc-protocol.md §4/§6) ----------
-
-  'deps:status': () => probeDependencies(),
-
-  'app:info': async () => ({
-    version: platform.getAppVersion(),
-    backendKind: platform.kind,
-    orchestraHome: orchestraHome(),
-    logPath: getLogFile(),
-  }),
-
-  'pty:scrollback': async (id) => Buffer.from(readScrollback(id), 'utf8').toString('base64'),
 };

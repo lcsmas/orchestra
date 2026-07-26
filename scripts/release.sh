@@ -15,18 +15,8 @@
 #   pnpm run release patch --ci-only   # skip local build, let GitHub Actions handle it
 #   pnpm run release patch --to-master # also land the release on master (see below)
 #   pnpm run release patch --install   # also install the local build to the launcher (see below)
-#   pnpm run release patch --with-gtk  # also build + attach the native GTK binary (see below)
 #   pnpm run release patch --notes-file NOTES.md  # use NOTES.md as the release description (see below)
 #
-# --with-gtk: after the AppImage, also `cargo build --release` the native GTK
-# frontend (native/orchestra-gtk) and attach the binary to the SAME GitHub
-# release, named orchestra-gtk-<arch> (arch from `uname -m`: x86_64→x64,
-# aarch64→arm64, to match the AppImage naming). The version is already in
-# lockstep — build.rs bakes the repo package.json version into the crate — so
-# the attached binary carries the release's version. Needs the crate's build
-# deps present (gtk4/vte/gtksourceview/webkitgtk devel packages); on a rootless
-# dev box, `source native/env.sh` first. Incompatible with --ci-only, where the
-# release.yml matrix builds and attaches the GTK binaries for every arch.
 # --notes-file FILE: use FILE's contents as the GitHub release description (body)
 # instead of gh's auto-generated commit list. The release title stays the tag.
 # Without it, the release falls back to `gh release create --generate-notes`.
@@ -72,7 +62,6 @@ DRY_RUN=0
 CI_ONLY=0
 TO_MASTER=0
 INSTALL=0
-WITH_GTK=0
 NOTES_FILE=""
 expect_notes_file=0
 for arg in "$@"; do
@@ -85,7 +74,6 @@ for arg in "$@"; do
     --ci-only|--ci) CI_ONLY=1 ;;
     --to-master) TO_MASTER=1 ;;
     --install) INSTALL=1 ;;
-    --with-gtk) WITH_GTK=1 ;;
     --notes-file) expect_notes_file=1 ;;
     --notes-file=*) NOTES_FILE="${arg#--notes-file=}" ;;
     [0-9]*.[0-9]*.[0-9]*) BUMP="$arg" ;;
@@ -96,12 +84,6 @@ done
 
 if [ "$INSTALL" = 1 ] && [ "$CI_ONLY" = 1 ]; then
   echo "error: --install needs the local build, so it can't be combined with --ci-only" >&2
-  exit 2
-fi
-
-if [ "$WITH_GTK" = 1 ] && [ "$CI_ONLY" = 1 ]; then
-  echo "error: --with-gtk builds the native binary locally, so it can't be combined with --ci-only" >&2
-  echo "       (CI attaches the GTK binaries itself from the release.yml matrix)" >&2
   exit 2
 fi
 
@@ -205,18 +187,6 @@ if git rev-parse "$TAG" >/dev/null 2>&1; then
 fi
 say "Releasing $CURRENT → $NEW  (tag $TAG)"
 
-# --with-gtk asset naming: map the machine arch to the AppImage's x64/arm64
-# labels so the GTK binary sits alongside Orchestra-<arch>.AppImage.
-if [ "$WITH_GTK" = 1 ]; then
-  case "$(uname -m)" in
-    x86_64)  GTK_ARCH="x64" ;;
-    aarch64|arm64) GTK_ARCH="arm64" ;;
-    *) echo "error: --with-gtk: unsupported arch $(uname -m) (expected x86_64/aarch64)" >&2; exit 1 ;;
-  esac
-  GTK_BIN_SRC="native/target/release/orchestra-gtk"
-  GTK_BIN_ASSET="orchestra-gtk-$GTK_ARCH"
-fi
-
 # ------------------------------------------------- advance master (pre-bump) ---
 # Fast-forward origin/master up to HEAD without checking it out (safe inside a
 # worktree). FF-safety was already verified in preflight. The post-bump push
@@ -264,35 +234,6 @@ if [ "$CI_ONLY" = 0 ]; then
     [ "$DRY_RUN" = "1" ] || echo "  installed — relaunch Orchestra to pick up $NEW"
   fi
 
-  # --with-gtk: build the native GTK frontend and stage the arch-suffixed
-  # binary next to the AppImage so the publish step can attach it.
-  if [ "$WITH_GTK" = 1 ]; then
-    say "Build native GTK frontend (--with-gtk)"
-    # Source the localdeps link chain ourselves rather than relying on the
-    # caller to have done it — env.sh is a documented no-op when .localdeps is
-    # absent (system-installed devel packages), so this is safe on any box and
-    # removes the "must remember to source env.sh first" failure mode that
-    # silently left the GTK binary un-rebuilt (and thus out of version lockstep
-    # with the freshly-bumped AppImage).
-    if [ -f native/env.sh ]; then
-      # shellcheck source=/dev/null
-      . native/env.sh
-    fi
-    if ! run "pnpm run build:gtk"; then
-      echo "error: GTK build failed. If this is a rootless dev box, 'source" >&2
-      echo "       native/env.sh' first so the localdeps link chain is on PATH." >&2
-      echo "       Undo the bump with: git tag -d $TAG && git reset --hard HEAD~1" >&2
-      exit 1
-    fi
-    if [ "$DRY_RUN" != "1" ] && [ ! -f "$GTK_BIN_SRC" ]; then
-      echo "error: GTK build did not produce $GTK_BIN_SRC" >&2
-      echo "  undo the bump with: git tag -d $TAG && git reset --hard HEAD~1" >&2
-      exit 1
-    fi
-    # Name it orchestra-gtk-<arch> to match the AppImage's arch labelling.
-    run "cp '$GTK_BIN_SRC' 'release/$GTK_BIN_ASSET'"
-    run "chmod +x 'release/$GTK_BIN_ASSET'"
-  fi
 else
   say "Skipping local build (--ci-only mode)"
 fi
@@ -317,10 +258,6 @@ if [ "$CI_ONLY" = 0 ]; then
   ASSETS="$APPIMAGE"
   # electron-builder also emits the auto-update manifest; ship it if present.
   [ -f release/latest-linux.yml ] && ASSETS="$ASSETS release/latest-linux.yml"
-  # --with-gtk: attach the native binary to the same release.
-  if [ "$WITH_GTK" = 1 ]; then
-    ASSETS="$ASSETS release/$GTK_BIN_ASSET"
-  fi
   # Use a hand-written description if given, else fall back to gh's commit list.
   if [ -n "$NOTES_FILE" ]; then
     NOTES_OPT="--notes-file '$NOTES_FILE'"

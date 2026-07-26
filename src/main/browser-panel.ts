@@ -19,9 +19,9 @@ import { log } from './logger';
 // `getPanel(wsId)`, so a workspace's agent can only drive that workspace's
 // panel — multiple workspaces each get an independent browser by construction.
 //
-// This file is Electron-only. The daemon/headless bundle never imports it; the
-// renderer reaches it through IPC (`browser:*`) and receives pushes on
-// `browser:event`.
+// This file is Electron-only: it owns native views, so only the main process
+// touches it. The renderer reaches it through IPC (`browser:*`) and receives
+// pushes on `browser:event`.
 
 /** How the native view is attached to the window + kept in sync with the DOM
  *  placeholder the renderer draws. `null` view means the panel exists in state
@@ -82,7 +82,7 @@ function emptyState(wsId: string): BrowserPanelState {
 }
 
 /** Recompute the panel's navigation state from the live webContents and push it
- *  to the renderer (URL bar / title / nav buttons) + any ui-rpc client. */
+ *  to the renderer (URL bar / title / nav buttons). */
 function emitState(panel: Panel, patch: Partial<BrowserPanelState>): void {
   const wc = panel.view.webContents;
   const nav = wc.navigationHistory;

@@ -1,7 +1,0 @@
-{
-  "method": "unarchiveWorkspace",
-  "params": [
-    "ws-fixture-tmp"
-  ],
-  "result": null
-}

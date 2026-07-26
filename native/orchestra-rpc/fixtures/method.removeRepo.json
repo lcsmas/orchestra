@@ -1,7 +1,0 @@
-{
-  "method": "removeRepo",
-  "params": [
-    "/tmp/orchestra-rpc-fixtures/no-such-repo"
-  ],
-  "result": null
-}

@@ -59,14 +59,10 @@ APP=/home/lmas/Applications/orchestra/release/Orchestra.AppImage
 peers=$("$APP" cli peers 2>/dev/null) || exit 0
 
 # Branches reviewed and deliberately NOT merged. Each was checked at file level:
-#   port-b1-sidebar        — its copy of a drive script is OLDER; merging would
-#                            revert an atexit daemon-cleanup fix
-#   gtk4-port-verifier     — verifier-local scratch; its files landed via A2
-#   m4-visual-reference    — superseded by regenerated captures
 #   login-isolated-*       — unrelated Electron work, carries version bumps
 # Listing them forever trains the reader to ignore the warning, which is worse
 # than not warning. Remove an entry the moment its reason stops holding.
-DECLINED="port-b1-sidebar gtk4-port-verifier m4-visual-reference login-isolated-browser-session"
+DECLINED="login-isolated-browser-session"
 
 out=""
 dirty=""

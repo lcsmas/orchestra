@@ -1,9 +1,0 @@
-{
-  "method": "reorderRepos",
-  "params": [
-    [
-      "/tmp/orchestra-rpc-fixtures/repo"
-    ]
-  ],
-  "result": null
-}

@@ -1,7 +1,0 @@
-{
-  "channel": "agentContext",
-  "args": [
-    "ws-fixture-git",
-    123456
-  ]
-}

@@ -31,7 +31,7 @@ Two secondary notes (not blockers):
 
 ## Q1 — Build & packaging
 
-**PASS.** `pnpm build` (`vite build && build:cli && build:daemon && electron-builder`)
+**PASS.** `pnpm build` (`vite build && build:cli && electron-builder`)
 exited **0** with the SDK imported into the Electron **main** bundle.
 
 - **Externalization required?** Yes. Added `@anthropic-ai/claude-agent-sdk` to the main

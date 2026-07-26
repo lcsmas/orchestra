@@ -1,7 +1,0 @@
-{
-  "method": "getSelfTuneOutput",
-  "params": [
-    "run-fixture-1"
-  ],
-  "result": ""
-}

@@ -105,8 +105,6 @@ function idFromFilename(name: string): string | null {
  *  moment instead. */
 function drain(id: string): void {
   // No attached UI yet (or torn down): don't consume events we can't apply.
-  // The old guard was "no renderer window"; it generalizes to "no Electron
-  // window AND no ui-rpc client" — either can apply status updates now.
   // Advancing the cursor here would strand whatever we read until the next
   // append, since a re-drain would early-return on `size === offset`.
   if (!started || !platform.hasAttachedUi()) return;

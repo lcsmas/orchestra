@@ -118,10 +118,10 @@ export function installCliShim(): void {
  * The orchestra-owned bin dir that main/pty.ts prepends to each agent PTY's
  * PATH. Kept separate from the user-facing shim location so we never depend on
  * the user's login PATH for agent-driven CLI calls. Under the Orchestra home
- * root (honoring $ORCHESTRA_HOME) so an isolated instance — a dev build, a
- * smoke-tested daemon — writes ITS OWN shim instead of clobbering the packaged
- * app's target for every live agent; the packaged default is the same
- * ~/.orchestra/bin as always.
+ * root (honoring $ORCHESTRA_HOME) so an isolated instance — e.g. a dev build —
+ * writes ITS OWN shim instead of clobbering the packaged app's target for
+ * every live agent; the packaged default is the same ~/.orchestra/bin as
+ * always.
  */
 export function agentCliBinDir(): string {
   return path.join(orchestraHome(), 'bin');
@@ -141,10 +141,9 @@ export function installAgentCliShim(): void {
     fs.mkdirSync(dir, { recursive: true });
     // Prefer the stable AppImage path when present; otherwise re-invoke this
     // exact executable. Both dispatch to CLI mode via the `cli` arg handled at
-    // the top of main/index.ts, so no second GUI window is ever opened. A
-    // plain-Node host (the daemon under `node daemon.js`) has no cli-mode
-    // dispatch in its own entry, so its shim runs the bundled cli.js sitting
-    // next to the entry bundle directly.
+    // the top of main/index.ts, so no second GUI window is ever opened. Under
+    // a plain-Node host (no Electron), there is no cli-mode dispatch in the
+    // entry, so the shim runs the bundled cli.js next to it directly.
     const target = process.env.APPIMAGE || process.execPath;
     const invoke = process.versions.electron
       ? `"${target}" cli`

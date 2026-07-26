@@ -95,33 +95,3 @@ Dependency-free (testable under `node --test`):
 `newestReport` ordering + fallbacks, the fold prompt contract (report list,
 cross-login dedupe wording, marker), `parseFoldSummary`, and the lessons diff
 (`parseLessonBullets`, `diffLessons`, `summarizeLessonsDiff`).
-
-## Native GTK4 port (M2-B5)
-
-`native/orchestra-gtk/src/overlays/insights.rs` reimplements both surfaces:
-
-- `InsightsSection` — the sidebar entry (idle summary row / per-step spinner
-  rows while running). Mounted from `app.rs` into the sidebar's `insights-slot`
-  (found by widget name, the same shell-glue pattern as the accounts usage
-  strip), seeded on launch/reconnect via `App::refresh_insights_section`,
-  refreshed on `selfTuneUpdate`, and highlighted by `App::sync_insights_active`
-  while its overlay is open. Clicking the row toggles the overlay.
-- `InsightsOverlay` — the full pane: run history (click → `picked_run_id`),
-  the selected run's step list + lessons diff + live transcript (seeded from
-  `getSelfTuneOutput`, appended from `selfTuneOutput` events via a `TextView`
-  with tail-follow scroll), Run-now (`startSelfTune`, in-flight rejection
-  surfaced through a dialog), per-login report buttons (`openSelfTuneReport`),
-  and a read-only LESSONS.md panel that counts bullets, flags "N new since the
-  last run", and bolds/accent-colors the added bullets via a `TextTag`.
-- Wire contracts the call sites honour (both live-verified against a daemon):
-  `startSelfTune` resolves a **bare** `SelfTuneRun` and **rejects** when a run
-  is in flight (the rejection arrives as `Err`, never an `{ok:false}` value);
-  `openSelfTuneReport` resolves a **bare bool** — `false` means "no report yet"
-  and must be surfaced, since it is NOT an error.
-- Event routing follows the coordinator's single-consumer rule: `App` owns the
-  one `backend.events()` pump and fans out via `Msg::BackendEvent`; the overlay
-  consumes `selfTuneUpdate`/`selfTuneOutput` through `Overlays::dispatch`, never
-  its own `events()` receiver.
-- Mock fixtures: `backend_fixtures.rs` (`self_tune_runs`, `self_tune_output`,
-  `lessons_md`, and `fake_run_script` — a streaming in-flight run replayed off
-  a thread through the mock's event sender by `startSelfTune`).

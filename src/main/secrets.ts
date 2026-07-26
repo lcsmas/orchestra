@@ -5,8 +5,8 @@
 // seam) — on Linux this uses the OS secret service (libsecret / KDE wallet),
 // on macOS the Keychain, on Windows DPAPI. We store the ciphertext as base64
 // in a JSON file under userData. If the seam reports no encryption backend (a
-// headless box, no keyring daemon, or the plain-Node daemon where safeStorage
-// doesn't exist), we fall back to storing the raw value with a 0600 file mode
+// headless box, or no keyring service available), we fall back to storing the
+// raw value with a 0600 file mode
 // and a logged warning — better a working feature than a hard failure, and the
 // file is already user-only in userData.
 

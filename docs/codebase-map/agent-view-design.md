@@ -89,9 +89,8 @@ Monaco was removed from the app entirely. It was the single heaviest thing the
 structured view mounted (a full `DiffEditor` per default-open Edit/Write card)
 and the dominant driver of the GPU-process-crash black screen. `ToolDiff` now
 renders a one-line summary (path · kind · +added/−removed); code blocks use
-**Shiki** (static highlighted HTML). The Electron Diff tab was removed too (the
-native GTK frontend keeps its own diff, served by the backend `getDiff` method).
-Inter is self-hosted (`assets/fonts/InterVariable*.woff2`) — no Google Fonts
+**Shiki** (static highlighted HTML). The Diff tab was removed too; change size
+still surfaces as `+N −M` badges on the sidebar rows. Inter is self-hosted (`assets/fonts/InterVariable*.woff2`) — no Google Fonts
 links.
 
 ### Scrollbar

@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Drive a built Orchestra instance end-to-end to verify a UI change — isolated ORCHESTRA_HOME, CDP over a debug port (Electron) or the remote-control socket (GTK), and a headless sway compositor so frames render without touching the user's desktop. Verification is ALWAYS both halves — state assertions AND a captured screenshot.
+description: Drive a built Orchestra instance end-to-end to verify a UI change — isolated ORCHESTRA_HOME, CDP over a debug port, and a headless sway compositor so frames render without touching the user's desktop. Verification is ALWAYS both halves — state assertions AND a captured screenshot.
 ---
 
 # Verify an Orchestra UI change by driving the real app
@@ -11,12 +11,12 @@ Every UI verification produces TWO artifacts. Neither substitutes for the other,
 and a drive that produced only one is NOT verified:
 
 1. **State assertions** (the oracle) — CDP `Runtime.evaluate` /
-   `getComputedStyle` for Electron, remote-control `get`/`measure` for GTK.
-   Answers *is the value right*. Prefer this for anything expressible as state:
-   a class is present, a computed color is `rgba(…)`, a rect is at x=371.
-2. **A captured screenshot** (the paint check) — `Page.captureScreenshot` or the
-   GTK `screenshot` op, saved to a file whose path you state in the report.
-   Answers *did it actually paint*.
+   `getComputedStyle`. Answers *is the value right*. Prefer this for anything
+   expressible as state: a class is present, a computed color is `rgba(…)`, a
+   rect is at x=371.
+2. **A captured screenshot** (the paint check) — `Page.captureScreenshot`, saved
+   to a file whose path you state in the report. Answers *did it actually
+   paint*.
 
 They are not redundant, because each is blind to what the other catches:
 
@@ -41,25 +41,15 @@ CHANGED (pre-state differs from post-state) rather than trusting that your click
 did anything. A set of "7 verified surfaces" that is really 5 has shipped here
 before. Name each file for what it SHOWS, not what the drive intended.
 
-**First: which frontend did you change?** Orchestra has TWO, sharing one
-backend over a ui-rpc socket (`docs/gtk4-port-plan.md`, `docs/ui-rpc-protocol.md`):
-
-- **Electron** (`src/renderer/`) — this document. CDP over a debug port.
-- **GTK** (`native/orchestra-gtk/`) — CDP does not apply. Launch with
-  `--remote-control <sock>` and drive via its harness ops
-  (`list_widgets` / `click` / `type` / `key` / `get` / `screenshot` / `action`);
-  see `native/e2e/` and `native/orchestra-gtk/scripts/*.sh` for working drives,
-  and source `native/env.sh` first. A backend-affecting change should be
-  verified on BOTH frontends — that is the point of the coexistence design.
-
-Everything below (isolated `ORCHESTRA_HOME`, headless sway for frames) applies
-to both.
+Orchestra is a single Electron app: one backend in the main process, one React
+renderer (`src/renderer/`). You verify a UI change by launching an isolated
+instance and driving it over CDP, with isolated `ORCHESTRA_HOME` and headless
+sway for frames.
 
 Build first: `npx vite build` (produces `dist/` + `dist-electron/`). Do NOT use
-`pnpm run lint` here (OOMs); `npx tsc --noEmit` is the typecheck. For the GTK
-app, rebuild the binary before ANY drive that execs it — `cargo test` does not
-refresh `target/debug/orchestra-gtk`, and a stale binary reproduces a false
-failure perfectly in isolation.
+`pnpm run lint` here (OOMs); `npx tsc --noEmit` is the typecheck. Always rebuild
+before ANY drive — a stale bundle reproduces a false failure perfectly in
+isolation.
 
 ## Launch an isolated instance with CDP
 

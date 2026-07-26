@@ -56,9 +56,9 @@ async function setStatus(
 }
 
 function fireFinished(id: string): void {
-  // Focus is the OR of the Electron window and every attached ui-rpc client
-  // (the seam guards a destroyed window internally — an isFocused throw here
-  // used to abort the whole spool drain batch and strand the `stop`).
+  // Focus of the Electron window (the seam guards a destroyed window
+  // internally — an isFocused throw here used to abort the whole spool drain
+  // batch and strand the `stop`).
   const focused = platform.isFocused();
   void setStatus(id, 'waiting').then((res) => {
     if (!res) return;
@@ -77,7 +77,7 @@ function fireFinished(id: string): void {
     // Only raise the OS notification on a real running→waiting transition. A
     // redundant terminal event that didn't move the status (already waiting)
     // must not pop a second toast. The seam posts the native Electron toast
-    // (click-to-focus) and/or emits the `ui:notify` event for GTK clients.
+    // (click-to-focus).
     if (focused || !changed) return;
     platform.notify({
       wsId: id,

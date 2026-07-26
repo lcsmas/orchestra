@@ -61,7 +61,7 @@ main:  @anthropic-ai/claude-agent-sdk query()  (new: src/main/agent-sdk.ts)
          │
          ▼
        platform.broadcast('agent:event', wsId, AgentEvent)   ← seam: platform/index.ts:51
-         │                                                     Electron win + ui-rpc sink
+         │
          ▼
 preload: window.orchestra.onAgentEvent(cb)   ← copy onAgentContext (preload:183-187)
          ▼
@@ -80,7 +80,7 @@ resume-per-turn, so the subprocess stays warm and `canUseTool` fires in-loop.
 
 ## Domain types (add to `src/shared/types.ts`, after :238)
 
-A discriminated `AgentEvent` union is the contract both frontends deserialize. Model it on
+A discriminated `AgentEvent` union is the contract the renderer deserializes. Model it on
 the SDK message types but OWN it (don't leak the SDK's volatile shape to the renderer —
 normalize once in main). Sketch:
 
@@ -127,9 +127,7 @@ plan changes — surface it before proceeding.**
   (`workspaces.ts:2906`), hook install, account inheritance, `CLAUDE_CONFIG_DIR`.
 - `src/shared/agent-events.ts` (+ `.test.ts`): pure `normalizeSdkMessage(msg) → AgentEvent[]`
   and `foldEvents(session, event) → session`. This is the tested core.
-- Wire the channel: `agent:event` broadcast (`platform.broadcast`), add
-  `'agent:event':'agentEvent'` to `WIRE_EVENT_CHANNELS`
-  (`src/shared/ui-rpc-protocol.ts:164-188`) so GTK clients get it too, add `onAgentEvent`
+- Wire the channel: `agent:event` broadcast (`platform.broadcast`), add `onAgentEvent`
   to `OrchestraAPI` (`src/shared/ipc.ts` events block) + preload closure
   (`preload:183-187`). Add the reverse invoke handlers (`agent:sdkSend`, `…Interrupt`,
   `…PermissionReply`, `…SetModel`, `…SetPermissionMode`) in `api-handlers.ts`.
@@ -235,7 +233,7 @@ A2 depends on A1's types; A3/A4 depend on A2's component tree; A5 is last.
 
 | Agent | Owns | Depends on | Key files |
 |---|---|---|---|
-| **A1** backend | SDK session mgr, `agent:event` channel, reverse IPC, pure normalize/fold + tests | — | `src/main/agent-sdk.ts` (new), `src/shared/agent-events.ts` (+test), `src/shared/types.ts`, `ipc.ts`, `preload/index.ts`, `ui-rpc-protocol.ts`, `api-handlers.ts` |
+| **A1** backend | SDK session mgr, `agent:event` channel, reverse IPC, pure normalize/fold + tests | — | `src/main/agent-sdk.ts` (new), `src/shared/agent-events.ts` (+test), `src/shared/types.ts`, `ipc.ts`, `preload/index.ts`, `api-handlers.ts` |
 | **A2** renderer core | store slice, `'structured'` tab/view, `StructuredView` skeleton, RAF delta batching, composer | A1 types | `src/renderer/store.ts`, `App.tsx`, `components/StructuredView.tsx` (new), a `structured-write-queue.ts` (new, pure, tested) |
 | **A3** components | markdown bubble, tool cards, Monaco diff, thinking blocks | A2 tree | `components/agent/*.tsx` (new) |
 | **A4** interaction | permission dialog, AskUserQuestion UI, interrupt/model/mode controls, turn footer | A2 tree | `components/agent/PermissionDialog.tsx`, controls |

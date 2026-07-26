@@ -24,10 +24,8 @@ design decisions, so you get accurate context without grepping the tree first.
 | Resources page: live CPU/memory/disk sampling, process trees, token-usage dashboard | `docs/codebase-map/resources.md` |
 | Linear issue badges, Linear API key | `docs/codebase-map/linear.md` |
 | Main bootstrap, IPC, React UI, Zustand store, Sidebar, dialogs, chime | `docs/codebase-map/renderer-ipc-ui.md` |
-| Platform seam (Electron vs headless), api-handlers table, ui-rpc socket server, daemon entry, backend lock, rpc fixtures | `docs/codebase-map/ui-rpc-backend.md` |
 | Sandbox/remote agents: wire protocol, shim, Docker image, transports, reconnect, ownership lock, import/eject/backups | `docs/codebase-map/sandbox-transport.md` |
 | Vite/electron-builder build, release pipeline, CI, bundled skills | `docs/codebase-map/build-release.md` |
-| Native GTK4 frontend (`orchestra-gtk`): backend discovery/attach probe, daemon auto-spawn, version lockstep, remote-control harness, packaging/CI/E2E | `docs/codebase-map/native-ui.md` |
 | Structured agent view: SDK-driven agent pane — `agent-sdk.ts` session manager, `AgentEvent` contract, normalize/fold, `agent:event` channel, StructuredView + tool cards / diffs / permission dialog | `docs/codebase-map/structured-agent-view.md` |
 | Structured agent-view design system: the 3 `av-*` CSS layers, tokens, theming, states, a11y contract the SDK-view components render against | `docs/codebase-map/agent-view-design.md` |
 | Embedded browser panel: per-workspace `WebContentsView`, user + agent shared surface, `webContents.debugger` driving, `mcp__browser__*` SDK tools, URL bar / pane wiring | `docs/codebase-map/browser-panel.md` |
