@@ -25,6 +25,7 @@ import {
   MODEL_CHOICES,
   choiceCovers,
   describeLiveModel,
+  versionedLabel,
   effectiveModel,
   modelChoicesFrom,
 } from './model-util.ts';
@@ -191,16 +192,16 @@ test('describeLiveModel maps a known base to its card label', () => {
   });
 });
 
-test('describeLiveModel surfaces a [1m] context suffix as a friendly note', () => {
-  // The reported bug: the account default resolves to `claude-opus-5[1m]`,
-  // which is NOT a menu entry, so it fell through to showing the raw id.
+test('describeLiveModel resolves a [1m]-suffixed id to its plain model label', () => {
+  // The account default resolves to `claude-opus-5[1m]`, which is NOT a menu
+  // entry verbatim — it must still read as the model, with NO context noise.
   const d = describeLiveModel('claude-opus-5[1m]');
-  assert.equal(d.label, 'Opus 5 · 1M context');
+  assert.equal(d.label, 'Opus 5');
   assert.equal(d.description, 'Highly capable — deep work');
 });
 
 test('describeLiveModel handles a [200k] suffix and unknown bases', () => {
-  assert.equal(describeLiveModel('claude-haiku-4-5[200k]').label, 'Haiku 4.5 · 200K context');
+  assert.equal(describeLiveModel('claude-haiku-4-5[200k]').label, 'Haiku 4.5');
   // Unknown id with no suffix falls back to the id itself.
   const unknown = describeLiveModel('claude-mystery-9');
   assert.equal(unknown.label, 'claude-mystery-9');
@@ -248,6 +249,68 @@ test('choiceCovers matches value, resolved id, static aliases, and [1m] suffixes
   assert.ok(!choiceCovers(aliasRow, ''));
 });
 
+test('versionedLabel renders the VERSIONED name with no context noise', () => {
+  // Exact rows from supportedModels() on Claude Code 2.1.220. The runtime's
+  // displayName is the bare family ("Opus", "Fable") or carries a context
+  // parenthetical ("Opus (1M context)") — the user wants "Opus 5" / "Fable 5".
+  assert.equal(
+    versionedLabel({ value: 'opus[1m]', resolvedModel: 'claude-opus-5[1m]', displayName: 'Opus (1M context)', description: 'Opus 5 with 1M context · Best for everyday, complex tasks' }),
+    'Opus 5',
+  );
+  assert.equal(
+    versionedLabel({ value: 'claude-fable-5[1m]', resolvedModel: 'claude-fable-5', displayName: 'Fable', description: 'Fable 5 · Most capable for your hardest and longest-running tasks' }),
+    'Fable 5',
+  );
+  assert.equal(
+    versionedLabel({ value: 'sonnet', resolvedModel: 'claude-sonnet-5', displayName: 'Sonnet', description: 'Sonnet 5 · Efficient for routine tasks' }),
+    'Sonnet 5',
+  );
+  // Dotted version, and a date-suffixed resolvedModel that must not leak.
+  assert.equal(
+    versionedLabel({ value: 'haiku', resolvedModel: 'claude-haiku-4-5-20251001', displayName: 'Haiku', description: 'Haiku 4.5 · Fastest for quick answers' }),
+    'Haiku 4.5',
+  );
+  // Fallback chain: no usable description → derive from resolvedModel.
+  assert.equal(
+    versionedLabel({ value: 'opus', resolvedModel: 'claude-opus-5[1m]', displayName: 'Opus (1M context)', description: '' }),
+    'Opus 5',
+  );
+  // Neither description nor resolvedModel usable → displayName minus the
+  // context parenthetical (never empty, never "(1M context)").
+  assert.equal(
+    versionedLabel({ value: 'x', displayName: 'Mystery (1M context)', description: '' }),
+    'Mystery',
+  );
+});
+
+test('modelChoicesFrom labels cards by version and keeps the default row verbatim', () => {
+  const cards = modelChoicesFrom([
+    { value: 'default', resolvedModel: 'claude-opus-5[1m]', displayName: 'Default (recommended)', description: 'Opus 5 with 1M context · Best for everyday, complex tasks' },
+    { value: 'opus[1m]', resolvedModel: 'claude-opus-5[1m]', displayName: 'Opus (1M context)', description: 'Opus 5 with 1M context · Best for everyday, complex tasks' },
+    { value: 'claude-fable-5[1m]', resolvedModel: 'claude-fable-5', displayName: 'Fable', description: 'Fable 5 · Most capable for your hardest and longest-running tasks' },
+    { value: 'sonnet', resolvedModel: 'claude-sonnet-5', displayName: 'Sonnet', description: 'Sonnet 5 · Efficient for routine tasks' },
+    { value: 'haiku', resolvedModel: 'claude-haiku-4-5-20251001', displayName: 'Haiku', description: 'Haiku 4.5 · Fastest for quick answers' },
+  ]);
+  assert.deepEqual(
+    cards.map((c) => c.label),
+    ['Default (recommended)', 'Opus 5', 'Fable 5', 'Sonnet 5', 'Haiku 4.5'],
+  );
+  // No label may carry context noise.
+  for (const c of cards) assert.ok(!/context/i.test(c.label), `${c.label} must not mention context`);
+});
+
+test('describeLiveModel keeps the context size OUT of the label', () => {
+  const live = modelChoicesFrom([
+    { value: 'opus[1m]', resolvedModel: 'claude-opus-5[1m]', displayName: 'Opus (1M context)', description: 'Opus 5 with 1M context · Best' },
+  ]);
+  // Previously appended "· 1M context" to the trigger label.
+  assert.equal(describeLiveModel('claude-opus-5[1m]', live).label, 'Opus 5');
+  assert.equal(describeLiveModel('opus[1m]', live).label, 'Opus 5');
+  // Static fallback list too.
+  assert.equal(describeLiveModel('opus[1m]').label, 'Opus 5');
+  assert.equal(describeLiveModel('claude-haiku-4-5[200k]').label, 'Haiku 4.5');
+});
+
 test('choiceCovers strips the context suffix on BOTH sides (v0.5.165 regression)', () => {
   // The REAL live rows from supportedModels() on Claude Code 2.1.220: every
   // Opus row resolves to `claude-opus-5[1m]` (WITH the suffix), while an
@@ -266,19 +329,19 @@ test('choiceCovers strips the context suffix on BOTH sides (v0.5.165 regression)
     live.filter((c) => choiceCovers(c, model)).map((c) => c.label);
 
   // The bug: a suffix-free explicit id was covered by NOTHING.
-  assert.deepEqual(covering('claude-opus-5'), ['Default (recommended)', 'Opus (1M context)']);
+  assert.deepEqual(covering('claude-opus-5'), ['Default (recommended)', 'Opus 5']);
   // Suffix-carrying and alias forms keep working.
-  assert.deepEqual(covering('claude-opus-5[1m]'), ['Default (recommended)', 'Opus (1M context)']);
-  assert.deepEqual(covering('opus[1m]'), ['Default (recommended)', 'Opus (1M context)']);
-  assert.deepEqual(covering('opus'), ['Default (recommended)', 'Opus (1M context)']);
+  assert.deepEqual(covering('claude-opus-5[1m]'), ['Default (recommended)', 'Opus 5']);
+  assert.deepEqual(covering('opus[1m]'), ['Default (recommended)', 'Opus 5']);
+  assert.deepEqual(covering('opus'), ['Default (recommended)', 'Opus 5']);
   // A card whose resolved id has NO suffix still matches a suffixed request.
-  assert.deepEqual(covering('claude-fable-5[1m]'), ['Fable']);
-  assert.deepEqual(covering('claude-sonnet-5'), ['Sonnet']);
+  assert.deepEqual(covering('claude-fable-5[1m]'), ['Fable 5']);
+  assert.deepEqual(covering('claude-sonnet-5'), ['Sonnet 5']);
   // The Haiku card's own `value` is the alias `haiku`, which normalizes to
   // claude-haiku-4-5 — so the bare id IS correctly covered by it (its
   // resolvedModel is the date-suffixed snapshot, which is a different key).
-  assert.deepEqual(covering('haiku'), ['Haiku']);
-  assert.deepEqual(covering('claude-haiku-4-5'), ['Haiku']);
+  assert.deepEqual(covering('haiku'), ['Haiku 4.5']);
+  assert.deepEqual(covering('claude-haiku-4-5'), ['Haiku 4.5']);
   // Cross-family and unknown models must NOT match anything.
   assert.deepEqual(covering('claude-opus-4-8'), []);
   assert.deepEqual(covering('some-future-model'), []);
@@ -291,7 +354,7 @@ test('describeLiveModel matches a live row whose resolvedModel carries a suffix'
   // Suffix-free id against a suffixed resolvedModel — previously fell through
   // to the raw string.
   assert.deepEqual(describeLiveModel('claude-opus-5', live), {
-    label: 'Opus (1M context)',
+    label: 'Opus 5',
     description: 'Best for everyday',
   });
 });
@@ -300,9 +363,9 @@ test('describeLiveModel uses a live choices list when given one', () => {
   const live = [
     { value: 'opus', resolvedModel: 'claude-opus-5', label: 'Opus 5', description: 'New!' },
   ];
-  // Matches via resolvedModel, and still surfaces the context suffix.
+  // Matches via resolvedModel; the label stays the plain model name.
   assert.deepEqual(describeLiveModel('claude-opus-5[1m]', live), {
-    label: 'Opus 5 · 1M context',
+    label: 'Opus 5',
     description: 'New!',
   });
 });
@@ -310,7 +373,7 @@ test('describeLiveModel uses a live choices list when given one', () => {
 test('describeLiveModel resolves Claude Code short aliases', () => {
   // settings.json stores the DEFAULT as an alias (e.g. `opus[1m]`), not a full id.
   assert.deepEqual(describeLiveModel('opus[1m]'), {
-    label: 'Opus 5 · 1M context',
+    label: 'Opus 5',
     description: 'Highly capable — deep work',
   });
   assert.equal(describeLiveModel('sonnet').label, 'Sonnet 5');

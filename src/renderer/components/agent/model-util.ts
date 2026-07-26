@@ -38,15 +38,50 @@ const MODEL_ALIASES: Record<string, string> = {
   fable: 'claude-fable-5',
 };
 
+/** Turn a live row into the label we render: the VERSIONED family name, with no
+ *  context-size noise — "Opus 5", not "Opus" and not "Opus (1M context)".
+ *
+ *  The runtime's `displayName` is the bare family ("Opus", "Fable") or carries a
+ *  context parenthetical ("Opus (1M context)"), and the version lives elsewhere.
+ *  Two sources, in order:
+ *    1. `description`, whose first `·`-segment is exactly the versioned name
+ *       ("Opus 5 with 1M context · …" → "Opus 5"; "Haiku 4.5 · …" → "Haiku 4.5");
+ *    2. `resolvedModel` as the fallback (`claude-opus-5[1m]` → "Opus 5"), for
+ *       rows whose description ever stops leading with the name.
+ *  Falls back to the suffix/parenthetical-stripped `displayName` so an
+ *  unrecognized row still renders something sane rather than empty. */
+export function versionedLabel(m: AgentModelInfo): string {
+  // 1. Leading segment of the description, minus any "with 1M context" tail.
+  const lead = (m.description ?? '').split('·')[0].trim();
+  const fromDesc = lead.replace(/\s+with\s+.*$/i, '').trim();
+  if (/^[A-Z][A-Za-z]*\s+\d/.test(fromDesc)) return fromDesc;
+
+  // 2. Canonical id → "Family Version" (claude-opus-5[1m] → Opus 5,
+  //    claude-haiku-4-5-20251001 → Haiku 4.5; a date snapshot is dropped).
+  const id = splitContextSuffix(m.resolvedModel ?? '').base.replace(/-\d{8}$/, '');
+  const parsed = /^claude-([a-z]+)-(\d+(?:-\d+)?)$/.exec(id);
+  if (parsed) {
+    const family = parsed[1][0].toUpperCase() + parsed[1].slice(1);
+    return `${family} ${parsed[2].replace(/-/g, '.')}`;
+  }
+
+  // 3. Last resort: the runtime's own name, minus the context parenthetical.
+  return (m.displayName ?? '').replace(/\s*\([^)]*context[^)]*\)/i, '').trim();
+}
+
 /** The switcher's choices: the LIVE runtime list when available (fetched from
  *  the Agent SDK's `supportedModels()` over IPC — same source as Claude Code's
  *  /model picker, so new models appear without an Orchestra release), else the
- *  static {@link MODEL_CHOICES} fallback (fresh app run, no session yet). */
+ *  static {@link MODEL_CHOICES} fallback (fresh app run, no session yet).
+ *  Labels are re-derived via {@link versionedLabel} so cards read "Opus 5"
+ *  rather than the runtime's "Opus" / "Opus (1M context)". The one row we keep
+ *  verbatim is `default` ("Default (recommended)"), whose whole meaning is that
+ *  it is the account default rather than a specific model. */
 export function modelChoicesFrom(models: AgentModelInfo[] | undefined): ModelChoice[] {
   if (!models?.length) return MODEL_CHOICES;
   return models.map((m) => ({
     value: m.value,
-    label: m.displayName,
+    label: m.value === 'default' ? m.displayName : versionedLabel(m),
     description: m.description,
     resolvedModel: m.resolvedModel,
   }));
@@ -111,8 +146,10 @@ export function effectiveModel(
  *  context-suffixed alias or full id (e.g. `opus[1m]` or `claude-opus-5[1m]`):
  *  resolve the base (mapping short aliases like `opus`→`claude-opus-5`), reuse
  *  the matching {@link MODEL_CHOICES} label, and surface the suffix as a "1M
- *  context" note — so the trigger reads "Opus 5 · 1M context" rather than the
- *  bare string. Falls back to the raw value for anything unrecognized. */
+ *  context" note. The LABEL stays context-free by design — it names the model
+ *  ("Opus 5"), and the context size rides in the DESCRIPTION line instead, where
+ *  it informs without cluttering the trigger. Falls back to the raw value for
+ *  anything unrecognized. */
 export function describeLiveModel(
   model: string,
   choices: ModelChoice[] = MODEL_CHOICES,
@@ -127,7 +164,8 @@ export function describeLiveModel(
   // falls through to the raw id.
   const known = choices.find((i) => choiceCovers(i, base));
   if (known) {
-    return { label: ctx ? `${known.label} · ${ctx}` : known.label, description: known.description };
+    // Label is the model name ONLY — never "Opus 5 · 1M context".
+    return { label: known.label, description: known.description };
   }
   return { label: model, description: ctx || 'Account default model' };
 }

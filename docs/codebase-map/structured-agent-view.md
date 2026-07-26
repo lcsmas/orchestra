@@ -569,11 +569,25 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   therefore appear without an Orchestra release. `modelChoicesFrom(models)`
   maps the wire rows (`AgentModelInfo {value, resolvedModel?, displayName,
   description}`) to `ModelChoice`s and falls back to the static
-  `MODEL_CHOICES` (**Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5**; canonical
+  `MODEL_CHOICES` (**Fable 5, Opus 5, Sonnet 5, Haiku 4.5**; canonical
   aliases, never date-suffixed) when no session has answered yet this app run.
+  **Labels are re-derived, not taken from the wire**: `versionedLabel(row)`
+  renders the VERSIONED, context-free name — the runtime's `displayName` is the
+  bare family ("Opus", "Fable") or carries a parenthetical ("Opus (1M
+  context)"), so the label comes from the description's leading segment ("Opus 5
+  with 1M context · …" → `Opus 5`), falling back to `resolvedModel`
+  (`claude-opus-5[1m]` → `Opus 5`; a date snapshot like
+  `claude-haiku-4-5-20251001` → `Haiku 4.5`) and finally to a
+  parenthetical-stripped `displayName`. The `default` row keeps its wire label
+  ("Default (recommended)") since that IS its meaning. `describeLiveModel`
+  likewise never appends "· 1M context" — the context size lives in the
+  description line only.
   `choiceCovers(choice, model)` decides which card a concrete model string
-  belongs to (direct value, live `resolvedModel`, static alias map, `[1m]`
-  suffix stripped) — `AgentControls` highlights the covering card (preferring a
+  belongs to via `modelKey()` (strip `[1m]`-style suffix + resolve alias)
+  applied to **both** sides — normalizing only the incoming model was the
+  v0.5.165 bug (an explicit `claude-opus-5` never matched rows resolving to
+  `claude-opus-5[1m]`, so a redundant "Account default model" card was prepended
+  and checkmarked). `AgentControls` highlights the covering card (preferring a
   non-`default` row, since the live list's "Default (recommended)" row resolves
   to the same id as its family row) and zips choices with `MODEL_FAMILY_ICONS`
   (substring match on fable/mythos/opus/sonnet/haiku, so post-build models get
