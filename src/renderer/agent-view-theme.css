@@ -1072,24 +1072,34 @@ h6.av-md-h {
    contents` dissolves those wrappers so interrupt / stats / menus become direct
    flex items of the deck bar, and `order` interleaves the stats between the
    interrupt and the menus regardless of DOM order. */
+/* The deck bar is now DOCKED INSIDE the composer card (rendered as `bar` in the
+   card's bottom row), so it carries no border, no background and no padding of
+   its own — `.av-composer-bar` owns the row's geometry. It survives only as a
+   `display:contents` wrapper so `.av-controls` / `.av-rc` / `.av-deck-account`
+   become direct flex items of that row and can be `order`ed against the send
+   button. */
 .av-deck-bar {
-  display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap;
-  padding: 7px 20px; border-top: 1px solid var(--av-hairline);
-  background: linear-gradient(180deg, var(--av-highlight), transparent 70%),
-    var(--av-surface-raised);
+  display: contents;
   font-size: var(--av-fs-small); color: var(--av-text-dim);
 }
 .av-controls { display: contents; }
+/* Leads the composer's control row while a turn is in flight; hidden entirely
+   when nothing is running (a permanently-disabled Stop button is noise in a row
+   this dense — Esc still interrupts from the composer either way). */
 .av-controls-interrupt {
   order: 1;
   display: inline-flex; align-items: center; gap: 7px;
-  font-size: var(--av-fs-small); padding: 4px 12px;
+  font-size: var(--av-fs-small); padding: 4px 10px;
 }
+.av-controls-interrupt:disabled { display: none; }
 .av-controls-interrupt-dot { width: 7px; height: 7px; border-radius: 2px; background: currentColor; }
 .av-controls-interrupt:not(:disabled) .av-controls-interrupt-dot { animation: av-pulse 1.4s var(--av-ease) infinite; }
 @media (prefers-reduced-motion: reduce) { .av-controls-interrupt:not(:disabled) .av-controls-interrupt-dot { animation: none; } }
-/* The switcher menus dock to the far right of the deck bar. */
-.av-controls-menus { order: 3; display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
+/* The switcher menus lead the composer's control row (after any interrupt).
+   No `margin-left:auto` here any more — the SEND button owns the auto margin
+   that pushes it to the right edge, and two auto margins in one row would
+   split the free space between them instead of grouping the chips left. */
+.av-controls-menus { order: 2; display: inline-flex; align-items: center; gap: 2px; }
 
 /* ── Account badge — which login this agent runs as ────────────────────────
    Last chip in the deck bar (order 4, after the model/permission menus), so
@@ -1099,7 +1109,15 @@ h6.av-md-h {
    dense list row, which reads undersized next to these chips. The account's
    identity colour (loginColor) and usage tint pass through untouched — that
    cross-app consistency is the point of the badge. */
-.av-deck-account { order: 4; display: inline-flex; align-items: center; flex: none; }
+/* Trailing chip in the composer's control row. A hairline separates the
+   session-scoped chips (remote control · account) from the send-scoped menus
+   (model · effort · permissions) — without it the bare account label reads as
+   loose text trailing the Remote-control chip rather than its own control. */
+.av-deck-account {
+  order: 4; display: inline-flex; align-items: center; flex: none;
+  padding-left: 6px; margin-left: 2px;
+  border-left: 1px solid var(--av-hairline);
+}
 .av-deck-account .ws-account-menu { display: inline-flex; align-items: center; }
 .av-deck-account .ws-account-trigger {
   display: inline-flex; align-items: center;
@@ -1133,7 +1151,7 @@ h6.av-md-h {
    A ghost trigger in the deck bar (order 2, right after interrupt). Off: quiet.
    On: green "connected" accent + a live dot; clicking opens a small popover with
    the claude.ai/code link (copy / open) and a Disconnect. */
-.av-rc { order: 2; position: relative; display: inline-flex; align-items: center; gap: 6px; }
+.av-rc { order: 3; position: relative; display: inline-flex; align-items: center; gap: 6px; }
 .av-rc-trigger { gap: 7px; }
 .av-rc-label { font-size: var(--av-fs-small); }
 .av-rc-dot {
@@ -1459,26 +1477,74 @@ h6.av-md-h {
 .av-turn-error-detail { color: var(--av-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
 .av-turn-error-spinner { border-top-color: var(--av-warn); }
 
-/* Composer — a floating field with the send action docked inside. */
+/* Composer — ONE card holding the input, the control bar and the send action,
+   with a caption-weight context strip beneath it. (It used to be two stacked
+   bordered surfaces: a `.av-deck-bar` row plus a separate framed field. The
+   controls govern the message being composed, so they belong to the same
+   frame; folding them in also reclaims a full row of vertical space.) */
 .av-composer {
-  display: flex; gap: 8px; align-items: flex-end;
-  padding: 10px 20px calc(14px + env(safe-area-inset-bottom, 0px));
-  border-top: none;
+  display: block;
+  padding: 12px 20px calc(14px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--av-hairline);
   background: var(--av-surface-raised);
 }
+/* The card: a COLUMN (text row, then control row) rather than the old
+   input-beside-send flex row. */
 .av-composer-field {
-  flex: 1 1 auto; display: flex; align-items: flex-end; gap: 8px;
-  padding: 6px 6px 6px 14px;
+  display: flex; flex-direction: column;
   border-radius: var(--av-radius-xl);
   border: 1px solid var(--av-hairline-strong);
   background: var(--av-surface);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
   transition: border-color 140ms var(--av-ease), box-shadow 140ms var(--av-ease);
 }
 .av-composer-field:focus-within {
   border-color: var(--av-focus-border);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12), 0 0 0 3px var(--av-focus-ring);
 }
+
+/* Bottom row of the card: the docked controls (via `.av-deck-bar`'s
+   display:contents) then the circular send button. A hairline separates it
+   from the text above — the only internal division in the card. */
+.av-composer-bar {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  padding: 6px 8px 6px 10px;
+  border-top: 1px solid var(--av-hairline-faint);
+}
+/* Bash mode replaces the menus with a one-line explanation of what Enter does. */
+.av-composer-bar-note {
+  font-size: var(--av-fs-small); color: var(--av-task);
+  padding: 4px 2px;
+}
+
+/* ── Context strip — the quiet readout UNDER the card ──────────────────────
+   worktree · cost · context gauge · branch, at caption weight so it recedes
+   until looked for. Answers "what am I about to change?" beside the send
+   button (the toolbar's branch chip is at the far end of the window). It is a
+   READOUT, not a control: BranchPicker in the toolbar stays the one writer. */
+.av-strip {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 6px 0;
+  font-size: var(--av-fs-small); color: var(--av-text-faint);
+  min-height: 12px;
+}
+.av-strip-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.av-strip-glyph { opacity: 0.65; font-size: 11px; }
+/* The branch docks right, mirroring the send button's edge. */
+.av-strip-branch {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--font-mono); font-size: var(--av-fs-small);
+  color: var(--av-text-dim);
+  padding: 2px 7px; border-radius: 6px;
+  max-width: 34ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The gauge shrinks to strip scale: a 40px bar instead of the deck row's 46px,
+   and no "used" label (the % reads on its own at this weight). */
+.av-strip .av-turn-context { gap: 6px; font-size: var(--av-fs-small); color: inherit; }
+.av-strip .av-turn-context .av-turn-stat-label { display: none; }
+.av-strip .av-turn-context-bar { width: 40px; height: 3px; }
+.av-strip .av-turn-stat-value { font-size: var(--av-fs-small); font-weight: 500; }
 /* The prompt is set in mono at code size — it's a command line to the agent
    (the terminal users are coming from), not a web form. */
 .av-composer-input {
@@ -1493,22 +1559,35 @@ h6.av-md-h {
 }
 .av-composer-input::placeholder { color: var(--av-text-faint); }
 .av-composer-input:focus, .av-composer-input:focus-visible { outline: none; border: none; box-shadow: none; }
+/* Circular icon-only send, docked at the right end of the control row. The
+   Send/Queue/Run wording the old pill carried now rides on the GLYPH (arrow /
+   queue-return / chevron) plus title + aria-label — dropping the text label is
+   what buys the horizontal room the docked menus need. `margin-left:auto`
+   pushes it right regardless of how many menus wrapped. */
 .av-composer-send {
-  flex: none; display: inline-flex; align-items: center; gap: 6px;
-  padding: 7px 14px; border-radius: 10px; border: none;
+  /* order:9 puts it LAST, after every docked chip (interrupt 1 · menus 2 ·
+     remote 3 · account 4). Without it the button inherits order:0 and renders
+     BEFORE the order:3/4 chips, so `margin-left:auto` eats the free space at
+     the wrong position and strands the button mid-row. */
+  order: 9;
+  flex: none; margin-left: auto;
+  width: 28px; height: 28px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: none;
   background: linear-gradient(180deg,
     color-mix(in srgb, var(--av-assistant) 88%, white) 0%,
     var(--av-assistant) 100%);
-  color: var(--av-assistant-ink); font-weight: 600; font-size: var(--av-fs-small);
+  color: var(--av-assistant-ink);
   cursor: pointer;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 1px 2px rgba(0, 0, 0, 0.3);
   transition: filter 120ms var(--av-ease), transform 90ms var(--av-ease), opacity 120ms, box-shadow 140ms var(--av-ease);
 }
 .av-composer-send:hover { filter: brightness(1.07); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 12px var(--av-glow); }
 .av-composer-send:active { transform: translateY(0.5px); }
-.av-composer-send:disabled { opacity: 0.35; cursor: not-allowed; filter: saturate(0.4); box-shadow: none; }
+.av-composer-send:disabled { opacity: 0.3; cursor: not-allowed; filter: saturate(0.4); box-shadow: none; }
 .av-composer-send:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring); }
-.av-composer-send-label { line-height: 1; }
+/* Bash mode: the send button takes the mode's purple, matching the card ring. */
+.av-composer-send-bash { background: var(--av-task); color: #fff; }
 
 /* ── Bash mode (composer `!command`, parity with Claude Code) ─────────────────
    A leading `!` switches the composer into bash mode: the field gets a purple
@@ -1597,9 +1676,17 @@ h6.av-md-h {
    column (rather than wrapping siblings of the field's flex row) means the
    only vertical space between the thumbnails and the text is this column's
    own `gap` — the field's row `gap` no longer double-applies across a wrap. */
+/* The text row of the card. Now carries the card's inner padding itself (the
+   field is a bare column since the control bar owns the bottom row), and lays
+   the bash chip beside the input on a top-aligned row. */
 .av-composer-stack {
   flex: 1 1 auto; min-width: 0;
   display: flex; flex-direction: column; gap: 4px;
+  padding: 11px 14px 9px;
+}
+/* Bash mode puts the `bash` chip inline, leading the command. */
+.av-composer-field-bash .av-composer-stack {
+  flex-direction: row; align-items: flex-start; gap: 8px;
 }
 
 /* Pasted-image attachments — a thumbnail strip above the input, inside the

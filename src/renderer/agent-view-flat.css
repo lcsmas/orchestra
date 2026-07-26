@@ -57,9 +57,10 @@
 }
 .av-view .av-btn-primary:hover { filter: brightness(0.96); background: var(--av-assistant); }
 
-/* ── Composer: solid accent send, flat framed field (no inset shadow). ───────*/
+/* ── Composer: solid accent send, flat framed card (no inset shadow). ───────*/
 .av-view .av-composer-send { background: var(--av-assistant); box-shadow: none; }
 .av-view .av-composer-send:hover { filter: brightness(0.96); box-shadow: none; }
+.av-view .av-composer-send-bash { background: var(--av-task); }
 .av-view .av-composer-field { box-shadow: none; background: var(--av-surface); }
 .av-view .av-composer-field:focus-within { box-shadow: 0 0 0 3px var(--av-focus-ring); }
 

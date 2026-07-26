@@ -104,9 +104,42 @@ wells (`av-tool-bash-out` etc., max-height 320px) get an 8px variant.
 
 Shell (`StructuredView.tsx`): `.av-view` (+`.active`) → `.av-message-list` →
 `.av-message-list-inner` → `.av-row`. Composer `.av-composer` >
-`.av-composer-field` (textarea + send live inside one framed field). The field is
-a flex row of `.av-composer-stack` (a flex **column**, `flex:1 1 auto`) + `.av-composer-send`
-(arrow icon + `.av-composer-send-label` "Send"/"Queue"). The stack holds the pasted-image
+`.av-composer-field` — **ONE card** holding the input, the control chrome and the
+send action, with `.av-strip` beneath it. (It used to be TWO stacked bordered
+surfaces: a `.av-deck-bar` row above a separate framed field. The menus govern
+the message being composed, so they now share its frame; folding them in also
+reclaims a row of vertical height.) The field is a flex **column**:
+`.av-composer-stack` (text row — pasted-image strip above `.av-composer-input`,
+and the `bash` chip beside it in bash mode) over `.av-composer-bar` (control
+row, separated by a `--av-hairline-faint` top border).
+
+`.av-composer-bar` holds the docked chrome plus `.av-composer-send`. The chrome
+arrives via `SessionControls`, whose `.av-deck-bar` wrapper is now
+**`display:contents`** (no border, no background of its own) purely so its
+descendants become direct flex items of the bar and can be `order`ed:
+**interrupt (1) · menus (2) · remote control (3) · account (4) · send (9)**.
+`.av-composer-send` MUST carry `order:9` — it defaults to `order:0`, which
+renders it *before* the order:3/4 chips so its `margin-left:auto` consumes free
+space at the wrong position and strands the button ~534px short of the card's
+right edge (caught by `scripts/verify-composer-card.mjs`; mutation-tested).
+Exactly ONE element in the row may own `margin-left:auto` — the send button —
+or the free space splits instead of grouping the chips left.
+
+The send button is a **28px icon-only circle**: the `Send`/`Queue`/`Run` wording
+the old pill carried now rides on the GLYPH (arrow / queue-return / chevron)
+plus `title` + `aria-label`. Dropping the text label is what buys the horizontal
+room the docked menus need. Bash mode adds `.av-composer-send-bash` (purple, to
+match the card ring) and swaps the menus for `.av-composer-bar-note`.
+
+`.av-strip` (`ContextStrip`) is the caption-weight readout UNDER the card:
+worktree folder · cost · context gauge · `.av-strip-branch` (right-docked). It
+is a **readout, not a control** — the toolbar's `BranchPicker` stays the single
+writer for branch state. The gauge is the same `ContextGauge` re-scaled by
+strip-scoped rules (40px bar, `used` label hidden). Stats come from
+`StripStats` (`TurnFooter.tsx`), which shares its formatters with the retained
+`TurnFooter` (still the error-state renderer).
+
+The stack holds the pasted-image
 strip above `.av-composer-input`; the column's `gap:4px` is the ONLY vertical space
 between thumbnails and text — attachments used to be a `width:100%` wrapping sibling of
 the field row, where the row's `align-items:flex-end` mis-stacked the wrapped strip and
@@ -242,17 +275,30 @@ Next submits directly.
 Buttons: `.av-btn` + `.av-btn-{primary,danger,ghost}` (permission/question actions
 and the interrupt button share this family).
 
-Deck bar (`SessionControls` in `StructuredView.tsx`): `.av-deck-bar` is the ONE
-bordered row above the composer, sharing a single y-axis. It wraps
-`AgentControls` (`.av-controls`) then `TurnFooter` (`.av-turn-footer`), which are
-dissolved via `.av-controls { display: contents }` so their children become
-direct flex items; `order` interleaves them left→right as **interrupt (1) ·
-turn-footer stats (2, `flex:1 1 auto`) · menus (3, `margin-left:auto`) · account
-badge (4)**. The deck bar owns the `border-top` / gradient background; the footer
-keeps no border or block padding of its own now (previously the controls +
-footer stacked as two separate bordered rows).
+Deck bar (`SessionControls` in `StructuredView.tsx`): `.av-deck-bar` no longer
+renders a row of its own — it is **`display:contents`**, a pure grouping wrapper
+whose children are hoisted into `.av-composer-bar` (the composer card's bottom
+row) as direct flex items. `SessionControls` is passed to `Composer` as its
+`bar` prop rather than mounted as a sibling, so the whole send surface is one
+frame. `.av-controls { display: contents }` dissolves `AgentControls` the same
+way one level down, and `order` lays the result out left→right as **interrupt
+(1) · menus (2) · remote control (3) · account badge (4) · send (9)**.
 
-Account badge (`.av-deck-account`, order 4 — last chip): reuses the sidebar's
+Two ordering invariants, both load-bearing (see the class contract above): the
+send button needs an explicit high `order`, and it must be the ONLY item with
+`margin-left:auto`. `.av-controls-menus` previously carried that auto margin and
+lost it in the fold — two auto margins split the free space between them instead
+of grouping the chips left.
+
+`TurnFooter` is NO LONGER MOUNTED in this row. Its stats moved to `StripStats`
+in the `.av-strip` readout under the card; `TurnFooter` itself is retained in
+`TurnFooter.tsx` for the error state and shares the formatters. The interrupt
+button is `display:none` while disabled — a permanently-dead Stop button is
+noise in a row this dense, and Esc still interrupts from the composer.
+
+Account badge (`.av-deck-account`, order 4 — last chip, separated from the
+send-scoped menus by a `border-left` hairline so its bare label doesn't read as
+loose text trailing the Remote-control chip): reuses the sidebar's
 `WorkspaceAccountBadge` with `migratable`, so it shows which login the agent
 runs as (the pin that drives the SDK session's `CLAUDE_CONFIG_DIR` in
 `agent-sdk.ts buildSdkEnv`) and clicking it opens the same migrate menu. The

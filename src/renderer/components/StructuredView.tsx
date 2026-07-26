@@ -42,7 +42,7 @@ import {
   PermissionDialog,
   AgentControls,
   RemoteControl,
-  TurnFooter,
+  StripStats,
   WorkingIndicator,
   BackgroundTasksPanel,
   runningTaskCount,
@@ -139,10 +139,16 @@ export function StructuredView({ workspaceId, isActive }: Props) {
       {/* A4 extension point: permission dialog(s) for parked canUseTool calls.
           Rendered as an overlay above the list. */}
       <PermissionSlot session={session} workspaceId={workspaceId} />
-      {/* A4 extension point: cost/token/duration turn footer + model/mode
-          controls. Given the last turn-end and running state. */}
-      <SessionControls session={session} workspaceId={workspaceId} />
-      <Composer session={session} workspaceId={workspaceId} isActive={isActive} />
+      {/* The model/mode controls and the ambient cost/context/branch readout are
+          passed INTO the composer: they render as the card's bottom row and the
+          caption strip beneath it, so the whole send surface is one frame. */}
+      <Composer
+        session={session}
+        workspaceId={workspaceId}
+        isActive={isActive}
+        bar={<SessionControls session={session} workspaceId={workspaceId} />}
+        strip={<ContextStrip session={session} workspaceId={workspaceId} />}
+      />
       {/* The Background tasks slide-over, over the transcript. */}
       {panelOpen && (
         <BackgroundTasksPanel session={session} onClose={() => setPanelOpen(false)} />
@@ -665,10 +671,61 @@ function SessionControls({
         wsEffort={ws?.sdkEffort}
       />
       <RemoteControl workspaceId={workspaceId} session={session} />
-      <TurnFooter session={session} />
       <span className="av-deck-account" title="Account this agent runs as — click to migrate">
         <WorkspaceAccountBadge workspaceId={workspaceId} migratable />
       </span>
+    </div>
+  );
+}
+
+// ── Context strip ────────────────────────────────────────────────────────────
+//
+// The quiet caption-weight line UNDER the composer card: which worktree this
+// message will change, how much context is left, and the branch. It answers
+// "what am I about to touch?" at the moment of sending — the app toolbar's
+// branch chip is correct but sits at the opposite end of the window from the
+// send button, so it isn't read at decision time.
+//
+// Deliberately NOT interactive (the toolbar's BranchPicker remains the one
+// place branches are switched): duplicating that control here would give two
+// writers for one piece of state. This is a readout.
+
+function ContextStrip({
+  session,
+  workspaceId,
+}: {
+  session: AgentSession | undefined;
+  workspaceId: string;
+}) {
+  const ws = useStore((s) => s.workspaces.find((w) => w.id === workspaceId));
+  if (!ws) return null;
+  // Scratch/orchestrator workspaces have no repo: `branch` is a display label
+  // and worktreePath is empty (see types.ts Workspace.kind), so show neither
+  // rather than render an empty chip.
+  const isGit = ws.kind !== 'scratch' && !!ws.worktreePath;
+  const folder = ws.worktreePath ? ws.worktreePath.split('/').filter(Boolean).pop() : '';
+  return (
+    <div className="av-strip">
+      {isGit && folder && (
+        <span className="av-strip-item" title={ws.worktreePath}>
+          <span className="av-strip-glyph" aria-hidden="true">
+            🗀
+          </span>
+          {folder}
+        </span>
+      )}
+      <StripStats session={session} />
+      {isGit && (
+        <span
+          className="av-strip-branch"
+          title={ws.baseBranch ? `${ws.branch} — base: ${ws.baseBranch}` : ws.branch}
+        >
+          <span className="av-strip-glyph" aria-hidden="true">
+            ⑂
+          </span>
+          {ws.branch}
+        </span>
+      )}
     </div>
   );
 }
@@ -704,10 +761,18 @@ function Composer({
   session,
   workspaceId,
   isActive,
+  bar,
+  strip,
 }: {
   session: AgentSession | undefined;
   workspaceId: string;
   isActive: boolean;
+  /** Control chrome docked into the card's bottom row (model / effort /
+   *  permission menus, remote control, account badge). Passed in rather than
+   *  rendered here so the composer stays a pure input concern. */
+  bar?: React.ReactNode;
+  /** Ambient readout under the card (worktree · cost · context · branch). */
+  strip?: React.ReactNode;
 }) {
   const [text, setText] = useState('');
   // Images pasted into the composer, pending send. Each carries the base64 for
@@ -1021,54 +1086,86 @@ function Composer({
           }}
           />
         </div>
-        <button
-          className="av-composer-send"
-          onClick={submit}
-          disabled={bashMode ? !bashCommand.trim() : !text.trim() && pendingImages.length === 0}
-          title={
-            bashMode
-              ? 'Run the shell command locally (Enter)'
-              : running
-                ? 'Agent is working — message will queue'
-                : 'Send (Enter)'
-          }
-        >
+        {/* The control bar is docked INSIDE the card (bottom row) rather than
+            rendered as its own bordered deck above it: the model / effort /
+            permission menus govern the message being composed, so they belong
+            to the same surface as the input. `bar` carries SessionControls +
+            the send button. */}
+        <div className="av-composer-bar">
           {bashMode ? (
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M4 4l4 4-4 4" />
-              <path d="M9 12h4" />
-            </svg>
+            <span className="av-composer-bar-note">
+              Runs locally in the worktree · output shared with the agent
+            </span>
           ) : (
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M8 13V3" />
-              <path d="M3.5 7.5 8 3l4.5 4.5" />
-            </svg>
+            bar
           )}
-          <span className="av-composer-send-label">
-            {bashMode ? 'Run' : running ? 'Queue' : 'Send'}
-          </span>
-        </button>
+          <button
+            className={`av-composer-send${bashMode ? ' av-composer-send-bash' : ''}`}
+            onClick={submit}
+            disabled={bashMode ? !bashCommand.trim() : !text.trim() && pendingImages.length === 0}
+            aria-label={bashMode ? 'Run command' : running ? 'Queue message' : 'Send message'}
+            title={
+              bashMode
+                ? 'Run the shell command locally (Enter)'
+                : running
+                  ? 'Agent is working — message will queue'
+                  : 'Send (Enter)'
+            }
+          >
+            {/* Icon-only: the Send/Queue/Run distinction the text label used to
+                carry now rides on the GLYPH (arrow / queue-return / chevron)
+                plus the tooltip + aria-label, which buys back the width the
+                docked menus need. */}
+            {bashMode ? (
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M4 4l4 4-4 4" />
+                <path d="M9 12h4" />
+              </svg>
+            ) : running ? (
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 4v5a3 3 0 0 1-3 3H4" />
+                <path d="M7 9l-3 3 3 3" />
+              </svg>
+            ) : (
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M8 13V3" />
+                <path d="M3.5 7.5 8 3l4.5 4.5" />
+              </svg>
+            )}
+          </button>
+        </div>
       </div>
+      {strip}
     </div>
   );
 }

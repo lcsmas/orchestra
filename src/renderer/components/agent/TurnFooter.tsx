@@ -107,6 +107,46 @@ export function TurnFooter({ session }: { session: AgentSession | undefined }) {
 }
 
 /**
+ * The context strip's readout: last-turn cost + the context gauge, at caption
+ * weight, rendered UNDER the composer card rather than in a bordered deck row.
+ *
+ * Same data as {@link TurnFooter} (which is no longer mounted — the deck bar it
+ * lived in was folded into the composer card). Kept in this file so the
+ * formatters and the gauge have exactly one definition; `TurnFooter` itself is
+ * retained for the error state and for any caller that still wants the old row.
+ */
+export function StripStats({ session }: { session: AgentSession | undefined }) {
+  if (!session) return null;
+  const turn = session.lastTurn;
+  // Nothing to report before the first turn closes; an errored turn is surfaced
+  // by TurnFooterError in the transcript, not repeated in the ambient strip.
+  if (!turn || turn.isError) return null;
+
+  const usage = turn.usage;
+  const cacheTotal = usage ? usage.cacheCreationInputTokens + usage.cacheReadInputTokens : 0;
+  const costDetail = [
+    `Session total ${formatCost(session.totalCostUsd)}`,
+    usage &&
+      `Tokens: ${formatTokens(usage.inputTokens)} in · ${formatTokens(usage.outputTokens)} out · ${formatTokens(cacheTotal)} cache`,
+    turn.numTurns > 0 && `${turn.numTurns} turn${turn.numTurns === 1 ? '' : 's'}`,
+    typeof turn.durationMs === 'number' && `Last turn took ${formatDuration(turn.durationMs)}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return (
+    <>
+      {typeof turn.costUsd === 'number' && (
+        <span className="av-strip-item" title={costDetail}>
+          {formatCost(turn.costUsd)}
+        </span>
+      )}
+      <ContextGauge turn={turn} />
+    </>
+  );
+}
+
+/**
  * Context-used gauge — the most-felt daily gap: long sessions used to hit the
  * context ceiling with zero warning. Data comes free on every result message
  * (`contextUsedTokens` ≈ the last API call's total input+output — the per-call
