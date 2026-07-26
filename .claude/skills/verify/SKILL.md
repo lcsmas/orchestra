@@ -1,9 +1,45 @@
 ---
 name: verify
-description: Drive a built Orchestra instance end-to-end to verify a UI change — isolated ORCHESTRA_HOME, CDP over a debug port (Electron) or the remote-control socket (GTK), and (for screenshots) a headless sway compositor so frames render without touching the user's desktop.
+description: Drive a built Orchestra instance end-to-end to verify a UI change — isolated ORCHESTRA_HOME, CDP over a debug port (Electron) or the remote-control socket (GTK), and a headless sway compositor so frames render without touching the user's desktop. Verification is ALWAYS both halves — state assertions AND a captured screenshot.
 ---
 
 # Verify an Orchestra UI change by driving the real app
+
+## Both halves are mandatory — state AND pixels
+
+Every UI verification produces TWO artifacts. Neither substitutes for the other,
+and a drive that produced only one is NOT verified:
+
+1. **State assertions** (the oracle) — CDP `Runtime.evaluate` /
+   `getComputedStyle` for Electron, remote-control `get`/`measure` for GTK.
+   Answers *is the value right*. Prefer this for anything expressible as state:
+   a class is present, a computed color is `rgba(…)`, a rect is at x=371.
+2. **A captured screenshot** (the paint check) — `Page.captureScreenshot` or the
+   GTK `screenshot` op, saved to a file whose path you state in the report.
+   Answers *did it actually paint*.
+
+They are not redundant, because each is blind to what the other catches:
+
+- State assertions cannot see paint. A widget with `opacity: 0` inherited from a
+  hover class its container can never satisfy reports `visible`, appears in the
+  DOM/widget tree, and paints NOTHING. Same for a dead renderer process — the
+  DOM is intact and the pane is a white rectangle with a sad-face bitmap.
+- Screenshots cannot see values, and are a lossy instrument. A translucent
+  surface over nothing reads as an opaque slab; a downscaled preview averages a
+  small light region into its dark surroundings and reads as "not painting".
+  When a screenshot contradicts the DOM oracle, **the oracle wins** — decode the
+  raw pixel at named coordinates before believing the image.
+
+So: assert state for correctness, screenshot for existence-of-paint, and report
+both. If the change is genuinely invisible (pure main-process/logic), say so
+explicitly rather than silently dropping the screenshot — that is a claim the
+reviewer can check, where silence is indistinguishable from a skipped step.
+
+**Screenshot hygiene** (a no-op drive still captures a frame): hash every capture
+in a set and fail on byte-identical duplicates, and assert the state actually
+CHANGED (pre-state differs from post-state) rather than trusting that your click
+did anything. A set of "7 verified surfaces" that is really 5 has shipped here
+before. Name each file for what it SHOWS, not what the drive intended.
 
 **First: which frontend did you change?** Orchestra has TWO, sharing one
 backend over a ui-rpc socket (`docs/gtk4-port-plan.md`, `docs/ui-rpc-protocol.md`):
@@ -45,17 +81,29 @@ ORCHESTRA_HOME=<fresh tmp dir> ORCHESTRA_DEBUG_PORT=<unique port> npx electron .
 ## Drive it (dep-free node, no MCP needed)
 
 Native `WebSocket` + `Runtime.evaluate` (`returnByValue: true`) for DOM
-assertions and clicks; `Page.captureScreenshot` for pixels. Keep a timeout race
-around screenshots — they hang forever if the window can't produce frames.
+assertions and clicks; `Page.captureScreenshot` for pixels — you need BOTH, per
+the top of this doc. Keep a timeout race around screenshots — they hang forever
+if the window can't produce frames.
+
+Drive gestures through TRUSTED input (`Input.dispatchMouseEvent`, including
+`type:'mouseWheel'` for scroll) — never a `.click()` call or a `scrollTop`
+assignment plus a synthetic `Event`. The app's own feedback loops (ResizeObserver
+re-pinning, controlled inputs, `isTrusted` checks) silently override synthetic
+writes and fabricate a FAILURE against working code. Yield at least one frame
+between dispatched keys: two keystrokes in one task means the second sees the
+pre-setState UI.
+
 Terminal CONTENT is invisible to DOM assertions (the WebGL renderer paints to
-canvas; `innerText` is empty) — verify terminal output via screenshot pixels or
-the PTY log instead.
+canvas; `innerText` is empty) — that is exactly the case where the screenshot is
+the only oracle, so read terminal output from screenshot pixels or the PTY log.
 
 ## Screenshots need a compositor that renders the window
 
-On the user's desktop the test window usually sits on a hidden Sway workspace →
-no frames → `Page.captureScreenshot` hangs. Don't steal focus. Instead run a
-second, headless sway and launch the app inside it:
+Since the screenshot half is mandatory, so is this section — a hidden window
+produces no frames, which blocks CDP INPUT and hit-testing too, not just pixels
+(clicks silently no-op). On the user's desktop the test window usually sits on a
+hidden Sway workspace → `Page.captureScreenshot` hangs. Don't steal focus.
+Instead run a second, headless sway and launch the app inside it:
 
 ```bash
 WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WAYLAND_DISPLAY= \

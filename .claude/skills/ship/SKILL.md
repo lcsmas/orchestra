@@ -48,7 +48,35 @@ launcher's AppImage with the local build.
    tag unverified code. (No separate `pnpm run build` needed here: the release
    script builds the AppImage itself and aborts if that fails.)
 
-4. **Stress-test performance before releasing.** A change can pass typecheck
+4. **Drive the changed UI surface — state AND pixels.** Typecheck and tests are
+   structurally blind to the defects that actually reach users: a composition
+   bug where every source is individually correct (a placeholder `''` masking a
+   persisted value, so the store is right and the display never moves), a CSS
+   rule that black-screens the app, an element that exists in the DOM and paints
+   nothing. All of those pass a green suite.
+
+   If the diff touches ANY user-facing surface — `src/renderer/**`, `*.css`,
+   `native/orchestra-gtk/src/**`, or a main-process change with a visible
+   result — run the `verify` skill and produce BOTH artifacts:
+
+   - **State assertions** over the real user path, driven with trusted CDP input
+     (or the GTK remote-control ops). Assert the CHANGE — capture pre-state and
+     require it to differ — not a state that may already have been true.
+   - **A screenshot** of the changed surface, saved to a stated path. This is
+     the only thing that catches "rendered nothing".
+
+   Report what you drove and what you observed, naming both artifacts. A caveat
+   is not a substitute: "not e2e-verified" shipped a user-facing regression here
+   in v0.5.153 that a ~10-minute drive caught in one run for v0.5.154. Disclosure
+   does not discharge the obligation.
+
+   Cosmetic/CSS-only edits are NOT exempt — they are the highest-risk category
+   for this step, because they cannot fail a typecheck and rarely fail a build,
+   yet a bad selector can leave the app unusable. A change with genuinely no
+   visible surface (pure logic, CLI, main-process plumbing) skips this step —
+   but say so explicitly in the release report rather than omitting it silently.
+
+5. **Stress-test performance before releasing.** A change can pass typecheck
    and tests and still melt the app at scale — work that runs per workspace ×
    per poll × per release adds up to a pegged main process. Two parts, both
    cheap; treat a failure like a failing test:
@@ -72,7 +100,7 @@ launcher's AppImage with the local build.
      offender. Sustained double-digit idle CPU, or a stream of short-lived
      `git`/`gh`/`du` children, is a release blocker.
 
-5. **Write the release description.** Compose a short, human-readable changelog
+6. **Write the release description.** Compose a short, human-readable changelog
    of what's in this release and write it to a temp file. Base it on the commits
    that this release adds on top of `origin/master`:
 
@@ -97,7 +125,7 @@ launcher's AppImage with the local build.
    Keep it concise and skip noise (chore/version-bump commits). If the branch has
    only trivial commits, a one-line summary is fine.
 
-6. **Release + land on master + install locally.** One command does the push,
+7. **Release + land on master + install locally.** One command does the push,
    the master fast-forward, the tag/build, the local install, and attaches your
    description to the GitHub release:
 
@@ -118,7 +146,7 @@ launcher's AppImage with the local build.
    build --release` in the worktree the launcher points at, or pass
    `--with-gtk` explicitly when the user asks for a GTK rebuild).
 
-7. **Report back.** Show the new version/tag. The local AppImage is already
+8. **Report back.** Show the new version/tag. The local AppImage is already
    swapped — tell the user to **relaunch Orchestra** to pick it up. CI then adds
    the x64/arm64 AppImages to the GitHub release a few minutes later.
 
