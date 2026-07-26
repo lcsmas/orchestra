@@ -248,6 +248,54 @@ test('choiceCovers matches value, resolved id, static aliases, and [1m] suffixes
   assert.ok(!choiceCovers(aliasRow, ''));
 });
 
+test('choiceCovers strips the context suffix on BOTH sides (v0.5.165 regression)', () => {
+  // The REAL live rows from supportedModels() on Claude Code 2.1.220: every
+  // Opus row resolves to `claude-opus-5[1m]` (WITH the suffix), while an
+  // explicit ws.model pin is the bare `claude-opus-5` (WITHOUT it). Normalizing
+  // only the incoming model — not the card's resolvedModel — meant nothing
+  // covered it, so AgentControls prepended a redundant "Account default model"
+  // card and checkmarked that instead of the real "Opus (1M context)" row.
+  const live = modelChoicesFrom([
+    { value: 'default', resolvedModel: 'claude-opus-5[1m]', displayName: 'Default (recommended)', description: '' },
+    { value: 'opus[1m]', resolvedModel: 'claude-opus-5[1m]', displayName: 'Opus (1M context)', description: '' },
+    { value: 'claude-fable-5[1m]', resolvedModel: 'claude-fable-5', displayName: 'Fable', description: '' },
+    { value: 'sonnet', resolvedModel: 'claude-sonnet-5', displayName: 'Sonnet', description: '' },
+    { value: 'haiku', resolvedModel: 'claude-haiku-4-5-20251001', displayName: 'Haiku', description: '' },
+  ]);
+  const covering = (model: string) =>
+    live.filter((c) => choiceCovers(c, model)).map((c) => c.label);
+
+  // The bug: a suffix-free explicit id was covered by NOTHING.
+  assert.deepEqual(covering('claude-opus-5'), ['Default (recommended)', 'Opus (1M context)']);
+  // Suffix-carrying and alias forms keep working.
+  assert.deepEqual(covering('claude-opus-5[1m]'), ['Default (recommended)', 'Opus (1M context)']);
+  assert.deepEqual(covering('opus[1m]'), ['Default (recommended)', 'Opus (1M context)']);
+  assert.deepEqual(covering('opus'), ['Default (recommended)', 'Opus (1M context)']);
+  // A card whose resolved id has NO suffix still matches a suffixed request.
+  assert.deepEqual(covering('claude-fable-5[1m]'), ['Fable']);
+  assert.deepEqual(covering('claude-sonnet-5'), ['Sonnet']);
+  // The Haiku card's own `value` is the alias `haiku`, which normalizes to
+  // claude-haiku-4-5 — so the bare id IS correctly covered by it (its
+  // resolvedModel is the date-suffixed snapshot, which is a different key).
+  assert.deepEqual(covering('haiku'), ['Haiku']);
+  assert.deepEqual(covering('claude-haiku-4-5'), ['Haiku']);
+  // Cross-family and unknown models must NOT match anything.
+  assert.deepEqual(covering('claude-opus-4-8'), []);
+  assert.deepEqual(covering('some-future-model'), []);
+});
+
+test('describeLiveModel matches a live row whose resolvedModel carries a suffix', () => {
+  const live = modelChoicesFrom([
+    { value: 'opus[1m]', resolvedModel: 'claude-opus-5[1m]', displayName: 'Opus (1M context)', description: 'Best for everyday' },
+  ]);
+  // Suffix-free id against a suffixed resolvedModel — previously fell through
+  // to the raw string.
+  assert.deepEqual(describeLiveModel('claude-opus-5', live), {
+    label: 'Opus (1M context)',
+    description: 'Best for everyday',
+  });
+});
+
 test('describeLiveModel uses a live choices list when given one', () => {
   const live = [
     { value: 'opus', resolvedModel: 'claude-opus-5', label: 'Opus 5', description: 'New!' },

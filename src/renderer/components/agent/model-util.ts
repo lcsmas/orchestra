@@ -59,15 +59,31 @@ function splitContextSuffix(model: string): { base: string; suffix: string } {
   return { base: (m ? m[1] : model).trim(), suffix: m ? m[2].trim() : '' };
 }
 
+/** Normalize a model string for comparison: strip the bracketed context suffix
+ *  and map a short alias to its canonical id, so `opus`, `opus[1m]`,
+ *  `claude-opus-5` and `claude-opus-5[1m]` all reduce to one key.
+ *
+ *  BOTH sides of a comparison must go through this. Normalizing only the model
+ *  being matched (and not the card's own `value`/`resolvedModel`) was the
+ *  0.5.165 bug: an explicit `claude-opus-5` never matched the live rows, whose
+ *  `resolvedModel` is `claude-opus-5[1m]`, so the switcher prepended a
+ *  redundant "Account default model" card and checkmarked THAT instead of the
+ *  real "Opus (1M context)" row. */
+function modelKey(model: string): string {
+  const { base } = splitContextSuffix(model);
+  const lower = base.toLowerCase();
+  return MODEL_ALIASES[lower] ?? lower;
+}
+
 /** Whether a card covers a concrete model string — directly, via its resolved
  *  canonical id (live-list alias rows), via the static alias map, or with a
- *  context suffix stripped (`opus[1m]` is still the `opus` card's model). */
+ *  context suffix stripped on EITHER side (`claude-opus-5` is covered by a row
+ *  resolving to `claude-opus-5[1m]`, and vice versa). */
 export function choiceCovers(choice: ModelChoice, model: string): boolean {
   if (!model) return false;
-  const { base } = splitContextSuffix(model);
-  const aliased = MODEL_ALIASES[base.toLowerCase()] ?? base;
-  const candidates = [model, base, aliased];
-  return candidates.some((c) => c === choice.value || (!!choice.resolvedModel && c === choice.resolvedModel));
+  const want = modelKey(model);
+  if (modelKey(choice.value) === want) return true;
+  return !!choice.resolvedModel && modelKey(choice.resolvedModel) === want;
 }
 
 /** The model the switcher should display, given the three candidate sources.
@@ -106,7 +122,10 @@ export function describeLiveModel(
   const base = MODEL_ALIASES[rawBase.toLowerCase()] ?? rawBase;
   const ctx = suffix ? `${suffix.replace(/m$/i, 'M').replace(/k$/i, 'K')} context` : '';
 
-  const known = choices.find((i) => i.value === base || i.resolvedModel === base);
+  // Same both-sides normalization as choiceCovers — a card whose resolvedModel
+  // carries a `[1m]` suffix must still match a suffix-free base, or the label
+  // falls through to the raw id.
+  const known = choices.find((i) => choiceCovers(i, base));
   if (known) {
     return { label: ctx ? `${known.label} · ${ctx}` : known.label, description: known.description };
   }
