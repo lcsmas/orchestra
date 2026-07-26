@@ -11,7 +11,7 @@ export interface ModelChoice {
   label: string;
   description: string;
   /** Canonical wire id `value` resolves to, when the choice came from the LIVE
-   *  runtime list (e.g. alias `opus` → `claude-opus-4-8`). Lets the switcher
+   *  runtime list (e.g. alias `opus` → `claude-opus-5`). Lets the switcher
    *  match a persisted/live full id against the alias card covering it. */
   resolvedModel?: string;
 }
@@ -19,20 +19,20 @@ export interface ModelChoice {
 /** Model choices offered in the switcher, newest/most-capable first. The live
  *  model is shown even when it's not in this list (see {@link describeLiveModel}) —
  *  e.g. the account default resolves to a context-suffixed variant like
- *  `claude-opus-4-8[1m]`. Ids are the canonical aliases (never date-suffixed). */
+ *  `claude-opus-5[1m]`. Ids are the canonical aliases (never date-suffixed). */
 export const MODEL_CHOICES: ModelChoice[] = [
   { value: 'claude-fable-5', label: 'Fable 5', description: 'Most capable — hardest work' },
-  { value: 'claude-opus-4-8', label: 'Opus 4.8', description: 'Highly capable — deep work' },
+  { value: 'claude-opus-5', label: 'Opus 5', description: 'Highly capable — deep work' },
   { value: 'claude-sonnet-5', label: 'Sonnet 5', description: 'Balanced speed and depth' },
   { value: 'claude-haiku-4-5', label: 'Haiku 4.5', description: 'Fastest — light tasks' },
 ];
 
 /** Claude Code's short model aliases → the canonical id we hold a card for.
  *  The account default is stored in `settings.json` as an alias (e.g. `opus[1m]`,
- *  `sonnet`), so a base of `opus` must resolve to `claude-opus-4-8` to reuse its
- *  card. Kept deliberately small — the exact 4.x mapping the CLI ships today. */
+ *  `sonnet`), so a base of `opus` must resolve to `claude-opus-5` to reuse its
+ *  card. Kept deliberately small — the mapping the CLI ships today (opus → Opus 5 since 2026-07-24). */
 const MODEL_ALIASES: Record<string, string> = {
-  opus: 'claude-opus-4-8',
+  opus: 'claude-opus-5',
   sonnet: 'claude-sonnet-5',
   haiku: 'claude-haiku-4-5',
   fable: 'claude-fable-5',
@@ -53,7 +53,7 @@ export function modelChoicesFrom(models: AgentModelInfo[] | undefined): ModelCho
 }
 
 /** Split a model string into its base id and bracketed context suffix
- *  (`claude-opus-4-8[1m]` → base `claude-opus-4-8`, suffix `1m`). */
+ *  (`claude-opus-5[1m]` → base `claude-opus-5`, suffix `1m`). */
 function splitContextSuffix(model: string): { base: string; suffix: string } {
   const m = /^(.*?)\[([^\]]+)\]$/.exec(model);
   return { base: (m ? m[1] : model).trim(), suffix: m ? m[2].trim() : '' };
@@ -92,10 +92,10 @@ export function effectiveModel(
 
 /** Turn a raw model id/alias the switcher has no card for into a friendly label +
  *  description. Covers the common case where the account's default model is a
- *  context-suffixed alias or full id (e.g. `opus[1m]` or `claude-opus-4-8[1m]`):
- *  resolve the base (mapping short aliases like `opus`→`claude-opus-4-8`), reuse
+ *  context-suffixed alias or full id (e.g. `opus[1m]` or `claude-opus-5[1m]`):
+ *  resolve the base (mapping short aliases like `opus`→`claude-opus-5`), reuse
  *  the matching {@link MODEL_CHOICES} label, and surface the suffix as a "1M
- *  context" note — so the trigger reads "Opus 4.8 · 1M context" rather than the
+ *  context" note — so the trigger reads "Opus 5 · 1M context" rather than the
  *  bare string. Falls back to the raw value for anything unrecognized. */
 export function describeLiveModel(
   model: string,

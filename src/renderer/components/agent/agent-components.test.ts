@@ -177,7 +177,7 @@ test('fileBase returns the last path segment', () => {
 test('MODEL_CHOICES offers Fable and uses date-suffix-free aliases', () => {
   const values = MODEL_CHOICES.map((c) => c.value);
   assert.ok(values.includes('claude-fable-5'), 'Fable 5 must be selectable');
-  assert.ok(values.includes('claude-opus-4-8'));
+  assert.ok(values.includes('claude-opus-5'));
   // Canonical aliases only — never date-suffixed (e.g. not claude-haiku-4-5-20251001).
   for (const v of values) {
     assert.ok(!/-\d{8}$/.test(v), `${v} should not carry a date suffix`);
@@ -185,17 +185,17 @@ test('MODEL_CHOICES offers Fable and uses date-suffix-free aliases', () => {
 });
 
 test('describeLiveModel maps a known base to its card label', () => {
-  assert.deepEqual(describeLiveModel('claude-opus-4-8'), {
-    label: 'Opus 4.8',
+  assert.deepEqual(describeLiveModel('claude-opus-5'), {
+    label: 'Opus 5',
     description: 'Highly capable — deep work',
   });
 });
 
 test('describeLiveModel surfaces a [1m] context suffix as a friendly note', () => {
-  // The reported bug: the account default resolves to `claude-opus-4-8[1m]`,
+  // The reported bug: the account default resolves to `claude-opus-5[1m]`,
   // which is NOT a menu entry, so it fell through to showing the raw id.
-  const d = describeLiveModel('claude-opus-4-8[1m]');
-  assert.equal(d.label, 'Opus 4.8 · 1M context');
+  const d = describeLiveModel('claude-opus-5[1m]');
+  assert.equal(d.label, 'Opus 5 · 1M context');
   assert.equal(d.description, 'Highly capable — deep work');
 });
 
@@ -240,9 +240,9 @@ test('choiceCovers matches value, resolved id, static aliases, and [1m] suffixes
   assert.ok(choiceCovers(aliasRow, 'claude-opus-5[1m]'));
   assert.ok(choiceCovers(aliasRow, 'opus[1m]'));
   // Static card (no resolvedModel) still covers the alias via MODEL_ALIASES.
-  const staticRow = { value: 'claude-opus-4-8', label: 'Opus 4.8', description: '' };
+  const staticRow = { value: 'claude-opus-5', label: 'Opus 5', description: '' };
   assert.ok(choiceCovers(staticRow, 'opus'));
-  assert.ok(choiceCovers(staticRow, 'claude-opus-4-8[1m]'));
+  assert.ok(choiceCovers(staticRow, 'claude-opus-5[1m]'));
   // Non-matches stay non-matches.
   assert.ok(!choiceCovers(aliasRow, 'claude-sonnet-5'));
   assert.ok(!choiceCovers(aliasRow, ''));
@@ -262,14 +262,14 @@ test('describeLiveModel uses a live choices list when given one', () => {
 test('describeLiveModel resolves Claude Code short aliases', () => {
   // settings.json stores the DEFAULT as an alias (e.g. `opus[1m]`), not a full id.
   assert.deepEqual(describeLiveModel('opus[1m]'), {
-    label: 'Opus 4.8 · 1M context',
+    label: 'Opus 5 · 1M context',
     description: 'Highly capable — deep work',
   });
   assert.equal(describeLiveModel('sonnet').label, 'Sonnet 5');
   assert.equal(describeLiveModel('haiku').label, 'Haiku 4.5');
   assert.equal(describeLiveModel('fable').label, 'Fable 5');
   // Case-insensitive on the alias.
-  assert.equal(describeLiveModel('OPUS').label, 'Opus 4.8');
+  assert.equal(describeLiveModel('OPUS').label, 'Opus 5');
 });
 
 test('effectiveModel: a backfilled (un-inited) session must not mask the ws choice', () => {
@@ -283,9 +283,9 @@ test('effectiveModel: a backfilled (un-inited) session must not mask the ws choi
 });
 
 test('effectiveModel: an inited session is the live truth', () => {
-  const inited = { sessionId: 'sess-1', model: 'claude-opus-4-8[1m]' };
+  const inited = { sessionId: 'sess-1', model: 'claude-opus-5[1m]' };
   // Live model wins over both ws choice and default.
-  assert.equal(effectiveModel(inited, 'claude-fable-5', 'opus[1m]'), 'claude-opus-4-8[1m]');
+  assert.equal(effectiveModel(inited, 'claude-fable-5', 'opus[1m]'), 'claude-opus-5[1m]');
   // Inited but model cleared ('' = session default) → fall to ws, then default.
   const cleared = { sessionId: 'sess-1', model: '' };
   assert.equal(effectiveModel(cleared, 'claude-fable-5', 'opus[1m]'), 'claude-fable-5');
