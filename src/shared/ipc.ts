@@ -6,6 +6,7 @@ import type {
   AgentEffortLevel,
   AgentEvent,
   AgentImage,
+  AgentModelInfo,
   AgentPermissionMode,
   AgentPermissionReply,
   AgentSkillInfo,
@@ -302,6 +303,10 @@ export interface OrchestraAPI {
   /** Skills (slash commands) available to the workspace's agent, for the
    *  composer's `/` autocomplete. */
   agentSkills: (wsId: string) => Promise<AgentSkillInfo[]>;
+  /** Models the workspace's Claude runtime offers (live `supportedModels()`
+   *  when a session runs, else the per-account cache). [] means "unknown" —
+   *  the renderer then falls back to its static list (model-util.ts). */
+  agentModels: (wsId: string) => Promise<AgentModelInfo[]>;
 
   // --- Embedded browser panel ---
   // A per-workspace in-window browser (an Electron WebContentsView) the user

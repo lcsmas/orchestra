@@ -535,16 +535,27 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   `.av-view`), blur killed in agent-view-flat.css.
 - **`model-util.ts`** (`components/agent/`, + tests in `agent-components.test.ts`) —
   pure, React-free model-switcher data/logic so `node --test` can exercise it.
-  `MODEL_CHOICES` is the switcher's model list (**Fable 5, Opus 4.8, Sonnet 5,
-  Haiku 4.5**; canonical aliases, never date-suffixed) — `AgentControls` zips it
-  with `MODEL_ICONS` into `AvMenuItem`s. `describeLiveModel(id)` renders a model
-  the list has no card for into a friendly `{label, description}`: it strips a
-  bracketed context suffix (`[1m]`/`[200k]` → "· 1M context"), maps Claude Code
-  short aliases (`opus`→`claude-opus-4-8`, `sonnet`/`haiku`/`fable`) to a card,
-  and reuses that card's label — so `opus[1m]` / `claude-opus-4-8[1m]` both read
-  "Opus 4.8 · 1M context". Unknown ids fall back to the raw string. The
-  `model`-not-in-list branch in `AgentControls` prepends the result as a `gear`
-  fallback item.
+  **The switcher's list is DYNAMIC**: `AgentControls` fetches the live runtime
+  list via **`agentModels`** (`agent:models` → `sdkListModels(wsId)` in
+  agent-sdk.ts — the Agent SDK's `query.supportedModels()`, the same source as
+  Claude Code's `/model` picker, cached in-memory per ACCOUNT config dir so
+  sessionless workspaces reuse a sibling's fetch; `[]` = unknown). New models
+  therefore appear without an Orchestra release. `modelChoicesFrom(models)`
+  maps the wire rows (`AgentModelInfo {value, resolvedModel?, displayName,
+  description}`) to `ModelChoice`s and falls back to the static
+  `MODEL_CHOICES` (**Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5**; canonical
+  aliases, never date-suffixed) when no session has answered yet this app run.
+  `choiceCovers(choice, model)` decides which card a concrete model string
+  belongs to (direct value, live `resolvedModel`, static alias map, `[1m]`
+  suffix stripped) — `AgentControls` highlights the covering card (preferring a
+  non-`default` row, since the live list's "Default (recommended)" row resolves
+  to the same id as its family row) and zips choices with `MODEL_FAMILY_ICONS`
+  (substring match on fable/mythos/opus/sonnet/haiku, so post-build models get
+  their family icon). `describeLiveModel(id, choices?)` renders a model no card
+  covers into a friendly `{label, description}`: strips the bracketed context
+  suffix (`[1m]`/`[200k]` → "· 1M context"), maps Claude Code short aliases,
+  and reuses the matching card's label. Unknown ids fall back to the raw
+  string, prepended as a verbatim card.
 - **Account-default model in the switcher (pre-session).** Before a turn starts
   there's no `session.model`; rather than an opaque placeholder, `AgentControls`
   fetches the model a fresh session *will* run on via **`agentSdkDefaultModel`**

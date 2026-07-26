@@ -884,6 +884,24 @@ export interface AgentSkillInfo {
   source: 'project' | 'user';
 }
 
+/** A model offered by the structured view's model switcher, as reported LIVE by
+ *  the Claude Code runtime (Agent SDK `query.supportedModels()`) — so newly
+ *  released models appear without an Orchestra release. Mirrors the SDK's
+ *  `ModelInfo` minus fields we don't render (agent-sdk.ts sdkListModels). The
+ *  renderer falls back to its small hardcoded list when this is unavailable
+ *  (no session has run yet in this app lifetime — model-util.ts). */
+export interface AgentModelInfo {
+  /** Identifier to pass to the SDK when selecting (may be an alias like `opus`). */
+  value: string;
+  /** Canonical wire id `value` resolves to (e.g. `opus` → `claude-opus-4-8`),
+   *  so a persisted explicit id can be matched to the alias row covering it. */
+  resolvedModel?: string;
+  /** Human-readable name, e.g. "Opus 4.8". */
+  displayName: string;
+  /** One-line capability description from the CLI. */
+  description: string;
+}
+
 /** A live change to the session's model or permission mode, emitted by the
  *  manager when the renderer's dropdowns switch one (agent-sdk.ts
  *  sdkSetModel/sdkSetPermissionMode). Without it the folded session keeps the

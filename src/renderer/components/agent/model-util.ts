@@ -2,12 +2,18 @@
 // (no React) so `node --test` can exercise them — AgentControls.tsx imports these
 // and pairs each id with an icon/tint for the AvMenu cards.
 
+import type { AgentModelInfo } from '../../../shared/types';
+
 /** A model the switcher offers as a card, minus the React icon. AgentControls
  *  zips these with icons/tints when building the AvMenu items. */
 export interface ModelChoice {
   value: string;
   label: string;
   description: string;
+  /** Canonical wire id `value` resolves to, when the choice came from the LIVE
+   *  runtime list (e.g. alias `opus` → `claude-opus-4-8`). Lets the switcher
+   *  match a persisted/live full id against the alias card covering it. */
+  resolvedModel?: string;
 }
 
 /** Model choices offered in the switcher, newest/most-capable first. The live
@@ -31,6 +37,38 @@ const MODEL_ALIASES: Record<string, string> = {
   haiku: 'claude-haiku-4-5',
   fable: 'claude-fable-5',
 };
+
+/** The switcher's choices: the LIVE runtime list when available (fetched from
+ *  the Agent SDK's `supportedModels()` over IPC — same source as Claude Code's
+ *  /model picker, so new models appear without an Orchestra release), else the
+ *  static {@link MODEL_CHOICES} fallback (fresh app run, no session yet). */
+export function modelChoicesFrom(models: AgentModelInfo[] | undefined): ModelChoice[] {
+  if (!models?.length) return MODEL_CHOICES;
+  return models.map((m) => ({
+    value: m.value,
+    label: m.displayName,
+    description: m.description,
+    resolvedModel: m.resolvedModel,
+  }));
+}
+
+/** Split a model string into its base id and bracketed context suffix
+ *  (`claude-opus-4-8[1m]` → base `claude-opus-4-8`, suffix `1m`). */
+function splitContextSuffix(model: string): { base: string; suffix: string } {
+  const m = /^(.*?)\[([^\]]+)\]$/.exec(model);
+  return { base: (m ? m[1] : model).trim(), suffix: m ? m[2].trim() : '' };
+}
+
+/** Whether a card covers a concrete model string — directly, via its resolved
+ *  canonical id (live-list alias rows), via the static alias map, or with a
+ *  context suffix stripped (`opus[1m]` is still the `opus` card's model). */
+export function choiceCovers(choice: ModelChoice, model: string): boolean {
+  if (!model) return false;
+  const { base } = splitContextSuffix(model);
+  const aliased = MODEL_ALIASES[base.toLowerCase()] ?? base;
+  const candidates = [model, base, aliased];
+  return candidates.some((c) => c === choice.value || (!!choice.resolvedModel && c === choice.resolvedModel));
+}
 
 /** The model the switcher should display, given the three candidate sources.
  *
@@ -59,15 +97,16 @@ export function effectiveModel(
  *  the matching {@link MODEL_CHOICES} label, and surface the suffix as a "1M
  *  context" note — so the trigger reads "Opus 4.8 · 1M context" rather than the
  *  bare string. Falls back to the raw value for anything unrecognized. */
-export function describeLiveModel(model: string): { label: string; description: string } {
+export function describeLiveModel(
+  model: string,
+  choices: ModelChoice[] = MODEL_CHOICES,
+): { label: string; description: string } {
   // Split off a bracketed context suffix like `[1m]` / `[200k]`.
-  const m = /^(.*?)\[([^\]]+)\]$/.exec(model);
-  const rawBase = (m ? m[1] : model).trim();
+  const { base: rawBase, suffix } = splitContextSuffix(model);
   const base = MODEL_ALIASES[rawBase.toLowerCase()] ?? rawBase;
-  const suffix = m ? m[2].trim() : '';
   const ctx = suffix ? `${suffix.replace(/m$/i, 'M').replace(/k$/i, 'K')} context` : '';
 
-  const known = MODEL_CHOICES.find((i) => i.value === base);
+  const known = choices.find((i) => i.value === base || i.resolvedModel === base);
   if (known) {
     return { label: ctx ? `${known.label} · ${ctx}` : known.label, description: known.description };
   }

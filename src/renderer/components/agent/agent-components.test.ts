@@ -21,7 +21,13 @@ import {
   fileBase,
   type ToolLike,
 } from './tool-util.ts';
-import { MODEL_CHOICES, describeLiveModel, effectiveModel } from './model-util.ts';
+import {
+  MODEL_CHOICES,
+  choiceCovers,
+  describeLiveModel,
+  effectiveModel,
+  modelChoicesFrom,
+} from './model-util.ts';
 import {
   EFFORT_LEVELS,
   EFFORT_LABELS,
@@ -201,6 +207,56 @@ test('describeLiveModel handles a [200k] suffix and unknown bases', () => {
   assert.equal(unknown.description, 'Account default model');
   // Unknown base but a recognizable suffix still surfaces the context note.
   assert.equal(describeLiveModel('claude-mystery-9[1m]').description, '1M context');
+});
+
+test('modelChoicesFrom prefers the live runtime list and falls back to the static one', () => {
+  // No live list yet (fresh app run, no session) → static fallback.
+  assert.deepEqual(modelChoicesFrom(undefined), MODEL_CHOICES);
+  assert.deepEqual(modelChoicesFrom([]), MODEL_CHOICES);
+  // Live list wins verbatim — including models this build has never heard of,
+  // which is the point of fetching dynamically (no release needed for new models).
+  const live = [
+    { value: 'opus', resolvedModel: 'claude-opus-5', displayName: 'Opus 5', description: 'New!' },
+    { value: 'claude-haiku-4-5', displayName: 'Haiku 4.5', description: 'Fast' },
+  ];
+  const choices = modelChoicesFrom(live);
+  assert.deepEqual(
+    choices.map((c) => c.label),
+    ['Opus 5', 'Haiku 4.5'],
+  );
+  assert.equal(choices[0].resolvedModel, 'claude-opus-5');
+});
+
+test('choiceCovers matches value, resolved id, static aliases, and [1m] suffixes', () => {
+  const aliasRow = {
+    value: 'opus',
+    resolvedModel: 'claude-opus-5',
+    label: 'Opus 5',
+    description: '',
+  };
+  // Direct value and resolved-id matches, with and without a context suffix.
+  assert.ok(choiceCovers(aliasRow, 'opus'));
+  assert.ok(choiceCovers(aliasRow, 'claude-opus-5'));
+  assert.ok(choiceCovers(aliasRow, 'claude-opus-5[1m]'));
+  assert.ok(choiceCovers(aliasRow, 'opus[1m]'));
+  // Static card (no resolvedModel) still covers the alias via MODEL_ALIASES.
+  const staticRow = { value: 'claude-opus-4-8', label: 'Opus 4.8', description: '' };
+  assert.ok(choiceCovers(staticRow, 'opus'));
+  assert.ok(choiceCovers(staticRow, 'claude-opus-4-8[1m]'));
+  // Non-matches stay non-matches.
+  assert.ok(!choiceCovers(aliasRow, 'claude-sonnet-5'));
+  assert.ok(!choiceCovers(aliasRow, ''));
+});
+
+test('describeLiveModel uses a live choices list when given one', () => {
+  const live = [
+    { value: 'opus', resolvedModel: 'claude-opus-5', label: 'Opus 5', description: 'New!' },
+  ];
+  // Matches via resolvedModel, and still surfaces the context suffix.
+  assert.deepEqual(describeLiveModel('claude-opus-5[1m]', live), {
+    label: 'Opus 5 · 1M context',
+    description: 'New!',
+  });
 });
 
 test('describeLiveModel resolves Claude Code short aliases', () => {

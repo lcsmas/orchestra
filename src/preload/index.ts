@@ -91,6 +91,7 @@ const api: OrchestraAPI = {
   agentSdkOpenTaskTranscript: (filePath) =>
     ipcRenderer.invoke('agent:sdkOpenTaskTranscript', filePath),
   agentSkills: (wsId) => ipcRenderer.invoke('agent:skills', wsId),
+  agentModels: (wsId) => ipcRenderer.invoke('agent:models', wsId),
   browserShow: (wsId) => ipcRenderer.invoke('browser:show', wsId),
   browserHide: (wsId) => ipcRenderer.invoke('browser:hide', wsId),
   browserNavigate: (wsId, url) => ipcRenderer.invoke('browser:navigate', wsId, url),

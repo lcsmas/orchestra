@@ -104,6 +104,7 @@ import {
   sdkHistory,
   sdkDefaultModel,
   sdkListSkills,
+  sdkListModels,
   sdkStopMany,
 } from './agent-sdk';
 import { probeDependencies, type DepsStatus } from './deps';
@@ -251,6 +252,7 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   agentSdkDefaultModel: 'agent:sdkDefaultModel',
   agentSdkOpenTaskTranscript: 'agent:sdkOpenTaskTranscript',
   agentSkills: 'agent:skills',
+  agentModels: 'agent:models',
   browserShow: 'browser:show',
   browserHide: 'browser:hide',
   browserNavigate: 'browser:navigate',
@@ -840,6 +842,7 @@ export const apiHandlers: ApiHandlerTable = {
   },
 
   agentSkills: async (wsId) => sdkListSkills(wsId),
+  agentModels: async (wsId) => sdkListModels(wsId),
 
   // --- Embedded browser panel (see browser-panel.ts) ---
   // The renderer opens/positions the native WebContentsView; navigation can also

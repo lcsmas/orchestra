@@ -10,11 +10,22 @@
 // field labels, the tinted icon + value carry the meaning.
 
 import React from 'react';
-import type { AgentEffortLevel, AgentPermissionMode, AgentSession } from '../../../shared/types';
+import type {
+  AgentEffortLevel,
+  AgentModelInfo,
+  AgentPermissionMode,
+  AgentSession,
+} from '../../../shared/types';
 import { AvMenu, type AvMenuItem } from './AvMenu';
 import { EffortSlider } from './EffortSlider';
 import { DEFAULT_EFFORT } from './effort-util';
-import { MODEL_CHOICES, describeLiveModel, effectiveModel } from './model-util';
+import {
+  type ModelChoice,
+  choiceCovers,
+  describeLiveModel,
+  effectiveModel,
+  modelChoicesFrom,
+} from './model-util';
 
 function icon(paths: React.ReactNode, viewBox = '0 0 16 16') {
   return (
@@ -112,23 +123,32 @@ const PERMISSION_ITEMS: (AvMenuItem & { value: AgentPermissionMode })[] = [
   },
 ];
 
-/** Per-model icon + tint, zipped onto the pure {@link MODEL_CHOICES} data
- *  (kept in model-util.ts so it's unit-testable without React). */
-const MODEL_ICONS: Record<string, { icon: React.ReactNode; tint: string }> = {
-  'claude-fable-5': { icon: sparkles, tint: '#e0a3ff' },
-  'claude-opus-4-8': { icon: sparkles, tint: '#8b7cff' },
-  'claude-sonnet-5': { icon: zap, tint: '#6ea8ff' },
-  'claude-haiku-4-5': { icon: feather, tint: '#7ee787' },
-};
+/** Per-model-FAMILY icon + tint, matched by substring so models the live list
+ *  surfaces after this build (a new Opus, a new Sonnet…) still get their
+ *  family's icon instead of the generic gear. Order matters: first hit wins. */
+const MODEL_FAMILY_ICONS: [pattern: string, style: { icon: React.ReactNode; tint: string }][] = [
+  ['fable', { icon: sparkles, tint: '#e0a3ff' }],
+  ['mythos', { icon: sparkles, tint: '#e0a3ff' }],
+  ['opus', { icon: sparkles, tint: '#8b7cff' }],
+  ['sonnet', { icon: zap, tint: '#6ea8ff' }],
+  ['haiku', { icon: feather, tint: '#7ee787' }],
+];
 
-/** Model choices offered in the switcher. The live model is shown even if not
- *  in this list (from session.model — e.g. the account default resolves to a
- *  context-suffixed variant like `claude-opus-4-8[1m]`, surfaced verbatim by
- *  the `model`-not-in-list fallback below via {@link describeLiveModel}). */
-const MODEL_ITEMS: AvMenuItem[] = MODEL_CHOICES.map((c) => ({
-  ...c,
-  ...(MODEL_ICONS[c.value] ?? { icon: gear, tint: '#949eb0' }),
-}));
+function modelIcon(value: string): { icon: React.ReactNode; tint: string } {
+  const v = value.toLowerCase();
+  return (
+    MODEL_FAMILY_ICONS.find(([pattern]) => v.includes(pattern))?.[1] ?? {
+      icon: gear,
+      tint: '#949eb0',
+    }
+  );
+}
+
+/** Build the switcher's cards from a set of pure choices (live runtime list or
+ *  the static {@link MODEL_CHOICES} fallback), zipping on family icons. */
+function toModelItems(choices: ModelChoice[]): AvMenuItem[] {
+  return choices.map((c) => ({ ...c, ...modelIcon(c.resolvedModel ?? c.value) }));
+}
 
 export function AgentControls({
   workspaceId,
@@ -185,14 +205,47 @@ export function AgentControls({
 
   const model = explicitModel || defaultModel;
 
-  const modelItems = MODEL_ITEMS.some((m) => m.value === model)
-    ? MODEL_ITEMS
-    : model
-      ? [
-          { value: model, ...describeLiveModel(model), icon: gear, tint: '#949eb0' },
-          ...MODEL_ITEMS,
-        ]
-      : MODEL_ITEMS;
+  // The LIVE model list, from the Agent SDK's `supportedModels()` (the same
+  // source as Claude Code's /model picker) — so newly released models show up
+  // without an Orchestra release. [] (no session yet this app run) falls back
+  // to the static MODEL_CHOICES via modelChoicesFrom. Re-fetched when a session
+  // inits, since only a live subprocess can answer (and the account may differ).
+  const [liveModels, setLiveModels] = React.useState<AgentModelInfo[]>([]);
+  React.useEffect(() => {
+    let alive = true;
+    void window.orchestra
+      .agentModels(workspaceId)
+      .then((models) => {
+        if (alive) setLiveModels(models);
+      })
+      // Fail-soft: keep the static fallback list; never an unhandled rejection.
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [workspaceId, inited]);
+
+  const choices: ModelChoice[] = modelChoicesFrom(liveModels);
+  const baseItems = toModelItems(choices);
+  // Highlight the card that COVERS the concrete model (alias rows cover their
+  // resolved id, `[1m]` suffixes strip); only a genuinely unknown model gets a
+  // prepended verbatim card. The live list's "default" row resolves to the same
+  // id as the real family row — prefer the family row for an explicit choice.
+  const covering =
+    choices.find((c) => c.value !== 'default' && choiceCovers(c, model)) ??
+    choices.find((c) => choiceCovers(c, model));
+  const menuValue = covering ? covering.value : model;
+  const modelItems =
+    covering || !model
+      ? baseItems
+      : [
+          {
+            value: model,
+            ...describeLiveModel(model, choices),
+            ...modelIcon(model),
+          },
+          ...baseItems,
+        ];
 
   return (
     <div className="av-controls" role="toolbar" aria-label="Agent controls">
@@ -210,7 +263,7 @@ export function AgentControls({
       <div className="av-controls-menus">
         <AvMenu
           items={modelItems}
-          value={model}
+          value={menuValue}
           placeholder="Account default"
           ariaLabel="Model"
           onSelect={(v) => void window.orchestra.agentSdkSetModel(workspaceId, v || undefined)}

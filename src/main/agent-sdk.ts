@@ -47,6 +47,7 @@ import type {
   AgentEvent,
   AgentImage,
   AgentPermissionMode,
+  AgentModelInfo,
   AgentPermissionReply,
   AgentSkillInfo,
   AgentStopReason,
@@ -962,6 +963,55 @@ export function sdkDefaultModel(wsId: string): string {
     if (m) model = m;
   }
   return model;
+}
+
+/** Model lists last reported by a live session, keyed by the ACCOUNT config
+ *  dir that answered (model availability is an account/CLI property, not a
+ *  workspace one) — so a workspace with no live session still gets the list a
+ *  sibling on the same account fetched. In-memory only: on a fresh app run
+ *  with no session yet, {@link sdkListModels} returns [] and the renderer
+ *  falls back to its static list (model-util.ts MODEL_CHOICES). */
+const modelListCache = new Map<string, AgentModelInfo[]>();
+
+/** List the models the workspace's Claude runtime actually offers, via the
+ *  live session's `supportedModels()` control request — the same source as
+ *  Claude Code's /model picker, so newly released models (and account-gated
+ *  ones) appear without hardcoding. Falls back to the last list cached for
+ *  this workspace's account, then []. The control request is raced against a
+ *  short timeout so a wedged subprocess can't hang the renderer's menu open. */
+export async function sdkListModels(wsId: string): Promise<AgentModelInfo[]> {
+  const ws = store.getWorkspace(wsId);
+  const cacheKey =
+    (ws && workspaceAccountConfigDir(ws, undefined)) || path.join(os.homedir(), '.claude');
+
+  const session = sessions.get(wsId);
+  if (session) {
+    try {
+      const models = await Promise.race([
+        session.q.supportedModels(),
+        // A control request to a dying subprocess can park forever; the menu
+        // must still open, so time-box and fall back to the cache.
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('supportedModels timed out')), 3000),
+        ),
+      ]);
+      const mapped: AgentModelInfo[] = models.map((m) => ({
+        value: m.value,
+        resolvedModel: m.resolvedModel,
+        displayName: m.displayName,
+        description: m.description,
+      }));
+      if (mapped.length) {
+        modelListCache.set(cacheKey, mapped);
+        return mapped;
+      }
+    } catch (err) {
+      log.warn(
+        `agent-sdk: supportedModels failed for ${wsId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  return modelListCache.get(cacheKey) ?? [];
 }
 
 /** List the skills (slash commands) available to a workspace: the worktree's
