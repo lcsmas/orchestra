@@ -2595,12 +2595,35 @@ Use this only for work that does NOT depend on your current uncommitted changes
 — the new worktree is cut from the base branch and will not see them. Only spawn
 when the user asks you to parallelize or delegate; do not do it unprompted.
 
+**Before running the command, answer in one line: does this child nest under me,
+or is it top-level?** Quote the user's own words that decide it. Nesting is the
+default and \`--detached\` is opt-in, so forgetting the flag silently produces the
+OPPOSITE of a "standalone" request — and nothing fails: the child works
+perfectly, it just appears in the wrong place, so only the user noticing the
+sidebar ever catches it. If the user said **standalone, independent, separate,
+or top-level** → \`--detached\`. (Careful: "standalone" also describes a
+self-contained BRIEF, as in the paragraph above. What matters is whether the
+user described the WORKSPACE that way, not the task.)
+
 Run this exact command (the \`orchestra\` CLI reads \$ORCHESTRA_SOCK /
 \$ORCHESTRA_WS_ID from your env, and nests the new worktree under you):
 
 \`\`\`bash
+# nested under me (default) — I am tracking this child's work
 orchestra spawn --task "<full self-contained instructions for the new agent>"
+
+# top-level — the user asked for a standalone/independent/separate workspace
+orchestra spawn --detached --task "<full self-contained instructions>"
 \`\`\`
+
+The CLI REFUSES the spawn when the task text asks for a standalone agent but
+\`--detached\` is missing. That check only sees the brief you wrote, not the
+user's request, so it is a backstop — you still make the call above.
+
+Got it wrong? \`orchestra detach <id>\` pops an already-spawned child out to its
+own section (\`orchestra attach <id> <parentId>\` nests it back). Neither
+interrupts the running agent; verify via the workspace's \`parentId\` rather than
+trusting the command output.
 
 On success it prints \`Spawned <workspace-id> on branch <branch>\` once the
 worktree exists and its agent has started; otherwise it prints an error and

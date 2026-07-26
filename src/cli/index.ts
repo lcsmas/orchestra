@@ -212,6 +212,26 @@ function takeBoolFlag(args: string[], flag: string): { present: boolean; rest: s
   return { present: true, rest: [...args.slice(0, idx), ...args.slice(idx + 1)] };
 }
 
+/** Does this spawn brief describe a top-level (detached) WORKSPACE?
+ *
+ *  Nesting is `orchestra spawn`'s default and `--detached` is opt-in, so a brief
+ *  asking for a "standalone agent" without the flag silently produces the
+ *  opposite — and nothing fails: the child works fine, it just lands in the
+ *  wrong place, so only a human noticing the sidebar ever catches it.
+ *
+ *  Deliberately NARROW: the wording must describe the AGENT/WORKSPACE, not the
+ *  code. "Refactor auth into a standalone module" and "extract an independent
+ *  package" are legitimate briefs that must NOT trip this — an over-broad gate
+ *  that blocks real work just teaches people to route around it. */
+export function taskAsksForStandaloneWorkspace(task: string): boolean {
+  return (
+    /\b(standalone|independent|detached|separate|top-level)\s+(agent|workspace|session)\b/i.test(task) ||
+    /\b(agent|workspace|session)\s+(?:should\s+be\s+|must\s+be\s+)?(standalone|independent|detached|top-level)\b/i.test(
+      task,
+    )
+  );
+}
+
 function fail(message: string): never {
   process.stderr.write(`${message}\n`);
   process.exit(1);
@@ -296,6 +316,21 @@ async function main(argv: string[]): Promise<void> {
         fail(
           'usage: orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]',
         );
+      // Catch the intent/flag mismatch mechanically. Nesting is the default, so
+      // an agent briefing a child as "standalone"/"independent"/"separate" while
+      // omitting --detached silently gets the OPPOSITE of what was asked, and
+      // nothing downstream fails — the child works fine, it just shows up in the
+      // wrong place, so the error is only ever caught by a human noticing the
+      // sidebar. Knowing the rule demonstrably isn't enough (this shipped wrong
+      // by an agent that had just read the rule), so the tool checks instead of
+      // trusting the caller to remember.
+      if (!detached && taskAsksForStandaloneWorkspace(task)) {
+        fail(
+          'refusing to spawn: the task text asks for a STANDALONE/independent agent, ' +
+            'but --detached was not passed, so this child would nest under you instead.\n' +
+            'Pass --detached to make it top-level, or reword the task if you really do want it nested.',
+        );
+      }
       // `from` is always sent (it also drives repo inheritance server-side);
       // `detached` tells the server to skip only the parent nesting.
       const body: Record<string, unknown> = { task, from: selfWorkspaceId() };
