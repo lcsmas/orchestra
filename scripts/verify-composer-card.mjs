@@ -249,6 +249,93 @@ async function main() {
     set.call(t, ''); t.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
 
+  // ── RUNNING STATE ─────────────────────────────────────────────────────────
+  // A `user-message` event is what flips `running:true` in the real fold
+  // (agent-events.ts:1183-1206) — drive it that way rather than poking state,
+  // so the interrupt chip / queue glyph are exercised through the true path.
+  console.log('\n[running]');
+  const preRun = await evaluate(`(() => {
+    const b = document.querySelector('.av-composer-send');
+    const i = document.querySelector('.av-controls-interrupt');
+    return { running: window.__readAgentSession('${WS_ID}')?.running ?? false,
+             interruptShown: i ? getComputedStyle(i).display !== 'none' : false,
+             sendPath: b.querySelector('svg path')?.getAttribute('d') ?? null };
+  })()`);
+  check('pre-state: not running', preRun.running === false);
+  check('pre-state: interrupt hidden while idle', preRun.interruptShown === false);
+
+  await evaluate(`
+    window.__injectAgentEvent('${WS_ID}', {
+      type: 'user-message', seq: 900, text: 'Check the sandbox path too.',
+      at: Date.now() - 64000,
+    });
+  `);
+  await new Promise((r) => setTimeout(r, 900));
+
+  const run = await evaluate(`(() => {
+    const s = window.__readAgentSession('${WS_ID}');
+    const b = document.querySelector('.av-composer-send');
+    const i = document.querySelector('.av-controls-interrupt');
+    const field = document.querySelector('.av-composer-field').getBoundingClientRect();
+    const br = b.getBoundingClientRect();
+    const work = document.querySelector('.av-working-line');
+    return {
+      running: s?.running ?? false,
+      interruptShown: i ? getComputedStyle(i).display !== 'none' : false,
+      interruptDisabled: i ? i.disabled : null,
+      interruptFirst: i ? Math.round(i.getBoundingClientRect().left) : null,
+      sendPath: b.querySelector('svg path')?.getAttribute('d') ?? null,
+      sendTitle: b.getAttribute('title'),
+      sendAria: b.getAttribute('aria-label'),
+      sendStillCircle: getComputedStyle(b).borderRadius === '50%',
+      sendGap: Math.round(field.right - br.right),
+      // The live readout renders in the TRANSCRIPT (CC-desktop placement),
+      // not in the composer bar — assert it is NOT inside the card.
+      workingExists: !!work,
+      workingInCard: !!(work && document.querySelector('.av-composer-field').contains(work)),
+      workingText: work ? work.innerText.replace(/\\s+/g, ' ').trim() : null,
+    };
+  })()`);
+  check('session is running', run.running === true);
+  check('interrupt appears while running', run.interruptShown === true);
+  check('interrupt is enabled', run.interruptDisabled === false);
+  check('interrupt leads the control row', run.interruptFirst !== null && run.interruptFirst < 400,
+    `x=${run.interruptFirst}`);
+  check('send swaps to the QUEUE glyph', run.sendPath === 'M12 4v5a3 3 0 0 1-3 3H4',
+    run.sendPath);
+  check('send announces queueing', run.sendAria === 'Queue message', run.sendAria);
+  check('send tooltip explains the queue', /queue/i.test(run.sendTitle || ''), run.sendTitle);
+  check('send stays circular while running', run.sendStillCircle);
+  check('send stays docked right while running', run.sendGap <= 12, `${run.sendGap}px`);
+  check('live readout renders in the transcript', run.workingExists === true);
+  check('live readout is NOT inside the composer card', run.workingInCard === false);
+  await shot('04-running');
+
+  // Esc interrupts from the composer — the no-session path makes main emit a
+  // synthetic turn-end, so running flips back to false. Real trusted keydown.
+  await evaluate(`document.querySelector('${ta}').focus()`);
+  await new Promise((r) => setTimeout(r, 120));
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
+  });
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
+  });
+  await new Promise((r) => setTimeout(r, 1400));
+  const afterEsc = await evaluate(`(() => {
+    const s = window.__readAgentSession('${WS_ID}');
+    const i = document.querySelector('.av-controls-interrupt');
+    const b = document.querySelector('.av-composer-send');
+    return { running: s?.running ?? false,
+             stopReason: s?.lastTurn?.stopReason ?? null,
+             interruptShown: i ? getComputedStyle(i).display !== 'none' : false,
+             sendPath: b.querySelector('svg path')?.getAttribute('d') ?? null };
+  })()`);
+  check('Esc from the composer interrupts the turn', afterEsc.running === false,
+    `stopReason=${afterEsc.stopReason}`);
+  check('interrupt hides again once stopped', afterEsc.interruptShown === false);
+  check('send reverts to the SEND glyph', afterEsc.sendPath === 'M8 13V3', afterEsc.sendPath);
+
   // ── NO REGRESSION: nothing overlaps, card is above the strip ──────────────
   console.log('\n[layout sanity]');
   const geo = await evaluate(`(() => {
