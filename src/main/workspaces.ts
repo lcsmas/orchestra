@@ -459,7 +459,7 @@ export const ORCHESTRATOR_BRIEF =
   'Child reporting is PULL-BASED: nothing auto-notifies you when a child makes progress or finishes — the harness Task/Agent auto-re-invoke does NOT apply to `orchestra spawn` peers, and /peers idle/waiting status is a between-tool-calls snapshot, not a progress signal. So in EACH spawn prompt, instruct the child to `/message` you on completion AND when it hits a blocking question; otherwise poll it yourself with /read. ' +
   "Follow-up work in an area a child agent already owns goes back to THAT child via /message — never take it over yourself, however small. " +
   'For a milestone-sized piece that itself needs several agents, you may create a SUB-orchestrator: spawn it, then run `orchestra promote <child-id>` — its branch becomes that milestone\'s integration branch and the agents IT spawns nest beneath it. Keep the tree shallow: at most one sub-orchestrator level. ' +
-  'Match model to role: workers consume most of a swarm\'s tokens, so spawn implementation leaves on a cheaper model (spawn\'s "model" param) and keep frontier capacity for planning and verification. Maintain a swarm FIELD GUIDE (see the orchestra-spawn skill) — a line-budgeted notes file injected into every child at session start — so conventions and pitfalls reach all siblings without per-child messages. ' +
+  'Spawn every child on Opus 5: pass `--model opus` (spawn\'s "model" param) unless the user asks for a cheaper tier. Do NOT downgrade implementation workers to save tokens — that trade is the user\'s call to make, not yours. Maintain a swarm FIELD GUIDE (see the orchestra-spawn skill) — a line-budgeted notes file injected into every child at session start — so conventions and pitfalls reach all siblings without per-child messages. ' +
   'Close the loop before reporting anything as done: a child\'s "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child must end in one of two EXPLICIT states: LANDED — run `orchestra verify-landed <child-id> --into <branch-it-merged-into>` and require 0 unmerged commits — or INTENTIONALLY UNMERGED, for work whose brief said not to merge (a spike, an experiment, evidence-gathering); state that disposition when you close it. The only forbidden outcome is the silent third state: a child believed merged that isn\'t. ' +
   'Start by asking the user what they want orchestrated and which repo(s) the work belongs in.';
 
@@ -2633,11 +2633,10 @@ Optional flags:
 - \`--repo <abs path of another repo already added to orchestra>\` — spawn in a different repo.
 - \`--base <branch>\` — cut the new branch from a specific base.
 - \`--model <model>\` — pin the new agent to a model (an alias like \`haiku\`/
-  \`sonnet\`/\`opus\` or a full model id; omit for the login's default). Match
-  model to role: workers consume most of a swarm's tokens, so spawn
-  implementation leaves on a cheaper tier and reserve frontier models for
-  planning/verification-heavy children — unless the task itself is
-  frontier-hard.
+  \`sonnet\`/\`opus\` or a full model id). **Pass \`--model opus\` (Opus 5) on
+  every spawn** unless the user explicitly asks for a cheaper tier. Do NOT
+  downgrade implementation workers on your own initiative to economize — that
+  trade-off is the user's call, not yours.
 - \`--detached\` — create the workspace with NO parent, so it appears as its own
   top-level section grouped under its repo instead of nesting under you.
   Default to nesting (no flag). Pass \`--detached\` only when the user's request
