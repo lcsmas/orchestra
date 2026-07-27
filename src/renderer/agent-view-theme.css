@@ -179,11 +179,24 @@
    and re-engaging is one click instead of a manual drag to the very bottom.
    Deliberately discreet: dim by default, accent only on hover. It sits in the
    positioned `.av-list-shell`, NOT in the scrolled content, so it stays put. */
+/* Centered WITHOUT `transform`, deliberately. The obvious
+   `left:50% + translateX(-50%)` is fragile here because this element is a
+   `<button>`, and styles.css has a global `button:active { transform:
+   translateY(0.5px) }` (specificity 0,1,1 — it outranks this rule). Pressing
+   the pill therefore REPLACED the centering translate, snapping the pill half
+   its width to the RIGHT, out from under the cursor, so mouseup landed outside
+   and the click never fired — clicking to the right of the button was the only
+   thing that worked. The base `button` rule also transitions `transform`, which
+   animated that jump.
+   `inset-inline: 0 + margin-inline: auto` centers via layout instead, so no
+   transform rule (`:active`, `:hover`, a keyframe) can ever displace it. */
 .av-follow-pill {
   position: absolute;
   bottom: 12px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  width: fit-content;
   z-index: 3;
   display: inline-flex;
   align-items: center;
@@ -198,13 +211,6 @@
   line-height: 1.4;
   cursor: pointer;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
-  /* NOT `av-reveal`: that keyframe animates `transform` (ending at
-     `transform: none`), which clobbers the `translateX(-50%)` centering above
-     for the animation's whole duration — the pill drew half a width to the
-     RIGHT of center, snapped to center when the animation ended, and left its
-     hit box behind at the un-centered position (clicks landed to the right of
-     the visible button). Any keyframe applied here must carry the centering
-     translate in EVERY frame. */
   animation: av-follow-pill-reveal 180ms var(--av-ease-out);
   transition:
     color 120ms var(--av-ease),
@@ -221,10 +227,15 @@
   border-color: var(--av-focus-border);
   box-shadow: 0 0 0 3px var(--av-focus-ring);
 }
+/* Centering is layout-based (see above), so this keyframe only needs the
+   vertical rise — no `translateX(-50%)` to preserve. */
 @keyframes av-follow-pill-reveal {
-  from { opacity: 0; transform: translateX(-50%) translateY(-3px); }
-  to { opacity: 1; transform: translateX(-50%); }
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: none; }
 }
+/* Cancel the global `button:active` nudge: it is the rule that used to displace
+   this pill, and a press-shift on a floating pill reads as a glitch anyway. */
+.av-follow-pill:active { transform: none; }
 @media (prefers-reduced-motion: reduce) {
   .av-follow-pill { animation: none; }
 }
