@@ -28,6 +28,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
+import { scoped } from '../log';
 import { WorkspaceAccountBadge } from './AccountBadge';
 import type { AgentImage, AgentSession, AgentSkillInfo, RenderMessage } from '../../shared/types';
 // A3: real presentational components (markdown bubbles, tool cards, diffs,
@@ -65,6 +66,15 @@ interface Props {
 // session length, which is what holds 60fps at 500 messages.
 const ESTIMATED_ROW_H = 72;
 const OVERSCAN = 6;
+
+const log = scoped('structured-view');
+
+// How many synchronous measure→render passes may chain within a single frame
+// before the row-measure path degrades to the coalesced (rAF) one. React throws
+// error #185 at ~50 nested updates and the app black-screens, so this must stay
+// comfortably below that. Normal streaming settles in a handful of passes (each
+// pass measures every mounted row, so one commit of N new rows is ONE pass).
+const MAX_SYNC_MEASURE_PASSES = 12;
 
 export function StructuredView({ workspaceId, isActive }: Props) {
   const session = useStore((s) => s.agentSessions[workspaceId]);
@@ -200,6 +210,11 @@ function MessageList({
   // we bump `measureTick` to recompute the window after a batch of measures.
   const heights = useRef<Map<string, number>>(new Map());
   const [measureTick, setMeasureTick] = useState(0);
+  // Guards against the React #185 render loop (see the onHeight handler). Counts
+  // synchronous measure→render passes since the last painted frame; a frame
+  // boundary resets it, so only an unbroken chain WITHIN one frame can trip it.
+  const syncMeasurePasses = useRef(0);
+  const measureLoopWarned = useRef(false);
   // Stick to bottom while the user hasn't scrolled up — streaming output should
   // keep the latest message in view, like a terminal.
   const stickBottom = useRef(true);
@@ -326,6 +341,20 @@ function MessageList({
     // Re-attach when the observed elements are (re)created — they only exist once
     // there are messages (the empty state renders a different subtree).
   }, [pinToBottom, messages.length > 0]);
+
+  // Reset the measure-loop counter once per painted frame. Only an unbroken
+  // chain of synchronous measure→render passes WITHIN a single frame can trip
+  // the guard; reaching a paint means layout settled, so normal streaming (which
+  // paints between batches) never accumulates toward the limit.
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      syncMeasurePasses.current = 0;
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   // Track viewport height (resize) so the window recomputes on layout changes.
   useLayoutEffect(() => {
@@ -477,7 +506,39 @@ function MessageList({
                   const known = heights.current.get(it.id);
                   if (known === h) return;
                   heights.current.set(it.id, h);
-                  if (known === undefined) {
+                  // Circuit breaker for React error #185 ("Maximum update depth
+                  // exceeded"), which black-screened the whole app.
+                  //
+                  // MeasuredRow's layout effect is dependency-free, so it
+                  // re-measures after EVERY render and calls back in here. The
+                  // `known === h` guard above terminates that only when heights
+                  // SETTLE. They don't have to: a viewport resize recomputes the
+                  // virtualized window, which mounts a different row set, whose
+                  // measurements move the window back — an A→B→A oscillation
+                  // where every pass reports a genuinely new height, so the
+                  // guard never fires and the synchronous path below re-renders
+                  // forever. Archiving the workspace you are viewing is the
+                  // reliable trigger: it switches to a cold StructuredView whose
+                  // rows all measure for the first time WHILE the pane is being
+                  // resized by the sidebar row disappearing.
+                  //
+                  // So bound the synchronous path: after enough back-to-back
+                  // passes without a paint, fall through to the coalesced rAF
+                  // path, which yields to the browser and cannot recurse. A
+                  // frame boundary resets the counter, so normal streaming (a
+                  // handful of passes per frame) is untouched.
+                  syncMeasurePasses.current += 1;
+                  const looping = syncMeasurePasses.current > MAX_SYNC_MEASURE_PASSES;
+                  if (looping && !measureLoopWarned.current) {
+                    measureLoopWarned.current = true;
+                    log.warn(
+                      `row-measure loop guard tripped after ` +
+                        `${MAX_SYNC_MEASURE_PASSES} synchronous passes (row ${it.id}: ` +
+                        `${String(known)}px -> ${h}px) — falling back to coalesced ` +
+                        `measurement. This prevented a React #185 render loop.`,
+                    );
+                  }
+                  if (known === undefined && !looping) {
                     // FIRST measure of a newly-mounted row: recompute the
                     // window synchronously (we're inside a layout effect, so
                     // this re-renders BEFORE paint). Until measured, offsets
