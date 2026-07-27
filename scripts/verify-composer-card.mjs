@@ -146,6 +146,7 @@ async function main() {
       radius: cs.borderRadius, text: b.textContent.trim(),
       aria: b.getAttribute('aria-label'), title: b.getAttribute('title'),
       disabled: b.disabled,
+      opacity: cs.opacity, filter: cs.filter,
       hasSvg: !!b.querySelector('svg'),
       // right-docked inside the card
       gapToFieldRight: Math.round(field.right - r.right),
@@ -157,6 +158,13 @@ async function main() {
   check('send keeps an accessible name', !!sendInfo.aria, sendInfo.aria);
   check('send renders its glyph', sendInfo.hasSvg);
   check('send is disabled while empty', sendInfo.disabled === true);
+  // The empty state must read as "waiting", not "broken": keep the accent hue
+  // (no saturate() wash) and stay legible. The old pill could grey out hard
+  // because it carried a "Send" TEXT label; a bare icon circle cannot.
+  check('disabled send keeps its accent hue (no desaturation)',
+    sendInfo.filter === 'none', `filter=${sendInfo.filter}`);
+  check('disabled send stays legible (opacity >= 0.4)',
+    parseFloat(sendInfo.opacity) >= 0.4, `opacity=${sendInfo.opacity}`);
   check('send docks to the card right edge', sendInfo.gapToFieldRight <= 12, `${sendInfo.gapToFieldRight}px`);
 
   await shot('01-idle-empty');
