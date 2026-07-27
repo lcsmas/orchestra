@@ -161,6 +161,43 @@ async function main() {
 
   await shot('01-idle-empty');
 
+  // ── FLAT CHIPS: no chip in the control row may look like a raised button ──
+  // ENUMERATE every element in the row rather than checking the ones we expect
+  // to be wrong — scoping this to known offenders is how the class survives
+  // being fixed. Two real defects were found this way: the interrupt inherited
+  // `.av-btn`'s border + surface fill, and EVERY `.av-menu-trigger` carried
+  // `box-shadow: var(--shadow-sm)` leaking from styles.css's bare `button`
+  // element rule (zeroing border/background does not reset shadow).
+  console.log('\n[flat chips]');
+  const chips = await evaluate(`(() => {
+    const bar = document.querySelector('.av-composer-bar');
+    const SEND = 'av-composer-send';
+    const offenders = [];
+    for (const e of bar.querySelectorAll('*')) {
+      if (e.offsetParent === null) continue;
+      const cls = typeof e.className === 'string' ? e.className : '';
+      // The send button is INTENTIONALLY a filled circle; dots/indicators are
+      // meant to be coloured marks, not chrome.
+      if (cls.includes(SEND) || /-dot\\b/.test(cls)) continue;
+      const cs = getComputedStyle(e);
+      // A BOX border is chrome; the account chip's single border-left divider
+      // is not (borderTopWidth stays 0px there), so key on the top edge only.
+      const border = cs.borderTopWidth !== '0px';
+      const shadow = cs.boxShadow !== 'none';
+      const bg = cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && cs.backgroundColor !== 'transparent';
+      if (border || shadow || bg) {
+        offenders.push({ cls: cls.slice(0, 44), tag: e.tagName,
+          border: border ? cs.borderTopWidth + ' ' + cs.borderTopColor : null,
+          shadow: shadow ? cs.boxShadow.slice(0, 48) : null,
+          bg: bg ? cs.backgroundColor : null });
+      }
+    }
+    return offenders;
+  })()`);
+  check('no raised-button chrome on any control-row chip',
+    chips.length === 0,
+    chips.length ? JSON.stringify(chips) : 'all flat');
+
   // ── STRIP CONTENT ─────────────────────────────────────────────────────────
   console.log('\n[context strip]');
   const strip = await evaluate(`(() => {
@@ -309,6 +346,30 @@ async function main() {
   check('send stays docked right while running', run.sendGap <= 12, `${run.sendGap}px`);
   check('live readout renders in the transcript', run.workingExists === true);
   check('live readout is NOT inside the composer card', run.workingInCard === false);
+
+  // Re-run the flat-chip enumeration WHILE RUNNING: the interrupt only exists
+  // in this state, so the idle pass above is structurally blind to it — that is
+  // exactly how its raised-button look shipped in the first place.
+  const runChips = await evaluate(`(() => {
+    const bar = document.querySelector('.av-composer-bar');
+    const offenders = [];
+    for (const e of bar.querySelectorAll('*')) {
+      if (e.offsetParent === null) continue;
+      const cls = typeof e.className === 'string' ? e.className : '';
+      if (cls.includes('av-composer-send') || /-dot\\b/.test(cls)) continue;
+      const cs = getComputedStyle(e);
+      const border = cs.borderTopWidth !== '0px';
+      const shadow = cs.boxShadow !== 'none';
+      const bg = cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && cs.backgroundColor !== 'transparent';
+      if (border || shadow || bg) offenders.push({ cls: cls.slice(0, 44),
+        border: border ? cs.borderTopWidth : null, shadow: shadow ? cs.boxShadow.slice(0, 40) : null,
+        bg: bg ? cs.backgroundColor : null });
+    }
+    return offenders;
+  })()`);
+  check('interrupt chip is flat like its neighbours',
+    runChips.length === 0, runChips.length ? JSON.stringify(runChips) : 'all flat');
+
   await shot('04-running');
 
   // Esc interrupts from the composer — the no-session path makes main emit a

@@ -1097,11 +1097,24 @@ h6.av-md-h {
 /* Leads the composer's control row while a turn is in flight; hidden entirely
    when nothing is running (a permanently-disabled Stop button is noise in a row
    this dense — Esc still interrupts from the composer either way). */
+/* Flat chip, matching the menu triggers beside it — NOT the raised `.av-btn`
+   look it inherits from the shared button family (border + surface fill +
+   global `button` shadow). Only the danger COLOUR is kept; the box is
+   transparent until hover, so the control row reads as one language. */
 .av-controls-interrupt {
   order: 1;
   display: inline-flex; align-items: center; gap: 7px;
   font-size: var(--av-fs-small); padding: 4px 10px;
+  border: none; background: transparent; box-shadow: none;
+  border-radius: var(--radius-sm, 6px);
+  color: var(--av-error);
 }
+.av-controls-interrupt:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--av-error) 14%, transparent);
+  border-color: transparent; box-shadow: none;
+  color: var(--av-error);
+}
+.av-controls-interrupt:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring); }
 .av-controls-interrupt:disabled { display: none; }
 .av-controls-interrupt-dot { width: 7px; height: 7px; border-radius: 2px; background: currentColor; }
 .av-controls-interrupt:not(:disabled) .av-controls-interrupt-dot { animation: av-pulse 1.4s var(--av-ease) infinite; }
@@ -1229,6 +1242,13 @@ h6.av-md-h {
 .av-menu-trigger {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 4px 8px; border: none; border-radius: var(--radius-sm, 6px);
+  /* styles.css styles the bare `button` ELEMENT with `box-shadow:
+     var(--shadow-sm)`. Zeroing border+background is not enough — the global
+     shadow still paints, which reads as a raised button among flat chips. Reset
+     it explicitly or every menu trigger in the composer row keeps a drop
+     shadow. (Verified via CDP getMatchedStylesForNode: the winning rule is the
+     bare `button` selector, not anything in this file.) */
+  box-shadow: none;
   background: transparent; color: var(--av-text-dim);
   font: inherit; font-size: var(--av-fs-small); font-weight: 550; cursor: pointer;
   transition: background 140ms var(--av-ease), color 140ms var(--av-ease);

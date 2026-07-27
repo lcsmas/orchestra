@@ -49,6 +49,16 @@
   border: 1px solid var(--av-hairline-strong);
 }
 .av-view .av-btn:hover { background: var(--av-surface-overlay); }
+/* The composer row's interrupt is an EXCEPTION to the .av-btn family: it lives
+   among flat borderless chips, so it must not take the raised button's border
+   or surface fill. Stated here (after the .av-btn rule above) because that rule
+   is 2 classes and would otherwise win on order. */
+.av-view .av-controls-interrupt {
+  border: none; background: transparent; box-shadow: none;
+}
+.av-view .av-controls-interrupt:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--av-error) 14%, transparent);
+}
 .av-view .av-btn-primary {
   background: var(--av-assistant);
   color: var(--av-assistant-ink);
