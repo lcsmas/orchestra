@@ -153,6 +153,33 @@ the field: `.av-composer-attachments` > `.av-composer-attachment` (img +
 `.av-composer-attachment-remove` hover ×). Empty state `.av-empty` >
 `.av-empty-{mark,title,desc,hint}` (kbd chips in the hint).
 
+**`.av-composer-field` must stay `position:relative` and must NOT set
+`overflow:hidden`** — the skills popover (`.av-ac`, below) is
+`position:absolute; bottom:calc(100% + 8px)` and anchors to this box. A later
+bare redeclaration of the selector silently dropped `position` and added
+`overflow:hidden` for corner-clipping, which positioned the popover against a
+distant ancestor AND clipped it out of existence: the autocomplete rendered with
+8 rows, a valid rect and `visibility:visible`, yet was invisible and
+un-hittable (`elementFromPoint` → null). The card's bottom corners are rounded
+by `.av-composer-bar`'s own `border-bottom-{left,right}-radius` instead, so the
+parent never needs to clip. Because the rules are order-dependent, the guard is
+"no `.av-composer-field` rule may reintroduce `overflow:hidden`".
+
+**Composer syntax highlight** (`/skill`, `!bash` — CC-desktop parity): a
+textarea cannot style a substring, so `.av-composer-inputwrap` grid-stacks a
+mirror `.av-composer-highlight` UNDER the textarea (both `grid-area:1/1`). The
+textarea's own text is `color:transparent` with an explicit `caret-color`, and
+the mirror paints every visible glyph — `.av-composer-token-skill` (assistant
+blue) and `.av-composer-token-bash` (task purple), the rest inheriting
+`--av-text`. `::placeholder` therefore needs an explicit color + `opacity:1`, or
+it inherits the transparent text and vanishes. The two elements MUST keep
+identical text metrics (font, size, line-height, padding, `white-space:pre-wrap`
+— declared on a shared selector list) or the highlight drifts off the real
+glyphs; verified with `dx/dy === 0`. Tokenizing is pure and lives in
+`src/shared/composer-highlight.ts` (`highlightComposer`, unit-tested): only a
+LEADING token highlights, and the lookahead guard keeps `/etc/hosts` and
+`and/or` unstyled.
+
 Message (`MessageBubble.tsx`): `.av-message` + role `.av-message-{assistant,user,
 system,error}`; role microlabel `.av-message-eyebrow` (**"Error" only** now — the
 user turn carries NO "You" label, told apart from the agent by bubble shape/tint,

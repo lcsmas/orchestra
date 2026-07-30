@@ -480,7 +480,15 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
 - **Skills autocomplete** — `agent-sdk.ts sdkListSkills(wsId)` scans the worktree's
   `.claude/skills/*` + the account config dir's `skills/*` (project shadows user) for
   `AgentSkillInfo` (shared/types.ts); the Composer shows a popover when the input is a
-  pure `/prefix` (Tab/Enter complete, arrows navigate, Esc dismisses).
+  pure `/prefix` (Tab/Enter complete, arrows navigate, Esc dismisses). The popover is
+  CSS-fragile: it anchors to `.av-composer-field`, so that rule must keep
+  `position:relative` and must never set `overflow:hidden` — see
+  `agent-view-design.md`, where a redeclaration once clipped a correctly-rendered
+  8-row popover into invisibility (the data/JS path was fine).
+- **Composer syntax highlight** — `shared/composer-highlight.ts`
+  (`highlightComposer`) splits the text into styled runs so a leading `/skill` or
+  `!bash` paints via a mirror layer behind the transparent-text textarea
+  (CC-desktop parity). Pure + unit-tested; styling lives in `agent-view-design.md`.
 - **Resume durability across reboot / internet loss.** A structured session is
   NOT a live process that survives a restart — it's a *resume by id*. The SDK
   session id is captured from the stream (`consume()`) and persisted to the

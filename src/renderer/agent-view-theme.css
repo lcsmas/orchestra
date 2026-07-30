@@ -1523,11 +1523,18 @@ h6.av-md-h {
    input-beside-send flex row. */
 .av-composer-field {
   display: flex; flex-direction: column;
+  /* KEEP `position: relative` (set at the autocomplete rule above): the skills
+     popover is `position:absolute; bottom:100%` and anchors to THIS box. A bare
+     redeclaration here silently dropped it and the popover escaped to a distant
+     ancestor. */
+  position: relative;
   border-radius: var(--av-radius-xl);
   border: 1px solid var(--av-hairline-strong);
   background: var(--av-surface);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.18);
-  overflow: hidden;
+  /* NOT `overflow: hidden` — it clipped the popover (which sits ABOVE the card)
+     out of existence. The rounded corners it used to protect are handled by the
+     children's own radii instead. */
   transition: border-color 140ms var(--av-ease), box-shadow 140ms var(--av-ease);
 }
 .av-composer-field:focus-within {
@@ -1542,6 +1549,10 @@ h6.av-md-h {
   display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
   padding: 6px 8px 6px 10px;
   border-top: 1px solid var(--av-hairline-faint);
+  /* Round the card's bottom corners here: the parent can't `overflow:hidden`
+     (that clipped the skills popover), so the last child owns its own radii. */
+  border-bottom-left-radius: var(--av-radius-xl);
+  border-bottom-right-radius: var(--av-radius-xl);
 }
 /* Bash mode replaces the menus with a one-line explanation of what Enter does. */
 .av-composer-bar-note {
@@ -1578,17 +1589,66 @@ h6.av-md-h {
 .av-strip .av-turn-stat-value { font-size: var(--av-fs-small); font-weight: 500; }
 /* The prompt is set in mono at code size — it's a command line to the agent
    (the terminal users are coming from), not a web form. */
-.av-composer-input {
-  flex: 1 1 auto; resize: none; min-height: 24px; max-height: 200px;
-  padding: 5px 0; border: none; background: none;
-  color: var(--av-text); font-family: var(--font-mono); font-size: var(--av-fs-code);
+/* ── Composer syntax highlight (CC-desktop parity) ─────────────────────────
+   A textarea cannot style a substring, so `/skill` and `!bash` prefixes are
+   painted by a MIRROR div stacked underneath a transparent-text textarea.
+   Both are grid cell 1/1 of this wrapper, which guarantees they share an
+   origin and a width; every text-metric property below is declared on BOTH
+   (via the shared selector list) so the mirrored glyphs land exactly under
+   the real ones. Changing a font/padding/wrap property for one MUST change
+   it for the other or the highlight drifts. */
+.av-composer-inputwrap {
+  flex: 1 1 auto; min-width: 0;
+  display: grid;
+}
+.av-composer-inputwrap > .av-composer-input,
+.av-composer-inputwrap > .av-composer-highlight {
+  grid-area: 1 / 1;
+}
+.av-composer-input, .av-composer-highlight {
+  /* Shared text metrics — keep these two lists identical. */
+  padding: 5px 0; border: none;
+  font-family: var(--font-mono); font-size: var(--av-fs-code);
   line-height: 1.6;
+  white-space: pre-wrap; overflow-wrap: break-word;
+  box-sizing: border-box;
+}
+.av-composer-input {
+  resize: none; min-height: 24px; max-height: 200px;
+  background: none;
+  /* The TEXTAREA's own glyphs are transparent and the MIRROR below supplies
+     every visible glyph — otherwise the opaque textarea text would paint over
+     the colored tokens and hide them. `caret-color` keeps the cursor visible,
+     and selection stays visible because the browser paints the textarea's own
+     selection highlight regardless of text color. */
+  color: transparent;
+  caret-color: var(--av-text);
+  position: relative; z-index: 1;
   /* Auto-grow (JS sets height to scrollHeight): border-box so the measured
      scrollHeight and the applied height agree, and once content passes
      max-height the field scrolls instead of clipping. */
-  box-sizing: border-box; overflow-y: auto;
+  overflow-y: auto;
 }
-.av-composer-input::placeholder { color: var(--av-text-faint); }
+/* The mirror is decoration: never hit-test it, never let it drive the box
+   height (the textarea owns that via its auto-grow), and let it clip the same
+   way so long text stays aligned. */
+.av-composer-highlight {
+  pointer-events: none; user-select: none;
+  min-height: 24px; max-height: 200px; overflow: hidden;
+  /* Ordinary prose — the tokens override this. This is what the user actually
+     reads, since the textarea's own text is transparent. */
+  color: var(--av-text);
+}
+.av-composer-token-skill {
+  color: var(--av-assistant); font-weight: 640;
+}
+.av-composer-token-bash {
+  color: var(--av-task); font-weight: 640;
+}
+/* The placeholder needs an explicit color because the textarea's own text is
+   `transparent` (the highlight mirror paints the real glyphs) — without this
+   the placeholder would inherit that and vanish. */
+.av-composer-input::placeholder { color: var(--av-text-faint); opacity: 1; }
 .av-composer-input:focus, .av-composer-input:focus-visible { outline: none; border: none; box-shadow: none; }
 /* Circular icon-only send, docked at the right end of the control row. The
    Send/Queue/Run wording the old pill carried now rides on the GLYPH (arrow /

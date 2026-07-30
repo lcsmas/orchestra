@@ -31,6 +31,7 @@ import { useStore } from '../store';
 import { scoped } from '../log';
 import { WorkspaceAccountBadge } from './AccountBadge';
 import type { AgentImage, AgentSession, AgentSkillInfo, RenderMessage } from '../../shared/types';
+import { highlightComposer } from '../../shared/composer-highlight';
 // A3: real presentational components (markdown bubbles, tool cards, diffs,
 // thinking spinner). AgentMessage routes tool→ToolCard else→MessageBubble and
 // owns the `av-message`/`av-tool-card` wrappers + thinking indicator, so it
@@ -852,6 +853,10 @@ function Composer({
   const bashMode = text.startsWith('!');
   const bashCommand = bashMode ? text.slice(1) : '';
 
+  // Styled runs for the highlight mirror behind the textarea (a leading
+  // `/skill` or `!bash` prefix). Pure + cheap; recomputed per keystroke.
+  const highlightParts = highlightComposer(text);
+
   // Accept image data from a clipboard/paste event: read each image item as a
   // data URL, split off the base64 payload, and stash it for send + preview.
   const addPastedImages = useCallback((items: DataTransferItemList | null) => {
@@ -1085,6 +1090,27 @@ function Composer({
               ))}
             </div>
           )}
+          {/* Syntax highlight for a leading `/skill` or `!bash` (CC-desktop
+              parity). A textarea can't style a substring, so we paint a mirror
+              layer BEHIND a transparent-text textarea. The two must share every
+              text-metric property (font, padding, wrapping) or the highlight
+              drifts off the real glyphs — see `.av-composer-highlight` in
+              agent-view-theme.css, which inherits them from the same rule. */}
+          <div className="av-composer-inputwrap">
+            <div className="av-composer-highlight" aria-hidden="true">
+              {highlightParts.map((p, i) =>
+                p.token ? (
+                  <span key={i} className={`av-composer-token av-composer-token-${p.token}`}>
+                    {p.text}
+                  </span>
+                ) : (
+                  <span key={i}>{p.text}</span>
+                ),
+              )}
+              {/* A trailing newline needs a spacer or the mirror is one line
+                  short of the textarea's scrollHeight. */}
+              {text.endsWith('\n') ? '​' : ''}
+            </div>
           <textarea
             ref={taRef}
             className="av-composer-input"
@@ -1146,6 +1172,7 @@ function Composer({
             }
           }}
           />
+          </div>
         </div>
         {/* The control bar is docked INSIDE the card (bottom row) rather than
             rendered as its own bordered deck above it: the model / effort /
