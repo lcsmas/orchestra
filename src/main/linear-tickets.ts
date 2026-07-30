@@ -142,7 +142,7 @@ export async function dispatchLinearAddRequest(input: {
         '(pass --repo, or run from a workspace that has one)',
     };
   }
-  const spawned = await spawnWorkspaceForTicket(identifier, repoPath, input.model);
+  const spawned = await spawnWorkspaceForTicket(identifier, repoPath, input.model, input.from);
   if (!spawned.ok) return { ok: true, ticket, error: spawned.error };
   return { ok: true, ticket: spawned.ticket ?? ticket, workspaceId: spawned.workspaceId, branch: spawned.branch };
 }
@@ -167,6 +167,12 @@ export async function spawnWorkspaceForTicket(
   identifier: string,
   repoPath: string,
   model?: string,
+  /** The calling agent's workspace id, so a ticket spawned by an agent nests
+   *  under it exactly as `orchestra spawn` does — a ticket handed to a child is
+   *  usually delegated BY a coordinator, so nesting is the useful default.
+   *  Omitted by the renderer's "spawn from ticket" button, which has no calling
+   *  workspace (the user clicked it), and therefore stays top-level. */
+  from?: string,
 ): Promise<TicketSpawnResult> {
   const ticket = store.getTicket(identifier);
   if (!ticket) return { ok: false, error: `ticket not pinned: ${identifier}` };
@@ -188,7 +194,16 @@ export async function spawnWorkspaceForTicket(
     `${ticket.url}\n\n` +
     `Start by reading the issue, then plan before implementing.`;
   try {
-    const res = await dispatchSpawnRequest({ repoPath, branch, task, model, detached: true });
+    // `detached` skips only the parent nesting (workspaces.ts), so a call with
+    // no `from` is top-level and one with `from` nests under the caller.
+    const res = await dispatchSpawnRequest({
+      repoPath,
+      branch,
+      task,
+      model,
+      from,
+      detached: !from,
+    });
     if (!res.ok || !res.id) {
       return { ok: false, error: res.error ?? 'failed to spawn workspace for ticket' };
     }

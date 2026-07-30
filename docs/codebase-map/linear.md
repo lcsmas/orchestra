@@ -62,6 +62,18 @@ The ticket then carries a `workspaceId`, leaves the queue
 (`shared/linear-tickets-queue.ts` `queuedTickets`), and its work shows as an
 ordinary workspace row — an issue is never displayed twice.
 
+**Nesting on spawn** — `spawnWorkspaceForTicket` (`main/linear-tickets.ts:166`)
+takes an optional `from` (the calling workspace id) and passes
+`detached: !from` to `dispatchSpawnRequest`, which nests via
+`parentId: input.detached ? undefined : input.from`
+(`main/workspaces.ts:1353`). So the two entry points differ deliberately:
+`orchestra linear add --spawn` forwards the caller's id and the new workspace
+nests under it (matching `orchestra spawn`), while the renderer's
+`spawnFromTicket` button (`main/api-handlers.ts:928`) passes no `from` and the
+workspace stays top-level — there is no calling agent to nest under. Before
+v0.5.184 the CLI path hardcoded `detached: true`, so an orchestrator's
+ticket-spawns always landed top-level with no way to override.
+
 ## Tests
 `linear.test.ts` covers `parseLinearIssueCandidate` (normalization, path-style,
 whole-token, permissiveness), the strict `parseLinearTicketRef` (URL + bare id,

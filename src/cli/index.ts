@@ -143,7 +143,8 @@ Usage:
                                                  kind, orchestrator role, parent, repo, base)
   orchestra linear add <url|TEAM-123> [--repo <path>] [--spawn] [--model <m>]
                                                  Pin a Linear ticket into the sidebar
-                                                 (--spawn: also create a worktree + agent for it)
+                                                 (--spawn: also create a worktree + agent for it,
+                                                  nested under you, like orchestra spawn)
   orchestra linear list [--mine]                 List pinned tickets (--mine: your open Linear issues)
   orchestra linear rm <url|TEAM-123>             Un-pin a ticket (never touches Linear)
   orchestra linear pin <url|TEAM-123> [--workspace <id>]
