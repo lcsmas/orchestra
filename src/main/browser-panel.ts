@@ -644,10 +644,23 @@ const DESIGN_MODE_SCRIPT = `(() => {
     const r = el.getBoundingClientRect();
     const cs = getComputedStyle(el);
     const computed = {};
-    // Snapshot the full computed style as a plain map; main subsets it
+    // Snapshot the computed style as a plain map; main subsets it
     // (shared/design-mode.ts STYLE_PROPS) so the property list lives in ONE
     // place that the unit tests assert against.
+    //
+    // TWO passes, because ITERATING a CSSStyleDeclaration yields only LONGHAND
+    // properties: margin, padding, border and border-radius are SHORTHANDS and
+    // never appear in that enumeration, so a pure index walk silently drops
+    // exactly the four box/border values design mode exists to report.
+    // (Measured on a real page: 383 enumerated properties, 0 of them
+    // shorthands, while getPropertyValue('margin') returns 6px fine.) So walk
+    // the enumeration for everything, then explicitly ask for the shorthands.
+    // NOTE: no backticks anywhere in this script — it IS a template literal.
     for (let i = 0; i < cs.length; i++) { const p = cs[i]; computed[p] = cs.getPropertyValue(p); }
+    for (const p of ['margin', 'padding', 'border', 'border-radius', 'font']) {
+      const v = cs.getPropertyValue(p);
+      if (v) computed[p] = v;
+    }
     const chain = [];
     let node = el;
     while (node && node.nodeType === 1 && node !== document.documentElement) {
@@ -690,12 +703,23 @@ export async function designModeArm(wsId: string): Promise<void> {
 }
 
 /** Disarm design mode (user toggled it off, or the panel is closing). Safe to
- *  call when it was never armed — the page-side teardown is guarded. */
+ *  call when it was never armed — the page-side teardown is guarded.
+ *
+ *  Swallows evaluation failures: the renderer disarms on unmount, on going
+ *  inactive, and after a pick, so this routinely lands on a page that is
+ *  mid-navigation or already gone ("Inspected target navigated or closed").
+ *  There is nothing to clean up in that case — the document that held the
+ *  overlay no longer exists — so surfacing it would log an ERROR on a perfectly
+ *  normal path and train readers to ignore the channel. */
 export async function designModeDisarm(wsId: string): Promise<void> {
-  await evaluate(
-    wsId,
-    `(() => { if (window.__orchestraDesignTeardown) { try { window.__orchestraDesignTeardown(); } catch (e) {} } window[${JSON.stringify(DESIGN_PICK_GLOBAL)}] = null; return true; })()`,
-  );
+  try {
+    await evaluate(
+      wsId,
+      `(() => { if (window.__orchestraDesignTeardown) { try { window.__orchestraDesignTeardown(); } catch (e) {} } window[${JSON.stringify(DESIGN_PICK_GLOBAL)}] = null; return true; })()`,
+    );
+  } catch (err) {
+    log.debug(`design-mode disarm(${wsId}) — page gone or navigating`, err);
+  }
 }
 
 /** Read a completed pick out of the page (and clear it), or `null` if the user

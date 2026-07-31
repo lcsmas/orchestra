@@ -159,6 +159,25 @@ keeps the shared debugger free of any long-lived event subscription.
   panel, or an unmounted panel would leave an invisible click-swallowing overlay
   in that page. The PICK, conversely, lives in the store, which is what lets it
   survive a composer that was never mounted.
+- **Iterating a `CSSStyleDeclaration` yields only LONGHANDS.** `margin`,
+  `padding`, `border` and `border-radius` are shorthands and never appear in the
+  `cs[i]` enumeration, so an index-walk collector silently drops exactly the
+  four box/border values design mode exists to report — and it fails *silently*,
+  producing a plausible-looking block missing only those rows. Measured on a
+  real page: **383 enumerated properties, 0 of them shorthands**, while
+  `getPropertyValue('margin')` returns `6px` fine. `DESIGN_MODE_SCRIPT` walks
+  the enumeration *and then* asks for the shorthands explicitly. Caught by
+  driving the real picker, not by a unit test (the test fixture had supplied
+  shorthands directly, so it could not have caught it); pinned now by
+  `subsetStyles surfaces the SHORTHAND box/border properties`.
+- **`DESIGN_MODE_SCRIPT` is a template literal — no backticks inside it.** A
+  backtick in a comment there silently terminates the string and breaks the
+  build (`TS1005`/esbuild parse error) far from the edit.
+- `designModeDisarm` **swallows evaluation failures**. The renderer disarms on
+  unmount, on going inactive, and after every pick, so it routinely lands on a
+  page that is mid-navigation or already gone (`Inspected target navigated or
+  closed`). There is nothing to clean up in that case, so surfacing it would log
+  an ERROR on a normal path.
 - The screenshot is **best-effort**: a failed `Page.captureScreenshot` still
   delivers the pick's text half rather than aborting the whole capture.
 

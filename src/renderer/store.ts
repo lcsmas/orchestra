@@ -886,6 +886,11 @@ declare global {
     __orchestraSetState?: (patch: Partial<State>) => void;
     __injectAgentEvent?: (workspaceId: string, event: AgentEvent) => void;
     __readAgentSession?: (workspaceId: string) => AgentSession | null;
+    /** E2E seam: how many design-mode picks are queued for a workspace but not
+     *  yet drained into its composer. Lets a driver assert the store-queue path
+     *  (pick made while the composer is unmounted) instead of only its visible
+     *  end state. Mirrors `__readAgentSession`. */
+    __readDesignPicks?: (workspaceId: string) => number;
   }
 }
 try {
@@ -894,6 +899,8 @@ try {
     useStore.getState().__injectAgentEvent(workspaceId, event);
   window.__readAgentSession = (workspaceId) =>
     useStore.getState().agentSessions[workspaceId] ?? null;
+  window.__readDesignPicks = (workspaceId) =>
+    (useStore.getState().designPicks[workspaceId] ?? []).length;
 } catch {
   /* non-browser context (tests) — no window to attach to */
 }

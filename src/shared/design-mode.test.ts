@@ -71,6 +71,42 @@ test('subsetStyles trims whitespace around values', () => {
   assert.equal(out.color, 'rgb(1, 2, 3)');
 });
 
+test('subsetStyles surfaces the SHORTHAND box/border properties', () => {
+  // Regression (found by driving the real picker, not by a unit test): the
+  // in-page collector originally built its map by ITERATING the
+  // CSSStyleDeclaration, which yields only LONGHANDS — margin/padding/border/
+  // border-radius are shorthands and never appear in that enumeration, so the
+  // captured block silently lost exactly the four box/border values design mode
+  // exists to report. Measured live: 383 enumerated props, 0 shorthands.
+  // browser-panel.ts now asks for these explicitly; this pins the contract that
+  // they must survive subsetting.
+  const out = subsetStyles({
+    margin: '6px',
+    padding: '12px 28px',
+    border: '3px solid rgb(29, 78, 216)',
+    'border-radius': '9px',
+    // Longhands present too — they must NOT crowd out or replace the shorthands.
+    'margin-top': '6px',
+    'border-top-color': 'rgb(29, 78, 216)',
+  });
+  assert.equal(out.margin, '6px');
+  assert.equal(out.padding, '12px 28px');
+  assert.equal(out.border, '3px solid rgb(29, 78, 216)');
+  assert.equal(out['border-radius'], '9px');
+});
+
+test('formatPickBlock renders the shorthand box values in the css fence', () => {
+  const block = formatPickBlock(
+    pickFixture({
+      styles: { margin: '6px', padding: '12px 28px', border: '3px solid rgb(29, 78, 216)', 'border-radius': '9px' },
+    }),
+  );
+  assert.ok(block.includes('  margin: 6px;'));
+  assert.ok(block.includes('  padding: 12px 28px;'));
+  assert.ok(block.includes('  border: 3px solid rgb(29, 78, 216);'));
+  assert.ok(block.includes('  border-radius: 9px;'));
+});
+
 test('every STYLE_PROPS entry is actually extractable (no typo in the list)', () => {
   const computed = Object.fromEntries(STYLE_PROPS.map((p) => [p, `v-${p}`]));
   const out = subsetStyles(computed);
