@@ -114,7 +114,13 @@ agents. All classes are `av-*`-prefixed; structural defaults live in
 `agent-view.css` (design system owned separately).
 
 ## App.tsx (~606 lines)
-Grid layout `[sidebar | resizer | main]` + `DialogHost`. Persists sidebar/nvim
+Grid layout `[sidebar | resizer | main]` + `DialogHost`. Hosts the app's first
+GLOBAL shortcut: **Ctrl/Cmd+J toggles the Jump Palette**
+(`components/JumpPalette.tsx` — fuzzy jump across live workspaces, recents-first
+on empty query via `openHistory`, ranking in the pure `shared/jump-rank.ts`).
+The capture-phase window listener deliberately ignores plain Ctrl+J while focus
+is inside an xterm (the terminal owns `^J` = LF); Ctrl+Shift+J works from
+anywhere, terminals included. Persists sidebar/nvim
 widths to localStorage; resizes via rAF. `startVisiblePoll` runs a fn on an
 interval but **stops when the document is hidden** (re-fires on visible) — this
 is what pauses git/gh/du/Linear polling when minimized. Toolbar is grouped by

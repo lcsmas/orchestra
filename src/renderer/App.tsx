@@ -11,6 +11,7 @@ import { SetupBanner } from './components/SetupBanner';
 import { PromptQueueBanner } from './components/PromptQueueBanner';
 import { SandboxControlBar } from './components/SandboxControlBar';
 import { InsightsView } from './components/Insights';
+import { JumpPalette } from './components/JumpPalette';
 import { ResourcesView } from './components/ResourcesView';
 import { HelpView, HelpIcon } from './components/Help';
 import { DialogHost, dialog } from './components/Dialog';
@@ -159,6 +160,25 @@ export function App() {
   const [nvimWidth, setNvimWidth] = useState<number>(() => loadNvimWidth());
   const [browserOpen, setBrowserOpen] = useState(false);
   const [browserWidth, setBrowserWidth] = useState<number>(() => loadBrowserWidth());
+
+  // Jump Palette (Ctrl/Cmd+J) — the app's first GLOBAL shortcut. Capture-phase
+  // on window so it fires before any component-local handler. Plain Ctrl+J is
+  // deliberately inert while focus is inside an xterm (the terminal owns
+  // ^J = LF there); Ctrl+Shift+J works from anywhere, terminals included.
+  const [jumpOpen, setJumpOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod || e.key.toLowerCase() !== 'j') return;
+      const inTerminal = e.target instanceof HTMLElement && !!e.target.closest('.xterm');
+      if (inTerminal && !e.shiftKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setJumpOpen((v) => !v);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, []);
 
   // Auto-open the browser pane when the ACTIVE workspace's agent navigates it
   // (the agent's `navigate` tool opens the WebContentsView main-side, but the
@@ -845,6 +865,8 @@ export function App() {
         {/* Help / feature guide pane — same overlay contract as Insights. */}
         {loaded && helpOpen && <HelpView />}
       </main>
+      {/* Jump Palette overlay — fixed-position, so it sits above both columns. */}
+      {loaded && jumpOpen && <JumpPalette onClose={() => setJumpOpen(false)} />}
       <DialogHost />
     </div>
   );
