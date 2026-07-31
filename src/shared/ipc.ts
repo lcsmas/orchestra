@@ -374,6 +374,25 @@ export interface OrchestraAPI {
   /** Hand the branch's failing CI run to the workspace's agent to fix — live
    * SDK turn / live PTY / wake, whichever applies. */
   fixChecks: (id: string) => Promise<{ status: 'requested' }>;
+  /** Raw unified-diff text for the review pane.
+   *  - `uncommitted`: working tree + index vs HEAD, plus untracked files.
+   *  - `base`: the THREE-DOT committed diff `merge-base(base, branch)..branch`,
+   *    i.e. what this branch changed, excluding base progress since the cut.
+   *  Returns '' for a clean tree / unresolvable base — never throws for those. */
+  getReviewDiff: (id: string, scope: 'uncommitted' | 'base') => Promise<string>;
+  /** Stage or unstage an exact subset of hunks by applying a rebuilt patch to
+   *  the index (`git apply --cached [--reverse]`). `paths` whole-file stages or
+   *  unstages instead, for binaries and pure renames that carry no hunks.
+   *  Rejects with git's own message when the patch no longer matches — that is
+   *  the signal the diff went stale and the pane must refetch. */
+  applyReviewPatch: (
+    id: string,
+    input: { patch?: string; paths?: string[]; mode: 'stage' | 'unstage' },
+  ) => Promise<{ status: 'applied' }>;
+  /** Deliver a composed review (file:line-anchored comments) to the workspace's
+   *  agent as one revision turn — live SDK turn, live PTY type-in, or wake,
+   *  whichever applies. Same delivery seam as `fixChecks`. */
+  sendReviewToAgent: (id: string, prompt: string) => Promise<{ status: 'requested' }>;
   /** Verify the branch's candidate Linear key against Linear's GraphQL API.
    *  Resolves the real issue, or null if the branch encodes no issue, the issue
    *  doesn't exist, or there's no/invalid LINEAR_API_KEY. */

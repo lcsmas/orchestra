@@ -10,6 +10,11 @@ import {
   findBranchChecks,
   listBranches,
   getDiffStats,
+  getRawDiff,
+  getBranchDiff,
+  applyPatchToIndex,
+  stagePaths,
+  unstagePaths,
 } from './git';
 import {
   verifyLinearIssue,
@@ -112,6 +117,12 @@ import {
 import { log, revealLogs, getLogFile, getLogLevel } from './logger';
 import * as browserPanel from './browser-panel';
 import type { OrchestraAPI } from '../shared/ipc';
+// NOTE the .ts extension: this is a VALUE import (the others from
+// ../shared/types below are type-only and erased at compile). Any main-process
+// file reachable from a `node --test --experimental-strip-types` suite must use
+// .ts-suffixed relative specifiers for value imports or it dies at runtime with
+// ERR_MODULE_NOT_FOUND — see commit 05adb90.
+import { isScratchLike } from '../shared/types.ts';
 import type {
   Account,
   BrowserBounds,
@@ -250,6 +261,9 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   findPR: 'git:findPR',
   findChecks: 'git:findChecks',
   fixChecks: 'git:fixChecks',
+  getReviewDiff: 'git:reviewDiff',
+  applyReviewPatch: 'git:applyReviewPatch',
+  sendReviewToAgent: 'git:sendReview',
   verifyLinear: 'linear:verify',
   listTickets: 'tickets:list',
   refreshTickets: 'tickets:refresh',
@@ -947,6 +961,50 @@ export const apiHandlers: ApiHandlerTable = {
     // Live SDK session or stopped agent: wakeAgentWithPrompt handles both
     // (deliver-as-next-turn / structured-first wake). It returns false when a
     // terminal PTY is live — then type it in, exactly like git:merge above.
+    if (!(await wakeAgentWithPrompt(id, prompt))) {
+      writePty(id, prompt);
+      setTimeout(() => writePty(id, '\r'), 80);
+    }
+    return { status: 'requested' as const };
+  },
+
+  getReviewDiff: async (id, scope) => {
+    const ws = store.getWorkspace(id);
+    if (!ws) throw new Error('workspace not found');
+    // Scratch/orchestrator sessions are repo-less, so there is nothing to diff.
+    // Same guard as findChecks; the Diff tab is hidden for them anyway, but the
+    // channel must not throw if something calls it.
+    if (isScratchLike(ws) || !ws.worktreePath) return '';
+    return scope === 'base'
+      ? getBranchDiff(ws.worktreePath, ws.baseBranch, ws.branch)
+      : getRawDiff(ws.worktreePath);
+  },
+
+  applyReviewPatch: async (id, input) => {
+    const ws = store.getWorkspace(id);
+    if (!ws) throw new Error('workspace not found');
+    if (isScratchLike(ws) || !ws.worktreePath) throw new Error('not a git workspace');
+    const reverse = input.mode === 'unstage';
+    // Whole-file paths and a hunk patch are independent inputs: binaries and
+    // pure renames arrive as paths (no hunks to select), everything else as a
+    // rebuilt patch. Both may be present in one call.
+    if (input.paths?.length) {
+      if (reverse) await unstagePaths(ws.worktreePath, input.paths);
+      else await stagePaths(ws.worktreePath, input.paths);
+    }
+    if (input.patch?.trim()) {
+      await applyPatchToIndex(ws.worktreePath, input.patch, reverse);
+    }
+    return { status: 'applied' as const };
+  },
+
+  sendReviewToAgent: async (id, prompt) => {
+    const ws = store.getWorkspace(id);
+    if (!ws) throw new Error('workspace not found');
+    if (!prompt.trim()) throw new Error('empty review');
+    // Exactly the fixChecks delivery seam: a live SDK session takes it as its
+    // next turn, a stopped agent gets a structured-first wake, and a live
+    // terminal PTY (where wakeAgentWithPrompt returns false) gets it typed in.
     if (!(await wakeAgentWithPrompt(id, prompt))) {
       writePty(id, prompt);
       setTimeout(() => writePty(id, '\r'), 80);

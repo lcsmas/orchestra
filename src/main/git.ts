@@ -286,6 +286,159 @@ async function readWorking(worktreePath: string, file: string): Promise<string> 
   }
 }
 
+/** Raw unified-diff text for the review pane, uncommitted scope: working tree +
+ *  index vs HEAD, plus untracked files.
+ *
+ *  Returns the patch TEXT (not the DiffFile content pairs `getDiff` builds)
+ *  because the pane renders hunks, and re-deriving hunks from two full blobs
+ *  would mean shipping a diff algorithm to the renderer for something git has
+ *  already computed.
+ *
+ *  Untracked files are folded in via `--intent-to-add` semantics: `git add -N`
+ *  would mutate the index, so instead each untracked path is diffed against
+ *  /dev/null with `--no-index`, which produces the same `new file mode` stanza
+ *  without touching the index. Without this, a brand-new file — the single most
+ *  common thing an agent produces — would be invisible in the pane.
+ *
+ *  `-M` enables rename detection so a moved file renders as one rename rather
+ *  than a delete plus an add. */
+export async function getRawDiff(worktreePath: string): Promise<string> {
+  const git = simpleGit(worktreePath);
+  const tracked = await safeRaw(git, ['diff', '-M', '--no-color', 'HEAD']);
+  const untracked = await safeRaw(git, ['ls-files', '--others', '--exclude-standard']);
+  const parts: string[] = [];
+  if (tracked.trim()) parts.push(tracked.replace(/\n$/, ''));
+
+  for (const file of untracked.split('\n').filter(Boolean)) {
+    // `--no-index` exits 1 when the files differ (they always do here), which
+    // simpleGit surfaces as a throw — safeRaw swallows it and returns ''. Use
+    // execFile directly so a nonzero-but-successful diff still yields text.
+    let out = '';
+    try {
+      const r = await pexec('git', ['diff', '--no-color', '--no-index', '/dev/null', file], {
+        cwd: worktreePath,
+        maxBuffer: 32 * 1024 * 1024,
+      });
+      out = r.stdout;
+    } catch (e) {
+      const err = e as { stdout?: string; code?: number };
+      // Exit 1 = "files differ", the expected path. Anything else is a real
+      // failure (unreadable file, binary weirdness) → skip that file.
+      if (err.code === 1 && err.stdout) out = err.stdout;
+      else gitFallback('diff --no-index', worktreePath, e, 'skipping untracked file');
+    }
+    if (!out.trim()) continue;
+    // NO rewriting here, deliberately. `git diff --no-index /dev/null <file>`
+    // already emits exactly the stanza a tracked addition produces —
+    // `diff --git a/<file> b/<file>`, `new file mode`, `--- /dev/null` — so it
+    // parses and re-applies as-is. An earlier version of this function
+    // "normalized" it with regexes; measured against real git output that
+    // duplicated the `new file mode` line and clobbered `index`, producing a
+    // corrupt patch. Left as a warning: check what git actually emits before
+    // reformatting it.
+    parts.push(out.replace(/\n$/, ''));
+  }
+
+  const joined = parts.join('\n');
+  return joined ? truncate(`${joined}\n`, 2_000_000) : '';
+}
+
+/** Raw unified-diff text for the review pane, vs-base scope: the THREE-DOT
+ *  committed diff `merge-base(base, branch)..branch`.
+ *
+ *  Three-dot (not two-dot) on purpose: two-dot compares the two tips, so any
+ *  commit that landed on the BASE after this branch was cut shows up as a
+ *  reversed change authored by this branch — base progress misattributed as
+ *  branch regressions. Three-dot diffs against the merge base, answering "what
+ *  did THIS branch change", which is the review question.
+ *
+ *  Uncommitted work is deliberately absent from this scope; that is what the
+ *  Uncommitted toggle is for. Returns '' when the base can't be resolved (base
+ *  branch deleted, shallow clone) rather than falling back to a two-dot diff,
+ *  because a plausible-but-wrong diff is worse here than an empty one. */
+export async function getBranchDiff(
+  worktreePath: string,
+  baseBranch: string,
+  branch: string,
+): Promise<string> {
+  const git = simpleGit(worktreePath);
+  // Resolve the fork point explicitly rather than relying on `base...branch`
+  // shorthand: it lets us log WHY an empty diff happened (unresolvable base)
+  // instead of silently returning nothing.
+  let forkPoint = '';
+  for (const base of [baseBranch, `origin/${baseBranch}`]) {
+    if (!base) continue;
+    try {
+      forkPoint = (await git.raw(['merge-base', base, branch])).trim();
+      if (forkPoint) break;
+    } catch (e) {
+      gitFallback('merge-base', worktreePath, e, `trying next base for ${base}`);
+    }
+  }
+  if (!forkPoint) {
+    glog.debug(`getBranchDiff: no merge-base for ${branch} vs ${baseBranch} → empty diff`);
+    return '';
+  }
+  const raw = await safeRaw(git, ['diff', '-M', '--no-color', forkPoint, branch]);
+  return raw.trim() ? truncate(raw, 2_000_000) : '';
+}
+
+/** Apply a rebuilt patch to the INDEX (`git apply --cached`), staging or — with
+ *  `reverse` — unstaging exactly the hunks it contains.
+ *
+ *  The patch arrives on stdin rather than via a temp file so a huge selection
+ *  never touches disk. `--unidiff-zero` is NOT passed: it disables the context
+ *  matching that makes a wrong-offset patch fail loudly, and the whole point of
+ *  applying to the index is that a mis-application is silent.
+ *
+ *  Throws with git's own stderr on rejection, so the pane can surface the real
+ *  reason ("does not exist in index", "corrupt patch") instead of a generic
+ *  failure — these are the messages that tell a user their diff went stale. */
+export async function applyPatchToIndex(
+  worktreePath: string,
+  patch: string,
+  reverse = false,
+): Promise<void> {
+  if (!patch.trim()) return;
+  const args = ['apply', '--cached'];
+  if (reverse) args.push('--reverse');
+  args.push('-');
+  await new Promise<void>((resolve, reject) => {
+    const child = execFile(
+      'git',
+      args,
+      { cwd: worktreePath, maxBuffer: 32 * 1024 * 1024 },
+      (err, _stdout, stderr) => {
+        if (err) {
+          const detail = (stderr || err.message).split('\n').slice(0, 3).join(' ').trim();
+          reject(new Error(detail || 'git apply failed'));
+          return;
+        }
+        resolve();
+      },
+    );
+    child.stdin?.end(patch);
+  });
+}
+
+/** Unstage whole files (`git reset -- <paths>`), the file-level counterpart to
+ *  a reverse patch apply. Used for the "unstage this file" affordance and for
+ *  untracked files, which have no HEAD blob for a reverse patch to match. */
+export async function unstagePaths(worktreePath: string, paths: string[]): Promise<void> {
+  if (paths.length === 0) return;
+  const git = simpleGit(worktreePath);
+  // `--` guards against a path that looks like a revision.
+  await git.raw(['reset', '-q', '--', ...paths]);
+}
+
+/** Stage whole files (`git add -- <paths>`). Used for binary files and pure
+ *  renames, which carry no selectable hunks. */
+export async function stagePaths(worktreePath: string, paths: string[]): Promise<void> {
+  if (paths.length === 0) return;
+  const git = simpleGit(worktreePath);
+  await git.raw(['add', '--', ...paths]);
+}
+
 function truncate(s: string, max = 300_000): string {
   if (s.length > max) return s.slice(0, max) + '\n\n... (truncated by Orchestra) ...\n';
   return s;
