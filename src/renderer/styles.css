@@ -2530,6 +2530,14 @@ input:focus, textarea:focus, select:focus {
   opacity: 0.3;
   cursor: default;
 }
+/* The global `button:hover` (which has no :not(:disabled) guard) still paints a
+   --bg-4 background on a disabled Back/Forward, making a dead control look
+   clickable. Our own hover rule above correctly drops out when disabled, so
+   nothing overrides it — restore the transparent background explicitly. */
+.browser-nav-btn:disabled:hover {
+  background: transparent;
+  border-color: transparent;
+}
 .browser-url-form {
   flex: 1;
   display: flex;
