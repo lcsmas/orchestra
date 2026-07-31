@@ -6,6 +6,7 @@ import { dispatchHookEvent } from './activity';
 import {
   dispatchRenameRequest,
   dispatchSetBaseRequest,
+  dispatchLinkRequest,
   dispatchSpawnRequest,
   dispatchPeersRequest,
   dispatchReadRequest,
@@ -155,6 +156,20 @@ export async function startHooksServer(): Promise<void> {
               send(200, await dispatchSetBaseRequest(msg.id, msg.baseBranch));
             } else {
               send(200, { ok: false, error: 'missing id or baseBranch' });
+            }
+          } else if (route === '/link') {
+            if (typeof msg.id === 'string') {
+              send(
+                200,
+                await dispatchLinkRequest({
+                  id: msg.id,
+                  prUrl: typeof msg.prUrl === 'string' ? msg.prUrl : undefined,
+                  linearKey: typeof msg.linearKey === 'string' ? msg.linearKey : undefined,
+                  clear: msg.clear === true,
+                }),
+              );
+            } else {
+              send(200, { ok: false, error: 'missing id' });
             }
           } else if (route === '/spawn') {
             if (typeof msg.task === 'string') {

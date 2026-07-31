@@ -397,6 +397,57 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
 
+    case 'link': {
+      // Report which PR / Linear issue THIS workspace is working on. Defaults to
+      // self, because the overwhelmingly common caller is the agent linking its
+      // own work — an explicit id stays available for a coordinator fixing up a
+      // child. Orchestra no longer guesses either link from the branch name, so
+      // this is the only way the badges are ever populated.
+      const USAGE = 'usage: orchestra link [--pr <url>] [--linear <KEY>] [--clear] [id]';
+      // Pull `--clear` FIRST: in clear mode `--pr`/`--linear` are valueless
+      // selectors, so running takeFlag on them would swallow the following
+      // argument (`--clear --pr --linear` would read "--linear" as the URL).
+      const { present: clear, rest: afterClear } = takeBoolFlag(args, '--clear');
+      let prUrl: string | undefined;
+      let linearKey: string | undefined;
+      let rest: string[];
+      if (clear) {
+        const p = takeBoolFlag(afterClear, '--pr');
+        const l = takeBoolFlag(p.rest, '--linear');
+        // Empty string = "named, no value", which the dispatcher reads as
+        // `!== undefined` to decide which field to unset.
+        if (p.present) prUrl = '';
+        if (l.present) linearKey = '';
+        rest = l.rest;
+        if (!p.present && !l.present) fail(`${USAGE}\n  --clear needs --pr and/or --linear`);
+      } else {
+        const p = takeFlag(afterClear, '--pr');
+        const l = takeFlag(p.rest, '--linear');
+        prUrl = p.value;
+        linearKey = l.value;
+        rest = l.rest;
+        if (!prUrl && !linearKey) fail(USAGE);
+      }
+      const id = rest[0] ?? selfWorkspaceId();
+      if (!id) fail(`${USAGE}\n  (no id given and not running inside an Orchestra workspace)`);
+      const res = await request('/link', {
+        id,
+        ...(prUrl !== undefined ? { prUrl } : {}),
+        ...(linearKey !== undefined ? { linearKey } : {}),
+        ...(clear ? { clear: true } : {}),
+      });
+      if (!res.ok) fail(res.error ?? 'failed to link workspace');
+      if (res.cleared) {
+        process.stdout.write('Link cleared\n');
+      } else {
+        const parts: string[] = [];
+        if (res.prUrl) parts.push(`PR ${res.prUrl as string}`);
+        if (res.linearKey) parts.push(`Linear ${res.linearKey as string}`);
+        process.stdout.write(`Linked ${parts.join(' and ')}\n`);
+      }
+      return;
+    }
+
     case 'promote': {
       const id = args[0];
       if (!id) fail('usage: orchestra promote <id>');
@@ -482,6 +533,11 @@ async function main(argv: string[]): Promise<void> {
         ['parent', (res.parentId as string | null | undefined) ?? 'none (top-level)'],
         ['repo', (res.repoPath as string | undefined) || '(none)'],
         ['base', (res.baseBranch as string | undefined) || '(none)'],
+        // Agent-reported links. `(none)` is load-bearing, not cosmetic: the
+        // link-instruction hook greps these rows to decide whether to nudge,
+        // so the unlinked state needs a stable, matchable token.
+        ['pr', (res.linkedPrUrl as string | null | undefined) || '(none)'],
+        ['linear', (res.linkedLinearKey as string | null | undefined) || '(none)'],
       ];
       const w = Math.max(...lines.map(([k]) => k.length));
       process.stdout.write(lines.map(([k, v]) => `${k.padEnd(w)}  ${v}`).join('\n') + '\n');

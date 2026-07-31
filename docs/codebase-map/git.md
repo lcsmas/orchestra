@@ -88,7 +88,20 @@ because a `git push` moves only `origin/<branch>` (branch/base tips stay put);
 keying on just (branch, base) pinned a stale `↑N` badge across a push.
 
 ## PRs & releases (gh CLI, cached)
-- **`findPullRequest(repoPath, branch)`** — one **REST** `gh api
+
+**Resolution order — agent link first, branch match second.** `findPullRequest`
+prefers `ws.linkedPrUrl` (set by `orchestra link --pr`, see
+[hooks-cli-socket.md](hooks-cli-socket.md)) and scans the fetch for that URL
+(`recordForUrl`); it falls back to the branch head-ref match when unset, or when
+the linked URL isn't in the fetch (wrong repo / deleted PR), so a bad link
+degrades to the old behaviour instead of blanking the badge. The reason the link
+exists: head-ref matching is exact string equality, so it silently loses the PR
+whenever the branch is renamed — and Orchestra *nudges* every agent to rename its
+branch, often after the PR already exists. The link supplies only **which** PR;
+its live open/merged/closed state still comes from this fetch every poll, so the
+badge stays truthful even on an idle workspace whose agent never runs again.
+A linked URL yields a single-PR record rather than the head-ref's whole set.
+- **`findPullRequest(repoPath, branch, linkedPrUrl?)`** — one **REST** `gh api
   repos/{owner}/{repo}/pulls?state=all --paginate` fetch **per repo**, indexed by
   head branch (`fetchRepoPRs`), returning `PRsForBranch`
   (`all/open/latest/mergedCount`, `types.ts:212`). 60s cache keyed by **repo**,

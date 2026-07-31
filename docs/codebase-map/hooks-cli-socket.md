@@ -32,7 +32,8 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | `/promote` | `id` | `{ ok, id?, branch?, kind? }` |
 | `/attach` | `id` (+ `parentId?`) | `{ ok, id?, parentId? }` |
 | `/verifyLanded` | `id` (+ `from?`, `into?`) | `{ ok, id?, branch?, target?, unmerged?, commits? }` — coordinator close-out: are all commits on the child's branch tip on the target (explicit `into` ref, else the `from` caller's branch)? |
-| `/whoami` | `id` | `{ ok, id?, name?, branch?, kind?, orchestrator?, parentId?, repoPath?, baseBranch? }` — a workspace's own record; the only in-band way an agent learns its `parentId` (peers excludes the caller). |
+| `/link` | `id` (+ `prUrl?`, `linearKey?`, `clear?`) | `{ ok, prUrl?, linearKey?, cleared? }` — attach the PR / Linear issue this workspace is working on. The **only** writer of `linkedPrUrl`/`linkedLinearKey`; both badges are agent-reported, not derived. Validates strictly (`normalizePrUrl`, `parseLinearTicketRef`) and rejects a branch name or non-PR URL. `clear:true` unsets whichever of `prUrl`/`linearKey` is *named* (empty string = named). |
+| `/whoami` | `id` | `{ ok, id?, name?, branch?, kind?, orchestrator?, parentId?, repoPath?, baseBranch?, linkedPrUrl?, linkedLinearKey? }` — a workspace's own record; the only in-band way an agent learns its `parentId` (peers excludes the caller). The two link fields are what `link-instruction.sh` reads to decide whether to nudge. |
 | `/status` | `id` (+ `text?`) | `{ ok, statusText? }` — set/clear the workspace's agent-authored one-line status note (`Workspace.statusText`, shown under the sidebar row and in `/peers`). Empty/absent `text` clears; sanitized to a single ≤160-char line (`shared/status-text.ts`). |
 | `/migrateAccount` | `id` (+ `accountId?` — null/'' = default login) | `{ ok, id?, branch?, accountId?, resumed? }` |
 | `/accounts` | — | `{ ok, accounts?: {id,label,configDir}[] }` |
@@ -94,6 +95,18 @@ Scripts and the Claude Code events they fire on:
   via `orchestra whoami` each fire — `parentId` is mutable (`/attach`), so
   baking it into env/sentinel would go stale. Self-silences without a
   parent/guide/CLI.
+- **`link-instruction.sh`** — SessionStart ONLY. Asks the agent to report its PR
+  (`orchestra link --pr`) and/or Linear issue (`--linear`), because neither badge
+  is derived from the branch name any more — this hook is the sole discovery
+  path for the capability. **Gated on being unlinked**: it parses `orchestra
+  whoami`'s padded `key  value` table (NOT json — the CLI prints a text table)
+  for the `pr` / `linear` rows and prints nothing once both are set, so a linked
+  workspace pays zero tokens forever. Rows are read anchored to line start, so a
+  branch named e.g. `pr-linear-stuff` can't be mistaken for a row. Fails
+  **silent** (not nagging) when `whoami` is unreachable or returns a non-table
+  body — a restarting daemon must not nag every SessionStart. SessionStart-only
+  for the usual reason: a per-turn injection compounds in the transcript, and a
+  blank badge is cosmetic, not a broken run. Paired skill: `orchestra-link`.
 - **`self-modify-instruction.sh`** — SessionStart ONLY. Self-modification
   notice for agents working on **Orchestra's own repo**: tells the agent this
   repo is the app currently running it, that changes only land after a
@@ -105,8 +118,8 @@ Scripts and the Claude Code events they fire on:
   an unrelated repo named "orchestra" stays silent). Exception to the
   `$ORCHESTRA_WS_ID` guard note above — its gate is repo identity, not env.
 
-Also installs 8 **capability skills** as `<worktree>/.claude/skills/<name>/SKILL.md`
-(orchestra-spawn / -comms / -repos / -promote / -attach / -rename /
+Also installs 9 **capability skills** as `<worktree>/.claude/skills/<name>/SKILL.md`
+(orchestra-spawn / -comms / -repos / -promote / -attach / -rename / -link /
 -migrate-account / -status) so the agent discovers them. A SessionStart readiness hook touches `$ORCHESTRA_READY_FILE` so
 spawn task-injection knows the TUI is live.
 
@@ -132,7 +145,11 @@ creates the workspace parentless — its own top-level section), `rename <id> <b
 `promote <id>`, `attach <id> <parentId>`, `detach <id>`, `verify-landed <id>
 [--into <branch>]` (close-out check: exits 0 only when every commit on the
 workspace's branch tip is on the target — the caller's branch by default),
-`whoami` (this workspace's own record: kind, orchestrator role, parent),
+`whoami` (this workspace's own record: kind, orchestrator role, parent, and the
+`pr`/`linear` link rows), `link [--pr <url>] [--linear <KEY>] [--clear] [id]`
+(report which PR / Linear issue this workspace is working on — defaults to
+**self**, since the common caller is the agent linking its own work; an explicit
+id is for a coordinator fixing up a child),
 `status <text…>` / `status --clear` (set/clear THIS workspace's one-line status
 note — rendered under its sidebar row and surfaced to peers; self-targeted via
 the identity env vars; whitespace-only text is REJECTED at the CLI — `--clear`

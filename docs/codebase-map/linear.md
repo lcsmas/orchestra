@@ -1,18 +1,39 @@
 # Linear integration
 
-Turns a branch name into a verified Linear issue badge in the sidebar. Files:
-`src/main/linear.ts`, `src/shared/linear.ts` (+ `.test.ts`, pure logic). UI:
-`LinearSettings.tsx`.
+Turns an **agent-reported** issue key into a verified Linear issue badge in the
+sidebar. Files: `src/main/linear.ts`, `src/shared/linear.ts` (+ `.test.ts`, pure
+logic). UI: `LinearSettings.tsx`.
+
+## The badge is reported, not derived
+
+The sidebar badge reads **`ws.linkedLinearKey`** — set only by `orchestra link
+--linear <KEY>` (see [hooks-cli-socket.md](hooks-cli-socket.md)). Branch-name
+derivation was **removed**: it guessed in both directions, inventing `POLL-429`
+from `usage-poll-429-backoff` while being structurally blind to any ticket whose
+key was never typed into the branch. No link → no badge.
+
+`parseLinearIssueCandidate` still exists and is still tested, but no longer
+feeds the badge — it serves the *other* direction (`ticketBranchName`, so
+`orchestra linear add --spawn` names branches key-first) and the one-time
+backfill below.
 
 ## Flow
-- `parseLinearIssueCandidate(branch)` (`shared/linear.ts:28`) — extracts a
-  `TEAM-NUMBER` token (whole-token regex; `nmc-261-…`→`NMC-261`; permissive, may
-  yield false candidates like `POLL-429`).
-- `verifyLinearIssue(branch)` (`main/linear.ts:112`) — queries Linear GraphQL
+- `verifyLinear` IPC (`api-handlers.ts:935`) → returns null unless
+  `ws.linkedLinearKey` is set, then calls…
+- `verifyLinearIssueByKey(key)` (`main/linear.ts`) — queries Linear GraphQL
   (`https://api.linear.app/graphql`, `Authorization: <key>` no Bearer) and only
-  returns a `LinearIssue` (`types.ts`) if the returned `identifier` matches.
+  returns a `LinearIssue` (`types.ts`) if the returned `identifier` matches. An
+  agent-supplied key is an assertion, not proof, so a hallucinated or mistyped
+  key renders nothing rather than a badge that opens a 404.
   Caches hits *and* misses; `noApiKey` latch (`:32`) stops retrying after 401/403
   until the user saves a new key (`resetLinearAuthState` `:52`).
+- `verifyLinearIssue(branch)` remains as a thin wrapper (parse → by-key) for the
+  backfill; the cache was always keyed on the issue key, so both routes share it.
+- **Backfill** (`src/main/link-backfill.ts`) — one-shot migration run at startup,
+  gated on `store.linkBackfillDone`. Runs the OLD derivation once and persists
+  only **verified** hits, so existing workspaces keep their badges after upgrade
+  instead of going blank until an agent happens to re-link them. Only ever fills
+  empty fields; never overwrites an agent's link.
 - Key resolution (`:37`): stored key → `LINEAR_API_KEY` env → none.
   `getLinearKeySource` `:46`. Stored via `secrets.ts` (encrypted). UI:
   `LinearSettings.tsx` (test/save/clear). IPC: `linear:keySource`/`checkKey`/

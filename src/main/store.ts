@@ -32,6 +32,12 @@ interface StoreShape {
    *  its own collection. Absent on stores predating the feature → treated as
    *  `[]`, which renders no section at all. */
   tickets?: PinnedTicket[];
+  /** True once the one-shot PR/Linear link backfill has run (src/main/
+   *  link-backfill.ts). Absent on every store predating that migration, which
+   *  is exactly what triggers it. Lives here rather than in a sidecar file so
+   *  the marker travels with the data it describes — a restored/copied store
+   *  must not re-run the backfill, nor skip one it never had. */
+  linkBackfillDone?: boolean;
 }
 
 const DEFAULT: StoreShape = { repos: [], workspaces: [], accounts: [] };
@@ -144,6 +150,16 @@ class Store {
 
   get workspaces() {
     return this.data.workspaces;
+  }
+
+  /** Has the one-shot PR/Linear link backfill already run? */
+  get linkBackfillDone() {
+    return this.data.linkBackfillDone === true;
+  }
+
+  async markLinkBackfillDone() {
+    this.data.linkBackfillDone = true;
+    await this.save();
   }
 
   async addRepo(r: RepoEntry) {

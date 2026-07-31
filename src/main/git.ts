@@ -873,10 +873,68 @@ async function fetchRepoPRs(repoPath: string): Promise<RepoPRFetch> {
   }
 }
 
-export async function findPullRequest(repoPath: string, branch: string): Promise<PRRecord> {
+/** Find the PR record for an agent-reported PR URL within a repo-wide fetch.
+ *
+ * The fetch is indexed by head branch, which is exactly the index a linked URL
+ * exists to bypass, so this scans instead. That is cheap (a few hundred PRs at
+ * worst, once per poll) and it is the whole point: the URL keeps identifying
+ * the right PR after a branch rename, which the `byBranch` lookup cannot.
+ *
+ * Returns a single-PR record rather than the branch's whole set — a linked URL
+ * names ONE pull request, so the badge shows that one and does not inherit
+ * whatever else happens to share its head ref. */
+function recordForUrl(byBranch: Map<string, PRRecord>, url: string): PRRecord | null {
+  for (const rec of byBranch.values()) {
+    const hit = rec.all.find((p) => p.url === url);
+    if (hit) {
+      return {
+        all: [hit],
+        open: hit.state === 'OPEN' ? hit : null,
+        latest: hit,
+        mergedCount: hit.state === 'MERGED' ? 1 : 0,
+      };
+    }
+  }
+  return null;
+}
+
+/** Resolve a workspace's PRs.
+ *
+ * Two sources, in priority order:
+ *  1. `linkedPrUrl` — the PR the AGENT reported (`orchestra link --pr`). Wins
+ *     when set, because it survives branch renames and odd branch names, both
+ *     of which silently blank the branch match. Orchestra nudges every agent to
+ *     rename its branch, so that case is routine, not exotic.
+ *  2. the branch's head-ref match — unchanged behaviour for every workspace
+ *     that has never linked, so nothing regresses and no backfill is required
+ *     for the link to be *optional*.
+ *
+ * The linked URL supplies only WHICH pr; its live open/merged/closed state
+ * still comes from this fetch every poll. That split is deliberate — an agent
+ * knows which PR is its own, but only GitHub knows whether it has since been
+ * merged, so storing the state instead of the pointer would go stale on any
+ * workspace whose agent stopped running.
+ *
+ * A linked URL that is not in the fetch (wrong repo, deleted PR, or a typo that
+ * passed shape validation) falls back to the branch match rather than showing
+ * nothing, so a bad link degrades to the old behaviour instead of blanking the
+ * badge. */
+export async function findPullRequest(
+  repoPath: string,
+  branch: string,
+  linkedPrUrl?: string,
+): Promise<PRRecord> {
+  const resolve = (byBranch: Map<string, PRRecord>): PRRecord => {
+    if (linkedPrUrl) {
+      const linked = recordForUrl(byBranch, linkedPrUrl);
+      if (linked) return linked;
+    }
+    return byBranch.get(branch) ?? EMPTY_PRS;
+  };
+
   const cached = repoPRCache.get(repoPath);
   if (cached && Date.now() - cached.at < PR_CACHE_TTL) {
-    return cached.byBranch.get(branch) ?? EMPTY_PRS;
+    return resolve(cached.byBranch);
   }
 
   let inflight = repoPRInflight.get(repoPath);
@@ -894,7 +952,7 @@ export async function findPullRequest(repoPath: string, branch: string): Promise
 
   const res = await inflight;
   if (res.error) return { ...EMPTY_PRS, error: res.error };
-  return res.byBranch.get(branch) ?? EMPTY_PRS;
+  return resolve(res.byBranch);
 }
 
 /* ---- CI checks (GitHub Actions) — same repo-wide + cached pattern as PRs.

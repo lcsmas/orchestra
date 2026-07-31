@@ -18,7 +18,7 @@ import {
   unstagePaths,
 } from './git';
 import {
-  verifyLinearIssue,
+  verifyLinearIssueByKey,
   verifyLinearApiKey,
   getLinearKeySource,
   resetLinearAuthState,
@@ -954,7 +954,10 @@ export const apiHandlers: ApiHandlerTable = {
     // Piggyback release detection on the PR poll — never on the hot stats
     // poll; the underlying computation is memoized on (branch tip, releases).
     void detectAndUpdateReleaseState(id).catch(() => {});
-    return findPullRequest(ws.repoPath, ws.branch);
+    // `linkedPrUrl` (agent-reported) takes priority over the branch head-ref
+    // match inside findPullRequest; the live PR state still comes from the
+    // repo-wide fetch either way.
+    return findPullRequest(ws.repoPath, ws.branch, ws.linkedPrUrl);
   },
 
   findChecks: async (id) => {
@@ -1063,9 +1066,16 @@ export const apiHandlers: ApiHandlerTable = {
   verifyLinear: async (id) => {
     const ws = store.getWorkspace(id);
     if (!ws) throw new Error('workspace not found');
-    // Scratch sessions have no git branch encoding an issue; skip the spawn.
-    if (ws.kind === 'scratch') return null;
-    return verifyLinearIssue(ws.branch);
+    // The badge is now driven SOLELY by what the agent reported via
+    // `orchestra link --linear` — the branch name is no longer mined for a
+    // key. Branch-name mining guessed in both directions: it invented issues
+    // from branches that encode none (`usage-poll-429-backoff` → `POLL-429`)
+    // and could never see a ticket whose key was never typed into the branch.
+    // No link → no badge, for scratch sessions and git worktrees alike.
+    if (!ws.linkedLinearKey) return null;
+    // Still verified against the API: the key is the agent's assertion, and an
+    // unverified assertion would render a badge that opens a 404.
+    return verifyLinearIssueByKey(ws.linkedLinearKey);
   },
 
   listBranches: async (id) => {

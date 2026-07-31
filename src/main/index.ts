@@ -161,6 +161,7 @@ import {
 } from './workspaces';
 import { stopAll } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
+import { backfillWorkspaceLinks } from './link-backfill';
 import { installCliShim, installAgentCliShim } from './cli-shim';
 import { startEventsSpool, stopEventsSpool } from './events-spool';
 import { startHibernationSweeper, stopHibernationSweeper } from './hibernation.ts';
@@ -312,6 +313,11 @@ async function createMainWindow() {
   // the conversation survives (terminal `--continue`, SDK sdkSessionId) so a
   // hibernated agent restores on the next keystroke/send/activation.
   startHibernationSweeper();
+  // One-shot migration to agent-reported PR/Linear links. The Linear badge no
+  // longer reads the branch name, so without this every pre-existing workspace
+  // would silently lose its badge on upgrade. Fire-and-forget: it makes network
+  // calls and must never delay window creation.
+  void backfillWorkspaceLinks().catch(() => {});
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void openUrlExternally(url);

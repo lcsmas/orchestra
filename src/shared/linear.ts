@@ -75,6 +75,40 @@ export function parseLinearTicketRef(input: string): string | null {
 }
 
 /**
+ * Normalize an agent-supplied GitHub pull-request URL, or null if it isn't one.
+ *
+ * Strict for the same reason {@link parseLinearTicketRef} is: this reads an
+ * argument the agent typed at `orchestra link --pr`, which is an assertion
+ * about its own work rather than a guess mined from a branch. A branch URL, a
+ * `/compare/` URL, an `/issues/` URL or a bare repo URL are all things a
+ * confused caller might paste, and each would store a badge that opens
+ * somewhere unhelpful — so they are rejected loudly instead of normalized into
+ * something plausible.
+ *
+ * Returns the canonical `https://github.com/<owner>/<repo>/pull/<n>` form with
+ * any trailing slug, query or fragment stripped (`/files`, `?diff=split`,
+ * `#discussion_r1`), so the stored value compares equal to the `html_url`
+ * GitHub's API returns and the two can be matched directly.
+ *
+ *   normalizePrUrl('https://github.com/a/b/pull/12')        -> 'https://github.com/a/b/pull/12'
+ *   normalizePrUrl('https://github.com/a/b/pull/12/files')  -> 'https://github.com/a/b/pull/12'
+ *   normalizePrUrl('http://www.github.com/a/b/pull/12')     -> 'https://github.com/a/b/pull/12'
+ *   normalizePrUrl('https://github.com/a/b/issues/12')      -> null
+ *   normalizePrUrl('https://github.com/a/b/compare/x')      -> null
+ *   normalizePrUrl('https://gitlab.com/a/b/pull/12')        -> null
+ */
+export function normalizePrUrl(input: string): string | null {
+  const raw = input.trim();
+  if (!raw) return null;
+  const m = raw.match(
+    /^https?:\/\/(?:www\.)?github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)(?:[/?#]|$)/i,
+  );
+  if (!m) return null;
+  // Canonical form: always https, never www, no trailing slug/query/fragment.
+  return `https://github.com/${m[1]}/${m[2]}/pull/${m[3]}`;
+}
+
+/**
  * Derive a git branch name for a ticket, e.g. `NMC-305` + "Grade sync misses
  * squash-merged branches" -> `nmc-305-grade-sync-misses-squash-merged`.
  *

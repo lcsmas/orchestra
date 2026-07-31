@@ -261,6 +261,48 @@ export interface Workspace {
    * poll, and only pays for a gh call once the cheap local ancestry check sees
    * the recorded version no longer contains the tip. */
   releasedAt?: number;
+  /** URL of the pull request the AGENT reported for this workspace, via
+   * `orchestra link --pr <url>` (the only writer — see `dispatchLinkRequest`).
+   *
+   * Why stored at all, when PRs are otherwise discovered by matching the
+   * branch against every PR's head ref: that match is exact string equality
+   * (`git.ts` `fetchRepoPRs` indexes `byBranch`), so it silently loses the PR
+   * the moment the branch is renamed — and Orchestra actively *nudges* every
+   * agent to rename its branch (`rename-instruction.sh`), often after the PR
+   * already exists. The agent is the one actor that knows which PR is its own,
+   * so it records that here once and the link stops depending on a name.
+   *
+   * This is a POINTER, never a status cache: the live open/merged/closed state
+   * still comes from the repo-wide `gh` fetch each poll, keyed off this URL
+   * instead of the branch name. A stored link therefore can't go stale in the
+   * way a stored state would — the badge keeps telling the truth even on an
+   * idle workspace whose agent will never run again.
+   *
+   * Sticky by design: never auto-cleared (not on rename — that's the whole
+   * point — and not on a failed lookup, which usually means `gh` couldn't be
+   * asked). Absent on every record predating this field, and on workspaces
+   * whose PR is still found by branch name. */
+  linkedPrUrl?: string;
+  /** Linear issue key (e.g. `NMC-261`) the AGENT reported for this workspace,
+   * via `orchestra link --linear <KEY>`. The ONLY source for the sidebar's
+   * Linear badge.
+   *
+   * Replaces the previous branch-name derivation, which mined a `TEAM-NUMBER`
+   * token out of the branch with a regex. That was a guess in both directions:
+   * it invented candidates from branches that encode no issue at all
+   * (`usage-poll-429-backoff` → `POLL-429`), and it was structurally blind to
+   * any ticket whose key was never typed into the branch name — the common
+   * case, since nothing tells an agent its branch must carry one. An agent
+   * that was handed a ticket knows its key; asking it beats guessing.
+   *
+   * Still verified against the Linear API before anything renders
+   * (`verifyLinearIssueByKey`), so a hallucinated or mistyped key shows no
+   * badge rather than a wrong one — the key is an assertion, not proof.
+   *
+   * Note `parseLinearIssueCandidate` remains in use for the *other* direction:
+   * `orchestra linear add --spawn` names branches key-first so a spawned
+   * ticket's branch is meaningful. It just no longer feeds the badge. */
+  linkedLinearKey?: string;
   /** Auto-allocated dev-server port handed to setup/run scripts as
    * `$ORCHESTRA_PORT`. Lets multiple workspaces run dev servers in parallel
    * without colliding. Allocated at creation, freed on hard delete. */

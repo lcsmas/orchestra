@@ -1,0 +1,136 @@
+import { store } from './store';
+import { platform } from './platform';
+import { findPullRequest } from './git';
+import { parseLinearIssueCandidate } from '../shared/linear';
+import { verifyLinearIssueByKey } from './linear';
+import { scoped } from './logger';
+import type { Workspace } from '../shared/types';
+
+const blog = scoped('link-backfill');
+
+/**
+ * One-shot migration from branch-derived PR/Linear badges to agent-reported
+ * links (`linkedPrUrl` / `linkedLinearKey`).
+ *
+ * Why this exists: the Linear badge no longer reads the branch name at all, so
+ * without a backfill every existing workspace would lose its badge the moment
+ * this version ships and would only get it back if its agent ever ran again
+ * and linked itself. Most workspaces here are finished work whose agent will
+ * never run again — the badge would simply be gone forever. So we run the OLD
+ * derivation exactly once and persist whatever it finds.
+ *
+ * Scope and safety:
+ *  - Runs once ever, gated on a store flag; a second call is a no-op.
+ *  - Only ever FILLS empty fields. An existing link (an agent got there first)
+ *    is never overwritten — the agent is the source of truth, this is a guess.
+ *  - Linear keys are VERIFIED before being stored, so the permissive branch
+ *    regex can't persist junk like `POLL-429` from `usage-poll-429-backoff`.
+ *    That is the one place this is strictly better than what it replaces: the
+ *    old path re-guessed every poll, this bakes in only confirmed hits.
+ *  - Failures are per-workspace and swallowed. A missing `gh`, a rate limit or
+ *    an absent Linear key must not block startup or half-migrate the store —
+ *    but note the flag is still set afterwards (see below).
+ *
+ * The flag is set even if individual lookups failed, deliberately: retrying
+ * forever would re-run a full PR fetch and a Linear round-trip per workspace on
+ * every single launch, which is exactly the quota drain this subsystem already
+ * got burned by. A workspace the backfill couldn't resolve is not stuck — its
+ * agent can link it, which is the mechanism this whole change is about.
+ */
+export async function backfillWorkspaceLinks(): Promise<void> {
+  if (store.linkBackfillDone) return;
+
+  const targets = store.workspaces.filter(
+    (w) => !w.archived && w.kind !== 'scratch' && (!w.linkedPrUrl || !w.linkedLinearKey),
+  );
+  if (targets.length === 0) {
+    await store.markLinkBackfillDone();
+    return;
+  }
+
+  blog.info(`backfilling PR/Linear links for ${targets.length} workspace(s)`);
+  let prFilled = 0;
+  let linearFilled = 0;
+
+  // Warm the per-repo PR cache ONCE per distinct repo, in parallel and under a
+  // timeout, before the per-workspace loop.
+  //
+  // `findPullRequest` fetches every PR in a repo with `gh api --paginate` and
+  // caches it for 60s, so N workspaces sharing a repo normally collapse into
+  // one request — but only if the first call has RETURNED before the others
+  // ask. Awaiting it serially per workspace does not collapse anything on a
+  // cold cache; it just serialises N full fetches. Measured here: a repo with
+  // ~9.6k PRs kept a single `gh --paginate` running for minutes, so the
+  // backfill logged "backfilling…" and never reached its completion line —
+  // startup work with no upper bound.
+  //
+  // Deliberately NOT awaited past the timeout: a repo too slow to answer is
+  // one whose PR links this migration simply skips. That is a strictly better
+  // outcome than blocking, because the whole feature is "agents report their
+  // own links" — an unbackfilled workspace is asked by the SessionStart hook.
+  const repos = [...new Set(targets.filter((w) => !w.linkedPrUrl).map((w) => w.repoPath))].filter(
+    Boolean,
+  );
+  if (repos.length) {
+    const WARM_TIMEOUT_MS = 20_000;
+    await Promise.all(
+      repos.map((repoPath) =>
+        Promise.race([
+          // Any branch name works to prime the per-repo cache; we discard the
+          // result and read it back per workspace below (a cache hit).
+          findPullRequest(repoPath, '').catch(() => null),
+          new Promise((r) => setTimeout(r, WARM_TIMEOUT_MS)),
+        ]),
+      ),
+    );
+  }
+
+  for (const ws of targets) {
+    let next: Workspace | null = null;
+
+    // --- PR: the branch head-ref match, exactly as the old badge did it.
+    if (!ws.linkedPrUrl) {
+      try {
+        // Normally a hit on the cache warmed above; a repo that timed out
+        // re-enters here and is bounded the same way, so one slow repo cannot
+        // stall the rest of the migration.
+        const prs = (await Promise.race([
+          findPullRequest(ws.repoPath, ws.branch),
+          new Promise<null>((r) => setTimeout(() => r(null), 5_000)),
+        ])) as Awaited<ReturnType<typeof findPullRequest>> | null;
+        // `error` means gh couldn't be asked — NOT that there is no PR. Storing
+        // nothing here is right; storing a link is what we skip.
+        if (prs && !prs.error && prs.latest) {
+          next = { ...(next ?? ws), linkedPrUrl: prs.latest.url };
+          prFilled++;
+        }
+      } catch {
+        /* per-workspace best-effort */
+      }
+    }
+
+    // --- Linear: mine the branch, then CONFIRM before persisting.
+    if (!ws.linkedLinearKey) {
+      const candidate = parseLinearIssueCandidate(ws.branch);
+      if (candidate) {
+        try {
+          const issue = await verifyLinearIssueByKey(candidate);
+          if (issue) {
+            next = { ...(next ?? ws), linkedLinearKey: issue.identifier };
+            linearFilled++;
+          }
+        } catch {
+          /* per-workspace best-effort */
+        }
+      }
+    }
+
+    if (next) {
+      await store.upsertWorkspace(next);
+      platform.broadcast('workspace:update', next);
+    }
+  }
+
+  await store.markLinkBackfillDone();
+  blog.info(`backfill complete: ${prFilled} PR link(s), ${linearFilled} Linear link(s)`);
+}

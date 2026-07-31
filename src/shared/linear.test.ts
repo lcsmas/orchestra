@@ -4,6 +4,7 @@ import {
   parseLinearIssueCandidate,
   parseLinearTicketRef,
   ticketBranchName,
+  normalizePrUrl,
 } from './linear.ts';
 
 test('parseLinearIssueCandidate extracts and upper-cases a candidate key', () => {
@@ -126,4 +127,62 @@ test('ticketBranchName caps the slug length', () => {
   const long = 'one two three four five six seven eight nine ten';
   assert.equal(ticketBranchName('NMC-2', long), 'nmc-2-one-two-three-four-five-six');
   assert.equal(ticketBranchName('NMC-2', long, 2), 'nmc-2-one-two');
+});
+
+test('normalizePrUrl accepts a canonical GitHub PR URL', () => {
+  assert.equal(
+    normalizePrUrl('https://github.com/acme/app/pull/12'),
+    'https://github.com/acme/app/pull/12',
+  );
+  assert.equal(normalizePrUrl('  https://github.com/acme/app/pull/12  '),
+    'https://github.com/acme/app/pull/12');
+});
+
+test('normalizePrUrl strips slug, query and fragment so it matches gh html_url', () => {
+  // gh returns the bare .../pull/<n> form; a link copied from the browser
+  // usually carries a tab suffix. They must compare equal or the linked PR
+  // would never be found in the fetch.
+  const want = 'https://github.com/acme/app/pull/12';
+  assert.equal(normalizePrUrl('https://github.com/acme/app/pull/12/files'), want);
+  assert.equal(normalizePrUrl('https://github.com/acme/app/pull/12/commits'), want);
+  assert.equal(normalizePrUrl('https://github.com/acme/app/pull/12?diff=split'), want);
+  assert.equal(normalizePrUrl('https://github.com/acme/app/pull/12#discussion_r1'), want);
+  assert.equal(normalizePrUrl('https://github.com/acme/app/pull/12/'), want);
+});
+
+test('normalizePrUrl canonicalises scheme and www', () => {
+  const want = 'https://github.com/acme/app/pull/12';
+  assert.equal(normalizePrUrl('http://github.com/acme/app/pull/12'), want);
+  assert.equal(normalizePrUrl('https://www.github.com/acme/app/pull/12'), want);
+});
+
+test('normalizePrUrl rejects non-PR GitHub URLs', () => {
+  // Each of these is something a confused caller might paste; storing any of
+  // them would produce a badge that opens the wrong page.
+  assert.equal(normalizePrUrl('https://github.com/acme/app/issues/12'), null);
+  assert.equal(normalizePrUrl('https://github.com/acme/app/compare/main...x'), null);
+  assert.equal(normalizePrUrl('https://github.com/acme/app/tree/some-branch'), null);
+  assert.equal(normalizePrUrl('https://github.com/acme/app'), null);
+  assert.equal(normalizePrUrl('https://github.com/acme/app/pull/'), null);
+  assert.equal(normalizePrUrl('https://github.com/acme/app/pull/abc'), null);
+});
+
+test('normalizePrUrl rejects non-GitHub and lookalike hosts', () => {
+  assert.equal(normalizePrUrl('https://gitlab.com/acme/app/pull/12'), null);
+  assert.equal(normalizePrUrl('https://github.com.evil.test/acme/app/pull/12'), null);
+  assert.equal(normalizePrUrl('https://notgithub.com/acme/app/pull/12'), null);
+  assert.equal(normalizePrUrl(''), null);
+  assert.equal(normalizePrUrl('   '), null);
+  assert.equal(normalizePrUrl('nmc-261-some-branch'), null);
+});
+
+test('normalizePrUrl requires the URL to BE a PR link, not merely contain one', () => {
+  // This is what the leading `^` anchor buys, and nothing else in this file
+  // exercises it: the lookalike-host cases above fail on their host shape and
+  // pass even with the anchor removed (verified by mutation). A PR URL
+  // embedded in another URL — a redirect wrapper, a notification link — is the
+  // case that genuinely needs anchoring, since matching it would store a badge
+  // pointing at whatever the outer link decides to do.
+  assert.equal(normalizePrUrl('https://evil.test/r?to=https://github.com/a/b/pull/9'), null);
+  assert.equal(normalizePrUrl('see https://github.com/a/b/pull/9 for details'), null);
 });

@@ -140,6 +140,26 @@ async function linearGraphql(
 export async function verifyLinearIssue(branch: string): Promise<LinearIssue | null> {
   const key = parseLinearIssueCandidate(branch);
   if (!key) return null;
+  return verifyLinearIssueByKey(key);
+}
+
+/**
+ * Resolve an EXPLICIT Linear issue key — the key an agent reported via
+ * `orchestra link --linear`, rather than one mined from a branch name.
+ *
+ * This is the badge path now. The distinction from {@link verifyLinearIssue}
+ * is only where the key came from, so verification is deliberately identical:
+ * an agent-supplied key is an assertion, not proof, and a mistyped or
+ * hallucinated `NMC-9999` must show no badge rather than a wrong one. Every
+ * failure mode (no API key, network error, `issue: null`, identifier mismatch)
+ * still resolves to null.
+ *
+ * Shares the by-key cache with the branch path — the cache was always keyed on
+ * the issue key, never the branch, so both routes hit the same entries.
+ */
+export async function verifyLinearIssueByKey(rawKey: string): Promise<LinearIssue | null> {
+  const key = rawKey.trim().toUpperCase();
+  if (!key) return null;
   if (cache.has(key)) return cache.get(key)!;
   if (noApiKey) return null;
 
