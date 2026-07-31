@@ -145,6 +145,11 @@ mounts only when selected.
 
 ## Sidebar.tsx (~2100 lines — the big one)
 Workspace list with orchestrator nesting, drag-reorder, archive, delete.
+- **Header inbox** (`InboxBell.tsx`, first header action): Orca-style
+  "Needs You" triage — badge counts workspaces with status waiting/error plus
+  bookmarks (pure grouping in `shared/attention.ts`); the popover lists
+  needs-you / bookmarked / working groups, click jumps (which itself clears
+  the signals via markSeen/setActive — no read-state kept).
 - **Header**: title + three quiet icon buttons (help / sound / accounts) and a
   single accent-tinted **“+ New” menu** (`.new-menu`) holding the three session
   kinds (repo workspace / scratch / orchestrator) — replaces the old trio of

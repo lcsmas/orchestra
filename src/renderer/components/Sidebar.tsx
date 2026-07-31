@@ -12,6 +12,7 @@ import type {
 import { isScratchLike, canOrchestrate } from '../../shared/types';
 import { groupByHost, hostLabel } from '../host-grouping';
 import { queuedTickets as selectQueuedTickets } from '../../shared/linear-tickets-queue';
+import { InboxBell } from './InboxBell';
 import { SoundSettings } from './SoundSettings';
 import { AgentViewSettings } from './AgentViewSettings';
 import { LinearSettings } from './LinearSettings';
@@ -1527,6 +1528,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       <div className="sidebar-header">
         <h1>Orchestra</h1>
         <div className="sidebar-header-actions">
+          <InboxBell />
           <button
             className="header-icon-btn"
             onClick={() => setHelpOpen(true)}
