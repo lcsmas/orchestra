@@ -135,7 +135,9 @@ workspace's branch tip is on the target — the caller's branch by default),
 `whoami` (this workspace's own record: kind, orchestrator role, parent),
 `status <text…>` / `status --clear` (set/clear THIS workspace's one-line status
 note — rendered under its sidebar row and surfaced to peers; self-targeted via
-the identity env vars),
+the identity env vars; whitespace-only text is REJECTED at the CLI — `--clear`
+is the only clear path, though the socket route itself treats empty `text` as
+clear for programmatic callers),
 `add-repo <path>`,
 `delete <id> --yes`, `accounts` (list configured accounts), `migrate-account <id>
 <accountId|--default>` (migrate a workspace to another login / back to default),

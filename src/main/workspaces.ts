@@ -2968,7 +2968,9 @@ orchestra status "implementing the socket route; tests next"
 - One short line (≤160 chars; longer input is truncated with an ellipsis).
 - Update on real phase changes, not every step: starting a phase, a key
   milestone landing, blocked / waiting on input, done.
-- Clear it when it no longer applies:
+- Clear it when it no longer applies — \`--clear\` is the ONLY clear path
+  (whitespace-only text is rejected with a usage error, deliberately, so a
+  mangled command cannot clear your note by accident):
 
 \`\`\`bash
 orchestra status --clear
