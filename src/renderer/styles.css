@@ -2496,8 +2496,8 @@ input:focus, textarea:focus, select:focus {
 .browser-toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 6px 8px;
+  gap: 6px;
+  padding: 7px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-2);
   flex: 0 0 auto;
@@ -2506,14 +2506,21 @@ input:focus, textarea:focus, select:focus {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text);
   cursor: pointer;
   transition: background 120ms var(--ease), color 120ms var(--ease);
+}
+/* The glyph is a flex item of the button, so it inherits `flex-shrink: 1` and
+   gets squashed narrower than its own width attribute (18px wide rendered at
+   10px). Pin it so the icon keeps its intrinsic square aspect. */
+.browser-nav-btn svg {
+  flex: 0 0 auto;
 }
 .browser-nav-btn:hover:not(:disabled) {
   background: var(--bg-4);
@@ -2533,13 +2540,13 @@ input:focus, textarea:focus, select:focus {
 .browser-url-input {
   flex: 1;
   min-width: 0;
-  height: 28px;
-  padding: 0 10px;
+  height: 34px;
+  padding: 0 12px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 9px;
   background: var(--bg-3);
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-family: inherit;
   outline: none;
 }
@@ -2549,8 +2556,8 @@ input:focus, textarea:focus, select:focus {
 }
 .browser-spinner {
   flex: 0 0 auto;
-  width: 13px;
-  height: 13px;
+  width: 15px;
+  height: 15px;
   border: 2px solid var(--border-strong);
   border-top-color: var(--accent);
   border-radius: 50%;

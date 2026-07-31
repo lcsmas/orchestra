@@ -124,7 +124,7 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
           disabled={!state.canGoBack}
           onClick={() => void window.orchestra.browserBack(workspaceId)}
         >
-          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true">
             <path fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" d="M10 3.5 5.5 8 10 12.5" />
           </svg>
         </button>
@@ -135,7 +135,7 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
           disabled={!state.canGoForward}
           onClick={() => void window.orchestra.browserForward(workspaceId)}
         >
-          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true">
             <path fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" d="M6 3.5 10.5 8 6 12.5" />
           </svg>
         </button>
@@ -145,7 +145,7 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
           aria-label="Reload"
           onClick={() => void window.orchestra.browserReload(workspaceId)}
         >
-          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true">
             <path fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" d="M12.5 4.5a5 5 0 1 0 1 3" />
             <path fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" d="M12.8 2.5v2.4h-2.4" />
           </svg>
