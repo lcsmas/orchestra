@@ -79,7 +79,9 @@ Single source of truth; **atomic selectors** so high-frequency events
 `stats`/`sizes` (+`sizesExclusive`: btrfs reclaimable-bytes vs apparent-`du`
 flag, drives the size-badge tooltip; active rows hide the badge below
 `SIZE_BADGE_MIN_BYTES` (50 MB) so the wrapping badge doesn't add a line of
-noise per row)/`prs`/`linear`/`tools`/`contextTokens`/`repoSync`/`accountUsage`/
+noise per row)/`prs`/`checks` (CI verdicts, 30s `refreshAllChecks` poll —
+red `.ci-badge` on fail only, click hands the run to the agent via
+`git:fixChecks`)/`linear`/`tools`/`contextTokens`/`repoSync`/`accountUsage`/
 `workspaceAccounts`, plus UI (`activeId`, `openHistory`, `view`, `loaded`).
 `openHistory` is a session-only most-recently-opened-first stack of workspace
 ids (pushed in `setActive` via `pushHistory`); when the active workspace

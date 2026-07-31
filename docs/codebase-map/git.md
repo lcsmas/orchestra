@@ -81,6 +81,20 @@ keying on just (branch, base) pinned a stale `↑N` badge across a push.
   `gh` stderr line, so "could not ask" reads differently from "nothing to show".
   Note `gh` puts its real diagnostic on **stderr** — `err.message` is only the
   exec wrapper's "Command failed".
+- **`findBranchChecks(repoPath, branch)`** — CI (GitHub Actions) verdict per
+  branch, same repo-wide + cached pattern as PRs: ONE REST
+  `actions/runs?per_page=100` page per repo per 60s TTL (deliberately NOT
+  `--paginate` — the newest page IS the freshness window; a branch whose last
+  run fell off shows no badge). Reduction to per-branch state lives in the pure
+  `shared/ci-state.ts` (`branchChecksFromRuns`): only runs on the branch's
+  newest head sha count, siblings aggregate (fail > running > pass),
+  cancelled/skipped → none. Failures aren't cached EXCEPT `HTTP 404`
+  ("Actions disabled"), which is stable and cached to stop per-TTL retries.
+  Renderer polls `git:findChecks` per workspace (30s, `refreshAllChecks`);
+  the Sidebar renders a red `.ci-badge` ONLY on `fail`, whose click →
+  `git:fixChecks` hands the failing run (`gh run view <id> --log-failed`) to
+  the workspace's agent via `wakeAgentWithPrompt`, falling back to typing into
+  a live PTY like `git:merge`.
 - **`getReleaseState`** `:722` / **`getReleaseVersionsContaining`** `:797` — pill
   policy: the earliest published release containing the branch's *authored*
   commits (`authoredCommits` `:870`, reflog-derived) **plus** each release the

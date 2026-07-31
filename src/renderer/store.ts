@@ -15,6 +15,7 @@ import type {
   DiffStats,
   LinearIssue,
   PinnedTicket,
+  ChecksForBranch,
   PRsForBranch,
   RepoEntry,
   RepoSyncState,
@@ -64,6 +65,8 @@ interface State {
    *  they're apparent `du` sizes (non-btrfs fallback). Drives tooltip copy. */
   sizesExclusive: boolean;
   prs: Record<string, PRsForBranch>;
+  /** Per-workspace CI verdict (GitHub Actions) — only `fail` renders a badge. */
+  checks: Record<string, ChecksForBranch>;
   /** Linear issue confirmed to exist for a workspace's branch, keyed by
    *  workspace id. Absent until verified; explicit null means "checked, no real
    *  issue" — so the sidebar shows a badge only on a present, non-null value. */
@@ -175,6 +178,7 @@ interface State {
   refreshSizes: () => Promise<void>;
   refreshPR: (id: string) => Promise<void>;
   refreshAllPRs: () => Promise<void>;
+  refreshAllChecks: () => Promise<void>;
   refreshLinear: (id: string) => Promise<void>;
   refreshAllLinear: () => Promise<void>;
   refreshTickets: () => Promise<void>;
@@ -189,6 +193,7 @@ export const useStore = create<State>((set, get) => ({
   sizes: {},
   sizesExclusive: false,
   prs: {},
+  checks: {},
   linear: {},
   tickets: [],
   tools: {},
@@ -541,6 +546,22 @@ export const useStore = create<State>((set, get) => ({
     if (Object.keys(next).length) set((s) => ({ prs: { ...s.prs, ...next } }));
   },
 
+  refreshAllChecks: async () => {
+    // Gather all CI lookups, then commit once — see refreshAllStats. Main
+    // serves these from a repo-wide 60s cache, so N workspaces on one repo
+    // cost one gh call per TTL.
+    const ids = get().workspaces.filter((w) => !w.archived).map((w) => w.id);
+    const entries = await mapBounded(ids, async (id) => {
+      try {
+        return [id, await window.orchestra.findChecks(id)] as const;
+      } catch {
+        return null; // gh missing, no remote, etc. — ignore
+      }
+    });
+    const next = Object.fromEntries(entries.filter((e) => e !== null));
+    if (Object.keys(next).length) set((s) => ({ checks: { ...s.checks, ...next } }));
+  },
+
   refreshLinear: async (id) => {
     try {
       const issue = await window.orchestra.verifyLinear(id);
@@ -635,12 +656,13 @@ window.orchestra.onWorkspaceRemoved((id) => {
         ? pickFallbackActive(workspaces, s.openHistory, id)
         : s.activeId;
     const { [id]: _gonePr, ...prs } = s.prs;
+    const { [id]: _goneChecks, ...checks } = s.checks;
     const { [id]: _goneLinear, ...linear } = s.linear;
     const { [id]: _goneStat, ...stats } = s.stats;
     const { [id]: _goneTool, ...tools } = s.tools;
     const { [id]: _goneCtx, ...contextTokens } = s.contextTokens;
     const { [id]: _goneSession, ...agentSessions } = s.agentSessions;
-    return { workspaces, activeId, prs, linear, stats, tools, contextTokens, agentSessions };
+    return { workspaces, activeId, prs, checks, linear, stats, tools, contextTokens, agentSessions };
   });
 });
 window.orchestra.onWorkspacesRemoved((ids) => {
@@ -657,6 +679,7 @@ window.orchestra.onWorkspacesRemoved((ids) => {
       workspaces,
       activeId,
       prs: prune(s.prs),
+      checks: prune(s.checks),
       linear: prune(s.linear),
       stats: prune(s.stats),
       tools: prune(s.tools),

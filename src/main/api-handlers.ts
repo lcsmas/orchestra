@@ -7,6 +7,7 @@ import {
   detectRemoteUrl,
   getDiff,
   findPullRequest,
+  findBranchChecks,
   listBranches,
   getDiffStats,
 } from './git';
@@ -37,6 +38,7 @@ import {
   dispatchMigrateAccountRequest,
   dispatchPromoteRequest,
   ensureWorkspacePort,
+  wakeAgentWithPrompt,
   getWorktreeSizes,
   renameWorkspaceBranch,
   runSetupScript,
@@ -246,6 +248,8 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   getWorktreeSizes: 'workspaces:sizes',
   sampleResources: 'resources:sample',
   findPR: 'git:findPR',
+  findChecks: 'git:findChecks',
+  fixChecks: 'git:fixChecks',
   verifyLinear: 'linear:verify',
   listTickets: 'tickets:list',
   refreshTickets: 'tickets:refresh',
@@ -913,6 +917,41 @@ export const apiHandlers: ApiHandlerTable = {
     // poll; the underlying computation is memoized on (branch tip, releases).
     void detectAndUpdateReleaseState(id).catch(() => {});
     return findPullRequest(ws.repoPath, ws.branch);
+  },
+
+  findChecks: async (id) => {
+    const ws = store.getWorkspace(id);
+    if (!ws) throw new Error('workspace not found');
+    // Non-git sessions have no branch to run CI on. Mirrors findPR's guard,
+    // extended to orchestrator (also repo-less).
+    if (ws.kind === 'scratch' || ws.kind === 'orchestrator' || !ws.repoPath) {
+      return { state: 'none' as const };
+    }
+    return findBranchChecks(ws.repoPath, ws.branch);
+  },
+
+  fixChecks: async (id) => {
+    const ws = store.getWorkspace(id);
+    if (!ws) throw new Error('workspace not found');
+    const checks = await findBranchChecks(ws.repoPath, ws.branch);
+    const logCmd = checks.runId
+      ? `gh run view ${checks.runId} --log-failed`
+      : `gh run list --branch "${ws.branch}" --limit 5` + ' then `gh run view <id> --log-failed`';
+    const prompt =
+      `CI is failing on this branch${checks.name ? ` (workflow "${checks.name}")` : ''}.\n\n` +
+      `- Branch: \`${ws.branch}\`\n` +
+      (checks.url ? `- Run: ${checks.url}\n` : '') +
+      `\nRead the failing logs with \`${logCmd}\` (run it in this worktree), ` +
+      `fix the root cause, run the failing checks locally to prove the fix, then commit and push. ` +
+      `Tell me what was broken and what you changed.`;
+    // Live SDK session or stopped agent: wakeAgentWithPrompt handles both
+    // (deliver-as-next-turn / structured-first wake). It returns false when a
+    // terminal PTY is live — then type it in, exactly like git:merge above.
+    if (!(await wakeAgentWithPrompt(id, prompt))) {
+      writePty(id, prompt);
+      setTimeout(() => writePty(id, '\r'), 80);
+    }
+    return { status: 'requested' as const };
   },
 
   listTickets: async () => store.tickets,

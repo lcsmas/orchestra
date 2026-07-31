@@ -4,7 +4,8 @@ import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { DiffFile, DiffStats } from '../shared/types';
+import type { ChecksForBranch, DiffFile, DiffStats } from '../shared/types';
+import { branchChecksFromRuns, type WorkflowRunLite } from '../shared/ci-state';
 // Explicit `.ts` extension: git.ts is pulled into Node's type-stripping test
 // runner (git-merge-state.test.ts et al.), which does not resolve extensionless
 // relative specifiers. Same reason logger.ts imports './platform/index.ts'.
@@ -719,6 +720,79 @@ export async function findPullRequest(repoPath: string, branch: string): Promise
   const res = await inflight;
   if (res.error) return { ...EMPTY_PRS, error: res.error };
   return res.byBranch.get(branch) ?? EMPTY_PRS;
+}
+
+/* ---- CI checks (GitHub Actions) — same repo-wide + cached pattern as PRs.
+ * ONE `actions/runs` page (the 100 newest runs) per repo per TTL answers every
+ * workspace's "is CI red?", so cost scales with repo count (~5) rather than
+ * workspace count (~45+), and staying on REST keeps it off the separately-
+ * drainable GraphQL budget — the full rationale lives on fetchRepoPRs above.
+ * Deliberately NOT --paginate: the newest page IS the freshness window by
+ * design (bounded cost); a branch whose last run fell off it simply shows no
+ * CI badge, same as a branch that never ran. */
+const repoChecksCache = new Map<string, { at: number; byBranch: Map<string, ChecksForBranch> }>();
+const CHECKS_CACHE_TTL = 60_000;
+const repoChecksInflight = new Map<string, Promise<RepoChecksFetch>>();
+
+interface RepoChecksFetch {
+  byBranch: Map<string, ChecksForBranch>;
+  error?: string;
+}
+
+const EMPTY_CHECKS: ChecksForBranch = { state: 'none' };
+
+async function fetchRepoChecks(repoPath: string): Promise<RepoChecksFetch> {
+  try {
+    const { stdout } = await pexec(
+      'gh',
+      [
+        'api',
+        'repos/{owner}/{repo}/actions/runs?per_page=100',
+        '--jq',
+        '.workflow_runs[] | {branch: .head_branch, sha: .head_sha, status, conclusion, name, url: .html_url, id}',
+      ],
+      { cwd: repoPath, maxBuffer: 32 * 1024 * 1024 },
+    );
+    const runs: WorkflowRunLite[] = [];
+    for (const line of stdout.split('\n')) {
+      const s = line.trim();
+      if (!s) continue;
+      runs.push(JSON.parse(s) as WorkflowRunLite);
+    }
+    return { byBranch: branchChecksFromRuns(runs) };
+  } catch (err) {
+    const e = err as { stderr?: string; message?: string };
+    const detail = (e.stderr || e.message || '').trim().split('\n')[0] || 'gh query failed';
+    return { byBranch: new Map(), error: detail };
+  }
+}
+
+/** Per-branch CI verdict, served from the repo-wide cache. Failures are not
+ * cached (next poll retries) EXCEPT a 404 — that's "Actions disabled on this
+ * repo", which is stable, and retrying it every poll would burn a request per
+ * TTL forever on repos that will never answer. */
+export async function findBranchChecks(
+  repoPath: string,
+  branch: string,
+): Promise<ChecksForBranch> {
+  const cached = repoChecksCache.get(repoPath);
+  if (cached && Date.now() - cached.at < CHECKS_CACHE_TTL) {
+    return cached.byBranch.get(branch) ?? EMPTY_CHECKS;
+  }
+  let inflight = repoChecksInflight.get(repoPath);
+  if (!inflight) {
+    inflight = fetchRepoChecks(repoPath).then((res) => {
+      if (!res.error || /HTTP 404/.test(res.error)) {
+        repoChecksCache.set(repoPath, { at: Date.now(), byBranch: res.byBranch });
+      }
+      return res;
+    });
+    repoChecksInflight.set(repoPath, inflight);
+    void inflight.catch(() => {}).finally(() => repoChecksInflight.delete(repoPath));
+  }
+  const res = await inflight;
+  if (res.error && !/HTTP 404/.test(res.error)) return { ...EMPTY_CHECKS, error: res.error };
+  return res.byBranch.get(branch) ?? EMPTY_CHECKS;
 }
 
 interface ReleaseRef {

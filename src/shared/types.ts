@@ -408,6 +408,27 @@ export interface PRsForBranch {
   error?: string;
 }
 
+/** CI (GitHub Actions) verdict for a branch, reduced from the repo-wide runs
+ * feed (`shared/ci-state.ts`) on the same repo-wide-fetch + cache pattern as
+ * PRs. Only `fail` renders a badge — green CI is quiet by design (Orca-style:
+ * failures are signal, passes are noise). */
+export interface ChecksForBranch {
+  /** Aggregated over the branch's newest head sha: any fail → `fail`, else any
+   * running → `running`, else any success → `pass`; `none` = no runs in the
+   * feed window (or only cancelled/skipped). */
+  state: 'pass' | 'fail' | 'running' | 'none';
+  /** Workflow name of the run behind `state` (tooltip). */
+  name?: string;
+  /** Web URL of that run. */
+  url?: string;
+  /** That run's id — "fix broken checks" points the agent at
+   * `gh run view <id> --log-failed`. */
+  runId?: number;
+  /** Set when the gh query itself failed — same semantics as
+   * {@link PRsForBranch.error}: "could not ask", not "no runs". */
+  error?: string;
+}
+
 /** A Linear issue confirmed to exist, resolved by querying Linear for the
  *  candidate key parsed from a branch name. The renderer only ever renders a
  *  Linear badge from one of these — a branch whose candidate key doesn't

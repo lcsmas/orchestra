@@ -1812,6 +1812,29 @@ input:focus, textarea:focus, select:focus {
   color: var(--text-dim);
 }
 
+/* ---- CI checks badge ---------------------------------------------------- */
+/* Rendered only on failure — green/running CI stays invisible (failures are
+   signal, passes are noise). Click hands the run to the workspace's agent. */
+.ci-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 0 6px;
+  height: 16px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid var(--red);
+  color: var(--red);
+  cursor: pointer;
+  flex-shrink: 0;
+  box-shadow: none;
+}
+.ci-badge:hover {
+  background: rgba(255, 107, 107, 0.12);
+  border-color: var(--red);
+}
+
 /* ---- Jump Palette (Ctrl/Cmd+J) ----------------------------------------- */
 /* Orca-inspired surface language: flat near-black panel, crisp 1px hairline,
    no glass/blur — contrast comes from the backdrop dim + shadow. */

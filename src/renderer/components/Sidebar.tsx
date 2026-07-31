@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import type {
+  ChecksForBranch,
   EnvStatusItem,
   LinearIssue,
   PRsForBranch,
@@ -72,6 +73,26 @@ function statusNoteTitle(w: Workspace): string {
   if (!w.statusText) return '';
   const age = w.statusTextAt ? ` — updated ${formatAgeShort(Date.now() - w.statusTextAt)} ago` : '';
   return `${w.statusText}${age} (agent-reported)`;
+}
+
+/** Red CI pill — rendered ONLY when the branch's newest run set is failing
+ * (green/running CI is quiet by design; failures are the signal). Clicking
+ * hands the failing run to the workspace's agent ("fix broken checks"). */
+function CiBadge({ checks, onFix }: { checks?: ChecksForBranch; onFix: () => void }) {
+  if (!checks || checks.state !== 'fail') return null;
+  return (
+    <button
+      className="ci-badge fail"
+      title={`CI failing${checks.name ? `: ${checks.name}` : ''} — click to hand the failing logs to this workspace's agent`}
+      aria-label="CI failing — hand to agent to fix"
+      onClick={(e) => {
+        e.stopPropagation();
+        onFix();
+      }}
+    >
+      CI ✗
+    </button>
+  );
 }
 
 function BellIcon() {
@@ -686,6 +707,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     sizes,
     sizesExclusive,
     prs,
+    checks,
     linear,
     tickets,
     removeTicket,
@@ -715,6 +737,21 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     : 'Worktree size on disk (apparent; btrfs reflinks are shared between worktrees, so this is not all reclaimable)';
   const [version, setVersion] = useState('');
   const [archivedOpen, setArchivedOpen] = useState(false);
+  // "Fix broken checks" (Orca-style): confirm, then main hands the failing
+  // run's pointers to this workspace's agent (live SDK turn / live PTY / wake).
+  const onFixChecks = async (w: Workspace) => {
+    const ok = await dialog.confirm({
+      title: `CI is failing on ${w.branch}`,
+      message: "Hand the failing run's logs to this workspace's agent to investigate and fix?",
+      confirmLabel: 'Hand to agent',
+    });
+    if (!ok) return;
+    try {
+      await window.orchestra.fixChecks(w.id);
+    } catch (e) {
+      void dialog.error('Could not hand off to the agent', (e as Error).message);
+    }
+  };
   // Per-repo collapse state, persisted across sessions so a repo the user
   // folded away stays folded next launch.
   const [collapsedRepos, setCollapsedRepos] = useState<Set<string>>(() => {
@@ -1487,6 +1524,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       prRecord={prs[w.id]}
                       linearIssue={linear[w.id] ?? null}
                     />
+                    <CiBadge checks={checks[w.id]} onFix={() => onFixChecks(w)} />
                   </span>
                 )}
               </div>
@@ -2188,6 +2226,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         </span>
                       )}
                       <PrLinearBadges prRecord={prRecord} linearIssue={linearIssue} />
+                      <CiBadge checks={checks[w.id]} onFix={() => onFixChecks(w)} />
                       {sizeBytes != null && sizeBytes >= SIZE_BADGE_MIN_BYTES && hasPills && (
                         <span
                           className="ws-size ws-size-pills"

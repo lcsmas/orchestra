@@ -117,6 +117,7 @@ export function App() {
   const refreshSizes = useStore((s) => s.refreshSizes);
   const prs = useStore((s) => s.prs);
   const refreshAllPRs = useStore((s) => s.refreshAllPRs);
+  const refreshAllChecks = useStore((s) => s.refreshAllChecks);
   const refreshAllLinear = useStore((s) => s.refreshAllLinear);
   const refreshTickets = useStore((s) => s.refreshTickets);
   const findRepo = (path: string): RepoEntry | undefined => repos.find((r) => r.path === path);
@@ -327,6 +328,13 @@ export function App() {
     // transition (which covers refocus), so no separate focus listener.
     return startVisiblePoll(refreshAllPRs, 12000);
   }, [loaded, wsSetRev, refreshAllPRs]);
+
+  // CI verdicts change slower than PR state and main caches repo-wide for 60s,
+  // so a gentler cadence than the PR poll is plenty.
+  useEffect(() => {
+    if (!loaded) return;
+    return startVisiblePoll(refreshAllChecks, 30000);
+  }, [loaded, wsSetRev, refreshAllChecks]);
 
   // Linear verification rides its own slow poll. The main process caches each
   // key's existence for the session (it can't change), so steady-state ticks

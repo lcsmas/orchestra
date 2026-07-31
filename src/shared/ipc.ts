@@ -19,6 +19,7 @@ import type {
   PinnedTicket,
   LinearKeyCheck,
   LinearKeySource,
+  ChecksForBranch,
   PRsForBranch,
   RepoEntry,
   RepoScripts,
@@ -368,6 +369,11 @@ export interface OrchestraAPI {
    *  there is no push channel — sampling only happens on demand. */
   sampleResources: () => Promise<ResourceSnapshot>;
   findPR: (id: string) => Promise<PRsForBranch>;
+  /** Per-branch CI verdict (GitHub Actions), from the repo-wide cached feed. */
+  findChecks: (id: string) => Promise<ChecksForBranch>;
+  /** Hand the branch's failing CI run to the workspace's agent to fix — live
+   * SDK turn / live PTY / wake, whichever applies. */
+  fixChecks: (id: string) => Promise<{ status: 'requested' }>;
   /** Verify the branch's candidate Linear key against Linear's GraphQL API.
    *  Resolves the real issue, or null if the branch encodes no issue, the issue
    *  doesn't exist, or there's no/invalid LINEAR_API_KEY. */
