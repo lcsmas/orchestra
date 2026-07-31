@@ -41,12 +41,12 @@ export type VimMode = 'insert' | 'normal' | 'visual';
 /** Label for the composer-bar chip: the mode readout when vim is on (so the
  *  chip doubles as the indicator), a quiet affordance when off.
  *
- *  Deliberately COMPACT (`NORMAL`, not `-- NORMAL --`): the control row already
- *  carries interrupt · model · effort · permissions · remote · account · send
- *  and wraps at realistic widths. The classic dashed form measured 96px and
- *  pushed the row onto a second line; the bare word is ~44px and fits. */
+ *  The classic dashed vim form (`-- NORMAL --`) on purpose — it is what the
+ *  status line in vim itself shows, so it reads as a mode indicator rather than
+ *  as one more label. It measures ~96px, which the control row has room for
+ *  (measured: ~84px of items in a 518px bar). */
 export function vimChipLabel(mode: VimMode | null): string {
-  return mode ? mode.toUpperCase() : 'vim';
+  return mode ? `-- ${mode.toUpperCase()} --` : 'vim';
 }
 
 function safeLocalStorage(): Pick<Storage, 'getItem' | 'setItem'> | undefined {

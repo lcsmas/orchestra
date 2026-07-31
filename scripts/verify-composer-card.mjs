@@ -329,6 +329,12 @@ async function main() {
       interruptShown: i ? getComputedStyle(i).display !== 'none' : false,
       interruptDisabled: i ? i.disabled : null,
       interruptFirst: i ? Math.round(i.getBoundingClientRect().left) : null,
+      // Interrupt is docked beside SEND now (both are turn actions); the left
+      // edge belongs to the vim mode indicator, which must not move when a turn
+      // starts. Measure the gap between them rather than an absolute x.
+      interruptToSendGap: i ? Math.round(br.left - i.getBoundingClientRect().right) : null,
+      vimChipLeft: (() => { const v = document.querySelector('.av-composer-vim');
+        return v ? Math.round(v.getBoundingClientRect().left) : null; })(),
       sendPath: b.querySelector('svg path')?.getAttribute('d') ?? null,
       sendTitle: b.getAttribute('title'),
       sendAria: b.getAttribute('aria-label'),
@@ -344,8 +350,14 @@ async function main() {
   check('session is running', run.running === true);
   check('interrupt appears while running', run.interruptShown === true);
   check('interrupt is enabled', run.interruptDisabled === false);
-  check('interrupt leads the control row', run.interruptFirst !== null && run.interruptFirst < 400,
-    `x=${run.interruptFirst}`);
+  // Interrupt used to lead the row (order:1). It now sits at the TRAILING edge
+  // beside send (order:8) so the vim mode indicator can own the left edge and
+  // stay put across idle→running.
+  check('interrupt docks beside send', run.interruptToSendGap !== null && run.interruptToSendGap < 40,
+    `gap=${run.interruptToSendGap}px`);
+  check('vim indicator keeps the left edge while running',
+    run.vimChipLeft !== null && run.interruptFirst !== null && run.vimChipLeft < run.interruptFirst,
+    `vim x=${run.vimChipLeft}, interrupt x=${run.interruptFirst}`);
   check('send swaps to the QUEUE glyph', run.sendPath === 'M12 4v5a3 3 0 0 1-3 3H4',
     run.sendPath);
   check('send announces queueing', run.sendAria === 'Queue message', run.sendAria);

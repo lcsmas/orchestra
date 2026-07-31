@@ -118,7 +118,10 @@ border).
 arrives via `SessionControls`, whose `.av-deck-bar` wrapper is now
 **`display:contents`** (no border, no background of its own) purely so its
 descendants become direct flex items of the bar and can be `order`ed:
-**interrupt (1) · menus (2) · remote control (3) · account (4) · vim chip (5) · send (9)**.
+**vim chip (0) · menus (2) · remote control (3) · account (4) · interrupt (8) · send (9)**.
+Interrupt moved from the leading edge to `order:8`, docked beside send: stop and
+send are the two TURN ACTIONS and group at the trailing edge, while the left edge
+belongs to the vim mode indicator, which must not shift when a turn starts.
 `.av-composer-send` MUST carry `order:9` — it defaults to `order:0`, which
 renders it *before* the order:3/4 chips so its `margin-left:auto` consumes free
 space at the wrong position and strands the button ~534px short of the card's
@@ -212,14 +215,15 @@ the mode and do NOT interrupt (so Esc out of muscle memory never kills a running
 turn mid-message); otherwise → interrupt the in-flight turn. `Enter` likewise
 falls through in vim NORMAL, where it is a motion rather than "send".
 
-**The `.av-composer-vim` chip** (composer bar, `order: 5`) is both the toggle and
-the mode readout — `INSERT` / `NORMAL` / `VISUAL`, coloured by mode, a quiet
-`vim` when off. It carries **no border, no shadow, no background**: the control
+**The `.av-composer-vim` chip** (composer bar, `order: 0` — the LEADING edge of
+the row, where a mode indicator belongs and where vim's own status line sits) is
+both the toggle and the mode readout — `-- INSERT --` / `-- NORMAL --` /
+`-- VISUAL --`, coloured by mode, a quiet `vim` when off. It carries **no border, no shadow, no background**: the control
 row is flat by contract and `scripts/verify-composer-card.mjs` asserts it (that
 check caught both an inherited button shadow and a 1px TRANSPARENT border, since
-it keys on `borderTopWidth !== 0px`). The label is the bare word rather than
-`-- NORMAL --` because the dashed form measured 96px in a row that already
-carries seven controls.
+it keys on `borderTopWidth !== 0px`). The label keeps vim's classic dashed
+form so it reads as a mode indicator rather than another label; at ~96px the row
+has room for it (measured ~84px of items in a 518px bar).
 
 `window.__cmComposerView` is an E2E seam (like `__orchestraSetState`): CM keeps
 no handle to its EditorView on the DOM, so a CDP drive cannot read or reset the

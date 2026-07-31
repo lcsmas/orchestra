@@ -1102,7 +1102,18 @@ h6.av-md-h {
    global `button` shadow). Only the danger COLOUR is kept; the box is
    transparent until hover, so the control row reads as one language. */
 .av-controls-interrupt {
-  order: 1;
+  /* order:8 — docked at the RIGHT, immediately before the send button (9).
+     Stop and send are the two TURN ACTIONS, so they group at the trailing edge;
+     the left edge belongs to the vim mode indicator (order:0), which must not
+     shift when a turn starts. It used to lead the row at order:1.
+
+     While visible, INTERRUPT owns `margin-left:auto` (see the send button's
+     rule, which drops its own when this is present): exactly one element in the
+     row may claim the free space, and it must be the FIRST of the trailing
+     pair — leaving it on send instead pushed send to the far edge and stranded
+     interrupt ~190px to its left. */
+  order: 8;
+  margin-left: auto;
   display: inline-flex; align-items: center; gap: 7px;
   font-size: var(--av-fs-small); padding: 4px 10px;
   border: none; background: transparent; box-shadow: none;
@@ -1621,7 +1632,12 @@ h6.av-md-h {
    it after the docked chrome (interrupt 1 · menus 2 · remote 3 · account 4)
    and before the send button (9), which must stay last. */
 .av-composer-vim {
-  order: 5;
+  /* FIRST in the row (before interrupt 1 · menus 2 · remote 3 · account 4 ·
+     send 9). The mode indicator belongs at the leading edge — it is the thing
+     you glance at to know what typing will do, and vim's own status line sits
+     bottom-left too. `order: 0` is the row's implicit default, so this is
+     stated explicitly to keep the intent visible next to the other orders. */
+  order: 0;
   display: inline-flex; align-items: center; flex: none;
   padding: 3px 8px; border-radius: 7px;
   /* The control row is FLAT by contract — no border, no shadow, no background
@@ -1653,11 +1669,19 @@ h6.av-md-h {
    queue-return / chevron) plus title + aria-label — dropping the text label is
    what buys the horizontal room the docked menus need. `margin-left:auto`
    pushes it right regardless of how many menus wrapped. */
+/* When INTERRUPT is visible it owns the row's single `margin-left:auto` (it is
+   the first of the trailing stop/send pair), so send must drop its own or the
+   free space splits between them and a ~190px hole opens up. `:has()` keys on
+   the interrupt button being present AND not display:none — it is
+   `display:none` while idle, in which case send keeps the auto margin. */
+.av-composer-bar:has(.av-controls-interrupt:not(:disabled)) .av-composer-send {
+  margin-left: 6px;
+}
 .av-composer-send {
-  /* order:9 puts it LAST, after every docked chip (interrupt 1 · menus 2 ·
-     remote 3 · account 4). Without it the button inherits order:0 and renders
-     BEFORE the order:3/4 chips, so `margin-left:auto` eats the free space at
-     the wrong position and strands the button mid-row. */
+  /* order:9 puts it LAST, after every docked chip (vim 0 · menus 2 · remote 3 ·
+     account 4 · interrupt 8). Without it the button inherits order:0 and
+     renders BEFORE the order:3/4 chips, so `margin-left:auto` eats the free
+     space at the wrong position and strands the button mid-row. */
   order: 9;
   flex: none; margin-left: auto;
   width: 28px; height: 28px; padding: 0;
