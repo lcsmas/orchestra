@@ -32,6 +32,7 @@ import {
   getPtySize,
 } from './pty';
 import { expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
+import { sanitizeStatusText } from '../shared/status-text';
 import { submitPlan } from '../shared/task-submit';
 import { syncAccountInheritance } from './account-inherit';
 import { refreshAccountsNow } from './account-usage';
@@ -2036,6 +2037,37 @@ function stripAnsi(s: string): string {
   return s.replace(ANSI_RE, '').replace(/\r/g, '');
 }
 
+export interface StatusResult {
+  ok: boolean;
+  /** The note as stored after sanitization (absent when cleared). */
+  statusText?: string;
+  error?: string;
+}
+
+/** Set (or clear) a workspace's one-line status note — the `/status` socket
+ * route behind `orchestra status`. Sanitization collapses the payload to a
+ * single capped line (shared/status-text.ts); an effectively-empty payload
+ * CLEARS the note (both fields go absent — the sidebar renders nothing rather
+ * than an empty line). Broadcasts the updated record at the mutation site so
+ * the sidebar row repaints immediately instead of waiting on a poll. */
+export async function dispatchStatusRequest(input: {
+  id?: string;
+  text?: string;
+}): Promise<StatusResult> {
+  if (!input.id) return { ok: false, error: 'missing id' };
+  const ws = store.getWorkspace(input.id);
+  if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
+  const text = sanitizeStatusText(input.text ?? '');
+  const updated: Workspace = {
+    ...ws,
+    statusText: text || undefined,
+    statusTextAt: text ? Date.now() : undefined,
+  };
+  await store.upsertWorkspace(updated);
+  platform.broadcast('workspace:update', updated);
+  return { ok: true, ...(text ? { statusText: text } : {}) };
+}
+
 export interface PeerInfo {
   id: string;
   branch: string;
@@ -2043,6 +2075,10 @@ export interface PeerInfo {
   status: WorkspaceStatus;
   running: boolean;
   lastTask?: string;
+  /** The peer's agent-authored one-line status note (`orchestra status`) —
+   * lets a coordinator scan swarm progress without `orchestra read`ing every
+   * child. Absent when the peer never set one (or cleared it). */
+  statusText?: string;
   /** Committed diff vs the workspace's base (three-dot shortstat). Present
    * only when the caller asked for `stats`; `null` = couldn't be computed
    * (missing ref / non-git workspace), which is distinct from an all-zero
@@ -2079,6 +2115,7 @@ export async function dispatchPeersRequest(input: {
     status: w.status,
     running: isRunning(w.id),
     lastTask: w.lastTask ? w.lastTask.slice(0, 200) : undefined,
+    statusText: w.statusText,
   }));
   if (input.stats) {
     await Promise.all(
@@ -2912,6 +2949,34 @@ Prints \`Renamed to <final-name>\` on success, or an error if the name was refus
 route-demande-accessoire.
 `;
 
+const STATUS_SKILL = `---
+name: orchestra-status
+description: Keep THIS workspace's one-line status note current — a "what I'm doing right now" line shown under its sidebar row and to peer agents. Update it WITHOUT being asked whenever your work enters a new phase (exploring → implementing → testing → blocked → done), so the human can scan progress across all agents without opening panes.
+---
+
+# Update this workspace's status note
+
+Orchestra shows a one-line, agent-authored status note under this workspace's
+branch name in the sidebar, and to other agents in \`orchestra peers\`. Keep it
+current as your work moves through phases — it is the only live progress signal
+the human sees without opening your pane.
+
+\`\`\`bash
+orchestra status "implementing the socket route; tests next"
+\`\`\`
+
+- One short line (≤160 chars; longer input is truncated with an ellipsis).
+- Update on real phase changes, not every step: starting a phase, a key
+  milestone landing, blocked / waiting on input, done.
+- Clear it when it no longer applies:
+
+\`\`\`bash
+orchestra status --clear
+\`\`\`
+
+Prints \`Status set: <note>\` (or \`Status cleared.\`) on success.
+`;
+
 const MIGRATE_ACCOUNT_SKILL = `---
 name: orchestra-migrate-account
 description: Migrate an EXISTING Orchestra workspace to a different Claude account (login), or back to the default login. Use when the user wants a workspace's agent to run under another account — e.g. "move next-api to the mc login".
@@ -3419,6 +3484,7 @@ const HOOKS_VERSION = createHash('sha256')
       ATTACH_SKILL,
       RENAME_SKILL,
       MIGRATE_ACCOUNT_SKILL,
+      STATUS_SKILL,
       HOOK_ACTIVITY_SUBMIT_CMD,
       HOOK_ACTIVITY_STOP_CMD,
       HOOK_ACTIVITY_NOTIFY_CMD,
@@ -3505,6 +3571,7 @@ export async function installOrchestraHooks(
       writeSkill('orchestra-attach', ATTACH_SKILL),
       writeSkill('orchestra-rename', RENAME_SKILL),
       writeSkill('orchestra-migrate-account', MIGRATE_ACCOUNT_SKILL),
+      writeSkill('orchestra-status', STATUS_SKILL),
     ]);
 
     const settingsDir = path.join(worktreePath, '.claude');

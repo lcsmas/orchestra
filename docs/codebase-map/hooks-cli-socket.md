@@ -33,6 +33,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | `/attach` | `id` (+ `parentId?`) | `{ ok, id?, parentId? }` |
 | `/verifyLanded` | `id` (+ `from?`, `into?`) | `{ ok, id?, branch?, target?, unmerged?, commits? }` — coordinator close-out: are all commits on the child's branch tip on the target (explicit `into` ref, else the `from` caller's branch)? |
 | `/whoami` | `id` | `{ ok, id?, name?, branch?, kind?, orchestrator?, parentId?, repoPath?, baseBranch? }` — a workspace's own record; the only in-band way an agent learns its `parentId` (peers excludes the caller). |
+| `/status` | `id` (+ `text?`) | `{ ok, statusText? }` — set/clear the workspace's agent-authored one-line status note (`Workspace.statusText`, shown under the sidebar row and in `/peers`). Empty/absent `text` clears; sanitized to a single ≤160-char line (`shared/status-text.ts`). |
 | `/migrateAccount` | `id` (+ `accountId?` — null/'' = default login) | `{ ok, id?, branch?, accountId?, resumed? }` |
 | `/accounts` | — | `{ ok, accounts?: {id,label,configDir}[] }` |
 | `/loginUrl` | `accountId`, `url` | `{ ok, mode?: 'window'\|'external' }` — routes a login PTY's browser-open into the account's isolated OAuth window (`main/login-browser.ts`) |
@@ -104,9 +105,9 @@ Scripts and the Claude Code events they fire on:
   an unrelated repo named "orchestra" stays silent). Exception to the
   `$ORCHESTRA_WS_ID` guard note above — its gate is repo identity, not env.
 
-Also installs 7 **capability skills** as `<worktree>/.claude/skills/<name>/SKILL.md`
+Also installs 8 **capability skills** as `<worktree>/.claude/skills/<name>/SKILL.md`
 (orchestra-spawn / -comms / -repos / -promote / -attach / -rename /
--migrate-account) so the agent discovers them. A SessionStart readiness hook touches `$ORCHESTRA_READY_FILE` so
+-migrate-account / -status) so the agent discovers them. A SessionStart readiness hook touches `$ORCHESTRA_READY_FILE` so
 spawn task-injection knows the TUI is live.
 
 PTY env that makes it all work (set in `pty.ts`): `ORCHESTRA_WS_ID`,
@@ -132,6 +133,9 @@ creates the workspace parentless — its own top-level section), `rename <id> <b
 [--into <branch>]` (close-out check: exits 0 only when every commit on the
 workspace's branch tip is on the target — the caller's branch by default),
 `whoami` (this workspace's own record: kind, orchestrator role, parent),
+`status <text…>` / `status --clear` (set/clear THIS workspace's one-line status
+note — rendered under its sidebar row and surfaced to peers; self-targeted via
+the identity env vars),
 `add-repo <path>`,
 `delete <id> --yes`, `accounts` (list configured accounts), `migrate-account <id>
 <accountId|--default>` (migrate a workspace to another login / back to default),

@@ -174,6 +174,11 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   `host-grouping.ts` `groupByHost` (returns null when all-local → flat list
   byte-identical to pre-sandbox); collapsible `.host-group-header` per node.
 - Drag-reorder for workspaces and repos (`reorderWorkspaces`/`reorderRepos`).
+- **Status note**: the agent-authored one-liner (`orchestra status` →
+  `Workspace.statusText`) renders as a muted single-line `.ws-status-note`
+  under the branch name on both the scratch/orchestrator and repo row
+  templates; the tooltip (`statusNoteTitle`) carries the full text plus
+  freshness ("updated 3m ago"). Absent field → no extra line.
 - Row actions: rename branch (inline), unread bookmark toggle (`UnreadToggle`
   → store `setUnread` → IPC `workspaces:setUnread`; sets `ws.markedUnread`,
   shown by turning the leading activity dot accent-blue (`.ws-dot.unread`,

@@ -56,6 +56,23 @@ function formatBytes(bytes: number): string {
  *  (it's the delete-candidates view and has room). */
 const SIZE_BADGE_MIN_BYTES = 50 * 1024 * 1024;
 
+/** Compact relative age for the status-note tooltip: "3m", "2h", "5d". */
+function formatAgeShort(ms: number): string {
+  const m = Math.max(1, Math.round(ms / 60_000));
+  if (m < 60) return `${m}m`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h}h`;
+  return `${Math.round(h / 24)}d`;
+}
+
+/** Tooltip for the agent-authored status note (`orchestra status`): the full
+ * text plus freshness, so a stale note reads as stale at a glance. */
+function statusNoteTitle(w: Workspace): string {
+  if (!w.statusText) return '';
+  const age = w.statusTextAt ? ` — updated ${formatAgeShort(Date.now() - w.statusTextAt)} ago` : '';
+  return `${w.statusText}${age} (agent-reported)`;
+}
+
 function BellIcon() {
   return (
     <svg
@@ -1472,6 +1489,11 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                   </span>
                 )}
               </div>
+              {w.statusText && (
+                <div className="ws-status-note" title={statusNoteTitle(w)}>
+                  {w.statusText}
+                </div>
+              )}
             </div>
             {!isDeleting && <UnreadToggle w={w} onToggle={onToggleUnread} />}
             {isDeleting ? (
@@ -2174,6 +2196,11 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       )}
                       </span>
                     </div>
+                    {w.statusText && (
+                      <div className="ws-status-note" title={statusNoteTitle(w)}>
+                        {w.statusText}
+                      </div>
+                    )}
                   </div>
                   <UnreadToggle w={w} onToggle={onToggleUnread} />
                   {!w.host ? (

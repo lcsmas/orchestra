@@ -18,6 +18,7 @@ import {
   dispatchWhoamiRequest,
   dispatchMigrateAccountRequest,
   dispatchAccountsListRequest,
+  dispatchStatusRequest,
 } from './workspaces';
 import {
   dispatchLinearAddRequest,
@@ -311,6 +312,20 @@ export async function startHooksServer(): Promise<void> {
               );
             } else {
               send(200, { ok: false, error: 'missing ref' });
+            }
+          } else if (route === '/status') {
+            // Agent-authored one-line status note (`orchestra status`). An
+            // absent/empty `text` clears the note.
+            if (typeof msg.id === 'string') {
+              send(
+                200,
+                await dispatchStatusRequest({
+                  id: msg.id,
+                  text: typeof msg.text === 'string' ? msg.text : undefined,
+                }),
+              );
+            } else {
+              send(200, { ok: false, error: 'missing id' });
             }
           } else if (route === '/accounts') {
             send(200, dispatchAccountsListRequest());

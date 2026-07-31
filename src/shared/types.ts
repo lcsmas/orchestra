@@ -137,6 +137,18 @@ export interface Workspace {
   status: WorkspaceStatus;
   agent: 'claude';
   lastTask?: string;
+  /** Agent-updated one-line status note — "what this workspace is doing right
+   * now", rendered under the branch name on the sidebar row and shown to peer
+   * agents in `orchestra peers`. Set by the agent itself over the socket
+   * (`orchestra status "<msg>"` → the `/status` route), sanitized to a single
+   * ≤160-char line (src/shared/status-text.ts). Cleared with
+   * `orchestra status --clear` — stored as ABSENT, never as an empty string.
+   * Purely informational: no lifecycle logic reads it. */
+  statusText?: string;
+  /** Epoch ms when {@link statusText} was last set. Lets the UI age the note —
+   * without a timestamp, a stale "wiring the tests" from yesterday reads as
+   * live progress. Absent whenever `statusText` is absent. */
+  statusTextAt?: number;
   archived?: boolean;
   archivedAt?: number;
   hasInput?: boolean;

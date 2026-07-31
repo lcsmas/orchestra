@@ -28,6 +28,8 @@ interface PeerInfo {
   status: string;
   running?: boolean;
   lastTask?: string;
+  /** Agent-authored one-line status note (`orchestra status`), if any. */
+  statusText?: string;
   /** Present only when `--stats` was requested; null = not computable. */
   diff?: { files: number; insertions: number; deletions: number } | null;
 }
@@ -141,6 +143,9 @@ Usage:
                                                  exit 0 = landed, 1 = unmerged commits remain
   orchestra whoami                               Print THIS workspace's own record (id, branch,
                                                  kind, orchestrator role, parent, repo, base)
+  orchestra status <text...>                     Set THIS workspace's one-line status note —
+                                                 shown under its sidebar row and in peers
+  orchestra status --clear                       Clear the status note
   orchestra linear add <url|TEAM-123> [--repo <path>] [--spawn] [--model <m>]
                                                  Pin a Linear ticket into the sidebar
                                                  (--spawn: also create a worktree + agent for it,
@@ -257,6 +262,10 @@ async function main(argv: string[]): Promise<void> {
         process.stdout.write('No peer workspaces.\n');
         return;
       }
+      // `note` (the agent-authored `orchestra status` one-liner) only appears
+      // when at least one peer set one — a permanently-empty column would just
+      // widen the table for everyone.
+      const anyNote = peers.some((p) => p.statusText);
       const rows = peers.map((p) => ({
         id: p.id,
         branch: p.branch,
@@ -270,10 +279,20 @@ async function main(argv: string[]): Promise<void> {
               '+/-': p.diff ? `+${p.diff.insertions}/-${p.diff.deletions}` : '?',
             }
           : {}),
+        ...(anyNote
+          ? {
+              note: p.statusText
+                ? p.statusText.length > 48
+                  ? `${p.statusText.slice(0, 47)}…`
+                  : p.statusText
+                : '',
+            }
+          : {}),
       }));
-      const columns = stats
+      const baseColumns = stats
         ? ['id', 'branch', 'repo', 'status', 'files', '+/-']
         : ['id', 'branch', 'repo', 'status'];
+      const columns = anyNote ? [...baseColumns, 'note'] : baseColumns;
       process.stdout.write(`${table(rows, columns)}\n`);
       return;
     }
@@ -466,6 +485,24 @@ async function main(argv: string[]): Promise<void> {
       ];
       const w = Math.max(...lines.map(([k]) => k.length));
       process.stdout.write(lines.map(([k, v]) => `${k.padEnd(w)}  ${v}`).join('\n') + '\n');
+      return;
+    }
+
+    case 'status': {
+      // Self-targeted by design: each agent narrates its OWN workspace. The id
+      // comes from the PTY/SDK env, so there is nothing to pass or mistype.
+      const { present: clear, rest } = takeBoolFlag(args, '--clear');
+      const id = selfWorkspaceId();
+      if (!id) fail('not inside an Orchestra workspace ($ORCHESTRA_WS_ID is not set)');
+      const text = clear ? '' : rest.join(' ').trim();
+      if (!text && !clear) {
+        fail('usage: orchestra status <text...> | orchestra status --clear');
+      }
+      const res = await request('/status', { id, text });
+      if (!res.ok) fail(res.error ?? 'failed to set status');
+      process.stdout.write(
+        res.statusText ? `Status set: ${res.statusText as string}\n` : 'Status cleared.\n',
+      );
       return;
     }
 
