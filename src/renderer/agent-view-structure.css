@@ -181,22 +181,9 @@
   padding: 8px 12px 12px;
   border-top: 1px solid var(--border);
 }
-.av-composer-input {
+.av-composer-cm {
   flex: 1 1 auto;
-  resize: none;
-  min-height: 36px;
-  max-height: 200px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--border-strong);
-  background: var(--bg-2);
-  color: var(--text);
-  font-size: 13px;
-  font-family: inherit;
-}
-.av-composer-input:focus {
-  outline: none;
-  border-color: var(--accent);
+  min-width: 0;
 }
 
 /* Shared button defaults for the structured view (A4/A5 restyle). */

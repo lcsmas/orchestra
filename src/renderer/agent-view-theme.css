@@ -1589,67 +1589,65 @@ h6.av-md-h {
 .av-strip .av-turn-stat-value { font-size: var(--av-fs-small); font-weight: 500; }
 /* The prompt is set in mono at code size — it's a command line to the agent
    (the terminal users are coming from), not a web form. */
-/* ── Composer syntax highlight (CC-desktop parity) ─────────────────────────
-   A textarea cannot style a substring, so `/skill` and `!bash` prefixes are
-   painted by a MIRROR div stacked underneath a transparent-text textarea.
-   Both are grid cell 1/1 of this wrapper, which guarantees they share an
-   origin and a width; every text-metric property below is declared on BOTH
-   (via the shared selector list) so the mirrored glyphs land exactly under
-   the real ones. Changing a font/padding/wrap property for one MUST change
-   it for the other or the highlight drifts. */
-.av-composer-inputwrap {
+/* ── Composer text surface — CodeMirror 6 ──────────────────────────────────
+   The composer used to be a textarea whose `/skill` prefix was painted by a
+   transparent-text textarea stacked over a mirror div (a textarea cannot style
+   a substring). That pair is gone: CodeMirror decorates the token directly and
+   brings modal (vim) editing with it.
+
+   Only LAYOUT lives here. Every colour/metric INSIDE the editor —  caret,
+   selection, block cursor, the `:`/`/` panel, search matches — is set by the
+   `EditorView.theme()` in CmComposer.tsx, because CodeMirror injects its own
+   scoped rules that outrank plain stylesheet declarations (an external
+   `caret-color` here rendered the caret BLACK). Do not re-add them here. */
+.av-composer-cm {
   flex: 1 1 auto; min-width: 0;
-  display: grid;
 }
-.av-composer-inputwrap > .av-composer-input,
-.av-composer-inputwrap > .av-composer-highlight {
-  grid-area: 1 / 1;
-}
-.av-composer-input, .av-composer-highlight {
-  /* Shared text metrics — keep these two lists identical. */
-  padding: 5px 0; border: none;
-  font-family: var(--font-mono); font-size: var(--av-fs-code);
-  line-height: 1.6;
-  white-space: pre-wrap; overflow-wrap: break-word;
-  box-sizing: border-box;
-}
-.av-composer-input {
-  resize: none; min-height: 24px; max-height: 200px;
-  background: none;
-  /* The TEXTAREA's own glyphs are transparent and the MIRROR below supplies
-     every visible glyph — otherwise the opaque textarea text would paint over
-     the colored tokens and hide them. `caret-color` keeps the cursor visible,
-     and selection stays visible because the browser paints the textarea's own
-     selection highlight regardless of text color. */
-  color: transparent;
-  caret-color: var(--av-text);
-  position: relative; z-index: 1;
-  /* Auto-grow (JS sets height to scrollHeight): border-box so the measured
-     scrollHeight and the applied height agree, and once content passes
-     max-height the field scrolls instead of clipping. */
-  overflow-y: auto;
-}
-/* The mirror is decoration: never hit-test it, never let it drive the box
-   height (the textarea owns that via its auto-grow), and let it clip the same
-   way so long text stays aligned. */
-.av-composer-highlight {
-  pointer-events: none; user-select: none;
-  min-height: 24px; max-height: 200px; overflow: hidden;
-  /* Ordinary prose — the tokens override this. This is what the user actually
-     reads, since the textarea's own text is transparent. */
-  color: var(--av-text);
-}
+.av-composer-cm .cm-editor { background: none; }
+/* The card owns the focus ring (`.av-composer-field:focus-within`), so the
+   editor must not draw its own. */
+.av-composer-cm .cm-editor.cm-focused { outline: none; }
 .av-composer-token-skill {
   color: var(--av-assistant); font-weight: 640;
 }
 .av-composer-token-bash {
   color: var(--av-task); font-weight: 640;
 }
-/* The placeholder needs an explicit color because the textarea's own text is
-   `transparent` (the highlight mirror paints the real glyphs) — without this
-   the placeholder would inherit that and vanish. */
-.av-composer-input::placeholder { color: var(--av-text-faint); opacity: 1; }
-.av-composer-input:focus, .av-composer-input:focus-visible { outline: none; border: none; box-shadow: none; }
+
+/* ── Vim mode chip ─────────────────────────────────────────────────────────
+   Sits with the model / effort / permission chips — vim is the same kind of
+   thing (a switch governing the message being composed). It doubles as the
+   MODE INDICATOR, so turning vim on costs no additional UI. `order: 5` places
+   it after the docked chrome (interrupt 1 · menus 2 · remote 3 · account 4)
+   and before the send button (9), which must stay last. */
+.av-composer-vim {
+  order: 5;
+  display: inline-flex; align-items: center; flex: none;
+  padding: 3px 8px; border-radius: 7px;
+  /* The control row is FLAT by contract — no border, no shadow, no background
+     on any chip (asserted by scripts/verify-composer-card.mjs, which caught
+     both an inherited button shadow and a 1px TRANSPARENT border here: the
+     check keys on `borderTopWidth !== 0px`, so even an invisible border counts
+     as chrome). Hover is the only surface this chip ever paints. */
+  border: none; background: transparent; box-shadow: none;
+  font-family: var(--font-mono); font-size: var(--av-fs-small);
+  color: var(--av-text-dim); cursor: pointer; white-space: nowrap;
+  transition: background 120ms var(--av-ease), border-color 120ms var(--av-ease),
+    color 120ms var(--av-ease);
+}
+.av-composer-vim:hover {
+  background: var(--av-surface-raised);
+  color: var(--av-text);
+}
+/* Vim ON: the mode is carried by TEXT COLOUR alone. The control row is flat by
+   contract — no border, no shadow, no background on any chip (enforced by
+   scripts/verify-composer-card.mjs) — so a filled/outlined chip would be the
+   only raised element in the row and would read as a different KIND of control
+   than the menus beside it. Hover still gets a surface, exactly like the
+   neighbouring chips. */
+.av-composer-vim[data-on='1'][data-mode='INSERT'] { color: var(--av-assistant); }
+.av-composer-vim[data-on='1'][data-mode='NORMAL'] { color: #7ee787; }
+.av-composer-vim[data-on='1'][data-mode='VISUAL'] { color: #ffc158; }
 /* Circular icon-only send, docked at the right end of the control row. The
    Send/Queue/Run wording the old pill carried now rides on the GLYPH (arrow /
    queue-return / chevron) plus title + aria-label — dropping the text label is
@@ -1706,7 +1704,7 @@ h6.av-md-h {
   letter-spacing: 0.02em; line-height: 1.5;
   text-transform: none;
 }
-.av-composer-field-bash .av-composer-input { color: var(--av-text); }
+.av-composer-field-bash .av-composer-cm .cm-content { color: var(--av-text); }
 
 /* ── Local-command card (a `!command` bash-mode run in the transcript) ────────
    The command line with a `bash` chip, a running spinner while it executes, then
@@ -1855,7 +1853,7 @@ h6.av-md-h {
   border-radius: var(--radius-sm, 6px);
 }
 /* The borderless composer textarea signals focus through its field frame. */
-.av-view .av-composer-input:focus-visible { box-shadow: none; }
+.av-view .av-composer-cm .cm-editor.cm-focused { box-shadow: none; }
 
 /* ============================================================================
  * BACKGROUND TASKS PANEL — a right-side slide-over listing the session's

@@ -485,10 +485,15 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   `position:relative` and must never set `overflow:hidden` — see
   `agent-view-design.md`, where a redeclaration once clipped a correctly-rendered
   8-row popover into invisibility (the data/JS path was fine).
-- **Composer syntax highlight** — `shared/composer-highlight.ts`
-  (`highlightComposer`) splits the text into styled runs so a leading `/skill` or
-  `!bash` paints via a mirror layer behind the transparent-text textarea
-  (CC-desktop parity). Pure + unit-tested; styling lives in `agent-view-design.md`.
+- **Composer editor** — the text surface is a CodeMirror 6 editor
+  (`components/agent/CmComposer.tsx`), not a textarea: it decorates the leading
+  `/skill` / `!bash` token via `shared/composer-highlight.ts` and carries VIM
+  keybindings (`@replit/codemirror-vim`), ON by default and opening in INSERT.
+  Esc is context-dependent (leaves vim INSERT/VISUAL, otherwise interrupts the
+  turn). The `.av-composer-vim` chip in the bar is both the toggle and the mode
+  readout; the preference persists via `renderer/composer-vim-pref.ts`.
+  `window.__cmComposerView` is the E2E seam. All the CodeMirror/vim theming and
+  keymap collisions are documented in `agent-view-design.md`.
 - **Resume durability across reboot / internet loss.** A structured session is
   NOT a live process that survives a restart — it's a *resume by id*. The SDK
   session id is captured from the stream (`consume()`) and persisted to the

@@ -30,8 +30,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useStore } from '../store';
 import { scoped } from '../log';
 import { WorkspaceAccountBadge } from './AccountBadge';
+import { CmComposer, type CmComposerHandle } from './agent/CmComposer';
+import { readComposerVim, writeComposerVim, vimChipLabel, type VimMode } from '../composer-vim-pref';
 import type { AgentImage, AgentSession, AgentSkillInfo, RenderMessage } from '../../shared/types';
-import { highlightComposer } from '../../shared/composer-highlight';
 // Design mode: the browser pane's element picker drops picks in the store; the
 // composer drains them into its draft + attachments (see the Composer's
 // design-pick effect). appendPickToDraft is the pure formatter (shared/, tested).
@@ -846,8 +847,22 @@ function Composer({
   const [pendingImages, setPendingImages] = useState<
     { id: string; mediaType: string; dataBase64: string; url: string }[]
   >([]);
-  const taRef = useRef<HTMLTextAreaElement>(null);
+  // Imperative handle on the CodeMirror editor (focus / read / set text).
+  const cmRef = useRef<CmComposerHandle | null>(null);
   const running = !!session?.running;
+
+  // Vim keybindings: ON by default, persisted per-user. `vimMode` is the live
+  // mode reported by the editor and drives the composer-bar chip.
+  const [vimEnabled, setVimEnabled] = useState(() => readComposerVim() === 'on');
+  const [vimMode, setVimMode] = useState<VimMode | null>(null);
+  const toggleVim = useCallback(() => {
+    setVimEnabled((on) => {
+      const next = !on;
+      writeComposerVim(next ? 'on' : 'off');
+      return next;
+    });
+    cmRef.current?.focus();
+  }, []);
 
   // Bash mode (parity with Claude Code's `!command`): a leading `!` switches the
   // composer into bash mode — the command runs LOCALLY in the worktree and its
@@ -856,10 +871,6 @@ function Composer({
   // Deleting back to empty exits the mode (the chip/placeholder update live).
   const bashMode = text.startsWith('!');
   const bashCommand = bashMode ? text.slice(1) : '';
-
-  // Styled runs for the highlight mirror behind the textarea (a leading
-  // `/skill` or `!bash` prefix). Pure + cheap; recomputed per keystroke.
-  const highlightParts = highlightComposer(text);
 
   // Accept image data from a clipboard/paste event: read each image item as a
   // data URL, split off the base64 payload, and stash it for send + preview.
@@ -933,21 +944,12 @@ function Composer({
         })),
       ]);
     }
-    taRef.current?.focus();
+    cmRef.current?.focus();
   }, [queuedDesignPicks, takeDesignPicks, workspaceId]);
 
-  // Auto-grow: the textarea height tracks its content up to the CSS max-height
-  // (then it scrolls). Reset to `auto` first so it can SHRINK when lines are
-  // removed, not just grow — measuring scrollHeight off a stale taller box would
-  // ratchet the height up permanently. Runs on every text change (incl. skill
-  // completion / programmatic setText, not just keystrokes) via the effect below.
-  const autosize = useCallback(() => {
-    const el = taRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
-  }, []);
-  useLayoutEffect(autosize, [text, autosize]);
+  // No autosize hook here any more: CodeMirror grows with its content natively
+  // and `.cm-scroller`'s `max-height: 200px` (set in the editor theme) reproduces
+  // the old cap-then-scroll behaviour without measuring scrollHeight by hand.
 
   // Skills autocomplete: loaded lazily on the first "/" (cheap dir scan in
   // main), cached per mount. `acIndex` is the highlighted row.
@@ -1000,7 +1002,7 @@ function Composer({
   // Focus the composer when this tab becomes active, so the user can type
   // immediately after switching to the structured view.
   useEffect(() => {
-    if (isActive) taRef.current?.focus();
+    if (isActive) cmRef.current?.focus();
   }, [isActive]);
 
   const submit = useCallback(() => {
@@ -1048,14 +1050,17 @@ function Composer({
 
   const completeSkill = (name: string) => {
     setText(`/${name} `);
-    taRef.current?.focus();
+    cmRef.current?.focus();
   };
 
   // Drag-and-drop into the composer (CC-desktop parity): image files become
   // attachments (same pipeline as paste); other files insert their absolute
   // path into the text (Electron exposes File.path).
+  // Accepts BOTH a React synthetic DragEvent (the card's own onDrop) and a
+  // native one (CodeMirror's domEventHandlers pass the raw event) — the two
+  // share the only fields this needs.
   const onDrop = useCallback(
-    (e: React.DragEvent) => {
+    (e: React.DragEvent | DragEvent) => {
       e.preventDefault();
       const dt = e.dataTransfer;
       if (!dt) return;
@@ -1066,7 +1071,7 @@ function Composer({
         .filter((p): p is string => !!p);
       if (paths.length > 0) {
         setText((prev) => (prev ? `${prev.trimEnd()} ` : '') + paths.join(' '));
-        taRef.current?.focus();
+        cmRef.current?.focus();
       }
     },
     [addPastedImages],
@@ -1130,89 +1135,75 @@ function Composer({
               ))}
             </div>
           )}
-          {/* Syntax highlight for a leading `/skill` or `!bash` (CC-desktop
-              parity). A textarea can't style a substring, so we paint a mirror
-              layer BEHIND a transparent-text textarea. The two must share every
-              text-metric property (font, padding, wrapping) or the highlight
-              drifts off the real glyphs — see `.av-composer-highlight` in
-              agent-view-theme.css, which inherits them from the same rule. */}
-          <div className="av-composer-inputwrap">
-            <div className="av-composer-highlight" aria-hidden="true">
-              {highlightParts.map((p, i) =>
-                p.token ? (
-                  <span key={i} className={`av-composer-token av-composer-token-${p.token}`}>
-                    {p.text}
-                  </span>
-                ) : (
-                  <span key={i}>{p.text}</span>
-                ),
-              )}
-              {/* A trailing newline needs a spacer or the mirror is one line
-                  short of the textarea's scrollHeight. */}
-              {text.endsWith('\n') ? '​' : ''}
-            </div>
-          <textarea
-            ref={taRef}
-            className="av-composer-input"
+          {/* The text surface is a CodeMirror editor (CmComposer). It replaced a
+              textarea + highlight-mirror pair: a textarea cannot style a
+              substring, so `/skill` had to be painted by a transparent-text
+              textarea stacked over a mirror div whose text metrics had to stay
+              byte-identical — and it cannot support modal editing at all. */}
+          <CmComposer
             value={text}
-          placeholder={
-            bashMode
-              ? 'Enter a shell command — runs in the worktree, output shared with the agent'
-              : 'Message the agent — / for skills, ! for bash, paste an image…'
-          }
-          rows={1}
-          onPaste={(e) => {
-            // If the clipboard carries image data, capture it and stop it from
-            // also inserting a filename/text into the textarea.
-            if (addPastedImages(e.clipboardData?.items ?? null)) {
-              e.preventDefault();
+            onChange={(t) => {
+              setText(t);
+              setAcDismissed(false);
+            }}
+            placeholder={
+              bashMode
+                ? 'Enter a shell command — runs in the worktree, output shared with the agent'
+                : 'Message the agent — / for skills, ! for bash, paste an image…'
             }
-          }}
-          onChange={(e) => {
-            setText(e.target.value);
-            setAcDismissed(false);
-          }}
-          onKeyDown={(e) => {
-            if (acOpen) {
-              if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                setAcIndex((i) => (i + 1) % acItems.length);
-                return;
-              }
-              if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                setAcIndex((i) => (i - 1 + acItems.length) % acItems.length);
-                return;
-              }
-              if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-                e.preventDefault();
+            vimEnabled={vimEnabled}
+            onVimMode={setVimMode}
+            handleRef={(h) => {
+              cmRef.current = h;
+            }}
+            onArrowDown={() => {
+              if (!acOpen) return false;
+              setAcIndex((i) => (i + 1) % acItems.length);
+              return true;
+            }}
+            onArrowUp={() => {
+              if (!acOpen) return false;
+              setAcIndex((i) => (i - 1 + acItems.length) % acItems.length);
+              return true;
+            }}
+            onTab={() => {
+              if (!acOpen) return false;
+              const it = acItems[acIndex];
+              if (it) completeSkill(it.name);
+              return true;
+            }}
+            onEnter={() => {
+              if (acOpen) {
                 const it = acItems[acIndex];
                 if (it) completeSkill(it.name);
-                return;
+                return true;
               }
-              if (e.key === 'Escape') {
-                e.preventDefault();
-                setAcDismissed(true);
-                return;
-              }
-            }
-            // Esc interrupts the in-flight turn — terminal-path muscle memory
-            // (the popover's own Escape handling ran above when it was open).
-            if (e.key === 'Escape' && running) {
-              e.preventDefault();
-              void window.orchestra
-                .agentSdkInterrupt(workspaceId)
-                .catch((err) => console.error('agentSdkInterrupt failed', err));
-              return;
-            }
-            // Enter submits; Shift+Enter inserts a newline (chat convention).
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
               submit();
-            }
-          }}
+              return true;
+            }}
+            onEscape={(mode) => {
+              // Context-dependent Esc:
+              //  1. popover open      → dismiss it
+              //  2. vim INSERT/VISUAL → let vim leave the mode; do NOT interrupt
+              //     (otherwise pressing Esc out of muscle memory mid-message
+              //     kills the running turn)
+              //  3. otherwise         → interrupt the in-flight turn
+              if (acOpen) {
+                setAcDismissed(true);
+                return true;
+              }
+              if (mode === 'insert' || mode === 'visual') return false;
+              if (running) {
+                void window.orchestra
+                  .agentSdkInterrupt(workspaceId)
+                  .catch((err) => console.error('agentSdkInterrupt failed', err));
+                return true;
+              }
+              return false;
+            }}
+            onPaste={(items) => addPastedImages(items)}
+            onDrop={(e) => onDrop(e)}
           />
-          </div>
         </div>
         {/* The control bar is docked INSIDE the card (bottom row) rather than
             rendered as its own bordered deck above it: the model / effort /
@@ -1227,6 +1218,28 @@ function Composer({
           ) : (
             bar
           )}
+          {/* Vim chip — a per-user switch beside the model / effort / permission
+              chips, which is what vim mode is. It DOUBLES as the mode indicator
+              (`-- INSERT --` / `-- NORMAL --` / `-- VISUAL --`), so enabling vim
+              costs no extra UI; with vim off it reads a quiet `vim`. `order:5`
+              keeps it after the docked chrome (interrupt 1 · menus 2 · remote 3
+              · account 4) and before the send button (9). */}
+          <button
+            type="button"
+            className="av-composer-vim"
+            data-on={vimEnabled ? '1' : '0'}
+            data-mode={vimMode ? vimMode.toUpperCase() : undefined}
+            onClick={toggleVim}
+            aria-pressed={vimEnabled}
+            aria-label={vimEnabled ? 'Disable vim keybindings' : 'Enable vim keybindings'}
+            title={
+              vimEnabled
+                ? `vim ${vimMode?.toUpperCase() ?? ''} — click to disable vim keybindings`
+                : 'Enable vim keybindings'
+            }
+          >
+            {vimChipLabel(vimEnabled ? vimMode : null)}
+          </button>
           <button
             className={`av-composer-send${bashMode ? ' av-composer-send-bash' : ''}`}
             onClick={submit}

@@ -237,14 +237,23 @@ async function main() {
 
   // ── TYPED STATE: send enables ─────────────────────────────────────────────
   console.log('\n[typed]');
-  const ta = '.av-composer-input';
-  await evaluate(`(() => {
-    const t = document.querySelector('${ta}');
-    const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-    set.call(t, 'Review the plan and tell me what you would cut.');
-    t.dispatchEvent(new Event('input', { bubbles: true }));
-    t.focus();
-  })()`);
+  // The composer is a CodeMirror editor (CmComposer), not a textarea: set its
+  // text through the `__cmComposerView` E2E seam. A native-setter poke on
+  // `.av-composer-input` throws "Illegal invocation" now that the element is
+  // gone, which is what this used to do.
+  const setComposerText = async (text) => {
+    const ok = await evaluate(
+      '(() => {' +
+      '  const v = window.__cmComposerView;' +
+      '  if (!v) return false;' +
+      '  v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: ' + JSON.stringify(text) + ' } });' +
+      '  v.focus();' +
+      '  return true;' +
+      '})()',
+    );
+    if (!ok) throw new Error('__cmComposerView missing — cannot drive the composer');
+  };
+  await setComposerText('Review the plan and tell me what you would cut.');
   await new Promise((r) => setTimeout(r, 350));
   const typed = await evaluate(`(() => {
     const b = document.querySelector('.av-composer-send');
@@ -258,12 +267,7 @@ async function main() {
 
   // ── BASH MODE ─────────────────────────────────────────────────────────────
   console.log('\n[bash mode]');
-  await evaluate(`(() => {
-    const t = document.querySelector('${ta}');
-    const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-    set.call(t, '!pnpm run test 2>&1 | tail -30');
-    t.dispatchEvent(new Event('input', { bubbles: true }));
-  })()`);
+  await setComposerText('!pnpm run test 2>&1 | tail -30');
   await new Promise((r) => setTimeout(r, 350));
   const bash = await evaluate(`(() => {
     const f = document.querySelector('.av-composer-field');
@@ -288,11 +292,7 @@ async function main() {
   await shot('03-bash-mode');
 
   // ── reset ─────────────────────────────────────────────────────────────────
-  await evaluate(`(() => {
-    const t = document.querySelector('${ta}');
-    const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-    set.call(t, ''); t.dispatchEvent(new Event('input', { bubbles: true }));
-  })()`);
+  await setComposerText('');
 
   // ── RUNNING STATE ─────────────────────────────────────────────────────────
   // A `user-message` event is what flips `running:true` in the real fold
@@ -382,8 +382,19 @@ async function main() {
 
   // Esc interrupts from the composer — the no-session path makes main emit a
   // synthetic turn-end, so running flips back to false. Real trusted keydown.
-  await evaluate(`document.querySelector('${ta}').focus()`);
+  await evaluate(`window.__cmComposerView && window.__cmComposerView.focus()`);
   await new Promise((r) => setTimeout(r, 120));
+  // Esc is CONTEXT-DEPENDENT now: in vim INSERT it leaves insert mode and does
+  // NOT interrupt (so a half-typed message never kills a running turn). Leave
+  // INSERT first, so the Esc below exercises the interrupt path.
+  await evaluate(`(() => {
+    const chip = document.querySelector('.av-composer-vim');
+    if (chip && chip.dataset.on === '1' && chip.dataset.mode === 'INSERT') {
+      window.__cmComposerView.contentDOM.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    }
+  })()`);
+  await new Promise((r) => setTimeout(r, 250));
   await send('Input.dispatchKeyEvent', {
     type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
   });

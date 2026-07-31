@@ -109,15 +109,16 @@ send action, with `.av-strip` beneath it. (It used to be TWO stacked bordered
 surfaces: a `.av-deck-bar` row above a separate framed field. The menus govern
 the message being composed, so they now share its frame; folding them in also
 reclaims a row of vertical height.) The field is a flex **column**:
-`.av-composer-stack` (text row — pasted-image strip above `.av-composer-input`,
-and the `bash` chip beside it in bash mode) over `.av-composer-bar` (control
-row, separated by a `--av-hairline-faint` top border).
+`.av-composer-stack` (text row — pasted-image strip above `.av-composer-cm`,
+the CodeMirror host, and the `bash` chip beside it in bash mode) over
+`.av-composer-bar` (control row, separated by a `--av-hairline-faint` top
+border).
 
 `.av-composer-bar` holds the docked chrome plus `.av-composer-send`. The chrome
 arrives via `SessionControls`, whose `.av-deck-bar` wrapper is now
 **`display:contents`** (no border, no background of its own) purely so its
 descendants become direct flex items of the bar and can be `order`ed:
-**interrupt (1) · menus (2) · remote control (3) · account (4) · send (9)**.
+**interrupt (1) · menus (2) · remote control (3) · account (4) · vim chip (5) · send (9)**.
 `.av-composer-send` MUST carry `order:9` — it defaults to `order:0`, which
 renders it *before* the order:3/4 chips so its `margin-left:auto` consumes free
 space at the wrong position and strands the button ~534px short of the card's
@@ -140,15 +141,14 @@ strip-scoped rules (40px bar, `used` label hidden). Stats come from
 `TurnFooter` (still the error-state renderer).
 
 The stack holds the pasted-image
-strip above `.av-composer-input`; the column's `gap:4px` is the ONLY vertical space
+strip above `.av-composer-cm`; the column's `gap:4px` is the ONLY vertical space
 between thumbnails and text — attachments used to be a `width:100%` wrapping sibling of
 the field row, where the row's `align-items:flex-end` mis-stacked the wrapped strip and
 the textarea and the parent `gap` double-applied, producing an oversized/odd gap. The
-`.av-composer-input` textarea **auto-grows** — `Composer`
-resets its height to `auto` then sets it to `scrollHeight` on every text change
-(a `useLayoutEffect`, so it fires on skill-completion `setText` too, not just
-keystrokes); CSS gives it `box-sizing:border-box` + `overflow-y:auto` so it scrolls
-past the `max-height:200px` cap. **Pasted images** show as a thumbnail strip inside
+editor **auto-grows natively** — CodeMirror sizes to its content and
+`.cm-scroller`'s `max-height: 200px` (set in the editor theme) gives the old
+cap-then-scroll behaviour, so the hand-rolled `scrollHeight` autosize effect is
+gone. **Pasted images** show as a thumbnail strip inside
 the field: `.av-composer-attachments` > `.av-composer-attachment` (img +
 `.av-composer-attachment-remove` hover ×). Empty state `.av-empty` >
 `.av-empty-{mark,title,desc,hint}` (kbd chips in the hint).
@@ -165,19 +165,83 @@ by `.av-composer-bar`'s own `border-bottom-{left,right}-radius` instead, so the
 parent never needs to clip. Because the rules are order-dependent, the guard is
 "no `.av-composer-field` rule may reintroduce `overflow:hidden`".
 
-**Composer syntax highlight** (`/skill`, `!bash` — CC-desktop parity): a
-textarea cannot style a substring, so `.av-composer-inputwrap` grid-stacks a
-mirror `.av-composer-highlight` UNDER the textarea (both `grid-area:1/1`). The
-textarea's own text is `color:transparent` with an explicit `caret-color`, and
-the mirror paints every visible glyph — `.av-composer-token-skill` (assistant
-blue) and `.av-composer-token-bash` (task purple), the rest inheriting
-`--av-text`. `::placeholder` therefore needs an explicit color + `opacity:1`, or
-it inherits the transparent text and vanishes. The two elements MUST keep
-identical text metrics (font, size, line-height, padding, `white-space:pre-wrap`
-— declared on a shared selector list) or the highlight drifts off the real
-glyphs; verified with `dx/dy === 0`. Tokenizing is pure and lives in
+**The composer's text surface is a CodeMirror 6 editor**
+(`components/agent/CmComposer.tsx`), not a textarea. It replaced a
+textarea + mirror pair (a textarea cannot style a substring, so `/skill` was
+painted by a transparent-text textarea stacked over a mirror div whose text
+metrics had to stay byte-identical) and it brings modal (vim) editing.
+
+Only LAYOUT for it lives in CSS (`.av-composer-cm`). Every colour/metric INSIDE
+the editor — caret, selection, block cursor, the `:`/`/` panel, search matches —
+is set by the `EditorView.theme()` in `CmComposer.tsx`, because CodeMirror
+injects its own scoped rules that OUTRANK plain stylesheet declarations. Four
+collisions worth knowing, each found by driving it:
+
+- an external `caret-color` is outranked → the caret rendered **black**;
+- CM's built-in theme ships
+  `.ͼ2.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground`,
+  whose child combinators beat a flat selector → visual-mode selections painted
+  CM's lavender, or nothing at all without `drawSelection()` (CM otherwise uses
+  NATIVE selection, which vim does not drive);
+- vim's block cursor lives in its own `.cm-vimCursorLayer` and is hard-coded
+  `#ff9696` by a `Prec.highest` theme — it coexists with `drawSelection()`, so
+  block cursor and selection are NOT mutually exclusive;
+- `.cm-panels` defaults to a LIGHT `#f5f5f5` bar and vim's `.cm-vim-panel` sets
+  no colour → the `:`/`/` line rendered as a white slab with black Arial text.
+  Fixed with `{ dark: true }` plus explicit panel rules.
+
+**Do not wrap `EditorView.theme()` in `Prec.highest`** — it returns FACET VALUES
+(`theme.of`, `darkTheme.of`) alongside its style module, and precedence-wrapping
+those stops them registering (this silently dropped `dark: true` and every
+`.cm-panels` rule). CSS specificity, not extension precedence, decides these.
+
+**`defaultKeymap` is dropped while vim is on** (a `Compartment` swap; history
+stays). It binds ~20 chords vim needs — `Ctrl-b/f/d/o/v/a/e/p/n`, `Mod-[`,
+`Mod-]`, `Mod-a/u/y` — so with it loaded `Ctrl+[` never reached vim at all and
+`Ctrl+a` moved the cursor instead of incrementing a number. `Ctrl-[` is
+additionally claimed at `Prec.highest` and forwarded to vim.
+
+**Vim is ON by default and the composer opens in INSERT.** `vim()` has no
+start-in-insert option and initialises in NORMAL, where typing "hello" runs
+h/e/l/l/o as COMMANDS (measured: the document became a bare newline and the
+keystrokes were swallowed) — unusable for a chat composer. Esc still reaches
+NORMAL. The preference persists via `renderer/composer-vim-pref.ts`.
+
+**Esc is context-dependent**: popover open → dismiss; vim INSERT/VISUAL → leave
+the mode and do NOT interrupt (so Esc out of muscle memory never kills a running
+turn mid-message); otherwise → interrupt the in-flight turn. `Enter` likewise
+falls through in vim NORMAL, where it is a motion rather than "send".
+
+**The `.av-composer-vim` chip** (composer bar, `order: 5`) is both the toggle and
+the mode readout — `INSERT` / `NORMAL` / `VISUAL`, coloured by mode, a quiet
+`vim` when off. It carries **no border, no shadow, no background**: the control
+row is flat by contract and `scripts/verify-composer-card.mjs` asserts it (that
+check caught both an inherited button shadow and a 1px TRANSPARENT border, since
+it keys on `borderTopWidth !== 0px`). The label is the bare word rather than
+`-- NORMAL --` because the dashed form measured 96px in a row that already
+carries seven controls.
+
+`window.__cmComposerView` is an E2E seam (like `__orchestraSetState`): CM keeps
+no handle to its EditorView on the DOM, so a CDP drive cannot read or reset the
+document without it.
+
+**`.av-composer-field` must stay `position:relative` and must NOT set
+`overflow:hidden`** — the skills popover (`.av-ac`, below) is
+`position:absolute; bottom:calc(100% + 8px)` and anchors to this box. A later
+bare redeclaration of the selector silently dropped `position` and added
+`overflow:hidden` for corner-clipping, which positioned the popover against a
+distant ancestor AND clipped it out of existence: the autocomplete rendered with
+8 rows, a valid rect and `visibility:visible`, yet was invisible and
+un-hittable (`elementFromPoint` → null). The card's bottom corners are rounded
+by `.av-composer-bar`'s own `border-bottom-{left,right}-radius` instead, so the
+parent never needs to clip. Because the rules are order-dependent, the guard is
+"no `.av-composer-field` rule may reintroduce `overflow:hidden`".
+
+**Token highlight**: `.av-composer-token-skill` (assistant blue) and
+`.av-composer-token-bash` (task purple) are applied as CodeMirror DECORATIONS by
+`CmComposer.tsx`, reusing the pure tokenizer in
 `src/shared/composer-highlight.ts` (`highlightComposer`, unit-tested): only a
-LEADING token highlights, and the lookahead guard keeps `/etc/hosts` and
+LEADING token highlights, and its lookahead guard keeps `/etc/hosts` and
 `and/or` unstyled.
 
 Message (`MessageBubble.tsx`): `.av-message` + role `.av-message-{assistant,user,
