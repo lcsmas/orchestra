@@ -10,6 +10,11 @@ import {
   getReleaseVersionsContaining,
 } from './git';
 import type { Workspace, WorkspaceStatus } from '../shared/types';
+// Dependency-free leaf (see hibernation-activity.ts): importing hibernation.ts
+// here would close an import cycle, since it imports pty.ts which imports this
+// file. The .ts extension is required for VALUE imports reachable from the
+// strip-types test runner.
+import { noteActivity } from './hibernation-activity.ts';
 
 // Status transitions are the most bug-prone surface in the app (a stuck or wrong
 // dot has been the visible symptom of spool wipes, missed turn-end events, and
@@ -503,6 +508,12 @@ export function applyAgentEvent(
   transcript?: string,
 ): void {
   alog.trace(`event ${event}${tool ? ` tool=${tool}` : ''} ws=${id}`);
+  // Every lifecycle event — from either agent path — is "this workspace did
+  // something", which is exactly what the hibernation sweeper measures idleness
+  // against. Stamped for ALL events including unhandled ones: an event we don't
+  // map to a status still proves the agent is alive, and treating it as silence
+  // would make an unrecognized Claude Code hook look like an idle agent.
+  noteActivity(id);
   switch (event) {
     case 'submit':
       emitTool(id, null);

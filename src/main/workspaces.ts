@@ -39,6 +39,8 @@ import { refreshAccountsNow } from './account-usage';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
 import { forgetWorkspaceProbes } from './activity';
+import { clearHibernated } from './hibernation.ts';
+import { forgetHibernationActivity } from './hibernation-activity.ts';
 import { destroyPanel as destroyBrowserPanel } from './browser-panel';
 import type { CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
 import { canOrchestrate, isScratchLike, SANDBOX_WORKSPACE_DIR } from '../shared/types';
@@ -615,6 +617,7 @@ export async function unarchiveWorkspace(id: string): Promise<void> {
 async function teardownWorkspace(ws: Workspace): Promise<void> {
   const id = ws.id;
   forgetWorkspaceProbes(id);
+  forgetHibernationActivity(id);
   log.info(`deleting workspace ${ws.branch} (${id}) worktree=${ws.worktreePath}`);
   // Hard delete: stop agent, run user's archive script (best-effort), remove
   // the git worktree from disk, drop the scrollback log. Archive script runs
@@ -2187,6 +2190,10 @@ function formatPeerMessage(fromBranch: string, fromId: string, text: string): st
 export async function wakeAgentWithPrompt(id: string, prompt: string): Promise<boolean> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived || isRunning(id)) return false;
+  // A wake is a restore, whichever branch below serves it: the SDK paths clear
+  // via ensureSession, but the raw-PTY fallback calls startPty directly, so
+  // clear once here and every branch is covered. Idempotent when not hibernated.
+  clearHibernated(id);
   // A live structured (SDK) session is the active agent even with no PTY: deliver
   // the prompt as its next turn rather than spawning a raw `claude` PTY beside it.
   // Returns true (delivered) so callers treat it exactly like a successful wake.

@@ -193,6 +193,14 @@ export interface OrchestraAPI {
    * automatically right after import and on a periodic timer. */
   backupSandbox: (id: string) => Promise<string>;
   markSeen: (id: string) => Promise<void>;
+  /** Tell main which workspace the user currently has open (null = none, e.g.
+   *  the Resources/Insights full-pane surfaces). Selection is renderer state,
+   *  but the hibernation sweeper must never stop the process of the pane under
+   *  the user's cursor — so the renderer reports it here on every selection.
+   *  Also counts as a restore intent: activating a hibernated workspace clears
+   *  its `hibernatedAt` immediately (the pane is about to lazy-start its PTY /
+   *  resume its SDK session) rather than waiting for the process to respawn. */
+  setActiveWorkspace: (id: string | null) => Promise<void>;
   /** Manually tag a workspace as unread (or clear the tag). An unread
    *  workspace wears a persistent "come back to this later" indicator in the
    *  sidebar until the user selects it again or clears the tag by hand. */

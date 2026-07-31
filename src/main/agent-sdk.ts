@@ -34,6 +34,7 @@ import { isRunning as isPtyRunning } from './pty';
 import { getEventsDir } from './events-spool';
 import { reconcileExited, applyAgentEvent, fireNeedsInput, resumeRunning } from './activity';
 import { registerSdkDelivery } from './sdk-delivery';
+import { clearHibernated } from './hibernation.ts';
 import { buildBrowserToolServer } from './agent-browser-tools';
 import {
   normalizeSdkMessage,
@@ -659,6 +660,12 @@ async function ensureSession(wsId: string): Promise<Session> {
 
   const ws = store.getWorkspace(wsId);
   if (!ws) throw new Error(`unknown workspace: ${wsId}`);
+
+  // A structured session is about to (re)start — the single funnel for every
+  // SDK start, resume and wake — so this workspace is no longer hibernated.
+  // Clearing here rather than at each call site (sdkSend/sdkWake/sdkDeliver)
+  // means no restore path can forget to drop the chip.
+  clearHibernated(wsId);
 
   // Env parity with the terminal spawn (installOrchestraHooks + account
   // inheritance + CLAUDE_CONFIG_DIR), skipped for remote/sandbox workspaces

@@ -75,6 +75,26 @@ function statusNoteTitle(w: Workspace): string {
   return `${w.statusText}${age} (agent-reported)`;
 }
 
+/** Quiet "zZ" chip on a hibernated row — the agent's process was stopped by the
+ * idle sweeper to reclaim memory (src/main/hibernation.ts). Deliberately
+ * HOUSEKEEPING, not an alert: no color, no badge count, no inbox entry (
+ * `computeAttention` ignores `hibernatedAt` entirely). The conversation is
+ * intact, so the tooltip's job is to say "nothing is wrong, and you don't have
+ * to do anything" — opening the row or typing restores it. */
+function HibernatedChip({ w }: { w: Workspace }) {
+  if (w.hibernatedAt === undefined) return null;
+  const age = formatAgeShort(Date.now() - w.hibernatedAt);
+  return (
+    <span
+      className="ws-hibernated"
+      title={`Hibernated ${age} ago — the idle agent's process was stopped to free memory. Opens instantly and resumes on input; the conversation is kept.`}
+      aria-label={`Hibernated ${age} ago`}
+    >
+      zZ
+    </span>
+  );
+}
+
 /** Red CI pill — rendered ONLY when the branch's newest run set is failing
  * (green/running CI is quiet by design; failures are the signal). Clicking
  * hands the failing run to the workspace's agent ("fix broken checks"). */
@@ -1452,17 +1472,19 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               <span className="ws-collapse spacer" aria-hidden="true" />
             )}
             <div
-              className={`ws-dot ${w.status as WorkspaceStatus}${w.markedUnread ? ' unread' : ''}`}
+              className={`ws-dot ${w.status as WorkspaceStatus}${w.markedUnread ? ' unread' : ''}${w.hibernatedAt !== undefined ? ' hibernated' : ''}`}
               title={
                 w.markedUnread
                   ? 'Tagged unread — come back to this workspace'
-                  : w.status === 'running'
-                    ? tools[w.id]
-                      ? `Agent is working… (${tools[w.id]})`
-                      : 'Agent is working…'
-                    : w.status === 'idle'
-                      ? 'Agent is idle'
-                      : w.status
+                  : w.hibernatedAt !== undefined
+                    ? 'Agent is hibernated — process stopped to free memory, resumes on input'
+                    : w.status === 'running'
+                      ? tools[w.id]
+                        ? `Agent is working… (${tools[w.id]})`
+                        : 'Agent is working…'
+                      : w.status === 'idle'
+                        ? 'Agent is idle'
+                        : w.status
               }
             />
             <div className="ws-body">
@@ -1505,6 +1527,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     {hidden.length}
                   </span>
                 )}
+                <HibernatedChip w={w} />
                 <WorkspaceContextBadge workspaceId={w.id} />
                 <span className="ws-login">
                   <span className="ws-context-sep" aria-hidden="true">
@@ -2077,17 +2100,19 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     </button>
                   ) : null}
                   <div
-                    className={`ws-dot ${w.status as WorkspaceStatus}${w.markedUnread ? ' unread' : ''}`}
+                    className={`ws-dot ${w.status as WorkspaceStatus}${w.markedUnread ? ' unread' : ''}${w.hibernatedAt !== undefined ? ' hibernated' : ''}`}
                     title={
                       w.markedUnread
                         ? 'Tagged unread — come back to this workspace'
-                        : w.status === 'running'
-                          ? tools[w.id]
-                            ? `Agent is working… (${tools[w.id]})`
-                            : 'Agent is working…'
-                          : w.status === 'idle'
-                            ? 'Agent is idle'
-                            : w.status
+                        : w.hibernatedAt !== undefined
+                          ? 'Agent is hibernated — process stopped to free memory, resumes on input'
+                          : w.status === 'running'
+                            ? tools[w.id]
+                              ? `Agent is working… (${tools[w.id]})`
+                              : 'Agent is working…'
+                            : w.status === 'idle'
+                              ? 'Agent is idle'
+                              : w.status
                     }
                   />
                   <div className="ws-body">
@@ -2118,6 +2143,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           {w.branch}
                         </div>
                       )}
+                      <HibernatedChip w={w} />
                       <WorkspaceContextBadge workspaceId={w.id} />
                       <span className="ws-login">
                         <span className="ws-context-sep" aria-hidden="true">

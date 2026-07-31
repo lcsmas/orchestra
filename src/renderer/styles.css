@@ -1439,6 +1439,35 @@ input:focus, textarea:focus, select:focus {
    which button un-tags the row. */
 .ws-icon-btn.unread-on { color: var(--accent); }
 
+/* Hibernated — the idle sweeper stopped this agent's process to free memory
+   (src/main/hibernation.ts). HOUSEKEEPING, not an alert: the dot only fades
+   further (it is already the dim idle grey), and the chip is the same muted
+   treatment as .ws-hidden-count with no color of its own. Placed AFTER
+   .ws-dot.unread so an explicit user bookmark still wins the dot — a
+   come-back-to-this marker outranks a memory optimisation. */
+.ws-dot.hibernated { opacity: 0.3; animation: none; }
+.ws-dot.unread.hibernated {
+  background: var(--accent);
+  opacity: 1;
+}
+.ws-hibernated {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  line-height: 13px;
+  color: var(--text-dim);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  opacity: 0.75;
+  cursor: default;
+}
+
 @keyframes ws-dot-pulse {
   0% { box-shadow: 0 0 0 0 rgba(91, 214, 139, 0.55), 0 0 6px rgba(91, 214, 139, 0.8); }
   70% { box-shadow: 0 0 0 6px rgba(91, 214, 139, 0), 0 0 10px rgba(91, 214, 139, 0.5); }

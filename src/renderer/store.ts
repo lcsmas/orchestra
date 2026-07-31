@@ -252,6 +252,11 @@ export const useStore = create<State>((set, get) => ({
       helpOpen: false,
       page: 'workspaces',
     }));
+    // Tell main which pane is open: the hibernation sweeper must never stop the
+    // process the user is looking at, and activating a hibernated workspace is
+    // a restore intent that clears its chip. Reported for null too (Resources /
+    // Insights cover the pane, so no workspace is protected).
+    void window.orchestra.setActiveWorkspace(id ?? null).catch(() => {});
     if (id) {
       const ws = get().workspaces.find((w) => w.id === id);
       if (ws && ws.status === 'waiting') {

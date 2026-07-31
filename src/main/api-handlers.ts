@@ -62,6 +62,7 @@ import {
   readScrollback,
   isRunning,
 } from './pty';
+import { clearHibernated, setActiveWorkspace } from './hibernation.ts';
 import { sampleResources } from './resources';
 import { getHookSocketPath } from './hooks-server';
 import { installLoginBrowserShim } from './cli-shim';
@@ -214,6 +215,7 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   ejectFromSandbox: 'workspaces:ejectFromSandbox',
   backupSandbox: 'sandbox:backup',
   markSeen: 'workspaces:markSeen',
+  setActiveWorkspace: 'workspaces:setActive',
   setUnread: 'workspaces:setUnread',
   promoteWorkspace: 'workspaces:promote',
   demoteWorkspace: 'workspaces:demote',
@@ -601,6 +603,10 @@ export const apiHandlers: ApiHandlerTable = {
     platform.broadcast('workspace:update', updated);
   },
 
+  setActiveWorkspace: async (id) => {
+    setActiveWorkspace(id);
+  },
+
   setUnread: async (id, unread) => {
     const ws = store.getWorkspace(id);
     if (!ws || !!ws.markedUnread === !!unread) return;
@@ -666,6 +672,11 @@ export const apiHandlers: ApiHandlerTable = {
     // resume. This is also where a workspace that was running before an app
     // restart comes back to life — deliberately on first open, never at boot.
     const resuming = ws.hasInput === true;
+    // The agent process is coming back (this is also the Terminal's
+    // press-any-key relaunch path, which resumes via `claude --continue`), so
+    // drop the hibernation chip and re-stamp activity — otherwise the next
+    // sweep could see a freshly-woken agent as still idle and kill it again.
+    clearHibernated(id);
     await startAgentPty(ws, cols, rows);
     // Preserve the `waiting` yellow dot across restarts; only clear stale
     // `running` state left over from a prior crash.

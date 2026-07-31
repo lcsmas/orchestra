@@ -110,6 +110,57 @@ reuse it so an open terminal keeps its real width instead of snapping to a
 default 80×24 / 120×32; the renderer only re-asserts size on container/focus
 changes, never on an out-of-band respawn).
 
+## Session hibernation — hibernation.ts / hibernation-activity.ts / shared/hibernation.ts
+
+Idle agents used to keep their processes forever: the renderer's 12-pane LRU
+(`shared/mounted-panes.ts`) unmounts React components but never the backing
+process, and `stopPty`/`sdkStop` fired only on explicit stop/delete/archive/quit
+— so ~19 live agents held hundreds of MB of resident memory. The sweeper stops
+long-idle agents and lets the existing resume paths bring them back.
+
+- **Eligibility is pure** — `src/shared/hibernation.ts` `shouldHibernate(ws,
+  signals)` + `resolveHibernateAfterMs` + `formatIdleDuration`, exhaustively
+  unit-tested (`hibernation.test.ts`, incl. a positive-control baseline so the
+  negative assertions can't pass vacuously). ALL must hold: a process is live;
+  `status === 'idle'` (never `running`/`waiting`/`error`/`stopped` — `waiting`
+  means the human is needed and the dot + inbox entry must survive); not the
+  active workspace; not sandbox-hosted (`ws.host` absent); not archived; no live
+  `<id>:run` PTY; idle ≥ threshold. Threshold from
+  `ORCHESTRA_HIBERNATE_AFTER_MS`: unset/empty/garbage/`0` → 30 min default,
+  `-1` → disabled (its own sentinel, since an env var with a default is not a
+  kill switch), positive → verbatim (the e2e rig injects a few seconds).
+- **The sweeper** — `src/main/hibernation.ts` `startHibernationSweeper()` (wired
+  in index.ts beside the other pollers, torn down in `shutdownSubsystems`) runs
+  `sweepHibernation()` on a 5-min `setInterval` (unref'd). Per eligible
+  workspace: `sdkStopIfLive` (the sdk-delivery seam) then `stopPty`, then
+  `markHibernated` records `ws.hibernatedAt` and broadcasts `workspace:update`
+  (mutation-site broadcast: persist in the background, broadcast immediately).
+  Logs each one at info with the workspace id and idle duration.
+- **Status is never touched.** A hibernated workspace stays `idle` — that IS its
+  state. `hibernatedAt` carries the distinction, for the sidebar chip alone.
+- **Last activity** lives in `src/main/hibernation-activity.ts`, a
+  DEPENDENCY-FREE leaf: `applyAgentEvent` (activity.ts) stamps `noteActivity`
+  for every lifecycle event — the one funnel both the spool-tailed terminal path
+  and the structured path's `driveStatusFromEvent` pass through — and activity.ts
+  cannot import hibernation.ts, which imports pty.ts, which imports activity.ts.
+  In-memory only, which is the SAFE direction: after a restart the map is empty
+  and the sweep falls back to an app-start floor, so nothing can be hibernated
+  until it has been idle a full threshold *of this run*.
+- **Restore** rides the paths that already resume: `clearHibernated(id)` is
+  called from `ensureSession` (agent-sdk.ts — the single funnel for every SDK
+  start/resume/wake, so no restore path can forget it), the `ptyStart` handler
+  (which is also Terminal.tsx's press-any-key `claude --continue` relaunch),
+  `wakeAgentWithPrompt` (covering its raw-PTY fallback), and workspace
+  ACTIVATION. The renderer reports selection over the new
+  `setActiveWorkspace` IPC (`workspaces:setActive`) — both so the sweeper never
+  kills the pane under the user's cursor and because activating a hibernated row
+  is a restore intent that drops the chip immediately.
+- **Not an attention signal.** `computeAttention` (shared/attention.ts) ignores
+  `hibernatedAt` entirely, guarded by a regression test — a hibernated agent must
+  never fill the Needs-You inbox. The UI is one quiet `.ws-hibernated` "zZ" chip
+  on the sidebar row plus a further-dimmed `.ws-dot.hibernated` (an explicit user
+  bookmark still wins the dot), with a tooltip aging `hibernatedAt`.
+
 ## Terminal.tsx (agent view, ~479 lines)
 xterm.js with addons: **FitAddon**, **WebLinksAddon** (opens via IPC),
 themed via the shared `TERM_THEME` (`src/renderer/term-theme.ts` — app-chrome

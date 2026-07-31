@@ -55,6 +55,26 @@ test('bookmarks on idle workspaces show under bookmarked and count', () => {
   assert.equal(g.count, 1);
 });
 
+// Hibernation is housekeeping, not an attention signal: the sweeper stops an
+// idle agent's process to reclaim memory and the conversation is intact, so a
+// hibernated row must never appear in the Needs-You inbox or move the badge.
+// Guarded here because `hibernatedAt` sits on the same record computeAttention
+// reads — a future grouping rule that keyed on it would silently fill the inbox
+// with every idle agent on the machine.
+test('hibernatedAt never puts an idle workspace in the inbox or the badge', () => {
+  const g = computeAttention([ws({ hibernatedAt: Date.now() - 60_000 })]);
+  assert.equal(g.needsYou.length, 0);
+  assert.equal(g.bookmarked.length, 0);
+  assert.equal(g.working.length, 0);
+  assert.equal(g.count, 0);
+});
+
+test('a hibernated workspace the user bookmarked still counts (the bookmark is theirs)', () => {
+  const g = computeAttention([ws({ hibernatedAt: Date.now(), markedUnread: true })]);
+  assert.equal(g.bookmarked.length, 1);
+  assert.equal(g.count, 1);
+});
+
 test('running agents group under working and stay out of the badge', () => {
   const g = computeAttention([ws({ status: 'running' }), ws({ status: 'running' })]);
   assert.equal(g.working.length, 2);

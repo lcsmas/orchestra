@@ -147,6 +147,7 @@ import { stopAll } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
 import { installCliShim, installAgentCliShim } from './cli-shim';
 import { startEventsSpool, stopEventsSpool } from './events-spool';
+import { startHibernationSweeper, stopHibernationSweeper } from './hibernation.ts';
 import { startUsagePolling, stopUsagePolling } from './usage';
 import { startAccountUsagePolling, stopAccountUsagePolling } from './account-usage';
 import { seedAccountInheritDefaults, syncAllAccountsInheritance } from './account-inherit';
@@ -291,6 +292,10 @@ async function createMainWindow() {
   // container is the only copy of unpushed work, so a dead sandbox must cost
   // at most one backup interval.
   startSandboxAutoBackup();
+  // Stop the agent processes of long-idle workspaces to reclaim their memory;
+  // the conversation survives (terminal `--continue`, SDK sdkSessionId) so a
+  // hibernated agent restores on the next keystroke/send/activation.
+  startHibernationSweeper();
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void openUrlExternally(url);
@@ -492,6 +497,7 @@ function shutdownSubsystems(): void {
   stopAccountUsagePolling();
   stopPromptQueueFlusher();
   stopSelfTuneScheduler();
+  stopHibernationSweeper();
   closeAllSandboxConnections();
 }
 

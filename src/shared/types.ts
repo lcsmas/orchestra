@@ -172,6 +172,22 @@ export interface Workspace {
    * CC's own menu — or after a safety timeout. Purely a guard around CC's
    * native gate; Orchestra never auto-answers the menu. */
   heavyResumePending?: boolean;
+  /** Epoch ms when the idle sweeper HIBERNATED this workspace — stopped its
+   * agent process (PTY and/or SDK session) to reclaim memory after it sat
+   * `idle` past the threshold (src/main/hibernation.ts, eligibility in
+   * src/shared/hibernation.ts). Absent = live or never hibernated.
+   *
+   * This is a MEMORY state, not a lifecycle state: the conversation is intact
+   * (the terminal resumes via `claude --continue`, the structured view via
+   * {@link sdkSessionId}), the status stays `idle`, and the row is NOT an
+   * attention signal — `computeAttention` deliberately ignores this field, so a
+   * hibernated agent never appears in the Needs-You inbox. Purely a quiet
+   * sidebar affordance (the "zZ" chip) plus the timestamp its tooltip ages.
+   *
+   * CLEARED on any restart/wake path (pty:start, sdkSend/sdkWake,
+   * wakeAgentWithPrompt, workspace activation) so the chip disappears the
+   * moment a process comes back. */
+  hibernatedAt?: number;
   /** True once the branch has been pinned by a *human* action — the user typing
    * a name in the sidebar, an out-of-band `git branch -m`, or an explicit branch
    * switch. Hard-disables the agent-facing auto-rename nudge regardless of
