@@ -106,10 +106,15 @@ function markHibernated(ws: Workspace, at: number): void {
 export function clearHibernated(wsId: string): void {
   const ws = store.getWorkspace(wsId);
   if (!ws || ws.hibernatedAt === undefined) return;
-  // Drop the key entirely rather than storing 0/undefined, so store.json does
-  // not accumulate a dead field on every workspace that ever hibernated.
-  const { hibernatedAt: _dropped, ...rest } = ws;
-  const updated = rest as Workspace;
+  // Set the key to `undefined` EXPLICITLY — do NOT rest-spread it away. The
+  // renderer's `workspace:update` reducer MERGES (`{...old, ...incoming}`), so
+  // a record with the key simply ABSENT cannot clear the value already in the
+  // renderer's copy: main goes correct, the row keeps its "zZ" chip forever.
+  // (Verified e2e: main reported hibernatedAt:null while the DOM still showed
+  // the chip.) An explicit `undefined` survives the spread and overwrites it —
+  // the same reason `setUnread` sends `markedUnread: unread || undefined`.
+  // JSON.stringify omits undefined values, so store.json still stays clean.
+  const updated: Workspace = { ...ws, hibernatedAt: undefined };
   void store.upsertWorkspace(updated).catch((e) => hlog.swallow('clear hibernatedAt', e));
   platform.broadcast('workspace:update', updated);
   hlog.debug(`${ws.name}: woke from hibernation`);
