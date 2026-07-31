@@ -392,6 +392,76 @@ export function allHunkIds(f: DiffFilePatch): Set<string> {
   return new Set(f.hunks.map((h) => h.id));
 }
 
+/**
+ * Which hunks of the review diff are already STAGED.
+ *
+ * The uncommitted scope renders `git diff HEAD`, which merges index and working
+ * tree into ONE patch — so nothing in it says whether a given hunk is staged.
+ * Without that, "Unstage" cannot tell a staged hunk from an unstaged one, and
+ * reverse-applying an unstaged hunk fails with a raw `patch does not apply`
+ * (harmless to the index, but a real dead-end for the user).
+ *
+ * `staged` is the parse of `git diff --cached` (index vs HEAD). A hunk counts as
+ * staged when the staged patch contains a hunk for the same file whose CONTENT
+ * matches — compared on the +/- line payload rather than the `@@` header,
+ * because the two diffs are computed against different post-images and their
+ * offsets legitimately differ (a staged hunk sits at a different new-side line
+ * once later unstaged edits are also present). Content equality is the property
+ * that actually transfers between the two views.
+ *
+ * Returns a per-file set of hunk ids, keyed exactly like {@link HunkSelection},
+ * so the two can be intersected directly.
+ */
+export function stagedHunkIds(
+  combined: DiffFilePatch[],
+  staged: DiffFilePatch[],
+): HunkSelection {
+  const stagedByPath = new Map<string, Set<string>>();
+  for (const f of staged) {
+    const sigs = new Set<string>();
+    for (const h of f.hunks) sigs.add(hunkSignature(h));
+    stagedByPath.set(f.path, sigs);
+  }
+  const out: HunkSelection = new Map();
+  for (const f of combined) {
+    const sigs = stagedByPath.get(f.path);
+    if (!sigs) continue;
+    const ids = new Set<string>();
+    for (const h of f.hunks) if (sigs.has(hunkSignature(h))) ids.add(h.id);
+    if (ids.size) out.set(f.path, ids);
+  }
+  return out;
+}
+
+/** Offset-independent identity for a hunk: the ordered +/- payload. Context
+ *  lines are excluded because the two diffs can carry different context around
+ *  the same change once other edits exist nearby. */
+function hunkSignature(h: DiffHunk): string {
+  const parts: string[] = [];
+  for (const l of h.lines) {
+    if (l.kind === 'context') continue;
+    parts.push(`${l.kind === 'add' ? '+' : '-'}${l.text}`);
+  }
+  return parts.join('\n');
+}
+
+/** Selection ∩ staged — the hunks an Unstage would actually act on. Empty means
+ *  the Unstage button must be disabled, because reverse-applying any of the
+ *  selected hunks would be rejected by git. */
+export function stagedSelection(
+  selection: HunkSelection,
+  staged: HunkSelection,
+): HunkSelection {
+  const out: HunkSelection = new Map();
+  for (const [path, ids] of selection) {
+    const stagedIds = staged.get(path);
+    if (!stagedIds) continue;
+    const both = new Set([...ids].filter((id) => stagedIds.has(id)));
+    if (both.size) out.set(path, both);
+  }
+  return out;
+}
+
 /** Tri-state for a file-level checkbox given the current selection. */
 export function fileCheckState(
   f: DiffFilePatch,

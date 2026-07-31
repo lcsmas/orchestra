@@ -5370,3 +5370,15 @@ button.danger-primary:active {
   flex-shrink: 0;
 }
 .diff-annotation-del:hover { background: transparent; color: var(--text); }
+/* "staged" pill on a hunk header: marks hunks already in the index, so a
+   disabled Unstage button is self-explanatory rather than mysterious. */
+.diff-staged-tag {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+  flex-shrink: 0;
+}

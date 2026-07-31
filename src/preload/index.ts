@@ -150,6 +150,7 @@ const api: OrchestraAPI = {
   findChecks: (id) => ipcRenderer.invoke('git:findChecks', id),
   fixChecks: (id) => ipcRenderer.invoke('git:fixChecks', id),
   getReviewDiff: (id, scope) => ipcRenderer.invoke('git:reviewDiff', id, scope),
+  getStagedDiff: (id) => ipcRenderer.invoke('git:stagedDiff', id),
   applyReviewPatch: (id, input) => ipcRenderer.invoke('git:applyReviewPatch', id, input),
   sendReviewToAgent: (id, prompt) => ipcRenderer.invoke('git:sendReview', id, prompt),
   verifyLinear: (id) => ipcRenderer.invoke('linear:verify', id),

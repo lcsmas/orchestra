@@ -11,6 +11,7 @@ import {
   listBranches,
   getDiffStats,
   getRawDiff,
+  getStagedDiff,
   getBranchDiff,
   applyPatchToIndex,
   stagePaths,
@@ -265,6 +266,7 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   findChecks: 'git:findChecks',
   fixChecks: 'git:fixChecks',
   getReviewDiff: 'git:reviewDiff',
+  getStagedDiff: 'git:stagedDiff',
   applyReviewPatch: 'git:applyReviewPatch',
   sendReviewToAgent: 'git:sendReview',
   verifyLinear: 'linear:verify',
@@ -989,6 +991,13 @@ export const apiHandlers: ApiHandlerTable = {
     return scope === 'base'
       ? getBranchDiff(ws.worktreePath, ws.baseBranch, ws.branch)
       : getRawDiff(ws.worktreePath);
+  },
+
+  getStagedDiff: async (id) => {
+    const ws = store.getWorkspace(id);
+    if (!ws) throw new Error('workspace not found');
+    if (isScratchLike(ws) || !ws.worktreePath) return '';
+    return getStagedDiff(ws.worktreePath);
   },
 
   applyReviewPatch: async (id, input) => {

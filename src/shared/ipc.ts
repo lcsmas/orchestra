@@ -398,6 +398,10 @@ export interface OrchestraAPI {
    *    i.e. what this branch changed, excluding base progress since the cut.
    *  Returns '' for a clean tree / unresolvable base — never throws for those. */
   getReviewDiff: (id: string, scope: 'uncommitted' | 'base') => Promise<string>;
+  /** Raw `git diff --cached` text — what is currently STAGED. The uncommitted
+   *  scope's diff merges index and working tree, so this is the only signal
+   *  telling the pane which hunks Unstage can actually reverse. */
+  getStagedDiff: (id: string) => Promise<string>;
   /** Stage or unstage an exact subset of hunks by applying a rebuilt patch to
    *  the index (`git apply --cached [--reverse]`). `paths` whole-file stages or
    *  unstages instead, for binaries and pure renames that carry no hunks.

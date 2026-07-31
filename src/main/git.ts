@@ -302,6 +302,25 @@ async function readWorking(worktreePath: string, file: string): Promise<string> 
  *
  *  `-M` enables rename detection so a moved file renders as one rename rather
  *  than a delete plus an add. */
+/** Raw unified-diff text of the INDEX against HEAD (`git diff --cached`) — i.e.
+ *  exactly what is currently STAGED.
+ *
+ *  The review pane's uncommitted scope renders `git diff HEAD`, which merges
+ *  index and working tree into a single patch, so nothing in it distinguishes a
+ *  staged hunk from an unstaged one. Without this second view the Unstage
+ *  action cannot tell which hunks git could actually reverse, and reverse-
+ *  applying an unstaged hunk fails with a bare `patch does not apply`. The
+ *  renderer intersects the two via `stagedHunkIds` in shared/diff-hunks.
+ *
+ *  Deliberately a SEPARATE method rather than widening getReviewDiff's return
+ *  type: that keeps the existing string contract (and its callers) untouched,
+ *  and the vs-base scope has no use for it. */
+export async function getStagedDiff(worktreePath: string): Promise<string> {
+  const git = simpleGit(worktreePath);
+  const raw = await safeRaw(git, ['diff', '--cached', '-M', '--no-color']);
+  return raw.trim() ? truncate(raw, 2_000_000) : '';
+}
+
 export async function getRawDiff(worktreePath: string): Promise<string> {
   const git = simpleGit(worktreePath);
   const tracked = await safeRaw(git, ['diff', '-M', '--no-color', 'HEAD']);

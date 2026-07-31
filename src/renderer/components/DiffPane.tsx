@@ -7,6 +7,8 @@ import {
   hunkStats,
   fileCheckState,
   countSelected,
+  stagedHunkIds,
+  stagedSelection,
   type DiffFilePatch,
   type DiffHunk,
   type DiffLine,
@@ -74,6 +76,10 @@ function anchorKey(path: string, side: 'old' | 'new', line: number): string {
 export function DiffPane({ workspaceId, isActive }: { workspaceId: string; isActive: boolean }) {
   const [scope, setScope] = useState<Scope>('uncommitted');
   const [raw, setRaw] = useState('');
+  // `git diff --cached` for the uncommitted scope. The scope's own diff merges
+  // index and working tree, so this is the ONLY signal saying which hunks are
+  // staged — and therefore which ones Unstage can actually reverse.
+  const [stagedRaw, setStagedRaw] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
@@ -95,9 +101,12 @@ export function DiffPane({ workspaceId, isActive }: { workspaceId: string; isAct
       try {
         const text = await window.orchestra.getReviewDiff(workspaceId, which);
         setRaw(text);
+        // Only the uncommitted scope can stage; vs-base has no index view.
+        setStagedRaw(which === 'uncommitted' ? await window.orchestra.getStagedDiff(workspaceId) : '');
       } catch (e) {
         setError((e as Error).message);
         setRaw('');
+        setStagedRaw('');
       } finally {
         setLoading(false);
       }
@@ -115,6 +124,11 @@ export function DiffPane({ workspaceId, isActive }: { workspaceId: string; isAct
   }, [isActive, scope, refresh]);
 
   const files = useMemo(() => parseUnifiedDiff(raw), [raw]);
+  /** Hunk ids (per file) that are already in the index. */
+  const staged = useMemo(
+    () => stagedHunkIds(files, parseUnifiedDiff(stagedRaw)),
+    [files, stagedRaw],
+  );
 
   // Selection is keyed on hunk ids that come from header offsets, so a refetch
   // that changed a file invalidates its ids. Drop anything that no longer
@@ -236,17 +250,26 @@ export function DiffPane({ workspaceId, isActive }: { workspaceId: string; isAct
     });
 
   const selectedCount = countSelected(selection);
+  /** The staged subset of the selection — what an Unstage would actually act
+   *  on. Gating Unstage on `selectedCount` alone (as this first shipped) let a
+   *  purely-unstaged selection send a reverse patch git rejects with a raw
+   *  "patch does not apply". */
+  const stagedSelected = useMemo(() => stagedSelection(selection, staged), [selection, staged]);
+  const stagedSelectedCount = countSelected(stagedSelected);
 
   const runStaging = async (mode: 'stage' | 'unstage') => {
-    if (selectedCount === 0 || busy) return;
+    // Unstage may only touch hunks git can actually reverse: the staged subset.
+    // Sending the raw selection would fail on any unstaged hunk in it.
+    const effective = mode === 'unstage' ? stagedSelected : selection;
+    if (countSelected(effective) === 0 || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const patch = buildPatch(files, selection);
+      const patch = buildPatch(files, effective);
       // Files with no hunks (binary, pure rename) can't ride in a patch, so they
       // are staged whole-file by path instead.
       const paths = files
-        .filter((f) => selection.has(f.path) && f.hunks.length === 0)
+        .filter((f) => effective.has(f.path) && f.hunks.length === 0)
         .map((f) => f.path);
       await window.orchestra.applyReviewPatch(workspaceId, { patch, paths, mode });
       setSelection(new Map());
@@ -393,6 +416,11 @@ export function DiffPane({ workspaceId, isActive }: { workspaceId: string; isAct
             <span className="diff-hunk-range">
               @@ −{h.oldStart},{h.oldCount} +{h.newStart},{h.newCount} @@
             </span>
+            {staged.get(row.file.path)?.has(h.id) && (
+              <span className="diff-staged-tag" title="Already staged (in the index)">
+                staged
+              </span>
+            )}
             {h.heading && <span className="diff-hunk-heading">{h.heading}</span>}
             <span className="diff-hunk-stat">
               {st.additions > 0 && <span className="diff-plus">+{st.additions}</span>}
@@ -549,11 +577,17 @@ export function DiffPane({ workspaceId, isActive }: { workspaceId: string; isAct
               </button>
               <button
                 className="diff-btn"
-                disabled={selectedCount === 0 || busy}
+                disabled={stagedSelectedCount === 0 || busy}
                 onClick={() => void runStaging('unstage')}
-                title="Unstage the selected hunks"
+                title={
+                  stagedSelectedCount > 0
+                    ? `Unstage ${stagedSelectedCount} staged hunk${stagedSelectedCount === 1 ? '' : 's'}`
+                    : selectedCount > 0
+                      ? 'Nothing selected is staged — Unstage only applies to hunks already in the index'
+                      : 'Select staged hunks to unstage'
+                }
               >
-                Unstage
+                Unstage{stagedSelectedCount > 0 ? ` ${stagedSelectedCount}` : ''}
               </button>
             </>
           )}
