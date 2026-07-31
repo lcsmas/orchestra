@@ -32,7 +32,7 @@ import {
   getPtySize,
 } from './pty';
 import { expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
-import { sanitizeStatusText } from '../shared/status-text';
+import { sanitizeStatusText } from '../shared/status-text.ts';
 import { submitPlan } from '../shared/task-submit';
 import { syncAccountInheritance } from './account-inherit';
 import { refreshAccountsNow } from './account-usage';

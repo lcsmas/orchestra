@@ -5,7 +5,10 @@ import { rm } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { ChecksForBranch, DiffFile, DiffStats } from '../shared/types';
-import { branchChecksFromRuns, type WorkflowRunLite } from '../shared/ci-state';
+// NOTE the .ts extension: git.ts is imported by node --test suites
+// (git-merge-state / git-verify-landed), where strip-types resolves VALUE
+// imports at runtime and an extensionless relative path is ERR_MODULE_NOT_FOUND.
+import { branchChecksFromRuns, type WorkflowRunLite } from '../shared/ci-state.ts';
 // Explicit `.ts` extension: git.ts is pulled into Node's type-stripping test
 // runner (git-merge-state.test.ts et al.), which does not resolve extensionless
 // relative specifiers. Same reason logger.ts imports './platform/index.ts'.
