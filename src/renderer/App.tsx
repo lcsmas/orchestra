@@ -6,6 +6,7 @@ import { BranchPicker } from './components/BranchPicker';
 import { NvimView } from './components/NvimView';
 import { BrowserPanel } from './components/BrowserPanel';
 import { RunTerminal } from './components/RunTerminal';
+import { DiffPane } from './components/DiffPane';
 import { StructuredView } from './components/StructuredView';
 import { SetupBanner } from './components/SetupBanner';
 import { PromptQueueBanner } from './components/PromptQueueBanner';
@@ -429,8 +430,10 @@ export function App() {
   // view is unavailable. If the user had it selected and then switches to such a
   // session, fall back to the terminal so the pane isn't left blank. The
   // `structured` view stays valid for every kind, so it is NOT forced away.
+  // `diff` is git-only for the same reason as `run` (a scratch/orchestrator
+  // session has no worktree to diff), so it falls back the same way.
   useEffect(() => {
-    if (isScratch && view === 'run') setView('terminal');
+    if (isScratch && (view === 'run' || view === 'diff')) setView('terminal');
   }, [isScratch, view, setView]);
   const onRestart = async () => {
     if (!active) return;
@@ -628,6 +631,15 @@ export function App() {
                 >
                   Structured
                 </button>
+                {!isScratch && (
+                  <button
+                    className={`tab ${view === 'diff' ? 'active' : ''}`}
+                    onClick={() => setView('diff')}
+                    title="Review this workspace's diff — stage hunks, comment on lines, send a review to the agent"
+                  >
+                    Diff
+                  </button>
+                )}
               </div>
               <button
                 className={`pane-toggle ${nvimOpen ? 'active' : ''}`}
@@ -803,6 +815,15 @@ export function App() {
                     isActive={ws.id === activeId && view === 'structured'}
                   />
                 ))}
+                {/* Mounted only while selected, unlike the terminals above: the
+                    pane holds no scrollback worth preserving and refetches on
+                    activation anyway, so keeping it mounted would cost DOM for
+                    a large diff with nothing to show for it. Annotations are
+                    component-local and therefore reset on tab-away — V1 scope;
+                    lifting them into the store is the follow-up. */}
+                {view === 'diff' && !isScratch && (
+                  <DiffPane key={`diff-${active.id}`} workspaceId={active.id} isActive={true} />
+                )}
                 {view === 'run' && (
                   <RunTerminal
                     // Prefix avoids colliding with the sibling TerminalView's

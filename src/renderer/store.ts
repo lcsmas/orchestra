@@ -128,7 +128,7 @@ interface State {
    *  list to reopen the *previous* workspace rather than snapping to the first
    *  row in sidebar order. Session-only; not persisted. */
   openHistory: string[];
-  view: 'terminal' | 'run' | 'structured';
+  view: 'terminal' | 'run' | 'structured' | 'diff';
   /** Which top-level surface fills the main pane: the normal workspace panes,
    *  or the full-page Resources view (opened from the sidebar footer). The
    *  workspace panes stay mounted underneath so xterm scrollback survives a
@@ -137,7 +137,7 @@ interface State {
   loaded: boolean;
 
   setActive: (id: string | null) => void;
-  setView: (v: 'terminal' | 'run' | 'structured') => void;
+  setView: (v: 'terminal' | 'run' | 'structured' | 'diff') => void;
   /** Dev/verifier seam: inject a synthetic {@link AgentEvent} for a workspace
    *  through the SAME RAF-batched fold path as a real `agent:event`. Lets the
    *  E2E verifier drive the structured view deterministically (assert
