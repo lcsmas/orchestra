@@ -61,14 +61,18 @@
 *::-webkit-scrollbar { width: 0; height: 0; display: none; }
 
 :root {
-  --bg: #0b0d10;
-  --bg-2: #12151a;
-  --bg-3: #1a1f26;
-  --bg-4: #222933;
-  --border: #242a33;
-  --border-strong: #333b47;
-  --text: #e6e9ef;
-  --text-dim: #8b95a7;
+  /* Orca-inspired surface ladder (batch: adopt-onorca-improvements): one step
+     deeper and one step less blue than the previous ladder — the near-black
+     neutral canvas is what makes hairlines and the white active pill read
+     crisp. Same relative hierarchy, so every derived surface keeps its rank. */
+  --bg: #0a0b0d;
+  --bg-2: #101215;
+  --bg-3: #171a20;
+  --bg-4: #1f242c;
+  --border: #23272f;
+  --border-strong: #353b45;
+  --text: #eef1f5;
+  --text-dim: #8f99a9;
   --accent: #6ea8ff;
   --accent-strong: #4a8cff;
   --accent-bright: #7ab4ff;
@@ -2703,11 +2707,21 @@ input:focus, textarea:focus, select:focus {
   color: var(--text);
   box-shadow: none;
 }
+/* Orca-signature active tab: an inverted high-contrast pill (light fill, dark
+   ink) instead of the old subtle bg-4 wash — the strongest single cue in
+   Orca's chrome, and it makes the selected surface unmistakable at a glance.
+   Ink is a fixed near-black (not var(--bg)) so the pill keeps its contrast
+   even if the canvas ladder shifts again. */
 .tab.active {
-  color: var(--text);
-  background: var(--bg-4);
+  color: #0c0e11;
+  background: var(--text);
   border-color: transparent;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.3);
+  font-weight: 600;
+  box-shadow: none;
+}
+.tab.active:hover {
+  background: var(--text);
+  color: #0c0e11;
 }
 
 .diff-indicator {
