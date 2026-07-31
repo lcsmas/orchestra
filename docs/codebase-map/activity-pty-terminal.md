@@ -131,11 +131,32 @@ long-idle agents and lets the existing resume paths bring them back.
   kill switch), positive → verbatim (the e2e rig injects a few seconds).
 - **The sweeper** — `src/main/hibernation.ts` `startHibernationSweeper()` (wired
   in index.ts beside the other pollers, torn down in `shutdownSubsystems`) runs
-  `sweepHibernation()` on a 5-min `setInterval` (unref'd). Per eligible
-  workspace: `sdkStopIfLive` (the sdk-delivery seam) then `stopPty`, then
-  `markHibernated` records `ws.hibernatedAt` and broadcasts `workspace:update`
-  (mutation-site broadcast: persist in the background, broadcast immediately).
-  Logs each one at info with the workspace id and idle duration.
+  `sweepHibernation()` on an unref'd `setInterval`. Per eligible workspace:
+  `sdkStopIfLive` (the sdk-delivery seam) then `stopPty`, then `markHibernated`
+  records `ws.hibernatedAt` and broadcasts `workspace:update` (mutation-site
+  broadcast: persist in the background, broadcast immediately).
+- **Both knobs are env-injectable, and that is a testability requirement, not a
+  convenience.** The cadence is `ORCHESTRA_HIBERNATE_SWEEP_MS`
+  (`resolveHibernateSweepMs`, default 5 min, floored at 1s, no disable sentinel
+  — disabling is the threshold's job, and two kill switches for one feature can
+  disagree). A rig needs a short THRESHOLD *and* a short CADENCE: with only the
+  former, the sweep is observable only by waiting out a real 5-minute timer.
+  The startup banner prints both as raw ms next to the friendly duration,
+  because `formatIdleDuration` renders 5s and 55s identically as "<1m" and so
+  cannot confirm an injection took.
+- **The log line names the KILLED PID** (`… — idle 5m pty pid=12345`), sampled
+  via `getPtyPid` (pty.ts) BEFORE `stopPty` — afterwards the session is gone
+  from the registry and the pid is unrecoverable. This is what makes process
+  death assertable with `ps -p <pid>`; an absent registry entry or UI text
+  proves only that the app's own bookkeeping changed.
+- **The sweep NEVER touches disk.** It acts only on state it owns — live
+  process/session handles and store fields. `ORCHESTRA_HOME` relocates
+  userData/logs/spool but NOT worktrees or scratch dirs, which stay under the
+  real `~/.orchestra` alongside every sibling agent — so an fs call in the sweep
+  path would be unsafe even to VERIFY on a busy machine. Guarded mechanically by
+  `hibernation-no-disk.test.ts` (source-level: no `node:fs`/`child_process`
+  import, no mutating fs call, and the activity leaf stays import-free), each
+  assertion carrying a positive control and the whole guard mutation-tested.
 - **Status is never touched.** A hibernated workspace stays `idle` — that IS its
   state. `hibernatedAt` carries the distinction, for the sidebar chip alone.
 - **Last activity** lives in `src/main/hibernation-activity.ts`, a

@@ -549,6 +549,21 @@ export function isRunning(id: string) {
   return sessions.has(id);
 }
 
+/** OS pid of a live session's spawned process, or undefined when the session
+ *  isn't running (or is REMOTE — a sandbox session's pid is container-side and
+ *  must never be resolved against the local process table, same caveat as
+ *  {@link listPtySessions}).
+ *
+ *  Exists so a caller that kills a session can name the pid it killed IN THE
+ *  LOG: an assertion of process death has to be made by recorded pid
+ *  (`ps -p <pid>`), and a pid read AFTER the kill is already gone. The
+ *  hibernation sweeper samples this immediately before `stopPty`. */
+export function getPtyPid(id: string): number | undefined {
+  const s = sessions.get(id);
+  if (!s || s.remote) return undefined;
+  return s.transport.pid;
+}
+
 /** Winsize for the session: the live session's if running, else the last size
  *  it had before stopping (the renderer keeps live sizes in sync with its
  *  xterm via resizePty). Null only for a session never started this app run.

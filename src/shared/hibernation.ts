@@ -83,6 +83,34 @@ export function resolveHibernateAfterMs(raw: string | undefined): number {
   return n;
 }
 
+/** Default cadence of the idle sweep: 5 minutes. Coarse on purpose — the win is
+ *  reclaiming memory from agents idle for tens of minutes, so this granularity
+ *  costs at most one extra interval of RAM and keeps the sweep off the hot
+ *  path. */
+export const DEFAULT_HIBERNATE_SWEEP_MS = 5 * 60 * 1000;
+
+/**
+ * Read the sweep cadence from the environment (`ORCHESTRA_HIBERNATE_SWEEP_MS`).
+ *
+ * Separate knob from the idle threshold because they are independently
+ * interesting to a test rig: a verifier wants a SHORT threshold (so a workspace
+ * becomes eligible quickly) AND a SHORT cadence (so it doesn't wait out a
+ * 5-minute timer to observe the sweep). A hardcoded cadence makes the sweep
+ * observable only by real-time waiting.
+ *
+ * Unset / empty / non-numeric / non-positive → {@link DEFAULT_HIBERNATE_SWEEP_MS}.
+ * Unlike the threshold there is NO disable sentinel here: disabling is the
+ * threshold's job (`ORCHESTRA_HIBERNATE_AFTER_MS=-1`), and giving one feature
+ * two kill switches invites the two disagreeing. Floored at 1s so a typo can't
+ * spin the event loop.
+ */
+export function resolveHibernateSweepMs(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_HIBERNATE_SWEEP_MS;
+  const n = Number(raw.trim());
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_HIBERNATE_SWEEP_MS;
+  return Math.max(1000, n);
+}
+
 /**
  * Should this workspace's agent process be stopped to reclaim its memory?
  *

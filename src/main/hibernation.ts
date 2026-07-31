@@ -19,7 +19,7 @@
 import { store } from './store';
 import { platform } from './platform';
 import { scoped } from './logger';
-import { isRunning, stopPty } from './pty';
+import { getPtyPid, isRunning, stopPty } from './pty';
 import { sdkSessionLive, sdkStopIfLive } from './sdk-delivery';
 // NOTE the .ts extension on this VALUE import: main modules pulled into
 // `node --test --experimental-strip-types` suites do not resolve extensionless
@@ -27,6 +27,7 @@ import { sdkSessionLive, sdkStopIfLive } from './sdk-delivery';
 import {
   formatIdleDuration,
   resolveHibernateAfterMs,
+  resolveHibernateSweepMs,
   shouldHibernate,
   HIBERNATION_DISABLED,
 } from '../shared/hibernation.ts';
@@ -42,12 +43,6 @@ import {
 import type { Workspace } from '../shared/types';
 
 const hlog = scoped('hibernate');
-
-/** How often the sweeper looks for eligible workspaces. Coarse on purpose: the
- *  win is reclaiming memory from agents idle for tens of minutes, so a 5-minute
- *  granularity costs at most one extra interval of RAM and keeps the sweep off
- *  the hot path entirely. */
-const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -154,9 +149,16 @@ export async function sweepHibernation(): Promise<string[]> {
     if (!eligible) continue;
 
     const idleFor = formatIdleDuration(now - lastActivityAt);
+    // Sample the pid BEFORE stopping — after `stopPty` the session is gone from
+    // the registry and the pid is unrecoverable. Naming it in the log is what
+    // makes process death assertable by `ps -p <pid>`: UI text or an absent
+    // registry entry proves the app's bookkeeping changed, not that the OS
+    // process actually exited.
+    const ptyPid = hasLivePty ? getPtyPid(ws.id) : undefined;
     hlog.info(
       `hibernating ${ws.name} (${ws.id}) — idle ${idleFor}` +
-        `${hasLivePty ? ' pty' : ''}${hasLiveSdk ? ' sdk' : ''}`,
+        `${hasLivePty ? ` pty${ptyPid !== undefined ? ` pid=${ptyPid}` : ' pid=unknown'}` : ''}` +
+        `${hasLiveSdk ? ' sdk' : ''}`,
     );
 
     if (hasLiveSdk) {
@@ -182,13 +184,17 @@ export function startHibernationSweeper(): void {
     hlog.info('session hibernation disabled (ORCHESTRA_HIBERNATE_AFTER_MS=-1)');
     return;
   }
+  const sweepMs = resolveHibernateSweepMs(process.env.ORCHESTRA_HIBERNATE_SWEEP_MS);
+  // Print the raw ms alongside the friendly duration: a test rig injecting a
+  // few seconds gets "<1m" from the human formatter, which cannot confirm the
+  // injection actually took (5s and 55s both read "<1m").
   hlog.info(
-    `session hibernation on — idle threshold ${formatIdleDuration(thresholdMs)}, ` +
-      `sweep every ${formatIdleDuration(SWEEP_INTERVAL_MS)}`,
+    `session hibernation on — idle threshold ${formatIdleDuration(thresholdMs)} (${thresholdMs}ms), ` +
+      `sweep every ${formatIdleDuration(sweepMs)} (${sweepMs}ms)`,
   );
   timer = setInterval(() => {
     void sweepHibernation().catch((e) => hlog.swallow('sweep', e));
-  }, SWEEP_INTERVAL_MS);
+  }, sweepMs);
   // Never hold the event loop open for housekeeping.
   timer.unref?.();
 }

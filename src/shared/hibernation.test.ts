@@ -2,9 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEFAULT_HIBERNATE_AFTER_MS,
+  DEFAULT_HIBERNATE_SWEEP_MS,
   HIBERNATION_DISABLED,
   formatIdleDuration,
   resolveHibernateAfterMs,
+  resolveHibernateSweepMs,
   shouldHibernate,
   type HibernationSignals,
 } from './hibernation.ts';
@@ -167,6 +169,31 @@ test('-1 disables; other negatives are treated as garbage (default)', () => {
 test('a positive value is used verbatim', () => {
   assert.equal(resolveHibernateAfterMs('5000'), 5000);
   assert.equal(resolveHibernateAfterMs('1'), 1);
+});
+
+// --- resolveHibernateSweepMs (the sweep cadence, a SEPARATE knob from the
+// idle threshold: a rig needs a short threshold AND a short cadence, or it can
+// only observe the sweep by waiting out a real 5-minute timer).
+test('sweep cadence: unset / empty / garbage / non-positive fall back to the default', () => {
+  assert.equal(resolveHibernateSweepMs(undefined), DEFAULT_HIBERNATE_SWEEP_MS);
+  assert.equal(resolveHibernateSweepMs(''), DEFAULT_HIBERNATE_SWEEP_MS);
+  assert.equal(resolveHibernateSweepMs('often'), DEFAULT_HIBERNATE_SWEEP_MS);
+  assert.equal(resolveHibernateSweepMs('0'), DEFAULT_HIBERNATE_SWEEP_MS);
+  assert.equal(resolveHibernateSweepMs('-1'), DEFAULT_HIBERNATE_SWEEP_MS);
+});
+
+test('sweep cadence: a positive value is used, floored at 1s so a typo cannot spin', () => {
+  assert.equal(resolveHibernateSweepMs('2000'), 2000);
+  assert.equal(resolveHibernateSweepMs(' 30000 '), 30000);
+  assert.equal(resolveHibernateSweepMs('5'), 1000);
+  assert.equal(resolveHibernateSweepMs('1'), 1000);
+});
+
+test('sweep cadence has NO disable sentinel — -1 is the threshold knob, not this one', () => {
+  // Two kill switches for one feature can disagree; disabling stays the
+  // threshold's job. -1 here is just garbage → default.
+  assert.equal(resolveHibernateSweepMs('-1'), DEFAULT_HIBERNATE_SWEEP_MS);
+  assert.equal(resolveHibernateAfterMs('-1'), HIBERNATION_DISABLED);
 });
 
 // --- formatIdleDuration
