@@ -251,6 +251,9 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   browserReload: 'browser:reload',
   browserSetBounds: 'browser:setBounds',
   browserState: 'browser:state',
+  browserDesignArm: 'browser:designArm',
+  browserDesignDisarm: 'browser:designDisarm',
+  browserDesignPoll: 'browser:designPoll',
   nvimStart: 'nvim:start',
   sandboxControlState: 'sandbox:controlState',
   takeSandboxControl: 'sandbox:takeControl',
@@ -858,6 +861,14 @@ export const apiHandlers: ApiHandlerTable = {
   browserSetBounds: async (wsId: string, bounds: BrowserBounds): Promise<void> =>
     browserPanel.setBounds(wsId, bounds),
   browserState: async (wsId: string): Promise<BrowserPanelState> => browserPanel.getState(wsId),
+
+  // --- Design mode: the browser pane's element picker ---
+  // Arm/disarm inject and tear down the in-page highlight overlay; poll drains
+  // a completed pick (and captures its cropped screenshot). The renderer polls
+  // while armed — see browser-panel.ts for why this is polled, not pushed.
+  browserDesignArm: async (wsId: string): Promise<void> => browserPanel.designModeArm(wsId),
+  browserDesignDisarm: async (wsId: string): Promise<void> => browserPanel.designModeDisarm(wsId),
+  browserDesignPoll: (wsId: string) => browserPanel.designModePoll(wsId),
 
   nvimStart: async (id, cols, rows) => {
     const ws = store.getWorkspace(id);

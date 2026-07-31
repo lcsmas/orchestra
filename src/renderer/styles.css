@@ -2819,6 +2819,38 @@ input:focus, textarea:focus, select:focus {
     transform: rotate(360deg);
   }
 }
+/* --- Design mode (the browser pane's element picker) ---------------------- */
+/* Armed state has to be unmissable: the pane swallows clicks while armed, so a
+   user who forgot it is on would read a dead page as a bug. Two signals — the
+   button lights up, and the whole pane takes an accent ring. Both use the app's
+   own --accent token so the picker chrome matches the surrounding window. */
+.browser-design-btn-on {
+  background: var(--accent);
+  color: var(--bg);
+}
+.browser-design-btn-on:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--bg);
+}
+.browser-panel-design {
+  /* Inset so the ring draws INSIDE the pane bounds — the native WebContentsView
+     composites above the DOM, so an outward glow would be painted over. */
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.browser-design-hint {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.browser-design-hint kbd {
+  font: inherit;
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 3px;
+}
 .browser-error {
   flex: 0 0 auto;
   padding: 5px 10px;

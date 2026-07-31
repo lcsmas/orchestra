@@ -1,4 +1,5 @@
 import type { SelfTuneReport, SelfTuneRun } from './self-tune';
+import type { DesignPick } from './design-mode';
 import type { WorktreeSizes } from './worktree-sizes';
 import type {
   Account,
@@ -336,6 +337,23 @@ export interface OrchestraAPI {
   browserSetBounds: (wsId: string, bounds: BrowserBounds) => Promise<void>;
   /** Current navigation state (a freshly-mounted panel re-requests this). */
   browserState: (wsId: string) => Promise<BrowserPanelState>;
+
+  // --- Design mode (the browser pane's element picker) ---
+  // The user arms design mode from the browser toolbar, hovers to highlight,
+  // and clicks an element; the pick (HTML + computed-style subset + cropped
+  // screenshot + selector/url) lands in the agent composer as one attachment.
+  // See src/shared/design-mode.ts for the shapes and src/main/browser-panel.ts
+  // for why the highlight is an in-page overlay rather than CDP's Overlay
+  // domain.
+  /** Arm the in-page picker (injects the highlight overlay). Idempotent. */
+  browserDesignArm: (wsId: string) => Promise<void>;
+  /** Disarm the picker. Safe when it was never armed. */
+  browserDesignDisarm: (wsId: string) => Promise<void>;
+  /** Poll for a completed pick. `null` = nothing picked yet (keep polling),
+   *  `{cancelled:true}` = the user pressed Escape in the page, otherwise the
+   *  captured {@link DesignPick}. Polled rather than pushed because the picker
+   *  deliberately holds no CDP event subscription (one debugger, one attach). */
+  browserDesignPoll: (wsId: string) => Promise<DesignPick | { cancelled: true } | null>;
 
   nvimStart: (id: string, cols: number, rows: number) => Promise<void>;
   onPtyData: (cb: (id: string, data: string) => void) => () => void;

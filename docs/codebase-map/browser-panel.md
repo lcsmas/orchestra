@@ -90,13 +90,87 @@ User ── URL bar / nav buttons ──► window.orchestra.browser{Navigate,Ba
   the app's own tokens (`--bg`, `--text`, `--accent`, …) so the chrome blends
   with the surrounding window.
 
+## Design mode — the element picker
+
+A user-facing element picker over the same panel (Orca parity): the user arms
+**Design Mode** from the browser toolbar (crosshair button), hovers to see the
+element under the cursor outlined, and clicks to pick it. The pick — trimmed
+`outerHTML`, a computed-style subset, a cropped element screenshot, the selector
+path and page URL — lands in that workspace's **agent composer** as one
+attachment (image + fenced text block).
+
+```
+BrowserPanel crosshair toggle          src/renderer/components/BrowserPanel.tsx
+   │  browserDesignArm(wsId)
+   ▼
+designModeArm → Runtime.evaluate(DESIGN_MODE_SCRIPT)   src/main/browser-panel.ts
+   │  in-page overlay: mousemove highlight + capturing click handler
+   ▼  click → window.__orchestraDesignPick = {chain, outerHTML, computed, box}
+renderer polls browserDesignPoll (150ms while armed)
+   │  main: reads+clears the global, Page.captureScreenshot with a padded clip
+   ▼  shapePick() — trim HTML, subset styles, build selector path
+store.addDesignPick(wsId, pick)                        src/renderer/store.ts
+   ▼  queued per workspace; survives an unmounted composer
+Composer effect → takeDesignPicks() (atomic read+clear) src/renderer/components/StructuredView.tsx
+   ▼  appendPickToDraft() into the textarea + screenshot into pendingImages
+```
+
+- **`src/shared/design-mode.ts`** — every pure part, unit-tested
+  (`design-mode.test.ts`, 31 cases): `STYLE_PROPS` (the 12-property computed
+  subset), `trimHtml`/`HTML_CAP`, `subsetStyles`, `shapePick`, `clipForBox`
+  (pads the element box then clamps BOTH origin and extent to the viewport —
+  an element flush to the top-left pads to a negative origin CDP rejects),
+  `selectorSegment`/`buildSelectorPath` (prefers id → stable classes →
+  `nth-of-type`, drops hashed css-modules/styled-components/emotion classes and
+  Tailwind arbitrary values, keeps the TAIL when too deep), `formatPickBlock`
+  and `appendPickToDraft`.
+- **`src/main/browser-panel.ts`** — `designModeArm` / `designModeDisarm` /
+  `designModePoll`, plus the injected `DESIGN_MODE_SCRIPT`. Goes through the
+  SAME `cdp()` / `evaluate()` helpers the agent tools use — **no second
+  `debugger.attach`** (attaching twice to one target throws).
+- **`src/renderer/store.ts`** — `designPicks: Record<wsId, DesignPick[]>` plus
+  `addDesignPick` / `takeDesignPicks` (reads and clears in one `set`, so a pick
+  is drained exactly once).
+
+### Why an in-page overlay and not `Overlay.setInspectMode`
+
+CDP's `Overlay.setInspectMode` + `Overlay.inspectNodeRequested` is the native
+picker seam and was the first choice. It does not work for this panel: the
+**pick event fires, but nothing is drawn** — the inspect highlight is painted by
+the DevTools *frontend* overlay layer, which a `WebContentsView` with no
+DevTools frontend attached never composites. A picker the user cannot see is not
+the feature, so the highlight + hit-testing live in the page instead. That also
+keeps the shared debugger free of any long-lived event subscription.
+
+### Design-mode gotchas
+
+- The overlay sets `pointer-events: none` on its own chrome, and picking starts
+  from `document.elementFromPoint` (which skips `pointer-events:none` nodes) —
+  so **design mode cannot capture its own highlight box**.
+- **A navigation destroys the injected overlay** (new document), silently
+  disarming the picker. `BrowserPanel` re-arms on every `state.url` change while
+  armed.
+- The pick is **polled, not pushed** (150ms, only while armed) precisely because
+  there is no CDP event subscription. Poll failure disarms the UI, so the
+  toolbar never shows "armed" over a page with no overlay behind it.
+- Picking is **one-shot**: a pick disarms design mode, so a stray second click
+  can't capture something the user didn't mean to send. The toolbar re-arms.
+- Armed state lives in the component, **not** the store — it must die with the
+  panel, or an unmounted panel would leave an invisible click-swallowing overlay
+  in that page. The PICK, conversely, lives in the store, which is what lets it
+  survive a composer that was never mounted.
+- The screenshot is **best-effort**: a failed `Page.captureScreenshot` still
+  delivers the pick's text half rather than aborting the whole capture.
+
 ## IPC / seam
 
 Request/response methods (`browserShow`/`Hide`/`Navigate`/`Back`/`Forward`/
 `Reload`/`SetBounds`/`State`) are declared in `OrchestraAPI` (`shared/ipc.ts`),
 registered in the `apiHandlers` table + `METHOD_IPC_CHANNELS`
 (`api-handlers.ts`), and closured in `preload/index.ts` — wired mechanically to
-ipcMain. The `browser:event` broadcast is declared as `onBrowserEvent`
+ipcMain. Design mode adds three on the same path: `browserDesignArm` /
+`browserDesignDisarm` / `browserDesignPoll` (`browser:designArm` /
+`designDisarm` / `designPoll`). The `browser:event` broadcast is declared as `onBrowserEvent`
 (`shared/ipc.ts`), pushed through `platform.broadcast`, and subscribed in
 preload. Panel teardown rides the workspace-delete handlers
 (`browserPanel.destroyPanel(id)` beside `sdkStopMany`) **and the archive path** —

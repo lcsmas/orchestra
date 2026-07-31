@@ -32,6 +32,10 @@ import { scoped } from '../log';
 import { WorkspaceAccountBadge } from './AccountBadge';
 import type { AgentImage, AgentSession, AgentSkillInfo, RenderMessage } from '../../shared/types';
 import { highlightComposer } from '../../shared/composer-highlight';
+// Design mode: the browser pane's element picker drops picks in the store; the
+// composer drains them into its draft + attachments (see the Composer's
+// design-pick effect). appendPickToDraft is the pure formatter (shared/, tested).
+import { appendPickToDraft } from '../../shared/design-mode';
 // A3: real presentational components (markdown bubbles, tool cards, diffs,
 // thinking spinner). AgentMessage routes tool→ToolCard else→MessageBubble and
 // owns the `av-message`/`av-tool-card` wrappers + thinking indicator, so it
@@ -895,6 +899,42 @@ function Composer({
 
   const removePendingImage = (id: string) =>
     setPendingImages((prev) => prev.filter((p) => p.id !== id));
+
+  // --- Design-mode picks ----------------------------------------------------
+  //
+  // The browser pane's element picker queues picks in the STORE (not straight
+  // into this component), which is what makes a pick survive a composer that
+  // isn't mounted: the user can pick while on the Terminal tab or on another
+  // workspace, and the pick waits until this composer mounts and drains it.
+  //
+  // Draining is one atomic store action (`takeDesignPicks` reads + clears in a
+  // single set), so a pick lands exactly once even across re-renders.
+  const queuedDesignPicks = useStore((s) => s.designPicks[workspaceId]);
+  const takeDesignPicks = useStore((s) => s.takeDesignPicks);
+  useEffect(() => {
+    if (!queuedDesignPicks || queuedDesignPicks.length === 0) return;
+    const picks = takeDesignPicks(workspaceId);
+    if (picks.length === 0) return;
+    // Text half: append the fenced selector/url/html/css block to the draft,
+    // preserving whatever the user had already typed.
+    setText((prev) => picks.reduce((draft, p) => appendPickToDraft(draft, p), prev));
+    // Image half: the cropped element screenshot rides the SAME pending-images
+    // path as a paste/drop, so it renders as a thumbnail and is sent as a real
+    // image block — no separate attachment type to teach the send path about.
+    const shots = picks.filter((p) => p.screenshotBase64);
+    if (shots.length > 0) {
+      setPendingImages((prev) => [
+        ...prev,
+        ...shots.map((p, i) => ({
+          id: `design:${p.selector}:${prev.length + i}`,
+          mediaType: 'image/png',
+          dataBase64: p.screenshotBase64 as string,
+          url: `data:image/png;base64,${p.screenshotBase64}`,
+        })),
+      ]);
+    }
+    taRef.current?.focus();
+  }, [queuedDesignPicks, takeDesignPicks, workspaceId]);
 
   // Auto-grow: the textarea height tracks its content up to the CSS max-height
   // (then it scrolls). Reset to `auto` first so it can SHRINK when lines are

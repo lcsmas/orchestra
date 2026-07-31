@@ -1,5 +1,15 @@
 import { WebContentsView, Menu, clipboard, session, shell } from 'electron';
 import type { BrowserBounds, BrowserPanelState } from '../shared/types';
+// NOTE the .ts extension on this VALUE import: it matches the convention the
+// rest of main uses for shared modules (git.ts → ci-state.ts, workspaces.ts →
+// status-text.ts), so this file stays resolvable if it is ever pulled into the
+// type-stripping test runner, which does not resolve extensionless specifiers.
+import {
+  buildSelectorPath,
+  clipForBox,
+  shapePick,
+  type DesignPick,
+} from '../shared/design-mode.ts';
 import { platform } from './platform';
 import { log } from './logger';
 
@@ -523,4 +533,228 @@ export async function scrollBy(wsId: string, deltaY: number): Promise<void> {
     deltaX: 0,
     deltaY,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Design mode — the user-facing element picker (Orca parity).
+// ---------------------------------------------------------------------------
+//
+// The user arms design mode from the browser toolbar, hovers to see the element
+// under the cursor highlighted, and clicks to pick it. Orchestra then captures
+// that element (outerHTML, a computed-style subset, a cropped screenshot, its
+// selector + page URL) and hands the bundle to the renderer, which drops it
+// into the agent composer as one attachment.
+//
+// WHY AN IN-PAGE OVERLAY AND NOT `Overlay.setInspectMode`:
+//
+// CDP's Overlay domain is the "native" way to do this and was tried first. It
+// does not work here, for a reason specific to how this panel is driven:
+// `Overlay.setInspectMode` makes the *browser* swallow the next click and
+// report it as `Overlay.inspectNodeRequested` — but the highlight it paints is
+// drawn by the DevTools frontend overlay layer, which an Electron
+// `WebContentsView` with no DevTools frontend attached does not composite. The
+// pick event fires; nothing is drawn. Since the whole point of design mode is
+// that the user SEES what they are about to pick, a pick-without-highlight is
+// not the feature.
+//
+// So the highlight + hit-testing live in the page as an injected overlay
+// (`DESIGN_MODE_SCRIPT`), which also keeps the debugger session free: we add NO
+// second `debugger.attach` (attaching twice to one target throws) and no
+// long-lived CDP event subscription. The only CDP calls are the same
+// `Runtime.evaluate` / `Page.captureScreenshot` the agent tools already use,
+// through the same `cdp()` helper.
+//
+// The overlay is deliberately built to be un-pickable by itself: it sets
+// `pointer-events: none` on its own chrome and, at pick time, the walker starts
+// from `document.elementFromPoint`, which never returns a pointer-events:none
+// node. So design mode cannot capture its own highlight box.
+
+/** The id the injected overlay uses for its own DOM, so re-arming replaces
+ *  rather than stacking overlays, and disarm can find and remove it. */
+const DESIGN_OVERLAY_ID = '__orchestra_design_overlay__';
+
+/** Where the in-page script stashes a completed pick for main to poll.
+ *  A global (rather than a CDP event) because the picker deliberately holds NO
+ *  debugger event subscription — see the block comment above. */
+const DESIGN_PICK_GLOBAL = '__orchestraDesignPick';
+
+/** Arm the in-page picker: inject the highlight overlay and start listening for
+ *  a click. Idempotent — re-running replaces any existing overlay.
+ *
+ *  The script is a single self-contained IIFE (no build step reaches the page)
+ *  that: draws a fixed-position outline + label box following `mousemove`,
+ *  and on `click` (captured, prevented) walks the picked element's ancestor
+ *  chain into a selector-node list, snapshots its computed style + outerHTML +
+ *  box, stashes the result on `window[DESIGN_PICK_GLOBAL]`, and tears itself
+ *  down. Escape disarms without picking. */
+const DESIGN_MODE_SCRIPT = `(() => {
+  const OVERLAY_ID = ${JSON.stringify(DESIGN_OVERLAY_ID)};
+  const PICK_GLOBAL = ${JSON.stringify(DESIGN_PICK_GLOBAL)};
+  // Re-arming: tear down any previous run first so listeners never stack.
+  if (window.__orchestraDesignTeardown) { try { window.__orchestraDesignTeardown(); } catch (e) {} }
+  window[PICK_GLOBAL] = null;
+
+  const host = document.createElement('div');
+  host.id = OVERLAY_ID;
+  // pointer-events:none on the whole overlay is what makes the picker unable to
+  // pick ITSELF — elementFromPoint skips pointer-events:none nodes.
+  host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;';
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;border:2px solid #6aa9ff;background:rgba(106,169,255,0.18);border-radius:2px;transition:all 40ms linear;pointer-events:none;';
+  const label = document.createElement('div');
+  label.style.cssText = 'position:fixed;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:#6aa9ff;color:#0b1020;padding:2px 6px;border-radius:3px;white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.35);';
+  host.appendChild(box); host.appendChild(label);
+  (document.body || document.documentElement).appendChild(host);
+
+  let current = null;
+
+  const describe = (el) => {
+    const cls = (el.getAttribute && el.getAttribute('class')) || '';
+    const classes = cls.split(/\\s+/).filter(Boolean);
+    let nth = 1;
+    let sib = el.previousElementSibling;
+    while (sib) { if (sib.tagName === el.tagName) nth++; sib = sib.previousElementSibling; }
+    return { tag: el.tagName, id: el.id || undefined, classes, nthOfType: nth };
+  };
+
+  const paint = (el) => {
+    const r = el.getBoundingClientRect();
+    box.style.left = r.left + 'px'; box.style.top = r.top + 'px';
+    box.style.width = r.width + 'px'; box.style.height = r.height + 'px';
+    const cls = el.classList && el.classList.length ? '.' + Array.from(el.classList).slice(0, 2).join('.') : '';
+    label.textContent = el.tagName.toLowerCase() + (el.id ? '#' + el.id : cls) +
+      '  ' + Math.round(r.width) + '×' + Math.round(r.height);
+    // Prefer the label ABOVE the box; flip below when the element is near the
+    // top edge, so the label never sits off-screen.
+    const above = r.top > 22;
+    label.style.left = Math.max(0, r.left) + 'px';
+    label.style.top = (above ? r.top - 20 : r.bottom + 4) + 'px';
+  };
+
+  const onMove = (e) => {
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    if (!el || el === current) return;
+    current = el; paint(el);
+  };
+
+  const onClick = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const el = document.elementFromPoint(e.clientX, e.clientY) || current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    const computed = {};
+    // Snapshot the full computed style as a plain map; main subsets it
+    // (shared/design-mode.ts STYLE_PROPS) so the property list lives in ONE
+    // place that the unit tests assert against.
+    for (let i = 0; i < cs.length; i++) { const p = cs[i]; computed[p] = cs.getPropertyValue(p); }
+    const chain = [];
+    let node = el;
+    while (node && node.nodeType === 1 && node !== document.documentElement) {
+      chain.unshift(describe(node));
+      node = node.parentElement;
+    }
+    window[PICK_GLOBAL] = {
+      url: location.href,
+      title: document.title,
+      chain: chain,
+      outerHTML: el.outerHTML || '',
+      computed: computed,
+      box: { x: r.left, y: r.top, width: r.width, height: r.height },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+    };
+    teardown();
+  };
+
+  const onKey = (e) => { if (e.key === 'Escape') { window[PICK_GLOBAL] = { cancelled: true }; teardown(); } };
+
+  const teardown = () => {
+    document.removeEventListener('mousemove', onMove, true);
+    document.removeEventListener('click', onClick, true);
+    document.removeEventListener('keydown', onKey, true);
+    const h = document.getElementById(OVERLAY_ID);
+    if (h && h.parentNode) h.parentNode.removeChild(h);
+    window.__orchestraDesignTeardown = null;
+  };
+  window.__orchestraDesignTeardown = teardown;
+
+  document.addEventListener('mousemove', onMove, true);
+  document.addEventListener('click', onClick, true);
+  document.addEventListener('keydown', onKey, true);
+  return true;
+})()`;
+
+/** Arm design mode in the panel's page. Returns once the overlay is installed. */
+export async function designModeArm(wsId: string): Promise<void> {
+  await evaluate(wsId, DESIGN_MODE_SCRIPT);
+}
+
+/** Disarm design mode (user toggled it off, or the panel is closing). Safe to
+ *  call when it was never armed — the page-side teardown is guarded. */
+export async function designModeDisarm(wsId: string): Promise<void> {
+  await evaluate(
+    wsId,
+    `(() => { if (window.__orchestraDesignTeardown) { try { window.__orchestraDesignTeardown(); } catch (e) {} } window[${JSON.stringify(DESIGN_PICK_GLOBAL)}] = null; return true; })()`,
+  );
+}
+
+/** Read a completed pick out of the page (and clear it), or `null` if the user
+ *  has not clicked yet. `{cancelled:true}` comes back when they pressed Escape.
+ *
+ *  Polled by the renderer while design mode is armed rather than pushed as a
+ *  CDP event, because the picker holds no debugger event subscription — see the
+ *  block comment at the top of this section. */
+async function readRawPick(wsId: string): Promise<any | null> {
+  return evaluate(
+    wsId,
+    `(() => { const p = window[${JSON.stringify(DESIGN_PICK_GLOBAL)}]; window[${JSON.stringify(DESIGN_PICK_GLOBAL)}] = null; return p || null; })()`,
+  );
+}
+
+/** Poll for a pick and, if one landed, capture its cropped screenshot and shape
+ *  the whole thing into a {@link DesignPick}.
+ *
+ *  Returns:
+ *  - `null` — nothing picked yet (keep polling),
+ *  - `{cancelled: true}` — the user pressed Escape (stop polling, disarm),
+ *  - a `DesignPick` — done.
+ *
+ *  The screenshot is best-effort: if `Page.captureScreenshot` fails (a page
+ *  mid-navigation, a clip the renderer rejects) the pick still returns with its
+ *  text half intact, because a selector + HTML + styles is already useful and
+ *  losing it to a failed crop would be the worse outcome. */
+export async function designModePoll(
+  wsId: string,
+): Promise<DesignPick | { cancelled: true } | null> {
+  const raw = await readRawPick(wsId);
+  if (!raw) return null;
+  if (raw.cancelled) return { cancelled: true };
+
+  const viewport = raw.viewport ?? { width: 1280, height: 800 };
+  let screenshot: string | undefined;
+  try {
+    const clip = clipForBox(raw.box, viewport);
+    const shot = await cdp(wsId, 'Page.captureScreenshot', {
+      format: 'png',
+      clip,
+      captureBeyondViewport: false,
+    });
+    if (shot?.data) screenshot = String(shot.data);
+  } catch (err) {
+    // Best-effort: the text half of the pick is still worth delivering.
+    log.debug(`design-mode: element screenshot failed for ${wsId}`, err);
+  }
+
+  return shapePick(
+    wsId,
+    {
+      url: String(raw.url ?? ''),
+      title: String(raw.title ?? ''),
+      selector: buildSelectorPath(raw.chain ?? []),
+      outerHTML: String(raw.outerHTML ?? ''),
+      computed: raw.computed ?? {},
+      box: raw.box,
+    },
+    screenshot,
+  );
 }

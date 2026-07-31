@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { BrowserPanelState } from '../../shared/types';
+import { useStore } from '../store';
 
 // The renderer half of the embedded browser panel. The actual web content is a
 // native Electron `WebContentsView` in the main process (browser-panel.ts) —
@@ -107,6 +108,77 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
     };
   }, [isActive, syncBounds]);
 
+  // --- Design mode (element picker) ----------------------------------------
+  //
+  // Armed state lives here (not in the store) because it is per-panel UI state
+  // that must die with the panel: leaving design mode armed on an unmounted
+  // panel would leave an invisible click-swallowing overlay in that page.
+  const [designArmed, setDesignArmed] = useState(false);
+  const addDesignPick = useStore((s) => s.addDesignPick);
+
+  // While armed, poll main for a completed pick. The picker holds no CDP event
+  // subscription (one debugger, one attach — see browser-panel.ts), so main
+  // cannot push; the renderer asks. 150ms is well under the perceptual budget
+  // for "I clicked and something happened" while costing one trivial
+  // Runtime.evaluate per tick, and only while the user is actively picking.
+  useEffect(() => {
+    if (!designArmed) return;
+    let stopped = false;
+    const timer = setInterval(() => {
+      void window.orchestra
+        .browserDesignPoll(workspaceId)
+        .then((res) => {
+          if (stopped || !res) return;
+          // Escape in the page = cancel; disarm without capturing.
+          if ('cancelled' in res) {
+            setDesignArmed(false);
+            return;
+          }
+          // One-shot by design (spec): a pick disarms, so a stray second click
+          // never captures something the user didn't mean to send. The toolbar
+          // button re-arms.
+          addDesignPick(workspaceId, res);
+          setDesignArmed(false);
+        })
+        .catch((e) => {
+          // A poll failing (panel navigating, view reaped) must not leave the
+          // UI stuck in an armed state that no longer has an overlay behind it.
+          console.error('browserDesignPoll failed', e);
+          setDesignArmed(false);
+        });
+    }, 150);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [designArmed, workspaceId, addDesignPick]);
+
+  // Push the armed state into the page (inject/tear down the overlay). Also
+  // disarms on unmount and whenever the panel goes inactive, so no page is ever
+  // left with a live click-swallowing overlay.
+  useEffect(() => {
+    if (designArmed && isActive) {
+      void window.orchestra.browserDesignArm(workspaceId).catch((e) => {
+        console.error('browserDesignArm failed', e);
+        setDesignArmed(false);
+      });
+    } else {
+      void window.orchestra.browserDesignDisarm(workspaceId).catch(() => {
+        /* nothing armed / no live view — disarm is best-effort by design */
+      });
+    }
+  }, [designArmed, isActive, workspaceId]);
+
+  // A navigation replaces the document, taking the injected overlay with it —
+  // so an armed picker silently stops working. Re-arm on every URL change while
+  // armed, so design mode survives the user clicking a link mid-pick.
+  useEffect(() => {
+    if (!designArmed || !isActive || !state.url) return;
+    void window.orchestra.browserDesignArm(workspaceId).catch(() => {
+      /* re-arm is best effort; the toggle stays available */
+    });
+  }, [state.url, designArmed, isActive, workspaceId]);
+
   const submitUrl = (e: React.FormEvent) => {
     e.preventDefault();
     const v = urlInput.trim();
@@ -115,7 +187,9 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
   };
 
   return (
-    <div className={`browser-panel ${isActive ? '' : 'browser-panel-hidden'}`}>
+    <div
+      className={`browser-panel ${isActive ? '' : 'browser-panel-hidden'} ${designArmed ? 'browser-panel-design' : ''}`}
+    >
       <div className="browser-toolbar">
         <button
           className="browser-nav-btn"
@@ -167,7 +241,36 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
           />
           {state.loading && <span className="browser-spinner" aria-label="Loading" />}
         </form>
+        <button
+          className={`browser-nav-btn browser-design-btn ${designArmed ? 'browser-design-btn-on' : ''}`}
+          title={
+            designArmed
+              ? 'Design mode: click an element to send it to the agent (Esc to cancel)'
+              : 'Design mode — pick an element to send to the agent'
+          }
+          aria-label="Design mode"
+          aria-pressed={designArmed}
+          onClick={() => setDesignArmed((v) => !v)}
+        >
+          {/* Crosshair */}
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+            <circle cx="8" cy="8" r="4" fill="none" stroke="currentColor" strokeWidth="1.4" />
+            <path
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+              d="M8 1v2.2M8 12.8V15M1 8h2.2M12.8 8H15"
+            />
+          </svg>
+        </button>
       </div>
+      {designArmed && (
+        <div className="browser-design-hint">
+          Click an element to send its HTML, styles and a screenshot to the agent ·{' '}
+          <kbd>Esc</kbd> to cancel
+        </div>
+      )}
       {state.error && <div className="browser-error">{state.error}</div>}
       {/* The native WebContentsView is composited over this placeholder. */}
       <div className="browser-holder" ref={holderRef} />

@@ -24,6 +24,7 @@ import type {
   WorkspaceAccount,
 } from '../shared/types';
 import type { SelfTuneRun } from '../shared/self-tune';
+import type { DesignPick } from '../shared/design-mode';
 import { clearPendingPermission, emptySession, foldEvents } from '../shared/agent-events';
 import { pickFallbackActive, pushHistory } from './active-fallback';
 import { createAgentEventQueue } from './agent-event-queue';
@@ -94,6 +95,20 @@ interface State {
    *  `setState` per animation frame regardless of how many deltas arrived — via
    *  the module-scope queue below. See `agent-event-queue.ts`. */
   agentSessions: Record<string, AgentSession>;
+  /** Design-mode picks captured from a workspace's browser pane but not yet
+   *  drained into its composer, keyed by workspace id.
+   *
+   *  This queue is what makes a pick survive a composer that is not mounted:
+   *  the user can be on the Terminal tab, or on another workspace entirely, arm
+   *  design mode, click an element, and the pick waits here until the composer
+   *  mounts and drains it. Putting the pick in the STORE rather than pushing it
+   *  at a component is the whole reason requirement "deliver even if the
+   *  composer isn't open" needs no separate draft-persistence path.
+   *
+   *  Drained by the Composer (StructuredView) via `takeDesignPicks`, which
+   *  returns and clears a workspace's queue in one atomic set. Never persisted —
+   *  a pick is a live editing gesture, not durable state. */
+  designPicks: Record<string, DesignPick[]>;
   /** Per-repo base-branch sync state (behind/ahead of origin/<base>),
    *  keyed by repoPath. Updated by `repo:syncState` events. */
   repoSync: Record<string, RepoSyncState>;
@@ -184,6 +199,14 @@ interface State {
   refreshTickets: () => Promise<void>;
   removeTicket: (identifier: string) => Promise<void>;
   spawnFromTicket: (identifier: string, repoPath: string) => Promise<void>;
+
+  /** Queue a design-mode pick for a workspace's composer to drain.
+   *  Called by BrowserPanel when the in-page picker reports a click. */
+  addDesignPick: (wsId: string, pick: DesignPick) => void;
+  /** Atomically return AND clear a workspace's queued picks. The composer calls
+   *  this on mount and whenever the queue grows, so a pick is consumed exactly
+   *  once even if two composers ever mounted for the same workspace. */
+  takeDesignPicks: (wsId: string) => DesignPick[];
 }
 
 export const useStore = create<State>((set, get) => ({
@@ -199,6 +222,7 @@ export const useStore = create<State>((set, get) => ({
   tools: {},
   contextTokens: {},
   agentSessions: {},
+  designPicks: {},
   repoSync: {},
   accountUsage: {},
   workspaceAccounts: {},
@@ -615,6 +639,23 @@ export const useStore = create<State>((set, get) => ({
     // `workspaceId` on the ticket and broadcasts both `workspace:update` and
     // `tickets:update`, so there is nothing to patch here.
     await window.orchestra.spawnFromTicket(identifier, repoPath);
+  },
+
+  addDesignPick: (wsId, pick) =>
+    set((s) => ({ designPicks: { ...s.designPicks, [wsId]: [...(s.designPicks[wsId] ?? []), pick] } })),
+
+  takeDesignPicks: (wsId) => {
+    const queued = get().designPicks[wsId] ?? [];
+    if (queued.length === 0) return [];
+    // Clear inside the same set as the read, so a pick can never be drained
+    // twice (a re-render between read and clear would otherwise duplicate it
+    // into the composer).
+    set((s) => {
+      const next = { ...s.designPicks };
+      delete next[wsId];
+      return { designPicks: next };
+    });
+    return queued;
   },
 }));
 

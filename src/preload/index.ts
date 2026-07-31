@@ -101,6 +101,9 @@ const api: OrchestraAPI = {
   browserReload: (wsId) => ipcRenderer.invoke('browser:reload', wsId),
   browserSetBounds: (wsId, bounds) => ipcRenderer.invoke('browser:setBounds', wsId, bounds),
   browserState: (wsId) => ipcRenderer.invoke('browser:state', wsId),
+  browserDesignArm: (wsId) => ipcRenderer.invoke('browser:designArm', wsId),
+  browserDesignDisarm: (wsId) => ipcRenderer.invoke('browser:designDisarm', wsId),
+  browserDesignPoll: (wsId) => ipcRenderer.invoke('browser:designPoll', wsId),
   nvimStart: (id, cols, rows) => ipcRenderer.invoke('nvim:start', id, cols, rows),
 
   getRepoScripts: (repoPath) => ipcRenderer.invoke('repos:getScripts', repoPath),
