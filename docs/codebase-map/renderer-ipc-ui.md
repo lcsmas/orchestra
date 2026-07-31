@@ -205,12 +205,32 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   generic so new integration checks need no renderer change.
 
 ## Other components
-- **(removed) Diff tab / DiffView.tsx** — the renderer's Monaco-based diff
-  viewer was removed (Monaco was the heaviest thing the agent view mounted and
-  drove the GPU-crash black screen). Change size still shows as `+N −M` badges
-  on every sidebar row (from the separate `getDiffStats` poll, kept). The
-  backend `getDiff` method survives as an `ExtraApiMethods` entry — a served
-  method with no renderer caller, behind the `git:diff` channel.
+- **DiffPane.tsx — the Diff review pane.** Replaces the removed Monaco-based
+  `DiffView.tsx` (Monaco was the heaviest thing the agent view mounted and drove
+  the GPU-crash black screen). **Do not reintroduce Monaco here**: this renders
+  plain DOM from raw patch text parsed by `src/shared/diff-hunks.ts`.
+  - Tab lives in App.tsx's `toolbar-views`, gated `!isScratch` exactly like Run
+    (scratch/orchestrator are repo-less); the same effect drops `view` back to
+    `terminal` when switching to such a session. Mounted only while selected —
+    unlike the terminals, it holds no scrollback and refetches on activation.
+  - Two scopes toggled in the pane header: **Uncommitted** (`getRawDiff`) and
+    **vs base** (`getBranchDiff`, three-dot). Fetches on activation/scope change
+    only — never polled, since a diff reflowing under the reader mid-review is
+    worse than a stale one; Refresh is the explicit resync.
+  - **Selective staging** (uncommitted scope only): per-hunk + tri-state
+    per-file checkboxes → `buildPatch` → `applyReviewPatch`. Hunk ids derive
+    from header offsets, so a refetch prunes any selection that no longer
+    resolves rather than carrying stale ids into a patch build.
+  - **Line annotations**: gutter click opens a markdown box (Cmd/Ctrl+Enter
+    saves, Esc cancels); one "Send to agent" composes them via
+    `composeRevisionPrompt` into a single file:line-anchored revision prompt.
+    State is component-local, so it resets on tab-away (V1 scope).
+  - Virtualizes above 600 rows at a fixed 18px row height — `ROW_H` **must**
+    match `.diff-line`'s CSS height. Word wrap makes rows variable-height, which
+    fixed-height windowing cannot position, so wrap disables virtualization.
+  - Change size also still shows as `+N −M` sidebar badges (separate
+    `getDiffStats` poll). The older `getDiff` (content pairs, `git:diff`)
+    remains an `ExtraApiMethods` entry with no renderer caller.
 - **BranchPicker.tsx** — toolbar branch-switch dropdown, fetches `listBranches`,
   current branch first. Its searchable list is the exported
   `BranchPopoverPanel`, reused by every branch-choosing surface.

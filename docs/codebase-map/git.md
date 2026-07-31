@@ -27,8 +27,41 @@ only *uncommitted* work appears (already-committed branch work is invisible to
 the diff view). Combines `diff --numstat HEAD` + `ls-files --others` (untracked);
 reads old (`show HEAD:f`), index (`show :f`), and working content per file;
 classifies added/modified/deleted; content truncated to 300 KB for Monaco.
-**`getDiffStats`** `:207` is the lightweight count-only variant used on the 8s poll.
-Helpers: `safeRaw` `:234`, `safeShow` `:242`, `readWorking` `:250`, `truncate` `:259`.
+**`getDiffStats`** `:237` is the lightweight count-only variant used on the 8s poll.
+Helpers: `safeRaw` `:264`, `safeShow` `:272`, `readWorking` `:280`, `truncate` `:442`.
+
+### Review-pane diffs (raw patch text, two scopes)
+
+`getDiff` above returns per-file *content pairs*; the Diff review pane instead
+consumes raw unified-diff TEXT, because it renders hunks and git has already
+computed them (see `src/shared/diff-hunks.ts` for the parser/patch-rebuilder).
+
+**`getRawDiff(worktreePath)`** — `git.ts:305`. Uncommitted scope: `diff -M HEAD`
+plus untracked files folded in via `diff --no-index /dev/null <file>` — `git add
+-N` would mutate the index, and without this a brand-new file (the most common
+thing an agent produces) is invisible. The `--no-index` output is used VERBATIM:
+it already matches the tracked-addition stanza, and an earlier "normalizing"
+regex pass duplicated `new file mode` and clobbered `index`, corrupting the
+patch. `--no-index` exits 1 when files differ, which is the success path here.
+
+**`getBranchDiff(worktreePath, baseBranch, branch)`** — `git.ts:359`. vs-base
+scope: the **three-dot** committed diff `merge-base(base, branch)..branch`.
+Two-dot would misattribute base progress since the cut as branch regressions
+(measured: it reports a base-only file as a branch *deletion*). Falls back
+`base` → `origin/base`, and returns `''` on an unresolvable base rather than
+silently degrading to two-dot.
+
+**`applyPatchToIndex(worktreePath, patch, reverse)`** — `git.ts:397`. Selective
+staging: `git apply --cached [--reverse]` with the rebuilt patch on stdin.
+Rethrows git's own stderr, because "does not exist in index" / "corrupt patch"
+is precisely the signal that the tree moved under an open review.
+**`unstagePaths`** `:427` (`reset -q --`) and **`stagePaths`** `:436` (`add --`)
+handle whole files, for binaries and pure renames that carry no selectable hunks.
+
+Measured against real git while building these (worth knowing before changing
+the patch rebuilder): hunk **line counts** are strictly validated (`corrupt
+patch`, rc 128), while new-side **start offsets** are ignored — `git apply`
+matches on old-side context, so a deliberately absurd `+9999` still applies.
 
 ## Merge-state detection (the subtle part)
 **`getBranchMergeState(repoPath, branch, baseBranch)`** — `git.ts:309`. Returns
