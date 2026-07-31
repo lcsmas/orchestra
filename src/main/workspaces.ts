@@ -3502,7 +3502,7 @@ const HOOKS_VERSION = createHash('sha256')
       HOOK_SELF_MODIFY_CMD,
       HOOK_FIELDGUIDE_CMD,
       ORCHESTRATOR_GUARD_MATCHER,
-    ].join(' '),
+    ].join('\0'),
   )
   .digest('hex');
 
