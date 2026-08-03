@@ -1756,7 +1756,13 @@ input:focus, textarea:focus, select:focus {
 .inbox-popover {
   position: absolute;
   top: calc(100% + 6px);
-  right: 0;
+  /* Anchor LEFT, not right: the bell is the FIRST (leftmost) header action, so
+     a right-anchored 320px panel extends ~276px past the window's left edge and
+     every row renders left-clipped (shipped in v0.5.187; driver now asserts
+     getBoundingClientRect().left >= 0 — a POSITION assertion, because presence
+     assertions are structurally blind to this class). `right: 0` is correct for
+     the + New menu because that button sits at the header's right edge. */
+  left: 0;
   z-index: 60;
   width: 320px;
   max-height: 60vh;
