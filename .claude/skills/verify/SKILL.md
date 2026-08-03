@@ -35,6 +35,14 @@ both. If the change is genuinely invisible (pure main-process/logic), say so
 explicitly rather than silently dropping the screenshot — that is a claim the
 reviewer can check, where silence is indistinguishable from a skipped step.
 
+**Popovers/overlays need a POSITION assertion, not just presence** — assert
+`getBoundingClientRect()` is fully inside the viewport (`left >= 0 && right <=
+innerWidth`). v0.5.187 shipped an inbox popover at left=-276px: present in the
+DOM, all content assertions green, 276 of its 320px outside the window. DOM
+assertions are structurally blind to paint position; the user found it in
+first real use. And **read every screenshot you capture** — the one unread
+shot of that drive's set was the one containing the bug.
+
 **Screenshot hygiene** (a no-op drive still captures a frame): hash every capture
 in a set and fail on byte-identical duplicates, and assert the state actually
 CHANGED (pre-state differs from post-state) rather than trusting that your click
