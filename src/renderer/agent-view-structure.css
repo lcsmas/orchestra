@@ -36,11 +36,16 @@
   flex-direction: column;
 }
 
-/* Scrollable, virtualized message list fills the space above the composer. */
+/* Scrollable, virtualized message list fills the space above the composer.
+   `overflow-anchor: none` — the component does its own scroll anchoring
+   (StructuredView's anchoring effect); the browser's native anchoring can't
+   track translateY-positioned rows inside the explicitly-sized wrapper and
+   would only fight the component's compensation with its own. */
 .av-message-list {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  overflow-anchor: none;
   padding: 12px;
 }
 

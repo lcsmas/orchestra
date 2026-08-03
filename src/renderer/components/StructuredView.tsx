@@ -216,6 +216,18 @@ function MessageList({
   // we bump `measureTick` to recompute the window after a batch of measures.
   const heights = useRef<Map<string, number>>(new Map());
   const [measureTick, setMeasureTick] = useState(0);
+  // Content-space layout of the CURRENT render — item ids + their cumulative
+  // offsets, written every render (a ref: reading it never re-renders). The
+  // scroll-anchoring effect and onScroll's anchor tracking read it.
+  const layoutRef = useRef<{ ids: string[]; offsets: number[] }>({ ids: [], offsets: [0] });
+  // Scroll anchor while follow is RELEASED: the item currently under the
+  // viewport top plus how far the top sits below that item's offset. When a
+  // measure pass replaces a 72px estimate with a real height for a row ABOVE
+  // the viewport, every offset below it moves while scrollTop stays put — the
+  // content the user is reading visibly jumps under a fixed viewport ("random
+  // jumps while scrolling up"). The anchoring effect below compensates by
+  // restoring this item to the same viewport position before paint.
+  const anchorRef = useRef<{ id: string; delta: number } | null>(null);
   // Guards against the React #185 render loop (see the onHeight handler). Counts
   // synchronous measure→render passes since the last painted frame; a frame
   // boundary resets it, so only an unbroken chain WITHIN one frame can trip it.
@@ -306,6 +318,13 @@ function MessageList({
       setFollowing(true);
     }
     setViewport({ scrollTop: cur, height: el.clientHeight });
+    // Re-anchor to the item under the viewport top. Every scroll — user drags,
+    // clamp corrections, our own anchoring writes — re-derives the anchor from
+    // the CURRENT offsets, so it is always consistent with the painted layout.
+    const { ids, offsets } = layoutRef.current;
+    let lo = 0;
+    while (lo < ids.length && offsets[lo + 1] <= cur) lo++;
+    anchorRef.current = lo < ids.length ? { id: ids[lo], delta: cur - offsets[lo] } : null;
   }, [setFollowing]);
 
   // Re-engage follow from the indicator: jump to the newest output and resume.
@@ -400,6 +419,45 @@ function MessageList({
     // (it renders outside the ResizeObserver'd wrapper) re-pins the bottom.
   }, [messages.length, measureTick, pinToBottom, session?.running]);
 
+  // SCROLL ANCHORING while follow is released. Reading history means scrolling
+  // UP through rows that have never mounted — history backfill folds the whole
+  // transcript in one commit, so only the bottom window was ever measured and
+  // everything above carries the 72px ESTIMATE. As those rows enter the
+  // overscan and measure for the first time, the offsets of every row below
+  // them (including the ones on screen) shift while scrollTop stays put, and
+  // the content visibly jumps under the viewport (reproduced in the real app:
+  // wheel-scrolling up produced 20-50px uncommanded shifts, one per few ticks
+  // — scripts/verify-scroll-anchoring.mjs). The browser's native anchoring
+  // cannot help: it doesn't track content repositioned via translateY inside
+  // an explicitly-sized wrapper (and we disable it in CSS so it can't fight
+  // this compensation either).
+  //
+  // Runs after EVERY commit (no dep array — a measure pass is exactly the
+  // commit that moves offsets): restore the anchor item (the one under the
+  // viewport top, tracked in onScroll) to the same viewport position, before
+  // paint, using THIS commit's offsets from layoutRef. While following, the
+  // bottom pin owns the scroll position instead; a hidden pane
+  // (`display: none`, clientHeight 0) has no geometry to correct.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (stickBottom.current || initialPin.current) return;
+    if (el.clientHeight === 0) return;
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+    const { ids, offsets } = layoutRef.current;
+    const idx = ids.indexOf(anchor.id);
+    if (idx < 0) return; // anchor item left the list — re-anchors on next scroll
+    const desired = offsets[idx] + anchor.delta;
+    if (Math.abs(desired - el.scrollTop) <= 1) return;
+    // 'instant' for the same reason as pinToBottom: the stylesheet's
+    // `scroll-behavior: smooth` would animate the correction into a wobble.
+    el.scrollTo({ top: desired, behavior: 'instant' as ScrollBehavior });
+    // The correction is not a user scroll: keep onScroll's baseline current so
+    // the follow-release discriminator never misreads it.
+    lastScrollTop.current = el.scrollTop;
+  });
+
   // Fold the flat message list into RENDER ITEMS: a run of consecutive `tool`
   // messages collapses into ONE `tool-group` item (rendered by ToolGroup, which
   // shows a "2 Read · 1 Bash" summary and expands to the individual cards). Every
@@ -417,6 +475,8 @@ function MessageList({
   offsets[0] = 0;
   for (let i = 0; i < items.length; i++) offsets[i + 1] = offsets[i] + itemH(items[i]);
   const totalHeight = offsets[items.length] ?? 0;
+  // Publish this render's layout for the anchoring effect + onScroll (above).
+  layoutRef.current = { ids: items.map((it) => it.id), offsets };
 
   const top = viewport.scrollTop;
   const bottom = top + (viewport.height || 1);
@@ -509,6 +569,13 @@ function MessageList({
                 key={it.id}
                 item={it}
                 onHeight={(h) => {
+                  // Inactive panes are `display: none` (theme CSS) but their
+                  // layout effects still run on background store updates, and
+                  // every row then reports offsetHeight 0. Caching those zeros
+                  // would poison the offsets (and drop the scroll position)
+                  // the user comes back to — a hidden pane has no real
+                  // geometry to record, so skip it entirely.
+                  if (h === 0) return;
                   const known = heights.current.get(it.id);
                   if (known === h) return;
                   heights.current.set(it.id, h);

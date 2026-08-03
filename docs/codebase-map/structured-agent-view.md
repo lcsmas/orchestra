@@ -333,6 +333,30 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   discriminator is WHERE the scroll landed, not merely that it moved up — a clamp
   leaves the viewport still parked at the bottom.
 
+  **Scroll anchoring while follow is released** (reading history). History
+  backfill folds the whole transcript in ONE commit, so only the bottom window
+  ever mounted — everything above carries the 72px estimate. Scrolling UP mounts
+  those rows for the first time; each measurement shifts every offset below it
+  while `scrollTop` stays put, so the content the user is reading visibly jumped
+  under the viewport (reproduced in the real app: 20–50px uncommanded shifts
+  every few wheel ticks — the "random jumps down / scroll not fluid" bug). Fix:
+  `onScroll` tracks an **anchor** (the item under the viewport top + its delta,
+  from `layoutRef`, the per-render ids/offsets snapshot), and a dep-less
+  `useLayoutEffect` restores the anchor's viewport position before paint
+  whenever a commit moved the offsets — content-space shifts still happen, but
+  `scrollTop` compensates in the same frame so the row stays put on screen.
+  Skipped while following (the pin owns the scroll) and for hidden panes.
+  `.av-message-list` sets `overflow-anchor: none` so the browser's native
+  anchoring (blind to translateY-repositioned rows) can't fight the correction.
+  Related guard: `MeasuredRow.onHeight` ignores `h === 0` — inactive panes are
+  `display: none` but their layout effects still run on background store
+  updates, and caching those zeros would poison the offsets (and drop the
+  scroll position) the user comes back to. Gate:
+  `scripts/verify-scroll-anchoring.mjs` — seeds a backfill-shaped transcript
+  (one-shot inject), wheel-scrolls up with trusted CDP input, and asserts ZERO
+  uncommanded screen-space shifts (`Δ(cy − scrollTop)` over no-wheel frame
+  pairs); mutation-tested (reverting the fix yields ~6 shifts, max ~49px).
+
   **Follow indicator.** `MessageList` mirrors `stickBottom` into render state
   (`following`, updated only on a real transition so the hot scroll/resize paths
   stay render-free) and shows a discreet **"Resume following" pill**

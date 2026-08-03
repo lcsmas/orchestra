@@ -96,18 +96,27 @@ const toolBlock = async (i) => {
   await inject({ type: 'block-stop', seq: seq++, at: Date.now(), index });
 };
 
-for (let i = 0; i < 8; i++) await textBlock(`Streaming paragraph ${i}. ` + 'lorem ipsum dolor sit amet '.repeat(8));
-for (let i = 0; i < 4; i++) await toolBlock(i);
+// Enough content to OVERFLOW any reasonable viewport — consecutive tools fold
+// into ONE collapsed group row, so interleave text between tool blocks to keep
+// the transcript tall. (On a 1000px-tall rig the original 8+4 seed fit entirely
+// in the viewport: scroll-up was a no-op at scrollTop 0, the release check
+// could never be exercised, and "stays pinned" gap=0 passed VACUOUSLY.)
+for (let i = 0; i < 14; i++) {
+  await textBlock(`Streaming paragraph ${i}. ` + 'lorem ipsum dolor sit amet '.repeat(10));
+  if (i % 2 === 0) await toolBlock(i);
+}
 await settle(6);
 let s = await ev(STATE);
 
-// POSITIVE CONTROL: the fold+render must have actually produced rows. Without
-// this, an empty list trivially reports gap 0 and every check below is vacuous.
+// POSITIVE CONTROL: the fold+render must have actually produced rows, and the
+// list must actually be SCROLLABLE. Without this, an empty (or fully-visible)
+// list trivially reports gap 0 and every check below is vacuous.
 const folded = await ev(`(()=>{const s=window.__readAgentSession(${JSON.stringify(WS)});return s?s.messages.length:-1})()`);
-check('CONTROL: events folded and rows rendered', folded > 0 && s.rows > 0,
-  `foldedMessages=${folded} domRows=${s.rows}`);
-if (!(folded > 0 && s.rows > 0)) {
-  console.error('\nABORT: nothing rendered — remaining checks would be vacuous.');
+check('CONTROL: events folded, rows rendered, list scrollable',
+  folded > 0 && s.rows > 0 && s.scrollHeight > s.clientHeight + 500,
+  `foldedMessages=${folded} domRows=${s.rows} scrollH=${s.scrollHeight} clientH=${s.clientHeight}`);
+if (!(folded > 0 && s.rows > 0 && s.scrollHeight > s.clientHeight + 500)) {
+  console.error('\nABORT: nothing rendered or nothing scrollable — remaining checks would be vacuous.');
   client.close(); process.exit(1);
 }
 check('streaming stays pinned (tool rows land)', s.gap <= 2, JSON.stringify(s));
