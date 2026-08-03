@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useStore } from '../store';
 import { computeAttention } from '../../shared/attention';
 import type { Workspace } from '../../shared/types';
@@ -22,14 +23,45 @@ export function InboxBell() {
   const tools = useStore((s) => s.tools);
   const setActive = useStore((s) => s.setActive);
   const [open, setOpen] = useState(false);
+  /** Viewport coords for the portalled panel, captured from the bell's rect at
+   * open time. PORTALLED to document.body like NewWorkspaceBranchPopover —
+   * anchored inside the sidebar it gets clipped by the sidebar's overflow /
+   * backdrop-filter containing block. Shipped both failure modes of in-place
+   * anchoring already: right-anchored → off the WINDOW's left edge (v0.5.187),
+   * left-anchored → clipped at the SIDEBAR's right edge (v0.5.188). Clamped
+   * on-screen whatever the sidebar width or bell position. */
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
 
   const { needsYou, bookmarked, working, count } = computeAttention(workspaces);
+
+  const POPOVER_WIDTH = 320;
+  const toggle = () => {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    const btn = rootRef.current?.querySelector('.header-icon-btn');
+    const r = btn?.getBoundingClientRect();
+    setPos(
+      r
+        ? {
+            left: Math.max(8, Math.min(r.left, window.innerWidth - POPOVER_WIDTH - 8)),
+            top: r.bottom + 6,
+          }
+        : { left: 8, top: 48 },
+    );
+    setOpen(true);
+  };
 
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      // The panel is portalled, so check BOTH the bell wrapper and the panel —
+      // testing only rootRef would close the popover on any click inside it.
+      if (!rootRef.current?.contains(t) && !popRef.current?.contains(t)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setOpen(false);
@@ -63,7 +95,7 @@ export function InboxBell() {
     <div className="inbox-bell" ref={rootRef}>
       <button
         className="header-icon-btn"
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         title={
           count > 0
             ? `${count} workspace${count === 1 ? '' : 's'} need${count === 1 ? 's' : ''} you`
@@ -74,8 +106,16 @@ export function InboxBell() {
         <InboxIcon />
         {count > 0 && <span className="inbox-badge">{count > 9 ? '9+' : count}</span>}
       </button>
-      {open && (
-        <div className="inbox-popover" role="menu" aria-label="Workspaces needing attention">
+      {open &&
+        pos &&
+        createPortal(
+          <div
+            ref={popRef}
+            className="inbox-popover"
+            role="menu"
+            aria-label="Workspaces needing attention"
+            style={{ left: pos.left, top: pos.top }}
+          >
           {needsYou.length === 0 && bookmarked.length === 0 && (
             <div className="inbox-empty">Nothing needs you — agents are working or idle.</div>
           )}
@@ -106,8 +146,9 @@ export function InboxBell() {
               )}
             </>
           )}
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
