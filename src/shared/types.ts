@@ -1306,6 +1306,16 @@ export interface AgentSession {
   slashCommands?: string[];
   /** MCP servers the session connected at init, with status. */
   mcpServers?: { name: string; status: string }[];
+  /** Whether this session's on-disk transcript has been read back into the
+   *  store (the history backfill). Lives on the SESSION, not on the component,
+   *  so it survives a pane unmount — App.tsx caps mounted panes
+   *  (MAX_MOUNTED_PANES), and the `agent:event` subscription keeps folding for
+   *  UNMOUNTED workspaces. A session that received a background turn while its
+   *  pane was evicted is therefore non-empty but NOT backfilled; keying the
+   *  gate on message count instead made the reopened pane render just those few
+   *  orphan messages as the whole conversation (the "transcript disappeared"
+   *  bug). See renderer/history-backfill.ts. */
+  historyBackfilled?: boolean;
   /** The highest `seq` folded in, so a caller can detect a gap. */
   lastSeq: number;
 }

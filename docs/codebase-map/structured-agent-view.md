@@ -511,8 +511,27 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   them but the backfill formerly dropped `image` blocks, so they vanished on reload.
   `agent-sdk.ts sdkHistory(wsId)` locates the
   file (`<configDir>/projects/<mangleProjectDir(worktreePath)>/<sdkSessionId>.jsonl`,
-  tail-capped at 4MB) and StructuredView requests it once per mount while the folded
-  session is empty, folding events through the normal RAF queue.
+  tail-capped at 4MB) and StructuredView requests it through the
+  **`shouldRequestHistory`** gate (`src/renderer/history-backfill.ts` + `.test.ts`),
+  applying the result via the store's **`applyAgentHistory`** action.
+  **The gate keys on `AgentSession.historyBackfilled`, NOT on message count** —
+  the fix for "part of the transcript disappeared". App.tsx unmounts panes past
+  `MAX_MOUNTED_PANES` (12) while the `agent:event` subscription in store.ts is
+  GLOBAL and ungated, so a session keeps folding events for an UNMOUNTED
+  workspace (peer delivery, `sdkWake`, a queued prompt — all start turns
+  headlessly). A workspace evicted from the LRU and then handed a background turn
+  therefore holds a couple of orphan messages while its real transcript still
+  lives only on disk; the old `messages.length > 0 → skip` gate read those as
+  "history already present" and rendered them as the WHOLE conversation, and the
+  old `.then()` additionally DISCARDED the backfill whenever live messages
+  existed. Now the flag lives on the session (so it survives unmount, and
+  `session/clear` resets it via `emptySession`), and history is **prepended**
+  (deduped by message id) rather than dropped, since everything on disk predates
+  anything folded live. Verified e2e on the built app by driving the REAL LRU
+  eviction (open → visit 15 workspaces → pane unmounts → background turn →
+  reopen): restored 1 → 81 messages with history visible, and mutation-tested —
+  reverting to the message-count gate leaves the pane at 1 message with the
+  transcript gone.
 - **Skills autocomplete** — `agent-sdk.ts sdkListSkills(wsId)` scans the worktree's
   `.claude/skills/*` + the account config dir's `skills/*` (project shadows user) for
   `AgentSkillInfo` (shared/types.ts); the Composer shows a popover when the input is a

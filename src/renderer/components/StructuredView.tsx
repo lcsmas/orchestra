@@ -37,6 +37,7 @@ import type { AgentImage, AgentSession, AgentSkillInfo, RenderMessage } from '..
 // composer drains them into its draft + attachments (see the Composer's
 // design-pick effect). appendPickToDraft is the pure formatter (shared/, tested).
 import { appendPickToDraft } from '../../shared/design-mode';
+import { shouldRequestHistory } from '../history-backfill';
 // A3: real presentational components (markdown bubbles, tool cards, diffs,
 // thinking spinner). AgentMessage routes tool→ToolCard else→MessageBubble and
 // owns the `av-message`/`av-tool-card` wrappers + thinking indicator, so it
@@ -90,6 +91,7 @@ export function StructuredView({ workspaceId, isActive }: Props) {
     (s) => !!s.workspaces.find((w) => w.id === workspaceId)?.sdkSessionId,
   );
   const injectEvent = useStore((s) => s.__injectAgentEvent);
+  const applyHistory = useStore((s) => s.applyAgentHistory);
 
   // The "Background tasks" slide-over. Stays closed by default when a task
   // spins up — a background task should not steal the transcript view; its
@@ -107,18 +109,33 @@ export function StructuredView({ workspaceId, isActive }: Props) {
   // Requested at most once per mount, only while the folded session is empty —
   // and unconditionally on `canResume` (main returns [] when there is nothing).
   const historyRequested = useRef(false);
-  const hasMessages = (session?.messages.length ?? 0) > 0;
+  // Keyed on whether THIS SESSION was backfilled — not on whether it has any
+  // messages. App.tsx unmounts panes past MAX_MOUNTED_PANES while the
+  // `agent:event` subscription keeps folding for unmounted workspaces, so a
+  // reopened workspace can hold a few messages from a background turn with its
+  // real transcript still only on disk. The old `messages.length > 0` gate read
+  // those as "history already present" and rendered them as the entire
+  // conversation — the reported disappearing transcript.
+  const alreadyBackfilled = session?.historyBackfilled === true;
   useEffect(() => {
-    if (historyRequested.current || hasMessages) return;
+    if (
+      !shouldRequestHistory({
+        requestedThisMount: historyRequested.current,
+        alreadyBackfilled,
+        messageCount: 0, // deliberately not consulted; see history-backfill.ts
+        cleared: false, // main returns [] for a cleared session
+      })
+    )
+      return;
     historyRequested.current = true;
     void window.orchestra
       .agentSdkHistory(workspaceId)
       .then((events) => {
-        // Re-check: if live events landed while we read the file, skip the
-        // backfill rather than appending stale history after fresh messages.
-        const live = useStore.getState().agentSessions[workspaceId];
-        if ((live?.messages.length ?? 0) > 0) return;
-        for (const ev of events) injectEvent(workspaceId, ev);
+        if (events.length === 0) return;
+        // Prepend (deduped) rather than skip: history is older than anything
+        // folded live, so a session that gained messages while unmounted must
+        // still get its earlier transcript back.
+        applyHistory(workspaceId, events);
       })
       .catch(() => {
         // A failed backfill used to be a silently blank transcript — say so
@@ -131,7 +148,7 @@ export function StructuredView({ workspaceId, isActive }: Props) {
           at: Date.now(),
         });
       });
-  }, [hasMessages, workspaceId, injectEvent]);
+  }, [alreadyBackfilled, workspaceId, injectEvent, applyHistory]);
 
   return (
     <div className={`av-view ${isActive ? 'active' : ''}`} data-workspace={workspaceId}>

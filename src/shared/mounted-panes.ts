@@ -12,8 +12,16 @@
 // activation order, plus the active one unconditionally (it may not be in the
 // LRU list yet on the first render after selection). Everything else unmounts
 // and releases its WebGL context; reopening it rebuilds the pane instantly (a
-// fresh xterm repaints via `claude --continue`, no agent state lost — that is
-// already how opening a workspace for the first time works).
+// fresh xterm repaints via `claude --continue`).
+//
+// CAUTION for the STRUCTURED view: eviction destroys component-local state, and
+// anything reconstructed from a per-mount ref must therefore be keyed on the
+// STORE, not on the component. The `agent:event` subscription (store.ts) is
+// global and ungated, so an unmounted workspace keeps folding events — a pane
+// evicted here and later handed a background turn comes back holding only those
+// few messages. StructuredView's history backfill hit exactly this and now gates
+// on `AgentSession.historyBackfilled` (renderer/history-backfill.ts) instead of
+// message count. "No agent state lost" holds for the TERMINAL pane only.
 //
 // Pure and dependency-free so it is unit-testable without React/Electron.
 export function computeMountedIds(opts: {

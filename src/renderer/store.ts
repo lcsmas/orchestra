@@ -167,6 +167,15 @@ interface State {
    *  `answered` set resets on unmount). Clearing it in the store is durable
    *  across remounts because the store IS the source of truth. */
   resolveAgentPermission: (workspaceId: string, requestId: string) => void;
+  /** Apply an on-disk history backfill to a workspace's session.
+   *
+   *  History is always OLDER than anything folded live, so it is PREPENDED (and
+   *  deduped by message id) rather than dropped when the session already holds
+   *  messages. Dropping it is what made a reopened pane whose transcript had
+   *  been evicted show only the handful of messages a background turn folded
+   *  while it was unmounted. Marks `historyBackfilled` so the pane never
+   *  re-reads the file on a later remount. See renderer/history-backfill.ts. */
+  applyAgentHistory: (workspaceId: string, events: AgentEvent[]) => void;
   setInsightsOpen: (open: boolean) => void;
   setPage: (p: 'workspaces' | 'resources') => void;
   setHelpOpen: (open: boolean) => void;
@@ -276,6 +285,37 @@ export const useStore = create<State>((set, get) => ({
     const nextSession = clearPendingPermission(prev, requestId);
     if (nextSession === prev) return; // nothing pending with that id
     useStore.setState({ agentSessions: { ...s.agentSessions, [workspaceId]: nextSession } });
+  },
+  applyAgentHistory: (workspaceId, events) => {
+    const s = useStore.getState();
+    const prev = s.agentSessions[workspaceId];
+    // Fold the history events on their own, from a blank session, so the
+    // resulting messages carry the same ids/shape the live fold would produce.
+    const history = foldEvents(emptySession(workspaceId), events);
+    if (prev) {
+      // Dedupe by message id: a turn that ran live AND was flushed to disk
+      // appears in both lists and must not render twice.
+      const liveIds = new Set(prev.messages.map((m) => m.id));
+      const older = history.messages.filter((m) => !liveIds.has(m.id));
+      useStore.setState({
+        agentSessions: {
+          ...s.agentSessions,
+          [workspaceId]: {
+            ...prev,
+            // Prepend: everything read off disk predates the live messages.
+            messages: [...older, ...prev.messages],
+            historyBackfilled: true,
+          },
+        },
+      });
+      return;
+    }
+    useStore.setState({
+      agentSessions: {
+        ...s.agentSessions,
+        [workspaceId]: { ...history, historyBackfilled: true },
+      },
+    });
   },
   // The Insights/Help panes and the Resources page are all full-pane surfaces —
   // opening any one dismisses the others so they can never stack.
