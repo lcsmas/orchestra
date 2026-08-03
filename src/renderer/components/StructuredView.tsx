@@ -569,13 +569,25 @@ function MessageList({
                 key={it.id}
                 item={it}
                 onHeight={(h) => {
-                  // Inactive panes are `display: none` (theme CSS) but their
-                  // layout effects still run on background store updates, and
-                  // every row then reports offsetHeight 0. Caching those zeros
-                  // would poison the offsets (and drop the scroll position)
-                  // the user comes back to — a hidden pane has no real
-                  // geometry to record, so skip it entirely.
-                  if (h === 0) return;
+                  // A zero measurement has TWO very different causes and they
+                  // need opposite handling:
+                  //   • HIDDEN PANE — inactive panes are `display: none` (theme
+                  //     CSS) but their layout effects still run on background
+                  //     store updates, and then EVERY row reports 0. Caching
+                  //     those zeros would poison the offsets (and drop the
+                  //     scroll position) the user comes back to.
+                  //   • GENUINELY EMPTY ROW — MessageBubble returns null when a
+                  //     message has no text, no thinking and no images (a
+                  //     block-start whose first delta hasn't landed, a
+                  //     thinking-only block after the spinner settles). That row
+                  //     really is 0px and MUST be cached: refusing to record it
+                  //     leaves it stuck on the 72px ESTIMATE forever, so the
+                  //     sized wrapper reserves space no row occupies — blank
+                  //     scrollable voids and gaps between rows (the v0.5.190
+                  //     regression this guard caused).
+                  // Discriminate by the SCROLLER, not the row: a hidden pane has
+                  // clientHeight 0, a live pane measuring an empty row does not.
+                  if (h === 0 && (scrollRef.current?.clientHeight ?? 0) === 0) return;
                   const known = heights.current.get(it.id);
                   if (known === h) return;
                   heights.current.set(it.id, h);

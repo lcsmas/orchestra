@@ -348,10 +348,22 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   Skipped while following (the pin owns the scroll) and for hidden panes.
   `.av-message-list` sets `overflow-anchor: none` so the browser's native
   anchoring (blind to translateY-repositioned rows) can't fight the correction.
-  Related guard: `MeasuredRow.onHeight` ignores `h === 0` — inactive panes are
-  `display: none` but their layout effects still run on background store
-  updates, and caching those zeros would poison the offsets (and drop the
-  scroll position) the user comes back to. Gate:
+  Related guard: `MeasuredRow.onHeight` ignores `h === 0` **only when the
+  scroller itself has `clientHeight === 0`** — i.e. a hidden pane, whose layout
+  effects still run on background store updates and would otherwise cache a
+  zero for every row (poisoning the offsets and dropping the scroll position
+  the user returns to). It must NOT skip zeros generally: `MessageBubble`
+  returns `null` for a message with no text, no thinking and no images (a
+  `block-start` whose first delta never landed), so those rows genuinely are
+  0px and their zero MUST be cached. v0.5.190 shipped the broad guard and
+  regressed: such rows never settled, so each kept the 72px `ESTIMATED_ROW_H`
+  until it entered the window, and the estimate then collapsed 72px→0px mid
+  scroll — throwing the viewport by exactly one `ESTIMATED_ROW_H` (measured:
+  `shifts=1, maxShift=72px` with `scrollTop` frozen, reproducibly the same row).
+  Note the stale reserve is **only observable dynamically**: inside the mounted
+  window rows are always flush (row container == sum of real heights), and four
+  separate static geometry checks all passed on the buggy build — see the long
+  comment in `verify-scroll-anchoring.mjs` before adding a fifth. Gate:
   `scripts/verify-scroll-anchoring.mjs` — seeds a backfill-shaped transcript
   (one-shot inject), wheel-scrolls up with trusted CDP input, and asserts ZERO
   uncommanded screen-space shifts (`Δ(cy − scrollTop)` over no-wheel frame

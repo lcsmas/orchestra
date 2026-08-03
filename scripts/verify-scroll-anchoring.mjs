@@ -111,6 +111,15 @@ const toolBlock = (i, lines) => {
     input: { command: Array.from({ length: lines }, (_, k) => `echo line ${k}`).join('\n') } });
   events.push({ type: 'block-stop', seq: seq++, at: Date.now(), index });
 };
+// A block-start with NO text delta: MessageBubble renders null (no text, no
+// thinking, no images), so the row is genuinely 0px. These are what exposed the
+// v0.5.190 phantom-height regression — a guard that refused to cache their zero
+// left them on the 72px estimate forever, reserving blank scrollable space.
+const emptyBlock = () => {
+  const index = blockIdx++;
+  events.push({ type: 'block-start', seq: seq++, at: Date.now(), index, kind: 'text' });
+  events.push({ type: 'block-stop', seq: seq++, at: Date.now(), index });
+};
 // Varied heights: short texts (<72px), long paragraphs (>72px), tool runs of
 // varying group size — so estimates err in BOTH directions, like a real session.
 for (let i = 0; i < 60; i++) {
@@ -119,6 +128,7 @@ for (let i = 0; i < 60; i++) {
   else if (mode === 1) textBlock(`Paragraph ${i}. ` + 'lorem ipsum dolor sit amet consectetur '.repeat(3 + (i % 5) * 3));
   else if (mode === 2) { const n = 1 + (i % 3); for (let k = 0; k < n; k++) toolBlock(tool++, 5 + (i % 4) * 6); }
   else textBlock(`Wrap-up ${i}. ` + 'done and verified '.repeat(1 + (i % 6) * 4));
+  if (i % 7 === 3) emptyBlock();
 }
 await ev(`(() => {
   const evs = ${JSON.stringify(events)};
@@ -231,6 +241,58 @@ if (EXPECT_BUG) {
 } else {
   check('scroll-up is anchored (no uncommanded content shifts)', shifts === 0, detail);
 }
+
+// ── PHANTOM SPACE: space RESERVED for the mounted window vs space it OCCUPIES ─
+// The virtualizer reserves `totalHeight` on the sized wrapper from cached-or-
+// ESTIMATED (72px) row heights; the mounted rows report what they really
+// occupy. Rows that legitimately render 0px (a block-start whose delta never
+// landed — MessageBubble returns null) must be CACHED at 0. A guard that
+// refuses to cache their zero leaves them on the 72px estimate forever, so the
+// wrapper reserves 72px of blank scrollable space per empty row (v0.5.190:
+// 2 empty rows × 72px = 144px of void, and crossing one during a scroll threw
+// the viewport by exactly 72px).
+//
+// WHERE THE DEFECT IS OBSERVABLE — and where it is NOT. Measured on the buggy
+// build: inside the MOUNTED WINDOW the rows are perfectly flush (row container
+// 1024px == sum of real row heights, empty rows' successors start at the same
+// y). The stale 72px estimates survive ONLY for rows OUTSIDE the window, in the
+// sized wrapper's `totalHeight` (declared 3994 against ~3378 of real content).
+// So every DOM-geometry check over mounted rows is structurally blind to this
+// bug. THREE such checks passed on the buggy build before I stopped guessing —
+// recorded so nobody re-derives them:
+//   • flush neighbours (next.top === prev.bottom) — PASSED buggy: 0px gaps.
+//   • per-empty-row slot (next.top − this.top) — PASSED buggy: slot=0px.
+//   • the row container's own height — derived from rendered rows, so it can
+//     never reveal a stale CACHE.
+// (A fourth, scrollHeight − sumOfMountedRealHeights, FAILS on a CORRECT build:
+// it compares the whole list against only the mounted window.)
+//
+// A FOURTH static check also passed on the buggy build (declaredTotal vs
+// scrollHeight after walking the whole list: 3994 vs 4026, excess −32px) —
+// because scrollHeight is itself max(wrapper, overflowing content), so the
+// inflated wrapper never exceeds it. Conclusion, after four attempts: the
+// phantom reserve is NOT observable as a static geometry property. Do not add
+// a fifth static check here; a guard that cannot be made to fail is worse than
+// no guard, because it reads as coverage.
+//
+// The observable signature — and the one this script already gates on above —
+// is DYNAMIC: when an unmeasured empty row scrolls into the window its estimate
+// collapses 72px → 0px and throws the viewport by exactly ESTIMATED_ROW_H.
+// Verified to discriminate, repeatably and with the same row and magnitude:
+//   buggy build  → shifts=1, maxShift=72px (row#33, scrollTop frozen)
+//   fixed build  → shifts=0
+// So the empty-row seeding above (`emptyBlock`) is load-bearing for THIS gate:
+// it is what puts an unmeasured 0px row in the scroll path.
+const emptyRowCheck = await ev(`(() => {
+  const rows = [...document.querySelectorAll('.av-row')];
+  return { emptyMounted: rows.filter((r) => r.getBoundingClientRect().height === 0).length };
+})()`);
+// CONTROL for the seeding, not a defect check: if the transcript contains no
+// genuinely-empty rows, the anchoring assertion above never exercises the
+// empty-row estimate path and this gate silently narrows to the generic case.
+check('CONTROL: seed produced genuinely empty (0px) rows in the window',
+  emptyRowCheck.emptyMounted > 0,
+  `emptyRowsInWindow=${emptyRowCheck.emptyMounted} (0 ⇒ the 72px-estimate path went untested)`);
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
