@@ -108,6 +108,19 @@ Refreshers (`refreshAllStats`/`Sizes`/`AllPRs`/`AllLinear`, `:292+`) are driven
 by **visibility-aware polls** and commit once. Live event subscriptions `:381+`
 patch state (note `onWorkspaceUpdate` merges to avoid clobbering a local create).
 
+**Derived maps must be invalidated by the event that changes their source.**
+`prs` is derived from `Workspace.linkedPrs` but cached separately on the 12s
+poll, and `onWorkspaceUpdate` originally patched `workspaces` without touching
+it — so `orchestra link` took a full poll interval to show its badge (measured
+~9.0s to link, ~10.9s to clear), which reads as the command having failed. The
+handler now calls `refreshPR(id)` when the linked-PR URLs differ, compared
+BEFORE the state write (afterwards the previous value is gone). The gate
+matters: the same channel carries status-dot transitions, which arrive
+constantly, and each refresh costs a `gh` call per linked PR — firing
+unconditionally would put the PR poll on the status-dot cadence. Note
+`onWorkspaceRemoved` already prunes `prs`/`checks`/`linear`/`stats`; the update
+path is the one that needed the equivalent.
+
 `agentSessions: Record<wsId, AgentSession>` holds the folded structured-agent-view
 state (Claude Agent SDK). The `agent:event` channel is the app's **hottest** —
 streaming token deltas — so the `onAgentEvent` subscription does **not** setState

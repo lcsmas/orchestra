@@ -149,10 +149,19 @@ creates the workspace parentless — its own top-level section), `rename <id> <b
 [--into <branch>]` (close-out check: exits 0 only when every commit on the
 workspace's branch tip is on the target — the caller's branch by default),
 `whoami` (this workspace's own record: kind, orchestrator role, parent, and the
-`pr`/`linear` link rows), `link [--pr <url>] [--linear <KEY>] [--clear] [id]`
-(report which PR / Linear issue this workspace is working on — defaults to
+`pr`/`linear` link rows), `link [--pr <url>]... [--linear <KEY>] [--clear] [id]`
+(report which PR(s) / Linear issue this workspace is working on — defaults to
 **self**, since the common caller is the agent linking its own work; an explicit
-id is for a coordinator fixing up a child),
+id is for a coordinator fixing up a child. `--pr` REPEATS and appends, deduped
+on `owner/repo#number`, because one workspace can own several PRs across
+different repos; `--clear --pr <url>` drops one, a bare `--clear --pr` drops
+all. Argument parsing lives in the pure exported **`parseLinkArgs`**
+(`link-args.test.ts`) because the two modes parse the same flags differently and
+that asymmetry has already shipped a bug: in CLEAR mode `--linear` is a
+*valueless selector*, so parsing it as a value-flag silently consumes the next
+token — the positional workspace id — and the command reports "unknown
+workspace" while looking well-formed. Only the explicit-id form breaks, so an
+agent clearing its own links via `$ORCHESTRA_WS_ID` never sees it),
 `status <text…>` / `status --clear` (set/clear THIS workspace's one-line status
 note — rendered under its sidebar row and surfaced to peers; self-targeted via
 the identity env vars; whitespace-only text is REJECTED at the CLI — `--clear`
