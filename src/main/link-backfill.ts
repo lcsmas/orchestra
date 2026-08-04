@@ -23,9 +23,9 @@ const LINK_BACKFILL_VERSION = 2;
 
 /**
  * One-shot migration from branch-derived PR/Linear badges to agent-reported
- * links (`linkedPrUrl` / `linkedLinearKey`).
+ * links (`linkedPrs` / `linkedLinearKey`).
  *
- * Why this exists: the Linear badge no longer reads the branch name at all, so
+ * Why this exists: neither badge reads the branch name any more, so
  * without a backfill every existing workspace would lose its badge the moment
  * this version ships and would only get it back if its agent ever ran again
  * and linked itself. Most workspaces here are finished work whose agent will

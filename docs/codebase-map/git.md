@@ -89,36 +89,49 @@ keying on just (branch, base) pinned a stale `↑N` badge across a push.
 
 ## PRs & releases (gh CLI, cached)
 
-**Resolution order — agent link first, branch match second.** `findPullRequest`
-prefers `ws.linkedPrUrl` (set by `orchestra link --pr`, see
-[hooks-cli-socket.md](hooks-cli-socket.md)) and scans the fetch for that URL
-(`recordForUrl`); it falls back to the branch head-ref match when unset, or when
-the linked URL isn't in the fetch (wrong repo / deleted PR), so a bad link
-degrades to the old behaviour instead of blanking the badge. The reason the link
-exists: head-ref matching is exact string equality, so it silently loses the PR
-whenever the branch is renamed — and Orchestra *nudges* every agent to rename its
-branch, often after the PR already exists. The link supplies only **which** PR;
-its live open/merged/closed state still comes from this fetch every poll, so the
-badge stays truthful even on an idle workspace whose agent never runs again.
-A linked URL yields a single-PR record rather than the head-ref's whole set.
-- **`findPullRequest(repoPath, branch, linkedPrUrl?)`** — one **REST** `gh api
-  repos/{owner}/{repo}/pulls?state=all --paginate` fetch **per repo**, indexed by
-  head branch (`fetchRepoPRs`), returning `PRsForBranch`
-  (`all/open/latest/mergedCount`, `types.ts:212`). 60s cache keyed by **repo**,
-  plus in-flight de-duplication so N workspaces sharing a repo collapse into one
-  request. Runs from repo root so PR state survives a missing worktree.
-  **Why repo-wide REST and not `gh pr list --head`:** the renderer polls per
-  workspace, and this machine runs 45+ workspaces over ~5 repos, so the old
-  per-branch call made ~45 requests to answer what ~5 answer — ~11k calls/hr
-  against a 5k/hr budget, exhausting it in ~27 min, after which every row showed
-  "PR?". `gh pr list` is also a **GraphQL** query, and GraphQL has its own
-  separate 5k/hr budget — the one that was actually drained (measured: graphql
-  0/5000 while core sat at 4977/5000). REST additionally answers from gh's
-  conditional-request cache, so repeat polls of an unchanged repo often cost no
-  quota at all. REST reports merged-ness via `merged_at` (its `state` is only
-  open/closed), mapped to `OPEN/CLOSED/MERGED` in the `--jq`; results are sorted
-  newest-first since REST returns oldest-first. Misses aren't cached (retry
-  immediately). On failure it returns the
+**PRs are agent-reported ONLY — there is no branch-name derivation.** The badge
+reads `ws.linkedPrs` (`PrLink[]`, each `{url, owner, repo, number}`), written
+solely by `orchestra link --pr` (see
+[hooks-cli-socket.md](hooks-cli-socket.md)). The head-ref match it replaced was
+exact string equality, so it silently lost the PR whenever the branch was
+renamed — and Orchestra *nudges* every agent to rename its branch, often after
+the PR already exists, so the feature broke its own detection.
+
+**A list, because one workspace owns several PRs.** A metarepo branch spans
+submodules that live in *separate GitHub repos*; each `PrLink` is polled by its
+own `owner`/`repo`, so a workspace's PRs are no longer confined to its
+`repoPath` — which the repo-wide fetch, rooted at one path, structurally could
+not do. The link supplies only **which** PRs; live open/merged/closed state is
+re-read every poll, so a badge cannot go stale on an idle workspace whose agent
+never runs again.
+- **`findPullRequest(linkedPrs?)`** — one **REST** `gh api
+  repos/{owner}/{repo}/pulls/{number}` call **per linked PR**, with **no `cwd`**
+  (the URL carries the coordinates, so no checkout is involved), returning the
+  same `PRsForBranch` shape (`all/open/latest/mergedCount`). 60s cache + in-flight
+  dedup keyed by **`prLinkKey`** (`owner/repo#number`, case-insensitive as GitHub
+  is), so several workspaces linking one PR collapse into a single request.
+  Failures are per-PR: a partial failure keeps the PRs that resolved, and only an
+  all-failed result carries `error`. Unlinked → `EMPTY_PRS`, for every workspace
+  kind (which is why `findPR` no longer needs its `kind === 'scratch'` guard;
+  release detection, which *does* need the local repo, is gated on `repoPath`).
+- **`findPullRequestsByBranch(repoPath, branch)`** — the RETIRED derivation, kept
+  for exactly one caller: the one-shot backfill (`link-backfill.ts`) that seeds
+  `linkedPrs` for workspaces predating agent-reported links. Not on the badge
+  path. It keeps the repo-wide `gh api
+  repos/{owner}/{repo}/pulls?state=all --paginate` fetch indexed by head branch
+  (`fetchRepoPRs`), 60s cache keyed by **repo** + in-flight dedup, because the
+  backfill hits every workspace at once — the exact fan-out that drained the
+  quota before. Once the backfill has run everywhere, both can go.
+  **Why REST and not `gh pr list --head`** (applies to both paths): `gh pr list`
+  is a **GraphQL** query with its own separate 5k/hr budget — the one actually
+  drained (measured: graphql 0/5000 while core sat at 4977/5000). The old
+  per-branch call also made ~45 requests to answer what ~5 answered, ~11k
+  calls/hr against a 5k/hr budget, exhausting it in ~27 min, after which every
+  row showed "PR?". REST additionally answers from gh's conditional-request
+  cache, so repeat polls often cost no quota at all. REST reports merged-ness via
+  `merged_at` (its `state` is only open/closed), mapped to `OPEN/CLOSED/MERGED`
+  in the `--jq`; results are sorted newest-first since REST returns oldest-first.
+  Misses aren't cached (retry immediately). On failure it returns the
   empty result **plus `error: <first stderr line>`** (`PRsForBranch.error`): an
   empty `all` alone is indistinguishable from "this branch has no PRs", so a
   broken `gh` (missing binary, invalid `GITHUB_TOKEN`, rate limit) used to make

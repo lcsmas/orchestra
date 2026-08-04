@@ -30,10 +30,25 @@ backfill below.
 - `verifyLinearIssue(branch)` remains as a thin wrapper (parse → by-key) for the
   backfill; the cache was always keyed on the issue key, so both routes share it.
 - **Backfill** (`src/main/link-backfill.ts`) — one-shot migration run at startup,
-  gated on `store.linkBackfillDone`. Runs the OLD derivation once and persists
-  only **verified** hits, so existing workspaces keep their badges after upgrade
+  gated on `store.linkBackfillVersion` vs `LINK_BACKFILL_VERSION`. Runs the OLD
+  derivations once (Linear regex + `findPullRequestsByBranch`) and persists only
+  **verified** hits, so existing workspaces keep their badges after upgrade
   instead of going blank until an agent happens to re-link them. Only ever fills
   empty fields; never overwrites an agent's link.
+  **Versioned, not a boolean** — revision 1 (v0.5.197) seeded the single
+  `linkedPrUrl`; revision 2 seeds the `linkedPrs` list carrying
+  `owner/repo/number`. A bare done-flag cannot express "done, but by an older
+  version", so every workspace revision 1 had marked would have been stranded
+  with a shape the badge path no longer reads — and those are mostly finished
+  workspaces whose agent will never run again, i.e. exactly the population the
+  backfill exists to serve. Revision 2 also stores **every** PR a branch matched,
+  not just `latest`, since the badge renders up to three.
+  Bounded on purpose: repos are warmed in parallel under a 20s timeout and each
+  workspace lookup under 5s, so one slow repo (a ~9.6k-PR fetch was measured
+  running for minutes) cannot stall startup. The flag is set even when individual
+  lookups failed — retrying forever would re-run a full fetch per workspace on
+  every launch, the exact quota drain this subsystem already got burned by, and
+  an unresolved workspace is simply asked by the SessionStart hook.
 - Key resolution (`:37`): stored key → `LINEAR_API_KEY` env → none.
   `getLinearKeySource` `:46`. Stored via `secrets.ts` (encrypted). UI:
   `LinearSettings.tsx` (test/save/clear). IPC: `linear:keySource`/`checkKey`/

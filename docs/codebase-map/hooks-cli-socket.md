@@ -32,8 +32,8 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | `/promote` | `id` | `{ ok, id?, branch?, kind? }` |
 | `/attach` | `id` (+ `parentId?`) | `{ ok, id?, parentId? }` |
 | `/verifyLanded` | `id` (+ `from?`, `into?`) | `{ ok, id?, branch?, target?, unmerged?, commits? }` — coordinator close-out: are all commits on the child's branch tip on the target (explicit `into` ref, else the `from` caller's branch)? |
-| `/link` | `id` (+ `prUrl?`, `linearKey?`, `clear?`) | `{ ok, prUrl?, linearKey?, cleared? }` — attach the PR / Linear issue this workspace is working on. The **only** writer of `linkedPrUrl`/`linkedLinearKey`; both badges are agent-reported, not derived. Validates strictly (`normalizePrUrl`, `parseLinearTicketRef`) and rejects a branch name or non-PR URL. `clear:true` unsets whichever of `prUrl`/`linearKey` is *named* (empty string = named). |
-| `/whoami` | `id` | `{ ok, id?, name?, branch?, kind?, orchestrator?, parentId?, repoPath?, baseBranch?, linkedPrUrl?, linkedLinearKey? }` — a workspace's own record; the only in-band way an agent learns its `parentId` (peers excludes the caller). The two link fields are what `link-instruction.sh` reads to decide whether to nudge. |
+| `/link` | `id` (+ `prUrls?: string[]`, `linearKey?`, `clear?`) | `{ ok, prUrls?, linearKey?, cleared? }` — attach the PR(s) / Linear issue this workspace is working on. The **only** writer of `linkedPrs`/`linkedLinearKey`; both badges are agent-reported, never derived. Validates strictly (`parsePrUrl`, `parseLinearTicketRef`) and rejects a branch name or non-PR URL. PRs **accumulate**: each call appends, deduped on `prLinkKey` (`owner/repo#number`), because one workspace can own several PRs across different repos. `clear:true` + a *named* `prUrls` drops those PRs; `prUrls: []` (flag present, no value) drops them **all** — so the route must not collapse an empty array to `undefined`, which would silently turn clear-all into a no-op. `prUrls` in the reply is the resulting full set, not the delta. |
+| `/whoami` | `id` | `{ ok, id?, name?, branch?, kind?, orchestrator?, parentId?, repoPath?, baseBranch?, linkedPrUrls?: string[], linkedLinearKey? }` — a workspace's own record; the only in-band way an agent learns its `parentId` (peers excludes the caller). The two link fields are what `link-instruction.sh` reads to decide whether to nudge. |
 | `/status` | `id` (+ `text?`) | `{ ok, statusText? }` — set/clear the workspace's agent-authored one-line status note (`Workspace.statusText`, shown under the sidebar row and in `/peers`). Empty/absent `text` clears; sanitized to a single ≤160-char line (`shared/status-text.ts`). |
 | `/migrateAccount` | `id` (+ `accountId?` — null/'' = default login) | `{ ok, id?, branch?, accountId?, resumed? }` |
 | `/accounts` | — | `{ ok, accounts?: {id,label,configDir}[] }` |
@@ -95,13 +95,16 @@ Scripts and the Claude Code events they fire on:
   via `orchestra whoami` each fire — `parentId` is mutable (`/attach`), so
   baking it into env/sentinel would go stale. Self-silences without a
   parent/guide/CLI.
-- **`link-instruction.sh`** — SessionStart ONLY. Asks the agent to report its PR
-  (`orchestra link --pr`) and/or Linear issue (`--linear`), because neither badge
-  is derived from the branch name any more — this hook is the sole discovery
-  path for the capability. **Gated on being unlinked**: it parses `orchestra
-  whoami`'s padded `key  value` table (NOT json — the CLI prints a text table)
-  for the `pr` / `linear` rows and prints nothing once both are set, so a linked
-  workspace pays zero tokens forever. Rows are read anchored to line start, so a
+- **`link-instruction.sh`** — SessionStart ONLY. Asks the agent to report its PR(s)
+  (`orchestra link --pr`, repeatable) and/or Linear issue (`--linear`), because
+  neither badge is derived from the branch name any more — this hook is the sole
+  discovery path for the capability, and it explicitly tells the agent to link
+  **every** PR when work spans several repos. **Gated on being unlinked**: it
+  parses `orchestra whoami`'s padded `key  value` table (NOT json — the CLI
+  prints a text table) for the `pr` / `linear` rows and prints nothing once both
+  are set, so a linked workspace pays zero tokens forever. Multiple PRs render
+  space-separated on the one `pr` row, so the gate stays a simple `http*`
+  presence test regardless of count. Rows are read anchored to line start, so a
   branch named e.g. `pr-linear-stuff` can't be mistaken for a row. Fails
   **silent** (not nagging) when `whoami` is unreachable or returns a non-table
   body — a restarting daemon must not nag every SessionStart. SessionStart-only
