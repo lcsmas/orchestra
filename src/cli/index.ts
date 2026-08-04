@@ -250,6 +250,60 @@ function takeAllFlags(
   return { values, present, rest };
 }
 
+/** Parse `orchestra link`'s arguments.
+ *
+ * Extracted as a pure function so it can be tested without a socket: the two
+ * modes parse the SAME flags differently, which is subtle enough that it has
+ * already shipped a regression. In CLEAR mode `--linear` is a valueless
+ * SELECTOR ("unset this field"), while in link mode it takes a value — so
+ * parsing clear-mode `--linear` as a value-flag silently swallows the token
+ * after it, which is the positional workspace id. `link --clear --pr --linear
+ * <ID>` then reports "unknown workspace" while looking perfectly well-formed.
+ *
+ * `--pr` is the awkward one: it is value-taking in link mode, and in clear mode
+ * takes an OPTIONAL value (`--pr <url>` drops that PR, bare `--pr` drops all),
+ * so it uses {@link takeAllFlags} in both — that helper declines to consume a
+ * following token that is itself a flag, which is what makes the optional-value
+ * form safe.
+ *
+ * Returns `error` rather than exiting, so tests can assert the failure modes. */
+export function parseLinkArgs(args: string[]): {
+  clear: boolean;
+  prUrls?: string[];
+  linearKey?: string;
+  rest: string[];
+  error?: string;
+} {
+  const { present: clear, rest: afterClear } = takeBoolFlag(args, '--clear');
+  let prUrls: string[] | undefined;
+  let linearKey: string | undefined;
+
+  if (clear) {
+    const p = takeAllFlags(afterClear, '--pr');
+    const l = takeBoolFlag(p.rest, '--linear');
+    if (p.present) prUrls = p.values;
+    // Empty string = "named, no value", which the dispatcher reads as
+    // `!== undefined` to decide whether to unset the Linear key.
+    if (l.present) linearKey = '';
+    if (!p.present && !l.present) {
+      return { clear, rest: l.rest, error: '--clear needs --pr and/or --linear' };
+    }
+    return { clear, prUrls, linearKey, rest: l.rest };
+  }
+
+  // `--pr` repeats: one workspace can own several PRs (a metarepo branch lands
+  // one per submodule repo), so every occurrence is collected.
+  const p = takeAllFlags(afterClear, '--pr');
+  const l = takeFlag(p.rest, '--linear');
+  if (p.present && !p.values.length) {
+    return { clear, rest: l.rest, error: '--pr needs a pull-request URL' };
+  }
+  if (p.values.length) prUrls = p.values;
+  linearKey = l.value;
+  if (!prUrls && !linearKey) return { clear, rest: l.rest, error: 'nothing to link' };
+  return { clear, prUrls, linearKey, rest: l.rest };
+}
+
 /** Pull a valueless `--flag` out of args, returning its presence and the leftover args. */
 function takeBoolFlag(args: string[], flag: string): { present: boolean; rest: string[] } {
   const idx = args.indexOf(flag);
@@ -447,31 +501,9 @@ async function main(argv: string[]): Promise<void> {
       // Pull `--clear` FIRST: in clear mode `--pr`/`--linear` may be valueless
       // selectors, so parsing them as value-flags would swallow the following
       // argument (`--clear --pr --linear` would read "--linear" as the URL).
-      const { present: clear, rest: afterClear } = takeBoolFlag(args, '--clear');
-      // `--pr` repeats: one workspace can own several PRs (a metarepo branch
-      // lands one per submodule repo), so every occurrence is collected.
-      const p = takeAllFlags(afterClear, '--pr');
-      const l = takeFlag(p.rest, '--linear');
-      const rest = l.rest;
-      let prUrls: string[] | undefined;
-      let linearKey: string | undefined;
-      if (clear) {
-        // `--pr` alone drops every PR; `--pr <url>` drops just that one. An
-        // empty-but-present array is the "all" signal, so it must survive the
-        // wire — see the /link route's note on not collapsing it.
-        if (p.present) prUrls = p.values;
-        // Empty string = "named, no value", which the dispatcher reads as
-        // `!== undefined` to decide whether to unset the Linear key.
-        if (l.value !== undefined || afterClear.includes('--linear')) linearKey = l.value ?? '';
-        if (!p.present && linearKey === undefined) {
-          fail(`${USAGE}\n  --clear needs --pr and/or --linear`);
-        }
-      } else {
-        if (p.present && !p.values.length) fail(`${USAGE}\n  --pr needs a pull-request URL`);
-        if (p.values.length) prUrls = p.values;
-        linearKey = l.value;
-        if (!prUrls && !linearKey) fail(USAGE);
-      }
+      const parsed = parseLinkArgs(args);
+      if (parsed.error) fail(`${USAGE}\n  ${parsed.error}`);
+      const { clear, prUrls, linearKey, rest } = parsed;
       const id = rest[0] ?? selfWorkspaceId();
       if (!id) fail(`${USAGE}\n  (no id given and not running inside an Orchestra workspace)`);
       const res = await request('/link', {

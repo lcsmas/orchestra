@@ -571,7 +571,7 @@ function PrLinearBadges({
       {hiddenPRs > 0 && (
         <span
           className="pr-badge more"
-          title={`${hiddenPRs} more PR${hiddenPRs === 1 ? '' : 's'} from this branch`}
+          title={`${hiddenPRs} more linked PR${hiddenPRs === 1 ? '' : 's'}`}
         >
           +{hiddenPRs}
         </span>
