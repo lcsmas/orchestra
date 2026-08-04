@@ -67,16 +67,6 @@ env -u APPIMAGE ORCHESTRA_OZONE=wayland ORCHESTRA_OZONE_RELAUNCHED=1 \
   ./node_modules/electron/dist/electron .
 ```
 
-- **`env -u APPIMAGE` + `ORCHESTRA_OZONE_RELAUNCHED=1` are load-bearing, not
-  belt-and-braces** — whenever the INSTALLED app you run under predates the
-  `stripProcessLocalEnv` fix. Such a build leaks `APPIMAGE=…/Orchestra.AppImage`
-  and `ORCHESTRA_OZONE=x11` into your agent shell; `src/main/index.ts` then sees
-  a hint it wants to change and, because `APPIMAGE` is set, *spawns the
-  installed AppImage* and exits — so `/json` hands you a CDP target whose url is
-  `/tmp/.mount_Orches…/app.asar`, i.e. the SHIPPED build running against your
-  isolated `ORCHESTRA_HOME`. Every assertion then passes or fails against code
-  that is not yours. Always confirm the target url is your worktree path (the
-  driver below hard-fails otherwise) before trusting a single result.
 - **Never let a test instance run with a fake `APPIMAGE`.** `cli-shim.ts`
   rewrites `~/.local/bin/orchestra` on every GUI startup from that value, so a
   stub path silently breaks the user's real `orchestra` command. Either launch
@@ -102,8 +92,11 @@ env -u APPIMAGE ORCHESTRA_OZONE=wayland ORCHESTRA_OZONE_RELAUNCHED=1 \
 - Target discovery: `curl http://127.0.0.1:<port>/json` → `webSocketDebuggerUrl`
   of the `type: "page"` entry.
 - **Strip the inherited AppImage env, or you will verify the INSTALLED build.**
-  Your agent process is a child of the running Orchestra AppImage, so `APPIMAGE`
-  / `APPDIR` / `OWD` are in your environment. The ozone-relaunch block
+  Your agent process is a child of the running Orchestra AppImage. As of the
+  `stripProcessLocalEnv` fix (shared/child-env.ts) the app no longer passes
+  `APPIMAGE`/`APPDIR`/`ARGV0`/`OWD` to the PTYs it spawns — but you inherit them
+  from ANY older installed build, which is most of the time, so keep stripping
+  them explicitly. The ozone-relaunch block
   (`src/main/index.ts:67-91`) re-execs `$APPIMAGE` when the platform hint
   disagrees — so `npx electron .` silently hands off to the *packaged* app,
   which happily reports a healthy CDP target while running code from months ago.
