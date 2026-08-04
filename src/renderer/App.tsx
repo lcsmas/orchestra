@@ -313,15 +313,16 @@ export function App() {
 
   // Worktree sizes are far heavier to compute than diff stats (a full
   // `btrfs fi du` / `du` pass), so they ride their own effect on a slower
-  // cadence than the 8s stats poll. The 30s interval keeps the number live as
-  // a worktree's contents grow/shrink (builds, installs) without freezing it
-  // between workspace add/remove like a load-only refresh would; the btrfs
-  // scanner gets no page-cache discount, so the main process additionally
-  // TTL-caches its result and most of these polls are served from that cache.
+  // cadence than the 8s stats poll. Only the Resources page reads them (the
+  // sidebar dropped its size badge), so the poll is gated on that page being
+  // open — a closed Resources page costs zero scans. The 30s interval keeps
+  // the number live while the page IS open as worktrees grow/shrink (builds,
+  // installs); the btrfs scanner gets no page-cache discount, so the main
+  // process additionally TTL-caches its result.
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || page !== 'resources') return;
     return startVisiblePoll(refreshSizes, 30000);
-  }, [loaded, wsSetRev, refreshSizes]);
+  }, [loaded, page, wsSetRev, refreshSizes]);
 
   useEffect(() => {
     if (!loaded) return;

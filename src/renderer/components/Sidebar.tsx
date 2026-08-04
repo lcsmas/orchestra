@@ -36,28 +36,6 @@ interface Props {
   onNewOrchestrator: () => void;
 }
 
-/** Compact human size for a worktree, e.g. 1536 → "1.5 KB", 2.8e9 → "2.6 GB".
- *  Binary units (matches what `du`/file managers report). */
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let val = bytes / 1024;
-  let i = 0;
-  while (val >= 1024 && i < units.length - 1) {
-    val /= 1024;
-    i += 1;
-  }
-  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
-}
-
-/** Active rows only surface the size badge above this threshold. The name row
- *  wraps (`flex-wrap`), so on a busy row the badge costs a whole extra line —
- *  and with btrfs exclusive sizes most worktrees sit at a few MB of noise.
- *  Hiding those keeps rows single-line and makes a visible badge mean "this
- *  one is actually worth cleaning up". The archived list always shows sizes
- *  (it's the delete-candidates view and has room). */
-const SIZE_BADGE_MIN_BYTES = 50 * 1024 * 1024;
-
 /** Compact relative age for the status-note tooltip: "3m", "2h", "5d". */
 function formatAgeShort(ms: number): string {
   const m = Math.max(1, Math.round(ms / 60_000));
@@ -724,8 +702,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     repos,
     activeId,
     stats,
-    sizes,
-    sizesExclusive,
     prs,
     checks,
     linear,
@@ -749,12 +725,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     page,
     setPage,
   } = useStore();
-  // On btrfs the main process reports EXCLUSIVE bytes (what deleting the
-  // worktree would reclaim — reflink-shared node_modules isn't counted); the
-  // non-btrfs fallback reports apparent size. Same badge, honest tooltip.
-  const sizeTitle = sizesExclusive
-    ? 'Worktree size on disk — exclusive bytes, i.e. what deleting it would reclaim (data shared with other worktrees via btrfs reflinks is not counted)'
-    : 'Worktree size on disk (apparent; btrfs reflinks are shared between worktrees, so this is not all reclaimable)';
   const [version, setVersion] = useState('');
   const [archivedOpen, setArchivedOpen] = useState(false);
   // "Fix broken checks" (Orca-style): confirm, then main hands the failing
@@ -1557,27 +1527,31 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 </div>
               )}
             </div>
-            {!isDeleting && <UnreadToggle w={w} onToggle={onToggleUnread} />}
             {isDeleting ? (
               <span className="ws-spinner" title="Removing…" aria-label="Removing" role="status" />
-            ) : childIsGit ? (
-              <button
-                className="ws-icon-btn"
-                title="Archive workspace"
-                aria-label={`Archive workspace ${w.name}`}
-                onClick={(e) => onArchive(e, w.id)}
-              >
-                <ArchiveIcon />
-              </button>
             ) : (
-              <button
-                className="ws-icon-btn danger"
-                title={depth === 0 ? `Delete ${rootNoun}` : 'Delete session'}
-                aria-label={`Delete ${w.branch}`}
-                onClick={(e) => onDeleteScratch(e, w.id, w.branch)}
-              >
-                <TrashIcon />
-              </button>
+              <span className="ws-row-actions">
+                <UnreadToggle w={w} onToggle={onToggleUnread} />
+                {childIsGit ? (
+                  <button
+                    className="ws-icon-btn"
+                    title="Archive workspace"
+                    aria-label={`Archive workspace ${w.name}`}
+                    onClick={(e) => onArchive(e, w.id)}
+                  >
+                    <ArchiveIcon />
+                  </button>
+                ) : (
+                  <button
+                    className="ws-icon-btn danger"
+                    title={depth === 0 ? `Delete ${rootNoun}` : 'Delete session'}
+                    aria-label={`Delete ${w.branch}`}
+                    onClick={(e) => onDeleteScratch(e, w.id, w.branch)}
+                  >
+                    <TrashIcon />
+                  </button>
+                )}
+              </span>
             )}
           </div>
         );
@@ -1865,32 +1839,37 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 <RepoAccountBadge repoPath={repoPath} />
               </button>
               <span className="repo-header-actions">
-                <span className="repo-count">{items.length}</span>
-                {repoRemoteUrl(repoPath) && (
+                {/* Hover-only tools ride in an absolutely-positioned pill so
+                    they cost the header row no resting layout width — at rest
+                    the repo name gets the space instead of an invisible gap. */}
+                <span className="repo-header-tools">
+                  {repoRemoteUrl(repoPath) && (
+                    <button
+                      className="repo-scripts-btn"
+                      title={`Open ${repoLabel(repoPath)} on GitHub`}
+                      aria-label={`Open ${repoLabel(repoPath)} on GitHub`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const url = repoRemoteUrl(repoPath);
+                        if (url) window.orchestra.openExternal(url);
+                      }}
+                    >
+                      <GitHubIcon />
+                    </button>
+                  )}
                   <button
                     className="repo-scripts-btn"
-                    title={`Open ${repoLabel(repoPath)} on GitHub`}
-                    aria-label={`Open ${repoLabel(repoPath)} on GitHub`}
+                    title={`Configure setup / run / archive scripts for ${repoLabel(repoPath)}`}
+                    aria-label={`Configure scripts for ${repoLabel(repoPath)}`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      const url = repoRemoteUrl(repoPath);
-                      if (url) window.orchestra.openExternal(url);
+                      setScriptsRepoPath(repoPath);
                     }}
                   >
-                    <GitHubIcon />
+                    <GearIcon />
                   </button>
-                )}
-                <button
-                  className="repo-scripts-btn"
-                  title={`Configure setup / run / archive scripts for ${repoLabel(repoPath)}`}
-                  aria-label={`Configure scripts for ${repoLabel(repoPath)}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setScriptsRepoPath(repoPath);
-                  }}
-                >
-                  <GearIcon />
-                </button>
+                </span>
+                <span className="repo-count">{items.length}</span>
                 <button
                   className="repo-add"
                   title={`New workspace in ${repoLabel(repoPath)} — right-click to pick the base branch`}
@@ -1951,7 +1930,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 const renderWs = ({ ws: w, depth }: TreeRow) => {
               const s = stats[w.id];
               const hasChanges = !!s && (s.additions > 0 || s.deletions > 0);
-              const sizeBytes = sizes[w.id];
               const prRecord = prs[w.id];
               // The purple #N merged PR badge already conveys "merged", so
               // suppress the standalone merged pill when one is visible.
@@ -1995,22 +1973,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               // its orchestrator gets a small repo tag so the nesting reads.
               const isChild = depth > 0;
               const crossRepoChild = isChild && w.repoPath !== repoPath;
-              // Whether the `.ws-pills` strip will render anything. When it does,
-              // the disk size rides along at the strip's right edge so a long
-              // branch name doesn't strand the size on its own line above the
-              // badges; when it doesn't, the size stays inline on the name row.
-              const hasPills =
-                isOrchestratorRow ||
-                isCollapsed ||
-                crossRepoChild ||
-                (!!w.mergedAt && !w.divergedFromBase && !hasMergedPRBadge) ||
-                !!w.releasedAt ||
-                (!!w.unpushedAhead && w.unpushedAhead > 0) ||
-                hasChanges ||
-                w.setupStatus === 'failed' ||
-                w.setupStatus === 'running' ||
-                orderedVisiblePRs(prRecord).visible.length > 0 ||
-                !!linearIssue;
               return (
                 <div
                   key={w.id}
@@ -2151,14 +2113,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         </span>
                         <WorkspaceAccountBadge workspaceId={w.id} migratable />
                       </span>
-                      {sizeBytes != null && sizeBytes >= SIZE_BADGE_MIN_BYTES && !hasPills && (
-                        <span
-                          className="ws-size"
-                          title={sizeTitle}
-                        >
-                          {formatBytes(sizeBytes)}
-                        </span>
-                      )}
                       <span className="ws-pills">
                       {isOrchestratorRow && (
                         <span
@@ -2253,14 +2207,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       )}
                       <PrLinearBadges prRecord={prRecord} linearIssue={linearIssue} />
                       <CiBadge checks={checks[w.id]} onFix={() => onFixChecks(w)} />
-                      {sizeBytes != null && sizeBytes >= SIZE_BADGE_MIN_BYTES && hasPills && (
-                        <span
-                          className="ws-size ws-size-pills"
-                          title={sizeTitle}
-                        >
-                          {formatBytes(sizeBytes)}
-                        </span>
-                      )}
                       </span>
                     </div>
                     {w.statusText && (
@@ -2269,34 +2215,36 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       </div>
                     )}
                   </div>
-                  <UnreadToggle w={w} onToggle={onToggleUnread} />
-                  {!w.host ? (
+                  <span className="ws-row-actions">
+                    <UnreadToggle w={w} onToggle={onToggleUnread} />
+                    {!w.host ? (
+                      <button
+                        className="ws-icon-btn"
+                        title="Import to sandbox — move this workspace into an always-on sandbox container"
+                        aria-label={`Import workspace ${w.name} to sandbox`}
+                        onClick={(e) => onImportToSandbox(e, w.id, w.name)}
+                      >
+                        <SandboxUploadIcon />
+                      </button>
+                    ) : (
+                      <button
+                        className="ws-icon-btn"
+                        title="Return to this machine — restore the workspace from its sandbox to a local worktree"
+                        aria-label={`Return workspace ${w.name} from sandbox`}
+                        onClick={(e) => onEjectFromSandbox(e, w.id, w.name)}
+                      >
+                        <SandboxDownloadIcon />
+                      </button>
+                    )}
                     <button
                       className="ws-icon-btn"
-                      title="Import to sandbox — move this workspace into an always-on sandbox container"
-                      aria-label={`Import workspace ${w.name} to sandbox`}
-                      onClick={(e) => onImportToSandbox(e, w.id, w.name)}
+                      title="Archive workspace"
+                      aria-label={`Archive workspace ${w.name}`}
+                      onClick={(e) => onArchive(e, w.id)}
                     >
-                      <SandboxUploadIcon />
+                      <ArchiveIcon />
                     </button>
-                  ) : (
-                    <button
-                      className="ws-icon-btn"
-                      title="Return to this machine — restore the workspace from its sandbox to a local worktree"
-                      aria-label={`Return workspace ${w.name} from sandbox`}
-                      onClick={(e) => onEjectFromSandbox(e, w.id, w.name)}
-                    >
-                      <SandboxDownloadIcon />
-                    </button>
-                  )}
-                  <button
-                    className="ws-icon-btn"
-                    title="Archive workspace"
-                    aria-label={`Archive workspace ${w.name}`}
-                    onClick={(e) => onArchive(e, w.id)}
-                  >
-                    <ArchiveIcon />
-                  </button>
+                  </span>
                 </div>
               );
                 }; // end renderWs
@@ -2458,7 +2406,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 )}
                 {archived.map((w) => {
                   const isSelected = selectedArchived.has(w.id);
-                  const sizeBytes = sizes[w.id];
                   const isDeleting = deletingIds.has(w.id);
                   return (
                     <div
@@ -2485,14 +2432,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           {repoLabel(w.repoPath)} · {w.agent}
                         </div>
                       </div>
-                      {sizeBytes != null && (
-                        <span
-                          className="ws-size"
-                          title={sizeTitle}
-                        >
-                          {formatBytes(sizeBytes)}
-                        </span>
-                      )}
                       {isDeleting ? (
                         <span
                           className="ws-spinner"

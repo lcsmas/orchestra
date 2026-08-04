@@ -77,9 +77,8 @@ Single source of truth; **atomic selectors** so high-frequency events
 (`agent:tool`, `repo:syncState`) don't re-render unrelated components. State:
 `repos`, `workspaces`, `accounts`, `globalUsage`, and per-workspace derived maps
 `stats`/`sizes` (+`sizesExclusive`: btrfs reclaimable-bytes vs apparent-`du`
-flag, drives the size-badge tooltip; active rows hide the badge below
-`SIZE_BADGE_MIN_BYTES` (50 MB) so the wrapping badge doesn't add a line of
-noise per row)/`prs`/`checks` (CI verdicts, 30s `refreshAllChecks` poll —
+flag — read only by the Resources page, which is also the only thing that
+polls it; the sidebar has no size badge)/`prs`/`checks` (CI verdicts, 30s `refreshAllChecks` poll —
 red `.ci-badge` on fail only, click hands the run to the agent via
 `git:fixChecks`)/`linear`/`tools`/`contextTokens`/`repoSync`/`accountUsage`/
 `workspaceAccounts`, plus UI (`activeId`, `openHistory`, `view`, `loaded`).
@@ -164,7 +163,18 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   tooltips) + version.
 - **Styling**: quiet glyph buttons all share one `.icon-btn` recipe in
   styles.css (header icons, `.ws-icon-btn` row actions, `.repo-scripts-btn`,
-  overlay close ×'s); repo-header gear/GitHub icons are hover/focus-revealed.
+  overlay close ×'s).
+- **Hover actions float, they don't reserve width.** A workspace row's actions
+  (unread / sandbox import-eject / archive) live in `.ws-row-actions` and a repo
+  header's gear+GitHub in `.repo-header-tools` — both `position:absolute`
+  `z-index:3` pills (`border-radius:999px`, `--bg-4`, drop shadow) revealed by
+  `:hover`/`:focus-within` on the row/header. They are OUT of flow on purpose:
+  when these buttons sat in the flex row at `opacity:0` they still consumed
+  ~66px (rows) / ~44px (headers) at rest, which read as a permanent dead gap to
+  the right of every branch name and between a repo's count and its `+`.
+  `.ws-item` is `position:relative` to anchor its pill. Archived rows
+  deliberately render their buttons OUTSIDE the pill (inline, always visible) —
+  that list is the delete-candidates view.
 - **SpawnForest** models orchestrator→children (`childrenOf`, `roots`,
   `rootOf`); `TreeRow = {ws, depth}`.
 - Sections: orchestrator trees (top) → scratch trees → repo groups (git

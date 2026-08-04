@@ -1220,9 +1220,38 @@ input:focus, textarea:focus, select:focus {
   font-variant-numeric: tabular-nums;
 }
 .repo-header-actions {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
+}
+/* Hover-only repo tools (GitHub / gear). Lifted OUT of the row's flow and
+   floated as a pill just left of the count, so a resting header spends none of
+   its width on invisible buttons — the repo name gets it instead. */
+.repo-header-tools {
+  position: absolute;
+  top: 50%;
+  right: 100%;
+  transform: translateY(-50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 4px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-4);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.repo-header-tools:empty { display: none; }
+.repo-header:hover .repo-header-tools,
+.repo-header:focus-within .repo-header-tools {
+  opacity: 1;
+  pointer-events: auto;
 }
 .repo-add {
   width: 18px;
@@ -1284,6 +1313,7 @@ input:focus, textarea:focus, select:focus {
 }
 @keyframes repo-sync-spin { to { transform: rotate(360deg); } }
 .ws-item {
+  position: relative; /* anchor for the floating .ws-row-actions pill */
   padding: 4px 14px;
   border-left: 2px solid transparent;
   cursor: pointer;
@@ -1966,9 +1996,9 @@ input:focus, textarea:focus, select:focus {
 }
 
 /* Status pills (merged / released / unpushed / diff / setup). Wrapped in their
-   own full-width flex line so they always drop below the name+size line rather
-   than crowding in beside the right-pinned size. Collapses to nothing when the
-   workspace has no pills, so a clean row stays a single line. */
+   own full-width flex line so they always drop below the name line rather than
+   crowding in beside it. Collapses to nothing when the workspace has no pills,
+   so a clean row stays a single line. */
 .ws-pills {
   display: flex;
   align-items: center;
@@ -1982,23 +2012,6 @@ input:focus, textarea:focus, select:focus {
    inside the sidebar flex row the `gap` does the spacing, so drop it here. */
 .ws-pills > * { margin-left: 0; }
 .ws-meta { flex: 1; min-width: 0; }
-/* Worktree disk size — muted, pushed to the trailing edge of the meta row. */
-.ws-size {
-  margin-left: auto;
-  align-self: baseline;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-dim);
-  white-space: nowrap;
-  flex: none;
-}
-/* When the size rides inside the pills strip (any workspace that has badges),
-   pin it to the strip's trailing edge and center it against the pills, which
-   sit on the baseline-less `align-items: center` row. This puts the size on the
-   same line as the badges instead of stranding it above them. */
-.ws-size.ws-size-pills {
-  align-self: center;
-}
 /* Login badge for orchestrator/scratch rows, sitting directly after the branch
    name on the same line so showing which login the session uses costs no extra
    vertical space. The inner .account-badge.inline owns the text style; the row's
@@ -2182,19 +2195,43 @@ input:focus, textarea:focus, select:focus {
   border-radius: 3px;
   outline: none;
 }
-/* Row actions stay invisible until the row is hovered — or until one of them
-   holds keyboard focus, so tabbing through a row reveals its actions too. */
 .ws-icon-btn {
   width: 22px;
   height: 22px;
   border-radius: 4px;
+}
+/* Row actions stay invisible until the row is hovered — or until one of them
+   holds keyboard focus, so tabbing through a row reveals its actions too.
+   They live in an absolutely-positioned pill that FLOATS OVER the row's
+   trailing edge rather than sitting in its flow: a resting row spends none of
+   its width on hidden buttons, so branch names and badges get the full width
+   instead of a permanent dead gap on the right. */
+.ws-row-actions {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-4);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
   opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
 }
-.ws-item:hover .ws-icon-btn,
-.ws-item:focus-within .ws-icon-btn,
-.ws-item.archived .ws-icon-btn {
+.ws-item:hover .ws-row-actions,
+.ws-item:focus-within .ws-row-actions {
   opacity: 1;
+  pointer-events: auto;
 }
+/* Archived rows deliberately render their buttons OUTSIDE the pill wrapper:
+   that list is the delete-candidates view, so restore/delete stay inline and
+   always visible. */
 
 .archived-section {
   margin-top: 8px;

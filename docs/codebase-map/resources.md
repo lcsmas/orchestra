@@ -43,8 +43,9 @@ Dependency-free so `node --test` covers it without Electron:
   previous call, which matches the page's tick).
 - Disk: `du -sk` over `~/.orchestra/{scratch,logs,backups}` + the events dir,
   cached 60s (`DISK_TTL_MS`), refreshed fire-and-forget off the tick. Worktree
-  sizes are deliberately not resampled — the renderer already has them from
-  `workspaces:sizes`.
+  sizes are deliberately not resampled — the renderer pulls them from
+  `workspaces:sizes`, which since the sidebar dropped its size badge is polled
+  only while this page is open.
 
 ## UI — ResourcesView.tsx
 Rendered by `App.tsx` as an **overlay** on `.main` (`position:absolute`,

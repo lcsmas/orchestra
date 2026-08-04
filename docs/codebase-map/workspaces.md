@@ -282,7 +282,9 @@ it unless `CreateWorkspaceInput.baseBranch` overrides per workspace
 (right-click the repo's sidebar "+", or `orchestra spawn --base`).
 
 ## Worktree sizes — workspaces.ts `getWorktreeSizes`
-Sidebar size badges come from one scan over `ORCHESTRA_ROOT`
+Read ONLY by the Resources page (the sidebar's per-row size badge was removed);
+`App.tsx` therefore polls this only while `page === 'resources'`, so a closed
+Resources page costs zero scans. One scan over `ORCHESTRA_ROOT`
 (`src/main/workspaces.ts:~230`), returning `WorktreeSizes { sizes, exclusive }`
 (`src/shared/worktree-sizes.ts`, which also holds the pure output parsers +
 tests). Two scanners: `btrfs filesystem du -s --raw` reporting **exclusive
@@ -291,8 +293,8 @@ looking worktree is often ~2 MB exclusive — with a plain `du -k` apparent-size
 fallback (non-btrfs/macOS; `exclusive: false` switches the renderer tooltip).
 The btrfs pass gets no page-cache discount (~7 s of extent ioctls every time),
 so results are TTL-cached 120 s in main, keyed on the worktree-path set so
-add/delete invalidates; renderer polls every 30 s (`App.tsx`) and mostly hits
-that cache. Scratch dirs live outside `ORCHESTRA_ROOT` and are never scanned.
+add/delete invalidates; the renderer polls every 30 s while the Resources page
+is open (`App.tsx`) and mostly hits that cache. Scratch dirs live outside `ORCHESTRA_ROOT` and are never scanned.
 
 ## Key invariants
 One worktree per workspace · `accountId` pinned for life · `parentId` only
