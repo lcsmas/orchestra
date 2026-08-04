@@ -404,8 +404,10 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   rendered in the **Claude-Code-desktop compact style**: EVERY tool run (even a
   single tool) collapses to ONE quiet, muted, **borderless** one-line row —
   chevron + deduped tool-icon strip + a **verb label** (`describeToolRun`) +
-  inline **red/green diff counts** (`aggregateDiff`) + a live status dot while
-  running. There is no card frame at rest, so the row recedes behind the
+  inline **red/green diff counts** (`aggregateDiff`) — and **no status dot** in
+  either direction: running/failed state is carried by the row's color class alone
+  (`av-tool-run-pending`/`-error`) plus a screen-reader-only state word. There is
+  no card frame at rest, so the row recedes behind the
   assistant's prose; expanding reveals the individual `ToolCard`s inside a framed
   `.av-tool-run-body`. The verb label groups by ACTION, not tool name — "Created
   5 files", "Read 3 files", "Ran a command, used a tool", "Used 6 tools" (a

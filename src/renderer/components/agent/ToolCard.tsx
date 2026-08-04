@@ -48,7 +48,7 @@ function ToolCardImpl({ message }: Props) {
     </span>
   );
 
-  // TodoWrite gets a live progress fraction next to its status dot.
+  // TodoWrite gets a live progress fraction in the header's status slot.
   const todoProgress = useMemo(() => {
     if (name !== 'TodoWrite') return null;
     const todos = todosFrom(input);
@@ -66,8 +66,8 @@ function ToolCardImpl({ message }: Props) {
       title={statusLabel}
     >
       {todoProgress && <span className="av-tool-progress">{todoProgress}</span>}
-      {/* Status reads as a colored dot; errors also say it in words. */}
-      <span className="av-tool-status-dot" aria-hidden="true" />
+      {/* No status dot — a failure says so in words, a running card is carried by
+          the accent-tinted border/icon; the rest is screen-reader-only. */}
       {isError ? 'failed' : <span className="av-sr-only">{statusLabel}</span>}
     </span>
   );

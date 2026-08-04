@@ -609,16 +609,12 @@ h6.av-md-h {
   font-family: var(--font-mono); font-size: var(--av-fs-caption);
   font-variant-numeric: tabular-nums;
 }
-/* Push the status dot to the far right; the label owns the slack. */
-.av-tool-run-status { flex: none; margin-left: auto; display: inline-flex; align-items: center; }
-.av-tool-run-status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--av-tool-active); }
-.av-tool-run-status-pending .av-tool-run-status-dot {
-  animation: av-pulse 1.4s var(--av-ease) infinite;
-}
-@media (prefers-reduced-motion: reduce) { .av-tool-run-status-pending .av-tool-run-status-dot { animation: none; } }
-/* A run containing a failed tool is deliberately NOT coloured: a non-zero exit
-   is routine, and a red summary row cries wolf. The failure still shows on the
-   individual card once the run is expanded (`.av-tool-errored`, below). */
+/* No status dot on the collapsed row, in EITHER direction — the row looks the
+   same whether the run is going, done, or failed; only an .av-sr-only word
+   carries the state for screen readers.
+   A run containing a failed tool is likewise deliberately NOT coloured: a
+   non-zero exit is routine, and a red summary row cries wolf. The failure still
+   shows on the individual card once the run is expanded (`.av-tool-errored`). */
 /* Expanded body: the individual cards stack with a hairline between them. */
 .av-tool-run-body {
   border-top: 1px solid var(--av-hairline-faint);
@@ -672,23 +668,18 @@ h6.av-md-h {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* Status: a colored dot (words only for failures). Pending pulses — live edge. */
+/* Status: NO dot anywhere — failures say it in words, a running card is carried
+   by the accent-tinted border/icon below, everything else is screen-reader-only. */
 .av-tool-status {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: var(--av-fs-caption); font-family: var(--font-mono);
   padding: 0; border: none; border-radius: 0;
 }
-.av-tool-status-dot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; flex: none; }
-.av-tool-status-ok { color: var(--av-add); }
-.av-tool-status-ok .av-tool-status-dot { opacity: 0.9; }
 .av-tool-status-error { color: var(--av-error); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
-.av-tool-status-pending { color: var(--av-warn); }
-.av-tool-status-pending .av-tool-status-dot { animation: av-pulse 1.4s var(--av-ease) infinite; }
 @keyframes av-pulse {
   0%, 100% { opacity: 1; box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 35%, transparent); }
   50% { opacity: 0.55; box-shadow: 0 0 0 3px transparent; }
 }
-@media (prefers-reduced-motion: reduce) { .av-tool-status-pending .av-tool-status-dot { animation: none; } }
 .av-tool-progress { color: var(--av-text-dim); }
 
 /* A running tool card joins the live edge: accent-tinted border + icon. */

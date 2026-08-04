@@ -16,9 +16,11 @@ interface Props {
  *   › Used 6 tools
  *   › Ran a command, used a tool
  *
- * — with an inline red/green diff count when any Edit/Write is in the run, and a
- * live status dot while a tool is running (no per-tool icons — the verb label
- * carries the meaning, Claude-Code-desktop style). The whole row is a plain
+ * — with an inline red/green diff count when any Edit/Write is in the run (no
+ * per-tool icons, and no status dot at all — the verb label carries the meaning,
+ * Claude-Code-desktop style). "Running" survives only as a visually-hidden word
+ * for screen readers; the visible row is identical whatever the run's state.
+ * The whole row is a plain
  * clickable label; expanding reveals the individual
  * {@link ToolCard}s. A LONE tool renders the same compact row (not a full card),
  * so a single tool call is just as quiet as a run — the transcript stays about
@@ -74,12 +76,7 @@ function ToolGroupImpl({ tools }: Props) {
             {diff.removed > 0 && <span className="av-diff-del">{`−${diff.removed}`}</span>}
           </span>
         )}
-        {anyPending && (
-          <span className="av-tool-run-status av-tool-run-status-pending">
-            <span className="av-tool-run-status-dot" aria-hidden />
-            <span className="av-sr-only">running</span>
-          </span>
-        )}
+        {anyPending && <span className="av-sr-only">running</span>}
       </button>
       {open && (
         <div className="av-tool-run-body">

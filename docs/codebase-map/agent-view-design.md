@@ -78,8 +78,9 @@ motion `--av-ease{,-out}`, type `--av-fs-*` / `--av-lh-prose` / `--av-measure` /
 While the agent works, the view breathes: the streaming/thinking message's rail
 glows (`av-breathe` on the `::before` rail, keyed off `:has(.av-cursor)` /
 `:has(.av-thinking)`), "Thinking…"/"Working…" shimmer (`av-shimmer`,
-background-clip text), the pending tool's status dot and the enabled interrupt
-dot pulse (`av-pulse`). Turn end goes still. Row entrance (`av-enter`) animates
+background-clip text), the running tool card's accent-tinted border/icon, and the
+enabled interrupt dot pulses (`av-pulse`) — tool rows and tool cards carry no
+status dot of their own. Turn end goes still. Row entrance (`av-enter`) animates
 ONLY `.av-row:last-child` — a virtualized remount mid-list must not replay it.
 All of it sits behind `prefers-reduced-motion` guards.
 
@@ -311,11 +312,12 @@ carries the meaning, CC-desktop style. `describeToolRun` in `tool-util.ts` build
 the verb; a single `Skill` run reads "Used a skill <name>" where the name comes
 from `skillName(input)` — the SDK carries it on the `skill` field, e.g.
 `{skill:'ship'}`) + `.av-tool-run-diff` (inline `.av-diff-add`/`.av-diff-del` red/green counts) +
-optional `.av-tool-run-status` (`-pending` only > `.av-tool-run-status-dot`,
-pushed right — a failed tool gets NO red label and NO error dot on the collapsed
-row; a non-zero exit is routine and colouring the summary cries wolf, so the
-failure surfaces only on the expanded `.av-tool-errored` card);
-expanded body `.av-tool-run-body` holds the individual
+NO status dot in either direction — the `.av-tool-run-status*` classes are
+gone, so the row looks identical running, done, or failed; only an `.av-sr-only`
+"running" survives. (A failed tool likewise gets NO red label: a non-zero exit is
+routine and colouring the summary cries wolf, so the failure surfaces only on the
+expanded `.av-tool-errored` card.)
+Expanded body `.av-tool-run-body` holds the individual
 `.av-tool-card`s. The ONLY tool that renders as a standalone always-open card is
 TodoWrite (`isStandaloneTool` in StructuredView). (Replaced the older
 `.av-tool-group*` name-count row.)
@@ -323,8 +325,10 @@ TodoWrite (`isStandaloneTool` in StructuredView). (Replaced the older
 Tool card (`ToolCard.tsx`): `.av-tool-card` + `.av-tool-<name-lowercased>` +
 `.av-tool-errored`. Header `.av-tool-header-inner` > `.av-tool-icon` (SVG per
 tool, `tool-icons.tsx`) + `.av-tool-name` + `.av-tool-summary`; status
-`.av-tool-status` + `.av-tool-status-{ok,error,pending}` > `.av-tool-status-dot`
-(+ `.av-tool-progress` "n/m" for TodoWrite, `.av-sr-only` text for a11y).
+`.av-tool-status` + `.av-tool-status-{ok,error,pending}` — with NO dot inside:
+only `failed` in words for errors (+ `.av-tool-progress` "n/m" for TodoWrite,
+`.av-sr-only` text for a11y). The `-pending` class is kept purely as the `:has()`
+hook that accent-tints the running card's border and icon.
 Bodies: `.av-tool-bash{,-desc,-cmd,-out,-prompt}`, `.av-tool-summary{-body,-line}`,
 `.av-tool-detail{,-toggle}`, `.av-tool-generic{,-section,-label,-json}`,
 `.av-tool-out-error`, `.av-tool-empty`. Todos `.av-tool-todos` > `.av-todo` +
