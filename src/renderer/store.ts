@@ -720,6 +720,26 @@ window.orchestra.onWorkspaceUpdate((w) => {
     else if (prev.status !== w.status)
       dlog('status', `${w.id.slice(0, 8)} ${prev.status} → ${w.status} (${w.name})`);
   }
+  // Did the agent-reported PR links themselves change? Compared BEFORE the
+  // state write, since afterwards the previous value is gone.
+  //
+  // `s.prs[id]` is derived from `linkedPrs` but cached separately, refreshed by
+  // the 12s poll. Nothing invalidated it here, so `orchestra link` took up to a
+  // full poll interval to show its badge — measured at ~9s to link and ~11s to
+  // clear, which reads as the command having silently failed. Re-deriving on
+  // the broadcast that carries the change closes that gap.
+  //
+  // Gated on the links actually differing, NOT fired on every update:
+  // `workspace:update` also carries status-dot transitions, which arrive
+  // constantly, and each refresh is a `gh` call per linked PR. Comparing by
+  // canonical URL is sound because that is the identity the badge renders from.
+  const prevWs = useStore.getState().workspaces.find((x) => x.id === w.id);
+  const linkKey = (ws?: { linkedPrs?: { url: string }[] }) =>
+    (ws?.linkedPrs ?? []).map((p) => p.url).join(' ');
+  // A workspace this renderer has never seen has no cached PRs to invalidate;
+  // the poll picks it up. Only a CHANGE to an existing record needs the nudge.
+  const linksChanged = !!prevWs && linkKey(prevWs) !== linkKey(w);
+
   useStore.setState((s) => {
     // Upsert, not just patch: a workspace created by the main process — the
     // agent-driven /spawn flow — is unknown to this renderer, so a pure map()
@@ -733,6 +753,12 @@ window.orchestra.onWorkspaceUpdate((w) => {
         : [...s.workspaces, w],
     };
   });
+
+  if (linksChanged) {
+    // Fire-and-forget: a failed refresh just leaves the poll to catch up, and
+    // this runs inside an IPC listener that must not reject.
+    void useStore.getState().refreshPR(w.id);
+  }
 });
 window.orchestra.onWorkspaceRemoved((id) => {
   useStore.setState((s) => {
