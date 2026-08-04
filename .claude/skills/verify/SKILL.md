@@ -75,6 +75,31 @@ ORCHESTRA_HOME=<fresh tmp dir> ORCHESTRA_DEBUG_PORT=<unique port> npx electron .
   `remote-allow-origins=*`, so websockets don't 403).
 - Target discovery: `curl http://127.0.0.1:<port>/json` → `webSocketDebuggerUrl`
   of the `type: "page"` entry.
+- **Strip the inherited AppImage env, or you will verify the INSTALLED build.**
+  Your agent process is a child of the running Orchestra AppImage, so `APPIMAGE`
+  / `APPDIR` / `OWD` are in your environment. The ozone-relaunch block
+  (`src/main/index.ts:67-91`) re-execs `$APPIMAGE` when the platform hint
+  disagrees — so `npx electron .` silently hands off to the *packaged* app,
+  which happily reports a healthy CDP target while running code from months ago.
+  Launch with the env sanitized and the relaunch suppressed:
+
+  ```bash
+  env -u APPIMAGE -u APPDIR -u OWD -u ARGV0 \
+    WAYLAND_DISPLAY=wayland-N ELECTRON_OZONE_PLATFORM_HINT=wayland \
+    ORCHESTRA_OZONE=wayland ORCHESTRA_OZONE_RELAUNCHED=1 \
+    ORCHESTRA_HOME=<tmp> ORCHESTRA_DEBUG_PORT=<port> \
+    ./node_modules/electron/dist/electron . --ozone-platform=wayland
+  ```
+
+  Then ASSERT it: the `/json` target `url` must contain your worktree path.
+  `app.asar` in that url means you are driving the installed build — abort.
+- **Name your tmp dir after YOUR workspace, not `orch-verify*`.** Sibling agents
+  run this same harness concurrently and clean up with globs; a shared prefix
+  gets your `ORCHESTRA_HOME` deleted mid-drive (observed: the app died and the
+  seeded store vanished between two runs).
+- **`pkill -f <your tmp path>` kills your own shell** — the pattern appears in
+  the Bash tool's own command line. Resolve the pid first
+  (`ss -ltnp | grep <port>`) and kill by pid.
 
 ## Drive it (dep-free node, no MCP needed)
 
@@ -82,6 +107,19 @@ Native `WebSocket` + `Runtime.evaluate` (`returnByValue: true`) for DOM
 assertions and clicks; `Page.captureScreenshot` for pixels — you need BOTH, per
 the top of this doc. Keep a timeout race around screenshots — they hang forever
 if the window can't produce frames.
+
+**Park the cursor before reading computed styles.** CDP's pointer position
+persists across script runs, so a previous drive's click leaves a row `:hover`-ed
+— which brightens `--av-text-faint` to `--av-text-dim` and makes two rows that
+should match differ for a reason unrelated to the change. Dispatch a
+`mouseMoved` to a neutral corner first.
+
+**Resolve `--av-*` custom properties from inside the agent view, not `:root`.**
+They are declared on the agent-view scope; a probe parented to `document.body`
+resolves `var(--av-error)` to nothing and inherits the ambient colour — so a
+"the header is not red" assertion passes against a value the app never paints.
+Cross-check the resolved colour against an element that IS supposed to be red
+(e.g. the `.av-tool-status-error` pill) before trusting it.
 
 Drive gestures through TRUSTED input (`Input.dispatchMouseEvent`, including
 `type:'mouseWheel'` for scroll) — never a `.click()` call or a `scrollTop`
