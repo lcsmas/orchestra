@@ -62,12 +62,38 @@ isolation.
 ## Launch an isolated instance with CDP
 
 ```bash
-ORCHESTRA_HOME=<fresh tmp dir> ORCHESTRA_DEBUG_PORT=<unique port> npx electron .
+env -u APPIMAGE ORCHESTRA_OZONE=wayland ORCHESTRA_OZONE_RELAUNCHED=1 \
+  ORCHESTRA_HOME=<fresh tmp dir> ORCHESTRA_DEBUG_PORT=<unique port> \
+  ./node_modules/electron/dist/electron .
 ```
 
+- **`env -u APPIMAGE` + `ORCHESTRA_OZONE_RELAUNCHED=1` are load-bearing, not
+  belt-and-braces** — whenever the INSTALLED app you run under predates the
+  `stripProcessLocalEnv` fix. Such a build leaks `APPIMAGE=…/Orchestra.AppImage`
+  and `ORCHESTRA_OZONE=x11` into your agent shell; `src/main/index.ts` then sees
+  a hint it wants to change and, because `APPIMAGE` is set, *spawns the
+  installed AppImage* and exits — so `/json` hands you a CDP target whose url is
+  `/tmp/.mount_Orches…/app.asar`, i.e. the SHIPPED build running against your
+  isolated `ORCHESTRA_HOME`. Every assertion then passes or fails against code
+  that is not yours. Always confirm the target url is your worktree path (the
+  driver below hard-fails otherwise) before trusting a single result.
+- **Never let a test instance run with a fake `APPIMAGE`.** `cli-shim.ts`
+  rewrites `~/.local/bin/orchestra` on every GUI startup from that value, so a
+  stub path silently breaks the user's real `orchestra` command. Either launch
+  with `APPIMAGE` unset (the shim install then no-ops on Linux) or restore
+  `~/.local/bin/orchestra` afterwards.
 - Pick a UNIQUE debug port (e.g. 93xx picked from your workspace id) — sibling
   agents run identical harnesses and 9322 specifically has collided; after
   connecting, confirm the `/json` target's `url` points at YOUR worktree.
+- Run every step of the drive with the Bash sandbox DISABLED. A sandboxed call
+  gets a private `/tmp`, so the sway config / store seed you write in one call
+  is invisible to the unsandboxed app in the next — presenting as "sway: config
+  not found" and an empty sidebar.
+- Seeding state beats clicking it in: write `<home>/userData/orchestra/store.json`
+  (`{repos, workspaces, accounts, selfTuneRuns}`) before launch. Point
+  `worktreePath` at REAL git-registered worktrees (`git worktree list`) —
+  `pruneOrphanedWorkspaces` deletes records it can't verify, silently emptying
+  a fabricated store.
 - `ORCHESTRA_HOME` relocates userData (store/logs/login dirs) and the events
   spool — but NOT scratch dirs or worktrees, which the app still creates under
   the real `~/.orchestra`; clean up any workspace you let it create.

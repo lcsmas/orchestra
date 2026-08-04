@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { shellEnvSync } from 'shell-env';
+import { APPIMAGE_PATH } from './app-image';
+import { stripProcessLocalEnv } from '../shared/child-env';
 
 // ---------------------------------------------------------------- CLI mode ---
 // The same binary doubles as the `orchestra` CLI: `Orchestra.AppImage cli …`
@@ -68,7 +70,7 @@ if (!ORCHESTRA_CLI_MODE && process.platform === 'linux') {
     process.env.ORCHESTRA_OZONE_RELAUNCHED = '1';
     process.env.ELECTRON_OZONE_PLATFORM_HINT = want;
     try {
-      if (process.env.APPIMAGE) {
+      if (APPIMAGE_PATH) {
         // app.relaunch() can't be used here: its relauncher is forked from
         // this process and execs only after we exit — by which point the
         // AppImage's FUSE mount is gone and the relauncher dies (verified:
@@ -76,7 +78,7 @@ if (!ORCHESTRA_CLI_MODE && process.platform === 'linux') {
         // ourselves while the mount is still alive, then exit. The brief
         // two-instance overlap is safe — we exit before `ready`, so this
         // instance never opened a window or touched the store.
-        spawn(process.env.APPIMAGE, [], {
+        spawn(APPIMAGE_PATH, [], {
           detached: true,
           stdio: 'ignore',
           env: process.env as NodeJS.ProcessEnv,
@@ -89,6 +91,20 @@ if (!ORCHESTRA_CLI_MODE && process.platform === 'linux') {
       // Spawning failed — carry on in this process; worst case is XWayland.
     }
   }
+}
+
+// The ozone decision above is the LAST consumer of this process's own
+// packaging/bootstrap vars, so drop them now — before anything can spawn a
+// child. Everything Orchestra spawns (agent PTYs, per-repo run/setup/archive
+// scripts, the SDK subprocess) inherits `process.env` wholesale, and an
+// inherited `APPIMAGE` makes a child Electron believe it is the packaged app:
+// a workspace whose run script starts a DEV Electron build re-execs the
+// INSTALLED AppImage and exits, so the Run tab silently launches the shipped
+// binary instead of the user's worktree. One choke point here covers every
+// current and future spawn site. `APPIMAGE_PATH` kept the value for the two
+// places that legitimately need it (the relaunch above, the CLI shim).
+if (!ORCHESTRA_CLI_MODE) {
+  stripProcessLocalEnv(process.env);
 }
 
 // Desktop launchers (file manager, app grid, .desktop files, rofi/combi) start

@@ -12,6 +12,22 @@ Bootstrap order matters; several steps run *before* the window:
 - **Ozone platform** `:36` — decide Wayland vs X11 from `WAYLAND_DISPLAY` vs
   `ELECTRON_OZONE_PLATFORM_HINT`; if mismatched, relaunch (guarded by
   `ORCHESTRA_OZONE_RELAUNCHED`). Fixes HiDPI blur / white-screen on Wayland.
+  An AppImage build re-execs `APPIMAGE_PATH` itself rather than using
+  `app.relaunch()`, whose relauncher execs only after we exit — by which point
+  the FUSE mount is gone.
+- **Strip process-local env** `:96` — `stripProcessLocalEnv(process.env)`
+  (`src/shared/child-env.ts`) deletes `APPIMAGE`/`APPDIR`/`ARGV0`/`OWD`/
+  `ORCHESTRA_OZONE_RELAUNCHED` once the ozone step (their last legitimate
+  consumer) is done. Every child — agent PTYs, per-repo run/setup/archive
+  scripts, the SDK subprocess — inherits `process.env` wholesale, and an
+  inherited `APPIMAGE` tells a child Electron "you are the packaged app": a
+  workspace running `pnpm dev` on Orchestra itself re-exec'd the INSTALLED
+  AppImage and exited, so the Run tab silently launched the shipped binary
+  instead of the worktree. One choke point covers every present and future
+  spawn site. `ORCHESTRA_OZONE` is deliberately KEPT (the user's platform
+  choice should apply to a dev build too); `src/main/app-image.ts` captures
+  `APPIMAGE` at import time for the two places that still need it (the relaunch
+  above, the CLI shim).
 - **Shell env merge** `:95` — `$SHELL -ilc env` (via `shell-env`) so PATH/MCP
   secrets reach agent PTYs and scripts even when launched from a desktop icon.
 - **`ORCHESTRA_HOME`** `:128` — relocate userData + events spool (dev isolation);

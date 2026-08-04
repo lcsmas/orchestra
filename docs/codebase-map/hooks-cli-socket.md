@@ -146,7 +146,9 @@ rides on `$ORCHESTRA_LOGIN_ACCOUNT`).
 Fully non-interactive (destructive `delete` needs `--yes`).
 
 ## CLI shims (cli-shim.ts)
-- **User-facing** — Linux `~/.local/bin/orchestra` (`exec "$APPIMAGE" cli "$@"`),
+- **User-facing** — Linux `~/.local/bin/orchestra` (`exec "<AppImage>" cli "$@"`,
+  the path from `APPIMAGE_PATH` in `src/main/app-image.ts` — `process.env.APPIMAGE`
+  itself is stripped at startup, so read it only from there),
   Windows `%LOCALAPPDATA%\Orchestra\bin\orchestra.cmd`. Only overwritten if it
   carries the orchestra marker or is absent. macOS skipped (no agreed location).
 - **Agent-facing** — `~/.orchestra/bin/orchestra`, re-installed every GUI startup

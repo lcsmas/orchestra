@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { orchestraHome } from './platform';
 import { log } from './logger';
+import { APPIMAGE_PATH } from './app-image';
 
 // The shipped `orchestra` CLI lives inside the app bundle (dist-electron/cli.js,
 // reached via `<app> cli …`). A package.json `bin` entry only helps npm
@@ -50,7 +51,7 @@ function planShim(): ShimPlan | null {
   if (process.platform === 'linux') {
     // Only the AppImage gives a stable single-file path to re-invoke. A distro
     // package / `npm run dev` has no such target, so skip (run cli.js directly).
-    const appImage = process.env.APPIMAGE;
+    const appImage = APPIMAGE_PATH;
     if (!appImage) return null;
     const dir = path.join(os.homedir(), '.local', 'bin');
     // exec replaces the shell so the CLI's exit code propagates unchanged.
@@ -144,7 +145,7 @@ export function installAgentCliShim(): void {
     // the top of main/index.ts, so no second GUI window is ever opened. Under
     // a plain-Node host (no Electron), there is no cli-mode dispatch in the
     // entry, so the shim runs the bundled cli.js next to it directly.
-    const target = process.env.APPIMAGE || process.execPath;
+    const target = APPIMAGE_PATH || process.execPath;
     const invoke = process.versions.electron
       ? `"${target}" cli`
       : `"${process.execPath}" "${path.join(__dirname, 'cli.js')}"`;
