@@ -34,7 +34,8 @@ import {
 import { expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
 import { submitPlan } from '../shared/task-submit';
-import { parseLinearTicketRef, normalizePrUrl } from '../shared/linear';
+import { parseLinearTicketRef, parsePrUrl, prLinkKey } from '../shared/linear';
+import type { PrLink } from '../shared/linear';
 import { syncAccountInheritance } from './account-inherit';
 import { refreshAccountsNow } from './account-usage';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
@@ -1035,7 +1036,9 @@ export async function dispatchSetBaseRequest(
 
 export interface LinkResult {
   ok: boolean;
-  prUrl?: string;
+  /** Every PR now linked to the workspace, not just the ones this call added —
+   * so the CLI can echo the resulting state rather than the delta. */
+  prUrls?: string[];
   linearKey?: string;
   /** True when the call cleared a link rather than setting one (`--clear`). */
   cleared?: boolean;
@@ -1046,11 +1049,18 @@ export interface LinkResult {
  * agent reporting what it is actually working on, rather than Orchestra
  * inferring it from the branch name.
  *
- * This is the ONLY writer of `linkedPrUrl` / `linkedLinearKey`. Both were
+ * This is the ONLY writer of `linkedPrs` / `linkedLinearKey`. Both were
  * previously derived: the PR by exact-matching the branch against every PR's
  * head ref, the Linear key by regex-mining the branch. Both derivations broke
  * in ways the agent can trivially fix, because the agent holds the ground
  * truth — it opened the PR, it was handed the ticket.
+ *
+ * PRs ACCUMULATE: each `--pr` appends rather than replaces, because one
+ * workspace legitimately owns several pull requests (a metarepo branch lands
+ * one PR per submodule repo). Re-linking a PR already present is a silent
+ * no-op rather than a duplicate badge — identity is {@link prLinkKey}, which
+ * treats owner/repo case-insensitively the way GitHub does. Linear stays
+ * single-valued: a workspace implements one ticket.
  *
  * Validation is strict and REJECTS rather than normalizing, because a link is
  * an assertion the agent is making about its own work:
@@ -1067,30 +1077,55 @@ export interface LinkResult {
  * rendering (so a well-formed but nonexistent key simply shows nothing). Fail
  * fast on shape, lazily on existence.
  *
- * `clear` unsets whichever fields were named. Note it assigns `undefined`
- * explicitly rather than deleting keys: the renderer's `workspace:update`
- * reducer is a merge (`{...old, ...incoming}`), so an omitted key means "no
- * opinion" and would leave a cleared link rendering forever. */
+ * `clear` unsets whichever fields were named. With `--pr <url>` it drops just
+ * that one PR (the others survive); with a bare `--pr` flag it drops them all.
+ * Note it assigns `undefined` explicitly rather than deleting keys: the
+ * renderer's `workspace:update` reducer is a merge (`{...old, ...incoming}`),
+ * so an omitted key means "no opinion" and would leave a cleared link
+ * rendering forever. An emptied list is stored as `undefined`, not `[]`, so
+ * "no links" has exactly one representation. */
 export async function dispatchLinkRequest(opts: {
   id: string;
-  prUrl?: string;
+  /** Repeatable: `orchestra link --pr A --pr B` links both in one call. */
+  prUrls?: string[];
   linearKey?: string;
   clear?: boolean;
 }): Promise<LinkResult> {
   const ws = store.getWorkspace(opts.id);
   if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
 
+  const existing = ws.linkedPrs ?? [];
+
   if (opts.clear) {
     // Clearing needs to know WHICH link to drop; clearing both on a bare
     // `--clear` would let a fat-fingered call silently discard a good link.
-    const dropPr = opts.prUrl !== undefined;
+    const dropPr = opts.prUrls !== undefined;
     const dropLinear = opts.linearKey !== undefined;
     if (!dropPr && !dropLinear) {
       return { ok: false, error: 'specify --pr and/or --linear with --clear' };
     }
+    // `--clear --pr <url>` removes that one PR; `--clear --pr` (no value)
+    // removes every PR. Unparseable URLs are rejected rather than ignored, so
+    // a typo can't read as "cleared nothing" while reporting success.
+    let nextPrs: PrLink[] | undefined = existing;
+    if (dropPr) {
+      const named = opts.prUrls ?? [];
+      if (named.length === 0) {
+        nextPrs = undefined;
+      } else {
+        const drop = new Set<string>();
+        for (const raw of named) {
+          const parsed = parsePrUrl(raw);
+          if (!parsed) return { ok: false, error: `not a GitHub pull-request URL: ${raw}` };
+          drop.add(prLinkKey(parsed));
+        }
+        const kept = existing.filter((p) => !drop.has(prLinkKey(p)));
+        nextPrs = kept.length ? kept : undefined;
+      }
+    }
     const updated: Workspace = {
       ...ws,
-      ...(dropPr ? { linkedPrUrl: undefined } : {}),
+      ...(dropPr ? { linkedPrs: nextPrs } : {}),
       ...(dropLinear ? { linkedLinearKey: undefined } : {}),
     };
     await store.upsertWorkspace(updated);
@@ -1098,15 +1133,27 @@ export async function dispatchLinkRequest(opts: {
     return { ok: true, cleared: true };
   }
 
-  const prRaw = opts.prUrl?.trim();
+  const prRaws = (opts.prUrls ?? []).map((s) => s.trim()).filter(Boolean);
   const linearRaw = opts.linearKey?.trim();
-  if (!prRaw && !linearRaw) return { ok: false, error: 'nothing to link: pass --pr and/or --linear' };
+  if (!prRaws.length && !linearRaw) {
+    return { ok: false, error: 'nothing to link: pass --pr and/or --linear' };
+  }
 
-  let prUrl: string | undefined;
-  if (prRaw) {
-    const normalized = normalizePrUrl(prRaw);
-    if (!normalized) return { ok: false, error: `not a GitHub pull-request URL: ${prRaw}` };
-    prUrl = normalized;
+  // Append, deduped by PR identity. Existing entries keep their position so a
+  // re-link never reorders the badges; a repeat is simply a no-op.
+  let nextPrs: PrLink[] | undefined;
+  if (prRaws.length) {
+    const merged = [...existing];
+    const seen = new Set(merged.map(prLinkKey));
+    for (const raw of prRaws) {
+      const parsed = parsePrUrl(raw);
+      if (!parsed) return { ok: false, error: `not a GitHub pull-request URL: ${raw}` };
+      const key = prLinkKey(parsed);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(parsed);
+    }
+    nextPrs = merged;
   }
 
   let linearKey: string | undefined;
@@ -1118,12 +1165,12 @@ export async function dispatchLinkRequest(opts: {
 
   const updated: Workspace = {
     ...ws,
-    ...(prUrl ? { linkedPrUrl: prUrl } : {}),
+    ...(nextPrs ? { linkedPrs: nextPrs } : {}),
     ...(linearKey ? { linkedLinearKey: linearKey } : {}),
   };
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
-  return { ok: true, prUrl, linearKey };
+  return { ok: true, prUrls: nextPrs?.map((p) => p.url), linearKey };
 }
 
 /** Record how many times the agent has auto-renamed, in a worktree sentinel the
@@ -1872,11 +1919,11 @@ export interface WhoamiResult {
   parentId?: string | null;
   repoPath?: string;
   baseBranch?: string;
-  /** Agent-reported PR URL, or null when unlinked. Same live-read rationale as
-   * `parentId`: it is mutable at any moment (`orchestra link`), so the
-   * link-instruction hook must ask for it each fire rather than trust a value
+  /** Agent-reported PR URLs, empty when unlinked. Same live-read rationale as
+   * `parentId`: they are mutable at any moment (`orchestra link`), so the
+   * link-instruction hook must ask for them each fire rather than trust a value
    * baked into the pty env at spawn. */
-  linkedPrUrl?: string | null;
+  linkedPrUrls?: string[];
   /** Agent-reported Linear issue key, or null when unlinked. */
   linkedLinearKey?: string | null;
   error?: string;
@@ -1899,7 +1946,7 @@ export function dispatchWhoamiRequest(input: { id?: string }): WhoamiResult {
     parentId: ws.parentId ?? null,
     repoPath: ws.repoPath,
     baseBranch: ws.baseBranch,
-    linkedPrUrl: ws.linkedPrUrl ?? null,
+    linkedPrUrls: (ws.linkedPrs ?? []).map((p) => p.url),
     linkedLinearKey: ws.linkedLinearKey ?? null,
   };
 }
@@ -3074,6 +3121,29 @@ branch name to the PR's head ref, so renaming a branch (which Orchestra
 actively nudges you to do) silently lost the badge. A linked URL does not care
 what the branch is called.
 
+### Several PRs, and PRs in other repos
+
+\`--pr\` repeats, and each call **adds** rather than replaces:
+
+\`\`\`bash
+orchestra link --pr https://github.com/acme/api/pull/12 --pr https://github.com/acme/web/pull/7
+\`\`\`
+
+Link **every** PR your work produced. A metarepo branch typically lands one PR
+per submodule, and those live in *different GitHub repos* — that is fully
+supported, because each link is polled by its own \`owner/repo/number\` rather
+than through this workspace's own repo. Re-linking a PR you already linked is a
+silent no-op, so it is safe to run again if you are unsure.
+
+Remove one without disturbing the others:
+
+\`\`\`bash
+orchestra link --clear --pr https://github.com/acme/api/pull/12   # just that one
+orchestra link --clear --pr                                       # every PR
+\`\`\`
+
+\`orchestra whoami\` shows what is currently linked.
+
 ## Link a Linear issue
 
 \`\`\`bash
@@ -3382,7 +3452,7 @@ case "\$linear_val" in ''|'(none)') has_linear=0 ;; *) has_linear=1 ;; esac
 [ "\$has_pr" = 1 ] && [ "\$has_linear" = 1 ] && exit 0
 
 echo "[orchestra] This workspace's sidebar badges are populated only by what you report — Orchestra does NOT infer them from the branch name."
-[ "\$has_pr" = 0 ] && echo "- No PR linked. The moment you open a pull request for this work, run: orchestra link --pr <url>"
+[ "\$has_pr" = 0 ] && echo "- No PR linked. The moment you open a pull request for this work, run: orchestra link --pr <url> — and if your work spans several repos (a metarepo branch lands one PR per submodule), link EVERY one: orchestra link --pr <url> --pr <url>"
 [ "\$has_linear" = 0 ] && echo "- No Linear issue linked. If this work has a ticket, run: orchestra link --linear <TEAM-123>"
 echo "Only link what you actually know — a guess is worse than a blank badge, and neither is required to do the work. See the orchestra-link skill for details."
 exit 0

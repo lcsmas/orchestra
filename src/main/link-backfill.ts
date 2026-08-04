@@ -1,12 +1,25 @@
 import { store } from './store';
 import { platform } from './platform';
-import { findPullRequest } from './git';
-import { parseLinearIssueCandidate } from '../shared/linear';
+import { findPullRequestsByBranch } from './git';
+import { parseLinearIssueCandidate, parsePrUrl } from '../shared/linear';
+import type { PrLink } from '../shared/linear';
 import { verifyLinearIssueByKey } from './linear';
 import { scoped } from './logger';
 import type { Workspace } from '../shared/types';
 
 const blog = scoped('link-backfill');
+
+/** Current backfill revision. Bump to make the migration run again.
+ *
+ *  1 — v0.5.197: seeded the single `linkedPrUrl` + `linkedLinearKey`.
+ *  2 — this change: `linkedPrs` is a LIST carrying owner/repo/number, so
+ *      revision 1's stores hold a shape the badge path no longer reads. Every
+ *      workspace revision 1 had already marked would otherwise be stranded
+ *      with no badge and no way to get one back short of its agent running
+ *      again — and most of these workspaces are finished work whose agent
+ *      never will. That is precisely the population the backfill exists for,
+ *      which is why a bare done/not-done flag was not enough. */
+const LINK_BACKFILL_VERSION = 2;
 
 /**
  * One-shot migration from branch-derived PR/Linear badges to agent-reported
@@ -38,13 +51,13 @@ const blog = scoped('link-backfill');
  * agent can link it, which is the mechanism this whole change is about.
  */
 export async function backfillWorkspaceLinks(): Promise<void> {
-  if (store.linkBackfillDone) return;
+  if (store.linkBackfillVersion >= LINK_BACKFILL_VERSION) return;
 
   const targets = store.workspaces.filter(
-    (w) => !w.archived && w.kind !== 'scratch' && (!w.linkedPrUrl || !w.linkedLinearKey),
+    (w) => !w.archived && w.kind !== 'scratch' && (!w.linkedPrs?.length || !w.linkedLinearKey),
   );
   if (targets.length === 0) {
-    await store.markLinkBackfillDone();
+    await store.markLinkBackfillVersion(LINK_BACKFILL_VERSION);
     return;
   }
 
@@ -68,9 +81,9 @@ export async function backfillWorkspaceLinks(): Promise<void> {
   // one whose PR links this migration simply skips. That is a strictly better
   // outcome than blocking, because the whole feature is "agents report their
   // own links" — an unbackfilled workspace is asked by the SessionStart hook.
-  const repos = [...new Set(targets.filter((w) => !w.linkedPrUrl).map((w) => w.repoPath))].filter(
-    Boolean,
-  );
+  const repos = [
+    ...new Set(targets.filter((w) => !w.linkedPrs?.length).map((w) => w.repoPath)),
+  ].filter(Boolean);
   if (repos.length) {
     const WARM_TIMEOUT_MS = 20_000;
     await Promise.all(
@@ -78,7 +91,7 @@ export async function backfillWorkspaceLinks(): Promise<void> {
         Promise.race([
           // Any branch name works to prime the per-repo cache; we discard the
           // result and read it back per workspace below (a cache hit).
-          findPullRequest(repoPath, '').catch(() => null),
+          findPullRequestsByBranch(repoPath, '').catch(() => null),
           new Promise((r) => setTimeout(r, WARM_TIMEOUT_MS)),
         ]),
       ),
@@ -89,20 +102,28 @@ export async function backfillWorkspaceLinks(): Promise<void> {
     let next: Workspace | null = null;
 
     // --- PR: the branch head-ref match, exactly as the old badge did it.
-    if (!ws.linkedPrUrl) {
+    if (!ws.linkedPrs?.length) {
       try {
         // Normally a hit on the cache warmed above; a repo that timed out
         // re-enters here and is bounded the same way, so one slow repo cannot
         // stall the rest of the migration.
         const prs = (await Promise.race([
-          findPullRequest(ws.repoPath, ws.branch),
+          findPullRequestsByBranch(ws.repoPath, ws.branch),
           new Promise<null>((r) => setTimeout(() => r(null), 5_000)),
-        ])) as Awaited<ReturnType<typeof findPullRequest>> | null;
+        ])) as Awaited<ReturnType<typeof findPullRequestsByBranch>> | null;
         // `error` means gh couldn't be asked — NOT that there is no PR. Storing
         // nothing here is right; storing a link is what we skip.
-        if (prs && !prs.error && prs.latest) {
-          next = { ...(next ?? ws), linkedPrUrl: prs.latest.url };
-          prFilled++;
+        if (prs && !prs.error && prs.all.length) {
+          // Store EVERY PR the branch matched, not just the newest: the schema
+          // is now a list, and the old badge itself rendered up to three. Taking
+          // only `latest` would quietly drop links the previous behaviour showed.
+          // A URL that fails to parse is skipped rather than stored malformed —
+          // it came from gh's own html_url, so this should never fire.
+          const links = prs.all.map((p) => parsePrUrl(p.url)).filter((p): p is PrLink => !!p);
+          if (links.length) {
+            next = { ...(next ?? ws), linkedPrs: links };
+            prFilled += links.length;
+          }
         }
       } catch {
         /* per-workspace best-effort */
@@ -131,6 +152,6 @@ export async function backfillWorkspaceLinks(): Promise<void> {
     }
   }
 
-  await store.markLinkBackfillDone();
+  await store.markLinkBackfillVersion(LINK_BACKFILL_VERSION);
   blog.info(`backfill complete: ${prFilled} PR link(s), ${linearFilled} Linear link(s)`);
 }

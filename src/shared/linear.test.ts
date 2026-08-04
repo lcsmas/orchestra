@@ -5,6 +5,8 @@ import {
   parseLinearTicketRef,
   ticketBranchName,
   normalizePrUrl,
+  parsePrUrl,
+  prLinkKey,
 } from './linear.ts';
 
 test('parseLinearIssueCandidate extracts and upper-cases a candidate key', () => {
@@ -185,4 +187,59 @@ test('normalizePrUrl requires the URL to BE a PR link, not merely contain one', 
   // pointing at whatever the outer link decides to do.
   assert.equal(normalizePrUrl('https://evil.test/r?to=https://github.com/a/b/pull/9'), null);
   assert.equal(normalizePrUrl('see https://github.com/a/b/pull/9 for details'), null);
+});
+
+test('parsePrUrl returns the URL components, not just the canonical URL', () => {
+  // The whole point of storing components: polling is a direct
+  // `gh api repos/<owner>/<repo>/pulls/<number>` call, so these three must come
+  // out of the same parse that canonicalises the URL.
+  assert.deepEqual(parsePrUrl('https://github.com/acme/app/pull/12/files'), {
+    url: 'https://github.com/acme/app/pull/12',
+    owner: 'acme',
+    repo: 'app',
+    number: 12,
+  });
+});
+
+test('parsePrUrl yields a numeric number, not a string', () => {
+  // Stored in the workspace record and interpolated into a REST path; a string
+  // would survive JSON round-tripping and typecheck under `unknown` casts, so
+  // assert the conversion explicitly.
+  const pr = parsePrUrl('https://github.com/acme/app/pull/7');
+  assert.equal(typeof pr?.number, 'number');
+  assert.equal(pr?.number, 7);
+});
+
+test('parsePrUrl and normalizePrUrl agree on every rejection', () => {
+  // normalizePrUrl now delegates to parsePrUrl, so its existing suite covers
+  // the parser's accept/reject surface. This pins the delegation itself: if
+  // they ever diverge, one of the two callers silently gets a different answer.
+  for (const bad of [
+    'https://github.com/acme/app/issues/12',
+    'https://gitlab.com/acme/app/pull/12',
+    'https://evil.test/r?to=https://github.com/a/b/pull/9',
+    '',
+    '   ',
+  ]) {
+    assert.equal(parsePrUrl(bad), null, bad);
+    assert.equal(normalizePrUrl(bad), null, bad);
+  }
+});
+
+test('prLinkKey identifies a PR case-insensitively across owner/repo spelling', () => {
+  // GitHub owner/repo are case-insensitive, so two agents linking the same PR
+  // with different casing must dedupe to one badge rather than two.
+  const a = parsePrUrl('https://github.com/Acme/App/pull/12');
+  const b = parsePrUrl('https://github.com/acme/app/pull/12');
+  assert.equal(prLinkKey(a!), prLinkKey(b!));
+  const other = parsePrUrl('https://github.com/acme/app/pull/13');
+  assert.notEqual(prLinkKey(a!), prLinkKey(other!));
+});
+
+test('prLinkKey separates same-numbered PRs in different repos', () => {
+  // The metarepo case: one branch, several submodule repos, each with its own
+  // PR #1. Keying on number alone would collapse them into one badge.
+  const loop = parsePrUrl('https://github.com/mobile-club/workspace/pull/1');
+  const api = parsePrUrl('https://github.com/Next-Mobiles/api/pull/1');
+  assert.notEqual(prLinkKey(loop!), prLinkKey(api!));
 });

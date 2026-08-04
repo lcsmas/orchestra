@@ -261,28 +261,37 @@ export interface Workspace {
    * poll, and only pays for a gh call once the cheap local ancestry check sees
    * the recorded version no longer contains the tip. */
   releasedAt?: number;
-  /** URL of the pull request the AGENT reported for this workspace, via
+  /** Pull requests the AGENT reported for this workspace, via
    * `orchestra link --pr <url>` (the only writer — see `dispatchLinkRequest`).
+   * The ONLY source for the sidebar's PR badges.
    *
-   * Why stored at all, when PRs are otherwise discovered by matching the
-   * branch against every PR's head ref: that match is exact string equality
-   * (`git.ts` `fetchRepoPRs` indexes `byBranch`), so it silently loses the PR
-   * the moment the branch is renamed — and Orchestra actively *nudges* every
-   * agent to rename its branch (`rename-instruction.sh`), often after the PR
-   * already exists. The agent is the one actor that knows which PR is its own,
-   * so it records that here once and the link stops depending on a name.
+   * Replaces the previous branch-name derivation, which matched the branch
+   * against every PR's head ref by exact string equality (`fetchRepoPRs`
+   * indexed `byBranch`). That silently lost the PR the moment the branch was
+   * renamed — and Orchestra actively *nudges* every agent to rename its branch
+   * (`rename-instruction.sh`), often after the PR already exists, so its own
+   * feature broke its own PR detection. The agent is the one actor that knows
+   * which PR is its own; asking it beats guessing.
    *
-   * This is a POINTER, never a status cache: the live open/merged/closed state
-   * still comes from the repo-wide `gh` fetch each poll, keyed off this URL
-   * instead of the branch name. A stored link therefore can't go stale in the
-   * way a stored state would — the badge keeps telling the truth even on an
-   * idle workspace whose agent will never run again.
+   * An ARRAY because one workspace legitimately owns several PRs: a metarepo
+   * branch spans submodules, so a single ticket lands as one PR per submodule
+   * repo. Each entry carries its own `owner`/`repo`, so those PRs are polled
+   * independently of the workspace's `repoPath` — which is precisely what the
+   * old repo-wide fetch, rooted at that one path, could never see.
+   *
+   * Entries are POINTERS, never a status cache: `open`/`merged`/`closed` is
+   * re-read from GitHub every poll (`gh api repos/<owner>/<repo>/pulls/<n>`),
+   * so a link cannot go stale the way a stored state would — the badge keeps
+   * telling the truth on an idle workspace whose agent will never run again.
+   * The four fields are written and cleared as a unit and all come from one
+   * parse of one URL (`parsePrUrl`), so they cannot disagree with each other.
    *
    * Sticky by design: never auto-cleared (not on rename — that's the whole
    * point — and not on a failed lookup, which usually means `gh` couldn't be
-   * asked). Absent on every record predating this field, and on workspaces
-   * whose PR is still found by branch name. */
-  linkedPrUrl?: string;
+   * asked). Absent on records predating this field and on workspaces whose
+   * agent has never linked one; a one-shot backfill (`link-backfill.ts`) seeds
+   * it from the retired branch match so existing rows keep their badges. */
+  linkedPrs?: PrLink[];
   /** Linear issue key (e.g. `NMC-261`) the AGENT reported for this workspace,
    * via `orchestra link --linear <KEY>`. The ONLY source for the sidebar's
    * Linear badge.
@@ -439,6 +448,17 @@ export interface RepoEntry {
    * configured or the URL cannot be parsed. */
   remoteUrl?: string;
 }
+
+/** A pull request an AGENT reported for a workspace (`orchestra link --pr`),
+ * resolved into everything needed to both open it and poll it.
+ *
+ * Re-exported from `shared/linear.ts`, where {@link parsePrUrl} produces it —
+ * all four fields come from one parse of one URL, so they cannot disagree.
+ * `owner`/`repo` are what let a linked PR be polled with a direct
+ * `gh api repos/<owner>/<repo>/pulls/<number>` call, needing no local checkout,
+ * which is how one workspace can track PRs living in several different repos. */
+import type { PrLink } from './linear';
+export type { PrLink };
 
 interface PRInfo {
   url: string;

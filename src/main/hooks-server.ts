@@ -163,7 +163,14 @@ export async function startHooksServer(): Promise<void> {
                 200,
                 await dispatchLinkRequest({
                   id: msg.id,
-                  prUrl: typeof msg.prUrl === 'string' ? msg.prUrl : undefined,
+                  // An ARRAY, and its presence is meaningful independently of
+                  // its contents: `--clear --pr` (flag, no value) arrives as
+                  // `[]` and means "drop every PR", while an absent key means
+                  // "leave PRs alone". Collapsing empty-to-undefined here would
+                  // silently turn a clear-all into a no-op.
+                  prUrls: Array.isArray(msg.prUrls)
+                    ? msg.prUrls.filter((u): u is string => typeof u === 'string')
+                    : undefined,
                   linearKey: typeof msg.linearKey === 'string' ? msg.linearKey : undefined,
                   clear: msg.clear === true,
                 }),

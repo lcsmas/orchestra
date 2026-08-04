@@ -154,6 +154,14 @@ Usage:
   orchestra linear rm <url|TEAM-123>             Un-pin a ticket (never touches Linear)
   orchestra linear pin <url|TEAM-123> [--workspace <id>]
                                                  Attach a ticket to an existing workspace
+  orchestra link [--pr <url>]... [--linear <KEY>] [id]
+                                                 Report the PR(s) / Linear issue THIS workspace
+                                                 is working on — the only source for the sidebar
+                                                 badges. --pr repeats and ADDS (link every PR
+                                                 when work spans several repos)
+  orchestra link --clear [--pr [<url>]] [--linear]
+                                                 Drop links: --pr <url> removes one,
+                                                 a bare --pr removes them all
   orchestra add-repo <path>                       Register a repo by path
   orchestra delete <id> [--yes]                  Delete a workspace (worktree + branch)
   orchestra accounts                              List configured Claude accounts (id + label)
@@ -209,6 +217,37 @@ function takeFlag(args: string[], flag: string): { value?: string; rest: string[
   const value = args[idx + 1];
   const rest = [...args.slice(0, idx), ...args.slice(idx + 2)];
   return { value, rest };
+}
+
+/** Pull EVERY `--flag value` occurrence out of args, in order.
+ *
+ * For flags that legitimately repeat (`orchestra link --pr A --pr B`), where
+ * {@link takeFlag} would silently keep only the first and discard the rest —
+ * a caller linking three submodule PRs in one call would see two vanish with
+ * no error. `present` distinguishes "flag never given" from "given with no
+ * value", which `--clear --pr` (drop them all) depends on. */
+function takeAllFlags(
+  args: string[],
+  flag: string,
+): { values: string[]; present: boolean; rest: string[] } {
+  const values: string[] = [];
+  const rest: string[] = [];
+  let present = false;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] !== flag) {
+      rest.push(args[i]);
+      continue;
+    }
+    present = true;
+    const value = args[i + 1];
+    // A following token that is itself a flag means this occurrence had no
+    // value (`--clear --pr --linear`), so don't swallow it as one.
+    if (value !== undefined && !value.startsWith('--')) {
+      values.push(value);
+      i++;
+    }
+  }
+  return { values, present, rest };
 }
 
 /** Pull a valueless `--flag` out of args, returning its presence and the leftover args. */
@@ -403,36 +442,41 @@ async function main(argv: string[]): Promise<void> {
       // own work — an explicit id stays available for a coordinator fixing up a
       // child. Orchestra no longer guesses either link from the branch name, so
       // this is the only way the badges are ever populated.
-      const USAGE = 'usage: orchestra link [--pr <url>] [--linear <KEY>] [--clear] [id]';
-      // Pull `--clear` FIRST: in clear mode `--pr`/`--linear` are valueless
-      // selectors, so running takeFlag on them would swallow the following
+      const USAGE =
+        'usage: orchestra link [--pr <url>]... [--linear <KEY>] [--clear] [id]';
+      // Pull `--clear` FIRST: in clear mode `--pr`/`--linear` may be valueless
+      // selectors, so parsing them as value-flags would swallow the following
       // argument (`--clear --pr --linear` would read "--linear" as the URL).
       const { present: clear, rest: afterClear } = takeBoolFlag(args, '--clear');
-      let prUrl: string | undefined;
+      // `--pr` repeats: one workspace can own several PRs (a metarepo branch
+      // lands one per submodule repo), so every occurrence is collected.
+      const p = takeAllFlags(afterClear, '--pr');
+      const l = takeFlag(p.rest, '--linear');
+      const rest = l.rest;
+      let prUrls: string[] | undefined;
       let linearKey: string | undefined;
-      let rest: string[];
       if (clear) {
-        const p = takeBoolFlag(afterClear, '--pr');
-        const l = takeBoolFlag(p.rest, '--linear');
+        // `--pr` alone drops every PR; `--pr <url>` drops just that one. An
+        // empty-but-present array is the "all" signal, so it must survive the
+        // wire — see the /link route's note on not collapsing it.
+        if (p.present) prUrls = p.values;
         // Empty string = "named, no value", which the dispatcher reads as
-        // `!== undefined` to decide which field to unset.
-        if (p.present) prUrl = '';
-        if (l.present) linearKey = '';
-        rest = l.rest;
-        if (!p.present && !l.present) fail(`${USAGE}\n  --clear needs --pr and/or --linear`);
+        // `!== undefined` to decide whether to unset the Linear key.
+        if (l.value !== undefined || afterClear.includes('--linear')) linearKey = l.value ?? '';
+        if (!p.present && linearKey === undefined) {
+          fail(`${USAGE}\n  --clear needs --pr and/or --linear`);
+        }
       } else {
-        const p = takeFlag(afterClear, '--pr');
-        const l = takeFlag(p.rest, '--linear');
-        prUrl = p.value;
+        if (p.present && !p.values.length) fail(`${USAGE}\n  --pr needs a pull-request URL`);
+        if (p.values.length) prUrls = p.values;
         linearKey = l.value;
-        rest = l.rest;
-        if (!prUrl && !linearKey) fail(USAGE);
+        if (!prUrls && !linearKey) fail(USAGE);
       }
       const id = rest[0] ?? selfWorkspaceId();
       if (!id) fail(`${USAGE}\n  (no id given and not running inside an Orchestra workspace)`);
       const res = await request('/link', {
         id,
-        ...(prUrl !== undefined ? { prUrl } : {}),
+        ...(prUrls !== undefined ? { prUrls } : {}),
         ...(linearKey !== undefined ? { linearKey } : {}),
         ...(clear ? { clear: true } : {}),
       });
@@ -441,7 +485,11 @@ async function main(argv: string[]): Promise<void> {
         process.stdout.write('Link cleared\n');
       } else {
         const parts: string[] = [];
-        if (res.prUrl) parts.push(`PR ${res.prUrl as string}`);
+        // Echoes the resulting state, not just this call's additions, so a
+        // repeat link makes the full set visible rather than looking like a
+        // no-op that lost the others.
+        const linked = (res.prUrls as string[] | undefined) ?? [];
+        if (linked.length) parts.push(linked.length === 1 ? `PR ${linked[0]}` : `PRs ${linked.join(', ')}`);
         if (res.linearKey) parts.push(`Linear ${res.linearKey as string}`);
         process.stdout.write(`Linked ${parts.join(' and ')}\n`);
       }
@@ -536,7 +584,9 @@ async function main(argv: string[]): Promise<void> {
         // Agent-reported links. `(none)` is load-bearing, not cosmetic: the
         // link-instruction hook greps these rows to decide whether to nudge,
         // so the unlinked state needs a stable, matchable token.
-        ['pr', (res.linkedPrUrl as string | null | undefined) || '(none)'],
+        // Several PRs render space-separated on the one row, so the hook's
+        // `(none)` test stays a simple presence check regardless of count.
+        ['pr', ((res.linkedPrUrls as string[] | undefined) ?? []).join(' ') || '(none)'],
         ['linear', (res.linkedLinearKey as string | null | undefined) || '(none)'],
       ];
       const w = Math.max(...lines.map(([k]) => k.length));

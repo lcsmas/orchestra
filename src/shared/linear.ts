@@ -98,6 +98,47 @@ export function parseLinearTicketRef(input: string): string | null {
  *   normalizePrUrl('https://gitlab.com/a/b/pull/12')        -> null
  */
 export function normalizePrUrl(input: string): string | null {
+  return parsePrUrl(input)?.url ?? null;
+}
+
+/** A pull request an agent reported, resolved into everything needed to both
+ * link to it and poll it.
+ *
+ * All four fields come from ONE parse of ONE URL, so they cannot disagree —
+ * `owner`/`repo`/`number` are not independent inputs, they are the URL's own
+ * components. They are stored rather than re-derived at poll time so a
+ * malformed URL fails once, loudly, at `orchestra link` — where an agent is
+ * present to see the error and retry — instead of silently yielding no badge on
+ * every poll forever after. */
+export interface PrLink {
+  /** Canonical `https://github.com/<owner>/<repo>/pull/<n>` — the click target,
+   * and equal to the `html_url` GitHub's API returns for the same PR. */
+  url: string;
+  owner: string;
+  repo: string;
+  number: number;
+}
+
+/**
+ * Parse a GitHub pull-request URL into its canonical form plus its components,
+ * or null if it isn't one.
+ *
+ * This is {@link normalizePrUrl} with the pieces kept rather than thrown away.
+ * The regex always captured owner/repo/number — canonicalising the URL requires
+ * them — so surfacing them costs nothing and removes the need for a second
+ * parse at poll time.
+ *
+ * Why the components matter: polling a linked PR is a direct
+ * `gh api repos/<owner>/<repo>/pulls/<number>` call, which needs no local
+ * checkout and no `cwd`. That frees a workspace's PRs from its own `repoPath` —
+ * a metarepo workspace can link PRs living in its submodules' separate GitHub
+ * repos, which a repo-wide fetch rooted at one path structurally cannot see.
+ *
+ *   parsePrUrl('https://github.com/a/b/pull/12/files')
+ *     -> { url: 'https://github.com/a/b/pull/12', owner: 'a', repo: 'b', number: 12 }
+ *   parsePrUrl('https://github.com/a/b/issues/12') -> null
+ */
+export function parsePrUrl(input: string): PrLink | null {
   const raw = input.trim();
   if (!raw) return null;
   const m = raw.match(
@@ -105,7 +146,19 @@ export function normalizePrUrl(input: string): string | null {
   );
   if (!m) return null;
   // Canonical form: always https, never www, no trailing slug/query/fragment.
-  return `https://github.com/${m[1]}/${m[2]}/pull/${m[3]}`;
+  return {
+    url: `https://github.com/${m[1]}/${m[2]}/pull/${m[3]}`,
+    owner: m[1],
+    repo: m[2],
+    number: Number(m[3]),
+  };
+}
+
+/** Identity for a linked PR: two links naming the same pull request are the
+ * same link regardless of how they were typed. Used to dedupe on append, since
+ * the canonical `url` already collapses casing/slug/query variants. */
+export function prLinkKey(pr: PrLink): string {
+  return `${pr.owner.toLowerCase()}/${pr.repo.toLowerCase()}#${pr.number}`;
 }
 
 /**

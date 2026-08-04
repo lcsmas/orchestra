@@ -950,14 +950,20 @@ export const apiHandlers: ApiHandlerTable = {
   findPR: async (id) => {
     const ws = store.getWorkspace(id);
     if (!ws) throw new Error('workspace not found');
-    if (ws.kind === 'scratch') return { all: [], open: null, latest: null, mergedCount: 0 };
-    // Piggyback release detection on the PR poll — never on the hot stats
-    // poll; the underlying computation is memoized on (branch tip, releases).
-    void detectAndUpdateReleaseState(id).catch(() => {});
-    // `linkedPrUrl` (agent-reported) takes priority over the branch head-ref
-    // match inside findPullRequest; the live PR state still comes from the
-    // repo-wide fetch either way.
-    return findPullRequest(ws.repoPath, ws.branch, ws.linkedPrUrl);
+    // Release detection still needs the workspace's own repo (it compares the
+    // branch tip against local tags), so it stays gated on being a git
+    // workspace even though the PR lookup below no longer is. It remains
+    // piggybacked here rather than on the hot stats poll because the
+    // underlying computation is memoized on (branch tip, releases).
+    if (ws.kind !== 'scratch' && ws.repoPath) {
+      void detectAndUpdateReleaseState(id).catch(() => {});
+    }
+    // PRs are whatever the AGENT linked (`orchestra link --pr`) — no branch
+    // matching, and no dependence on `ws.repoPath`, so a workspace can track
+    // PRs that live in other repos entirely (metarepo submodules). Unlinked
+    // workspaces of every kind return empty here, which is why the old
+    // `kind === 'scratch'` early-return is no longer needed.
+    return findPullRequest(ws.linkedPrs);
   },
 
   findChecks: async (id) => {

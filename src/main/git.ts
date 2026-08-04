@@ -5,9 +5,8 @@ import { rm } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { ChecksForBranch, DiffFile, DiffStats } from '../shared/types';
-// NOTE the .ts extension: git.ts is imported by node --test suites
-// (git-merge-state / git-verify-landed), where strip-types resolves VALUE
-// imports at runtime and an extensionless relative path is ERR_MODULE_NOT_FOUND.
+import { prLinkKey } from '../shared/linear.ts';
+import type { PrLink } from '../shared/linear.ts';
 import { branchChecksFromRuns, type WorkflowRunLite } from '../shared/ci-state.ts';
 // Explicit `.ts` extension: git.ts is pulled into Node's type-stripping test
 // runner (git-merge-state.test.ts et al.), which does not resolve extensionless
@@ -873,76 +872,29 @@ async function fetchRepoPRs(repoPath: string): Promise<RepoPRFetch> {
   }
 }
 
-/** Find the PR record for an agent-reported PR URL within a repo-wide fetch.
+/** Every PR whose head ref is `branch`, via the repo-wide fetch — the RETIRED
+ * branch-name derivation, kept for exactly one caller: the one-shot backfill
+ * that seeds `linkedPrs` for workspaces predating agent-reported links.
  *
- * The fetch is indexed by head branch, which is exactly the index a linked URL
- * exists to bypass, so this scans instead. That is cheap (a few hundred PRs at
- * worst, once per poll) and it is the whole point: the URL keeps identifying
- * the right PR after a branch rename, which the `byBranch` lookup cannot.
+ * Not used by the badge path, which reads only what the agent linked. Once the
+ * backfill has run everywhere this and `fetchRepoPRs` can go; until then it is
+ * the only way a workspace whose agent will never run again keeps its badge.
  *
- * Returns a single-PR record rather than the branch's whole set — a linked URL
- * names ONE pull request, so the badge shows that one and does not inherit
- * whatever else happens to share its head ref. */
-function recordForUrl(byBranch: Map<string, PRRecord>, url: string): PRRecord | null {
-  for (const rec of byBranch.values()) {
-    const hit = rec.all.find((p) => p.url === url);
-    if (hit) {
-      return {
-        all: [hit],
-        open: hit.state === 'OPEN' ? hit : null,
-        latest: hit,
-        mergedCount: hit.state === 'MERGED' ? 1 : 0,
-      };
-    }
-  }
-  return null;
-}
-
-/** Resolve a workspace's PRs.
- *
- * Two sources, in priority order:
- *  1. `linkedPrUrl` — the PR the AGENT reported (`orchestra link --pr`). Wins
- *     when set, because it survives branch renames and odd branch names, both
- *     of which silently blank the branch match. Orchestra nudges every agent to
- *     rename its branch, so that case is routine, not exotic.
- *  2. the branch's head-ref match — unchanged behaviour for every workspace
- *     that has never linked, so nothing regresses and no backfill is required
- *     for the link to be *optional*.
- *
- * The linked URL supplies only WHICH pr; its live open/merged/closed state
- * still comes from this fetch every poll. That split is deliberate — an agent
- * knows which PR is its own, but only GitHub knows whether it has since been
- * merged, so storing the state instead of the pointer would go stale on any
- * workspace whose agent stopped running.
- *
- * A linked URL that is not in the fetch (wrong repo, deleted PR, or a typo that
- * passed shape validation) falls back to the branch match rather than showing
- * nothing, so a bad link degrades to the old behaviour instead of blanking the
- * badge. */
-export async function findPullRequest(
+ * Keeps the repo-wide fetch's cache/in-flight dedup because the backfill hits
+ * every workspace at once, and this machine routinely has ~45 workspaces over
+ * ~5 repos — the exact fan-out that drained the quota before. */
+export async function findPullRequestsByBranch(
   repoPath: string,
   branch: string,
-  linkedPrUrl?: string,
 ): Promise<PRRecord> {
-  const resolve = (byBranch: Map<string, PRRecord>): PRRecord => {
-    if (linkedPrUrl) {
-      const linked = recordForUrl(byBranch, linkedPrUrl);
-      if (linked) return linked;
-    }
-    return byBranch.get(branch) ?? EMPTY_PRS;
-  };
-
   const cached = repoPRCache.get(repoPath);
   if (cached && Date.now() - cached.at < PR_CACHE_TTL) {
-    return resolve(cached.byBranch);
+    return cached.byBranch.get(branch) ?? EMPTY_PRS;
   }
 
   let inflight = repoPRInflight.get(repoPath);
   if (!inflight) {
     inflight = fetchRepoPRs(repoPath).then((res) => {
-      // Cache successes for the full TTL. Do NOT cache failures — a rate-limit
-      // window or transient network blip should be retried by the next poll
-      // rather than pinning "PR?" on every row for the whole TTL.
       if (!res.error) repoPRCache.set(repoPath, { at: Date.now(), byBranch: res.byBranch });
       return res;
     });
@@ -952,7 +904,112 @@ export async function findPullRequest(
 
   const res = await inflight;
   if (res.error) return { ...EMPTY_PRS, error: res.error };
-  return resolve(res.byBranch);
+  return res.byBranch.get(branch) ?? EMPTY_PRS;
+}
+
+/* ---- Linked-PR polling.
+ *
+ * A linked PR is fetched DIRECTLY by its own coordinates —
+ * `gh api repos/<owner>/<repo>/pulls/<number>` — rather than being looked up
+ * inside a repo-wide fetch. Three consequences, all deliberate:
+ *
+ *  1. No `cwd` is needed, so a workspace's PRs are no longer confined to its
+ *     own `repoPath`. A metarepo branch spans submodules that live in SEPARATE
+ *     GitHub repos; the repo-wide fetch, rooted at one path, structurally could
+ *     not see those PRs no matter what the agent linked.
+ *  2. Cost scales with LINKED PRS rather than workspaces — one small REST call
+ *     each, on the core budget (never the separately-drainable GraphQL one that
+ *     `gh pr list` uses and that this subsystem already exhausted once). The
+ *     repo-wide fetch's own dedup rationale still holds for the backfill, which
+ *     is why `fetchRepoPRs` survives below.
+ *  3. Caching keys on the PR itself, so several workspaces linking the same PR
+ *     collapse to one request. */
+const linkedPRCache = new Map<string, { at: number; info: PRInfoLite }>();
+const linkedPRInflight = new Map<string, Promise<PRInfoLite | { error: string }>>();
+
+type PRInfoLite = { url: string; number: number; title: string; state: PRState };
+type PRState = 'OPEN' | 'CLOSED' | 'MERGED';
+
+/** Fetch ONE pull request by its coordinates. No repo checkout involved. */
+async function fetchLinkedPR(pr: PrLink): Promise<PRInfoLite | { error: string }> {
+  try {
+    const { stdout } = await pexec(
+      'gh',
+      [
+        'api',
+        `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`,
+        '--jq',
+        // Same merged_at mapping as the repo-wide fetch: REST's own `state` is
+        // only open/closed, so a merged PR would otherwise read as CLOSED.
+        '{url: .html_url, number, title, state: ' +
+          '(if .merged_at then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end)}',
+      ],
+      // No `cwd`: the URL carries owner/repo, so this works regardless of which
+      // repo (if any) the workspace is checked out from.
+      { maxBuffer: 1024 * 1024 },
+    );
+    const s = stdout.trim();
+    if (!s) return { error: 'empty response from gh' };
+    return JSON.parse(s) as PRInfoLite;
+  } catch (err) {
+    // Same rationale as fetchRepoPRs: report the failure rather than an empty
+    // result, so "we could not ask" stays distinguishable from "no such PR".
+    const e = err as { stderr?: string; message?: string };
+    const detail = (e.stderr || e.message || '').trim().split('\n')[0] || 'gh query failed';
+    return { error: detail };
+  }
+}
+
+/** Resolve the live state of every PR an agent linked to a workspace.
+ *
+ * The links supply WHICH pull requests; GitHub supplies their state on every
+ * poll. That split is what keeps a stored link from going stale the way a
+ * stored status would — the badge stays truthful on an idle workspace whose
+ * agent will never run again.
+ *
+ * Failures are per-PR and surfaced: if every linked PR failed to fetch, the
+ * result carries `error` so the badge shows amber "PR?" rather than silently
+ * vanishing, which would read as "no PR exists". A partial failure keeps the
+ * PRs that did resolve — one dead link should not blank the others. */
+export async function findPullRequest(linkedPrs?: PrLink[]): Promise<PRRecord> {
+  const links = linkedPrs ?? [];
+  if (!links.length) return EMPTY_PRS;
+
+  const settled = await Promise.all(
+    links.map(async (pr) => {
+      const key = prLinkKey(pr);
+      const cached = linkedPRCache.get(key);
+      if (cached && Date.now() - cached.at < PR_CACHE_TTL) return cached.info;
+
+      let inflight = linkedPRInflight.get(key);
+      if (!inflight) {
+        inflight = fetchLinkedPR(pr).then((res) => {
+          // Cache successes only — a rate-limit window or transient blip should
+          // be retried next poll rather than pinned for the whole TTL.
+          if (!('error' in res)) linkedPRCache.set(key, { at: Date.now(), info: res });
+          return res;
+        });
+        linkedPRInflight.set(key, inflight);
+        void inflight.catch(() => {}).finally(() => linkedPRInflight.delete(key));
+      }
+      return inflight;
+    }),
+  );
+
+  const ok = settled.filter((r): r is PRInfoLite => !('error' in r));
+  if (!ok.length) {
+    const firstError = settled.find((r) => 'error' in r) as { error: string } | undefined;
+    return { ...EMPTY_PRS, error: firstError?.error ?? 'gh query failed' };
+  }
+
+  // Newest-first, matching what the sidebar's badge order expects.
+  const all = [...ok].sort((a, b) => b.number - a.number);
+  return {
+    all,
+    open: all.find((p) => p.state === 'OPEN') ?? null,
+    latest: all[0] ?? null,
+    mergedCount: all.filter((p) => p.state === 'MERGED').length,
+  };
 }
 
 /* ---- CI checks (GitHub Actions) — same repo-wide + cached pattern as PRs.
