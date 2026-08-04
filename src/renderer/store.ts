@@ -735,7 +735,7 @@ window.orchestra.onWorkspaceUpdate((w) => {
   // canonical URL is sound because that is the identity the badge renders from.
   const prevWs = useStore.getState().workspaces.find((x) => x.id === w.id);
   const linkKey = (ws?: { linkedPrs?: { url: string }[] }) =>
-    (ws?.linkedPrs ?? []).map((p) => p.url).join(' ');
+    (ws?.linkedPrs ?? []).map((p) => p.url).join('\u0000');
   // A workspace this renderer has never seen has no cached PRs to invalidate;
   // the poll picks it up. Only a CHANGE to an existing record needs the nudge.
   const linksChanged = !!prevWs && linkKey(prevWs) !== linkKey(w);

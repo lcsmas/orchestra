@@ -229,6 +229,7 @@ function takeFlag(args: string[], flag: string): { value?: string; rest: string[
 function takeAllFlags(
   args: string[],
   flag: string,
+  accepts: (token: string) => boolean = (t) => !t.startsWith('--'),
 ): { values: string[]; present: boolean; rest: string[] } {
   const values: string[] = [];
   const rest: string[] = [];
@@ -240,14 +241,27 @@ function takeAllFlags(
     }
     present = true;
     const value = args[i + 1];
-    // A following token that is itself a flag means this occurrence had no
-    // value (`--clear --pr --linear`), so don't swallow it as one.
-    if (value !== undefined && !value.startsWith('--')) {
+    // Whether the following token belongs to this flag. By default anything
+    // that isn't itself a flag (`--clear --pr --linear` → `--pr` had no value);
+    // callers whose flag takes an OPTIONAL value pass a narrower predicate, so
+    // a trailing positional argument isn't swallowed as a value.
+    if (value !== undefined && accepts(value)) {
       values.push(value);
       i++;
     }
   }
   return { values, present, rest };
+}
+
+/** Does this token look like a GitHub PR URL (as opposed to a workspace id)?
+ *
+ * Deliberately loose — it only has to separate "a URL the user meant as a PR"
+ * from "a workspace id". Strict validation is `parsePrUrl`'s job in the main
+ * process, which still rejects a malformed URL with a precise message. Matching
+ * loosely here means a typo'd URL is reported as a bad URL rather than silently
+ * treated as a workspace id. */
+function isPrUrlish(token: string): boolean {
+  return /^https?:\/\//i.test(token) || token.includes('/pull/');
 }
 
 /** Parse `orchestra link`'s arguments.
@@ -279,7 +293,17 @@ export function parseLinkArgs(args: string[]): {
   let linearKey: string | undefined;
 
   if (clear) {
-    const p = takeAllFlags(afterClear, '--pr');
+    // In clear mode `--pr` takes an OPTIONAL value, which makes
+    // `link --clear --pr <token>` genuinely ambiguous: is <token> the PR to
+    // drop, or the positional workspace id? Resolve it by SHAPE, not position —
+    // a PR value is always a github.com pull URL (`parsePrUrl` enforces that
+    // downstream anyway), so anything that isn't one is the id.
+    //
+    // Resolving it positionally instead made `link --clear --pr <ID>` eat the
+    // id and fail with "unknown workspace" — the same class of bug as the
+    // `--linear` swallow below, and it does not announce itself, because
+    // falling back to $ORCHESTRA_WS_ID means the command LOOKS well-formed.
+    const p = takeAllFlags(afterClear, '--pr', isPrUrlish);
     const l = takeBoolFlag(p.rest, '--linear');
     if (p.present) prUrls = p.values;
     // Empty string = "named, no value", which the dispatcher reads as

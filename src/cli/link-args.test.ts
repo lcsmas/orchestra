@@ -23,13 +23,27 @@ test('clear mode: --pr --linear does not swallow the workspace id', () => {
   assert.deepEqual(r.rest, ['WS-ID'], 'the id must survive as a positional');
 });
 
-test('clear mode: --pr <id-shaped token> is not mistaken for a URL', () => {
-  // `link --clear --pr <ID>` is ambiguous by construction: --pr takes an
-  // optional value. The id lands in prUrls, which the dispatcher then rejects
-  // as a malformed URL rather than silently clearing the wrong thing.
+test('clear mode: bare --pr followed by the workspace id drops ALL PRs', () => {
+  // `link --clear --pr <ID>` is ambiguous by construction (--pr takes an
+  // OPTIONAL value here), and resolving it positionally is wrong: the id got
+  // eaten as the PR to drop, `rest` came back empty, and the command fell
+  // through to $ORCHESTRA_WS_ID — failing with "unknown workspace" while
+  // looking perfectly well-formed. Resolve by SHAPE instead: a PR value is
+  // always a URL, so a non-URL token is the positional id.
   const r = parseLinkArgs(['--clear', '--pr', 'WS-ID']);
   assert.equal(r.error, undefined);
-  assert.deepEqual(r.prUrls, ['WS-ID']);
+  assert.deepEqual(r.prUrls, [], 'bare --pr means drop ALL PRs');
+  assert.deepEqual(r.rest, ['WS-ID'], 'the id must survive as a positional');
+});
+
+test('clear mode: a malformed PR URL is still treated as a URL, not an id', () => {
+  // The shape test is loose on purpose. A typo'd URL must reach the dispatcher
+  // so it fails with "not a GitHub pull-request URL"; treating it as a
+  // workspace id would report "unknown workspace" and send the user hunting
+  // entirely the wrong thing.
+  const r = parseLinkArgs(['--clear', '--pr', 'https://github.com/a/b/pulls/1', 'WS-ID']);
+  assert.deepEqual(r.prUrls, ['https://github.com/a/b/pulls/1']);
+  assert.deepEqual(r.rest, ['WS-ID']);
 });
 
 test('clear mode: an explicit URL drops one PR and keeps the id', () => {
