@@ -927,6 +927,25 @@ export async function findPullRequestsByBranch(
 const linkedPRCache = new Map<string, { at: number; info: PRInfoLite }>();
 const linkedPRInflight = new Map<string, Promise<PRInfoLite | { error: string }>>();
 
+/** Longer than the repo-wide `PR_CACHE_TTL`, because the two paths scale
+ * oppositely and only this one scales with WORKSPACES.
+ *
+ * The repo-wide fetch is one (paginated) request per REPO — ~3 here — so a 60s
+ * TTL is cheap. Per-PR polling is one request per LINKED PR, and at this
+ * machine's real scale (20 live workspaces; measured, not assumed) three PRs
+ * each at 60s would be ~3600 requests/hour against the 5000/hour core budget.
+ * That is 72% of the budget spent on badges, in the subsystem that has already
+ * exhausted a quota once — too close to ship, and the failure mode is the whole
+ * sidebar showing amber "PR?".
+ *
+ * 5 minutes cuts that to ~720/hour (~14%) while staying well inside how fast PR
+ * state actually changes: a PR that merges is stale on the badge for at most a
+ * few minutes, which is invisible next to the 12s poll it rides on. The poll
+ * cadence itself is deliberately NOT slowed — it also drives release detection,
+ * and a longer cache is the cheaper lever (a cache hit costs no request at all).
+ * gh's conditional-request caching makes the real number lower still. */
+const LINKED_PR_CACHE_TTL = 300_000;
+
 type PRInfoLite = { url: string; number: number; title: string; state: PRState };
 type PRState = 'OPEN' | 'CLOSED' | 'MERGED';
 
@@ -979,7 +998,7 @@ export async function findPullRequest(linkedPrs?: PrLink[]): Promise<PRRecord> {
     links.map(async (pr) => {
       const key = prLinkKey(pr);
       const cached = linkedPRCache.get(key);
-      if (cached && Date.now() - cached.at < PR_CACHE_TTL) return cached.info;
+      if (cached && Date.now() - cached.at < LINKED_PR_CACHE_TTL) return cached.info;
 
       let inflight = linkedPRInflight.get(key);
       if (!inflight) {
