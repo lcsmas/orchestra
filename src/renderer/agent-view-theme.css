@@ -612,13 +612,13 @@ h6.av-md-h {
 /* Push the status dot to the far right; the label owns the slack. */
 .av-tool-run-status { flex: none; margin-left: auto; display: inline-flex; align-items: center; }
 .av-tool-run-status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--av-tool-active); }
-.av-tool-run-status-error .av-tool-run-status-dot { background: var(--av-error); }
 .av-tool-run-status-pending .av-tool-run-status-dot {
   animation: av-pulse 1.4s var(--av-ease) infinite;
 }
 @media (prefers-reduced-motion: reduce) { .av-tool-run-status-pending .av-tool-run-status-dot { animation: none; } }
-/* Errored run: the label reads in the error color so a failure isn't buried. */
-.av-tool-run-error > .av-tool-run-header { color: var(--av-error); }
+/* A run containing a failed tool is deliberately NOT coloured: a non-zero exit
+   is routine, and a red summary row cries wolf. The failure still shows on the
+   individual card once the run is expanded (`.av-tool-errored`, below). */
 /* Expanded body: the individual cards stack with a hairline between them. */
 .av-tool-run-body {
   border-top: 1px solid var(--av-hairline-faint);

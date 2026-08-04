@@ -37,10 +37,13 @@ function ToolGroupImpl({ tools }: Props) {
   const label = useMemo(() => describeToolRun(toolLikes), [toolLikes]);
   const diff = useMemo(() => aggregateDiff(toolLikes), [toolLikes]);
 
-  const anyError = tools.some((t) => t.toolResult?.isError === true);
+  // A failed tool gets NO special treatment on the collapsed row — a non-zero
+  // exit is routine (a grep that matched nothing, a probe that was meant to
+  // fail), and colouring the whole run red cries wolf. The failure is still
+  // visible where it matters: expand the run and the individual ToolCard keeps
+  // its error tint + stderr.
   const anyPending = tools.some((t) => !t.toolResult && !t.done);
-  const statusKind = anyError ? 'error' : anyPending ? 'pending' : 'ok';
-  const statusLabel = anyError ? 'failed' : anyPending ? 'running' : 'done';
+  const statusKind = anyPending ? 'pending' : 'ok';
 
   return (
     <div className={`av-tool-run ${open ? 'av-open' : 'av-closed'} av-tool-run-${statusKind}`}>
@@ -74,13 +77,7 @@ function ToolGroupImpl({ tools }: Props) {
         {anyPending && (
           <span className="av-tool-run-status av-tool-run-status-pending">
             <span className="av-tool-run-status-dot" aria-hidden />
-            <span className="av-sr-only">{statusLabel}</span>
-          </span>
-        )}
-        {anyError && (
-          <span className="av-tool-run-status av-tool-run-status-error">
-            <span className="av-tool-run-status-dot" aria-hidden />
-            <span className="av-sr-only">{statusLabel}</span>
+            <span className="av-sr-only">running</span>
           </span>
         )}
       </button>

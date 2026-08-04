@@ -311,8 +311,11 @@ carries the meaning, CC-desktop style. `describeToolRun` in `tool-util.ts` build
 the verb; a single `Skill` run reads "Used a skill <name>" where the name comes
 from `skillName(input)` — the SDK carries it on the `skill` field, e.g.
 `{skill:'ship'}`) + `.av-tool-run-diff` (inline `.av-diff-add`/`.av-diff-del` red/green counts) +
-optional `.av-tool-run-status` (`-pending`/`-error` > `.av-tool-run-status-dot`,
-pushed right); expanded body `.av-tool-run-body` holds the individual
+optional `.av-tool-run-status` (`-pending` only > `.av-tool-run-status-dot`,
+pushed right — a failed tool gets NO red label and NO error dot on the collapsed
+row; a non-zero exit is routine and colouring the summary cries wolf, so the
+failure surfaces only on the expanded `.av-tool-errored` card);
+expanded body `.av-tool-run-body` holds the individual
 `.av-tool-card`s. The ONLY tool that renders as a standalone always-open card is
 TodoWrite (`isStandaloneTool` in StructuredView). (Replaced the older
 `.av-tool-group*` name-count row.)
