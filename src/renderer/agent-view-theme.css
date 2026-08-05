@@ -2291,10 +2291,14 @@ h6.av-md-h {
 }
 .av-rewind-pop-actions button:disabled { opacity: 0.5; cursor: default; }
 .av-rewind-cancel:hover:not(:disabled) { color: var(--av-text); }
-/* The destructive action carries the weight — this discards messages. */
+/* The destructive action carries the weight — this DISCARDS messages, so it
+   reads as destructive, not affirmative. (`--av-user` is the green user-bubble
+   accent: it looked like a "safe/go" button for an irreversible action.) */
 .av-rewind-confirm {
-  border-color: transparent !important;
-  background: var(--av-user) !important;
-  color: #fff !important;
+  border-color: color-mix(in srgb, var(--av-error) 45%, transparent) !important;
+  background: color-mix(in srgb, var(--av-error) 16%, transparent) !important;
+  color: var(--av-error) !important;
 }
-.av-rewind-confirm:hover:not(:disabled) { filter: brightness(1.08); }
+.av-rewind-confirm:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--av-error) 26%, transparent) !important;
+}
