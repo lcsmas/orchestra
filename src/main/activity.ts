@@ -10,6 +10,9 @@ import {
   getReleaseVersionsContaining,
 } from './git';
 import type { AgentStopReason, Workspace, WorkspaceStatus } from '../shared/types';
+// Value import (not `import type`): the .ts extension is required for value
+// imports reachable from the test runner — see the hibernation-activity note.
+import { THINKING_TOOL_LABEL } from '../shared/types.ts';
 // Dependency-free leaf (see hibernation-activity.ts): importing hibernation.ts
 // here would close an import cycle, since it imports pty.ts which imports this
 // file. The .ts extension is required for VALUE imports reachable from the
@@ -538,7 +541,10 @@ export function applyAgentEvent(
   noteActivity(id);
   switch (event) {
     case 'submit':
-      emitTool(id, null);
+      // Same gap as `posttool`, at the other end: the prompt has been submitted
+      // and the model is generating before any tool runs. That window is also
+      // event-free, so label it rather than clearing.
+      emitTool(id, THINKING_TOOL_LABEL);
       void setStatus(id, 'running');
       break;
     case 'pretool':
@@ -546,10 +552,17 @@ export function applyAgentEvent(
       void setStatus(id, 'running');
       break;
     case 'posttool':
-      // Stay running between tools; just clear the active-tool label. Refresh
-      // the context-size badge here so it climbs live through a long turn, not
-      // only at turn-end.
-      emitTool(id, null);
+      // Stay running between tools. The label does NOT go blank here: what
+      // follows a finished tool is the model generating its next step, and that
+      // gap measured 2.5–6.5s on a live session with no lifecycle event in it —
+      // the row read as frozen. Label it instead of clearing it, so the tooltip
+      // says "Agent is thinking…" (statusGlyphTitle special-cases the sentinel)
+      // rather than dropping to a bare "Agent is working…" for seconds at a
+      // time. Status is untouched
+      // (`running` either way) — see THINKING_TOOL_LABEL for why this is a label
+      // and not a sixth status. Refresh the context-size badge here too so it
+      // climbs live through a long turn, not only at turn-end.
+      emitTool(id, THINKING_TOOL_LABEL);
       void emitContext(id, transcript);
       break;
     case 'stop':

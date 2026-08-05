@@ -1,5 +1,6 @@
 import type React from 'react';
 import type { Workspace, WorkspaceStatus } from '../../shared/types.ts';
+import { THINKING_TOOL_LABEL } from '../../shared/types.ts';
 
 /**
  * The status marker for a workspace, shown wherever the app lists agents:
@@ -103,16 +104,6 @@ export function WorkspaceStatusGlyph({
 
 /** Tooltip text for a workspace's status glyph. Shared by every surface that
  * renders one, so the same state cannot be described two different ways. */
-export function statusGlyphTitle(
-  w: Pick<Workspace, 'status' | 'markedUnread' | 'hibernatedAt'>,
-  tool?: string,
-): string {
-  if (w.markedUnread) return 'Tagged unread — come back to this workspace';
-  if (w.hibernatedAt !== undefined)
-    return 'Agent is hibernated — process stopped to free memory, resumes on input';
-  if (w.status === 'running') return tool ? `Agent is working… (${tool})` : 'Agent is working…';
-  if (w.status === 'idle') return 'Agent is idle';
-  if (w.status === 'waiting') return 'Agent is waiting for you';
-  if (w.status === 'error') return 'Agent hit an error';
-  return w.status;
-}
+// Re-exported from a plain .ts module so it can be unit-tested (node:test can't
+// import JSX). Every existing import site keeps working unchanged.
+export { statusGlyphTitle } from '../status-glyph-title.ts';

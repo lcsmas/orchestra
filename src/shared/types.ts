@@ -1,5 +1,25 @@
 export type WorkspaceStatus = 'idle' | 'running' | 'waiting' | 'error' | 'stopped';
 
+/** Active-tool label meaning "no tool is running — the model is generating".
+ *
+ *  WHY THIS IS A LABEL AND NOT A SIXTH `WorkspaceStatus`: between a tool
+ *  finishing (`posttool`) and the next one starting (`pretool`) the agent
+ *  streams its response, which measured at 2.5–6.5s per gap on a live session.
+ *  No lifecycle event fires in that window, so the row looked frozen — the dot
+ *  was correctly `running`, but the label under it was cleared to nothing.
+ *
+ *  A new status would be the wrong shape: `status === 'running'` is compared by
+ *  EQUALITY in the attention rollup (shared/attention.ts) and the sidebar's
+ *  hidden-urgency counts, so a sixth state would silently drop thinking agents
+ *  out of "working" — a regression in the very surfaces the dot feeds. The tool
+ *  label is already an optional, ephemeral, never-persisted sub-status channel
+ *  (`agent:tool`) that `statusGlyphTitle` composes into the running tooltip, so
+ *  putting the signal there is additive and costs no consumer a change.
+ *
+ *  Exported so main (which emits it) and the renderer (which may special-case
+ *  its presentation) cannot drift on the sentinel string. */
+export const THINKING_TOOL_LABEL = 'thinking';
+
 /** Where a workspace's agent actually runs. Absent (the default, and what every
  * pre-existing record is treated as) means `{ kind: 'local' }`: the agent, its
  * worktree, and its Claude session live on this machine, driven by the local

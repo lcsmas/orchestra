@@ -13,8 +13,23 @@ scraping, no polling.
 ### Status model — activity.ts (~523 lines)
 `WorkspaceStatus = 'idle'|'running'|'waiting'|'error'|'stopped'` (`types.ts:1`).
 Event → status (`applyAgentEvent` `:471`):
-- `submit` → `running`; `pretool` → `running` + tool label; `posttool` →
-  `running`, clear label, emit live context tokens.
+- `submit` → `running` + `THINKING_TOOL_LABEL`; `pretool` → `running` + tool
+  label; `posttool` → `running`, label back to `THINKING_TOOL_LABEL`, emit live
+  context tokens.
+
+  **The thinking label is the between-tools latency fix.** Measured on a live
+  session: `pretool`→`posttool` pairs are 40–130 ms apart, but consecutive PAIRS
+  are 2.5–6.5 s apart — the model generating, with no lifecycle event in the
+  window. Status was correctly `running` throughout; what went blank was the
+  label, so the row read as frozen. `submit`/`posttool` now label the gap
+  instead of clearing it (`THINKING_TOOL_LABEL`, `shared/types.ts`), and
+  `statusGlyphTitle` renders it as "Agent is thinking…" rather than the
+  parenthesised tool form. Deliberately a LABEL, not a sixth `WorkspaceStatus`:
+  `status === 'running'` is compared by equality in `shared/attention.ts` and
+  the sidebar's hidden-urgency rollups, so a new state would silently drop
+  thinking agents out of "working". The tooltip logic lives in
+  `renderer/status-glyph-title.ts` (a plain `.ts` so node:test can import it;
+  the `.tsx` component re-exports it) and is unit-tested + mutation-tested.
 - `stop`/`stopfail` → `waiting` via `fireFinished` `:61` (chime + "finished"
   toast if window unfocused; recomputes merge state; persists context tokens).
   `applyAgentEvent` takes an optional `stopReason` (`AgentStopReason`) that
