@@ -272,6 +272,20 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   for extra PRs — `releasedVersions` is oldest-first, so newest is the LAST
   element. There is no standalone "merged" pill: `mergedAt` is conveyed by the
   merged PR badge, and the pill duplicated it.
+- **PR/Linear badges are NOT gated on being a git row; CI is.** In
+  `renderSpawnTreeRows` the `.ws-pills.mini` strip renders unconditionally, with
+  only `<CiBadge>` still behind `childIsGit` (`isChild && !isScratchLike(w)`).
+  The two badge families answer different questions: PR/Linear links are
+  AGENT-REPORTED (`orchestra link --pr`, stored in `linkedPrs` with their own
+  `owner/repo/number`), so `findPR` deliberately dropped every `kind`/`repoPath`
+  guard — an orchestrator coordinating a metarepo milestone owns the submodule
+  PRs while having no repo or branch itself. CI, by contrast, needs a branch to
+  query, and `findChecks` hard-returns `{state:'none'}` for scratch/orchestrator
+  rows. Gating the whole strip on `childIsGit` hid PR badges on exactly the rows
+  that link cross-repo PRs — both orchestrator/scratch ROOTS (depth 0 fails
+  `isChild`) and repo-less nested coordinators. Safe to render always because
+  `PrLinearBadges` returns `null` when nothing is linked and `.ws-pills:empty`
+  collapses the strip, so unlinked rows keep their exact previous layout.
 - **Row layout is a single 24px line.** Name, badges, context and account all
   share one line, with metadata right-aligned. `.ws-pills` was previously
   `flex-basis: 100%`, which inside a `flex-wrap: wrap` row ALWAYS starts a new

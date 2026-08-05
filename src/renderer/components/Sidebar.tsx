@@ -1569,15 +1569,26 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     The repo tag is dropped here (under a pinned tree the repo
                     is already implied); it is kept in the repo sections, where
                     it marks a genuinely cross-repo child. */}
-                {childIsGit && (
-                  <span className="ws-pills mini">
-                    <PrLinearBadges
-                      prRecord={prs[w.id]}
-                      linearIssue={linear[w.id] ?? null}
-                    />
+                {/* PR/Linear badges are NOT gated on being a git child. Links
+                    are agent-reported (`orchestra link --pr`) and carry their
+                    own owner/repo/number, so main's `findPR` deliberately
+                    dropped every kind/repoPath guard — an orchestrator
+                    coordinating a metarepo milestone links the submodule PRs it
+                    owns while having no repo or branch of its own. Gating on
+                    `childIsGit` hid exactly those. `PrLinearBadges` already
+                    renders null when there is nothing linked, so repo-less rows
+                    with no links stay blank as before.
+                    CI stays git-only: `findChecks` needs a branch to query and
+                    hard-returns `none` for scratch/orchestrator rows. */}
+                <span className="ws-pills mini">
+                  <PrLinearBadges
+                    prRecord={prs[w.id]}
+                    linearIssue={linear[w.id] ?? null}
+                  />
+                  {childIsGit && (
                     <CiBadge checks={checks[w.id]} onFix={() => onFixChecks(w)} />
-                  </span>
-                )}
+                  )}
+                </span>
                 <HibernatedChip w={w} />
                 <WorkspaceContextBadge workspaceId={w.id} />
                 {/* Login is omitted when it just repeats the parent's — see
