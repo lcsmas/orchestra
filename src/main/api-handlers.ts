@@ -975,7 +975,13 @@ export const apiHandlers: ApiHandlerTable = {
     // workspace even though the PR lookup below no longer is. It remains
     // piggybacked here rather than on the hot stats poll because the
     // underlying computation is memoized on (branch tip, releases).
-    if (ws.kind !== 'scratch' && ws.repoPath) {
+    // `isScratchLike`, not `kind !== 'scratch'`: an orchestrator is equally
+    // repo-less, and this guard let it through. That was inert only because an
+    // orchestrator's `repoPath` is `''`, so the `&& ws.repoPath` half caught it
+    // by accident — a pre-existing hole that any repo-ish field on a
+    // coordinator would reopen, spending the shared gh/GraphQL budget resolving
+    // a branch that does not exist in that repo.
+    if (!isScratchLike(ws) && ws.repoPath) {
       void detectAndUpdateReleaseState(id).catch(() => {});
     }
     // PRs are whatever the AGENT linked (`orchestra link --pr`) — no branch

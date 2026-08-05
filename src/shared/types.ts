@@ -83,7 +83,12 @@ export interface Workspace {
    * the `/spawn` socket. Children it spawns carry its id as their `parentId`
    * and nest beneath it in the sidebar's "Orchestrators" section. Treat
    * `'orchestrator'` exactly like `'scratch'` for every git/diff/merge/delete
-   * decision — use the `isScratchLike` helper rather than `=== 'scratch'`. */
+   * decision — use the `isScratchLike` helper rather than `=== 'scratch'`.
+   *
+   * An orchestrator may additionally carry a {@link Workspace.repoAssociation}
+   * — a DISPLAY-ONLY pointer that files it under a repo section in the sidebar.
+   * That never gives it a repo: `repoPath` stays empty and every git decision
+   * above is unchanged. */
   kind?: 'worktree' | 'scratch' | 'orchestrator';
   /** Orchestrator CAPABILITY on a workspace that is not the `'orchestrator'`
    * KIND — i.e. a real git worktree that also coordinates children. Set by
@@ -150,6 +155,31 @@ export interface Workspace {
    *  memory) instead of starting a blank session. */
   sdkSessionId?: string;
   repoPath: string;
+  /** DISPLAY-ONLY repo association for a repo-less coordinator (`kind:
+   * 'orchestrator'`). Purely a sidebar-grouping preference: it files the
+   * orchestrator — and the subtree it parents — under that repo's section
+   * instead of the pinned "Orchestrators" section, so a coordinator whose
+   * children all work in one repo sits with them.
+   *
+   * Deliberately a SEPARATE field rather than filling in `repoPath`, and that
+   * separation is the whole safety argument. `repoPath` is the "this workspace
+   * owns a git checkout" fact: ~40 sites read it, and several use a non-empty
+   * `repoPath` as the proxy for "git-backed" while guarding only on
+   * `kind === 'scratch'` (which does NOT exclude `'orchestrator'`). Filling it
+   * in would silently enlist a repo-less coordinator into git machinery it has
+   * no checkout for — most sharply `pruneOrphanedWorkspaces`, which buckets by
+   * `repoPath` and hard-deletes any record whose `worktreePath` git no longer
+   * tracks; an orchestrator's scratch dir never is, so it would be DELETED on
+   * the next launch. An empty `repoPath` is what protects it today.
+   *
+   * So the invariant stands unchanged: an orchestrator's `repoPath` stays
+   * empty, it never gains a diff/merge/PR/branch, and `/spawn` still refuses to
+   * inherit a repo from it (see `dispatchSpawnRequest`). This field is read by
+   * the sidebar and nothing else.
+   *
+   * Absent = the default, and every pre-existing record: render in the
+   * "Orchestrators" section. Only ever set on `kind: 'orchestrator'`. */
+  repoAssociation?: string;
   worktreePath: string;
   branch: string;
   baseBranch: string;
