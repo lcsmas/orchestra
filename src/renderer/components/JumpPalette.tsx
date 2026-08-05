@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { rankJumpTargets } from '../../shared/jump-rank';
+import { WorkspaceStatusGlyph, statusGlyphTitle } from './WorkspaceStatusGlyph';
 import type { Workspace } from '../../shared/types';
 
 /** Repo label for a palette row. Mirrors the Sidebar's basename labeling for
@@ -108,7 +109,12 @@ export function JumpPalette({ onClose }: { onClose: () => void }) {
                   jump(t.id);
                 }}
               >
-                <span className={`ws-dot ${w.status}`} aria-hidden="true" />
+                <WorkspaceStatusGlyph
+                  status={w.status}
+                  hibernated={w.hibernatedAt !== undefined}
+                  unread={!!w.markedUnread}
+                  title={statusGlyphTitle(w)}
+                />
                 <span className="jump-branch">{t.branch}</span>
                 <span className="jump-repo">{t.repoLabel}</span>
                 {w.statusText && <span className="jump-note">{w.statusText}</span>}

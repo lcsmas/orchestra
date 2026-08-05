@@ -13,6 +13,7 @@ import type {
 import { isScratchLike, canOrchestrate } from '../../shared/types';
 import { groupByHost, hostLabel } from '../host-grouping';
 import { queuedTickets as selectQueuedTickets } from '../../shared/linear-tickets-queue';
+import { WorkspaceStatusGlyph, statusGlyphTitle } from './WorkspaceStatusGlyph';
 import { InboxBell } from './InboxBell';
 import { SoundSettings } from './SoundSettings';
 import { AgentViewSettings } from './AgentViewSettings';
@@ -148,104 +149,6 @@ export function OrchestratorIcon() {
       <path d="M12 8v4M12 12H5v4M12 12h7v4" />
     </svg>
   );
-}
-
-/** Status marker for a workspace row.
- *
- * Replaces the old 8px filled `.ws-dot` circle. Outlined RING glyphs carry two
- * channels — shape AND colour — so "done" and "needs you" stay distinguishable
- * without relying on green-vs-amber, which a colour-blind user cannot use. The
- * terminal/quiet states stay as plain dots because there is no shape worth
- * drawing for them.
- *
- * `running` is a CSS ring rather than an SVG: a `border-top-color: transparent`
- * circle spun by a compositor-only transform costs no main-thread work, which
- * matters with dozens of rows visible. See `.ws-glyph-spin` in styles.css for
- * the reduced-motion handling.
- *
- * Both render paths (the pinned spawn-tree rows and the repo-section rows) use
- * this one component, so the two paths cannot drift apart.
- */
-export function WorkspaceStatusGlyph({
-  status,
-  hibernated,
-  unread,
-  title,
-}: {
-  status: WorkspaceStatus;
-  hibernated: boolean;
-  unread: boolean;
-  title: string;
-}) {
-  const cls = (kind: string) =>
-    `ws-glyph ws-glyph-${kind}${unread ? ' unread' : ''}${hibernated ? ' hibernated' : ''}`;
-  const svg = (children: React.ReactNode, kind: string) => (
-    <span className={cls(kind)} title={title} role="img" aria-label={title}>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
-        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
-        {children}
-      </svg>
-    </span>
-  );
-
-  // A hibernated agent is stopped, so it must never show as spinning even if
-  // its last known status was `running`.
-  if (hibernated) {
-    return <span className={cls('idle')} title={title} role="img" aria-label={title} />;
-  }
-  switch (status) {
-    case 'running':
-      // Lucide has no spinner; this is the CSS ring described above.
-      return (
-        <span className={cls('running')} title={title} role="img" aria-label={title}>
-          <span className="ws-glyph-spin" aria-hidden="true" />
-        </span>
-      );
-    case 'waiting':
-      // Lucide `message-circle-question` — the agent is asking, not failing.
-      return svg(
-        <>
-          <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z" />
-          <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
-          <path d="M12 17h.01" />
-        </>,
-        'waiting',
-      );
-    case 'error':
-      // Lucide `circle-x`.
-      return svg(
-        <>
-          <circle cx="12" cy="12" r="10" />
-          <path d="m15 9-6 6M9 9l6 6" />
-        </>,
-        'error',
-      );
-    case 'idle':
-      // Lucide `circle-check` — idle means the agent finished its turn.
-      return svg(
-        <>
-          <circle cx="12" cy="12" r="10" />
-          <path d="m9 12 2 2 4-4" />
-        </>,
-        'idle',
-      );
-    default:
-      // `stopped` and any future status: a quiet dot, no shape claim.
-      return <span className={cls('stopped')} title={title} role="img" aria-label={title} />;
-  }
-}
-
-/** The tooltip text for a row's status glyph. Shared so the two render paths
- * cannot describe the same state differently. */
-function statusGlyphTitle(w: Workspace, tool: string | undefined): string {
-  if (w.markedUnread) return 'Tagged unread — come back to this workspace';
-  if (w.hibernatedAt !== undefined)
-    return 'Agent is hibernated — process stopped to free memory, resumes on input';
-  if (w.status === 'running') return tool ? `Agent is working… (${tool})` : 'Agent is working…';
-  if (w.status === 'idle') return 'Agent is idle';
-  if (w.status === 'waiting') return 'Agent is waiting for you';
-  if (w.status === 'error') return 'Agent hit an error';
-  return w.status;
 }
 
 function FolderPlusIcon() {

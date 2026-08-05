@@ -1497,12 +1497,15 @@ input:focus, textarea:focus, select:focus {
   border: 1px solid var(--border);
 }
 /* ── Status DOT ─────────────────────────────────────────────────────────────
-   The sidebar workspace rows moved to the ring glyphs below, but this dot is
-   still the status marker in the Inbox (InboxBell), the jump palette
-   (JumpPalette), the Resources process table (ResourcesView) and the sidebar's
-   own ARCHIVED rows. Those are dense list contexts where a 12px ring would be
-   heavier than the line deserves — keep the dot here rather than deleting it
-   with the sidebar rewrite. */
+   Every LIVE-agent surface (sidebar rows, Inbox, jump palette, Resources
+   table) now uses the ring glyphs below. This dot survives for exactly one
+   case: the sidebar's ARCHIVED rows.
+
+   That is a semantic distinction, not a leftover. An archived workspace has no
+   running agent — its `status` is a frozen value from before it was archived —
+   so a green check-ring would assert "this agent finished successfully", a
+   claim the data cannot support. A neutral dot says "inert", which is true.
+   Same reasoning as the hibernated case inside the glyph component. */
 .ws-dot {
   width: 8px; height: 8px; border-radius: 50%;
   flex-shrink: 0;
@@ -1539,6 +1542,14 @@ input:focus, textarea:focus, select:focus {
   height: 12px;
 }
 .ws-glyph svg { width: 12px; height: 12px; display: block; }
+/* Denser lists can opt down a size without redefining the glyph. */
+.ws-glyph.ws-glyph-sm { width: 10px; height: 10px; }
+.ws-glyph.ws-glyph-sm svg { width: 10px; height: 10px; }
+.ws-glyph.ws-glyph-sm .ws-glyph-spin { width: 8px; height: 8px; border-width: 1.5px; }
+/* The Resources table is a GRID whose first column is a fixed 12px, so the
+   glyph must not be stretched by the default `align-items: center` track
+   sizing — pin it to its own box. */
+.res-agent-row .ws-glyph { width: 12px; height: 12px; justify-self: center; }
 .ws-glyph-idle { color: var(--green); }
 .ws-glyph-waiting { color: var(--yellow); }
 .ws-glyph-error { color: var(--red); }
@@ -1990,7 +2001,8 @@ input:focus, textarea:focus, select:focus {
   background: var(--bg-4);
   border-color: transparent;
 }
-.inbox-row .ws-dot {
+.inbox-row .ws-dot,
+.inbox-row .ws-glyph {
   flex-shrink: 0;
 }
 .inbox-branch {
@@ -2114,7 +2126,8 @@ input:focus, textarea:focus, select:focus {
 .jump-row.selected {
   background: rgba(255, 255, 255, 0.07);
 }
-.jump-row .ws-dot {
+.jump-row .ws-dot,
+.jump-row .ws-glyph {
   flex-shrink: 0;
 }
 .jump-branch {

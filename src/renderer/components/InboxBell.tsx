@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useStore } from '../store';
 import { computeAttention } from '../../shared/attention';
+import { WorkspaceStatusGlyph, statusGlyphTitle } from './WorkspaceStatusGlyph';
 import type { Workspace } from '../../shared/types';
 
 function rowRepoLabel(w: Workspace): string {
@@ -81,9 +82,15 @@ export function InboxBell() {
 
   const row = (w: Workspace, reason: string, reasonClass: string) => (
     <button key={w.id} className="inbox-row" onClick={() => jump(w.id)} role="menuitem">
-      <span
-        className={`ws-dot ${w.status}${w.markedUnread ? ' unread' : ''}`}
-        aria-hidden="true"
+      {/* Same ring glyph the sidebar uses, so one shape means one state
+          everywhere. The row also prints a text reason, so here the glyph is
+          reinforcement rather than the sole signal — but a reader scanning the
+          column still gets shape as well as colour. */}
+      <WorkspaceStatusGlyph
+        status={w.status}
+        hibernated={w.hibernatedAt !== undefined}
+        unread={!!w.markedUnread}
+        title={statusGlyphTitle(w)}
       />
       <span className="inbox-branch">{w.branch}</span>
       <span className="inbox-repo">{rowRepoLabel(w)}</span>

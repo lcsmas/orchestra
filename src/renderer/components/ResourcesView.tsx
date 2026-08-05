@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { loginColor } from './AccountBadge';
 import { dialog } from './Dialog';
 import { formatResetsIn, formatUpdatedAgo } from './UsageBars';
+import { WorkspaceStatusGlyph, statusGlyphTitle } from './WorkspaceStatusGlyph';
 import type { ResourceSnapshot, SessionResourceStat } from '../../shared/resources';
 import type { UsageErrorKind, UsageWindow, Workspace } from '../../shared/types';
 
@@ -225,7 +226,14 @@ function AgentRowView({
         aria-expanded={open}
         title={open ? 'Hide processes' : 'Show processes'}
       >
-        <span className={`ws-dot ${row.ws?.status ?? 'idle'}`} />
+        {/* The row's grid reserves a 12px first column, which is exactly the
+            glyph's width — so the ring drops in with no layout change. */}
+        <WorkspaceStatusGlyph
+          status={row.ws?.status ?? 'idle'}
+          hibernated={row.ws?.hibernatedAt !== undefined}
+          unread={!!row.ws?.markedUnread}
+          title={row.ws ? statusGlyphTitle(row.ws) : 'Agent is idle'}
+        />
         <span className="res-agent-name">
           <span className="res-agent-branch">{name}</span>
           <span className="res-agent-sub">
@@ -614,7 +622,15 @@ export function ResourcesView() {
               ))}
               {loginSessions.map((s) => (
                 <div key={s.ptyId} className="res-agent-row static">
-                  <span className="ws-dot running" />
+                  {/* A login session is a live PTY by definition — it only
+                      appears in this list while the process exists — so the
+                      spinner is literal here, not decorative. */}
+                  <WorkspaceStatusGlyph
+                    status="running"
+                    hibernated={false}
+                    unread={false}
+                    title="Account login session is running"
+                  />
                   <span className="res-agent-name">
                     <span className="res-agent-branch">login</span>
                     <span className="res-agent-sub">{s.ptyId.slice('account-login:'.length)}</span>

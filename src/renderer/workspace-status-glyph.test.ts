@@ -9,10 +9,11 @@
  * branch as neither passing nor failing, just untouched.
  *
  * So the branch selection is pinned here instead, against the same predicate
- * the component uses. This file deliberately does NOT import the component
- * (Sidebar.tsx transitively pulls xterm and the preload IPC bridge, neither of
- * which loads under `node --test`); it mirrors the switch, and the mirror is
- * kept honest by the assertion in `glyphKindFor`'s doc comment below.
+ * the component uses. This file does NOT import the component: JSX cannot run
+ * under `node --test`, so the switch is mirrored below. The mirror is kept
+ * honest by living beside the component in review, and by the fact that both
+ * enumerate the same `WorkspaceStatus` union — adding a status makes the
+ * exhaustiveness of one visibly diverge from the other.
  *
  * The CSS side — that `.ws-glyph-spin` computes to a green ring with a
  * transparent top edge — is verified separately by driving the built app,
@@ -23,7 +24,9 @@ import assert from 'node:assert/strict';
 import type { WorkspaceStatus } from '../shared/types.ts';
 
 /** The glyph kind a row shows, given its status and whether it is hibernated.
- * Mirrors the switch in `WorkspaceStatusGlyph` (src/renderer/components/Sidebar.tsx).
+ * Mirrors the switch in `WorkspaceStatusGlyph`
+ * (src/renderer/components/WorkspaceStatusGlyph.tsx), which every live-agent
+ * surface renders: sidebar rows, Inbox, jump palette, Resources table.
  * Keep the two in step: if you add a status, add it in both places. */
 export function glyphKindFor(
   status: WorkspaceStatus,

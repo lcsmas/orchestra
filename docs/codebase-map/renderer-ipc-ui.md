@@ -238,17 +238,27 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   uses `calc(12px + min(var(--ws-depth,1), 3) * 16px)`: the `min()` CLAMPS at
   depth 3 because `flattenSubtree` imposes no depth limit and an unclamped ramp
   runs the branch name off the edge on a deep sub-orchestrator chain.
-- **Status glyphs** (`WorkspaceStatusGlyph`, exported from `Sidebar.tsx`):
-  outlined lucide-style RING icons, not the old filled `.ws-dot` — `circle-check`
-  (idle), `message-circle-question` (waiting), `circle-x` (error), a CSS
+- **Status glyphs** — `components/WorkspaceStatusGlyph.tsx`, its own module so
+  the five surfaces can share it without importing 100KB of `Sidebar.tsx` (and
+  so it renders in a test without dragging in xterm + the IPC bridge). Outlined
+  lucide-style RING icons, not the old filled `.ws-dot`: `circle-check` (idle),
+  `message-circle-question` (waiting), `circle-x` (error), a CSS
   `border-top-color: transparent` spinner (running, `.ws-glyph-spin`,
   compositor-only so dozens of rows cost no main-thread work), bare dot
   (stopped/hibernated). Shape + colour is two channels, so "done" vs "needs you"
   survives colour-blindness. A hibernated row NEVER spins even when its recorded
-  status is `running`. Branch selection is pinned by
+  status is `running`. `statusGlyphTitle()` ships alongside so no two surfaces
+  describe the same state differently. Branch selection is pinned by
   `src/renderer/workspace-status-glyph.test.ts`; the CSS half needs a real drive.
-  `.ws-dot` still exists and is still used by InboxBell, JumpPalette,
-  ResourcesView and the sidebar's archived rows — do not delete it.
+  Used by: sidebar rows (both paths), `InboxBell`, `JumpPalette`,
+  `ResourcesView` (agent rows + login sessions). An optional `size="sm"` prop
+  drops it to 10px for denser lists.
+- **`.ws-dot` survives for ARCHIVED sidebar rows only**, and that is semantic,
+  not leftover: an archived workspace has no live agent, so its `status` is a
+  frozen pre-archive value — a green check-ring would assert a successful finish
+  the data cannot support, where a neutral dot correctly reads as "inert". Same
+  reasoning as the hibernated branch inside the glyph. Do not "finish the
+  migration" by converting it.
 - **Host grouping**: within a repo, rows bucket per machine/sandbox node via
   `host-grouping.ts` `groupByHost` (returns null when all-local → flat list
   byte-identical to pre-sandbox); collapsible `.host-group-header` per node.
