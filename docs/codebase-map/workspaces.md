@@ -75,6 +75,31 @@ early and never calls `removeWorktree` (the git worktree **leaks**),
 `renameWorkspaceBranch` (`:823`) stops running `git branch -m` (label desyncs
 from the real branch), and both frontends hide Diff/Run/PR/merge/branch-picker.
 
+### Repo ASSOCIATION ≠ `repoPath`
+
+A repo-less orchestrator can be filed under a repo's sidebar section (so a
+coordinator sits with the children it coordinates) via
+**`repoAssociation`** (`types.ts`, set by `/setRepoAssociation` —
+`orchestra set-repo <id> [<path>]`). It is a **display-only** grouping key: the
+orchestrator keeps `repoPath: ''`, gains no branch/diff/merge/PR, and `/spawn`
+**deliberately** does not inherit it (a bare spawn from a coordinator must still
+name `--repo`, or a sidebar preference would silently decide where code lands).
+
+Filling in `repoPath` instead looks equivalent and is not — several git paths
+treat a non-empty `repoPath` as "owns a checkout" while guarding only on
+`kind === 'scratch'`, which does **not** exclude `'orchestrator'`. Sharpest:
+`pruneOrphanedWorkspaces` buckets by `repoPath`, and an orchestrator's scratch
+dir is never in `git worktree list`, so it would be **hard-deleted from the
+store on the next launch** (measured: with `repoPath` filled and no kind guard,
+the record is dropped; the empty `repoPath` is the only thing that saved it
+before). The bucketing loop now skips `isScratchLike` records on their KIND, so
+the trap is closed for any future repo-ish field too.
+
+Three pollers were widened from `kind === 'scratch'` to `isScratchLike` in the
+same change (`activity.ts` merge-state / branch-name / release-state and
+`api-handlers.ts` `findPR`) — a pre-existing hole where an orchestrator reached
+`gh` and `git` calls for a branch that is not in the repo.
+
 Key per-record fields: `accountId` (pinned at creation, never changes —
 preserves `claude --continue` history), `parentId` (nesting), `port`
 (auto-allocated dev-server port), `setupStatus`, `branchManuallySet` (rename
@@ -206,6 +231,7 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 | `dispatchPromoteRequest` | `:1309` | `/promote` | Make a workspace a coordinator (idempotent). **Two routes**: a scratch session swaps `kind` → `'orchestrator'`; a **git worktree keeps its kind and gains `canOrchestrate`**, so it parents children while keeping repo/branch/diff/merge/PR. |
 | `dispatchDemoteRequest` | `:1384` | `/demote` | Inverse of promote. Clears `canOrchestrate` and **detaches every child** (a `parentId` pointing at a non-orchestrator renders nowhere). Refuses the `'orchestrator'` KIND — it is repo-less by nature and has no worktree to fall back to. |
 | `dispatchAttachRequest` | `:1456` | `/attach` | Re-parent under a coordinator (`canOrchestrate`), or clear `parentId` to detach. **Full-ancestry cycle check**: a promoted worktree can itself have a parent, so A→B→A is reachable and the old bare self-check was no longer sufficient. |
+| `dispatchSetRepoAssociationRequest` | `:1834` | `/setRepoAssociation` | File an `'orchestrator'`-KIND session under a repo's sidebar section (with its subtree), or clear it. Writes **`repoAssociation`, never `repoPath`** — see below. Refuses a git worktree (it already groups by its own repo) and any path not in `store.repos`. |
 | `dispatchVerifyLandedRequest` | `~:1590` | `/verifyLanded` | **Coordinator close-out check** (read-only): are ALL commits on a child's branch **tip** reachable from the target? Target = explicit `into` ref (repo-less coordinators) or the caller's own branch (`from`, must share the child's repo — the integration-branch case). Backed by `listUnmergedCommits` (git.ts, ref-validates first so a deleted branch fails loudly instead of reading "0 unmerged"; tests in `git-verify-landed.test.ts`). Exists because a child's "done"/"merged" report decays — agents keep committing after they report. NOT LANDED is not always a defect: deliberately-unmerged work (spikes) closes as INTENTIONALLY UNMERGED — the contracts forbid only the *silent* strand. |
 | `dispatchWhoamiRequest` | `~:1660` | `/whoami` | A workspace's own record (id/name/branch/kind, `orchestrator` via the `canOrchestrate` helper, `parentId`, repo/base). The only in-band way an agent learns its `parentId` — `/peers` excludes the caller, and a child promoted BY its parent never observes the promotion — which is what makes "at most one sub-orchestrator level" checkable by its addressee. |
 | `dispatchPeersRequest` | `:1239` | `/peers` | List other live workspaces (`PeerInfo[]`). `stats: true` adds each git peer's committed three-dot diff vs base (`getBranchDiffShortstat`, git.ts) — opt-in because the comms-resurface hook hits `/peers` every prompt and N git spawns on that path is the per-workspace × per-poll trap. |

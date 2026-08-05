@@ -15,6 +15,7 @@ import {
   dispatchDeleteWorkspaceRequest,
   dispatchPromoteRequest,
   dispatchAttachRequest,
+  dispatchSetRepoAssociationRequest,
   dispatchVerifyLandedRequest,
   dispatchWhoamiRequest,
   dispatchMigrateAccountRequest,
@@ -253,6 +254,20 @@ export async function startHooksServer(): Promise<void> {
                 await dispatchAttachRequest({
                   id: msg.id,
                   parentId: typeof msg.parentId === 'string' ? msg.parentId : null,
+                }),
+              );
+            } else {
+              send(200, { ok: false, error: 'missing id' });
+            }
+          } else if (route === '/setRepoAssociation') {
+            if (typeof msg.id === 'string') {
+              send(
+                200,
+                await dispatchSetRepoAssociationRequest({
+                  id: msg.id,
+                  // Absent → clear, mirroring how /attach reads a missing
+                  // parentId as a detach.
+                  repoPath: typeof msg.repoPath === 'string' ? msg.repoPath : null,
                 }),
               );
             } else {

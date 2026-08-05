@@ -731,6 +731,15 @@ export async function pruneOrphanedWorkspaces(): Promise<void> {
   // Read each repo's worktree list once, not per workspace.
   const byRepo = new Map<string, Workspace[]>();
   for (const ws of store.workspaces) {
+    // Scratch sessions and orchestrators own no git worktree — their directory
+    // lives under SCRATCH_ROOT and `git worktree list` will never mention it,
+    // so pruning by worktree-tracking would delete every one of them. They were
+    // previously excluded only ACCIDENTALLY, by bucketing under the `''` key
+    // that `existsSync('')` then skipped; that made an empty `repoPath` the
+    // sole thing protecting the record. Skip them on their KIND instead, which
+    // is the question actually being asked and holds regardless of what any
+    // display-only repo field says.
+    if (isScratchLike(ws)) continue;
     const list = byRepo.get(ws.repoPath) ?? [];
     list.push(ws);
     byRepo.set(ws.repoPath, list);
@@ -1479,13 +1488,21 @@ export async function dispatchSpawnRequest(
   } else if (input.from) {
     // Inherit the caller's repo — but a scratch/orchestrator caller has none
     // (repoPath is ''), so it must always name the target repo explicitly.
+    //
+    // DELIBERATELY reads `repoPath` and NOT `repoAssociation`: an orchestrator's
+    // association is a sidebar-grouping preference, not ownership of a repo.
+    // Inheriting it would silently land a bare `orchestra spawn` in whichever
+    // repo the coordinator happens to be FILED UNDER, turning a display choice
+    // into a decision about where code gets written — and it would do so
+    // invisibly, since the caller passed no `--repo`. Keeping the explicit
+    // requirement also keeps the error below honest. Do not "fix" this omission.
     repoPath = store.getWorkspace(input.from)?.repoPath || undefined;
   }
   if (!repoPath)
     return {
       ok: false,
       error:
-        'no repo: pass an explicit repoPath (an orchestrator/scratch session has no repo of its own to inherit)',
+        'no repo: pass an explicit repoPath (an orchestrator/scratch session has no repo of its own to inherit — a repo ASSOCIATION only groups it in the sidebar and is deliberately not inherited)',
     };
   try {
     // `detached` skips only the parent nesting — `from` above still drives
@@ -1828,6 +1845,95 @@ export async function dispatchAttachRequest(input: {
   platform.broadcast('workspace:update', updated);
   log.info(`attached ${ws.branch} (${id}) under orchestrator ${parent.branch} (${rawParent})`);
   return { ok: true, id, parentId: rawParent, branch: ws.branch };
+}
+
+// ---------- Associate an orchestrator with a repo (sidebar grouping only) ----------
+
+export interface SetRepoAssociationResult {
+  ok: boolean;
+  id?: string;
+  branch?: string;
+  /** The association after the call: a repo path, or `null` once cleared. */
+  repoAssociation?: string | null;
+  error?: string;
+}
+
+/** Socket entry point for `/setRepoAssociation`. Files a repo-less orchestrator
+ * under a repo's sidebar section (carrying the subtree it parents with it)
+ * instead of the pinned "Orchestrators" section. Passing no path clears it.
+ * Idempotent. Never throws; answers `{ ok }`.
+ *
+ * DISPLAY ONLY — this is the whole contract. It writes `repoAssociation`, never
+ * `repoPath`, so the orchestrator gains no checkout, branch, diff, merge or PR,
+ * and `/spawn` still refuses to inherit a repo from it. Filling in `repoPath`
+ * instead would look equivalent and is not: several git paths treat a non-empty
+ * `repoPath` as "this owns a worktree" while guarding only on
+ * `kind === 'scratch'` (which does not exclude `'orchestrator'`), and
+ * `pruneOrphanedWorkspaces` would then bucket the coordinator under a real repo,
+ * fail to find its scratch dir in `git worktree list`, and DELETE the record on
+ * the next launch. See `Workspace.repoAssociation` in shared/types.ts.
+ *
+ * Restricted to the `'orchestrator'` KIND on purpose. A git worktree (promoted
+ * or not) already groups by its own `repoPath`, so an association there would be
+ * a second, competing grouping key; a plain scratch session parents no subtree,
+ * so filing it under a repo would drop a lone non-git row into a section of git
+ * branches. Both are refused rather than silently ignored, so a caller learns
+ * the verb did nothing. */
+export async function dispatchSetRepoAssociationRequest(input: {
+  id?: string;
+  repoPath?: string | null;
+}): Promise<SetRepoAssociationResult> {
+  const id = input.id?.trim();
+  if (!id) return { ok: false, error: 'missing id' };
+  const ws = store.getWorkspace(id);
+  if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
+
+  const raw = typeof input.repoPath === 'string' ? input.repoPath.trim() : '';
+
+  // Clear: no path given → drop the association, so the orchestrator floats
+  // back to the pinned Orchestrators section.
+  if (!raw) {
+    if (ws.repoAssociation === undefined) {
+      return { ok: true, id, branch: ws.branch, repoAssociation: null };
+    }
+    // Assign `undefined` EXPLICITLY rather than deleting the key: the
+    // renderer's `workspace:update` reducer is a merge (`{...old, ...incoming}`),
+    // so an omitted key means "no opinion" and would leave the cleared section
+    // rendering forever.
+    const updated: Workspace = { ...ws, repoAssociation: undefined };
+    await store.upsertWorkspace(updated);
+    platform.broadcast('workspace:update', updated);
+    log.info(`cleared repo association on ${ws.branch} (${id})`);
+    return { ok: true, id, branch: ws.branch, repoAssociation: null };
+  }
+
+  if (ws.kind !== 'orchestrator') {
+    return {
+      ok: false,
+      error:
+        'only an orchestrator session can be associated with a repo (a git worktree already groups under its own repo)',
+    };
+  }
+  // Must name a repo Orchestra actually knows, mirroring /spawn's trust check —
+  // otherwise the sidebar would grow a phantom section for a path with no repo
+  // entry behind it.
+  const repo = store.repos.find((r) => r.path === raw);
+  if (!repo) return { ok: false, error: `unknown repoPath: ${raw}` };
+
+  // Idempotent re-association to the same repo.
+  if (ws.repoAssociation === raw) {
+    return { ok: true, id, branch: ws.branch, repoAssociation: raw };
+  }
+
+  try {
+    const updated: Workspace = { ...ws, repoAssociation: raw };
+    await store.upsertWorkspace(updated);
+    platform.broadcast('workspace:update', updated);
+    log.info(`associated orchestrator ${ws.branch} (${id}) with repo ${raw}`);
+    return { ok: true, id, branch: ws.branch, repoAssociation: raw };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'set repo association failed' };
+  }
 }
 
 // ---------- Verify a delegated branch landed (coordinator close-out) ----------
@@ -3087,6 +3193,47 @@ orchestra detach <workspace-id>
 Prints \`Detached <id>\`.
 `;
 
+const SET_REPO_SKILL = `---
+name: orchestra-set-repo
+description: Group an ORCHESTRATOR under a repo's sidebar section, alongside the children it coordinates, instead of the pinned "Orchestrators" section. Use when a coordinator's work all belongs to one repo and you want it filed with that repo.
+---
+
+# Group an orchestrator under a repo
+
+A repo-less orchestrator normally sits in the pinned **Orchestrators** section at
+the top of the sidebar. If the work it coordinates all belongs to one repo, you
+can file it under that repo's section instead — it takes its whole subtree with
+it, so the coordinator and the children it spawned appear together.
+
+This is a **display preference only**. The orchestrator stays repo-less: it gains
+no branch, diff, merge or PR, and \`orchestra spawn\` still requires an explicit
+\`--repo\` (the association is deliberately NOT inherited, so a sidebar choice can
+never silently decide where a child's code gets written).
+
+Only an orchestrator-kind session can be associated. A git worktree — promoted or
+not — already groups under its own repo and is refused.
+
+## Group it under a repo
+
+\`\`\`bash
+orchestra set-repo "$ORCHESTRA_WS_ID" /path/to/repo
+\`\`\`
+
+Prints \`Grouped <id> under /path/to/repo\`. The path must be a repo Orchestra
+already knows (see the orchestra-repos skill); an unknown path is refused rather
+than creating a phantom sidebar section. Re-running with the same path succeeds
+unchanged.
+
+## Clear it (back to the Orchestrators section)
+
+\`\`\`bash
+orchestra set-repo "$ORCHESTRA_WS_ID"
+\`\`\`
+
+Prints \`Cleared repo grouping for <id>\`. Clearing an already-clear workspace
+succeeds too.
+`;
+
 const LINK_SKILL = `---
 name: orchestra-link
 description: Report which pull request and/or Linear issue THIS workspace is working on, so Orchestra can show them as sidebar badges. Use right after opening a PR, or once you know the ticket this work implements.
@@ -3795,6 +3942,7 @@ const HOOKS_VERSION = createHash('sha256')
       REPO_ROUTES_SKILL,
       PROMOTE_SKILL,
       ATTACH_SKILL,
+      SET_REPO_SKILL,
       RENAME_SKILL,
       LINK_SKILL,
       MIGRATE_ACCOUNT_SKILL,
@@ -3885,6 +4033,7 @@ export async function installOrchestraHooks(
       writeSkill('orchestra-repos', REPO_ROUTES_SKILL),
       writeSkill('orchestra-promote', PROMOTE_SKILL),
       writeSkill('orchestra-attach', ATTACH_SKILL),
+      writeSkill('orchestra-set-repo', SET_REPO_SKILL),
       writeSkill('orchestra-rename', RENAME_SKILL),
       writeSkill('orchestra-link', LINK_SKILL),
       writeSkill('orchestra-migrate-account', MIGRATE_ACCOUNT_SKILL),

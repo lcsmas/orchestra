@@ -12,7 +12,7 @@ import {
 import type { AgentStopReason, Workspace, WorkspaceStatus } from '../shared/types';
 // Value import (not `import type`): the .ts extension is required for value
 // imports reachable from the test runner — see the hibernation-activity note.
-import { THINKING_TOOL_LABEL } from '../shared/types.ts';
+import { THINKING_TOOL_LABEL, isScratchLike } from '../shared/types.ts';
 // Dependency-free leaf (see hibernation-activity.ts): importing hibernation.ts
 // here would close an import cycle, since it imports pty.ts which imports this
 // file. The .ts extension is required for VALUE imports reachable from the
@@ -176,7 +176,12 @@ const lastMergeProbe = new Map<
 
 export async function detectAndUpdateMergeState(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
-  if (!ws || ws.archived || ws.kind === 'scratch') return;
+  // `isScratchLike` covers the orchestrator kind too — it is just as repo-less
+  // as a scratch session. The old `kind === 'scratch'` test let orchestrators
+  // through and was saved only by their empty `repoPath` making the git call
+  // fail; that is an accident, not a guard. (Pre-existing; see the matching
+  // fixes in detectAndUpdateBranchName/ReleaseState and api-handlers findPR.)
+  if (!ws || ws.archived || isScratchLike(ws)) return;
   const heads = await getRefShas(ws.repoPath, ws.branch, ws.baseBranch);
   if (heads) {
     const prev = lastMergeProbe.get(id);
@@ -256,7 +261,12 @@ export function forgetWorkspaceProbes(id: string): void {
 
 export async function detectAndUpdateBranchName(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
-  if (!ws || ws.archived || ws.kind === 'scratch') return;
+  // See detectAndUpdateMergeState: orchestrators are repo-less too. This one is
+  // the sharpest of the three — it would reconcile the row's label against a
+  // `git rev-parse` in a directory that is not a checkout, and on a hit would
+  // relabel the row and pin `branchManuallySet`, permanently retiring the
+  // rename nudge.
+  if (!ws || ws.archived || isScratchLike(ws)) return;
   const now = Date.now();
   const last = lastBranchProbe.get(id) ?? 0;
   if (now - last < BRANCH_PROBE_MS) return;
@@ -294,7 +304,10 @@ export async function detectAndUpdateBranchName(id: string): Promise<void> {
  *  hot 8s stats poll and must stay network-free. */
 export async function detectAndUpdateReleaseState(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
-  if (!ws || ws.archived || ws.kind === 'scratch') return;
+  // See detectAndUpdateMergeState: orchestrators are repo-less too. This path
+  // reaches `gh`, so letting one through spends the shared (and exhaustible)
+  // GitHub budget on a branch that is not in the repo.
+  if (!ws || ws.archived || isScratchLike(ws)) return;
   // One pill for the release that FIRST shipped this branch's own work, plus
   // one per release this branch itself cut (it authored the version-bump tag
   // commit). getReleaseVersionsContaining derives the branch's authored commit

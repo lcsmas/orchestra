@@ -11,6 +11,7 @@ import type {
   WorkspaceStatus,
 } from '../../shared/types';
 import { isScratchLike, canOrchestrate } from '../../shared/types';
+import { repoSectionKeyOf, partitionOrchestratorRoots } from '../orchestrator-repo-grouping';
 import { groupByHost, hostLabel } from '../host-grouping';
 import { queuedTickets as selectQueuedTickets } from '../../shared/linear-tickets-queue';
 import { WorkspaceStatusGlyph, statusGlyphTitle } from './WorkspaceStatusGlyph';
@@ -733,15 +734,22 @@ function collectDescendants(id: string, childrenOf: Map<string, Workspace[]>): W
  * the SAME section, so a child in repo B still appears under its parent in repo
  * A — the spawn relationship wins over repo grouping. Roots whose tree belongs
  * to the Orchestrators section are passed in pre-filtered, so they never appear
- * here. */
+ * here — EXCEPT an orchestrator carrying a `repoAssociation`, which the caller
+ * deliberately includes so it files under that repo (see `repoSectionKeyOf`). */
 function groupRootsByRepo(roots: Workspace[], forest: SpawnForest): Map<string, TreeRow[]> {
   const groups = new Map<string, TreeRow[]>();
   const visited = new Set<string>();
   for (const root of roots) {
     const rows = flattenSubtree(root, forest.childrenOf, visited);
-    const existing = groups.get(root.repoPath);
+    // `repoSectionKeyOf` is `repoPath` for a git root, but an associated
+    // orchestrator has an EMPTY repoPath and files under its `repoAssociation`
+    // instead — so the key must come from the helper, not the raw field.
+    // (`null` is unreachable here: callers pass only git roots and associated
+    // orchestrators, but fall back to repoPath rather than crashing.)
+    const key = repoSectionKeyOf(root) ?? root.repoPath;
+    const existing = groups.get(key);
     if (existing) existing.push(...rows);
-    else groups.set(root.repoPath, rows);
+    else groups.set(key, rows);
   }
   return groups;
 }
@@ -1113,7 +1121,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     [repos, spawnFromTicket],
   );
 
-  const { active, archived, forest, orchestratorTrees, scratchTrees } = useMemo(() => {
+  const {
+    active,
+    archived,
+    forest,
+    orchestratorTrees,
+    scratchTrees,
+    associatedOrchestratorRoots,
+  } = useMemo(() => {
     const active = workspaces.filter((w) => !w.archived);
     const archived = workspaces.filter((w) => w.archived);
     // The spawn forest links every active workspace to the one that spawned it.
@@ -1123,8 +1138,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     const forest = buildSpawnForest(active);
     // Orchestrator sessions and everything they (transitively) spawned, threaded
     // into trees and pinned at the very top.
-    const orchestratorRoots = forest.roots.filter((w) => w.kind === 'orchestrator');
-    const orchestratorTrees = orchestratorRoots.map((root) => ({
+    // An orchestrator carrying a `repoAssociation` is filed into that repo's
+    // section instead (with its whole subtree), so it is split out here rather
+    // than pinned. `partitionOrchestratorRoots` returns two complementary
+    // lists, which is what guarantees each root renders in exactly one section
+    // — no double-render, no vanishing row.
+    const { pinned: pinnedOrchestratorRoots, inRepoSections: associatedOrchestratorRoots } =
+      partitionOrchestratorRoots(forest.roots.filter((w) => w.kind === 'orchestrator'));
+    const orchestratorTrees = pinnedOrchestratorRoots.map((root) => ({
       root,
       rows: flattenSubtree(root, forest.childrenOf, new Set<string>()),
     }));
@@ -1138,7 +1159,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       root,
       rows: flattenSubtree(root, forest.childrenOf, new Set<string>()),
     }));
-    return { active, archived, forest, orchestratorTrees, scratchTrees };
+    return {
+      active,
+      archived,
+      forest,
+      orchestratorTrees,
+      scratchTrees,
+      associatedOrchestratorRoots,
+    };
   }, [workspaces]);
 
   const allArchivedSelected =
@@ -1358,12 +1386,23 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   // pills and reorder handle. Only `kind === 'orchestrator'` moves to the
   // pinned Orchestrators section — which is why section assignment must ask
   // `isScratchLike` (a GIT question) and never `canOrchestrate` (a TREE
-  // question). Its children arrive via groupRootsByRepo's flattenSubtree and
+  // question). An orchestrator with a `repoAssociation` is the one exception:
+  // it is filed back into a repo section by explicit user request, but purely
+  // for DISPLAY — it stays repo-less (`repoPath` empty, no diff/merge/PR), so
+  // that is still not a git question. Its children arrive via groupRootsByRepo's flattenSubtree and
   // render indented beneath it, exactly like an orchestrator's subtree; because
   // a child is never a forest root, it cannot also appear in its own repo
   // section, so nothing double-renders.
   const { activeGroups, repoOrder } = useMemo(() => {
-    const repoRoots = forest.roots.filter((w) => !isScratchLike(w));
+    // Git roots, PLUS any orchestrator the user has filed under a repo via
+    // `repoAssociation` (those were excluded from the pinned section above, so
+    // each still renders exactly once). The orchestrator keeps its own row
+    // chrome; its children arrive through flattenSubtree and nest beneath it
+    // exactly as they do in the pinned section.
+    const repoRoots = [
+      ...forest.roots.filter((w) => !isScratchLike(w)),
+      ...associatedOrchestratorRoots,
+    ];
     const activeGroups = groupRootsByRepo(repoRoots, forest);
     // Show every registered repo as a section, plus any orphan repoPaths that
     // still have workspaces (e.g. the repo entry was removed but workspaces
@@ -1374,7 +1413,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       ...Array.from(activeGroups.keys()).filter((p) => !repos.some((r) => r.path === p)),
     ];
     return { activeGroups, repoOrder };
-  }, [forest, repos]);
+  }, [forest, repos, associatedOrchestratorRoots]);
 
   const repoLabel = (repoPath: string) => {
     const repo = repos.find((r) => r.path === repoPath);

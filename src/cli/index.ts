@@ -138,6 +138,10 @@ Usage:
   orchestra promote <id>                         Promote a scratch session into an orchestrator
   orchestra attach <id> <parentId>               Nest an existing workspace under an orchestrator
   orchestra detach <id>                          Pop a workspace back out to its own section
+  orchestra set-repo <id> [<path>]               Group an ORCHESTRATOR under a repo's sidebar
+                                                 section (with its children); omit the path to
+                                                 clear. Display only — grants no repo/branch/diff
+                                                 and is never inherited by spawn
   orchestra verify-landed <id> [--into <branch>] Check every commit on a workspace's branch tip
                                                  landed on the target (default: YOUR branch);
                                                  exit 0 = landed, 1 = unmerged commits remain
@@ -582,6 +586,23 @@ async function main(argv: string[]): Promise<void> {
       const res = await request('/attach', { id });
       if (!res.ok) fail(res.error ?? 'failed to detach workspace');
       process.stdout.write(`Detached ${res.id as string}\n`);
+      return;
+    }
+
+    case 'set-repo': {
+      const id = args[0];
+      // Optional: omitting the path clears the association (same shape as
+      // detach clearing a parent).
+      const repoPath = args[1];
+      if (!id) fail('usage: orchestra set-repo <id> [<path>]');
+      const res = await request('/setRepoAssociation', { id, ...(repoPath ? { repoPath } : {}) });
+      if (!res.ok) fail(res.error ?? 'failed to set repo association');
+      const assoc = res.repoAssociation as string | null | undefined;
+      process.stdout.write(
+        assoc
+          ? `Grouped ${res.id as string} under ${assoc}\n`
+          : `Cleared repo grouping for ${res.id as string}\n`,
+      );
       return;
     }
 

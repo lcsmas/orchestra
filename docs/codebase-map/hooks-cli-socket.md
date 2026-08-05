@@ -31,6 +31,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | `/deleteWorkspace` | `id` | `{ ok, id?, branch? }` |
 | `/promote` | `id` | `{ ok, id?, branch?, kind? }` |
 | `/attach` | `id` (+ `parentId?`) | `{ ok, id?, parentId? }` |
+| `/setRepoAssociation` | `id` (+ `repoPath?`) | `{ ok, id?, branch?, repoAssociation? }` — files an orchestrator under a repo's sidebar section (omit `repoPath` to clear). DISPLAY ONLY: writes `repoAssociation`, never `repoPath`, so the coordinator stays repo-less and `/spawn` still won't inherit from it. |
 | `/verifyLanded` | `id` (+ `from?`, `into?`) | `{ ok, id?, branch?, target?, unmerged?, commits? }` — coordinator close-out: are all commits on the child's branch tip on the target (explicit `into` ref, else the `from` caller's branch)? |
 | `/link` | `id` (+ `prUrls?: string[]`, `linearKey?`, `clear?`) | `{ ok, prUrls?, linearKey?, cleared? }` — attach the PR(s) / Linear issue this workspace is working on. The **only** writer of `linkedPrs`/`linkedLinearKey`; both badges are agent-reported, never derived. Validates strictly (`parsePrUrl`, `parseLinearTicketRef`) and rejects a branch name or non-PR URL. PRs **accumulate**: each call appends, deduped on `prLinkKey` (`owner/repo#number`), because one workspace can own several PRs across different repos. `clear:true` + a *named* `prUrls` drops those PRs; `prUrls: []` (flag present, no value) drops them **all** — so the route must not collapse an empty array to `undefined`, which would silently turn clear-all into a no-op. `prUrls` in the reply is the resulting full set, not the delta. |
 | `/whoami` | `id` | `{ ok, id?, name?, branch?, kind?, orchestrator?, parentId?, repoPath?, baseBranch?, linkedPrUrls?: string[], linkedLinearKey? }` — a workspace's own record; the only in-band way an agent learns its `parentId` (peers excludes the caller). The two link fields are what `link-instruction.sh` reads to decide whether to nudge. |
@@ -121,9 +122,11 @@ Scripts and the Claude Code events they fire on:
   an unrelated repo named "orchestra" stays silent). Exception to the
   `$ORCHESTRA_WS_ID` guard note above — its gate is repo identity, not env.
 
-Also installs 9 **capability skills** as `<worktree>/.claude/skills/<name>/SKILL.md`
-(orchestra-spawn / -comms / -repos / -promote / -attach / -rename / -link /
--migrate-account / -status) so the agent discovers them. A SessionStart readiness hook touches `$ORCHESTRA_READY_FILE` so
+Also installs 10 **capability skills** as `<worktree>/.claude/skills/<name>/SKILL.md`
+(orchestra-spawn / -comms / -repos / -promote / -attach / -set-repo / -rename /
+-link / -migrate-account / -status) so the agent discovers them. They are
+template literals in `workspaces.ts`, NOT tracked `.md` files — each is hashed
+into `HOOKS_VERSION`, so adding one forces exactly one reinstall per workspace. A SessionStart readiness hook touches `$ORCHESTRA_READY_FILE` so
 spawn task-injection knows the TUI is live.
 
 PTY env that makes it all work (set in `pty.ts`): `ORCHESTRA_WS_ID`,
