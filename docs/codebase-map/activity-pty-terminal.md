@@ -53,9 +53,19 @@ is a property of the USER'S ATTENTION and must survive independently:
 
 | State | Representation | Glyph |
 |---|---|---|
-| needs my input | `status: 'waiting'` | amber `?` |
-| finished, not opened | `status: 'idle'` + `autoUnread` | amber 🔔 bell |
-| done, seen | `status: 'idle'` | green check |
+| needs my input | `status: 'waiting'` | `--attention` question mark |
+| finished, not opened | `status: 'idle'` + `autoUnread` | `--attention` filled bell |
+| done, seen | `status: 'idle'` | `--green` dot |
+
+Glyphs match Orca's `StatusIndicator`/`WorktreeCardStatusSlot` one-for-one: a
+plain green dot for done/seen (Orca: `size-2 rounded-full bg-emerald-500`, NOT
+a check), its exact `FilledBellIcon` path for unread, and the same Lucide
+`MessageCircleQuestion` for needs-input. Two hues, as Orca splits them: the
+working ring is `--yellow` (Orca `border-yellow-500`) while both
+user-attention glyphs are `--attention` (Orca `amber-500`) — so "busy" and
+"needs you" never read alike. `error` (red `circle-x`) has no Orca counterpart.
+`.ws-glyph-idle:not(.hibernated)` is load-bearing: a hibernated row reuses the
+idle glyph and must stay grey, not green.
 
 `Workspace.autoUnread` (`types.ts`) is set by `fireFinished` when
 `!(platform.isFocused() && getActiveWorkspaceId() === id)` — i.e. the turn ended

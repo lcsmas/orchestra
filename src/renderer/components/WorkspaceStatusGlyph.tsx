@@ -7,13 +7,15 @@ import { THINKING_TOOL_LABEL } from '../../shared/types.ts';
  * the sidebar rows (both render paths), the Inbox, the jump palette and the
  * Resources table.
  *
- * Outlined RING glyphs, not the old filled `.ws-dot` circle. A ring plus an
- * inner shape carries two channels — form AND colour — so "finished" and
- * "needs your input" stay distinguishable to someone who cannot separate green
- * from amber. Five same-shaped dots in five hues could not do that. The quiet
- * states (stopped, hibernated) stay plain dots: there is no shape worth
- * drawing for them, and drawing one would assert a claim the state doesn't
- * make.
+ * SHAPE, not just colour, carries the states that ask something of the user:
+ * the `waiting` question mark and the `autoUnread` bell are distinguishable
+ * without seeing hue at all, which five same-shaped dots in five colours could
+ * not manage. The quiet states — `idle`, `stopped`, `hibernated` — are plain
+ * DOTS: there is no shape worth drawing for "nothing is happening", and
+ * drawing one asserts a claim the state doesn't make (a check mark on `idle`
+ * would claim a successful finish, but `idle` is also where a workspace that
+ * has never run sits). This matches Orca one-for-one, which renders its
+ * done/active states as a bare `bg-emerald-500` circle.
  *
  * `running` is a CSS ring rather than an SVG: a `border-top-color: transparent`
  * circle spun by a compositor-only transform costs no main-thread work, which
@@ -26,8 +28,8 @@ import { THINKING_TOOL_LABEL } from '../../shared/types.ts';
  * stays renderable in a test without dragging in xterm and the IPC bridge.
  *
  * NOT used for ARCHIVED workspaces: their `status` is a frozen leftover from
- * before archiving, with no live agent behind it, so a check-ring would assert
- * a successful finish the data cannot support. Those rows keep `.ws-dot`.
+ * before archiving, with no live agent behind it, so a live-looking glyph would
+ * assert something the data cannot support. Those rows keep `.ws-dot`.
  */
 export function WorkspaceStatusGlyph({
   status,
@@ -73,17 +75,22 @@ export function WorkspaceStatusGlyph({
   // already underway so a stale bell would misreport it. That leaves exactly
   // `idle`/`stopped`, which is where a finished-unseen turn lands.
   if (autoUnread && (status === 'idle' || status === 'stopped')) {
-    // Lucide `bell` (filled): a notification waiting to be read, matching
-    // Orca's amber FilledBellIcon for the same state.
-    return svg(
-      <>
-        <path d="M10.268 21a2 2 0 0 0 3.464 0" />
-        <path
-          d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"
-          fill="currentColor"
-        />
-      </>,
-      'autounread',
+    // A FILLED bell — the exact path from Orca's `FilledBellIcon`
+    // (WorktreeCardHelpers.tsx), which it renders in amber for this same
+    // state. Filled rather than outlined so it reads as a solid attention mark
+    // against the outlined `?`/`x` glyphs, and stays legible at 10px.
+    // Rendered outside the shared `svg()` helper because that helper sets
+    // stroke-based defaults; this path is fill-only.
+    return (
+      <span className={cls('autounread')} title={title} role="img" aria-label={title}>
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+          <path
+            fillRule="evenodd"
+            clipRule="evenodd"
+            d="M5.25 9A6.75 6.75 0 0 1 12 2.25 6.75 6.75 0 0 1 18.75 9v3.75c0 .526.214 1.03.594 1.407l.53.532a.75.75 0 0 1-.53 1.28H4.656a.75.75 0 0 1-.53-1.28l.53-.532A1.989 1.989 0 0 0 5.25 12.75V9Zm6.75 12a3 3 0 0 0 2.996-2.825.75.75 0 0 0-.748-.8h-4.5a.75.75 0 0 0-.748.8A3 3 0 0 0 12 21Z"
+          />
+        </svg>
+      </span>
     );
   }
   switch (status) {
@@ -114,14 +121,14 @@ export function WorkspaceStatusGlyph({
         'error',
       );
     case 'idle':
-      // Lucide `circle-check` — idle means the agent finished its turn.
-      return svg(
-        <>
-          <circle cx="12" cy="12" r="10" />
-          <path d="m9 12 2 2 4-4" />
-        </>,
-        'idle',
-      );
+      // A plain GREEN DOT — matching Orca, whose `done`/`active` states render
+      // `size-2 rounded-full bg-emerald-500`. Deliberately not a check mark:
+      // `idle` only means "no turn in flight", which is also the state of a
+      // workspace that has never run, so a check would assert a successful
+      // completion the status cannot support. The two states that DO need
+      // acting on (waiting, autoUnread) keep distinct shapes, so the
+      // form-plus-colour redundancy is preserved exactly where it matters.
+      return <span className={cls('idle')} title={title} role="img" aria-label={title} />;
     default:
       // `stopped` and any future status: a quiet dot, no shape claim.
       return <span className={cls('stopped')} title={title} role="img" aria-label={title} />;

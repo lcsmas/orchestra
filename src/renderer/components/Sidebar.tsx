@@ -1421,12 +1421,13 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         const isCollapsed = collapsible && collapsedOrch.has(w.id);
         const hidden = isCollapsed ? collectDescendants(w.id, forest.childrenOf) : [];
         // Most urgent status among the hidden subtree, so a folded
-        // subtree can't silently swallow an agent that errored, is
-        // waiting for input, or carries the manual unread tag (shown
-        // with the same urgency as waiting).
+        // subtree can't silently swallow an agent that errored, is blocked on
+        // input, finished with output nobody has opened (`autoUnread`), or
+        // carries the manual unread tag — the last three all roll up with the
+        // same urgency, since each means "there is something here for you".
         const hiddenUrgency = hidden.some((h) => h.status === 'error')
           ? 'error'
-          : hidden.some((h) => h.status === 'waiting' || h.markedUnread)
+          : hidden.some((h) => h.status === 'waiting' || h.autoUnread || h.markedUnread)
             ? 'waiting'
             : hidden.some((h) => h.status === 'running')
               ? 'running'
@@ -2037,7 +2038,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               const hiddenKids = isCollapsed ? descendants : [];
               const hiddenUrgency = hiddenKids.some((h) => h.status === 'error')
                 ? 'error'
-                : hiddenKids.some((h) => h.status === 'waiting' || h.markedUnread)
+                : hiddenKids.some((h) => h.status === 'waiting' || h.autoUnread || h.markedUnread)
                   ? 'waiting'
                   : hiddenKids.some((h) => h.status === 'running')
                     ? 'running'

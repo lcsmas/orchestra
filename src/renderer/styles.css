@@ -93,6 +93,14 @@
   --green: #5bd68b;
   --red: #ff6b6b;
   --yellow: #ffc857;
+  /* Attention amber — the two states that ask something of the USER (the
+     `waiting` question mark, the auto-unread bell). Deliberately a different
+     hue from `--yellow`, which the working spinner uses: Orca draws the same
+     split (`yellow-500` ring vs `amber-500` icons) so "the agent is busy" and
+     "the agent needs you" never read as the same signal at a glance. Warmer
+     and more saturated than --yellow, tuned for this dark theme rather than
+     copying Tailwind's #f59e0b, which is muddy on these surfaces. */
+  --attention: #ffab40;
   /* Session-kind accents — scratch (amber) and orchestrator (green) tint the
      sidebar sections, toolbar chips, and glyphs so the same concept always
      wears the same color. */
@@ -1555,20 +1563,33 @@ input:focus, textarea:focus, select:focus {
    sizing — pin it to its own box. */
 .res-agent-row .ws-glyph { width: 12px; height: 12px; justify-self: center; }
 .ws-glyph-idle { color: var(--green); }
-.ws-glyph-waiting { color: var(--yellow); }
 .ws-glyph-error { color: var(--red); }
-/* "Finished, never opened" — the same amber as `waiting`, because both are
-   attention states the user must clear; the SHAPE (bell vs question mark) is
-   what distinguishes "go look" from "answer me". Matches Orca's amber bell. */
-.ws-glyph-autounread { color: var(--yellow); }
+/* The two states that ask something of the USER share `--attention` (Orca uses
+   amber-500 for both its `?` and its bell), while the working spinner keeps
+   `--yellow`. Colour says "you are needed"; SHAPE says which kind — a question
+   mark to answer, a bell to go look. */
+.ws-glyph-waiting { color: var(--attention); }
+.ws-glyph-autounread { color: var(--attention); }
 /* Dot states — rendered as an empty span, so the dot IS the element. */
 .ws-glyph-stopped::before,
+.ws-glyph-idle::before,
 .ws-glyph.hibernated::before {
   content: "";
   width: 8px; height: 8px;
   border-radius: 50%;
   background: var(--text-dim);
   opacity: 0.4;
+}
+/* `idle` = finished, nothing owed: a GREEN dot (Orca renders `done`/`active`
+   as `bg-emerald-500`). Overrides the dim default above — but the `:not()` is
+   load-bearing, NOT defensive: a HIBERNATED row renders the idle glyph too
+   (see WorkspaceStatusGlyph's early return) and must stay grey, because its
+   process is stopped and a green dot would read as a healthy live agent.
+   Excluding it here means the rule simply does not match those rows, so the
+   dim default above applies — no specificity or source-order race. */
+.ws-glyph-idle:not(.hibernated)::before {
+  background: var(--green);
+  opacity: 1;
 }
 /* Running: a CSS ring with a transparent top edge, spun by a compositor-only
    transform — no SVG and no main-thread work, which matters when dozens of
@@ -1577,7 +1598,10 @@ input:focus, textarea:focus, select:focus {
   display: block;
   width: 10px; height: 10px;
   border-radius: 50%;
-  border: 2px solid var(--green);
+  /* Yellow, matching Orca's `border-yellow-500` spinner. Also frees GREEN to
+     mean exactly one thing — "finished, nothing owed" — instead of being
+     shared by the working ring and the idle dot. */
+  border: 2px solid var(--yellow);
   border-top-color: transparent;
   animation: ws-glyph-spin 0.8s linear infinite;
 }
@@ -1585,7 +1609,7 @@ input:focus, textarea:focus, select:focus {
 @media (prefers-reduced-motion: reduce) {
   /* Restore the top edge when the animation is off: a FROZEN ring with a
      transparent quarter reads as a broken/clipped glyph, not as "working". */
-  .ws-glyph-spin { animation: none; border-top-color: var(--green); }
+  .ws-glyph-spin { animation: none; border-top-color: var(--yellow); }
 }
 /* Manual "unread" tag — a come-back-later bookmark the user sets by hand.
    The row reads like unread mail: the status glyph turns accent-blue
