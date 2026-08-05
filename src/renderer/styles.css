@@ -1414,10 +1414,9 @@ input:focus, textarea:focus, select:focus {
 @media (prefers-reduced-motion: reduce) {
   .ws-chevron-svg { transition: none; }
 }
-/* The hover action strip is absolutely positioned at the row's right edge, so
-   it would land ON TOP of the chevron. Shift it left by the chevron's width on
-   rows that have one, so the two coexist instead of overlapping. */
-.ws-item:has(.ws-chevron) .ws-row-actions { right: 26px; }
+/* (The old `.ws-item:has(.ws-chevron) .ws-row-actions { right: 26px }` dodge is
+   gone with the strip itself — the actions now float outside the sidebar, so
+   nothing inside the row competes with the chevron for the right edge.) */
 /* Count pill on a collapsed orchestrator row: how many spawned agents are
    folded away. Tinted by the most urgent hidden status so a hidden agent that
    errored or is waiting for input still shows through the fold. */
@@ -2223,6 +2222,21 @@ input:focus, textarea:focus, select:focus {
 .ws-name.ws-name-tight {
   flex: 0 1 auto;
 }
+/* The branch name must never be squeezed to nothing. With enough badges (repo
+   pill + Linear + PR + CI + release pills) the name was shrinking to ~40px —
+   a couple of characters plus an ellipsis, i.e. an unidentifiable row.
+   `min-width` gives it a floor so the BADGES give up their space first; they
+   are fixed-size marks whose meaning survives being pushed out of view far
+   better than a nameless row does. */
+.ws-item .ws-name {
+  min-width: 7.5em;
+}
+/* …but not on a pane so narrow that the floor would push the badges out
+   entirely — below this the row is cramped whatever we do, so let the name
+   shrink again rather than clipping the status marks. */
+@media (max-width: 1100px) {
+  .ws-item .ws-name { min-width: 5em; }
+}
 /* Push the metadata cluster to the row's right edge. The name takes the slack
    (`margin-left:auto` on the first metadata element), so context/account/badges
    form a right-aligned column that scans vertically down the list instead of
@@ -2423,6 +2437,38 @@ input:focus, textarea:focus, select:focus {
    trailing edge rather than sitting in its flow: a resting row spends none of
    its width on hidden buttons, so branch names and badges get the full width
    instead of a permanent dead gap on the right. */
+/* Row actions, floated OUTSIDE the sidebar and anchored to the hovered row
+   (portalled to <body>; see RowActionsPopover.tsx). `position: fixed` because
+   the coordinates come from a `getBoundingClientRect()` measurement, which is
+   viewport-relative.
+
+   These used to sit INSIDE the row, on top of its own clickable content — the
+   account badge, the PR/Linear badges, the chevron — so reaching for a badge
+   could hit an action button, one of which is Delete. Outside the row there is
+   nothing to collide with. */
+.ws-row-actions-pop {
+  position: fixed;
+  transform: translateY(-50%); /* centre on the row's vertical midpoint */
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-4);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+  animation: ws-row-actions-in 0.1s var(--ease);
+}
+@keyframes ws-row-actions-in {
+  from { opacity: 0; transform: translateY(-50%) translateX(-4px); }
+  to { opacity: 1; transform: translateY(-50%) translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-row-actions-pop { animation: none; }
+}
+
+/* Still used by the ARCHIVED rows, which keep their inline strip. */
 .ws-row-actions {
   position: absolute;
   top: 50%;

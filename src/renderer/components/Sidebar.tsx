@@ -14,6 +14,7 @@ import { isScratchLike, canOrchestrate } from '../../shared/types';
 import { groupByHost, hostLabel } from '../host-grouping';
 import { queuedTickets as selectQueuedTickets } from '../../shared/linear-tickets-queue';
 import { WorkspaceStatusGlyph, statusGlyphTitle } from './WorkspaceStatusGlyph';
+import { RowActionsPopover, useRowActionsPopover } from './RowActionsPopover';
 import { InboxBell } from './InboxBell';
 import { SoundSettings } from './SoundSettings';
 import { AgentViewSettings } from './AgentViewSettings';
@@ -28,6 +29,7 @@ import {
   RepoAccountBadge,
   WorkspaceAccountBadge,
   WorkspaceContextBadge,
+  WorkspaceRowAccountBadge,
 } from './AccountBadge';
 import { dialog } from './Dialog';
 
@@ -380,10 +382,22 @@ function PRErrorIcon() {
 }
 
 // Linear's mark, simplified to a single tilted-square glyph at the icon size.
+/** Linear's actual brand mark — a disc sliced by diagonal gaps into four
+ * bands that shrink toward the bottom-left. Path from simple-icons (CC0; the
+ * mark itself remains Linear's trademark, used here only to link to Linear).
+ *
+ * This was previously a rotated square, i.e. a generic hollow diamond that
+ * looked nothing like Linear.
+ *
+ * It is a FILLED mark, not line art, so it deliberately does NOT spread
+ * ICON_PROPS: those set `fill: none` + `stroke: currentColor`, which would
+ * outline each of the four bands (a double-edged mess) or render nothing at
+ * all. Fill and stroke are set explicitly here instead. */
 function LinearIcon() {
   return (
-    <svg {...ICON_PROPS}>
-      <rect x="5" y="5" width="14" height="14" rx="3" transform="rotate(45 12 12)" />
+    <svg viewBox="0 0 24 24" width={11} height={11} fill="currentColor" stroke="none"
+      aria-hidden="true" focusable={false} shapeRendering="geometricPrecision">
+      <path d="M2.886 4.18A11.982 11.982 0 0 1 11.99 0C18.624 0 24 5.376 24 12.009c0 3.64-1.62 6.903-4.18 9.105L2.887 4.18ZM1.817 5.626l16.556 16.556c-.524.33-1.075.62-1.65.866L.951 7.277c.247-.575.537-1.126.866-1.65ZM.322 9.163l14.515 14.515c-.71.172-1.443.282-2.195.322L0 11.358a12 12 0 0 1 .322-2.195Zm-.17 4.862 9.823 9.824a12.02 12.02 0 0 1-9.824-9.824Z" />
     </svg>
   );
 }
@@ -392,8 +406,10 @@ function LinearIcon() {
  * One pinned Linear ticket in the sidebar's Tickets section.
  *
  * Deliberately NOT a workspace row, in two ways that matter:
- *  - the leading glyph is a hollow DIAMOND, not the round `.ws-dot`, so a
- *    ticket can never be misread as an agent that is running or waiting;
+ *  - the leading glyph is a hollow DIAMOND (`.ticket-dot`, a CSS rotated
+ *    square), never the round ring/dot a workspace row uses
+ *    (`WorkspaceStatusGlyph`), so a ticket can never be misread as an agent
+ *    that is running or waiting;
  *  - clicking opens the issue in Linear and never calls `setActive`, which
  *    keys off the workspace list — a ticket id there would resolve to no
  *    workspace and blank the main pane.
@@ -810,6 +826,9 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   // any kind (repo workspace / scratch / orchestrator). Closes on outside
   // click or Escape.
   const [newMenuOpen, setNewMenuOpen] = useState(false);
+  // Row action buttons live in a portal anchored beside the hovered row, not
+  // inside it — see RowActionsPopover for why.
+  const rowActions = useRowActionsPopover();
   useEffect(() => {
     if (!newMenuOpen) return;
     const onDown = (e: MouseEvent) => {
@@ -1401,6 +1420,42 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
             className={`ws-item ${activeId === w.id ? 'active' : ''}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}${w.markedUnread ? ' unread' : ''}${dragWs?.id === w.id ? ' dragging' : attachTo === w.id ? ' attach-target' : ''}`}
             style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
             onClick={() => setActive(w.id)}
+            // Actions float OUTSIDE the sidebar, anchored to this row — see
+            // RowActionsPopover. Measured on enter so the popover tracks the
+            // row's real position (rows move as subtrees fold).
+            onMouseEnter={(e) => {
+              if (isDeleting) return;
+              const r = e.currentTarget.getBoundingClientRect();
+              rowActions.show({
+                key: w.id,
+                rect: { top: r.top, bottom: r.bottom, right: r.right },
+                content: (
+                  <>
+                    <UnreadToggle w={w} onToggle={onToggleUnread} />
+                    {childIsGit ? (
+                      <button
+                        className="ws-icon-btn"
+                        title="Archive workspace"
+                        aria-label={`Archive workspace ${w.name}`}
+                        onClick={(e2) => { rowActions.hideNow(); onArchive(e2, w.id); }}
+                      >
+                        <ArchiveIcon />
+                      </button>
+                    ) : (
+                      <button
+                        className="ws-icon-btn danger"
+                        title={depth === 0 ? `Delete ${rootNoun}` : 'Delete session'}
+                        aria-label={`Delete ${w.branch}`}
+                        onClick={(e2) => { rowActions.hideNow(); onDeleteScratch(e2, w.id, w.branch); }}
+                      >
+                        <TrashIcon />
+                      </button>
+                    )}
+                  </>
+                ),
+              });
+            }}
+            onMouseLeave={rowActions.scheduleHide}
             // Rows in the pinned sections are re-parent drag sources and, when
             // orchestrator-capable, re-parent DROP TARGETS. They are never
             // reorder targets — the spawn tree owns their order.
@@ -1504,9 +1559,9 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 )}
                 <HibernatedChip w={w} />
                 <WorkspaceContextBadge workspaceId={w.id} />
-                <span className="ws-login">
-                  <WorkspaceAccountBadge workspaceId={w.id} migratable />
-                </span>
+                {/* Login is omitted when it just repeats the parent's — see
+                    WorkspaceRowAccountBadge. Root rows always show theirs. */}
+                <WorkspaceRowAccountBadge workspaceId={w.id} parentId={w.parentId} />
               </div>
               {w.statusText && (
                 <div className="ws-status-note" title={statusNoteTitle(w)}>
@@ -1538,31 +1593,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 <ChevronIcon open={!isCollapsed} />
               </button>
             )}
-            {isDeleting ? (
+            {isDeleting && (
               <span className="ws-spinner" title="Removing…" aria-label="Removing" role="status" />
-            ) : (
-              <span className="ws-row-actions">
-                <UnreadToggle w={w} onToggle={onToggleUnread} />
-                {childIsGit ? (
-                  <button
-                    className="ws-icon-btn"
-                    title="Archive workspace"
-                    aria-label={`Archive workspace ${w.name}`}
-                    onClick={(e) => onArchive(e, w.id)}
-                  >
-                    <ArchiveIcon />
-                  </button>
-                ) : (
-                  <button
-                    className="ws-icon-btn danger"
-                    title={depth === 0 ? `Delete ${rootNoun}` : 'Delete session'}
-                    aria-label={`Delete ${w.branch}`}
-                    onClick={(e) => onDeleteScratch(e, w.id, w.branch)}
-                  >
-                    <TrashIcon />
-                  </button>
-                )}
-              </span>
             )}
           </div>
         );
@@ -1680,7 +1712,10 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           </div>
         </div>
       </div>
-      <div className="ws-list">
+      {/* Scrolling moves every row, so a popover anchored to a measured rect
+          would float over unrelated content. Drop it immediately rather than
+          re-measuring mid-scroll. */}
+      <div className="ws-list" onScroll={rowActions.hideNow}>
         {repoOrder.length === 0 &&
           archived.length === 0 &&
           scratchTrees.length === 0 &&
@@ -1992,6 +2027,47 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                   className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}${isChild ? ' ws-child' : ''}${w.markedUnread ? ' unread' : ''}${wsDnd}`}
                   style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
                   onClick={() => setActive(w.id)}
+                  // Actions float outside the sidebar, anchored to this row.
+                  onMouseEnter={(e) => {
+                    const r = e.currentTarget.getBoundingClientRect();
+                    rowActions.show({
+                      key: w.id,
+                      rect: { top: r.top, bottom: r.bottom, right: r.right },
+                      content: (
+                        <>
+                          <UnreadToggle w={w} onToggle={onToggleUnread} />
+                          {!w.host ? (
+                            <button
+                              className="ws-icon-btn"
+                              title="Import to sandbox — move this workspace into an always-on sandbox container"
+                              aria-label={`Import workspace ${w.name} to sandbox`}
+                              onClick={(e2) => { rowActions.hideNow(); onImportToSandbox(e2, w.id, w.name); }}
+                            >
+                              <SandboxUploadIcon />
+                            </button>
+                          ) : (
+                            <button
+                              className="ws-icon-btn"
+                              title="Return to this machine — restore the workspace from its sandbox to a local worktree"
+                              aria-label={`Return workspace ${w.name} from sandbox`}
+                              onClick={(e2) => { rowActions.hideNow(); onEjectFromSandbox(e2, w.id, w.name); }}
+                            >
+                              <SandboxDownloadIcon />
+                            </button>
+                          )}
+                          <button
+                            className="ws-icon-btn"
+                            title="Archive workspace"
+                            aria-label={`Archive workspace ${w.name}`}
+                            onClick={(e2) => { rowActions.hideNow(); onArchive(e2, w.id); }}
+                          >
+                            <ArchiveIcon />
+                          </button>
+                        </>
+                      ),
+                    });
+                  }}
+                  onMouseLeave={rowActions.scheduleHide}
                   // Nested rows are now draggable too — not to reorder them
                   // (the spawn tree owns their position), but so they can be
                   // dragged OUT to detach or onto another orchestrator.
@@ -2092,12 +2168,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       )}
                       <HibernatedChip w={w} />
                       <WorkspaceContextBadge workspaceId={w.id} />
-                      <span className="ws-login">
-                        <span className="ws-context-sep" aria-hidden="true">
-                          ·
-                        </span>
-                        <WorkspaceAccountBadge workspaceId={w.id} migratable />
-                      </span>
+                      <WorkspaceRowAccountBadge workspaceId={w.id} parentId={w.parentId} />
                       <span className="ws-pills">
                       {/* A promoted worktree's ONLY "I coordinate agents" cue.
                           Now the same network glyph the Orchestrators section
@@ -2227,36 +2298,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       <ChevronIcon open={!isCollapsed} />
                     </button>
                   )}
-                  <span className="ws-row-actions">
-                    <UnreadToggle w={w} onToggle={onToggleUnread} />
-                    {!w.host ? (
-                      <button
-                        className="ws-icon-btn"
-                        title="Import to sandbox — move this workspace into an always-on sandbox container"
-                        aria-label={`Import workspace ${w.name} to sandbox`}
-                        onClick={(e) => onImportToSandbox(e, w.id, w.name)}
-                      >
-                        <SandboxUploadIcon />
-                      </button>
-                    ) : (
-                      <button
-                        className="ws-icon-btn"
-                        title="Return to this machine — restore the workspace from its sandbox to a local worktree"
-                        aria-label={`Return workspace ${w.name} from sandbox`}
-                        onClick={(e) => onEjectFromSandbox(e, w.id, w.name)}
-                      >
-                        <SandboxDownloadIcon />
-                      </button>
-                    )}
-                    <button
-                      className="ws-icon-btn"
-                      title="Archive workspace"
-                      aria-label={`Archive workspace ${w.name}`}
-                      onClick={(e) => onArchive(e, w.id)}
-                    >
-                      <ArchiveIcon />
-                    </button>
-                  </span>
                 </div>
               );
                 }; // end renderWs
@@ -2572,6 +2613,13 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           </span>
         )}
       </div>
+      {/* Portalled to <body>, so it can paint past the sidebar's right edge
+          (the list clips and `.app` is a grid). */}
+      <RowActionsPopover
+        target={rowActions.target}
+        onEnter={rowActions.cancelClose}
+        onLeave={rowActions.scheduleHide}
+      />
     </aside>
   );
 }

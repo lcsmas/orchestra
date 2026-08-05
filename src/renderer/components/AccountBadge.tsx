@@ -120,6 +120,55 @@ export function RepoAccountBadge({ repoPath }: { repoPath: string }) {
 // default-login badge; a git child carries its repo's pinned account. The
 // resolved accountId comes from the main-process `computeWorkspaceAccounts`
 // mapping (null = default login) via the renderer store.
+/** True when this workspace runs on the SAME login as `parentId`, so a child
+ * row can omit a label that just repeats its parent's.
+ *
+ * Resolves both sides exactly the way `WorkspaceAccountBadge` does — including
+ * `null`, which means "the default login" and is a real, comparable value, not
+ * "unknown". Comparing the raw store field directly would make an unpinned
+ * child look different from an unpinned parent.
+ *
+ * Returns false when there is no parent, so a root row always shows its login.
+ */
+export function useInheritsParentAccount(
+  workspaceId: string,
+  parentId: string | undefined,
+): boolean {
+  return useStore((s) => {
+    if (!parentId) return false;
+    const mine = s.workspaceAccounts[workspaceId]?.accountId ?? null;
+    const theirs = s.workspaceAccounts[parentId]?.accountId ?? null;
+    return mine === theirs;
+  });
+}
+
+/** The login label for a sidebar row, hidden when it would merely repeat the
+ * parent orchestrator's. A child inherits its parent's login unless explicitly
+ * migrated, so printing it on every nested row is noise that pushes the more
+ * informative badges out of a 24px line — but the moment a child runs on a
+ * DIFFERENT account, that is exactly what you need to see, so it reappears.
+ *
+ * Its own component (not an inline conditional) because the comparison needs a
+ * store hook, which cannot be called conditionally inside a row `.map()`. */
+export function WorkspaceRowAccountBadge({
+  workspaceId,
+  parentId,
+}: {
+  workspaceId: string;
+  parentId?: string;
+}) {
+  const inherits = useInheritsParentAccount(workspaceId, parentId);
+  if (inherits) return null;
+  // Keeps the `.ws-login` wrapper the row CSS targets for alignment — the call
+  // sites used to supply it, but an empty wrapper would still consume the
+  // row's flex gap on every row that now hides its label.
+  return (
+    <span className="ws-login">
+      <WorkspaceAccountBadge workspaceId={workspaceId} migratable />
+    </span>
+  );
+}
+
 export function WorkspaceAccountBadge({
   workspaceId,
   migratable = false,

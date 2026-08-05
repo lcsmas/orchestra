@@ -226,6 +226,35 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   right edge, so no left gutter is reserved on leaf rows; `.ws-row-actions`
   shifts to `right: 26px` on such rows (`.ws-item:has(.ws-chevron)`) so the
   hover strip does not cover it.
+- **Row actions float OUTSIDE the sidebar** (`components/RowActionsPopover.tsx`).
+  Bookmark/archive/delete/sandbox buttons render in a PORTAL to `<body>`,
+  `position: fixed`, anchored to the hovered row's measured rect and offset past
+  the sidebar's right edge. They used to be an absolutely-positioned strip
+  inside the row, sitting on top of the row's own clickable content (account
+  badge, PR/Linear badges, chevron) — reaching for a badge could hit Delete. A
+  portal is required, not stylistic: `.ws-list` scrolls (clips) and `.app` is a
+  grid, so in-row layout cannot paint past the sidebar. `useRowActionsPopover`
+  holds hover intent — a ~220ms close delay so the pointer can cross the gap,
+  cancelled when it lands on the popover; `.ws-list`'s `onScroll` hides it
+  immediately since the anchor rect goes stale. ARCHIVED rows keep the old
+  inline `.ws-row-actions` strip (that list is the delete-candidates view).
+- **Child rows hide a login that matches their parent's**
+  (`WorkspaceRowAccountBadge` + `useInheritsParentAccount`, AccountBadge.tsx).
+  A child inherits its parent's account unless migrated, so repeating it on
+  every nested row is noise; it reappears the moment it DIFFERS. Both sides
+  resolve `accountId ?? null` the same way the badge does — `null` means "the
+  default login" and is a real comparable value, so comparing the raw store
+  field would make an unpinned child look different from an unpinned parent.
+- **`LinearIcon` is Linear's real mark** — the four-band sliced disc (path from
+  simple-icons), NOT the rotated square it used to be. It is a FILLED path, so
+  it deliberately does not spread `ICON_PROPS` (`fill: none` + stroke would
+  outline each band or render nothing). The PR icons are genuine lucide
+  `git-pull-request` / `git-merge` / `git-pull-request-closed` shapes.
+- **`.ws-name` has a `min-width` floor** (7.5em, 5em under 1100px). With enough
+  badges the branch name was shrinking to ~40px — a couple of characters, i.e.
+  an unidentifiable row. The floor makes the BADGES yield space first; they are
+  fixed-size marks that survive being pushed out of view better than a nameless
+  row does.
 - **Row layout is a single 24px line.** Name, badges, context and account all
   share one line, with metadata right-aligned. `.ws-pills` was previously
   `flex-basis: 100%`, which inside a `flex-wrap: wrap` row ALWAYS starts a new
