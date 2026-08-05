@@ -93,14 +93,28 @@
   --green: #5bd68b;
   --red: #ff6b6b;
   --yellow: #ffc857;
-  /* Attention amber — the two states that ask something of the USER (the
-     `waiting` question mark, the auto-unread bell). Deliberately a different
-     hue from `--yellow`, which the working spinner uses: Orca draws the same
-     split (`yellow-500` ring vs `amber-500` icons) so "the agent is busy" and
-     "the agent needs you" never read as the same signal at a glance. Warmer
-     and more saturated than --yellow, tuned for this dark theme rather than
-     copying Tailwind's #f59e0b, which is muddy on these surfaces. */
-  --attention: #ffab40;
+  /* ── Agent status glyph palette — EXACT Orca parity ──────────────────────
+     Verbatim Tailwind v4.2.4 defaults (the version Orca pins), copied from
+     its `theme.css` rather than converted, so these are the same colours
+     Orca's `text-amber-500` / `border-yellow-500` / `bg-emerald-500` /
+     `bg-neutral-500` resolve to — bit for bit, no round-trip loss.
+
+     OKLCH is used as-is: verified `CSS.supports('color','oklch(...)')` is true
+     in this project's own Electron (Chromium 150), and the computed value
+     round-trips unchanged.
+
+     These are SEPARATE tokens from --green/--yellow/--red on purpose. Those
+     three are used in ~26 other places (diff gutters, chips, CI pills);
+     repainting them to match Orca would restyle half the app, not the status
+     glyphs. Scope the parity to exactly the surface the user asked about.
+
+     The amber/yellow split is Orca's own: the working ring is yellow-500
+     while both user-attention glyphs are amber-500, so "the agent is busy"
+     and "the agent needs you" never read as the same signal. */
+  --glyph-working: oklch(79.5% 0.184 86.047);   /* tw yellow-500  */
+  --glyph-attention: oklch(76.9% 0.188 70.08);  /* tw amber-500   */
+  --glyph-done: oklch(69.6% 0.17 162.48);       /* tw emerald-500 */
+  --glyph-inactive: oklch(55.6% 0 0);           /* tw neutral-500 */
   /* Session-kind accents — scratch (amber) and orchestrator (green) tint the
      sidebar sections, toolbar chips, and glyphs so the same concept always
      wears the same color. */
@@ -1562,22 +1576,24 @@ input:focus, textarea:focus, select:focus {
    glyph must not be stretched by the default `align-items: center` track
    sizing — pin it to its own box. */
 .res-agent-row .ws-glyph { width: 12px; height: 12px; justify-self: center; }
-.ws-glyph-idle { color: var(--green); }
+.ws-glyph-idle { color: var(--glyph-done); }
 .ws-glyph-error { color: var(--red); }
 /* The two states that ask something of the USER share `--attention` (Orca uses
    amber-500 for both its `?` and its bell), while the working spinner keeps
    `--yellow`. Colour says "you are needed"; SHAPE says which kind — a question
    mark to answer, a bell to go look. */
-.ws-glyph-waiting { color: var(--attention); }
-.ws-glyph-autounread { color: var(--attention); }
-/* Dot states — rendered as an empty span, so the dot IS the element. */
+.ws-glyph-waiting { color: var(--glyph-attention); }
+.ws-glyph-autounread { color: var(--glyph-attention); }
+/* Dot states — rendered as an empty span, so the dot IS the element.
+   8px = Orca's `size-2` (0.5rem) dot, and the `/40` alpha on the quiet states
+   is its `bg-neutral-500/40`. */
 .ws-glyph-stopped::before,
 .ws-glyph-idle::before,
 .ws-glyph.hibernated::before {
   content: "";
   width: 8px; height: 8px;
   border-radius: 50%;
-  background: var(--text-dim);
+  background: var(--glyph-inactive);
   opacity: 0.4;
 }
 /* `idle` = finished, nothing owed: a GREEN dot (Orca renders `done`/`active`
@@ -1588,7 +1604,7 @@ input:focus, textarea:focus, select:focus {
    Excluding it here means the rule simply does not match those rows, so the
    dim default above applies — no specificity or source-order race. */
 .ws-glyph-idle:not(.hibernated)::before {
-  background: var(--green);
+  background: var(--glyph-done);
   opacity: 1;
 }
 /* Running: a CSS ring with a transparent top edge, spun by a compositor-only
@@ -1601,7 +1617,7 @@ input:focus, textarea:focus, select:focus {
   /* Yellow, matching Orca's `border-yellow-500` spinner. Also frees GREEN to
      mean exactly one thing — "finished, nothing owed" — instead of being
      shared by the working ring and the idle dot. */
-  border: 2px solid var(--yellow);
+  border: 2px solid var(--glyph-working);
   border-top-color: transparent;
   animation: ws-glyph-spin 0.8s linear infinite;
 }
@@ -1609,7 +1625,7 @@ input:focus, textarea:focus, select:focus {
 @media (prefers-reduced-motion: reduce) {
   /* Restore the top edge when the animation is off: a FROZEN ring with a
      transparent quarter reads as a broken/clipped glyph, not as "working". */
-  .ws-glyph-spin { animation: none; border-top-color: var(--yellow); }
+  .ws-glyph-spin { animation: none; border-top-color: var(--glyph-working); }
 }
 /* Manual "unread" tag — a come-back-later bookmark the user sets by hand.
    The row reads like unread mail: the status glyph turns accent-blue
