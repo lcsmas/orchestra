@@ -128,6 +128,28 @@ content_block_stop, message_delta, message_stop`.
   keyed off the `thinking` content-block start, not a text stream.
   *(Verdict recorded as observed, not assumed — text was empty in every observation.)*
 
+  > **SCOPE UPDATE — 2026-08-05 (not a retraction).** The observation above still
+  > stands for what it tested. What has NOT aged well is its generalization.
+  >
+  > This spike ran the OLD thinking config, `{type:'enabled', budgetTokens:6000}`.
+  > The current Messages API streaming docs define thinking display as a request
+  > parameter — `{type:'adaptive', display:'summarized'|'omitted'}` — and state
+  > that under `display:'omitted'` **"no `thinking_delta` events are sent. The
+  > thinking block opens, receives a single `signature_delta`, and closes."**
+  > That is exactly the shape observed here, and the docs show `thinking_delta`
+  > carrying real cleartext reasoning under `display:'summarized'`.
+  >
+  > So "empty thinking text" reads as the documented behaviour of an omitted
+  > display, not as per-model redaction — which makes the bolded claim ("a live
+  > thinking-stream panel is not achievable from the SDK") **UNVERIFIED on
+  > today's models and config**, rather than false. Nobody has re-tested it.
+  >
+  > Before building any readable-thinking UI: pass `display:'summarized'` through
+  > the SDK's thinking options, confirm non-empty `thinking_delta.thinking` on the
+  > model actually in use, and keep `text_delta` alongside as the positive control
+  > (as this spike did). Do NOT treat this section as licence to skip that test —
+  > and do not treat it as licence to assume the text is there either.
+
 ### (c) `canUseTool` fires; `allow` and `deny` both work — **PASS**
 
 `canUseTool` fired for `Bash`, `Write`, and `Read` with `(toolName, input, opts)`.

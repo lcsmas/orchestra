@@ -9,7 +9,7 @@ import {
   getRefShas,
   getReleaseVersionsContaining,
 } from './git';
-import type { Workspace, WorkspaceStatus } from '../shared/types';
+import type { AgentStopReason, Workspace, WorkspaceStatus } from '../shared/types';
 // Dependency-free leaf (see hibernation-activity.ts): importing hibernation.ts
 // here would close an import cycle, since it imports pty.ts which imports this
 // file. The .ts extension is required for VALUE imports reachable from the
@@ -81,7 +81,28 @@ async function setStatus(
   return { ws: updated, changed: true };
 }
 
-function fireFinished(id: string): void {
+/** Human-facing wording for a turn-end toast, keyed by WHY the turn ended.
+ *  A turn that blew its budget or died on an error is still `waiting` — the
+ *  human is still needed — but announcing it as "ready for review" misreports
+ *  what happened, which is the whole point of carrying the reason. */
+function finishedToast(reason: AgentStopReason | undefined, name: string): {
+  title: string;
+  body: string;
+} {
+  switch (reason) {
+    case 'error':
+      return { title: 'Agent stopped on an error', body: `${name} ended its turn with an error` };
+    case 'max_turns':
+      return { title: 'Agent hit its turn limit', body: `${name} stopped after reaching max turns` };
+    case 'interrupted':
+      return { title: 'Agent interrupted', body: `${name} was interrupted mid-turn` };
+    // end_turn (and the spool path's absent reason) — the normal, good case.
+    default:
+      return { title: 'Agent finished', body: `${name} is ready for review` };
+  }
+}
+
+function fireFinished(id: string, stopReason?: AgentStopReason): void {
   // Focus of the Electron window (the seam guards a destroyed window
   // internally — an isFocused throw here used to abort the whole spool drain
   // batch and strand the `stop`).
@@ -105,12 +126,8 @@ function fireFinished(id: string): void {
     // must not pop a second toast. The seam posts the native Electron toast
     // (click-to-focus).
     if (focused || !changed) return;
-    platform.notify({
-      wsId: id,
-      kind: 'finished',
-      title: 'Agent finished',
-      body: `${ws.name} is ready for review`,
-    });
+    const { title, body } = finishedToast(stopReason, ws.name);
+    platform.notify({ wsId: id, kind: 'finished', title, body });
   });
 }
 
@@ -506,6 +523,11 @@ export function applyAgentEvent(
   event: string,
   tool: string | undefined,
   transcript?: string,
+  /** Why the turn ended, when the caller knows (the SDK path — see
+   *  `sdkEventToStopReason`). The terminal/spool path passes nothing: Claude
+   *  Code's Stop hook carries no reason field, so those events keep their
+   *  previous behavior exactly. Only consulted for terminal events. */
+  stopReason?: AgentStopReason,
 ): void {
   alog.trace(`event ${event}${tool ? ` tool=${tool}` : ''} ws=${id}`);
   // Every lifecycle event — from either agent path — is "this workspace did
@@ -540,7 +562,11 @@ export function applyAgentEvent(
       // Turn-end: persist the figure (piggybacks the status write fireFinished
       // is about to make) so the badge can be restored at next startup.
       void emitContext(id, transcript, true);
-      fireFinished(id);
+      // `stopfail` is itself a reason signal: the terminal path routes Claude
+      // Code's StopFailure hook here and passes no explicit reason, so fall back
+      // to 'error' for it. That keeps the two paths agreeing without the spool
+      // hook needing a new field it cannot produce.
+      fireFinished(id, stopReason ?? (event === 'stopfail' ? 'error' : undefined));
       break;
     case 'notify':
       emitTool(id, null);

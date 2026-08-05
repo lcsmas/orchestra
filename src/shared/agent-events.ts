@@ -392,8 +392,24 @@ function normalizeStreamEvent(ctx: NormalizeContext, ev: RawStreamEvent): AgentE
     } else if (d.type === 'input_json_delta' && typeof d.partial_json === 'string') {
       out.push(stamp(ctx, { type: 'tool-input-delta', index, partialJson: d.partial_json }));
     }
-    // thinking_delta text is redacted/empty on Opus 4.8 (spike b) — we emit no
-    // text event for it; the thinking-start indicator (above) is the whole UI.
+    // thinking_delta text was empty on Opus 4.8 under the OLD thinking config
+    // (`{type:'enabled',budgetTokens}`) — spike b, reproduced 4x with text_delta
+    // flowing alongside as a positive control (docs/spikes/phase0-sdk-findings.md).
+    //
+    // SCOPE, re-checked 2026-08-05 against the current streaming docs: that is
+    // the documented behaviour of `thinking.display: "omitted"` ("no
+    // thinking_delta events are sent; the block opens, receives a single
+    // signature_delta, and closes") — NOT a platform invariant. The config is
+    // now `{type:'adaptive', display:'summarized'|'omitted'}`, and the docs show
+    // thinking_delta carrying real cleartext under "summarized".
+    //
+    // So the spike's observation stands for the config it tested; its
+    // generalization ("a live thinking-stream panel is not achievable") is
+    // UNVERIFIED on today's models/config. Emitting no text event is still the
+    // correct DEFAULT — an empty string must never render as a thinking bubble —
+    // but if a readable thinking stream is wanted, the thing to test is passing
+    // `display:'summarized'` and confirming non-empty deltas BEFORE building UI
+    // on it. Until then the thinking-start indicator (above) is the whole UI.
     return out;
   }
 
@@ -856,7 +872,19 @@ export function isBadResumeError(message: string): boolean {
 /** The spool-event names the activity status machine (`applyAgentEvent`,
  *  src/main/activity.ts) consumes — the same lexicon the terminal path's shell
  *  hooks append to the durable events spool. */
-export type StatusSpoolEvent = 'submit' | 'pretool' | 'posttool' | 'notify' | 'stop';
+/** The spool events that move the sidebar status dot.
+ *
+ *  `stopfail` mirrors Claude Code's StopFailure hook (a turn that ended on an
+ *  API error): `applyAgentEvent` has always handled it alongside `stop` — both
+ *  land on `waiting` — but it was missing from this union, so the SDK path had
+ *  no way to express "the turn ended badly" even though it knows. */
+export type StatusSpoolEvent =
+  | 'submit'
+  | 'pretool'
+  | 'posttool'
+  | 'notify'
+  | 'stop'
+  | 'stopfail';
 
 /** Map one live SDK {@link AgentEvent} onto the spool event that should drive
  *  the sidebar status dot, or `null` when the event doesn't move status.
@@ -886,10 +914,36 @@ export function sdkEventToStatusEvent(ev: AgentEvent): StatusSpoolEvent | null {
       return 'notify';
     case 'turn-end':
       // Turn boundary: finished, waiting for the next prompt (↔ Stop → `waiting`).
-      return 'stop';
+      //
+      // A turn that ended in an ERROR maps to `stopfail`, the spool event the
+      // terminal path already uses for Claude Code's StopFailure hook. Both
+      // still land on `waiting` in applyAgentEvent — the distinction is not the
+      // status but the REASON, which the finished-toast reads so an errored turn
+      // doesn't announce itself as "ready for review".
+      //
+      // `ev.stopReason` is computed by toStopReason() and already rides on the
+      // turn-end event for the renderer's TurnFooter; before this it was dropped
+      // at exactly this line, collapsing end_turn / interrupted / max_turns /
+      // error into one indistinguishable `waiting`. Both the Messages API
+      // (`message_delta.stop_reason`) and Managed Agents (typed `stop_reason` on
+      // `session.status_idle`) model turn-end the same way: one idle state, a
+      // typed reason beside it.
+      return ev.stopReason === 'error' ? 'stopfail' : 'stop';
     default:
       return null;
   }
+}
+
+/** The turn-end reason for a status event, when the event carries one.
+ *
+ *  Kept separate from {@link sdkEventToStatusEvent} so the status mapping stays
+ *  a pure event→event function: the reason is metadata ABOUT a terminal event,
+ *  not a different event. Returns undefined for every non-terminal event, which
+ *  is what `applyAgentEvent` expects for the spool path (shell hooks carry no
+ *  reason — Claude Code's Stop hook has no equivalent field, so the terminal
+ *  path simply passes nothing and behaves exactly as before). */
+export function sdkEventToStopReason(ev: AgentEvent): AgentStopReason | undefined {
+  return ev.type === 'turn-end' ? ev.stopReason : undefined;
 }
 
 /** Build a stamped user-message echo (see {@link AgentUserMessageEvent}) — the
@@ -1010,8 +1064,11 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
           toolUse: { toolUseId: event.toolUseId ?? '', name: event.name ?? '', inputJson: '' },
         });
       } else if (event.kind === 'thinking') {
-        // Thinking text is redacted on Opus 4.8 (spike b) — the message is a
-        // pure indicator, so it gets NO `text` slot, only the boolean flag.
+        // Thinking text was empty on Opus 4.8 under the old thinking config
+        // (spike b) — the message is a pure indicator, so it gets NO `text`
+        // slot, only the boolean flag. See normalizeStreamEvent's thinking note
+        // for the scope of that finding (it describes `display:'omitted'`, not
+        // every model/config) and what to test before building a text UI here.
         messages.push({ id, role: 'assistant', index: event.index, thinking: true });
       } else {
         messages.push({ id, role: 'assistant', index: event.index, text: '' });

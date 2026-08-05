@@ -12,6 +12,7 @@ import {
   shouldAutoApprovePermission,
   isBadResumeError,
   sdkEventToStatusEvent,
+  sdkEventToStopReason,
   ASK_USER_QUESTION,
   type NormalizeContext,
   type SdkMessage,
@@ -463,6 +464,54 @@ test('sdkEventToStatusEvent: a parked permission → notify (→ waiting for the
 
 test('sdkEventToStatusEvent: turn-end → stop (→ waiting)', () => {
   assert.equal(sdkEventToStatusEvent(at('turn-end', { isError: false })), 'stop');
+});
+
+// ─── turn-end REASON (end_turn / interrupted / max_turns / error) ────────────
+//
+// The reason was computed by toStopReason() and shipped on the turn-end event
+// for the renderer, then dropped at the status boundary — so a turn that blew
+// its budget or died on an error was indistinguishable from a clean finish.
+// Both the Messages API (`message_delta.stop_reason`) and Managed Agents (typed
+// `stop_reason` on `session.status_idle`) model this as one idle state with a
+// typed reason beside it; these guard that Orchestra does the same.
+
+test('sdkEventToStatusEvent: an ERRORED turn-end → stopfail, not stop', () => {
+  // Both still land on `waiting` in applyAgentEvent — the distinction is the
+  // reason, which the finished-toast reads. A plain 'stop' here would announce
+  // a crashed turn as "ready for review".
+  assert.equal(sdkEventToStatusEvent(at('turn-end', { stopReason: 'error' })), 'stopfail');
+});
+
+test('sdkEventToStatusEvent: non-error turn-ends stay stop (only `error` diverges)', () => {
+  // max_turns / interrupted are real turn-ends, not failures of the turn
+  // machinery — they must not take the stopfail branch.
+  for (const stopReason of ['end_turn', 'max_turns', 'interrupted']) {
+    assert.equal(
+      sdkEventToStatusEvent(at('turn-end', { stopReason })),
+      'stop',
+      `${stopReason} must map to stop`,
+    );
+  }
+});
+
+test('sdkEventToStopReason: carries the reason for turn-end, undefined for everything else', () => {
+  assert.equal(sdkEventToStopReason(at('turn-end', { stopReason: 'max_turns' })), 'max_turns');
+  assert.equal(sdkEventToStopReason(at('turn-end', { stopReason: 'end_turn' })), 'end_turn');
+  // Non-terminal events must yield undefined — and the fixtures below deliberately
+  // CARRY a stopReason field so this discriminates on the event TYPE rather than
+  // on the field being absent. Without that, a broken implementation that just
+  // returned `ev.stopReason` unconditionally would pass (verified: it did — the
+  // first version of this test was vacuous under exactly that mutation).
+  assert.equal(sdkEventToStopReason(at('tool-use', { name: 'Bash', stopReason: 'error' })), undefined);
+  assert.equal(sdkEventToStopReason(at('user-message', { text: 'go', stopReason: 'max_turns' })), undefined);
+  assert.equal(sdkEventToStopReason(at('text-delta', { text: 'hi', stopReason: 'end_turn' })), undefined);
+});
+
+test('sdkEventToStopReason: a turn-end with no reason yields undefined, not a fabricated one', () => {
+  // The spool/terminal path has no reason field at all (Claude Code's Stop hook
+  // carries none). Undefined must flow through as "unknown", which the toast
+  // treats as the normal finish — never as an invented failure.
+  assert.equal(sdkEventToStopReason(at('turn-end', { isError: false })), undefined);
 });
 
 test('sdkEventToStatusEvent: pure-render events do NOT move status (→ null)', () => {

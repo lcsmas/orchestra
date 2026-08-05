@@ -17,6 +17,16 @@ Event → status (`applyAgentEvent` `:471`):
   `running`, clear label, emit live context tokens.
 - `stop`/`stopfail` → `waiting` via `fireFinished` `:61` (chime + "finished"
   toast if window unfocused; recomputes merge state; persists context tokens).
+  `applyAgentEvent` takes an optional `stopReason` (`AgentStopReason`) that
+  `fireFinished` uses to word the toast — an errored / turn-limited /
+  interrupted turn is still `waiting` (the human is still needed) but must not
+  announce itself as "ready for review". Only the SDK path supplies it
+  (`sdkEventToStopReason`); Claude Code's Stop hook has no reason field, so the
+  spool path passes nothing and behaves exactly as before, except `stopfail`
+  which implies `error`. Status stays a 5-state machine — the reason is metadata
+  beside it, matching how the Messages API (`message_delta.stop_reason`) and
+  Managed Agents (typed `stop_reason` on `session.status_idle`) both model
+  turn-end.
 - `notify` → `waiting` via `fireNeedsInput` `:109` ("needs input" toast).
 - `session` (SessionStart; `tool` slot carries the payload `source`) →
   `source=clear|compact` resets the context badge via `resetContext` (0
