@@ -10,7 +10,12 @@ import os from 'node:os';
 // at boot with ERR_REQUIRE_ESM. The `query` VALUE is loaded via a cached
 // dynamic import() instead (see {@link loadSdk}) — the one form Node can use to
 // pull ESM from CJS.
-import type { Query, SDKUserMessage, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import type {
+  Query,
+  SDKUserMessage,
+  PermissionResult,
+  RewindFilesResult,
+} from '@anthropic-ai/claude-agent-sdk';
 import { platform } from './platform';
 import { store } from './store';
 import { log, scoped } from './logger';
@@ -55,6 +60,7 @@ import type {
   AgentPermissionMode,
   AgentModelInfo,
   AgentPermissionReply,
+  AgentSessionRewindEvent,
   AgentSkillInfo,
   AgentStopReason,
   RemoteControlState,
@@ -191,6 +197,17 @@ interface Session {
 }
 
 const sessions = new Map<string, Session>();
+
+/** Pending `resumeSessionAt` cuts, keyed by workspace — set by {@link sdkRewind}
+ *  and consumed by the very next {@link ensureSession}.
+ *
+ *  A rewind can't truncate a RUNNING session: the cut is a `query()` START
+ *  option, so the flow is stop-now / restart-truncated-later. Rather than
+ *  eagerly respawning a subprocess the user may not need (they might rewind and
+ *  walk away), the cut is parked here and applied lazily when the next send
+ *  rebuilds the session — matching how `resume` itself is lazy. Consumed
+ *  read-and-delete so it can never apply twice. */
+const rewindResumeAt = new Map<string, string>();
 
 /** Broadcast one normalized event to the renderer. */
 function emit(wsId: string, event: AgentEvent): void {
@@ -661,6 +678,13 @@ async function ensureSession(wsId: string): Promise<Session> {
   const ws = store.getWorkspace(wsId);
   if (!ws) throw new Error(`unknown workspace: ${wsId}`);
 
+  // A pending rewind cut, consumed EXACTLY ONCE by the restart it was queued
+  // for (see sdkRewind). Read-and-clear before any `await` below so a second
+  // concurrent ensureSession can't apply the same truncation twice — and so a
+  // later, unrelated resume never silently re-truncates the conversation.
+  const pendingRewindAt = rewindResumeAt.get(wsId);
+  rewindResumeAt.delete(wsId);
+
   // A structured session is about to (re)start — the single funnel for every
   // SDK start, resume and wake — so this workspace is no longer hibernated.
   // Clearing here rather than at each call site (sdkSend/sdkWake/sdkDeliver)
@@ -820,6 +844,18 @@ async function ensureSession(wsId: string): Promise<Session> {
             },
           }
         : {}),
+      // Track per-user-message file snapshots so `sdkRewind` can restore the
+      // files a turn touched (`Query.rewindFiles` REQUIRES this — without it it
+      // returns canRewind:false). Checkpoints only cover edits made AFTER the
+      // flag is on, so sessions predating this feature rewind the conversation
+      // only; the UI says so rather than implying a full restore. Note this is
+      // incompatible with the SDK's `sessionStore` option (backup blobs aren't
+      // mirrored) — Orchestra doesn't use one. See docs/spikes/rewind-sdk-findings.md.
+      enableFileCheckpointing: true,
+      // Truncate the resumed conversation to just before the message the user
+      // rewound to. Set for exactly ONE restart (consumed below) — a rewind
+      // tears the session down and the next send rebuilds it with this cut.
+      ...(pendingRewindAt ? { resumeSessionAt: pendingRewindAt } : {}),
       // A large cap: real turns end on their own; this only backstops runaways.
       maxTurns: 200,
     },
@@ -1142,9 +1178,18 @@ export async function sdkSend(
           ...(sendText ? [{ type: 'text' as const, text: sendText }] : []),
         ]
       : sendText;
+  // Mint this turn's message uuid OURSELVES — the rewind target. `uuid` is an
+  // optional *input* on SDKUserMessage that the CLI persists verbatim to the
+  // on-disk transcript (verified, with a uuid-omitted negative control, in
+  // docs/spikes/rewind-sdk-findings.md). Minting it here is what makes the id
+  // known synchronously: the SDK never echoes user messages back, so there is
+  // NO stream path to learn a CLI-assigned uuid, and reading it off disk would
+  // be racy. It rides the echo below so the bubble is rewindable immediately.
+  const rewindId = randomUUID();
   const msg: SDKUserMessage = {
     type: 'user',
     parent_tool_use_id: null,
+    uuid: rewindId,
     // The SDK's content-block union is wider than our narrowed shape; the base64
     // image + text blocks match the Messages API vision contract exactly.
     message: { role: 'user', content: content as SDKUserMessage['message']['content'] },
@@ -1156,7 +1201,7 @@ export async function sdkSend(
   // for the status dot, so drive status off it directly: it flips the sidebar to
   // `running` the instant the turn is queued, before the first SDK event lands —
   // parity with the terminal path's UserPromptSubmit hook.
-  const userMsg = makeUserMessage(session.ctx, text, images);
+  const userMsg = makeUserMessage(session.ctx, text, images, rewindId);
   emit(session.wsId, userMsg);
   driveStatusFromEvent(session, userMsg);
   // Remember what we fed the generator so emitFrom can drop a stream replay of
@@ -1633,6 +1678,123 @@ export async function sdkClear(wsId: string): Promise<void> {
     seq: session ? session.ctx.seq++ : 0,
     at: Date.now(),
   });
+}
+
+/** Rewind the conversation to a previous user message — Claude Code's
+ *  double-Esc restore, as an explicit per-message action (parity feature).
+ *
+ *  `rewindId` is the {@link AgentUserMessageEvent.rewindId} of the message being
+ *  UNDONE: it and everything after it leave the conversation, and the files that
+ *  turn touched are restored. `prevRewindId` is the uuid of the user message
+ *  BEFORE it, or undefined when rewinding the very first turn.
+ *
+ *  ## Why two ids
+ *
+ *  The two SDK primitives take DIFFERENT targets, and conflating them is an
+ *  off-by-one that silently keeps or drops a whole turn:
+ *    • `rewindFiles(rewindId)` — restores files to their state AT that message,
+ *      i.e. before its edits. Targets the message being undone.
+ *    • `resumeSessionAt(uuid)` — keeps turns 1..N **inclusive** of the targeted
+ *      message (measured, not inferred: docs/spikes/rewind-sdk-findings.md).
+ *      So to DROP the target we must cut at its PREDECESSOR.
+ *  Rewinding the first message therefore has no cut target at all — the next
+ *  send starts a fresh session (`sdkSessionId: ''`, the explicit cleared marker).
+ *
+ *  ## Ordering
+ *
+ *  `rewindFiles` runs on the LIVE query object BEFORE teardown — checkpoints are
+ *  session-scoped, so a stopped (or forked) session can no longer restore them.
+ *  Files first, then stop, then park the conversation cut for the next start.
+ *
+ *  The file restore is best-effort and NEVER blocks the conversation rewind: a
+ *  session that predates `enableFileCheckpointing` has no snapshots and the SDK
+ *  reports `canRewind:false` (or throws "No file checkpoint found for this
+ *  message"). That is surfaced as `filesError` on the event so the UI can say
+ *  "conversation rewound, files untouched" instead of implying a full restore. */
+export async function sdkRewind(
+  wsId: string,
+  rewindId: string,
+  prevRewindId?: string,
+): Promise<AgentSessionRewindEvent> {
+  const session = sessions.get(wsId);
+
+  // 1. Files FIRST, while the session (and its checkpoints) are still alive.
+  let files: RewindFilesResult | undefined;
+  let filesError: string | undefined;
+  if (session && !session.stopping) {
+    try {
+      files = await session.q.rewindFiles(rewindId);
+      if (!files.canRewind) {
+        filesError = files.error || 'No file checkpoint exists for this message.';
+      }
+    } catch (err) {
+      // Thrown for an unknown/uncheckpointed message ("No file checkpoint found
+      // for this message.") — expected for pre-feature sessions, so it is a
+      // reported caveat, not a failure of the rewind.
+      filesError = err instanceof Error ? err.message : String(err);
+    }
+  } else {
+    filesError = 'The agent session was not running, so file changes were left as they are.';
+  }
+  if (filesError) {
+    log.info(`agent-sdk: rewind ${wsId}: files not restored — ${filesError}`);
+  }
+
+  // 2. Tear the session down. `cleared` suppresses its tail events so the dying
+  //    subprocess can't append rows to a transcript we are about to truncate.
+  if (session) {
+    session.cleared = true;
+    await sdkStop(wsId);
+  }
+
+  // 3. Park the conversation cut for the next lazy start (see rewindResumeAt).
+  //    No predecessor ⇒ the whole conversation goes: drop the resume id so the
+  //    next send opens a brand-new session rather than resuming the full one.
+  if (prevRewindId) {
+    rewindResumeAt.set(wsId, prevRewindId);
+  } else {
+    rewindResumeAt.delete(wsId);
+    await persistWorkspacePatch(wsId, { sdkSessionId: '' }).catch(() => {});
+  }
+
+  const event: AgentSessionRewindEvent = {
+    type: 'session/rewind',
+    seq: session ? session.ctx.seq++ : 0,
+    at: Date.now(),
+    rewindId,
+    ...(files?.filesChanged ? { filesChanged: files.filesChanged } : {}),
+    ...(typeof files?.insertions === 'number' ? { insertions: files.insertions } : {}),
+    ...(typeof files?.deletions === 'number' ? { deletions: files.deletions } : {}),
+    ...(files?.skippedLinks ? { skippedLinks: files.skippedLinks } : {}),
+    ...(filesError ? { filesError } : {}),
+  };
+  emit(wsId, event);
+  // The turn the rewind killed leaves the dot stuck `running`; settle it the
+  // same way the consume loop's exit floor does.
+  reconcileExited(wsId);
+  return event;
+}
+
+/** Preview a rewind WITHOUT changing anything — the SDK's `dryRun`, so the
+ *  confirmation can state exactly which files would be restored (and whether
+ *  any can be) before the user commits. Never throws: an un-checkpointed
+ *  session reports `canRewind:false` with the reason. */
+export async function sdkRewindPreview(
+  wsId: string,
+  rewindId: string,
+): Promise<RewindFilesResult> {
+  const session = sessions.get(wsId);
+  if (!session || session.stopping) {
+    return {
+      canRewind: false,
+      error: 'The agent session is not running, so file changes cannot be restored.',
+    };
+  }
+  try {
+    return await session.q.rewindFiles(rewindId, { dryRun: true });
+  } catch (err) {
+    return { canRewind: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /** Whether a workspace currently has a live SDK session. */

@@ -1084,6 +1084,20 @@ export interface AgentUserMessageEvent extends AgentEventBase {
   text: string;
   /** Images pasted into the composer alongside the text, if any. */
   images?: AgentImage[];
+  /** The Claude Code message UUID for this turn — the **rewind target**.
+   *
+   *  Orchestra MINTS this itself in `sdkSend` and sets it on the outgoing
+   *  `SDKUserMessage.uuid` (an optional *input* field the CLI persists verbatim
+   *  to the on-disk transcript — verified in `docs/spikes/rewind-sdk-findings.md`).
+   *  Minting it caller-side is what makes the id known synchronously; the SDK
+   *  never echoes user messages back, so there is no stream path to learn a
+   *  CLI-assigned uuid.
+   *
+   *  Absent on turns Orchestra didn't originate (Remote Control / peer text
+   *  arriving on the stream) and on pre-feature history, where the transcript
+   *  backfill supplies the on-disk envelope uuid instead. A message without one
+   *  simply isn't a rewind target. */
+  rewindId?: string;
   /** Where an externally-originated turn came from, when it did NOT come from
    *  this composer — e.g. 'claude.ai' (Remote Control from phone/web) or
    *  'peer: <name>'. Locally-typed prompts omit it. Rendered as a small badge
@@ -1222,6 +1236,52 @@ export interface AgentTaskEvent extends AgentEventBase {
   liveIds?: string[];
 }
 
+/** Emitted when a **rewind** completes (see `sdkRewind`, src/main/agent-sdk.ts):
+ *  the conversation has been truncated back to just before the user message
+ *  `rewindId`, and — when file checkpointing was active — the files it touched
+ *  have been restored to their state at that point.
+ *
+ *  The fold DROPS every render message from the target onward, so the pane
+ *  matches the truncated session the next turn will actually resume from. */
+export interface AgentSessionRewindEvent extends AgentEventBase {
+  type: 'session/rewind';
+  /** {@link AgentUserMessageEvent.rewindId} of the message that was rewound —
+   *  it and everything after it leave the transcript. */
+  rewindId: string;
+  /** Files restored by `Query.rewindFiles`, when checkpointing was active.
+   *  Empty when only the conversation was rewound (no checkpoints — e.g. a
+   *  session that predates the feature). */
+  filesChanged?: string[];
+  /** Line counts from the file restore, for the confirmation notice. */
+  insertions?: number;
+  deletions?: number;
+  /** Tracked files skipped for link-safety by the SDK (symlink/hard-link at the
+   *  tracked path). Surfaced so a partial restore is never silent. */
+  skippedLinks?: number;
+  /** Set when the conversation was rewound but files were NOT restorable —
+   *  e.g. no checkpoint exists for a session started before checkpointing was
+   *  enabled. Rendered as a caveat so a half-done rewind can't read as total. */
+  filesError?: string;
+}
+
+/** A dry-run preview of what a rewind would restore — the shape of the SDK's
+ *  `RewindFilesResult`, redeclared here so the RENDERER never has to import the
+ *  pure-ESM agent SDK for a type (see agent-sdk.ts's dynamic-import note).
+ *  Backs the confirmation popover's file summary. */
+export interface AgentRewindPreview {
+  /** False when nothing can be restored — no checkpoint for this message (a
+   *  session predating file checkpointing), or no live session. `error` says
+   *  which, and the UI offers a conversation-only rewind instead. */
+  canRewind: boolean;
+  error?: string;
+  filesChanged?: string[];
+  insertions?: number;
+  deletions?: number;
+  /** Tracked files the SDK refused for link-safety (a symlink/hard link at the
+   *  tracked path). Only populated on a REAL rewind, never on a dry run. */
+  skippedLinks?: number;
+}
+
 /** The full agent event stream — a discriminated union on `type`. The main
  *  process emits these in order over the `agent:event` channel; the renderer
  *  folds them via {@link foldEventsInto} (src/shared/agent-events.ts). */
@@ -1244,6 +1304,7 @@ export type AgentEvent =
   | AgentStatusEvent
   | AgentThinkingTokensEvent
   | AgentSessionClearEvent
+  | AgentSessionRewindEvent
   | AgentTurnEndEvent
   | AgentErrorEvent;
 
@@ -1280,6 +1341,11 @@ export interface RenderMessage {
   origin?: string;
   /** For a `user` message: images pasted into the composer with this turn. */
   images?: AgentImage[];
+  /** For a `user` message: the Claude Code message UUID, i.e. the **rewind
+   *  target** (see {@link AgentUserMessageEvent.rewindId}). Present only on
+   *  turns Orchestra minted an id for, or history lines whose on-disk envelope
+   *  carried one — the bubble shows its rewind affordance only when set. */
+  rewindId?: string;
   /** True while a thinking block is open on this message — a spinner indicator,
    *  never rendered text (redacted on Opus 4.8). */
   thinking?: boolean;

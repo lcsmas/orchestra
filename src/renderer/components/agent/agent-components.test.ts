@@ -22,6 +22,12 @@ import {
   type ToolLike,
 } from './tool-util.ts';
 import {
+  describeRewindPreview,
+  previousRewindId,
+  rewindPrefillText,
+} from './rewind-util.ts';
+import type { RenderMessage } from '../../../shared/types.ts';
+import {
   MODEL_CHOICES,
   choiceCovers,
   describeLiveModel,
@@ -450,4 +456,72 @@ test('stepEffort steps one stop and clamps at the track ends', () => {
   assert.equal(stepEffort('low', -1), 'low');
   // Undefined (no persisted choice) steps from the default.
   assert.equal(stepEffort(undefined, 1), 'xhigh');
+});
+
+// ─── rewind helpers ──────────────────────────────────────────────────────────
+
+test('describeRewindPreview states what changes on disk', () => {
+  assert.match(describeRewindPreview(null), /Checking/);
+  // A session predating file checkpointing: lead with what WILL happen (the
+  // conversation still rewinds), not with an error the user can't act on.
+  assert.match(
+    describeRewindPreview({ canRewind: false, error: 'No file checkpoint found for this message.' }),
+    /left as they are/,
+  );
+  assert.equal(describeRewindPreview({ canRewind: true, filesChanged: [] }), 'No file changes to undo.');
+  assert.equal(
+    describeRewindPreview({ canRewind: true, filesChanged: ['a.ts'], insertions: 3, deletions: 1 }),
+    'Restores 1 file (+3/−1).',
+  );
+  assert.equal(
+    describeRewindPreview({ canRewind: true, filesChanged: ['a.ts', 'b.ts'], insertions: 12, deletions: 40 }),
+    'Restores 2 files (+12/−40).',
+  );
+  // Missing counts must read as 0, never "undefined".
+  assert.equal(
+    describeRewindPreview({ canRewind: true, filesChanged: ['a.ts'] }),
+    'Restores 1 file (+0/−0).',
+  );
+});
+
+/** A transcript row, minimal — only the fields the rewind helpers read. */
+function row(id: string, rewindId?: string, text?: string): RenderMessage {
+  return { id, role: rewindId ? 'user' : 'assistant', ...(rewindId ? { rewindId } : {}), ...(text ? { text } : {}) };
+}
+
+test('previousRewindId cuts at the PREDECESSOR, not the target', () => {
+  // resumeSessionAt keeps the message it targets, so undoing u2 must cut at u1
+  // — targeting u2 would leave the very turn being undone in the session.
+  const msgs = [row('m1', 'u1', 'first'), row('m2'), row('m3', 'u2', 'second'), row('m4')];
+  assert.equal(previousRewindId(msgs, 'u2'), 'u1');
+});
+
+test('previousRewindId returns undefined for the FIRST turn (fresh session)', () => {
+  // Nothing to keep ⇒ the caller must start a new session rather than resume.
+  const msgs = [row('m1', 'u1', 'first'), row('m2'), row('m3', 'u2', 'second')];
+  assert.equal(previousRewindId(msgs, 'u1'), undefined);
+  // An id that isn't in the transcript is likewise a no-op.
+  assert.equal(previousRewindId(msgs, 'nope'), undefined);
+});
+
+test('previousRewindId skips rows with no rewind id', () => {
+  // Assistant/tool rows and externally-originated turns carry no id and are not
+  // valid cut points — the walk must pass over them to the nearest real target.
+  const msgs = [
+    row('m1', 'u1', 'first'),
+    row('m2'),
+    row('m3'), // e.g. a tool row
+    row('m4', undefined, 'remote turn, no id'),
+    row('m5', 'u2', 'second'),
+  ];
+  assert.equal(previousRewindId(msgs, 'u2'), 'u1');
+});
+
+test('rewindPrefillText returns the undone message text for edit-and-retry', () => {
+  const msgs = [row('m1', 'u1', 'first'), row('m2', 'u2', 'second')];
+  assert.equal(rewindPrefillText(msgs, 'u2'), 'second');
+  // An image-only turn (no text) and an unknown id both yield empty, never
+  // undefined — the composer would render the string "undefined".
+  assert.equal(rewindPrefillText([row('m3', 'u3')], 'u3'), '');
+  assert.equal(rewindPrefillText(msgs, 'nope'), '');
 });

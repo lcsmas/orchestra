@@ -4,6 +4,8 @@ import { MarkdownView } from './MarkdownView';
 import { NoticeRow } from './NoticeRow';
 import { ThinkingIndicator } from './ThinkingIndicator';
 import { useTypewriter } from './useTypewriter';
+import { RewindControl } from './RewindControl';
+import { useRewind } from './rewind-context';
 
 interface Props {
   message: RenderMessage;
@@ -24,6 +26,9 @@ interface Props {
  */
 function MessageBubbleImpl({ message }: Props) {
   const { text, thinking, role, images } = message;
+  // Context, not a prop: this bubble sits below several memo boundaries kept
+  // deliberately render-free on the streaming hot path (see rewind-context.ts).
+  const rewind = useRewind();
   const fullText = text ?? '';
 
   // Typewriter reveal for STREAMING ASSISTANT text: the SDK delivers tokens in
@@ -63,6 +68,18 @@ function MessageBubbleImpl({ message }: Props) {
           bubble for the user; plain prose for the agent). Only errors keep an
           eyebrow, where the word carries real information. */}
       {role === 'error' ? <div className="av-message-eyebrow">Error</div> : null}
+      {/* Rewind: only a USER turn carrying a rewind target can be undone. The
+          control reveals on hover (CSS) so it never competes with the prose. */}
+      {role === 'user' && message.rewindId && rewind ? (
+        <div className="av-message-actions">
+          <RewindControl
+            rewindId={message.rewindId}
+            onPreview={rewind.onPreview}
+            onConfirm={rewind.onConfirm}
+            disabled={rewind.busy}
+          />
+        </div>
+      ) : null}
       {hasImages ? (
         <div className="av-message-images">
           {images!.map((img, i) => (
@@ -111,7 +128,12 @@ function areEqual(a: Props, b: Props): boolean {
     x.id === y.id &&
     // Images are set once at message creation and never mutate, so an identity
     // (length) check is sufficient and cheap.
-    (x.images?.length ?? 0) === (y.images?.length ?? 0)
+    (x.images?.length ?? 0) === (y.images?.length ?? 0) &&
+    // The rewind target is minted with the message and never changes, but it
+    // gates whether the affordance renders at all, so it belongs in the compare.
+    // (`busy` rides the CONTEXT, which re-renders consumers on its own — that is
+    // exactly why it isn't a prop.)
+    x.rewindId === y.rewindId
   );
 }
 

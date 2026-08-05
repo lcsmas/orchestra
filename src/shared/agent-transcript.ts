@@ -41,6 +41,11 @@ const HISTORY_INDEX_BASE = 100_000;
 interface TranscriptEnvelope {
   type?: string;
   isSidechain?: boolean;
+  /** The Claude Code message UUID for this line — the **rewind target** for a
+   *  user turn (see AgentUserMessageEvent.rewindId). Note the on-disk envelope
+   *  is camelCase (`uuid`, `parentUuid`, `sessionId`) where the live wire shape
+   *  is snake_case (`session_id`) — two different serializations. */
+  uuid?: string;
   message?: { role?: string; content?: unknown };
 }
 
@@ -80,8 +85,17 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
 
     if (entry.type === 'user') {
       const content = entry.message?.content;
+      // The line's own uuid is this turn's rewind target — recovered so a
+      // REOPENED workspace can rewind its history, not just turns sent live
+      // this run. (Only user lines carry a usable target; tool_result lines
+      // share the `user` type but are not turns the user can rewind to, so the
+      // id rides only on the text/image bubbles below.)
+      const rewindId = typeof entry.uuid === 'string' && entry.uuid ? entry.uuid : undefined;
       if (typeof content === 'string') {
-        if (content.trim()) out.push(stamp(ctx, { type: 'user-message', text: content }));
+        if (content.trim())
+          out.push(
+            stamp(ctx, { type: 'user-message', text: content, ...(rewindId ? { rewindId } : {}) }),
+          );
       } else if (Array.isArray(content)) {
         const blocks = content as TranscriptBlock[];
         // Reconstruct pasted images so a reopened workspace shows them instead of
@@ -121,6 +135,7 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
                 type: 'user-message',
                 text: b.text,
                 ...(!imagesAttached && images.length > 0 ? { images } : {}),
+                ...(rewindId ? { rewindId } : {}),
               }),
             );
             imagesAttached = true;
@@ -128,7 +143,14 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
         }
         // An image-only turn (no caption) still renders a bubble with the images.
         if (!imagesAttached && images.length > 0) {
-          out.push(stamp(ctx, { type: 'user-message', text: '', images }));
+          out.push(
+            stamp(ctx, {
+              type: 'user-message',
+              text: '',
+              images,
+              ...(rewindId ? { rewindId } : {}),
+            }),
+          );
         }
       }
       continue;

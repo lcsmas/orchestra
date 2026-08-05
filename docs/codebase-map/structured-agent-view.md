@@ -47,8 +47,53 @@ mechanism). A bash run never starts a model turn — the fold leaves `running`/
 the status dot doesn't move. Sandbox workspaces surface a "not available" notice
 (bash runs on the local machine; the sandbox worktree lives in a remote container).
 
+**Rewind a message (parity with Claude Code's double-Esc restore).** Hovering a
+user bubble reveals a **Rewind** control (`components/agent/RewindControl.tsx`,
+`.av-rewind*`) that undoes that turn: its file edits are restored AND the
+conversation is truncated back to before it, with the message's text returned to
+the composer for **edit-and-retry**. Three SDK primitives back it, and the
+measured semantics are recorded in `docs/spikes/rewind-sdk-findings.md`:
+
+- **`options.enableFileCheckpointing: true`** (set in `ensureSession`) makes the
+  CLI snapshot tracked files per user message. Checkpoints only cover edits made
+  AFTER it is on, so pre-feature sessions rewind the CONVERSATION only — surfaced
+  as `filesError` rather than silently implying a full restore. Incompatible with
+  the SDK's `sessionStore` option (Orchestra uses none).
+- **`query.rewindFiles(userMessageId, {dryRun})`** restores the files. It is a
+  CONTROL REQUEST, so it needs the transport OPEN — `sdkRewind` therefore runs it
+  on the LIVE query FIRST and only then sets `session.cleared` + `sdkStop`
+  (calling it after teardown throws `ProcessTransport is not ready for writing`).
+  The `dryRun` backs the confirmation popover's "Restores N files (+x/−y)" line.
+- **`options.resumeSessionAt: <uuid>`** truncates the resumed conversation. It
+  keeps turns **1..N inclusive** of its target (measured, not inferred), so
+  undoing message N means cutting at **N−1** — `previousRewindId`
+  (`rewind-util.ts`, unit-tested + mutation-tested) owns that off-by-one. No
+  predecessor ⇒ the first turn is being undone ⇒ `sdkSessionId: ''` and the next
+  send opens a fresh session. The cut is parked in `rewindResumeAt` and consumed
+  read-and-delete by the next `ensureSession`, so it can never apply twice.
+
+**The rewind target is a uuid Orchestra MINTS ITSELF.** `SDKUserMessage.uuid` is
+an optional *input* the CLI persists verbatim to the transcript, so `sdkSend`
+generates one per turn (`randomUUID()`) and rides it on the `user-message` echo as
+**`rewindId`** → `RenderMessage.rewindId`. This is the only way to know the id
+synchronously: the SDK never echoes user messages back, and no output message
+carries a back-reference, so there is NO stream path to a CLI-assigned uuid (and
+reading it off disk would race). `agent-transcript.ts` also recovers the
+envelope's `uuid` (camelCase on disk vs snake_case on the wire), so a REOPENED
+workspace can rewind its history too. A message with no id — externally-originated
+turns, pre-feature history — simply renders no affordance.
+
+The fold's **`session/rewind`** case drops the target and everything after it
+(`slice(0, cut)`), settles live turn state so the pane can't wedge on "Working…",
+and clears `pendingPermissions` (their `canUseTool` promises died with the
+session). An UNKNOWN id is a **no-op, never a wipe** — a stale or duplicate event
+must not clear a transcript it doesn't match. The renderer passes the wiring by
+**context** (`agent/rewind-context.ts`), not props, because the bubble sits below
+several memo boundaries kept deliberately render-free on the streaming hot path.
+
 **Reverse path (user → agent):** `window.orchestra.agentSdk*` invoke handlers call into
 the live `query` object in main — `agentSdkSend(wsId, text, images?)`, `agentSdkRunBash(wsId, command)`, `agentSdkInterrupt(wsId)`,
+`agentSdkRewind(wsId, rewindId, prevRewindId?)`, `agentSdkRewindPreview(wsId, rewindId)`,
 `agentSdkPermissionReply(wsId, requestId, reply)`, `agentSdkSetModel`,
 `agentSdkSetEffort`, `agentSdkSetPermissionMode`, `agentSdkSetRemoteControl(wsId, enabled)`. Multi-turn uses the
 **streaming-input pattern**: one long-lived `query()` per session fed by an async-generator

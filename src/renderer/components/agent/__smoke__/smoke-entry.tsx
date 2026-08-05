@@ -11,6 +11,7 @@ import type { RenderMessage } from '../../../../shared/types';
 import { AgentMessage } from '../AgentMessage';
 import { ThinkingIndicator } from '../ThinkingIndicator';
 import { MarkdownView } from '../MarkdownView';
+import { RewindContext } from '../rewind-context';
 
 let failures = 0;
 const check = (label: string, fn: () => string, assertHtml?: (html: string) => void) => {
@@ -321,4 +322,63 @@ check(
 );
 
 console.log(failures === 0 ? '\nALL SMOKE CHECKS PASSED' : `\n${failures} SMOKE CHECK(S) FAILED`);
+// ── Rewind affordance ───────────────────────────────────────────────────────
+// A user bubble with a rewindId must render the control ONLY when a provider is
+// mounted; with none (the default) it must render nothing and not throw — the
+// read-only/SSR path.
+check('user bubble WITHOUT rewind provider has no control', () =>
+  renderToString(
+    <AgentMessage message={msg({ role: 'user', text: 'undo me', rewindId: 'uuid-1' })} />
+  ),
+  (html) => {
+    if (html.includes('av-rewind')) throw new Error('rendered a rewind control with no provider');
+    if (!html.includes('undo me')) throw new Error('lost the message text');
+  });
+
+check('user bubble WITH provider renders the rewind control', () =>
+  renderToString(
+    <RewindContext.Provider value={{
+      onPreview: async () => ({ canRewind: true, filesChanged: ['a.ts'], insertions: 1, deletions: 1 }),
+      onConfirm: async () => {},
+      busy: false,
+    }}>
+      <AgentMessage message={msg({ role: 'user', text: 'undo me', rewindId: 'uuid-1' })} />
+    </RewindContext.Provider>
+  ),
+  (html) => {
+    if (!html.includes('av-rewind-btn')) throw new Error('no rewind button');
+    if (!html.includes('av-message-actions')) throw new Error('no actions wrapper');
+    if (!html.includes('Rewind to this message')) throw new Error('missing aria-label/title');
+  });
+
+check('a user bubble with NO rewindId offers no control', () =>
+  renderToString(
+    <RewindContext.Provider value={{ onPreview: async () => ({ canRewind: false }), onConfirm: async () => {}, busy: false }}>
+      <AgentMessage message={msg({ role: 'user', text: 'remote turn' })} />
+    </RewindContext.Provider>
+  ),
+  (html) => {
+    if (html.includes('av-rewind')) throw new Error('offered rewind for a message with no target');
+  });
+
+check('an ASSISTANT message never offers rewind', () =>
+  renderToString(
+    <RewindContext.Provider value={{ onPreview: async () => ({ canRewind: true }), onConfirm: async () => {}, busy: false }}>
+      <AgentMessage message={msg({ role: 'assistant', text: 'my reply', rewindId: 'uuid-9' })} />
+    </RewindContext.Provider>
+  ),
+  (html) => {
+    if (html.includes('av-rewind')) throw new Error('offered rewind on an assistant row');
+  });
+
+check('rewind button is DISABLED while a turn is running', () =>
+  renderToString(
+    <RewindContext.Provider value={{ onPreview: async () => ({ canRewind: true }), onConfirm: async () => {}, busy: true }}>
+      <AgentMessage message={msg({ role: 'user', text: 'undo me', rewindId: 'uuid-1' })} />
+    </RewindContext.Provider>
+  ),
+  (html) => {
+    if (!html.includes('disabled')) throw new Error('control was enabled mid-turn');
+  });
+
 if (failures > 0) process.exit(1);

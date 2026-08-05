@@ -2191,3 +2191,110 @@ h6.av-md-h {
   background: var(--av-surface-sunken);
   font-size: var(--av-fs-body);
 }
+
+/* ── Rewind ────────────────────────────────────────────────────────────────
+   Per-message "undo this turn" affordance (Claude Code's double-Esc restore,
+   as an explicit action). Only user bubbles carrying a rewindId render it.
+
+   Placement: pinned OUTSIDE the bubble's left edge. The user bubble is
+   right-aligned and shrink-wrapped, so the gutter to its left is reliably
+   free — putting the control inside would reflow the text on hover. */
+.av-message-actions {
+  position: absolute;
+  right: calc(100% + 8px);
+  top: 8px;
+  /* Hidden until the row is hovered/focused, so it never competes with the
+     prose. `visibility` (not display:none) keeps it hit-testable the instant
+     it fades in, and keeps the popover mounted while interacting with it. */
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms var(--av-ease);
+}
+.av-message-user:hover .av-message-actions,
+.av-message-actions:focus-within {
+  opacity: 1;
+  visibility: visible;
+}
+/* Keep it visible while its popover is open, even if the pointer drifts off
+   the bubble — otherwise the confirm dialog vanishes mid-decision. */
+.av-message-actions:has(.av-rewind-pop) {
+  opacity: 1;
+  visibility: visible;
+}
+
+.av-rewind { position: relative; display: inline-flex; }
+.av-rewind-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 7px;
+  border: 1px solid var(--av-hairline);
+  border-radius: 999px;
+  background: var(--av-surface-raised);
+  color: var(--av-text-faint);
+  font-size: 10.5px; font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 120ms var(--av-ease), border-color 120ms var(--av-ease);
+}
+.av-rewind-btn:hover:not(:disabled) {
+  color: var(--av-text);
+  border-color: color-mix(in srgb, var(--av-user) 45%, var(--av-hairline));
+}
+.av-rewind-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.av-rewind-label { line-height: 1; }
+
+/* Confirmation popover. Anchored to the button and opening LEFTWARD, since the
+   control already sits in the left gutter near the viewport's centre column. */
+.av-rewind-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  width: 268px;
+  padding: 12px;
+  border: 1px solid var(--av-hairline-strong);
+  border-radius: 10px;
+  background: var(--av-surface-overlay, var(--av-surface-raised));
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.38);
+  text-align: left;
+  cursor: default;
+}
+.av-rewind-pop-title {
+  font-size: var(--av-fs-small); font-weight: 650;
+  color: var(--av-text); margin-bottom: 5px;
+}
+.av-rewind-pop-body {
+  font-size: 11.5px; line-height: 1.45;
+  color: var(--av-text-dim);
+}
+/* The dry-run result — what actually changes on disk. Monospace so file counts
+   line up and read as data rather than prose. */
+.av-rewind-pop-files {
+  margin-top: 8px; padding: 6px 8px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--av-hairline);
+  font-family: var(--font-mono);
+  font-size: 10.5px; line-height: 1.4;
+  color: var(--av-text-dim);
+}
+.av-rewind-pop-actions {
+  display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px;
+}
+.av-rewind-pop-actions button {
+  padding: 5px 11px;
+  border-radius: var(--radius-sm, 6px);
+  font-size: 11.5px; font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--av-hairline-strong);
+  background: transparent;
+  color: var(--av-text-dim);
+}
+.av-rewind-pop-actions button:disabled { opacity: 0.5; cursor: default; }
+.av-rewind-cancel:hover:not(:disabled) { color: var(--av-text); }
+/* The destructive action carries the weight — this discards messages. */
+.av-rewind-confirm {
+  border-color: transparent !important;
+  background: var(--av-user) !important;
+  color: #fff !important;
+}
+.av-rewind-confirm:hover:not(:disabled) { filter: brightness(1.08); }

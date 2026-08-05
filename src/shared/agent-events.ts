@@ -898,11 +898,13 @@ export function makeUserMessage(
   ctx: NormalizeContext,
   text: string,
   images?: AgentImage[],
+  rewindId?: string,
 ): AgentUserMessageEvent {
   return stamp(ctx, {
     type: 'user-message',
     text,
     ...(images && images.length > 0 ? { images } : {}),
+    ...(rewindId ? { rewindId } : {}),
   });
 }
 
@@ -1191,6 +1193,9 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         text: event.text,
         ...(event.origin ? { origin: event.origin } : {}),
         ...(event.images && event.images.length > 0 ? { images: event.images } : {}),
+        // The rewind target for this turn, when Orchestra minted one (locally
+        // submitted turns) or the history backfill recovered it from disk.
+        ...(event.rewindId ? { rewindId: event.rewindId } : {}),
         done: true,
       });
       // A fresh prompt starts a new turn: start the live clock and reset the
@@ -1289,6 +1294,36 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       // Full reset (composer /clear): a fresh transcript for every client. The
       // fold identity keeps only the workspace binding.
       return emptySession(next.workspaceId);
+
+    case 'session/rewind': {
+      // The main process has truncated the underlying session back to just
+      // BEFORE the target user message (see sdkRewind). Mirror that in the
+      // rendered transcript: the target and everything after it are gone.
+      //
+      // Cut at the FIRST message carrying this rewindId. Messages are appended
+      // in stream order, so everything at a higher index came after it — no
+      // ordering assumption beyond that is needed. An unknown id is a no-op
+      // rather than a wipe: a stale/duplicate event must never clear a
+      // transcript it doesn't match (the destructive failure mode).
+      const cut = next.messages.findIndex((m) => m.rewindId === event.rewindId);
+      if (cut < 0) return next;
+      return {
+        ...next,
+        messages: next.messages.slice(0, cut),
+        // The rewind ends any in-flight turn: the session was stopped and will
+        // be restarted lazily on the next send. Clear the live turn state so
+        // the pane can't wedge on a "Working…" footer for a turn that no
+        // longer exists (same reasoning as consume()'s synthetic turn-end).
+        running: false,
+        turnStartedAt: undefined,
+        liveOutputChars: 0,
+        statusNotice: undefined,
+        liveThinkingTokens: undefined,
+        // Any permission parked by the discarded turn can never be answered —
+        // its canUseTool promise died with the session.
+        pendingPermissions: [],
+      };
+    }
 
     default: {
       // Compile-time exhaustiveness (the `never` assignment errors if a variant

@@ -137,3 +137,48 @@ test('transcript: history block ids never collide with a live session at low ind
   // Distinct React keys for every message.
   assert.equal(new Set(s.messages.map((m) => m.id)).size, s.messages.length);
 });
+
+test('backfill recovers the envelope uuid as the rewind target', () => {
+  // Real on-disk shape: the envelope is camelCase (`uuid`) where the live wire
+  // is snake_case — and it is the uuid a REOPENED workspace rewinds to, since
+  // those turns were never sent by this app run.
+  const jsonl = [
+    JSON.stringify({
+      type: 'user',
+      uuid: '7e1cd30a-e77c-466c-b2a8-118726719eb9',
+      message: { role: 'user', content: 'plain string turn' },
+    }),
+    JSON.stringify({
+      type: 'user',
+      uuid: 'bbbbbbbb-e77c-466c-b2a8-118726719eb9',
+      message: { role: 'user', content: [{ type: 'text', text: 'block turn' }] },
+    }),
+    // A tool_result line shares the `user` type but is not a rewindable turn —
+    // it must not mint a user bubble at all.
+    JSON.stringify({
+      type: 'user',
+      uuid: 'cccccccc-e77c-466c-b2a8-118726719eb9',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'ok' }] },
+    }),
+  ].join('\n');
+
+  const s = foldEvents(emptySession('ws1'), transcriptToEvents(jsonl, ctx()));
+  const users = s.messages.filter((m) => m.role === 'user');
+  assert.deepEqual(
+    users.map((m) => m.rewindId),
+    ['7e1cd30a-e77c-466c-b2a8-118726719eb9', 'bbbbbbbb-e77c-466c-b2a8-118726719eb9'],
+  );
+});
+
+test('backfill: a line with no uuid yields no rewind target (not a crash)', () => {
+  // Pre-feature transcripts and synthetic lines simply are not rewindable —
+  // the bubble hides its affordance rather than offering a broken target.
+  const jsonl = JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: 'no envelope uuid' },
+  });
+  const s = foldEvents(emptySession('ws1'), transcriptToEvents(jsonl, ctx()));
+  const users = s.messages.filter((m) => m.role === 'user');
+  assert.equal(users.length, 1);
+  assert.equal(users[0].rewindId, undefined);
+});

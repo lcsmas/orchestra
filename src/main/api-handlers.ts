@@ -105,6 +105,8 @@ import {
   sdkRunBash,
   sdkInterrupt,
   sdkClear,
+  sdkRewind,
+  sdkRewindPreview,
   sdkPermissionReply,
   sdkSetModel,
   sdkSetEffort,
@@ -236,6 +238,8 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   agentSdkRunBash: 'agent:sdkRunBash',
   agentSdkInterrupt: 'agent:sdkInterrupt',
   agentSdkClear: 'agent:sdkClear',
+  agentSdkRewind: 'agent:sdkRewind',
+  agentSdkRewindPreview: 'agent:sdkRewindPreview',
   agentSdkPermissionReply: 'agent:sdkPermissionReply',
   agentSdkSetModel: 'agent:sdkSetModel',
   agentSdkSetEffort: 'agent:sdkSetEffort',
@@ -815,6 +819,11 @@ export const apiHandlers: ApiHandlerTable = {
   agentSdkClear: async (wsId) => {
     await sdkClear(wsId);
   },
+
+  agentSdkRewind: async (wsId, rewindId, prevRewindId) =>
+    sdkRewind(wsId, rewindId, prevRewindId),
+
+  agentSdkRewindPreview: async (wsId, rewindId) => sdkRewindPreview(wsId, rewindId),
 
   agentSdkPermissionReply: async (wsId, requestId, reply) => {
     sdkPermissionReply(wsId, requestId, reply);

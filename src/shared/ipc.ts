@@ -10,6 +10,8 @@ import type {
   AgentModelInfo,
   AgentPermissionMode,
   AgentPermissionReply,
+  AgentRewindPreview,
+  AgentSessionRewindEvent,
   AgentSkillInfo,
   BrowserBounds,
   BrowserPanelState,
@@ -283,6 +285,20 @@ export interface OrchestraAPI {
    *  session, drop the resume id, and broadcast `session/clear` so every
    *  client resets its folded transcript. */
   agentSdkClear: (wsId: string) => Promise<void>;
+  /** Rewind the conversation to before a previous user message: restore the
+   *  files that turn touched, truncate the session back to its predecessor, and
+   *  broadcast `session/rewind` so clients drop the discarded messages.
+   *  `rewindId` is the message being undone; `prevRewindId` its predecessor
+   *  (omitted when rewinding the FIRST turn — the whole conversation goes).
+   *  Resolves with the emitted event so the caller can report what changed. */
+  agentSdkRewind: (
+    wsId: string,
+    rewindId: string,
+    prevRewindId?: string,
+  ) => Promise<AgentSessionRewindEvent>;
+  /** Preview a rewind without changing anything (SDK `dryRun`) — backs the
+   *  confirmation's "N files, +x/−y" line and its can't-restore caveat. */
+  agentSdkRewindPreview: (wsId: string, rewindId: string) => Promise<AgentRewindPreview>;
   /** Resolve a parked `canUseTool` permission request with the user's decision
    *  (allow, optionally with edited input, or deny with a message). */
   agentSdkPermissionReply: (

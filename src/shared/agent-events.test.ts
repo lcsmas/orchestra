@@ -1583,3 +1583,110 @@ test('fold: two parallel tool blocks finalize in order (first-unfinalized match)
   assert.equal(tools[1].toolUse?.toolUseId, 'tu_B');
   assert.equal(tools[1].toolUse?.name, 'Bash');
 });
+
+// ─── rewind ──────────────────────────────────────────────────────────────────
+
+test('makeUserMessage carries the rewind id only when one is minted', () => {
+  const c = ctx();
+  assert.equal(makeUserMessage(c, 'no id').rewindId, undefined);
+  assert.equal(makeUserMessage(c, 'with id', undefined, 'uuid-1').rewindId, 'uuid-1');
+  // The id must reach the folded render message — it is what the bubble's
+  // rewind affordance keys on.
+  const s = foldEvent(emptySession('ws1'), makeUserMessage(c, 'hi', undefined, 'uuid-1'));
+  assert.equal(s.messages[0].rewindId, 'uuid-1');
+});
+
+/** An assistant text row, as the live stream produces it (block-start + delta —
+ *  a bare `assistant` message alone folds to nothing). `index` must be unique
+ *  per row within a test, since deltas correlate to a row by index. */
+function assistantText(index: number, seq: number, text: string): AgentEvent[] {
+  return [
+    { type: 'block-start', seq, at: 1000, index, kind: 'text' },
+    { type: 'text-delta', seq: seq + 1, at: 1000, index, text },
+  ];
+}
+
+test('fold: session/rewind drops the target message and everything after it', () => {
+  const c = ctx();
+  let s = foldEvents(emptySession('ws1'), [
+    makeUserMessage(c, 'first', undefined, 'u1'),
+    ...assistantText(0, 10, 'A1'),
+    makeUserMessage(c, 'second', undefined, 'u2'),
+    ...assistantText(1, 20, 'A2'),
+  ]);
+  assert.equal(s.messages.length, 4);
+
+  // Rewinding 'second' undoes that turn: the user message AND its reply go,
+  // while the completed first turn survives intact.
+  s = foldEvent(s, { type: 'session/rewind', seq: 50, at: 9, rewindId: 'u2' });
+  assert.deepEqual(
+    s.messages.map((m) => m.text),
+    ['first', 'A1'],
+  );
+  assert.equal(s.messages.length, 2);
+});
+
+test('fold: session/rewind on the FIRST message empties the transcript', () => {
+  const c = ctx();
+  let s = foldEvents(emptySession('ws1'), [
+    makeUserMessage(c, 'first', undefined, 'u1'),
+    ...assistantText(0, 10, 'A1'),
+  ]);
+  assert.equal(s.messages.length, 2);
+  s = foldEvent(s, { type: 'session/rewind', seq: 50, at: 9, rewindId: 'u1' });
+  assert.equal(s.messages.length, 0);
+  // Unlike session/clear this is NOT a full identity reset — the workspace
+  // binding and session id survive, since the conversation still exists.
+  assert.equal(s.workspaceId, 'ws1');
+});
+
+test('fold: session/rewind with an UNKNOWN id is a no-op, never a wipe', () => {
+  const c = ctx();
+  const before = foldEvents(emptySession('ws1'), [
+    makeUserMessage(c, 'first', undefined, 'u1'),
+    makeUserMessage(c, 'second', undefined, 'u2'),
+  ]);
+  // A stale or duplicate rewind event must not clear a transcript it does not
+  // match — the destructive failure mode. The message ARRAY must be untouched
+  // (reference-equal); the session itself legitimately differs, since every
+  // fold advances `lastSeq`.
+  const after = foldEvent(before, { type: 'session/rewind', seq: 51, at: 9, rewindId: 'nope' });
+  assert.equal(after.messages.length, 2);
+  assert.equal(after.messages, before.messages);
+  assert.deepEqual(
+    after.messages.map((m) => m.text),
+    ['first', 'second'],
+  );
+});
+
+test('fold: session/rewind settles live turn state (no wedged "Working…")', () => {
+  const c = ctx();
+  let s = foldEvents(emptySession('ws1'), [
+    makeUserMessage(c, 'first', undefined, 'u1'),
+    makeUserMessage(c, 'second', undefined, 'u2'),
+  ]);
+  // A user-message fold leaves the session running mid-turn.
+  assert.equal(s.running, true);
+  assert.ok(s.turnStartedAt);
+  s = foldEvent(s, { type: 'session/rewind', seq: 52, at: 9, rewindId: 'u2' });
+  // The rewind killed that turn: the pane must not keep showing it in flight.
+  assert.equal(s.running, false);
+  assert.equal(s.turnStartedAt, undefined);
+  assert.equal(s.liveOutputChars, 0);
+  assert.deepEqual(s.pendingPermissions, []);
+});
+
+test('fold: session/rewind is replay-safe (pure projection)', () => {
+  const c = ctx();
+  const events: AgentEvent[] = [
+    makeUserMessage(c, 'first', undefined, 'u1'),
+    makeUserMessage(c, 'second', undefined, 'u2'),
+    { type: 'session/rewind', seq: 90, at: 9, rewindId: 'u2' },
+  ];
+  // The store is a pure projection: replaying the stream from emptySession must
+  // rebuild the identical view (same invariant the whole fold rests on).
+  const once = foldEvents(emptySession('ws1'), events);
+  const twice = foldEvents(emptySession('ws1'), events);
+  assert.deepEqual(once.messages, twice.messages);
+  assert.equal(once.messages.length, 1);
+});

@@ -26,7 +26,7 @@
  * starts the session and sends the opening turn; nothing extra to call on tab open.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { scoped } from '../log';
 import { WorkspaceAccountBadge } from './AccountBadge';
@@ -56,6 +56,8 @@ import {
   runningTaskCount,
   totalTaskCount,
 } from './agent';
+import { RewindContext } from './agent/rewind-context';
+import { previousRewindId, rewindPrefillText } from './agent/rewind-util';
 
 interface Props {
   workspaceId: string;
@@ -116,6 +118,65 @@ export function StructuredView({ workspaceId, isActive }: Props) {
   // real transcript still only on disk. The old `messages.length > 0` gate read
   // those as "history already present" and rendered them as the entire
   // conversation — the reported disappearing transcript.
+  // ── Rewind ────────────────────────────────────────────────────────────────
+  // Undo a previous user turn (Claude Code's double-Esc restore, as a
+  // per-message action). Two ids are involved and they are NOT the same:
+  // `rewindId` is the message being undone (the file-restore target), while the
+  // SESSION is truncated at its PREDECESSOR, because `resumeSessionAt` keeps the
+  // message it targets — see docs/spikes/rewind-sdk-findings.md. Deriving the
+  // predecessor here (from the rendered transcript) keeps that ordering rule in
+  // one place instead of duplicating it in main.
+  const composerRef = useRef<{ prefill: (text: string) => void } | null>(null);
+  const rewindBusy = !!session?.running;
+
+  const onRewindPreview = useCallback(
+    (rewindId: string) => window.orchestra.agentSdkRewindPreview(workspaceId, rewindId),
+    [workspaceId],
+  );
+
+  const onRewindConfirm = useCallback(
+    async (rewindId: string) => {
+      const msgs = session?.messages ?? [];
+      // Edit-and-retry: the undone message's text returns to the composer. Read
+      // it BEFORE the rewind, since the fold is about to drop the row.
+      const text = rewindPrefillText(msgs, rewindId);
+      // Cut the SESSION at the predecessor — resumeSessionAt keeps the message
+      // it targets, so targeting `rewindId` itself would leave the very turn we
+      // are undoing in place (rewind-util.ts documents the rule; it is tested).
+      const prev = previousRewindId(msgs, rewindId);
+      try {
+        const res = await window.orchestra.agentSdkRewind(workspaceId, rewindId, prev);
+        if (text) composerRef.current?.prefill(text);
+        // A partial rewind must never read as a complete one: if the files
+        // could not be restored (a session predating checkpointing), say so in
+        // the transcript rather than letting the truncation imply a full undo.
+        if (res.filesError) {
+          injectEvent(workspaceId, {
+            type: 'notice',
+            kind: 'info',
+            text: `Conversation rewound. Files were left unchanged — ${res.filesError}`,
+            seq: 0,
+            at: Date.now(),
+          });
+        }
+      } catch (e) {
+        injectEvent(workspaceId, {
+          type: 'notice',
+          kind: 'warning',
+          text: `Rewind failed: ${e instanceof Error ? e.message : String(e)}`,
+          seq: 0,
+          at: Date.now(),
+        });
+      }
+    },
+    [workspaceId, session, injectEvent],
+  );
+
+  const rewindApi = useMemo(
+    () => ({ onPreview: onRewindPreview, onConfirm: onRewindConfirm, busy: rewindBusy }),
+    [onRewindPreview, onRewindConfirm, rewindBusy],
+  );
+
   const alreadyBackfilled = session?.historyBackfilled === true;
   useEffect(() => {
     if (
@@ -151,6 +212,7 @@ export function StructuredView({ workspaceId, isActive }: Props) {
   }, [alreadyBackfilled, workspaceId, injectEvent, applyHistory]);
 
   return (
+    <RewindContext.Provider value={rewindApi}>
     <div className={`av-view ${isActive ? 'active' : ''}`} data-workspace={workspaceId}>
       {/* Toolbar toggle for the Background tasks panel — only shown once the
           session has spawned at least one task. Mirrors Claude Desktop's panel
@@ -179,6 +241,7 @@ export function StructuredView({ workspaceId, isActive }: Props) {
         session={session}
         workspaceId={workspaceId}
         isActive={isActive}
+        handleRef={composerRef}
         bar={<SessionControls session={session} workspaceId={workspaceId} />}
         strip={<ContextStrip session={session} workspaceId={workspaceId} />}
       />
@@ -187,6 +250,7 @@ export function StructuredView({ workspaceId, isActive }: Props) {
         <BackgroundTasksPanel session={session} onClose={() => setPanelOpen(false)} />
       )}
     </div>
+    </RewindContext.Provider>
   );
 }
 
@@ -926,6 +990,7 @@ function Composer({
   isActive,
   bar,
   strip,
+  handleRef,
 }: {
   session: AgentSession | undefined;
   workspaceId: string;
@@ -936,6 +1001,10 @@ function Composer({
   bar?: React.ReactNode;
   /** Ambient readout under the card (worktree · cost · context · branch). */
   strip?: React.ReactNode;
+  /** Imperative handle the parent uses to PREFILL the input — the edit-and-retry
+   *  half of a rewind puts the undone message's text back for editing. The
+   *  composer owns its text state, so this is the seam rather than lifting it. */
+  handleRef?: React.MutableRefObject<{ prefill: (text: string) => void } | null>;
 }) {
   const [text, setText] = useState('');
   // Images pasted into the composer, pending send. Each carries the base64 for
@@ -946,6 +1015,24 @@ function Composer({
   // Imperative handle on the CodeMirror editor (focus / read / set text).
   const cmRef = useRef<CmComposerHandle | null>(null);
   const running = !!session?.running;
+
+  // Expose PREFILL to the parent (rewind's edit-and-retry). Both the React
+  // state and the CodeMirror document must be set: `text` drives bash-mode
+  // detection, the send payload and the autocomplete, while the editor holds
+  // the actual document. Setting only one silently desyncs them.
+  useEffect(() => {
+    if (!handleRef) return;
+    handleRef.current = {
+      prefill: (next: string) => {
+        setText(next);
+        cmRef.current?.setText(next);
+        cmRef.current?.focus();
+      },
+    };
+    return () => {
+      handleRef.current = null;
+    };
+  }, [handleRef]);
 
   // Vim keybindings: ON by default, persisted per-user. `vimMode` is the live
   // mode reported by the editor and drives the composer-bar chip.
