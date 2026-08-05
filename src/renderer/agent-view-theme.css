@@ -2198,28 +2198,62 @@ h6.av-md-h {
 
    Placement: pinned OUTSIDE the bubble's left edge. The user bubble is
    right-aligned and shrink-wrapped, so the gutter to its left is reliably
-   free — putting the control inside would reflow the text on hover. */
+   free — putting the control inside would reflow the text on hover.
+
+   REACHABILITY — v0.5.201 shipped this control UNREACHABLE, so read this
+   before touching the two rules below. The control sits OUTSIDE the bubble but
+   was revealed only by `.av-message-user:hover` and hidden with
+   `visibility:hidden`, which breaks the journey to it in two separate ways:
+     1. an 8px gutter sat between bubble and button, so moving toward the
+        button left the bubble's hover area and the button vanished; and
+     2. `visibility:hidden` elements DO NOT HIT-TEST, so the control could not
+        rescue its own hover on the way in — nor could any transparent "bridge"
+        pseudo-element placed on it (measured in Chromium: `elementFromPoint`
+        over the gap returns BODY, not the bridge).
+   The fix, chosen by testing five alternatives against a real stepped pointer
+   path (a bridge on the bubble, on the control, with/without z-index, …):
+   make the actions box ITSELF span the gutter via right-PADDING so it
+   physically touches the bubble — one contiguous hover surface, no gap to
+   cross — and hide it by OPACITY ONLY so it never stops hit-testing mid-move.
+   Padding (not a wider box with a bridge) is what keeps clicks landing: the
+   rejected variants all put a transparent layer OVER the button, which swallowed
+   the click while looking perfectly correct. */
 .av-message-actions {
   position: absolute;
-  right: calc(100% + 8px);
+  /* Butt directly against the bubble; the visual 8px gap comes from the
+     padding below, which is part of the hover surface rather than a dead zone. */
+  right: 100%;
   top: 8px;
-  /* Hidden until the row is hovered/focused, so it never competes with the
-     prose. `visibility` (not display:none) keeps it hit-testable the instant
-     it fades in, and keeps the popover mounted while interacting with it. */
+  padding: 10px 16px 10px 0;
+  /* Opacity-only hide — NEVER `visibility:hidden`/`display:none` here, or the
+     control stops hit-testing and becomes unreachable again (see above). */
   opacity: 0;
-  visibility: hidden;
   transition: opacity 120ms var(--av-ease);
 }
 .av-message-user:hover .av-message-actions,
+/* Keeps it up once the pointer is on the control itself — without this the
+   button hides the moment the pointer crosses out of the bubble's own box. */
+.av-message-actions:hover,
 .av-message-actions:focus-within {
   opacity: 1;
-  visibility: visible;
+}
+/* An opacity:0 element still hit-tests, so the BUTTON is made inert while
+   invisible — otherwise an unseen control sits in the gutter accepting clicks.
+   Only the button is disabled, never the container: the container's hit area is
+   exactly what carries hover across the gutter, so making IT inert would undo
+   the fix above. */
+.av-message-actions > .av-rewind > .av-rewind-btn {
+  pointer-events: none;
+}
+.av-message-user:hover .av-rewind-btn,
+.av-message-actions:hover .av-rewind-btn,
+.av-message-actions:focus-within .av-rewind-btn {
+  pointer-events: auto;
 }
 /* Keep it visible while its popover is open, even if the pointer drifts off
    the bubble — otherwise the confirm dialog vanishes mid-decision. */
 .av-message-actions:has(.av-rewind-pop) {
   opacity: 1;
-  visibility: visible;
 }
 
 .av-rewind { position: relative; display: inline-flex; }
