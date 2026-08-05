@@ -35,8 +35,10 @@ import {
 // call site (activity.ts applyAgentEvent) cannot import THIS file: hibernation
 // → pty → activity would close an import cycle. See hibernation-activity.ts.
 import {
+  getActiveWorkspaceId,
   getAppStartedAt,
   getLastActivity,
+  noteActiveWorkspace,
   noteActivity,
   noteAppStart,
 } from './hibernation-activity.ts';
@@ -63,13 +65,18 @@ let timer: ReturnType<typeof setInterval> | null = null;
 // here. Absent (no window, nothing selected) simply means "no workspace is
 // protected by activity", which is correct: with no UI attached nothing is
 // under the user's cursor.
-let activeWorkspaceId: string | null = null;
+// The pointer itself lives in the dependency-free leaf (hibernation-activity.ts)
+// so activity.ts can read it for turn-end auto-unread without closing the
+// activity → hibernation → pty → activity import cycle. Kept as ONE variable
+// there rather than a copy here: two copies of "what is the user looking at"
+// would drift, and the drift would be invisible (each consumer would simply be
+// wrong in a different direction).
 
 /** Renderer-reported active workspace. Also clears `hibernatedAt` on the newly
  *  activated row, so opening a hibernated workspace drops the chip immediately
  *  rather than waiting for the process to actually respawn. */
 export function setActiveWorkspace(id: string | null): void {
-  activeWorkspaceId = id;
+  noteActiveWorkspace(id);
   if (id) {
     // Activation is a restore intent: the pane is about to lazy-start its PTY
     // or resume its SDK session. Stamp activity so the next sweep can't kill
@@ -79,9 +86,7 @@ export function setActiveWorkspace(id: string | null): void {
   }
 }
 
-export function getActiveWorkspaceId(): string | null {
-  return activeWorkspaceId;
-}
+export { getActiveWorkspaceId };
 
 // --- hibernation state on the workspace record ------------------------------
 
@@ -138,7 +143,7 @@ export async function sweepHibernation(): Promise<string[]> {
     const eligible = shouldHibernate(ws, {
       now,
       lastActivityAt,
-      isActive: activeWorkspaceId === ws.id,
+      isActive: getActiveWorkspaceId() === ws.id,
       hasLivePty,
       hasLiveSdk,
       // The run-script PTY registry uses the `<id>:run` naming convention

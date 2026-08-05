@@ -64,7 +64,7 @@ const SECTIONS: HelpSection[] = [
       { name: 'Live terminal', desc: 'A real TTY per agent — full color, resize, scrollback, image paste.' },
       { name: 'Run tab', desc: 'A second terminal per workspace running the repo’s configured run script (dev server, tests) with Start/Stop.' },
       { name: 'Nvim pane', desc: 'Split the main pane with a Neovim editor opened on the worktree.' },
-      { name: 'Status dots', desc: 'Idle / running / waiting / error per workspace, driven by Claude Code’s own lifecycle hooks — no polling, no terminal scraping. Plus a live context-size badge per agent.' },
+      { name: 'Status glyphs', desc: 'Per workspace, driven by Claude Code’s own lifecycle hooks — no polling, no terminal scraping. A spinner while it works, an amber “?” when the agent is blocked on your answer, an amber bell when it finished and you haven’t opened it yet, a green check once you have. Plus a live context-size badge per agent.' },
       { name: 'Chime', desc: 'A notification sound when an agent finishes while the window is unfocused — pick from ~20 synthesized sounds (bell icon).' },
     ],
   },

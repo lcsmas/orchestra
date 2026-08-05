@@ -1557,6 +1557,10 @@ input:focus, textarea:focus, select:focus {
 .ws-glyph-idle { color: var(--green); }
 .ws-glyph-waiting { color: var(--yellow); }
 .ws-glyph-error { color: var(--red); }
+/* "Finished, never opened" — the same amber as `waiting`, because both are
+   attention states the user must clear; the SHAPE (bell vs question mark) is
+   what distinguishes "go look" from "answer me". Matches Orca's amber bell. */
+.ws-glyph-autounread { color: var(--yellow); }
 /* Dot states — rendered as an empty span, so the dot IS the element. */
 .ws-glyph-stopped::before,
 .ws-glyph.hibernated::before {

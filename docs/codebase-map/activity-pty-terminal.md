@@ -30,12 +30,14 @@ Event → status (`applyAgentEvent` `:471`):
   thinking agents out of "working". The tooltip logic lives in
   `renderer/status-glyph-title.ts` (a plain `.ts` so node:test can import it;
   the `.tsx` component re-exports it) and is unit-tested + mutation-tested.
-- `stop`/`stopfail` → `waiting` via `fireFinished` `:61` (chime + "finished"
-  toast if window unfocused; recomputes merge state; persists context tokens).
+- `stop`/`stopfail` → **`idle` + `autoUnread`** via `fireFinished` (chime +
+  "finished" toast if window unfocused; recomputes merge state; persists context
+  tokens).
   `applyAgentEvent` takes an optional `stopReason` (`AgentStopReason`) that
   `fireFinished` uses to word the toast — an errored / turn-limited /
-  interrupted turn is still `waiting` (the human is still needed) but must not
-  announce itself as "ready for review". Only the SDK path supplies it
+  interrupted turn still lands `idle` + `autoUnread` (the human is still
+  needed — see the three attention states below) but must not announce itself
+  as "ready for review". Only the SDK path supplies it
   (`sdkEventToStopReason`); Claude Code's Stop hook has no reason field, so the
   spool path passes nothing and behaves exactly as before, except `stopfail`
   which implies `error`. Status stays a 5-state machine — the reason is metadata
@@ -44,29 +46,47 @@ Event → status (`applyAgentEvent` `:471`):
   turn-end.
 - `notify` → `waiting` via `fireNeedsInput` `:109` ("needs input" toast).
 
-Both of the above write the SAME `waiting` status, so a second field carries
-why: `Workspace.waitingReason: 'blocked'|'finished'` (`types.ts:164`), passed as
-`setStatus`'s third argument. `fireFinished` → `'finished'` (turn over, output
-unreviewed); `fireNeedsInput` → `'blocked'` (agent cannot proceed without you).
-Absent ⇒ read as `'finished'`, the weaker claim.
-- Deliberately NOT a sixth `WorkspaceStatus` member: `waiting` is load-bearing
-  in ~20 consumers that all want the union, and a new enum member would drop
-  out of every one of them while still compiling.
-- `setStatus` `:48` short-circuits on an unchanged status, so it carries an
-  explicit ESCALATION arm: Claude fires `Notification` right after `Stop` when
-  it stops to ask, and that second event finds the row already `waiting`. The
-  arm upgrades `finished`→`blocked` only (never the reverse) and returns
-  `changed: false` so no second toast fires.
-- Cleared to `undefined` (never a dropped key — `workspace:update` is a MERGE)
-  on every non-`waiting` status, by `markSeen` and the `ptyStart` reset
-  (`api-handlers.ts`), and demoted `blocked`→`finished` at load
-  (`store.ts` `:120`) since a restored question can no longer be answered —
-  same reasoning as `reconcileExited` `:328`.
-- Consumed by `computeAttention` (`shared/attention.ts`), which ranks the
-  Needs-You inbox error > blocked > finished, and by `statusGlyphTitle`'s
-  tooltip. The GLYPH itself stays one amber question mark for both reasons,
-  matching Orca (`mapAgentStatusStateToVisualStatus` collapses its separate
-  `blocked`/`waiting` hook states into one `permission` visual).
+#### The three attention states (Orca parity)
+
+"What the agent is doing" and "have I seen it" are TWO axes, because the second
+is a property of the USER'S ATTENTION and must survive independently:
+
+| State | Representation | Glyph |
+|---|---|---|
+| needs my input | `status: 'waiting'` | amber `?` |
+| finished, not opened | `status: 'idle'` + `autoUnread` | amber 🔔 bell |
+| done, seen | `status: 'idle'` | green check |
+
+`Workspace.autoUnread` (`types.ts`) is set by `fireFinished` when
+`!(platform.isFocused() && getActiveWorkspaceId() === id)` — i.e. the turn ended
+while the user was not looking at that workspace. Mirrors Orca's
+`WorktreeMeta.isUnread` (set on completion when `!isVisibleForegroundPaneKey`,
+cleared on interact — the "show until interact" model).
+- Folding it into `status` is what made `waiting` ambiguous before: it meant
+  BOTH "blocked on you" and "finished, unseen". `waiting` now means ONLY the
+  first.
+- The active-workspace pointer lives in `hibernation-activity.ts` (the
+  dependency-free leaf) because `activity.ts` cannot import `hibernation.ts`
+  without closing the activity → hibernation → pty → activity cycle. ONE
+  variable, not a copy per consumer — two copies of "what is the user looking
+  at" would drift invisibly.
+- Cleared by `markSeen` (`api-handlers.ts`), which now also fires for an
+  `autoUnread` row that is merely `idle` — the renderer's `setActive` gates on
+  `status === 'waiting' || autoUnread`, else the bell would never clear.
+  Written as an explicit `undefined`, never a dropped key: `workspace:update`
+  is a MERGE, so an absent key means "no opinion" and leaves a stale bell.
+- **Hibernation protection**: `shouldHibernate` (`shared/hibernation.ts`)
+  refuses an `autoUnread` workspace. Those rows used to be `waiting` and were
+  protected by the status gate; without this the sweeper would reap exactly the
+  workspaces whose output the user has not read.
+- `reconcileExited` resolves a dead PTY to `idle` + bell, never `waiting` — a
+  dead process cannot answer, so `waiting` would park an unanswerable row in the
+  inbox forever.
+- Store load migrates a persisted `waiting` (written when it meant both) to
+  `idle` + `autoUnread`: the claim still true either way is "there is unseen
+  output here". Same hazard Orca names `restoredUnconfirmed`.
+- `computeAttention` (`shared/attention.ts`) ranks the Needs-You inbox
+  error > `waiting` > `autoUnread`, and counts a row that is both exactly once.
 - `session` (SessionStart; `tool` slot carries the payload `source`) →
   `source=clear|compact` resets the context badge via `resetContext` (0
   sentinel over `agent:context` + drops persisted `contextTokens`), else

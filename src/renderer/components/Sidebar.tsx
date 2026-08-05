@@ -1521,6 +1521,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               status={w.status as WorkspaceStatus}
               hibernated={w.hibernatedAt !== undefined}
               unread={!!w.markedUnread}
+              autoUnread={!!w.autoUnread}
               title={statusGlyphTitle(w, tools[w.id])}
             />
             <div className="ws-body">
@@ -2170,6 +2171,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     status={w.status as WorkspaceStatus}
                     hibernated={w.hibernatedAt !== undefined}
                     unread={!!w.markedUnread}
+                    autoUnread={!!w.autoUnread}
                     title={statusGlyphTitle(w, tools[w.id])}
                   />
                   <div className="ws-body">

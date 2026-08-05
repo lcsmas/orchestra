@@ -598,13 +598,22 @@ export const apiHandlers: ApiHandlerTable = {
 
   backupSandbox: (id) => backupSandboxWorkspace(id),
 
+  // The user opened this workspace: that is the "read" moment for BOTH
+  // attention signals. It clears the auto-unread bell (they have now seen the
+  // finished output) and resolves a `waiting` row to `idle`.
+  //
+  // Note `waiting` no longer means "finished, unseen" — it means "the agent is
+  // blocked on your answer" — so clearing it on open is a deliberate,
+  // pre-existing behaviour: opening the workspace is where you answer. The bell
+  // is the part that specifically encodes "never looked at".
   markSeen: async (id) => {
     const ws = store.getWorkspace(id);
     if (!ws || ws.archived) return;
-    if (ws.status !== 'waiting') return;
+    const nextStatus = ws.status === 'waiting' ? 'idle' : ws.status;
+    if (nextStatus === ws.status && !ws.autoUnread) return;
     // Explicit `undefined`, not a dropped key: `workspace:update` is merged
-    // into the renderer store, so omitting it would leave the stale reason.
-    const updated: Workspace = { ...ws, status: 'idle', waitingReason: undefined };
+    // into the renderer store, so omitting it would leave the bell on screen.
+    const updated: Workspace = { ...ws, status: nextStatus, autoUnread: undefined };
     await store.upsertWorkspace(updated);
     platform.broadcast('workspace:update', updated);
   },
@@ -684,10 +693,10 @@ export const apiHandlers: ApiHandlerTable = {
     // sweep could see a freshly-woken agent as still idle and kill it again.
     clearHibernated(id);
     await startAgentPty(ws, cols, rows);
-    // Preserve the `waiting` yellow dot across restarts; only clear stale
-    // `running` state left over from a prior crash.
+    // Preserve the attention signals (`waiting`, the auto-unread bell) across
+    // restarts; only clear stale `running` state left over from a prior crash.
     if (ws.status === 'running') {
-      const updated: Workspace = { ...ws, status: 'idle', waitingReason: undefined };
+      const updated: Workspace = { ...ws, status: 'idle' };
       await store.upsertWorkspace(updated);
       platform.broadcast('workspace:update', updated);
     }

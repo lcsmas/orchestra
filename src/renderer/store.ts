@@ -268,7 +268,10 @@ export const useStore = create<State>((set, get) => ({
     void window.orchestra.setActiveWorkspace(id ?? null).catch(() => {});
     if (id) {
       const ws = get().workspaces.find((w) => w.id === id);
-      if (ws && ws.status === 'waiting') {
+      // Also fire for `autoUnread` alone: a finished-but-unseen workspace sits
+      // at `idle` (not `waiting`), so gating on the status would leave its bell
+      // lit forever — the row would be permanently unread despite being open.
+      if (ws && (ws.status === 'waiting' || ws.autoUnread)) {
         void window.orchestra.markSeen(id).catch(() => {});
       }
       // Coming back to a manually-tagged workspace is the "read" moment —

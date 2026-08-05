@@ -33,12 +33,18 @@ export function WorkspaceStatusGlyph({
   status,
   hibernated,
   unread,
+  autoUnread,
   title,
   size,
 }: {
   status: WorkspaceStatus;
   hibernated: boolean;
   unread: boolean;
+  /** The agent finished a turn here and the user has never opened it
+   *  ({@link Workspace.autoUnread}). Renders a BELL instead of the status
+   *  shape: "finished, unseen" is a different thing to communicate than
+   *  "finished" — see the switch below. */
+  autoUnread?: boolean;
   title: string;
   /** Optional context class, e.g. `'sm'` for denser lists. */
   size?: 'sm';
@@ -59,6 +65,26 @@ export function WorkspaceStatusGlyph({
   // were working — even though its last recorded status is usually 'running'.
   if (hibernated) {
     return <span className={cls('idle')} title={title} role="img" aria-label={title} />;
+  }
+  // "Finished, and you have never looked at it" — a FILLED BELL, the third of
+  // the three attention states. Deliberately checked only for the quiet
+  // statuses: `waiting` (blocked on your answer) and `error` are stronger
+  // claims that must keep their own glyph, and `running` means a NEW turn is
+  // already underway so a stale bell would misreport it. That leaves exactly
+  // `idle`/`stopped`, which is where a finished-unseen turn lands.
+  if (autoUnread && (status === 'idle' || status === 'stopped')) {
+    // Lucide `bell` (filled): a notification waiting to be read, matching
+    // Orca's amber FilledBellIcon for the same state.
+    return svg(
+      <>
+        <path d="M10.268 21a2 2 0 0 0 3.464 0" />
+        <path
+          d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"
+          fill="currentColor"
+        />
+      </>,
+      'autounread',
+    );
   }
   switch (status) {
     case 'running':

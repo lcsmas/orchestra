@@ -232,6 +232,7 @@ function AgentRowView({
           status={row.ws?.status ?? 'idle'}
           hibernated={row.ws?.hibernatedAt !== undefined}
           unread={!!row.ws?.markedUnread}
+          autoUnread={!!row.ws?.autoUnread}
           title={row.ws ? statusGlyphTitle(row.ws) : 'Agent is idle'}
         />
         <span className="res-agent-name">

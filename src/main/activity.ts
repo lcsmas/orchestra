@@ -17,7 +17,7 @@ import { THINKING_TOOL_LABEL } from '../shared/types.ts';
 // here would close an import cycle, since it imports pty.ts which imports this
 // file. The .ts extension is required for VALUE imports reachable from the
 // strip-types test runner.
-import { noteActivity } from './hibernation-activity.ts';
+import { getActiveWorkspaceId, noteActivity } from './hibernation-activity.ts';
 
 // Status transitions are the most bug-prone surface in the app (a stuck or wrong
 // dot has been the visible symptom of spool wipes, missed turn-end events, and
@@ -39,10 +39,30 @@ const alog = scoped('activity');
 //   submit   → running
 //   pretool  → running, with the active tool name surfaced to the renderer
 //   posttool → running, tool cleared
-//   stop     → waiting (chime + finished-toast)
+//   stop     → idle + autoUnread (chime + finished-toast) — the turn ended;
+//              the bell records that the user has not opened it yet.
 //   notify   → waiting (chime + needs-input-toast) — Claude fires this when the
 //              agent is prompting the user for an answer (permission prompts
 //              and the 60s idle reminder).
+//
+// Note `waiting` means ONLY "blocked on the user's answer". "Finished but not
+// yet seen" is `idle` + `autoUnread`, a separate axis — see Workspace.autoUnread.
+
+/** Set or clear the auto-unread bell — "an agent finished here and you have
+ *  never seen it". See {@link Workspace.autoUnread}.
+ *
+ *  Stored ABSENT rather than `false` so store.json doesn't grow a dead key on
+ *  every workspace ever opened, but broadcast with an explicit `undefined`:
+ *  the renderer's `workspace:update` reducer is a MERGE, so omitting the key
+ *  means "no opinion" and would leave a cleared bell on screen forever. */
+export async function markAutoUnread(id: string, unread: boolean): Promise<void> {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived) return;
+  if (!!ws.autoUnread === unread) return;
+  const updated: Workspace = { ...ws, autoUnread: unread || undefined };
+  void store.upsertWorkspace(updated).catch((e) => alog.swallow('persist autoUnread', e));
+  platform.broadcast('workspace:update', updated);
+}
 
 /** Update a workspace's status. Returns the workspace plus whether this call
  *  was a real transition (`changed`) — callers that fire a one-shot side effect
@@ -52,10 +72,6 @@ const alog = scoped('activity');
 async function setStatus(
   id: string,
   status: WorkspaceStatus,
-  /** Why this workspace is `waiting` — see {@link Workspace.waitingReason}.
-   *  Only meaningful with `status === 'waiting'`; cleared on every other
-   *  status so a stale "blocked" can't outlive the question it described. */
-  waitingReason?: 'blocked' | 'finished',
 ): Promise<{ ws: Workspace; changed: boolean } | null> {
   const ws = store.getWorkspace(id);
   if (!ws) {
@@ -69,34 +85,12 @@ async function setStatus(
     alog.trace(`setStatus(${status}) for archived ${ws.name} — dropped`);
     return null;
   }
-  // The reason a `waiting` workspace is waiting, after this event. Absent for
-  // every other status — a leftover `blocked` on a `running`/`idle` row would
-  // claim an answer is still owed. Note `field: undefined` rather than dropping
-  // the key: the renderer's `workspace:update` reducer is a MERGE, so an absent
-  // key means "no opinion" and would leave the stale value on screen forever.
-  const nextReason = status === 'waiting' ? (waitingReason ?? 'finished') : undefined;
   if (ws.status === status) {
-    // Same status — but the REASON may still be escalating. Claude fires
-    // `Notification` right after `Stop` when it stops to ask something, so the
-    // second event finds us already `waiting` and would no-op away the very
-    // distinction this field exists to record. Only ever escalate
-    // finished→blocked, never the reverse: a plain turn-end must not clear a
-    // question the user still owes an answer to.
-    if (status === 'waiting' && nextReason === 'blocked' && ws.waitingReason !== 'blocked') {
-      alog.trace(`${ws.name}: waiting reason ${ws.waitingReason ?? 'finished'} → blocked`);
-      const escalated: Workspace = { ...ws, waitingReason: 'blocked' };
-      void store.upsertWorkspace(escalated).catch((e) => alog.swallow('persist reason', e));
-      platform.broadcast('workspace:update', escalated);
-      // `changed: false` still — the STATUS did not move, and callers gate
-      // their toast/chime on it. Escalating the reason must not re-fire a
-      // notification the `stop` already raised.
-      return { ws: escalated, changed: false };
-    }
     alog.trace(`${ws.name}: status already ${status} (no-op)`);
     return { ws, changed: false };
   }
   alog.trace(`${ws.name}: ${ws.status} → ${status}`);
-  const updated: Workspace = { ...ws, status, waitingReason: nextReason };
+  const updated: Workspace = { ...ws, status };
   // Broadcast to the renderer first, then persist. upsertWorkspace mutates the
   // in-memory store synchronously (before its first await), so state is already
   // consistent here — but its disk flush is serialized through one write chain
@@ -136,7 +130,19 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
   // internally — an isFocused throw here used to abort the whole spool drain
   // batch and strand the `stop`).
   const focused = platform.isFocused();
-  void setStatus(id, 'waiting', 'finished').then((res) => {
+  // "Did the user actually SEE this turn end?" — the workspace must be the one
+  // they have open AND the window must have focus. Either being false means the
+  // output is unseen, so the row carries the auto-unread bell until they open
+  // it (markSeen clears it). Mirrors Orca's `!isVisibleForegroundPaneKey(...)
+  // || !isOrcaWindowForegroundFocused()` test. Computed BEFORE the await so it
+  // reflects the moment the turn ended, not whenever the promise settles.
+  const seen = focused && getActiveWorkspaceId() === id;
+  void markAutoUnread(id, !seen);
+  // `idle`, not `waiting`: `waiting` now means ONLY "the agent is blocked on
+  // your answer". A finished turn owes you nothing — whether you have looked at
+  // it is carried by `autoUnread` above, which is a property of your attention
+  // rather than of the agent's state.
+  void setStatus(id, 'idle').then((res) => {
     if (!res) return;
     const { ws, changed } = res;
     // Ship the main-process focus state with the event. document.hasFocus()
@@ -150,9 +156,9 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
     // on the branch afterward — so the pill cycles on/off with each merge
     // and re-divergence rather than being a one-shot terminal state.
     void detectAndUpdateMergeState(id);
-    // Only raise the OS notification on a real running→waiting transition. A
-    // redundant terminal event that didn't move the status (already waiting)
-    // must not pop a second toast. The seam posts the native Electron toast
+    // Only raise the OS notification on a real running→idle transition. A
+    // redundant terminal event that didn't move the status (already idle) must
+    // not pop a second toast. The seam posts the native Electron toast
     // (click-to-focus).
     if (focused || !changed) return;
     const { title, body } = finishedToast(stopReason, ws.name);
@@ -169,7 +175,7 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
  *  parks an interactive tool call. Exported for that caller. */
 export function fireNeedsInput(id: string): void {
   const focused = platform.isFocused();
-  void setStatus(id, 'waiting', 'blocked').then((res) => {
+  void setStatus(id, 'waiting').then((res) => {
     if (!res) return;
     const { ws, changed } = res;
     platform.broadcast('agent:needs-input', id, focused);
@@ -374,18 +380,21 @@ export async function detectAndUpdateReleaseState(id: string): Promise<void> {
  *  cannot possibly still be `running`. Called from the PTY exit handler. This
  *  is the durability backstop that makes a lost terminal event self-heal — even
  *  if a `stop`/`notify` line were never delivered, the dot can never outlive the
- *  process. We move to `waiting` (not `idle`) so the workspace still reads as
- *  "has unreviewed output, go look" and keeps its yellow dot until the user
- *  opens it; a clean idle is reserved for never-run / already-seen workspaces.
+ *  process.
+ *
+ *  Resolves to `idle` + the auto-unread bell, exactly like a normal turn-end:
+ *  the process died with output the user never saw, which is precisely what
+ *  `autoUnread` records. It must NOT resolve to `waiting` — that now means "the
+ *  agent is blocked on your answer", and a dead process cannot be answered, so
+ *  it would park a permanently-unanswerable row in the Needs-You inbox.
  *  A no-op when the workspace already left `running` via a real stop/notify. */
 export function reconcileExited(id: string): void {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return;
   if (ws.status !== 'running') return;
-  // `finished`, never `blocked`: the process is GONE, so whatever it may have
-  // been asking can no longer be answered — claiming otherwise would park a
-  // permanently-unanswerable row at the top of the Needs-You inbox.
-  void setStatus(id, 'waiting', 'finished');
+  const seen = platform.isFocused() && getActiveWorkspaceId() === id;
+  void markAutoUnread(id, !seen);
+  void setStatus(id, 'idle');
 }
 
 /** Restore `running` after a parked interactive tool call is answered (the

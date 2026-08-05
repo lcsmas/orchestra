@@ -81,39 +81,50 @@ test('running agents group under working and stay out of the badge', () => {
   assert.equal(g.count, 0);
 });
 
-// ── waitingReason: blocked-on-you outranks finished-unseen ──────────────────
-// Both are `status: 'waiting'`, so before the split these were indistinguishable
-// and the inbox ordered them arbitrarily. A blocked agent is burning wall-clock
-// doing nothing until you reply; a finished one already delivered its work.
+// ── the three attention states ─────────────────────────────────────────────
+// `waiting` = blocked on your answer; `autoUnread` = finished but never
+// opened; neither = nothing owed. All three used to collapse into `waiting`.
 
-test('a blocked agent sorts above one that merely finished unseen', () => {
-  const fin = ws({ id: 'fin', status: 'waiting', waitingReason: 'finished' });
-  const blk = ws({ id: 'blk', status: 'waiting', waitingReason: 'blocked' });
+test('an autoUnread workspace lands in needsYou even though it is idle', () => {
+  const g = computeAttention([ws({ id: 'a', status: 'idle', autoUnread: true })]);
+  assert.deepEqual(g.needsYou.map((w) => w.id), ['a']);
+  assert.equal(g.count, 1);
+});
+
+test('a plain idle workspace is not an attention signal', () => {
+  const g = computeAttention([ws({ status: 'idle' })]);
+  assert.equal(g.needsYou.length, 0);
+  assert.equal(g.count, 0);
+});
+
+test('blocked (waiting) sorts above finished-unseen (autoUnread)', () => {
+  const fin = ws({ id: 'fin', status: 'idle', autoUnread: true });
+  const blk = ws({ id: 'blk', status: 'waiting' });
   const g = computeAttention([fin, blk]);
   assert.deepEqual(g.needsYou.map((w) => w.id), ['blk', 'fin']);
 });
 
-test('error still outranks a blocked agent', () => {
-  const blk = ws({ id: 'blk', status: 'waiting', waitingReason: 'blocked' });
+test('error outranks both', () => {
+  const fin = ws({ id: 'fin', status: 'idle', autoUnread: true });
+  const blk = ws({ id: 'blk', status: 'waiting' });
   const err = ws({ id: 'err', status: 'error' });
-  const g = computeAttention([blk, err]);
-  assert.deepEqual(g.needsYou.map((w) => w.id), ['err', 'blk']);
+  const g = computeAttention([fin, blk, err]);
+  assert.deepEqual(g.needsYou.map((w) => w.id), ['err', 'blk', 'fin']);
 });
 
-// Absent waitingReason must read as the WEAKER claim. Pre-split records (and
-// any `waiting` written by a path that never set a reason) must not jump the
-// queue ahead of an agent genuinely blocked on an answer.
-test('absent waitingReason ranks as finished, never as blocked', () => {
-  const legacy = ws({ id: 'legacy', status: 'waiting' });
-  const blk = ws({ id: 'blk', status: 'waiting', waitingReason: 'blocked' });
-  const g = computeAttention([legacy, blk]);
-  assert.deepEqual(g.needsYou.map((w) => w.id), ['blk', 'legacy']);
-});
-
-test('waitingReason does not change the badge count', () => {
-  const g = computeAttention([
-    ws({ status: 'waiting', waitingReason: 'blocked' }),
-    ws({ status: 'waiting', waitingReason: 'finished' }),
-  ]);
+// A row can be both: the agent asked a question while you were away. It ranks
+// as blocked (the stronger claim — answering is what unblocks it) and must be
+// counted ONCE, not twice.
+test('waiting + autoUnread ranks as blocked and counts once', () => {
+  const both = ws({ id: 'both', status: 'waiting', autoUnread: true });
+  const fin = ws({ id: 'fin', status: 'idle', autoUnread: true });
+  const g = computeAttention([fin, both]);
+  assert.deepEqual(g.needsYou.map((w) => w.id), ['both', 'fin']);
   assert.equal(g.count, 2);
+});
+
+test('an archived autoUnread workspace is ignored entirely', () => {
+  const g = computeAttention([ws({ status: 'idle', autoUnread: true, archived: true })]);
+  assert.equal(g.needsYou.length, 0);
+  assert.equal(g.count, 0);
 });

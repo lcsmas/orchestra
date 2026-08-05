@@ -111,9 +111,12 @@ class Store {
       this.data = DEFAULT;
     }
     // `running` across a restart can only be stale state from a prior PTY
-    // that no longer exists — reset to idle. `waiting` is intentionally
-    // preserved so an unread "agent finished" dot from the previous session
-    // survives until the user actually views the workspace (markSeen).
+    // that no longer exists — reset to idle. The unread "agent finished" signal
+    // from the previous session is still intentionally preserved so it survives
+    // until the user actually views the workspace (markSeen) — it now rides on
+    // `autoUnread` rather than on a `waiting` status, so a restored row shows
+    // the bell instead of claiming an agent is blocked on an answer that no
+    // live process is waiting for.
     // Previously-running agents are NOT relaunched at startup: the agent
     // spawns (with `claude --continue`) when the user first opens the
     // workspace — see the pty:start path in TerminalView/startAgentPty.
@@ -123,18 +126,20 @@ class Store {
       // (the PTY-quiescence watchdog has been removed) — treat as idle.
       if (ws.status === 'running' || (ws.status as string) === 'stalled') {
         ws.status = 'idle';
-        ws.waitingReason = undefined;
         mutated = true;
       }
-      // A restored `blocked` describes a question asked by a process that no
-      // longer exists — the answer can never be delivered, so demote it to the
-      // weaker `finished`. The yellow dot is still preserved (the status is
-      // untouched); only the "an agent is stuck on you RIGHT NOW" claim is
-      // dropped. Same reasoning as reconcileExited, and the same hazard Orca
-      // names `restoredUnconfirmed`: a nonterminal state hydrated from disk
-      // with no live hook since must never be trusted as current.
-      if (ws.status === 'waiting' && ws.waitingReason === 'blocked') {
-        ws.waitingReason = 'finished';
+      // A restored `waiting` was written by a build where `waiting` meant BOTH
+      // "blocked on you" and "finished, unseen". The process behind it is gone,
+      // so the question it may have been asking can never be answered — resolve
+      // it to the claim that is still true either way: there is output here the
+      // user has not seen. That is `idle` + the auto-unread bell, which also
+      // keeps the row's attention signal (inbox entry, hibernation protection)
+      // exactly as the old yellow dot did. Same hazard Orca names
+      // `restoredUnconfirmed`: a nonterminal state hydrated from disk with no
+      // live hook since must never be trusted as current.
+      if (ws.status === 'waiting') {
+        ws.status = 'idle';
+        ws.autoUnread = true;
         mutated = true;
       }
     }

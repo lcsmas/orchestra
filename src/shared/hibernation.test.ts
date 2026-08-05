@@ -206,3 +206,15 @@ test('idle duration formats coarsely', () => {
   assert.equal(formatIdleDuration(3600_000 + 5 * 60_000), '1h 5m');
   assert.equal(formatIdleDuration(-1), '0m');
 });
+
+// An unseen finished turn is `idle` (so it passes the status gate) but still
+// owes the user a look. Before the three-state split those rows were `waiting`
+// and the status check protected them; this asserts the replacement guard, so a
+// refactor cannot silently start reaping unread output.
+test('an auto-unread workspace is never hibernated', () => {
+  assert.equal(shouldHibernate(ws({ autoUnread: true }), signals()), false);
+});
+
+test('clearing auto-unread makes it eligible again', () => {
+  assert.equal(shouldHibernate(ws({ autoUnread: undefined }), signals()), true);
+});

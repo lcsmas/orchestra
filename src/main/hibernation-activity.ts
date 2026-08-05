@@ -45,6 +45,30 @@ export function noteAppStart(): void {
   appStartedAt = Date.now();
 }
 
+// --- the workspace the user is looking at -----------------------------------
+//
+// Main has no notion of renderer selection; the renderer reports it over
+// `workspaces:setActive`. It lives in THIS leaf rather than hibernation.ts
+// because two unrelated consumers need it and one of them (activity.ts's
+// turn-end auto-unread) cannot import hibernation.ts without closing the
+// activity → hibernation → pty → activity cycle described above.
+//
+// Absent (no window, nothing selected) means "no workspace is being watched",
+// which is the correct default in both consumers: nothing is protected from
+// the hibernation sweep, and a finishing agent is treated as UNSEEN.
+
+let activeWorkspaceId: string | null = null;
+
+/** Record the renderer's currently-selected workspace. */
+export function noteActiveWorkspace(id: string | null): void {
+  activeWorkspaceId = id;
+}
+
+/** The renderer's currently-selected workspace, or null. */
+export function getActiveWorkspaceId(): string | null {
+  return activeWorkspaceId;
+}
+
 export function getAppStartedAt(): number {
   return appStartedAt;
 }

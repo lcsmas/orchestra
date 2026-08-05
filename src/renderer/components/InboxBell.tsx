@@ -14,7 +14,8 @@ function rowRepoLabel(w: Workspace): string {
 
 /** Header inbox — Orca's "Needs You" triage as a dropdown.
  *
- * The badge counts workspaces that need the user (status waiting/error +
+ * The badge counts workspaces that need the user (status waiting/error,
+ * finished-but-unopened (`autoUnread`), +
  * bookmarks); the popover lists them grouped, with the running agents below
  * for ambient awareness. Clicking a row jumps to the workspace — which is also
  * what clears its signals (main's markSeen clears `waiting`; the store's
@@ -90,6 +91,7 @@ export function InboxBell() {
         status={w.status}
         hibernated={w.hibernatedAt !== undefined}
         unread={!!w.markedUnread}
+        autoUnread={!!w.autoUnread}
         title={statusGlyphTitle(w)}
       />
       <span className="inbox-branch">{w.branch}</span>
@@ -129,10 +131,18 @@ export function InboxBell() {
           {needsYou.length > 0 && (
             <>
               <div className="inbox-section">Needs you</div>
+              {/* Three distinct reasons a row is here, in the same priority
+                  computeAttention sorts by. A finished-but-unopened agent is
+                  NOT "waiting for you" — nothing is blocked on you — so it
+                  must not borrow the blocked copy. */}
               {needsYou.map((w) =>
                 row(
                   w,
-                  w.status === 'error' ? 'error' : 'waiting for you',
+                  w.status === 'error'
+                    ? 'error'
+                    : w.status === 'waiting'
+                      ? 'waiting for you'
+                      : 'finished — not opened yet',
                   w.status === 'error' ? 'error' : 'waiting',
                 ),
               )}

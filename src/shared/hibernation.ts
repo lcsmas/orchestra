@@ -120,10 +120,13 @@ export function resolveHibernateSweepMs(raw: string | undefined): number {
  *    recording `hibernatedAt` on an already-stopped workspace would put a "zZ"
  *    chip on a row that never had a process.
  *  - **Status is `idle`.** Never `running` (a turn is in flight — killing it
- *    loses the work), never `waiting` (the agent stopped FOR THE USER; the
+ *    loses the work), never `waiting` (the agent is blocked on the user; the
  *    orange dot and the inbox entry are a standing request for attention and
  *    must survive), never `error` (the failure is the signal), never `stopped`
  *    (already down).
+ *  - **Not auto-unread.** A finished turn the user has never opened is `idle`
+ *    but still owes them a look, so it is protected for the same reason
+ *    `waiting` is. See {@link Workspace.autoUnread}.
  *  - **Not the active workspace.** The pane the user is looking at keeps its
  *    process, even if they've been reading in silence past the threshold.
  *  - **Not sandbox-hosted** (`ws.host` absent). A remote session's process
@@ -158,6 +161,13 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
   if (!hasLivePty && !hasLiveSdk) return false;
 
   if (ws.status !== 'idle') return false;
+  // An unseen finished turn is a standing request for attention, exactly as
+  // `waiting` is. Before the three-state split those rows WERE `waiting` and
+  // this status check protected them; now they resolve to `idle` + the
+  // auto-unread bell, so without this line the sweeper would hibernate the very
+  // workspaces whose output the user has not read yet — and the "zZ" chip would
+  // replace the bell on a row that still owes them a look.
+  if (ws.autoUnread) return false;
   if (isActive) return false;
   if (ws.host) return false;
   if (ws.archived) return false;

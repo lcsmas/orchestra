@@ -113,6 +113,7 @@ export function JumpPalette({ onClose }: { onClose: () => void }) {
                   status={w.status}
                   hibernated={w.hibernatedAt !== undefined}
                   unread={!!w.markedUnread}
+                  autoUnread={!!w.autoUnread}
                   title={statusGlyphTitle(w)}
                 />
                 <span className="jump-branch">{t.branch}</span>
