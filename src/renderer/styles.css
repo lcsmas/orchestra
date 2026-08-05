@@ -432,52 +432,49 @@ button.run-toggle-btn.running:hover {
   background: rgba(248, 113, 113, 0.1);
 }
 
-.merged-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 0 5px;
-  margin-left: 6px;
-  border-radius: 999px;
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-  text-transform: uppercase;
-  color: #c4a8ff;
-  background: rgba(179, 139, 255, 0.12);
-  border: 1px solid rgba(179, 139, 255, 0.32);
-}
-/* "released" pill — branch's work has shipped in a published GitHub release.
-   Green so it reads as a terminal "done, in production" state, distinct from
-   the purple "merged" pill it sits beside. text-transform stays off so the
-   version tag (e.g. v0.1.11) renders verbatim rather than shouted. */
-.released-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 0 5px;
-  margin-left: 6px;
-  border-radius: 999px;
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-  color: #7ee787;
-  background: rgba(126, 231, 135, 0.10);
-  border: 1px solid rgba(126, 231, 135, 0.32);
-}
-/* "↑N" badge — branch has commits not yet on origin. Amber so it reads as
-   a soft "action available" cue, not an error. Sits next to the diff
-   indicator in the sidebar row. */
+/* Release tag and unpushed-commits marks — glyph + number, NO pill chrome.
+   These deliberately match `.ws-item .pr-badge` (border/background/padding all
+   dropped, 10px glyph, 9px mono number) rather than carrying a filled track:
+   as bordered chips they were the only badges in the row's pill strip still
+   wearing chrome, which made them read a size larger than the PR/Linear badges
+   sitting beside them and inverted the row's hierarchy away from the branch
+   name. Colour alone carries the state — green "shipped", amber "ready to
+   push". Unlike the PR badges these keep their treatment everywhere they
+   appear, since the sidebar row is their only site. */
+.released-pill,
 .unpushed-pill {
   display: inline-flex;
   align-items: center;
-  padding: 0 5px;
+  gap: 3px;
+  flex-shrink: 0;
+  padding: 0;
   margin-left: 6px;
-  border-radius: 999px;
+  border: none;
+  background: none;
+  font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.2px;
-  color: #f5c46b;
-  background: rgba(245, 196, 107, 0.10);
-  border: 1px solid rgba(245, 196, 107, 0.32);
+  font-variant-numeric: tabular-nums;
+}
+.released-pill svg,
+.unpushed-pill svg {
+  width: 10px;
+  height: 10px;
+  opacity: 0.95;
+  flex-shrink: 0;
+}
+.released-pill { color: #7ee787; }
+.unpushed-pill { color: #f5c46b; }
+.released-v,
+.unpushed-n { line-height: 1; }
+/* Older releases collapse into a dim `+N` beside the newest version, matching
+   how `.pr-badge.more` folds away extra PRs. Muted so the version the branch
+   actually shipped in reads first; the full list lives on the title tooltip. */
+.released-more {
+  color: var(--text-dim);
+  opacity: 0.85;
+  line-height: 1;
 }
 
 /* Open PR button when there are local commits ready to push — same shape
@@ -1468,6 +1465,14 @@ input:focus, textarea:focus, select:focus {
   font-family: var(--font-mono);
   font-size: 8.5px;
 }
+/* Collapsed row: the glyph's count is the ONLY cue for the agents folded away
+   under it, so it takes over the urgency tint the separate hidden-count badge
+   used to carry (that badge was removed as redundant — on a flat tree it just
+   repeated this number). Expanded rows stay orchestrator-green: the children
+   are visible on their own rows and show their own status there. */
+.orchestrator-pill.running { color: var(--green); opacity: 1; }
+.orchestrator-pill.waiting { color: var(--yellow); opacity: 1; }
+.orchestrator-pill.error { color: var(--red); opacity: 1; }
 /* Re-parent drop feedback. A reorder drop draws an insertion LINE between rows
    (.drop-before/.drop-after above); an attach drop lands ON the row, so it gets
    a full-row outline instead — the two must not look alike or the user can't

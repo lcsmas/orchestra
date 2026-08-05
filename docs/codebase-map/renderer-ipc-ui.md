@@ -219,9 +219,14 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   children gets a **right-aligned** chevron (`.ws-chevron`, `ChevronIcon`) that
   folds its subtree — the depth-first rows are filtered at render time (skip
   rows deeper than a collapsed node until the walk climbs back). Persists as
-  `orchestra.collapsedOrchestrators` (workspace ids). A collapsed row shows a
-  `.ws-hidden-count` pill (hidden descendant count via `collectDescendants`)
-  tinted by the most urgent hidden status (error > waiting > running).
+  `orchestra.collapsedOrchestrators` (workspace ids). In the PINNED sections a
+  collapsed row shows a `.ws-hidden-count` pill (hidden descendant count via
+  `collectDescendants`) tinted by the most urgent hidden status
+  (error > waiting > running). REPO rows carry no such pill: their
+  `.orchestrator-pill` glyph count is itself recursive (`collectDescendants`,
+  not `kids.length`), so a separate badge only repeated the same number on a
+  flat tree — the glyph takes over the urgency tint when collapsed
+  (`.orchestrator-pill.running/.waiting/.error`).
   The chevron is rendered ONLY on rows that have children and lives at the row's
   right edge, so no left gutter is reserved on leaf rows; `.ws-row-actions`
   shifts to `right: 26px` on such rows (`.ws-item:has(.ws-chevron)`) so the
@@ -255,6 +260,18 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   an unidentifiable row. The floor makes the BADGES yield space first; they are
   fixed-size marks that survive being pushed out of view better than a nameless
   row does.
+- **Every badge in `.ws-pills` is a flat glyph + number** — no pill chrome. PR
+  and Linear badges get this from `.ws-item .pr-badge` (border/background/padding
+  stripped); `.released-pill` and `.unpushed-pill` are authored flat outright
+  (`ReleaseTagIcon`/`UnpushedIcon`, both Lucide on the shared 24-viewBox
+  `ICON_PROPS`). Colour alone carries state: green shipped, amber ready-to-push.
+  A bordered chip beside a flat badge reads a size larger and pulls rank from
+  the branch name, which is what the previous filled release/unpushed pills did.
+  **Only the newest release renders**, with older ones collapsed into a dim
+  `.released-more` `+N` (full list on the `title`), mirroring `.pr-badge.more`
+  for extra PRs — `releasedVersions` is oldest-first, so newest is the LAST
+  element. There is no standalone "merged" pill: `mergedAt` is conveyed by the
+  merged PR badge, and the pill duplicated it.
 - **Row layout is a single 24px line.** Name, badges, context and account all
   share one line, with metadata right-aligned. `.ws-pills` was previously
   `flex-basis: 100%`, which inside a `flex-wrap: wrap` row ALWAYS starts a new

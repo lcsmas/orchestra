@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Sidebar badge restyle — options</title>
+<style>
+  /* ── Tokens lifted verbatim from src/renderer/styles.css ─────────────── */
+  :root {
+    --bg: #0a0b0d;
+    --bg-2: #101215;
+    --bg-3: #171a20;
+    --bg-4: #1f242c;
+    --border: #23272f;
+    --border-strong: #353b45;
+    --text: #eef1f5;
+    --text-dim: #8f99a9;
+    --accent: #6ea8ff;
+    --green: #5bd68b;
+    --scratch: #e3b341;
+    --orchestrator: #7ee787;
+    --hover-bg: rgba(255, 255, 255, 0.05);
+    --ease: cubic-bezier(0.3, 0.8, 0.3, 1);
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 40px 32px 80px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Geist", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+    line-height: 1.45;
+    letter-spacing: 0.01em;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 20px; font-weight: 500; margin: 0 0 6px; }
+  .sub { color: var(--text-dim); font-size: 12px; margin: 0 0 36px; max-width: 70ch; }
+  .sub code { font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
+
+  h2 {
+    font-size: 13px; font-weight: 500; margin: 0 0 4px;
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  h2 .tag {
+    font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+    color: var(--accent); border: 1px solid rgba(110,168,255,.35);
+    border-radius: 999px; padding: 1px 7px; letter-spacing: .04em;
+  }
+  .note { color: var(--text-dim); font-size: 11.5px; margin: 0 0 12px; max-width: 78ch; }
+  section { margin: 0 0 34px; }
+
+  /* ── Faithful sidebar chrome ─────────────────────────────────────────── */
+  .sidebar {
+    width: 560px; background: var(--bg-2);
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 6px 0; overflow: hidden;
+  }
+  .ws-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 12px; cursor: default;
+  }
+  .ws-item:hover { background: var(--hover-bg); }
+  .ws-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto;
+    background: var(--green); box-shadow: 0 0 6px rgba(91,214,139,.7);
+  }
+  .ws-dot.grey { background: #39414d; box-shadow: none; }
+  .ws-dot.blue { background: var(--accent); box-shadow: 0 0 6px rgba(110,168,255,.6); }
+  .ws-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
+  .ws-name {
+    font-weight: 400; font-size: 12px; color: var(--text-dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    min-width: 7.5em; flex: 1 1 0;
+  }
+  .ws-item.active .ws-name { color: var(--text); font-weight: 500; }
+  .ws-size {
+    font-family: var(--font-mono); font-size: 10px; color: var(--scratch);
+    flex: 0 0 auto; opacity: .85;
+  }
+  .ws-sep { color: #3a4150; font-size: 10px; }
+  .ws-login { font-size: 10px; color: var(--text-dim); flex: 0 0 auto; }
+  .ws-pills {
+    display: flex; align-items: center; flex-wrap: nowrap;
+    gap: 5px; flex: 0 0 auto; min-width: 0;
+  }
+
+  /* ── CURRENT: PR / Linear badges (flat inside .ws-item) ──────────────── */
+  .pr-badge {
+    display: inline-flex; align-items: center; gap: 3px;
+    border: none; background: none; padding: 0; height: auto;
+    border-radius: 999px; flex-shrink: 0; cursor: pointer;
+    font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+    letter-spacing: .2px; color: var(--accent);
+  }
+  .pr-badge svg { width: 10px; height: 10px; opacity: .95; flex-shrink: 0; }
+  .pr-badge.open { color: #3fb950; }
+  .pr-badge.merged { color: #b8a0ff; }
+  .pr-badge.linear { color: #8b91f0; }
+  .orchestrator-pill {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+    color: var(--text-dim);
+  }
+  .orchestrator-pill svg { width: 10px; height: 10px; }
+  .ws-hidden-count {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 14px; height: 14px; padding: 0 4px; border-radius: 999px;
+    font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+    color: var(--text-dim); border: 1px solid var(--border-strong);
+  }
+
+  /* ── CURRENT: release / unpushed / merged pills ──────────────────────── */
+  .cur .merged-pill {
+    display: inline-flex; align-items: center; padding: 0 5px;
+    border-radius: 999px; font-size: 9px; font-weight: 600;
+    letter-spacing: .2px; text-transform: uppercase;
+    color: #c4a8ff; background: rgba(179,139,255,.12);
+    border: 1px solid rgba(179,139,255,.32);
+  }
+  .cur .released-pill {
+    display: inline-flex; align-items: center; padding: 0 5px;
+    border-radius: 999px; font-size: 9px; font-weight: 600;
+    letter-spacing: .2px; color: #7ee787;
+    background: rgba(126,231,135,.10); border: 1px solid rgba(126,231,135,.32);
+  }
+  .cur .unpushed-pill {
+    display: inline-flex; align-items: center; padding: 0 5px;
+    border-radius: 999px; font-size: 9px; font-weight: 600;
+    letter-spacing: .2px; color: #f5c46b;
+    background: rgba(245,196,107,.10); border: 1px solid rgba(245,196,107,.32);
+  }
+
+  /* ══ OPTION A — flat marks, exactly like the PR/Linear badges ═════════ */
+  .optA .released-pill,
+  .optA .unpushed-pill {
+    display: inline-flex; align-items: center; gap: 3px;
+    border: none; background: none; padding: 0; height: auto;
+    font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+    letter-spacing: .2px;
+  }
+  .optA .released-pill { color: #7ee787; }
+  .optA .unpushed-pill { color: #f5c46b; }
+  .optA .released-pill svg,
+  .optA .unpushed-pill svg { width: 10px; height: 10px; opacity: .95; }
+
+  /* ══ OPTION B — flat marks, tag glyph only on the FIRST release ═══════ */
+  .optB .rel-group {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+    letter-spacing: .2px; color: #7ee787;
+  }
+  .optB .rel-group svg { width: 10px; height: 10px; opacity: .95; }
+  .optB .rel-group .v + .v { opacity: .62; }
+  .optB .unpushed-pill {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+    letter-spacing: .2px; color: #f5c46b;
+  }
+  .optB .unpushed-pill svg { width: 10px; height: 10px; }
+
+  /* ══ OPTION C — flat, versions collapsed to latest + "+N" ═════════════ */
+  .optC .rel-group {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+    letter-spacing: .2px; color: #7ee787; cursor: default;
+  }
+  .optC .rel-group svg { width: 10px; height: 10px; opacity: .95; }
+  .optC .rel-more { color: var(--text-dim); opacity: .8; }
+  .optC .unpushed-pill {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+    letter-spacing: .2px; color: #f5c46b;
+  }
+  .optC .unpushed-pill svg { width: 10px; height: 10px; }
+
+  /* ══ OPTION D — hairline outline chips, PR-badge geometry, no fill ════ */
+  .optD .released-pill,
+  .optD .unpushed-pill {
+    display: inline-flex; align-items: center; gap: 3px;
+    height: 15px; padding: 0 5px 0 4px; border-radius: 999px;
+    background: transparent;
+    font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+    letter-spacing: .2px;
+  }
+  .optD .released-pill { color: #7ee787; border: 1px solid rgba(126,231,135,.30); }
+  .optD .unpushed-pill { color: #f5c46b; border: 1px solid rgba(245,196,107,.30); }
+  .optD .released-pill svg, .optD .unpushed-pill svg { width: 10px; height: 10px; }
+
+  /* Shared bits */
+  .legend {
+    display: flex; gap: 18px; flex-wrap: wrap;
+    margin: 10px 0 0; color: var(--text-dim); font-size: 11px;
+  }
+  .pick {
+    margin-top: 46px; padding: 16px 18px; border: 1px solid var(--border);
+    border-radius: 10px; background: var(--bg-2); max-width: 860px;
+  }
+  .pick h3 { margin: 0 0 8px; font-size: 13px; font-weight: 500; }
+  .pick ul { margin: 0; padding-left: 18px; color: var(--text-dim); font-size: 12px; }
+  .pick li { margin-bottom: 5px; }
+  .pick b { color: var(--text); font-weight: 500; }
+  .side-by-side { display: flex; gap: 24px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+
+<h1>Sidebar badges — release tags, unpushed count, MERGED</h1>
+<p class="sub">
+  Real sidebar chrome, real tokens, real rows. The <b>PR</b> and <b>Linear</b> badges are already
+  <i>flat</i> inside a row — <code>.ws-item .pr-badge</code> strips border, background and padding, leaving
+  a bare 10px glyph + 9px mono number. The release and unpushed pills never got that treatment: they still
+  carry a filled track and a 1px border, which is why they read one size up. Every option below removes the
+  <code>MERGED</code> pill.
+</p>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<section class="cur">
+  <h2>Current <span class="tag">today</span></h2>
+  <p class="note">
+    Three visual weights competing in one strip: flat PR/Linear marks, then filled+bordered
+    release/unpushed chips, plus the redundant purple MERGED pill.
+  </p>
+  <div class="sidebar">
+    <div class="ws-item">
+      <span class="ws-dot"></span>
+      <div class="ws-name-row">
+        <span class="ws-name">adopt-onorca-improvements</span>
+        <span class="ws-sep">·</span><span class="ws-size">741k</span>
+        <span class="ws-login">perso</span>
+        <span class="ws-pills">
+          <span class="orchestrator-pill">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="3" r="1.8"/><circle cx="3" cy="13" r="1.8"/><circle cx="13" cy="13" r="1.8"/><path d="M8 4.8v3.4M8 8.2H3.6v3M8 8.2h4.4v3"/></svg>
+            <span>4</span>
+          </span>
+          <span class="ws-hidden-count">4</span>
+          <span class="merged-pill">MERGED</span>
+          <span class="released-pill">v0.5.187</span>
+          <span class="released-pill">v0.5.188</span>
+          <span class="released-pill">v0.5.192</span>
+        </span>
+      </div>
+    </div>
+    <div class="ws-item active">
+      <span class="ws-dot blue"></span>
+      <div class="ws-name-row">
+        <span class="ws-name">research-orca-agent-comms</span>
+        <span class="ws-sep">·</span><span class="ws-size">246k</span>
+        <span class="ws-login">perso</span>
+        <span class="ws-pills">
+          <span class="unpushed-pill">↑2</span>
+        </span>
+      </div>
+    </div>
+    <div class="ws-item">
+      <span class="ws-dot grey"></span>
+      <div class="ws-name-row">
+        <span class="ws-name">structured-view-rewind</span>
+        <span class="ws-sep">·</span><span class="ws-size">439k</span>
+        <span class="ws-login">perso</span>
+        <span class="ws-pills">
+          <span class="pr-badge linear" title="Linear">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 9.2 6.8 14A6 6 0 0 1 2 9.2Zm-.05-2.06A6 6 0 0 1 8.86 14.05L1.95 7.14Zm.42-1.86A6 6 0 0 1 10.72 13.4L2.37 5.28Zm1.1-1.7A6 6 0 0 1 12.42 12.4L3.47 3.58Z"/></svg>
+            <span>ORC-118</span>
+          </span>
+          <span class="pr-badge merged" title="PR merged">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.25a1.75 1.75 0 1 0-2.5 1.58v6.34a1.75 1.75 0 1 0 1.5 0V6.5a3.5 3.5 0 0 0 3.5 3.5h1.17a1.75 1.75 0 1 0 0-1.5H7.5A2 2 0 0 1 5.5 6.5v-1.67A1.75 1.75 0 0 0 5 3.25Z"/></svg>
+            <span>#412</span>
+          </span>
+          <span class="merged-pill">MERGED</span>
+          <span class="released-pill">v0.5.201</span>
+          <span class="released-pill">v0.5.202</span>
+          <span class="released-pill">v0.5.203</span>
+        </span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<section class="optA">
+  <h2>Option A — flat marks <span class="tag">A</span></h2>
+  <p class="note">
+    Release and unpushed adopt the PR badge treatment exactly: no border, no fill, 10px glyph + 9px mono
+    text, same colours. A <b>tag glyph</b> per version, an <b>↑ arrow</b> for unpushed. Maximum consistency —
+    everything in the strip is now one visual language.
+  </p>
+  <div class="sidebar">
+    <div class="ws-item">
+      <span class="ws-dot"></span>
+      <div class="ws-name-row">
+        <span class="ws-name">adopt-onorca-improvements</span>
+        <span class="ws-sep">·</span><span class="ws-size">741k</span>
+        <span class="ws-login">perso</span>
+        <span class="ws-pills">
+          <span class="orchestrator-pill">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="3" r="1.8"/><circle cx="3" cy="13" r="1.8"/><circle cx="13" cy="13" r="1.8"/><path d="M8 4.8v3.4M8 8.2H3.6v3M8 8.2h4.4v3"/></svg>
+            <span>4</span>
+          </span>
+          <span class="ws-hidden-count">4</span>
+          <span class="released-pill"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M1.9 7.4V2.6a.7.7 0 0 1 .7-.7h4.8a.7.7 0 0 1 .5.2l6 6a.7.7 0 0 1 0 1l-4.8 4.8a.7.7 0 0 1-1 0l-6-6a.7.7 0 0 1-.2-.5Z"/><circle cx="4.9" cy="4.9" r=".9" fill="currentColor" stroke="none"/></svg><span>v0.5.187</span></span>
+          <span class="released-pill"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M1.9 7.4V2.6a.7.7 0 0 1 .7-.7h4.8a.7.7 0 0 1 .5.2l6 6a.7.7 0 0 1 0 1l-4.8 4.8a.7.7 0 0 1-1 0l-6-6a.7.7 0 0 1-.2-.5Z"/><circle cx="4.9" cy="4.9" r=".9" fill="currentColor" stroke="none"/></svg><span>v0.5.188</span></span>
+          <span class="released-pill"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M1.9 7.4V2.6a.7.7 0 0 1 .7-.7h4.8a.7.7 0 0 1 .5.2l6 6a.7.7 0 0 1 0 1l-4.8 4.8a.7.7 0 0 1-1 0l-6-6a.7.7 0 0 1-.2-.5Z"/><circle cx="4.9" cy="4.9" r=".9" fill="currentColor" stroke="none"/></svg><span>v0.5.192</span></span>
+        </span>
+      </div>
+    </div>
+    <div class="ws-item active">
+      <span class="ws-dot blue"></span>
+      <div class="ws-name-row">
+        <span class="ws-name">research-orca-agent-comms</span>
+        <span class="ws-sep">·</span><span class="ws-size">246k</span>
+        <span class="ws-login">perso</span>
+        <span class="ws-pills">
+          <span class="unpushed-pill"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3.6M4.4 7.2 8 3.4l3.6 3.8"/></svg><span>2</span></span>
+        </span>
+      </div>
+    </div>
+    <div class="ws-item">
+      <span class="ws-dot grey"></span>
+      <div class="ws-name-row">
+        <span class="ws-name">structured-view-rewind</span>
+        <span class="ws-sep">·</span><span class="ws-size">439k</span>
+        <span class="ws-login">perso</span>
+        <span class="ws-pills">
+          <span class="pr-badge linear"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 9.2 6.8 14A6 6 0 0 1 2 9.2Zm-.05-2.06A6 6 0 0 1 8.86 14.05L1.95 7.14Zm.42-1.86A6 6 0 0 1 10.72 13.4L2.37 5.28Zm1.1-1.7A6 6 0 0 1 12.42 12.4L3.47 3.58Z"/></svg><span>ORC-118</span></span>
+          <span class="pr-badge merged"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.25a1.75 1.75 0 1 0-2.5 1.58v6.34a1.75 1.75 0 1 0 1.5 0V6.5a3.5 3.5 0 0 0 3.5 3.5h1.17a1.75 1.75 0 1 0 0-1.5H7.5A2 2 0 0 1 5.5 6.5v-1.67A1.75 1.75 0 0 0 5 3.25Z"/></svg><span>#412</span></span>
+          <span class="released-pill"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M1.9 7.4V2.6a.7.7 0 0 1 .7-.7h4.8a.7.7 0 0 1 .5.2l6 6a.7.7 0 0 1 0 1l-4.8 4.8a.7.7 0 0 1-1 0l-6-6a.7.7 0 0 1-.2-.5Z"/><circle cx="4.9" cy="4.9" r=".9" fill="currentColor" stroke="none"/></svg><span>v0.5.201</span></span>
+          <span class="released-pill"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M1.9 7.4V2.6a.7.7 0 0 1 .7-.7h4.8a.7.7 0 0 1 .5.2l6 6a.7.7 0 0 1 0 1l-4.8 4.8a.7.7 0 0 1-1 0l-6-6a.7.7 0 0 1-.2-.5Z"/><circle cx="4.9" cy="4.9" r=".9" fill="currentColor" stroke="none"/></svg><span>v0.5.202</span></span>
+          <span class="released-pill"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M1.9 7.4V2.6a.7.7 0 0 1 .7-.7h4.8a.7.7 0 0 1 .5.2l6 6a.7.7 0 0 1 0 1l-4.8 4.8a.7.7 0 0 1-1 0l-6-6a.7.7 0 0 1-.2-.5Z"/><circle cx="4.9" cy="4.9" r=".9" fill="currentColor" stroke="none"/></svg><span>v0.5.203</span></span>
+        </span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<section class="optB">
+  <h2>Option B — one tag glyph, versions grouped <span class="tag">B</span></h2>
+  <p class="note">
+    Same flat language as A, but the tag glyph appears <b>once</b> and the versions follow as a run, with
+    older ones dimmed so the latest release reads first. Three releases stop looking like three separate
+    facts. Quietest option at the same information density.
+  </p>
+  <div class="sidebar">
+    <div class="ws-item">
+      <span class="ws-dot"></span>
+      <div class="ws-name-row">
+        <span class="ws-name">adopt-onorca-improvements</span>
+        <span class="ws-sep">·</span><span class="ws-size">741k</span>
+        <span class="ws-login">perso</span>
+        <span class="ws-pills">
+          <span class="orchestrator-pill">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="3" r="1.8"/><circle cx="3" cy="13" r="1.8"/><circle cx="13" cy="13" r="1.8"/><path d="M8 4.8v3.4M8 8.2H3.6v3M8 8.2h4.4v3"/></svg>
+            <span>4</span>
+          </span>
+          <span class="ws-hidden-count">4</span>
+          <span class="rel-group">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M1.9 7.4V2.6a.7.7 0 0 1 .7-.7h4.8a.7.7 0 0 1 .5.2l6 6a.7.7 0 0 1 0 1l-4.8 4.8a.7.7 0 0 1-1 0l-6-6a.7.7 0 0 1-.2-.5Z"/><circle cx="4.9" cy="4.9" r=".9" fill="currentColor" stroke="none"/></svg>
+            <span class="v">v0.5.192</span><span class="v">v0.5.188</span><span class="v">v0.5.187</span>
+          </span>
+        </span>
+      </div>
+    </div>
+    <div class="ws-item active">
+      <span class="ws-dot blue"></span>
+      <div class="ws-name-row">
+        <span class="ws-name">research-orca-agent-comms</span>
+        <span class="ws-sep">·</span><span class="ws-size">246k</span>
+        <span class="ws-login">perso</span>
+        <span class="ws-pills">
+          <span class="unpushed-pill"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3.6M4.4 7.2 8 3.4l3.6 3.8"/></svg><span>2</span></span>
+        </span>
+      </div>
+    </div>
+    <div class="ws-item">
+      <span class="ws-dot grey"></span>
+      <div class="ws-name-row">
+        <span class="ws-name">structured-view-rewind</span>
+        <span class="ws-sep">·</span><span class="ws-size">439k</span>
+        <span class="ws-login">perso</span>
+        <span class="ws-pills">
+          <span class="pr-badge linear"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 9.2 6.8 14A6 6 0 0 1 2 9.2Zm-.05-2.06A6 6 0 0 1 8.86 14.05L1.95 7.14Zm.42-1.86A6 6 0 0 1 10.72 13.4L2.37 5.28Zm1.1-1.7A6 6 0 0 1 12.42 12.4L3.47 3.58Z"/></svg><span>ORC-118</span></span>
+          <span class="pr-badge merged"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.25a1.75 1.75 0 1 0-2.5 1.58v6.34a1.75 1.75 0 1 0 1.5 0V6.5a3.5 3.5 0 0 0 3.5 3.5h1.17a1.75 1.75 0 1 0 0-1.5H7.5A2 2 0 0 1 5.5 6.5v-1.67A1.75 1.75 0 0 0 5 3.25Z"/></svg><span>#412</span></span>
+          <span class="rel-group">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M1.9 7.4V2.6a.7.7 0 0 1 .7-.7h4.8a.7.7 0 0 1 .5.2l6 6a.7.7 0 0 1 0 1l-4.8 4.8a.7.7 0 0 1-1 0l-6-6a.7.7 0 0 1-.2-.5Z"/><circle cx="4.9" cy="4.9" r=".9" fill="currentColor" stroke="none"/></svg>
+            <span class="v">v0.5.203</span><span class="v">v0.5.202</span><span class="v">v0.5.201</span>
+          </span>
+        </span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<section class="optC">
+  <h2>Option C — latest release only, “+2” for the rest <span class="tag">C</span></h2>
+  <p class="note">
+    Flat language plus the <code>.pr-badge.more</code> pattern already used for extra PRs: show the newest
+    version, collapse the rest into a dim <b>+N</b> (full list on the tooltip). Shortest strip by far —
+    the branch name keeps its width even on heavily released rows.
+  </p>
+  <div class="sidebar">
+    <div class="ws-item">
+      <span class="ws-dot"></span>
+      <div class="ws-name-row">
+        <span class="ws-name">adopt-onorca-improvements</span>
+        <span class="ws-sep">·</span><span class="ws-size">741k</span>
+        <span class="ws-login">perso</span>
+        <span class="ws-pills">
+          <span class="orchestrator-pill">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="3" r="1.8"/><circle cx="3" cy="13" r="1.8"/><circle cx="13" cy="13" r="1.8"/><path d="M8 4.8v3.4M8 8.2H3.6v3M8 8.2h4.4v3"/></svg>
+            <span>4</span>
+          </span>
+          <span class="ws-hidden-count">4</span>
+          <span class="rel-group" title="Shipped in v0.5.187, v0.5.188, v0.5.192">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M1.9 7.4V2.6a.7.7 0 0 1 .7-.7h4.8a.7.7 0 0 1 .5.2l6 6a.7.7 0 0 1 0 1l-4.8 4.8a.7.7 0 0 1-1 0l-6-6a.7.7 0 0 1-.2-.5Z"/><circle cx="4.9" cy="4.9" r=".9" fill="currentColor" stroke="none"/></svg>
+            <span>v0.5.192</span><span class="rel-more">+2</span>
+          </span>
+        </span>
+      </div>
+    </div>
+    <div class="ws-item active">
+      <span class="ws-dot blue"></span>
+      <div class="ws-name-row">
+        <span class="ws-name">research-orca-agent-comms</span>
+        <span class="ws-sep">·</span><span class="ws-size">246k</span>
+        <span class="ws-login">perso</span>
+        <span class="ws-pills">
+          <span class="unpushed-pill"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3.6M4.4 7.2 8 3.4l3.6 3.8"/></svg><span>2</span></span>
+        </span>
+      </div>
+    </div>
+    <div class="ws-item">
+      <span class="ws-dot grey"></span>
+      <div class="ws-name-row">
+        <span class="ws-name">structured-view-rewind</span>
+        <span class="ws-sep">·</span><span class="ws-size">439k</span>
+        <span class="ws-login">perso</span>
+        <span class="ws-pills">
+          <span class="pr-badge linear"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 9.2 6.8 14A6 6 0 0 1 2 9.2Zm-.05-2.06A6 6 0 0 1 8.86 14.05L1.95 7.14Zm.42-1.86A6 6 0 0 1 10.72 13.4L2.37 5.28Zm1.1-1.7A6 6 0 0 1 12.42 12.4L3.47 3.58Z"/></svg><span>ORC-118</span></span>
+          <span class="pr-badge merged"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.25a1.75 1.75 0 1 0-2.5 1.58v6.34a1.75 1.75 0 1 0 1.5 0V6.5a3.5 3.5 0 0 0 3.5 3.5h1.17a1.75 1.75 0 1 0 0-1.5H7.5A2 2 0 0 1 5.5 6.5v-1.67A1.75 1.75 0 0 0 5 3.25Z"/></svg><span>#412</span></span>
+          <span class="rel-group" title="Shipped in v0.5.201, v0.5.202, v0.5.203">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M1.9 7.4V2.6a.7.7 0 0 1 .7-.7h4.8a.7.7 0 0 1 .5.2l6 6a.7.7 0 0 1 0 1l-4.8 4.8a.7.7 0 0 1-1 0l-6-6a.7.7 0 0 1-.2-.5Z"/><circle cx="4.9" cy="4.9" r=".9" fill="currentColor" stroke="none"/></svg>
+            <span>v0.5.203</span><span class="rel-more">+2</span>
+          </span>
+        </span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────────────────────────────── -->
+<section class="optD">
+  <h2>Option D — hairline chips, no fill <span class="tag">D</span></h2>
+  <p class="note">
+    Keeps a pill outline but drops the filled track and matches the <code>.pr-badge</code> geometry
+    (15px tall, same padding/radius/type). Middle ground: still reads as a discrete “tag”, without the
+    heavy two-tone block. Note this re-introduces a second visual weight next to the flat PR badges.
+  </p>
+  <div class="sidebar">
+    <div class="ws-item">
+      <span class="ws-dot"></span>
+      <div class="ws-name-row">
+        <span class="ws-name">adopt-onorca-improvements</span>
+        <span class="ws-sep">·</span><span class="ws-size">741k</span>
+        <span class="ws-login">perso</span>
+        <span class="ws-pills">
+          <span class="orchestrator-pill">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="3" r="1.8"/><circle cx="3" cy="13" r="1.8"/><circle cx="13" cy="13" r="1.8"/><path d="M8 4.8v3.4M8 8.2H3.6v3M8 8.2h4.4v3"/></svg>
+            <span>4</span>
+          </span>
+          <span class="ws-hidden-count">4</span>
+          <span class="released-pill">v0.5.187</span>
+          <span class="released-pill">v0.5.188</span>
+          <span class="released-pill">v0.5.192</span>
+        </span>
+      </div>
+    </div>
+    <div class="ws-item active">
+      <span class="ws-dot blue"></span>
+      <div class="ws-name-row">
+        <span class="ws-name">research-orca-agent-comms</span>
+        <span class="ws-sep">·</span><span class="ws-size">246k</span>
+        <span class="ws-login">perso</span>
+        <span class="ws-pills">
+          <span class="unpushed-pill"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3.6M4.4 7.2 8 3.4l3.6 3.8"/></svg><span>2</span></span>
+        </span>
+      </div>
+    </div>
+    <div class="ws-item">
+      <span class="ws-dot grey"></span>
+      <div class="ws-name-row">
+        <span class="ws-name">structured-view-rewind</span>
+        <span class="ws-sep">·</span><span class="ws-size">439k</span>
+        <span class="ws-login">perso</span>
+        <span class="ws-pills">
+          <span class="pr-badge linear"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 9.2 6.8 14A6 6 0 0 1 2 9.2Zm-.05-2.06A6 6 0 0 1 8.86 14.05L1.95 7.14Zm.42-1.86A6 6 0 0 1 10.72 13.4L2.37 5.28Zm1.1-1.7A6 6 0 0 1 12.42 12.4L3.47 3.58Z"/></svg><span>ORC-118</span></span>
+          <span class="pr-badge merged"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.25a1.75 1.75 0 1 0-2.5 1.58v6.34a1.75 1.75 0 1 0 1.5 0V6.5a3.5 3.5 0 0 0 3.5 3.5h1.17a1.75 1.75 0 1 0 0-1.5H7.5A2 2 0 0 1 5.5 6.5v-1.67A1.75 1.75 0 0 0 5 3.25Z"/></svg><span>#412</span></span>
+          <span class="released-pill">v0.5.201</span>
+          <span class="released-pill">v0.5.202</span>
+          <span class="released-pill">v0.5.203</span>
+        </span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="pick">
+  <h3>What each option decides</h3>
+  <ul>
+    <li><b>A</b> — pure consistency. One glyph + number language for every badge in the strip. Longest strip when a branch shipped in 3 releases.</li>
+    <li><b>B</b> — same, but one tag glyph for the whole run and older versions dimmed. Reads as “this shipped, latest is X”.</li>
+    <li><b>C</b> — shortest. Latest version + <b>+N</b>, full list on hover, mirroring how extra PRs already collapse.</li>
+    <li><b>D</b> — keeps an outline chip, just lighter and PR-badge sized. Choose if you want release tags to stay visually separable from PR/Linear links.</li>
+  </ul>
+  <p class="note" style="margin:12px 0 0">
+    All four drop the <b>MERGED</b> pill. Note it is already conditional — it renders only when there is no
+    merged-PR badge — so removing it costs no information on rows that have a PR linked.
+    Unpushed <code>↑2</code> becomes an arrow glyph + count in A/B/C/D (matching how PR/Linear pair a glyph
+    with a number) rather than a text arrow inside a chip.
+  </p>
+</div>
+
+</body>
+</html>

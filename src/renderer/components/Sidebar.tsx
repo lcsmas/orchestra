@@ -355,6 +355,28 @@ function PRMergedIcon() {
   );
 }
 
+/** Lucide `tag` — a released version. Pairs a glyph with its number the way the
+ * PR/Linear badges do, which is what lets the release badge drop its pill
+ * chrome and still read as a distinct kind of fact rather than loose text. */
+function ReleaseTagIcon() {
+  return (
+    <svg {...ICON_PROPS}>
+      <path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z" />
+      <circle cx="7.5" cy="7.5" r=".5" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** Lucide `arrow-up` — commits made locally that origin has not seen yet. */
+function UnpushedIcon() {
+  return (
+    <svg {...ICON_PROPS}>
+      <path d="m5 12 7-7 7 7" />
+      <path d="M12 19V5" />
+    </svg>
+  );
+}
+
 function PRClosedIcon() {
   return (
     <svg {...ICON_PROPS}>
@@ -524,8 +546,7 @@ function ResourcesIcon() {
 }
 
 /** PRs for a branch, ordered open-first then gh's newest-first, capped at the
- * three we surface. Shared so the row and its merged-pill suppression agree on
- * which PRs are "visible". */
+ * three we surface. */
 function orderedVisiblePRs(prRecord?: PRsForBranch): {
   visible: PRsForBranch['all'];
   hidden: number;
@@ -1979,11 +2000,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               const s = stats[w.id];
               const hasChanges = !!s && (s.additions > 0 || s.deletions > 0);
               const prRecord = prs[w.id];
-              // The purple #N merged PR badge already conveys "merged", so
-              // suppress the standalone merged pill when one is visible.
-              const hasMergedPRBadge = orderedVisiblePRs(prRecord).visible.some(
-                (p) => p.state === 'MERGED',
-              );
               // Linear issue badge — shown ONLY for an issue the main process
               // verified to exist via Linear's GraphQL API. A branch whose name
               // merely looks like it carries a key (`usage-poll-429`) resolves to
@@ -1999,7 +2015,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               const kids = forest.childrenOf.get(w.id) ?? [];
               const collapsible = kids.length > 0;
               const isCollapsed = collapsible && collapsedOrch.has(w.id);
-              const hiddenKids = isCollapsed ? collectDescendants(w.id, forest.childrenOf) : [];
+              // Every agent under this row, however deep. The orchestrator glyph
+              // shows THIS count (not `kids.length`) so a row nesting a
+              // sub-orchestrator still accounts for the agents below it — the
+              // separate collapsed-only count badge that used to carry the
+              // recursive number was removed as redundant, since on a flat tree
+              // it just repeated the glyph's own number.
+              const descendants = collectDescendants(w.id, forest.childrenOf);
+              const hiddenKids = isCollapsed ? descendants : [];
               const hiddenUrgency = hiddenKids.some((h) => h.status === 'error')
                 ? 'error'
                 : hiddenKids.some((h) => h.status === 'waiting' || h.markedUnread)
@@ -2178,25 +2201,23 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           over them with a bordered pill. */}
                       {isOrchestratorRow && (
                         <span
-                          className="orchestrator-pill"
+                          className={`orchestrator-pill${
+                            isCollapsed && hiddenUrgency ? ` ${hiddenUrgency}` : ''
+                          }`}
                           title={
-                            w.kind === 'orchestrator'
-                              ? 'Orchestrator session — coordinates the agents nested under it'
-                              : `Promoted worktree — coordinates ${kids.length} nested agent${kids.length === 1 ? '' : 's'} while keeping its own branch`
+                            isCollapsed && hiddenKids.length > 0
+                              ? `${hiddenKids.length} hidden agent${hiddenKids.length === 1 ? '' : 's'}: ${hiddenKids
+                                  .map((h) => (h.markedUnread ? `${h.branch} (unread)` : h.branch))
+                                  .join(', ')}`
+                              : w.kind === 'orchestrator'
+                                ? 'Orchestrator session — coordinates the agents nested under it'
+                                : `Promoted worktree — coordinates ${descendants.length} nested agent${descendants.length === 1 ? '' : 's'} while keeping its own branch`
                           }
                         >
                           <OrchestratorIcon />
-                          {kids.length > 0 && <span className="orch-count">{kids.length}</span>}
-                        </span>
-                      )}
-                      {isCollapsed && (
-                        <span
-                          className={`ws-hidden-count${hiddenUrgency ? ` ${hiddenUrgency}` : ''}`}
-                          title={`${hiddenKids.length} hidden agent${hiddenKids.length === 1 ? '' : 's'}: ${hiddenKids
-                            .map((h) => (h.markedUnread ? `${h.branch} (unread)` : h.branch))
-                            .join(', ')}`}
-                        >
-                          {hiddenKids.length}
+                          {descendants.length > 0 && (
+                            <span className="orch-count">{descendants.length}</span>
+                          )}
                         </span>
                       )}
                       {crossRepoChild && (
@@ -2207,17 +2228,11 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           {repoLabel(w.repoPath)}
                         </span>
                       )}
-                      {w.mergedAt && !w.divergedFromBase && !hasMergedPRBadge && (
-                        <span className="merged-pill" title={`Merged into ${w.baseBranch}`}>
-                          merged
-                        </span>
-                      )}
                       {w.releasedAt &&
                         (() => {
-                          // Show one pill per release that contains this
-                          // branch's work. Fall back to the single
-                          // releasedVersion for pre-upgrade records, then to a
-                          // bare "released" when no tag is known.
+                          // Fall back to the single releasedVersion for
+                          // pre-upgrade records, then to a bare "released" when
+                          // no tag is known.
                           const versions =
                             w.releasedVersions && w.releasedVersions.length > 0
                               ? w.releasedVersions
@@ -2227,22 +2242,41 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           if (versions.length === 0) {
                             return (
                               <span className="released-pill" title="Shipped in a published release">
-                                released
+                                <ReleaseTagIcon />
+                                <span className="released-v">released</span>
                               </span>
                             );
                           }
-                          return versions.map((v) => (
-                            <span key={v} className="released-pill" title={`Shipped in release ${v}`}>
-                              {v}
+                          // Only the NEWEST version is shown, with the rest
+                          // collapsed into a dim `+N` — the same treatment
+                          // `.pr-badge.more` already gives extra PRs. A branch
+                          // that shipped in three releases otherwise spent three
+                          // full pills of row width to say one thing, and the
+                          // branch name is what gives up that space.
+                          const newest = versions[versions.length - 1];
+                          const extra = versions.length - 1;
+                          return (
+                            <span
+                              className="released-pill"
+                              title={
+                                extra > 0
+                                  ? `Shipped in releases ${versions.join(', ')}`
+                                  : `Shipped in release ${newest}`
+                              }
+                            >
+                              <ReleaseTagIcon />
+                              <span className="released-v">{newest}</span>
+                              {extra > 0 && <span className="released-more">+{extra}</span>}
                             </span>
-                          ));
+                          );
                         })()}
                       {!!w.unpushedAhead && w.unpushedAhead > 0 && (
                         <span
                           className="unpushed-pill"
                           title={`${w.unpushedAhead} commit${w.unpushedAhead === 1 ? '' : 's'} not yet on origin — ready to push`}
                         >
-                          ↑{w.unpushedAhead}
+                          <UnpushedIcon />
+                          <span className="unpushed-n">{w.unpushedAhead}</span>
                         </span>
                       )}
                       {hasChanges && (
