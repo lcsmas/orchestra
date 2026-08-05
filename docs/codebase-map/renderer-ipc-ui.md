@@ -216,12 +216,39 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   forest root and repo sections never see it). Both section count badges show
   root count, not total rows.
 - **Subtree collapse** (orchestrator + scratch sections): any row with spawned
-  children gets a per-row caret (`.ws-collapse`) that folds its subtree — the
-  depth-first rows are filtered at render time (skip rows deeper than a
-  collapsed node until the walk climbs back). Persists as
+  children gets a **right-aligned** chevron (`.ws-chevron`, `ChevronIcon`) that
+  folds its subtree — the depth-first rows are filtered at render time (skip
+  rows deeper than a collapsed node until the walk climbs back). Persists as
   `orchestra.collapsedOrchestrators` (workspace ids). A collapsed row shows a
   `.ws-hidden-count` pill (hidden descendant count via `collectDescendants`)
   tinted by the most urgent hidden status (error > waiting > running).
+  The chevron is rendered ONLY on rows that have children and lives at the row's
+  right edge, so no left gutter is reserved on leaf rows; `.ws-row-actions`
+  shifts to `right: 26px` on such rows (`.ws-item:has(.ws-chevron)`) so the
+  hover strip does not cover it.
+- **Row layout is a single 24px line.** Name, badges, context and account all
+  share one line, with metadata right-aligned. `.ws-pills` was previously
+  `flex-basis: 100%`, which inside a `flex-wrap: wrap` row ALWAYS starts a new
+  flex line — that one declaration made every git-backed child ~42px. Both the
+  name row and the pills strip are now `nowrap`, so a long branch ellipsises
+  rather than pushing badges to a second line. Rows carrying a
+  `.ws-status-note` are the deliberate exception (two stacked lines,
+  `.ws-item:has(.ws-status-note)` top-aligns the glyph).
+- **Nesting is indent-only** — no `╰─` connector, no rail. `.ws-item.ws-child`
+  uses `calc(12px + min(var(--ws-depth,1), 3) * 16px)`: the `min()` CLAMPS at
+  depth 3 because `flattenSubtree` imposes no depth limit and an unclamped ramp
+  runs the branch name off the edge on a deep sub-orchestrator chain.
+- **Status glyphs** (`WorkspaceStatusGlyph`, exported from `Sidebar.tsx`):
+  outlined lucide-style RING icons, not the old filled `.ws-dot` — `circle-check`
+  (idle), `message-circle-question` (waiting), `circle-x` (error), a CSS
+  `border-top-color: transparent` spinner (running, `.ws-glyph-spin`,
+  compositor-only so dozens of rows cost no main-thread work), bare dot
+  (stopped/hibernated). Shape + colour is two channels, so "done" vs "needs you"
+  survives colour-blindness. A hibernated row NEVER spins even when its recorded
+  status is `running`. Branch selection is pinned by
+  `src/renderer/workspace-status-glyph.test.ts`; the CSS half needs a real drive.
+  `.ws-dot` still exists and is still used by InboxBell, JumpPalette,
+  ResourcesView and the sidebar's archived rows — do not delete it.
 - **Host grouping**: within a repo, rows bucket per machine/sandbox node via
   `host-grouping.ts` `groupByHost` (returns null when all-local → flat list
   byte-identical to pre-sandbox); collapsible `.host-group-header` per node.
@@ -233,8 +260,10 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   freshness ("updated 3m ago"). Absent field → no extra line.
 - Row actions: rename branch (inline), unread bookmark toggle (`UnreadToggle`
   → store `setUnread` → IPC `workspaces:setUnread`; sets `ws.markedUnread`,
-  shown by turning the leading activity dot accent-blue (`.ws-dot.unread`,
-  overrides the status color) + bold name, auto-cleared by the store's
+  shown by turning the leading status glyph accent-blue (`.ws-glyph.unread`,
+  overrides the status colour; name brightens but is NOT bolded — emphasis is
+  carried by colour, since weight-700 rows made the whole list read as
+  shouting), auto-cleared by the store's
   `setActive` when the user next selects the row), archive/unarchive, delete
   (confirm + bulk progress), switch branch (`BranchPicker`), setup gear
   (`RepoScriptsModal`), ☁↑ import-to-sandbox (`onImportToSandbox` `:800`,

@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Orchestra sidebar v4 — C indent, tree gaps, promoted worktrees</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0a0b0d; --bg-2:#101215; --bg-3:#171a20; --bg-4:#1f242c;
+  --border:#23272f; --border-strong:#353b45;
+  --text:#eef1f5; --text-dim:#8f99a9;
+  --accent:#6ea8ff; --green:#5bd68b; --red:#ff6b6b; --yellow:#ffc857;
+  --orchestrator:#7ee787;
+  --font-mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  --ctx:#d9b772; --linear:#8b91f0;
+  --orca-emerald:#10b981; --orca-amber:#f59e0b; --orca-yellow:#eab308; --orca-red:#ef4444;
+  --row-primary:#929292; --row-primary-focus:#fafafa; --row-meta:#747474; --row-time:#656565;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:#07080a;color:var(--text);
+  font-family:"Geist",-apple-system,BlinkMacSystemFont,sans-serif;
+  font-size:13px;line-height:1.45;letter-spacing:.01em;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;}
+.page{max-width:1420px;margin:0 auto;padding:34px 28px 90px}
+h1{font-size:19px;font-weight:600;letter-spacing:-.01em;margin:0 0 6px}
+.sub{color:var(--text-dim);font-size:12.5px;max-width:80ch;margin:0 0 24px;line-height:1.65}
+code{font-family:var(--font-mono);font-size:10.5px;background:var(--bg-3);padding:1px 5px;border-radius:4px;color:var(--ctx)}
+h2.sec{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--text-dim);
+  font-weight:600;margin:36px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.grid{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
+.card{background:var(--bg-2);border:1px solid var(--border);border-radius:12px;overflow:hidden;width:352px;flex:0 0 auto}
+.card.hero{border-color:rgba(126,231,135,.3)}
+.card-hd{padding:11px 14px 10px;border-bottom:1px solid var(--border);background:var(--bg)}
+.card-hd .t{font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:8px}
+.card-hd .d{font-size:10.5px;color:var(--text-dim);margin-top:4px;line-height:1.55}
+.tag{font-family:var(--font-mono);font-size:8.5px;font-weight:600;padding:2px 6px;border-radius:999px;text-transform:uppercase}
+.tag.rec{color:var(--orchestrator);background:rgba(126,231,135,.1);border:1px solid rgba(126,231,135,.35)}
+.tag.alt{color:var(--accent);background:rgba(110,168,255,.1);border:1px solid rgba(110,168,255,.3)}
+.tag.warn{color:#e8b96a;background:rgba(232,185,106,.1);border:1px solid rgba(232,185,106,.35)}
+.sb{background:linear-gradient(180deg,rgba(21,25,31,.85),rgba(18,21,26,.92));padding:6px 0 10px}
+
+.hd{display:flex;justify-content:space-between;align-items:center;padding:7px 12px 5px;
+  font-size:9.5px;text-transform:uppercase;letter-spacing:.075em;color:var(--text-dim);font-weight:500}
+.hd .l{display:flex;align-items:center;gap:7px}
+.hd .l .nm{color:var(--orchestrator);font-weight:500}
+.hd .l .nm.repo{color:var(--text-dim)}
+.hd .ic{color:var(--orchestrator);display:inline-flex}
+.hd .ic.repo{color:var(--text-dim)}
+.hd .r{display:flex;align-items:center;gap:7px}
+.hd .ct{font-variant-numeric:tabular-nums;font-size:10px}
+.hd .add{width:16px;height:16px;padding:0;border:1px solid var(--border);background:transparent;
+  color:var(--text-dim);border-radius:4px;font-size:12px;line-height:1;cursor:pointer}
+.sect + .sect{border-top:1px solid var(--border);margin-top:2px;padding-top:2px}
+
+.row{position:relative;display:flex;align-items:center;gap:7px;
+  padding:0 8px 0 12px;height:24px;border-left:2px solid transparent;cursor:pointer;
+  font-size:11px;line-height:1}
+.row:hover{background:var(--bg-3)}
+.row.active{background:var(--bg-3);border-left-color:var(--accent)}
+
+.st{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:12px;height:12px}
+.st svg{width:12px;height:12px;display:block}
+.st.done{color:var(--orca-emerald)}.st.perm{color:var(--orca-amber)}.st.err{color:var(--orca-red)}
+.spin{display:block;width:10px;height:10px;border-radius:50%;
+  border:2px solid var(--orca-yellow);border-top-color:transparent;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none;border-top-color:var(--orca-yellow)}}
+.idot{display:block;width:8px;height:8px;border-radius:50%;background:#737373;opacity:.4}
+
+.nm{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  font-weight:400;color:var(--row-primary)}
+.row.parent .nm{color:#b8b8b8;font-weight:500}
+.row.active .nm,.row:hover .nm{color:var(--row-primary-focus)}
+
+.meta{flex:0 0 auto;display:flex;align-items:center;gap:6px;
+  font-family:var(--font-mono);font-size:10px;font-variant-numeric:tabular-nums;color:var(--row-meta)}
+.meta .ctx{color:var(--ctx);opacity:.78}
+.meta .acct{color:var(--row-time);font-family:"Geist",sans-serif;font-size:10px}
+.meta .zz{font-size:8px;font-weight:600;letter-spacing:.3px;color:var(--row-time);
+  border:1px solid var(--border);border-radius:3px;padding:0 3px;line-height:11px}
+
+.tick{flex:0 0 auto;display:flex;align-items:center;gap:5px}
+.lin{display:inline-flex;align-items:center;gap:3px}
+.lin svg{width:9px;height:9px;fill:var(--linear);opacity:.9}
+.lin .n{font-family:var(--font-mono);font-size:9px;font-weight:500;color:var(--linear);opacity:.85}
+.pr{display:inline-flex;align-items:center;gap:3px}
+.pr svg{width:10px;height:10px}
+.pr .n{font-family:var(--font-mono);font-size:9px;font-weight:500;opacity:.9}
+.pr.open{color:#3fb950}.pr.open svg{stroke:#3fb950}
+.pr.merged{color:#a371f7}.pr.merged svg{stroke:#a371f7}
+.pr.draft{color:#8b949e}.pr.draft svg{stroke:#8b949e}
+.pr.closed{color:#f85149}.pr.closed svg{stroke:#f85149}
+
+/* orch marker — restyled to match the new flat language */
+.orch{display:inline-flex;align-items:center;gap:3px;flex:0 0 auto;
+  font-family:var(--font-mono);font-size:8.5px;font-weight:600;letter-spacing:.02em;
+  color:var(--orchestrator);opacity:.9}
+.orch svg{width:9px;height:9px;stroke:var(--orchestrator);fill:none;stroke-width:2}
+
+.cv{flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+  width:14px;height:14px;margin-left:1px;color:var(--row-time);cursor:pointer;border-radius:3px}
+.cv svg{width:11px;height:11px;transition:transform .14s cubic-bezier(.3,.8,.3,1)}
+.cv.open svg{transform:rotate(180deg)}
+.row:hover .cv{color:var(--row-primary)}
+
+/* ── variant C indent: no rail, indent alone ── */
+.kids .row{padding-left:28px}
+.kids .row.d2{padding-left:44px}
+
+/* ── TREE GAP options ── */
+.g-a .tree + .tree{margin-top:8px}
+.g-b .tree + .tree{margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.045)}
+.g-c .tree + .tree{margin-top:6px}
+.tree{padding-bottom:1px}
+
+.note{background:rgba(110,168,255,.05);border:1px solid rgba(110,168,255,.2);border-left:2px solid var(--accent);
+  border-radius:0 8px 8px 0;padding:13px 16px;margin:18px 0 0;font-size:11.5px;line-height:1.65;color:#c6cedb}
+.note b{color:var(--text);font-weight:600}
+.note.warn{background:rgba(232,185,106,.05);border-color:rgba(232,185,106,.22);border-left-color:#e8b96a}
+.note.ok{background:rgba(126,231,135,.05);border-color:rgba(126,231,135,.2);border-left-color:var(--orchestrator)}
+table.cmp{width:100%;border-collapse:collapse;margin-top:12px;font-size:11.5px}
+table.cmp th{text-align:left;padding:8px 12px;background:var(--bg-2);color:var(--text-dim);
+  font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border)}
+table.cmp td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:top;line-height:1.55}
+table.cmp td:first-child{color:var(--text-dim);white-space:nowrap}
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>v4 · C indent, tree gaps, and the promoted-worktree path</h1>
+<p class="sub">
+Your question about promoted workspaces turned up something I had wrong. Short answer: <b>the changes work,
+but my mockups only ever showed half the sidebar.</b> Details in section 3 — worth reading before you approve.
+</p>
+
+<!-- ════════ 1 · TREE GAP ════════ -->
+<h2 class="sec">1 · Gap between orchestrator trees</h2>
+<p class="sub" style="margin-bottom:14px">
+There is <b>no separation today</b> — <code>renderSpawnTreeRows</code> flatMaps every tree into one
+undifferentiated row list (<code>Sidebar.tsx:1345</code>), so a new root is distinguished only by lacking the
+child indent. Three options:
+</p>
+<div class="grid">
+
+  <div class="card g-a hero">
+    <div class="card-hd"><div class="t"><span class="tag rec">Gap A</span> 8px space — recommended</div>
+      <div class="d">Pure whitespace. Groups read as separate without adding another line to the visual noise.</div></div>
+    <div class="sb">
+      <div class="hd"><div class="l"><span class="ic"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3M12 12V8"/></svg></span><span class="nm">Orchestrators</span></div><div class="r"><span class="ct">2</span><button class="add">+</button></div></div>
+      <div class="tree">
+        <div class="row parent"><span class="st"><span class="idot"></span></span><span class="nm">bloc2-investigation-nmc-migration</span>
+          <span class="meta"><span class="ctx">666k</span><span class="acct">perso</span></span>
+          <span class="cv open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></span></div>
+        <div class="kids">
+          <div class="row"><span class="st done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg></span><span class="nm">nmc-298-create-mc-user</span>
+            <span class="tick"><span class="lin"><svg viewBox="0 0 100 100"><path d="M1.2 61.5 38.5 98.8a50 50 0 0 1-37.3-37.3M0 46.6l53.4 53.4a50 50 0 0 0 8.6-1L1 38.6a50 50 0 0 0-1 8m4.5-16.6 66.1 66.1a50 50 0 0 0 6.4-3.3L7.8 23.6A50 50 0 0 0 4.5 30m8-13.5a50 50 0 1 0 71 71z"/></svg><span class="n">298</span></span></span>
+            <span class="meta"><span class="ctx">254k</span></span></div>
+          <div class="row"><span class="st"><span class="idot"></span></span><span class="nm">nmc-298-mc-origin-customer-info</span>
+            <span class="meta"><span class="zz">zZ</span><span class="ctx">207k</span></span></div>
+        </div>
+      </div>
+      <div class="tree">
+        <div class="row parent"><span class="st"><span class="spin"></span></span><span class="nm">checkout-flow-v2</span>
+          <span class="meta"><span class="ctx">412k</span><span class="acct">perso</span></span>
+          <span class="cv open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></span></div>
+        <div class="kids">
+          <div class="row active"><span class="st"><span class="spin"></span></span><span class="nm">running-checkout-regression</span><span class="meta"><span class="ctx">88k</span></span></div>
+          <div class="row"><span class="st perm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></span><span class="nm">validating-eu-promo-codes</span><span class="meta"><span class="ctx">31k</span></span></div>
+          <div class="row"><span class="st err"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span><span class="nm">reviewing-tax-calculation</span><span class="meta"><span class="ctx">9k</span></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card g-b">
+    <div class="card-hd"><div class="t"><span class="tag alt">Gap B</span> 8px + hairline</div>
+      <div class="d">Adds a 4.5%-white rule. Unambiguous, but with many orchestrators the sidebar starts
+      to look ruled.</div></div>
+    <div class="sb">
+      <div class="hd"><div class="l"><span class="ic"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3M12 12V8"/></svg></span><span class="nm">Orchestrators</span></div><div class="r"><span class="ct">2</span><button class="add">+</button></div></div>
+      <div class="tree">
+        <div class="row parent"><span class="st"><span class="idot"></span></span><span class="nm">bloc2-investigation-nmc-migration</span>
+          <span class="meta"><span class="ctx">666k</span><span class="acct">perso</span></span>
+          <span class="cv open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></span></div>
+        <div class="kids">
+          <div class="row"><span class="st done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg></span><span class="nm">nmc-298-create-mc-user</span><span class="meta"><span class="ctx">254k</span></span></div>
+          <div class="row"><span class="st"><span class="idot"></span></span><span class="nm">nmc-298-mc-origin-customer-info</span><span class="meta"><span class="zz">zZ</span><span class="ctx">207k</span></span></div>
+        </div>
+      </div>
+      <div class="tree">
+        <div class="row parent"><span class="st"><span class="spin"></span></span><span class="nm">checkout-flow-v2</span>
+          <span class="meta"><span class="ctx">412k</span><span class="acct">perso</span></span>
+          <span class="cv open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></span></div>
+        <div class="kids">
+          <div class="row active"><span class="st"><span class="spin"></span></span><span class="nm">running-checkout-regression</span><span class="meta"><span class="ctx">88k</span></span></div>
+          <div class="row"><span class="st perm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></span><span class="nm">validating-eu-promo-codes</span><span class="meta"><span class="ctx">31k</span></span></div>
+          <div class="row"><span class="st err"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span><span class="nm">reviewing-tax-calculation</span><span class="meta"><span class="ctx">9k</span></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card g-c">
+    <div class="card-hd"><div class="t"><span class="tag alt">Gap C</span> 6px — subtle</div>
+      <div class="d">Just enough to break the run. If you find A too airy once there are 5+ trees.</div></div>
+    <div class="sb">
+      <div class="hd"><div class="l"><span class="ic"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3M12 12V8"/></svg></span><span class="nm">Orchestrators</span></div><div class="r"><span class="ct">3</span><button class="add">+</button></div></div>
+      <div class="tree">
+        <div class="row parent"><span class="st"><span class="idot"></span></span><span class="nm">bloc2-investigation-nmc</span>
+          <span class="meta"><span class="ctx">666k</span></span>
+          <span class="cv open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></span></div>
+        <div class="kids"><div class="row"><span class="st done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg></span><span class="nm">nmc-298-create-mc-user</span><span class="meta"><span class="ctx">254k</span></span></div></div>
+      </div>
+      <div class="tree">
+        <div class="row parent"><span class="st"><span class="spin"></span></span><span class="nm">checkout-flow-v2</span>
+          <span class="meta"><span class="ctx">412k</span></span>
+          <span class="cv open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></span></div>
+        <div class="kids"><div class="row active"><span class="st"><span class="spin"></span></span><span class="nm">running-checkout-regression</span><span class="meta"><span class="ctx">88k</span></span></div>
+          <div class="row"><span class="st perm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></span><span class="nm">validating-eu-promo</span><span class="meta"><span class="ctx">31k</span></span></div></div>
+      </div>
+      <div class="tree">
+        <div class="row parent"><span class="st done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg></span><span class="nm">design-system-refresh</span>
+          <span class="meta"><span class="ctx">120k</span></span>
+          <span class="cv open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></span></div>
+        <div class="kids"><div class="row"><span class="st done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg></span><span class="nm">token-audit</span><span class="meta"><span class="ctx">18k</span></span></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 2 · PROMOTED ════════ -->
+<h2 class="sec">2 · The promoted-worktree path (what I'd missed)</h2>
+<div class="grid">
+  <div class="card hero g-a">
+    <div class="card-hd"><div class="t"><span class="tag rec">Repo section</span> Promoted worktree + children</div>
+      <div class="d">A promoted worktree lives in <b>its own repo section</b>, not under Orchestrators — it
+      keeps full git chrome (branch, PR, Linear, diff) <i>and</i> gains an <code>orch N</code> marker, with its
+      children nested beneath it right there. Same 24px rows, C indent, right chevron.</div></div>
+    <div class="sb">
+      <div class="sect">
+        <div class="hd"><div class="l"><span class="ic"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3M12 12V8"/></svg></span><span class="nm">Orchestrators</span></div><div class="r"><span class="ct">1</span><button class="add">+</button></div></div>
+        <div class="tree">
+          <div class="row parent"><span class="st"><span class="idot"></span></span><span class="nm">bloc2-investigation-nmc-migration</span>
+            <span class="meta"><span class="ctx">666k</span><span class="acct">perso</span></span>
+            <span class="cv open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></span></div>
+          <div class="kids">
+            <div class="row"><span class="st done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg></span><span class="nm">nmc-298-create-mc-user</span>
+              <span class="tick"><span class="lin"><svg viewBox="0 0 100 100"><path d="M1.2 61.5 38.5 98.8a50 50 0 0 1-37.3-37.3M0 46.6l53.4 53.4a50 50 0 0 0 8.6-1L1 38.6a50 50 0 0 0-1 8m4.5-16.6 66.1 66.1a50 50 0 0 0 6.4-3.3L7.8 23.6A50 50 0 0 0 4.5 30m8-13.5a50 50 0 1 0 71 71z"/></svg><span class="n">298</span></span></span>
+              <span class="meta"><span class="ctx">254k</span></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="sect">
+        <div class="hd"><div class="l"><span class="ic repo"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></span><span class="nm repo">orchestra</span></div><div class="r"><span class="ct">4</span><button class="add">+</button></div></div>
+        <div class="tree">
+          <div class="row parent"><span class="st"><span class="spin"></span></span><span class="nm">sidebar-density-status-glyphs</span>
+            <span class="tick"><span class="orch"><svg viewBox="0 0 24 24" stroke-linecap="round"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3M12 12V8"/></svg><span>3</span></span>
+              <span class="pr draft"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 9v12M18 9a9 9 0 0 1-9 9"/></svg><span class="n">318</span></span></span>
+            <span class="meta"><span class="ctx">92k</span><span class="acct">perso</span></span>
+            <span class="cv open"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></span></div>
+          <div class="kids">
+            <div class="row"><span class="st done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg></span><span class="nm">geist-font-bundling</span>
+              <span class="tick"><span class="pr merged"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 9v12M18 9a9 9 0 0 1-9 9"/></svg><span class="n">319</span></span></span>
+              <span class="meta"><span class="ctx">34k</span></span></div>
+            <div class="row"><span class="st perm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></span><span class="nm">status-glyph-rings</span>
+              <span class="meta"><span class="ctx">21k</span></span></div>
+            <div class="row d2"><span class="st"><span class="idot"></span></span><span class="nm">ring-a11y-contrast</span>
+              <span class="meta"><span class="ctx">7k</span></span></div>
+          </div>
+        </div>
+        <div class="tree">
+          <div class="row"><span class="st"><span class="idot"></span></span><span class="nm">fix-diff-pane-scroll</span>
+            <span class="tick"><span class="pr open"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 9v12M18 9a9 9 0 0 1-9 9"/></svg><span class="n">315</span></span></span>
+            <span class="meta"><span class="ctx">44k</span></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><div class="t"><span class="tag warn">Marker</span> <code>orch</code> pill — before &amp; after</div>
+      <div class="d">Today it's a bordered green pill, which in the new flat language would be the loudest
+      thing on the row. Restyled to a glyph + count, matching how Linear and PR now read.</div></div>
+    <div class="sb" style="padding:14px 12px">
+      <div style="font-size:9.5px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Today</div>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:16px;padding-left:2px">
+        <span style="display:inline-flex;align-items:center;padding:0 5px;border-radius:999px;font-size:9px;
+          font-weight:600;letter-spacing:.2px;color:#7ee787;background:rgba(126,231,135,.1);
+          border:1px solid rgba(126,231,135,.35);line-height:15px">orch 3</span>
+        <span style="display:inline-flex;align-items:center;padding:0 5px;border-radius:999px;font-size:9px;
+          font-weight:600;color:var(--text-dim);background:var(--bg-3);border:1px solid var(--border);line-height:15px">metarepo</span>
+      </div>
+      <div style="font-size:9.5px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Proposed</div>
+      <div style="display:flex;align-items:center;gap:7px;padding-left:2px">
+        <span class="orch"><svg viewBox="0 0 24 24" stroke-linecap="round"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3M12 12V8"/></svg><span>3</span></span>
+        <span class="lin"><svg viewBox="0 0 100 100"><path d="M1.2 61.5 38.5 98.8a50 50 0 0 1-37.3-37.3M0 46.6l53.4 53.4a50 50 0 0 0 8.6-1L1 38.6a50 50 0 0 0-1 8m4.5-16.6 66.1 66.1a50 50 0 0 0 6.4-3.3L7.8 23.6A50 50 0 0 0 4.5 30m8-13.5a50 50 0 1 0 71 71z"/></svg><span class="n">298</span></span>
+        <span class="pr draft"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 9v12M18 9a9 9 0 0 1-9 9"/></svg><span class="n">318</span></span>
+      </div>
+      <div style="margin-top:16px;font-size:10.5px;color:var(--text-dim);line-height:1.6">
+        The network glyph reuses the Orchestrators section icon, so the same shape means "orchestrator"
+        in both places. Count omitted when zero.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 3 · ANSWER ════════ -->
+<h2 class="sec">3 · Does this all work for promoted workspaces?</h2>
+<div class="note warn">
+  <b>I was wrong about this, and it's worth stating plainly.</b> I assumed a promoted workspace showed up in the
+  Orchestrators section like a scratch orchestrator does. It does not. The filter is
+  <code>forest.roots.filter(w =&gt; w.kind === 'orchestrator')</code> (<code>Sidebar.tsx:1073</code>) — a
+  <i>kind</i> check, not <code>canOrchestrate</code> — and <code>isScratchLike()</code> is false for
+  <code>'worktree'</code> whatever its flag. So a promoted worktree stays in <b>its own repo section</b>, with its
+  children nested there, and appears in exactly one place. Everything I mocked up until now was the
+  Orchestrators path only.
+</div>
+<table class="cmp">
+  <tr><th>Change</th><th>Holds for promoted worktrees?</th></tr>
+  <tr><td>24px single-line rows</td>
+    <td><b>Yes, and it helps more here.</b> Repo-section rows carry the most metadata (branch + diff + PR +
+      Linear + CI + orch), so they're the ones the <code>flex-basis:100%</code> wrap hurts worst.</td></tr>
+  <tr><td>Geist + grey ramp</td><td><b>Yes</b> — global, path-independent.</td></tr>
+  <tr><td>Ring status glyphs</td><td><b>Yes</b> — <code>.ws-dot</code> is rendered identically by both paths.</td></tr>
+  <tr><td>Right chevron</td>
+    <td><b>Yes</b>, but it must be applied to the repo-row renderer too — that's a <i>second</i> code path
+      (<code>Sidebar.tsx:1950+</code>), not the same function. Easy to miss and ship half-done.</td></tr>
+  <tr><td>C indent (no rail)</td>
+    <td><b>Yes</b> — both paths use the same <code>--ws-depth</code> mechanism
+      (<code>styles.css:1342</code>), so one formula change covers both.</td></tr>
+  <tr><td>Dropping the repo-tag pill</td>
+    <td><b>Careful.</b> In repo sections that pill marks a <i>cross-repo child</i>
+      (<code>crossRepoChild</code>, <code>Sidebar.tsx:2139</code>) — real information, not redundancy.
+      I'd keep it there and drop it only under Orchestrators.</td></tr>
+  <tr><td>Tree gap</td>
+    <td><b>Applies to both</b>, since repo sections also stack multiple roots.</td></tr>
+</table>
+
+<div class="note ok">
+  <b>One genuine improvement this surfaces:</b> a promoted worktree's only orchestrator cue is the
+  <code>orch</code> pill — there's no marker under the Orchestrators section at all
+  (<code>.orchestrator-pill</code> renders only on repo rows, <code>Sidebar.tsx:2117</code>). So the two kinds of
+  orchestrator look nothing alike today. Reusing the network glyph in both places is a small consistency win
+  the redesign gets almost for free.
+</div>
+<div class="note">
+  <b>Also worth knowing:</b> depth is <b>unbounded</b> (<code>flattenSubtree</code>,
+  <code>Sidebar.tsx:655</code>) — sub-orchestrators nest arbitrarily deep, and today's 16px-per-level formula
+  has no clamp, so a deep chain runs the name off the edge. The <code>ring-a11y-contrast</code> row above is
+  depth 2. With C's larger step I'd clamp the indent after ~3 levels; I'll handle that in the build.
+</div>
+<div class="note">
+  <b>Not verified:</b> still static mockups with invented rows — I have not driven the real sidebar. The
+  <code>.ws-row-actions</code> / chevron collision flagged last round remains predicted from CSS, not observed.
+</div>
+
+</div>
+</body>
+</html>

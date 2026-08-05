@@ -21,6 +21,17 @@
  * unreliably across restarts). Shipping the variable font (weights 100-900 in
  * one file per style) guarantees the UI typography everywhere. OFL-1.1 —
  * see Inter-OFL.txt. */
+/* Geist (SIL OFL 1.1 — see assets/fonts/Geist-LICENSE.txt) is the UI face.
+   Narrower than Inter at the same size, so more branch name fits in a sidebar
+   row before it ellipsizes, and it reads lighter at the same weight. Inter is
+   kept below as the fallback and for anything that still asks for it. */
+@font-face {
+  font-family: "Geist";
+  src: url("./assets/fonts/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
 @font-face {
   font-family: "Inter";
   src: url("./assets/fonts/InterVariable.woff2") format("woff2");
@@ -115,11 +126,18 @@ html, body, #root {
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
-  font-family: "Inter", "InterVariable", -apple-system, BlinkMacSystemFont,
+  font-family: "Geist", "Inter", "InterVariable", -apple-system, BlinkMacSystemFont,
     "SF Pro Text", "Segoe UI", Roboto, Ubuntu, Cantarell, sans-serif;
   font-size: 13px;
   line-height: 1.45;
+  /* NOTE: cv11/ss01/ss03 are Inter-specific stylistic sets and mean nothing in
+     Geist — a font ignores feature tags it does not define, so they are inert
+     rather than harmful, and they still apply if we ever fall back to Inter.
+     calt/liga/kern are generic and wanted in both. */
   font-feature-settings: "cv11", "ss01", "ss03", "calt", "liga", "kern";
+  /* Geist is drawn slightly tight for UI use at small sizes; Orca ships the
+     same +0.01em. Measured: keeps 11px branch names from looking cramped. */
+  letter-spacing: 0.01em;
   font-variant-ligatures: common-ligatures contextual;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -1312,14 +1330,23 @@ input:focus, textarea:focus, select:focus {
   margin-left: auto;
 }
 @keyframes repo-sync-spin { to { transform: rotate(360deg); } }
+/* A workspace row is ONE line, 24px tall. Everything the row shows — name,
+   badges, context, account — sits on that single line, with the metadata
+   right-aligned. It used to be two lines for any git-backed child, because the
+   badge strip carried `flex-basis:100%` inside a wrapping flex row (a 100%
+   basis always starts a new flex line). Removing that wrap is what took a
+   child row from ~42px to 24px. `align-items: center` (was flex-start) is what
+   lets a fixed-height row centre its glyph without per-element margin-top
+   nudges. */
 .ws-item {
   position: relative; /* anchor for the floating .ws-row-actions pill */
-  padding: 4px 14px;
+  padding: 0 8px 0 12px;
+  min-height: 24px;
   border-left: 2px solid transparent;
   cursor: pointer;
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  gap: 7px;
 }
 .ws-item:hover { background: var(--bg-3); }
 .ws-item.active {
@@ -1336,43 +1363,61 @@ input:focus, textarea:focus, select:focus {
 .repo-section.repo-dragging { opacity: 0.5; }
 .repo-section.repo-drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
 .repo-section.repo-drop-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
-/* Orchestrator → spawned-children tree. A child row is indented by its depth
-   (set inline as --ws-depth) and led by a connector glyph, so the agents an
-   orchestrator spawned read as nested beneath it. */
+/* Orchestrator → spawned-children tree. Nesting is carried by INDENT ALONE —
+   no connector glyph, no vertical rail. The old `╰─` was a text character in
+   the flex flow, so it needed margin/line-height fudging to sit right and it
+   consumed width on every child.
+
+   The indent CLAMPS at depth 3. `flattenSubtree` imposes no depth limit
+   (sub-orchestrators nest arbitrarily), and an unclamped 16px-per-level ramp
+   runs the branch name off the right edge on a deep chain. Past level 3 the
+   rows stop stepping right; they are still ordered depth-first under their
+   parent, and the chevron on each ancestor is what makes the structure
+   navigable. min() does the clamping without needing a JS cap. */
 .ws-item.ws-child {
-  padding-left: calc(14px + var(--ws-depth, 1) * 16px);
+  padding-left: calc(12px + min(var(--ws-depth, 1), 3) * 16px);
 }
-.ws-tree-connector {
+/* Right-edge collapse control. Rendered ONLY on rows that have children, which
+   is the point: a left-side caret had to reserve its width on every row —
+   including leaves that can never collapse — pushing all content right. Here
+   the space is consumed only where the control exists, so every row's status
+   glyph starts at the same x. */
+.ws-chevron {
   flex-shrink: 0;
-  margin-top: 2px;
-  color: var(--text-dim);
-  font-size: 11px;
-  line-height: 1;
-  opacity: 0.55;
-  user-select: none;
-}
-/* Per-row collapse caret in the orchestrator section. Every row renders one
-   (a spacer when the row has no children) so the status dots stay aligned. */
-.ws-collapse {
-  flex-shrink: 0;
-  width: 10px;
-  margin: 3px 0 0 -4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 22px; /* nearly the full row: a bigger hit target than it looks */
+  margin: 0 -2px 0 1px;
   padding: 0;
   background: none;
   border: none;
+  border-radius: 3px;
   color: var(--text-dim);
-  font-size: 9px;
-  line-height: 1;
   cursor: pointer;
   user-select: none;
+  opacity: 0.75;
 }
-.ws-collapse .caret {
-  display: inline-block;
-  transition: transform 0.12s ease;
+.ws-chevron:hover { color: var(--text); opacity: 1; background: var(--hover-bg); }
+.ws-chevron:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
+  color: var(--text);
+  opacity: 1;
 }
-.ws-collapse .caret.open { transform: rotate(90deg); }
-.ws-collapse:hover .caret { color: var(--text); }
-.ws-collapse.spacer { cursor: inherit; }
+.ws-chevron-svg {
+  transition: transform 0.14s var(--ease);
+  transform: rotate(-90deg); /* collapsed: points left */
+}
+.ws-chevron-svg.open { transform: rotate(0deg); } /* expanded: points down */
+@media (prefers-reduced-motion: reduce) {
+  .ws-chevron-svg { transition: none; }
+}
+/* The hover action strip is absolutely positioned at the row's right edge, so
+   it would land ON TOP of the chevron. Shift it left by the chevron's width on
+   rows that have one, so the two coexist instead of overlapping. */
+.ws-item:has(.ws-chevron) .ws-row-actions { right: 26px; }
 /* Count pill on a collapsed orchestrator row: how many spawned agents are
    folded away. Tinted by the most urgent hidden status so a hidden agent that
    errored or is waiting for input still shows through the fold. */
@@ -1393,25 +1438,36 @@ input:focus, textarea:focus, select:focus {
 .ws-hidden-count.running { color: var(--green); border-color: var(--green); }
 .ws-hidden-count.waiting { color: var(--yellow); border-color: var(--yellow); }
 .ws-hidden-count.error { color: var(--red); border-color: var(--red); }
-/* Coordinator marker on a sidebar row. Green, matching the toolbar's
-   .branch-chip.orchestrator and the Orchestrators section heading, so a
-   promoted worktree reads as a coordinator while it sits in its repo section
-   alongside ordinary worktrees. Same geometry as .repo-tag-pill — this is not a
-   new pill shape, only a new tint. */
+/* Coordinator marker on a sidebar row — a PROMOTED WORKTREE's only cue that it
+   coordinates other agents (it stays in its repo section and never appears in
+   the pinned Orchestrators list, so nothing else marks it).
+
+   Now the SAME network glyph the Orchestrators section header uses, so one
+   shape means "orchestrator" everywhere in the sidebar. Drawn as a bare
+   glyph + count rather than a bordered pill: beside the flat PR/Linear badges
+   a filled green pill was the loudest thing on the row, which inverted the
+   hierarchy — the branch name should lead. */
 .orchestrator-pill {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  padding: 0 5px;
-  margin-left: 6px;
-  border-radius: 999px;
+  gap: 3px;
+  padding: 0;
+  margin-left: 0;
+  border: none;
+  background: none;
+  border-radius: 0;
   font-size: 9px;
   font-weight: 600;
-  letter-spacing: 0.2px;
+  letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
-  color: #7ee787;
-  background: rgba(126, 231, 135, 0.1);
-  border: 1px solid rgba(126, 231, 135, 0.35);
+  color: var(--orchestrator);
+  opacity: 0.9;
+}
+.orchestrator-pill svg { width: 10px; height: 10px; }
+.orchestrator-pill .orch-count {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
 }
 /* Re-parent drop feedback. A reorder drop draws an insertion LINE between rows
    (.drop-before/.drop-after above); an attach drop lands ON the row, so it gets
@@ -1440,6 +1496,13 @@ input:focus, textarea:focus, select:focus {
   background: var(--bg-3);
   border: 1px solid var(--border);
 }
+/* ── Status DOT ─────────────────────────────────────────────────────────────
+   The sidebar workspace rows moved to the ring glyphs below, but this dot is
+   still the status marker in the Inbox (InboxBell), the jump palette
+   (JumpPalette), the Resources process table (ResourcesView) and the sidebar's
+   own ARCHIVED rows. Those are dense list contexts where a 12px ring would be
+   heavier than the line deserves — keep the dot here rather than deleting it
+   with the sidebar rewrite. */
 .ws-dot {
   width: 8px; height: 8px; border-radius: 50%;
   flex-shrink: 0;
@@ -1454,20 +1517,68 @@ input:focus, textarea:focus, select:focus {
 .ws-dot.waiting { background: var(--yellow); box-shadow: 0 0 8px rgba(255, 200, 87, 0.55); }
 .ws-dot.error { background: var(--red); box-shadow: 0 0 8px rgba(255, 107, 107, 0.5); }
 .ws-dot.stopped { background: #555; opacity: 0.6; }
-
-/* Manual "unread" tag — a come-back-later bookmark the user sets by hand.
-   The row reads like unread mail: the leading activity dot turns accent-blue
-   (overriding the status color) plus a brighter, bolder name. Cleared when
-   the row is selected. */
 .ws-dot.unread {
   background: var(--accent);
   box-shadow: 0 0 6px rgba(110, 168, 255, 0.6);
   opacity: 1;
   animation: none;
 }
+
+/* ── Status glyphs ──────────────────────────────────────────────────────────
+   Outlined RING icons, not filled dots. A ring plus an inner shape carries two
+   channels — form AND colour — so "finished" and "needs your input" stay
+   distinguishable to someone who cannot separate green from amber. Five
+   same-shaped dots in five hues could not do that. Quiet states (stopped,
+   hibernated) stay as plain dots: there is no shape worth drawing for them. */
+.ws-glyph {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+}
+.ws-glyph svg { width: 12px; height: 12px; display: block; }
+.ws-glyph-idle { color: var(--green); }
+.ws-glyph-waiting { color: var(--yellow); }
+.ws-glyph-error { color: var(--red); }
+/* Dot states — rendered as an empty span, so the dot IS the element. */
+.ws-glyph-stopped::before,
+.ws-glyph.hibernated::before {
+  content: "";
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  opacity: 0.4;
+}
+/* Running: a CSS ring with a transparent top edge, spun by a compositor-only
+   transform — no SVG and no main-thread work, which matters when dozens of
+   rows animate at once. */
+.ws-glyph-spin {
+  display: block;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--green);
+  border-top-color: transparent;
+  animation: ws-glyph-spin 0.8s linear infinite;
+}
+@keyframes ws-glyph-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  /* Restore the top edge when the animation is off: a FROZEN ring with a
+     transparent quarter reads as a broken/clipped glyph, not as "working". */
+  .ws-glyph-spin { animation: none; border-top-color: var(--green); }
+}
+/* Manual "unread" tag — a come-back-later bookmark the user sets by hand.
+   The row reads like unread mail: the status glyph turns accent-blue
+   (overriding the status colour) plus a brighter name. Cleared when the row is
+   selected. Weight is NOT used for emphasis any more — at 400 vs 700 the list
+   looked like every row was shouting; colour alone carries it. */
+.ws-glyph.unread { color: var(--accent); }
+.ws-glyph.unread .ws-glyph-spin { border-color: var(--accent); border-top-color: transparent; }
+.ws-glyph.unread::before { background: var(--accent); opacity: 1; }
 .ws-item.unread .ws-name {
   color: var(--text);
-  font-weight: 700;
+  font-weight: 500;
 }
 /* Bookmark toggle stays tinted while the tag is on, so the hover strip shows
    which button un-tags the row. */
@@ -1718,23 +1829,71 @@ input:focus, textarea:focus, select:focus {
   width: 9px;
   height: 9px;
 }
+
+/* ── Flat badges on sidebar rows ────────────────────────────────────────────
+   Inside a workspace row the PR / Linear / CI badges drop their pill chrome
+   (border + background + rounded track) and render as a bare glyph + number.
+   Three bordered pills in a row competed with each other and with the branch
+   name; as flat marks they group quietly and colour alone carries the state.
+   Scoped to `.ws-item` so the same components keep their pill treatment
+   wherever else they appear. */
+.ws-item .pr-badge {
+  border: none;
+  background: none;
+  padding: 0;
+  height: auto;
+  gap: 3px;
+  font-size: 9px;
+}
+.ws-item .pr-badge:hover { background: none; opacity: 1; }
+.ws-item .pr-badge svg { width: 10px; height: 10px; }
+.ws-item .ws-pills.mini .pr-badge { height: auto; padding: 0; }
+/* An OPEN pr is the unremarkable default, so it sits at the muted tier; the
+   states that want attention (draft/closed/error) keep their own colour. */
+.ws-item .pr-badge.open { color: #3fb950; }
+.ws-item .ci-badge {
+  border: none;
+  background: none;
+  padding: 0;
+  height: auto;
+  font-size: 9px;
+}
+.ws-item .ci-badge:hover { background: none; }
 .ws-body {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
+  justify-content: center;
 }
+/* A row carrying an agent status note is TWO stacked lines, so it cannot be
+   24px. Give it a taller fixed height and top-align its glyph, otherwise
+   `align-items: center` on the row floats the glyph to the middle of a
+   two-line body and it stops lining up with the branch name. */
+.ws-item:has(.ws-status-note) {
+  align-items: flex-start;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+.ws-item:has(.ws-status-note) .ws-glyph,
+.ws-item:has(.ws-status-note) .ws-chevron { margin-top: 1px; }
+/* NOWRAP is load-bearing: with `flex-wrap: wrap` any child that cannot fit —
+   or that declares `flex-basis: 100%` — silently starts a second line and the
+   row grows. Keeping it on one line means overflow ellipsises the NAME (which
+   has a tooltip) instead of reflowing the badges out of view. */
 .ws-name-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 6px;
   min-width: 0;
-  flex-wrap: wrap;
-  row-gap: 4px;
+  flex-wrap: nowrap;
 }
 .ws-name {
-  font-weight: 500;
+  /* 400, not 500. Emphasis is carried by COLOUR (dim grey → near-white when
+     active/hovered) rather than weight; at 500/700 every row read as shouting,
+     which is what made the list feel heavy. */
+  font-weight: 400;
   font-size: 12px;
   /* Single line, ellipsised. Long branch names truncate rather than wrapping to
    * three ragged lines — the full name is always on the `title` tooltip. This
@@ -1995,16 +2154,20 @@ input:focus, textarea:focus, select:focus {
   border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-/* Status pills (merged / released / unpushed / diff / setup). Wrapped in their
-   own full-width flex line so they always drop below the name line rather than
-   crowding in beside it. Collapses to nothing when the workspace has no pills,
-   so a clean row stays a single line. */
+/* Status pills (merged / released / unpushed / diff / setup / PR / Linear / CI).
+   These STAY ON THE NAME LINE, right-aligned after the branch name.
+
+   They previously carried `flex-basis: 100%`, which in a `flex-wrap: wrap` row
+   ALWAYS starts a new flex line — that single declaration is what made every
+   git-backed row two lines tall (~42px vs 24px). Now the row does not wrap at
+   all and the pills are a `flex: 0 0 auto` cluster, so a long branch name
+   ellipsises instead of shoving the badges onto a second line. */
 .ws-pills {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 5px;
-  flex-basis: 100%;
+  flex: 0 0 auto;
   min-width: 0;
 }
 .ws-pills:empty { display: none; }
@@ -2047,6 +2210,47 @@ input:focus, textarea:focus, select:focus {
 .ws-name.ws-name-tight {
   flex: 0 1 auto;
 }
+/* Push the metadata cluster to the row's right edge. The name takes the slack
+   (`margin-left:auto` on the first metadata element), so context/account/badges
+   form a right-aligned column that scans vertically down the list instead of
+   floating at a different x on every row depending on name length. */
+.ws-item .ws-pills + .ws-hibernated,
+.ws-item .ws-pills:first-of-type,
+.ws-item .ws-context,
+.ws-item .ws-login { flex: 0 0 auto; }
+.ws-item .ws-name + .ws-pills,
+.ws-item .ws-name + .ws-hibernated,
+.ws-item .ws-name + .ws-context,
+.ws-item .ws-name + .ws-login,
+.ws-item .ws-name-input + .ws-pills { margin-left: auto; }
+/* ── Row typography: the grey ramp ──────────────────────────────────────────
+   Row text is NEVER pure white at rest. A resting row sits at a muted grey and
+   lifts toward full brightness only when active or hovered, so the eye lands
+   on the row you are pointing at rather than on all forty at once.
+
+   Dimming is done with `color`, deliberately NOT `opacity`: an opacity rule on
+   the row would fade the status glyph and the PR/Linear badges too — exactly
+   the signals that must stay legible. Colour tints only the text. */
+.ws-item .ws-name { color: #9aa3ae; }
+.ws-item.ws-child .ws-name { color: #8d95a1; }
+.ws-item:hover .ws-name,
+.ws-item.active .ws-name { color: var(--text); }
+/* Metadata sits a further step down the ramp, so name > badges > context reads
+   as a hierarchy inside a single 24px line. */
+.ws-item .ws-context { opacity: 0.82; }
+.ws-item .account-badge.inline { opacity: 0.75; }
+.ws-item:hover .ws-context,
+.ws-item.active .ws-context,
+.ws-item:hover .account-badge.inline,
+.ws-item.active .account-badge.inline { opacity: 1; }
+
+/* ── Separation between orchestrator trees ──────────────────────────────────
+   Each tree is wrapped in `.ws-tree` (see renderSpawnTreeRows) purely so
+   consecutive trees have an element boundary to hang this gap on. Without it
+   one orchestrator's last child butts straight against the next
+   orchestrator's root and the two subtrees read as one list. */
+.ws-tree + .ws-tree { margin-top: 8px; }
+
 /* Per-row delete spinner (same look as the setup-banner spinner) and the
    dimmed/non-interactive state of a worktree being removed. */
 .ws-item.deleting { opacity: 0.55; pointer-events: none; }

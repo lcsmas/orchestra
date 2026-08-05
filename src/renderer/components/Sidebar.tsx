@@ -124,6 +124,18 @@ export function ZapIcon() {
   );
 }
 
+function ChevronIcon({ open }: { open: boolean }) {
+  // Lucide `chevron-down`, rotated by CSS so the open/closed transition
+  // animates. Points down when expanded, left when collapsed.
+  return (
+    <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor"
+      strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round"
+      className={`ws-chevron-svg${open ? ' open' : ''}`} aria-hidden="true" focusable="false">
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
 export function OrchestratorIcon() {
   // Lucide `network` — a node branching to two children, evoking an
   // orchestrator delegating to the agents it spawns.
@@ -136,6 +148,104 @@ export function OrchestratorIcon() {
       <path d="M12 8v4M12 12H5v4M12 12h7v4" />
     </svg>
   );
+}
+
+/** Status marker for a workspace row.
+ *
+ * Replaces the old 8px filled `.ws-dot` circle. Outlined RING glyphs carry two
+ * channels — shape AND colour — so "done" and "needs you" stay distinguishable
+ * without relying on green-vs-amber, which a colour-blind user cannot use. The
+ * terminal/quiet states stay as plain dots because there is no shape worth
+ * drawing for them.
+ *
+ * `running` is a CSS ring rather than an SVG: a `border-top-color: transparent`
+ * circle spun by a compositor-only transform costs no main-thread work, which
+ * matters with dozens of rows visible. See `.ws-glyph-spin` in styles.css for
+ * the reduced-motion handling.
+ *
+ * Both render paths (the pinned spawn-tree rows and the repo-section rows) use
+ * this one component, so the two paths cannot drift apart.
+ */
+export function WorkspaceStatusGlyph({
+  status,
+  hibernated,
+  unread,
+  title,
+}: {
+  status: WorkspaceStatus;
+  hibernated: boolean;
+  unread: boolean;
+  title: string;
+}) {
+  const cls = (kind: string) =>
+    `ws-glyph ws-glyph-${kind}${unread ? ' unread' : ''}${hibernated ? ' hibernated' : ''}`;
+  const svg = (children: React.ReactNode, kind: string) => (
+    <span className={cls(kind)} title={title} role="img" aria-label={title}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+        {children}
+      </svg>
+    </span>
+  );
+
+  // A hibernated agent is stopped, so it must never show as spinning even if
+  // its last known status was `running`.
+  if (hibernated) {
+    return <span className={cls('idle')} title={title} role="img" aria-label={title} />;
+  }
+  switch (status) {
+    case 'running':
+      // Lucide has no spinner; this is the CSS ring described above.
+      return (
+        <span className={cls('running')} title={title} role="img" aria-label={title}>
+          <span className="ws-glyph-spin" aria-hidden="true" />
+        </span>
+      );
+    case 'waiting':
+      // Lucide `message-circle-question` — the agent is asking, not failing.
+      return svg(
+        <>
+          <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z" />
+          <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+          <path d="M12 17h.01" />
+        </>,
+        'waiting',
+      );
+    case 'error':
+      // Lucide `circle-x`.
+      return svg(
+        <>
+          <circle cx="12" cy="12" r="10" />
+          <path d="m15 9-6 6M9 9l6 6" />
+        </>,
+        'error',
+      );
+    case 'idle':
+      // Lucide `circle-check` — idle means the agent finished its turn.
+      return svg(
+        <>
+          <circle cx="12" cy="12" r="10" />
+          <path d="m9 12 2 2 4-4" />
+        </>,
+        'idle',
+      );
+    default:
+      // `stopped` and any future status: a quiet dot, no shape claim.
+      return <span className={cls('stopped')} title={title} role="img" aria-label={title} />;
+  }
+}
+
+/** The tooltip text for a row's status glyph. Shared so the two render paths
+ * cannot describe the same state differently. */
+function statusGlyphTitle(w: Workspace, tool: string | undefined): string {
+  if (w.markedUnread) return 'Tagged unread — come back to this workspace';
+  if (w.hibernatedAt !== undefined)
+    return 'Agent is hibernated — process stopped to free memory, resumes on input';
+  if (w.status === 'running') return tool ? `Agent is working… (${tool})` : 'Agent is working…';
+  if (w.status === 'idle') return 'Agent is idle';
+  if (w.status === 'waiting') return 'Agent is waiting for you';
+  if (w.status === 'error') return 'Agent hit an error';
+  return w.status;
 }
 
 function FolderPlusIcon() {
@@ -1342,7 +1452,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     trees: { root: Workspace; rows: TreeRow[] }[],
     variant: 'orchestrator' | 'scratch',
   ) =>
-    trees.flatMap(({ rows }) => {
+    // Each tree gets its OWN wrapper rather than flat-mapping every row into
+    // one undifferentiated list, so consecutive trees can be separated (see
+    // `.ws-tree + .ws-tree` in styles.css). Without it there is no element
+    // boundary to hang a gap on, and one orchestrator's last child runs
+    // straight into the next orchestrator's root row.
+    trees.map(({ root, rows }) => {
       const rootNoun = variant === 'orchestrator' ? 'orchestrator' : 'scratch session';
       // Rows are depth-first, so a collapsed node hides every deeper
       // row that follows it until the walk climbs back to its depth.
@@ -1354,7 +1469,9 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         visibleRows.push(row);
         if (collapsedOrch.has(row.ws.id)) skipBelow = row.depth;
       }
-      return visibleRows.map(({ ws: w, depth }) => {
+      return (
+        <div className="ws-tree" key={root.id}>
+          {visibleRows.map(({ ws: w, depth }) => {
         const isDeleting = deletingIds.has(w.id);
         const isChild = depth > 0;
         const collapsible = (forest.childrenOf.get(w.id)?.length ?? 0) > 0;
@@ -1416,46 +1533,16 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
             }}
             onDragEnd={clearDnd}
           >
-            {isChild && (
-              <span className="ws-tree-connector" aria-hidden="true">
-                ╰─
-              </span>
-            )}
-            {collapsible ? (
-              <button
-                className="ws-collapse"
-                aria-expanded={!isCollapsed}
-                aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} agents spawned by ${w.branch}`}
-                title={
-                  isCollapsed
-                    ? `Show ${hidden.length} spawned agent${hidden.length === 1 ? '' : 's'}`
-                    : 'Hide spawned agents'
-                }
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleOrchCollapsed(w.id);
-                }}
-              >
-                <span className={`caret ${isCollapsed ? '' : 'open'}`}>▸</span>
-              </button>
-            ) : (
-              <span className="ws-collapse spacer" aria-hidden="true" />
-            )}
-            <div
-              className={`ws-dot ${w.status as WorkspaceStatus}${w.markedUnread ? ' unread' : ''}${w.hibernatedAt !== undefined ? ' hibernated' : ''}`}
-              title={
-                w.markedUnread
-                  ? 'Tagged unread — come back to this workspace'
-                  : w.hibernatedAt !== undefined
-                    ? 'Agent is hibernated — process stopped to free memory, resumes on input'
-                    : w.status === 'running'
-                      ? tools[w.id]
-                        ? `Agent is working… (${tools[w.id]})`
-                        : 'Agent is working…'
-                      : w.status === 'idle'
-                        ? 'Agent is idle'
-                        : w.status
-              }
+            {/* No left caret and no `╰─` connector: the collapse chevron now
+                lives at the ROW'S RIGHT EDGE (below), so nesting is carried by
+                indent alone and every row's glyph starts at the same x. A left
+                caret had to reserve its width on every row including leaves,
+                which pushed children's content right for no reason. */}
+            <WorkspaceStatusGlyph
+              status={w.status as WorkspaceStatus}
+              hibernated={w.hibernatedAt !== undefined}
+              unread={!!w.markedUnread}
+              title={statusGlyphTitle(w, tools[w.id])}
             />
             <div className="ws-body">
               <div className="ws-name-row ws-name-row-login">
@@ -1497,22 +1584,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     {hidden.length}
                   </span>
                 )}
-                <HibernatedChip w={w} />
-                <WorkspaceContextBadge workspaceId={w.id} />
-                <span className="ws-login">
-                  <span className="ws-context-sep" aria-hidden="true">
-                    ·
-                  </span>
-                  <WorkspaceAccountBadge workspaceId={w.id} migratable />
-                </span>
+                {/* Badges stay ON the name line. They used to sit in a
+                    `.ws-pills` strip whose `flex-basis:100%` forced a second
+                    line in the wrapping row, doubling every git child's height.
+                    The repo tag is dropped here (under a pinned tree the repo
+                    is already implied); it is kept in the repo sections, where
+                    it marks a genuinely cross-repo child. */}
                 {childIsGit && (
                   <span className="ws-pills mini">
-                    <span
-                      className="repo-tag-pill"
-                      title={`Spawned into ${repoLabel(w.repoPath)}`}
-                    >
-                      {repoLabel(w.repoPath)}
-                    </span>
                     <PrLinearBadges
                       prRecord={prs[w.id]}
                       linearIssue={linear[w.id] ?? null}
@@ -1520,6 +1599,11 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     <CiBadge checks={checks[w.id]} onFix={() => onFixChecks(w)} />
                   </span>
                 )}
+                <HibernatedChip w={w} />
+                <WorkspaceContextBadge workspaceId={w.id} />
+                <span className="ws-login">
+                  <WorkspaceAccountBadge workspaceId={w.id} migratable />
+                </span>
               </div>
               {w.statusText && (
                 <div className="ws-status-note" title={statusNoteTitle(w)}>
@@ -1527,6 +1611,30 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 </div>
               )}
             </div>
+            {/* Collapse control, right-aligned. It sits OUTSIDE
+                `.ws-row-actions` (which is absolutely positioned and only
+                appears on hover) so it stays visible at rest; the actions strip
+                is offset to clear it — see `.ws-item:has(.ws-chevron)` in
+                styles.css. Rendered only when there is something to collapse,
+                which is exactly why moving it here reclaims space on leaf rows. */}
+            {collapsible && (
+              <button
+                className="ws-chevron"
+                aria-expanded={!isCollapsed}
+                aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} agents spawned by ${w.branch}`}
+                title={
+                  isCollapsed
+                    ? `Show ${hidden.length} spawned agent${hidden.length === 1 ? '' : 's'}`
+                    : 'Hide spawned agents'
+                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleOrchCollapsed(w.id);
+                }}
+              >
+                <ChevronIcon open={!isCollapsed} />
+              </button>
+            )}
             {isDeleting ? (
               <span className="ws-spinner" title="Removing…" aria-label="Removing" role="status" />
             ) : (
@@ -1555,7 +1663,9 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
             )}
           </div>
         );
-      });
+          })}
+        </div>
+      );
     });
 
   return (
@@ -2038,44 +2148,16 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                   }}
                   onDragEnd={clearDnd}
                 >
-                  {isChild && (
-                    <span className="ws-tree-connector" aria-hidden="true">
-                      ╰─
-                    </span>
-                  )}
-                  {collapsible ? (
-                    <button
-                      className="ws-collapse"
-                      aria-expanded={!isCollapsed}
-                      aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} agents nested under ${w.branch}`}
-                      title={
-                        isCollapsed
-                          ? `Show ${hiddenKids.length} nested agent${hiddenKids.length === 1 ? '' : 's'}`
-                          : 'Hide nested agents'
-                      }
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleOrchCollapsed(w.id);
-                      }}
-                    >
-                      <span className={`caret ${isCollapsed ? '' : 'open'}`}>▸</span>
-                    </button>
-                  ) : null}
-                  <div
-                    className={`ws-dot ${w.status as WorkspaceStatus}${w.markedUnread ? ' unread' : ''}${w.hibernatedAt !== undefined ? ' hibernated' : ''}`}
-                    title={
-                      w.markedUnread
-                        ? 'Tagged unread — come back to this workspace'
-                        : w.hibernatedAt !== undefined
-                          ? 'Agent is hibernated — process stopped to free memory, resumes on input'
-                          : w.status === 'running'
-                            ? tools[w.id]
-                              ? `Agent is working… (${tools[w.id]})`
-                              : 'Agent is working…'
-                            : w.status === 'idle'
-                              ? 'Agent is idle'
-                              : w.status
-                    }
+                  {/* Same treatment as the pinned spawn-tree rows: no left
+                      caret, no `╰─`. The chevron moves to the row's right edge
+                      (below). A promoted worktree renders through THIS path,
+                      never the pinned one, so both paths must change together
+                      or the two kinds of orchestrator drift apart visually. */}
+                  <WorkspaceStatusGlyph
+                    status={w.status as WorkspaceStatus}
+                    hibernated={w.hibernatedAt !== undefined}
+                    unread={!!w.markedUnread}
+                    title={statusGlyphTitle(w, tools[w.id])}
                   />
                   <div className="ws-body">
                     <div className="ws-name-row">
@@ -2114,6 +2196,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         <WorkspaceAccountBadge workspaceId={w.id} migratable />
                       </span>
                       <span className="ws-pills">
+                      {/* A promoted worktree's ONLY "I coordinate agents" cue.
+                          Now the same network glyph the Orchestrators section
+                          header uses, so one shape means "orchestrator"
+                          everywhere, and styled as a bare glyph+count to match
+                          the PR/Linear badges beside it rather than shouting
+                          over them with a bordered pill. */}
                       {isOrchestratorRow && (
                         <span
                           className="orchestrator-pill"
@@ -2123,7 +2211,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                               : `Promoted worktree — coordinates ${kids.length} nested agent${kids.length === 1 ? '' : 's'} while keeping its own branch`
                           }
                         >
-                          orch{kids.length > 0 ? ` ${kids.length}` : ''}
+                          <OrchestratorIcon />
+                          {kids.length > 0 && <span className="orch-count">{kids.length}</span>}
                         </span>
                       )}
                       {isCollapsed && (
@@ -2215,6 +2304,26 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       </div>
                     )}
                   </div>
+                  {/* Right-edge collapse control — mirrors the pinned-tree
+                      rows. A promoted worktree gets its chevron here. */}
+                  {collapsible && (
+                    <button
+                      className="ws-chevron"
+                      aria-expanded={!isCollapsed}
+                      aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} agents nested under ${w.branch}`}
+                      title={
+                        isCollapsed
+                          ? `Show ${hiddenKids.length} nested agent${hiddenKids.length === 1 ? '' : 's'}`
+                          : 'Hide nested agents'
+                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleOrchCollapsed(w.id);
+                      }}
+                    >
+                      <ChevronIcon open={!isCollapsed} />
+                    </button>
+                  )}
                   <span className="ws-row-actions">
                     <UnreadToggle w={w} onToggle={onToggleUnread} />
                     {!w.host ? (
