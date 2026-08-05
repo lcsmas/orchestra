@@ -2250,10 +2250,16 @@ h6.av-md-h {
 .av-message-actions:focus-within .av-rewind-btn {
   pointer-events: auto;
 }
-/* Keep it visible while its popover is open, even if the pointer drifts off
-   the bubble — otherwise the confirm dialog vanishes mid-decision. */
-.av-message-actions:has(.av-rewind-pop) {
+/* Keep the trigger visible while its dialog is open, even if the pointer drifts
+   off the bubble — otherwise the button vanishes mid-decision. The panel is
+   PORTALLED to <body>, so `:has(.av-rewind-pop)` can no longer see it; key off
+   the trigger's own aria-expanded, which RewindControl already sets. */
+.av-message-actions:has(.av-rewind-btn[aria-expanded='true']) {
   opacity: 1;
+}
+/* …and keep that button clickable, since pointer-events are gated on hover. */
+.av-rewind-btn[aria-expanded='true'] {
+  pointer-events: auto;
 }
 
 .av-rewind { position: relative; display: inline-flex; }
@@ -2277,21 +2283,64 @@ h6.av-md-h {
 .av-rewind-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .av-rewind-label { line-height: 1; }
 
-/* Confirmation popover. Anchored to the button and opening LEFTWARD, since the
-   control already sits in the left gutter near the viewport's centre column. */
+/* Confirmation popover — PORTALLED to document.body and positioned:fixed by
+   RewindControl, which sets left/top/width inline.
+   It cannot live inside the row: the virtualized list wraps every row in a
+   `transform: translateY(...)` container, and a transform CREATES A STACKING
+   CONTEXT that traps any z-index inside that row — so an in-place panel is
+   painted over by every later row (the "transparent popover" bug: 5/5 sample
+   points inside the panel hit `av-row`/assistant messages). No z-index value
+   can escape a stacking context; only leaving the subtree can. */
 .av-rewind-pop {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 40;
-  width: 268px;
+  position: fixed;
+  z-index: 1000;
   padding: 12px;
-  border: 1px solid var(--av-hairline-strong);
   border-radius: 10px;
-  background: var(--av-surface-overlay, var(--av-surface-raised));
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.38);
   text-align: left;
   cursor: default;
+
+  /* SELF-SUFFICIENT COLOURS — do not replace these with bare `var(--av-*)`.
+     The panel is portalled to <body>, i.e. OUTSIDE `.av-view`, and the whole
+     `--av-*` palette is declared ON `.av-view`. Outside that scope those
+     custom properties resolve to EMPTY, and `background: var(--empty, fallback)`
+     does NOT use the fallback when the property is defined-but-empty — it
+     computes to `rgba(0,0,0,0)`, i.e. a fully TRANSPARENT panel with the
+     transcript showing through (the reported bug; measured
+     `computedBackground: rgba(0, 0, 0, 0)`).
+     Note `elementFromPoint` cannot catch this: hit-testing sees stacking order,
+     not alpha, so the probe reported the panel "on top" while it was invisible.
+     Re-declare the tokens locally so the panel carries its own palette, and the
+     nested `.av-rewind-pop-*` rules below keep resolving --av-text etc. */
+  /* Mirrors the `.av-view` declarations verbatim (lines ~59-90) so the panel
+     matches the pane it belongs to. Keep them in sync if the palette moves. */
+  --av-surface-overlay: var(--bg-4, #222933);
+  --av-surface-raised: var(--bg-3, #1f242c);
+  --av-text: var(--text, #e6e9ef);
+  --av-text-dim: var(--text-dim, #8b95a7);
+  --av-hairline: rgba(125, 135, 154, 0.16);
+  --av-hairline-strong: rgba(125, 135, 154, 0.28);
+  --av-error: var(--red, #ff6b6b);
+  /* Also scoped to .av-view — the title would otherwise fall back to the
+     browser default size. (`--font-mono`/`--radius-sm` are global, so the
+     nested rules resolve those fine from here.) */
+  --av-fs-small: 11px;
+  background: var(--av-surface-overlay);
+  border: 1px solid var(--av-hairline-strong);
+  color: var(--av-text);
+}
+/* Light theme: the portalled panel is outside `.av-view`, so the theme's own
+   `.av-view[data-agent-theme=light]` block cannot reach it. Key off the same
+   attribute wherever it sits on an ancestor of <body>'s subtree. */
+[data-agent-theme='light'] .av-rewind-pop,
+.av-rewind-pop[data-agent-theme='light'] {
+  --av-surface-overlay: #ffffff;
+  --av-surface-raised: #f6f7f9;
+  --av-text: #10151c;
+  --av-text-dim: #59606d;
+  --av-hairline: rgba(20, 30, 50, 0.1);
+  --av-hairline-strong: rgba(20, 30, 50, 0.18);
+  --av-error: #c93737;
 }
 .av-rewind-pop-title {
   font-size: var(--av-fs-small); font-weight: 650;
