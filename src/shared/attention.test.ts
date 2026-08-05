@@ -80,3 +80,40 @@ test('running agents group under working and stay out of the badge', () => {
   assert.equal(g.working.length, 2);
   assert.equal(g.count, 0);
 });
+
+// ── waitingReason: blocked-on-you outranks finished-unseen ──────────────────
+// Both are `status: 'waiting'`, so before the split these were indistinguishable
+// and the inbox ordered them arbitrarily. A blocked agent is burning wall-clock
+// doing nothing until you reply; a finished one already delivered its work.
+
+test('a blocked agent sorts above one that merely finished unseen', () => {
+  const fin = ws({ id: 'fin', status: 'waiting', waitingReason: 'finished' });
+  const blk = ws({ id: 'blk', status: 'waiting', waitingReason: 'blocked' });
+  const g = computeAttention([fin, blk]);
+  assert.deepEqual(g.needsYou.map((w) => w.id), ['blk', 'fin']);
+});
+
+test('error still outranks a blocked agent', () => {
+  const blk = ws({ id: 'blk', status: 'waiting', waitingReason: 'blocked' });
+  const err = ws({ id: 'err', status: 'error' });
+  const g = computeAttention([blk, err]);
+  assert.deepEqual(g.needsYou.map((w) => w.id), ['err', 'blk']);
+});
+
+// Absent waitingReason must read as the WEAKER claim. Pre-split records (and
+// any `waiting` written by a path that never set a reason) must not jump the
+// queue ahead of an agent genuinely blocked on an answer.
+test('absent waitingReason ranks as finished, never as blocked', () => {
+  const legacy = ws({ id: 'legacy', status: 'waiting' });
+  const blk = ws({ id: 'blk', status: 'waiting', waitingReason: 'blocked' });
+  const g = computeAttention([legacy, blk]);
+  assert.deepEqual(g.needsYou.map((w) => w.id), ['blk', 'legacy']);
+});
+
+test('waitingReason does not change the badge count', () => {
+  const g = computeAttention([
+    ws({ status: 'waiting', waitingReason: 'blocked' }),
+    ws({ status: 'waiting', waitingReason: 'finished' }),
+  ]);
+  assert.equal(g.count, 2);
+});

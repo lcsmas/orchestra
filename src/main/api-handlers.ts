@@ -602,7 +602,9 @@ export const apiHandlers: ApiHandlerTable = {
     const ws = store.getWorkspace(id);
     if (!ws || ws.archived) return;
     if (ws.status !== 'waiting') return;
-    const updated: Workspace = { ...ws, status: 'idle' };
+    // Explicit `undefined`, not a dropped key: `workspace:update` is merged
+    // into the renderer store, so omitting it would leave the stale reason.
+    const updated: Workspace = { ...ws, status: 'idle', waitingReason: undefined };
     await store.upsertWorkspace(updated);
     platform.broadcast('workspace:update', updated);
   },
@@ -685,7 +687,7 @@ export const apiHandlers: ApiHandlerTable = {
     // Preserve the `waiting` yellow dot across restarts; only clear stale
     // `running` state left over from a prior crash.
     if (ws.status === 'running') {
-      const updated: Workspace = { ...ws, status: 'idle' };
+      const updated: Workspace = { ...ws, status: 'idle', waitingReason: undefined };
       await store.upsertWorkspace(updated);
       platform.broadcast('workspace:update', updated);
     }

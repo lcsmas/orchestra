@@ -41,9 +41,30 @@ test('statusGlyphTitle: thinking only applies while RUNNING, never to a rest sta
   assert.equal(statusGlyphTitle(ws({ status: 'idle' }), THINKING_TOOL_LABEL), 'Agent is idle');
   assert.equal(
     statusGlyphTitle(ws({ status: 'waiting' }), THINKING_TOOL_LABEL),
-    'Agent is waiting for you',
+    'Agent is blocked on your answer',
   );
   assert.equal(statusGlyphTitle(ws({ status: 'error' }), THINKING_TOOL_LABEL), 'Agent hit an error');
+});
+
+// The three attention states must each read differently — `waiting` (blocked on
+// you) and `autoUnread` (finished, never opened) used to be the same `waiting`
+// status and so the same sentence.
+test('statusGlyphTitle: blocked, finished-unseen and seen are three distinct phrases', () => {
+  assert.equal(statusGlyphTitle(ws({ status: 'waiting' })), 'Agent is blocked on your answer');
+  assert.equal(
+    statusGlyphTitle(ws({ status: 'idle', autoUnread: true })),
+    'Agent finished — you have not opened this yet',
+  );
+  assert.equal(statusGlyphTitle(ws({ status: 'idle' })), 'Agent is idle');
+});
+
+test('statusGlyphTitle: a blocked agent outranks the unread bell when both apply', () => {
+  // Answering is what unblocks it, so the stronger claim wins — matching the
+  // glyph, where `waiting` keeps its question mark rather than showing a bell.
+  assert.equal(
+    statusGlyphTitle(ws({ status: 'waiting', autoUnread: true })),
+    'Agent is blocked on your answer',
+  );
 });
 
 test('statusGlyphTitle: unread and hibernated still outrank a thinking label', () => {

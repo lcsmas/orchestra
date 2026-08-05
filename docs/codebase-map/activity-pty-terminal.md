@@ -43,6 +43,30 @@ Event → status (`applyAgentEvent` `:471`):
   Managed Agents (typed `stop_reason` on `session.status_idle`) both model
   turn-end.
 - `notify` → `waiting` via `fireNeedsInput` `:109` ("needs input" toast).
+
+Both of the above write the SAME `waiting` status, so a second field carries
+why: `Workspace.waitingReason: 'blocked'|'finished'` (`types.ts:164`), passed as
+`setStatus`'s third argument. `fireFinished` → `'finished'` (turn over, output
+unreviewed); `fireNeedsInput` → `'blocked'` (agent cannot proceed without you).
+Absent ⇒ read as `'finished'`, the weaker claim.
+- Deliberately NOT a sixth `WorkspaceStatus` member: `waiting` is load-bearing
+  in ~20 consumers that all want the union, and a new enum member would drop
+  out of every one of them while still compiling.
+- `setStatus` `:48` short-circuits on an unchanged status, so it carries an
+  explicit ESCALATION arm: Claude fires `Notification` right after `Stop` when
+  it stops to ask, and that second event finds the row already `waiting`. The
+  arm upgrades `finished`→`blocked` only (never the reverse) and returns
+  `changed: false` so no second toast fires.
+- Cleared to `undefined` (never a dropped key — `workspace:update` is a MERGE)
+  on every non-`waiting` status, by `markSeen` and the `ptyStart` reset
+  (`api-handlers.ts`), and demoted `blocked`→`finished` at load
+  (`store.ts` `:120`) since a restored question can no longer be answered —
+  same reasoning as `reconcileExited` `:328`.
+- Consumed by `computeAttention` (`shared/attention.ts`), which ranks the
+  Needs-You inbox error > blocked > finished, and by `statusGlyphTitle`'s
+  tooltip. The GLYPH itself stays one amber question mark for both reasons,
+  matching Orca (`mapAgentStatusStateToVisualStatus` collapses its separate
+  `blocked`/`waiting` hook states into one `permission` visual).
 - `session` (SessionStart; `tool` slot carries the payload `source`) →
   `source=clear|compact` resets the context badge via `resetContext` (0
   sentinel over `agent:context` + drops persisted `contextTokens`), else

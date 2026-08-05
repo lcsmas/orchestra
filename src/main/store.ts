@@ -123,6 +123,18 @@ class Store {
       // (the PTY-quiescence watchdog has been removed) — treat as idle.
       if (ws.status === 'running' || (ws.status as string) === 'stalled') {
         ws.status = 'idle';
+        ws.waitingReason = undefined;
+        mutated = true;
+      }
+      // A restored `blocked` describes a question asked by a process that no
+      // longer exists — the answer can never be delivered, so demote it to the
+      // weaker `finished`. The yellow dot is still preserved (the status is
+      // untouched); only the "an agent is stuck on you RIGHT NOW" claim is
+      // dropped. Same reasoning as reconcileExited, and the same hazard Orca
+      // names `restoredUnconfirmed`: a nonterminal state hydrated from disk
+      // with no live hook since must never be trusted as current.
+      if (ws.status === 'waiting' && ws.waitingReason === 'blocked') {
+        ws.waitingReason = 'finished';
         mutated = true;
       }
     }

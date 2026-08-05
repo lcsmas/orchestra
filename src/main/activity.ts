@@ -52,6 +52,10 @@ const alog = scoped('activity');
 async function setStatus(
   id: string,
   status: WorkspaceStatus,
+  /** Why this workspace is `waiting` — see {@link Workspace.waitingReason}.
+   *  Only meaningful with `status === 'waiting'`; cleared on every other
+   *  status so a stale "blocked" can't outlive the question it described. */
+  waitingReason?: 'blocked' | 'finished',
 ): Promise<{ ws: Workspace; changed: boolean } | null> {
   const ws = store.getWorkspace(id);
   if (!ws) {
@@ -65,12 +69,34 @@ async function setStatus(
     alog.trace(`setStatus(${status}) for archived ${ws.name} — dropped`);
     return null;
   }
+  // The reason a `waiting` workspace is waiting, after this event. Absent for
+  // every other status — a leftover `blocked` on a `running`/`idle` row would
+  // claim an answer is still owed. Note `field: undefined` rather than dropping
+  // the key: the renderer's `workspace:update` reducer is a MERGE, so an absent
+  // key means "no opinion" and would leave the stale value on screen forever.
+  const nextReason = status === 'waiting' ? (waitingReason ?? 'finished') : undefined;
   if (ws.status === status) {
+    // Same status — but the REASON may still be escalating. Claude fires
+    // `Notification` right after `Stop` when it stops to ask something, so the
+    // second event finds us already `waiting` and would no-op away the very
+    // distinction this field exists to record. Only ever escalate
+    // finished→blocked, never the reverse: a plain turn-end must not clear a
+    // question the user still owes an answer to.
+    if (status === 'waiting' && nextReason === 'blocked' && ws.waitingReason !== 'blocked') {
+      alog.trace(`${ws.name}: waiting reason ${ws.waitingReason ?? 'finished'} → blocked`);
+      const escalated: Workspace = { ...ws, waitingReason: 'blocked' };
+      void store.upsertWorkspace(escalated).catch((e) => alog.swallow('persist reason', e));
+      platform.broadcast('workspace:update', escalated);
+      // `changed: false` still — the STATUS did not move, and callers gate
+      // their toast/chime on it. Escalating the reason must not re-fire a
+      // notification the `stop` already raised.
+      return { ws: escalated, changed: false };
+    }
     alog.trace(`${ws.name}: status already ${status} (no-op)`);
     return { ws, changed: false };
   }
   alog.trace(`${ws.name}: ${ws.status} → ${status}`);
-  const updated: Workspace = { ...ws, status };
+  const updated: Workspace = { ...ws, status, waitingReason: nextReason };
   // Broadcast to the renderer first, then persist. upsertWorkspace mutates the
   // in-memory store synchronously (before its first await), so state is already
   // consistent here — but its disk flush is serialized through one write chain
@@ -110,7 +136,7 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
   // internally — an isFocused throw here used to abort the whole spool drain
   // batch and strand the `stop`).
   const focused = platform.isFocused();
-  void setStatus(id, 'waiting').then((res) => {
+  void setStatus(id, 'waiting', 'finished').then((res) => {
     if (!res) return;
     const { ws, changed } = res;
     // Ship the main-process focus state with the event. document.hasFocus()
@@ -143,7 +169,7 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
  *  parks an interactive tool call. Exported for that caller. */
 export function fireNeedsInput(id: string): void {
   const focused = platform.isFocused();
-  void setStatus(id, 'waiting').then((res) => {
+  void setStatus(id, 'waiting', 'blocked').then((res) => {
     if (!res) return;
     const { ws, changed } = res;
     platform.broadcast('agent:needs-input', id, focused);
@@ -356,7 +382,10 @@ export function reconcileExited(id: string): void {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return;
   if (ws.status !== 'running') return;
-  void setStatus(id, 'waiting');
+  // `finished`, never `blocked`: the process is GONE, so whatever it may have
+  // been asking can no longer be answered — claiming otherwise would park a
+  // permanently-unanswerable row at the top of the Needs-You inbox.
+  void setStatus(id, 'waiting', 'finished');
 }
 
 /** Restore `running` after a parked interactive tool call is answered (the

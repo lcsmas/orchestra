@@ -14,7 +14,7 @@ import { THINKING_TOOL_LABEL } from '../shared/types.ts';
  *  while one is running, or {@link THINKING_TOOL_LABEL} in the gap between
  *  tools where the model is generating. */
 export function statusGlyphTitle(
-  w: Pick<Workspace, 'status' | 'markedUnread' | 'hibernatedAt'>,
+  w: Pick<Workspace, 'status' | 'markedUnread' | 'hibernatedAt' | 'autoUnread'>,
   tool?: string,
 ): string {
   if (w.markedUnread) return 'Tagged unread — come back to this workspace';
@@ -26,8 +26,13 @@ export function statusGlyphTitle(
   // label IS a real tool name and keeps the parenthesised form.
   if (w.status === 'running' && tool === THINKING_TOOL_LABEL) return 'Agent is thinking…';
   if (w.status === 'running') return tool ? `Agent is working… (${tool})` : 'Agent is working…';
-  if (w.status === 'idle') return 'Agent is idle';
-  if (w.status === 'waiting') return 'Agent is waiting for you';
+  // Ordered to match the GLYPH's own precedence (see WorkspaceStatusGlyph): the
+  // bell only wins on the quiet statuses, so `waiting`/`error` answer first.
+  // `waiting` now means ONLY "blocked on your answer" — "finished but unseen"
+  // is `idle` + `autoUnread`, which is the bell.
+  if (w.status === 'waiting') return 'Agent is blocked on your answer';
   if (w.status === 'error') return 'Agent hit an error';
+  if (w.autoUnread) return 'Agent finished — you have not opened this yet';
+  if (w.status === 'idle') return 'Agent is idle';
   return w.status;
 }

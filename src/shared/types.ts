@@ -181,6 +181,33 @@ export interface Workspace {
    * workspace (or by toggling the button again). Persisted so the reminder
    * survives an app restart. */
   markedUnread?: boolean;
+  /** Why the workspace is in the `waiting` status — the distinction Orchestra
+   * used to lose. `fireFinished` (Stop hook: the turn ended, nothing is being
+   * asked of you) and `fireNeedsInput` (Notification hook / a parked SDK
+   * permission call: the agent is BLOCKED on your answer) both write
+   * `status: 'waiting'`, so nothing downstream could tell "there is unreviewed
+   * output" apart from "an agent is stuck waiting on you right now".
+   *
+   * `'blocked'` = the agent asked and cannot proceed; `'finished'` = the turn
+   * completed unseen. Absent whenever `status !== 'waiting'`, and absent on
+   * pre-existing records — treat absent as `'finished'`, the weaker claim (a
+   * stale record must never assert that a long-dead agent is still blocked on
+   * an answer).
+   *
+   * Deliberately a DISCRIMINATOR beside `status`, not a sixth
+   * {@link WorkspaceStatus} member: `waiting` is load-bearing in ~20 places
+   * (`computeAttention`, `markSeen`, `resumeRunning`, the hibernation floor,
+   * the InboxBell, both Sidebar roll-ups), and every one of them wants the
+   * union. A new enum member would silently fall out of all of them — the
+   * classic "add a case, every exhaustive switch keeps compiling" regression.
+   * Consumers that care opt IN; consumers that don't keep working unchanged.
+   *
+   * Mirrors Orca, which reports `blocked` and `waiting` as separate hook states
+   * (`AGENT_STATUS_STATES`) and only merges them at the render layer
+   * (`mapAgentStatusStateToVisualStatus` → the single `permission` visual). We
+   * likewise keep the sidebar glyph collapsed; the split exists so triage and
+   * tooling can act on it. */
+  waitingReason?: 'blocked' | 'finished';
   /** Set at spawn when `claude --continue` is about to resume a session whose
    * most-recent transcript exceeds {@link HEAVY_RESUME_TOKEN_THRESHOLD} tokens.
    * Claude Code shows an interactive "resume from summary / full / don't ask"
