@@ -102,10 +102,14 @@ export function WorkspaceStatusGlyph({
         </span>
       );
     case 'waiting':
-      // Lucide `message-circle-question` — the agent is asking, not failing.
+      // Lucide `message-circle-question-mark` — the agent is asking, not
+      // failing. Paths copied verbatim from lucide-react 0.577.0, the version
+      // Orca pins, so this is the identical glyph rather than a same-named
+      // icon from a different revision (Orchestra previously carried an older
+      // one whose speech bubble was a visibly different shape).
       return svg(
         <>
-          <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z" />
+          <path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719" />
           <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
           <path d="M12 17h.01" />
         </>,
