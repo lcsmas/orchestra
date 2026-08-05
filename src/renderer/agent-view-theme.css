@@ -2251,9 +2251,9 @@ h6.av-md-h {
   pointer-events: auto;
 }
 /* Keep the trigger visible while its dialog is open, even if the pointer drifts
-   off the bubble — otherwise the button vanishes mid-decision. The panel is
-   PORTALLED to <body>, so `:has(.av-rewind-pop)` can no longer see it; key off
-   the trigger's own aria-expanded, which RewindControl already sets. */
+   off the bubble — otherwise the button vanishes mid-decision. Keyed on the
+   trigger's own aria-expanded (rather than `:has(.av-rewind-pop)`) so it holds
+   regardless of where the panel is rendered. */
 .av-message-actions:has(.av-rewind-btn[aria-expanded='true']) {
   opacity: 1;
 }
@@ -2283,64 +2283,42 @@ h6.av-md-h {
 .av-rewind-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .av-rewind-label { line-height: 1; }
 
-/* Confirmation popover — PORTALLED to document.body and positioned:fixed by
-   RewindControl, which sets left/top/width inline.
-   It cannot live inside the row: the virtualized list wraps every row in a
-   `transform: translateY(...)` container, and a transform CREATES A STACKING
-   CONTEXT that traps any z-index inside that row — so an in-place panel is
-   painted over by every later row (the "transparent popover" bug: 5/5 sample
-   points inside the panel hit `av-row`/assistant messages). No z-index value
-   can escape a stacking context; only leaving the subtree can. */
+/* Lift the row that owns an OPEN rewind dialog above its later siblings.
+   THIS is what makes the panel visible, and it is the whole fix.
+
+   `.av-row { contain: layout style }` (see the virtualization rules above)
+   makes EVERY row its own stacking context, so rows stack in DOM order and a
+   later row paints over an earlier row's overflowing popover no matter how
+   large that popover's own z-index is — the z-index only orders things WITHIN
+   its row. Isolated by experiment: removing `contain` fixes it while keeping
+   the translateY; removing the transform and keeping `contain` does NOT. (So
+   the transform is a red herring here — an earlier fix blamed it and portalled
+   the panel to <body>, which worked but then put the panel outside `.av-view`,
+   where the whole `--av-*` palette is declared, so its background resolved to
+   `rgba(0,0,0,0)` — a fully transparent dialog. Lifting the row keeps the panel
+   inside the palette's scope and needs no JS.)
+   `contain: layout` does NOT clip, so the panel still overflows the row freely
+   (measured: 132px past the row box). */
+.av-row:has(.av-rewind-btn[aria-expanded='true']) {
+  position: relative;
+  z-index: 5;
+}
+
+/* Confirmation popover. Anchored to the trigger, opening downward-left; it
+   overflows its row, which the rule above makes safe. */
 .av-rewind-pop {
-  position: fixed;
-  z-index: 1000;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  width: 268px;
   padding: 12px;
+  border: 1px solid var(--av-hairline-strong);
   border-radius: 10px;
+  background: var(--av-surface-overlay, var(--av-surface-raised));
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.38);
   text-align: left;
   cursor: default;
-
-  /* SELF-SUFFICIENT COLOURS — do not replace these with bare `var(--av-*)`.
-     The panel is portalled to <body>, i.e. OUTSIDE `.av-view`, and the whole
-     `--av-*` palette is declared ON `.av-view`. Outside that scope those
-     custom properties resolve to EMPTY, and `background: var(--empty, fallback)`
-     does NOT use the fallback when the property is defined-but-empty — it
-     computes to `rgba(0,0,0,0)`, i.e. a fully TRANSPARENT panel with the
-     transcript showing through (the reported bug; measured
-     `computedBackground: rgba(0, 0, 0, 0)`).
-     Note `elementFromPoint` cannot catch this: hit-testing sees stacking order,
-     not alpha, so the probe reported the panel "on top" while it was invisible.
-     Re-declare the tokens locally so the panel carries its own palette, and the
-     nested `.av-rewind-pop-*` rules below keep resolving --av-text etc. */
-  /* Mirrors the `.av-view` declarations verbatim (lines ~59-90) so the panel
-     matches the pane it belongs to. Keep them in sync if the palette moves. */
-  --av-surface-overlay: var(--bg-4, #222933);
-  --av-surface-raised: var(--bg-3, #1f242c);
-  --av-text: var(--text, #e6e9ef);
-  --av-text-dim: var(--text-dim, #8b95a7);
-  --av-hairline: rgba(125, 135, 154, 0.16);
-  --av-hairline-strong: rgba(125, 135, 154, 0.28);
-  --av-error: var(--red, #ff6b6b);
-  /* Also scoped to .av-view — the title would otherwise fall back to the
-     browser default size. (`--font-mono`/`--radius-sm` are global, so the
-     nested rules resolve those fine from here.) */
-  --av-fs-small: 11px;
-  background: var(--av-surface-overlay);
-  border: 1px solid var(--av-hairline-strong);
-  color: var(--av-text);
-}
-/* Light theme: the portalled panel is outside `.av-view`, so the theme's own
-   `.av-view[data-agent-theme=light]` block cannot reach it. Key off the same
-   attribute wherever it sits on an ancestor of <body>'s subtree. */
-[data-agent-theme='light'] .av-rewind-pop,
-.av-rewind-pop[data-agent-theme='light'] {
-  --av-surface-overlay: #ffffff;
-  --av-surface-raised: #f6f7f9;
-  --av-text: #10151c;
-  --av-text-dim: #59606d;
-  --av-hairline: rgba(20, 30, 50, 0.1);
-  --av-hairline-strong: rgba(20, 30, 50, 0.18);
-  --av-error: #c93737;
 }
 .av-rewind-pop-title {
   font-size: var(--av-fs-small); font-weight: 650;
