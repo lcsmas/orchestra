@@ -359,9 +359,39 @@ export function taskAsksForStandaloneWorkspace(task: string): boolean {
   );
 }
 
+/** Sentinel thrown by {@link fail} so a refusal genuinely stops the command.
+ *  Caught only by {@link runCli}, which exits 1 without re-printing. */
+class CliFailure extends Error {}
+
+/** Abort the command with `message` on stderr and exit status 1.
+ *
+ * The `throw` is load-bearing, not belt-and-braces. `process.exit()` does NOT
+ * reliably terminate synchronously when called from inside an HTTP/socket
+ * response callback in the Electron main process — which is exactly where every
+ * `if (!res.ok) fail(...)` runs, since the packaged binary doubles as the CLI
+ * (`Orchestra.AppImage cli …`, see main/index.ts). Execution CONTINUED past the
+ * bare `process.exit(1)`, fell into the success branch below the guard, and then
+ * hit `runCli`'s own `process.exit(0)` — so every socket-level refusal printed
+ * its error, printed a contradictory success line with `undefined` interpolated
+ * for the id it never got, and exited 0. Measured on the shipped v0.5.209 build
+ * for `promote`, `attach`, `set-base` and `set-repo` alike:
+ *
+ *     $ orchestra promote deadbeef-not-real
+ *     unknown workspace: deadbeef-not-real
+ *     Promoted undefined to orchestrator     <-- unreachable in intent
+ *     RC=0                                   <-- a refusal reported as success
+ *
+ * A `fail()` reached BEFORE any socket call (usage errors, unknown command)
+ * exited 1 correctly, which is why this survived: the failure is specific to the
+ * post-request callback context. Throwing makes the control-flow guarantee the
+ * type signature already claims (`: never`) independent of `process.exit`'s
+ * timing, so any script or agent gating on `$?` sees the refusal. */
 function fail(message: string): never {
   process.stderr.write(`${message}\n`);
+  process.exitCode = 1;
   process.exit(1);
+  // Unreachable under plain Node; the guarantee that matters under Electron.
+  throw new CliFailure(message);
 }
 
 async function main(argv: string[]): Promise<void> {
@@ -906,6 +936,17 @@ export async function runCli(argv: string[]): Promise<void> {
     await main(argv);
     process.exit(0);
   } catch (err: unknown) {
+    // A CliFailure has ALREADY printed its message and set status 1 — it is the
+    // sentinel `fail()` throws so a refusal stops the command even where
+    // `process.exit` does not terminate synchronously (see fail's docblock).
+    // Re-printing it here would duplicate the error, and falling through to the
+    // `process.exit(0)` above is precisely the bug that made every socket-level
+    // refusal exit 0 on the packaged build.
+    if (err instanceof CliFailure) {
+      process.exitCode = 1;
+      process.exit(1);
+      return;
+    }
     fail(err instanceof Error ? err.message : String(err));
   }
 }
