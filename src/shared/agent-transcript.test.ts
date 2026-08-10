@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { transcriptToEvents } from './agent-transcript.ts';
+import { transcriptToEvents, HISTORY_SEQ_BASE } from './agent-transcript.ts';
 import { foldEvents, emptySession, type NormalizeContext } from './agent-events.ts';
 import type { AgentEvent } from './types.ts';
 
@@ -231,4 +231,65 @@ test('backfill: the interrupt marker becomes an interrupted notice', () => {
     ['user', 'system'],
   );
   assert.equal(s.messages[1].noticeKind, 'interrupted');
+});
+
+// ─── message-id uniqueness across the history/live boundary ──────────────────
+//
+// Every RenderMessage id is derived from `event.seq`, and a backfilled history
+// is PREPENDED into the same array as the live messages (store.applyAgentHistory).
+// Two rows with one id is not cosmetic: the id is the React key, the
+// virtualizer's measured-height cache key and its scroll-anchor key, so a
+// collision made scrolling up one notch from the bottom teleport the viewport
+// to the top of the transcript (the hibernation-wake bug).
+
+test('backfill ids never collide with a live session that starts at seq 0', () => {
+  const jsonl = lines([
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first ever turn' } },
+    {
+      type: 'assistant',
+      uuid: 'a1',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'answering' }] },
+    },
+  ]);
+  // Exactly how sdkHistory() builds its cursor.
+  const history = foldEvents(
+    emptySession('ws1'),
+    transcriptToEvents(jsonl, { seq: HISTORY_SEQ_BASE, now: () => 1_000 }),
+  );
+
+  // A live session ALWAYS starts a fresh workspace cursor at 0 (first launch),
+  // and after a hibernation wake it resumes the workspace's monotonic cursor —
+  // 0 is the worst case, so assert against it.
+  const live = foldEvents(emptySession('ws1'), [
+    { type: 'user-message', seq: 0, at: 2_000, text: 'a turn sent after waking' },
+  ] as AgentEvent[]);
+
+  const ids = [...history.messages, ...live.messages].map((m) => m.id);
+  assert.equal(new Set(ids).size, ids.length, `duplicate message id in ${JSON.stringify(ids)}`);
+});
+
+test('a backfill is internally free of duplicate ids', () => {
+  const jsonl = lines([
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: 'one' } },
+    {
+      type: 'assistant',
+      uuid: 'a1',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'thinking out loud' },
+          { type: 'tool_use', id: 'tu_1', name: 'Read', input: { file_path: '/a' } },
+        ],
+      },
+    },
+    { type: 'user', uuid: 'u2', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'ok' }] } },
+    { type: 'user', uuid: 'u3', message: { role: 'user', content: 'two' } },
+  ]);
+  const s = foldEvents(
+    emptySession('ws1'),
+    transcriptToEvents(jsonl, { seq: HISTORY_SEQ_BASE, now: () => 1_000 }),
+  );
+  const ids = s.messages.map((m) => m.id);
+  assert.ok(ids.length >= 4);
+  assert.equal(new Set(ids).size, ids.length, `duplicate message id in ${JSON.stringify(ids)}`);
 });

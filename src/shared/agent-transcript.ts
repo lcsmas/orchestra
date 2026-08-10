@@ -39,6 +39,27 @@ import {
  *  can never be matched into a history message by the fold's index lookup. */
 const HISTORY_INDEX_BASE = 100_000;
 
+/** `seq` for a history backfill starts here, for the same reason
+ *  HISTORY_INDEX_BASE exists — but for message IDENTITY rather than block
+ *  correlation.
+ *
+ *  Every RenderMessage id the fold mints is built from `event.seq`
+ *  (`user:<seq>`, `error:<seq>`, `notice:<seq>`, `<sessionId>:<seq>:<index>`),
+ *  and those ids are the React keys, the virtualizer's measured-height cache
+ *  keys AND its scroll-anchor keys. A backfill used to run on a fresh
+ *  `{seq: 0}` cursor, so history's FIRST message was `user:0` — colliding with
+ *  the first user turn of the live session, which also starts at 0. The
+ *  transcript then held two rows with the same id, one at the very top and one
+ *  at the very bottom, and `StructuredView`'s anchor lookup (`indexOf`)
+ *  resolved the bottom one to the top one: scrolling up a hair from the bottom
+ *  teleported the viewport to the beginning of the transcript. Reproduced
+ *  against a real 181-message transcript before this base existed.
+ *
+ *  A live cursor is per-workspace-monotonic (see agent-sdk.ts) and would need a
+ *  billion events in one workspace to reach this floor, so history ids and live
+ *  ids now occupy disjoint id spaces by construction. */
+export const HISTORY_SEQ_BASE = 1_000_000_000;
+
 interface TranscriptEnvelope {
   type?: string;
   isSidechain?: boolean;

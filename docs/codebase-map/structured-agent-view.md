@@ -415,6 +415,17 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   Skipped while following (the pin owns the scroll) and for hidden panes.
   `.av-message-list` sets `overflow-anchor: none` so the browser's native
   anchoring (blind to translateY-repositioned rows) can't fight the correction.
+
+  **The anchor resolves POSITIONALLY** — `resolveAnchorIndex(ids, id, hint)`
+  (`src/renderer/scroll-anchor.ts` + `.test.ts`) picks the occurrence nearest the
+  index the anchor was captured at, not `ids.indexOf(id)`. This is the fix for
+  "scrolling up a notch from the bottom teleports to the beginning of the
+  transcript": message ids were not unique (see **Message-id uniqueness** below),
+  so `indexOf` resolved the row at the bottom to its namesake at the TOP and the
+  anchoring effect scrolled there — then re-anchored on the top row, stranding the
+  user at the start. Uniqueness is enforced at the source now; the positional
+  lookup is the belt-and-braces, since this effect writes `scrollTop` on EVERY
+  commit and must never be able to lose the reading position.
   Related guard: `MeasuredRow.onHeight` ignores `h === 0` **only when the
   scroller itself has `clientHeight === 0`** — i.e. a hidden pane, whose layout
   effects still run on background store updates and would otherwise cache a
@@ -435,6 +446,17 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   (one-shot inject), wheel-scrolls up with trusted CDP input, and asserts ZERO
   uncommanded screen-space shifts (`Δ(cy − scrollTop)` over no-wheel frame
   pairs); mutation-tested (reverting the fix yields ~6 shifts, max ~49px).
+
+  Sibling gate for the **teleport** (as opposed to the jitter):
+  `scripts/verify-scroll-dup-anchor.mjs` seeds the hibernation-wake shape — a
+  duplicate-id user row near the end of a ~18000px transcript — pins to bottom,
+  wheels up and asserts the largest single-frame drop in `scrollTop` stays at
+  one wheel tick. Mutation-tested: restoring `ids.indexOf` drops
+  17067px → 768px on frame 4, i.e. straight to the top of the transcript. NOTE
+  the seeded duplicate row must be TALL: the anchor is only re-derived on scroll
+  events, so a one-line bubble (~50px) is narrower than a 120px wheel tick and
+  the viewport top skips over it without the teleport ever firing — the first
+  version of this gate reported a clean pass against the known-buggy build.
 
   **Follow indicator.** `MessageList` mirrors `stickBottom` into render state
   (`following`, updated only on a real transition so the hot scroll/resize paths
@@ -601,6 +623,38 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   reopen): restored 1 → 81 messages with history visible, and mutation-tested —
   reverting to the message-count gate leaves the pane at 1 message with the
   transcript gone.
+- **Message-id uniqueness (`seq` is identity, not just bookkeeping).** Every
+  `RenderMessage.id` the fold mints comes from `event.seq` — `user:<seq>`,
+  `error:<seq>`, `notice:<seq>`, `blockMsgId` = `<sessionId>:<seq>:<index>`
+  (`shared/agent-events.ts`) — and those ids are the React keys, the
+  virtualizer's measured-height cache keys AND its scroll-anchor keys. Two rows
+  sharing one id is therefore a *scrolling* bug, not a cosmetic one. Two sources
+  used to restart the counter mid-transcript:
+  - **A new `Session` object minted `ctx: {seq: 0}`.** A Session dies on every
+    teardown (hibernation sweep, `sdkStop`, crashed subprocess) while the
+    RENDERER's folded transcript survives — it is store state, not pane state.
+    So waking a hibernated workspace and sending one message appended a second
+    `user:0` to a list whose first row was already `user:0`. Fixed by
+    **`seqCursors` / `cursorFor(wsId)`** (`agent-sdk.ts`): ONE cursor per
+    workspace for the app's lifetime, monotonic across session restarts, never
+    reset (not even on `sdkClear`), dropped only in `sdkStopMany` (delete/archive
+    — hibernation goes through `sdkStopIfLive` and must KEEP the cursor). The
+    no-live-session emits (`error`/`turn-end`/`session/clear`/`session/rewind`)
+    draw from it too instead of hardcoding `seq: 0`.
+  - **A history backfill folded on its own `{seq: 0}`**, so history's first row
+    was `user:0` — colliding with the live session's first turn. Fixed with
+    **`HISTORY_SEQ_BASE = 1e9`** (`shared/agent-transcript.ts`, the identity
+    sibling of `HISTORY_INDEX_BASE`): `sdkHistory` bases its cursor there, so
+    history ids and live ids occupy disjoint spaces by construction.
+
+  Regression coverage: `agent-transcript.test.ts` asserts a backfill is
+  internally unique AND collision-free against a live session starting at seq 0.
+  Reproduced beforehand against a real 181-message hibernated transcript (one
+  duplicate: `user:0` at row 0 and row 181 → anchoring jumped 13032px → 0px).
+  NOTE `applyAgentHistory`'s "dedupe by message id" only ever suppressed those
+  accidental collisions — history and live ids are disjoint by design, so a turn
+  present in BOTH lists (the LRU-eviction overlap) still renders twice; that is
+  a separate, still-open bug needing content-based dedupe.
 - **Skills autocomplete** — `agent-sdk.ts sdkListSkills(wsId)` scans the worktree's
   `.claude/skills/*` + the account config dir's `skills/*` (project shadows user) for
   `AgentSkillInfo` (shared/types.ts); the Composer shows a popover when the input is a

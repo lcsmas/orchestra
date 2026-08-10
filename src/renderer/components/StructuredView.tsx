@@ -38,6 +38,7 @@ import type { AgentImage, AgentSession, AgentSkillInfo, RenderMessage } from '..
 // design-pick effect). appendPickToDraft is the pure formatter (shared/, tested).
 import { appendPickToDraft } from '../../shared/design-mode';
 import { shouldRequestHistory } from '../history-backfill';
+import { resolveAnchorIndex } from '../scroll-anchor';
 // A3: real presentational components (markdown bubbles, tool cards, diffs,
 // thinking spinner). AgentMessage routes tool→ToolCard else→MessageBubble and
 // owns the `av-message`/`av-tool-card` wrappers + thinking indicator, so it
@@ -308,7 +309,11 @@ function MessageList({
   // content the user is reading visibly jumps under a fixed viewport ("random
   // jumps while scrolling up"). The anchoring effect below compensates by
   // restoring this item to the same viewport position before paint.
-  const anchorRef = useRef<{ id: string; delta: number } | null>(null);
+  // `index` rides along so the anchor can be resolved POSITIONALLY
+  // (resolveAnchorIndex) instead of by `ids.indexOf`, which resolves to the
+  // first namesake — see scroll-anchor.ts for the transcript-teleport that came
+  // from trusting id uniqueness here.
+  const anchorRef = useRef<{ id: string; delta: number; index: number } | null>(null);
   // Guards against the React #185 render loop (see the onHeight handler). Counts
   // synchronous measure→render passes since the last painted frame; a frame
   // boundary resets it, so only an unbroken chain WITHIN one frame can trip it.
@@ -405,7 +410,7 @@ function MessageList({
     const { ids, offsets } = layoutRef.current;
     let lo = 0;
     while (lo < ids.length && offsets[lo + 1] <= cur) lo++;
-    anchorRef.current = lo < ids.length ? { id: ids[lo], delta: cur - offsets[lo] } : null;
+    anchorRef.current = lo < ids.length ? { id: ids[lo], delta: cur - offsets[lo], index: lo } : null;
   }, [setFollowing]);
 
   // Re-engage follow from the indicator: jump to the newest output and resume.
@@ -527,7 +532,7 @@ function MessageList({
     const anchor = anchorRef.current;
     if (!anchor) return;
     const { ids, offsets } = layoutRef.current;
-    const idx = ids.indexOf(anchor.id);
+    const idx = resolveAnchorIndex(ids, anchor.id, anchor.index);
     if (idx < 0) return; // anchor item left the list — re-anchors on next scroll
     const desired = offsets[idx] + anchor.delta;
     if (Math.abs(desired - el.scrollTop) <= 1) return;

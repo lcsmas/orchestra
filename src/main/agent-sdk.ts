@@ -31,7 +31,7 @@ import {
   autoRenameActive,
   ORCHESTRATOR_BRIEF,
 } from './workspaces';
-import { transcriptToEvents } from '../shared/agent-transcript';
+import { transcriptToEvents, HISTORY_SEQ_BASE } from '../shared/agent-transcript';
 import { syncAccountInheritance } from './account-inherit';
 import { agentCliBinDir } from './cli-shim';
 import { getHookSocketPath } from './hooks-server';
@@ -198,6 +198,40 @@ interface Session {
 }
 
 const sessions = new Map<string, Session>();
+
+/** Per-workspace event cursors, kept ALIVE across session teardown.
+ *
+ *  `seq` is not just gap-detection bookkeeping: every RenderMessage id the fold
+ *  mints is derived from it (`user:<seq>`, `error:<seq>`, `notice:<seq>`,
+ *  `<sessionId>:<seq>:<index>`), and those ids are the renderer's React keys,
+ *  measured-height cache keys and scroll-anchor keys.
+ *
+ *  A Session object dies on every teardown — hibernation sweep, `sdkStop`, a
+ *  crashed subprocess — while the RENDERER's folded transcript survives (it is
+ *  store state, not pane state). Minting a fresh `{seq: 0}` per Session
+ *  therefore restarted id numbering in the middle of a transcript that still
+ *  held the earlier rows: waking a hibernated workspace and sending one message
+ *  produced a second `user:0` at the bottom of a list whose top was already
+ *  `user:0`. `StructuredView`'s anchor lookup resolves an id to its FIRST
+ *  occurrence, so scrolling up a little from the bottom jumped to the very
+ *  beginning of the transcript.
+ *
+ *  Keeping ONE cursor per workspace for the app's lifetime makes seq monotonic
+ *  across session restarts, so ids stay unique for as long as the transcript
+ *  they key does. It is never reset — not even on `sdkClear`: reuse only ever
+ *  risks collisions, and a monotonic counter also makes the renderer's
+ *  `lastSeq` gap detection meaningful across a restart. */
+const seqCursors = new Map<string, NormalizeContext>();
+
+/** The (monotonic, never-reset) event cursor for a workspace. */
+function cursorFor(wsId: string): NormalizeContext {
+  let ctx = seqCursors.get(wsId);
+  if (!ctx) {
+    ctx = { seq: 0 };
+    seqCursors.set(wsId, ctx);
+  }
+  return ctx;
+}
 
 /** Pending `resumeSessionAt` cuts, keyed by workspace — set by {@link sdkRewind}
  *  and consumed by the very next {@link ensureSession}.
@@ -784,7 +818,10 @@ async function ensureSession(wsId: string): Promise<Session> {
     // q is assigned right after — the generator/canUseTool close over `session`,
     // not over `q`, so the forward reference is safe.
     q: undefined as unknown as Query,
-    ctx: { seq: 0 },
+    // Shared, monotonic across session restarts — see `seqCursors`. NOT a fresh
+    // `{seq: 0}`: the renderer's transcript outlives this Session, and restarting
+    // the counter mints ids that collide with rows already in it.
+    ctx: cursorFor(wsId),
     queue: [],
     pump: null,
     turnGate: null,
@@ -990,10 +1027,11 @@ export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
     log.warn(`agent-sdk: history backfill read failed for ${wsId} (${file})`, err);
     return [];
   }
-  // Fresh cursor: history seq-space is independent of the live session's (seq
-  // only feeds gap detection; message identity includes seq + index, and
-  // history block indexes start far above live ones so they never collide).
-  const ctx: NormalizeContext = { seq: 0 };
+  // History gets its OWN seq space, based far above any live cursor
+  // (HISTORY_SEQ_BASE). Message identity is derived from seq, and a backfill is
+  // merged into the SAME transcript array as live messages — a shared origin at
+  // 0 made history's first row and the live session's first row the same id.
+  const ctx: NormalizeContext = { seq: HISTORY_SEQ_BASE };
   const events: AgentEvent[] = [];
   if (truncated) {
     // A tail-cut backfill used to render with no marker — the missing early
@@ -1171,7 +1209,9 @@ export async function sdkSend(
     log.warn(`agent-sdk: could not start session for ${wsId}: ${message}`);
     emit(wsId, {
       type: 'error',
-      seq: 0,
+      // Unique even with no live Session: the workspace cursor outlives
+      // sessions, so two failed sends can't both mint id `error:0`.
+      seq: cursorFor(wsId).seq++,
       at: Date.now(),
       message: `Couldn't start the agent: ${message}`,
       apiErrorStatus: null,
@@ -1312,7 +1352,9 @@ export async function sdkRunBash(wsId: string, command: string): Promise<void> {
     log.warn(`agent-sdk: could not start session for bash run ${wsId}: ${message}`);
     emit(wsId, {
       type: 'error',
-      seq: 0,
+      // Unique even with no live Session: the workspace cursor outlives
+      // sessions, so two failed sends can't both mint id `error:0`.
+      seq: cursorFor(wsId).seq++,
       at: Date.now(),
       message: `Couldn't run the command: ${message}`,
       apiErrorStatus: null,
@@ -1430,7 +1472,9 @@ export async function sdkInterrupt(wsId: string): Promise<void> {
   if (!session) {
     emit(wsId, {
       type: 'turn-end',
-      seq: 0,
+      // Unique even with no live Session: the workspace cursor outlives
+      // sessions, so two failed sends can't both mint id `error:0`.
+      seq: cursorFor(wsId).seq++,
       at: Date.now(),
       isError: false,
       stopReason: 'interrupted',
@@ -1628,7 +1672,9 @@ export async function sdkSetRemoteControl(wsId: string, enabled: boolean): Promi
     log.warn(`agent-sdk: could not start session for remote control ${wsId}: ${message}`);
     emit(wsId, {
       type: 'error',
-      seq: 0,
+      // Unique even with no live Session: the workspace cursor outlives
+      // sessions, so two failed sends can't both mint id `error:0`.
+      seq: cursorFor(wsId).seq++,
       at: Date.now(),
       message: `Couldn't start the agent: ${message}`,
       apiErrorStatus: null,
@@ -1714,7 +1760,7 @@ export async function sdkClear(wsId: string): Promise<void> {
   await persistWorkspacePatch(wsId, { sdkSessionId: '' });
   emit(wsId, {
     type: 'session/clear',
-    seq: session ? session.ctx.seq++ : 0,
+    seq: cursorFor(wsId).seq++,
     at: Date.now(),
   });
 }
@@ -1798,7 +1844,7 @@ export async function sdkRewind(
 
   const event: AgentSessionRewindEvent = {
     type: 'session/rewind',
-    seq: session ? session.ctx.seq++ : 0,
+    seq: cursorFor(wsId).seq++,
     at: Date.now(),
     rewindId,
     ...(files?.filesChanged ? { filesChanged: files.filesChanged } : {}),
@@ -1850,6 +1896,11 @@ export function sdkHasSession(wsId: string): boolean {
 export function sdkStopMany(wsIds: readonly string[]): void {
   for (const wsId of wsIds) {
     if (sessions.has(wsId)) void sdkStop(wsId);
+    // The workspace is being deleted/archived — no transcript can reference its
+    // message ids any more, so its seq cursor can go. (Hibernation goes through
+    // sdkStopIfLive, NOT here: a hibernated workspace comes back and MUST keep
+    // its cursor, or the wake re-mints ids its transcript already holds.)
+    seqCursors.delete(wsId);
   }
 }
 
