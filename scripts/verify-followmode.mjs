@@ -101,7 +101,11 @@ const toolBlock = async (i) => {
 // the transcript tall. (On a 1000px-tall rig the original 8+4 seed fit entirely
 // in the viewport: scroll-up was a no-op at scrollTop 0, the release check
 // could never be exercised, and "stays pinned" gap=0 passed VACUOUSLY.)
-for (let i = 0; i < 14; i++) {
+// 26, not 14: the CONTROL below needs the list taller than the viewport + 500px,
+// and 14 paragraphs only reach ~1223px — which ABORTS the whole gate on any
+// window with a list taller than ~720px (a 1600x1000 headless sway gives 777px).
+// The seed count, not the assertion, is what should absorb viewport size.
+for (let i = 0; i < 26; i++) {
   await textBlock(`Streaming paragraph ${i}. ` + 'lorem ipsum dolor sit amet '.repeat(10));
   if (i % 2 === 0) await toolBlock(i);
 }
