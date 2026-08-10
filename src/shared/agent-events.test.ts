@@ -1739,3 +1739,138 @@ test('fold: session/rewind is replay-safe (pure projection)', () => {
   assert.deepEqual(once.messages, twice.messages);
   assert.equal(once.messages.length, 1);
 });
+
+// ─── normalize: Claude Code's non-conversational user frames ─────────────────
+// The stream/transcript writes slash-command invocations, their acks, and
+// interrupt markers as USER messages — they must not render as raw-XML bubbles.
+
+test('normalize: <local-command-stdout> user message → quiet command-output notice', () => {
+  const evs = normalizeSdkMessage(
+    {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: '<local-command-stdout>Set model to opus (claude-opus-5)</local-command-stdout>',
+      },
+    },
+    ctx(),
+  );
+  assert.deepEqual(evs, [
+    { type: 'notice', seq: 0, at: 1000, kind: 'command-output', text: 'Set model to opus (claude-opus-5)' },
+  ]);
+});
+
+test('normalize: an EMPTY <local-command-stdout> block (e.g. /clear ack) is dropped', () => {
+  const evs = normalizeSdkMessage(
+    {
+      type: 'user',
+      message: { role: 'user', content: '<local-command-stdout></local-command-stdout>' },
+    },
+    ctx(),
+  );
+  assert.deepEqual(evs, []);
+});
+
+test('normalize: a <command-name> invocation reconstructs the typed /cmd args', () => {
+  // Tag order varies across CC versions — cover both observed orderings.
+  const a = normalizeSdkMessage(
+    {
+      type: 'user',
+      message: {
+        role: 'user',
+        content:
+          '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>opus</command-args>',
+      },
+    },
+    ctx(),
+  );
+  assert.deepEqual(a, [{ type: 'user-message', seq: 0, at: 1000, text: '/model opus' }]);
+  const b = normalizeSdkMessage(
+    {
+      type: 'user',
+      message: {
+        role: 'user',
+        content:
+          '<command-message>loop</command-message>\n<command-name>/loop</command-name>\n<command-args></command-args>',
+      },
+    },
+    ctx(),
+  );
+  assert.deepEqual(b, [{ type: 'user-message', seq: 0, at: 1000, text: '/loop' }]);
+});
+
+test('normalize: the interrupt marker → interrupted notice, not a user bubble', () => {
+  const evs = normalizeSdkMessage(
+    {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] },
+    },
+    ctx(),
+  );
+  assert.deepEqual(evs, [
+    { type: 'notice', seq: 0, at: 1000, kind: 'interrupted', text: 'Interrupted by user' },
+  ]);
+  // The tool-use variant maps the same way.
+  const tool = normalizeSdkMessage(
+    {
+      type: 'user',
+      message: { role: 'user', content: '[Request interrupted by user for tool use]' },
+    },
+    ctx(),
+  );
+  assert.equal((tool[0] as Extract<AgentEvent, { type: 'notice' }>).kind, 'interrupted');
+});
+
+test('normalize: text typed AFTER an interrupt marker survives as the user bubble', () => {
+  const evs = normalizeSdkMessage(
+    {
+      type: 'user',
+      message: { role: 'user', content: '[Request interrupted by user]\nactually try the other fix' },
+    },
+    ctx(),
+  );
+  assert.deepEqual(
+    evs.map((e) => e.type),
+    ['notice', 'user-message'],
+  );
+  assert.equal((evs[1] as Extract<AgentEvent, { type: 'user-message' }>).text, 'actually try the other fix');
+});
+
+test('normalize: system local_command(_output) unwraps stdout tags and drops empties', () => {
+  const wrapped = normalizeSdkMessage(
+    { type: 'system', subtype: 'local_command', content: '<local-command-stdout>Login successful</local-command-stdout>' },
+    ctx(),
+  );
+  assert.deepEqual(wrapped, [
+    { type: 'notice', seq: 0, at: 1000, kind: 'command-output', text: 'Login successful' },
+  ]);
+  const empty = normalizeSdkMessage(
+    { type: 'system', subtype: 'local_command', content: '<local-command-stdout></local-command-stdout>' },
+    ctx(),
+  );
+  assert.deepEqual(empty, []);
+  // Plain (untagged) content passes through untouched.
+  const plain = normalizeSdkMessage(
+    { type: 'system', subtype: 'local_command_output', content: 'Compacted.' },
+    ctx(),
+  );
+  assert.equal((plain[0] as Extract<AgentEvent, { type: 'notice' }>).text, 'Compacted.');
+});
+
+test('fold: back-to-back interrupted notices collapse to one row', () => {
+  // One interrupt can surface twice: the stream marker AND the manager's
+  // catch-path notice. The transcript shows a single divider.
+  const s = foldEvents(emptySession('ws1'), [
+    { type: 'notice', seq: 0, at: 1000, kind: 'interrupted', text: 'Interrupted by user' },
+    { type: 'notice', seq: 1, at: 1001, kind: 'interrupted', text: 'Interrupted by user' },
+  ]);
+  assert.equal(s.messages.filter((m) => m.noticeKind === 'interrupted').length, 1);
+});
+
+test('fold: an interrupted notice does NOT open a turn (no phantom running)', () => {
+  const s = foldEvents(emptySession('ws1'), [
+    { type: 'notice', seq: 0, at: 1000, kind: 'interrupted', text: 'Interrupted by user' },
+  ]);
+  assert.equal(s.running, false);
+  assert.equal(s.turnStartedAt, undefined);
+});

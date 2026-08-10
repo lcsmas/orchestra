@@ -516,13 +516,24 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
       if (msg.isSynthetic !== true && msg.parent_tool_use_id == null) {
         const text = userTextFrom(content);
         if (text) {
-          out.push(
-            stamp(ctx, {
-              type: 'user-message',
-              text,
-              ...(originLabel(msg.origin) ? { origin: originLabel(msg.origin) } : {}),
-            }),
-          );
+          const origin = originLabel(msg.origin) ? { origin: originLabel(msg.origin) } : {};
+          // Route Claude Code's non-conversational user frames to their proper
+          // surfaces instead of raw-XML bubbles (see classifyUserText): a
+          // slash-command ack becomes a quiet command-output notice, the
+          // interrupt marker an `interrupted` notice, a replayed command
+          // invocation the `/cmd args` the user typed (which the manager's
+          // recentEchoes guard then dedupes against the local echo). Bonus fix:
+          // as notices these no longer flip the fold's `running`/`turnStartedAt`
+          // or the sidebar dot the way a phantom user-message did.
+          const c = classifyUserText(text);
+          if (c.kind === 'interrupted') {
+            out.push(stamp(ctx, { type: 'notice', kind: 'interrupted', text: 'Interrupted by user' }));
+            if (c.rest) out.push(stamp(ctx, { type: 'user-message', text: c.rest, ...origin }));
+          } else if (c.kind === 'command-output') {
+            if (c.text) out.push(stamp(ctx, { type: 'notice', kind: 'command-output', text: c.text }));
+          } else if (c.text) {
+            out.push(stamp(ctx, { type: 'user-message', text: c.text, ...origin }));
+          }
         }
       }
       return out;
@@ -671,12 +682,18 @@ function normalizeSystemNotice(ctx: NormalizeContext, msg: SdkMessage): AgentEve
       ];
     }
 
-    case 'local_command_output':
+    case 'local_command': // observed on-disk spelling (subtype `local_command`)
+    case 'local_command_output': {
       // Output of a built-in slash command (/compact ack, /usage, …) — CC
       // renders these as assistant-style text; we use a command-output notice.
-      return typeof msg.content === 'string' && msg.content.trim()
-        ? [stamp(ctx, { type: 'notice', kind: 'command-output', text: msg.content })]
-        : [];
+      // The content may arrive wrapped in `<local-command-stdout>` tags (the
+      // transcript shape) — unwrap so the notice never shows raw XML, and drop
+      // empty blocks (e.g. /clear's `<local-command-stdout></local-command-stdout>`).
+      if (typeof msg.content !== 'string' || !msg.content.trim()) return [];
+      const c = classifyUserText(msg.content);
+      const text = c.kind === 'command-output' ? c.text : msg.content.trim();
+      return text ? [stamp(ctx, { type: 'notice', kind: 'command-output', text })] : [];
+    }
 
     case 'informational': {
       if (typeof msg.content !== 'string' || !msg.content.trim()) return [];
@@ -755,6 +772,52 @@ function contextUsedFrom(u: RawUsage | null | undefined): number | null {
     (u.cache_creation_input_tokens ?? 0) +
     (u.output_tokens ?? 0);
   return used > 0 ? used : null;
+}
+
+/** Claude Code writes several NON-conversational frames into the user-message
+ *  stream/transcript that must not render as bubbles of raw XML (the bug this
+ *  fixes: `/model` acks showing as `<local-command-stdout>…` user bubbles, and
+ *  `[Request interrupted by user]` markers rendering as if the user typed them):
+ *    • `<command-name>/x</command-name><command-message>…</command-message>
+ *      <command-args>…</command-args>` — a built-in slash-command INVOCATION
+ *      (tag order varies across CC versions) → reconstructed as the `/x args`
+ *      the user actually typed.
+ *    • `<local-command-stdout|stderr>…</…>` — the command's OUTPUT, CC's channel
+ *      for feeding it to the model's next turn → a quiet `command-output`
+ *      notice (empty blocks, e.g. /clear's, drop entirely).
+ *    • `[Request interrupted by user]` / `…for tool use]` — the interrupt
+ *      marker → an `interrupted` notice; any trailing real text (the prompt
+ *      typed after interrupting) survives as `rest`.
+ *  Shared by the live normalize path (agent-events.ts `case 'user'`) and the
+ *  on-disk backfill (agent-transcript.ts) so both surfaces agree. */
+export type UserTextClassification =
+  | { kind: 'text'; text: string }
+  | { kind: 'command'; text: string }
+  | { kind: 'command-output'; text: string }
+  | { kind: 'interrupted'; rest: string };
+
+const INTERRUPT_MARKER_RE = /^\[Request interrupted by user[^\]]*\]\s*/;
+
+export function classifyUserText(raw: string): UserTextClassification {
+  const text = raw.trim();
+  const marker = INTERRUPT_MARKER_RE.exec(text);
+  if (marker) return { kind: 'interrupted', rest: text.slice(marker[0].length).trim() };
+  if (/^<command-(name|message)>/.test(text)) {
+    const name = /<command-name>([\s\S]*?)<\/command-name>/.exec(text)?.[1]?.trim() ?? '';
+    const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(text)?.[1]?.trim() ?? '';
+    return { kind: 'command', text: [name, args].filter(Boolean).join(' ') };
+  }
+  if (/^<local-command-std(out|err)\b/.test(text)) {
+    const inner: string[] = [];
+    const re = /<local-command-std(?:out|err)\b[^>]*>([\s\S]*?)<\/local-command-std(?:out|err)>/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text))) {
+      const t = m[1].trim();
+      if (t) inner.push(t);
+    }
+    return { kind: 'command-output', text: inner.join('\n') };
+  }
+  return { kind: 'text', text };
 }
 
 /** Extract renderable user TEXT from a stream `user` message's content —
@@ -1329,6 +1392,13 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       return { ...next, tasks: foldTaskEvent(next.tasks, event) };
 
     case 'notice': {
+      // Collapse back-to-back interrupt markers: one interrupt can surface
+      // twice (the stream's "[Request interrupted by user]" marker AND the
+      // manager's catch-path notice) — one row tells the story.
+      if (event.kind === 'interrupted') {
+        const last = next.messages[next.messages.length - 1];
+        if (last?.role === 'system' && last.noticeKind === 'interrupted') return next;
+      }
       const messages = [...next.messages];
       messages.push({
         id: `notice:${event.seq}`,

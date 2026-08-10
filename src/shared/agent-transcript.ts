@@ -30,6 +30,7 @@ import type { AgentEvent, AgentImage } from './types';
 import {
   stamp,
   normalizeResultContent,
+  classifyUserText,
   type NormalizeContext,
 } from './agent-events.ts';
 
@@ -70,6 +71,28 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
   const out: AgentEvent[] = [];
   let blockIndex = HISTORY_INDEX_BASE;
 
+  /** Emit a user text as its PROPER event (see classifyUserText): slash-command
+   *  invocations become the `/cmd args` the user typed, `<local-command-stdout>`
+   *  acks a quiet command-output notice, interrupt markers an `interrupted`
+   *  notice — instead of raw-XML user bubbles on backfill. Returns true when a
+   *  user-message bubble was emitted (the image-attachment anchor). */
+  const pushUserText = (text: string, extra: { rewindId?: string; images?: AgentImage[] }): boolean => {
+    const c = classifyUserText(text);
+    if (c.kind === 'interrupted') {
+      out.push(stamp(ctx, { type: 'notice', kind: 'interrupted', text: 'Interrupted by user' }));
+      if (!c.rest) return false;
+      out.push(stamp(ctx, { type: 'user-message', text: c.rest, ...extra }));
+      return true;
+    }
+    if (c.kind === 'command-output') {
+      if (c.text) out.push(stamp(ctx, { type: 'notice', kind: 'command-output', text: c.text }));
+      return false;
+    }
+    if (!c.text) return false;
+    out.push(stamp(ctx, { type: 'user-message', text: c.text, ...extra }));
+    return true;
+  };
+
   for (const raw of jsonl.split('\n')) {
     const line = raw.trim();
     if (!line) continue;
@@ -92,10 +115,7 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
       // id rides only on the text/image bubbles below.)
       const rewindId = typeof entry.uuid === 'string' && entry.uuid ? entry.uuid : undefined;
       if (typeof content === 'string') {
-        if (content.trim())
-          out.push(
-            stamp(ctx, { type: 'user-message', text: content, ...(rewindId ? { rewindId } : {}) }),
-          );
+        if (content.trim()) pushUserText(content, rewindId ? { rewindId } : {});
       } else if (Array.isArray(content)) {
         const blocks = content as TranscriptBlock[];
         // Reconstruct pasted images so a reopened workspace shows them instead of
@@ -130,15 +150,11 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
               }),
             );
           } else if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
-            out.push(
-              stamp(ctx, {
-                type: 'user-message',
-                text: b.text,
-                ...(!imagesAttached && images.length > 0 ? { images } : {}),
-                ...(rewindId ? { rewindId } : {}),
-              }),
-            );
-            imagesAttached = true;
+            const emitted = pushUserText(b.text, {
+              ...(!imagesAttached && images.length > 0 ? { images } : {}),
+              ...(rewindId ? { rewindId } : {}),
+            });
+            if (emitted) imagesAttached = true;
           }
         }
         // An image-only turn (no caption) still renders a bubble with the images.

@@ -314,6 +314,20 @@ function emitFrom(session: Session, msg: SdkMessage): void {
         continue;
       }
     }
+    // A USER-requested interrupt ends the turn with an `is_error` result
+    // (subtype error_during_execution) whose normalized error read "agent turn
+    // errored (error_during_execution)" — a red banner for the routine mechanics
+    // of the stop the user just asked for. The stream's own interrupt marker
+    // (rendered as an `interrupted` notice) is the transcript's record, so drop
+    // the redundant error. A genuine EDE crash (no interrupt requested) still
+    // renders; the flag resets at the result boundary in consume().
+    if (
+      ev.type === 'error' &&
+      session.interruptRequested &&
+      /error_during_execution|ede_diagnostic/i.test(ev.message)
+    ) {
+      continue;
+    }
     emit(session.wsId, ev);
     driveStatusFromEvent(session, ev);
   }
@@ -575,7 +589,12 @@ async function consume(session: Session): Promise<void> {
         void persistSessionId(session.wsId, sid);
       }
       if (msg.type === 'result') {
-        // Turn boundary — resolve any parked permission (belt & suspenders) and
+        // Turn boundary — the interrupt (if any) is fully accounted for, so
+        // reset the flag: it must not linger and mislabel/suppress a FUTURE
+        // turn's genuine error as interrupt fallout. (emitFrom already ran for
+        // this result, so its suppression saw the flag still set.)
+        session.interruptRequested = false;
+        // Resolve any parked permission (belt & suspenders) and
         // open the gate so the next queued turn can proceed.
         for (const [id, resolve] of session.pending) {
           resolve({ behavior: 'deny', message: 'turn ended' });
@@ -596,14 +615,29 @@ async function consume(session: Session): Promise<void> {
       session.interruptRequested || /error_during_execution|ede_diagnostic/i.test(message);
     endedByInterrupt = interrupted;
     if (!session.cleared) {
-      emit(session.wsId, {
-        type: 'error',
-        seq: session.ctx.seq++,
-        at: (session.ctx.now ?? Date.now)(),
-        message: interrupted ? 'Turn interrupted.' : message,
-        apiErrorStatus: null,
-        willRetry: false,
-      });
+      // An interrupt is the user's own action, not a failure — surface it as a
+      // quiet `interrupted` notice (the fold collapses it into the stream's
+      // "[Request interrupted by user]" marker when that already rendered)
+      // instead of the red error banner it used to raise. Real crashes keep
+      // the error row.
+      if (interrupted) {
+        emit(session.wsId, {
+          type: 'notice',
+          kind: 'interrupted',
+          seq: session.ctx.seq++,
+          at: (session.ctx.now ?? Date.now)(),
+          text: 'Interrupted by user',
+        });
+      } else {
+        emit(session.wsId, {
+          type: 'error',
+          seq: session.ctx.seq++,
+          at: (session.ctx.now ?? Date.now)(),
+          message,
+          apiErrorStatus: null,
+          willRetry: false,
+        });
+      }
     }
     if (!interrupted) {
       log.warn(`agent-sdk: session ${session.wsId} consume loop errored`, err);

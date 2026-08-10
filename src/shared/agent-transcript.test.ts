@@ -182,3 +182,53 @@ test('backfill: a line with no uuid yields no rewind target (not a crash)', () =
   assert.equal(users.length, 1);
   assert.equal(users[0].rewindId, undefined);
 });
+
+test('backfill: slash-command frames render properly, not as raw XML bubbles', () => {
+  const jsonl = lines([
+    {
+      type: 'user',
+      uuid: 'u1',
+      message: {
+        role: 'user',
+        content:
+          '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>opus</command-args>',
+      },
+    },
+    {
+      type: 'user',
+      message: { role: 'user', content: '<local-command-stdout>Set model to opus</local-command-stdout>' },
+    },
+    // /clear's empty ack must vanish entirely.
+    {
+      type: 'user',
+      message: { role: 'user', content: '<local-command-stdout></local-command-stdout>' },
+    },
+  ]);
+  const s = foldEvents(emptySession('ws1'), transcriptToEvents(jsonl, ctx()));
+  assert.deepEqual(
+    s.messages.map((m) => [m.role, m.text]),
+    [
+      ['user', '/model opus'],
+      ['system', 'Set model to opus'],
+    ],
+  );
+  // The invocation keeps its rewind target — it is a real turn the user sent.
+  assert.equal(s.messages[0].rewindId, 'u1');
+  assert.equal(s.messages[1].noticeKind, 'command-output');
+});
+
+test('backfill: the interrupt marker becomes an interrupted notice', () => {
+  const jsonl = lines([
+    { type: 'user', message: { role: 'user', content: 'do the thing' } },
+    {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] },
+    },
+  ]);
+  const s = foldEvents(emptySession('ws1'), transcriptToEvents(jsonl, ctx()));
+  assert.deepEqual(
+    s.messages.map((m) => m.role),
+    ['user', 'system'],
+  );
+  assert.equal(s.messages[1].noticeKind, 'interrupted');
+});

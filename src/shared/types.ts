@@ -900,7 +900,8 @@ export type AgentNoticeKind =
   | 'notification' // loop-side text notification (system/notification)
   | 'warning' // informational message at warning prominence
   | 'info' // informational message (system/informational, low prominence)
-  | 'command-output'; // output of a built-in slash command (/compact, /usage …)
+  | 'command-output' // output of a built-in slash command (/compact, /usage …)
+  | 'interrupted'; // the user interrupted the turn (stream marker / manager notice)
 
 /** A user-relevant system notice the SDK surfaced outside the assistant text
  *  stream. Before this event existed, `normalizeSdkMessage` silently dropped

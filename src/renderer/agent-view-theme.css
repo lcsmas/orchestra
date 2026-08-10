@@ -2144,6 +2144,26 @@ h6.av-md-h {
 .av-notice-permission-denied .av-notice-dot { background: var(--av-error); }
 .av-notice-compact-boundary .av-notice-dot { background: var(--av-assistant); }
 .av-notice-command-output { background: var(--av-surface-sunken); }
+/* Interrupt marker — a quiet centered divider, not a boxed row: it marks a
+   break in the conversation's flow ("you stopped the turn here") rather than
+   reporting a condition. Square dot = a "stop" glyph. */
+.av-notice-interrupted {
+  border: none; background: none;
+  align-items: center;
+  color: var(--av-text-faint);
+}
+.av-notice-interrupted::before,
+.av-notice-interrupted::after {
+  content: ''; flex: 1; height: 1px;
+  background: var(--av-hairline);
+}
+.av-notice-interrupted .av-notice-dot {
+  order: 1; /* sit between the leading rule and the text */
+  border-radius: 1.5px;
+  background: var(--av-text-faint);
+}
+.av-notice-interrupted .av-notice-text { order: 2; flex: none; }
+.av-notice-interrupted::after { order: 3; }
 
 /* Origin badge on an externally-originated user turn (Remote Control / peer). */
 .av-message-origin {

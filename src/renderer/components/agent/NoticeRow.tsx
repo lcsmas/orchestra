@@ -23,6 +23,9 @@ const LABEL: Record<AgentNoticeKind, string> = {
   warning: 'Warning',
   info: '',
   'command-output': '',
+  // Renders as a centered divider (see .av-notice-interrupted) — the text
+  // carries the story, no shouty uppercase label.
+  interrupted: '',
 };
 
 function NoticeRowImpl({ message }: { message: RenderMessage }) {

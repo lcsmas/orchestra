@@ -154,10 +154,12 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   message variants and silently dropped the rest. Now an **`AgentNoticeEvent`**
   (`type:'notice'`, `kind`: rate-limit / auth / compact-boundary / compact-error
   / refusal / permission-denied / notification / warning / info /
-  command-output) surfaces `rate_limit_event`, `auth_status`,
-  `system/{compact_boundary, local_command_output, informational, notification,
+  command-output / interrupted) surfaces `rate_limit_event`, `auth_status`,
+  `system/{compact_boundary, local_command(_output), informational, notification,
   permission_denied, model_refusal_*}` as quiet system rows
-  (`NoticeRow.tsx`, `.av-notice-*`). **`AgentStatusEvent`**
+  (`NoticeRow.tsx`, `.av-notice-*`). `interrupted` renders as a centered
+  hairline divider with a square "stop" dot (`.av-notice-interrupted`), and
+  the fold collapses back-to-back `interrupted` notices into one row. **`AgentStatusEvent`**
   (`session/status`, transient — never a transcript row) carries
   `system/api_retry` ("API 529 — retrying in 8s (3/10)") and
   `status:'compacting'`; folded into `session.statusNotice`, shown in the
@@ -185,6 +187,24 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   synthetic frames, subagent sidechains (`parent_tool_use_id`) and
   tool_result-only messages stay filtered. `emitFrom` drops replays matching
   `session.recentEchoes` (belt-and-braces vs future SDK replay behavior).
+- **Claude Code's non-conversational user frames** — the stream/transcript
+  writes slash-command INVOCATIONS (`<command-name>/x</command-name>…`), their
+  acks (`<local-command-stdout>…</local-command-stdout>`) and the interrupt
+  marker (`[Request interrupted by user…]`) as plain USER messages, which used
+  to render as raw-XML user bubbles (and a phantom `running` turn).
+  **`classifyUserText`** (agent-events.ts) routes them: invocation →
+  reconstructed `/cmd args` user-message (deduped against the local echo by
+  `recentEchoes`), ack → `command-output` notice (empty blocks, e.g. /clear's,
+  drop), marker → `interrupted` notice (trailing typed text survives as its own
+  bubble). Applied by BOTH the live normalize `user` branch and the
+  `transcriptToEvents` backfill so live and reopened views agree.
+- **Interrupt is not an error** — a user-requested interrupt ends the turn with
+  an `is_error` result (`subtype: error_during_execution`) that used to raise a
+  red "agent turn errored (error_during_execution)" banner. `emitFrom` now
+  drops that error while `session.interruptRequested` is set (reset at the
+  next `result` boundary in `consume` so a FUTURE turn's genuine EDE still
+  renders), and consume's catch path emits a quiet `interrupted` notice
+  instead of the old "Turn interrupted." error row.
 - **Fold robustness** — the fold's default case tolerates unknown event types
   at runtime (compile-time exhaustiveness kept via a `never` assignment); the
   store's RAF flush try/catches per workspace so one bad event can't discard a
