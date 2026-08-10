@@ -38,6 +38,7 @@ import { getHookSocketPath } from './hooks-server';
 import { isRunning as isPtyRunning } from './pty';
 import { getEventsDir } from './events-spool';
 import { reconcileExited, applyAgentEvent, fireNeedsInput, resumeRunning } from './activity';
+import { makeKeeperSpawn, killKeeper, probeKeeper } from './keeper-client';
 import { registerSdkDelivery } from './sdk-delivery';
 import { clearHibernated } from './hibernation.ts';
 import { buildBrowserToolServer } from './agent-browser-tools';
@@ -398,6 +399,12 @@ function buildSdkEnv(ws: Workspace): { env: Record<string, string>; driveStatus:
   // ORCHESTRA_WS_ID with this workspace's id (pty.ts) and so never leaks.
   delete env.ORCHESTRA_WS_ID;
   delete env.ORCHESTRA_EVENTS_DIR;
+  // Same hygiene for the hook socket: a stale inherited path must not leak
+  // into a child whose own assignment below is the source of truth. (The
+  // value set below is durable across app restarts — hooks-server binds a
+  // STABLE per-ORCHESTRA_HOME socket precisely so a keeper-surviving CLI's
+  // frozen env keeps resolving the CURRENT app instance.)
+  delete env.ORCHESTRA_SOCK;
   const configDir = workspaceAccountConfigDir(ws, undefined);
   if (configDir) env.CLAUDE_CONFIG_DIR = configDir;
   env.ORCHESTRA_BRANCH = ws.branch;
@@ -887,6 +894,24 @@ async function ensureSession(wsId: string): Promise<Session> {
       canUseTool: makeCanUseTool(session) as never,
       env: sdkEnv,
       ...(claudeBin ? { pathToClaudeCodeExecutable: claudeBin } : {}),
+      // LOCAL sessions run the CLI behind the detached session KEEPER
+      // (src/keeper/index.ts via keeper-client.ts): the subprocess belongs to
+      // a tiny daemon instead of Electron main, so quitting Orchestra only
+      // drops the socket (detach) and an in-flight turn keeps running; the
+      // next ensureSession transparently REATTACHES to the live CLI (the
+      // SDK's initialize handshake works mid-session and even redelivers
+      // parked canUseTool permission requests — measured in
+      // docs/spikes/keeper-findings.md). Remote/sandbox sessions keep the
+      // SDK's own spawn (their process lives in the container). Typed `as
+      // never` like canUseTool: the local SpawnedProcess mirror is
+      // structurally identical but not nominally the SDK's.
+      ...(remote
+        ? {}
+        : {
+            spawnClaudeCodeProcess: makeKeeperSpawn(wsId, (pid) =>
+              log.info(`agent-sdk[${wsId}] reattached to detached keeper session (cli pid=${pid ?? '?'})`),
+            ) as never,
+          }),
       // Start on the workspace's configured model (set by `orchestra spawn
       // --model` or the Model dropdown). Undefined falls back to the account's
       // default model. `sdkSetModel` switches it live.
@@ -1315,6 +1340,34 @@ export async function sdkWake(wsId: string, text: string): Promise<void> {
   await sdkSend(wsId, text);
 }
 
+/** Reattach to a DETACHED keeper session, if one is live for this workspace.
+ *
+ *  A structured session's CLI survives app quit inside the detached keeper
+ *  (keeper-client.ts); after a relaunch the app has no in-memory session but
+ *  the turn may still be running. This lazily rebuilds the session AROUND the
+ *  live CLI — ensureSession's keeper spawn facade finds the live keeper and
+ *  attaches instead of spawning, so the in-flight turn's stream flows into
+ *  consume() again (and any parked permission request is redelivered by the
+ *  attach handshake — docs/spikes/keeper-findings.md). Called fire-and-forget
+ *  when a workspace's structured view loads (api-handlers sdkHistory), keeping
+ *  attach LAZY per the no-mass-resume-at-startup philosophy (index.ts).
+ *  Returns true when an attach was started. */
+export async function sdkAttachIfDetached(wsId: string): Promise<boolean> {
+  if (sessions.has(wsId)) return false;
+  const ws = store.getWorkspace(wsId);
+  if (!ws || ws.host?.kind === 'sandbox') return false;
+  const probe = await probeKeeper(wsId);
+  if (!probe?.running) return false;
+  log.info(`agent-sdk: live detached keeper found for ${wsId} (cli pid=${probe.pid ?? '?'}) — reattaching`);
+  try {
+    await ensureSession(wsId);
+    return true;
+  } catch (err) {
+    log.warn(`agent-sdk: reattach failed for ${wsId}`, err);
+    return false;
+  }
+}
+
 /** Cap on captured bash output so a runaway command (e.g. `yes`, `cat bigfile`)
  *  can't blow up the transcript or the context we feed the model. Matches the
  *  spirit of Claude Code's own bash-output truncation. */
@@ -1726,7 +1779,16 @@ export async function sdkSetRemoteControl(wsId: string, enabled: boolean): Promi
  *  stop and on workspace removal so a deleted workspace never leaks a query. */
 export async function sdkStop(wsId: string): Promise<void> {
   const session = sessions.get(wsId);
-  if (!session) return;
+  if (!session) {
+    // No in-memory session — but a DETACHED KEEPER may still be running this
+    // workspace's CLI (app relaunched while a turn survived the quit). Every
+    // explicit-stop path (/clear, rewind, archive, delete, hibernate, branch
+    // switch, account migration) funnels through here and must not leave an
+    // orphan CLI running a conversation the app just discarded. Best-effort:
+    // instant no-op when no keeper exists.
+    void killKeeper(wsId);
+    return;
+  }
   session.stopping = true;
   // Wake any waiters so the generator returns, then interrupt to unwind the SDK.
   session.pump?.();
@@ -1737,6 +1799,10 @@ export async function sdkStop(wsId: string): Promise<void> {
     // interrupt on an already-ended query throws; ignore.
   }
   sessions.delete(wsId);
+  // NOTE: no killKeeper here — the SDK's graceful close ends stdin, which the
+  // bridge forwards as a stdinEnd frame; the keeper then EOF→SIGTERM→SIGKILL
+  // escalates on its own clock. That preserves the CLI's clean shutdown
+  // (transcript flush) where an immediate SIGTERM would race it.
 }
 
 /** Clear the conversation (composer `/clear` — parity with Claude Code): tear

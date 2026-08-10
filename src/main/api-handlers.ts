@@ -117,6 +117,7 @@ import {
   sdkListSkills,
   sdkListModels,
   sdkStopMany,
+  sdkAttachIfDetached,
 } from './agent-sdk';
 import { log, revealLogs, getLogFile, getLogLevel } from './logger';
 import * as browserPanel from './browser-panel';
@@ -856,7 +857,15 @@ export const apiHandlers: ApiHandlerTable = {
     await sdkSetRemoteControl(wsId, enabled);
   },
 
-  agentSdkHistory: async (wsId) => sdkHistory(wsId),
+  agentSdkHistory: async (wsId) => {
+    // Opening a structured view is the LAZY reattach point: if this
+    // workspace's CLI outlived a previous app run in a detached keeper
+    // (keeper-client.ts), rebuild the session around it now so the in-flight
+    // turn streams live again. Fire-and-forget — the backfill below paints
+    // the on-disk transcript either way, and attach events layer on top.
+    void sdkAttachIfDetached(wsId);
+    return sdkHistory(wsId);
+  },
 
   agentSdkDefaultModel: async (wsId) => sdkDefaultModel(wsId),
 

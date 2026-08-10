@@ -27,6 +27,7 @@ design decisions, so you get accurate context without grepping the tree first.
 | Sandbox/remote agents: wire protocol, shim, Docker image, transports, reconnect, ownership lock, import/eject/backups | `docs/codebase-map/sandbox-transport.md` |
 | Vite/electron-builder build, release pipeline, CI, bundled skills | `docs/codebase-map/build-release.md` |
 | Structured agent view: SDK-driven agent pane — `agent-sdk.ts` session manager, `AgentEvent` contract, normalize/fold, `agent:event` channel, StructuredView + tool cards / diffs / permission dialog | `docs/codebase-map/structured-agent-view.md` |
+| Detached session keeper: structured sessions surviving app quit — keeper daemon, `spawnClaudeCodeProcess` bridge, attach/reattach, linger policy, kill/quit semantics | `docs/codebase-map/session-keeper.md` |
 | Structured agent-view design system: the 3 `av-*` CSS layers, tokens, theming, states, a11y contract the SDK-view components render against | `docs/codebase-map/agent-view-design.md` |
 | Embedded browser panel: per-workspace `WebContentsView`, user + agent shared surface, `webContents.debugger` driving, `mcp__browser__*` SDK tools, URL bar / pane wiring | `docs/codebase-map/browser-panel.md` |
 

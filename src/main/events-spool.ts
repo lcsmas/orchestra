@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { platform } from './platform';
 import { applyAgentEvent } from './activity';
+import { listLiveKeepers } from './keeper-client';
 import { log, scoped } from './logger';
 
 /** Spool-scoped logger. The spool is the sole source of agent status, so every
@@ -268,9 +269,26 @@ export function startEventsSpool(): void {
   // zeroes the FIRST instance's live spools and its dots freeze forever. A
   // non-zero count in a log whose banner says the app just started is the
   // fingerprint of that bug — and it was previously invisible.
+  // EXCEPTION to "no agent is running at startup": a structured session's CLI
+  // can outlive the previous app run inside a detached keeper
+  // (keeper-client.ts), and its hooks are still appending to this dir. Skip
+  // those workspaces' files — unlinking one mid-`flock` would race the hook
+  // writer (cursors are in-memory either way, so keeping the file is
+  // consistent: the tailer replays it from offset 0 and seq-dedups).
+  let liveKeeperIds: Set<string>;
+  try {
+    liveKeeperIds = new Set(listLiveKeepers());
+  } catch {
+    liveKeeperIds = new Set();
+  }
   let wiped = 0;
   try {
     for (const name of fs.readdirSync(EVENTS_DIR)) {
+      const wsId = name.replace(/\.(jsonl(\.old)?|seq)$/, '');
+      if (liveKeeperIds.has(wsId)) {
+        slog.info(`startup wipe: keeping ${name} — live detached keeper for ${wsId}`);
+        continue;
+      }
       try {
         fs.unlinkSync(path.join(EVENTS_DIR, name));
         wiped++;

@@ -2,6 +2,7 @@ import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { dispatchHookEvent } from './activity';
 import {
   dispatchRenameRequest,
@@ -30,6 +31,7 @@ import {
 } from './linear-tickets';
 import { dispatchLoginUrlRequest } from './login-url';
 import { log } from './logger';
+import { orchestraHome } from './platform';
 
 // Tiny HTTP server bound to a Unix socket. Each workspace's
 // .claude/settings.local.json registers Claude Code lifecycle hooks
@@ -45,15 +47,28 @@ let server: http.Server | null = null;
 let socketPath: string | null = null;
 
 function defaultSocketPath(): string {
+  // STABLE per-ORCHESTRA_HOME name (hash of the home path), NOT per-PID. The
+  // detached session keeper (keeper-client.ts) lets a CLI child OUTLIVE the
+  // app process, with ORCHESTRA_SOCK frozen in its env at spawn — a per-PID
+  // socket name would go stale at the first app restart and silently break
+  // every `orchestra` CLI call and hook (they hard-gate on $ORCHESTRA_SOCK,
+  // env-before-pointer-file precedence in cli/index.ts) for the rest of that
+  // CLI's life. A stable name keeps the frozen env valid across restarts:
+  //  - one binder per home is guaranteed by the single-instance lock (userData
+  //    lives under ORCHESTRA_HOME — index.ts), and dev/prod homes differ, so
+  //    the hash keeps their sockets distinct;
+  //  - a crashed run's stale socket file is unlinked before bind (below), the
+  //    same recovery the per-PID name relied on the name change for.
+  const homeHash = crypto.createHash('sha256').update(orchestraHome()).digest('hex').slice(0, 12);
   // Windows has no filesystem unix sockets — Node's net/http layer instead
   // listens on a named pipe addressed as \\.\pipe\<name>. Both server.listen()
   // and http.request({ socketPath }) accept that string, so the rest of the
   // plumbing (and the pointer file) is identical to the POSIX path.
   if (process.platform === 'win32') {
-    return `\\\\.\\pipe\\orchestra-${process.pid}`;
+    return `\\\\.\\pipe\\orchestra-${homeHash}`;
   }
   const dir = process.env.XDG_RUNTIME_DIR || os.tmpdir();
-  return path.join(dir, `orchestra-${process.pid}.sock`);
+  return path.join(dir, `orchestra-${homeHash}.sock`);
 }
 
 // Stable, well-known pointer file whose contents are the absolute path of the
@@ -95,7 +110,7 @@ export function getHookSocketPath(): string | null {
 export async function startHooksServer(): Promise<void> {
   if (server) return;
   const target = defaultSocketPath();
-  // Stale socket left over by a prior crashed run with the same PID — drop it
+  // Stale socket left over by a prior crashed run of this home — drop it
   // before bind so listen() doesn't fail with EADDRINUSE. Filesystem-socket
   // only: Windows named pipes are not files (and auto-release when the owner
   // dies), so there's nothing to unlink there.

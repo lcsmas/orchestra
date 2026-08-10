@@ -163,6 +163,7 @@ import { stopAll } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
 import { backfillWorkspaceLinks } from './link-backfill';
 import { installCliShim, installAgentCliShim } from './cli-shim';
+import { installKeeper, listLiveKeepers, killKeeper, setAppQuitting } from './keeper-client';
 import { startEventsSpool, stopEventsSpool } from './events-spool';
 import { startHibernationSweeper, stopHibernationSweeper } from './hibernation.ts';
 import { startUsagePolling, stopUsagePolling } from './usage';
@@ -511,6 +512,22 @@ async function checkDependencies(): Promise<void> {
 // In CLI mode the GUI lifecycle is never wired up — the dynamic import at the
 // top of this module handles the command and exits the process.
 
+/** Kill detached keepers whose workspace no longer exists in the store —
+ *  deleted/archived while their turn outlived a previous app run. Best-effort;
+ *  live keepers for known workspaces are left alone (lazy reattach). */
+function reapOrphanKeepers(): void {
+  try {
+    for (const wsId of listLiveKeepers()) {
+      if (!store.getWorkspace(wsId)) {
+        log.info(`reaping orphan keeper for deleted workspace ${wsId}`);
+        void killKeeper(wsId);
+      }
+    }
+  } catch (e) {
+    log.warn('orphan-keeper reap failed', e);
+  }
+}
+
 function shutdownSubsystems(): void {
   stopAll();
   stopEventsSpool();
@@ -588,7 +605,19 @@ if (!ORCHESTRA_CLI_MODE) {
       // entry before the shim file exists and fall through to the raw
       // binary (which launches the GUI on a bare `orchestra <subcmd>`).
       installAgentCliShim();
+      // Keeper runtime: copied OUT of the install dir so a detached session
+      // host survives the app (asar / AppImage mount) going away. Before the
+      // window for the same reason as the CLI shim — an early structured send
+      // must find the runtime in place.
+      installKeeper();
       await createMainWindow();
+      // Reap keepers whose workspace no longer exists (deleted while the app
+      // was closed) — everything else stays lazily attachable; also prunes
+      // stale pid/sock files for dead keepers as a side effect. MUST run after
+      // createMainWindow: store.load() happens in there, and reaping against
+      // an unloaded store reads every workspace as missing and kills every
+      // legitimate keeper (caught by verify-keeper-detach.mjs).
+      reapOrphanKeepers();
       installCliShim();
       log.info('main window ready');
     } catch (e) {
@@ -599,11 +628,18 @@ if (!ORCHESTRA_CLI_MODE) {
 
   app.on('window-all-closed', () => {
     log.info('window-all-closed — shutting down');
+    setAppQuitting(); // keeper bridges: treat everything from here as detach
     shutdownSubsystems();
     if (process.platform !== 'darwin') app.quit();
   });
 
   app.on('before-quit', () => {
+    // Detach — don't shut down — the structured sessions: mark quitting FIRST
+    // so the SDK's exit sweep (win32 stdin.end) and transport closes read as
+    // "detach" in the keeper bridge, letting in-flight turns keep running in
+    // their detached keepers (keeper-client.ts). Deliberately NO sdkStop here —
+    // surviving quit is the feature; shutdownSubsystems stays SDK-free.
+    setAppQuitting();
     shutdownSubsystems();
   });
 

@@ -1,0 +1,319 @@
+#!/usr/bin/env node
+/* E2E gate for the detached session keeper: a structured-agent turn SURVIVES
+ * quitting Orchestra, and a relaunch REATTACHES to it.
+ *
+ * Drives the REAL built app (isolated ORCHESTRA_HOME, headless sway, CDP):
+ *   1. Seed a scratch workspace; launch app #1; send a turn that runs
+ *      `sleep 15 && echo DONE > proof` via the Bash tool (model haiku).
+ *   2. Once the keeper + CLI exist, close the app mid-turn (window.close()).
+ *   3. Assert keeper + claude survive the quit and the proof file appears
+ *      WHILE NO APP IS RUNNING (the turn completed detached).
+ *   4. Launch app #2 on the same home; open the workspace; assert the
+ *      transcript (incl. the reply produced while closed) is visible, the
+ *      main log shows the reattach, and capture a screenshot.
+ *   5. `/clear` (agentSdkClear) → assert the keeper + CLI actually DIE
+ *      (explicit stop must kill what quit must not).
+ *
+ * Usage: node scripts/verify-keeper-detach.mjs   (from the repo root, after
+ *        `npx vite build && pnpm run build:cli && pnpm run build:keeper`)
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { spawn, execSync } from 'node:child_process';
+
+const REPO = process.cwd();
+const RUN = path.join(os.tmpdir(), `keeper-e2e-f3d27106-${process.pid}`);
+const HOME = path.join(RUN, 'home');
+const WS = 'e2e-keeper-ws-1';
+// Per-run port: a crashed previous run's dying Chromium can hold a fixed port
+// at our launch instant, and Electron then silently continues WITHOUT CDP.
+const PORT = 9300 + (process.pid % 90);
+const results = [];
+const check = (name, ok, detail = '') => {
+  results.push({ name, ok: !!ok });
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + detail : ''}`);
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(what, pred, ms, step = 300) {
+  const t0 = Date.now();
+  for (;;) {
+    const v = await pred();
+    if (v) return v;
+    if (Date.now() - t0 > ms) throw new Error('timeout: ' + what);
+    await sleep(step);
+  }
+}
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// ── harness: sway ───────────────────────────────────────────────────────────
+fs.mkdirSync(HOME, { recursive: true });
+const swayCfg = path.join(RUN, 'sway.cfg');
+fs.writeFileSync(swayCfg, 'output HEADLESS-1 resolution 1600x1000\n');
+const runtimeDir = process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid()}`;
+// A previous crashed run can leave (a) a stray headless sway and (b) a stale
+// wayland-N socket FILE that a fresh sway re-binds under the SAME name — so
+// detect the new socket by MTIME, not by name diff, and sweep strays first.
+try {
+  execSync(`pkill -f 'sway -c /tmp/keeper-e2e'`);
+  await sleep(500);
+} catch {
+  /* none running */
+}
+const t0 = Date.now();
+const sway = spawn('sway', ['-c', swayCfg], {
+  env: {
+    ...process.env,
+    WLR_BACKENDS: 'headless',
+    WLR_LIBINPUT_NO_DEVICES: '1',
+    WAYLAND_DISPLAY: '',
+    SWAYSOCK: path.join(RUN, 'sway.sock'),
+  },
+  stdio: 'ignore',
+});
+const wayland = await waitFor(
+  'sway wayland socket',
+  () =>
+    fs
+      .readdirSync(runtimeDir)
+      .filter((f) => /^wayland-\d+$/.test(f))
+      .find((f) => fs.statSync(path.join(runtimeDir, f)).mtimeMs >= t0 - 1000),
+  10000,
+);
+console.log(`[harness] sway up on ${wayland}`);
+
+// ── seed store ──────────────────────────────────────────────────────────────
+const scratchDir = path.join(RUN, 'scratch-ws');
+fs.mkdirSync(scratchDir, { recursive: true });
+const storeDir = path.join(HOME, 'userData', 'orchestra');
+fs.mkdirSync(storeDir, { recursive: true });
+fs.writeFileSync(
+  path.join(storeDir, 'store.json'),
+  JSON.stringify(
+    {
+      repos: [],
+      workspaces: [
+        {
+          id: WS,
+          name: 'keeper-e2e',
+          kind: 'scratch',
+          repoPath: '',
+          worktreePath: scratchDir,
+          branch: 'keeper-e2e',
+          baseBranch: '',
+          createdAt: Date.now(),
+          status: 'idle',
+          agent: 'claude',
+          model: 'haiku',
+        },
+      ],
+    },
+    null,
+    2,
+  ),
+);
+
+// ── app launcher + CDP ─────────────────────────────────────────────────────
+const appEnv = { ...process.env };
+for (const k of ['APPIMAGE', 'APPDIR', 'OWD', 'ARGV0']) delete appEnv[k];
+Object.assign(appEnv, {
+  WAYLAND_DISPLAY: wayland,
+  ELECTRON_OZONE_PLATFORM_HINT: 'wayland',
+  ORCHESTRA_OZONE: 'wayland',
+  ORCHESTRA_OZONE_RELAUNCHED: '1',
+  ORCHESTRA_HOME: HOME,
+  ORCHESTRA_DEBUG_PORT: String(PORT),
+});
+function launchApp(port) {
+  return spawn(path.join(REPO, 'node_modules/electron/dist/electron'), ['.', '--ozone-platform=wayland'], {
+    cwd: REPO,
+    env: { ...appEnv, ORCHESTRA_DEBUG_PORT: String(port) },
+    stdio: 'ignore',
+  });
+}
+async function connectCdp(PORT) {
+  const url = await waitFor(
+    'CDP target',
+    async () => {
+      try {
+        const targets = await (await fetch(`http://127.0.0.1:${PORT}/json`)).json();
+        const page = targets.find((t) => t.type === 'page' && t.url.includes('index.html'));
+        if (page && !page.url.includes('app.asar')) return page.webSocketDebuggerUrl;
+      } catch {
+        /* not up yet */
+      }
+      return null;
+    },
+    30000,
+    500,
+  );
+  const ws = new WebSocket(url);
+  let id = 0;
+  const pending = new Map();
+  await new Promise((res, rej) => {
+    ws.onopen = res;
+    ws.onerror = rej;
+  });
+  ws.onmessage = (m) => {
+    const msg = JSON.parse(m.data);
+    if (msg.id && pending.has(msg.id)) {
+      const { resolve, reject } = pending.get(msg.id);
+      pending.delete(msg.id);
+      msg.error ? reject(new Error(JSON.stringify(msg.error))) : resolve(msg.result);
+    }
+  };
+  const send = (method, params = {}) =>
+    new Promise((resolve, reject) => {
+      const my = ++id;
+      pending.set(my, { resolve, reject });
+      ws.send(JSON.stringify({ id: my, method, params }));
+    });
+  await send('Runtime.enable');
+  const ev = async (expr) => {
+    const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
+    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || 'eval threw');
+    return r.result?.value;
+  };
+  return { send, ev, close: () => ws.close() };
+}
+const keeperPidFile = path.join(HOME, 'keepers', `${WS}.pid`);
+const keeperPid = () => JSON.parse(fs.readFileSync(keeperPidFile, 'utf8')).pid;
+const claudeChildOf = (pid) => {
+  try {
+    return Number(execSync(`pgrep -P ${pid} -f claude`, { encoding: 'utf8' }).trim().split('\n')[0]);
+  } catch {
+    return null;
+  }
+};
+
+let app1;
+let app2;
+try {
+  // ── phase 1: start a turn, quit mid-turn ──────────────────────────────────
+  app1 = launchApp(PORT);
+  const cdp1 = await connectCdp(PORT);
+  await sleep(1500); // let the store hydrate
+  await cdp1.ev(`window.__orchestraSetState({ activeId: ${JSON.stringify(WS)}, view: 'structured' }); 1`);
+  const proof = path.join(RUN, 'detach-proof.txt');
+  const prompt =
+    `Use the Bash tool to run exactly: sleep 15 && echo DONE > ${proof}\n` +
+    `Then reply with exactly: KEEPER_E2E_DONE`;
+  await cdp1.ev(`window.orchestra.agentSdkSend(${JSON.stringify(WS)}, ${JSON.stringify(prompt)}); 1`);
+
+  await waitFor('keeper pid file', () => fs.existsSync(keeperPidFile), 30000);
+  const kPid = keeperPid();
+  const cPid = await waitFor('claude child of keeper', () => claudeChildOf(kPid), 30000);
+  check('keeper owns the claude subprocess', alive(kPid) && alive(cPid), `keeper=${kPid} claude=${cPid}`);
+
+  // Wait until the Bash tool is actually running — (a) the structured view
+  // shows a running tool row AND (b) a `sleep 15` process that is a DESCENDANT
+  // of OUR keeper exists (a bare pgrep once matched a sibling agent's process
+  // and made this script close the app before the turn even started). Then
+  // close the app MID-TURN.
+  const ppidOf = (pid) => {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+  };
+  const keeperDescendantSleep = () => {
+    let pids = [];
+    try {
+      pids = execSync('pgrep -f "sleep 15"', { encoding: 'utf8' }).trim().split('\n').map(Number);
+    } catch {
+      return false;
+    }
+    for (const p of pids) {
+      try {
+        for (let cur = p, i = 0; i < 8 && cur > 1; i++, cur = ppidOf(cur)) {
+          if (cur === kPid) return true;
+        }
+      } catch {
+        /* raced exit */
+      }
+    }
+    return false;
+  };
+  // Live-streaming half: the user bubble (echoed on send) must be visible in
+  // the structured view — proves agent events flow through the keeper bridge
+  // into the live DOM, not just the on-disk transcript.
+  const liveEcho = await waitFor(
+    'structured view shows the sent prompt (live stream over keeper bridge)',
+    () => cdp1.ev(`document.body.innerText.includes('KEEPER_E2E_DONE')`),
+    30000,
+    500,
+  ).then(() => true, () => false);
+  check('live view streams through the keeper bridge', liveEcho);
+  await waitFor('sleep 15 running under OUR keeper', keeperDescendantSleep, 90000);
+  const midShot = await Promise.race([
+    cdp1.send('Page.captureScreenshot', { format: 'png' }),
+    sleep(10000).then(() => null),
+  ]);
+  if (midShot?.data) fs.writeFileSync(path.join(RUN, 'mid-turn.png'), Buffer.from(midShot.data, 'base64'));
+  check('mid-turn (proof not yet written)', !fs.existsSync(proof));
+  await cdp1.ev('window.close(); 1').catch(() => {});
+  await waitFor('app #1 exited', () => app1.exitCode !== null, 15000);
+
+  // ── phase 2: detached survival ───────────────────────────────────────────
+  await sleep(1000);
+  check('keeper survived app quit', alive(kPid));
+  check('claude survived app quit', alive(cPid));
+  await waitFor('proof file written WHILE APP CLOSED', () => fs.existsSync(proof), 90000);
+  check('turn completed fully detached', fs.existsSync(proof));
+  await sleep(2000);
+  check('keeper lingers after turn end (default 15m linger)', alive(kPid) && alive(cPid));
+
+  // ── phase 3: relaunch + reattach ─────────────────────────────────────────
+  app2 = launchApp(PORT + 1);
+  const cdp2 = await connectCdp(PORT + 1);
+  await sleep(1500);
+  await cdp2.ev(`window.__orchestraSetState({ activeId: ${JSON.stringify(WS)}, view: 'structured' }); 1`);
+  // History backfill + attach: the completed reply must appear in the DOM.
+  const gotReply = await waitFor(
+    'transcript shows the reply produced while the app was closed',
+    () => cdp2.ev(`document.body.innerText.includes('KEEPER_E2E_DONE')`),
+    30000,
+    500,
+  ).then(() => true, () => false);
+  check('transcript intact after relaunch (incl. detached work)', gotReply);
+  const logFile = path.join(HOME, 'logs', 'orchestra.log');
+  const logTxt = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
+  check('main log records the reattach', /reattach/i.test(logTxt), logFile ?? 'no log file');
+
+  // Screenshot (paint half). Race a timeout — hangs mean no frames.
+  const shot = await Promise.race([
+    cdp2.send('Page.captureScreenshot', { format: 'png' }),
+    sleep(10000).then(() => null),
+  ]);
+  const shotPath = path.join(RUN, 'reattached-transcript.png');
+  if (shot?.data) fs.writeFileSync(shotPath, Buffer.from(shot.data, 'base64'));
+  check('screenshot captured', !!shot?.data && fs.statSync(shotPath).size > 20000, shotPath);
+
+  // ── phase 4: explicit stop kills what quit must not ──────────────────────
+  await cdp2.ev(`window.orchestra.agentSdkClear(${JSON.stringify(WS)}); 1`);
+  await waitFor('keeper dies on explicit /clear', () => !alive(kPid), 25000);
+  check('explicit stop kills keeper', !alive(kPid));
+  await waitFor('claude dies on explicit /clear', () => !alive(cPid), 25000);
+  check('explicit stop kills claude', !alive(cPid));
+  check('keeper artifacts cleaned', !fs.existsSync(path.join(HOME, 'keepers', `${WS}.sock`)));
+
+  await cdp2.ev('window.close(); 1').catch(() => {});
+  await waitFor('app #2 exited', () => app2.exitCode !== null, 15000).catch(() => app2.kill('SIGKILL'));
+} finally {
+  for (const p of [app1, app2]) if (p && p.exitCode === null) p.kill('SIGKILL');
+  try {
+    if (fs.existsSync(keeperPidFile)) process.kill(keeperPid(), 'SIGKILL');
+  } catch {
+    /* gone */
+  }
+  sway.kill('SIGKILL');
+}
+
+const failed = results.filter((r) => !r.ok);
+console.log(`\n${results.length - failed.length}/${results.length} checks passed  (artifacts: ${RUN})`);
+process.exit(failed.length ? 1 : 0);

@@ -71,9 +71,15 @@ export async function sdkStartAndDeliver(wsId: string, text: string): Promise<bo
   }
 }
 
-/** Stop a live structured session if one exists (best-effort). No-op otherwise. */
+/** Stop a live structured session if one exists (best-effort). Even with NO
+ *  in-memory session this still calls stop: a detached KEEPER may be running
+ *  this workspace's CLI from before an app restart (keeper-client.ts), and
+ *  every caller here (hibernation, branch switch, account migration) means
+ *  "make sure nothing structured is running" — sdkStop's no-session path kills
+ *  any live keeper and is an instant no-op otherwise. */
 export async function sdkStopIfLive(wsId: string): Promise<boolean> {
-  if (!impl?.hasSession(wsId)) return false;
+  if (!impl) return false;
+  const had = impl.hasSession(wsId);
   await impl.stop(wsId);
-  return true;
+  return had;
 }

@@ -26,7 +26,8 @@
   "scripts": {
     "dev": "ORCHESTRA_HOME=\"${ORCHESTRA_HOME:-$HOME/.orchestra-dev}\" vite",
     "build:cli": "vite build --config vite.cli.config.ts",
-    "build": "vite build && pnpm run build:cli && electron-builder",
+    "build:keeper": "vite build --config vite.keeper.config.ts",
+    "build": "vite build && pnpm run build:cli && pnpm run build:keeper && electron-builder",
     "start": "electron .",
     "lint": "eslint src --ext .ts,.tsx",
     "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",

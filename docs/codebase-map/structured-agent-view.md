@@ -672,8 +672,20 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   readout; the preference persists via `renderer/composer-vim-pref.ts`.
   `window.__cmComposerView` is the E2E seam. All the CodeMirror/vim theming and
   keymap collisions are documented in `agent-view-design.md`.
+- **App-quit durability — the detached session keeper.** A LOCAL session's
+  `claude` subprocess is spawned THROUGH a tiny detached daemon
+  (`spawnClaudeCodeProcess: makeKeeperSpawn(wsId)` in ensureSession →
+  `src/main/keeper-client.ts` → `src/keeper/index.ts`), so quitting Orchestra
+  only detaches: an in-flight turn keeps running, and reopening the workspace
+  lazily reattaches (`sdkAttachIfDetached`, fired from the `agentSdkHistory`
+  handler) with parked permission requests redelivered by the attach
+  handshake. Explicit stops (`sdkStop`, incl. its no-session path) DO kill the
+  keeper + CLI. Full reference: `docs/codebase-map/session-keeper.md`; measured
+  SDK semantics: `docs/spikes/keeper-findings.md`; gate:
+  `scripts/verify-keeper-detach.mjs`.
 - **Resume durability across reboot / internet loss.** A structured session is
-  NOT a live process that survives a restart — it's a *resume by id*. The SDK
+  NOT a live process that survives a restart (except within the keeper's
+  linger window above) — it's a *resume by id*. The SDK
   session id is captured from the stream (`consume()`) and persisted to the
   on-disk store as `ws.sdkSessionId` (types.ts); the next `sdkSend` passes
   `resume: ws.sdkSessionId` (ensureSession) with `cwd: ws.worktreePath`, so the
