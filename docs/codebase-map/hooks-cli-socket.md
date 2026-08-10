@@ -96,7 +96,9 @@ Scripts and the Claude Code events they fire on:
   via `orchestra whoami` each fire — `parentId` is mutable (`/attach`), so
   baking it into env/sentinel would go stale. Self-silences without a
   parent/guide/CLI.
-- **`link-instruction.sh`** — SessionStart ONLY. Asks the agent to report its PR(s)
+- **`link-instruction.sh`** — SessionStart **and** UserPromptSubmit (the latter
+  passes the arg `prompt`; two distinct hook command strings so both register).
+  Asks the agent to report its PR(s)
   (`orchestra link --pr`, repeatable) and/or Linear issue (`--linear`), because
   neither badge is derived from the branch name any more — this hook is the sole
   discovery path for the capability, and it explicitly tells the agent to link
@@ -108,9 +110,30 @@ Scripts and the Claude Code events they fire on:
   presence test regardless of count. Rows are read anchored to line start, so a
   branch named e.g. `pr-linear-stuff` can't be mistaken for a row. Fails
   **silent** (not nagging) when `whoami` is unreachable or returns a non-table
-  body — a restarting daemon must not nag every SessionStart. SessionStart-only
-  for the usual reason: a per-turn injection compounds in the transcript, and a
-  blank badge is cosmetic, not a broken run. Paired skill: `orchestra-link`.
+  body — a restarting daemon must not nag every SessionStart.
+  **Branch-mined suggestion**: it greps the LIVE git branch (never
+  `$ORCHESTRA_BRANCH`, stale after a rename) for a `TEAM-123` shape, mirroring
+  `parseLinearIssueCandidate` in `src/shared/linear.ts`, and names that key plus
+  the exact command in the message. The badge is still never *inferred* — the
+  hook suggests, the agent confirms with `orchestra link`.
+  **`prompt` mode** (`workspaces.ts:3604` `LINK_PROMPT_NUDGE_BUDGET = 3`)
+  is the only per-turn part and is deliberately the narrowest possible. Gates
+  run strictly **cheapest-first**, because this fires on every turn of every
+  workspace: spent budget (`.orchestra/.link-nudges`, one stat) → branch
+  candidate (one local `git rev-parse`) → `whoami` (the only socket
+  round-trip). It exists because SessionStart alone loses the link: an agent
+  handed a ticket reads the turn-1 nudge, works, and never returns to it. The
+  budget is charged when a nudge prints — so a false-positive branch nags 3
+  times and goes quiet — and is **spent outright when the link is found**, which
+  is what stops a linked, key-named branch from re-querying `whoami` every turn
+  forever to rediscover the same answer (a cleared link is still covered by the
+  SessionStart ask). A branch with *no* candidate deliberately does NOT retire:
+  a rename can introduce the key at any turn, and that is the case this exists
+  to catch. The generic
+  full ask (including the PR half) stays SessionStart-only. Covered by
+  `src/main/link-nudge.test.ts`, which extracts the real script from
+  `workspaces.ts` and runs it against a fake `orchestra` + real git repo.
+  Paired skill: `orchestra-link`.
 - **`self-modify-instruction.sh`** — SessionStart ONLY. Self-modification
   notice for agents working on **Orchestra's own repo**: tells the agent this
   repo is the app currently running it, that changes only land after a

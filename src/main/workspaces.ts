@@ -2770,10 +2770,18 @@ const HOOK_ORCHESTRATOR_INSTRUCTION_CMD =
 const HOOK_FIELDGUIDE_CMD =
   'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/fieldguide-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
 
-// PR/Linear link nudge, SessionStart only. The script self-silences once both
+// PR/Linear link nudge, SessionStart. The script self-silences once both
 // links are set, so a linked workspace pays nothing.
 const HOOK_LINK_INSTRUCTION_CMD =
   'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/link-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
+
+// Same script in `prompt` mode, on UserPromptSubmit: the narrow re-ask for a
+// Linear key the BRANCH NAME already spells out, budget-capped inside the
+// script (see LINK_INSTRUCTION_SCRIPT for why the per-turn cadence is worth it
+// here and nowhere else). A distinct command string from the SessionStart one,
+// so upsertHookCommand treats the two registrations as separate entries.
+const HOOK_LINK_PROMPT_CMD =
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/link-instruction.sh"; [ -f "$f" ] && bash "$f" prompt || true';
 
 // Hard enforcement of the orchestrator contract: a PreToolUse hook on the
 // file-editing tools that DENIES the call (exit 2 → the agent sees the stderr
@@ -3565,17 +3573,84 @@ exit 0
 // because a link can land at any moment (same reasoning as the field guide
 // resolving parentId live).
 //
-// SessionStart only, matching the orchestrator reminder: per-turn injection
-// compounds one copy per turn in the transcript and is re-billed as input on
-// every later turn. A missed link costs a blank badge, not a broken run —
-// nowhere near enough to justify a per-prompt tax.
+// TWO CADENCES, deliberately asymmetric:
+//
+//   SessionStart (no arg) — the full ask, whenever EITHER link is missing. Once
+//     per context reset, matching the orchestrator reminder: cheap enough that
+//     the generic version can stay ungated beyond "is it already linked".
+//
+//   UserPromptSubmit (`prompt`) — a re-ask that fires ONLY when the branch name
+//     itself names a plausible `TEAM-123` that is still unlinked, and at most
+//     LINK_PROMPT_NUDGE_BUDGET times ever. This exists because SessionStart
+//     alone measurably loses the link: an agent handed a ticket at spawn reads
+//     the nudge on turn 1, is busy doing the actual work, and never comes back
+//     to it — the badge is then blank forever on a workspace whose branch
+//     literally spells the key (observed: `verify-mc-4204-…` with no MC-4204
+//     badge). Re-asking on the prompt boundary catches it once the agent is
+//     between tasks rather than mid-task.
+//
+// The branch-mined key is a SUGGESTION, not an inference: Orchestra still never
+// writes a badge from the branch (that guessing is exactly what `orchestra
+// link` replaced, and it invented `POLL-429` from `usage-poll-429-backoff`).
+// What changed is who resolves the ambiguity — the message names the candidate
+// and the exact command, and the AGENT confirms or ignores it. A concrete
+// "run: orchestra link --linear MC-4204" converts far better than an abstract
+// "<TEAM-123>", and a false positive costs one ignored line.
+//
+// The budget is what makes a per-prompt hook affordable in the bad case: a
+// workspace whose branch merely looks ticket-shaped, or whose agent decided
+// there is no ticket, nags a bounded number of times and then goes quiet for
+// good. Spent budget is a single stat() per prompt — no socket round-trip.
+const LINK_PROMPT_NUDGE_BUDGET = 3;
+
 const LINK_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
-# Auto-installed by orchestra. Asks the agent to report its PR / Linear issue
-# once, when either link is missing. Silent when both are already set.
+# Auto-installed by orchestra. Asks the agent to report its PR / Linear issue.
+#   (no arg)  SessionStart : the full ask while either link is missing.
+#   prompt    UserPromptSubmit : re-ask ONLY when the branch names a plausible
+#             Linear key that is still unlinked — at most ${LINK_PROMPT_NUDGE_BUDGET} times ever.
+mode="\${1:-session}"
 [ -n "\${ORCHESTRA_WS_ID:-}" ] || exit 0
 command -v orchestra >/dev/null 2>&1 || exit 0
 # Scratch sessions have no branch and no PR; nothing to link.
 [ "\${ORCHESTRA_KIND:-}" = "scratch" ] && exit 0
+worktree="\${ORCHESTRA_WORKTREE:-.}"
+budget_file="\$worktree/.orchestra/.link-nudges"
+
+# The per-prompt path runs on EVERY turn of EVERY workspace, so its gates are
+# ordered strictly cheapest-first: a spent budget costs one stat and nothing
+# else — no fork for git, no socket round-trip. Everything below this is only
+# reached while the nudge is still live.
+spent=0
+if [ "\$mode" = prompt ]; then
+  [ -f "\$budget_file" ] && spent="\$(cat "\$budget_file" 2>/dev/null)"
+  case "\$spent" in ''|*[!0-9]*) spent=0 ;; esac
+  [ "\$spent" -ge ${LINK_PROMPT_NUDGE_BUDGET} ] && exit 0
+fi
+
+# Mine a plausible issue key out of the branch name. Mirrors
+# parseLinearIssueCandidate() in src/shared/linear.ts: a >=2-letter team, a
+# digit run, both delimiter-bounded — so \`v1-2-bump\` and \`feature/cleanup\`
+# yield nothing. Read LIVE from git, never from \$ORCHESTRA_BRANCH: that env is
+# frozen at spawn and every workspace renames its branch mid-session, which is
+# precisely when the key first appears.
+branch="\$(git -C "\$worktree" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+[ -n "\$branch" ] && [ "\$branch" != "HEAD" ] || branch="\${ORCHESTRA_BRANCH:-}"
+candidate=""
+if [ -n "\$branch" ]; then
+  candidate="\$(printf '%s' "\$branch" \\
+    | grep -Eio '(^|[-_/.])[a-z]{2,}-[0-9]+([-_/.]|\$)' \\
+    | head -1 \\
+    | grep -Eio '[a-z]{2,}-[0-9]+' \\
+    | tr '[:lower:]' '[:upper:]')"
+fi
+
+# No key in the branch → nothing to suggest, and the socket stays untouched.
+# NOT retired via the budget: a rename can introduce the key at any turn, which
+# is exactly the case this hook exists to catch, so the (local, cheap) branch
+# read repeats while the budget lasts.
+if [ "\$mode" = prompt ]; then
+  [ -n "\$candidate" ] || exit 0
+fi
 
 me="\$(orchestra whoami 2>/dev/null)" || exit 0
 # \`orchestra whoami\` prints a padded "key  value" table (NOT json), one row per
@@ -3596,11 +3671,37 @@ linear_val="\$(link_row linear)"
 # "(none)" (or an unexpectedly absent row) means unlinked.
 case "\$pr_val" in http*) has_pr=1 ;; *) has_pr=0 ;; esac
 case "\$linear_val" in ''|'(none)') has_linear=0 ;; *) has_linear=1 ;; esac
+
+# --- per-prompt re-ask: the branch-suggested Linear key only.
+if [ "\$mode" = prompt ]; then
+  if [ "\$has_linear" = 1 ]; then
+    # Linked — RETIRE the nudge by spending the budget outright, rather than
+    # just returning. Otherwise a linked workspace whose branch names a key
+    # would re-run \`orchestra whoami\` (a socket round-trip) on every prompt
+    # for the rest of its life to rediscover the same answer. Should the link
+    # later be cleared, the SessionStart ask still covers it.
+    printf '%s\\n' ${LINK_PROMPT_NUDGE_BUDGET} 2>/dev/null > "\$budget_file" || true
+    exit 0
+  fi
+  # Charge the budget only for a nudge actually PRINTED, so the count means
+  # "times the agent was asked", not "times the hook ran".
+  printf '%s\\n' "\$((spent + 1))" 2>/dev/null > "\$budget_file" || true
+  echo "[orchestra] This workspace is on branch '\$branch', which looks like it implements Linear issue \$candidate — but no Linear issue is linked, and Orchestra never infers the badge from a branch name. If \$candidate is the ticket, run: orchestra link --linear \$candidate — if the resemblance is a coincidence, ignore this (the reminder retires after ${LINK_PROMPT_NUDGE_BUDGET} asks)."
+  exit 0
+fi
+
+# --- SessionStart: the full ask.
 [ "\$has_pr" = 1 ] && [ "\$has_linear" = 1 ] && exit 0
 
 echo "[orchestra] This workspace's sidebar badges are populated only by what you report — Orchestra does NOT infer them from the branch name."
 [ "\$has_pr" = 0 ] && echo "- No PR linked. The moment you open a pull request for this work, run: orchestra link --pr <url> — and if your work spans several repos (a metarepo branch lands one PR per submodule), link EVERY one: orchestra link --pr <url> --pr <url>"
-[ "\$has_linear" = 0 ] && echo "- No Linear issue linked. If this work has a ticket, run: orchestra link --linear <TEAM-123>"
+if [ "\$has_linear" = 0 ]; then
+  if [ -n "\$candidate" ]; then
+    echo "- No Linear issue linked, but this branch names \$candidate. If that IS the ticket this work implements, run: orchestra link --linear \$candidate"
+  else
+    echo "- No Linear issue linked. If this work has a ticket, run: orchestra link --linear <TEAM-123>"
+  fi
+fi
 echo "Only link what you actually know — a guess is worse than a blank badge, and neither is required to do the work. See the orchestra-link skill for details."
 exit 0
 `;
@@ -3962,6 +4063,7 @@ const HOOKS_VERSION = createHash('sha256')
       HOOK_SELF_MODIFY_CMD,
       HOOK_FIELDGUIDE_CMD,
       HOOK_LINK_INSTRUCTION_CMD,
+      HOOK_LINK_PROMPT_CMD,
       ORCHESTRATOR_GUARD_MATCHER,
     ].join('\0'),
   )
@@ -4096,6 +4198,11 @@ export async function installOrchestraHooks(
     upsertHookCommand(submitList, HOOK_COMMS_RESURFACE_CMD);
     // Surface any queued peer messages right before the agent's next turn.
     upsertHookCommand(submitList, HOOK_INBOX_DELIVER_CMD);
+    // Re-ask for the Linear link when the BRANCH NAME already spells the key
+    // and it is still unlinked. The narrowest possible per-turn hook: silent
+    // without a branch-mined candidate, silent once linked, and budget-capped
+    // so a false-positive branch nags a bounded number of times and stops.
+    upsertHookCommand(submitList, HOOK_LINK_PROMPT_CMD);
     // The orchestrator reminder is deliberately NOT on UserPromptSubmit (a
     // per-turn injection compounds in the transcript); it lives on
     // SessionStart, and the PreToolUse guard enforces between resets. Evict
@@ -4154,8 +4261,9 @@ export async function installOrchestraHooks(
     // script self-silences without a parent or a guide file).
     upsertHookCommand(sessionStartList, HOOK_FIELDGUIDE_CMD);
     // Ask for the PR / Linear link when either is missing (the script queries
-    // whoami and self-silences once both are set). SessionStart only: a blank
-    // badge is a cosmetic gap, not worth a per-turn transcript tax.
+    // whoami and self-silences once both are set). The generic full ask lives
+    // here, once per context reset; only the branch-suggests-a-key case earns
+    // the per-turn cadence above.
     upsertHookCommand(sessionStartList, HOOK_LINK_INSTRUCTION_CMD);
     hooks.SessionStart = sessionStartList;
 

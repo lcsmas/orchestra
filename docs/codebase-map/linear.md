@@ -14,8 +14,22 @@ key was never typed into the branch. No link → no badge.
 
 `parseLinearIssueCandidate` still exists and is still tested, but no longer
 feeds the badge — it serves the *other* direction (`ticketBranchName`, so
-`orchestra linear add --spawn` names branches key-first) and the one-time
-backfill below.
+`orchestra linear add --spawn` names branches key-first), the one-time backfill
+below, and the **nudge** (next section), where the same shape is a suggestion
+the agent confirms rather than a value Orchestra writes.
+
+### Branch key → suggestion, never inference
+
+Removing derivation traded a wrong badge for a *missing* one: an agent handed
+`MC-4204` spawns onto `verify-mc-4204-…`, reads the SessionStart link nudge on
+turn 1, does the work, and never links — badge blank forever on a branch that
+spells the key. `link-instruction.sh` closes that loop from the other side: in
+`prompt` mode (UserPromptSubmit) it greps the live branch with a bash mirror of
+`parseLinearIssueCandidate` and, when the key is unlinked, re-asks with the
+candidate and the exact command filled in — capped at `LINK_PROMPT_NUDGE_BUDGET`
+(3) asks, charged only when a nudge prints. Orchestra still writes nothing; the
+agent confirms. Bash/TS parity is pinned by `src/main/link-nudge.test.ts`.
+Details and gating order: [hooks-cli-socket.md](hooks-cli-socket.md).
 
 ## Flow
 - `verifyLinear` IPC (`api-handlers.ts:935`) → returns null unless
