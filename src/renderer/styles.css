@@ -536,6 +536,14 @@ input:focus, textarea:focus, select:focus {
   /* Default column track; the live width is driven by an inline style that
      reflects the user's dragged sidebar width (persisted in localStorage). */
   grid-template-columns: 340px 1fr;
+  /* Pin the single row to the viewport instead of leaving it `auto`. An auto
+     row is sized from its items' content, so ANY in-flow pane taller than the
+     window grows the row past 100vh — the row, not `.app` itself, which keeps
+     its `height` and just overflows (clipped by #root's `overflow: hidden`).
+     `minmax(0, 1fr)` makes the track height definite regardless of content, so
+     the percentage/flex height chain below it has something real to resolve
+     against. Belt-and-braces with the `min-height: 0` on both grid items. */
+  grid-template-rows: minmax(0, 1fr);
   height: 100vh;
   position: relative;
 }
@@ -2706,7 +2714,15 @@ input:focus, textarea:focus, select:focus {
 /* Main */
 /* position: relative anchors the full-pane overlays (Insights, Resources —
    absolute, inset 0) without disturbing the always-mounted terminal views. */
-.main { display: flex; flex-direction: column; min-width: 0; position: relative; }
+/* `min-height: 0` is load-bearing, exactly as on `.sidebar` (the other grid
+   item). Without it this grid item's automatic minimum size is its content's,
+   so a tall in-flow pane inflates the row and every `min-height: 0` further
+   down (.pane-row, .pane) is handed an already-oversized box to divide up:
+   .diff-scroll then gets `clientHeight === scrollHeight` and CANNOT SCROLL.
+   The terminal/structured panes hid this for a long time because they are
+   `position: absolute; inset: 0` and contribute zero intrinsic height — the
+   Diff pane is the first in-flow pane whose content is arbitrarily tall. */
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
 .toolbar {
   position: relative;
   z-index: 20;
@@ -3488,32 +3504,12 @@ button.active {
   display: none;
 }
 
-.diff-pane { display: grid; grid-template-columns: 260px 1fr; height: 100%; }
-.diff-files {
-  border-right: 1px solid var(--border);
-  background: var(--bg-2);
-  overflow-y: auto;
-}
-.diff-file-item {
-  padding: 8px 12px;
-  cursor: pointer;
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-  display: flex;
-  justify-content: space-between;
-  gap: 6px;
-}
-.diff-file-item:hover { background: var(--bg-3); }
-.diff-file-item.active { background: var(--bg-3); border-left: 2px solid var(--accent); padding-left: 10px; }
-.diff-file-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-}
-.diff-stat { color: var(--text-dim); font-variant-numeric: tabular-nums; }
-.diff-stat .add { color: var(--green); }
-.diff-stat .del { color: var(--red); }
+/* (Removed: a dead `.diff-pane` grid rule plus `.diff-files`/`.diff-file-item`/
+   `.diff-file-name`/`.diff-stat`, left over from the old side-by-side file-list
+   pane. No renderer code emits those classes any more. The live Diff pane rules
+   are the flex-column ones further down, next to `.diff-scroll`. The stale
+   `.diff-pane` mattered here: it declared `display: grid` for the same selector
+   the live rule sets to `flex`, so the cascade decided the pane's layout mode. */
 
 .empty {
   display: flex;

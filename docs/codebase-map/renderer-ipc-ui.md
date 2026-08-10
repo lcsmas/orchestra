@@ -144,6 +144,30 @@ agents. All classes are `av-*`-prefixed; structural defaults live in
 `agent-view.css` (design system owned separately).
 
 ## App.tsx (~606 lines)
+
+### The pane height chain is load-bearing — don't "tidy" it
+`.app` → `.main` → `.pane-row` → `.pane` must each stay height-constrained, or
+scroll containers inside a pane silently stop scrolling. Two declarations do the
+work, and BOTH are guarded by `src/renderer/pane-scroll-chain.test.ts`:
+`.app { grid-template-rows: minmax(0, 1fr) }` (styles.css:~534) and
+`.main { min-height: 0 }` (styles.css:~2709, the same declaration `.sidebar`
+carries — they are the two grid items, and it is redundant on neither).
+
+Why: `.app` is a `height: 100vh` grid whose single row was implicit, i.e. `auto`,
+i.e. **sized from its items' content**. A grid item without `min-height: 0` has
+an automatic minimum size of its content's height, so a pane taller than the
+window grew the ROW past 100vh — `.app` itself kept `height: 100vh` and merely
+overflowed, invisibly, because `#root` is `overflow: hidden`. `.pane-row`/`.pane`
+then faithfully divided up an already-oversized box and `.diff-scroll` ended with
+`clientHeight === scrollHeight`. Measured in the real app: `.main` 3789px in a
+971px viewport, diff unscrollable; with the fix, 971px and it scrolls.
+
+This hid for a long time because **`.terminal-pane` and `.av-view` are
+`position: absolute; inset: 0`** and contribute ZERO intrinsic height — DiffPane
+(`.pane.diff-pane`, in normal flow) was the first pane whose content is
+arbitrarily tall. Note `overflow: hidden` on `.pane` does NOT fix this: overflow
+does not change a box's intrinsic contribution to grid track sizing.
+
 Grid layout `[sidebar | resizer | main]` + `DialogHost`. Hosts the app's first
 GLOBAL shortcut: **Ctrl/Cmd+J toggles the Jump Palette**
 (`components/JumpPalette.tsx` — fuzzy jump across live workspaces, recents-first
