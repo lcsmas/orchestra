@@ -68,18 +68,6 @@ function MessageBubbleImpl({ message }: Props) {
           bubble for the user; plain prose for the agent). Only errors keep an
           eyebrow, where the word carries real information. */}
       {role === 'error' ? <div className="av-message-eyebrow">Error</div> : null}
-      {/* Rewind: only a USER turn carrying a rewind target can be undone. The
-          control reveals on hover (CSS) so it never competes with the prose. */}
-      {role === 'user' && message.rewindId && rewind ? (
-        <div className="av-message-actions">
-          <RewindControl
-            rewindId={message.rewindId}
-            onPreview={rewind.onPreview}
-            onConfirm={rewind.onConfirm}
-            disabled={rewind.busy}
-          />
-        </div>
-      ) : null}
       {hasImages ? (
         <div className="av-message-images">
           {images!.map((img, i) => (
@@ -113,6 +101,20 @@ function MessageBubbleImpl({ message }: Props) {
         ) : null}
       </div>
       {thinking ? <ThinkingIndicator /> : null}
+      {/* Rewind: only a USER turn carrying a rewind target can be undone. A
+          ghost action row hangs BELOW the bubble (chat-app style), revealed on
+          hover (CSS) so it never competes with the prose. Placed last so tab
+          order runs text → action. */}
+      {role === 'user' && message.rewindId && rewind ? (
+        <div className="av-message-actions">
+          <RewindControl
+            rewindId={message.rewindId}
+            onPreview={rewind.onPreview}
+            onConfirm={rewind.onConfirm}
+            disabled={rewind.busy}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

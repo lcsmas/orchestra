@@ -2196,15 +2196,17 @@ h6.av-md-h {
    Per-message "undo this turn" affordance (Claude Code's double-Esc restore,
    as an explicit action). Only user bubbles carrying a rewindId render it.
 
-   Placement: pinned OUTSIDE the bubble's left edge. The user bubble is
-   right-aligned and shrink-wrapped, so the gutter to its left is reliably
-   free — putting the control inside would reflow the text on hover.
+   Placement: a ghost action row hanging BELOW the bubble, right-aligned
+   (chat-app message-actions style, chosen from five mocked variants). The row
+   is absolutely positioned off the bubble's bottom edge so revealing it never
+   reflows the prose; the bubble reserves the row's height via margin-bottom
+   (below) so the row never overlaps the next transcript row either.
 
    REACHABILITY — v0.5.201 shipped this control UNREACHABLE, so read this
    before touching the two rules below. The control sits OUTSIDE the bubble but
    was revealed only by `.av-message-user:hover` and hidden with
    `visibility:hidden`, which breaks the journey to it in two separate ways:
-     1. an 8px gutter sat between bubble and button, so moving toward the
+     1. a gap sat between bubble and button, so moving toward the
         button left the bubble's hover area and the button vanished; and
      2. `visibility:hidden` elements DO NOT HIT-TEST, so the control could not
         rescue its own hover on the way in — nor could any transparent "bridge"
@@ -2212,23 +2214,31 @@ h6.av-md-h {
         over the gap returns BODY, not the bridge).
    The fix, chosen by testing five alternatives against a real stepped pointer
    path (a bridge on the bubble, on the control, with/without z-index, …):
-   make the actions box ITSELF span the gutter via right-PADDING so it
-   physically touches the bubble — one contiguous hover surface, no gap to
-   cross — and hide it by OPACITY ONLY so it never stops hit-testing mid-move.
-   Padding (not a wider box with a bridge) is what keeps clicks landing: the
-   rejected variants all put a transparent layer OVER the button, which swallowed
-   the click while looking perfectly correct. */
+   make the actions box ITSELF span the gap via PADDING so it physically
+   touches the bubble — one contiguous hover surface, no gap to cross — and
+   hide it by OPACITY ONLY so it never stops hit-testing mid-move. Padding
+   (not a wider box with a bridge) is what keeps clicks landing: the rejected
+   variants all put a transparent layer OVER the button, which swallowed the
+   click while looking perfectly correct. The same recipe holds for the
+   bottom placement, with the bridge padding on TOP instead of the right. */
 .av-message-actions {
   position: absolute;
-  /* Butt directly against the bubble; the visual 8px gap comes from the
-     padding below, which is part of the hover surface rather than a dead zone. */
-  right: 100%;
-  top: 8px;
-  padding: 10px 16px 10px 0;
+  /* Butt directly against the bubble's bottom edge; the visual 3px gap comes
+     from the padding below, which is part of the hover surface rather than a
+     dead zone. */
+  top: 100%;
+  right: 0;
+  padding: 3px 0 6px 16px;
   /* Opacity-only hide — NEVER `visibility:hidden`/`display:none` here, or the
      control stops hit-testing and becomes unreachable again (see above). */
   opacity: 0;
   transition: opacity 120ms var(--av-ease);
+}
+/* Reserve the hanging row's height so it never overlaps whatever renders
+   under this bubble (assistant reply, footer, …). Roughly padding(3+6) +
+   button(~22px). */
+.av-message-user:has(.av-message-actions) {
+  margin-bottom: 30px;
 }
 .av-message-user:hover .av-message-actions,
 /* Keeps it up once the pointer is on the control itself — without this the
@@ -2263,22 +2273,24 @@ h6.av-md-h {
 }
 
 .av-rewind { position: relative; display: inline-flex; }
+/* Ghost treatment — borderless and background-free at rest so the row reads
+   as an affordance, not chrome; a soft fill appears under the pointer. */
 .av-rewind-btn {
   display: inline-flex; align-items: center; gap: 4px;
-  padding: 3px 7px;
-  border: 1px solid var(--av-hairline);
-  border-radius: 999px;
-  background: var(--av-surface-raised);
+  padding: 3px 6px;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
   color: var(--av-text-faint);
   font-size: 10.5px; font-weight: 600;
   letter-spacing: 0.02em;
   white-space: nowrap;
   cursor: pointer;
-  transition: color 120ms var(--av-ease), border-color 120ms var(--av-ease);
+  transition: color 120ms var(--av-ease), background-color 120ms var(--av-ease);
 }
 .av-rewind-btn:hover:not(:disabled) {
   color: var(--av-text);
-  border-color: color-mix(in srgb, var(--av-user) 45%, var(--av-hairline));
+  background: var(--av-hairline-faint);
 }
 .av-rewind-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .av-rewind-label { line-height: 1; }

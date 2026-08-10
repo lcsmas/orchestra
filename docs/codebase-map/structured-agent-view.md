@@ -49,7 +49,9 @@ the status dot doesn't move. Sandbox workspaces surface a "not available" notice
 
 **Rewind a message (parity with Claude Code's double-Esc restore).** Hovering a
 user bubble reveals a **Rewind** control (`components/agent/RewindControl.tsx`,
-`.av-rewind*`) that undoes that turn: its file edits are restored AND the
+`.av-rewind*`) — a ghost action row hanging below the bubble's bottom-right edge
+(`.av-message-actions`, chosen from five mocked placements; the bubble reserves
+the row's height so revealing it never reflows) — that undoes that turn: its file edits are restored AND the
 conversation is truncated back to before it, with the message's text returned to
 the composer for **edit-and-retry**. Three SDK primitives back it, and the
 measured semantics are recorded in `docs/spikes/rewind-sdk-findings.md`:
