@@ -52,12 +52,23 @@ jobs:
         run: pnpm exec electron-rebuild
 
       - name: Build AppImage
-        # Same chain as local (vite → build:cli → build:keeper → electron-builder)
-        # so CI cannot silently ship without the CLI/keeper bundles. The publish
-        # flag is explicit: a v* tag otherwise triggers electron-builder's
-        # implicit publishing, which fails without GH_TOKEN — this job only
-        # uploads artifacts, the `publish` job creates the release.
-        run: pnpm run build -- --publish never
+        # `build:bundles` is the SAME script local `pnpm run build` uses (vite →
+        # build:cli → build:keeper), so CI cannot silently ship without the
+        # CLI/keeper bundles — that gap shipped every AppImage up to v0.5.221
+        # without the session keeper. Share the script; never restate the list.
+        #
+        # electron-builder is invoked directly rather than through `pnpm run
+        # build` so `--publish never` actually reaches its parser: `pnpm run
+        # build -- --publish never` forwards a LITERAL `--` too (argv becomes
+        # ["--","--publish","never"]), which the parser treats as a positional
+        # and leaves `publish` undefined — and undefined is exactly what
+        # triggers implicit publishing (PublishManager.js: git tag, then CI
+        # detection), which then fails with "GitHub Personal Access Token is
+        # not set". This job only builds + uploads artifacts; the `publish` job
+        # creates the release.
+        run: |
+          pnpm run build:bundles
+          pnpm exec electron-builder --publish never
 
       - name: Rename artifact
         run: mv release/Orchestra.AppImage release/${{ matrix.artifact }}
