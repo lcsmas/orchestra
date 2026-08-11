@@ -31,8 +31,36 @@ interface Cursor {
   buffer: string;
   lastSeq: number;
   prevSize: number;
+  persistedSeq: number;
 }
-const newCursor = (): Cursor => ({ offset: 0, buffer: '', lastSeq: 0, prevSize: 0 });
+const newCursor = (): Cursor => ({ offset: 0, buffer: '', lastSeq: 0, prevSize: 0, persistedSeq: 0 });
+
+// Faithful copies of events-spool.ts's reader-cursor persistence (the
+// "notification replay on relaunch" fix): the highest-applied seq survives an
+// app restart in a `.cursor` file beside the spool, so a spool KEPT across the
+// startup wipe (live detached keeper) dedups against the PREVIOUS run instead
+// of replaying — and re-notifying — every line from seq 0.
+function loadPersistedSeq(cursorPath: string): number {
+  try {
+    const raw = JSON.parse(fs.readFileSync(cursorPath, 'utf8')) as { lastSeq?: unknown };
+    return typeof raw.lastSeq === 'number' && Number.isFinite(raw.lastSeq) && raw.lastSeq > 0
+      ? raw.lastSeq
+      : 0;
+  } catch {
+    return 0;
+  }
+}
+function persistSeq(cursorPath: string, cur: Cursor): void {
+  if (cur.lastSeq <= cur.persistedSeq) return;
+  fs.writeFileSync(`${cursorPath}.tmp`, JSON.stringify({ lastSeq: cur.lastSeq }));
+  fs.renameSync(`${cursorPath}.tmp`, cursorPath);
+  cur.persistedSeq = cur.lastSeq;
+}
+/** A fresh run's cursor, seeded from the persisted mark like drain() does. */
+function restoredCursor(cursorPath: string): Cursor {
+  const persisted = loadPersistedSeq(cursorPath);
+  return { offset: 0, buffer: '', lastSeq: persisted, prevSize: 0, persistedSeq: persisted };
+}
 
 /** Faithful copy of the FIXED events-spool.ts `drain`. `apply` stands in for
  *  `applyAgentEvent`; `hasWindow` stands in for the reader's window ref (drain
@@ -104,6 +132,10 @@ function drain(
     }
   }
   cur.prevSize = size;
+  // ← fix (relaunch replay): persist the high-water mark after each batch,
+  //   mirroring events-spool.ts drain(). `p + '.cursor'` matches the prod
+  //   cursorPathFor naming relative to the spool.
+  persistSeq(`${p}.cursor`, cur);
 }
 
 // status as the renderer derives it: the last applied lifecycle event.
@@ -239,4 +271,76 @@ test('control: real hook under concurrency → reader applies every event, no dr
   assert.equal(applied.length, fileLines.length, 'reader applied every line in the spool');
   assert.equal(applied[applied.length - 1], 'stop', 'the turn-end applied last');
   assert.equal(statusOf(applied), 'waiting');
+});
+
+// ── Relaunch replay (the "every notification triggers on reopen" bug) ────────
+//
+// The startup wipe KEEPS a live detached keeper's spool, and the tailer then
+// re-reads it from offset 0. The seq-dedup only lived in memory, so every app
+// relaunch re-applied every kept line — and each replayed stop/notify re-fired
+// its chime/OS toast for turns the user had already seen before quitting.
+// Persisting the reader's high-water mark makes the dedup hold across runs.
+
+test('relaunch: a kept spool replays NOTHING already applied by the previous run', () => {
+  const p = tmpSpool();
+
+  // Run 1: a full turn is applied and (implicitly) notified.
+  const run1: string[] = [];
+  const cur1 = newCursor();
+  append(p, 1, 'submit');
+  append(p, 2, 'pretool', 'Bash');
+  append(p, 3, 'posttool', 'Bash');
+  append(p, 4, 'stop');
+  drain(p, cur1, (e) => run1.push(e));
+  assert.equal(run1.length, 4);
+
+  // App restarts: fresh cursor seeded from the persisted mark (spool file
+  // KEPT — live keeper). Pre-quit lines must not re-apply, so no re-chime.
+  const run2: string[] = [];
+  const cur2 = restoredCursor(`${p}.cursor`);
+  drain(p, cur2, (e) => run2.push(e));
+  assert.deepEqual(run2, [], 'no replayed applies → no replayed notifications');
+});
+
+test('relaunch: lines written WHILE the app was closed still apply exactly once', () => {
+  const p = tmpSpool();
+
+  // Run 1 applies a first turn…
+  const cur1 = newCursor();
+  append(p, 1, 'submit');
+  append(p, 2, 'stop');
+  drain(p, cur1, () => {});
+
+  // …the app quits; the detached session keeps working and finishes a turn.
+  append(p, 3, 'submit');
+  append(p, 4, 'stop');
+
+  // Run 2: only the while-closed lines apply (one legit notification), and a
+  // THIRD run replays nothing at all.
+  const run2: string[] = [];
+  const cur2 = restoredCursor(`${p}.cursor`);
+  drain(p, cur2, (e) => run2.push(e));
+  assert.deepEqual(run2, ['submit', 'stop']);
+
+  const run3: string[] = [];
+  const cur3 = restoredCursor(`${p}.cursor`);
+  drain(p, cur3, (e) => run3.push(e));
+  assert.deepEqual(run3, []);
+});
+
+test('relaunch: a missing/corrupt cursor degrades to the old replay, never a crash', () => {
+  const p = tmpSpool();
+  append(p, 1, 'submit');
+  append(p, 2, 'stop');
+
+  // Corrupt cursor → treated as 0 → replay-with-dedup from the top.
+  fs.writeFileSync(`${p}.cursor`, 'not json');
+  const applied: string[] = [];
+  const cur = restoredCursor(`${p}.cursor`);
+  drain(p, cur, (e) => applied.push(e));
+  assert.deepEqual(applied, ['submit', 'stop']);
+  // And the drain repaired the cursor: a subsequent restart replays nothing.
+  const again: string[] = [];
+  drain(p, restoredCursor(`${p}.cursor`), (e) => again.push(e));
+  assert.deepEqual(again, []);
 });

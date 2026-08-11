@@ -137,14 +137,23 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
   // || !isOrcaWindowForegroundFocused()` test. Computed BEFORE the await so it
   // reflects the moment the turn ended, not whenever the promise settles.
   const seen = focused && getActiveWorkspaceId() === id;
-  void markAutoUnread(id, !seen);
   // `idle`, not `waiting`: `waiting` now means ONLY "the agent is blocked on
   // your answer". A finished turn owes you nothing — whether you have looked at
-  // it is carried by `autoUnread` above, which is a property of your attention
+  // it is carried by `autoUnread` below, which is a property of your attention
   // rather than of the agent's state.
   void setStatus(id, 'idle').then((res) => {
     if (!res) return;
     const { ws, changed } = res;
+    // EVERY user-facing side effect — the unread bell, the renderer chime
+    // broadcast, the OS toast — gates on `changed`, i.e. a real
+    // running→idle transition. A redundant terminal event on an
+    // already-idle workspace (an overlapping drain, a synthetic turn-end, a
+    // replayed spool line) used to gate only the OS toast: the broadcast
+    // still chimed and markAutoUnread re-belled rows the user had already
+    // reviewed. (`seen` is still computed BEFORE the await, at the moment
+    // the turn ended.)
+    if (!changed) return;
+    void markAutoUnread(id, !seen);
     // Ship the main-process focus state with the event. document.hasFocus()
     // is unreliable in the renderer (returns stale true on Wayland when the
     // window is hidden on another workspace / CDP is attached), so the
@@ -156,11 +165,10 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
     // on the branch afterward — so the pill cycles on/off with each merge
     // and re-divergence rather than being a one-shot terminal state.
     void detectAndUpdateMergeState(id);
-    // Only raise the OS notification on a real running→idle transition. A
-    // redundant terminal event that didn't move the status (already idle) must
-    // not pop a second toast. The seam posts the native Electron toast
-    // (click-to-focus).
-    if (focused || !changed) return;
+    // OS toast additionally requires the window to be unfocused (`changed` is
+    // already guaranteed by the gate above). The seam posts the native
+    // Electron toast (click-to-focus).
+    if (focused) return;
     const { title, body } = finishedToast(stopReason, ws.name);
     platform.notify({ wsId: id, kind: 'finished', title, body });
   });
@@ -178,8 +186,12 @@ export function fireNeedsInput(id: string): void {
   void setStatus(id, 'waiting').then((res) => {
     if (!res) return;
     const { ws, changed } = res;
+    // Chime broadcast AND OS toast gate on a real transition — a redundant
+    // `notify` (overlapping drain, replayed spool line, notify-after-notify)
+    // used to gate only the toast while the broadcast still chimed.
+    if (!changed) return;
     platform.broadcast('agent:needs-input', id, focused);
-    if (focused || !changed) return;
+    if (focused) return;
     platform.notify({
       wsId: id,
       kind: 'needsInput',

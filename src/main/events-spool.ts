@@ -78,6 +78,9 @@ interface Cursor {
   /** File size seen at the previous drain, for the quiescence check that gates
    *  rotation (size unchanged + no buffered partial ⇒ safe to rotate). */
   prevSize: number;
+  /** The `lastSeq` value last written to the on-disk cursor file, so a drain
+   *  that applied nothing new doesn't rewrite it. */
+  persistedSeq: number;
 }
 
 let started = false;
@@ -87,6 +90,57 @@ const cursors = new Map<string, Cursor>();
 
 function spoolPathFor(id: string): string {
   return path.join(EVENTS_DIR, `${id}.jsonl`);
+}
+
+// ── Reader-cursor persistence (the "notification replay on relaunch" fix) ────
+//
+// The startup wipe KEEPS the spool of a live detached keeper (its hooks are
+// still appending), and the tailer then replays that file from offset 0. The
+// seq-dedup was assumed to make the replay harmless, but `lastSeq` lived only
+// in memory — so every relaunch re-applied every kept line, and each replayed
+// `stop`/`notify` re-fired its chime/OS toast for turns the user had already
+// seen before quitting (the "every notification triggers on reopen" bug).
+// Persisting the reader's highest-applied seq per workspace makes the dedup
+// hold across app runs: pre-quit lines skip, while lines the detached session
+// wrote WHILE the app was closed (seq above the persisted mark) still apply —
+// and notify — exactly once.
+//
+// Only `lastSeq` is persisted (not the byte offset): on relaunch the file is
+// re-read from 0 and deduped by seq, which sidesteps offset-vs-rotation races
+// for a one-time cost bounded by ROTATE_BYTES. The write is tmp+rename so a
+// torn cursor can't be half-read (a missing/corrupt cursor degrades to one
+// replay burst, the pre-fix behavior). The `.cursor` file lives beside the
+// spool and follows its lifecycle: wiped with it at startup when stale,
+// kept with it for a live keeper (see the wipe's extension regex).
+
+function cursorPathFor(id: string): string {
+  return path.join(EVENTS_DIR, `${id}.cursor`);
+}
+
+function loadPersistedSeq(id: string): number {
+  try {
+    const raw = JSON.parse(fs.readFileSync(cursorPathFor(id), 'utf8')) as { lastSeq?: unknown };
+    return typeof raw.lastSeq === 'number' && Number.isFinite(raw.lastSeq) && raw.lastSeq > 0
+      ? raw.lastSeq
+      : 0;
+  } catch {
+    return 0; // absent/corrupt → replay-with-dedup from 0, the safe default
+  }
+}
+
+function persistSeq(id: string, cur: Cursor): void {
+  if (cur.lastSeq <= cur.persistedSeq) return;
+  const p = cursorPathFor(id);
+  try {
+    fs.writeFileSync(`${p}.tmp`, JSON.stringify({ lastSeq: cur.lastSeq }));
+    fs.renameSync(`${p}.tmp`, p);
+    cur.persistedSeq = cur.lastSeq;
+  } catch (e) {
+    // Non-fatal: the dedup still holds in memory for this run; the cost of a
+    // lost cursor is one replay burst next launch. But say so — a persistent
+    // failure here means the relaunch bug is back with no other evidence.
+    slog.debug(`${id}: could not persist spool cursor`, e);
+  }
 }
 
 /** Absolute path of the per-workspace spool directory, handed to spawned PTYs
@@ -123,7 +177,11 @@ function drain(id: string): void {
   }
   let cur = cursors.get(id);
   if (!cur) {
-    cur = { offset: 0, buffer: '', lastSeq: 0, prevSize: 0 };
+    // Seed the dedup mark from the persisted cursor so a spool KEPT across an
+    // app restart (live detached keeper) doesn't re-apply — and re-notify —
+    // lines already handled by the previous run.
+    const persisted = loadPersistedSeq(id);
+    cur = { offset: 0, buffer: '', lastSeq: persisted, prevSize: 0, persistedSeq: persisted };
     cursors.set(id, cur);
   }
   // File shrank — it was rotated away (by us) or recreated. Restart byte
@@ -211,6 +269,9 @@ function drain(id: string): void {
     }
   }
   cur.prevSize = size;
+  // After the batch (not per line — one tiny write per drain), remember the
+  // high-water mark so a relaunch can't replay what this run already applied.
+  persistSeq(id, cur);
 }
 
 /** Bound a long-lived workspace's spool by renaming the current file aside and
@@ -284,7 +345,11 @@ export function startEventsSpool(): void {
   let wiped = 0;
   try {
     for (const name of fs.readdirSync(EVENTS_DIR)) {
-      const wsId = name.replace(/\.(jsonl(\.old)?|seq)$/, '');
+      // `.cursor` (the reader's persisted seq mark) follows its spool's
+      // lifecycle: wiped when the spool is stale, KEPT for a live keeper —
+      // missing it from this regex would delete a live keeper's cursor and
+      // resurrect the notification-replay bug for exactly the kept case.
+      const wsId = name.replace(/\.(jsonl(\.old)?|seq|cursor(\.tmp)?)$/, '');
       if (liveKeeperIds.has(wsId)) {
         slog.info(`startup wipe: keeping ${name} — live detached keeper for ${wsId}`);
         continue;

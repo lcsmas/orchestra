@@ -146,16 +146,40 @@ sub-ms); the file is the source of truth.
   monotonic `seq` (skip ≤ lastSeq); **(3)** per-event try/catch so one throw
   can't abort the batch and strand a trailing `stop`. `maybeRotate` `:206`
   rotates only when quiescent (≥256 KiB, no partial line, size unchanged).
+- **The reader cursor's `lastSeq` PERSISTS across app runs** (`<wsid>.cursor`
+  beside the spool, `{lastSeq}` written tmp+rename after each drained batch,
+  reloaded when the in-memory cursor is first minted). This is the fix for
+  "every notification triggers on reopen": the startup wipe KEEPS a live
+  detached keeper's spool, the tailer re-reads it from offset 0, and the
+  seq-dedup used to live only in memory — so every relaunch re-applied every
+  kept line, and each replayed `stop`/`notify` re-fired its chime/OS toast for
+  turns already seen before quitting. Only `lastSeq` is persisted (not the
+  offset): a relaunch re-reads the file and dedups by seq, sidestepping
+  offset-vs-rotation races at a cost bounded by ROTATE_BYTES. Lines a detached
+  session wrote WHILE the app was closed sit above the persisted mark and
+  still apply — and notify — exactly once. A missing/corrupt cursor degrades
+  to one replay burst (pre-fix behavior), never a crash. Belt-and-braces in
+  activity.ts: `fireFinished`/`fireNeedsInput` now gate ALL side effects (the
+  unread bell, the chime broadcast, the OS toast) on `setStatus`'s `changed` —
+  the broadcasts used to fire even for a redundant no-transition event, so
+  any replayed line chimed regardless.
 - `startEventsSpool(win)` `:235` **wipes the dir at startup** (any on-disk spool
-  is stale; live status lives in store.json), then watches the dir + 1s
+  is stale; live status lives in store.json) — EXCEPT files belonging to a live
+  detached keeper (`listLiveKeepers`), whose hooks are still appending; the
+  wipe's extension regex covers `.jsonl`/`.jsonl.old`/`.seq`/`.cursor(.tmp)` so
+  a kept workspace keeps its cursor too (dropping it would resurrect the
+  replay bug for exactly the kept case). Then watches the dir + 1s
   safety-net poll. `stopEventsSpool` `:282`.
 - **Multi-instance hazard:** dev + packaged instances must not share the events
   dir — the second instance's startup wipe would zero the first's spool. That's
   why `$ORCHESTRA_HOME` segregates dev. (Matches the known "stuck dot =
   shared events dir wiped by a 2nd instance" gotcha.)
-- `events-spool.test.ts` replays the reader headlessly: normal turn ends
-  `waiting`; mid-batch throw no longer strands `stop`; events seen while window
-  absent replay once it returns; real hook under concurrency drops nothing.
+- `events-spool.test.ts` replays the reader headlessly (a FAITHFUL COPY of
+  `drain` incl. cursor persistence): normal turn ends `waiting`; mid-batch
+  throw no longer strands `stop`; events seen while window absent replay once
+  it returns; real hook under concurrency drops nothing; a kept spool replays
+  NOTHING across a simulated relaunch while while-closed lines apply exactly
+  once; a corrupt cursor degrades to one replay burst and self-repairs.
 
 ## PTY — pty.ts (~422 lines)
 Manages agent sessions over a **transport seam**. PTY id = `<wsId>` (agent),
