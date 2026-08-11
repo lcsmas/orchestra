@@ -52,7 +52,7 @@ jobs:
         run: pnpm exec electron-rebuild
 
       - name: Build AppImage
-        run: pnpm exec vite build && pnpm exec electron-builder --publish never
+        run: pnpm run build
 
       - name: Rename artifact
         run: mv release/Orchestra.AppImage release/${{ matrix.artifact }}

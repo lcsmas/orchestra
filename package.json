@@ -81,6 +81,7 @@
     "directories": {
       "output": "release"
     },
+    "afterPack": "scripts/after-pack-check.cjs",
     "linux": {
       "target": [
         "AppImage"
