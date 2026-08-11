@@ -1436,6 +1436,87 @@ h6.av-md-h {
   background: var(--av-surface-raised); border: 1px solid var(--av-hairline-strong);
 }
 
+/* ─── MCP manager popover — opened by SUBMITTING `/mcp` in the composer ──────
+   Anchors above `.av-composer-field` like the skills autocomplete (`.av-ac`),
+   with the same fragility: the field must keep position:relative and never
+   gain overflow:hidden. Uses --av-surface-overlay (not .av-ac's hardcoded dark
+   glass) so it adapts to the light theme for free. */
+.av-mcp {
+  position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30;
+  min-width: 300px; max-width: min(440px, 100%);
+  display: flex; flex-direction: column; gap: 1px; padding: 6px;
+  background: var(--av-surface-overlay);
+  border: 1px solid var(--av-hairline-strong);
+  border-radius: var(--radius-lg, 12px);
+  box-shadow:
+    inset 0 1px 0 var(--av-highlight),
+    0 18px 40px rgba(0, 0, 0, 0.35),
+    0 2px 4px rgba(0, 0, 0, 0.2);
+}
+.av-mcp-title {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 4px 8px 6px;
+  font-family: var(--font-mono); font-size: var(--av-fs-caption); font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--av-text-faint);
+}
+.av-mcp-loading { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.av-mcp-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 8px; border-radius: 7px;
+}
+.av-mcp-row:hover { background: var(--av-code-bg); }
+.av-mcp-row-off .av-mcp-name, .av-mcp-row-off .av-mcp-meta { color: var(--av-text-faint); }
+.av-mcp-dot { flex: none; width: 7px; height: 7px; border-radius: 999px; }
+.av-mcp-dot-ok { background: var(--av-add); }
+.av-mcp-dot-bad { background: var(--av-error); }
+.av-mcp-dot-pending { background: var(--av-warn); }
+.av-mcp-dot-off { background: transparent; border: 1.5px solid var(--av-text-faint); }
+.av-mcp-name {
+  flex: none; font-family: var(--font-mono); font-size: var(--av-fs-code);
+  font-weight: 640; color: var(--av-text);
+}
+.av-mcp-meta {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  font-family: var(--font-mono); font-size: var(--av-fs-small); color: var(--av-text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.av-mcp-retry {
+  border: none; background: none; padding: 0; cursor: pointer;
+  font: inherit; color: var(--av-assistant);
+}
+.av-mcp-retry:hover { text-decoration: underline; }
+.av-mcp-switch {
+  flex: none; width: 28px; height: 16px; position: relative;
+  border: none; padding: 0; border-radius: 9px; cursor: pointer;
+  background: var(--av-hairline-strong);
+  transition: background 0.15s var(--av-ease);
+}
+.av-mcp-switch:disabled { opacity: 0.5; cursor: default; }
+.av-mcp-switch-on { background: color-mix(in srgb, var(--av-add) 40%, transparent); }
+.av-mcp-knob {
+  position: absolute; top: 2px; left: 2px; width: 12px; height: 12px;
+  border-radius: 999px; background: var(--av-text-dim);
+  transition: left 0.15s var(--av-ease), background 0.15s var(--av-ease);
+}
+.av-mcp-switch-on .av-mcp-knob { left: 14px; background: var(--av-add); }
+.av-mcp-empty { padding: 8px; font-size: var(--av-fs-small); color: var(--av-text-dim); }
+.av-mcp-error {
+  padding: 6px 8px; font-family: var(--font-mono); font-size: var(--av-fs-small);
+  color: var(--av-error); overflow-wrap: anywhere;
+}
+.av-mcp-hint {
+  display: flex; align-items: center; gap: 4px;
+  padding: 5px 9px 3px; margin-top: 1px;
+  border-top: 1px solid var(--av-hairline-faint);
+  font-family: var(--font-mono); font-size: 9.5px; color: var(--av-text-faint);
+}
+.av-mcp-hint kbd {
+  font-family: inherit; font-size: 9px; color: var(--av-text-dim);
+  padding: 0.5px 4px; border-radius: 4px;
+  background: var(--av-surface-raised); border: 1px solid var(--av-hairline-strong);
+}
+
 /* Turn footer — flight-data strip: mono, tabular, quiet. Now an inline group
    inside `.av-deck-bar` (order 2, between interrupt and menus): no border /
    background / block padding of its own, and it flex-grows so the stats fill the
@@ -2164,6 +2245,26 @@ h6.av-md-h {
 }
 .av-notice-interrupted .av-notice-text { order: 2; flex: none; }
 .av-notice-interrupted::after { order: 3; }
+
+/* MCP connection outcomes (Option-D tracking) — the same quiet centered-divider
+   treatment as the interrupt marker: a connect/fail event marks the session's
+   flow ("context7 connected · 12 tools"), it doesn't report a boxed condition.
+   The dot color alone carries the state: green connected, red failed. */
+.av-notice-mcp, .av-notice-mcp-error {
+  border: none; background: none;
+  align-items: center;
+  color: var(--av-text-faint);
+}
+.av-notice-mcp::before, .av-notice-mcp::after,
+.av-notice-mcp-error::before, .av-notice-mcp-error::after {
+  content: ''; flex: 1; height: 1px;
+  background: var(--av-hairline);
+}
+.av-notice-mcp .av-notice-dot, .av-notice-mcp-error .av-notice-dot { order: 1; }
+.av-notice-mcp .av-notice-dot { background: var(--av-add); }
+.av-notice-mcp-error .av-notice-dot { background: var(--av-error); }
+.av-notice-mcp .av-notice-text, .av-notice-mcp-error .av-notice-text { order: 2; flex: none; }
+.av-notice-mcp::after, .av-notice-mcp-error::after { order: 3; }
 
 /* Origin badge on an externally-originated user turn (Remote Control / peer). */
 .av-message-origin {

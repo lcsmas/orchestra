@@ -122,6 +122,35 @@ toggle). Failures (org policy, rollout-not-enabled, network) surface as
 toggle can read active without a user click (verified e2e: full disable→re-enable
 round-trip against the live relay flips `active` and mints a fresh `session_url`).
 
+**MCP tracking + management (`/mcp`, Option-D design).** MCP servers surface in
+two places. (1) **Transcript notices:** the init normalize branch emits one
+quiet hairline notice per server (`notice` kinds `mcp`/`mcp-error`,
+`.av-notice-mcp*` — the interrupt-divider treatment, dot color = state):
+"context7 connected · 12 tools" / "linear failed to connect". `toolCount` is
+derived from the init `tools` list by `mcp__<name>__` prefix
+(`mcpServerFromInit`, agent-events.ts); notice text comes from the shared pure
+`describeMcpServer` (`disabled` → null: re-announcing a user-disabled server
+every session is noise). (2) **The `/mcp` manager popover**
+(`components/agent/McpPopover.tsx`, `.av-mcp*`): SUBMITTING `/mcp` in the
+composer is intercepted Orchestra-side like `/clear` (never sent to the model)
+and opens a popover above the composer field listing
+`session.mcpServers` — status dot, tool count, per-server enable/disable
+switch, retry on failed/needs-auth. Backing IPC (`agentSdkMcp{Status,Toggle,
+Reconnect}` → `sdkMcp*`, agent-sdk.ts) drives the SDK query's control requests
+`mcpServerStatus()` / `toggleMcpServer(name, enabled)` /
+`reconnectMcpServer(name)` — all LIVE on the running session, no restart (the
+CLI persists toggles for future sessions); `sdkMcpStatus` lazily
+`ensureSession`s (CC's /mcp also runs in-session — same pattern as Remote
+Control). Every op broadcasts a **`session/mcp`** full-list event
+(fold: wholesale replace of `AgentSession.mcpServers`, mirroring
+`session/remote-control`) plus an outcome notice, so toggling/reconnecting
+writes its own history into the transcript. `sdkEventToStatusEvent` maps
+`session/mcp` → null (the status dot never moves for MCP chatter). Guards in
+`agent-events.test.ts` (init notices/toolCount, session/mcp fold,
+describeMcpServer, status-map null). Known gap: the history backfill
+(agent-transcript.ts) does not synthesize init events, so MCP notices reappear
+only when the session next initializes — they are not reconstructed on reopen.
+
 **Peer/queue delivery + STRUCTURED-FIRST spawn/wake:** the lifecycle dispatchers in
 `workspaces.ts`/`prompt-queue.ts` (peer `dispatchMessageRequest`, the usage-limit
 prompt-queue flusher, `wakeAgentWithPrompt`, `/spawn`'s `startWorkspaceAgentHeadless`,

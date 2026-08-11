@@ -112,6 +112,9 @@ import {
   sdkSetEffort,
   sdkSetPermissionMode,
   sdkSetRemoteControl,
+  sdkMcpStatus,
+  sdkMcpToggle,
+  sdkMcpReconnect,
   sdkHistory,
   sdkDefaultModel,
   sdkListSkills,
@@ -246,6 +249,9 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   agentSdkSetEffort: 'agent:sdkSetEffort',
   agentSdkSetPermissionMode: 'agent:sdkSetPermissionMode',
   agentSdkSetRemoteControl: 'agent:sdkSetRemoteControl',
+  agentSdkMcpStatus: 'agent:sdkMcpStatus',
+  agentSdkMcpToggle: 'agent:sdkMcpToggle',
+  agentSdkMcpReconnect: 'agent:sdkMcpReconnect',
   agentSdkHistory: 'agent:sdkHistory',
   agentSdkDefaultModel: 'agent:sdkDefaultModel',
   agentSdkOpenTaskTranscript: 'agent:sdkOpenTaskTranscript',
@@ -852,6 +858,12 @@ export const apiHandlers: ApiHandlerTable = {
   agentSdkSetPermissionMode: async (wsId, mode) => {
     await sdkSetPermissionMode(wsId, mode);
   },
+
+  agentSdkMcpStatus: async (wsId) => sdkMcpStatus(wsId),
+
+  agentSdkMcpToggle: async (wsId, serverName, enabled) => sdkMcpToggle(wsId, serverName, enabled),
+
+  agentSdkMcpReconnect: async (wsId, serverName) => sdkMcpReconnect(wsId, serverName),
 
   agentSdkSetRemoteControl: async (wsId, enabled) => {
     await sdkSetRemoteControl(wsId, enabled);

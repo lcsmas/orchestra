@@ -26,6 +26,11 @@ const LABEL: Record<AgentNoticeKind, string> = {
   // Renders as a centered divider (see .av-notice-interrupted) — the text
   // carries the story, no shouty uppercase label.
   interrupted: '',
+  // MCP connection outcomes (Option-D tracking): quiet hairline rows whose
+  // dot color carries the state (green connected / red failed) — the text
+  // ("context7 connected · 12 tools") is the whole story, no label.
+  mcp: '',
+  'mcp-error': '',
 };
 
 function NoticeRowImpl({ message }: { message: RenderMessage }) {

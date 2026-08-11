@@ -13,6 +13,7 @@ import {
   isBadResumeError,
   sdkEventToStatusEvent,
   sdkEventToStopReason,
+  describeMcpServer,
   ASK_USER_QUESTION,
   type NormalizeContext,
   type SdkMessage,
@@ -1401,6 +1402,126 @@ test('normalize: init carries slash commands and MCP servers when present', () =
   ) as [Extract<AgentEvent, { type: 'session/init' }>];
   assert.deepEqual(ev.slashCommands, ['compact', 'usage']);
   assert.deepEqual(ev.mcpServers, [{ name: 'browser', status: 'connected' }]);
+});
+
+// ─── MCP tracking (Option D: init notices + session/mcp fold) ────────────────
+
+test('normalize: init derives per-server toolCount from the tools list', () => {
+  const [ev] = normalizeSdkMessage(
+    {
+      type: 'system',
+      subtype: 'init',
+      tools: ['Bash', 'mcp__context7__resolve', 'mcp__context7__get-docs', 'mcp__pg__query'],
+      mcp_servers: [
+        { name: 'context7', status: 'connected' },
+        { name: 'pg', status: 'connected' },
+      ],
+    } as SdkMessage,
+    ctx(),
+  ) as [Extract<AgentEvent, { type: 'session/init' }>];
+  assert.deepEqual(ev.mcpServers, [
+    { name: 'context7', status: 'connected', toolCount: 2 },
+    { name: 'pg', status: 'connected', toolCount: 1 },
+  ]);
+});
+
+test('normalize: init emits one transcript notice per MCP server, kind by status', () => {
+  const events = normalizeSdkMessage(
+    {
+      type: 'system',
+      subtype: 'init',
+      tools: ['mcp__context7__a', 'mcp__context7__b'],
+      mcp_servers: [
+        { name: 'context7', status: 'connected' },
+        { name: 'linear', status: 'failed' },
+        { name: 'gh', status: 'needs-auth' },
+        { name: 'off', status: 'disabled' }, // user intent — no notice
+      ],
+    } as SdkMessage,
+    ctx(),
+  );
+  const notices = events.filter((e) => e.type === 'notice');
+  assert.deepEqual(
+    notices.map((n) => [n.kind, n.text]),
+    [
+      ['mcp', 'context7 connected · 2 tools'],
+      ['mcp-error', 'linear failed to connect'],
+      ['mcp-error', 'gh needs authentication'],
+    ],
+  );
+  // Notices follow the init event and share its monotonic seq stream.
+  assert.equal(events[0].type, 'session/init');
+  assert.deepEqual(
+    events.map((e) => e.seq),
+    [0, 1, 2, 3],
+  );
+});
+
+test('normalize: init without mcp_servers emits no MCP notices', () => {
+  const events = normalizeSdkMessage(
+    { type: 'system', subtype: 'init', tools: ['Bash'] } as SdkMessage,
+    ctx(),
+  );
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'session/init');
+});
+
+test('fold: session/mcp replaces the server list wholesale', () => {
+  let s = emptySession();
+  s = foldEvents(s, [
+    {
+      type: 'session/init',
+      seq: 0,
+      at: 1000,
+      sessionId: 'sid',
+      model: 'm',
+      cwd: '/w',
+      permissionMode: 'default',
+      tools: [],
+      mcpServers: [{ name: 'linear', status: 'failed' }],
+    },
+    {
+      type: 'session/mcp',
+      seq: 1,
+      at: 1001,
+      servers: [
+        { name: 'linear', status: 'connected', toolCount: 4 },
+        { name: 'pg', status: 'disabled' },
+      ],
+    },
+  ]);
+  assert.deepEqual(s.mcpServers, [
+    { name: 'linear', status: 'connected', toolCount: 4 },
+    { name: 'pg', status: 'disabled' },
+  ]);
+});
+
+test('status map: session/mcp and mcp notices never move the status dot', () => {
+  assert.equal(
+    sdkEventToStatusEvent({ type: 'session/mcp', seq: 0, at: 1000, servers: [] }),
+    null,
+  );
+  assert.equal(
+    sdkEventToStatusEvent({ type: 'notice', kind: 'mcp', text: 'x connected', seq: 0, at: 1000 }),
+    null,
+  );
+});
+
+test('describeMcpServer: per-status texts; disabled is silent; unknown surfaces', () => {
+  assert.equal(
+    describeMcpServer({ name: 'c7', status: 'connected', toolCount: 1 }),
+    'c7 connected · 1 tool',
+  );
+  assert.equal(describeMcpServer({ name: 'c7', status: 'connected' }), 'c7 connected');
+  assert.equal(
+    describeMcpServer({ name: 'li', status: 'failed', error: 'ECONNREFUSED' }),
+    'li failed to connect — ECONNREFUSED',
+  );
+  assert.equal(describeMcpServer({ name: 'gh', status: 'needs-auth' }), 'gh needs authentication');
+  assert.equal(describeMcpServer({ name: 'pg', status: 'pending' }), 'pg connecting…');
+  assert.equal(describeMcpServer({ name: 'off', status: 'disabled' }), null);
+  assert.equal(describeMcpServer({ name: 'x', status: '' }), null);
+  assert.equal(describeMcpServer({ name: 'x', status: 'odd' }), 'x — odd');
 });
 
 // ─── normalize: externally-originated user text (audit H4) ───────────────────

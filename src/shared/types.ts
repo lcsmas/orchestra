@@ -884,7 +884,33 @@ export interface AgentInitEvent extends AgentEventBase {
    *  built-ins (/compact, /usage, …) are discoverable. */
   slashCommands?: string[];
   /** MCP servers the session connected, with their status — CC's `/mcp` surface. */
-  mcpServers?: { name: string; status: string }[];
+  mcpServers?: AgentMcpServer[];
+}
+
+/** One MCP server as tracked in the structured view — from `session/init`
+ *  (name + status + toolCount derived from the init `tools` list) and refreshed
+ *  by {@link AgentMcpServersEvent} (full status via the SDK's
+ *  `mcpServerStatus()` control request, which also carries errors). Backs the
+ *  `/mcp` popover and the transcript's MCP notices. */
+export interface AgentMcpServer {
+  /** Server name as configured (the `<name>` in `mcp__<name>__<tool>`). */
+  name: string;
+  /** SDK status: 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled'
+   *  (kept open as string — unknown future statuses must not break the fold). */
+  status: string;
+  /** Number of tools the server exposes, when known. */
+  toolCount?: number;
+  /** Error message, when `status === 'failed'`. */
+  error?: string;
+}
+
+/** Full refresh of the session's MCP server list — emitted by the main-process
+ *  MCP control ops (`sdkMcpStatus`/`sdkMcpToggle`/`sdkMcpReconnect`) after
+ *  querying the SDK. REPLACES `AgentSession.mcpServers` wholesale (like
+ *  `session/remote-control`, a full-state event so replays reconstruct it). */
+export interface AgentMcpServersEvent extends AgentEventBase {
+  type: 'session/mcp';
+  servers: AgentMcpServer[];
 }
 
 /** Category of a {@link AgentNoticeEvent} — drives the row's icon/accent and
@@ -901,7 +927,9 @@ export type AgentNoticeKind =
   | 'warning' // informational message at warning prominence
   | 'info' // informational message (system/informational, low prominence)
   | 'command-output' // output of a built-in slash command (/compact, /usage …)
-  | 'interrupted'; // the user interrupted the turn (stream marker / manager notice)
+  | 'interrupted' // the user interrupted the turn (stream marker / manager notice)
+  | 'mcp' // an MCP server connected / was enabled (green-dot hairline)
+  | 'mcp-error'; // an MCP server failed / needs auth / was disabled (red-dot hairline)
 
 /** A user-relevant system notice the SDK surfaced outside the assistant text
  *  stream. Before this event existed, `normalizeSdkMessage` silently dropped
@@ -1377,6 +1405,7 @@ export type AgentEvent =
   | AgentLocalCommandEvent
   | AgentSessionUpdateEvent
   | AgentRemoteControlEvent
+  | AgentMcpServersEvent
   | AgentTaskEvent
   | AgentNoticeEvent
   | AgentStatusEvent
@@ -1510,8 +1539,10 @@ export interface AgentSession {
   /** Slash commands the CLI reported at init (built-ins + custom), for the
    *  composer autocomplete. */
   slashCommands?: string[];
-  /** MCP servers the session connected at init, with status. */
-  mcpServers?: { name: string; status: string }[];
+  /** MCP servers the session loaded, with live status — seeded at init,
+   *  replaced wholesale by each {@link AgentMcpServersEvent}. Backs the `/mcp`
+   *  popover (submit-intercepted in the composer, never sent to the model). */
+  mcpServers?: AgentMcpServer[];
   /** Whether this session's on-disk transcript has been read back into the
    *  store (the history backfill). Lives on the SESSION, not on the component,
    *  so it survives a pane unmount — App.tsx caps mounted panes

@@ -45,6 +45,7 @@ import { buildBrowserToolServer } from './agent-browser-tools';
 import {
   normalizeSdkMessage,
   makePermissionRequest,
+  describeMcpServer,
   makeUserMessage,
   makeLocalCommand,
   shouldAutoApprovePermission,
@@ -59,6 +60,7 @@ import type {
   AgentEffortLevel,
   AgentEvent,
   AgentImage,
+  AgentMcpServer,
   AgentPermissionMode,
   AgentModelInfo,
   AgentPermissionReply,
@@ -1773,6 +1775,142 @@ export async function sdkSetRemoteControl(wsId: string, enabled: boolean): Promi
       error: message || 'Remote Control request failed.',
     });
   }
+}
+
+// ─── MCP server tracking + control (`/mcp` popover, Option-D design) ─────────
+
+/** The SDK's `McpServerStatus` shape, read loosely (see SdkMessage's rationale:
+ *  optional everywhere so a missing field degrades, never throws). */
+interface RawMcpServerStatus {
+  name?: string;
+  status?: string;
+  error?: string;
+  tools?: { name?: string }[];
+}
+
+/** Map one SDK `McpServerStatus` onto Orchestra's {@link AgentMcpServer}. */
+function toAgentMcpServer(s: RawMcpServerStatus): AgentMcpServer {
+  return {
+    name: s?.name ?? '',
+    status: s?.status ?? '',
+    ...(Array.isArray(s?.tools) && s.tools.length > 0 ? { toolCount: s.tools.length } : {}),
+    ...(typeof s?.error === 'string' && s.error ? { error: s.error } : {}),
+  };
+}
+
+/** Fetch the live MCP server list from the session's query and broadcast it as
+ *  a `session/mcp` full-list event (folded into `AgentSession.mcpServers`, so
+ *  every attached client — and a later replay — agrees with the popover). */
+async function emitMcpServers(session: Session): Promise<AgentMcpServer[]> {
+  const q = session.q as Query & { mcpServerStatus?: () => Promise<RawMcpServerStatus[]> };
+  if (typeof q.mcpServerStatus !== 'function') {
+    throw new Error('MCP server status is not available in this Claude Code version.');
+  }
+  const raw = await q.mcpServerStatus();
+  const servers = (Array.isArray(raw) ? raw : []).map(toAgentMcpServer);
+  emit(session.wsId, stamp(session.ctx, { type: 'session/mcp', servers }));
+  return servers;
+}
+
+/** Current MCP server statuses for the `/mcp` popover. Lazily starts the
+ *  session (like Remote Control): CC's `/mcp` also runs in-session, and the
+ *  status/toggle/reconnect control requests all need a live query. */
+export async function sdkMcpStatus(wsId: string): Promise<AgentMcpServer[]> {
+  const session = await ensureSession(wsId);
+  return emitMcpServers(session);
+}
+
+/** Enable/disable one MCP server on the LIVE session (SDK `toggleMcpServer` —
+ *  no session restart; the CLI persists the toggle for future sessions). Emits
+ *  a quiet transcript notice with the outcome plus a `session/mcp` refresh, and
+ *  returns the refreshed list so the popover can render it without a second
+ *  round-trip. */
+export async function sdkMcpToggle(
+  wsId: string,
+  serverName: string,
+  enabled: boolean,
+): Promise<AgentMcpServer[]> {
+  const session = await ensureSession(wsId);
+  const q = session.q as Query & {
+    toggleMcpServer?: (name: string, enabled: boolean) => Promise<void>;
+  };
+  if (typeof q.toggleMcpServer !== 'function') {
+    throw new Error('MCP server toggling is not available in this Claude Code version.');
+  }
+  try {
+    await q.toggleMcpServer(serverName, enabled);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn(`agent-sdk: toggleMcpServer(${serverName}, ${enabled}) failed for ${wsId}`, err);
+    emit(
+      session.wsId,
+      stamp(session.ctx, {
+        type: 'notice',
+        kind: 'mcp-error',
+        text: `Couldn't ${enabled ? 'enable' : 'disable'} ${serverName} — ${message}`,
+      }),
+    );
+    throw err;
+  }
+  const servers = await emitMcpServers(session);
+  // Announce the outcome in the transcript (Option D: connection history lives
+  // in the conversation flow). Enabling reports the resulting connection state
+  // ("connected · N tools" / "failed to connect"); disabling is user intent,
+  // announced at info prominence rather than as an error.
+  const changed = servers.find((s) => s.name === serverName);
+  const text = enabled
+    ? changed
+      ? describeMcpServer(changed)
+      : `${serverName} enabled`
+    : `${serverName} disabled`;
+  if (text) {
+    emit(
+      session.wsId,
+      stamp(session.ctx, {
+        type: 'notice',
+        kind: !enabled ? 'info' : changed && changed.status !== 'connected' ? 'mcp-error' : 'mcp',
+        text,
+      }),
+    );
+  }
+  return servers;
+}
+
+/** Reconnect one MCP server (SDK `reconnectMcpServer`) — the popover's retry
+ *  action for a `failed` / `needs-auth` server. Emits the outcome notice and a
+ *  `session/mcp` refresh; returns the refreshed list. */
+export async function sdkMcpReconnect(wsId: string, serverName: string): Promise<AgentMcpServer[]> {
+  const session = await ensureSession(wsId);
+  const q = session.q as Query & { reconnectMcpServer?: (name: string) => Promise<void> };
+  if (typeof q.reconnectMcpServer !== 'function') {
+    throw new Error('MCP server reconnect is not available in this Claude Code version.');
+  }
+  let reconnectError: string | null = null;
+  try {
+    await q.reconnectMcpServer(serverName);
+  } catch (err) {
+    // Keep going: the status refresh below is the source of truth either way.
+    reconnectError = err instanceof Error ? err.message : String(err);
+    log.warn(`agent-sdk: reconnectMcpServer(${serverName}) failed for ${wsId}`, err);
+  }
+  const servers = await emitMcpServers(session);
+  const server = servers.find((s) => s.name === serverName);
+  const text = reconnectError
+    ? `${serverName} failed to reconnect — ${reconnectError}`
+    : server
+      ? describeMcpServer(server)
+      : null;
+  if (text) {
+    emit(
+      session.wsId,
+      stamp(session.ctx, {
+        type: 'notice',
+        kind: !reconnectError && server?.status === 'connected' ? 'mcp' : 'mcp-error',
+        text,
+      }),
+    );
+  }
+  return servers;
 }
 
 /** Tear down a workspace's session (stop/interrupt + drop). Called on explicit

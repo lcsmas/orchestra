@@ -439,6 +439,19 @@ Composer skills autocomplete: `.av-ac` (absolute above `.av-composer-field`) >
 `.av-ac-source{,-project,-user}`; footer `.av-ac-hint` with kbd chips. The
 composer input is MONO at code size (a command line, not a web form).
 
+MCP manager popover (`McpPopover.tsx`, opened by SUBMITTING `/mcp`): `.av-mcp`
+(absolute above `.av-composer-field`, same anchor + same fragility as `.av-ac` —
+the field must keep `position:relative`, never `overflow:hidden`; unlike
+`.av-ac`'s hardcoded dark glass it backs on `--av-surface-overlay`, so it
+adapts to light for free) > `.av-mcp-title` (+`.av-mcp-loading`) >
+`.av-mcp-row` (+`-off`) > `.av-mcp-dot{-ok,-bad,-pending,-off}` +
+`.av-mcp-name` + `.av-mcp-meta` (+ inline `.av-mcp-retry` link-button) +
+`.av-mcp-switch` (+`-on`, `role="switch"`, disabled while an op is in flight) >
+`.av-mcp-knob`; `.av-mcp-empty` / `.av-mcp-error` / footer `.av-mcp-hint`.
+MCP transcript notices reuse the interrupt marker's centered-divider treatment:
+`.av-notice-mcp` (green `--av-add` dot) / `.av-notice-mcp-error` (red
+`--av-error` dot) — hairline rules both sides, text carries the story, no label.
+
 Turn footer (`TurnFooter.tsx`): `.av-turn-footer` (+`-running`/`-error`) >
 `.av-turn-stat` (`.av-turn-stat-value` + `.av-turn-stat-label`). The **running**
 variant is the real-time "working" readout: `.av-turn-spark` (rotating spark) +

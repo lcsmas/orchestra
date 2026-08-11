@@ -31,6 +31,7 @@ import { useStore } from '../store';
 import { scoped } from '../log';
 import { WorkspaceAccountBadge } from './AccountBadge';
 import { CmComposer, type CmComposerHandle } from './agent/CmComposer';
+import { McpPopover } from './agent/McpPopover';
 import { readComposerVim, writeComposerVim, vimChipLabel, type VimMode } from '../composer-vim-pref';
 import type { AgentImage, AgentSession, AgentSkillInfo, RenderMessage } from '../../shared/types';
 // Design mode: the browser pane's element picker drops picks in the store; the
@@ -982,12 +983,15 @@ const BUILTIN_DESC: Record<string, string> = {
   clear: 'Start a fresh conversation (clears the transcript)',
   compact: 'Compact the conversation to free context',
   usage: 'Show plan usage / rate-limit status',
+  mcp: 'Manage MCP servers — status, enable/disable, reconnect',
 };
 
 /** Commands Orchestra guarantees regardless of what the CLI reports. `clear`
- *  is handled Orchestra-side (agentSdkClear); `compact` is sent to the CLI,
- *  which executes it as a built-in and reports back via status/compact events. */
-const ALWAYS_COMMANDS = ['clear', 'compact'];
+ *  is handled Orchestra-side (agentSdkClear); `mcp` likewise (it opens the MCP
+ *  manager popover on submit — never sent to the model); `compact` is sent to
+ *  the CLI, which executes it as a built-in and reports back via
+ *  status/compact events. */
+const ALWAYS_COMMANDS = ['clear', 'compact', 'mcp'];
 
 function Composer({
   session,
@@ -1020,6 +1024,9 @@ function Composer({
   // Imperative handle on the CodeMirror editor (focus / read / set text).
   const cmRef = useRef<CmComposerHandle | null>(null);
   const running = !!session?.running;
+  // The MCP manager popover (Option-D design) — opened by SUBMITTING `/mcp`
+  // (intercepted Orchestra-side in `submit`, never sent to the model).
+  const [mcpOpen, setMcpOpen] = useState(false);
 
   // Expose PREFILL to the parent (rewind's edit-and-retry). Both the React
   // state and the CodeMirror document must be set: `text` drives bash-mode
@@ -1218,6 +1225,14 @@ function Composer({
       setText('');
       return;
     }
+    // `/mcp` is likewise Orchestra-side: SUBMITTING it opens the MCP manager
+    // popover over the composer (Option-D design — the popover pops on send,
+    // not while typing) and the command never reaches the model.
+    if (t === '/mcp') {
+      setMcpOpen(true);
+      setText('');
+      return;
+    }
     // Allow send when there's text OR at least one pasted image (an image with
     // no caption is a valid turn).
     if (!t && pendingImages.length === 0) return;
@@ -1272,6 +1287,16 @@ function Composer({
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDrop}
       >
+        {mcpOpen && (
+          <McpPopover
+            workspaceId={workspaceId}
+            seed={session?.mcpServers}
+            onClose={() => {
+              setMcpOpen(false);
+              cmRef.current?.focus();
+            }}
+          />
+        )}
         {acOpen && (
           <div className="av-ac" role="listbox" aria-label="Skills">
             {acItems.map((s, idx) => (

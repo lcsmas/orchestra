@@ -7,6 +7,7 @@ import type {
   AgentEffortLevel,
   AgentEvent,
   AgentImage,
+  AgentMcpServer,
   AgentModelInfo,
   AgentPermissionMode,
   AgentPermissionReply,
@@ -319,6 +320,17 @@ export interface OrchestraAPI {
    *  event folded into `AgentSession.remoteControl` (URL to open on another
    *  device on enable, or an error). */
   agentSdkSetRemoteControl: (wsId: string, enabled: boolean) => Promise<void>;
+  /** Current MCP server statuses for the `/mcp` popover (SDK
+   *  `mcpServerStatus()`). Starts the session lazily if needed (CC's /mcp also
+   *  runs in-session). Also broadcast on `agent:event` as `session/mcp`. */
+  agentSdkMcpStatus: (wsId: string) => Promise<AgentMcpServer[]>;
+  /** Enable/disable one MCP server on the live session (SDK `toggleMcpServer`,
+   *  no restart; the CLI persists the toggle). Resolves with the refreshed
+   *  server list; also emits a transcript notice + `session/mcp` refresh. */
+  agentSdkMcpToggle: (wsId: string, serverName: string, enabled: boolean) => Promise<AgentMcpServer[]>;
+  /** Reconnect one MCP server (the popover's retry for failed/needs-auth).
+   *  Resolves with the refreshed list; outcome also lands as a notice. */
+  agentSdkMcpReconnect: (wsId: string, serverName: string) => Promise<AgentMcpServer[]>;
   /** History backfill: the workspace's persisted on-disk session transcript
    *  converted to AgentEvents (empty when there is nothing to backfill). The
    *  renderer folds these through the same queue as live events. */

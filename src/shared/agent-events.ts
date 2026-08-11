@@ -27,6 +27,7 @@
 import type {
   AgentEvent,
   AgentImage,
+  AgentMcpServer,
   AgentNoticeKind,
   AgentPermissionMode,
   AgentPermissionRequestEvent,
@@ -418,6 +419,48 @@ function normalizeStreamEvent(ctx: NormalizeContext, ev: RawStreamEvent): AgentE
   return out;
 }
 
+/** Build one {@link AgentMcpServer} from an init `mcp_servers` entry, deriving
+ *  `toolCount` from the init `tools` list (`mcp__<name>__<tool>` prefix count) —
+ *  the init message itself carries no per-server tool info. */
+export function mcpServerFromInit(
+  s: { name?: string; status?: string } | undefined,
+  tools: string[],
+): AgentMcpServer {
+  const name = s?.name ?? '';
+  const prefix = `mcp__${name}__`;
+  const toolCount = name ? tools.filter((t) => t.startsWith(prefix)).length : 0;
+  return {
+    name,
+    status: s?.status ?? '',
+    ...(toolCount > 0 ? { toolCount } : {}),
+  };
+}
+
+/** One-line transcript-notice text for an MCP server's connection outcome —
+ *  "context7 connected · 12 tools", "linear failed to connect". Returns null
+ *  for statuses that don't warrant a notice (`disabled` — the user turned it
+ *  off; re-announcing it every session start is noise). Shared by the init
+ *  normalize path and the main-process toggle/reconnect ops so live and
+ *  reopened transcripts read the same. */
+export function describeMcpServer(s: AgentMcpServer): string | null {
+  const tools = s.toolCount !== undefined ? ` · ${s.toolCount} tool${s.toolCount === 1 ? '' : 's'}` : '';
+  switch (s.status) {
+    case 'connected':
+      return `${s.name} connected${tools}`;
+    case 'failed':
+      return `${s.name} failed to connect${s.error ? ` — ${s.error}` : ''}`;
+    case 'needs-auth':
+      return `${s.name} needs authentication`;
+    case 'pending':
+      return `${s.name} connecting…`;
+    case 'disabled':
+      return null;
+    default:
+      // Unknown status: surface it rather than hide a server the SDK reported.
+      return s.status ? `${s.name} — ${s.status}` : null;
+  }
+}
+
 /** Normalize one SDK message into zero or more {@link AgentEvent}s. Pure except
  *  for advancing `ctx.seq`. Unknown/irrelevant messages return `[]`. */
 export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): AgentEvent[] {
@@ -426,6 +469,10 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
   switch (msg.type) {
     case 'system':
       if (msg.subtype === 'init') {
+        const tools = Array.isArray(msg.tools) ? msg.tools : [];
+        const mcpServers = Array.isArray(msg.mcp_servers)
+          ? msg.mcp_servers.map((s) => mcpServerFromInit(s, tools))
+          : undefined;
         return [
           stamp(ctx, {
             type: 'session/init',
@@ -433,18 +480,27 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
             model: msg.model ?? '',
             cwd: msg.cwd ?? '',
             permissionMode: toPermissionMode(msg.permissionMode),
-            tools: Array.isArray(msg.tools) ? msg.tools : [],
+            tools,
             ...(Array.isArray(msg.slash_commands)
               ? { slashCommands: msg.slash_commands.filter((c): c is string => typeof c === 'string') }
               : {}),
-            ...(Array.isArray(msg.mcp_servers)
-              ? {
-                  mcpServers: msg.mcp_servers.map((s) => ({
-                    name: s?.name ?? '',
-                    status: s?.status ?? '',
-                  })),
-                }
-              : {}),
+            ...(mcpServers !== undefined ? { mcpServers } : {}),
+          }),
+          // Option-D MCP tracking: connection outcomes render as quiet hairline
+          // notices IN the transcript, so connect/fail history lives in the
+          // conversation flow (and survives a reopen via the backfill).
+          ...(mcpServers ?? []).flatMap((s) => {
+            const text = describeMcpServer(s);
+            if (text === null) return [];
+            return [
+              stamp(ctx, {
+                type: 'notice' as const,
+                kind: (s.status === 'connected' || s.status === 'pending'
+                  ? 'mcp'
+                  : 'mcp-error') as AgentNoticeKind,
+                text,
+              }),
+            ];
           }),
         ];
       }
@@ -1301,6 +1357,11 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       // Full-state replace (the manager always emits the complete state), so a
       // replay from emptySession reconstructs the current toggle state.
       return { ...next, remoteControl: event.state };
+
+    case 'session/mcp':
+      // Full-list replace, mirroring session/remote-control: the MCP control
+      // ops always emit the complete server list from mcpServerStatus().
+      return { ...next, mcpServers: event.servers };
 
     case 'user-message': {
       const messages = [...next.messages];
