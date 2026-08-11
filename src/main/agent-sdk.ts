@@ -46,6 +46,7 @@ import {
   normalizeSdkMessage,
   makePermissionRequest,
   describeMcpServer,
+  firstHttpUrl,
   makeUserMessage,
   makeLocalCommand,
   shouldAutoApprovePermission,
@@ -1996,6 +1997,148 @@ export async function sdkMcpReconnect(wsId: string, serverName: string): Promise
         kind: !reconnectError && server?.status === 'connected' ? 'mcp' : 'mcp-error',
         text,
       }),
+    );
+  }
+  return servers;
+}
+
+/** How long the OAuth flow may take end-to-end (user switches to the browser,
+ *  logs in, approves). Claude Code's own flow is similarly patient. */
+const MCP_AUTH_TIMEOUT_MS = 180_000;
+/** Status-poll cadence while waiting for the fresh token to land. */
+const MCP_AUTH_POLL_MS = 2_000;
+
+/** Run the OAuth flow for a `needs-auth` MCP server — Claude Code's `/mcp`
+ *  authenticate, as the popover's ↻ action:
+ *
+ *  1. `mcpAuthenticate(serverName)` (internal control request, typed locally
+ *     like `enableRemoteControl`) asks the CLI to start the flow. Its response
+ *     shape is undocumented, so {@link firstHttpUrl} deep-scans it for the
+ *     authorization link; if one surfaces, it opens in the SYSTEM browser
+ *     (existing login cookies live there, and some providers refuse webviews).
+ *     If none does, the CLI may have opened/completed the flow itself — either
+ *     way the poll below is the source of truth.
+ *  2. Poll `mcpServerStatus()` until the server leaves `needs-auth` (fresh
+ *     token landed → the CLI reconnects it) or the timeout hits. The
+ *     renderer's row shows "waiting for authentication…" while this IPC
+ *     promise is pending.
+ *  3. Broadcast the final `session/mcp` + an outcome notice, and resolve with
+ *     the refreshed list.
+ *
+ *  The authenticate promise itself may resolve fast (URL handed back) or only
+ *  after the callback completes — both are handled: it is raced against the
+ *  poll loop, and whichever signals completion first wins. */
+export async function sdkMcpAuth(wsId: string, serverName: string): Promise<AgentMcpServer[]> {
+  const session = await ensureSession(wsId);
+  const q = session.q as Query & {
+    mcpAuthenticate?: (serverName: string, redirectUri?: string) => Promise<unknown>;
+    mcpServerStatus?: () => Promise<RawMcpServerStatus[]>;
+  };
+  const { mcpAuthenticate, mcpServerStatus } = q;
+  if (typeof mcpAuthenticate !== 'function' || typeof mcpServerStatus !== 'function') {
+    throw new Error('MCP authentication is not available in this Claude Code version.');
+  }
+  // Bound: these are class methods on the concrete Query (they use `this`).
+  const bound = {
+    mcpAuthenticate: mcpAuthenticate.bind(q),
+    mcpServerStatus: mcpServerStatus.bind(q),
+  };
+  try {
+    try {
+      return await runMcpAuthFlow(session, bound, serverName);
+    } catch (err) {
+      // Clicking ↻ seconds after a cold /mcp open races the subprocess boot —
+      // control requests throw "ProcessTransport is not ready for writing"
+      // until the transport opens. That is the EXPECTED first interaction for
+      // a user who opened /mcp to fix auth, so retry once after a beat rather
+      // than making them click again.
+      const m = err instanceof Error ? err.message : String(err);
+      if (!/not ready/i.test(m)) throw err;
+      slog.info(`mcp auth ${serverName}: transport not ready, retrying once`);
+      await new Promise((r) => setTimeout(r, 3_000));
+      return await runMcpAuthFlow(session, bound, serverName);
+    }
+  } catch (err) {
+    // A thrown flow (e.g. a control request racing the session boot —
+    // "ProcessTransport is not ready") must STILL write its outcome into the
+    // transcript, like every other MCP op; the popover additionally shows the
+    // rejection inline.
+    const message = err instanceof Error ? err.message : String(err);
+    emit(
+      session.wsId,
+      stamp(session.ctx, {
+        type: 'notice',
+        kind: 'mcp-error',
+        text: `${serverName} authentication failed — ${message}`,
+      }),
+    );
+    throw err;
+  }
+}
+
+async function runMcpAuthFlow(
+  session: Session,
+  q: {
+    mcpAuthenticate: (serverName: string, redirectUri?: string) => Promise<unknown>;
+    mcpServerStatus: () => Promise<RawMcpServerStatus[]>;
+  },
+  serverName: string,
+): Promise<AgentMcpServer[]> {
+  const deadline = Date.now() + MCP_AUTH_TIMEOUT_MS;
+  let opened = false;
+  let authError: string | null = null;
+
+  // Kick off the flow. Do NOT await to completion before polling — the promise
+  // may only resolve after the user finishes in the browser.
+  const authPromise = q
+    .mcpAuthenticate(serverName)
+    .then((res) => {
+      const url = firstHttpUrl(res);
+      if (url && !opened) {
+        opened = true;
+        slog.info(`mcp auth ${serverName}: opening authorization URL`);
+        void platform.openExternal(url);
+      }
+    })
+    .catch((err) => {
+      authError = err instanceof Error ? err.message : String(err);
+      slog.warn(`mcp auth ${serverName} failed for ${session.wsId}: ${authError}`);
+    });
+  // Give a fast URL-carrying response a moment to surface before polling.
+  await Promise.race([authPromise, new Promise((r) => setTimeout(r, 1_500))]);
+
+  const stillNeedsAuth = (servers: AgentMcpServer[]) => {
+    const s = servers.find((x) => x.name === serverName);
+    // A server MISSING from the status list is terminal, not pending — it was
+    // removed from config (or never existed); polling can't make it appear,
+    // so waiting the full timeout would just hold the popover row for 3 min.
+    return s !== undefined && (s.status === 'needs-auth' || s.status === 'pending');
+  };
+
+  let servers = (await q.mcpServerStatus().then((r) => (Array.isArray(r) ? r : []))).map(
+    toAgentMcpServer,
+  );
+  while (stillNeedsAuth(servers) && authError === null && Date.now() < deadline) {
+    await Promise.race([authPromise, new Promise((r) => setTimeout(r, MCP_AUTH_POLL_MS))]);
+    servers = (await q.mcpServerStatus().then((r) => (Array.isArray(r) ? r : []))).map(
+      toAgentMcpServer,
+    );
+  }
+
+  // Broadcast whatever we ended on (even a timeout leaves fresher state than
+  // the popover's seed) and write the outcome into the transcript.
+  emit(session.wsId, stamp(session.ctx, { type: 'session/mcp', servers }));
+  const server = servers.find((s) => s.name === serverName);
+  const connected = server?.status === 'connected';
+  const text = connected
+    ? describeMcpServer(server)
+    : authError
+      ? `${serverName} authentication failed — ${authError}`
+      : `${serverName} authentication timed out — finish the flow in your browser, then retry`;
+  if (text) {
+    emit(
+      session.wsId,
+      stamp(session.ctx, { type: 'notice', kind: connected ? 'mcp' : 'mcp-error', text }),
     );
   }
   return servers;

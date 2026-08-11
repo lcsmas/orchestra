@@ -331,6 +331,13 @@ export interface OrchestraAPI {
   /** Reconnect one MCP server (the popover's retry for failed/needs-auth).
    *  Resolves with the refreshed list; outcome also lands as a notice. */
   agentSdkMcpReconnect: (wsId: string, serverName: string) => Promise<AgentMcpServer[]>;
+  /** Run the OAuth flow for a needs-auth MCP server (CC's /mcp authenticate):
+   *  opens the authorization link in the SYSTEM browser and resolves — with
+   *  the refreshed list — once the fresh token lands and the server
+   *  reconnects, or on timeout/failure (outcome lands as a notice either
+   *  way). LONG-RUNNING: pends while the user completes the flow (up to
+   *  ~3 min); the popover row shows a waiting state meanwhile. */
+  agentSdkMcpAuth: (wsId: string, serverName: string) => Promise<AgentMcpServer[]>;
   /** History backfill: the workspace's persisted on-disk session transcript
    *  converted to AgentEvents (empty when there is nothing to backfill). The
    *  renderer folds these through the same queue as live events. */

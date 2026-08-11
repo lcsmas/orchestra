@@ -14,6 +14,7 @@ import {
   sdkEventToStatusEvent,
   sdkEventToStopReason,
   describeMcpServer,
+  firstHttpUrl,
   ASK_USER_QUESTION,
   type NormalizeContext,
   type SdkMessage,
@@ -1425,7 +1426,12 @@ test('normalize: init derives per-server toolCount from the tools list', () => {
   ]);
 });
 
-test('normalize: init emits one transcript notice per MCP server, kind by status', () => {
+test('normalize: init emits NO transcript notices for MCP servers', () => {
+  // The CLI re-emits `system/init` at the start of EVERY request, so per-init
+  // notices re-announced the whole server list on every turn (user-rejected
+  // noise). Init CAPTURES the list for the /mcp popover and emits nothing
+  // else; the only MCP notices come from explicit user actions (the sdkMcp*
+  // ops). Regression guard for the "outputed every turn" bug.
   const events = normalizeSdkMessage(
     {
       type: 'system',
@@ -1435,31 +1441,9 @@ test('normalize: init emits one transcript notice per MCP server, kind by status
         { name: 'context7', status: 'connected' },
         { name: 'linear', status: 'failed' },
         { name: 'gh', status: 'needs-auth' },
-        { name: 'off', status: 'disabled' }, // user intent — no notice
+        { name: 'off', status: 'disabled' },
       ],
     } as SdkMessage,
-    ctx(),
-  );
-  const notices = events.filter((e) => e.type === 'notice');
-  assert.deepEqual(
-    notices.map((n) => [n.kind, n.text]),
-    [
-      ['mcp', 'context7 connected · 2 tools'],
-      ['mcp-error', 'linear failed to connect'],
-      ['mcp-error', 'gh needs authentication'],
-    ],
-  );
-  // Notices follow the init event and share its monotonic seq stream.
-  assert.equal(events[0].type, 'session/init');
-  assert.deepEqual(
-    events.map((e) => e.seq),
-    [0, 1, 2, 3],
-  );
-});
-
-test('normalize: init without mcp_servers emits no MCP notices', () => {
-  const events = normalizeSdkMessage(
-    { type: 'system', subtype: 'init', tools: ['Bash'] } as SdkMessage,
     ctx(),
   );
   assert.equal(events.length, 1);
@@ -1505,6 +1489,29 @@ test('status map: session/mcp and mcp notices never move the status dot', () => 
     sdkEventToStatusEvent({ type: 'notice', kind: 'mcp', text: 'x connected', seq: 0, at: 1000 }),
     null,
   );
+});
+
+test('firstHttpUrl: finds the auth URL wherever the response hides it', () => {
+  // Field-name-agnostic: the mcpAuthenticate response shape is an internal
+  // contract, so the extractor must survive any of these.
+  assert.equal(firstHttpUrl({ authUrl: 'https://x.test/authorize?c=1' }), 'https://x.test/authorize?c=1');
+  assert.equal(
+    firstHttpUrl({ deep: { nested: ['no', { url: 'http://a.test/cb' }] } }),
+    'http://a.test/cb',
+  );
+  assert.equal(
+    firstHttpUrl('Visit https://idp.test/oauth?state=abc to continue'),
+    'https://idp.test/oauth?state=abc',
+  );
+  // Trailing delimiters are not part of the URL.
+  assert.equal(firstHttpUrl('go to (https://x.test/a) now'), 'https://x.test/a');
+  assert.equal(firstHttpUrl({ ok: true, note: 'already authenticated' }), null);
+  assert.equal(firstHttpUrl(undefined), null);
+  assert.equal(firstHttpUrl(42), null);
+  // Cycle-safe via the depth cap.
+  const cyc: Record<string, unknown> = {};
+  cyc.self = cyc;
+  assert.equal(firstHttpUrl(cyc), null);
 });
 
 test('describeMcpServer: per-status texts; disabled is silent; unknown surfaces', () => {

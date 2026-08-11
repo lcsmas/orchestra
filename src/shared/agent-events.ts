@@ -461,6 +461,34 @@ export function describeMcpServer(s: AgentMcpServer): string | null {
   }
 }
 
+/** First http(s) URL found anywhere in a value — deep-walks objects/arrays and
+ *  scans strings. Used to pull the OAuth authorization link out of the SDK's
+ *  `mcpAuthenticate` response, whose shape is an INTERNAL contract (untyped in
+ *  the public d.ts, like `enableRemoteControl`): rather than betting on a field
+ *  name (`authUrl`? `authorizationUrl`?), find the URL wherever it lives so a
+ *  rename can't silently break the auth flow. Depth-capped against cycles. */
+export function firstHttpUrl(value: unknown, depth = 0): string | null {
+  if (depth > 6 || value == null) return null;
+  if (typeof value === 'string') {
+    const m = value.match(/https?:\/\/[^\s"'<>)\]}]+/);
+    return m ? m[0] : null;
+  }
+  if (Array.isArray(value)) {
+    for (const v of value) {
+      const url = firstHttpUrl(v, depth + 1);
+      if (url) return url;
+    }
+    return null;
+  }
+  if (typeof value === 'object') {
+    for (const v of Object.values(value as Record<string, unknown>)) {
+      const url = firstHttpUrl(v, depth + 1);
+      if (url) return url;
+    }
+  }
+  return null;
+}
+
 /** Normalize one SDK message into zero or more {@link AgentEvent}s. Pure except
  *  for advancing `ctx.seq`. Unknown/irrelevant messages return `[]`. */
 export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): AgentEvent[] {
@@ -470,6 +498,13 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
     case 'system':
       if (msg.subtype === 'init') {
         const tools = Array.isArray(msg.tools) ? msg.tools : [];
+        // MCP server state is CAPTURED (for the /mcp popover) but deliberately
+        // emits NO transcript notices here: the CLI re-emits `system/init` at
+        // the start of EVERY request, so per-init notices re-announced the
+        // whole server list on every turn — pure noise (user-rejected). The
+        // only MCP notices in the transcript are the outcomes of EXPLICIT user
+        // actions (toggle / reconnect / authenticate, emitted by the sdkMcp*
+        // ops in agent-sdk.ts).
         const mcpServers = Array.isArray(msg.mcp_servers)
           ? msg.mcp_servers.map((s) => mcpServerFromInit(s, tools))
           : undefined;
@@ -485,22 +520,6 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
               ? { slashCommands: msg.slash_commands.filter((c): c is string => typeof c === 'string') }
               : {}),
             ...(mcpServers !== undefined ? { mcpServers } : {}),
-          }),
-          // Option-D MCP tracking: connection outcomes render as quiet hairline
-          // notices IN the transcript, so connect/fail history lives in the
-          // conversation flow (and survives a reopen via the backfill).
-          ...(mcpServers ?? []).flatMap((s) => {
-            const text = describeMcpServer(s);
-            if (text === null) return [];
-            return [
-              stamp(ctx, {
-                type: 'notice' as const,
-                kind: (s.status === 'connected' || s.status === 'pending'
-                  ? 'mcp'
-                  : 'mcp-error') as AgentNoticeKind,
-                text,
-              }),
-            ];
           }),
         ];
       }

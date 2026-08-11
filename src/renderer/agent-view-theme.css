@@ -1481,11 +1481,42 @@ h6.av-md-h {
   font-family: var(--font-mono); font-size: var(--av-fs-small); color: var(--av-text-dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.av-mcp-retry {
-  border: none; background: none; padding: 0; cursor: pointer;
-  font: inherit; color: var(--av-assistant);
+/* Hover-revealed reconnect (↻) — present on every ENABLED row, revealed on
+   row hover/focus; ALWAYS visible and attention-tinted on failed/needs-auth
+   rows (there it runs the OAuth flow / retry, the row's primary action). */
+.av-mcp-reconnect {
+  flex: none; width: 20px; height: 20px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: 5px; padding: 0; cursor: pointer;
+  background: none; color: var(--av-text-dim);
+  opacity: 0; transition: opacity 0.12s var(--av-ease);
 }
-.av-mcp-retry:hover { text-decoration: underline; }
+.av-mcp-row:hover .av-mcp-reconnect,
+.av-mcp-reconnect:focus-visible { opacity: 1; }
+.av-mcp-reconnect:hover { background: var(--av-code-bg); color: var(--av-text); }
+.av-mcp-reconnect-attn { opacity: 1; color: var(--av-error); }
+.av-mcp-reconnect-attn:hover { color: var(--av-error); }
+/* Waiting-for-OAuth row state: spinner + label while agentSdkMcpAuth pends. */
+.av-mcp-authwait { display: inline-flex; align-items: center; gap: 6px; color: var(--av-warn); }
+.av-mcp-spin {
+  width: 9px; height: 9px; border-radius: 999px;
+  border: 1.5px solid var(--av-hairline-strong); border-top-color: var(--av-warn);
+  animation: av-mcp-spin 0.9s linear infinite;
+}
+@keyframes av-mcp-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .av-mcp-spin { animation: none; } }
+/* Collapsed "disabled · N" section (collapsed by default). */
+.av-mcp-sep { height: 1px; background: var(--av-hairline-faint); margin: 5px 4px; }
+.av-mcp-sect {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  border: none; background: none; cursor: pointer; text-align: left;
+  padding: 5px 8px 3px; border-radius: 6px;
+  font-family: var(--font-mono); font-size: var(--av-fs-caption); font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--av-text-faint);
+}
+.av-mcp-sect:hover { background: var(--av-code-bg); color: var(--av-text-dim); }
+.av-mcp-sect-chev { font-size: 9px; }
+.av-mcp-sect-n { color: var(--av-text-dim); text-transform: none; letter-spacing: 0; }
 .av-mcp-switch {
   flex: none; width: 28px; height: 16px; position: relative;
   border: none; padding: 0; border-radius: 9px; cursor: pointer;

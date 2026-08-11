@@ -97,6 +97,7 @@ const api: OrchestraAPI = {
     ipcRenderer.invoke('agent:sdkMcpToggle', wsId, serverName, enabled),
   agentSdkMcpReconnect: (wsId, serverName) =>
     ipcRenderer.invoke('agent:sdkMcpReconnect', wsId, serverName),
+  agentSdkMcpAuth: (wsId, serverName) => ipcRenderer.invoke('agent:sdkMcpAuth', wsId, serverName),
   agentSdkHistory: (wsId) => ipcRenderer.invoke('agent:sdkHistory', wsId),
   agentSdkDefaultModel: (wsId) => ipcRenderer.invoke('agent:sdkDefaultModel', wsId),
   agentSdkOpenTaskTranscript: (filePath) =>

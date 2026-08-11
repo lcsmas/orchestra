@@ -445,9 +445,15 @@ the field must keep `position:relative`, never `overflow:hidden`; unlike
 `.av-ac`'s hardcoded dark glass it backs on `--av-surface-overlay`, so it
 adapts to light for free) > `.av-mcp-title` (+`.av-mcp-loading`) >
 `.av-mcp-row` (+`-off`) > `.av-mcp-dot{-ok,-bad,-pending,-off}` +
-`.av-mcp-name` + `.av-mcp-meta` (+ inline `.av-mcp-retry` link-button) +
-`.av-mcp-switch` (+`-on`, `role="switch"`, disabled while an op is in flight) >
-`.av-mcp-knob`; `.av-mcp-empty` / `.av-mcp-error` / footer `.av-mcp-hint`.
+`.av-mcp-name` + `.av-mcp-meta` (auth-pending: `.av-mcp-authwait` +
+`.av-mcp-spin` amber spinner) + `.av-mcp-reconnect` (↻ icon-button:
+`opacity:0` at rest, revealed by `.av-mcp-row:hover` / `:focus-visible`;
+`+-attn` variant always-visible + `--av-error`-tinted on failed/needs-auth
+rows, where it runs the OAuth flow) + `.av-mcp-switch` (+`-on`,
+`role="switch"`, disabled while an op is in flight) > `.av-mcp-knob`.
+Disabled servers sit behind `.av-mcp-sep` + `.av-mcp-sect` (a button with
+`aria-expanded`; `.av-mcp-sect-chev`/`-n`), collapsed by default.
+`.av-mcp-empty` / `.av-mcp-error` / footer `.av-mcp-hint`.
 MCP transcript notices reuse the interrupt marker's centered-divider treatment:
 `.av-notice-mcp` (green `--av-add` dot) / `.av-notice-mcp-error` (red
 `--av-error` dot) — hairline rules both sides, text carries the story, no label.

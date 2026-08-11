@@ -2,19 +2,27 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { AgentMcpServer } from '../../../shared/types';
 
 /**
- * The `/mcp` manager popover (Option-D design): opened by SUBMITTING `/mcp`
+ * The `/mcp` manager popover (Option-A-v2 design): opened by SUBMITTING `/mcp`
  * in the composer (intercepted Orchestra-side, never sent to the model), it
- * anchors above the composer field like the skills autocomplete (`.av-ac`) and
- * lists the session's MCP servers — status dot, tool count, a reconnect action
- * for failed/needs-auth servers, and an enable/disable switch per server.
+ * anchors above the composer field like the skills autocomplete (`.av-ac`).
  *
- * Data path: mounts with the folded `session.mcpServers` as a SEED (last known
- * state, instant paint), then refreshes via `agentSdkMcpStatus` — which lazily
- * starts the SDK session if needed (CC's /mcp also runs in-session) and
- * broadcasts a `session/mcp` event so the store agrees. Toggle/reconnect
- * resolve with the refreshed list, so the popover never waits on a second
- * round-trip; their transcript-notice side effects render as quiet `mcp` /
- * `mcp-error` hairlines in the flow (the tracking half of Option D).
+ * Enabled servers render as a flat list — status dot, tool count, an
+ * enable/disable switch, and a **hover-revealed ↻ reconnect** on every row
+ * (always visible, attention-tinted, on failed / needs-auth rows). Disabled
+ * servers collapse into a "▸ disabled · N" section (collapsed by default) so
+ * a long tail of switched-off servers is one quiet line.
+ *
+ * **↻ on a `needs-auth` server runs the real OAuth flow** (parity with Claude
+ * Code's /mcp authenticate): `agentSdkMcpAuth` opens the provider's
+ * authorization link in the SYSTEM browser and pends until the fresh token
+ * lands and the CLI reconnects the server (or ~3 min timeout) — the row shows
+ * "waiting for authentication…" meanwhile. ↻ elsewhere is a plain reconnect.
+ *
+ * Data path: mounts with the folded `session.mcpServers` as a SEED (instant
+ * paint), then refreshes via `agentSdkMcpStatus` — which lazily starts the SDK
+ * session if needed and broadcasts `session/mcp` so the store agrees. Every op
+ * resolves with the refreshed list, and its outcome lands as a quiet
+ * `mcp`/`mcp-error` hairline notice in the transcript (the tracking half).
  *
  * CSS contract: anchors to `.av-composer-field`, which MUST keep
  * `position: relative` and must never gain `overflow: hidden` — the same
@@ -48,11 +56,14 @@ function metaText(s: AgentMcpServer): string {
     case 'needs-auth':
       return 'needs auth';
     case 'disabled':
-      return 'disabled';
+      return '';
     default:
       return s.status;
   }
 }
+
+/** What kind of operation is in flight for a server (drives the row state). */
+type Busy = 'op' | 'auth';
 
 export function McpPopover({
   workspaceId,
@@ -68,11 +79,12 @@ export function McpPopover({
   const [servers, setServers] = useState<AgentMcpServer[] | null>(seed ?? null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  /** Server names with a toggle/reconnect in flight (rows disable themselves). */
-  const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
+  const [showDisabled, setShowDisabled] = useState(false);
+  /** Server name → in-flight operation ('auth' pends for the whole OAuth flow). */
+  const [busy, setBusy] = useState<Readonly<Record<string, Busy>>>({});
   const rootRef = useRef<HTMLDivElement | null>(null);
-  // Guards state updates after unmount: every IPC promise below outlives a
-  // closed popover, and the refresh may take seconds when it boots the session.
+  // Guards state updates after unmount: the auth IPC promise can outlive a
+  // closed popover by minutes.
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true; // re-set on strict-mode remount (cleanup ran between)
@@ -123,35 +135,93 @@ export function McpPopover({
     };
   }, [onClose]);
 
-  const runOp = useCallback(
-    (name: string, op: () => Promise<AgentMcpServer[]>) => {
-      setBusy((prev) => new Set(prev).add(name));
-      setError(null);
-      op()
-        .then((list) => {
-          if (alive.current) setServers(list);
-        })
-        .catch((e) => {
-          if (alive.current) setError(e instanceof Error ? e.message : String(e));
-        })
-        .finally(() => {
-          if (!alive.current) return;
-          setBusy((prev) => {
-            const next = new Set(prev);
-            next.delete(name);
-            return next;
-          });
+  const runOp = useCallback((name: string, kind: Busy, op: () => Promise<AgentMcpServer[]>) => {
+    setBusy((prev) => ({ ...prev, [name]: kind }));
+    setError(null);
+    op()
+      .then((list) => {
+        if (alive.current) setServers(list);
+      })
+      .catch((e) => {
+        if (alive.current) setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!alive.current) return;
+        setBusy((prev) => {
+          const next = { ...prev };
+          delete next[name];
+          return next;
         });
-    },
-    [],
-  );
+      });
+  }, []);
 
   const toggle = (s: AgentMcpServer) =>
-    runOp(s.name, () =>
+    runOp(s.name, 'op', () =>
       window.orchestra.agentSdkMcpToggle(workspaceId, s.name, s.status === 'disabled'),
     );
+  /** The ↻ action: OAuth flow for needs-auth, plain reconnect otherwise. */
   const reconnect = (s: AgentMcpServer) =>
-    runOp(s.name, () => window.orchestra.agentSdkMcpReconnect(workspaceId, s.name));
+    s.status === 'needs-auth'
+      ? runOp(s.name, 'auth', () => window.orchestra.agentSdkMcpAuth(workspaceId, s.name))
+      : runOp(s.name, 'op', () => window.orchestra.agentSdkMcpReconnect(workspaceId, s.name));
+
+  const all = servers ?? [];
+  const enabled = all.filter((s) => s.status !== 'disabled');
+  const disabled = all.filter((s) => s.status === 'disabled');
+
+  const renderRow = (s: AgentMcpServer) => {
+    const b = busy[s.name];
+    const isOff = s.status === 'disabled';
+    const attention = s.status === 'failed' || s.status === 'needs-auth';
+    return (
+      <div key={s.name} className={`av-mcp-row ${isOff ? 'av-mcp-row-off' : ''}`}>
+        <span className={`av-mcp-dot av-mcp-dot-${dotClass(s.status)}`} aria-hidden />
+        <span className="av-mcp-name">{s.name}</span>
+        <span className="av-mcp-meta" title={s.error ?? undefined}>
+          {b === 'auth' ? (
+            <span className="av-mcp-authwait">
+              <span className="av-mcp-spin" aria-hidden /> waiting for authentication…
+            </span>
+          ) : b === 'op' ? (
+            '…'
+          ) : (
+            metaText(s)
+          )}
+        </span>
+        {!isOff && !b && (
+          <button
+            type="button"
+            className={`av-mcp-reconnect ${attention ? 'av-mcp-reconnect-attn' : ''}`}
+            title={s.status === 'needs-auth' ? `Authenticate ${s.name}` : `Reconnect ${s.name}`}
+            aria-label={s.status === 'needs-auth' ? `Authenticate ${s.name}` : `Reconnect ${s.name}`}
+            onClick={() => reconnect(s)}
+          >
+            <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden>
+              <path
+                d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 1.5v3h-3"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        )}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={!isOff}
+          aria-label={`${isOff ? 'Enable' : 'Disable'} ${s.name}`}
+          className={`av-mcp-switch ${isOff ? '' : 'av-mcp-switch-on'}`}
+          onClick={() => toggle(s)}
+          disabled={!!b}
+        >
+          <span className="av-mcp-knob" aria-hidden />
+        </button>
+      </div>
+    );
+  };
 
   return (
     <div className="av-mcp" role="dialog" aria-label="MCP servers" ref={rootRef}>
@@ -159,42 +229,25 @@ export function McpPopover({
         MCP servers
         {loading && <span className="av-mcp-loading">checking…</span>}
       </div>
-      {servers && servers.length > 0 ? (
-        servers.map((s) => {
-          const isBusy = busy.has(s.name);
-          const canRetry = s.status === 'failed' || s.status === 'needs-auth';
-          const enabled = s.status !== 'disabled';
-          return (
-            <div key={s.name} className={`av-mcp-row ${enabled ? '' : 'av-mcp-row-off'}`}>
-              <span className={`av-mcp-dot av-mcp-dot-${dotClass(s.status)}`} aria-hidden />
-              <span className="av-mcp-name">{s.name}</span>
-              <span className="av-mcp-meta" title={s.error ?? undefined}>
-                {isBusy ? '…' : metaText(s)}
-                {!isBusy && canRetry && (
-                  <button
-                    type="button"
-                    className="av-mcp-retry"
-                    onClick={() => reconnect(s)}
-                    disabled={isBusy}
-                  >
-                    retry
-                  </button>
-                )}
-              </span>
+      {all.length > 0 ? (
+        <>
+          {enabled.map(renderRow)}
+          {disabled.length > 0 && (
+            <>
+              <div className="av-mcp-sep" aria-hidden />
               <button
                 type="button"
-                role="switch"
-                aria-checked={enabled}
-                aria-label={`${enabled ? 'Disable' : 'Enable'} ${s.name}`}
-                className={`av-mcp-switch ${enabled ? 'av-mcp-switch-on' : ''}`}
-                onClick={() => toggle(s)}
-                disabled={isBusy}
+                className="av-mcp-sect"
+                aria-expanded={showDisabled}
+                onClick={() => setShowDisabled((v) => !v)}
               >
-                <span className="av-mcp-knob" aria-hidden />
+                <span className="av-mcp-sect-chev">{showDisabled ? '▾' : '▸'}</span>
+                disabled <span className="av-mcp-sect-n">· {disabled.length}</span>
               </button>
-            </div>
-          );
-        })
+              {showDisabled && disabled.map(renderRow)}
+            </>
+          )}
+        </>
       ) : (
         <div className="av-mcp-empty">
           {loading

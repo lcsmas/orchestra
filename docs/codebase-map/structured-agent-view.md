@@ -123,14 +123,16 @@ toggle can read active without a user click (verified e2e: full disable→re-ena
 round-trip against the live relay flips `active` and mints a fresh `session_url`).
 
 **MCP tracking + management (`/mcp`, Option-D design).** MCP servers surface in
-two places. (1) **Transcript notices:** the init normalize branch emits one
-quiet hairline notice per server (`notice` kinds `mcp`/`mcp-error`,
-`.av-notice-mcp*` — the interrupt-divider treatment, dot color = state):
-"context7 connected · 12 tools" / "linear failed to connect". `toolCount` is
-derived from the init `tools` list by `mcp__<name>__` prefix
-(`mcpServerFromInit`, agent-events.ts); notice text comes from the shared pure
-`describeMcpServer` (`disabled` → null: re-announcing a user-disabled server
-every session is noise). (2) **The `/mcp` manager popover**
+two places. (1) **Transcript notices — for USER ACTIONS ONLY** (`notice` kinds
+`mcp`/`mcp-error`, `.av-notice-mcp*` — the interrupt-divider treatment, dot
+color = state): the outcomes of toggle / reconnect / authenticate, emitted by
+the `sdkMcp*` ops. The init normalize branch CAPTURES `mcp_servers` (with
+`toolCount` derived from the init `tools` list by `mcp__<name>__` prefix —
+`mcpServerFromInit`, agent-events.ts) but deliberately emits NO notices: the
+CLI re-emits `system/init` at the start of EVERY request, so per-init notices
+re-announced the whole server list each turn (user-rejected noise; regression
+guard in agent-events.test.ts). Notice text comes from the shared pure
+`describeMcpServer` (`disabled` → null). (2) **The `/mcp` manager popover**
 (`components/agent/McpPopover.tsx`, `.av-mcp*`): SUBMITTING `/mcp` in the
 composer is intercepted Orchestra-side like `/clear` (never sent to the model)
 and opens a popover above the composer field listing
@@ -141,15 +143,31 @@ Reconnect}` → `sdkMcp*`, agent-sdk.ts) drives the SDK query's control requests
 `reconnectMcpServer(name)` — all LIVE on the running session, no restart (the
 CLI persists toggles for future sessions); `sdkMcpStatus` lazily
 `ensureSession`s (CC's /mcp also runs in-session — same pattern as Remote
-Control). Every op broadcasts a **`session/mcp`** full-list event
+Control). The popover's ↻ is **hover-revealed on every enabled row** and
+always-visible (attention-tinted) on failed/needs-auth rows; **disabled
+servers collapse into a "▸ disabled · N" section** (collapsed by default).
+**↻ on a `needs-auth` server runs the REAL OAuth flow** (`sdkMcpAuth` →
+`agentSdkMcpAuth`, LONG-RUNNING IPC): the SDK's internal `mcpAuthenticate`
+control request starts the flow, `firstHttpUrl` (agent-events.ts, pure +
+unit-tested) deep-scans its undocumented response for the authorization link
+(field-name-agnostic on purpose), `platform.openExternal` opens it in the
+SYSTEM browser, and the flow polls `mcpServerStatus()` (2s cadence, 3-min
+cap) until the fresh token lands and the CLI reconnects — the row shows
+"waiting for authentication…" (`.av-mcp-authwait`) meanwhile. A server
+MISSING from the status list is terminal (no 3-min poll for a removed name);
+a "ProcessTransport is not ready" throw (↻ clicked seconds after a cold
+/mcp open, racing the subprocess boot) retries ONCE after 3s; every outcome
+— success, failure, timeout, throw — lands as a transcript notice. The SDK
+also exposes `mcpSubmitOAuthCallbackUrl`/`mcpClearAuth` (unused so far).
+Every op broadcasts a **`session/mcp`** full-list event
 (fold: wholesale replace of `AgentSession.mcpServers`, mirroring
 `session/remote-control`) plus an outcome notice, so toggling/reconnecting
 writes its own history into the transcript. `sdkEventToStatusEvent` maps
 `session/mcp` → null (the status dot never moves for MCP chatter). Guards in
-`agent-events.test.ts` (init notices/toolCount, session/mcp fold,
-describeMcpServer, status-map null). Known gap: the history backfill
-(agent-transcript.ts) does not synthesize init events, so MCP notices reappear
-only when the session next initializes — they are not reconstructed on reopen.
+`agent-events.test.ts` (init emits NO notices, toolCount, session/mcp fold,
+describeMcpServer, status-map null). Known gap: the op-outcome notices are
+Orchestra-side emissions (not CLI transcript lines), so the history backfill
+does not reconstruct them on reopen.
 
 **Peer/queue delivery + STRUCTURED-FIRST spawn/wake:** the lifecycle dispatchers in
 `workspaces.ts`/`prompt-queue.ts` (peer `dispatchMessageRequest`, the usage-limit
