@@ -453,7 +453,18 @@ rows, where it runs the OAuth flow) + `.av-mcp-switch` (+`-on`,
 `role="switch"`, disabled while an op is in flight) > `.av-mcp-knob`.
 Disabled servers sit behind `.av-mcp-sep` + `.av-mcp-sect` (a button with
 `aria-expanded`; `.av-mcp-sect-chev`/`-n`), collapsed by default.
-`.av-mcp-empty` / `.av-mcp-error` / footer `.av-mcp-hint`.
+`.av-mcp-empty` / `.av-mcp-error` / footer `.av-mcp-hint`. The popover itself
+is `max-height`-capped with internal scroll (30+ server configs overflow the
+viewport otherwise).
+
+MCP health chip (`McpIndicator`): `.av-mcp-ind` (+`-failed`) > `.av-mcp-ind-dot`
+(pulsing, `currentColor`, reduced-motion-safe). Amber `--av-warn` tint by
+default, red `--av-error` on the `-failed` variant. NOTE: the composer bar
+interleaves children via flex `order` (vim 0 · menus 2 · rc 3 · account 4 ·
+interrupt 8 · send 9) — the chip carries `order:3` and relies on the DOM
+tie-break to sit AFTER Remote control; a new bar chip without an explicit
+order lands at the far LEFT (order 0), which is how this one shipped its
+first drive.
 MCP transcript notices reuse the interrupt marker's centered-divider treatment:
 `.av-notice-mcp` (green `--av-add` dot) / `.av-notice-mcp-error` (red
 `--av-error` dot) — hairline rules both sides, text carries the story, no label.

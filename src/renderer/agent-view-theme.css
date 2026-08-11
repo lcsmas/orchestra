@@ -1444,6 +1444,12 @@ h6.av-md-h {
 .av-mcp {
   position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30;
   min-width: 300px; max-width: min(440px, 100%);
+  /* A large server list (30+ with claude.ai connectors) must scroll INSIDE
+     the popover — unbounded it grows past the viewport top (caught e2e). This
+     overflow is safe: it's the floating popover itself, not the anchor field
+     (.av-composer-field must never clip — see the .av-ac note). */
+  max-height: min(480px, calc(100vh - 160px));
+  overflow-y: auto;
   display: flex; flex-direction: column; gap: 1px; padding: 6px;
   background: var(--av-surface-overlay);
   border: 1px solid var(--av-hairline-strong);
@@ -1481,6 +1487,35 @@ h6.av-md-h {
   font-family: var(--font-mono); font-size: var(--av-fs-small); color: var(--av-text-dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* MCP health chip (session-controls bar) — renders ONLY while a server needs
+   attention. Amber = needs-auth, red (`-failed`) = something failed. The dot
+   pulses gently to read as "live condition", not decoration. */
+.av-mcp-ind {
+  /* Direct flex item of .av-composer-bar (the deck bar is display:contents).
+     order:3 ties with Remote control (.av-rc); DOM order breaks the tie, so
+     the chip sits right AFTER it, before the account badge (order:4). */
+  order: 3;
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--av-warn) 32%, transparent);
+  background: color-mix(in srgb, var(--av-warn) 8%, transparent);
+  color: var(--av-warn);
+  border-radius: 6px; padding: 2.5px 8px; cursor: pointer;
+  font-family: var(--font-mono); font-size: var(--av-fs-caption); font-weight: 600;
+}
+.av-mcp-ind:hover { background: color-mix(in srgb, var(--av-warn) 14%, transparent); }
+.av-mcp-ind-failed {
+  border-color: color-mix(in srgb, var(--av-error) 34%, transparent);
+  background: color-mix(in srgb, var(--av-error) 8%, transparent);
+  color: var(--av-error);
+}
+.av-mcp-ind-failed:hover { background: color-mix(in srgb, var(--av-error) 14%, transparent); }
+.av-mcp-ind-dot {
+  width: 7px; height: 7px; border-radius: 999px; background: currentColor;
+  animation: av-mcp-ind-pulse 2s ease-in-out infinite;
+}
+@keyframes av-mcp-ind-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .av-mcp-ind-dot { animation: none; } }
+
 /* Hover-revealed reconnect (↻) — present on every ENABLED row, revealed on
    row hover/focus; ALWAYS visible and attention-tinted on failed/needs-auth
    rows (there it runs the OAuth flow / retry, the row's primary action). */

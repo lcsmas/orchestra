@@ -31,7 +31,7 @@ import { useStore } from '../store';
 import { scoped } from '../log';
 import { WorkspaceAccountBadge } from './AccountBadge';
 import { CmComposer, type CmComposerHandle } from './agent/CmComposer';
-import { McpPopover } from './agent/McpPopover';
+import { McpPopover, McpIndicator } from './agent/McpPopover';
 import { readComposerVim, writeComposerVim, vimChipLabel, type VimMode } from '../composer-vim-pref';
 import type { AgentImage, AgentSession, AgentSkillInfo, RenderMessage } from '../../shared/types';
 // Design mode: the browser pane's element picker drops picks in the store; the
@@ -102,6 +102,10 @@ export function StructuredView({ workspaceId, isActive }: Props) {
   // presence is surfaced by the toolbar toggle + running-count badge instead,
   // and the user opens the panel on demand. `panelOpen` is fully user-owned.
   const [panelOpen, setPanelOpen] = useState(false);
+  // The /mcp manager popover. Owned HERE (not in Composer) because two
+  // surfaces open it: submitting `/mcp` in the composer, and clicking the
+  // amber/red MCP health chip in the session-controls bar.
+  const [mcpOpen, setMcpOpen] = useState(false);
   const runningTasks = runningTaskCount(session);
   const totalTasks = totalTaskCount(session);
 
@@ -244,7 +248,15 @@ export function StructuredView({ workspaceId, isActive }: Props) {
         workspaceId={workspaceId}
         isActive={isActive}
         handleRef={composerRef}
-        bar={<SessionControls session={session} workspaceId={workspaceId} />}
+        mcpOpen={mcpOpen}
+        setMcpOpen={setMcpOpen}
+        bar={
+          <SessionControls
+            session={session}
+            workspaceId={workspaceId}
+            onOpenMcp={() => setMcpOpen(true)}
+          />
+        }
         strip={<ContextStrip session={session} workspaceId={workspaceId} />}
       />
       {/* The Background tasks slide-over, over the transcript. */}
@@ -887,9 +899,11 @@ function PermissionSlot({
 function SessionControls({
   session,
   workspaceId,
+  onOpenMcp,
 }: {
   session: AgentSession | undefined;
   workspaceId: string;
+  onOpenMcp?: () => void;
 }) {
   // Persisted per-workspace SDK settings source the dropdowns so a choice made
   // before the session starts sticks (reflected back via workspace:update).
@@ -904,6 +918,8 @@ function SessionControls({
         wsEffort={ws?.sdkEffort}
       />
       <RemoteControl workspaceId={workspaceId} session={session} />
+      {/* MCP health chip — renders ONLY when a server needs attention. */}
+      <McpIndicator session={session} onOpen={onOpenMcp} />
       <span className="av-deck-account" title="Account this agent runs as — click to migrate">
         <WorkspaceAccountBadge workspaceId={workspaceId} migratable />
       </span>
@@ -1000,10 +1016,16 @@ function Composer({
   bar,
   strip,
   handleRef,
+  mcpOpen,
+  setMcpOpen,
 }: {
   session: AgentSession | undefined;
   workspaceId: string;
   isActive: boolean;
+  /** The /mcp manager popover — state lives in the PARENT because the MCP
+   *  health chip in the controls bar opens it too, not just `/mcp` submit. */
+  mcpOpen: boolean;
+  setMcpOpen: (open: boolean) => void;
   /** Control chrome docked into the card's bottom row (model / effort /
    *  permission menus, remote control, account badge). Passed in rather than
    *  rendered here so the composer stays a pure input concern. */
@@ -1024,9 +1046,6 @@ function Composer({
   // Imperative handle on the CodeMirror editor (focus / read / set text).
   const cmRef = useRef<CmComposerHandle | null>(null);
   const running = !!session?.running;
-  // The MCP manager popover (Option-D design) — opened by SUBMITTING `/mcp`
-  // (intercepted Orchestra-side in `submit`, never sent to the model).
-  const [mcpOpen, setMcpOpen] = useState(false);
 
   // Expose PREFILL to the parent (rewind's edit-and-retry). Both the React
   // state and the CodeMirror document must be set: `text` drives bash-mode
@@ -1249,7 +1268,7 @@ function Composer({
       .catch((e) => console.error('agentSdkSend failed', e));
     setText('');
     setPendingImages([]);
-  }, [text, pendingImages, workspaceId]);
+  }, [text, pendingImages, workspaceId, setMcpOpen]);
 
   const completeSkill = (name: string) => {
     setText(`/${name} `);

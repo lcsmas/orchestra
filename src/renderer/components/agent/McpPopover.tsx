@@ -1,5 +1,45 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { AgentMcpServer } from '../../../shared/types';
+import type { AgentMcpServer, AgentSession } from '../../../shared/types';
+
+/**
+ * The MCP health chip (Option-A indicator) — a small `◌ mcp · N` chip in the
+ * session-controls bar that renders ONLY while at least one server needs
+ * attention (`failed` / `needs-auth`); a healthy session shows nothing. Red
+ * when anything failed, amber when it's auth-only. The native tooltip lists
+ * the affected servers; clicking opens the /mcp popover (the remedy lives one
+ * click from the signal). Reacts live with no polling: the folded
+ * `session.mcpServers` refreshes on every request's init and on each
+ * `session/mcp` broadcast.
+ */
+export function McpIndicator({
+  session,
+  onOpen,
+}: {
+  session: AgentSession | undefined;
+  onOpen?: () => void;
+}) {
+  const attention = (session?.mcpServers ?? []).filter(
+    (s) => s.status === 'failed' || s.status === 'needs-auth',
+  );
+  if (attention.length === 0) return null;
+  const anyFailed = attention.some((s) => s.status === 'failed');
+  const title = [
+    ...attention.map((s) => `${s.name} — ${s.status === 'failed' ? 'failed' : 'needs auth'}`),
+    'Click to open /mcp',
+  ].join('\n');
+  return (
+    <button
+      type="button"
+      className={`av-mcp-ind ${anyFailed ? 'av-mcp-ind-failed' : ''}`}
+      onClick={onOpen}
+      title={title}
+      aria-label={`${attention.length} MCP server${attention.length === 1 ? '' : 's'} need${attention.length === 1 ? 's' : ''} attention`}
+    >
+      <span className="av-mcp-ind-dot" aria-hidden />
+      mcp · {attention.length}
+    </button>
+  );
+}
 
 /**
  * The `/mcp` manager popover (Option-A-v2 design): opened by SUBMITTING `/mcp`

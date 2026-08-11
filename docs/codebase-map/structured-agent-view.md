@@ -159,7 +159,21 @@ a "ProcessTransport is not ready" throw (↻ clicked seconds after a cold
 /mcp open, racing the subprocess boot) retries ONCE after 3s; every outcome
 — success, failure, timeout, throw — lands as a transcript notice. The SDK
 also exposes `mcpSubmitOAuthCallbackUrl`/`mcpClearAuth` (unused so far).
-Every op broadcasts a **`session/mcp`** full-list event
+A **health chip** (`McpIndicator`, exported from McpPopover.tsx; `.av-mcp-ind`,
+`order:3` so it docks right after Remote control in the composer bar) renders
+ONLY while a server is `failed`/`needs-auth` — amber for auth-only, red
+(`-failed`) when anything failed, pulsing dot, native tooltip listing the
+servers; clicking opens the /mcp popover, whose `mcpOpen` state therefore
+lives in the PANE component (StructuredView), not in Composer — both the
+`/mcp` submit intercept and the chip open it. No polling: the chip reads the
+folded `session.mcpServers`, refreshed by every request's init and every
+`session/mcp`. The popover is capped at `max-height: min(480px, 100vh-160px)`
+with internal scroll — a real config (30+ servers with claude.ai connectors)
+otherwise overflowed the viewport top (caught e2e). Harness gotcha recorded
+in that drive: Electron's HTTP cache in a REUSED `ORCHESTRA_HOME` serves a
+STALE `dist/` index.html+css across relaunches — clear `userData/Cache` (and
+`Code Cache`) or use a fresh home, and verify the loaded stylesheet hash
+before trusting a CSS assertion. Every op broadcasts a **`session/mcp`** full-list event
 (fold: wholesale replace of `AgentSession.mcpServers`, mirroring
 `session/remote-control`) plus an outcome notice, so toggling/reconnecting
 writes its own history into the transcript. `sdkEventToStatusEvent` maps
