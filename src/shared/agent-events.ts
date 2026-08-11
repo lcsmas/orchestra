@@ -1031,6 +1031,10 @@ export function sdkEventToStatusEvent(ev: AgentEvent): StatusSpoolEvent | null {
       // The agent parked a permission / AskUserQuestion — it needs the user
       // (↔ Notification → `waiting`).
       return 'notify';
+    case 'session/attach':
+      // Reattached to a keeper-hosted turn still in flight: the submit that
+      // started it happened in a previous app run, so re-assert `running`.
+      return ev.turnInFlight ? 'submit' : null;
     case 'turn-end':
       // Turn boundary: finished, waiting for the next prompt (↔ Stop → `waiting`).
       //
@@ -1477,6 +1481,15 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
 
     case 'thinking-tokens':
       return { ...next, liveThinkingTokens: event.tokens };
+
+    case 'session/attach':
+      // Reattached to a detached keeper's CLI with a turn mid-flight: no
+      // `user-message` echo ever ran in THIS app instance, so without this the
+      // reattached turn streams into an "idle" pane (no Working indicator, no
+      // interrupt affordance). `turnStartedAt` measures from the attach — the
+      // original submit instant died with the previous app run.
+      if (!event.turnInFlight) return next;
+      return { ...next, running: true, turnStartedAt: event.at, liveOutputChars: 0 };
 
     case 'session/clear':
       // Full reset (composer /clear): a fresh transcript for every client. The

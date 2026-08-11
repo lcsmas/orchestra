@@ -45,6 +45,7 @@ if (!wsId || !sockPath || !pidPath || !logPath) {
 const policy = {
   lingerMs: intEnv('ORCHESTRA_KEEPER_LINGER_MS', DEFAULT_KEEPER_POLICY.lingerMs),
   wedgeMs: intEnv('ORCHESTRA_KEEPER_WEDGE_MS', DEFAULT_KEEPER_POLICY.wedgeMs),
+  initGraceMs: intEnv('ORCHESTRA_KEEPER_INIT_GRACE_MS', DEFAULT_KEEPER_POLICY.initGraceMs),
 };
 const LOG_CAP_BYTES = 4 * 1024 * 1024;
 const TICK_MS = intEnv('ORCHESTRA_KEEPER_TICK_MS', 30_000);
@@ -173,12 +174,17 @@ const server = net.createServer((sock) => {
   const reply = (frame: KeeperDaemonFrame): void => {
     if (!sock.destroyed) sock.write(encodeKeeperFrame(frame));
   };
-  const ack = (): KeeperDaemonFrame => ({
-    t: 'helloAck',
-    wsId,
-    running: !!child && !childExited,
-    pid: child?.pid,
-  });
+  const ack = (): KeeperDaemonFrame => {
+    const snap = state.snapshot();
+    return {
+      t: 'helloAck',
+      wsId,
+      running: !!child && !childExited,
+      pid: child?.pid,
+      everStarted: snap.everStarted,
+      turnInFlight: snap.everStarted && !snap.turnComplete,
+    };
+  };
 
   sock.on(
     'data',
@@ -258,7 +264,9 @@ const server = net.createServer((sock) => {
 setInterval(() => {
   if (!shuttingDown && state.shouldShutdown(Date.now())) {
     const snap = state.snapshot();
-    beginShutdown(snap.turnComplete ? 'linger expired' : 'wedge backstop');
+    beginShutdown(
+      !snap.everStarted ? 'init grace (session never started)' : snap.turnComplete ? 'linger expired' : 'wedge backstop',
+    );
   }
 }, TICK_MS).unref();
 

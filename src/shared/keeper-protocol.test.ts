@@ -83,7 +83,7 @@ test('classifyStdoutLine maps stream-json types', () => {
 // Shutdown policy
 // ---------------------------------------------------------------------------
 
-const POLICY = { lingerMs: 1000, wedgeMs: 5000 };
+const POLICY = { lingerMs: 1000, wedgeMs: 5000, initGraceMs: 200 };
 
 test('attached keeper never shuts down', () => {
   const st = createKeeperState(POLICY, 0);
@@ -141,13 +141,30 @@ test('reattach cancels pending shutdown clocks', () => {
   assert.equal(st.shouldShutdown(10_000), false);
 });
 
-test('fresh spawn with no output ever → linger applies (not wedge)', () => {
+test('fresh spawn with no activity ever → INIT GRACE applies (fast kill)', () => {
+  // A client death during session init orphans the MCP/init handshake and
+  // wedges the CLI (reproduced from a real quit-right-after-send) — a
+  // never-started session must die fast, not linger.
   const st = createKeeperState(POLICY, 0);
   st.onSpawn(0);
   st.onAttach();
-  st.onDetach(50); // client died before first send
-  assert.equal(st.shouldShutdown(1049), false);
-  assert.equal(st.shouldShutdown(1050), true);
+  st.onStdoutLine('{"type":"system","subtype":"init"}', 20); // system lines ≠ started
+  st.onDetach(50);
+  assert.equal(st.snapshot().everStarted, false);
+  assert.equal(st.shouldShutdown(249), false);
+  assert.equal(st.shouldShutdown(250), true, 'initGrace from detach');
+});
+
+test('everStarted latches on first activity and switches to linger/wedge rules', () => {
+  const st = createKeeperState(POLICY, 0);
+  st.onSpawn(0);
+  st.onAttach();
+  st.onStdoutLine('{"type":"assistant"}', 10);
+  assert.equal(st.snapshot().everStarted, true);
+  st.onStdoutLine('{"type":"result"}', 20);
+  st.onDetach(100);
+  assert.equal(st.shouldShutdown(400), false, 'past initGrace but session ran — linger applies');
+  assert.equal(st.shouldShutdown(1100), true, 'linger');
 });
 
 test('shouldShutdown latches once true', () => {
@@ -161,5 +178,7 @@ test('shouldShutdown latches once true', () => {
 test('default policy has sane magnitudes', () => {
   assert.equal(DEFAULT_KEEPER_POLICY.lingerMs, 15 * 60 * 1000);
   assert.equal(DEFAULT_KEEPER_POLICY.wedgeMs, 2 * 60 * 60 * 1000);
+  assert.equal(DEFAULT_KEEPER_POLICY.initGraceMs, 10 * 1000);
   assert.ok(DEFAULT_KEEPER_POLICY.wedgeMs > DEFAULT_KEEPER_POLICY.lingerMs);
+  assert.ok(DEFAULT_KEEPER_POLICY.lingerMs > DEFAULT_KEEPER_POLICY.initGraceMs);
 });

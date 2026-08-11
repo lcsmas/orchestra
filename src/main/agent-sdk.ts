@@ -637,6 +637,11 @@ async function consume(session: Session): Promise<void> {
         // turn's genuine error as interrupt fallout. (emitFrom already ran for
         // this result, so its suppression saw the flag still set.)
         session.interruptRequested = false;
+        // The turn ran to a boundary — the pending-prompt insurance (sdkSend)
+        // has served its purpose; drop it so a later reopen can't replay.
+        if (store.getWorkspace(session.wsId)?.sdkPendingPrompts?.length) {
+          void persistWorkspacePatch(session.wsId, { sdkPendingPrompts: undefined });
+        }
         // Resolve any parked permission (belt & suspenders) and
         // open the gate so the next queued turn can proceed.
         for (const [id, resolve] of session.pending) {
@@ -753,7 +758,25 @@ async function consume(session: Session): Promise<void> {
 
 /** Start (lazily) the SDK session for a workspace and return it. Idempotent —
  *  returns the existing session if one is live. */
-async function ensureSession(wsId: string): Promise<Session> {
+/** In-flight ensureSession promises, keyed by wsId. The sessions map is only
+ *  populated at the END of a (multi-await) start, so two near-simultaneous
+ *  callers — a send racing the lazy keeper reattach (sdkAttachIfDetached), or
+ *  a peer delivery racing a user send — would BOTH pass the `sessions.get`
+ *  check and spawn two rival query()/keeper clients (the second's hello
+ *  preempts the first's socket). Coalesce them onto one start instead. */
+const ensuring = new Map<string, Promise<Session>>();
+
+function ensureSession(wsId: string): Promise<Session> {
+  const existing = sessions.get(wsId);
+  if (existing && !existing.stopping) return Promise.resolve(existing);
+  const inFlight = ensuring.get(wsId);
+  if (inFlight) return inFlight;
+  const p = ensureSessionInner(wsId).finally(() => ensuring.delete(wsId));
+  ensuring.set(wsId, p);
+  return p;
+}
+
+async function ensureSessionInner(wsId: string): Promise<Session> {
   const existing = sessions.get(wsId);
   if (existing && !existing.stopping) return existing;
 
@@ -910,9 +933,20 @@ async function ensureSession(wsId: string): Promise<Session> {
       ...(remote
         ? {}
         : {
-            spawnClaudeCodeProcess: makeKeeperSpawn(wsId, (pid) =>
-              log.info(`agent-sdk[${wsId}] reattached to detached keeper session (cli pid=${pid ?? '?'})`),
-            ) as never,
+            spawnClaudeCodeProcess: makeKeeperSpawn(wsId, (pid, turnInFlight) => {
+              log.info(
+                `agent-sdk[${wsId}] reattached to detached keeper session (cli pid=${pid ?? '?'}, turnInFlight=${turnInFlight})`,
+              );
+              // Restore the turn state this app never saw the start of: the
+              // fold flips running/turnStartedAt so the Working indicator and
+              // interrupt affordance come back with the reattached turn.
+              const live = sessions.get(wsId);
+              if (live && !live.cleared) {
+                const attachEv = stamp(live.ctx, { type: 'session/attach' as const, turnInFlight });
+                emit(wsId, attachEv);
+                driveStatusFromEvent(live, attachEv);
+              }
+            }) as never,
           }),
       // Start on the workspace's configured model (set by `orchestra spawn
       // --model` or the Model dropdown). Undefined falls back to the account's
@@ -1315,6 +1349,19 @@ export async function sdkSend(
   // carry (context prefix included). Bounded — this is a dedupe window, not a log.
   session.recentEchoes.push(sendText);
   if (session.recentEchoes.length > 8) session.recentEchoes.shift();
+  // Insurance for the quit-right-after-send window: until this turn COMPLETES
+  // (cleared in consume() at the result), the raw prompt is persisted on the
+  // workspace. If the app quits before the CLI ever runs the turn (session
+  // init orphaned → the keeper's initGrace kills the CLI), the prompt would
+  // otherwise exist nowhere — recoverPendingPrompts re-sends it on the next
+  // structured-view open. Raw `text`, not sendText: a replay must not carry a
+  // stale local-command context prefix.
+  if (text.trim()) {
+    const wsNow = store.getWorkspace(wsId);
+    void persistWorkspacePatch(wsId, {
+      sdkPendingPrompts: [...(wsNow?.sdkPendingPrompts ?? []), text],
+    });
+  }
   session.pump?.();
 }
 
@@ -1360,6 +1407,17 @@ export async function sdkAttachIfDetached(wsId: string): Promise<boolean> {
   if (!ws || ws.host?.kind === 'sandbox') return false;
   const probe = await probeKeeper(wsId);
   if (!probe?.running) return false;
+  if (probe.everStarted === false) {
+    // The CLI never ran a turn — it's still in (likely orphaned) session init,
+    // which a dead client wedges for ~60s (docs/spikes/keeper-findings.md
+    // follow-up). Attaching would only inherit the wedge: kill it and let the
+    // pending-prompt recovery start a FRESH session that runs immediately.
+    // AWAITED — the recovery's respawn follows right behind, and racing a
+    // dying keeper bridged a fresh query onto the SIGTERM'd child in testing.
+    log.info(`agent-sdk: keeper for ${wsId} holds a never-started CLI — killing instead of attaching`);
+    await killKeeper(wsId);
+    return false;
+  }
   log.info(`agent-sdk: live detached keeper found for ${wsId} (cli pid=${probe.pid ?? '?'}) — reattaching`);
   try {
     await ensureSession(wsId);
@@ -1367,6 +1425,36 @@ export async function sdkAttachIfDetached(wsId: string): Promise<boolean> {
   } catch (err) {
     log.warn(`agent-sdk: reattach failed for ${wsId}`, err);
     return false;
+  }
+}
+
+/** Re-send prompts that were sent before a quit but never actually RAN.
+ *
+ *  `ws.sdkPendingPrompts` holds every prompt whose turn hasn't completed (set
+ *  in sdkSend, cleared at the result in consume()). On structured-view open,
+ *  any entry the on-disk transcript does NOT contain as user text was lost in
+ *  the quit-right-after-send window (the CLI queued it during init and the
+ *  keeper's initGrace reaped that CLI) — re-send it so the user's message
+ *  reappears, with the normal echo restoring the bubble, the Working
+ *  indicator, and the status dot. Entries the transcript DOES contain simply
+ *  clear (the turn ran — possibly to completion while the app was closed).
+ *  Runs AFTER sdkAttachIfDetached so a resend can never race the attach's
+ *  session start. */
+export async function recoverPendingPrompts(wsId: string, history: AgentEvent[]): Promise<void> {
+  const ws = store.getWorkspace(wsId);
+  const pending = ws?.sdkPendingPrompts ?? [];
+  if (pending.length === 0) return;
+  const userTexts = history.filter((e) => e.type === 'user-message').map((e) => e.text ?? '');
+  const missing = pending.filter((p) => !userTexts.some((t) => t.includes(p)));
+  // Clear FIRST: the resend below re-appends via sdkSend, so leaving the old
+  // entries would double them; and a transcript-covered entry is done for good.
+  await persistWorkspacePatch(wsId, { sdkPendingPrompts: undefined });
+  if (missing.length === 0) return;
+  log.info(`agent-sdk: re-sending ${missing.length} pending prompt(s) lost to a quit for ${wsId}`);
+  try {
+    await sdkSend(wsId, missing.join('\n'));
+  } catch (err) {
+    log.warn(`agent-sdk: pending-prompt recovery send failed for ${wsId}`, err);
   }
 }
 

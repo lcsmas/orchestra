@@ -195,6 +195,8 @@ const claudeChildOf = (pid) => {
 
 let app1;
 let app2;
+let app3;
+let app4;
 try {
   // ── phase 1: start a turn, quit mid-turn ──────────────────────────────────
   app1 = launchApp(PORT);
@@ -304,8 +306,78 @@ try {
 
   await cdp2.ev('window.close(); 1').catch(() => {});
   await waitFor('app #2 exited', () => app2.exitCode !== null, 15000).catch(() => app2.kill('SIGKILL'));
+
+  // ── phase 5: the QUIT-RIGHT-AFTER-SEND wedge (real-usage regression) ──────
+  // Quit while the CLI is still in session INIT (hooks/MCP handshake): the
+  // dead client orphans the init and the prompt sits unrun in the CLI's
+  // queue. Reopen must (a) refuse to attach to the never-started CLI (kill
+  // it), (b) REPLAY the persisted prompt so the user's message reappears,
+  // and (c) show the Working indicator + eventually the reply.
+  await sleep(1000);
+  app3 = launchApp(PORT + 2);
+  const cdp3 = await connectCdp(PORT + 2);
+  await sleep(1500);
+  await cdp3.ev(`window.__orchestraSetState({ activeId: ${JSON.stringify(WS)}, view: 'structured' }); 1`);
+  await cdp3.ev(
+    `window.orchestra.agentSdkSend(${JSON.stringify(WS)}, 'Reply with exactly: RECOVERY_OK'); 1`,
+  );
+  await waitFor('keeper pid file (phase 5)', () => fs.existsSync(keeperPidFile), 30000);
+  const kPid2 = keeperPid();
+  const cPid2 = await waitFor('claude child (phase 5)', () => claudeChildOf(kPid2), 30000);
+  // Quit IMMEDIATELY — before the CLI finishes init (it just spawned).
+  await cdp3.ev('window.close(); 1').catch(() => {});
+  await waitFor('app #3 exited', () => app3.exitCode !== null, 15000);
+  await sleep(500);
+  check('phase5: CLI survived the instant quit (init-stage)', alive(cPid2));
+
+  app4 = launchApp(PORT + 3);
+  const cdp4 = await connectCdp(PORT + 3);
+  await sleep(1500);
+  await cdp4.ev(`window.__orchestraSetState({ activeId: ${JSON.stringify(WS)}, view: 'structured' }); 1`);
+  // The recovery path: never-started CLI killed, prompt replayed → user
+  // bubble + Working indicator + reply, promptly (NOT after a ~60s wedge).
+  const t5 = Date.now();
+  const bubbleBack = await waitFor(
+    'replayed prompt bubble visible',
+    () => cdp4.ev(`document.body.innerText.includes('Reply with exactly: RECOVERY_OK')`),
+    20000,
+    400,
+  ).then(() => true, () => false);
+  check('phase5: sent prompt REAPPEARS after reopen (replay)', bubbleBack);
+  const sawWorking = await waitFor(
+    'working indicator during replayed turn',
+    () => cdp4.ev(`!!document.querySelector('.av-working-line')`),
+    15000,
+    200,
+  ).then(() => true, () => false);
+  check('phase5: Working indicator shows for the replayed turn', sawWorking);
+  const gotReply2 = await waitFor(
+    'replayed turn reply',
+    () => cdp4.ev(`document.body.innerText.includes('RECOVERY_OK')
+      && /RECOVERY_OK[\\s\\S]*$/.test(document.body.innerText)`),
+    60000,
+    500,
+  ).then(() => true, () => false);
+  check('phase5: replayed turn completes promptly', gotReply2 && Date.now() - t5 < 60000, `${Math.round((Date.now() - t5) / 1000)}s`);
+  await waitFor('phase5: wedged init-stage CLI was killed', () => !alive(cPid2), 20000).then(
+    () => check('phase5: never-started CLI killed on reopen', true),
+    () => check('phase5: never-started CLI killed on reopen', false, `pid ${cPid2} still alive`),
+  );
+  const shot5 = await Promise.race([
+    cdp4.send('Page.captureScreenshot', { format: 'png' }),
+    sleep(10000).then(() => null),
+  ]);
+  const shot5Path = path.join(RUN, 'recovered-after-instant-quit.png');
+  if (shot5?.data) fs.writeFileSync(shot5Path, Buffer.from(shot5.data, 'base64'));
+  check('phase5: screenshot captured', !!shot5?.data, shot5Path);
+
+  // teardown: clear (kills the replay session's keeper) and close.
+  await cdp4.ev(`window.orchestra.agentSdkClear(${JSON.stringify(WS)}); 1`);
+  await sleep(3000);
+  await cdp4.ev('window.close(); 1').catch(() => {});
+  await waitFor('app #4 exited', () => app4.exitCode !== null, 15000).catch(() => app4.kill('SIGKILL'));
 } finally {
-  for (const p of [app1, app2]) if (p && p.exitCode === null) p.kill('SIGKILL');
+  for (const p of [app1, app2, app3, app4]) if (p && p.exitCode === null) p.kill('SIGKILL');
   try {
     if (fs.existsSync(keeperPidFile)) process.kill(keeperPid(), 'SIGKILL');
   } catch {

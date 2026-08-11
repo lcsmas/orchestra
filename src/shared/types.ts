@@ -154,6 +154,15 @@ export interface Workspace {
    *  RESUMES the prior conversation (query({ resume }) — the agent keeps its
    *  memory) instead of starting a blank session. */
   sdkSessionId?: string;
+  /** Prompts SENT to the structured session whose turn has not completed yet
+   *  (appended by sdkSend, cleared at turn-end). Insurance against the
+   *  quit-right-after-send wedge: if the app quits before the CLI actually
+   *  RUNS the turn (session init orphaned → keeper's initGrace kills the CLI),
+   *  the prompt would otherwise vanish — it lived only in the CLI's internal
+   *  queue and the quit app's memory. On the next structured-view open,
+   *  `recoverPendingPrompts` (agent-sdk.ts) re-sends any entry the on-disk
+   *  transcript does not contain. */
+  sdkPendingPrompts?: string[];
   repoPath: string;
   /** DISPLAY-ONLY repo association for a repo-less coordinator (`kind:
    * 'orchestrator'`). Purely a sidebar-grouping preference: it files the
@@ -972,6 +981,20 @@ export interface AgentSessionClearEvent extends AgentEventBase {
   type: 'session/clear';
 }
 
+/** Emitted by the session manager when it REATTACHES to a CLI that survived an
+ *  app quit inside the detached keeper (keeper-client.ts) and a turn is still
+ *  in flight there. The app that streamed the turn's start is gone, so no
+ *  `user-message` echo ever set `running` in THIS app's fold — without this
+ *  event the reattached turn streams into an "idle" pane with no Working
+ *  indicator. The fold flips `running`/`turnStartedAt` (the elapsed readout
+ *  measures from the attach, the best information available). */
+export interface AgentSessionAttachEvent extends AgentEventBase {
+  type: 'session/attach';
+  /** True when the keeper reports a turn mid-flight (activity seen, no result
+   *  yet). False attaches are informational only — the fold ignores them. */
+  turnInFlight: boolean;
+}
+
 /** One incremental chunk of assistant TEXT (`text_delta`). `index` is the SDK
  *  content-block index the delta belongs to, so `foldEvents` appends deltas of
  *  the same block into one contiguous text run even when tool blocks interleave
@@ -1411,6 +1434,7 @@ export type AgentEvent =
   | AgentStatusEvent
   | AgentThinkingTokensEvent
   | AgentSessionClearEvent
+  | AgentSessionAttachEvent
   | AgentSessionRewindEvent
   | AgentTurnEndEvent
   | AgentErrorEvent;

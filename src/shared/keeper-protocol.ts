@@ -36,7 +36,23 @@ export type KeeperClientFrame =
 
 /** Keeper → client frames. */
 export type KeeperDaemonFrame =
-  | { t: 'helloAck'; wsId: string; running: boolean; pid?: number; startedAt?: number }
+  | {
+      t: 'helloAck';
+      wsId: string;
+      running: boolean;
+      pid?: number;
+      startedAt?: number;
+      /** True once the CLI has EVER streamed turn activity (assistant/user/
+       *  stream lines). False = the session is still in INIT — a client death
+       *  in that window orphans the init handshake (in-process MCP) and wedges
+       *  the CLI for ~60s, so clients must NOT attach to it (kill + respawn
+       *  instead) and the keeper itself kills it after a short detach grace. */
+      everStarted?: boolean;
+      /** True when a turn is in flight (activity seen, no result yet) — lets
+       *  an attaching client restore the "Working…" turn state it never saw
+       *  the start of. */
+      turnInFlight?: boolean;
+    }
   /** Raw bytes from the CLI's stdout. */
   | { t: 'stdout'; b64: string }
   /** CLI exited (delivered only to an attached client; a detached keeper just
@@ -111,11 +127,19 @@ export interface KeeperPolicy {
    *  wedged (e.g. an in-flight mcp_message nobody can answer — measured in the
    *  spike) and shut down rather than leak a stuck CLI forever. */
   wedgeMs: number;
+  /** Detached + the session NEVER streamed any turn activity → the CLI is
+   *  still in INIT (hooks, MCP handshake). A client death there orphans the
+   *  init handshake and wedges the CLI (~60s MCP timeout; reproduced from a
+   *  real quit-right-after-send), and nothing pre-turn is worth preserving —
+   *  the sent prompt sits in the CLI's queue, unrun, and the app persists it
+   *  separately (ws.sdkPendingPrompts) for replay. So die fast. */
+  initGraceMs: number;
 }
 
 export const DEFAULT_KEEPER_POLICY: KeeperPolicy = {
   lingerMs: 15 * 60 * 1000,
   wedgeMs: 2 * 60 * 60 * 1000,
+  initGraceMs: 10 * 1000,
 };
 
 export interface KeeperState {
@@ -125,8 +149,14 @@ export interface KeeperState {
   onStdoutLine(line: string, now: number): void;
   /** Poll: should the keeper begin graceful shutdown now? Latches once true. */
   shouldShutdown(now: number): boolean;
-  /** Introspection for tests/logging. */
-  snapshot(): { attached: boolean; turnComplete: boolean; lastStdoutAt: number; detachedAt: number };
+  /** Introspection for tests/logging + helloAck. */
+  snapshot(): {
+    attached: boolean;
+    turnComplete: boolean;
+    everStarted: boolean;
+    lastStdoutAt: number;
+    detachedAt: number;
+  };
 }
 
 /** Pure keeper shutdown-policy state machine. The daemon calls the event
@@ -137,6 +167,10 @@ export function createKeeperState(policy: KeeperPolicy, spawnedAt: number): Keep
   // A fresh CLI is "between turns" until output proves otherwise: if a client
   // spawns it and vanishes before the first send, linger (not wedge) applies.
   let turnComplete = true;
+  // Flips true on the FIRST activity line and stays true: distinguishes a
+  // session that has really run (linger/wedge rules apply) from one still in
+  // INIT (initGrace applies — see KeeperPolicy.initGraceMs).
+  let everStarted = false;
   let lastStdoutAt = spawnedAt;
   let detachedAt = spawnedAt;
   let latched = false;
@@ -157,18 +191,21 @@ export function createKeeperState(policy: KeeperPolicy, spawnedAt: number): Keep
       lastStdoutAt = now; // any line is a sign of life for the wedge clock
       const kind = classifyStdoutLine(line);
       if (kind === 'result') turnComplete = true;
-      else if (kind === 'activity') turnComplete = false;
+      else if (kind === 'activity') {
+        turnComplete = false;
+        everStarted = true;
+      }
     },
     shouldShutdown(now) {
       if (latched) return true;
       if (attached) return false;
       const idleSince = Math.max(detachedAt, lastStdoutAt);
-      const limit = turnComplete ? policy.lingerMs : policy.wedgeMs;
+      const limit = !everStarted ? policy.initGraceMs : turnComplete ? policy.lingerMs : policy.wedgeMs;
       if (now - idleSince >= limit) latched = true;
       return latched;
     },
     snapshot() {
-      return { attached, turnComplete, lastStdoutAt, detachedAt };
+      return { attached, turnComplete, everStarted, lastStdoutAt, detachedAt };
     },
   };
 }

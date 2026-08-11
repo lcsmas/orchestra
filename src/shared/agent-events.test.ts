@@ -1995,3 +1995,32 @@ test('fold: an interrupted notice does NOT open a turn (no phantom running)', ()
   assert.equal(s.running, false);
   assert.equal(s.turnStartedAt, undefined);
 });
+
+// ─── session/attach (keeper reattach mid-turn) ───────────────────────────────
+
+test('fold: session/attach with a turn in flight restores running state', () => {
+  const s = foldEvents(emptySession('ws1'), [
+    { type: 'session/attach', seq: 0, at: 5000, turnInFlight: true },
+  ]);
+  assert.equal(s.running, true, 'reattached turn must show the Working indicator');
+  assert.equal(s.turnStartedAt, 5000, 'elapsed measures from the attach');
+});
+
+test('fold: session/attach to an idle session is a no-op', () => {
+  const s = foldEvents(emptySession('ws1'), [
+    { type: 'session/attach', seq: 0, at: 5000, turnInFlight: false },
+  ]);
+  assert.equal(s.running, false);
+  assert.equal(s.turnStartedAt, undefined);
+});
+
+test('sdkEventToStatusEvent: mid-turn attach → submit (dot running); idle attach → null', () => {
+  assert.equal(
+    sdkEventToStatusEvent({ type: 'session/attach', seq: 0, at: 1, turnInFlight: true }),
+    'submit',
+  );
+  assert.equal(
+    sdkEventToStatusEvent({ type: 'session/attach', seq: 0, at: 1, turnInFlight: false }),
+    null,
+  );
+});

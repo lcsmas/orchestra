@@ -66,7 +66,36 @@ completion, relaunch reattach + transcript, explicit-stop kill).
   makes a live process redundant, so idle `claude`s never accumulate. Detached
   + turn in flight + NO stdout for 2h (`ORCHESTRA_KEEPER_WEDGE_MS`) → wedge
   backstop (covers e.g. an in-flight browser-MCP call nobody can answer —
-  spike S5: not redelivered on attach; `interrupt()` un-wedges).
+  spike S5: not redelivered on attach; `interrupt()` un-wedges). Detached +
+  the session NEVER streamed turn activity (`everStarted` false) → **init
+  grace** 10s (`ORCHESTRA_KEEPER_INIT_GRACE_MS`): a client death during
+  session INIT (hooks/MCP handshake) orphans the init and wedges the CLI
+  ~60s with the sent prompt stuck in ITS queue — reproduced from a real
+  quit-right-after-send — and nothing pre-turn is worth keeping alive.
+- **The quit-right-after-send window** (user-reported: empty view on reopen,
+  prompt vanished, output later with no Working indicator) is closed by three
+  cooperating pieces beyond the init grace:
+  - `helloAck` carries **`everStarted`/`turnInFlight`** from the state
+    machine. `sdkAttachIfDetached` REFUSES to attach to a never-started CLI —
+    `await killKeeper(wsId)` (awaited: fire-and-forget once bridged a fresh
+    query onto the dying keeper's SIGTERM'd child — "exited with code 143")
+    then falls through to the recovery path; the facade's stale branch does
+    the same. `killKeeper` resolves only once the keeper PROCESS is dead.
+  - **`ws.sdkPendingPrompts`** (types.ts): every sent prompt persists until
+    its turn's `result` (set in `sdkSend`, cleared in `consume()`).
+    `recoverPendingPrompts` (agent-sdk.ts, called from the `agentSdkHistory`
+    handler AFTER `sdkAttachIfDetached` so the resend can't race the attach)
+    re-sends any entry the on-disk transcript lacks — the normal echo
+    restores the bubble, `running`, and the status dot. Entries the
+    transcript covers just clear (the turn ran, possibly detached).
+  - **`session/attach`** (`AgentSessionAttachEvent`, types.ts): emitted from
+    the keeper-spawn `onAttached` callback when a genuine mid-turn reattach
+    happens; the fold flips `running`/`turnStartedAt` so the reattached turn
+    shows the Working indicator instead of streaming into an "idle" pane.
+    Maps to `submit` in `sdkEventToStatusEvent` (dot parity).
+  - `ensureSession` is **start-coalesced** (`ensuring` map): a send racing
+    the lazy reattach would otherwise pass the `sessions.get` check twice and
+    spawn two rival query()/keeper clients.
 - Startup: `installKeeper()` before the window; `reapOrphanKeepers()` AFTER
   `createMainWindow()` — the store loads in there, and reaping against an
   unloaded store kills every legitimate keeper (E2E-caught bug).

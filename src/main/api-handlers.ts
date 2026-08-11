@@ -121,6 +121,7 @@ import {
   sdkListModels,
   sdkStopMany,
   sdkAttachIfDetached,
+  recoverPendingPrompts,
 } from './agent-sdk';
 import { log, revealLogs, getLogFile, getLogLevel } from './logger';
 import * as browserPanel from './browser-panel';
@@ -870,13 +871,20 @@ export const apiHandlers: ApiHandlerTable = {
   },
 
   agentSdkHistory: async (wsId) => {
+    const events = await sdkHistory(wsId);
     // Opening a structured view is the LAZY reattach point: if this
     // workspace's CLI outlived a previous app run in a detached keeper
     // (keeper-client.ts), rebuild the session around it now so the in-flight
-    // turn streams live again. Fire-and-forget — the backfill below paints
-    // the on-disk transcript either way, and attach events layer on top.
-    void sdkAttachIfDetached(wsId);
-    return sdkHistory(wsId);
+    // turn streams live again. Then replay any prompt that was sent before a
+    // quit but never ran (recoverPendingPrompts) — SEQUENCED after the attach
+    // so the resend can't race the attach's session start. Fire-and-forget —
+    // the backfill result below paints the on-disk transcript either way, and
+    // attach/replay events layer on top.
+    void (async () => {
+      await sdkAttachIfDetached(wsId);
+      await recoverPendingPrompts(wsId, events);
+    })().catch((err) => log.warn(`agent:sdkHistory attach/recover failed for ${wsId}`, err));
+    return events;
   },
 
   agentSdkDefaultModel: async (wsId) => sdkDefaultModel(wsId),
