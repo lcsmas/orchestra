@@ -52,7 +52,12 @@ jobs:
         run: pnpm exec electron-rebuild
 
       - name: Build AppImage
-        run: pnpm run build
+        # Same chain as local (vite → build:cli → build:keeper → electron-builder)
+        # so CI cannot silently ship without the CLI/keeper bundles. The publish
+        # flag is explicit: a v* tag otherwise triggers electron-builder's
+        # implicit publishing, which fails without GH_TOKEN — this job only
+        # uploads artifacts, the `publish` job creates the release.
+        run: pnpm run build -- --publish never
 
       - name: Rename artifact
         run: mv release/Orchestra.AppImage release/${{ matrix.artifact }}
