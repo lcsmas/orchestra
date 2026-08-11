@@ -40,8 +40,16 @@ resolution).
 ## Commands (package.json scripts)
 - `pnpm run dev` — `ORCHESTRA_HOME=$HOME/.orchestra-dev vite` (isolated dev data,
   HMR + Electron).
-- `pnpm run build` — `vite build && pnpm run build:cli && electron-builder`.
+- `pnpm run build` — `pnpm run build:bundles && electron-builder`.
+- `pnpm run build:bundles` — every JS bundle the package needs, in one place:
+  `vite build && pnpm run build:cli && pnpm run build:keeper`. **CI calls this
+  same script** — the list of bundles is never restated, because a CI build that
+  inlined only `vite build` shipped every AppImage up to v0.5.221 without
+  `keeper.js` (structured sessions then died with `connect ENOENT
+  …/keepers/<wsId>.sock`).
 - `pnpm run build:cli` — CLI only.
+- `pnpm run build:keeper` — detached session keeper only (`dist-electron/keeper.js`,
+  see `session-keeper.md`).
 - `pnpm run start` — `electron .` (runs the built `dist-electron/main.js`).
 - `pnpm run lint` — `eslint src --ext .ts,.tsx`.
 - `pnpm run test` — `node --test --experimental-strip-types 'src/**/*.test.ts'`
@@ -76,8 +84,23 @@ do it), `--notes-file`. On build failure it prints the undo
 Triggers on `push` tag `v*` (or manual `workflow_dispatch` with a tag). Build
 matrix: `ubuntu-latest`→x64, `ubuntu-24.04-arm`→arm64. Each: checkout the tag,
 pnpm + Node 20, `apt install build-essential libfuse2`, `pnpm install
---frozen-lockfile`, `electron-rebuild`, `vite build && electron-builder --publish
-never`, rename to `Orchestra-<arch>.AppImage`, upload artifact. Publish job
+--frozen-lockfile`, `electron-rebuild`, `pnpm run build:bundles` then `pnpm exec
+electron-builder --publish never`, rename to `Orchestra-<arch>.AppImage`, upload
+artifact. Two non-obvious constraints on that build step, both learned by
+shipping breakage:
+- It calls the shared `build:bundles` script rather than restating the bundle
+  list — the inlined `vite build` it used to run silently omitted the CLI and
+  keeper bundles from every published AppImage.
+- electron-builder is invoked via `pnpm exec`, NOT `pnpm run build -- --publish
+  never`: `pnpm run <script> -- <args>` forwards the `--` itself, so argv
+  becomes `["--","--publish","never"]`, the parser reads the separator as a
+  positional and leaves `publish` undefined — the exact condition that turns on
+  implicit publishing (`app-builder-lib` `PublishManager.js`: git tag first,
+  then CI detection), which then aborts with "GitHub Personal Access Token is
+  not set". The build job only uploads artifacts; publishing is the `publish`
+  job's role.
+
+Publish job
 (`needs: build`, only on real tags) downloads both and attaches them to the
 release via `softprops/action-gh-release` — **appends** to a release the local
 `pnpm run release` already created, or creates one in `--ci-only` mode.
