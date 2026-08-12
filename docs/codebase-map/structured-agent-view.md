@@ -56,6 +56,18 @@ conversation is truncated back to before it, with the message's text returned to
 the composer for **edit-and-retry**. Three SDK primitives back it, and the
 measured semantics are recorded in `docs/spikes/rewind-sdk-findings.md`:
 
+The confirmation panel (`.av-rewind-pop`) is **portalled to `<body>`** with fixed
+positioning anchored to the trigger (`RewindControl.tsx`), flipping above the
+trigger when there is no room below. It has to be portalled: the bubble lives
+inside `.av-message-list`, the `overflow:auto` scroller, so an in-flow panel is
+clipped at the scroller's edge and then overpainted by `.av-composer` (a later
+sibling) — neither of which a z-index inside the list can beat. The portal root
+carries `av-view` (where the `--av-*` palette is declared) plus the live
+`data-agent-theme`, because an earlier `<body>` portal without that scope
+resolved its background to `rgba(0,0,0,0)`. `.av-rewind-portal` must therefore
+also force `display: block !important`, since `.av-view:not(.active)` is
+`display:none` and the wrapper is deliberately not `.active`.
+
 - **`options.enableFileCheckpointing: true`** (set in `ensureSession`) makes the
   CLI snapshot tracked files per user message. Checkpoints only cover edits made
   AFTER it is on, so pre-feature sessions rewind the CONVERSATION only — surfaced

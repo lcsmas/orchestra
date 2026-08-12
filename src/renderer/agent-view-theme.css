@@ -2482,34 +2482,36 @@ h6.av-md-h {
 .av-rewind-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .av-rewind-label { line-height: 1; }
 
-/* Lift the row that owns an OPEN rewind dialog above its later siblings.
-   THIS is what makes the panel visible, and it is the whole fix.
+/* Portal root for the confirmation panel — see RewindControl.tsx for WHY the
+   panel is portalled (it is clipped by the `.av-message-list` scroller and then
+   overpainted by the composer otherwise; lifting the row cannot beat either,
+   because clipping and sibling paint order both outrank z-index).
 
-   `.av-row { contain: layout style }` (see the virtualization rules above)
-   makes EVERY row its own stacking context, so rows stack in DOM order and a
-   later row paints over an earlier row's overflowing popover no matter how
-   large that popover's own z-index is — the z-index only orders things WITHIN
-   its row. Isolated by experiment: removing `contain` fixes it while keeping
-   the translateY; removing the transform and keeping `contain` does NOT. (So
-   the transform is a red herring here — an earlier fix blamed it and portalled
-   the panel to <body>, which worked but then put the panel outside `.av-view`,
-   where the whole `--av-*` palette is declared, so its background resolved to
-   `rgba(0,0,0,0)` — a fully transparent dialog. Lifting the row keeps the panel
-   inside the palette's scope and needs no JS.)
-   `contain: layout` does NOT clip, so the panel still overflows the row freely
-   (measured: 132px past the row box). */
-.av-row:has(.av-rewind-btn[aria-expanded='true']) {
-  position: relative;
-  z-index: 5;
+   This wrapper exists ONLY to re-establish the `--av-*` palette scope (declared
+   on `.av-view`) around the portalled panel. It must therefore be layout- and
+   paint-inert: `.av-view` is a real pane style elsewhere, so zero it out here
+   and let ONLY the fixed-position child paint. `pointer-events: none` keeps the
+   full-viewport wrapper from swallowing clicks; the panel re-enables them.
+
+   `display: block !important` is LOAD-BEARING, not tidiness: `.av-view:not(.active)`
+   sets `display: none`, and this wrapper deliberately carries `av-view` (for the
+   tokens) WITHOUT `active` (it is not a pane). Without the override the entire
+   panel is display:none — measured: `offsetHeight` 0 and a 0×0 rect while the
+   panel's own computed styles all read correct, so it fails completely silently. */
+.av-rewind-portal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: block !important;
+  background: none;
+  pointer-events: none;
 }
+.av-rewind-portal > .av-rewind-pop { pointer-events: auto; }
 
-/* Confirmation popover. Anchored to the trigger, opening downward-left; it
-   overflows its row, which the rule above makes safe. */
+/* Confirmation popover. Fixed-positioned; `left`/`top` come from the trigger
+   anchor computed in RewindControl.tsx (kept in sync with PANEL_WIDTH there). */
 .av-rewind-pop {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 40;
+  position: fixed;
   width: 268px;
   padding: 12px;
   border: 1px solid var(--av-hairline-strong);
