@@ -2032,7 +2032,22 @@ const MCP_STATUS_TIMEOUT_MS = 10_000;
  *  unruled-out chance of breaking every such auth deterministically, was not
  *  a trade worth taking. If the staleness above needs a fix, it has to come
  *  from a signal that actually tracks "the user is done in the browser" —
- *  polling harder isn't it. */
+ *  polling harder isn't it.
+ *
+ *  If this is ever revisited and a claude.ai connector auth starts failing
+ *  outright: that failure mode is INDISTINGUISHABLE BY SYMPTOM from the bug
+ *  this file already fixes — both look like "popover row spins, auth never
+ *  completes". Don't assume a regression in the status-poll fix above; the
+ *  discriminator is timing, not appearance. Stale status (this file's
+ *  original bug) resolves on ITS OWN if you wait, or on a later MANUAL
+ *  reconnect — the connection was live the whole time. A broken PKCE
+ *  exchange (what an active nudge could cause) never resolves no matter how
+ *  long you wait or how many times you reconnect after the fact, because the
+ *  server-side authorization itself failed. One question — "does it come
+ *  good on a later manual reconnect?" — separates the two in a single step,
+ *  and saves a session spent debugging the wrong file. (h/t a sibling agent's
+ *  review, 2026-08-13, for both the original nudge idea's evidence and this
+ *  discriminator once the nudge was reverted.) */
 
 /** Run the OAuth flow for a `needs-auth` MCP server — Claude Code's `/mcp`
  *  authenticate, as the popover's ↻ action:
