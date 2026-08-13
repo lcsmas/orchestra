@@ -2007,6 +2007,15 @@ export async function sdkMcpReconnect(wsId: string, serverName: string): Promise
 const MCP_AUTH_TIMEOUT_MS = 180_000;
 /** Status-poll cadence while waiting for the fresh token to land. */
 const MCP_AUTH_POLL_MS = 2_000;
+/** Per-call bound on a single `mcpServerStatus()` control request. Some
+ *  providers (observed with claude.ai connectors like Slack/Datadog) leave the
+ *  CLI's mcp subsystem wedged on that ONE server mid-handshake — the request
+ *  never rejects, it just never comes back. Without this, that single stuck
+ *  await silently defeats {@link MCP_AUTH_TIMEOUT_MS}: the deadline is only
+ *  ever re-checked *between* completed status calls, so one hung call means
+ *  the popover spins forever (and every retry click just piles on another
+ *  permanently-pending promise, still spinning). */
+const MCP_STATUS_TIMEOUT_MS = 10_000;
 
 /** Run the OAuth flow for a `needs-auth` MCP server — Claude Code's `/mcp`
  *  authenticate, as the popover's ↻ action:
@@ -2115,14 +2124,42 @@ async function runMcpAuthFlow(
     return s !== undefined && (s.status === 'needs-auth' || s.status === 'pending');
   };
 
-  let servers = (await q.mcpServerStatus().then((r) => (Array.isArray(r) ? r : []))).map(
-    toAgentMcpServer,
-  );
-  while (stillNeedsAuth(servers) && authError === null && Date.now() < deadline) {
+  // Bounded status check: on timeout, return null rather than hanging — the
+  // caller keeps its last-known list and the outer while's Date.now() check
+  // still fires next iteration, so a wedged control request degrades to "stale
+  // reading, deadline still enforced" instead of "stuck forever".
+  const pollStatus = async (): Promise<AgentMcpServer[] | null> => {
+    const STUCK = Symbol('mcp-status-timeout');
+    const result = await Promise.race([
+      q.mcpServerStatus().catch(() => STUCK),
+      new Promise<typeof STUCK>((r) => setTimeout(() => r(STUCK), MCP_STATUS_TIMEOUT_MS)),
+    ]);
+    if (result === STUCK) {
+      slog.warn(`mcp auth ${serverName}: mcpServerStatus() stuck/failed for ${session.wsId}`);
+      return null;
+    }
+    return (Array.isArray(result) ? result : []).map(toAgentMcpServer);
+  };
+
+  // `haveReading` distinguishes "never got a real status yet" from "got one
+  // and the server is genuinely gone" — pollStatus() returning null (stuck
+  // call) must NOT collapse servers to `[]` and have stillNeedsAuth's
+  // missing-is-terminal rule mistake "no data yet" for "server was removed"
+  // and bail out on the very first iteration.
+  let servers: AgentMcpServer[] = [];
+  let haveReading = false;
+  const firstRead = await pollStatus();
+  if (firstRead !== null) {
+    servers = firstRead;
+    haveReading = true;
+  }
+  while ((!haveReading || stillNeedsAuth(servers)) && authError === null && Date.now() < deadline) {
     await Promise.race([authPromise, new Promise((r) => setTimeout(r, MCP_AUTH_POLL_MS))]);
-    servers = (await q.mcpServerStatus().then((r) => (Array.isArray(r) ? r : []))).map(
-      toAgentMcpServer,
-    );
+    const next = await pollStatus();
+    if (next !== null) {
+      servers = next;
+      haveReading = true;
+    }
   }
 
   // Broadcast whatever we ended on (even a timeout leaves fresher state than
