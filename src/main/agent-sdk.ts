@@ -1965,6 +1965,65 @@ export async function sdkMcpToggle(
   return servers;
 }
 
+/** Re-enumerate MCP servers from scratch by RESTARTING the CLI process —
+ *  the popover's "refresh" action, and the only way to pick up account-level
+ *  changes.
+ *
+ *  ## Why a restart is the mechanism
+ *
+ *  The set of `claude.ai` connectors (and their `mcpsrv_…` ids) is resolved by
+ *  the CLI ONCE, at process start. Nothing in the SDK re-fetches it:
+ *  `mcpServerStatus()` re-reads the CLI's existing view, `reconnectMcpServer()`
+ *  re-dials one already-known server. So if the account's connectors change
+ *  (a connector added/removed/re-connected on claude.ai — which mints a NEW
+ *  `mcpsrv_` id), a long-lived CLI keeps serving the stale set indefinitely,
+ *  and its auth URLs 404 with "Server not found" against ids that no longer
+ *  exist. Observed 2026-08-13: a CLI ~2.5h old still offering a dead Slack id.
+ *
+ *  Crucially, the DETACHED KEEPER (session-keeper.md) means "restart the app"
+ *  does NOT fix this — the app reattaches to the same surviving CLI, so the
+ *  stale enumeration outlives every relaunch. Before this, the only real
+ *  remedy was `/clear` (destroys the conversation) or killing the process by
+ *  hand. Hence an explicit action.
+ *
+ *  ## Conversation safety
+ *
+ *  {@link sdkStop} deliberately does NOT touch the persisted `sdkSessionId`
+ *  (only {@link sdkClear} does) — so the next `ensureSession` RESUMES the same
+ *  conversation in a brand-new process. The transcript survives; only the OS
+ *  process is replaced.
+ *
+ *  Refuses while a turn is in flight rather than killing the agent mid-answer:
+ *  the caller surfaces that as an inline popover error. */
+export async function sdkMcpRefresh(wsId: string): Promise<AgentMcpServer[]> {
+  const live = sessions.get(wsId);
+  // `turnGate` is non-null exactly while a turn is in flight (same idiom as
+  // the reattach path's `hadOpenTurn`).
+  if (live && live.turnGate !== null) {
+    throw new Error('The agent is working — interrupt it first, then refresh.');
+  }
+  // Tear down (graceful: lets the CLI flush its transcript), then make sure
+  // the keeper's process is really gone before booting a replacement. Without
+  // the killKeeper backstop, ensureSession below could reattach to the very
+  // process we are trying to replace and the refresh would be a no-op.
+  await sdkStop(wsId);
+  await killKeeper(wsId).catch(() => {
+    /* already gone — the common case after a graceful stop */
+  });
+  const session = await ensureSession(wsId);
+  const servers = await emitMcpServers(session);
+  slog.info(`mcp refresh ${wsId}: re-enumerated ${servers.length} server(s) on a fresh CLI`);
+  emit(
+    session.wsId,
+    stamp(session.ctx, {
+      type: 'notice',
+      kind: 'mcp',
+      text: `MCP servers re-enumerated on a fresh session — ${servers.length} server(s)`,
+    }),
+  );
+  return servers;
+}
+
 /** Reconnect one MCP server (SDK `reconnectMcpServer`) — the popover's retry
  *  action for a `failed` / `needs-auth` server. Emits the outcome notice and a
  *  `session/mcp` refresh; returns the refreshed list. */

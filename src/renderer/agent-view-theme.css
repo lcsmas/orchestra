@@ -1582,6 +1582,18 @@ h6.av-md-h {
   padding: 0.5px 4px; border-radius: 4px;
   background: var(--av-surface-raised); border: 1px solid var(--av-hairline-strong);
 }
+/* Popover-wide re-enumerate (restarts the CLI). Pinned right in the hint row:
+   a rare, deliberate action — discoverable but never competing with the
+   per-row ↻. */
+.av-mcp-refresh {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-left: auto; padding: 1px 6px;
+  font-family: inherit; font-size: 9.5px; color: var(--av-text-dim);
+  background: none; border: 1px solid var(--av-hairline-strong); border-radius: 5px;
+  cursor: pointer; transition: color 0.12s var(--av-ease), border-color 0.12s var(--av-ease);
+}
+.av-mcp-refresh:hover:not(:disabled) { color: var(--av-text); border-color: var(--av-text-dim); }
+.av-mcp-refresh:disabled { opacity: 0.6; cursor: default; }
 
 /* Turn footer — flight-data strip: mono, tabular, quiet. Now an inline group
    inside `.av-deck-bar` (order 2, between interrupt and menus): no border /

@@ -169,8 +169,29 @@ cap) until the fresh token lands and the CLI reconnects — the row shows
 MISSING from the status list is terminal (no 3-min poll for a removed name);
 a "ProcessTransport is not ready" throw (↻ clicked seconds after a cold
 /mcp open, racing the subprocess boot) retries ONCE after 3s; every outcome
-— success, failure, timeout, throw — lands as a transcript notice. The SDK
+— success, failure, timeout, throw — lands as a transcript notice. At the
+timeout boundary (and ONLY there) the flow fires one last `reconnectMcpServer`
+before reporting failure, since status can lag a connection that is already
+live; a *periodic* nudge was tried and reverted (v0.5.226→228) because it
+would fire during the user's browser step and could disturb the in-flight
+PKCE exchange — the reasoning is preserved in a long comment above
+`MCP_STATUS_TIMEOUT_MS`, read it before re-proposing one. The SDK
 also exposes `mcpSubmitOAuthCallbackUrl`/`mcpClearAuth` (unused so far).
+The popover's footer carries a **`re-enumerate`** button (`.av-mcp-refresh`,
+`agentSdkMcpRefresh` → `sdkMcpRefresh`) — the ONLY way to pick up
+account-level connector changes. `claude.ai` connectors and their `mcpsrv_`
+ids are resolved by the CLI **once, at process start**: no SDK call re-fetches
+them, so a connector added/removed/re-connected on claude.ai (which mints a
+NEW `mcpsrv_` id) leaves a long-lived CLI serving a stale set whose auth URLs
+404 with "Server not found". Critically **an app relaunch does NOT fix this** —
+the detached keeper (session-keeper.md) survives it and the app reattaches to
+the same stale CLI, so the bad enumeration outlives every restart. Hence the
+mechanism is a real process restart: `sdkStop` + `killKeeper` backstop (else
+`ensureSession` could reattach to the very process being replaced) then
+`ensureSession`. The conversation is PRESERVED — `sdkStop` deliberately leaves
+`sdkSessionId` alone (only `sdkClear` drops it), so the fresh process resumes
+the same transcript. Refuses while `session.turnGate !== null` (a turn is in
+flight) rather than killing the agent mid-answer.
 A **health chip** (`McpIndicator`, exported from McpPopover.tsx; `.av-mcp-ind`,
 `order:3` so it docks right after Remote control in the composer bar) renders
 ONLY while a server is `failed`/`needs-auth` — amber for auth-only, red

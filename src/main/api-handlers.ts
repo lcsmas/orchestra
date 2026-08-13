@@ -115,6 +115,7 @@ import {
   sdkMcpStatus,
   sdkMcpToggle,
   sdkMcpReconnect,
+  sdkMcpRefresh,
   sdkMcpAuth,
   sdkHistory,
   sdkDefaultModel,
@@ -254,6 +255,7 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   agentSdkMcpStatus: 'agent:sdkMcpStatus',
   agentSdkMcpToggle: 'agent:sdkMcpToggle',
   agentSdkMcpReconnect: 'agent:sdkMcpReconnect',
+  agentSdkMcpRefresh: 'agent:sdkMcpRefresh',
   agentSdkMcpAuth: 'agent:sdkMcpAuth',
   agentSdkHistory: 'agent:sdkHistory',
   agentSdkDefaultModel: 'agent:sdkDefaultModel',
@@ -867,6 +869,8 @@ export const apiHandlers: ApiHandlerTable = {
   agentSdkMcpToggle: async (wsId, serverName, enabled) => sdkMcpToggle(wsId, serverName, enabled),
 
   agentSdkMcpReconnect: async (wsId, serverName) => sdkMcpReconnect(wsId, serverName),
+
+  agentSdkMcpRefresh: async (wsId) => sdkMcpRefresh(wsId),
 
   agentSdkMcpAuth: async (wsId, serverName) => sdkMcpAuth(wsId, serverName),
 

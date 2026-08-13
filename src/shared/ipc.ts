@@ -331,6 +331,14 @@ export interface OrchestraAPI {
   /** Reconnect one MCP server (the popover's retry for failed/needs-auth).
    *  Resolves with the refreshed list; outcome also lands as a notice. */
   agentSdkMcpReconnect: (wsId: string, serverName: string) => Promise<AgentMcpServer[]>;
+  /** Re-enumerate the server list from scratch by RESTARTING the CLI process.
+   *  The only way to pick up account-level connector changes (claude.ai
+   *  connectors + their `mcpsrv_` ids are resolved once at process start), and
+   *  notably NOT something an app relaunch achieves — the detached keeper
+   *  survives that. The conversation is preserved (the resume id is kept, so
+   *  the fresh process resumes it); only the OS process is replaced. Rejects
+   *  if a turn is in flight. Resolves with the refreshed list. */
+  agentSdkMcpRefresh: (wsId: string) => Promise<AgentMcpServer[]>;
   /** Run the OAuth flow for a needs-auth MCP server (CC's /mcp authenticate):
    *  opens the authorization link in the SYSTEM browser and resolves — with
    *  the refreshed list — once the fresh token lands and the server

@@ -105,6 +105,11 @@ function metaText(s: AgentMcpServer): string {
 /** What kind of operation is in flight for a server (drives the row state). */
 type Busy = 'op' | 'auth';
 
+/** Sentinel key in the `busy` map for the popover-wide refresh (which restarts
+ *  the session rather than touching one server). Not a real server name, and
+ *  `#` can't collide with one. */
+const REFRESH_KEY = '#refresh';
+
 export function McpPopover({
   workspaceId,
   seed,
@@ -205,9 +210,18 @@ export function McpPopover({
       ? runOp(s.name, 'auth', () => window.orchestra.agentSdkMcpAuth(workspaceId, s.name))
       : runOp(s.name, 'op', () => window.orchestra.agentSdkMcpReconnect(workspaceId, s.name));
 
+  /** Re-enumerate from a fresh CLI. This is the ONLY way to pick up
+   *  account-level connector changes (claude.ai connectors are resolved once
+   *  at process start), and it is NOT what relaunching Orchestra does — the
+   *  detached keeper survives that, so a stale list can outlive every app
+   *  restart. Preserves the conversation; rejects while a turn is running. */
+  const refresh = () =>
+    runOp(REFRESH_KEY, 'op', () => window.orchestra.agentSdkMcpRefresh(workspaceId));
+
   const all = servers ?? [];
   const enabled = all.filter((s) => s.status !== 'disabled');
   const disabled = all.filter((s) => s.status === 'disabled');
+  const refreshing = busy[REFRESH_KEY] !== undefined;
 
   const renderRow = (s: AgentMcpServer) => {
     const b = busy[s.name];
@@ -298,6 +312,26 @@ export function McpPopover({
       {error && <div className="av-mcp-error">{error}</div>}
       <div className="av-mcp-hint">
         from ~/.claude.json · .mcp.json — <kbd>Esc</kbd> to close
+        <button
+          type="button"
+          className="av-mcp-refresh"
+          onClick={refresh}
+          disabled={refreshing}
+          title={
+            'Restart the agent process and re-enumerate MCP servers.\n' +
+            'Needed to pick up claude.ai connectors added/removed on your account — ' +
+            'those are read once at process start, and the process survives an app restart.\n' +
+            'Your conversation is preserved.'
+          }
+        >
+          {refreshing ? (
+            <>
+              <span className="av-mcp-spin" aria-hidden /> restarting…
+            </>
+          ) : (
+            're-enumerate'
+          )}
+        </button>
       </div>
     </div>
   );

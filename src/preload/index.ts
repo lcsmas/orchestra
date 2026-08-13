@@ -93,6 +93,7 @@ const api: OrchestraAPI = {
   agentSdkSetRemoteControl: (wsId, enabled) =>
     ipcRenderer.invoke('agent:sdkSetRemoteControl', wsId, enabled),
   agentSdkMcpStatus: (wsId) => ipcRenderer.invoke('agent:sdkMcpStatus', wsId),
+  agentSdkMcpRefresh: (wsId) => ipcRenderer.invoke('agent:sdkMcpRefresh', wsId),
   agentSdkMcpToggle: (wsId, serverName, enabled) =>
     ipcRenderer.invoke('agent:sdkMcpToggle', wsId, serverName, enabled),
   agentSdkMcpReconnect: (wsId, serverName) =>
