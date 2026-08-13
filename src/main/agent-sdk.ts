@@ -2016,38 +2016,45 @@ const MCP_AUTH_POLL_MS = 2_000;
  *  the popover spins forever (and every retry click just piles on another
  *  permanently-pending promise, still spinning). */
 const MCP_STATUS_TIMEOUT_MS = 10_000;
-/** NOT taken: actively nudging `reconnectMcpServer()` mid-poll. A live
- *  cross-workspace probe (2026-08-13) showed the underlying connection for a
- *  `claude.ai`-account connector (Slack) can go fully functional — real tool
- *  calls succeeding — while `mcpServerStatus()` keeps reporting `needs-auth`,
- *  which made an active nudge look attractive. It was shipped (v0.5.226) and
- *  then reverted (v0.5.228): the only signal available to gate the nudge is
- *  `mcpAuthenticate()`'s own request settling, and for exactly this provider
- *  class that request resolves almost immediately (URL handed back) — long
- *  before the user finishes the consent step in the browser. So the nudge
- *  would fire every ~15s *during* the user's browser step, and whether
- *  `mcp_reconnect` can rotate/invalidate an in-flight PKCE exchange for the
- *  same server is undocumented CLI-internal behavior with no way to verify
- *  from here. No confirmed benefit for the case it targeted, and an
- *  unruled-out chance of breaking every such auth deterministically, was not
- *  a trade worth taking. If the staleness above needs a fix, it has to come
- *  from a signal that actually tracks "the user is done in the browser" —
- *  polling harder isn't it.
+/** NOT taken: actively nudging `reconnectMcpServer()` every N seconds WHILE
+ *  the poll loop runs. A live cross-workspace probe (2026-08-13) showed the
+ *  underlying connection for a `claude.ai`-account connector (Slack) can go
+ *  fully functional — real tool calls succeeding — while `mcpServerStatus()`
+ *  keeps reporting `needs-auth`, which made an active nudge look attractive.
+ *  A periodic version shipped (v0.5.226) and was reverted (v0.5.228): the
+ *  only signal available to gate it is `mcpAuthenticate()`'s own request
+ *  settling, and for exactly this provider class that request resolves
+ *  almost immediately (URL handed back) — long before the user finishes the
+ *  consent step in the browser. So the nudge would fire every ~15s *during*
+ *  the user's browser step, and whether `mcp_reconnect` can rotate/invalidate
+ *  an in-flight PKCE exchange for the same server is undocumented
+ *  CLI-internal behavior with no way to verify from here. No confirmed
+ *  benefit for the case it targeted, and an unruled-out chance of breaking
+ *  every such auth deterministically, was not a trade worth taking.
  *
- *  If this is ever revisited and a claude.ai connector auth starts failing
- *  outright: that failure mode is INDISTINGUISHABLE BY SYMPTOM from the bug
- *  this file already fixes — both look like "popover row spins, auth never
+ *  TAKEN instead (v0.5.230): a SINGLE `reconnectMcpServer()` call at the
+ *  timeout boundary, after the loop gives up — see its call site below. By
+ *  then MCP_AUTH_TIMEOUT_MS has fully elapsed, so the browser step is either
+ *  finished or abandoned; there's no live exchange left to interleave with,
+ *  which is precisely what made the periodic version unsafe. This recovers
+ *  most of the periodic nudge's value (reconciling a connection that's
+ *  already live) in the one spot a false negative is most expensive, without
+ *  reintroducing the risk.
+ *
+ *  If a claude.ai connector auth ever starts failing outright despite this:
+ *  that failure mode is INDISTINGUISHABLE BY SYMPTOM from the bug this file
+ *  originally fixed — both look like "popover row spins, auth never
  *  completes". Don't assume a regression in the status-poll fix above; the
- *  discriminator is timing, not appearance. Stale status (this file's
- *  original bug) resolves on ITS OWN if you wait, or on a later MANUAL
- *  reconnect — the connection was live the whole time. A broken PKCE
- *  exchange (what an active nudge could cause) never resolves no matter how
- *  long you wait or how many times you reconnect after the fact, because the
- *  server-side authorization itself failed. One question — "does it come
- *  good on a later manual reconnect?" — separates the two in a single step,
- *  and saves a session spent debugging the wrong file. (h/t a sibling agent's
- *  review, 2026-08-13, for both the original nudge idea's evidence and this
- *  discriminator once the nudge was reverted.) */
+ *  discriminator is timing, not appearance. Stale status resolves on ITS OWN
+ *  if you wait, or on a later MANUAL reconnect — the connection was live the
+ *  whole time (this is what the boundary call above already tries once). A
+ *  genuinely broken exchange never resolves no matter how long you wait or
+ *  how many times you reconnect after the fact, because the server-side
+ *  authorization itself failed. One question — "does it come good on a later
+ *  manual reconnect?" — separates the two in a single step, and saves a
+ *  session spent debugging the wrong file. (h/t a sibling agent's review,
+ *  2026-08-13, for the original nudge's evidence, this discriminator, and
+ *  the boundary-call design that replaced the periodic version.) */
 
 /** Run the OAuth flow for a `needs-auth` MCP server — Claude Code's `/mcp`
  *  authenticate, as the popover's ↻ action:
@@ -2063,6 +2070,10 @@ const MCP_STATUS_TIMEOUT_MS = 10_000;
  *     token landed → the CLI reconnects it) or the timeout hits. The
  *     renderer's row shows "waiting for authentication…" while this IPC
  *     promise is pending.
+ *  2b. If step 2 hits the timeout still needing auth, ONE last-ditch
+ *     `reconnectMcpServer()` before giving up — see the comment at its call
+ *     site for why this single boundary call is safe where a mid-loop nudge
+ *     was not.
  *  3. Broadcast the final `session/mcp` + an outcome notice, and resolve with
  *     the refreshed list.
  *
@@ -2075,7 +2086,7 @@ export async function sdkMcpAuth(wsId: string, serverName: string): Promise<Agen
     mcpAuthenticate?: (serverName: string, redirectUri?: string) => Promise<unknown>;
     mcpServerStatus?: () => Promise<RawMcpServerStatus[]>;
   };
-  const { mcpAuthenticate, mcpServerStatus } = q;
+  const { mcpAuthenticate, mcpServerStatus, reconnectMcpServer } = q;
   if (typeof mcpAuthenticate !== 'function' || typeof mcpServerStatus !== 'function') {
     throw new Error('MCP authentication is not available in this Claude Code version.');
   }
@@ -2083,6 +2094,10 @@ export async function sdkMcpAuth(wsId: string, serverName: string): Promise<Agen
   const bound = {
     mcpAuthenticate: mcpAuthenticate.bind(q),
     mcpServerStatus: mcpServerStatus.bind(q),
+    // Optional: older SDKs may lack it. Used ONLY once, at the timeout
+    // boundary — see MCP_STATUS_TIMEOUT_MS's neighboring comment for why a
+    // mid-loop nudge was rejected but this single call is safe.
+    reconnectMcpServer: typeof reconnectMcpServer === 'function' ? reconnectMcpServer.bind(q) : undefined,
   };
   try {
     try {
@@ -2122,6 +2137,7 @@ async function runMcpAuthFlow(
   q: {
     mcpAuthenticate: (serverName: string, redirectUri?: string) => Promise<unknown>;
     mcpServerStatus: () => Promise<RawMcpServerStatus[]>;
+    reconnectMcpServer?: (serverName: string) => Promise<void>;
   },
   serverName: string,
 ): Promise<AgentMcpServer[]> {
@@ -2192,6 +2208,28 @@ async function runMcpAuthFlow(
       servers = next;
       haveReading = true;
     }
+  }
+
+  // ONE last-ditch reconnect right at the timeout boundary, before reporting
+  // failure — NOT a mid-loop nudge (see the "NOT taken" comment above
+  // MCP_STATUS_TIMEOUT_MS for why that was reverted). This is a different,
+  // narrower move: by the time we're here, MCP_AUTH_TIMEOUT_MS (3 minutes)
+  // has already elapsed, so the user's browser step is either finished or
+  // abandoned — there is no live PKCE exchange left for a reconnect to
+  // interrupt. If mcpServerStatus() has simply been lagging a connection
+  // that's ACTUALLY already live (the exact staleness this file's poll loop
+  // was diagnosed with), this is the one call that can still catch it before
+  // the user is told "it didn't work" — precisely where a false negative is
+  // most expensive. Best-effort and silent on failure: worst case, nothing
+  // changes and the existing timeout message still fires below.
+  if (authError === null && stillNeedsAuth(servers) && q.reconnectMcpServer) {
+    await q.reconnectMcpServer(serverName).catch((err) => {
+      slog.info(
+        `mcp auth ${serverName}: timeout-boundary reconnect failed for ${session.wsId} — ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+    const finalRead = await pollStatus();
+    if (finalRead !== null) servers = finalRead;
   }
 
   // Broadcast whatever we ended on (even a timeout leaves fresher state than
