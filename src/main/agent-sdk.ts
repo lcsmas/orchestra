@@ -2114,6 +2114,13 @@ async function runMcpAuthFlow(
   const deadline = Date.now() + MCP_AUTH_TIMEOUT_MS;
   let opened = false;
   let authError: string | null = null;
+  // Gates the reconnect nudge below: true once mcpAuthenticate()'s OWN
+  // request has settled (resolved or rejected), never while it is still
+  // outstanding. mcp_reconnect's server-side effect on an in-flight
+  // mcp_authenticate handshake for the SAME server is undocumented — rather
+  // than assume it is safe to interleave, this makes it structurally
+  // impossible for the nudge to race the authenticate call at all.
+  let authSettled = false;
 
   // Kick off the flow. Do NOT await to completion before polling — the promise
   // may only resolve after the user finishes in the browser.
@@ -2130,6 +2137,13 @@ async function runMcpAuthFlow(
     .catch((err) => {
       authError = err instanceof Error ? err.message : String(err);
       slog.warn(`mcp auth ${serverName} failed for ${session.wsId}: ${authError}`);
+    })
+    .finally(() => {
+      // Marks mcpAuthenticate() as no longer outstanding — see its use below,
+      // gating the reconnect nudge. Deliberately NOT set inside the `.then()`/
+      // `.catch()` bodies above: this must run after BOTH branches, and a
+      // `.finally` is the one place guaranteed to.
+      authSettled = true;
     });
   // Give a fast URL-carrying response a moment to surface before polling.
   await Promise.race([authPromise, new Promise((r) => setTimeout(r, 1_500))]);
@@ -2179,7 +2193,9 @@ async function runMcpAuthFlow(
     // keeps reporting needs-auth, and reconnectMcpServer() is what reconciles
     // that (it's exactly what the popover's plain ↻ sends). Best-effort: a
     // rejection here just means "not yet" — the status poll below still runs.
-    if (q.reconnectMcpServer && Date.now() - lastNudge >= MCP_STATUS_NUDGE_EVERY_MS) {
+    // Gated on authSettled (see its declaration) so this NEVER fires while
+    // mcpAuthenticate() is still outstanding for this same server.
+    if (authSettled && q.reconnectMcpServer && Date.now() - lastNudge >= MCP_STATUS_NUDGE_EVERY_MS) {
       lastNudge = Date.now();
       await q.reconnectMcpServer(serverName).catch((err) => {
         slog.info(`mcp auth ${serverName}: reconnect nudge failed for ${session.wsId} — ${err instanceof Error ? err.message : String(err)}`);
