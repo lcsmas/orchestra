@@ -158,6 +158,23 @@ export function McpPopover({
     };
   }, [workspaceId]);
 
+  // Adopt LIVE updates. `seed` is the folded `session.mcpServers`, refreshed by
+  // every `session/mcp` broadcast — including the ones `sdkMcpRefresh` emits as
+  // a freshly-restarted CLI's servers finish connecting. Without this the
+  // popover would freeze on whatever it fetched at mount (or on a re-enumerate's
+  // first snapshot, i.e. every row stuck at "connecting…"), since it does no
+  // polling of its own.
+  //
+  // Skipped while ANY op is in flight so a broadcast can't clobber the result
+  // the user is waiting on (a toggle/auth resolves with its own authoritative
+  // list). `busy` is keyed by server name, so `busyCount` covers the popover-
+  // wide refresh too.
+  const busyCount = Object.keys(busy).length;
+  useEffect(() => {
+    if (!seed || busyCount > 0) return;
+    setServers(seed);
+  }, [seed, busyCount]);
+
   // Esc closes (capture so the CodeMirror/vim Esc handling never eats it while
   // the popover is up); click outside the popover closes too.
   useEffect(() => {

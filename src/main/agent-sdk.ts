@@ -2011,8 +2011,24 @@ export async function sdkMcpRefresh(wsId: string): Promise<AgentMcpServer[]> {
     /* already gone — the common case after a graceful stop */
   });
   const session = await ensureSession(wsId);
-  const servers = await emitMcpServers(session);
-  slog.info(`mcp refresh ${wsId}: re-enumerated ${servers.length} server(s) on a fresh CLI`);
+  // A just-booted CLI reports every server as `pending` for a few seconds while
+  // it dials them. Returning that first snapshot would leave the popover
+  // showing "connecting…" for all of them FOREVER: the popover has no polling,
+  // and the next `session/mcp` broadcast would otherwise only arrive on the
+  // next turn's init. So settle here — each emitMcpServers() also broadcasts,
+  // so an open popover updates live as servers land rather than jumping at the
+  // end. Bounded: a server that never leaves `pending` must not hang the IPC.
+  let servers = await emitMcpServers(session);
+  const settleBy = Date.now() + MCP_REFRESH_SETTLE_MS;
+  while (servers.some((s) => s.status === 'pending') && Date.now() < settleBy) {
+    await new Promise((r) => setTimeout(r, MCP_REFRESH_SETTLE_POLL_MS));
+    servers = await emitMcpServers(session);
+  }
+  const stillPending = servers.filter((s) => s.status === 'pending').length;
+  slog.info(
+    `mcp refresh ${wsId}: re-enumerated ${servers.length} server(s) on a fresh CLI` +
+      (stillPending ? ` (${stillPending} still connecting after settle window)` : ''),
+  );
   emit(
     session.wsId,
     stamp(session.ctx, {
@@ -2075,6 +2091,14 @@ const MCP_AUTH_POLL_MS = 2_000;
  *  the popover spins forever (and every retry click just piles on another
  *  permanently-pending promise, still spinning). */
 const MCP_STATUS_TIMEOUT_MS = 10_000;
+/** How long {@link sdkMcpRefresh} waits for a freshly-booted CLI's servers to
+ *  finish connecting before returning. Only a bound, not a target: it returns
+ *  as soon as nothing is `pending`. */
+const MCP_REFRESH_SETTLE_MS = 30_000;
+/** Re-poll cadence inside that settle window. Each poll also broadcasts
+ *  `session/mcp`, so an open popover ticks from "connecting…" to the real
+ *  status as each server lands. */
+const MCP_REFRESH_SETTLE_POLL_MS = 1_000;
 /** NOT taken: actively nudging `reconnectMcpServer()` every N seconds WHILE
  *  the poll loop runs. A live cross-workspace probe (2026-08-13) showed the
  *  underlying connection for a `claude.ai`-account connector (Slack) can go
