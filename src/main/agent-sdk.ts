@@ -2016,6 +2016,17 @@ const MCP_AUTH_POLL_MS = 2_000;
  *  the popover spins forever (and every retry click just piles on another
  *  permanently-pending promise, still spinning). */
 const MCP_STATUS_TIMEOUT_MS = 10_000;
+/** How often the poll loop actively nudges a reconnect (vs. just passively
+ *  reading status) once auth is presumed underway. Confirmed via a live
+ *  cross-workspace probe (2026-08-13): for `claude.ai`-account connectors
+ *  (Slack, Datadog, …) the underlying MCP connection can go fully live —
+ *  tool calls succeed, e.g. an actual Slack post — while `mcpServerStatus()`
+ *  KEEPS reporting `needs-auth` for that same server, because nothing tells
+ *  the CLI's status cache to re-check. What DOES reconcile it is the exact
+ *  request the popover's plain ↻ button already sends: `reconnectMcpServer()`.
+ *  So the loop below sends that nudge periodically instead of waiting for the
+ *  user to notice the stuck row and click ↻ by hand. */
+const MCP_STATUS_NUDGE_EVERY_MS = 15_000;
 
 /** Run the OAuth flow for a `needs-auth` MCP server — Claude Code's `/mcp`
  *  authenticate, as the popover's ↻ action:
@@ -2028,8 +2039,10 @@ const MCP_STATUS_TIMEOUT_MS = 10_000;
  *     If none does, the CLI may have opened/completed the flow itself — either
  *     way the poll below is the source of truth.
  *  2. Poll `mcpServerStatus()` until the server leaves `needs-auth` (fresh
- *     token landed → the CLI reconnects it) or the timeout hits. The
- *     renderer's row shows "waiting for authentication…" while this IPC
+ *     token landed → the CLI reconnects it) or the timeout hits, periodically
+ *     nudging `reconnectMcpServer()` too (see {@link MCP_STATUS_NUDGE_EVERY_MS}
+ *     — status alone can lag a connection that is already functionally live).
+ *     The renderer's row shows "waiting for authentication…" while this IPC
  *     promise is pending.
  *  3. Broadcast the final `session/mcp` + an outcome notice, and resolve with
  *     the refreshed list.
@@ -2043,7 +2056,7 @@ export async function sdkMcpAuth(wsId: string, serverName: string): Promise<Agen
     mcpAuthenticate?: (serverName: string, redirectUri?: string) => Promise<unknown>;
     mcpServerStatus?: () => Promise<RawMcpServerStatus[]>;
   };
-  const { mcpAuthenticate, mcpServerStatus } = q;
+  const { mcpAuthenticate, mcpServerStatus, reconnectMcpServer } = q;
   if (typeof mcpAuthenticate !== 'function' || typeof mcpServerStatus !== 'function') {
     throw new Error('MCP authentication is not available in this Claude Code version.');
   }
@@ -2051,6 +2064,10 @@ export async function sdkMcpAuth(wsId: string, serverName: string): Promise<Agen
   const bound = {
     mcpAuthenticate: mcpAuthenticate.bind(q),
     mcpServerStatus: mcpServerStatus.bind(q),
+    // Optional: older SDKs may lack it. When present, the poll loop uses it to
+    // actively nudge a reconnect rather than only passively reading status —
+    // see the comment above MCP_STATUS_NUDGE_EVERY for why that matters.
+    reconnectMcpServer: typeof reconnectMcpServer === 'function' ? reconnectMcpServer.bind(q) : undefined,
   };
   try {
     try {
@@ -2090,6 +2107,7 @@ async function runMcpAuthFlow(
   q: {
     mcpAuthenticate: (serverName: string, redirectUri?: string) => Promise<unknown>;
     mcpServerStatus: () => Promise<RawMcpServerStatus[]>;
+    reconnectMcpServer?: (serverName: string) => Promise<void>;
   },
   serverName: string,
 ): Promise<AgentMcpServer[]> {
@@ -2153,8 +2171,20 @@ async function runMcpAuthFlow(
     servers = firstRead;
     haveReading = true;
   }
+  let lastNudge = Date.now();
   while ((!haveReading || stillNeedsAuth(servers)) && authError === null && Date.now() < deadline) {
     await Promise.race([authPromise, new Promise((r) => setTimeout(r, MCP_AUTH_POLL_MS))]);
+    // Actively nudge a reconnect every so often — see MCP_STATUS_NUDGE_EVERY_MS:
+    // the underlying connection can already be live while mcpServerStatus()
+    // keeps reporting needs-auth, and reconnectMcpServer() is what reconciles
+    // that (it's exactly what the popover's plain ↻ sends). Best-effort: a
+    // rejection here just means "not yet" — the status poll below still runs.
+    if (q.reconnectMcpServer && Date.now() - lastNudge >= MCP_STATUS_NUDGE_EVERY_MS) {
+      lastNudge = Date.now();
+      await q.reconnectMcpServer(serverName).catch((err) => {
+        slog.info(`mcp auth ${serverName}: reconnect nudge failed for ${session.wsId} — ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
     const next = await pollStatus();
     if (next !== null) {
       servers = next;
