@@ -1557,6 +1557,12 @@ export interface RenderMessage {
   };
   /** True once the block that produced this message has stopped. */
   done?: boolean;
+  /** Epoch ms this message was minted — the stamping event's `at`. History
+   *  backfill recovers the REAL time from the transcript envelope's
+   *  `timestamp`, so reopened workspaces show historical times, not load time.
+   *  Set once at mint and never updated (deltas accumulate text, not time);
+   *  drives the hover timestamp + the turn dividers in the structured view. */
+  at?: number;
 }
 
 /** The whole folded session state the renderer holds per workspace. Rebuilt by

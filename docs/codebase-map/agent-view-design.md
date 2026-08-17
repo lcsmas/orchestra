@@ -267,6 +267,15 @@ renders `null` (no empty stub). The transcript is **full-width**:
 cards/diffs AND agent prose all span the full lane (the `--av-measure` reading-column
 cap on `.av-message-text` was removed — the user wanted output to use the whole
 viewport width; `--av-measure` now only bounds the user bubble's fit-content max).
+**Time indication** (design exploration
+`docs/design-explorations/bubble-timestamps.html`, options A+D): `.av-message-ts`
+is a hover-revealed ghost timestamp on every stamped bubble (opacity 0 → 1 on
+`.av-message:hover`; left of the user bubble, top-right for assistant/error), and
+`.av-turn-divider` (> `.av-turn-divider-label`, day in `<b>`, `.av-turn-divider-gap`)
+is a centered hairline above each user turn carrying `HH:MM`, the day when it
+changes, and idle gaps ≥ 10 min — content computed by `shared/message-time.ts`,
+rendered by `ItemSlot` inside the user turn's row. `.av-turn-divider +
+.av-message-user` collapses the bubble's own top margin.
 Markdown
 (`markdown.tsx`): `.av-md`, `.av-md-{p,h,ul,ol,quote,hr,code-inline,link,strong,em}`.
 

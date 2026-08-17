@@ -293,3 +293,33 @@ test('a backfill is internally free of duplicate ids', () => {
   assert.ok(ids.length >= 4);
   assert.equal(new Set(ids).size, ids.length, `duplicate message id in ${JSON.stringify(ids)}`);
 });
+
+test('transcript: envelope timestamps override the clock so backfilled messages carry REAL times', () => {
+  const jsonl = lines([
+    {
+      type: 'user',
+      uuid: 'u1',
+      timestamp: '2026-08-16T14:32:00.000Z',
+      message: { role: 'user', content: 'first turn' },
+    },
+    {
+      type: 'assistant',
+      uuid: 'a1',
+      timestamp: '2026-08-16T14:32:30.000Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] },
+    },
+    // Timestamp-less line: inherits the PREVIOUS line's time, never the clock.
+    { type: 'user', uuid: 'u2', message: { role: 'user', content: 'second turn' } },
+  ]);
+
+  // Clock deliberately far from the envelope times — if any stamped event
+  // carries it, the override leaked.
+  const evs = transcriptToEvents(jsonl, { seq: 0, now: () => 9_999_999 });
+  const s = foldEvents(emptySession('ws1'), evs);
+
+  const [u1, a1, u2] = s.messages;
+  assert.equal(u1.at, Date.parse('2026-08-16T14:32:00.000Z'));
+  assert.equal(a1.at, Date.parse('2026-08-16T14:32:30.000Z'));
+  assert.equal(u2.at, Date.parse('2026-08-16T14:32:30.000Z')); // inherited
+  assert.ok(s.messages.every((m) => m.at !== 9_999_999));
+});

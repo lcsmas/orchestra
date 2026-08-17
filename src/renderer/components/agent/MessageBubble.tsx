@@ -6,6 +6,7 @@ import { ThinkingIndicator } from './ThinkingIndicator';
 import { useTypewriter } from './useTypewriter';
 import { RewindControl } from './RewindControl';
 import { useRewind } from './rewind-context';
+import { formatClock, formatFullStamp } from '../../../shared/message-time';
 
 interface Props {
   message: RenderMessage;
@@ -57,6 +58,16 @@ function MessageBubbleImpl({ message }: Props) {
 
   return (
     <div className={`av-message av-message-${role}`} data-role={role}>
+      {/* Hover-revealed ghost timestamp — invisible until the bubble is
+          hovered (same quiet-affordance treatment as the rewind row), so the
+          transcript stays chrome-free while per-message precision is one
+          hover away. Positioned by CSS: left of the user bubble, top-right of
+          assistant/error prose. */}
+      {message.at !== undefined ? (
+        <span className="av-message-ts" title={formatFullStamp(message.at)} aria-hidden="true">
+          {formatClock(message.at)}
+        </span>
+      ) : null}
       {/* Externally-originated turn (Remote Control from claude.ai/mobile, a
           peer delivery): badge WHERE it came from so a remotely-driven session
           reads coherently. */}
@@ -135,7 +146,10 @@ function areEqual(a: Props, b: Props): boolean {
     // gates whether the affordance renders at all, so it belongs in the compare.
     // (`busy` rides the CONTEXT, which re-renders consumers on its own — that is
     // exactly why it isn't a prop.)
-    x.rewindId === y.rewindId
+    x.rewindId === y.rewindId &&
+    // Minted once, immutable — compared anyway (costless) so the hover
+    // timestamp can never go stale if that ever changes.
+    x.at === y.at
   );
 }
 

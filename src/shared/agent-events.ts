@@ -1210,6 +1210,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
           id: event.toolUseId || id,
           role: 'tool',
           index: event.index,
+          at: event.at,
           toolUse: { toolUseId: event.toolUseId ?? '', name: event.name ?? '', inputJson: '' },
         });
       } else if (event.kind === 'thinking') {
@@ -1218,9 +1219,9 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         // slot, only the boolean flag. See normalizeStreamEvent's thinking note
         // for the scope of that finding (it describes `display:'omitted'`, not
         // every model/config) and what to test before building a text UI here.
-        messages.push({ id, role: 'assistant', index: event.index, thinking: true });
+        messages.push({ id, role: 'assistant', index: event.index, at: event.at, thinking: true });
       } else {
-        messages.push({ id, role: 'assistant', index: event.index, text: '' });
+        messages.push({ id, role: 'assistant', index: event.index, at: event.at, text: '' });
       }
       return { ...next, messages };
     }
@@ -1233,6 +1234,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
           id: blockMsgId(next.sessionId, event.index, event.seq),
           role: 'assistant',
           index: event.index,
+          at: event.at,
           thinking: true,
         });
       } else {
@@ -1250,6 +1252,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
           id: blockMsgId(next.sessionId, event.index, event.seq),
           role: 'assistant',
           index: event.index,
+          at: event.at,
           text: event.text,
         });
       } else {
@@ -1275,6 +1278,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
           id: blockMsgId(next.sessionId, event.index, event.seq),
           role: 'tool',
           index: event.index,
+          at: event.at,
           toolUse: { toolUseId: '', name: '', inputJson: event.partialJson },
         });
       } else {
@@ -1322,6 +1326,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         messages.push({
           id: event.toolUseId,
           role: 'tool',
+          at: event.at,
           toolUse: {
             toolUseId: event.toolUseId,
             name: event.name,
@@ -1363,6 +1368,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       messages.push({
         id: event.toolUseId,
         role: 'tool',
+        at: event.at,
         toolUse: { toolUseId: event.toolUseId, name: '', inputJson: '' },
         toolResult: { content: event.content, isError: event.isError },
         done: true,
@@ -1401,6 +1407,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       messages.push({
         id: `user:${event.seq}`,
         role: 'user',
+        at: event.at,
         text: event.text,
         ...(event.origin ? { origin: event.origin } : {}),
         ...(event.images && event.images.length > 0 ? { images: event.images } : {}),
@@ -1440,6 +1447,9 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         id,
         role: 'local-command',
         localCommand,
+        // The completion event replaces the row wholesale — keep the START
+        // time (the mint's `at`), not the completion's.
+        at: idx >= 0 ? messages[idx].at : event.at,
         done: !event.running,
       };
       if (idx >= 0) messages[idx] = row;
@@ -1471,6 +1481,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       messages.push({
         id: `error:${event.seq}`,
         role: 'error',
+        at: event.at,
         text: event.message,
         // Terminal by construction — without `done` the bubble would show a
         // live streaming cursor on a finished error.
@@ -1494,6 +1505,7 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       messages.push({
         id: `notice:${event.seq}`,
         role: 'system',
+        at: event.at,
         text: event.text,
         noticeKind: event.kind,
         ...(event.resetsAt !== undefined ? { noticeResetsAt: event.resetsAt } : {}),

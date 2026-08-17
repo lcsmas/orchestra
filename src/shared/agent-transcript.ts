@@ -68,6 +68,10 @@ interface TranscriptEnvelope {
    *  is camelCase (`uuid`, `parentUuid`, `sessionId`) where the live wire shape
    *  is snake_case (`session_id`) — two different serializations. */
   uuid?: string;
+  /** ISO-8601 wall-clock time the line was written — the REAL historical time
+   *  of the message. Recovered so backfilled bubbles/turn dividers show when
+   *  the conversation actually happened, not when the workspace was reopened. */
+  timestamp?: string;
   message?: { role?: string; content?: unknown };
 }
 
@@ -92,6 +96,18 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
   const out: AgentEvent[] = [];
   let blockIndex = HISTORY_INDEX_BASE;
 
+  // The current line's real wall-clock time (envelope `timestamp`), when
+  // parsable. `stamp()` assigns `at` from the clock (= backfill-load time here);
+  // this hook rewrites it to the historical instant so the structured view's
+  // time indications are honest on reopened workspaces. Carried between lines
+  // so blocks on a timestamp-less line inherit the previous line's time rather
+  // than jumping to "now".
+  let lineAt: number | undefined;
+  const st: typeof stamp = (c, body) => {
+    const e = stamp(c, body);
+    return lineAt !== undefined ? { ...e, at: lineAt } : e;
+  };
+
   /** Emit a user text as its PROPER event (see classifyUserText): slash-command
    *  invocations become the `/cmd args` the user typed, `<local-command-stdout>`
    *  acks a quiet command-output notice, interrupt markers an `interrupted`
@@ -100,17 +116,17 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
   const pushUserText = (text: string, extra: { rewindId?: string; images?: AgentImage[] }): boolean => {
     const c = classifyUserText(text);
     if (c.kind === 'interrupted') {
-      out.push(stamp(ctx, { type: 'notice', kind: 'interrupted', text: 'Interrupted by user' }));
+      out.push(st(ctx, { type: 'notice', kind: 'interrupted', text: 'Interrupted by user' }));
       if (!c.rest) return false;
-      out.push(stamp(ctx, { type: 'user-message', text: c.rest, ...extra }));
+      out.push(st(ctx, { type: 'user-message', text: c.rest, ...extra }));
       return true;
     }
     if (c.kind === 'command-output') {
-      if (c.text) out.push(stamp(ctx, { type: 'notice', kind: 'command-output', text: c.text }));
+      if (c.text) out.push(st(ctx, { type: 'notice', kind: 'command-output', text: c.text }));
       return false;
     }
     if (!c.text) return false;
-    out.push(stamp(ctx, { type: 'user-message', text: c.text, ...extra }));
+    out.push(st(ctx, { type: 'user-message', text: c.text, ...extra }));
     return true;
   };
 
@@ -126,6 +142,10 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
     if (!entry || typeof entry !== 'object') continue;
     // Task-subagent lines share the file; only the main chain is our transcript.
     if (entry.isSidechain === true) continue;
+    if (typeof entry.timestamp === 'string') {
+      const t = Date.parse(entry.timestamp);
+      if (!Number.isNaN(t)) lineAt = t;
+    }
 
     if (entry.type === 'user') {
       const content = entry.message?.content;
@@ -161,7 +181,7 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
         for (const b of blocks) {
           if (b?.type === 'tool_result' && typeof b.tool_use_id === 'string') {
             out.push(
-              stamp(ctx, {
+              st(ctx, {
                 type: 'tool-result',
                 toolUseId: b.tool_use_id,
                 content: normalizeResultContent(b.content),
@@ -181,7 +201,7 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
         // An image-only turn (no caption) still renders a bubble with the images.
         if (!imagesAttached && images.length > 0) {
           out.push(
-            stamp(ctx, {
+            st(ctx, {
               type: 'user-message',
               text: '',
               images,
@@ -199,19 +219,19 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
       for (const b of content as TranscriptBlock[]) {
         if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
           const index = blockIndex++;
-          out.push(stamp(ctx, { type: 'block-start', index, kind: 'text' }));
-          out.push(stamp(ctx, { type: 'text-delta', index, text: b.text }));
-          out.push(stamp(ctx, { type: 'block-stop', index }));
+          out.push(st(ctx, { type: 'block-start', index, kind: 'text' }));
+          out.push(st(ctx, { type: 'text-delta', index, text: b.text }));
+          out.push(st(ctx, { type: 'block-stop', index }));
         } else if (b?.type === 'tool_use' && typeof b.id === 'string') {
           const index = blockIndex++;
           // Carry the tool id/name like the live stream's content_block_start
           // does, so the fold mints the message with its final id up front
           // (stable React key — see agent-events.ts block-start).
           out.push(
-            stamp(ctx, { type: 'block-start', index, kind: 'tool_use', toolUseId: b.id, name: b.name ?? '' }),
+            st(ctx, { type: 'block-start', index, kind: 'tool_use', toolUseId: b.id, name: b.name ?? '' }),
           );
           out.push(
-            stamp(ctx, {
+            st(ctx, {
               type: 'tool-use',
               toolUseId: b.id,
               name: b.name ?? '',
@@ -231,7 +251,7 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
     // turn-end the fold would leave the session stuck `running` (the
     // user-message fold flips it on). One synthetic quiet turn-end settles it.
     out.push(
-      stamp(ctx, {
+      st(ctx, {
         type: 'turn-end',
         isError: false,
         stopReason: 'end_turn',

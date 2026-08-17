@@ -474,7 +474,18 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   scrollHeight now monotonic, 0px drop while pinned; resizes of already-measured
   rows still coalesce via `scheduleMeasureFlush`). Items route
   through `ItemSlot` → `ToolGroup` (tool runs) or `AgentMessage`
-  (`MessageBubble`, else a lone `ToolCard`). The list **opens scrolled to the last
+  (`MessageBubble`, else a lone `ToolCard`). **Bubble time indication**: every
+  message the fold mints carries `RenderMessage.at` (the stamping event's epoch
+  ms; history backfill recovers the REAL time from the transcript envelope's
+  `timestamp` in `agent-transcript.ts`, so reopened workspaces don't show load
+  time). `buildRenderItems` computes a **turn divider** per user turn
+  (`computeTurnDivider` in `src/shared/message-time.ts` + tests): wall-clock
+  time, day label when the calendar day changes (Today/Yesterday/date), and the
+  idle gap since the previous stamped message when ≥ 10 min. The divider rides
+  INSIDE the user turn's virtualized row (rendered by `ItemSlot`,
+  `.av-turn-divider`) so row heights stay a pure function of item content; each
+  bubble additionally has a hover-revealed ghost timestamp
+  (`.av-message-ts` in `MessageBubble`). The list **opens scrolled to the last
   message** (an `initialPin` ref force-scrolls to bottom across the async
   height-settle passes). **Follow-mode (stick-to-bottom during streaming)** is
   driven by a **`ResizeObserver` watching BOTH the translated row container AND

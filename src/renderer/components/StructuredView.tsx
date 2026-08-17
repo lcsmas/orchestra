@@ -40,6 +40,7 @@ import {
   type AgentSkillInfo,
   type RenderMessage,
 } from '../../shared/types';
+import { computeTurnDivider, type TurnDivider } from '../../shared/message-time';
 // Design mode: the browser pane's element picker drops picks in the store; the
 // composer drains them into its draft + attachments (see the Composer's
 // design-pick effect). appendPickToDraft is the pure formatter (shared/, tested).
@@ -821,7 +822,7 @@ function MeasuredRow({
 // so its measured height and expand state survive scrolling.
 
 type RenderItem =
-  | { kind: 'message'; id: string; message: RenderMessage }
+  | { kind: 'message'; id: string; message: RenderMessage; divider?: TurnDivider }
   | { kind: 'tool-group'; id: string; tools: RenderMessage[] };
 
 /** Tools that must NOT be folded into a collapsed group — they own a first-class,
@@ -834,6 +835,14 @@ function isStandaloneTool(m: RenderMessage): boolean {
 function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
   const items: RenderItem[] = [];
   let run: RenderMessage[] | null = null;
+  // TURN DIVIDER bookkeeping: each USER turn gets a divider above its bubble
+  // (time + day-on-change + idle gap ≥ 10 min). `prevAt` is the last stamped
+  // message of ANY role, so the gap measures real transcript silence, not just
+  // prompt-to-prompt distance. The divider rides INSIDE the user message's
+  // virtualized row (rendered by ItemSlot) so row heights stay a pure function
+  // of item content.
+  const nowMs = Date.now();
+  let prevAt: number | undefined;
   const flush = () => {
     if (run && run.length > 0) {
       items.push({ kind: 'tool-group', id: `tg:${run[0].id}`, tools: run });
@@ -847,8 +856,13 @@ function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
       // A standalone tool (TodoWrite) and any non-tool message both break the
       // current run and render as their own item.
       flush();
-      items.push({ kind: 'message', id: m.id, message: m });
+      const divider =
+        m.role === 'user' && m.at !== undefined
+          ? computeTurnDivider(m.at, prevAt, nowMs)
+          : undefined;
+      items.push({ kind: 'message', id: m.id, message: m, ...(divider ? { divider } : {}) });
     }
+    if (m.at !== undefined) prevAt = m.at;
   }
   flush();
   return items;
@@ -862,7 +876,20 @@ function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
 
 function ItemSlot({ item }: { item: RenderItem }) {
   if (item.kind === 'tool-group') return <ToolGroup tools={item.tools} />;
-  return <AgentMessage message={item.message} />;
+  return (
+    <>
+      {item.divider ? (
+        <div className="av-turn-divider" title={item.divider.title} aria-hidden="true">
+          <span className="av-turn-divider-label">
+            {item.divider.day ? <b>{item.divider.day} · </b> : null}
+            {item.divider.time}
+            {item.divider.gap ? <span className="av-turn-divider-gap"> · {item.divider.gap}</span> : null}
+          </span>
+        </div>
+      ) : null}
+      <AgentMessage message={item.message} />
+    </>
+  );
 }
 
 // ── Permission slot (A4) ─────────────────────────────────────────────────────
