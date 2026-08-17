@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, rm, appendFile, readdir, stat, open, rename, copyFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, appendFile, readdir, stat, open, rename, copyFile, cp } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -33,6 +33,7 @@ import {
 } from './pty';
 import { expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
+import { workspaceDisplayName } from '../shared/workspace-name.ts';
 import { submitPlan } from '../shared/task-submit';
 import { parseLinearTicketRef, parsePrUrl, prLinkKey } from '../shared/linear';
 import type { PrLink } from '../shared/linear';
@@ -454,10 +455,34 @@ export async function createWorkspace(input: CreateWorkspaceInput): Promise<Work
  * the children nest under it in the sidebar. Kept short on purpose: the
  * spawn/peers/message command reference is already injected by the
  * session-start hooks. */
-export const ORCHESTRATOR_BRIEF =
+const ORCHESTRATOR_BRIEF_HEAD =
   "You are an orchestrator. Your job is to coordinate work across other agents rather than edit code yourself. " +
-  "Break the user's goal into independent pieces and delegate each to a fresh worktree+agent using the /spawn socket command shown above. " +
-  'You have no repo of your own, so every /spawn MUST include an explicit "repoPath" naming a repo orchestra already knows about (and optionally a "baseBranch"). ' +
+  "Break the user's goal into independent pieces and delegate each to a fresh worktree+agent using the /spawn socket command shown above. ";
+
+/** The repo paragraph, which differs by sub-state: a repo-less coordinator must
+ * name a repo on every spawn, while one that has adopted a repo inherits it and
+ * can read its own checkout (docs, scripts, project skills). */
+function orchestratorRepoParagraph(
+  ws: Pick<Workspace, 'repoPath' | 'branch' | 'baseBranch'>,
+): string {
+  if (!ws.repoPath) {
+    return 'You have no repo of your own, so every /spawn MUST include an explicit "repoPath" naming a repo orchestra already knows about (and optionally a "baseBranch"). ';
+  }
+  const repoName = path.basename(ws.repoPath);
+  return (
+    `You own a checkout of the ${repoName} repo, on branch ${ws.branch}${ws.baseBranch ? ` (cut from ${ws.baseBranch})` : ''} — it is your working directory. ` +
+    'READ it freely — its docs, notes, scripts and its git-tracked .claude/skills project skills are yours to use for planning and for briefing children, and they update with `git pull`. ' +
+    'A bare /spawn INHERITS this repo, so you only pass an explicit "repoPath" when a child works in a DIFFERENT repo. ' +
+    'Your checkout is for coordinating — reading, planning, and integration work that belongs to THIS branch. Delegate implementation to children rather than doing it here. '
+  );
+}
+
+export function orchestratorBrief(
+  ws: Pick<Workspace, 'repoPath' | 'branch' | 'baseBranch'>,
+): string {
+  return (
+  ORCHESTRATOR_BRIEF_HEAD +
+  orchestratorRepoParagraph(ws) +
   'Because THIS session is an orchestrator, spawn children WITHOUT `--detached` so they nest under you in the sidebar — `--detached` is only for spawning from a plain (non-orchestrator) scratch session and would pop the child out top-level. If a child was spawned detached by mistake, repair it with `orchestra attach <child-id> ' +
   "<this-session's-id>`. " +
   'Track the agents you spawn with /peers, read their progress with /read, and follow up with /message. ' +
@@ -466,7 +491,9 @@ export const ORCHESTRATOR_BRIEF =
   'For a milestone-sized piece that itself needs several agents, you may create a SUB-orchestrator: spawn it, then run `orchestra promote <child-id>` — its branch becomes that milestone\'s integration branch and the agents IT spawns nest beneath it. Keep the tree shallow: at most one sub-orchestrator level. ' +
   'Spawn every child on Opus 5: pass `--model opus` (spawn\'s "model" param) unless the user asks for a cheaper tier. Do NOT downgrade implementation workers to save tokens — that trade is the user\'s call to make, not yours. Maintain a swarm FIELD GUIDE (see the orchestra-spawn skill) — a line-budgeted notes file injected into every child at session start — so conventions and pitfalls reach all siblings without per-child messages. ' +
   'Close the loop before reporting anything as done: a child\'s "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child must end in one of two EXPLICIT states: LANDED — run `orchestra verify-landed <child-id> --into <branch-it-merged-into>` and require 0 unmerged commits — or INTENTIONALLY UNMERGED, for work whose brief said not to merge (a spike, an experiment, evidence-gathering); state that disposition when you close it. The only forbidden outcome is the silent third state: a child believed merged that isn\'t. ' +
-  'Start by asking the user what they want orchestrated and which repo(s) the work belongs in.';
+  'Start by asking the user what they want orchestrated and which repo(s) the work belongs in.'
+  );
+}
 
 /** Create a non-git session under `~/.orchestra/scratch`. `kind` selects the
  * flavour: `'scratch'` is a blank throwaway; `'orchestrator'` is the same shell
@@ -916,7 +943,7 @@ export async function renameWorkspaceBranch(
     const updated: Workspace = {
       ...ws,
       branch: newBranch,
-      name: `scratch · ${newBranch}`,
+      name: workspaceDisplayName(ws, newBranch),
       ...gateFields,
     };
     await store.upsertWorkspace(updated);
@@ -938,13 +965,12 @@ export async function renameWorkspaceBranch(
     }
     return ws;
   }
-  const repoName = path.basename(ws.repoPath);
   await renameWorktreeBranch(ws.worktreePath, liveBranch, newBranch);
 
   const updated: Workspace = {
     ...ws,
     branch: newBranch,
-    name: `${repoName} · ${newBranch}`,
+    name: workspaceDisplayName(ws, newBranch),
     ...gateFields,
   };
   await store.upsertWorkspace(updated);
@@ -1486,23 +1512,25 @@ export async function dispatchSpawnRequest(
     // worktree at an arbitrary filesystem path.
     if (!store.repos.some((r) => r.path === repoPath)) return { ok: false, error: 'unknown repoPath' };
   } else if (input.from) {
-    // Inherit the caller's repo — but a scratch/orchestrator caller has none
-    // (repoPath is ''), so it must always name the target repo explicitly.
+    // Inherit the caller's repo. A scratch session and a repo-LESS orchestrator
+    // own none (repoPath is ''), so they must name the target repo explicitly;
+    // an orchestrator that has ADOPTED one inherits it exactly like a promoted
+    // worktree does, which is correct — it genuinely owns that checkout.
     //
-    // DELIBERATELY reads `repoPath` and NOT `repoAssociation`: an orchestrator's
-    // association is a sidebar-grouping preference, not ownership of a repo.
-    // Inheriting it would silently land a bare `orchestra spawn` in whichever
-    // repo the coordinator happens to be FILED UNDER, turning a display choice
-    // into a decision about where code gets written — and it would do so
-    // invisibly, since the caller passed no `--repo`. Keeping the explicit
-    // requirement also keeps the error below honest. Do not "fix" this omission.
+    // DELIBERATELY reads `repoPath` and NOT `repoAssociation`: an association is
+    // a sidebar-grouping preference, not ownership. Inheriting THAT would
+    // silently land a bare `orchestra spawn` in whichever repo the coordinator
+    // happens to be FILED UNDER, turning a display choice into a decision about
+    // where code gets written — and invisibly, since the caller passed no
+    // `--repo`. That omission is deliberate; do not "fix" it. Real ownership is
+    // a different fact and is inherited on purpose.
     repoPath = store.getWorkspace(input.from)?.repoPath || undefined;
   }
   if (!repoPath)
     return {
       ok: false,
       error:
-        'no repo: pass an explicit repoPath (an orchestrator/scratch session has no repo of its own to inherit — a repo ASSOCIATION only groups it in the sidebar and is deliberately not inherited)',
+        'no repo: pass an explicit repoPath (this session owns no checkout to inherit — a repo ASSOCIATION only groups it in the sidebar and is deliberately not inherited; `orchestra adopt-repo` gives a coordinator a real checkout)',
     };
   try {
     // `detached` skips only the parent nesting — `from` above still drives
@@ -1727,7 +1755,11 @@ export async function dispatchDemoteRequest(input: { id?: string }): Promise<Dem
   if (!id) return { ok: false, error: 'missing id' };
   const ws = store.getWorkspace(id);
   if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
-  if (ws.kind === 'orchestrator') {
+  // A REPO-LESS orchestrator still cannot be demoted: demoting means "become a
+  // plain workspace", and there is no repo to become a worktree of. That reason
+  // evaporates once it has adopted one — then demotion is exactly the inverse of
+  // promotion, so route it to the kind swap below rather than refusing.
+  if (ws.kind === 'orchestrator' && !ws.repoPath) {
     return {
       ok: false,
       error:
@@ -1735,7 +1767,8 @@ export async function dispatchDemoteRequest(input: { id?: string }): Promise<Dem
     };
   }
   // Not an orchestrator at all — idempotent success, mirroring promote.
-  if (!ws.canOrchestrate) return { ok: true, id, branch: ws.branch, kind: ws.kind, detachedChildren: [] };
+  if (ws.kind !== 'orchestrator' && !ws.canOrchestrate)
+    return { ok: true, id, branch: ws.branch, kind: ws.kind, detachedChildren: [] };
   try {
     const children = store.workspaces.filter((w) => w.parentId === id);
     for (const child of children) {
@@ -1743,7 +1776,18 @@ export async function dispatchDemoteRequest(input: { id?: string }): Promise<Dem
       await store.upsertWorkspace(detached);
       platform.broadcast('workspace:update', detached);
     }
-    const updated: Workspace = { ...ws, canOrchestrate: undefined };
+    // Two routes, inverse to promote's. A repo-OWNING orchestrator sheds the
+    // KIND (it already owns a real checkout, so `'worktree'` is accurate and
+    // every git path keeps working); a promoted worktree sheds the CAPABILITY.
+    // The repo-less kind never reaches here — refused above.
+    const demoted: Workspace =
+      ws.kind === 'orchestrator'
+        ? { ...ws, kind: 'worktree', canOrchestrate: undefined }
+        : { ...ws, canOrchestrate: undefined };
+    const updated: Workspace = {
+      ...demoted,
+      name: workspaceDisplayName(demoted, demoted.branch),
+    };
     await store.upsertWorkspace(updated);
     // Drop the sentinel so the standing delegation reminder and the PreToolUse
     // guard stop firing on the next prompt — same no-pty-restart path as promote.
@@ -1858,6 +1902,172 @@ export interface SetRepoAssociationResult {
   error?: string;
 }
 
+export interface AdoptRepoResult {
+  ok: boolean;
+  id?: string;
+  branch?: string;
+  repoPath?: string;
+  worktreePath?: string;
+  /** The now-unused scratch directory, left on disk for the user to inspect. */
+  previousDir?: string;
+  error?: string;
+}
+
+/** Socket entry point for `/adoptRepo`. Gives a REPO-LESS orchestrator a real
+ * git checkout, so its agent can read the repo's files — docs, notes, scripts,
+ * and its git-tracked `.claude/skills` project skills (which are discovered from
+ * the agent's cwd and nowhere else, so nothing short of a checkout reaches
+ * them). The workspace keeps `kind: 'orchestrator'` and its whole coordinator
+ * identity; what changes is that it stops being scratch-like, so every
+ * git/diff/merge/rename/delete path now treats it as the worktree it owns.
+ *
+ * ORDERING IS THE SAFETY ARGUMENT and the steps are not interchangeable: the
+ * worktree is created on disk BEFORE `repoPath` is written to the store. A
+ * record carrying a non-empty `repoPath` whose `worktreePath` git does not track
+ * is exactly what `pruneOrphanedWorkspaces` hard-deletes on the next launch, so
+ * that combination must never be observable — not even briefly. Everything
+ * before the single store write is therefore reversible by doing nothing, and a
+ * failure leaves the coordinator exactly as it was.
+ *
+ * The new checkout lives under ORCHESTRA_ROOT, not SCRATCH_ROOT: `teardown`
+ * confines its `rm -rf` to the scratch root, `pruneOrphanedWorkspaces` and the
+ * size accounting only scan the worktree root, and a real checkout in the
+ * directory whose only teardown rule is "recursive delete" is one predicate
+ * regression away from losing uncommitted work.
+ *
+ * The agent's transcript directory is keyed by the mangled worktree path, so the
+ * conversation would be orphaned by the move — it is carried across explicitly,
+ * along with `.claude/` and `.orchestra/`, so an adopting session keeps its
+ * history. PTYs are stopped first because their cwd is about to stop existing.
+ * Idempotent. Never throws; answers `{ ok }`. */
+export async function dispatchAdoptRepoRequest(input: {
+  id?: string;
+  repoPath?: string;
+  baseBranch?: string;
+}): Promise<AdoptRepoResult> {
+  const id = input.id?.trim();
+  if (!id) return { ok: false, error: 'missing id' };
+  const ws = store.getWorkspace(id);
+  if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
+  if (ws.kind !== 'orchestrator') {
+    return {
+      ok: false,
+      error:
+        'only an orchestrator session can adopt a repo (a git worktree already owns one; a scratch session has no coordinator role to keep)',
+    };
+  }
+  const repoPath = input.repoPath?.trim();
+  if (!repoPath) return { ok: false, error: 'missing repoPath' };
+
+  // Idempotent: already adopted this repo and the checkout is still there.
+  if (ws.repoPath === repoPath && existsSync(ws.worktreePath)) {
+    return {
+      ok: true,
+      id,
+      branch: ws.branch,
+      repoPath: ws.repoPath,
+      worktreePath: ws.worktreePath,
+    };
+  }
+  if (ws.repoPath) {
+    return {
+      ok: false,
+      error: `already owns a checkout of ${ws.repoPath} — adopting a second repo is not supported`,
+    };
+  }
+  // Must name a repo Orchestra knows, mirroring /spawn's trust check.
+  const repo = store.repos.find((r) => r.path === repoPath);
+  if (!repo) {
+    return { ok: false, error: `unknown repo: ${repoPath} (register it with /addRepo first)` };
+  }
+
+  try {
+    const baseBranch = input.baseBranch?.trim() || repo.defaultBranch || 'main';
+    // The current `branch` is a display LABEL with no git object behind it, so a
+    // real branch has to be minted. Keep the label as its name where free, so
+    // the sidebar row stays recognisable across the migration.
+    const branch = await freeBranchName(repoPath, sanitizeBranchName(ws.branch), '');
+    const repoName = path.basename(repoPath);
+    const newWorktreePath = path.join(
+      ORCHESTRA_ROOT,
+      `orchestrator-${repoName}-${sanitizeBranchName(branch)}-${id.slice(0, 8)}`,
+    );
+
+    // The agent's cwd is about to stop existing — stop it before moving.
+    stopPty(id);
+    stopPty(`${id}:run`);
+    stopPty(`${id}:nvim`);
+
+    await createWorktree(repoPath, branch, baseBranch, newWorktreePath);
+
+    // Carry the session across. The transcript dir is keyed by the MANGLED
+    // worktree path (see agent-sdk `transcriptDir`), so without this the
+    // conversation history is orphaned by the move.
+    const oldDir = ws.worktreePath;
+    for (const sub of ['.claude', '.orchestra']) {
+      const from = path.join(oldDir, sub);
+      if (existsSync(from)) {
+        await cp(from, path.join(newWorktreePath, sub), { recursive: true, force: true });
+      }
+    }
+    await carryTranscriptDir(ws, oldDir, newWorktreePath);
+
+    await installOrchestraHooks(newWorktreePath);
+    // `dual` sentinel: it coordinates AND owns a branch, which is exactly what
+    // the dual-role SessionStart reminder already describes.
+    await markOrchestratorWorktree(newWorktreePath, true);
+
+    // Single store write, worktree already on disk (see the ordering note).
+    const updated: Workspace = {
+      ...ws,
+      repoPath,
+      baseBranch,
+      branch,
+      worktreePath: newWorktreePath,
+      name: workspaceDisplayName({ ...ws, repoPath }, branch),
+      // A display-only association is now superseded by real ownership.
+      repoAssociation: undefined,
+    };
+    await store.upsertWorkspace(updated);
+    platform.broadcast('workspace:update', updated);
+    log.info(
+      `orchestrator ${id} adopted ${repoPath} on branch ${branch} at ${newWorktreePath} (was ${oldDir})`,
+    );
+    return {
+      ok: true,
+      id,
+      branch,
+      repoPath,
+      worktreePath: newWorktreePath,
+      previousDir: oldDir,
+    };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'adopt failed' };
+  }
+}
+
+/** Copy the workspace's Claude Code transcript directory to the one its NEW
+ * worktree path will resolve to, so `--continue` and the SDK history backfill
+ * both still find the conversation after an adopt moves the directory. Both
+ * drivers key that directory on `mangleProjectDir(worktreePath)` under the
+ * workspace's pinned account config dir. Best-effort: a missing transcript just
+ * means the session had no history yet, which is not a failure. */
+async function carryTranscriptDir(
+  ws: Workspace,
+  oldWorktreePath: string,
+  newWorktreePath: string,
+): Promise<void> {
+  try {
+    const base = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
+    const from = path.join(base, 'projects', mangleProjectDir(oldWorktreePath));
+    const to = path.join(base, 'projects', mangleProjectDir(newWorktreePath));
+    if (!existsSync(from) || existsSync(to)) return;
+    await cp(from, to, { recursive: true, force: true });
+  } catch (e) {
+    log.warn(`adopt: could not carry transcript dir for ${ws.id}`, e);
+  }
+}
+
 /** Socket entry point for `/setRepoAssociation`. Files a repo-less orchestrator
  * under a repo's sidebar section (carrying the subtree it parents with it)
  * instead of the pinned "Orchestrators" section. Passing no path clears it.
@@ -1912,6 +2122,14 @@ export async function dispatchSetRepoAssociationRequest(input: {
       ok: false,
       error:
         'only an orchestrator session can be associated with a repo (a git worktree already groups under its own repo)',
+    };
+  }
+  // Same reason, now reachable within the kind: an orchestrator that has ADOPTED
+  // a repo already groups under it, and a second key could only disagree.
+  if (ws.repoPath) {
+    return {
+      ok: false,
+      error: `this orchestrator already owns a checkout of ${ws.repoPath} and groups under it`,
     };
   }
   // Must name a repo Orchestra actually knows, mirroring /spawn's trust check —
@@ -3151,7 +3369,7 @@ already-promoted workspace succeeds too.
 
 Once promoted, adopt the orchestrator role for the rest of this session:
 
-${ORCHESTRATOR_BRIEF}
+${orchestratorBrief({ repoPath: '', branch: '', baseBranch: '' })}
 
 If this session is a promoted GIT WORKTREE, two lines above bend: you DO have a
 repo (spawns inherit it, so "repoPath" is only needed to target a different
@@ -3961,7 +4179,7 @@ export async function startAgentPty(ws: Workspace, cols: number, rows: number): 
   // orchestrator-instruction hook, re-fired on every prompt — this one-time
   // brief is just the richer onboarding.
   if (!resuming && ws.kind === 'orchestrator') {
-    claudeArgs.push('--append-system-prompt', ORCHESTRATOR_BRIEF);
+    claudeArgs.push('--append-system-prompt', orchestratorBrief(ws));
   }
   // Hook installation writes into the worktree's .claude/. For a local
   // workspace that's this machine's worktree; for a sandbox workspace the

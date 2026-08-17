@@ -17,6 +17,7 @@ import {
   dispatchPromoteRequest,
   dispatchAttachRequest,
   dispatchSetRepoAssociationRequest,
+  dispatchAdoptRepoRequest,
   dispatchVerifyLandedRequest,
   dispatchWhoamiRequest,
   dispatchMigrateAccountRequest,
@@ -283,6 +284,19 @@ export async function startHooksServer(): Promise<void> {
                   // Absent → clear, mirroring how /attach reads a missing
                   // parentId as a detach.
                   repoPath: typeof msg.repoPath === 'string' ? msg.repoPath : null,
+                }),
+              );
+            } else {
+              send(200, { ok: false, error: 'missing id' });
+            }
+          } else if (route === '/adoptRepo') {
+            if (typeof msg.id === 'string') {
+              send(
+                200,
+                await dispatchAdoptRepoRequest({
+                  id: msg.id,
+                  repoPath: typeof msg.repoPath === 'string' ? msg.repoPath : undefined,
+                  baseBranch: typeof msg.baseBranch === 'string' ? msg.baseBranch : undefined,
                 }),
               );
             } else {

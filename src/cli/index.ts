@@ -636,6 +636,30 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
 
+    case 'adopt-repo': {
+      // Gives a repo-LESS orchestrator a real checkout, so its agent can read
+      // the repo's docs/scripts and its git-tracked project skills. Unlike
+      // set-repo (a display-only grouping preference) this creates a worktree.
+      const { value: base, rest } = takeFlag(args, '--base');
+      const id = rest[0];
+      const repoPath = rest[1];
+      if (!id || !repoPath) fail('usage: orchestra adopt-repo <id> <repoPath> [--base <branch>]');
+      const res = await request('/adoptRepo', {
+        id,
+        repoPath,
+        ...(base ? { baseBranch: base } : {}),
+      });
+      if (!res.ok) fail(res.error ?? 'failed to adopt repo');
+      process.stdout.write(
+        `Adopted ${res.repoPath as string} on branch ${res.branch as string}\n` +
+          `  checkout: ${res.worktreePath as string}\n` +
+          (res.previousDir
+            ? `  previous scratch dir left in place: ${res.previousDir as string}\n`
+            : ''),
+      );
+      return;
+    }
+
     case 'verify-landed': {
       // The coordinator close-out check: a child's "done"/"merged" report is a
       // claim, not a state (agents keep committing after they report), so this

@@ -110,3 +110,57 @@ test('partitionOrchestratorRoots: empty input yields two empty lists', () => {
   assert.deepEqual(pinned, []);
   assert.deepEqual(inRepoSections, []);
 });
+
+// ─── repo-OWNING orchestrators (adopted a real checkout) ─────────────────────
+
+/** A coordinator that has adopted a repo: kind stays 'orchestrator' (it keeps
+ * the coordinator identity) but it owns a REAL checkout, so `repoPath` is set. */
+const orchWithRepo = (id: string, repoPath: string, repoAssociation?: string) => ({
+  id,
+  kind: 'orchestrator' as const,
+  repoPath,
+  repoAssociation,
+});
+
+test('repoSectionKeyOf: a repo-OWNING orchestrator files under its real repo', () => {
+  assert.equal(repoSectionKeyOf(orchWithRepo('a', '/home/u/dev/metarepo')), '/home/u/dev/metarepo');
+});
+
+// Precedence: real ownership beats the display-only preference. A stale
+// association naming another repo must not override where the checkout is.
+test('repoSectionKeyOf: repoPath WINS over a conflicting repoAssociation', () => {
+  assert.equal(
+    repoSectionKeyOf(orchWithRepo('a', '/home/u/dev/metarepo', '/home/u/dev/other')),
+    '/home/u/dev/metarepo',
+  );
+});
+
+test('isRepoAssociatedOrchestrator: true for a repo-owning orchestrator with no association', () => {
+  // Must be true, or partitionOrchestratorRoots leaves it in the PINNED list
+  // while Sidebar's repo filter also picks it up → the row renders twice.
+  assert.equal(isRepoAssociatedOrchestrator(orchWithRepo('a', '/home/u/dev/metarepo')), true);
+});
+
+test('partitionOrchestratorRoots: a repo-owning orchestrator leaves the pinned list', () => {
+  const rows = [orch('pinned'), orchWithRepo('adopted', '/home/u/dev/metarepo')];
+  const { pinned, inRepoSections } = partitionOrchestratorRoots(rows);
+  assert.deepEqual(pinned.map((w) => w.id), ['pinned']);
+  assert.deepEqual(inRepoSections.map((w) => w.id), ['adopted']);
+});
+
+// THE INVARIANT THAT CATCHES A DOUBLE-RENDER. Every root must land in exactly
+// one of the two lists: disjoint, and together covering the input.
+test('partitionOrchestratorRoots: the two lists are complementary and disjoint', () => {
+  const rows = [
+    orch('pinned-a'),
+    orch('assoc-b', '/home/u/dev/metarepo'),
+    orchWithRepo('adopted-c', '/home/u/dev/orchestra'),
+    orchWithRepo('both-d', '/home/u/dev/orchestra', '/home/u/dev/other'),
+  ];
+  const { pinned, inRepoSections } = partitionOrchestratorRoots(rows);
+  assert.equal(pinned.length + inRepoSections.length, rows.length);
+  const ids = [...pinned, ...inRepoSections].map((w) => w.id).sort();
+  assert.deepEqual(ids, ['adopted-c', 'assoc-b', 'both-d', 'pinned-a']);
+  const overlap = pinned.filter((p) => inRepoSections.some((r) => r.id === p.id));
+  assert.deepEqual(overlap, []);
+});

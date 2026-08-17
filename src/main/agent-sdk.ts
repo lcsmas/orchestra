@@ -29,7 +29,7 @@ import {
   workspaceAccountConfigDir,
   mangleProjectDir,
   autoRenameActive,
-  ORCHESTRATOR_BRIEF,
+  orchestratorBrief,
 } from './workspaces';
 import { transcriptToEvents, HISTORY_SEQ_BASE } from '../shared/agent-transcript';
 import { syncAccountInheritance } from './account-inherit';
@@ -1023,7 +1023,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
             systemPrompt: {
               type: 'preset' as const,
               preset: 'claude_code' as const,
-              append: ORCHESTRATOR_BRIEF,
+              append: orchestratorBrief(ws),
             },
           }
         : {}),

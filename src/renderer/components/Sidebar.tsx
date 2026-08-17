@@ -1399,8 +1399,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     // each still renders exactly once). The orchestrator keeps its own row
     // chrome; its children arrive through flattenSubtree and nest beneath it
     // exactly as they do in the pinned section.
+    // `kind === 'orchestrator'` is excluded here and routed EXCLUSIVELY through
+    // `associatedOrchestratorRoots` (which covers both an adopted `repoPath` and
+    // a display-only `repoAssociation`). Without that exclusion a repo-owning
+    // coordinator satisfies BOTH lists — `!isScratchLike` is now true for it —
+    // and the row renders twice. Keeping all orchestrator routing on one side of
+    // the split is what makes the two lists provably complementary.
     const repoRoots = [
-      ...forest.roots.filter((w) => !isScratchLike(w)),
+      ...forest.roots.filter((w) => !isScratchLike(w) && w.kind !== 'orchestrator'),
       ...associatedOrchestratorRoots,
     ];
     const activeGroups = groupRootsByRepo(repoRoots, forest);

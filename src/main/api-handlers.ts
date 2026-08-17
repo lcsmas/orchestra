@@ -980,7 +980,7 @@ export const apiHandlers: ApiHandlerTable = {
   getDiff: async (id) => {
     const ws = store.getWorkspace(id);
     if (!ws) throw new Error('workspace not found');
-    if (ws.kind === 'scratch') return []; // non-git dir — no diff against a base
+    if (isScratchLike(ws)) return []; // non-git dir — no diff against a base
     return getDiff(ws.worktreePath, ws.baseBranch);
   },
 
@@ -989,7 +989,7 @@ export const apiHandlers: ApiHandlerTable = {
     if (!ws) throw new Error('workspace not found');
     // Scratch sessions aren't git-backed: no diff stats, and none of the
     // merge / branch reconciliation below applies.
-    if (ws.kind === 'scratch') return { additions: 0, deletions: 0, files: 0 };
+    if (isScratchLike(ws)) return { additions: 0, deletions: 0, files: 0 };
     // Piggyback merge/unpushed state refresh on the renderer's 8s stats poll.
     void detectAndUpdateMergeState(id).catch(() => {});
     // Same cadence: catch branches renamed outside orchestra so the stored
@@ -1034,7 +1034,7 @@ export const apiHandlers: ApiHandlerTable = {
     if (!ws) throw new Error('workspace not found');
     // Non-git sessions have no branch to run CI on. Mirrors findPR's guard,
     // extended to orchestrator (also repo-less).
-    if (ws.kind === 'scratch' || ws.kind === 'orchestrator' || !ws.repoPath) {
+    if (isScratchLike(ws) || !ws.repoPath) {
       return { state: 'none' as const };
     }
     return findBranchChecks(ws.repoPath, ws.branch);

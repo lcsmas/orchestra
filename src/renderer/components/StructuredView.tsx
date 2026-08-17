@@ -33,7 +33,13 @@ import { WorkspaceAccountBadge } from './AccountBadge';
 import { CmComposer, type CmComposerHandle } from './agent/CmComposer';
 import { McpPopover, McpIndicator } from './agent/McpPopover';
 import { readComposerVim, writeComposerVim, vimChipLabel, type VimMode } from '../composer-vim-pref';
-import type { AgentImage, AgentSession, AgentSkillInfo, RenderMessage } from '../../shared/types';
+import {
+  isScratchLike,
+  type AgentImage,
+  type AgentSession,
+  type AgentSkillInfo,
+  type RenderMessage,
+} from '../../shared/types';
 // Design mode: the browser pane's element picker drops picks in the store; the
 // composer drains them into its draft + attachments (see the Composer's
 // design-pick effect). appendPickToDraft is the pure formatter (shared/, tested).
@@ -957,7 +963,7 @@ function ContextStrip({
   // Scratch/orchestrator workspaces have no repo: `branch` is a display label
   // and worktreePath is empty (see types.ts Workspace.kind), so show neither
   // rather than render an empty chip.
-  const isGit = ws.kind !== 'scratch' && !!ws.worktreePath;
+  const isGit = !isScratchLike(ws) && !!ws.worktreePath;
   const folder = ws.worktreePath ? ws.worktreePath.split('/').filter(Boolean).pop() : '';
   return (
     <div className="av-strip">

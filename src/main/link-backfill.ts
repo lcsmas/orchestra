@@ -5,7 +5,7 @@ import { parseLinearIssueCandidate, parsePrUrl } from '../shared/linear';
 import type { PrLink } from '../shared/linear';
 import { verifyLinearIssueByKey } from './linear';
 import { scoped } from './logger';
-import type { Workspace } from '../shared/types';
+import { isScratchLike, type Workspace } from '../shared/types';
 
 const blog = scoped('link-backfill');
 
@@ -54,7 +54,7 @@ export async function backfillWorkspaceLinks(): Promise<void> {
   if (store.linkBackfillVersion >= LINK_BACKFILL_VERSION) return;
 
   const targets = store.workspaces.filter(
-    (w) => !w.archived && w.kind !== 'scratch' && (!w.linkedPrs?.length || !w.linkedLinearKey),
+    (w) => !w.archived && !isScratchLike(w) && (!w.linkedPrs?.length || !w.linkedLinearKey),
   );
   if (targets.length === 0) {
     await store.markLinkBackfillVersion(LINK_BACKFILL_VERSION);
