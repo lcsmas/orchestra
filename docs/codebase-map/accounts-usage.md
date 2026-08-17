@@ -65,10 +65,29 @@ reads them transiently to query usage.
 - **Per-account OAuth browser** (`src/main/login-browser.ts`): the browser half
   of `/login` must NOT land in the system browser — its one claude.ai cookie
   jar is already the user's main account, so a secondary account's login would
-  silently authorize the wrong account. Each account instead gets a
-  `BrowserWindow` on its own persistent session partition
-  (`persist:claude-login-<id>`), UA stripped of Electron/Orchestra tokens so
-  Google's embedded-webview OAuth block doesn't trip. URLs reach it two ways,
+  silently authorize the wrong account. Each account instead gets its own
+  **isolated Chromium profile**: `openLoginChromium` spawns a real
+  Chromium-family browser (`CHROMIUM_CANDIDATES`, resolved by an explicit
+  PATH probe in `findChromium` — on Fedora `chromium` is a shell alias with no
+  executable, so a bare spawn ENOENTs) against
+  `<orchestraHome>/login-profiles/login-<accountId>`. `--user-data-dir` is the
+  load-bearing flag: `--profile-directory` would attach to the user's RUNNING
+  browser and inherit the main account's session. Pure helpers live in
+  `src/shared/login-chromium.ts` (`isLaunchableUrl` refuses a leading `-`, so a
+  crafted URL can't smuggle Chromium switches into argv).
+  *Why a real browser:* Electron cannot run a Manifest V3 extension's service
+  worker (measured on Electron 33 vs 1Password 8.12 — `chrome.action` /
+  `offscreen` / `privacy` / `windows` are all missing, the worker throws at
+  startup and never registers), so password managers are inert inside a
+  `BrowserWindow`. Isolation was only ever a cookie-jar requirement, and a
+  dedicated user-data-dir satisfies it while keeping the user's real extensions.
+  The `BrowserWindow` on a persistent session partition
+  (`persist:claude-login-<id>`, UA stripped of Electron/Orchestra tokens so
+  Google's embedded-webview OAuth block doesn't trip) remains the **fallback**
+  when no Chromium is installed. `closeLoginBrowser` tears down both: it
+  signals the browser's process GROUP (`-pid`, since the child is `detached`) —
+  signalling the bare pid leaves the renderer/zygote children on screen.
+  URLs reach it two ways,
   both via `dispatchLoginUrlRequest` (host-anchored `isClaudeAuthUrl` in
   `accounts.ts` gates which URLs get the partition; others → `openExternal`):
   (1) claude's auto-open, intercepted by the `xdg-open`/`open` PATH shim
