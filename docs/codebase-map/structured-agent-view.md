@@ -258,7 +258,19 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   `system/api_retry` ("API 529 — retrying in 8s (3/10)") and
   `status:'compacting'`; folded into `session.statusNotice`, shown in the
   running TurnFooter, cleared when output resumes / at turn end.
-  **`AgentThinkingTokensEvent`** (`system/thinking_tokens`) drives a live
+  **`AgentMemorySizeEvent`** (`session/memory-size`) carries the CLAUDE.md
+  memory files whose resolved size (imports inlined) exceeds the model's
+  per-file char limit; folded into `session.oversizedMemory` (pinned session
+  state, never a transcript row) and rendered as the persistent
+  `MemorySizeBanner` strip above the message list. This one is NOT an SDK
+  message: the Claude Code CLI shows this warning only in its Ink startup
+  banner and never puts it on the wire (`system/init` carries `memory_paths`
+  with no sizes and no over-limit flag), so `emitMemoryWarning`
+  (`agent-sdk.ts`) measures the files itself, once per session, and synthesizes
+  the event. The limit formula is an Orchestra-side REPLICA of the CLI's —
+  `max(40000, contextWindow * 0.05 * 3)` — documented with its drift risks in
+  `src/shared/memory-size.ts`; `src/main/memory-files.ts` does the (import-
+  resolving) measurement. **`AgentThinkingTokensEvent`** (`system/thinking_tokens`) drives a live
   "thinking · N tokens" readout while redacted thinking streams nothing else.
   A `status` message's `permissionMode` also emits `session/update` (CLI-side
   mode changes reflect live).

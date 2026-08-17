@@ -894,6 +894,10 @@ export interface AgentInitEvent extends AgentEventBase {
   slashCommands?: string[];
   /** MCP servers the session connected, with their status — CC's `/mcp` surface. */
   mcpServers?: AgentMcpServer[];
+  /** Absolute paths of the CLAUDE.md memory files loaded (`memory_paths`).
+   *  Paths only — the CLI reports no sizes here, so the oversized-memory
+   *  warning is measured separately in main (see `memory-size.ts`). */
+  memoryPaths?: string[];
 }
 
 /** One MCP server as tracked in the structured view — from `session/init`
@@ -952,6 +956,16 @@ export interface AgentNoticeEvent extends AgentEventBase {
   text: string;
   /** For `rate-limit`: epoch seconds the limit resets, when reported. */
   resetsAt?: number;
+}
+
+/** The CLAUDE.md memory files that exceed the model's per-file char limit.
+ *  Emitted ONCE per session by main (the SDK never reports this — see
+ *  shared/memory-size.ts), and folded into pinned session state rather than a
+ *  transcript row: it describes a standing property of the environment, so it
+ *  belongs in a banner that persists, not a notice that scrolls away. */
+export interface AgentMemorySizeEvent extends AgentEventBase {
+  type: 'session/memory-size';
+  files: OversizedMemoryNotice[];
 }
 
 /** A transient status line for the in-flight turn — "Compacting conversation…",
@@ -1431,6 +1445,7 @@ export type AgentEvent =
   | AgentMcpServersEvent
   | AgentTaskEvent
   | AgentNoticeEvent
+  | AgentMemorySizeEvent
   | AgentStatusEvent
   | AgentThinkingTokensEvent
   | AgentSessionClearEvent
@@ -1577,8 +1592,26 @@ export interface AgentSession {
    *  orphan messages as the whole conversation (the "transcript disappeared"
    *  bug). See renderer/history-backfill.ts. */
   historyBackfilled?: boolean;
+  /** CLAUDE.md memory files whose resolved size exceeds the model's per-file
+   *  limit. Pinned SESSION state rather than a transcript row, because this is
+   *  a standing condition of the environment (it stays true until the user
+   *  edits the file), not an event that happened at one point in the
+   *  conversation — a scrolling notice would be gone by the second turn.
+   *  Recomputed nowhere in the renderer: main measures it once at init (see
+   *  main/memory-files.ts) because the SDK never reports it. */
+  oversizedMemory?: OversizedMemoryNotice[];
   /** The highest `seq` folded in, so a caller can detect a gap. */
   lastSeq: number;
+}
+
+/** One over-limit memory file, as surfaced in the structured view's banner. */
+export interface OversizedMemoryNotice {
+  /** Display path (already shortened to `~/…` by main). */
+  path: string;
+  /** Resolved size in chars, imports inlined. */
+  chars: number;
+  /** The limit it exceeded, so the banner can't imply a stale threshold. */
+  limit: number;
 }
 
 /** The folded state of one background task — the projection the "Background

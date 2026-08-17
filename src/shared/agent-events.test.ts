@@ -2031,3 +2031,49 @@ test('sdkEventToStatusEvent: mid-turn attach → submit (dot running); idle atta
     null,
   );
 });
+
+// ── Oversized-memory banner ─────────────────────────────────────────────────
+// The CLI shows this in its startup banner but never sends it over the wire, so
+// main measures it and emits a synthetic event; these cover the fold contract.
+
+test('fold: session/memory-size pins the over-limit files on the session', () => {
+  const s = foldEvent(emptySession('w'), {
+    type: 'session/memory-size',
+    files: [{ path: '~/.claude/LESSONS.md', chars: 187_700, limit: 150_000 }],
+    seq: 1,
+    at: 1,
+  } as AgentEvent);
+  assert.deepEqual(s.oversizedMemory, [
+    { path: '~/.claude/LESSONS.md', chars: 187_700, limit: 150_000 },
+  ]);
+  // Pinned state, NOT a transcript row — a banner must not scroll away.
+  assert.equal(s.messages.length, 0);
+});
+
+test('fold: session/memory-size replaces wholesale so a shrunk file clears it', () => {
+  let s = foldEvent(emptySession('w'), {
+    type: 'session/memory-size',
+    files: [{ path: '~/a.md', chars: 200_000, limit: 150_000 }],
+    seq: 1,
+    at: 1,
+  } as AgentEvent);
+  // An empty list must CLEAR the warning; a merge-shaped fold could only add.
+  s = foldEvent(s, { type: 'session/memory-size', files: [], seq: 2, at: 2 } as AgentEvent);
+  assert.deepEqual(s.oversizedMemory, []);
+});
+
+test('normalize: system/init carries memory_paths through to session/init', () => {
+  const [ev] = normalizeSdkMessage(
+    {
+      type: 'system',
+      subtype: 'init',
+      session_id: 's1',
+      model: 'claude-opus-4-8[1m]',
+      memory_paths: ['/home/u/.claude/CLAUDE.md', 42 as unknown as string],
+    } as SdkMessage,
+    ctx(),
+  ) as [Extract<AgentEvent, { type: 'session/init' }>];
+  assert.equal(ev.type, 'session/init');
+  // Non-string entries are filtered rather than trusted.
+  assert.deepEqual(ev.memoryPaths, ['/home/u/.claude/CLAUDE.md']);
+});

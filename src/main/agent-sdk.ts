@@ -57,9 +57,12 @@ import {
   type NormalizeContext,
   type SdkMessage,
 } from '../shared/agent-events';
+import { findOversizedMemoryFiles } from './memory-files.ts';
+import { contextWindowFromModelId } from '../shared/memory-size.ts';
 import type {
   AgentEffortLevel,
   AgentEvent,
+  AgentInitEvent,
   AgentImage,
   AgentMcpServer,
   AgentPermissionMode,
@@ -194,6 +197,11 @@ interface Session {
    *  that does). Externally-originated user text (Remote Control, channel) is
    *  never in here and always renders. */
   recentEchoes: string[];
+  /** Set once the oversized-memory warning has been emitted for this session.
+   *  The CLI re-sends `system/init` at the start of EVERY request, so without
+   *  this the banner would re-announce on every turn — the same noise that got
+   *  per-init MCP notices rejected (see the init branch in agent-events.ts). */
+  memoryWarned?: boolean;
   /** Set by {@link sdkClear}: the user cleared the conversation, so the dying
    *  session's tail events (interrupt error, synthetic turn-end, stray stream
    *  messages) must NOT be emitted — they'd land AFTER the `session/clear`
@@ -368,7 +376,44 @@ function emitFrom(session: Session, msg: SdkMessage): void {
     }
     emit(session.wsId, ev);
     driveStatusFromEvent(session, ev);
+    if (ev.type === 'session/init') emitMemoryWarning(session, ev);
   }
+}
+
+/** Emit the oversized-memory warning the CLI shows in its startup banner but
+ *  never puts on the wire (see src/shared/memory-size.ts for why we recompute
+ *  it). Fires at most ONCE per session: `system/init` repeats on every request,
+ *  and a per-turn re-announcement is the noise that got per-init MCP notices
+ *  rejected. Measuring is a few small file reads, so it stays on this path. */
+function emitMemoryWarning(session: Session, ev: AgentInitEvent): void {
+  if (session.memoryWarned) return;
+  session.memoryWarned = true;
+  const paths = ev.memoryPaths ?? [];
+  if (!paths.length) return;
+  let over: ReturnType<typeof findOversizedMemoryFiles>;
+  try {
+    over = findOversizedMemoryFiles(paths, contextWindowFromModelId(ev.model));
+  } catch (e) {
+    // A warning about context is never worth breaking the session for.
+    slog.warn(`memory-size check failed: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  if (!over.length) return;
+  emit(
+    session.wsId,
+    stamp(session.ctx, {
+      type: 'session/memory-size',
+      // Shorten paths under $HOME the way the CLI relativizes against cwd —
+      // the full path is noise in a one-line banner.
+      files: over.map((f) => ({ path: tildePath(f.path), chars: f.chars, limit: f.limit })),
+    }),
+  );
+}
+
+/** `/home/x/.claude/LESSONS.md` -> `~/.claude/LESSONS.md`. */
+function tildePath(p: string): string {
+  const home = os.homedir();
+  return home && p.startsWith(home + path.sep) ? `~${p.slice(home.length)}` : p;
 }
 
 /** Build the SDK env for a workspace, matching startAgentPty's plumbing: the

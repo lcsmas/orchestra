@@ -58,6 +58,7 @@ import {
   runningTaskCount,
   totalTaskCount,
 } from './agent';
+import { MemorySizeBanner } from './agent/MemorySizeBanner';
 import { RewindContext } from './agent/rewind-context';
 import { previousRewindId, rewindPrefillText } from './agent/rewind-util';
 
@@ -236,6 +237,11 @@ export function StructuredView({ workspaceId, isActive }: Props) {
           {runningTasks > 0 && <span className="av-bgtask-toggle-badge">{runningTasks}</span>}
         </button>
       )}
+      {/* Pinned above the scroller: an oversized CLAUDE.md is a standing
+          condition of the environment, not a moment in the conversation. */}
+      {session?.oversizedMemory?.length ? (
+        <MemorySizeBanner files={session.oversizedMemory} />
+      ) : null}
       <MessageList session={session} canResume={canResume} />
       {/* A4 extension point: permission dialog(s) for parked canUseTool calls.
           Rendered as an overlay above the list. */}

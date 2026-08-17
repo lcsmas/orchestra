@@ -121,6 +121,10 @@ export interface SdkMessage {
   tools?: string[];
   slash_commands?: string[];
   mcp_servers?: { name?: string; status?: string }[];
+  /** system/init: absolute paths of the CLAUDE.md memory files in effect. The
+   *  CLI sends PATHS ONLY — no sizes, no over-limit flag — so the oversized-
+   *  memory banner has to be recomputed from these (see memory-size.ts). */
+  memory_paths?: string[];
   // stream_event:
   event?: RawStreamEvent;
   // assistant / user (an object); system/permission_denied reuses the key as a
@@ -520,6 +524,9 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
               ? { slashCommands: msg.slash_commands.filter((c): c is string => typeof c === 'string') }
               : {}),
             ...(mcpServers !== undefined ? { mcpServers } : {}),
+            ...(Array.isArray(msg.memory_paths)
+              ? { memoryPaths: msg.memory_paths.filter((p): p is string => typeof p === 'string') }
+              : {}),
           }),
         ];
       }
@@ -1497,6 +1504,13 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
 
     case 'session/status':
       return { ...next, statusNotice: event.status ?? undefined };
+
+    case 'session/memory-size':
+      // Replaced wholesale, never merged: the event carries the complete set of
+      // over-limit files, so an empty list must be able to CLEAR a previous
+      // warning (a merge-shaped fold could only ever add — the absent-means-no-
+      // opinion trap that leaves a stale banner pinned after the file shrinks).
+      return { ...next, oversizedMemory: event.files };
 
     case 'thinking-tokens':
       return { ...next, liveThinkingTokens: event.tokens };

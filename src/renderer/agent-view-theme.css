@@ -2576,3 +2576,44 @@ h6.av-md-h {
 .av-rewind-confirm:hover:not(:disabled) {
   background: color-mix(in srgb, var(--av-error) 26%, transparent) !important;
 }
+
+/* ── Oversized-memory banner ──────────────────────────────────────────────
+   Pinned strip above the transcript for CLAUDE.md files over the model's
+   per-file char limit. Mirrors the Claude Code CLI's own startup banner (which
+   is terminal-only and never reaches the SDK — main recomputes it; see
+   src/shared/memory-size.ts). Shares the `--av-warn` treatment used by
+   .av-notice-warning so the two read as one family. */
+.av-memory-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--av-warn) 34%, transparent);
+  background: color-mix(in srgb, var(--av-warn) 9%, var(--av-surface-raised));
+  color: var(--av-text);
+  font-size: var(--av-fs-meta, 12px);
+  line-height: 1.45;
+}
+.av-memory-banner-icon {
+  flex: 0 0 auto;
+  color: var(--av-warn);
+  /* Optical alignment with the first text line rather than the box. */
+  line-height: 1.45;
+}
+.av-memory-banner-body { flex: 1 1 auto; min-width: 0; }
+.av-memory-banner-line { overflow-wrap: anywhere; }
+.av-memory-banner-path { font-weight: 600; color: var(--av-warn); }
+.av-memory-banner-hint { color: var(--av-text-dim); }
+.av-memory-banner-close {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--av-text-dim);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: var(--radius-sm, 6px);
+}
+.av-memory-banner-close:hover { color: var(--av-text); background: var(--av-hover, transparent); }
