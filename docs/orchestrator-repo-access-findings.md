@@ -97,8 +97,48 @@ promoted worktree.
   worktree in place, under a live agent, is the crux.
 - Does `repoAssociation` become redundant, or stay as display-only grouping?
 
+## Outcome — implemented
+
+Landed on `orchestrator-repo-file-access`:
+
+- `4ab76ab` — `isScratchLike` asks about the checkout, not the kind. The naive
+  `!ws.repoPath` form was REFUTED (it makes a free-form string load-bearing for
+  a safety property); the shipped form is conjunctive. I wrote the naive version
+  first and the defensive test caught it.
+- `394ca3e` — `orchestra adopt-repo <id> <repoPath> [--base <branch>]`, the
+  display-name helper, `/demote`'s inverse route, grouping precedence + the
+  double-render fix, and five bare-`kind` gates normalized.
+
+### E2E result (isolated fixture repo, real git worktrees)
+
+|  | before adopt | after adopt |
+|---|---|---|
+| `knowledge/NOTES.md` | NOT VISIBLE | VISIBLE |
+| `notify-tech-pr` project skill | NOT VISIBLE | VISIBLE |
+| `orchestra-*` generated skills | — | carried |
+| `.orchestra/.orchestrator` sentinel | — | carried |
+| transcript dir (conversation) | — | carried |
+| `isScratchLike` (real import) | true | false |
+| `canOrchestrate` (identity) | true | true |
+| sidebar section | pinned | repo section, exactly once |
+| git tracks the worktree | n/a | YES (prune-safe) |
+| teardown | n/a | removes cleanly, 0 prunable husks |
+
 ## NOT verified
 
+- **No run against the real Electron app.** The adopt path was driven as a
+  faithful re-implementation of `dispatchAdoptRepoRequest`'s sequence against
+  real git, with assertions imported from the actual source modules — but
+  `dispatchAdoptRepoRequest` itself was never executed (workspaces.ts imports
+  Electron, so it is not unit-testable here). PTY stop/restart, the live
+  `workspace:update` broadcast, and the sidebar actually re-rendering are
+  unproven. No screenshot was captured.
+- Whether an **SDK session** picks up the new `worktreePath` without a restart.
+  The adopt verb stops the PTYs; the SDK session is NOT explicitly torn down.
+  The transcript dir is carried so history survives either way, but a live SDK
+  session may keep the old cwd until restarted. **Open — check before using this
+  on a workspace with a live SDK agent.**
 - Whether the `claude` CLI honours any additional skills-search knob (Orchestra
   passes none, so this repo cannot answer it).
-- Whether the one-line `isScratchLike` change is actually safe at all 39 sites.
+- `pnpm run lint` was not run (it OOMs in this env); `npx tsc --noEmit` and both
+  vite builds are clean instead.

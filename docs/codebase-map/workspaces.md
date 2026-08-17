@@ -48,8 +48,50 @@ A workspace is an isolated execution environment for one Claude Code agent.
   way an agent learns its own `parentId`) — so model-initiated recursion is a
   documented pattern, not an accident of the attach machinery.
 
-Use the helper **`isScratchLike(ws)`** (`types.ts:246`) instead of comparing
-`kind` to a literal — it covers both non-git kinds in one place.
+Use the helper **`isScratchLike(ws)`** (`types.ts`) instead of comparing `kind`
+to a literal. It asks **"does this own a git checkout?"**, not "what kind is
+this?" — the rule is conjunctive: `'scratch'` is always scratch-like, and
+`'orchestrator'` is scratch-like only *while repo-less*. Deliberately not a bare
+`!ws.repoPath`: `teardownWorkspace` branches on this to choose between `rm -rf`
+of a directory and `git worktree remove` against a repo, so keeping `kind` as
+the primary gate means only the paths that mint a workspace can change that
+answer. A scratch record carrying a stray `repoPath` is still scratch-like, and
+that case is asserted in `shared/workspace-predicates.test.ts` so the predicate
+cannot be "simplified" back.
+
+### An orchestrator can adopt a real checkout
+
+`orchestra adopt-repo <id> <repoPath> [--base <branch>]` →
+`/adoptRepo` → **`dispatchAdoptRepoRequest`** (`workspaces.ts`) gives a
+repo-**less** orchestrator a real worktree, so its agent can read the repo it
+coordinates — docs, notes, scripts, and the repo's git-tracked
+`.claude/skills` project skills. That last one is the motivating case: project
+skills are discovered from the agent's **cwd only** (`sdkListSkills` pushes
+`<worktreePath>/.claude/skills`; Orchestra passes no skills flag to CLI or SDK
+and there is no redirect mechanism), so nothing short of a checkout reaches them.
+
+`kind` stays `'orchestrator'` — the coordinator identity (pinned section, brief,
+`orchestrator · ` name prefix) is kind-carried and survives. What changes is that
+`isScratchLike` goes false, so every git path treats it as the worktree it owns.
+
+Three invariants that are not interchangeable:
+
+- **Worktree first, store write second.** A record whose `repoPath` is set while
+  its `worktreePath` is untracked by git is exactly what
+  `pruneOrphanedWorkspaces` hard-deletes on the next launch, so that combination
+  must never be observable. Everything before the single `upsertWorkspace` is
+  reversible by doing nothing.
+- **The checkout lives under `ORCHESTRA_ROOT`**, never `SCRATCH_ROOT` — the
+  latter's only teardown rule is a plain `rm -rf` (`teardownWorkspace` confines
+  it there), and prune + size accounting scan only the worktree root.
+- **The transcript directory is carried across.** Both drivers key it on
+  `mangleProjectDir(worktreePath)` (`agent-sdk.ts` `transcriptDir`), so moving
+  the directory would orphan the conversation of the very session adopting.
+
+After adoption `repoPath` supersedes any `repoAssociation` for grouping, `/spawn`
+inherits the repo (real ownership, unlike an association), and `/demote` becomes
+available: it sheds the *kind* to `'worktree'`, the inverse of promote's two
+routes.
 
 ### Orchestrator: a KIND *and* a capability
 
@@ -85,15 +127,20 @@ orchestrator keeps `repoPath: ''`, gains no branch/diff/merge/PR, and `/spawn`
 **deliberately** does not inherit it (a bare spawn from a coordinator must still
 name `--repo`, or a sidebar preference would silently decide where code lands).
 
-Filling in `repoPath` instead looks equivalent and is not — several git paths
-treat a non-empty `repoPath` as "owns a checkout" while guarding only on
-`kind === 'scratch'`, which does **not** exclude `'orchestrator'`. Sharpest:
-`pruneOrphanedWorkspaces` buckets by `repoPath`, and an orchestrator's scratch
-dir is never in `git worktree list`, so it would be **hard-deleted from the
+Filling in `repoPath` **without creating the checkout** looks equivalent and is
+not — several git paths treat a non-empty `repoPath` as "owns a checkout".
+Sharpest: `pruneOrphanedWorkspaces` buckets by `repoPath`, and a scratch dir is
+never in `git worktree list`, so the record would be **hard-deleted from the
 store on the next launch** (measured: with `repoPath` filled and no kind guard,
-the record is dropped; the empty `repoPath` is the only thing that saved it
-before). The bucketing loop now skips `isScratchLike` records on their KIND, so
-the trap is closed for any future repo-ish field too.
+the record is dropped). The bucketing loop now skips `isScratchLike` records on
+their KIND, closing that trap for any future repo-ish field.
+
+Note the hazard is the **missing checkout**, not the field: `adopt-repo` above
+sets `repoPath` legitimately, because it creates the worktree first. What stays
+forbidden is promoting this display-only preference into `repoPath` without
+materializing one. Once a coordinator has adopted a repo, `repoPath` supersedes
+any association for grouping and `/setRepoAssociation` refuses it (a second key
+could only disagree with where its checkout actually is).
 
 Three pollers were widened from `kind === 'scratch'` to `isScratchLike` in the
 same change (`activity.ts` merge-state / branch-name / release-state and
