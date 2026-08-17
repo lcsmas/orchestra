@@ -76,19 +76,30 @@ export interface Workspace {
    * `repoPath` and `baseBranch` are empty strings and `branch` is just a display
    * label.
    *
-   * `'orchestrator'` is a scratch session with a purpose: it is non-git in
-   * exactly the same way (empty `repoPath`/`baseBranch`, label-only `branch`,
-   * lives under `~/.orchestra/scratch`), but its agent is seeded with an
-   * opening brief telling it to delegate work by spawning child workspaces over
-   * the `/spawn` socket. Children it spawns carry its id as their `parentId`
-   * and nest beneath it in the sidebar's "Orchestrators" section. Treat
-   * `'orchestrator'` exactly like `'scratch'` for every git/diff/merge/delete
-   * decision — use the `isScratchLike` helper rather than `=== 'scratch'`.
+   * `'orchestrator'` is a session whose agent is seeded with an opening brief
+   * telling it to delegate work by spawning child workspaces over the `/spawn`
+   * socket. Children it spawns carry its id as their `parentId` and nest beneath
+   * it in the sidebar. It has TWO sub-states, and they differ in git-ness:
    *
-   * An orchestrator may additionally carry a {@link Workspace.repoAssociation}
-   * — a DISPLAY-ONLY pointer that files it under a repo section in the sidebar.
-   * That never gives it a repo: `repoPath` stays empty and every git decision
-   * above is unchanged. */
+   * - **Repo-less** (how every orchestrator is born, see
+   *   `createScratchLikeWorkspace`): non-git in exactly the way `'scratch'` is —
+   *   empty `repoPath`/`baseBranch`, label-only `branch`, directory under
+   *   `~/.orchestra/scratch`. Renders in the pinned "Orchestrators" section.
+   * - **Repo-owning** (after `dispatchAdoptRepoRequest`): owns a REAL git
+   *   worktree under `~/.orchestra/worktrees`, with a real `repoPath`,
+   *   `baseBranch` and branch — so its agent can read the repo's files (docs,
+   *   scripts, and its git-tracked `.claude/skills` project skills). Every
+   *   git/diff/merge/delete/rename path treats it as a worktree, exactly like a
+   *   promoted worktree, while it keeps the coordinator identity (pinned chip,
+   *   brief, `orchestrator · ` name prefix) that `kind` carries.
+   *
+   * So do NOT treat `'orchestrator'` as equivalent to `'scratch'` for git
+   * decisions — ask {@link isScratchLike}, which encodes exactly this split.
+   *
+   * A REPO-LESS orchestrator may additionally carry a
+   * {@link Workspace.repoAssociation} — a DISPLAY-ONLY pointer that files it
+   * under a repo section in the sidebar without giving it a repo. Once it adopts
+   * a real repo, `repoPath` supersedes that association for grouping. */
   kind?: 'worktree' | 'scratch' | 'orchestrator';
   /** Orchestrator CAPABILITY on a workspace that is not the `'orchestrator'`
    * KIND — i.e. a real git worktree that also coordinates children. Set by
@@ -170,24 +181,28 @@ export interface Workspace {
    * instead of the pinned "Orchestrators" section, so a coordinator whose
    * children all work in one repo sits with them.
    *
-   * Deliberately a SEPARATE field rather than filling in `repoPath`, and that
-   * separation is the whole safety argument. `repoPath` is the "this workspace
-   * owns a git checkout" fact: ~40 sites read it, and several use a non-empty
-   * `repoPath` as the proxy for "git-backed" while guarding only on
-   * `kind === 'scratch'` (which does NOT exclude `'orchestrator'`). Filling it
-   * in would silently enlist a repo-less coordinator into git machinery it has
-   * no checkout for — most sharply `pruneOrphanedWorkspaces`, which buckets by
-   * `repoPath` and hard-deletes any record whose `worktreePath` git no longer
-   * tracks; an orchestrator's scratch dir never is, so it would be DELETED on
-   * the next launch. An empty `repoPath` is what protects it today.
+   * Deliberately a SEPARATE field rather than filling in `repoPath`. `repoPath`
+   * is the "this workspace owns a git checkout" fact: ~40 sites read it, and
+   * several use a non-empty `repoPath` as the proxy for "git-backed". Setting it
+   * on a coordinator that has NO checkout on disk would silently enlist it into
+   * git machinery it cannot satisfy — most sharply `pruneOrphanedWorkspaces`,
+   * which buckets by `repoPath` and hard-deletes any record whose `worktreePath`
+   * git no longer tracks. THAT hazard is about the missing CHECKOUT, not about
+   * the field: the supported way to give a coordinator a repo is
+   * `dispatchAdoptRepoRequest`, which creates the worktree on disk FIRST and
+   * only then writes `repoPath` — so no window exists where the two disagree.
+   * What remains forbidden is promoting this display-only preference into
+   * `repoPath` without materializing that checkout.
    *
-   * So the invariant stands unchanged: an orchestrator's `repoPath` stays
-   * empty, it never gains a diff/merge/PR/branch, and `/spawn` still refuses to
-   * inherit a repo from it (see `dispatchSpawnRequest`). This field is read by
-   * the sidebar and nothing else.
+   * Note {@link isScratchLike} no longer keys on `kind` alone, so an empty
+   * `repoPath` is no longer the thing protecting a repo-less coordinator — the
+   * predicate's conjunctive rule is. This field stays read by the sidebar and
+   * nothing else, and `/spawn` still refuses to inherit a repo from it (a
+   * grouping preference must never decide where a child's code lands).
    *
    * Absent = the default, and every pre-existing record: render in the
-   * "Orchestrators" section. Only ever set on `kind: 'orchestrator'`. */
+   * "Orchestrators" section. Only meaningful on a REPO-LESS `kind:
+   * 'orchestrator'`; once one adopts a repo, `repoPath` supersedes it. */
   repoAssociation?: string;
   worktreePath: string;
   branch: string;
@@ -432,13 +447,34 @@ export interface Workspace {
   contextTokens?: number;
 }
 
-/** True for the non-git workspace kinds — `'scratch'` and `'orchestrator'`.
- * Both live under `~/.orchestra/scratch`, have no repo/branch/diff/merge/PR, and
- * are torn down by plain directory removal. Use this everywhere a code path
- * needs "is this a real git worktree?" instead of comparing `kind` to a single
- * literal, so a new non-git kind stays correctly handled in one place. */
-export function isScratchLike(ws: Pick<Workspace, 'kind'>): boolean {
-  return ws.kind === 'scratch' || ws.kind === 'orchestrator';
+/** True when this workspace owns NO git checkout — i.e. it has no
+ * repo/branch/diff/merge/PR and is torn down by plain directory removal. This
+ * is the single answer to "is this a real git worktree?"; use it everywhere a
+ * code path needs that, rather than comparing `kind` to a literal.
+ *
+ * The rule is CONJUNCTIVE on purpose: a non-git KIND that owns no repo. A
+ * `'scratch'` session is always scratch-like; an `'orchestrator'` is scratch-like
+ * only while it is repo-less, and stops being so once it adopts a repo (see
+ * `dispatchAdoptRepoRequest`) — at which point it owns a real worktree and every
+ * git path must treat it as one.
+ *
+ * Why not simply `!ws.repoPath`: that would make `repoPath` — a free-form string
+ * — load-bearing for a SAFETY property. `teardownWorkspace` branches on this
+ * predicate to choose between `rm -rf` of a directory and `git worktree remove`
+ * against a repo, so a single stray write to `repoPath` on a `'scratch'` record
+ * would arm the latter. Keeping `kind` as the primary gate means only the three
+ * code paths that mint a workspace can change that answer. The defensive case
+ * (a scratch record carrying a stray `repoPath` is STILL scratch-like) is
+ * asserted in types.test.ts so this cannot be "simplified" back. */
+export function isScratchLike(ws: Pick<Workspace, 'kind' | 'repoPath'>): boolean {
+  // A throwaway session owns a plain directory and nothing else — no `repoPath`
+  // write can turn it into a checkout, so it is unconditionally scratch-like.
+  if (ws.kind === 'scratch') return true;
+  // An orchestrator is the only kind that spans both states: repo-less at birth,
+  // git-backed once it adopts a repo (worktree created BEFORE `repoPath` is set).
+  if (ws.kind === 'orchestrator') return !ws.repoPath;
+  // `'worktree'`, and `undefined` for pre-`kind` legacy records.
+  return false;
 }
 
 /** True when children may nest under this workspace — the single answer to
