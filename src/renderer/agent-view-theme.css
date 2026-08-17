@@ -2370,9 +2370,26 @@ h6.av-md-h {
   top: 50%;
   transform: translateY(-50%);
 }
+/* Assistant/error/system prose spans the FULL lane width, so a stamp pinned
+   INSIDE the lane lands on top of any line that runs to the right edge — it
+   rendered its glyphs interleaved with the prose ("11:20" over the last word),
+   leaving both unreadable. Two changes fix that:
+
+   1. Move it OUT of the text column into the lane's right margin. `.av-message`
+      carries `margin: 2px 24px` inside a pane that adds ~8px more, so the
+      measured gutter is 32px against a 41px label — not quite enough on its
+      own, hence (2).
+   2. Give it an opaque backdrop, so the few px that do reach back over the
+      column occlude the prose cleanly instead of interleaving with it. This is
+      also what keeps it legible in a narrow pane, where the gutter shrinks and
+      the stamp necessarily sits over text. */
 :is(.av-message-assistant, .av-message-error, .av-message-system) > .av-message-ts {
-  right: 8px;
-  top: 9px;
+  right: -20px;
+  top: 7px;
+  padding: 1px 4px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--av-surface);
+  box-shadow: 0 0 0 1px var(--av-hairline-faint);
 }
 
 /* D: turn divider — a centered hairline with a mono microlabel. The day (bold)
