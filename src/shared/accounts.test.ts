@@ -422,3 +422,19 @@ test('isClaudeAuthUrl accepts Claude/Anthropic https pages only', () => {
   assert.equal(isClaudeAuthUrl('not a url'), false);
   assert.equal(isClaudeAuthUrl('file:///etc/passwd'), false);
 });
+
+// Regression: the CLI moved the interactive login OAuth flow off claude.ai onto
+// claude.com. These are the exact URLs the installed claude 2.1.233 opens; while
+// they were unmatched, every account login fell through to the SYSTEM browser
+// (one window per redirect hop, authorizing the user's main account instead).
+test('isClaudeAuthUrl accepts the claude.com OAuth hosts the CLI now uses', () => {
+  assert.equal(isClaudeAuthUrl('https://platform.claude.com/oauth/authorize'), true);
+  assert.equal(isClaudeAuthUrl('https://claude.com/cai/oauth/authorize'), true);
+  assert.equal(isClaudeAuthUrl('https://platform.claude.com/oauth/code/callback'), true);
+  assert.equal(isClaudeAuthUrl('https://claude.com/'), true);
+  // Widening the allowlist must not widen it to lookalikes.
+  assert.equal(isClaudeAuthUrl('https://claude.com.evil.com/oauth/authorize'), false);
+  assert.equal(isClaudeAuthUrl('https://notclaude.com/oauth/authorize'), false);
+  assert.equal(isClaudeAuthUrl('https://evilclaude.com/'), false);
+  assert.equal(isClaudeAuthUrl('http://claude.com/cai/oauth/authorize'), false);
+});

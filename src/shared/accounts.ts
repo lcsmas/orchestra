@@ -387,12 +387,20 @@ export function planAccountMigration(
 // ---- account login browser routing ----------------------------------------------
 
 /** Whether `url` is a Claude/Anthropic OAuth page that the per-account login
- *  browser window should host. The interactive `claude /login` opens exactly
- *  one of `https://claude.ai/oauth/authorize` or
- *  `https://console.anthropic.com/oauth/authorize`; anything else an account
- *  login PTY tries to open (docs links, non-https schemes) belongs in the
- *  system browser instead. Deliberately host-anchored — a lookalike such as
- *  `claude.ai.evil.com` must not be granted the account's session partition. */
+ *  browser window should host. Anything else an account login PTY tries to
+ *  open (docs links, non-https schemes) belongs in the system browser instead.
+ *  Deliberately host-anchored — a lookalike such as `claude.ai.evil.com` must
+ *  not be granted the account's session partition.
+ *
+ *  `claude.com` is NOT optional: Anthropic migrated the interactive
+ *  `claude /login` OAuth flow off `claude.ai` onto `claude.com`, so the
+ *  installed CLI (verified in 2.1.233) opens
+ *  `https://platform.claude.com/oauth/authorize` and
+ *  `https://claude.com/cai/oauth/authorize`. While those hosts were missing
+ *  here, every login fell through to `platform.openExternal` and opened the
+ *  system browser — one window per redirect hop, each landing on the user's
+ *  MAIN account session, which is exactly what this routing exists to prevent.
+ *  Keep `claude.ai` for older CLIs still on the legacy host. */
 export function isClaudeAuthUrl(url: string): boolean {
   let parsed: URL;
   try {
@@ -404,8 +412,10 @@ export function isClaudeAuthUrl(url: string): boolean {
   const host = parsed.hostname.toLowerCase();
   return (
     host === 'claude.ai' ||
+    host === 'claude.com' ||
     host === 'anthropic.com' ||
     host.endsWith('.claude.ai') ||
+    host.endsWith('.claude.com') ||
     host.endsWith('.anthropic.com')
   );
 }
