@@ -64,9 +64,22 @@ Event → status (`applyAgentEvent` `:471`):
   A looping row's turn-end still arms the BELL but skips the chime
   (App.tsx `onAgentFinished`) and the OS toast (`fireFinished`) — a 15-min
   loop would otherwise announce itself 4×/hour; a loop parked on a question
-  (`fireNeedsInput`) still notifies. E2E gate:
+  (`fireNeedsInput`) still notifies.
+  **Live detection is NOT sufficient**: Claude Code's daemon (CLI ≥2.1.233,
+  `claude daemon run`) re-invokes /loop sessions at wakeup time OUTSIDE
+  Orchestra — no `ORCHESTRA_WS_ID` (spool hook exits silently) and no attached
+  SDK stream, so daemon-hosted iterations are invisible to both paths. The
+  transcript is the ground truth that survives: `src/shared/loop-scan.ts`
+  (pure `scanTranscriptTailForLoop`, 4-state verdict — looping / stopped /
+  stale (armed but due+30min-slack passed = host dead) / unknown (bounded tail,
+  clears NOTHING)) + `src/main/loop-scan.ts` (`startLoopScan` in index.ts:
+  startup pass + 5-min sweep, stat-gated on transcript mtime; resolves the
+  file via the pinned account's config dir + `mangleProjectDir` +
+  `sdkSessionId`, falling back to newest `.jsonl`). Backfills loops predating
+  the flag and daemon ticks, clears self-stopped/dead loops. E2E gate:
   `scripts/verify-loop-badge-restore.mjs` (badge states incl. live spool
-  detection, restart restore + its lingering-keeper negative control).
+  detection, restart restore + its lingering-keeper negative control, and both
+  transcript-backfill directions).
 - **Keeper restart restore** — `restoreRunningFromKeeper` (activity.ts, beside
   `resumeRunning`): store.load() unconditionally floors persisted `running` →
   `idle` (its "no process survives a restart" comment predates the keeper), so

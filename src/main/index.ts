@@ -173,6 +173,7 @@ import {
 import { restoreRunningFromKeeper } from './activity';
 import { startEventsSpool, stopEventsSpool } from './events-spool';
 import { startHibernationSweeper, stopHibernationSweeper } from './hibernation.ts';
+import { startLoopScan, stopLoopScan } from './loop-scan';
 import { startUsagePolling, stopUsagePolling } from './usage';
 import { startAccountUsagePolling, stopAccountUsagePolling } from './account-usage';
 import { seedAccountInheritDefaults, syncAllAccountsInheritance } from './account-inherit';
@@ -555,6 +556,7 @@ async function reconcileKeepersAtStartup(): Promise<void> {
 
 function shutdownSubsystems(): void {
   stopAll();
+  stopLoopScan();
   stopEventsSpool();
   stopHooksServer();
   stopUsagePolling();
@@ -646,6 +648,11 @@ if (!ORCHESTRA_CLI_MODE) {
       // await: probing N keepers is socket round-trips that must not delay
       // "main window ready".
       void reconcileKeepersAtStartup();
+      // Transcript-based loop reconcile: backfills `loopingSince` for loops
+      // whose ScheduleWakeup calls Orchestra never observed live (CC-daemon
+      // -hosted iterations, loops predating the flag, ticks while the app was
+      // closed) and clears flags for loops that stopped/died meanwhile.
+      startLoopScan();
       installCliShim();
       log.info('main window ready');
     } catch (e) {

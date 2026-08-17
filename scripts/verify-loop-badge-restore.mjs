@@ -81,6 +81,11 @@ const WS = {
   restore: 'e2e-keeper-restore-1',
   linger: 'e2e-keeper-linger-1',
   control: 'e2e-plain-control-1',
+  // Transcript-based backfill (loops Orchestra never observed live — CC-daemon
+  // hosted iterations): armed transcript + NO flag → badge must appear;
+  // stopped transcript + STALE flag → badge must clear.
+  backfill: 'e2e-loop-backfill-1',
+  stalestop: 'e2e-loop-stalestop-1',
 };
 const mkWs = (id, name, over = {}) => {
   const dir = path.join(RUN, `scratch-${id}`);
@@ -116,12 +121,37 @@ fs.writeFileSync(
         // Negative control: live keeper but NO turn in flight → must stay idle.
         mkWs(WS.linger, 'keeper-linger', { status: 'running' }),
         mkWs(WS.control, 'plain-control'),
+        mkWs(WS.backfill, 'loop-backfill', { sdkSessionId: 'e2e-sess-backfill' }),
+        mkWs(WS.stalestop, 'loop-stalestop', {
+          sdkSessionId: 'e2e-sess-stalestop',
+          loopingSince: Date.now() - HOUR, // stale flag the scan must CLEAR
+        }),
       ],
     },
     null,
     2,
   ),
 );
+
+// ── seed transcripts for the backfill cases (real ~/.claude fallback dir — an
+// unpinned workspace resolves there; cleaned up in the finally) ─────────────
+const mangle = (p) => p.replace(/[^a-zA-Z0-9]/g, '-');
+const wsEntry = (input) =>
+  JSON.stringify({
+    type: 'assistant',
+    isSidechain: false,
+    timestamp: new Date(Date.now() - 5 * 60_000).toISOString(),
+    message: { content: [{ type: 'tool_use', id: 't1', name: 'ScheduleWakeup', input }] },
+  }) + '\n';
+const transcriptDirs = [];
+function seedTranscript(wsId, sessId, input) {
+  const dir = path.join(os.homedir(), '.claude', 'projects', mangle(path.join(RUN, `scratch-${wsId}`)));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${sessId}.jsonl`), wsEntry(input));
+  transcriptDirs.push(dir);
+}
+seedTranscript(WS.backfill, 'e2e-sess-backfill', { delaySeconds: 1800, prompt: '/loop x' });
+seedTranscript(WS.stalestop, 'e2e-sess-stalestop', { stop: true });
 
 // ── fake keepers (real pid file + real frame protocol on the real socket) ───
 const keeperDir = path.join(HOME, 'keepers');
@@ -263,10 +293,10 @@ try {
   const href = await cdp.ev('location.href');
   check('driving this worktree, not an installed build', !href.includes('app.asar'), href);
 
-  // Sidebar rendered with all five rows.
+  // Sidebar rendered with all seven rows.
   await waitFor(
     'sidebar rows',
-    () => cdp.ev(`document.querySelectorAll('.ws-item').length >= 5`),
+    () => cdp.ev(`document.querySelectorAll('.ws-item').length >= 7`),
     15000,
   );
 
@@ -362,6 +392,35 @@ try {
     JSON.stringify(afterStop),
   );
 
+  // ── A3. transcript-based backfill (daemon-hosted loops) ───────────────────
+  // The startup sweep runs async; poll both directions.
+  const backfilled = await waitFor(
+    'backfill row gains badge from transcript scan',
+    async () => {
+      const g = await cdp.ev(GLYPH_PROBE('loop-backfill'));
+      return !g.error && g.hasBadge ? g : null;
+    },
+    20000,
+  ).catch(() => null);
+  check(
+    'armed transcript + no flag → badge BACKFILLED at startup',
+    !!backfilled && backfilled.badgeVisible,
+    JSON.stringify(backfilled),
+  );
+  const cleared = await waitFor(
+    'stalestop row loses its stale badge',
+    async () => {
+      const g = await cdp.ev(GLYPH_PROBE('loop-stalestop'));
+      return !g.error && !g.hasBadge ? g : null;
+    },
+    20000,
+  ).catch(() => null);
+  check(
+    'stopped transcript + stale flag → badge CLEARED at startup',
+    !!cleared,
+    JSON.stringify(cleared),
+  );
+
   // Tooltip carries the loop clause.
   const title = await cdp.ev(`(() => {
     const rows = [...document.querySelectorAll('.ws-item')];
@@ -393,6 +452,8 @@ try {
   try {
     sway.kill('SIGTERM');
   } catch {}
+  // Remove the transcript dirs seeded into the REAL ~/.claude/projects.
+  for (const dir of transcriptDirs) try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
 }
 
 const failed = results.filter((r) => !r.ok);
