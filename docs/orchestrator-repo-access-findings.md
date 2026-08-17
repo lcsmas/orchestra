@@ -124,20 +124,56 @@ Landed on `orchestrator-repo-file-access`:
 | git tracks the worktree | n/a | YES (prune-safe) |
 | teardown | n/a | removes cleanly, 0 prunable husks |
 
+## Real-app verification (2026-08-17)
+
+Driven against a REAL built Electron instance: isolated `ORCHESTRA_HOME`, own
+headless sway (socket identified by set-difference, empty tree asserted before
+launch), CDP target URL asserted to be this worktree's `dist/index.html` (not
+`app.asar`), seeded store with a repo-less orchestrator parenting a real child
+worktree. The fixture repo carried `knowledge/NOTES.md` and a git-tracked
+`.claude/skills/notify-tech-pr`.
+
+| # | Case | Result |
+|---|---|---|
+| 1 | adopt unknown repo | refused, rc=1 |
+| 2 | adopt unknown workspace id | refused, rc=1 |
+| 3 | adopt on a plain worktree | refused, rc=1 |
+| 4 | `set-repo` on a repo-LESS orchestrator | still works |
+| 5 | **adopt** | worktree created + git-tracked; `knowledge/` and `notify-tech-pr` VISIBLE; `orchestra-*` skills, `.orchestrator` sentinel (`dual`) and transcript carried; real branch checked out |
+| 6 | sidebar after adopt | ORCHESTRATORS section gone; row inside FIXREPO (count 0→2) with child still nested; **exactly 1 row** (no double-render, enumerated from live DOM); Run/Diff tabs appear |
+| 7 | idempotent re-adopt | no second worktree, no duplicate branch |
+| 8 | adopt a SECOND repo | refused, rc=1 |
+| 9 | `set-repo` after adopt | refused (repoPath supersedes) |
+| 10 | bare `/spawn` from adopted orchestrator | INHERITS the repo, child nests |
+| 11 | **restart → `pruneOrphanedWorkspaces`** | adopted record SURVIVES. Negative control: an injected untracked "ghost" record was DELETED in the same boot, proving prune ran and discriminates |
+| 12 | `/demote` | now succeeds: kind→`worktree`, keeps repo/checkout, name→`fixrepo · …`, children detached |
+| 13 | **delete → worktree leak** | worktree untracked by git, directory removed, 0 prunable husks |
+
+Screenshot: full-window capture confirmed paint (row under FIXREPO with the
+orchestrator glyph and child count, footer showing the real worktree path).
+
+Two instrument failures caught mid-run and corrected, both of which had produced
+a passing-looking result:
+- A "restart" that never restarted: the kill hit a child process while the
+  original held the SingletonLock and the port, so new launches silently exited.
+  The store was simply unchanged since the kill (mtime + a 0-byte log proved it).
+  Redone after killing the true lock holder.
+- `pgrep -c electron` returned 0 and looked like the user's app had been killed;
+  it runs as `Orchestra.AppImage`, so the pattern never matched. Confirmed
+  healthy by name + live socket.
+
 ## NOT verified
 
-- **No run against the real Electron app.** The adopt path was driven as a
-  faithful re-implementation of `dispatchAdoptRepoRequest`'s sequence against
-  real git, with assertions imported from the actual source modules — but
-  `dispatchAdoptRepoRequest` itself was never executed (workspaces.ts imports
-  Electron, so it is not unit-testable here). PTY stop/restart, the live
-  `workspace:update` broadcast, and the sidebar actually re-rendering are
-  unproven. No screenshot was captured.
 - Whether an **SDK session** picks up the new `worktreePath` without a restart.
   The adopt verb stops the PTYs; the SDK session is NOT explicitly torn down.
   The transcript dir is carried so history survives either way, but a live SDK
-  session may keep the old cwd until restarted. **Open — check before using this
-  on a workspace with a live SDK agent.**
+  session may keep the old cwd until restarted. The verification used a seeded
+  store with no live agent, so this was never exercised. **Open — check before
+  adopting on a workspace with a live SDK agent.**
+- The `/slash` composer dropdown was not opened; project-skill visibility was
+  verified at the filesystem level (`sdkListSkills` reads exactly that dir).
+- `/demote` has no CLI verb and no socket route — it is IPC-only, driven here
+  through the preload bridge. Worth adding for parity.
 - Whether the `claude` CLI honours any additional skills-search knob (Orchestra
   passes none, so this repo cannot answer it).
 - `pnpm run lint` was not run (it OOMs in this env); `npx tsc --noEmit` and both
