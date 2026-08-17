@@ -36,6 +36,7 @@ export function WorkspaceStatusGlyph({
   hibernated,
   unread,
   autoUnread,
+  looping,
   title,
   size,
 }: {
@@ -47,6 +48,12 @@ export function WorkspaceStatusGlyph({
    *  shape: "finished, unseen" is a different thing to communicate than
    *  "finished" — see the switch below. */
   autoUnread?: boolean;
+  /** The agent is running a recurring /loop ({@link Workspace.loopingSince}).
+   *  An axis ORTHOGONAL to status — a looping agent alternates running
+   *  (iteration in flight) and idle/bell (sleeping until the next wakeup) —
+   *  so it renders as a small cycle-arrows BADGE on the glyph's corner,
+   *  overlaid on every state's shape rather than replacing any of them. */
+  looping?: boolean;
   title: string;
   /** Optional context class, e.g. `'sm'` for denser lists. */
   size?: 'sm';
@@ -54,17 +61,34 @@ export function WorkspaceStatusGlyph({
   const cls = (kind: string) =>
     `ws-glyph ws-glyph-${kind}${size ? ` ws-glyph-${size}` : ''}` +
     `${unread ? ' unread' : ''}${hibernated ? ' hibernated' : ''}`;
+  // The /loop corner badge — Lucide `rotate-cw` arrows, slow-spun in CSS.
+  // Inherits `currentColor`, so it follows each state's own hue (green on
+  // idle, yellow on running, amber on the bell/?, accent when bookmarked)
+  // without per-state rules here. Suppressed while HIBERNATED below: the
+  // process is stopped, so a wakeup can never fire and the badge would
+  // advertise a loop that cannot run.
+  const loopBadge = looping ? (
+    <span className="ws-glyph-loop" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3.4}
+        strokeLinecap="round" aria-hidden="true" focusable="false">
+        <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+        <path d="M21 3v5h-5" />
+      </svg>
+    </span>
+  ) : null;
   const svg = (children: React.ReactNode, kind: string) => (
     <span className={cls(kind)} title={title} role="img" aria-label={title}>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
         {children}
       </svg>
+      {loopBadge}
     </span>
   );
 
   // A hibernated agent's process is STOPPED, so it must never animate as if it
   // were working — even though its last recorded status is usually 'running'.
+  // No loop badge either — see loopBadge above.
   if (hibernated) {
     return <span className={cls('idle')} title={title} role="img" aria-label={title} />;
   }
@@ -90,6 +114,7 @@ export function WorkspaceStatusGlyph({
             d="M5.25 9A6.75 6.75 0 0 1 12 2.25 6.75 6.75 0 0 1 18.75 9v3.75c0 .526.214 1.03.594 1.407l.53.532a.75.75 0 0 1-.53 1.28H4.656a.75.75 0 0 1-.53-1.28l.53-.532A1.989 1.989 0 0 0 5.25 12.75V9Zm6.75 12a3 3 0 0 0 2.996-2.825.75.75 0 0 0-.748-.8h-4.5a.75.75 0 0 0-.748.8A3 3 0 0 0 12 21Z"
           />
         </svg>
+        {loopBadge}
       </span>
     );
   }
@@ -99,6 +124,7 @@ export function WorkspaceStatusGlyph({
       return (
         <span className={cls('running')} title={title} role="img" aria-label={title}>
           <span className="ws-glyph-spin" aria-hidden="true" />
+          {loopBadge}
         </span>
       );
     case 'waiting':
@@ -132,10 +158,18 @@ export function WorkspaceStatusGlyph({
       // completion the status cannot support. The two states that DO need
       // acting on (waiting, autoUnread) keep distinct shapes, so the
       // form-plus-colour redundancy is preserved exactly where it matters.
-      return <span className={cls('idle')} title={title} role="img" aria-label={title} />;
+      return (
+        <span className={cls('idle')} title={title} role="img" aria-label={title}>
+          {loopBadge}
+        </span>
+      );
     default:
       // `stopped` and any future status: a quiet dot, no shape claim.
-      return <span className={cls('stopped')} title={title} role="img" aria-label={title} />;
+      return (
+        <span className={cls('stopped')} title={title} role="img" aria-label={title}>
+          {loopBadge}
+        </span>
+      );
   }
 }
 

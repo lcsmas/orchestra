@@ -78,3 +78,37 @@ test('statusGlyphTitle: unread and hibernated still outrank a thinking label', (
     'Agent is hibernated — process stopped to free memory, resumes on input',
   );
 });
+
+// ─── the /loop suffix ────────────────────────────────────────────────────────
+//
+// Looping is an axis orthogonal to status (the glyph overlays a corner badge on
+// every shape), so the tooltip APPENDS a clause to whichever phrase wins rather
+// than replacing it. Hibernated is the one state that suppresses it — a stopped
+// process cannot fire the wakeup, and the glyph hides the badge there too.
+
+test('statusGlyphTitle: looping appends to every state phrase it composes with', () => {
+  assert.equal(statusGlyphTitle(ws({ loopingSince: 1 })), 'Agent is working… — looping');
+  assert.equal(
+    statusGlyphTitle(ws({ status: 'idle', loopingSince: 1 })),
+    'Agent is idle — looping',
+  );
+  assert.equal(
+    statusGlyphTitle(ws({ status: 'idle', autoUnread: true, loopingSince: 1 })),
+    'Agent finished — you have not opened this yet — looping',
+  );
+  assert.equal(
+    statusGlyphTitle(ws({ status: 'waiting', loopingSince: 1 })),
+    'Agent is blocked on your answer — looping',
+  );
+});
+
+test('statusGlyphTitle: hibernated suppresses the looping clause', () => {
+  assert.equal(
+    statusGlyphTitle(ws({ hibernatedAt: 1, loopingSince: 1 })),
+    'Agent is hibernated — process stopped to free memory, resumes on input',
+  );
+});
+
+test('statusGlyphTitle: no loop marker means no clause (control)', () => {
+  assert.equal(statusGlyphTitle(ws({ status: 'idle' })), 'Agent is idle');
+});

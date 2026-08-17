@@ -367,6 +367,12 @@ export function App() {
         void window.orchestra.markSeen(finishedId).catch(() => {});
         return;
       }
+      // A LOOPING agent's turn-end is a routine iteration tick, not a
+      // completion to announce — a 15-minute /loop would otherwise chime
+      // 4×/hour. The bell/badge carry the signal instead (main skips the OS
+      // toast for the same reason — see fireFinished); a loop parked on a
+      // QUESTION still chimes via onAgentNeedsInput below.
+      if (useStore.getState().workspaces.find((w) => w.id === finishedId)?.loopingSince) return;
       playFinishedChime();
     });
   }, []);

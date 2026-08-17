@@ -119,6 +119,17 @@
   /* state color helper: green when idle, yellow when working */
   .st-idle { --lc: var(--glyph-done); }
   .st-working { --lc: var(--glyph-working); }
+  /* attention states: amber bell / amber ? — and the ring follows the state
+     color in state-colored variants */
+  .st-attn { --lc: var(--glyph-attention); }
+  .st-unread { --lc: var(--accent); }
+  .bell { color: var(--glyph-attention); }
+  .bell svg, .waitq svg { width: 12px; height: 12px; display: block; }
+  .waitq { color: var(--glyph-attention); }
+  .unread-dot::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+  }
 
   /* pick chip */
   .pick { font-size: 10px; color: var(--text-dim); letter-spacing: .05em; }
@@ -205,6 +216,34 @@
   </div>
 
 </div>
+
+<h1 style="margin-top:36px">Composition — attention states</h1>
+<div class="sub">A loop mostly lives in the <b>bell</b> state: every iteration ends a turn, and if you're not looking the row goes idle + auto-unread (amber bell). The marker must also compose with <b>waiting</b> (amber ?) and your <b>manual unread</b> bookmark (accent-blue glyph). State-colored variants (A/C/D/E/F) render the ring amber over attention glyphs and accent over manual-unread; variant B's ring is always accent — note it melts into the manual-unread state.</div>
+
+<div class="grid" id="compose"></div>
+<script>
+  const BELL = '<svg viewBox="0 0 24 24" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M5.25 9A6.75 6.75 0 0 1 12 2.25 6.75 6.75 0 0 1 18.75 9v3.75c0 .526.214 1.03.594 1.407l.53.532a.75.75 0 0 1-.53 1.28H4.656a.75.75 0 0 1-.53-1.28l.53-.532A1.989 1.989 0 0 0 5.25 12.75V9Zm6.75 12a3 3 0 0 0 2.996-2.825.75.75 0 0 0-.748-.8h-4.5a.75.75 0 0 0-.748.8A3 3 0 0 0 12 21Z"/></svg>';
+  const WAIT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>';
+  const RB = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v5h-5"/></svg>';
+  const variants = [
+    ['A','Arc, state-colored','loopA'], ['B','Arc, accent','loopB'],
+    ['C','Dashed orbit','loopC'], ['D','Comet sweep','loopD'],
+    ['E','Satellite','loopE'], ['F','Corner badge','loopF'],
+  ];
+  const glyph = (cls, inner, extra) =>
+    `<span class="ws-glyph ${cls}">${extra||''}${inner||''}</span>`;
+  document.getElementById('compose').innerHTML = variants.map(([tag, name, lc]) => {
+    const track = lc === 'loopE' ? '<span class="track"></span>' : '';
+    const badge = lc === 'loopF' ? `<span class="badge">${RB}</span>` : '';
+    const mk = (stateCls, inner) => glyph(`${lc} ${stateCls}`, inner, track) .replace('</span>', `${badge}</span>`);
+    return `<div class="card"><span class="tag">${tag}</span><h2>${name}</h2>
+      <div class="rows">
+        <div class="row">${mk('bell st-attn', BELL)}<span class="name">finished, unseen</span><span class="note">bell + loop</span></div>
+        <div class="row">${mk('waitq st-attn', WAIT)}<span class="name">needs your answer</span><span class="note">waiting + loop</span></div>
+        <div class="row">${mk('unread-dot st-unread', '')}<span class="name">your bookmark</span><span class="note">manual unread + loop</span></div>
+      </div></div>`;
+  }).join('');
+</script>
 
 <div class="sidebar-sim">
   <h2>Noise check — mixed sidebar</h2>

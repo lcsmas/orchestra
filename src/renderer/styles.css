@@ -1574,6 +1574,10 @@ input:focus, textarea:focus, select:focus {
   justify-content: center;
   width: 12px;
   height: 12px;
+  /* Anchor for the /loop corner badge (.ws-glyph-loop), which hangs a few px
+     outside this 12px box — the box is NOT overflow-clipped anywhere, so the
+     badge renders without reserving row space. */
+  position: relative;
 }
 .ws-glyph svg { width: 12px; height: 12px; display: block; }
 /* Denser lists can opt down a size without redefining the glyph. */
@@ -1635,6 +1639,48 @@ input:focus, textarea:focus, select:focus {
      transparent quarter reads as a broken/clipped glyph, not as "working". */
   .ws-glyph-spin { animation: none; border-top-color: var(--glyph-working); }
 }
+/* The /loop corner badge — tiny cycle-arrows pinned to the glyph's bottom-right
+   corner, marking a workspace whose agent runs a recurring /loop
+   (Workspace.loopingSince). A BADGE rather than a ring so it overlays every
+   status shape (dot, spinner, bell, ?) without competing with them; the dark
+   disc behind it separates the arrows from whatever glyph ink sits beneath
+   (matches the sidebar's dark surfaces closely enough at 9px that it reads as
+   a cutout on rest, hover and active rows alike). Colour is `currentColor`, so
+   it follows the state's own hue with zero per-state rules — including the
+   manual-unread accent override. Slow spin: alive, not busy — `running` is the
+   spinner's claim, this only says "recurring". */
+.ws-glyph-loop {
+  position: absolute;
+  right: -5px;
+  bottom: -4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: rgba(10, 11, 13, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ws-glyph-loop svg {
+  width: 8px;
+  height: 8px;
+  display: block;
+  animation: ws-glyph-spin 4s linear infinite;
+}
+.ws-glyph.ws-glyph-sm .ws-glyph-loop { width: 8px; height: 8px; right: -4px; bottom: -3px; }
+.ws-glyph.ws-glyph-sm .ws-glyph-loop svg { width: 7px; height: 7px; }
+@media (prefers-reduced-motion: reduce) {
+  /* A static ↻ still reads as "recurring" — unlike the working ring, nothing
+     about the shape depends on motion. */
+  .ws-glyph-loop svg { animation: none; }
+}
+/* The spinner state's colour is carried by explicit border colours, so the
+   glyph span itself never needed a `color` — the badge inherits it, so give
+   running (and stopped, defensively) their state hues for the badge alone.
+   `.ws-glyph.unread`'s accent override still wins (declared later + more
+   specific for the unread case). */
+.ws-glyph-running { color: var(--glyph-working); }
+.ws-glyph-stopped { color: var(--glyph-inactive); }
 /* Manual "unread" tag — a come-back-later bookmark the user sets by hand.
    The row reads like unread mail: the status glyph turns accent-blue
    (overriding the status colour) plus a brighter name. Cleared when the row is

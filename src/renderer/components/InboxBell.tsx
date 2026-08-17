@@ -92,6 +92,7 @@ export function InboxBell() {
         hibernated={w.hibernatedAt !== undefined}
         unread={!!w.markedUnread}
         autoUnread={!!w.autoUnread}
+        looping={!!w.loopingSince}
         title={statusGlyphTitle(w)}
       />
       <span className="inbox-branch">{w.branch}</span>

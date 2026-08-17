@@ -186,7 +186,15 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
     // OS toast additionally requires the window to be unfocused (`changed` is
     // already guaranteed by the gate above). The seam posts the native
     // Electron toast (click-to-focus).
-    if (focused) return;
+    //
+    // LOOPING rows skip the toast (and the renderer skips its chime — see
+    // App.tsx's onAgentFinished): a /loop ends a turn every iteration, so a
+    // 15-minute loop would otherwise toast+chime at the user 4×/hour for
+    // routine ticks. The BELL still arms above — each iteration genuinely is
+    // unseen output — and the loop badge on the glyph already says "alive and
+    // recurring". A loop that parks on a QUESTION still notifies: that path is
+    // fireNeedsInput, untouched.
+    if (focused || ws.loopingSince) return;
     const { title, body } = finishedToast(stopReason, ws.name);
     platform.notify({ wsId: id, kind: 'finished', title, body });
   });

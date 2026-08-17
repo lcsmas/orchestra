@@ -14,25 +14,33 @@ import { THINKING_TOOL_LABEL } from '../shared/types.ts';
  *  while one is running, or {@link THINKING_TOOL_LABEL} in the gap between
  *  tools where the model is generating. */
 export function statusGlyphTitle(
-  w: Pick<Workspace, 'status' | 'markedUnread' | 'hibernatedAt' | 'autoUnread'>,
+  w: Pick<Workspace, 'status' | 'markedUnread' | 'hibernatedAt' | 'autoUnread' | 'loopingSince'>,
   tool?: string,
 ): string {
-  if (w.markedUnread) return 'Tagged unread — come back to this workspace';
+  // The /loop badge's clause, APPENDED to whichever state phrase wins below —
+  // looping is an orthogonal axis (the glyph overlays a badge, it doesn't
+  // replace the shape), so the tooltip composes the same way. Hibernated is
+  // the one state whose glyph suppresses the badge (a stopped process can't
+  // wake), so its phrase stays bare.
+  const loop = (base: string) =>
+    w.loopingSince && w.hibernatedAt === undefined ? `${base} — looping` : base;
+  if (w.markedUnread) return loop('Tagged unread — come back to this workspace');
   if (w.hibernatedAt !== undefined)
     return 'Agent is hibernated — process stopped to free memory, resumes on input';
   // The thinking sentinel is NOT a tool name — it marks the between-tools gap
   // (main sets it on submit/posttool). Render it as its own phrase rather than
   // "(thinking)", which would read like a tool called "thinking". Any other
   // label IS a real tool name and keeps the parenthesised form.
-  if (w.status === 'running' && tool === THINKING_TOOL_LABEL) return 'Agent is thinking…';
-  if (w.status === 'running') return tool ? `Agent is working… (${tool})` : 'Agent is working…';
+  if (w.status === 'running' && tool === THINKING_TOOL_LABEL) return loop('Agent is thinking…');
+  if (w.status === 'running')
+    return loop(tool ? `Agent is working… (${tool})` : 'Agent is working…');
   // Ordered to match the GLYPH's own precedence (see WorkspaceStatusGlyph): the
   // bell only wins on the quiet statuses, so `waiting`/`error` answer first.
   // `waiting` now means ONLY "blocked on your answer" — "finished but unseen"
   // is `idle` + `autoUnread`, which is the bell.
-  if (w.status === 'waiting') return 'Agent is blocked on your answer';
-  if (w.status === 'error') return 'Agent hit an error';
-  if (w.autoUnread) return 'Agent finished — you have not opened this yet';
-  if (w.status === 'idle') return 'Agent is idle';
-  return w.status;
+  if (w.status === 'waiting') return loop('Agent is blocked on your answer');
+  if (w.status === 'error') return loop('Agent hit an error');
+  if (w.autoUnread) return loop('Agent finished — you have not opened this yet');
+  if (w.status === 'idle') return loop('Agent is idle');
+  return loop(w.status);
 }

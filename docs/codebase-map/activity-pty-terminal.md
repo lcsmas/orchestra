@@ -57,6 +57,16 @@ Event → status (`applyAgentEvent` `:471`):
   usually `idle` between wakeups). `shouldHibernate` refuses a looping
   workspace — the sweeper would silently kill the loop (wakeups live inside the
   session process, and loop delays reach 60 min > the 30-min idle threshold).
+  UI: a small cycle-arrows CORNER BADGE (`.ws-glyph-loop`, slow 4s spin,
+  `currentColor` so it follows each state's hue) overlaid on every glyph shape
+  by `WorkspaceStatusGlyph` (`looping` prop, passed by all five surfaces) —
+  suppressed while hibernated; `statusGlyphTitle` appends "— looping".
+  A looping row's turn-end still arms the BELL but skips the chime
+  (App.tsx `onAgentFinished`) and the OS toast (`fireFinished`) — a 15-min
+  loop would otherwise announce itself 4×/hour; a loop parked on a question
+  (`fireNeedsInput`) still notifies. E2E gate:
+  `scripts/verify-loop-badge-restore.mjs` (badge states incl. live spool
+  detection, restart restore + its lingering-keeper negative control).
 - **Keeper restart restore** — `restoreRunningFromKeeper` (activity.ts, beside
   `resumeRunning`): store.load() unconditionally floors persisted `running` →
   `idle` (its "no process survives a restart" comment predates the keeper), so
