@@ -168,6 +168,13 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
   // workspaces whose output the user has not read yet — and the "zZ" chip would
   // replace the bell on a row that still owes them a look.
   if (ws.autoUnread) return false;
+  // A /loop's wakeups live INSIDE the session process — hibernating a looping
+  // agent doesn't pause the loop, it silently kills it (and the sidebar would
+  // keep advertising a loop that can never fire again). A loop's idle phase
+  // between wakeups can legitimately exceed the 30-min threshold (ScheduleWakeup
+  // delays go up to 60 min), so without this line the sweeper reaps exactly the
+  // agents that are deliberately sleeping-to-work.
+  if (ws.loopingSince) return false;
   if (isActive) return false;
   if (ws.host) return false;
   if (ws.archived) return false;

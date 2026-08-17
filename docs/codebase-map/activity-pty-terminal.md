@@ -45,6 +45,30 @@ Event → status (`applyAgentEvent` `:471`):
   Managed Agents (typed `stop_reason` on `session.status_idle`) both model
   turn-end.
 - `notify` → `waiting` via `fireNeedsInput` `:109` ("needs input" toast).
+- **Loop marker** — `Workspace.loopingSince` (persisted, orthogonal to `status`
+  like `autoUnread`; full set/clear rules in its types.ts doc). `markLooping`
+  (activity.ts, mirrors `markAutoUnread` incl. the explicit-`undefined`
+  broadcast) is SET from the `pretool` case when `tool === 'ScheduleWakeup'`
+  (the /loop skill re-arming — the one chokepoint both agent paths cross with
+  the tool name), and CLEARED on `ScheduleWakeup({stop:true})` (SDK path only —
+  agent-sdk.ts `emitFrom`, the spool hook line carries no tool input), on
+  session `clear` (not `compact`), and in `reconcileExited` (process death
+  kills the loop; checked BEFORE the `running` guard, since a looping agent is
+  usually `idle` between wakeups). `shouldHibernate` refuses a looping
+  workspace — the sweeper would silently kill the loop (wakeups live inside the
+  session process, and loop delays reach 60 min > the 30-min idle threshold).
+- **Keeper restart restore** — `restoreRunningFromKeeper` (activity.ts, beside
+  `resumeRunning`): store.load() unconditionally floors persisted `running` →
+  `idle` (its "no process survives a restart" comment predates the keeper), so
+  a DETACHED keeper mid-turn showed a quiet row after relaunch until the user
+  opened it (lazy attach is the only other path that re-asserts `running`).
+  `reconcileKeepersAtStartup` (index.ts, the renamed orphan-keeper reap) probes
+  each live keeper read-only (`probeKeeper` — never claims/attaches) and lifts
+  `idle` → `running` only when `turnInFlight` (a lingering post-turn keeper
+  stays idle), clearing a load-migrated bell and labeling the gap
+  `THINKING_TOOL_LABEL`. The restored `running` resolves normally via the
+  surviving spool's turn-end line (the startup wipe keeps live keepers' spool +
+  cursor).
 
 #### The three attention states (Orca parity)
 

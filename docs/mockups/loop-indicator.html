@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Loop indicator — variants</title>
+<style>
+  :root {
+    /* Verbatim Orchestra tokens (styles.css) */
+    --bg: #0a0b0d;
+    --panel: #14161a;
+    --text: #eef1f5;
+    --text-dim: #8b93a0;
+    --accent: #6ea8ff;
+    --glyph-working: oklch(79.5% 0.184 86.047);   /* tw yellow-500  */
+    --glyph-attention: oklch(76.9% 0.188 70.08);  /* tw amber-500   */
+    --glyph-done: oklch(69.6% 0.17 162.48);       /* tw emerald-500 */
+    --glyph-inactive: oklch(55.6% 0 0);           /* tw neutral-500 */
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 40px 64px;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.5 system-ui, -apple-system, sans-serif;
+  }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: var(--text-dim); margin-bottom: 28px; }
+  h2 { font-size: 13px; font-weight: 600; margin: 0; }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px; max-width: 1200px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid #23262c; border-radius: 10px;
+    padding: 14px 16px 10px;
+  }
+  .card .desc { color: var(--text-dim); font-size: 12px; margin: 2px 0 10px; min-height: 34px; }
+  .card .tag {
+    float: right; font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    border-radius: 99px; padding: 1px 7px;
+  }
+  /* ---- faithful sidebar row ---- */
+  .rows { border-radius: 7px; overflow: hidden; }
+  .row {
+    display: flex; align-items: center; gap: 9px;
+    padding: 5px 10px; height: 28px;
+  }
+  .row:hover { background: #1b1e24; }
+  .row .name { color: var(--text); font-size: 12.5px; }
+  .row .note { color: var(--text-dim); font-size: 11px; margin-left: auto; }
+
+  /* ---- current glyphs, verbatim mechanics ---- */
+  .ws-glyph {
+    position: relative; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    width: 12px; height: 12px;
+  }
+  .dot-idle::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--glyph-done);
+  }
+  .spin {
+    display: block; width: 10px; height: 10px; border-radius: 50%;
+    border: 2px solid var(--glyph-working); border-top-color: transparent;
+    animation: rot .8s linear infinite;
+  }
+  @keyframes rot { to { transform: rotate(360deg); } }
+
+  /* ============ VARIANT A — thin arc ring (state-colored) ============ */
+  .loopA::after {
+    content: ""; position: absolute; inset: -4px; border-radius: 50%;
+    border: 1px solid transparent; border-top-color: var(--lc);
+    border-right-color: var(--lc);
+    animation: rot 2.2s linear infinite;
+  }
+  /* ============ VARIANT B — thin arc ring (accent = loop's own color) ============ */
+  .loopB::after {
+    content: ""; position: absolute; inset: -4px; border-radius: 50%;
+    border: 1px solid transparent; border-top-color: var(--accent);
+    border-right-color: var(--accent);
+    animation: rot 2.2s linear infinite;
+  }
+  /* ============ VARIANT C — dashed orbit ============ */
+  .loopC::after {
+    content: ""; position: absolute; inset: -4.5px; border-radius: 50%;
+    border: 1px dashed color-mix(in srgb, var(--lc) 75%, transparent);
+    animation: rot 7s linear infinite;
+  }
+  /* ============ VARIANT D — comet sweep ============ */
+  .loopD::after {
+    content: ""; position: absolute; inset: -4.5px; border-radius: 50%;
+    background: conic-gradient(from 0deg, transparent 0 62%, var(--lc) 100%);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 1.5px), #000 calc(100% - 1.4px));
+            mask: radial-gradient(farthest-side, transparent calc(100% - 1.5px), #000 calc(100% - 1.4px));
+    animation: rot 2.6s linear infinite;
+  }
+  /* ============ VARIANT E — orbiting satellite ============ */
+  .loopE::after {
+    content: ""; position: absolute; inset: -4.5px; border-radius: 50%;
+    background: radial-gradient(circle 1.6px at 50% 0.8px, var(--lc) 98%, transparent);
+    animation: rot 1.8s linear infinite;
+  }
+  .loopE::before2 {}
+  /* faint track for the satellite */
+  .loopE .track {
+    position: absolute; inset: -4.5px; border-radius: 50%;
+    border: 1px solid color-mix(in srgb, var(--glyph-inactive) 30%, transparent);
+  }
+  /* ============ VARIANT F — corner ↻ badge ============ */
+  .loopF .badge {
+    position: absolute; right: -5px; bottom: -4px;
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .loopF .badge svg { width: 8px; height: 8px; display: block; color: var(--lc); }
+  .loopF .badge svg { animation: rot 4s linear infinite; }
+
+  /* state color helper: green when idle, yellow when working */
+  .st-idle { --lc: var(--glyph-done); }
+  .st-working { --lc: var(--glyph-working); }
+
+  /* pick chip */
+  .pick { font-size: 10px; color: var(--text-dim); letter-spacing: .05em; }
+
+  .refbar {
+    display: flex; gap: 36px; align-items: center; background: var(--panel);
+    border: 1px solid #23262c; border-radius: 10px; padding: 10px 18px;
+    margin-bottom: 20px; max-width: 1200px;
+  }
+  .refbar .r { display: flex; align-items: center; gap: 9px; color: var(--text-dim); font-size: 12px; }
+
+  .sidebar-sim {
+    margin-top: 30px; max-width: 300px; background: var(--panel);
+    border: 1px solid #23262c; border-radius: 10px; padding: 8px 0;
+  }
+  .sidebar-sim h2 { padding: 4px 14px 8px; color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; }
+</style>
+</head>
+<body>
+
+<h1>Loop indicator — pick a variant</h1>
+<div class="sub">Each variant shown as <b>idle + loop</b> and <b>working + loop</b>, at real size (12px glyph box, 28px sidebar row) on the real app tokens. The base glyphs are untouched — the loop marker is an added layer.</div>
+
+<div class="refbar">
+  <div class="r"><span class="ws-glyph dot-idle"></span> idle (current)</div>
+  <div class="r"><span class="ws-glyph"><span class="spin"></span></span> working (current)</div>
+  <div class="r" style="margin-left:auto; font-size:11px;">← reference, unchanged</div>
+</div>
+
+<div class="grid">
+
+  <div class="card">
+    <span class="tag">A</span><h2>Thin arc ring — state-colored</h2>
+    <div class="desc">Your suggestion, literal: a 1px half-arc orbiting the glyph, tinted the state's own color (green over idle, yellow over working). Loop reads as an aura of the state.</div>
+    <div class="rows">
+      <div class="row"><span class="ws-glyph dot-idle loopA st-idle"></span><span class="name">api-refactor</span><span class="note">idle + loop</span></div>
+      <div class="row"><span class="ws-glyph loopA st-working"><span class="spin"></span></span><span class="name">nightly-audit</span><span class="note">working + loop</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <span class="tag">B</span><h2>Thin arc ring — accent blue</h2>
+    <div class="desc">Same ring, but loop gets its <i>own</i> color channel (accent blue) regardless of state — instantly scannable as "this one loops", never confusable with the yellow working ring.</div>
+    <div class="rows">
+      <div class="row"><span class="ws-glyph dot-idle loopB"></span><span class="name">api-refactor</span><span class="note">idle + loop</span></div>
+      <div class="row"><span class="ws-glyph loopB"><span class="spin"></span></span><span class="name">nightly-audit</span><span class="note">working + loop</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <span class="tag">C</span><h2>Dashed orbit</h2>
+    <div class="desc">A dashed circle rotating slowly — the dashes literally say "recurring / segmented cycle". Calmer than an arc; full circle so it's visible at every rotation phase.</div>
+    <div class="rows">
+      <div class="row"><span class="ws-glyph dot-idle loopC st-idle"></span><span class="name">api-refactor</span><span class="note">idle + loop</span></div>
+      <div class="row"><span class="ws-glyph loopC st-working"><span class="spin"></span></span><span class="name">nightly-audit</span><span class="note">working + loop</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <span class="tag">D</span><h2>Comet sweep</h2>
+    <div class="desc">A radar-like sweep with a fading tail on a thin ring. The most "alive" of the ring options — reads as a scheduler ticking around a clock face.</div>
+    <div class="rows">
+      <div class="row"><span class="ws-glyph dot-idle loopD st-idle"></span><span class="name">api-refactor</span><span class="note">idle + loop</span></div>
+      <div class="row"><span class="ws-glyph loopD st-working"><span class="spin"></span></span><span class="name">nightly-audit</span><span class="note">working + loop</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <span class="tag">E</span><h2>Orbiting satellite</h2>
+    <div class="desc">A 3px dot orbiting the glyph on a faint track — like a moon around a planet. Minimal ink; the motion alone carries "loop".</div>
+    <div class="rows">
+      <div class="row"><span class="ws-glyph dot-idle loopE st-idle"><span class="track"></span></span><span class="name">api-refactor</span><span class="note">idle + loop</span></div>
+      <div class="row"><span class="ws-glyph loopE st-working"><span class="spin"></span><span class="track"></span></span><span class="name">nightly-audit</span><span class="note">working + loop</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <span class="tag">F</span><h2>Corner ↻ badge</h2>
+    <div class="desc">No ring at all: a tiny cycle-arrows badge pinned to the glyph's corner (like a notification badge), rotating very slowly. Zero interference with the base glyph; the most literal "this is a loop".</div>
+    <div class="rows">
+      <div class="row"><span class="ws-glyph dot-idle loopF st-idle"><span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v5h-5"/></svg></span></span><span class="name">api-refactor</span><span class="note">idle + loop</span></div>
+      <div class="row"><span class="ws-glyph loopF st-working"><span class="spin"></span><span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v5h-5"/></svg></span></span><span class="name">nightly-audit</span><span class="note">working + loop</span></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="sidebar-sim">
+  <h2>Noise check — mixed sidebar</h2>
+  <div class="row"><span class="ws-glyph dot-idle"></span><span class="name">plain idle</span></div>
+  <div class="row"><span class="ws-glyph dot-idle loopA st-idle"></span><span class="name">A · arc, state color</span></div>
+  <div class="row"><span class="ws-glyph"><span class="spin"></span></span><span class="name">plain working</span></div>
+  <div class="row"><span class="ws-glyph loopB"><span class="spin"></span></span><span class="name">B · arc, accent</span></div>
+  <div class="row"><span class="ws-glyph dot-idle loopC st-idle"></span><span class="name">C · dashed orbit</span></div>
+  <div class="row"><span class="ws-glyph loopD st-working"><span class="spin"></span></span><span class="name">D · comet sweep</span></div>
+  <div class="row"><span class="ws-glyph dot-idle loopE st-idle"><span class="track"></span></span><span class="name">E · satellite</span></div>
+  <div class="row"><span class="ws-glyph loopF st-working"><span class="spin"></span><span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v5h-5"/></svg></span></span><span class="name">F · corner badge</span></div>
+</div>
+
+</body>
+</html>

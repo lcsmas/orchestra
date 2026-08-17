@@ -218,3 +218,14 @@ test('an auto-unread workspace is never hibernated', () => {
 test('clearing auto-unread makes it eligible again', () => {
   assert.equal(shouldHibernate(ws({ autoUnread: undefined }), signals()), true);
 });
+
+// A /loop's wakeups live inside the session process, so hibernating a looping
+// agent silently kills the loop — and its idle phase between wakeups can
+// legitimately exceed the threshold (ScheduleWakeup delays reach 60 min).
+test('a looping workspace is never hibernated', () => {
+  assert.equal(shouldHibernate(ws({ loopingSince: 123 }), signals()), false);
+});
+
+test('clearing the loop marker makes it eligible again', () => {
+  assert.equal(shouldHibernate(ws({ loopingSince: undefined }), signals()), true);
+});

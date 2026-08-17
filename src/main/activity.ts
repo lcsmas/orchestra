@@ -64,6 +64,24 @@ export async function markAutoUnread(id: string, unread: boolean): Promise<void>
   platform.broadcast('workspace:update', updated);
 }
 
+/** Set or clear the loop marker — "this agent is running a recurring /loop".
+ *  See {@link Workspace.loopingSince} for the set/clear rules. Same mechanics
+ *  as {@link markAutoUnread}: stored ABSENT when off, broadcast with an
+ *  explicit `undefined` (the renderer's `workspace:update` reducer is a MERGE,
+ *  so a dropped key would leave a stale loop ring on screen forever). Setting
+ *  while already looping is a no-op — `loopingSince` keeps the FIRST
+ *  observation, so the tooltip can age "looping for 2h" rather than resetting
+ *  on every re-schedule. */
+export async function markLooping(id: string, looping: boolean): Promise<void> {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived) return;
+  if (!!ws.loopingSince === looping) return;
+  alog.info(`loop ${looping ? 'detected' : 'ended'} ws=${id}`);
+  const updated: Workspace = { ...ws, loopingSince: looping ? Date.now() : undefined };
+  void store.upsertWorkspace(updated).catch((e) => alog.swallow('persist loopingSince', e));
+  platform.broadcast('workspace:update', updated);
+}
+
 /** Update a workspace's status. Returns the workspace plus whether this call
  *  was a real transition (`changed`) — callers that fire a one-shot side effect
  *  on entering a state (a chime, an OS notification) gate on `changed` so a
@@ -416,6 +434,11 @@ export async function detectAndUpdateReleaseState(id: string): Promise<void> {
 export function reconcileExited(id: string): void {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return;
+  // The agent process is gone, and a /loop's wakeups live inside it — clear
+  // the loop marker regardless of status (a looping agent is usually `idle`,
+  // sleeping until its next wakeup, so this must not hide behind the
+  // `running` guard below).
+  if (ws.loopingSince) void markLooping(id, false);
   if (ws.status !== 'running') return;
   const seen = platform.isFocused() && getActiveWorkspaceId() === id;
   void markAutoUnread(id, !seen);
@@ -433,6 +456,32 @@ export function resumeRunning(id: string): void {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return;
   if (ws.status !== 'waiting') return;
+  void setStatus(id, 'running');
+}
+
+/** Startup reconcile for keeper-hosted turns: a live detached keeper reports a
+ *  turn genuinely in flight, but `store.load()` floored the persisted `running`
+ *  to `idle` (its "no process can survive a restart" assumption predates the
+ *  keeper). Lift exactly that case back to `running` so the sidebar shows the
+ *  agent working WITHOUT attaching to it (the caller probes read-only — lazy
+ *  reattach stays lazy). Guarded to only lift `idle`: never resurrect
+ *  `error`/`stopped`, and a redundant call is a `setStatus` no-op. The bell is
+ *  cleared too — "finished, unseen" cannot be true of a turn still in flight
+ *  (the load migration may have minted it from a stale `waiting`), and
+ *  `fireFinished` re-arms it when this turn really ends. The turn-end that
+ *  resolves this restored `running` arrives through the surviving spool (the
+ *  startup wipe keeps live keepers' spool + cursor, and the detached CLI's
+ *  hooks keep appending). */
+export function restoreRunningFromKeeper(id: string): void {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived) return;
+  if (ws.status !== 'idle') return;
+  alog.info(`restoring running status from live keeper mid-turn ws=${id}`);
+  if (ws.autoUnread) void markAutoUnread(id, false);
+  // No tool name is knowable without attaching — label the gap as thinking,
+  // exactly as `submit` does, so the tooltip reads "Agent is thinking…" until
+  // the next spool pretool names the real tool.
+  emitTool(id, THINKING_TOOL_LABEL);
   void setStatus(id, 'running');
 }
 
@@ -613,6 +662,14 @@ export function applyAgentEvent(
     case 'pretool':
       emitTool(id, tool ?? null);
       void setStatus(id, 'running');
+      // A ScheduleWakeup call is the /loop skill re-arming its next iteration —
+      // the observable that marks this workspace as LOOPING. Detected here
+      // because this is the one chokepoint both agent paths cross with the
+      // tool name in hand (spool hook line and SDK tool-use event alike). The
+      // hook line carries no tool INPUT, so `stop: true` (loop termination) is
+      // only visible on the SDK path — see agent-sdk.ts's emitFrom; a terminal
+      // session's loop end is caught by session-clear/process-exit instead.
+      if (tool === 'ScheduleWakeup') void markLooping(id, true);
       break;
     case 'posttool':
       // Stay running between tools. The label does NOT go blank here: what
@@ -658,6 +715,10 @@ export function applyAgentEvent(
       // (existing) transcript, which still carries a valid last-turn figure.
       if (tool === 'clear' || tool === 'compact') {
         resetContext(id);
+        // A cleared session dropped its conversation — any /loop that lived in
+        // it is gone with it (a compact keeps the conversation, so the loop
+        // survives that).
+        if (tool === 'clear') void markLooping(id, false);
       } else {
         void emitContext(id, transcript, true);
       }

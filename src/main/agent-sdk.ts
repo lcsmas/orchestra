@@ -37,7 +37,13 @@ import { agentCliBinDir } from './cli-shim';
 import { getHookSocketPath } from './hooks-server';
 import { isRunning as isPtyRunning } from './pty';
 import { getEventsDir } from './events-spool';
-import { reconcileExited, applyAgentEvent, fireNeedsInput, resumeRunning } from './activity';
+import {
+  reconcileExited,
+  applyAgentEvent,
+  fireNeedsInput,
+  resumeRunning,
+  markLooping,
+} from './activity';
 import { makeKeeperSpawn, killKeeper, probeKeeper } from './keeper-client';
 import { registerSdkDelivery } from './sdk-delivery';
 import { clearHibernated } from './hibernation.ts';
@@ -375,6 +381,18 @@ function emitFrom(session: Session, msg: SdkMessage): void {
       continue;
     }
     emit(session.wsId, ev);
+    // Loop tracking: the SDK path is the only one that sees a tool call's full
+    // INPUT, so it alone can catch `ScheduleWakeup({stop: true})` — the /loop
+    // skill's own termination. The SET side ('ScheduleWakeup' fired at all)
+    // rides the shared `pretool` chokepoint in activity.ts, which this event
+    // also reaches via driveStatusFromEvent/the spool; markLooping is
+    // idempotent, so the paths can overlap safely. Deliberately OUTSIDE the
+    // driveStatus single-writer gate: that gate exists to avoid double-DRIVING
+    // the status dot, but the loop flag is a store field with its own
+    // no-change guard.
+    if (ev.type === 'tool-use' && ev.name === 'ScheduleWakeup') {
+      void markLooping(session.wsId, ev.input?.stop !== true);
+    }
     driveStatusFromEvent(session, ev);
     if (ev.type === 'session/init') emitMemoryWarning(session, ev);
   }

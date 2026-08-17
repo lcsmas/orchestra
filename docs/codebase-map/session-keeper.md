@@ -52,6 +52,13 @@ completion, relaunch reattach + transcript, explicit-stop kill).
   and **redelivers parked canUseTool permission requests**; no
   `reinitialize()` needed (spike S3/S4). History backfill paints everything
   missed while detached; live events layer on top.
+  Laziness has one status-side complement: `reconcileKeepersAtStartup`
+  (index.ts — the orphan-keeper reap, extended) probes each live keeper
+  READ-ONLY at launch and calls `restoreRunningFromKeeper` (activity.ts) when
+  `turnInFlight`, because store.load() floors persisted `running` → `idle` and
+  nothing else re-asserts it until the user opens the row. Probe ≠ attach: the
+  probe frame never claims the client slot, so this restores the sidebar dot
+  without violating no-mass-resume.
 - **Explicit stops genuinely kill**: `sdkStop`'s live path rides the graceful
   close (interrupt → stdin EOF → keeper escalation — preserves the CLI's
   transcript flush); its NO-SESSION path calls `killKeeper(wsId)` — critical

@@ -163,7 +163,14 @@ import { stopAll } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
 import { backfillWorkspaceLinks } from './link-backfill';
 import { installCliShim, installAgentCliShim } from './cli-shim';
-import { installKeeper, listLiveKeepers, killKeeper, setAppQuitting } from './keeper-client';
+import {
+  installKeeper,
+  listLiveKeepers,
+  killKeeper,
+  probeKeeper,
+  setAppQuitting,
+} from './keeper-client';
+import { restoreRunningFromKeeper } from './activity';
 import { startEventsSpool, stopEventsSpool } from './events-spool';
 import { startHibernationSweeper, stopHibernationSweeper } from './hibernation.ts';
 import { startUsagePolling, stopUsagePolling } from './usage';
@@ -512,19 +519,37 @@ async function checkDependencies(): Promise<void> {
 // In CLI mode the GUI lifecycle is never wired up — the dynamic import at the
 // top of this module handles the command and exits the process.
 
-/** Kill detached keepers whose workspace no longer exists in the store —
- *  deleted/archived while their turn outlived a previous app run. Best-effort;
- *  live keepers for known workspaces are left alone (lazy reattach). */
-function reapOrphanKeepers(): void {
+/** Startup keeper reconcile. Two jobs, one `listLiveKeepers()` walk:
+ *  - Kill detached keepers whose workspace no longer exists in the store —
+ *    deleted/archived while their turn outlived a previous app run.
+ *  - For live keepers whose workspace DOES exist, probe (read-only — a probe
+ *    frame never claims the client slot or attaches, so lazy reattach stays
+ *    lazy) and, when a turn is genuinely in flight, restore the `running` dot
+ *    that store.load() unconditionally floored to `idle`. Without this a
+ *    working detached agent shows a quiet grey/green row until the user
+ *    happens to open it. `turnInFlight` (not mere liveness) is the gate: a
+ *    keeper LINGERING after its turn must stay `idle`. Best-effort throughout. */
+async function reconcileKeepersAtStartup(): Promise<void> {
   try {
     for (const wsId of listLiveKeepers()) {
       if (!store.getWorkspace(wsId)) {
         log.info(`reaping orphan keeper for deleted workspace ${wsId}`);
         void killKeeper(wsId);
+        continue;
+      }
+      try {
+        const probe = await probeKeeper(wsId);
+        // `everStarted === false` = CLI wedged in session INIT (see KeeperProbe)
+        // — not a turn the user is waiting on; leave it idle.
+        if (probe?.running && probe.everStarted !== false && probe.turnInFlight) {
+          restoreRunningFromKeeper(wsId);
+        }
+      } catch (e) {
+        log.warn(`keeper status probe failed for ${wsId}`, e);
       }
     }
   } catch (e) {
-    log.warn('orphan-keeper reap failed', e);
+    log.warn('startup keeper reconcile failed', e);
   }
 }
 
@@ -612,12 +637,15 @@ if (!ORCHESTRA_CLI_MODE) {
       installKeeper();
       await createMainWindow();
       // Reap keepers whose workspace no longer exists (deleted while the app
-      // was closed) — everything else stays lazily attachable; also prunes
+      // was closed) and restore the `running` dot for keeper turns still in
+      // flight — everything else stays lazily attachable; also prunes
       // stale pid/sock files for dead keepers as a side effect. MUST run after
       // createMainWindow: store.load() happens in there, and reaping against
       // an unloaded store reads every workspace as missing and kills every
-      // legitimate keeper (caught by verify-keeper-detach.mjs).
-      reapOrphanKeepers();
+      // legitimate keeper (caught by verify-keeper-detach.mjs). Fired without
+      // await: probing N keepers is socket round-trips that must not delay
+      // "main window ready".
+      void reconcileKeepersAtStartup();
       installCliShim();
       log.info('main window ready');
     } catch (e) {

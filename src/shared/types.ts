@@ -289,6 +289,27 @@ export interface Workspace {
    * wakeAgentWithPrompt, workspace activation) so the chip disappears the
    * moment a process comes back. */
   hibernatedAt?: number;
+  /** Epoch ms since this workspace's agent has been running a recurring loop
+   * (the `/loop` skill — observed as a `ScheduleWakeup` tool call). Loop is an
+   * axis ORTHOGONAL to {@link WorkspaceStatus}, like {@link autoUnread}: a
+   * looping agent alternates `running` (iteration in flight) and `idle`
+   * (sleeping until the next wakeup), and the sidebar overlays a loop marker on
+   * either glyph rather than adding a sixth status.
+   *
+   * SET whenever a `ScheduleWakeup` call is observed (both agent paths: the
+   * spool hook's `pretool` line carries the tool name; the SDK path sees the
+   * full `tool-use` event). CLEARED when: the SDK path sees `ScheduleWakeup`
+   * with `stop: true` (the loop's own termination — the spool path can't see
+   * inputs, so a terminal session's stop is caught by the other rules); the
+   * session is cleared (SessionStart source=clear); or the agent process dies
+   * (`reconcileExited`) — a wakeup lives inside the session process, so no
+   * process means no loop. `shouldHibernate` refuses a looping workspace for
+   * the same reason: the sweeper would silently kill the loop it advertises.
+   *
+   * Persisted (a detached keeper's loop survives an app restart). Stored ABSENT
+   * rather than 0/false; broadcast with an explicit `undefined` on clear
+   * because `workspace:update` is a MERGE. */
+  loopingSince?: number;
   /** True once the branch has been pinned by a *human* action — the user typing
    * a name in the sidebar, an out-of-band `git branch -m`, or an explicit branch
    * switch. Hard-disables the agent-facing auto-rename nudge regardless of
