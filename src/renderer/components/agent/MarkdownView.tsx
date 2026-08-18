@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import remend from 'remend';
 import { CodeBlock } from './CodeBlock';
 import { partitionStreamingMarkdown } from '../../../shared/markdown-blocks';
@@ -37,6 +38,22 @@ interface Props {
  * else uses react-markdown's default element mapping under our `av-md-*` classes.
  * react-markdown never renders raw HTML from the source (no `rehype-raw`), so
  * model output can't inject markup.
+ *
+ * ## Line breaks — why `remark-breaks`
+ *
+ * Strict CommonMark treats a SINGLE newline as a "soft break" and renders it as a
+ * SPACE; only a blank line (paragraph) or a two-trailing-space "hard break" starts
+ * a new visual line. That is wrong for this surface: the agent writes chat prose,
+ * and a drafted message with real line breaks collapsed into one run-on paragraph
+ * (verified: 4 lines → 1 `<p>`, 0 `<br>`). Nothing downstream rescues it either —
+ * `.av-message-text` is `white-space: normal`, so the newline really does paint as
+ * a space. `remark-breaks` maps every soft break to a `<br>`, which is the
+ * convention every chat renderer uses (GitHub comments, Slack, Discord) and what a
+ * reader typing a newline actually expects.
+ *
+ * Ordering matters: `remarkGfm` runs FIRST so its block constructs (tables, task
+ * lists) are parsed before soft breaks become `<br>` nodes — a `<br>` injected
+ * inside a pipe-table row would otherwise break the table parse.
  *
  * ## Smooth streaming — block-level memoization
  *
@@ -93,26 +110,30 @@ function MarkdownBlockImpl({ text, done }: Props) {
         );
       },
       // Class hooks so the existing av-md-* theme layer styles these unchanged.
-      h1: (p) => <h1 className="av-md-h" {...p} />,
-      h2: (p) => <h2 className="av-md-h" {...p} />,
-      h3: (p) => <h3 className="av-md-h" {...p} />,
-      h4: (p) => <h4 className="av-md-h" {...p} />,
-      h5: (p) => <h5 className="av-md-h" {...p} />,
-      h6: (p) => <h6 className="av-md-h" {...p} />,
-      p: (p) => <p className="av-md-p" {...p} />,
-      ul: (p) => <ul className="av-md-ul" {...p} />,
-      ol: (p) => <ol className="av-md-ol" {...p} />,
-      blockquote: (p) => <blockquote className="av-md-quote" {...p} />,
+      // `node` is react-markdown's internal mdast node — it is NOT a DOM
+      // attribute, so it must be stripped before spreading onto a real element
+      // (otherwise every one of these emits a junk `node="[object Object]"`
+      // attribute into the DOM; React 19 passes unknown props straight through).
+      h1: ({ node: _n, ...p }) => <h1 className="av-md-h" {...p} />,
+      h2: ({ node: _n, ...p }) => <h2 className="av-md-h" {...p} />,
+      h3: ({ node: _n, ...p }) => <h3 className="av-md-h" {...p} />,
+      h4: ({ node: _n, ...p }) => <h4 className="av-md-h" {...p} />,
+      h5: ({ node: _n, ...p }) => <h5 className="av-md-h" {...p} />,
+      h6: ({ node: _n, ...p }) => <h6 className="av-md-h" {...p} />,
+      p: ({ node: _n, ...p }) => <p className="av-md-p" {...p} />,
+      ul: ({ node: _n, ...p }) => <ul className="av-md-ul" {...p} />,
+      ol: ({ node: _n, ...p }) => <ol className="av-md-ol" {...p} />,
+      blockquote: ({ node: _n, ...p }) => <blockquote className="av-md-quote" {...p} />,
       hr: () => <hr className="av-md-hr" />,
-      strong: (p) => <strong className="av-md-strong" {...p} />,
-      em: (p) => <em className="av-md-em" {...p} />,
+      strong: ({ node: _n, ...p }) => <strong className="av-md-strong" {...p} />,
+      em: ({ node: _n, ...p }) => <em className="av-md-em" {...p} />,
       // GFM tables — the headline gap the old parser couldn't render at all.
-      table: (p) => (
+      table: ({ node: _n, ...p }) => (
         <div className="av-md-table-wrap">
           <table className="av-md-table" {...p} />
         </div>
       ),
-      del: (p) => <del className="av-md-del" {...p} />,
+      del: ({ node: _n, ...p }) => <del className="av-md-del" {...p} />,
     }),
     [done],
   );
@@ -129,7 +150,7 @@ function MarkdownBlockImpl({ text, done }: Props) {
   const source = useMemo(() => (done ? text : remend(text)), [text, done]);
 
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={components}>
       {source}
     </ReactMarkdown>
   );

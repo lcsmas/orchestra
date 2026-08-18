@@ -646,10 +646,17 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   `MarkdownView` so per-frame render stays cheap. Verified e2e at the real
   operating point (28-char deltas / 120ms): backlog 72 at block-stop drained
   over 7 frames, max 24 ch/frame),
-  **`MarkdownView.tsx`** (full CommonMark + GFM via **react-markdown + remark-gfm** —
-  tables, strikethrough, task/nested lists — replacing the former hand-rolled dep-free
-  subset parser that silently dropped all of those, the "bad markdown reader"; fenced
-  blocks route to `CodeBlock`. **Streams smoothly via block-level memoization**: instead
+  **`MarkdownView.tsx`** (full CommonMark + GFM via **react-markdown + remark-gfm +
+  remark-breaks** — tables, strikethrough, task/nested lists — replacing the former
+  hand-rolled dep-free subset parser that silently dropped all of those, the "bad
+  markdown reader"; fenced blocks route to `CodeBlock`. **`remark-breaks` maps a single
+  newline to `<br>`**: strict CommonMark renders a soft break as a SPACE, so multi-line
+  chat prose collapsed into one run-on paragraph (measured: 4 lines -> 1 `<p>`, 0 `<br>`;
+  `.av-message-text` is `white-space: normal`, so nothing downstream rescued it). Plugin
+  ORDER matters — `remarkGfm` runs first so table/task-list blocks parse before soft
+  breaks become `<br>` nodes. Note the element overrides destructure react-markdown's
+  internal `node` prop OUT before spreading onto DOM elements; spreading it emits a junk
+  `node="[object Object]"` attribute on every `p`/`h*`/`ul`/`table`/... . **Streams smoothly via block-level memoization**: instead
   of re-parsing/re-reconciling the whole accumulated markdown every frame — which grows
   with message length and, past a few KB, blows the 16ms frame budget so text arrives in
   visible *blocks* — it splits the text into top-level blocks
