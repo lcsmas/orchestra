@@ -125,7 +125,7 @@ import {
   sdkAttachIfDetached,
   recoverPendingPrompts,
 } from './agent-sdk';
-import { log, revealLogs, getLogFile, getLogLevel } from './logger';
+import { log, revealLogs, getLogFile, getLogLevel, scoped } from './logger';
 import * as browserPanel from './browser-panel';
 import type { OrchestraAPI } from '../shared/ipc';
 // NOTE the .ts extension: this is a VALUE import (the others from
@@ -311,6 +311,10 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   readSelfTuneLessons: 'selfTune:lessons',
 };
 
+/** External-URL opens. Its own scope so `[open-url]` lines can be grepped out
+ *  of a busy log when tracing a duplicate-window report. */
+const olog = scoped('open-url');
+
 // Only allow http(s) URLs out to the OS. Other schemes are ignored to avoid
 // opening arbitrary things (file://, javascript:, etc.) from PTY output.
 function isSafeHttpUrl(url: string): boolean {
@@ -323,10 +327,29 @@ function isSafeHttpUrl(url: string): boolean {
 }
 
 /** Open a URL with the system handler iff it is a plain web URL. Shared with
- *  index.ts's window-open interception. */
-export async function openUrlExternally(url: string): Promise<void> {
-  if (!isSafeHttpUrl(url)) return;
-  await platform.openExternal(url);
+ *  index.ts's window-open interception.
+ *
+ * `origin` names the call site so a single user gesture that produces MORE than
+ * one open is legible in the log. This path was previously silent, which made
+ * the "one link click tiled six browser windows" report impossible to diagnose
+ * from logs alone: the duplication could live in Orchestra (both the
+ * window-open handler and `will-navigate` firing for one click — neither is
+ * deduped) or entirely below it (on Linux `shell.openExternal` shells out to
+ * `xdg-open`, and a Chromium whose profile SingletonLock is stale cannot hand
+ * the URL to the running browser, so every invocation forks a fresh competing
+ * instance). The two are indistinguishable without a per-call record, so log
+ * every call with its origin before deciding which layer to fix. */
+export async function openUrlExternally(url: string, origin = 'unknown'): Promise<void> {
+  if (!isSafeHttpUrl(url)) {
+    olog.debug(`refused non-http(s) url from ${origin}: ${url.slice(0, 120)}`);
+    return;
+  }
+  olog.info(`open external (${origin}): ${url.slice(0, 200)}`);
+  try {
+    await platform.openExternal(url);
+  } catch (err) {
+    olog.warn(`open external failed (${origin}) for ${url.slice(0, 200)}`, err);
+  }
 }
 
 /** Read a workspace back after a mutation that reported success, for handlers
@@ -391,7 +414,7 @@ export const apiHandlers: ApiHandlerTable = {
 
   // ---------- App ----------
 
-  openExternal: (url) => openUrlExternally(url),
+  openExternal: (url) => openUrlExternally(url, 'renderer-ipc'),
 
   getAppVersion: async () => platform.getAppVersion(),
 

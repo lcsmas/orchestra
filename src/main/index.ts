@@ -328,8 +328,15 @@ async function createMainWindow() {
   // calls and must never delay window creation.
   void backfillWorkspaceLinks().catch(() => {});
 
+  // NOTE: these two handlers are independent and NOT deduped against each
+  // other. A `target="_blank"` click normally routes only through the
+  // window-open handler, but any gesture that falls back to a same-frame
+  // navigation reaches `will-navigate` as well — and then ONE click opens the
+  // URL TWICE. The `origin` tags below exist to make that visible in the log:
+  // two `[open-url]` lines for one click means the duplication is here; one
+  // line means it is below us (see openUrlExternally's comment).
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void openUrlExternally(url);
+    void openUrlExternally(url, 'window-open');
     return { action: 'deny' };
   });
 
@@ -338,7 +345,7 @@ async function createMainWindow() {
     if (url === current) return;
     if (VITE_DEV_SERVER_URL && url.startsWith(VITE_DEV_SERVER_URL)) return;
     event.preventDefault();
-    void openUrlExternally(url);
+    void openUrlExternally(url, 'will-navigate');
   });
 
   // Renderer/GPU crash recovery. Two distinct "the window went black" failure
