@@ -118,3 +118,75 @@ test('a fresh start re-uses the wsid file path (rotation/restart resets counter 
   execFileSync('bash', [script, 'submit'], { env });
   assert.deepEqual(readSeqs(dir), hasFlock ? [1] : [0], 'numbering restarts from 1 after a wipe');
 });
+
+// ---------------------------------------------------------------------------
+// Payload-parse core: the stdin-mining half of ORCHESTRA_HOOK_SCRIPT (tool /
+// transcript / crons extraction). Same copy-discipline as HOOK above: this
+// mirrors the script in workspaces.ts; if that parsing changes, change this
+// with it. The two Stop payloads are REAL captures from a live claude 2.1.234
+// run (one with an armed ScheduleWakeup, one without) — they pin the compact
+// wire format the bash matchers rely on.
+const PARSE = `#!/usr/bin/env bash
+payload="$(cat)"
+tool=""
+transcript=""
+crons=""
+case "$payload" in
+  *'"tool_name"'*)
+    rest="\${payload#*'"tool_name"'}"
+    rest="\${rest#*:}"
+    rest="\${rest#*'"'}"
+    tool="\${rest%%'"'*}"
+    ;;
+esac
+case "$payload" in
+  *'"transcript_path"'*)
+    rest="\${payload#*'"transcript_path"'}"
+    rest="\${rest#*:}"
+    rest="\${rest#*'"'}"
+    transcript="\${rest%%'"'*}"
+    ;;
+esac
+case "$payload" in
+  *'"session_crons":[]'*) crons="none" ;;
+  *'"session_crons":['*) crons="some" ;;
+esac
+printf '%s|%s|%s' "$tool" "$transcript" "$crons"
+`;
+
+const STOP_PAYLOAD_NO_CRONS =
+  '{"session_id":"dd36f181-6d5b-4c5b-b082-91036d455db0","transcript_path":"/tmp/p/dd36f181.jsonl","cwd":"/tmp/p","prompt_id":"caded681-8b3b-47ef-ad44-d6fb658d08ca","permission_mode":"default","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"ok","background_tasks":[],"session_crons":[]}';
+const STOP_PAYLOAD_WITH_CRON =
+  '{"session_id":"dad3c204-9820-4a9e-b7da-2ca1ced85a3a","transcript_path":"/tmp/p/dad3c204.jsonl","cwd":"/tmp/p","prompt_id":"23b0a366-d18d-41d8-823e-0df855b305b8","permission_mode":"default","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done.","background_tasks":[],"session_crons":[{"id":"d806bf5b","schedule":"51 19 * * *","recurring":false,"prompt":"noop"}]}';
+
+function runParse(payload: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-hook-parse-'));
+  const script = path.join(dir, 'parse.sh');
+  fs.writeFileSync(script, PARSE, { mode: 0o755 });
+  return execFileSync('bash', [script], { input: payload }).toString();
+}
+
+test('Stop payload with empty session_crons → crons=none (definitively not looping)', () => {
+  assert.equal(runParse(STOP_PAYLOAD_NO_CRONS), '|/tmp/p/dd36f181.jsonl|none');
+});
+
+test('Stop payload with an armed session cron → crons=some', () => {
+  assert.equal(runParse(STOP_PAYLOAD_WITH_CRON), '|/tmp/p/dad3c204.jsonl|some');
+});
+
+test('payload without session_crons (older CLI) → crons empty = no opinion', () => {
+  const legacy =
+    '{"session_id":"x","transcript_path":"/tmp/p/x.jsonl","hook_event_name":"Stop","stop_hook_active":false}';
+  assert.equal(runParse(legacy), '|/tmp/p/x.jsonl|');
+});
+
+test('a message QUOTING session_crons:[] cannot spoof the matcher — JSON escaping breaks the pattern', () => {
+  // The bash matcher is a substring scan, not a JSON parse — but it is still
+  // unspoofable by string CONTENT: inside any JSON string value a double quote
+  // is escaped as \" on the wire, so the raw byte sequence "session_crons":[]
+  // can only ever appear as a real top-level key. A payload whose
+  // last_assistant_message quotes the empty form must still read the REAL
+  // field (here: an armed cron → some).
+  const spoofed = STOP_PAYLOAD_WITH_CRON.replace('"Done."', '"see \\"session_crons\\":[] here"');
+  assert.equal(runParse(spoofed).split('|')[2], 'some');
+});

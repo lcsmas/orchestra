@@ -651,6 +651,13 @@ export function applyAgentEvent(
    *  Code's Stop hook carries no reason field, so those events keep their
    *  previous behavior exactly. Only consulted for terminal events. */
   stopReason?: AgentStopReason,
+  /** Loop level-signal from the Stop payload's `session_crons` (the CLI
+   *  scheduler's own registry of pending ScheduleWakeup/CronCreate//loop
+   *  tasks), reduced by the spool hook: 'none' = definitively nothing will
+   *  wake this session, 'some' = a wakeup is armed, undefined = no opinion
+   *  (older hook script/CLI, or a non-spool caller). Only consulted for
+   *  turn-end events. */
+  crons?: 'none' | 'some',
 ): void {
   alog.trace(`event ${event}${tool ? ` tool=${tool}` : ''} ws=${id}`);
   // Every lifecycle event — from either agent path — is "this workspace did
@@ -703,6 +710,17 @@ export function applyAgentEvent(
       // Turn-end: persist the figure (piggybacks the status write fireFinished
       // is about to make) so the badge can be restored at next startup.
       void emitContext(id, transcript, true);
+      // Loop badge, level-triggered: `session_crons` is the scheduler's own
+      // answer to "will anything wake this session later?", delivered on every
+      // turn-end. This is what makes the badge SELF-HEALING — a /loop that
+      // dies by simply not re-arming (the dynamic-/loop norm) is cleared on
+      // that very turn, where the transcript reconcile (loop-scan.ts) needs a
+      // staleness window and the tool-call rules can't see "no call happened".
+      // Applied BEFORE fireFinished so its looping-row toast/chime suppression
+      // reads the fresh flag (markLooping mutates the in-memory store
+      // synchronously). undefined = no opinion — never clear on absence.
+      if (crons === 'none') void markLooping(id, false);
+      else if (crons === 'some') void markLooping(id, true);
       // `stopfail` is itself a reason signal: the terminal path routes Claude
       // Code's StopFailure hook here and passes no explicit reason, so fall back
       // to 'error' for it. That keeps the two paths agreeing without the spool

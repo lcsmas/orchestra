@@ -392,6 +392,41 @@ try {
     JSON.stringify(afterStop),
   );
 
+  // ── A2b. session_crons level signal (self-healing badge) ──────────────────
+  // The seq-3 stop above carried NO crons field (old hook script / old CLI) and
+  // correctly kept the badge — that was the no-opinion negative control. Now a
+  // turn-end whose Stop payload carried session_crons:[] (the hook script
+  // reduces it to crons:"none") must CLEAR the badge: a dynamic /loop dies by
+  // simply not re-arming, which no edge-triggered rule can see.
+  fs.appendFileSync(spool, `{"seq":4,"event":"stop","tool":"","transcript":"","crons":"none"}\n`);
+  const afterNone = await waitFor(
+    'control row loses badge on crons:none turn-end',
+    async () => {
+      const g = await cdp.ev(GLYPH_PROBE('plain-control'));
+      return !g.error && !g.hasBadge ? g : null;
+    },
+    15000,
+  ).catch(() => null);
+  check('stop with crons:none → badge self-heals (clears)', !!afterNone, JSON.stringify(afterNone));
+
+  // And crons:"some" alone — no ScheduleWakeup pretool observed this run (the
+  // call happened while the app was closed, or mid-turn events were lost) —
+  // must SET the badge purely from the level signal.
+  fs.appendFileSync(spool, `{"seq":5,"event":"stop","tool":"","transcript":"","crons":"some"}\n`);
+  const afterSome = await waitFor(
+    'control row regains badge on crons:some turn-end',
+    async () => {
+      const g = await cdp.ev(GLYPH_PROBE('plain-control'));
+      return !g.error && g.hasBadge ? g : null;
+    },
+    15000,
+  ).catch(() => null);
+  check(
+    'stop with crons:some → badge set from the level signal alone',
+    !!afterSome && afterSome.badgeVisible,
+    JSON.stringify(afterSome),
+  );
+
   // ── A3. transcript-based backfill (daemon-hosted loops) ───────────────────
   // The startup sweep runs async; poll both directions.
   const backfilled = await waitFor(

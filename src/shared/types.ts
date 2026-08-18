@@ -296,15 +296,24 @@ export interface Workspace {
    * (sleeping until the next wakeup), and the sidebar overlays a loop marker on
    * either glyph rather than adding a sixth status.
    *
-   * SET whenever a `ScheduleWakeup` call is observed (both agent paths: the
-   * spool hook's `pretool` line carries the tool name; the SDK path sees the
-   * full `tool-use` event). CLEARED when: the SDK path sees `ScheduleWakeup`
-   * with `stop: true` (the loop's own termination — the spool path can't see
-   * inputs, so a terminal session's stop is caught by the other rules); the
-   * session is cleared (SessionStart source=clear); or the agent process dies
-   * (`reconcileExited`) — a wakeup lives inside the session process, so no
-   * process means no loop. `shouldHibernate` refuses a looping workspace for
-   * the same reason: the sweeper would silently kill the loop it advertises.
+   * The AUTHORITATIVE signal is level-triggered: every turn-end (Stop /
+   * StopFailure hook) delivers `session_crons` — the CLI scheduler's own
+   * registry of pending ScheduleWakeup/CronCreate//loop wakeups — which the
+   * spool hook reduces to none/some and `applyAgentEvent` assigns on
+   * stop/stopfail ('none' clears, 'some' sets, absent = no opinion). That
+   * makes the badge self-healing: a dynamic /loop that dies by NOT re-arming
+   * clears on that very turn.
+   *
+   * Edge-triggered set/clear rules still cover what the level signal can't
+   * reach: SET on an observed `ScheduleWakeup` call (spool `pretool` line /
+   * SDK `tool-use` event — live, mid-turn) and by the transcript reconcile
+   * (loop-scan.ts — CC-daemon-hosted iterations never fire Orchestra's spool
+   * hook, so their turn-ends carry no level signal). CLEARED when the SDK
+   * path sees `ScheduleWakeup` with `stop: true`; when the session is cleared
+   * (SessionStart source=clear); when the transcript reconcile finds the last
+   * wakeup stopped/stale; or when the agent process dies (`reconcileExited`).
+   * `shouldHibernate` refuses a looping workspace so the sweeper can't
+   * silently kill the loop it advertises.
    *
    * Persisted (a detached keeper's loop survives an app restart). Stored ABSENT
    * rather than 0/false; broadcast with an explicit `undefined` on clear

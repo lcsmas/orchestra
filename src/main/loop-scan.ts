@@ -15,15 +15,12 @@ import { store } from './store';
 import { scoped } from './logger';
 import { markLooping } from './activity';
 import { scanTranscriptTailForLoop } from '../shared/loop-scan.ts';
+import { readTailUntil } from '../shared/tail-read.ts';
 import { workspaceAccountConfigDir, mangleProjectDir } from './workspaces';
 import type { Workspace } from '../shared/types';
 
 const llog = scoped('loop-scan');
 
-/** Tail window per transcript read. The deciding entry is the newest
- *  ScheduleWakeup; 256 KiB comfortably holds many turns (same figure the
- *  context reader uses). */
-const TAIL_BYTES = 256 * 1024;
 
 /** Sweep cadence. Coarse on purpose — the badge appearing within minutes of a
  *  daemon-hosted tick is plenty, and the steady-state cost is N stats. */
@@ -68,23 +65,6 @@ async function transcriptFileFor(ws: Workspace): Promise<string | null> {
   }
 }
 
-async function readTail(file: string): Promise<string | null> {
-  try {
-    const handle = await fs.open(file, 'r');
-    try {
-      const size = (await handle.stat()).size;
-      const start = Math.max(0, size - TAIL_BYTES);
-      const buf = Buffer.alloc(size - start);
-      await handle.read(buf, 0, buf.length, start);
-      return buf.toString('utf8');
-    } finally {
-      await handle.close();
-    }
-  } catch {
-    return null;
-  }
-}
-
 /** One reconcile pass over every live workspace. Exported for the e2e gate. */
 export async function sweepLoopScan(): Promise<void> {
   const now = Date.now();
@@ -96,7 +76,12 @@ export async function sweepLoopScan(): Promise<void> {
       const mtime = (await fs.stat(file)).mtimeMs;
       if (lastScanned.get(ws.id) === mtime) continue;
       lastScanned.set(ws.id, mtime);
-      const tail = await readTail(file);
+      // Backward chunked read until the newest ScheduleWakeup is in the
+      // window (capped at 8 MiB): a fixed small tail went permanently
+      // `unknown` on chatty sessions whose last ScheduleWakeup drifted out of
+      // it, so a dead loop's badge could never clear (observed live: deciding
+      // entry 474 KB from EOF of a 3.2 MB transcript vs a 256 KiB window).
+      const tail = await readTailUntil(file, '"ScheduleWakeup"');
       if (tail === null) continue;
       const verdict = scanTranscriptTailForLoop(tail, now);
       llog.trace(`ws=${ws.id} verdict=${verdict.state}`);

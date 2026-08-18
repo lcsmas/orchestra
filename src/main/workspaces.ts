@@ -4019,6 +4019,7 @@ event="\${1:-}"
 # in TypeScript rather than parsing JSONL here, which would be fragile).
 tool=""
 transcript=""
+crons=""
 case "\$event" in
   pretool|posttool|stop|notify|session)
     payload="\$(cat)"
@@ -4051,6 +4052,17 @@ case "\$event" in
         transcript="\${rest%%'"'*}"
         ;;
     esac
+    # Loop level-signal: Stop/StopFailure payloads carry \`session_crons\` — the
+    # CLI scheduler's OWN registry of pending ScheduleWakeup/CronCreate//loop
+    # tasks ("[]" = definitively none scheduled). Reduced to a three-state flag
+    # (none/some/absent) so the reader can set/clear the loop badge from the
+    # authoritative source instead of transcript archaeology. The CLI emits
+    # compact JSON (verified on live 2.1.234 payloads), so the bare-bracket
+    # matches are safe; an older CLI without the field yields "" = no opinion.
+    case "\$payload" in
+      *'"session_crons":[]'*) crons="none" ;;
+      *'"session_crons":['*) crons="some" ;;
+    esac
     ;;
 esac
 
@@ -4081,7 +4093,7 @@ fi
 transcript="\${transcript//\\\\/\\\\\\\\}"
 transcript="\${transcript//\\"/\\\\\\"}"
 
-printf '{"seq":%s,"event":"%s","tool":"%s","transcript":"%s"}\\n' "\$seq" "\$event" "\$tool" "\$transcript" >> "\$spool"
+printf '{"seq":%s,"event":"%s","tool":"%s","transcript":"%s","crons":"%s"}\\n' "\$seq" "\$event" "\$tool" "\$transcript" "\$crons" >> "\$spool"
 exit 0
 `;
 

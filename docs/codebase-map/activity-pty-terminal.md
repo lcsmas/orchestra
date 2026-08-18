@@ -54,7 +54,17 @@ Event → status (`applyAgentEvent` `:471`):
   agent-sdk.ts `emitFrom`, the spool hook line carries no tool input), on
   session `clear` (not `compact`), and in `reconcileExited` (process death
   kills the loop; checked BEFORE the `running` guard, since a looping agent is
-  usually `idle` between wakeups). `shouldHibernate` refuses a looping
+  usually `idle` between wakeups).
+  **The authoritative signal is level-triggered**: Claude Code's Stop /
+  StopFailure payload carries `session_crons` — the CLI scheduler's own
+  registry of pending ScheduleWakeup/CronCreate//loop wakeups (`[]` =
+  definitively none). The spool hook (workspaces.ts `ORCHESTRA_HOOK_SCRIPT`)
+  reduces it to a `crons` field on the spool line (`none`/`some`/`""`), and
+  `applyAgentEvent`'s stop/stopfail case assigns the flag from it (before
+  `fireFinished`, so toast suppression reads the fresh flag; `""`/absent = no
+  opinion — old hook script or CLI). This is what makes the badge SELF-HEALING:
+  a dynamic /loop that dies by simply not re-arming clears on that very
+  turn-end, where the edge rules can't see "no call happened". `shouldHibernate` refuses a looping
   workspace — the sweeper would silently kill the loop (wakeups live inside the
   session process, and loop delays reach 60 min > the 30-min idle threshold).
   UI: a small cycle-arrows CORNER BADGE (`.ws-glyph-loop`, slow 4s spin,
@@ -75,7 +85,12 @@ Event → status (`applyAgentEvent` `:471`):
   clears NOTHING)) + `src/main/loop-scan.ts` (`startLoopScan` in index.ts:
   startup pass + 5-min sweep, stat-gated on transcript mtime; resolves the
   file via the pinned account's config dir + `mangleProjectDir` +
-  `sdkSessionId`, falling back to newest `.jsonl`). Backfills loops predating
+  `sdkSessionId`, falling back to newest `.jsonl`). The tail window is NOT
+  fixed: `src/shared/tail-read.ts` (`readTailUntil`, node-testable) reads
+  256 KiB chunks backwards until `"ScheduleWakeup"` is in the window (8 MiB
+  cap) — a fixed window went permanently `unknown` once a chatty session
+  pushed the deciding entry out of it, so a dead loop's badge could never
+  clear. Backfills loops predating
   the flag and daemon ticks, clears self-stopped/dead loops. E2E gate:
   `scripts/verify-loop-badge-restore.mjs` (badge states incl. live spool
   detection, restart restore + its lingering-keeper negative control, and both

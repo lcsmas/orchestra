@@ -226,13 +226,20 @@ function drain(id: string): void {
   for (const line of parts) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    let ev: { seq?: unknown; event?: unknown; tool?: unknown; transcript?: unknown };
+    let ev: {
+      seq?: unknown;
+      event?: unknown;
+      tool?: unknown;
+      transcript?: unknown;
+      crons?: unknown;
+    };
     try {
       ev = JSON.parse(trimmed) as {
         seq?: unknown;
         event?: unknown;
         tool?: unknown;
         transcript?: unknown;
+        crons?: unknown;
       };
     } catch {
       // Skip a corrupt line rather than wedge the tail — but say so. A run of
@@ -257,13 +264,17 @@ function drain(id: string): void {
     const tool = typeof ev.tool === 'string' && ev.tool.length ? ev.tool : undefined;
     const transcript =
       typeof ev.transcript === 'string' && ev.transcript.length ? ev.transcript : undefined;
+    // Three-state loop level-signal mined from the Stop payload's
+    // `session_crons` by the hook script: 'none' | 'some' | absent (older hook
+    // script or CLI — no opinion). Only ever meaningful on stop/stopfail lines.
+    const crons = ev.crons === 'none' || ev.crons === 'some' ? ev.crons : undefined;
     // Isolate each apply: a throw here used to abort the whole loop, and since
     // the cursor (offset + lastSeq) has already advanced past these lines, the
     // unapplied tail — typically the turn-ending `stop`/`notify` — was lost for
     // good (the dot stuck on `running`). Swallow per-line so one bad event can
     // never strand the events behind it.
     try {
-      applyAgentEvent(id, ev.event, tool, transcript);
+      applyAgentEvent(id, ev.event, tool, transcript, undefined, crons);
     } catch (e) {
       log.error(`events-spool: applyAgentEvent failed for ${id} seq=${seq} event=${ev.event}`, e);
     }
