@@ -80,11 +80,21 @@ User ── URL bar / nav buttons ──► window.orchestra.browser{Navigate,Ba
   updates (both manual and agent-driven). Shows/hides the native view as it
   becomes active/inactive and on unmount.
 - **`src/renderer/App.tsx`** — the panel is a third flex child of `.pane-row`
-  (mirroring the nvim pane): `browserOpen`/`browserWidth` state, a toolbar
-  toggle beside the file-pane toggle, a `.pane-resizer`, and inline
-  `flex: 0 0 ${browserWidth}px`. Its `isActive` is gated off when a full-page
-  overlay (Insights / Resources / Help) covers the pane row, because a
-  `WebContentsView` composits **above** the DOM and would otherwise show through.
+  (mirroring the nvim pane): **per-workspace** open state (`browserOpenIds:
+  Set<wsId>` — a single boolean here was the "opening the browser opens it for
+  every workspace" bug: switching workspaces kept the pane open and silently
+  created a native `WebContentsView` per workspace visited), `browserWidth`, a
+  toolbar toggle beside the file-pane toggle, a `.pane-resizer`, and inline
+  `flex: 0 0 ${browserWidth}px`. Agent navigation auto-opens the pane **for the
+  navigating workspace only** (any `browser:event` with a real URL adds that
+  wsId to the set — revealed when the user is or switches there). Its
+  `isActive` is gated off when a full-page overlay (Insights / Resources /
+  Help) covers the pane row, because a `WebContentsView` composits **above**
+  the DOM and would otherwise show through — and also whenever a **modal
+  overlay** is up (`overlayUp`, a MutationObserver watching for
+  `.dialog-backdrop` / `.modal-backdrop` / `.jump-overlay` while the pane is
+  open): a centered dialog would otherwise render invisibly BEHIND the native
+  view while its backdrop swallows clicks, reading as a frozen app.
 - **`src/renderer/styles.css`** — `.browser-pane` / `.browser-panel` /
   `.browser-toolbar` / `.browser-url-input` / `.browser-holder` etc., styled with
   the app's own tokens (`--bg`, `--text`, `--accent`, …) so the chrome blends
@@ -234,6 +244,27 @@ in the archived subtree, so an orchestrator archives its children's panels too.
   agent-opened panel composites at a garbage rect while the pane is closed.
   Views also get an explicit `setBackgroundColor`, since an unpainted
   `WebContentsView` composites black by default.
+- **Agents must never attach a view for a non-focused workspace.**
+  `browser-panel.ts` tracks `focusedWsId` — the workspace whose panel the
+  RENDERER composites (set by `showPanel`, cleared by `hidePanel`, both
+  renderer-driven). The agent `navigate` tool goes through `revealForAgent`,
+  which only reaches `showPanel` when its workspace IS the focused one;
+  otherwise it just ensures the panel exists. Calling `showPanel` directly from
+  the agent path (the old behavior) let a BACKGROUND workspace's agent hide the
+  active workspace's panel and composite its own view — at stale bounds — over
+  whatever the user was looking at. Regression harness:
+  `scripts/verify-browser-panel-focus-steal.mjs`.
+- **A non-composited view produces NO frames — screenshots and CDP input hang
+  or lie.** Measured on Electron 33: `capturePage()` on a never-attached view
+  silently returns an empty 0x0 image; on a detached-after-shown view it
+  **hangs forever**; CDP `Page.captureScreenshot` hangs in both cases; CDP
+  mouse input hangs or queues events that fire on a later attach.
+  `Runtime.evaluate` / `loadURL` work fine detached. So `capture`, `clickAt`,
+  `typeText` and `scrollBy` guard with `requireComposited()` (a clear,
+  actionable error naming the tools that DO still work) and every
+  capture/input CDP call is wrapped in `withTimeout` — a hung promise here is
+  an agent tool call that never returns. `navigate`/`read_page`/`evaluate`/
+  `form_input` remain fully usable from a background workspace.
 - The SDK MCP builder must be loaded via dynamic `import()` — a static import of
   `@anthropic-ai/claude-agent-sdk` crashes the packaged app at boot
   (`ERR_REQUIRE_ESM`). Verify the emitted bundle has **0**

@@ -62,6 +62,16 @@ interface Panel {
 
 const panels = new Map<string, Panel>();
 
+/** The workspace whose panel the RENDERER currently composites (its
+ *  BrowserPanel component is mounted + active and called browserShow). This is
+ *  the authority for "what is on screen": agent-driven opens must never attach
+ *  a view for any other workspace, or a background agent's browsing would hide
+ *  the panel the user is looking at and paint its own view — at stale bounds —
+ *  over the current workspace's UI (the reported "browser makes Orchestra
+ *  buggy"). Set by {@link showPanel} (renderer-driven), cleared by
+ *  {@link hidePanel}. */
+let focusedWsId: string | null = null;
+
 /** The panel's live `webContents`, or `undefined` if the view has none any more.
  *
  *  Electron drops `WebContentsView.webContents` (to `undefined`) once the
@@ -249,6 +259,10 @@ export function getPanel(wsId: string): Panel | undefined {
  *  applied separately via {@link setBounds} once the renderer measures them. */
 export function showPanel(wsId: string): BrowserPanelState {
   const panel = ensurePanel(wsId);
+  // Renderer-authoritative: whoever shows a panel is putting it on screen.
+  // (The agent path goes through revealForAgent, which only reaches here when
+  // this workspace is already the focused one.)
+  focusedWsId = wsId;
   const win = getWindow?.();
   // Never composite a view that has never been positioned: an agent can call
   // this (via its MCP browser tools) while the renderer's pane is closed, so no
@@ -273,6 +287,7 @@ export function showPanel(wsId: string): BrowserPanelState {
 /** Remove the view from the window (stops compositing) without destroying it —
  *  its page + history + cookies survive so re-showing is instant. */
 export function hidePanel(wsId: string): void {
+  if (focusedWsId === wsId) focusedWsId = null;
   const panel = panels.get(wsId);
   const win = getWindow?.();
   if (!panel) return;
@@ -283,6 +298,19 @@ export function hidePanel(wsId: string): void {
     win.contentView.removeChildView(panel.view);
     panel.visible = false;
   }
+}
+
+/** Agent-driven "open the panel" — never steals the screen. If this
+ *  workspace's panel is the one the renderer currently composites, (re)attach
+ *  it; otherwise just ensure the panel EXISTS and leave revealing to the
+ *  renderer, which marks the navigating workspace's pane open (browser:event
+ *  auto-open) and attaches it when the user is — or switches — there.
+ *  Attaching from here for a non-focused workspace would hide the active
+ *  workspace's panel and composite this one over the user's current UI. */
+export function revealForAgent(wsId: string): BrowserPanelState {
+  const panel = ensurePanel(wsId);
+  if (focusedWsId === wsId) return showPanel(wsId);
+  return panel.state;
 }
 
 /** Position/size the native view over the renderer's `.browser-pane` rect.
@@ -410,13 +438,48 @@ async function cdp(wsId: string, method: string, params?: Record<string, unknown
   return wc.debugger.sendCommand(method, params ?? {});
 }
 
+/** Reject after `ms` if `p` hasn't settled. Screenshots and input dispatch on a
+ *  view that stops compositing mid-call HANG FOREVER (measured on Electron 33:
+ *  `capturePage` and `Page.captureScreenshot` on a detached view never settle),
+ *  and a hung promise here means an agent tool call that never returns. */
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms),
+    ),
+  ]);
+}
+
+/** Throw a clear, actionable error when the panel isn't composited. A hidden
+ *  (background-workspace / closed-pane) `WebContentsView` produces NO frames:
+ *  measured on Electron 33, `capturePage` returns an empty 0x0 image if the
+ *  view was never attached and hangs forever if it was detached after showing;
+ *  CDP `Page.captureScreenshot` hangs in both cases, and CDP mouse input hangs
+ *  or silently queues. Failing fast with guidance beats a blank image, a
+ *  phantom click, or an agent stuck on a tool call that never returns. */
+function requireComposited(wsId: string, what: string): Panel {
+  const panel = getPanel(wsId);
+  if (!liveContents(panel)) throw new Error(`no browser panel open for workspace ${wsId}`);
+  if (!panel!.visible) {
+    throw new Error(
+      `${what} needs the Browser pane on screen, but this workspace's panel is not currently ` +
+        `composited (the workspace is in the background or its pane is closed). ` +
+        `read_page, evaluate, navigate and form_input still work; for ${what}, ask the user ` +
+        `to open this workspace's Browser pane.`,
+    );
+  }
+  return panel!;
+}
+
 /** Capture the panel as a JPEG (base64) — the agent's "screenshot" primitive.
  *  Uses the native `capturePage()` (simpler + faster than `Page.captureScreenshot`),
  *  matching the Claude Code desktop app's screenshot tool. */
 export async function capture(wsId: string, quality = 75): Promise<string> {
-  const wc = liveContents(getPanel(wsId));
+  const panel = requireComposited(wsId, 'screenshot');
+  const wc = liveContents(panel);
   if (!wc) throw new Error(`no browser panel open for workspace ${wsId}`);
-  const image = await wc.capturePage();
+  const image = await withTimeout(wc.capturePage(), 10_000, 'capturePage');
   return image.toJPEG(Math.max(0, Math.min(100, quality))).toString('base64');
 }
 
@@ -490,8 +553,17 @@ async function refToPoint(wsId: string, ref: number): Promise<{ x: number; y: nu
 /** Click at viewport coordinates via CDP Input (a real, trusted input event —
  *  unlike a synthetic DOM `.click()` which fails isTrusted checks). */
 export async function clickAt(wsId: string, x: number, y: number): Promise<void> {
-  await cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
-  await cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+  requireComposited(wsId, 'click');
+  await withTimeout(
+    cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 }),
+    10_000,
+    'click (mousePressed)',
+  );
+  await withTimeout(
+    cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 }),
+    10_000,
+    'click (mouseReleased)',
+  );
 }
 
 /** Click a `ref_N` element (resolves its center, then clickAt). */
@@ -502,7 +574,8 @@ export async function clickRef(wsId: string, ref: number): Promise<void> {
 
 /** Type text into the currently-focused element via CDP (trusted input). */
 export async function typeText(wsId: string, text: string): Promise<void> {
-  await cdp(wsId, 'Input.insertText', { text });
+  requireComposited(wsId, 'type');
+  await withTimeout(cdp(wsId, 'Input.insertText', { text }), 10_000, 'type (insertText)');
 }
 
 /** Set the value of a form element identified by `ref` (matches CC's
@@ -526,13 +599,18 @@ export async function formInput(wsId: string, ref: number, value: string): Promi
 
 /** Scroll the page (or a wheel gesture) via CDP. */
 export async function scrollBy(wsId: string, deltaY: number): Promise<void> {
-  await cdp(wsId, 'Input.dispatchMouseEvent', {
-    type: 'mouseWheel',
-    x: 100,
-    y: 100,
-    deltaX: 0,
-    deltaY,
-  });
+  requireComposited(wsId, 'scroll');
+  await withTimeout(
+    cdp(wsId, 'Input.dispatchMouseEvent', {
+      type: 'mouseWheel',
+      x: 100,
+      y: 100,
+      deltaX: 0,
+      deltaY,
+    }),
+    10_000,
+    'scroll (mouseWheel)',
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -758,11 +836,17 @@ export async function designModePoll(
   let screenshot: string | undefined;
   try {
     const clip = clipForBox(raw.box, viewport);
-    const shot = await cdp(wsId, 'Page.captureScreenshot', {
-      format: 'png',
-      clip,
-      captureBeyondViewport: false,
-    });
+    // Bounded: Page.captureScreenshot HANGS (never settles) if the view stops
+    // compositing mid-call — e.g. the pane closing right after a pick.
+    const shot = await withTimeout(
+      cdp(wsId, 'Page.captureScreenshot', {
+        format: 'png',
+        clip,
+        captureBeyondViewport: false,
+      }),
+      10_000,
+      'design-mode screenshot',
+    );
     if (shot?.data) screenshot = String(shot.data);
   } catch (err) {
     // Best-effort: the text half of the pick is still worth delivering.

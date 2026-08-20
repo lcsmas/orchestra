@@ -160,7 +160,12 @@ export function App() {
   }, [activeId]);
   const [nvimOpen, setNvimOpen] = useState(false);
   const [nvimWidth, setNvimWidth] = useState<number>(() => loadNvimWidth());
-  const [browserOpen, setBrowserOpen] = useState(false);
+  // PER-WORKSPACE browser-pane open state. A single boolean here was the
+  // "opening the browser opens it for every workspace" bug: with one flag,
+  // switching workspaces kept the pane open and mounted a BrowserPanel for the
+  // new workspace, which created a native WebContentsView (a full renderer
+  // process) per workspace visited — none of which the user asked for.
+  const [browserOpenIds, setBrowserOpenIds] = useState<ReadonlySet<string>>(() => new Set());
   const [browserWidth, setBrowserWidth] = useState<number>(() => loadBrowserWidth());
 
   // Jump Palette (Ctrl/Cmd+J) — the app's first GLOBAL shortcut. Capture-phase
@@ -182,15 +187,18 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey, true);
   }, []);
 
-  // Auto-open the browser pane when the ACTIVE workspace's agent navigates it
-  // (the agent's `navigate` tool opens the WebContentsView main-side, but the
-  // renderer pane only mounts when `browserOpen` is true). A navigation with a
-  // real URL that lands while the pane is closed is the agent — the user can't
-  // drive a closed pane — so reveal it. Scoped to the active workspace so a
-  // background agent's browsing doesn't yank the pane open on an unrelated one.
+  // Auto-open the browser pane FOR THE NAVIGATING WORKSPACE when its agent
+  // drives the panel (the agent's `navigate` tool works main-side, but the
+  // renderer pane only mounts when that workspace's pane is open). A navigation
+  // with a real URL that lands while the pane is closed is the agent — the user
+  // can't drive a closed pane — so mark that workspace's pane open. Because the
+  // open state is per-workspace, a BACKGROUND agent's browsing never yanks the
+  // pane open on the workspace the user is looking at: its own pane is simply
+  // revealed when the user switches there.
   useEffect(() => {
     return window.orchestra.onBrowserEvent((wsId, state) => {
-      if (wsId === useStore.getState().activeId && state.url) setBrowserOpen(true);
+      if (!state.url) return;
+      setBrowserOpenIds((prev) => (prev.has(wsId) ? prev : new Set(prev).add(wsId)));
     });
   }, []);
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => loadSidebarWidth());
@@ -410,6 +418,40 @@ export function App() {
 
   const liveWorkspaces = workspaces.filter((w) => !w.archived);
   const active = liveWorkspaces.find((w) => w.id === activeId);
+
+  // The browser pane is open iff the ACTIVE workspace's pane is open — see
+  // browserOpenIds above.
+  const browserOpen = !!active && browserOpenIds.has(active.id);
+  const toggleBrowser = () => {
+    if (!active) return;
+    setBrowserOpenIds((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(active.id)) next.add(active.id);
+      return next;
+    });
+  };
+
+  // The native browser WebContentsView composites ABOVE all renderer DOM, so a
+  // modal overlay (confirm dialogs, settings modals, the jump palette) renders
+  // BEHIND it: a centered dialog can sit invisible under the browser view while
+  // its full-screen backdrop swallows clicks — the app reads as frozen. Watch
+  // the DOM for any such overlay and hide the native view while one is up.
+  // Keyed on the overlay CLASSES rather than each modal's open state so present
+  // and future modals are covered mechanically; observed only while the pane is
+  // open, so a closed pane costs nothing.
+  const [overlayUp, setOverlayUp] = useState(false);
+  useEffect(() => {
+    if (!browserOpen) return;
+    const SEL = '.dialog-backdrop, .modal-backdrop, .jump-overlay';
+    const check = () => setOverlayUp(!!document.querySelector(SEL));
+    const mo = new MutationObserver(check);
+    mo.observe(document.body, { childList: true, subtree: true });
+    check();
+    return () => {
+      mo.disconnect();
+      setOverlayUp(false);
+    };
+  }, [browserOpen]);
 
   // Which panes stay mounted: the MAX_MOUNTED_PANES most-recently-active
   // workspaces (LRU order), plus the active one unconditionally. Anything else
@@ -674,7 +716,7 @@ export function App() {
               </button>
               <button
                 className={`pane-toggle ${browserOpen ? 'active' : ''}`}
-                onClick={() => setBrowserOpen((v) => !v)}
+                onClick={toggleBrowser}
                 title={browserOpen ? 'Hide browser pane' : 'Show browser pane'}
                 aria-label={browserOpen ? 'Hide browser pane' : 'Show browser pane'}
                 aria-pressed={browserOpen}
@@ -878,11 +920,17 @@ export function App() {
                     {/* Hide the native view (isActive=false) whenever a full-page
                         overlay covers the pane row — the WebContentsView
                         composits ABOVE the DOM and would otherwise show through
-                        Insights/Resources/Help. */}
+                        Insights/Resources/Help — and whenever a modal overlay
+                        (dialog / settings modal / jump palette) is up, which
+                        would otherwise render invisibly BEHIND the view. */}
                     <BrowserPanel
                       workspaceId={active.id}
                       isActive={
-                        browserOpen && !insightsOpen && !helpOpen && page !== 'resources'
+                        browserOpen &&
+                        !insightsOpen &&
+                        !helpOpen &&
+                        page !== 'resources' &&
+                        !overlayUp
                       }
                     />
                   </div>

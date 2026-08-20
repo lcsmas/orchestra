@@ -78,7 +78,11 @@ export async function buildBrowserToolServer(
       'open a URL, `read_page` to get an accessibility outline (each interactive ' +
       'element tagged [ref_N]), `screenshot` to see the page, and `click`/`type`/' +
       '`form_input` to interact. Prefer read_page + ref-based actions over ' +
-      'coordinate clicks. Open the pane with `navigate` before other tools.',
+      'coordinate clicks. Open the pane with `navigate` before other tools. ' +
+      'A hidden panel (your workspace in the background, or the pane closed) ' +
+      'produces no frames: `screenshot`, `click`, `type` and `scroll` then fail ' +
+      'with a clear error, while `navigate`, `read_page`, `evaluate` and ' +
+      '`form_input` keep working.',
     tools: [
       tool(
         'navigate',
@@ -98,7 +102,12 @@ export async function buildBrowserToolServer(
               bp.goForward(wsId);
               return text('Went forward.');
             }
-            bp.showPanel(wsId);
+            // revealForAgent, NOT showPanel: if this workspace isn't the one on
+            // screen, attaching its view would hide the active workspace's
+            // panel and paint this one over the user's current UI. The renderer
+            // reveals the pane itself (auto-open on browser:event) when the
+            // user is — or switches — on this workspace.
+            bp.revealForAgent(wsId);
             const state = await bp.navigate(wsId, args.to);
             return text(`Navigated to ${state.url || args.to}${state.error ? ` (error: ${state.error})` : ''}`);
           } catch (err) {
