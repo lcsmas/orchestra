@@ -90,7 +90,17 @@ env -u APPIMAGE ORCHESTRA_OZONE=wayland ORCHESTRA_OZONE_RELAUNCHED=1 \
 - `ORCHESTRA_DEBUG_PORT` enables CDP (`src/main/index.ts` also sets
   `remote-allow-origins=*`, so websockets don't 403).
 - Target discovery: `curl http://127.0.0.1:<port>/json` → `webSocketDebuggerUrl`
-  of the `type: "page"` entry.
+  of the `type: "page"` entry — **filtered by URL (`dist/index.html`), on EVERY
+  connection, not just the first**: once the embedded browser panel navigates,
+  its `WebContentsView` becomes a second `type:"page"` target on the SAME port,
+  and `find(t => t.type === 'page')` on a reconnect grabs that page instead of
+  the app (your keystrokes/queries land in the panel's document and every app
+  assertion reads false against working code).
+- **`Page.captureScreenshot` on the app target does NOT include sibling
+  `WebContentsView`s** (the browser panel) — it captures the app renderer's own
+  DOM, so the pane region shows `.browser-holder`'s white, whatever the panel
+  painted. The composed-window oracle is a compositor capture:
+  `WAYLAND_DISPLAY=wayland-N grim -o HEADLESS-1 out.png` on the headless sway.
 - **Strip the inherited AppImage env, or you will verify the INSTALLED build.**
   Your agent process is a child of the running Orchestra AppImage. As of the
   `stripProcessLocalEnv` fix (shared/child-env.ts) the app no longer passes
