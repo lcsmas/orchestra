@@ -39,6 +39,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | `/migrateAccount` | `id` (+ `accountId?` — null/'' = default login) | `{ ok, id?, branch?, accountId?, resumed? }` |
 | `/accounts` | — | `{ ok, accounts?: {id,label,configDir}[] }` |
 | `/loginUrl` | `accountId`, `url` | `{ ok, mode?: 'window'\|'external' }` — routes a login PTY's browser-open into the account's isolated OAuth window (`main/login-browser.ts`) |
+| `/reloadSkills` | `id` OR `all: true` (+ `plugins?: true`) | `{ ok, results?: ReloadResult[] }` — hot-reload skills (and optionally plugins) into ALREADY-RUNNING SDK sessions via the retained `session.q`, so an out-of-band install lands without restarting the agent and losing its context. Handled by `agent-sdk.ts dispatchReloadSkillsRequest` (the one route served from `agent-sdk.ts` rather than `workspaces.ts`; importing it there would cycle, since `agent-sdk` already imports `workspaces`). Fans out over the LIVE `sessions` map, not the store — only a live session can be reloaded, and a workspace without one reports `outcome:'skipped'`, which is NOT a failure and does not colour the exit code. `plugins:true` waits ~2.5s once per fan-out for the CLI's settings cache before calling `reloadPlugins()`, and an empty `plugins: []` is expected rather than an error. |
 | default (no match) | `id`, `event` | `{}` 200 — legacy activity-event path |
 
 ## Hooks installed into each worktree
@@ -171,6 +172,13 @@ Subcommands: `peers [--stats]` (`--stats` adds per-peer committed diff vs base),
 --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]`
 (`--model` pins the agent's model — alias or full id; `--detached`
 creates the workspace parentless — its own top-level section), `rename <id> <branch>`,
+`reload-skills [<id>|--all] [--plugins]` (make an out-of-band skill/plugin
+install visible to sessions that are ALREADY RUNNING, without the restart that
+would cost the agent its warm context — defaults to **self**; `--all` fans out
+over every live session; `--plugins` also reloads plugins, which unlike plain
+`~/.claude/skills` are not watched for changes. Prints one row per workspace so
+it is visible WHICH sessions picked the install up, and exits non-zero only on a
+real failure — "no live session" is a normal outcome, not an error),
 `promote <id>`, `attach <id> <parentId>`, `detach <id>`, `verify-landed <id>
 [--into <branch>]` (close-out check: exits 0 only when every commit on the
 workspace's branch tip is on the target — the caller's branch by default),

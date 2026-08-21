@@ -32,6 +32,11 @@ import {
   orchestratorBrief,
 } from './workspaces';
 import { transcriptToEvents, HISTORY_SEQ_BASE } from '../shared/agent-transcript';
+import {
+  isPluginReloadFailure,
+  summarizeReload,
+  type ReloadResult,
+} from '../shared/reload-skills';
 import { syncAccountInheritance } from './account-inherit';
 import { agentCliBinDir } from './cli-shim';
 import { getHookSocketPath } from './hooks-server';
@@ -1838,6 +1843,201 @@ export async function sdkSetPermissionMode(
       }),
     );
   }
+}
+
+// ---------- Skill / plugin hot-reload ----------
+//
+// Skills and plugins installed OUT OF BAND (a `git pull` in ~/.claude/skills, a
+// plugin marketplace install, another agent writing a SKILL.md) are invisible to
+// a session that is already running: the CLI resolved its skill and plugin set
+// at startup. Restarting the session to pick them up costs the conversation's
+// warm context, which is exactly the thing a long-lived agent is holding.
+//
+// The SDK exposes two control requests for this — `reloadSkills()` and
+// `reloadPlugins()` — and Orchestra retains the `Query` handle per workspace
+// (`session.q`), so both are reachable mid-session for every live agent at once.
+//
+// What each one covers is NOT the same, and the difference decides whether you
+// need this verb at all:
+//   - plain `~/.claude/skills`, `commands/` and `agents/` are WATCHED by the
+//     CLI itself (a chokidar watch over `.md`, depth 2) and hot-reload on their
+//     own. `reloadSkills()` is the explicit nudge for when that watch didn't
+//     fire — a skill added outside the watched depth, or a project-level
+//     `.claude/skills` the watch never covered.
+//   - the PLUGIN cache (`~/.claude/plugins/cache/…`) is NOT watched. A plugin
+//     install is invisible to a running session until something calls
+//     `reloadPlugins()`, which is why `--plugins` exists as an explicit opt-in.
+//
+// Both are TRANSIENT runtime actions: nothing is persisted (contrast
+// {@link sdkSetModel}, which writes `ws.model` so the choice survives a
+// restart). There is nothing to persist — a reload has no state, only an
+// effect on the process that is running right now, and a session that starts
+// later reads the new skills at startup anyway.
+
+/** How long to wait before issuing `reloadPlugins()`, to let the CLI's settings
+ *  cache turn over.
+ *
+ *  MEASURED, and the reason this constant exists at all: immediately after an
+ *  out-of-band plugin install, the FIRST `reloadPlugins()` returns
+ *  `plugins: []` — the settings file carrying `enabledPlugins` sits behind a
+ *  ~2s cache, so the reload re-reads a stale view and finds nothing enabled.
+ *  Two back-to-back immediate calls both came back empty; a single call issued
+ *  after ~5s picked the plugin up. So the wait is not politeness, it is what
+ *  makes the FIRST call the one that works.
+ *
+ *  Only paid on the `--plugins` path, and only once per fan-out (not per
+ *  workspace) — see {@link dispatchReloadSkillsRequest}. */
+const PLUGIN_RELOAD_SETTLE_MS = 2_500;
+
+/** Reload the skill set of a workspace's LIVE session.
+ *
+ *  Returns `'skipped'` when the workspace has no live session — deliberately
+ *  NOT `ensureSession`. Booting a session in order to reload its skills would
+ *  be backwards (a fresh session reads the new skills at startup regardless),
+ *  and on the `--all` fan-out it would cold-start every idle workspace in the
+ *  sidebar, spawning ~20 CLI processes as a side effect of a refresh. "No live
+ *  session" is the normal state for most workspaces and is reported as such
+ *  rather than as an error.
+ *
+ *  Emits an `info` notice into the transcript on success so the agent's own
+ *  view records that its capabilities changed underneath it — otherwise a skill
+ *  appears mid-conversation with no explanation of where it came from — and a
+ *  `warning` notice on failure, matching {@link sdkSetModel}'s rule that the
+ *  UI never silently lies about what the running session actually has. */
+export async function sdkReloadSkills(wsId: string): Promise<ReloadResult> {
+  const ws = store.getWorkspace(wsId);
+  const label = ws?.branch ?? ws?.name ?? wsId;
+  const session = sessions.get(wsId);
+  if (!session) return { id: wsId, label, outcome: 'skipped' };
+  try {
+    const res = await session.q.reloadSkills();
+    const skills = res?.skills?.length ?? 0;
+    slog.info(`reload-skills ${wsId}: session reports ${skills} skill(s)`);
+    emit(
+      wsId,
+      stamp(session.ctx, {
+        type: 'notice',
+        kind: 'info',
+        text: `Skills reloaded — ${skills} available to this session.`,
+      }),
+    );
+    return { id: wsId, label, outcome: 'reloaded', skills };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn(`agent-sdk: reloadSkills failed for ${wsId}`, err);
+    emit(
+      wsId,
+      stamp(session.ctx, {
+        type: 'notice',
+        kind: 'warning',
+        text: `Skills could not be reloaded into the running session (${message}) — restart the session to pick them up.`,
+      }),
+    );
+    return { id: wsId, label, outcome: 'failed', error: message };
+  }
+}
+
+/** Reload the plugin set (and, with it, the commands/agents/MCP servers plugins
+ *  contribute) of a workspace's LIVE session. Same skip/notice contract as
+ *  {@link sdkReloadSkills}.
+ *
+ *  An EMPTY `plugins` array is NOT a failure — see {@link isPluginReloadFailure}
+ *  for the measured reasoning. It is reported as a plain count so the caller can
+ *  see it, and the caller waits out {@link PLUGIN_RELOAD_SETTLE_MS} before
+ *  getting here so the count is usually the real one. */
+export async function sdkReloadPlugins(wsId: string): Promise<ReloadResult> {
+  const ws = store.getWorkspace(wsId);
+  const label = ws?.branch ?? ws?.name ?? wsId;
+  const session = sessions.get(wsId);
+  if (!session) return { id: wsId, label, outcome: 'skipped' };
+  try {
+    const res = await session.q.reloadPlugins();
+    const plugins = res?.plugins?.length ?? 0;
+    // Deliberately not branched on: the predicate always answers "not a
+    // failure". It is called anyway so the rule is expressed in code at the one
+    // place a future edit would be tempted to add `if (!plugins) throw`.
+    if (isPluginReloadFailure(res ?? {})) {
+      throw new Error('plugin reload reported no usable plugin set');
+    }
+    slog.info(`reload-plugins ${wsId}: session reports ${plugins} plugin(s)`);
+    emit(
+      wsId,
+      stamp(session.ctx, {
+        type: 'notice',
+        kind: 'info',
+        text: `Plugins reloaded — ${plugins} active in this session.`,
+      }),
+    );
+    return { id: wsId, label, outcome: 'reloaded', plugins };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn(`agent-sdk: reloadPlugins failed for ${wsId}`, err);
+    emit(
+      wsId,
+      stamp(session.ctx, {
+        type: 'notice',
+        kind: 'warning',
+        text: `Plugins could not be reloaded into the running session (${message}) — restart the session to pick them up.`,
+      }),
+    );
+    return { id: wsId, label, outcome: 'failed', error: message };
+  }
+}
+
+/** Reload skills (and optionally plugins) for one workspace, merging both
+ *  results into the single row the caller reports.
+ *
+ *  Merge rule: a failure on EITHER half fails the row. A row that said
+ *  "reloaded" because skills succeeded while plugins threw would be the silent
+ *  half-success this repo keeps paying for — the user installed a plugin, the
+ *  report said reloaded, and the session never saw it. */
+async function reloadOne(wsId: string, withPlugins: boolean): Promise<ReloadResult> {
+  const skills = await sdkReloadSkills(wsId);
+  if (!withPlugins || skills.outcome === 'skipped') return skills;
+  const plugins = await sdkReloadPlugins(wsId);
+  return {
+    ...skills,
+    outcome: plugins.outcome === 'failed' ? 'failed' : skills.outcome,
+    plugins: plugins.plugins,
+    error: skills.error ?? plugins.error,
+  };
+}
+
+/** The `/reloadSkills` socket route behind `orchestra reload-skills`.
+ *
+ *  Fan-out (`all: true`) iterates the LIVE `sessions` map rather than the
+ *  workspace store: the store lists every workspace that has ever existed
+ *  (archived ones included), and only a live session can be reloaded at all, so
+ *  iterating sessions is both the correct set and the cheap one. One
+ *  out-of-band install therefore reaches every running agent in a single call,
+ *  which is the point — a 20-workspace sidebar is not somewhere you re-run a
+ *  command per row.
+ *
+ *  The snapshot (`[...sessions.keys()]`) is taken UP FRONT and deliberately:
+ *  the awaits below yield, and a session that dies mid-fan-out would otherwise
+ *  mutate the map we are iterating. A workspace that ends between snapshot and
+ *  call simply reports `skipped`, which is already a first-class outcome. */
+export async function dispatchReloadSkillsRequest(input: {
+  id?: string;
+  all?: boolean;
+  plugins?: boolean;
+}): Promise<{ ok: boolean; results?: ReloadResult[]; error?: string }> {
+  const withPlugins = input.plugins === true;
+  if (!input.all && !input.id) return { ok: false, error: 'missing id (or pass --all)' };
+  // Pay the settings-cache wait ONCE for the whole fan-out, before any call —
+  // the cache is per-CLI-install, not per-session, so waiting per workspace
+  // would multiply a 2.5s wait by the number of live agents for no benefit.
+  if (withPlugins) await new Promise((r) => setTimeout(r, PLUGIN_RELOAD_SETTLE_MS));
+  if (input.all) {
+    const ids = [...sessions.keys()];
+    const results: ReloadResult[] = [];
+    for (const id of ids) results.push(await reloadOne(id, withPlugins));
+    slog.info(`reload-skills --all: ${summarizeReload(results)}`);
+    return { ok: true, results };
+  }
+  const ws = store.getWorkspace(input.id!);
+  if (!ws) return { ok: false, error: 'unknown workspace' };
+  return { ok: true, results: [await reloadOne(input.id!, withPlugins)] };
 }
 
 /** The shape of the SDK worker's `remote_control` control-request response. The

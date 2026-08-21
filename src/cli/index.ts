@@ -6,6 +6,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import {
+  parseReloadSkillsArgs,
+  summarizeReload,
+  reloadExitCode,
+  type ReloadResult,
+} from '../shared/reload-skills.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -135,6 +141,12 @@ Usage:
                                                   --detached: top-level, not nested under the caller)
   orchestra rename <id> <branch>                 Rename a workspace's branch
   orchestra set-base <id> <branch>               Retarget the base branch (Diff/merge target)
+  orchestra reload-skills [<id>|--all] [--plugins]
+                                                 Make out-of-band skill/plugin installs visible to
+                                                 ALREADY-RUNNING sessions, without restarting them
+                                                 (default: THIS workspace; --all: every live session;
+                                                  --plugins: also reload plugins, which unlike plain
+                                                  ~/.claude/skills are NOT watched for changes)
   orchestra promote <id>                         Promote a scratch session into an orchestrator
   orchestra attach <id> <parentId>               Nest an existing workspace under an orchestrator
   orchestra detach <id>                          Pop a workspace back out to its own section
@@ -545,6 +557,62 @@ async function main(argv: string[]): Promise<void> {
       const res = await request('/setBase', { id, baseBranch });
       if (!res.ok) fail(res.error ?? 'failed to set base branch');
       process.stdout.write(`Base branch set to ${res.baseBranch as string}\n`);
+      return;
+    }
+
+    case 'reload-skills': {
+      // Make skills/plugins installed out of band visible to sessions that are
+      // ALREADY RUNNING, without restarting them (which would cost the agent
+      // its warm context). Defaults to THIS workspace: the overwhelmingly
+      // common caller is an agent that just installed something for itself.
+      const parsed = parseReloadSkillsArgs(args);
+      if (parsed.error) {
+        fail(`${parsed.error}\nusage: orchestra reload-skills [<id>|--all] [--plugins]`);
+      }
+      // No id and no --all → self, matching `orchestra status` / `orchestra link`.
+      const target = parsed.all ? undefined : (parsed.id ?? selfWorkspaceId());
+      if (!parsed.all && !target) {
+        fail(
+          'could not determine which workspace to reload (no ORCHESTRA_WS_ID) — ' +
+            'pass an <id> or --all',
+        );
+      }
+      const res = await request('/reloadSkills', {
+        ...(target ? { id: target } : {}),
+        all: parsed.all,
+        plugins: parsed.plugins,
+      });
+      if (!res.ok) fail(res.error ?? 'failed to reload skills');
+      const results = (res.results as ReloadResult[] | undefined) ?? [];
+      // Report PER WORKSPACE, not just a total: the user needs to see which
+      // sessions actually picked the install up. A session that was not live
+      // is called out explicitly rather than omitted — an absent row reads as
+      // "handled" when it means "never touched".
+      for (const r of results) {
+        const detail =
+          r.outcome === 'reloaded'
+            ? [
+                r.skills !== undefined ? `${r.skills} skills` : '',
+                r.plugins !== undefined ? `${r.plugins} plugins` : '',
+              ]
+                .filter(Boolean)
+                .join(', ')
+            : r.outcome === 'skipped'
+              ? 'no live session'
+              : (r.error ?? 'failed');
+        process.stdout.write(`${r.outcome.padEnd(8)} ${r.label}${detail ? `  (${detail})` : ''}\n`);
+      }
+      process.stdout.write(`${summarizeReload(results)}\n`);
+      // A failed reload must exit non-zero, and getting there via `fail()` is
+      // deliberate: a bare `process.exit(1)` in THIS position does not reliably
+      // terminate — we are inside the socket response callback, the exact
+      // context whose measured non-termination is documented on `fail()` below.
+      // Falling through from a bare exit would land on `runCli`'s
+      // `process.exit(0)` and report success for a reload that failed.
+      const failed = results.filter((r) => r.outcome === 'failed');
+      if (reloadExitCode(results) !== 0) {
+        fail(`${failed.length} workspace(s) failed to reload`);
+      }
       return;
     }
 

@@ -351,6 +351,24 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   "API error — retrying" footer branch was removed (mid-turn retries surface
   via `statusNotice`). `switchWorkspaceBranch` (workspaces.ts) now calls
   `sdkStopIfLive` so a live structured session can't keep stale branch context.
+- **Skill / plugin hot-reload** — `sdkReloadSkills(wsId)` and
+  `sdkReloadPlugins(wsId)` (`agent-sdk.ts`) call the SDK's `reloadSkills()` /
+  `reloadPlugins()` control requests on the retained `session.q`, so a skill or
+  plugin installed OUT OF BAND reaches sessions that are already running
+  without restarting them (a restart would cost the agent its warm context).
+  Both are TRANSIENT — nothing is persisted, unlike `sdkSetModel` — and both
+  return `'skipped'` rather than booting a session via `ensureSession`, so an
+  `--all` fan-out cannot cold-start every idle workspace as a side effect.
+  `dispatchReloadSkillsRequest` fans out over the live `sessions` map (snapshot
+  taken up front, since the awaits yield) behind the `/reloadSkills` socket
+  route and the `orchestra reload-skills [<id>|--all] [--plugins]` CLI verb.
+  Plain `~/.claude/skills`, `commands/` and `agents/` are already watched by the
+  CLI itself and hot-reload unaided; the PLUGIN cache is NOT watched, which is
+  why `--plugins` is an explicit opt-in. It also waits
+  `PLUGIN_RELOAD_SETTLE_MS` (2.5s, once per fan-out) first: measured, the first
+  `reloadPlugins()` after an install returns `plugins: []` because the settings
+  file holding `enabledPlugins` sits behind a ~2s cache — and an empty array is
+  NOT treated as a failure (`shared/reload-skills.ts` `isPluginReloadFailure`).
 
 ## Key files
 
@@ -715,6 +733,15 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   plus `agent-theme.ts` (a dependency-free `useAgentTheme` hook returning
   `'dark'|'light'` off the `data-agent-theme` attribute, used to pick the light/dark
   Shiki theme — formerly monaco-theme.ts, now Monaco-free).
+- **`src/shared/reload-skills.ts`** (+ `.test.ts`) — pure logic behind
+  `orchestra reload-skills`: `parseReloadSkillsArgs` (`--all` and an explicit id
+  are mutually exclusive; an unknown flag is an ERROR, not an ignored token, so a
+  typo'd `--plugin` can't report a clean success for a reload that never touched
+  plugins), `isPluginReloadFailure` (always false — an empty `plugins` array is
+  the ~2s settings cache, not a fault), `summarizeReload` (counts skipped
+  sessions explicitly, so "reloaded nothing" and "reloaded everything" don't
+  print the same line) and `reloadExitCode`. Electron-free so `node --test` can
+  pin the decisions a live SDK session can't cheaply demonstrate.
 - **`src/shared/agent-transcript.ts`** (+ `.test.ts`) — pure converter from the on-disk
   Claude Code session JSONL to `AgentEvent[]` (**history backfill**). On-disk lines
   differ from the live stream: assistant text is finalized (no stream_events → we

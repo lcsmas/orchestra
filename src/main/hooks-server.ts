@@ -31,6 +31,7 @@ import {
   dispatchLinearRemoveRequest,
 } from './linear-tickets';
 import { dispatchLoginUrlRequest } from './login-url';
+import { dispatchReloadSkillsRequest } from './agent-sdk';
 import { log } from './logger';
 import { orchestraHome } from './platform';
 
@@ -174,6 +175,20 @@ export async function startHooksServer(): Promise<void> {
             } else {
               send(200, { ok: false, error: 'missing id or baseBranch' });
             }
+          } else if (route === '/reloadSkills') {
+            // Transient runtime action, so no persistence and nothing to
+            // validate beyond the selector: `--all` fans out over live
+            // sessions, an explicit id targets one. A workspace with no live
+            // session reports `skipped`, not an error — see
+            // dispatchReloadSkillsRequest.
+            send(
+              200,
+              await dispatchReloadSkillsRequest({
+                id: typeof msg.id === 'string' ? msg.id : undefined,
+                all: msg.all === true,
+                plugins: msg.plugins === true,
+              }),
+            );
           } else if (route === '/link') {
             if (typeof msg.id === 'string') {
               send(
