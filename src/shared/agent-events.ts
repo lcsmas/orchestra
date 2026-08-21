@@ -917,8 +917,10 @@ function userTextFrom(content: RawContentBlock[] | string | undefined): string {
   return texts.join('\n').trim();
 }
 
-/** Short display label for an SDK user-message origin. */
-function originLabel(origin: SdkMessage['origin']): string | undefined {
+/** Short display label for an SDK user-message origin. Exported for the
+ *  on-disk backfill (agent-transcript.ts), whose envelope persists the same
+ *  `origin` shape — so a reopened workspace keeps the badge live turns had. */
+export function originLabel(origin: SdkMessage['origin']): string | undefined {
   if (!origin || typeof origin !== 'object') return undefined;
   switch (origin.kind) {
     case 'channel':

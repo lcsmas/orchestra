@@ -217,6 +217,113 @@ test('backfill: slash-command frames render properly, not as raw XML bubbles', (
   assert.equal(s.messages[1].noticeKind, 'command-output');
 });
 
+// ─── CLI-synthetic frames (isMeta on disk = isSynthetic on the wire) ─────────
+//
+// The CLI persists `isMeta: msg.isSynthetic`, and the live normalize path drops
+// synthetic user TEXT (`msg.isSynthetic !== true`). Without the mirror gate the
+// backfill rendered every skill invocation's whole SKILL.md body — plus
+// "Continue from where you left off." wake prompts, `[Image: …]` placeholders
+// and `<local-command-caveat>` wrappers — as giant USER bubbles after an app
+// restart, on frames a live session never showed (the "skills show as messages
+// from the user after restart" bug, real bloc2 transcript 2026-08-21).
+
+test('backfill: isMeta frames (skill bodies, continuation prompts) never render as user bubbles', () => {
+  const jsonl = lines([
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: '/retro' } },
+    // The skill-body expansion — string content, isMeta.
+    {
+      type: 'user',
+      uuid: 'u2',
+      isMeta: true,
+      sourceToolUseID: 'toolu_skill',
+      message: { role: 'user', content: 'Base directory for this skill: /home/x/skills/retro\n\n# Post-task retro\n…' },
+    },
+    // The wake/continuation prompt — text-block content, isMeta.
+    {
+      type: 'user',
+      uuid: 'u3',
+      isMeta: true,
+      message: { role: 'user', content: [{ type: 'text', text: 'Continue from where you left off.' }] },
+    },
+    // The pasted-image coordinate placeholder — isMeta.
+    {
+      type: 'user',
+      uuid: 'u4',
+      isMeta: true,
+      message: { role: 'user', content: '[Image: original 2022x1254, displayed at 2000x1240.]' },
+    },
+  ]);
+  const s = foldEvents(emptySession('ws1'), transcriptToEvents(jsonl, ctx()));
+  assert.deepEqual(
+    s.messages.map((m) => [m.role, m.text]),
+    [['user', '/retro']],
+  );
+});
+
+test('backfill: tool_result blocks on an isMeta frame still flow (live-path parity)', () => {
+  // The live gate covers only the text branch — tool results are consumed
+  // before it. A synthetic frame carrying a tool_result must still finalize
+  // the tool card, or a backfilled run would show tools stuck running.
+  const jsonl = lines([
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: {} }] } },
+    {
+      type: 'user',
+      isMeta: true,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'ok', is_error: false }] },
+    },
+  ]);
+  const s = foldEvents(emptySession('ws1'), transcriptToEvents(jsonl, ctx()));
+  const tool = s.messages.find((m) => m.role === 'tool')!;
+  assert.equal(tool.toolResult!.content, 'ok');
+  // And no phantom user bubble from the synthetic frame.
+  assert.equal(s.messages.filter((m) => m.role === 'user').length, 0);
+});
+
+test('backfill: the compact summary becomes a boundary notice, not a wall-of-text user bubble', () => {
+  const jsonl = lines([
+    {
+      type: 'user',
+      isCompactSummary: true,
+      isVisibleInTranscriptOnly: true,
+      message: { role: 'user', content: 'This session is being continued from a previous conversation that ran out of context…' },
+    },
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: 'real turn after compact' } },
+  ]);
+  const s = foldEvents(emptySession('ws1'), transcriptToEvents(jsonl, ctx()));
+  assert.deepEqual(
+    s.messages.map((m) => [m.role, m.noticeKind ?? m.text]),
+    [
+      ['system', 'compact-boundary'],
+      ['user', 'real turn after compact'],
+    ],
+  );
+});
+
+test('backfill: envelope origin is recovered as the live badge (claude.ai / peer)', () => {
+  const jsonl = lines([
+    {
+      type: 'user',
+      uuid: 'u1',
+      origin: { kind: 'channel' },
+      message: { role: 'user', content: 'typed on claude.ai' },
+    },
+    {
+      type: 'user',
+      uuid: 'u2',
+      origin: { kind: 'human' }, // live renders no badge for 'human' — parity
+      message: { role: 'user', content: 'plain human turn' },
+    },
+  ]);
+  const s = foldEvents(emptySession('ws1'), transcriptToEvents(jsonl, ctx()));
+  assert.deepEqual(
+    s.messages.map((m) => [m.text, m.origin]),
+    [
+      ['typed on claude.ai', 'claude.ai'],
+      ['plain human turn', undefined],
+    ],
+  );
+});
+
 test('backfill: the interrupt marker becomes an interrupted notice', () => {
   const jsonl = lines([
     { type: 'user', message: { role: 'user', content: 'do the thing' } },

@@ -31,6 +31,7 @@ import {
   stamp,
   normalizeResultContent,
   classifyUserText,
+  originLabel,
   type NormalizeContext,
 } from './agent-events.ts';
 
@@ -72,6 +73,23 @@ interface TranscriptEnvelope {
    *  of the message. Recovered so backfilled bubbles/turn dividers show when
    *  the conversation actually happened, not when the workspace was reopened. */
   timestamp?: string;
+  /** The on-disk spelling of the wire's `isSynthetic` (the CLI persists
+   *  `isMeta: msg.isSynthetic`): a CLI-GENERATED user frame the human never
+   *  typed — skill-body expansions ("Base directory for this skill: …" +
+   *  the whole SKILL.md), "Continue from where you left off." continuation
+   *  prompts, `[Image: …]` coordinate-mapping placeholders,
+   *  `<local-command-caveat>` wrappers. The live normalize path drops their
+   *  text (`msg.isSynthetic !== true`, agent-events.ts), so none of these
+   *  ever render in a live session. */
+  isMeta?: boolean;
+  /** The compact/continuation summary frame ("This session is being continued
+   *  from a previous conversation…") — CLI context plumbing, not a user turn.
+   *  The SDK's own resume replay skips these lines wholesale. */
+  isCompactSummary?: boolean;
+  /** Same shape the live wire carries on `msg.origin` — recovered so a
+   *  reopened workspace keeps the origin badge (claude.ai / peer / task
+   *  notification) its externally-originated turns had live. */
+  origin?: { kind?: string; from?: string; name?: string; body?: string };
   message?: { role?: string; content?: unknown };
 }
 
@@ -113,7 +131,10 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
    *  acks a quiet command-output notice, interrupt markers an `interrupted`
    *  notice — instead of raw-XML user bubbles on backfill. Returns true when a
    *  user-message bubble was emitted (the image-attachment anchor). */
-  const pushUserText = (text: string, extra: { rewindId?: string; images?: AgentImage[] }): boolean => {
+  const pushUserText = (
+    text: string,
+    extra: { rewindId?: string; images?: AgentImage[]; origin?: string },
+  ): boolean => {
     const c = classifyUserText(text);
     if (c.kind === 'interrupted') {
       out.push(st(ctx, { type: 'notice', kind: 'interrupted', text: 'Interrupted by user' }));
@@ -149,14 +170,31 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
 
     if (entry.type === 'user') {
       const content = entry.message?.content;
+      // A compact/continuation summary is not a user turn — without this gate
+      // it backfilled as a wall-of-text user bubble no live session ever
+      // showed. Surface it as the boundary marker it is (parity with the live
+      // stream's compact_boundary notice).
+      if (entry.isCompactSummary === true) {
+        out.push(st(ctx, { type: 'notice', kind: 'compact-boundary', text: 'Conversation compacted' }));
+        continue;
+      }
+      // CLI-synthetic frames (see TranscriptEnvelope.isMeta): the live path
+      // drops their TEXT but still consumes their tool_result blocks, so the
+      // backfill must mirror exactly that — without this gate every skill
+      // invocation rendered its entire SKILL.md body as a giant user message
+      // after an app restart ("skills show as messages from the user").
+      const synthetic = entry.isMeta === true;
       // The line's own uuid is this turn's rewind target — recovered so a
       // REOPENED workspace can rewind its history, not just turns sent live
       // this run. (Only user lines carry a usable target; tool_result lines
       // share the `user` type but are not turns the user can rewind to, so the
       // id rides only on the text/image bubbles below.)
       const rewindId = typeof entry.uuid === 'string' && entry.uuid ? entry.uuid : undefined;
+      const origin = originLabel(entry.origin);
       if (typeof content === 'string') {
-        if (content.trim()) pushUserText(content, rewindId ? { rewindId } : {});
+        if (!synthetic && content.trim()) {
+          pushUserText(content, { ...(rewindId ? { rewindId } : {}), ...(origin ? { origin } : {}) });
+        }
       } else if (Array.isArray(content)) {
         const blocks = content as TranscriptBlock[];
         // Reconstruct pasted images so a reopened workspace shows them instead of
@@ -190,22 +228,24 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
                 isError: b.is_error === true || b.is_error === 'true',
               }),
             );
-          } else if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
+          } else if (!synthetic && b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
             const emitted = pushUserText(b.text, {
               ...(!imagesAttached && images.length > 0 ? { images } : {}),
               ...(rewindId ? { rewindId } : {}),
+              ...(origin ? { origin } : {}),
             });
             if (emitted) imagesAttached = true;
           }
         }
         // An image-only turn (no caption) still renders a bubble with the images.
-        if (!imagesAttached && images.length > 0) {
+        if (!synthetic && !imagesAttached && images.length > 0) {
           out.push(
             st(ctx, {
               type: 'user-message',
               text: '',
               images,
               ...(rewindId ? { rewindId } : {}),
+              ...(origin ? { origin } : {}),
             }),
           );
         }

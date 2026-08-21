@@ -751,6 +751,20 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   reconstructed into the `user-message`'s `images`** (Messages-API `{source:{base64}}`
   shape → `AgentImage[]`), so pasted images survive a reopen — the live echo carried
   them but the backfill formerly dropped `image` blocks, so they vanished on reload.
+  **CLI-synthetic user frames are dropped, mirroring the live `isSynthetic` filter**:
+  the CLI persists the wire's `isSynthetic` as the envelope's **`isMeta`** — skill-body
+  expansions ("Base directory for this skill: …" + the whole SKILL.md), "Continue from
+  where you left off." wake prompts, `[Image: …]` coordinate placeholders,
+  `<local-command-caveat>` wrappers — and without the gate every one of them backfilled
+  as a giant USER bubble a live session never showed ("skills show as messages from the
+  user after an app restart", measured on a real transcript: 60 phantom bubbles).
+  Tool_results on synthetic frames still flow (live-path parity), and an
+  **`isCompactSummary`** line becomes a quiet `compact-boundary` notice instead of a
+  wall-of-text bubble. The envelope's **`origin`** is also recovered (same shape as the
+  wire's `msg.origin`, via the now-exported `originLabel`) so claude.ai/peer-originated
+  turns keep their badge on reopen. Slash-command invocation frames
+  (`<command-name>…`) are NOT synthetic on disk and still reconstruct as the
+  `/cmd args` user bubble — same as live.
   `agent-sdk.ts sdkHistory(wsId)` locates the
   file (`<configDir>/projects/<mangleProjectDir(worktreePath)>/<sdkSessionId>.jsonl`,
   tail-capped at 4MB) and StructuredView requests it through the
