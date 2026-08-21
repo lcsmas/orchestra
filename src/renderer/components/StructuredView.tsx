@@ -1553,12 +1553,12 @@ function Composer({
                 }
               >
                 <svg
-                  width="13"
-                  height="13"
+                  width="17"
+                  height="17"
                   viewBox="0 0 16 16"
                   fill="none"
                   stroke="currentColor"
-                  strokeWidth="1.8"
+                  strokeWidth="1.6"
                   strokeLinecap="round"
                   aria-hidden="true"
                 >
@@ -1576,12 +1576,12 @@ function Composer({
                 title="Edit by voice (Ctrl+Shift+M) — select text (or default: the last utterance) and speak an instruction"
               >
                 <svg
-                  width="13"
-                  height="13"
+                  width="17"
+                  height="17"
                   viewBox="0 0 16 16"
                   fill="none"
                   stroke="currentColor"
-                  strokeWidth="1.8"
+                  strokeWidth="1.6"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                   aria-hidden="true"

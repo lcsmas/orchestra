@@ -1821,7 +1821,10 @@ h6.av-md-h {
 .av-composer-mic {
   order: 5;
   display: inline-flex; align-items: center; justify-content: center; flex: none;
-  width: 26px; height: 24px; border-radius: 7px;
+  /* Sized like a real control, not a glyph-width sliver — at 26×24/13px the
+     two chips read as faint dots next to the text chips (user: "way too
+     small"). Same idle colour family as the row, one step brighter. */
+  width: 34px; height: 28px; border-radius: 8px;
   border: none; background: transparent; box-shadow: none;
   color: var(--av-text-dim); cursor: pointer;
   transition: background 120ms var(--av-ease), color 120ms var(--av-ease);
