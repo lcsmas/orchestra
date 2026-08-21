@@ -237,6 +237,11 @@ interface Props {
   onEscape: (mode: VimMode | null) => boolean;
   onPaste: (items: DataTransferItemList | null) => boolean;
   onDrop: (e: DragEvent) => void;
+  /** Ctrl+M — toggle voice dictation. Optional: absent (or returning false)
+   *  when the voice models aren't installed, so the chord types nothing. */
+  onVoiceDictate?: () => boolean;
+  /** Ctrl+Shift+M — toggle voice EDIT (revise selection / last utterance). */
+  onVoiceEdit?: () => boolean;
   handleRef?: (h: CmComposerHandle | null) => void;
 }
 
@@ -254,6 +259,8 @@ export function CmComposer({
   onEscape,
   onPaste,
   onDrop,
+  onVoiceDictate,
+  onVoiceEdit,
   handleRef,
 }: Props) {
   const host = useRef<HTMLDivElement>(null);
@@ -264,11 +271,11 @@ export function CmComposer({
   // (the editor is created once; props change every render).
   const cb = useRef({
     onChange, onEnter, onShiftEnter, onArrowDown, onArrowUp, onTab, onEscape,
-    onPaste, onDrop, onVimMode, vimEnabled,
+    onPaste, onDrop, onVimMode, vimEnabled, onVoiceDictate, onVoiceEdit,
   });
   cb.current = {
     onChange, onEnter, onShiftEnter, onArrowDown, onArrowUp, onTab, onEscape,
-    onPaste, onDrop, onVimMode, vimEnabled,
+    onPaste, onDrop, onVimMode, vimEnabled, onVoiceDictate, onVoiceEdit,
   };
 
   /** Current vim mode, or null when vim is off. */
@@ -322,6 +329,11 @@ export function CmComposer({
           },
         },
         { key: 'Escape', run: (v) => cb.current.onEscape(readMode(v)) },
+        // Voice dictation chords. Letters with Ctrl so they can never collide
+        // with typing (insert mode) — and claimed at highest precedence so vim
+        // (Ctrl-m = carriage-return motion in NORMAL) doesn't eat them.
+        { key: 'Ctrl-m', run: () => cb.current.onVoiceDictate?.() ?? false },
+        { key: 'Ctrl-Shift-m', run: () => cb.current.onVoiceEdit?.() ?? false },
       ]),
     );
 

@@ -1485,6 +1485,16 @@ function Composer({
             }}
             onPaste={(items) => addPastedImages(items)}
             onDrop={(e) => onDrop(e)}
+            onVoiceDictate={() => {
+              if (!voice.available || bashMode) return false;
+              voice.toggle('dictate');
+              return true;
+            }}
+            onVoiceEdit={() => {
+              if (!voice.available || bashMode) return false;
+              voice.toggle('edit');
+              return true;
+            }}
           />
         </div>
         {/* The control bar is docked INSIDE the card (bottom row) rather than
@@ -1538,8 +1548,8 @@ function Composer({
                 aria-label={voice.micState === 'dictate' ? 'Stop dictation' : 'Dictate'}
                 title={
                   voice.micState === 'dictate'
-                    ? 'Stop dictation'
-                    : 'Dictate — speech lands here as you talk, cleaned up on each pause'
+                    ? 'Stop dictation (Ctrl+M)'
+                    : 'Dictate (Ctrl+M) — speech lands here as you talk, cleaned up on each pause'
                 }
               >
                 <svg
@@ -1563,7 +1573,7 @@ function Composer({
                 onClick={() => voice.toggle('edit')}
                 aria-pressed={voice.micState === 'edit'}
                 aria-label="Edit by voice"
-                title="Edit by voice — select text (or default: the last utterance) and speak an instruction"
+                title="Edit by voice (Ctrl+Shift+M) — select text (or default: the last utterance) and speak an instruction"
               >
                 <svg
                   width="13"
