@@ -154,6 +154,7 @@ if (!ORCHESTRA_CLI_MODE && process.env.ORCHESTRA_HOME) {
 import { initPlatform } from './platform';
 import { createElectronPlatform } from './platform/electron';
 import { initBrowserPanels } from './browser-panel';
+import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
 import {
   ensureRoot,
@@ -197,6 +198,10 @@ initPlatform(createElectronPlatform(() => mainWindow));
 // The embedded browser panel attaches its per-workspace WebContentsView to the
 // main window's content view; give it the same live accessor.
 initBrowserPanels(() => mainWindow);
+
+// Voice dictation (composer mic). Registers its own ipcMain handlers; the
+// feature self-gates on the local STT models existing (voiceAvailable).
+initVoice();
 
 // Wrap ipcMain.handle so any error thrown by a handler is logged with its
 // channel before being re-thrown back to the renderer. Without this, a failing
@@ -572,6 +577,7 @@ function shutdownSubsystems(): void {
   stopSelfTuneScheduler();
   stopHibernationSweeper();
   closeAllSandboxConnections();
+  disposeVoice();
 }
 
 if (!ORCHESTRA_CLI_MODE) {

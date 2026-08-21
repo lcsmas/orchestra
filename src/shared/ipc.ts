@@ -1,4 +1,5 @@
 import type { SelfTuneReport, SelfTuneRun } from './self-tune';
+import type { VoiceEvent, VoiceStartOptions } from './voice';
 import type { DesignPick } from './design-mode';
 import type { WorktreeSizes } from './worktree-sizes';
 import type {
@@ -522,7 +523,22 @@ export interface OrchestraAPI {
   /** Live transcript chunks of the in-flight run. */
   onSelfTuneOutput: (cb: (runId: string, chunk: string) => void) => () => void;
 
+  // Voice dictation (composer mic). Frontend-local like pickDirectory: the
+  // handlers live in src/main/voice.ts, not the api-handlers table, and the
+  // feature self-gates on local STT models existing (voiceAvailable -> false
+  // hides the mic button entirely).
+  voiceAvailable: () => Promise<boolean>;
+  /** Begin (or re-configure) a dictation/edit session for a workspace. */
+  voiceStart: (wsId: string, opts: VoiceStartOptions) => Promise<boolean>;
+  /** One ~100ms chunk of 16kHz mono Int16 PCM from the renderer's mic worklet. */
+  voicePcm: (wsId: string, pcm: ArrayBuffer) => Promise<void>;
+  /** Mic released: flush the buffered utterance as a final. */
+  voiceStop: (wsId: string) => Promise<void>;
+
   // Events
+  /** Voice pipeline events (partial/final/clean/revision…), keyed by workspace.
+   *  Partials arrive ~1/s while dictating — cheap enough to setState directly. */
+  onVoiceEvent: (cb: (wsId: string, event: VoiceEvent) => void) => () => void;
   /** Pushed whenever the pinned-ticket list changes (pin/un-pin/refresh/graduate). */
   onTicketsUpdate: (cb: (tickets: PinnedTicket[]) => void) => () => void;
 

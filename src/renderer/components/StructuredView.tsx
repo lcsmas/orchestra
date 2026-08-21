@@ -31,6 +31,7 @@ import { useStore } from '../store';
 import { scoped } from '../log';
 import { WorkspaceAccountBadge } from './AccountBadge';
 import { CmComposer, type CmComposerHandle } from './agent/CmComposer';
+import { useVoiceDictation } from './agent/useVoiceDictation';
 import { McpPopover, McpIndicator } from './agent/McpPopover';
 import { readComposerVim, writeComposerVim, vimChipLabel, type VimMode } from '../composer-vim-pref';
 import {
@@ -1086,6 +1087,16 @@ function Composer({
   const cmRef = useRef<CmComposerHandle | null>(null);
   const running = !!session?.running;
 
+  // Voice dictation (mic + voice-edit in the bar; ghost partials in the doc).
+  // The workspace's branch + repo folder ride into the speaker dictionary so
+  // "worktree", ticket-ish branch names and repo names transcribe right.
+  const vocabExtra = useStore((s) => {
+    const ws = s.workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return '';
+    return [ws.branch, ws.repoPath?.split('/').pop()].filter(Boolean).join(', ');
+  });
+  const voice = useVoiceDictation(workspaceId, cmRef, setText, vocabExtra);
+
   // Expose PREFILL to the parent (rewind's edit-and-retry). Both the React
   // state and the CodeMirror document must be set: `text` drives bash-mode
   // detection, the send payload and the autocomplete, while the editor holds
@@ -1511,6 +1522,65 @@ function Composer({
           >
             {vimChipLabel(vimEnabled ? vimMode : null)}
           </button>
+          {voice.available && !bashMode && (
+            <>
+              {voice.status && (
+                <span className="av-voice-status" aria-live="polite">
+                  {voice.status}
+                </span>
+              )}
+              <button
+                type="button"
+                className="av-composer-mic"
+                data-state={voice.micState === 'dictate' ? 'rec' : undefined}
+                onClick={() => voice.toggle('dictate')}
+                aria-pressed={voice.micState === 'dictate'}
+                aria-label={voice.micState === 'dictate' ? 'Stop dictation' : 'Dictate'}
+                title={
+                  voice.micState === 'dictate'
+                    ? 'Stop dictation'
+                    : 'Dictate — speech lands here as you talk, cleaned up on each pause'
+                }
+              >
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  aria-hidden="true"
+                >
+                  <rect x="6" y="1.5" width="4" height="8" rx="2" />
+                  <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2.5" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="av-composer-mic av-composer-voice-edit"
+                data-state={voice.micState === 'edit' ? 'rec' : undefined}
+                onClick={() => voice.toggle('edit')}
+                aria-pressed={voice.micState === 'edit'}
+                aria-label="Edit by voice"
+                title="Edit by voice — select text (or default: the last utterance) and speak an instruction"
+              >
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M11.5 2.5l2 2L6 12l-2.7.7.7-2.7z" />
+                </svg>
+              </button>
+            </>
+          )}
           <button
             className={`av-composer-send${bashMode ? ' av-composer-send-bash' : ''}`}
             onClick={submit}

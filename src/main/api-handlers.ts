@@ -161,8 +161,12 @@ type ApiMethodName = {
 }[keyof OrchestraAPI];
 
 /** The servable slice of `OrchestraAPI`: all methods minus the frontend-local
- *  `pickDirectory`. */
-type ServableApi = Omit<Pick<OrchestraAPI, ApiMethodName>, 'pickDirectory'>;
+ *  ones — `pickDirectory` (native file chooser) and the `voice*` family
+ *  (registered inline by src/main/voice.ts: high-frequency PCM, dev-gated). */
+type ServableApi = Omit<
+  Pick<OrchestraAPI, ApiMethodName>,
+  'pickDirectory' | 'voiceAvailable' | 'voiceStart' | 'voicePcm' | 'voiceStop'
+>;
 
 /** Served backend methods that are not part of the renderer-facing
  *  `OrchestraAPI`. */

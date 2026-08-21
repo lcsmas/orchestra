@@ -247,6 +247,15 @@ const api: OrchestraAPI = {
     ipcRenderer.on('agent:event', listener);
     return () => ipcRenderer.off('agent:event', listener);
   },
+  voiceAvailable: () => ipcRenderer.invoke('voice:available'),
+  voiceStart: (wsId, opts) => ipcRenderer.invoke('voice:start', wsId, opts),
+  voicePcm: (wsId, pcm) => ipcRenderer.invoke('voice:pcm', wsId, pcm),
+  voiceStop: (wsId) => ipcRenderer.invoke('voice:stop', wsId),
+  onVoiceEvent: (cb) => {
+    const listener = (_e: unknown, wsId: string, event: unknown) => cb(wsId, event as never);
+    ipcRenderer.on('voice:event', listener);
+    return () => ipcRenderer.off('voice:event', listener);
+  },
   onBrowserEvent: (cb) => {
     const listener = (_e: unknown, wsId: string, state: unknown) => cb(wsId, state as never);
     ipcRenderer.on('browser:event', listener);

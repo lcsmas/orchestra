@@ -1057,3 +1057,39 @@ interactive tool set, the `SDKResultMessage` fields, diffs-from-input, streaming
 multi-turn, and the packaging (SDK + native `claude` binary ship in `app.asar`). Redacted
 thinking on Opus 4.8 and frequent transient 500s (arrive as `is_error` result messages) are
 documented there.
+
+## Voice dictation (composer mic — design "A: ghost inline")
+
+Local push-to-talk STT into the composer, validated in a standalone PoC (`~/voice-poc`)
+before landing. Dev-gated: `voiceAvailable()` requires `ORCHESTRA_VOICE_DIR`
+(default `~/voice-poc`) to hold `whisper.cpp/build/bin/parakeet-cli` +
+`models/ggml-parakeet-tdt-0.6b-v3-f16.bin`; without them the mic UI never renders.
+
+- `src/shared/voice.ts` — pure layer: `VoiceEvent`, the Haiku ROUTER/EDIT prompts
+  (each utterance is routed `append` vs `replace_last` — inline spoken corrections
+  revise the previous utterance), `parseRouterReply` (malformed LLM reply degrades to
+  append so an utterance is never eaten), and `EnergyEndpointer` (RMS gate + adaptive
+  noise floor; sherpa was dropped — key-release is already a hard endpoint and an
+  energy gate is language-independent where the monolingual zipformer broke on
+  franglais). Unit tests in `src/shared/voice.test.ts`.
+- `src/main/voice.ts` — engine: per-workspace `VoiceSession` (PCM in over
+  `voice:pcm`), incremental parakeet re-decode of the live utterance for `partial`s
+  (same model as finals — the industry-standard shape; ~1s cadence, skip-if-busy),
+  parakeet final on endpoint/stop, persistent `claude -p --input/output-format
+  stream-json --model haiku` worker (`HaikuWorker`, serialized asks; cold CLI spawn
+  measured ~6s vs ~1.5s warm). Handlers registered inline like `pickDirectory`
+  (excluded from the api-handlers table). Events out via
+  `platform.broadcast('voice:event', wsId, ev)`.
+- `src/renderer/components/agent/useVoiceDictation.ts` — renderer controller:
+  permanently-warm mic (getUserMedia + inline AudioWorklet downsampler to 16kHz
+  Int16) with ~600ms pre-roll ring (cold pipeline startup measurably ate the first
+  syllable: "1469" → "469"), applies events to the composer (`clean append` /
+  `replace_last` by last-occurrence string match; edit `revision` splices the
+  target). Edit target = CM selection, else last utterance, else full text.
+- `CmComposer` — `setGhost(text|null, kind)` renders partials as a `WidgetType`
+  pinned at doc end (`.av-ghost`, grey italic; `.av-ghost-edit` amber) — never real
+  doc text, so send/undo/caret can't touch it. `getSelection()` feeds edit mode.
+- `StructuredView` Composer — mic + voice-edit chips in `.av-composer-bar` (flat,
+  colour-carried rec state like the vim chip; `verify-composer-card.mjs` contract),
+  `.av-voice-status` latency readout; workspace branch + repo folder are appended to
+  the speaker dictionary (`DEFAULT_VOCAB`) so repo jargon transcribes right.

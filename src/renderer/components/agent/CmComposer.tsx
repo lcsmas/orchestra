@@ -11,11 +11,19 @@
 // by driving a prototype; each carries the measurement that produced it.
 
 import { useEffect, useLayoutEffect, useRef } from 'react';
-import { EditorState, RangeSetBuilder, Compartment, Prec } from '@codemirror/state';
+import {
+  EditorState,
+  RangeSetBuilder,
+  Compartment,
+  Prec,
+  StateEffect,
+  StateField,
+} from '@codemirror/state';
 import {
   EditorView,
   Decoration,
   ViewPlugin,
+  WidgetType,
   keymap,
   placeholder as cmPlaceholder,
   drawSelection,
@@ -153,10 +161,61 @@ const orchestraTheme = EditorView.theme(
   { dark: true },
 );
 
+// ---------------------------------------------------------------------------
+// Voice-dictation ghost tail (design "A — ghost inline"): live STT partials
+// render as a grey-italic WIDGET pinned to the end of the doc — never real
+// document text, so they can't be sent, edited, or pollute undo history. The
+// widget is swapped for committed text only when the cleaned utterance arrives.
+// ---------------------------------------------------------------------------
+
+const setGhostEffect = StateEffect.define<{ text: string; kind: 'dictate' | 'edit' } | null>();
+
+class GhostWidget extends WidgetType {
+  constructor(
+    readonly text: string,
+    readonly kind: 'dictate' | 'edit',
+  ) {
+    super();
+  }
+  override eq(o: GhostWidget): boolean {
+    return o.text === this.text && o.kind === this.kind;
+  }
+  toDOM(): HTMLElement {
+    const s = document.createElement('span');
+    s.className = `av-ghost av-ghost-${this.kind}`;
+    s.textContent = this.text;
+    return s;
+  }
+}
+
+const ghostField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    for (const e of tr.effects) {
+      if (e.is(setGhostEffect)) {
+        return e.value
+          ? Decoration.set([
+              Decoration.widget({
+                widget: new GhostWidget(e.value.text, e.value.kind),
+                side: 1,
+              }).range(tr.newDoc.length),
+            ])
+          : Decoration.none;
+      }
+    }
+    return deco.map(tr.changes);
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
 export interface CmComposerHandle {
   focus: () => void;
   getText: () => string;
   setText: (text: string) => void;
+  /** Voice dictation: render (or clear, with null) the ghost partial tail. */
+  setGhost: (text: string | null, kind?: 'dictate' | 'edit') => void;
+  /** Current primary selection — voice edit mode scopes its revision to it. */
+  getSelection: () => { from: number; to: number; text: string };
 }
 
 interface Props {
@@ -286,6 +345,7 @@ export function CmComposer({
           drawSelection({ cursorBlinkRate: 1200 }),
           orchestraTheme,
           highlighter,
+          ghostField,
           cmPlaceholder(placeholder),
           EditorView.lineWrapping,
           EditorView.updateListener.of((u) => {
@@ -329,6 +389,13 @@ export function CmComposer({
           changes: { from: 0, to: view.state.doc.length, insert: text },
           selection: { anchor: text.length },
         });
+      },
+      setGhost: (text, kind = 'dictate') => {
+        view.dispatch({ effects: setGhostEffect.of(text ? { text, kind } : null) });
+      },
+      getSelection: () => {
+        const r = view.state.selection.main;
+        return { from: r.from, to: r.to, text: view.state.doc.sliceString(r.from, r.to) };
       },
     });
     return () => {

@@ -1814,6 +1814,37 @@ h6.av-md-h {
 .av-composer-vim[data-on='1'][data-mode='INSERT'] { color: var(--av-assistant); }
 .av-composer-vim[data-on='1'][data-mode='NORMAL'] { color: #7ee787; }
 .av-composer-vim[data-on='1'][data-mode='VISUAL'] { color: #ffc158; }
+/* Voice dictation: mic + voice-edit chips. Flat like every chip in this row
+   (no border/background/shadow — verify-composer-card.mjs enforces it); the
+   recording state is carried by COLOUR + pulse, exactly how vim carries mode.
+   Red = dictating, amber = listening for an edit instruction. */
+.av-composer-mic {
+  order: 5;
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 26px; height: 24px; border-radius: 7px;
+  border: none; background: transparent; box-shadow: none;
+  color: var(--av-text-dim); cursor: pointer;
+  transition: background 120ms var(--av-ease), color 120ms var(--av-ease);
+}
+.av-composer-mic:hover { background: var(--av-surface-raised); color: var(--av-text); }
+.av-composer-mic[data-state='rec'] { color: #f85149; animation: av-mic-pulse 1.1s infinite; }
+.av-composer-voice-edit[data-state='rec'] { color: #ffc158; }
+@keyframes av-mic-pulse { 50% { opacity: 0.55; } }
+/* Pipeline status readout beside the mic ("stt 0.9s", "clean 1.5s"). */
+.av-voice-status {
+  order: 5; flex: none;
+  font-family: var(--font-mono); font-size: var(--av-fs-small);
+  color: var(--av-text-faint); white-space: nowrap;
+}
+/* The ghost partial tail inside the CodeMirror doc: live STT text that is NOT
+   yet real content — grey italic while dictating, amber while an edit
+   instruction is being heard. A widget, so caret/undo/send never touch it. */
+.av-ghost { color: var(--av-text-dim); opacity: 0.55; font-style: italic; }
+.av-ghost-edit { color: #ffc158; opacity: 0.7; }
+/* The ghost is a WIDGET, so an empty doc still counts as empty to CM and the
+   placeholder paints — concatenated right after the ghost text (caught by the
+   e2e screenshot, invisible to DOM assertions). Hide it while a ghost shows. */
+.av-composer-cm:has(.av-ghost) .cm-placeholder { display: none; }
 /* Circular icon-only send, docked at the right end of the control row. The
    Send/Queue/Run wording the old pill carried now rides on the GLYPH (arrow /
    queue-return / chevron) plus title + aria-label — dropping the text label is
