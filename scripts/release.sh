@@ -112,13 +112,29 @@ run()  { if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] %s\n' "$*"; else eval "
 # package.json regenerates the reported diff hunk-for-hunk (`@@ -23,33 +23,6 @@`,
 # `@@ -74,37 +47,5 @@`) and the reported `wc -l` of 50 vs 109.
 #
-# What is NOT established is how that bundle-only content reached the worktree
-# file: under this repo's config (asar enabled) the transform result is held in
-# memory and packed into app.asar, and every copy destination resolves under
-# `release/`. So the writer is unidentified — which is exactly why this is a
-# guard and not a fix. A stripped package.json breaks every later `pnpm run …`
-# in the worktree, and if it ever landed BEFORE the build it would ship broken
-# metadata; nothing in the flow noticed either time.
+# THE WRITER IS `npx asar extract-file`, AND IT IS NOT THIS SCRIPT. Its second
+# argument is a SELECTOR inside the archive, never a destination: output always
+# lands in the CURRENT DIRECTORY. So an artifact-identity check like
+#     cd <repo> && npx asar extract-file <app.asar> package.json
+# silently REPLACES that repo's package.json with the packaged, stripped copy —
+# deterministic, exit code 0, no warning. Both #40 sightings were post-release
+# worktree-only because a post-release verify step does exactly this. Confirmed
+# on a control fixture: `name` flipped from the fixture's own value to the
+# archive's, i.e. the file was REPLACED, not edited.
+#
+# Note the JS API is safe and differently shaped: `extractFile()` RETURNS a
+# buffer and touches nothing (that is what scripts/after-pack-check.cjs uses).
+# Only the CLI writes to cwd.
+#
+# Do not re-derive the dead hypothesis: electron-builder's own pipeline does NOT
+# do this. Its transform result is held in memory and packed into app.asar, and
+# every copy destination resolves under `release/` — true, verified, and a dead
+# end. Full evidence on issue #40.
+#
+# This stays a GUARD rather than a fix because release.sh is not the writer and
+# has no extract-file on any path: a stripped package.json breaks every later
+# `pnpm run …` in the worktree, and if it ever landed BEFORE the build it would
+# ship broken metadata; nothing in the flow noticed either time.
 #
 # Cheap, total check: the file must parse, and carry the keys a stripped one
 # lacks. Called after the bump (so a pre-build mangling aborts before we ship)
