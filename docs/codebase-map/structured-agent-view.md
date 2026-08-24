@@ -1014,7 +1014,18 @@ The gauge has THREE possible sources, normalized to one shape by the pure
 |---|---|---|---|
 | `live` | `Query.getContextUsage()` | camelCase, `isDeferred` flags | live SDK session |
 | `context-command` | `context_usage` on a `/context` result | snake_case, `kind` enum | user runs `/context` |
-| `transcript` | `activity.ts computeContextTokens` | bare token count | no live Query |
+| `transcript` | `activity.ts computeContextTokens` / history replay | bare token count | no live Query |
+| `turn-end` | `AgentTurnEndEvent` fields (inferred) | tokens + sometimes a window | last resort |
+
+**Provenance is readable, not inferred.** Every reading carries
+`ContextUsage.source`, `resolveContextUsage` (context-usage.ts) makes the ONE
+sourcing decision and tags which producer won, and the rendered gauge carries
+`data-context-source`. A driver can therefore assert WHICH path fed the gauge —
+necessary because a fabricated turn-end and a real live reading can render the
+same number, so the value alone proves nothing. Readable three ways:
+`window.__readAgentSession(wsId).contextUsage.source` (emitted readings),
+the `data-context-source` DOM attribute (the RESOLVED source, incl. `turn-end`),
+or `resolveContextUsage()` directly in a unit test.
 
 - **Primary — live.** `sdkGetContextUsage` (`agent-sdk.ts:1315`) calls
   `session.q.getContextUsage()`, raced against a 3s timeout exactly like

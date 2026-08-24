@@ -1,7 +1,9 @@
 // Context-window usage — one normalized shape from three different sources.
 //
-// The context gauge answers "how full is this agent's context window?". Three
-// producers can answer it, in descending order of authority:
+// The context gauge answers "how full is this agent's context window?". FOUR
+// producers can answer it, in descending order of authority (the tag on each
+// reading, `ContextUsage.source`, names which one did — provenance is readable
+// rather than inferred from the number):
 //
 //   1. `Query.getContextUsage()` — the live SDK control request. The CLI's OWN
 //      accounting, the same figure its `/context` view renders. Available the
@@ -17,8 +19,14 @@
 //      the only source that works with no live `Query` at all (detached keeper
 //      sessions, history panes, PTY-driven agents).
 //
+//   4. `turn-end` — the per-turn inference on `AgentTurnEndEvent`
+//      (`contextUsedTokens`/`contextWindow`), derived from what the last API
+//      call billed. Never emitted as an event: it is synthesized at read time
+//      by `resolveContextUsage` when nothing better is on the session. Weakest,
+//      and the reason the others exist — its window is null on many turns.
+//
 // (1) and (2) are structurally near-identical and trivially convertible; (3)
-// yields only a token count. So the normalized shape below carries the token
+// and (4) yield only a token count (and, for (4), sometimes a window). So the normalized shape below carries the token
 // total as its REQUIRED core and the category breakdown as OPTIONAL — a gauge
 // can always render, and a richer breakdown appears when the source had one.
 //
@@ -30,7 +38,7 @@
 /** Where a {@link ContextUsage} came from. Rendered as provenance and used to
  *  decide precedence: a `live` reading always supersedes a `transcript` one for
  *  the same workspace, never the reverse (see {@link isMoreAuthoritative}). */
-export type ContextUsageSource = 'live' | 'context-command' | 'transcript';
+export type ContextUsageSource = 'live' | 'context-command' | 'transcript' | 'turn-end';
 
 /** One row of the by-category breakdown, normalized across both SDK shapes.
  *
@@ -279,6 +287,47 @@ export function transcriptContextTokens(usage: TranscriptUsage | null | undefine
   );
 }
 
+/** The per-turn figures the gauge falls back to when no reading has been
+ *  emitted — `AgentTurnEndEvent`'s inferred pair. */
+export interface TurnEndContextFields {
+  contextUsedTokens?: number | null;
+  contextWindow?: number | null;
+}
+
+/** Resolve what the context gauge should display, from the two things a folded
+ *  session can offer: an emitted {@link ContextUsage} (live / `/context` /
+ *  transcript) or the inferred per-turn fields.
+ *
+ *  Exists so the gauge's sourcing decision is ONE testable function rather than
+ *  inline ternaries in a component, and — the reason it returns a tagged
+ *  `ContextUsage` rather than a bare pair — so the RESOLVED source is readable
+ *  from outside. A verifier driving the app can then assert WHICH producer fed
+ *  the gauge instead of inferring it from a rendered number, which a fabricated
+ *  turn-end would make indistinguishable from a real live reading.
+ *
+ *  Returns null when there is nothing to show. */
+export function resolveContextUsage(
+  usage: ContextUsage | undefined,
+  turn: TurnEndContextFields | undefined,
+): ContextUsage | null {
+  if (usage) return usage;
+  const totalTokens = turn?.contextUsedTokens;
+  if (typeof totalTokens !== 'number' || !Number.isFinite(totalTokens) || totalTokens <= 0) {
+    return null;
+  }
+  const w = turn?.contextWindow;
+  const maxTokens = typeof w === 'number' && Number.isFinite(w) && w > 0 ? w : null;
+  return {
+    totalTokens,
+    maxTokens,
+    percentage: computePercentage(totalTokens, maxTokens),
+    source: 'turn-end',
+    // Synthesized at read time from an already-folded turn, so it carries no
+    // independent timestamp of its own.
+    at: 0,
+  };
+}
+
 /** Rank a source's authority. Live SDK readings are the CLI's own accounting;
  *  the transcript recompute is an inference from billing data. */
 function sourceRank(source: ContextUsageSource): number {
@@ -289,6 +338,11 @@ function sourceRank(source: ContextUsageSource): number {
       return 2;
     case 'transcript':
       return 1;
+    // Weakest: inferred from what the last API call billed, and only exists
+    // once a turn has closed. Never emitted as an event — it is synthesized by
+    // the gauge when nothing better is on the session (see resolveContextUsage).
+    case 'turn-end':
+      return 0;
   }
 }
 

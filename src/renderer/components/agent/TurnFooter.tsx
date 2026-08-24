@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from 'react';
 import type { AgentSession, AgentTurnEndEvent } from '../../../shared/types';
-import type { ContextUsage } from '../../../shared/context-usage';
+import { resolveContextUsage, type ContextUsage } from '../../../shared/context-usage';
 
 /** k/M token formatter, mirroring AccountBadge.formatTokens for consistency. */
 function formatTokens(n: number): string {
@@ -174,20 +174,22 @@ function ContextGauge({
   turn: AgentTurnEndEvent | undefined;
   usage: ContextUsage | undefined;
 }) {
-  // Prefer the live SDK reading (`session/context`) over the per-turn
-  // inference: it is the CLI's own accounting, it always carries a window size
-  // (the inferred `contextWindow` is null on many turns, which used to make the
-  // gauge vanish outright), and it exists before the first turn closes.
-  const used = usage ? usage.totalTokens : turn?.contextUsedTokens;
-  const window = usage ? usage.maxTokens : turn?.contextWindow;
-  if (!used) return null;
+  // ONE sourcing decision, in a pure tested function: prefer the emitted
+  // reading (live / `/context` / transcript) over the per-turn inference, and
+  // tag which one won so the choice is readable from outside (see
+  // resolveContextUsage — a driver asserting provenance cannot tell a
+  // fabricated turn-end from a real live reading by the number alone).
+  const resolved = resolveContextUsage(usage, turn);
+  if (!resolved) return null;
+  const used = resolved.totalTokens;
+  const window = resolved.maxTokens;
   // A window is NOT required. The transcript fallback (history/detached
   // sessions, which have no live Query) knows how many tokens the last turn fed
   // in but never what the window was — inventing a 200K denominator there would
   // fabricate a percentage the source cannot support. So render the absolute
   // token count instead of nothing: an unknown-denominator reading is still the
   // only context figure those sessions have, and showing nothing was the bug.
-  const pct = window && window > 0 ? Math.round((used / window) * 100) : null;
+  const pct = resolved.percentage;
   // The BAR is clamped (a fill can't exceed its track), but the NUMBER is not:
   // an over-limit session genuinely reads past 100%, and pinning it to 100
   // would hide exactly the state this gauge exists to warn about.
@@ -197,6 +199,7 @@ function ContextGauge({
   return (
     <div
       className={`av-turn-stat av-turn-context av-turn-context-${level}`}
+      data-context-source={resolved.source}
       title={
         window && window > 0
           ? `Context: ${formatTokens(used)} of ${formatTokens(window)} tokens in use${

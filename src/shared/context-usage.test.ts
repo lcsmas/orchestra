@@ -9,6 +9,7 @@ import {
   isDeferredCategory,
   isMoreAuthoritative,
   transcriptContextTokens,
+  resolveContextUsage,
   STALE_MS,
   type ContextUsage,
 } from './context-usage.ts';
@@ -262,4 +263,58 @@ test('transcriptContextTokens returns 0 for absent/garbage usage', () => {
 test('transcriptContextTokens tolerates partially-present components', () => {
   assert.equal(transcriptContextTokens({ input_tokens: 50 }), 50);
   assert.equal(transcriptContextTokens({ cache_read_input_tokens: 7 }), 7);
+});
+
+// ── resolveContextUsage — the gauge's single sourcing decision ───────────────
+//
+// The provenance seam: a driver must be able to assert WHICH producer fed the
+// gauge. A fabricated turn-end and a real live reading can render the same
+// number, so the tag — not the value — is the evidence.
+
+test('resolveContextUsage prefers an emitted reading over turn-end fields', () => {
+  const live = normalizeLiveContextUsage(LIVE_PAYLOAD, 0)!;
+  const r = resolveContextUsage(live, { contextUsedTokens: 999, contextWindow: 1000 });
+  assert.equal(r!.source, 'live');
+  assert.equal(r!.totalTokens, 73191);
+});
+
+test('resolveContextUsage falls back to turn-end fields, tagged as such', () => {
+  const r = resolveContextUsage(undefined, { contextUsedTokens: 50000, contextWindow: 200000 });
+  assert.ok(r);
+  assert.equal(r.source, 'turn-end');
+  assert.equal(r.totalTokens, 50000);
+  assert.equal(r.maxTokens, 200000);
+  assert.equal(r.percentage, 25);
+});
+
+test('resolveContextUsage keeps a turn-end reading whose window is unknown', () => {
+  // The exact case that used to render NOTHING: modelUsage reported no window.
+  const r = resolveContextUsage(undefined, { contextUsedTokens: 50000, contextWindow: null });
+  assert.ok(r, 'a windowless turn-end must still yield a reading');
+  assert.equal(r.source, 'turn-end');
+  assert.equal(r.maxTokens, null);
+  assert.equal(r.percentage, null);
+});
+
+test('resolveContextUsage returns null when there is nothing to show', () => {
+  assert.equal(resolveContextUsage(undefined, undefined), null);
+  assert.equal(resolveContextUsage(undefined, {}), null);
+  assert.equal(resolveContextUsage(undefined, { contextUsedTokens: 0 }), null);
+  assert.equal(resolveContextUsage(undefined, { contextUsedTokens: null }), null);
+});
+
+test('a transcript reading still beats turn-end fields', () => {
+  const r = resolveContextUsage(contextUsageFromTranscript(48000, 5), {
+    contextUsedTokens: 999,
+    contextWindow: 1000,
+  });
+  assert.equal(r!.source, 'transcript');
+  assert.equal(r!.totalTokens, 48000);
+});
+
+test('turn-end ranks below every emitted source', () => {
+  const te = resolveContextUsage(undefined, { contextUsedTokens: 1, contextWindow: 2 })!;
+  // Any emitted reading must supersede a synthesized turn-end one.
+  assert.equal(isMoreAuthoritative(contextUsageFromTranscript(10, 0), te), true);
+  assert.equal(isMoreAuthoritative(live(0), te), true);
 });
