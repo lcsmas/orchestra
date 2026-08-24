@@ -19,6 +19,7 @@ import { RowActionsPopover, useRowActionsPopover } from './RowActionsPopover';
 import { InboxBell } from './InboxBell';
 import { SoundSettings } from './SoundSettings';
 import { AgentViewSettings } from './AgentViewSettings';
+import { VoiceDictionarySettings } from './VoiceDictionarySettings';
 import { LinearSettings } from './LinearSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
 import { NewWorkspaceBranchPopover } from './NewWorkspaceBranchPopover';
@@ -848,6 +849,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   });
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
   const [agentViewSettingsOpen, setAgentViewSettingsOpen] = useState(false);
+  const [voiceDictOpen, setVoiceDictOpen] = useState(false);
   const setHelpOpen = useStore((s) => s.setHelpOpen);
   const [linearSettingsOpen, setLinearSettingsOpen] = useState(false);
   const [accountsSettingsOpen, setAccountsSettingsOpen] = useState(false);
@@ -1707,6 +1709,19 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           </button>
           <button
             className="header-icon-btn"
+            onClick={() => setVoiceDictOpen(true)}
+            title="Voice dictionary — words dictation should spell your way"
+            aria-label="Voice dictionary settings"
+          >
+            {/* microphone glyph: the speaker dictionary used by dictation */}
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="11" rx="3" />
+              <path d="M5 11a7 7 0 0 0 14 0" />
+              <line x1="12" y1="18" x2="12" y2="21" />
+            </svg>
+          </button>
+          <button
+            className="header-icon-btn"
             onClick={() => setAgentViewSettingsOpen(true)}
             title="Default agent view — terminal or structured (SDK) pane"
             aria-label="Default agent view settings"
@@ -2456,6 +2471,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         {agentViewSettingsOpen && (
           <AgentViewSettings onClose={() => setAgentViewSettingsOpen(false)} />
         )}
+        {voiceDictOpen && <VoiceDictionarySettings onClose={() => setVoiceDictOpen(false)} />}
         {accountsSettingsOpen && (
           <AccountsSettings onClose={() => setAccountsSettingsOpen(false)} />
         )}

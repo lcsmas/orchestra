@@ -707,6 +707,31 @@ input:focus, textarea:focus, select:focus {
   margin-bottom: 14px;
   line-height: 1.5;
 }
+/* Voice dictionary settings modal — mirrors .linear-key-input's field tokens. */
+.voice-dict-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  resize: vertical;
+}
+.voice-dict-input:focus { outline: none; border-color: var(--accent); }
+.voice-dict-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.voice-dict-builtin { text-align: right; }
+
 /* Linear API key settings modal */
 .linear-settings { width: 460px; max-width: 92vw; }
 .linear-key-source {

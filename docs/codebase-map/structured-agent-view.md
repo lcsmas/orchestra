@@ -1328,3 +1328,16 @@ before landing. Dev-gated: `voiceAvailable()` requires `ORCHESTRA_VOICE_DIR`
   colour-carried rec state like the vim chip; `verify-composer-card.mjs` contract),
   `.av-voice-status` latency readout; workspace branch + repo folder are appended to
   the speaker dictionary (`DEFAULT_VOCAB`) so repo jargon transcribes right.
+- Speaker dictionary — three layers, concatenated in `useVoiceDictation.ts:205`
+  *inside* `toggle` (not a hook dep), so a Settings edit applies to the next
+  utterance with no remount: `DEFAULT_VOCAB` (hardcoded baseline,
+  `shared/voice.ts`) + the user's GLOBAL list (`renderer/voice-dictionary.ts`,
+  localStorage key `orchestra:voiceDictionary`) + per-workspace terms (branch +
+  repo folder, `StructuredView.tsx:1093`). The dictionary is consumed only by
+  the Haiku stage (`ROUTER_PROMPT` / `EDIT_PROMPT` `{vocab}`) — parakeet never
+  sees it, so it fixes SPELLING, not recognition.
+- `VoiceDictionarySettings.tsx` — textarea modal editing that global list
+  (`.voice-dict-input`), opened from the Sidebar header mic button; mirrors
+  `SoundSettings` / `AgentViewSettings` (localStorage pref, persist-on-keystroke,
+  no Cancel). `parseVoiceDictionary` splits on comma/newline/semicolon, trims,
+  drops case-insensitive dupes, preserves casing.

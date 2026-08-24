@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { DEFAULT_VOCAB, ghostForEvent } from '../../../shared/voice';
+import { readVoiceDictionary } from '../../voice-dictionary';
 import type { CmComposerHandle } from './CmComposer';
 
 export type MicState = 'idle' | 'dictate' | 'edit';
@@ -202,7 +203,13 @@ export function useVoiceDictation(
           }
           editTargetRef.current = target;
         }
-        const vocab = vocabExtra ? `${DEFAULT_VOCAB}, ${vocabExtra}` : DEFAULT_VOCAB;
+        // Speaker dictionary = hardcoded baseline + the user's global list +
+        // this workspace's terms. The global list is read HERE rather than
+        // captured in a dep, so editing it in Settings applies to the very next
+        // utterance without remounting the composer.
+        const vocab = [DEFAULT_VOCAB, readVoiceDictionary(), vocabExtra]
+          .filter(Boolean)
+          .join(', ');
         const ok = await window.orchestra.voiceStart(workspaceId, {
           mode,
           full,
