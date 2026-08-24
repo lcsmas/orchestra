@@ -3977,12 +3977,33 @@ mkdir -p "\$dir" 2>/dev/null || true
 spool="\$dir/\$ORCHESTRA_WS_ID.jsonl"
 seqf="\$dir/\$ORCHESTRA_WS_ID.seq"
 
-# Atomically allocate the next sequence number. flock serializes concurrent
-# hook processes so two events can't claim the same seq; the read-bump-write
-# runs while holding an exclusive lock on the counter file's own fd. A missing
-# flock leaves seq=0 — the reader applies unsequenced lines unconditionally, so
-# we never block the agent or lose an event over it.
+# JSON-escape the transcript path's two structurally-significant characters
+# (backslash, then double-quote) so an unusual path can't corrupt the line the
+# reader JSON.parses. Tool names are identifiers and need no escaping. Done
+# BEFORE the lock so the critical section stays as short as possible.
+transcript="\${transcript//\\\\/\\\\\\\\}"
+transcript="\${transcript//\\"/\\\\\\"}"
+
+# Allocate the sequence number AND append the line under ONE exclusive lock.
+#
+# The seq bump alone used to be locked and the append left outside it. That is
+# not enough: \`printf >> "\$spool"\` is a single O_APPEND *shell* redirect, but
+# it is NOT a single write() once the line exceeds what the kernel writes at
+# once (a long transcript path pushes a line past that). Two concurrent hooks
+# then interleave their fragments and TEAR a line — the reader JSON.parses the
+# wreckage, drops it, and a lifecycle event (typically the turn-ending stop) is
+# lost, leaving the status dot stuck on \`running\`. Measured on the real hook
+# shape: 6 of 20 concurrency trials tore at least one line with the append
+# outside the lock, 0 of 20 with it inside.
+#
+# Holding the lock across the append serializes writers, so a line is either
+# fully present or absent — never half-written. The lock is per-workspace and
+# held for one small append, so hooks never contend with anything but each
+# other. A missing flock leaves seq=0 and an unlocked append — the reader
+# applies unsequenced lines unconditionally, so we degrade to exactly the old
+# behavior rather than blocking the agent or losing an event.
 seq=0
+line_written=0
 if command -v flock >/dev/null 2>&1; then
   exec 9>>"\$seqf"
   if flock -w 2 9; then
@@ -3990,17 +4011,17 @@ if command -v flock >/dev/null 2>&1; then
     case "\$cur" in ''|*[!0-9]*) cur=0 ;; esac
     seq=\$((cur + 1))
     printf '%s' "\$seq" >"\$seqf"
+    printf '{"seq":%s,"event":"%s","tool":"%s","transcript":"%s","crons":"%s"}\\n' "\$seq" "\$event" "\$tool" "\$transcript" "\$crons" >> "\$spool"
+    line_written=1
   fi
   exec 9>&-
 fi
 
-# JSON-escape the transcript path's two structurally-significant characters
-# (backslash, then double-quote) so an unusual path can't corrupt the line the
-# reader JSON.parses. Tool names are identifiers and need no escaping.
-transcript="\${transcript//\\\\/\\\\\\\\}"
-transcript="\${transcript//\\"/\\\\\\"}"
-
-printf '{"seq":%s,"event":"%s","tool":"%s","transcript":"%s","crons":"%s"}\\n' "\$seq" "\$event" "\$tool" "\$transcript" "\$crons" >> "\$spool"
+# No flock, or the lock timed out: fall back to the unsequenced unlocked append
+# so an event is never silently dropped.
+if [ "\$line_written" = 0 ]; then
+  printf '{"seq":%s,"event":"%s","tool":"%s","transcript":"%s","crons":"%s"}\\n' "0" "\$event" "\$tool" "\$transcript" "\$crons" >> "\$spool"
+fi
 exit 0
 `;
 

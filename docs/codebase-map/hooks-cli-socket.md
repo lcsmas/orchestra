@@ -54,8 +54,15 @@ Scripts and the Claude Code events they fire on:
   Notification, PreToolUse, PostToolUse, SessionStart. The **durable activity
   writer**: appends one JSON line per event to
   `~/.orchestra/events/<wsid>.jsonl`, allocating a monotonic `seq` under `flock`
-  on `<wsid>.seq` (2s timeout; falls back to `seq=0` without flock). Pure bash
-  (no jq/sed); JSON-escapes the transcript path. Line:
+  on `<wsid>.seq` (2s timeout; falls back to `seq=0` **and an unlocked append**
+  without flock). The `seq` bump **and the spool append happen under that one
+  lock** — `printf >> "$spool"` is one shell redirect but not one `write()` once
+  the line is long (a long transcript path does it), so an append outside the
+  lock let concurrent hooks interleave fragments and **tear a line**, which the
+  reader then dropped — losing a lifecycle event (issues #28/#37; the turn-end
+  `stop` going missing is what left the status dot stuck on `running`). Pure bash
+  (no jq/sed); JSON-escapes the transcript path **before** taking the lock to
+  keep the critical section short. Line:
   `{"seq":N,"event":"…","tool":"…","transcript":"…"}`. For the `session` event
   the `tool` slot carries the SessionStart `source`
   (startup|resume|clear|compact) so main can reset the context badge on

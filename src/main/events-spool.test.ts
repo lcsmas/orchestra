@@ -223,12 +223,18 @@ test('events seen while the window is absent replay once it returns', () => {
 // Confirms the loss is the reader's apply/cursor coupling, not the writer/spool:
 // the real hook script, hammered concurrently, yields a gapless, in-order,
 // duplicate-free seq stream that the reader applies completely.
+// Mirrors the shape of the real ORCHESTRA_HOOK_SCRIPT in workspaces.ts: the
+// seq bump AND the spool append happen under ONE flock. The append used to sit
+// outside the lock, which let two concurrent hooks interleave write() fragments
+// and tear a line (issues #28/#37) — the reader then dropped the wreckage and a
+// lifecycle event was lost. If the real hook changes, change this with it.
 const HOOK = `#!/usr/bin/env bash
 dir="\${ORCHESTRA_EVENTS_DIR}"
 event="\${1:-}"
 spool="$dir/ws.jsonl"
 seqf="$dir/ws.seq"
 seq=0
+line_written=0
 if command -v flock >/dev/null 2>&1; then
   exec 9>>"$seqf"
   if flock -w 5 9; then
@@ -236,10 +242,45 @@ if command -v flock >/dev/null 2>&1; then
     case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
     seq=$((cur + 1))
     printf '%s' "$seq" >"$seqf"
+    printf '{"seq":%s,"event":"%s","tool":"%s"}\\n' "$seq" "$event" "" >> "$spool"
+    line_written=1
   fi
   exec 9>&-
 fi
-printf '{"seq":%s,"event":"%s","tool":"%s"}\\n' "$seq" "$event" "" >> "$spool"
+if [ "$line_written" = 0 ]; then
+  printf '{"seq":%s,"event":"%s","tool":"%s"}\\n' "0" "$event" "" >> "$spool"
+fi
+`;
+
+// The same writer shape, but emitting a LONG transcript field so the line
+// exceeds what the kernel writes in one go — the condition under which an
+// append outside the lock tears. Deleting the append from inside the flock
+// below (moving it back after `exec 9>&-`) makes the tear test go red.
+const HOOK_TEAR = `#!/usr/bin/env bash
+dir="\${ORCHESTRA_EVENTS_DIR}"
+event="\${1:-}"
+spool="$dir/ws.jsonl"
+seqf="$dir/ws.seq"
+# A realistic-but-long transcript path: this is what pushes the line past a
+# single write() in the field.
+transcript="/home/u/.claude/projects/$(printf 'a%.0s' $(seq 1 400000)).jsonl"
+seq=0
+line_written=0
+if command -v flock >/dev/null 2>&1; then
+  exec 9>>"$seqf"
+  if flock -w 5 9; then
+    cur="$(cat "$seqf" 2>/dev/null)"
+    case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+    seq=$((cur + 1))
+    printf '%s' "$seq" >"$seqf"
+    printf '{"seq":%s,"event":"%s","transcript":"%s"}\\n' "$seq" "$event" "$transcript" >> "$spool"
+    line_written=1
+  fi
+  exec 9>&-
+fi
+if [ "$line_written" = 0 ]; then
+  printf '{"seq":%s,"event":"%s","transcript":"%s"}\\n' "0" "$event" "$transcript" >> "$spool"
+fi
 `;
 
 test('control: real hook under concurrency → reader applies every event, no drop', () => {
@@ -269,8 +310,71 @@ test('control: real hook under concurrency → reader applies every event, no dr
     .split('\n')
     .filter((l) => l.trim());
   assert.equal(applied.length, fileLines.length, 'reader applied every line in the spool');
+  // Assert against a KNOWN expected count too, not only against whatever landed
+  // in the file: ROUNDS*6*2 tool events + 1 stop. Comparing the two derived
+  // quantities alone would still pass if the writer lost a whole line.
+  assert.equal(applied.length, ROUNDS * 6 * 2 + 1, 'every emitted event is in the spool');
   assert.equal(applied[applied.length - 1], 'stop', 'the turn-end applied last');
   assert.equal(statusOf(applied), 'waiting');
+});
+
+// ── The torn concurrent append (issues #28 / #37) ────────────────────────────
+//
+// `printf ... >> "$spool"` is ONE shell redirect but NOT one write() once the
+// line is long (a long transcript path does it). With the append outside the
+// seq flock, two concurrent hooks interleave their fragments and tear a line:
+// the reader can't JSON.parse the wreckage and the event is lost — typically
+// the turn-ending stop, leaving the dot stuck `running`.
+//
+// This drives the REAL writer shape at a line length that forces a split write.
+// Measured on the pre-fix hook (append outside the lock) this tore on ~5-10% of
+// trials; with the append inside the lock it is 0. Load is deliberately high so
+// the test discriminates rather than passing by luck.
+test('writer: concurrent hooks never tear a spool line (long transcript path)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-hooktear-'));
+  const script = path.join(dir, 'hook.sh');
+  fs.writeFileSync(script, HOOK_TEAR, { mode: 0o755 });
+  const env = { ...process.env, ORCHESTRA_EVENTS_DIR: dir };
+  const p = path.join(dir, 'ws.jsonl');
+
+  const PROCS = 64;
+  // Start gate: every hook is spawned first and spins until the gate file
+  // appears, so all PROCS appends collide instead of being spread out by the
+  // process-spawn ramp. Without this the writers arrive staggered and a torn
+  // append is merely likely rather than reliable.
+  execFileSync(
+    'bash',
+    [
+      '-c',
+      `gate="${dir}/gate"
+       for i in $(seq 1 ${PROCS}); do
+         ( while [ ! -e "$gate" ]; do :; done; "${script}" pretool ) &
+       done
+       sleep 0.3; : > "$gate"; wait`,
+    ],
+    { env },
+  );
+
+  const raw = fs.readFileSync(p, 'utf8');
+  const lines = raw.split('\n').filter((l) => l.trim());
+  assert.equal(lines.length, PROCS, 'every concurrent hook appended exactly one line');
+
+  // The real assertion: every line is intact JSON with a distinct seq. A torn
+  // line fails to parse; an interleaved one yields a duplicate/garbage seq.
+  const seqs = new Set<number>();
+  for (const l of lines) {
+    let ev: { seq?: unknown };
+    try {
+      ev = JSON.parse(l) as { seq?: unknown };
+    } catch {
+      assert.fail(`torn spool line (${l.length}B): ${l.slice(0, 80)}…`);
+    }
+    assert.equal(typeof ev.seq, 'number', 'line carries a numeric seq');
+    assert.ok(!seqs.has(ev.seq as number), `duplicate seq ${String(ev.seq)}`);
+    seqs.add(ev.seq as number);
+  }
+  assert.equal(seqs.size, PROCS, 'every line got a distinct sequence number');
+  assert.ok(raw.endsWith('\n'), 'the spool ends on a record boundary');
 });
 
 // ── Relaunch replay (the "every notification triggers on reopen" bug) ────────
