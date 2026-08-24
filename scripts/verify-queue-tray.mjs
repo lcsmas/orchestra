@@ -12,10 +12,21 @@
 //
 // Prereqs: `npx vite build`, then launch with ORCHESTRA_DEBUG_PORT=9418 on a
 // headless compositor (see the `verify` skill). Then: node scripts/verify-queue-tray.mjs
+import WebSocket from 'ws';
+import fs from 'node:fs';
 import crypto from 'node:crypto';
-const PORT=9418, OUT='/tmp/qtray-verify-1d8fec6c';
+
+// Overridable so this is not welded to one agent's worktree/port.
+const PORT = Number(process.env.ORCHESTRA_DEBUG_PORT || 9418);
+const OUT = process.env.QTRAY_OUT || '/tmp/qtray-verify';
+const MATCH = process.env.QTRAY_URL_MATCH || 'dist/index.html';
 const list = await (await fetch(`http://127.0.0.1:${PORT}/json`)).json();
-const page = list.find(t=>t.type==='page'&&t.url.includes('curious-nebula'));
+const page = list.find(t=>t.type==='page'&&t.url.includes(MATCH));
+if (!page) throw new Error(`no page target matching ${MATCH} on port ${PORT}`);
+// Driving the packaged build instead of this worktree silently verifies the
+// WRONG code — refuse rather than report a confident pass.
+if (page.url.includes('app.asar')) throw new Error('CDP target is the PACKAGED app (app.asar) — build and launch this worktree instead');
+fs.mkdirSync(OUT, { recursive: true });
 const ws=new WebSocket(page.webSocketDebuggerUrl,{maxPayload:2e8});
 await new Promise(r=>ws.on('open',r));
 let id=0;const pend=new Map();
