@@ -1213,11 +1213,30 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
     `elicitation-request` / `user-dialog-request` card on
     `platform.broadcast('agent:event')` → `sdkAnswerableReply` settles the
     parked promise → correct `ElicitResult` / `UserDialogResult` shape), so a
-    present-but-inert callback fails too. All three options are one unit:
-    `supportedDialogKinds` is asserted non-empty because the CLI only emits
-    kinds declared there, making `onUserDialog` unable to fire without it.
-    **Proven to fail**: each of the three deleted individually turns the gate
-    RED (RC=1) with its own named failure. Runs against a mkdtemp userData +
+    present-but-inert callback fails too. All three options are one unit.
+    `supportedDialogKinds` is checked by **CONTENT on two axes**, never
+    cardinality: (a) set-equality with the bridge's own `SUPPORTED_DIALOG_KINDS`
+    guard list (a kind declared-but-not-handled is rejected by the `includes()`
+    guard at `agent-sdk.ts:749` and left unanswered — the repo calls that "worse
+    than not declaring it"), and (b) every declared kind is one the **vendor
+    `sdk.d.ts` documents** — an anchor OUTSIDE the file under test. (b) is not
+    redundant: (a) alone is a tautology at one remove, since both sides derive
+    from the same constant, so rewriting it to a bogus kind moves them together
+    and equality still holds (measured — it passed an equality-only version
+    while the feature was fully broken, the CLI failing closed on the unknown
+    kind). Both **launch paths** are driven — a local workspace and a
+    `host.kind==='sandbox'` one, the latter asserting `cwd === '/workspace'` so
+    it cannot silently re-measure the local arm — because the launch site
+    already spreads one option on `remote` 14 lines below the wiring
+    (`agent-sdk.ts:1218`), making a `...(remote ? {} : {...})` gate a one-line
+    break in the file's own idiom.
+    **Proven to fail** — six mutations each applied to source and watched go RED
+    (RC=1): the three options deleted individually; `SUPPORTED_DIALOG_KINDS`
+    set to a bogus kind; a declared-but-not-handled kind appended; and the
+    wiring gated behind `!remote`. Plus two harness controls: hiding the vendor
+    `sdk.d.ts` fails loudly rather than going vacuous, and an innocent
+    `makeOnElicitation` → `buildElicitationBridge` rename stays GREEN (it
+    asserts the object, not the text). Runs against a mkdtemp userData +
     seeded `store.json` + its own `$ORCHESTRA_HOME`, and derives the seeded
     account's `configDir` from `$CLAUDE_CONFIG_DIR` (fallback `~/.claude`) —
     never a hardcoded account.

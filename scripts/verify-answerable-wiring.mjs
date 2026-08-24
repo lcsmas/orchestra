@@ -3,9 +3,11 @@
 // WHY THIS EXISTS — the coverage hole is specific and was MEASURED, not
 // guessed. Delete `onElicitation: makeOnElicitation(session)` from the
 // `query()` launch site in src/main/agent-sdk.ts and BOTH of this repo's
-// standing instruments stay green: the full unit suite passes 989/989 and
-// `npx tsc --noEmit` is clean. Every option on that object is optional in the
-// SDK's type, so dropping one is not a type error; and the unit suite never
+// standing instruments stay green: `pnpm run test` reports 1012 tests / 1000
+// pass / 0 fail (12 self-skip) and `npx tsc --noEmit` exits 0 with zero error
+// lines — both MEASURED on the mutated tree, not assumed. Every option on that
+// object is optional in the SDK's type, so dropping one is not a type error;
+// and the unit suite never
 // constructs the options object at all — it tests the fold, the normalizers
 // and the reply mappers, all of which keep working perfectly while the
 // callback that feeds them is no longer passed to the CLI. The user-visible
@@ -36,11 +38,34 @@
 // with no callback). Dropping the list is therefore as complete a break as
 // dropping the callback, and it is even quieter. All three are asserted.
 //
-// PROVEN TO FAIL (the only claim that makes this a gate): with
-// `onElicitation: makeOnElicitation(session)` deleted from the launch site,
-// this script exits 1 and prints `onElicitation: MISSING`. Re-run it after any
-// change here and confirm that is still true — a gate nobody has watched fail
-// is indistinguishable from one that cannot.
+// The list is checked by CONTENT on TWO axes, never by cardinality:
+//   (a) SET EQUALITY with the bridge's own guard list — catches declaring a
+//       kind the bridge then refuses to answer, and vice versa;
+//   (b) every declared kind is one the VENDOR `sdk.d.ts` documents — an
+//       anchor OUTSIDE the file under test.
+// (b) is not redundant. Asserting "non-empty" was a tautology (the dialog probe
+// read its kind back out of the captured list), and (a) ALONE is a tautology at
+// one remove: both sides derive from `SUPPORTED_DIALOG_KINDS`, so rewriting that
+// constant to a bogus kind moves declared and handled together and equality
+// still holds — measured, it passed an equality-only version of this gate while
+// the feature was completely broken.
+//
+// BOTH LAUNCH PATHS are driven — a local workspace and a sandbox/remote one.
+// `ensureSession` derives `remote = ws.host?.kind === 'sandbox'`, and the launch
+// site already spreads one option conditionally on that flag, so gating the
+// wiring the same way is a one-line change in the file's own house style that
+// would strip cards from every remote workspace. A local-only harness cannot
+// see it.
+//
+// PROVEN TO FAIL (the only claim that makes this a gate) — each mutation
+// applied to the source and WATCHED to go red:
+//   • `onElicitation` / `onUserDialog` / `supportedDialogKinds` deleted
+//   • `SUPPORTED_DIALOG_KINDS = ['totally_bogus_kind_the_cli_never_emits']`
+//   • `supportedDialogKinds: [...SUPPORTED_DIALOG_KINDS, 'permission_prompt']`
+//     (declared but NOT handled — rejected by the bridge's includes() guard)
+//   • the wiring gated behind `...(remote ? {} : { ... })`
+// Re-run these after any change here — a gate nobody has watched fail is
+// indistinguishable from one that cannot.
 //
 // ISOLATION — this never touches the user's real Orchestra state. It runs
 // against a fresh mkdtemp userData with its own seeded store.json, its own
@@ -109,6 +134,14 @@ process.env.ORCHESTRA_HOME = path.join(tmp, 'home');
 // runs this gate, the seeded workspace points at THAT account's config dir.
 const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 const WS_ID = 'wiring-gate-ws';
+// BOTH launch paths must be exercised. `ensureSession` computes
+// `remote = ws.host?.kind === 'sandbox'` (agent-sdk.ts:1058) and the launch site
+// already spreads one option conditionally on it 14 lines below the wiring
+// (`...(remote ? {} : { spawnClaudeCodeProcess })`, agent-sdk.ts:1218). Gating
+// the answerable-cards wiring behind that same idiom would strip cards from
+// every sandbox/remote workspace — so seeding only a local workspace leaves the
+// gate blind to a one-line change written in the file's own house style.
+const WS_ID_SANDBOX = 'wiring-gate-ws-sandbox';
 const ACCOUNT_ID = 'wiring-gate-account';
 fs.writeFileSync(
   path.join(userData, 'orchestra', 'store.json'),
@@ -124,6 +157,19 @@ fs.writeFileSync(
         branch: 'wiring-gate',
         accountId: ACCOUNT_ID,
         createdAt: 1,
+      },
+      {
+        id: WS_ID_SANDBOX,
+        name: 'wiring-gate-sandbox',
+        repoPath: worktree,
+        // A sandbox workspace's worktree lives in the container; ensureSession
+        // skips the local statSync/hook-install for it and passes
+        // SANDBOX_WORKSPACE_DIR as cwd. The path here is never touched.
+        worktreePath: '/workspace',
+        branch: 'wiring-gate',
+        accountId: ACCOUNT_ID,
+        createdAt: 1,
+        host: { kind: 'sandbox', endpoint: 'ws://127.0.0.1:59999' },
       },
     ],
   }),
@@ -253,25 +299,31 @@ sdk.__setQueryFactoryForTests((params) => {
   };
 });
 
-console.log('query() launch site receives the answerable-cards wiring:');
-try {
-  await sdk.sdkSend(WS_ID, 'wiring gate');
-} catch (err) {
-  // A send failure is itself a gate failure — the launch site was never reached.
-  check('sdkSend reached the query() launch site', false, err?.message ?? String(err));
+/** Drive one workspace through the real launch site and hand back the options
+ *  bag `query()` actually received. */
+async function captureOptionsFor(wsId) {
+  captured = null;
+  try {
+    await sdk.sdkSend(wsId, 'wiring gate');
+  } catch (err) {
+    // A send failure is itself a gate failure — the launch site was never reached.
+    check(`sdkSend reached the query() launch site (${wsId})`, false, err?.message ?? String(err));
+  }
+  return captured?.options ?? null;
 }
+
+console.log('query() launch site receives the answerable-cards wiring (LOCAL workspace):');
+const options = await captureOptionsFor(WS_ID);
 
 // A null capture means the factory was never called: report it as the single
 // blocking failure rather than letting every assertion below report `undefined`,
 // which would read as "the wiring is gone" when the truth is "the harness
 // never got there".
-if (!captured) {
+if (!options) {
   check('the injected query factory was invoked', false, 'sdkSend never reached query()');
   console.log('\nWIRING GATE FAILED — the launch site was never reached.');
   process.exit(1);
 }
-
-const options = captured.options ?? {};
 
 // ── 1. The options OBJECT carries all three ─────────────────────────────────
 check(
@@ -284,12 +336,100 @@ check(
   typeof options.onUserDialog === 'function',
   `onUserDialog: ${options.onUserDialog === undefined ? 'MISSING' : typeof options.onUserDialog}`,
 );
-// Without a NON-EMPTY list the CLI emits no dialog kinds at all, so
-// onUserDialog can never fire — a present-but-inert callback.
+// `supportedDialogKinds` is asserted by CONTENT, not cardinality. Non-empty is
+// NOT enough, and asserting it was a tautology: the old probe below read its
+// kind back out of this very list, so ANY non-empty value passed by
+// construction — including `['totally_bogus_kind_the_cli_never_emits']`, which
+// breaks the feature completely while the gate reports all-green.
+//
+// The list is a HARD OPT-IN in both directions (agent-sdk.ts:709-726, 746-755):
+//   • DECLARED but not HANDLED — the CLI routes that kind here and
+//     `makeOnUserDialog`'s `SUPPORTED_DIALOG_KINDS.includes()` guard rejects it,
+//     returning null and leaving the dialog unanswered until the CLI's
+//     deadline. The repo calls this "worse than not declaring it".
+//   • HANDLED but not DECLARED — the CLI FAILS CLOSED and never emits the kind
+//     at all, so the callback can never fire.
+// Both directions are silent breakage, so the correct assertion is SET EQUALITY
+// between what the launch site DECLARES and what the bridge actually HANDLES.
+//
+// The handled list is module-private, so it is read out of the source text
+// rather than imported. That is the one place text is unavoidable — and it is
+// safe here because it is not the thing under test: it is the EXPECTATION being
+// compared against the captured runtime object. A parse failure is reported as
+// its own failure rather than being allowed to yield an empty set that would
+// make the comparison vacuous.
+const handledKinds = (() => {
+  const src = fs.readFileSync(path.join(repoRoot, 'src/main/agent-sdk.ts'), 'utf8');
+  const m = src.match(/^const SUPPORTED_DIALOG_KINDS\s*=\s*(\[[^\]]*\])\s*;/m);
+  if (!m) return null;
+  try {
+    return JSON.parse(m[1].replace(/'/g, '"'));
+  } catch {
+    return null;
+  }
+})();
 check(
-  'supportedDialogKinds is a non-empty list (onUserDialog cannot fire without it)',
-  Array.isArray(options.supportedDialogKinds) && options.supportedDialogKinds.length > 0,
-  `supportedDialogKinds: ${JSON.stringify(options.supportedDialogKinds)}`,
+  "the bridge's own SUPPORTED_DIALOG_KINDS guard list was readable (expectation source)",
+  Array.isArray(handledKinds) && handledKinds.length > 0,
+  `parsed: ${JSON.stringify(handledKinds)}`,
+);
+
+// ANCHOR THE SET TO SOMETHING OUTSIDE THE FILE UNDER TEST.
+//
+// Set-equality between DECLARED and HANDLED is necessary but NOT sufficient,
+// and on its own it is a tautology at one remove: both sides derive from
+// `SUPPORTED_DIALOG_KINDS`, so rewriting that constant to
+// `['totally_bogus_kind_the_cli_never_emits']` moves declared AND handled
+// together and the comparison stays true — while the CLI, which fails closed on
+// kinds it does not recognise, emits nothing and `onUserDialog` can never fire.
+// (Measured: that mutation passed an equality-only version of this gate.)
+//
+// So the expectation is anchored in the VENDOR type declarations, which no
+// Orchestra-side change can move: `sdk.d.ts` documents `supportedDialogKinds`
+// and names `'refusal_fallback_prompt'` as the dialog kind it fails closed on.
+// A kind Orchestra declares that the SDK has never heard of is a kind the CLI
+// will never send.
+const vendorKinds = (() => {
+  const dts = path.join(repoRoot, 'node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts');
+  let src;
+  try {
+    src = fs.readFileSync(dts, 'utf8');
+  } catch {
+    return null;
+  }
+  // Scope the scan to the neighbourhood of the `supportedDialogKinds` docs —
+  // `*_prompt` identifiers elsewhere in the d.ts (e.g. `mcp_prompt`) are
+  // unrelated concepts and would pollute the set.
+  const found = new Set();
+  for (const m of src.matchAll(/supportedDialogKinds/g)) {
+    const window_ = src.slice(Math.max(0, m.index - 1800), m.index + 400);
+    for (const k of window_.matchAll(/'([a-z][a-z0-9_]*_prompt)'/g)) found.add(k[1]);
+  }
+  return found.size > 0 ? [...found] : null;
+})();
+check(
+  'the SDK d.ts named at least one real dialog kind (independent anchor)',
+  Array.isArray(vendorKinds) && vendorKinds.length > 0,
+  `vendor kinds: ${JSON.stringify(vendorKinds)} — without this the content check below is vacuous`,
+);
+check(
+  'every DECLARED dialog kind is one the SDK actually documents (not an invented kind the CLI never emits)',
+  Array.isArray(vendorKinds) &&
+    Array.isArray(options.supportedDialogKinds) &&
+    options.supportedDialogKinds.length > 0 &&
+    options.supportedDialogKinds.every((k) => vendorKinds.includes(k)),
+  `declared: ${JSON.stringify(options.supportedDialogKinds)} vs SDK-documented: ${JSON.stringify(vendorKinds)}`,
+);
+const declaredKinds = options.supportedDialogKinds;
+const sameSet =
+  Array.isArray(declaredKinds) &&
+  Array.isArray(handledKinds) &&
+  declaredKinds.length === handledKinds.length &&
+  [...declaredKinds].sort().join('\u0000') === [...handledKinds].sort().join('\u0000');
+check(
+  'supportedDialogKinds DECLARED at the launch site === the kinds the bridge HANDLES',
+  sameSet,
+  `declared: ${JSON.stringify(declaredKinds)} vs handled: ${JSON.stringify(handledKinds)}`,
 );
 
 // ── 2. The callbacks are LIVE-WIRED, not just present ───────────────────────
@@ -353,13 +493,15 @@ if (typeof options.onElicitation !== 'function') {
 }
 
 console.log('\ninvoking onUserDialog surfaces an answerable card and settles on reply:');
-if (typeof options.onUserDialog !== 'function' || !options.supportedDialogKinds?.length) {
+if (typeof options.onUserDialog !== 'function' || !handledKinds?.length) {
   console.log('  ---- skipped: onUserDialog is not wired (see the failure above)');
 } else {
-  // Use a kind the launch site actually DECLARED — an undeclared kind is
-  // deliberately left unanswered by the bridge, which would make this probe
-  // measure the wrong path.
-  const kind = options.supportedDialogKinds?.[0];
+  // Probe with a kind read from the BRIDGE's guard list, never from the
+  // captured options. Taking it from `options.supportedDialogKinds[0]` — the
+  // value just read back out of the object under test — made this probe
+  // tautological: whatever the launch site declared was, by construction,
+  // exactly what got probed, so a bogus declaration sailed through.
+  const kind = handledKinds[0];
   const before = eventsOf('user-dialog-request').length;
   const ctl = new AbortController();
   const pending = options.onUserDialog(
@@ -391,6 +533,57 @@ if (typeof options.onUserDialog !== 'function' || !options.supportedDialogKinds?
     'it settles with the SDK UserDialogResult shape',
     settled?.v?.behavior === 'completed' && settled?.v?.result === 'Yes',
     `resolved: ${JSON.stringify(settled?.v)}`,
+  );
+}
+
+// ── 3. The SANDBOX/REMOTE launch path carries the same wiring ───────────────
+// A sandbox workspace takes the `remote === true` branch of ensureSession. The
+// launch site conditions one option on exactly that flag already, so gating the
+// answerable-cards wiring the same way is a one-line change in the file's own
+// idiom that would silently strip cards from every remote workspace. Asserting
+// the same three options on this second capture is what makes that visible.
+console.log('\nquery() launch site receives the same wiring (SANDBOX/REMOTE workspace):');
+const remoteOptions = await captureOptionsFor(WS_ID_SANDBOX);
+if (!remoteOptions) {
+  check('the sandbox workspace reached query()', false, 'sdkSend never reached query()');
+} else {
+  // Confirm the arm really is the remote one — otherwise this whole section
+  // could be silently re-testing the local path and passing for the wrong
+  // reason. `cwd` is SANDBOX_WORKSPACE_DIR ('/workspace') only when
+  // `remote === true` (agent-sdk.ts:1143).
+  check(
+    'the sandbox arm really took the remote branch (cwd is the container path)',
+    remoteOptions.cwd === '/workspace',
+    `cwd: ${remoteOptions.cwd} (expected /workspace; if this is the local worktree the probe measured the WRONG arm)`,
+  );
+  check(
+    'onElicitation is passed to query() for a sandbox workspace',
+    typeof remoteOptions.onElicitation === 'function',
+    `onElicitation: ${remoteOptions.onElicitation === undefined ? 'MISSING' : typeof remoteOptions.onElicitation}`,
+  );
+  check(
+    'onUserDialog is passed to query() for a sandbox workspace',
+    typeof remoteOptions.onUserDialog === 'function',
+    `onUserDialog: ${remoteOptions.onUserDialog === undefined ? 'MISSING' : typeof remoteOptions.onUserDialog}`,
+  );
+  const remoteSameSet =
+    Array.isArray(remoteOptions.supportedDialogKinds) &&
+    Array.isArray(handledKinds) &&
+    remoteOptions.supportedDialogKinds.length === handledKinds.length &&
+    [...remoteOptions.supportedDialogKinds].sort().join('\u0000') ===
+      [...handledKinds].sort().join('\u0000');
+  check(
+    'supportedDialogKinds DECLARED === HANDLED for a sandbox workspace',
+    remoteSameSet,
+    `declared: ${JSON.stringify(remoteOptions.supportedDialogKinds)} vs handled: ${JSON.stringify(handledKinds)}`,
+  );
+  check(
+    'every DECLARED dialog kind is SDK-documented for a sandbox workspace',
+    Array.isArray(vendorKinds) &&
+      Array.isArray(remoteOptions.supportedDialogKinds) &&
+      remoteOptions.supportedDialogKinds.length > 0 &&
+      remoteOptions.supportedDialogKinds.every((k) => vendorKinds.includes(k)),
+    `declared: ${JSON.stringify(remoteOptions.supportedDialogKinds)} vs SDK-documented: ${JSON.stringify(vendorKinds)}`,
   );
 }
 
