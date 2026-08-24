@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from 'react';
 import type { AgentSession, AgentTurnEndEvent } from '../../../shared/types';
-import { resolveContextUsage, type ContextUsage } from '../../../shared/context-usage';
+import { describeContextGauge, type ContextUsage } from '../../../shared/context-usage';
 
 /** k/M token formatter, mirroring AccountBadge.formatTokens for consistency. */
 function formatTokens(n: number): string {
@@ -174,44 +174,28 @@ function ContextGauge({
   turn: AgentTurnEndEvent | undefined;
   usage: ContextUsage | undefined;
 }) {
-  // ONE sourcing decision, in a pure tested function: prefer the emitted
-  // reading (live / `/context` / transcript) over the per-turn inference, and
-  // tag which one won so the choice is readable from outside (see
-  // resolveContextUsage — a driver asserting provenance cannot tell a
-  // fabricated turn-end from a real live reading by the number alone).
-  const resolved = resolveContextUsage(usage, turn);
-  if (!resolved) return null;
-  const used = resolved.totalTokens;
-  const window = resolved.maxTokens;
-  // A window is NOT required. The transcript fallback (history/detached
-  // sessions, which have no live Query) knows how many tokens the last turn fed
-  // in but never what the window was — inventing a 200K denominator there would
-  // fabricate a percentage the source cannot support. So render the absolute
-  // token count instead of nothing: an unknown-denominator reading is still the
-  // only context figure those sessions have, and showing nothing was the bug.
-  const pct = resolved.percentage;
-  // The BAR is clamped (a fill can't exceed its track), but the NUMBER is not:
-  // an over-limit session genuinely reads past 100%, and pinning it to 100
-  // would hide exactly the state this gauge exists to warn about.
-  const usedPct = pct == null ? null : Math.max(0, pct);
-  const fillPct = pct == null ? 0 : Math.max(0, Math.min(100, pct));
-  const level = usedPct == null ? 'ok' : usedPct >= 90 ? 'critical' : usedPct >= 75 ? 'low' : 'ok';
+  // NO DECISIONS HERE — every one (whether to show at all, what to print, the
+  // threshold level, the bar width, the tooltip) is resolved by the pure
+  // `describeContextGauge`, which the unit suite CAN execute.
+  //
+  // This component used to own the "no window -> render nothing" branch, and
+  // reverting that branch left all 844 unit tests GREEN while the gauge vanished
+  // in the built app: `node --test` does not transform JSX, so nothing ever ran
+  // this function. A decision no test can execute regresses silently. Keep this
+  // component dumb — if you find yourself adding a conditional here, put it in
+  // describeContextGauge instead.
+  const view = describeContextGauge(usage, turn);
+  if (!view) return null;
   return (
     <div
-      className={`av-turn-stat av-turn-context av-turn-context-${level}`}
-      data-context-source={resolved.source}
-      title={
-        window && window > 0
-          ? `Context: ${formatTokens(used)} of ${formatTokens(window)} tokens in use${
-              level !== 'ok' ? ' — consider /compact' : ''
-            }`
-          : `Context: ${formatTokens(used)} tokens in use (window size unknown — no live session to ask)`
-      }
+      className={`av-turn-stat av-turn-context av-turn-context-${view.level}`}
+      data-context-source={view.source}
+      title={view.title}
     >
-      <span className="av-turn-stat-value">{usedPct == null ? formatTokens(used) : `${usedPct}%`}</span>
+      <span className="av-turn-stat-value">{view.label}</span>
       <span className="av-turn-stat-label">used</span>
       <span className="av-turn-context-bar" aria-hidden="true">
-        <span className="av-turn-context-fill" style={{ width: `${fillPct}%` }} />
+        <span className="av-turn-context-fill" style={{ width: `${view.fillPct}%` }} />
       </span>
     </div>
   );

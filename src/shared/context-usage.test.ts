@@ -10,6 +10,7 @@ import {
   isMoreAuthoritative,
   transcriptContextTokens,
   resolveContextUsage,
+  describeContextGauge,
   transcriptContextWindow,
   STALE_MS,
   type ContextUsage,
@@ -357,4 +358,94 @@ test('turn-end ranks below every emitted source', () => {
   // Any emitted reading must supersede a synthesized turn-end one.
   assert.equal(isMoreAuthoritative(contextUsageFromTranscript(10, 0), te), true);
   assert.equal(isMoreAuthoritative(live(0), te), true);
+});
+
+// ── describeContextGauge — the WHOLE render decision, now unit-testable ─────
+//
+// These exist because the visibility decision used to live in the React
+// component, where `node --test` could not reach it: reverting the null-window
+// branch there left the entire suite GREEN while the gauge vanished in the
+// built app. Each assertion below now fails on that mutation.
+
+test('gauge: a windowless transcript reading RENDERS a token count', () => {
+  // THE regression. Previously this returned null and the detached gauge was blank.
+  const v = describeContextGauge(contextUsageFromTranscript(502955, 0), undefined);
+  assert.ok(v, 'a windowless reading must still render');
+  assert.equal(v.label, '503k');
+  assert.equal(v.source, 'transcript');
+  assert.equal(v.level, 'ok');
+  // No track position exists without a window.
+  assert.equal(v.fillPct, 0);
+  assert.match(v.title, /window size unknown/);
+});
+
+test('gauge: a known window renders a percentage', () => {
+  const v = describeContextGauge(normalizeLiveContextUsage(LIVE_PAYLOAD, 0)!, undefined)!;
+  assert.equal(v.label, '37%');
+  assert.equal(v.source, 'live');
+  assert.equal(v.fillPct, 37);
+  assert.match(v.title, /73k of 200k tokens in use/);
+});
+
+test('gauge: thresholds are quiet / amber / red', () => {
+  const at = (pct: number) =>
+    describeContextGauge(
+      { totalTokens: pct * 2000, maxTokens: 200000, percentage: pct, source: 'live', at: 0 },
+      undefined,
+    )!;
+  assert.equal(at(74).level, 'ok');
+  assert.equal(at(75).level, 'low');
+  assert.equal(at(89).level, 'low');
+  assert.equal(at(90).level, 'critical');
+  // The advisory rides the tooltip only past the quiet threshold.
+  assert.match(at(90).title, /consider \/compact/);
+  assert.doesNotMatch(at(74).title, /consider \/compact/);
+});
+
+test('gauge: an unknown window is never amber/red', () => {
+  // A huge token count with no window must NOT imply a measurement we lack.
+  const v = describeContextGauge(contextUsageFromTranscript(9_000_000, 0), undefined)!;
+  assert.equal(v.level, 'ok');
+  assert.equal(v.label, '9.0M');
+});
+
+test('gauge: over-limit READS past 100% while the bar CLAMPS', () => {
+  const v = describeContextGauge(
+    { totalTokens: 220000, maxTokens: 200000, percentage: 110, source: 'live', at: 0 },
+    undefined,
+  )!;
+  assert.equal(v.label, '110%', 'pinning to 100 would hide the state the gauge warns about');
+  assert.equal(v.fillPct, 100, 'a fill cannot exceed its track');
+  assert.equal(v.level, 'critical');
+});
+
+test('gauge: falls back to turn-end fields, tagged turn-end', () => {
+  const v = describeContextGauge(undefined, { contextUsedTokens: 50000, contextWindow: 200000 })!;
+  assert.equal(v.label, '25%');
+  assert.equal(v.source, 'turn-end');
+});
+
+test('gauge: a windowless TURN-END reading also renders (not just transcript)', () => {
+  // contextWindow is null on many real turns — this is the other route to the
+  // same blank-gauge bug.
+  const v = describeContextGauge(undefined, { contextUsedTokens: 50000, contextWindow: null })!;
+  assert.ok(v);
+  assert.equal(v.label, '50k');
+  assert.equal(v.source, 'turn-end');
+});
+
+test('gauge: renders nothing only when there is genuinely nothing', () => {
+  assert.equal(describeContextGauge(undefined, undefined), null);
+  assert.equal(describeContextGauge(undefined, {}), null);
+  assert.equal(describeContextGauge(undefined, { contextUsedTokens: 0 }), null);
+});
+
+test('gauge: a 0-token reading is a real 0%, not absence', () => {
+  // The compaction sentinel: 0 tokens against a known window renders 0%.
+  const v = describeContextGauge(
+    { totalTokens: 0, maxTokens: 200000, percentage: 0, source: 'transcript', at: 0 },
+    undefined,
+  );
+  assert.ok(v, 'a reset session must render 0%, not vanish');
+  assert.equal(v.label, '0%');
 });

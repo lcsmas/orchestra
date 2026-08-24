@@ -1006,6 +1006,15 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   system, wins). Reference: `agent-view-design.md`.
 
 
+**The gauge's render decision is PURE — `describeContextGauge()`** in
+`context-usage.ts` returns `{label, level, fillPct, title, source}` (or null),
+and `ContextGauge` renders it with NO conditionals of its own. This is
+structural, not stylistic: the visibility decision used to live in the
+component, where `node --test` cannot reach it (the strip-types runner does not
+transform JSX), so reverting the null-window branch left all 844 unit tests
+GREEN while the gauge vanished in the built app. If you find yourself adding a
+conditional to the component, put it in `describeContextGauge` instead.
+
 **Renderer-level gate — `scripts/context-gauge-render-smoke.mjs`** (`pnpm run
 test:render`). The unit suite CANNOT see the gauge's own render logic: re-adding
 a `if (!window) return null` early return to `ContextGauge` — reverting the exact
@@ -1013,8 +1022,18 @@ behaviour the detached-session spec depends on — leaves all 844 unit tests GRE
 because the behaviour lives in a React component `node --test` never renders
 (JSX is not transformed by the strip-types runner). That regression was caught
 only by driving the built app. This harness bundles the real component with
-esbuild, renders it to static HTML, and fails on that mutation (3 assertions,
-RC=1), so a future refactor cannot silently restore the null-return. It also
+esbuild, renders it to static HTML, and fails on that mutation (RC=1).
+
+BOTH layers are needed, and the mutation matrix shows why — neither alone
+closes the hole:
+
+| Mutation | Unit suite | Render smoke |
+|---|---|---|
+| null-window returns nothing (in `describeContextGauge`) | **3 fail** | fail |
+| a hide-branch re-added to the **component** | **853 pass, 0 fail** | **fail** |
+
+A decision moved into pure code is gated by the unit seam; a decision that
+creeps back into the component is caught only by rendering it. It also
 pins the threshold styling, the >100% unclamped number vs the clamped bar, and
 `data-context-source` for every source.
 

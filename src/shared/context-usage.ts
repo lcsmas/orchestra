@@ -371,6 +371,84 @@ export function resolveContextUsage(
   };
 }
 
+/** Everything the context gauge needs to paint one frame — the WHOLE render
+ *  decision, resolved in pure code.
+ *
+ *  WHY THIS EXISTS (structural fix, not a convenience): the visibility decision
+ *  used to live inside the React component, where the unit suite could not
+ *  reach it. Re-adding a `if (!window) return null` early return there — which
+ *  reverts the behaviour detached sessions depend on — left all 844 unit tests
+ *  GREEN while the gauge vanished in the built app, because `node --test` does
+ *  not transform JSX and never renders the component. A decision no test can
+ *  execute is a decision that regresses silently.
+ *
+ *  So the component now renders this object and makes no decisions of its own:
+ *  whether to show at all (`null`), what to print, the threshold level, and the
+ *  bar width are all gated by the existing unit seam.
+ *
+ *  Returns `null` when there is nothing to show. */
+export interface ContextGaugeView {
+  /** What the value reads: a percentage when the window is known, otherwise the
+   *  absolute token count — never a percentage against an invented window. */
+  label: string;
+  /** Threshold styling: quiet below 75%, amber from 75%, red from 90%. Always
+   *  `ok` when no percentage exists — an unknown-window reading cannot be
+   *  "critical", and colouring it red would imply a measurement we do not have. */
+  level: 'ok' | 'low' | 'critical';
+  /** Bar fill 0-100. CLAMPED, unlike the label: a fill cannot exceed its track,
+   *  but an over-limit session must still READ past 100% (see below). 0 when the
+   *  window is unknown — there is no track position to represent. */
+  fillPct: number;
+  /** Hover text, self-contained so a stale tooltip cannot imply a window we
+   *  never measured. */
+  title: string;
+  /** Which producer fed this frame, mirrored to `data-context-source` so a
+   *  driver can assert provenance rather than infer it from the number. */
+  source: ContextUsageSource;
+}
+
+/** Format a token count the way the gauge prints it (k/M), mirroring the
+ *  renderer's own formatter so the pure layer and the component agree. */
+function formatTokensShort(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) {
+    const k = n / 1000;
+    return `${k < 10 ? k.toFixed(1) : Math.round(k)}k`;
+  }
+  const m = n / 1_000_000;
+  return `${m < 10 ? m.toFixed(1) : Math.round(m)}M`;
+}
+
+export function describeContextGauge(
+  usage: ContextUsage | undefined,
+  turn: TurnEndContextFields | undefined,
+): ContextGaugeView | null {
+  const resolved = resolveContextUsage(usage, turn);
+  if (!resolved) return null;
+  const used = resolved.totalTokens;
+  const window = resolved.maxTokens;
+  const pct = resolved.percentage;
+  // NOTE the asymmetry, and that it is deliberate: the NUMBER is unclamped so an
+  // over-limit session reads e.g. 110% — precisely the state the gauge exists to
+  // warn about — while the BAR clamps, because a fill cannot exceed its track.
+  const usedPct = pct == null ? null : Math.max(0, pct);
+  const fillPct = pct == null ? 0 : Math.max(0, Math.min(100, pct));
+  const level: ContextGaugeView['level'] =
+    usedPct == null ? 'ok' : usedPct >= 90 ? 'critical' : usedPct >= 75 ? 'low' : 'ok';
+  return {
+    label: usedPct == null ? formatTokensShort(used) : `${usedPct}%`,
+    level,
+    fillPct,
+    title:
+      window != null && window > 0
+        ? `Context: ${formatTokensShort(used)} of ${formatTokensShort(window)} tokens in use${
+            level !== 'ok' ? ' — consider /compact' : ''
+          }`
+        : `Context: ${formatTokensShort(used)} tokens in use (window size unknown — no live session to ask)`,
+    source: resolved.source,
+  };
+}
+
 /** Rank a source's authority. Live SDK readings are the CLI's own accounting;
  *  the transcript recompute is an inference from billing data. */
 function sourceRank(source: ContextUsageSource): number {
