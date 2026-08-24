@@ -25,6 +25,8 @@
  */
 
 import type {
+  AgentAnswerableEvent,
+  AgentElicitationRequestEvent,
   AgentEvent,
   AgentImage,
   AgentMcpServer,
@@ -32,6 +34,7 @@ import type {
   AgentPermissionMode,
   AgentPermissionRequestEvent,
   AgentSession,
+  AgentUserDialogRequestEvent,
   AgentStopReason,
   AgentLocalCommandEvent,
   AgentTaskEvent,
@@ -1132,6 +1135,92 @@ export function makePermissionRequest(
   });
 }
 
+/** Build a `user-dialog-request` event from an SDK `onUserDialog` request.
+ *  The manager owns the requestId map and calls this; the shape lives here with
+ *  the rest of the contract so it stays unit-testable.
+ *
+ *  `payload` is per-`dialogKind` and opaque to the protocol — normalized to an
+ *  object (never null/undefined) so the card can render it generically without
+ *  a null guard at every read site. */
+export function makeUserDialogRequest(
+  ctx: NormalizeContext,
+  requestId: string,
+  dialogKind: string,
+  payload: Record<string, unknown> | undefined,
+  opts?: { toolUseId?: string | null },
+): AgentUserDialogRequestEvent {
+  return stamp(ctx, {
+    type: 'user-dialog-request',
+    requestId,
+    dialogKind,
+    payload: payload && typeof payload === 'object' ? payload : {},
+    toolUseId: opts?.toolUseId ?? null,
+  });
+}
+
+/** Build an `elicitation-request` event from an SDK `onElicitation` request.
+ *
+ *  `mode` is OPTIONAL on the SDK type but not here: an absent mode is
+ *  normalized to `'form'`, matching the SDK's own documentation ('form' for
+ *  structured input is the default shape, 'url' is the opt-in browser-auth
+ *  variant flagged by the presence of `url`). Normalizing at the boundary means
+ *  the card renders a single known union rather than re-deriving the default in
+ *  every branch. A request that carries a `url` but no mode is treated as
+ *  `'url'` — the url is the discriminator the server actually sent. */
+export function makeElicitationRequest(
+  ctx: NormalizeContext,
+  requestId: string,
+  req: {
+    serverName?: string;
+    message?: string;
+    mode?: 'form' | 'url';
+    url?: string;
+    requestedSchema?: Record<string, unknown>;
+    title?: string;
+    displayName?: string;
+    description?: string;
+  },
+): AgentElicitationRequestEvent {
+  const mode: 'form' | 'url' = req.mode ?? (req.url ? 'url' : 'form');
+  return stamp(ctx, {
+    type: 'elicitation-request',
+    requestId,
+    serverName: req.serverName ?? '',
+    message: req.message ?? '',
+    mode,
+    ...(req.url ? { url: req.url } : {}),
+    ...(req.requestedSchema ? { requestedSchema: req.requestedSchema } : {}),
+    ...(req.title ? { title: req.title } : {}),
+    ...(req.displayName ? { displayName: req.displayName } : {}),
+    ...(req.description ? { description: req.description } : {}),
+  });
+}
+
+/** Whether an event is one the user can ANSWER — the three parked-callback
+ *  shapes that share {@link AgentSession.pendingAnswerables}. */
+export function isAnswerableEvent(event: AgentEvent): event is AgentAnswerableEvent {
+  return (
+    event.type === 'permission-request' ||
+    event.type === 'user-dialog-request' ||
+    event.type === 'elicitation-request'
+  );
+}
+
+/** Which parked-callback map in the manager a given answerable belongs to —
+ *  the routing tag echoed back in {@link AgentAnswerableReply}. */
+export function answerableKind(
+  event: AgentAnswerableEvent,
+): 'permission' | 'user-dialog' | 'elicitation' {
+  switch (event.type) {
+    case 'permission-request':
+      return 'permission';
+    case 'user-dialog-request':
+      return 'user-dialog';
+    case 'elicitation-request':
+      return 'elicitation';
+  }
+}
+
 /** The `AskUserQuestion` tool name. Shared source of truth: the renderer's
  *  question UI (src/renderer/components/agent/askUserQuestion.ts) re-exports it,
  *  and agent-sdk.ts's canUseTool bridge tests against it. */
@@ -1217,8 +1306,15 @@ export function sdkEventToStatusEvent(ev: AgentEvent): StatusSpoolEvent | null {
       // Tool finished: stay `running`, clear the label (↔ PostToolUse).
       return 'posttool';
     case 'permission-request':
-      // The agent parked a permission / AskUserQuestion — it needs the user
-      // (↔ Notification → `waiting`).
+    // The #21 answerables block the session on the human exactly like a
+    // permission does, so they drive the SAME sidebar transition — without
+    // this the dot stays `running` (green) while the agent is in fact parked
+    // waiting for an answer, which is the "looks busy, is actually stuck"
+    // symptom the whole ticket exists to remove.
+    case 'user-dialog-request':
+    case 'elicitation-request':
+      // The agent parked a permission / AskUserQuestion / dialog / elicitation
+      // — it needs the user (↔ Notification → `waiting`).
       return 'notify';
     case 'session/attach':
       // Reattached to a keeper-hosted turn still in flight: the submit that
@@ -1299,6 +1395,7 @@ export function emptySession(workspaceId: string): AgentSession {
     running: false,
     messages: [],
     pendingPermissions: [],
+    pendingAnswerables: [],
     totalCostUsd: 0,
     liveOutputChars: 0,
     tasks: {},
@@ -1552,7 +1649,29 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
     case 'permission-request': {
       // De-dupe by requestId (a re-emit shouldn't stack two prompts).
       if (next.pendingPermissions.some((p) => p.requestId === event.requestId)) return next;
-      return { ...next, pendingPermissions: [...next.pendingPermissions, event] };
+      return {
+        ...next,
+        pendingPermissions: [...next.pendingPermissions, event],
+        pendingAnswerables: [...next.pendingAnswerables, event],
+      };
+    }
+
+    // The #21 answerables. Same de-dupe rule as a permission (a redelivered
+    // request after an attach must not stack a second card), but scoped PER
+    // EVENT TYPE: the manager keys each parked-callback map independently, so
+    // the SDK can legitimately hand us a dialog and an elicitation carrying the
+    // SAME requestId. De-duping on requestId alone would then silently swallow
+    // the second card and leave that callback parked forever.
+    case 'user-dialog-request':
+    case 'elicitation-request': {
+      if (
+        next.pendingAnswerables.some(
+          (p) => p.type === event.type && p.requestId === event.requestId,
+        )
+      ) {
+        return next;
+      }
+      return { ...next, pendingAnswerables: [...next.pendingAnswerables, event] };
     }
 
     case 'session/update':
@@ -1650,8 +1769,11 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         // duration/token usage off `lastTurn` instead of the live estimate.
         turnStartedAt: undefined,
         // A finished turn resolves any still-pending permission prompts (the
-        // turn cannot end with a live canUseTool call outstanding).
+        // turn cannot end with a live canUseTool call outstanding) — and with
+        // them every other parked answerable, which the manager sweeps on the
+        // same `result` boundary.
         pendingPermissions: [],
+        pendingAnswerables: [],
         // …and retires the transient working-readout extras.
         statusNotice: undefined,
         liveThinkingTokens: undefined,
@@ -1747,8 +1869,10 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         statusNotice: undefined,
         liveThinkingTokens: undefined,
         // Any permission parked by the discarded turn can never be answered —
-        // its canUseTool promise died with the session.
+        // its canUseTool promise died with the session. Same for the #21
+        // dialogs/elicitations parked against that same dead query().
         pendingPermissions: [],
+        pendingAnswerables: [],
       };
     }
 
@@ -1860,9 +1984,39 @@ export function foldEvents(session: AgentSession, events: AgentEvent[]): AgentSe
   return events.reduce(foldEvent, session);
 }
 
-/** Remove a resolved permission request from the pending list. */
+/** Remove a resolved permission request from the pending lists.
+ *
+ *  Clears BOTH `pendingPermissions` and the permission entry in the unified
+ *  `pendingAnswerables` queue, so the two can never drift into a state where
+ *  the dialog slot still shows a card the older list has already dropped. */
 export function clearPendingPermission(session: AgentSession, requestId: string): AgentSession {
-  const pendingPermissions = session.pendingPermissions.filter((p) => p.requestId !== requestId);
-  if (pendingPermissions.length === session.pendingPermissions.length) return session;
-  return { ...session, pendingPermissions };
+  return clearPendingAnswerable(session, 'permission', requestId);
+}
+
+/** Remove a resolved answerable (permission / dialog / elicitation) from the
+ *  pending queues.
+ *
+ *  Matches on the (kind, requestId) PAIR, not requestId alone: the manager keys
+ *  its three parked-callback maps independently, so the same requestId can be
+ *  live in two of them at once and clearing by id alone would drop a card the
+ *  user has not answered — leaving that callback parked until the turn ends. */
+export function clearPendingAnswerable(
+  session: AgentSession,
+  kind: 'permission' | 'user-dialog' | 'elicitation',
+  requestId: string,
+): AgentSession {
+  const pendingAnswerables = session.pendingAnswerables.filter(
+    (p) => !(answerableKind(p) === kind && p.requestId === requestId),
+  );
+  const pendingPermissions =
+    kind === 'permission'
+      ? session.pendingPermissions.filter((p) => p.requestId !== requestId)
+      : session.pendingPermissions;
+  if (
+    pendingAnswerables.length === session.pendingAnswerables.length &&
+    pendingPermissions.length === session.pendingPermissions.length
+  ) {
+    return session;
+  }
+  return { ...session, pendingAnswerables, pendingPermissions };
 }

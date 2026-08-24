@@ -13,13 +13,26 @@
 // default), not to allow or to a silent dismiss. Allow is never auto-focused.
 //
 // Multiple queued permissions are shown one at a time, in arrival order.
+//
+// #21 — this slot now drives ALL THREE answerables (permission, `onUserDialog`
+// dialog, MCP `onElicitation`) off the single `pendingAnswerables` queue, so a
+// dialog arriving while a permission is up QUEUES behind it instead of stacking
+// a rival modal. Replies route through one channel
+// (`agentSdkAnswerableReply`), tagged by kind — the three parked-callback maps
+// in main are keyed independently, so the tag (not the requestId) is what picks
+// the right one.
 
 import { useEffect, useState } from 'react';
 import type {
+  AgentAnswerableEvent,
+  AgentAnswerableReply,
   AgentPermissionReply,
   AgentPermissionRequestEvent,
   AgentSession,
 } from '../../../shared/types';
+import { answerableKind } from '../../../shared/agent-events';
+import { UserDialogCard } from './UserDialogCard';
+import { ElicitationCard } from './ElicitationCard';
 import { ToolInput } from './toolInput';
 import { AskUserQuestionCard } from './AskUserQuestionCard';
 import { ASK_USER_QUESTION, parseAskUserQuestion } from './askUserQuestion';
@@ -34,9 +47,9 @@ export function PermissionDialog({
 }: {
   workspaceId: string;
   session: AgentSession | undefined;
-  onReplied?: (requestId: string) => void;
+  onReplied?: (requestId: string, kind: 'permission' | 'user-dialog' | 'elicitation') => void;
 }) {
-  const pending = session?.pendingPermissions ?? [];
+  const pending: AgentAnswerableEvent[] = session?.pendingAnswerables ?? [];
 
   // Track requestIds we have already answered so a lagging fold can't resurrect
   // a prompt we just resolved.
@@ -46,35 +59,88 @@ export function PermissionDialog({
   // lags our reply: pending[0] can still be the request we just answered, and
   // the next queued prompt must surface immediately rather than wait for main
   // to fold the clear.
-  const active: AgentPermissionRequestEvent | undefined = pending.find(
-    (p) => !answered.has(p.requestId),
-  );
+  // Keyed by kind+requestId, not requestId alone: the same id can be live in
+  // two different parked-callback maps at once (see agent-events'
+  // clearPendingAnswerable), so a bare-id answered-set would hide a card the
+  // user has not actually answered.
+  const keyOf = (p: AgentAnswerableEvent) => `${answerableKind(p)}:${p.requestId}`;
+  const active: AgentAnswerableEvent | undefined = pending.find((p) => !answered.has(keyOf(p)));
+
+  const answer = (target: AgentAnswerableEvent, a: AgentAnswerableReply) => {
+    setAnswered((prev) => new Set(prev).add(keyOf(target)));
+    void window.orchestra.agentSdkAnswerableReply(workspaceId, target.requestId, a);
+    onReplied?.(target.requestId, answerableKind(target));
+  };
 
   const reply = (requestId: string, r: AgentPermissionReply) => {
-    setAnswered((prev) => new Set(prev).add(requestId));
-    void window.orchestra.agentSdkPermissionReply(workspaceId, requestId, r);
-    onReplied?.(requestId);
+    const target = pending.find(
+      (p) => p.type === 'permission-request' && p.requestId === requestId,
+    );
+    if (!target) return;
+    answer(target, { kind: 'permission', reply: r });
   };
 
   // Escape = deny (safe default). Never allow on a keystroke.
   useEffect(() => {
     if (!active) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        reply(active.requestId, { behavior: 'deny', message: 'Denied by user.' });
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      // Escape is DISMISS, expressed in each mechanism's own vocabulary — and
+      // in all three cases it is the SAFE outcome: deny the tool, let the CLI
+      // apply the dialog's default, tell the MCP server the user cancelled.
+      // Never an accept.
+      switch (active.type) {
+        case 'permission-request':
+          answer(active, {
+            kind: 'permission',
+            reply: { behavior: 'deny', message: 'Denied by user.' },
+          });
+          return;
+        case 'user-dialog-request':
+          answer(active, { kind: 'user-dialog', reply: { behavior: 'cancelled' } });
+          return;
+        case 'elicitation-request':
+          answer(active, { kind: 'elicitation', reply: { action: 'cancel' } });
+          return;
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active?.requestId, workspaceId]);
+  }, [active && keyOf(active), workspaceId]);
 
   if (!active) return null;
 
+  const remaining = pending.filter((p) => !answered.has(keyOf(p))).length;
+
+  // ── #21 answerables ────────────────────────────────────────────────────────
+  // Both render inside the same backdrop as a tool permission: like a
+  // permission (and unlike AskUserQuestion) these BLOCK the session, so the
+  // modal treatment is the honest one.
+  if (active.type === 'user-dialog-request') {
+    return (
+      <div className="av-permission-backdrop" role="presentation">
+        <UserDialogCard
+          request={active}
+          onReply={(r) => answer(active, { kind: 'user-dialog', reply: r })}
+        />
+      </div>
+    );
+  }
+  if (active.type === 'elicitation-request') {
+    return (
+      <div className="av-permission-backdrop" role="presentation">
+        <ElicitationCard
+          request={active}
+          onReply={(r) => answer(active, { kind: 'elicitation', reply: r })}
+        />
+      </div>
+    );
+  }
+
   const isQuestion =
     active.name === ASK_USER_QUESTION && parseAskUserQuestion(active.name, active.input) != null;
-  const remaining = pending.filter((p) => !answered.has(p.requestId)).length;
 
   // AskUserQuestion is NOT a dangerous action — it renders DOCKED above the
   // composer (no backdrop, no scrim, background stays fully visible), matching
