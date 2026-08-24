@@ -1198,7 +1198,7 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
     test:wiring`, also chained into `test:render`; issue #50). The render smoke
     proves the CARDS draw; nothing proved they are still REACHED. Deleting
     `onElicitation: makeOnElicitation(session)` from the `query()` launch site
-    (`agent-sdk.ts:1199-1204`) was **measured** to leave both standing
+    (`agent-sdk.ts:1229-1231`) was **measured** to leave both standing
     instruments green — `npx tsc --noEmit` RC=0 with zero error lines (every
     option on that bag is optional in the SDK's type) and `pnpm run test`
     1000/1012 passing, 0 fail (the unit suite never builds the options object;
@@ -1217,7 +1217,7 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
     `supportedDialogKinds` is checked by **CONTENT on two axes**, never
     cardinality: (a) set-equality with the bridge's own `SUPPORTED_DIALOG_KINDS`
     guard list (a kind declared-but-not-handled is rejected by the `includes()`
-    guard at `agent-sdk.ts:749` and left unanswered — the repo calls that "worse
+    guard at `agent-sdk.ts:755` and left unanswered — the repo calls that "worse
     than not declaring it"), and (b) every declared kind is one the **vendor
     `sdk.d.ts` documents** — an anchor OUTSIDE the file under test. (b) is not
     redundant: (a) alone is a tautology at one remove, since both sides derive
@@ -1228,7 +1228,7 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
     `host.kind==='sandbox'` one, the latter asserting `cwd === '/workspace'` so
     it cannot silently re-measure the local arm — because the launch site
     already spreads one option on `remote` 14 lines below the wiring
-    (`agent-sdk.ts:1218`), making a `...(remote ? {} : {...})` gate a one-line
+    (`agent-sdk.ts:1248`), making a `...(remote ? {} : {...})` gate a one-line
     break in the file's own idiom.
     **Proven to fail** — six mutations each applied to source and watched go RED
     (RC=1): the three options deleted individually; `SUPPORTED_DIALOG_KINDS`

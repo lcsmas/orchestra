@@ -74,7 +74,14 @@
 // $CLAUDE_CONFIG_DIR (falling back to ~/.claude) — never a hardcoded account,
 // so this passes for whichever account happens to run it.
 //
+// HOW THIS IS ENFORCED — by the FLEET MODEL, deliberately, not by a GitHub
+// Actions workflow (owner ruling, 2026-08-25, issue #55). It is registered as
+// `pnpm run test:wiring` and chained into `pnpm run test:render`; the fleet's
+// per-candidate gates run it. There is intentionally no workflow file, so
+// "nothing runs this on push" is a scope decision, not a coverage gap.
+//
 // Run: node scripts/verify-answerable-wiring.mjs
+//      pnpm run test:wiring        (the registered name)
 
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
@@ -135,9 +142,9 @@ process.env.ORCHESTRA_HOME = path.join(tmp, 'home');
 const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 const WS_ID = 'wiring-gate-ws';
 // BOTH launch paths must be exercised. `ensureSession` computes
-// `remote = ws.host?.kind === 'sandbox'` (agent-sdk.ts:1058) and the launch site
+// `remote = ws.host?.kind === 'sandbox'` (agent-sdk.ts:1084) and the launch site
 // already spreads one option conditionally on it 14 lines below the wiring
-// (`...(remote ? {} : { spawnClaudeCodeProcess })`, agent-sdk.ts:1218). Gating
+// (`...(remote ? {} : { spawnClaudeCodeProcess })`, agent-sdk.ts:1248). Gating
 // the answerable-cards wiring behind that same idiom would strip cards from
 // every sandbox/remote workspace — so seeding only a local workspace leaves the
 // gate blind to a one-line change written in the file's own house style.
@@ -342,7 +349,7 @@ check(
 // construction — including `['totally_bogus_kind_the_cli_never_emits']`, which
 // breaks the feature completely while the gate reports all-green.
 //
-// The list is a HARD OPT-IN in both directions (agent-sdk.ts:709-726, 746-755):
+// The list is a HARD OPT-IN in both directions (agent-sdk.ts:715-731, 751-760):
 //   • DECLARED but not HANDLED — the CLI routes that kind here and
 //     `makeOnUserDialog`'s `SUPPORTED_DIALOG_KINDS.includes()` guard rejects it,
 //     returning null and leaving the dialog unanswered until the CLI's
@@ -550,7 +557,7 @@ if (!remoteOptions) {
   // Confirm the arm really is the remote one — otherwise this whole section
   // could be silently re-testing the local path and passing for the wrong
   // reason. `cwd` is SANDBOX_WORKSPACE_DIR ('/workspace') only when
-  // `remote === true` (agent-sdk.ts:1143).
+  // `remote === true` (agent-sdk.ts:1173).
   check(
     'the sandbox arm really took the remote branch (cwd is the container path)',
     remoteOptions.cwd === '/workspace',
