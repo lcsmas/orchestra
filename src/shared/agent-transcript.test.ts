@@ -430,3 +430,108 @@ test('transcript: envelope timestamps override the clock so backfilled messages 
   assert.equal(u2.at, Date.parse('2026-08-16T14:32:30.000Z')); // inherited
   assert.ok(s.messages.every((m) => m.at !== 9_999_999));
 });
+
+// ── context gauge seeding (issue #15) ───────────────────────────────────────
+//
+// A history/detached session has NO live `Query` to ask for context usage, and
+// the synthetic terminal turn-end carries `usage: null`. Without a seed here
+// the gauge renders nothing at all at pane mount for these sessions — the
+// regression these tests pin.
+
+test('transcript: folded session carries a context reading for the gauge', () => {
+  const jsonl = lines([
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } },
+    {
+      type: 'assistant',
+      uuid: 'a1',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'hello' }],
+        usage: { input_tokens: 10, cache_creation_input_tokens: 5, cache_read_input_tokens: 40000 },
+      },
+    },
+  ]);
+  const session = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.ok(session.contextUsage, 'history session must expose a context reading');
+  assert.equal(session.contextUsage.totalTokens, 40015);
+  assert.equal(session.contextUsage.source, 'transcript');
+  // The transcript cannot know the window, so it must not fabricate one.
+  assert.equal(session.contextUsage.maxTokens, null);
+  assert.equal(session.contextUsage.percentage, null);
+  // The turn-end it ships alongside carries no usage — proving the reading
+  // could only have come from the seed.
+  assert.equal(session.lastTurn?.usage, null);
+});
+
+test('transcript: the NEWEST assistant turn wins the context reading', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'one' }], usage: { input_tokens: 100 } } },
+    { type: 'assistant', uuid: 'a2', message: { role: 'assistant', content: [{ type: 'text', text: 'two' }], usage: { input_tokens: 900 } } },
+  ]);
+  const session = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.equal(session.contextUsage?.totalTokens, 900);
+});
+
+test('transcript: sidechain turns do not contribute to the context reading', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'main' }], usage: { input_tokens: 100 } } },
+    // A Task-subagent line: its context is not this session's window.
+    { type: 'assistant', uuid: 's1', isSidechain: true, message: { role: 'assistant', content: [{ type: 'text', text: 'sub' }], usage: { input_tokens: 77777 } } },
+  ]);
+  const session = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.equal(session.contextUsage?.totalTokens, 100);
+});
+
+test('transcript: a compaction boundary discards the stale pre-compact reading', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'big' }], usage: { input_tokens: 150000 } } },
+    { type: 'user', uuid: 'c1', isCompactSummary: true, message: { role: 'user', content: 'summary…' } },
+  ]);
+  const session = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  // Everything before the boundary is pre-compact and stale; showing 150k after
+  // a compaction would be worse than showing nothing.
+  assert.equal(session.contextUsage, undefined);
+});
+
+test('transcript: a post-compaction turn re-seeds the reading', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'big' }], usage: { input_tokens: 150000 } } },
+    { type: 'user', uuid: 'c1', isCompactSummary: true, message: { role: 'user', content: 'summary…' } },
+    { type: 'assistant', uuid: 'a2', message: { role: 'assistant', content: [{ type: 'text', text: 'after' }], usage: { input_tokens: 8000 } } },
+  ]);
+  const session = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.equal(session.contextUsage?.totalTokens, 8000);
+});
+
+test('transcript: a transcript with no usage yields no context reading', () => {
+  const jsonl = lines([
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } },
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] } },
+  ]);
+  const session = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.equal(session.contextUsage, undefined);
+});
+
+test('transcript: a live reading supersedes the transcript seed on the same session', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 100 } } },
+  ]);
+  let session = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.equal(session.contextUsage?.source, 'transcript');
+  // A live session attaching later must win, even though it arrives second.
+  const liveEv: AgentEvent = {
+    type: 'session/context',
+    seq: 1,
+    at: 2_000,
+    usage: {
+      totalTokens: 73191,
+      maxTokens: 200000,
+      percentage: 37,
+      source: 'live',
+      at: 2_000,
+    },
+  };
+  session = foldEvents(session, [liveEv]);
+  assert.equal(session.contextUsage?.source, 'live');
+  assert.equal(session.contextUsage?.percentage, 37);
+});

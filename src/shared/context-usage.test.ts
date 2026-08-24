@@ -8,6 +8,7 @@ import {
   usedTokens,
   isDeferredCategory,
   isMoreAuthoritative,
+  transcriptContextTokens,
   STALE_MS,
   type ContextUsage,
 } from './context-usage.ts';
@@ -233,4 +234,32 @@ test('context-command outranks transcript but not live', () => {
   const cmd = normalizeContextCommandUsage(COMMAND_PAYLOAD, 1500)!;
   assert.equal(isMoreAuthoritative(cmd, transcript(1000)), true);
   assert.equal(isMoreAuthoritative(cmd, live(1000)), false);
+});
+
+// ── transcript fallback (history / detached sessions, no live Query) ─────────
+
+test('transcriptContextTokens sums the three input components, excluding output', () => {
+  assert.equal(
+    transcriptContextTokens({
+      input_tokens: 100,
+      cache_creation_input_tokens: 20,
+      cache_read_input_tokens: 3,
+      // Output is what the model PRODUCED, not what was fed back in.
+      output_tokens: 9999,
+    } as Record<string, unknown>),
+    123,
+  );
+});
+
+test('transcriptContextTokens returns 0 for absent/garbage usage', () => {
+  assert.equal(transcriptContextTokens(null), 0);
+  assert.equal(transcriptContextTokens(undefined), 0);
+  assert.equal(transcriptContextTokens({}), 0);
+  assert.equal(transcriptContextTokens({ input_tokens: 'lots' }), 0);
+  assert.equal(transcriptContextTokens({ input_tokens: NaN }), 0);
+});
+
+test('transcriptContextTokens tolerates partially-present components', () => {
+  assert.equal(transcriptContextTokens({ input_tokens: 50 }), 50);
+  assert.equal(transcriptContextTokens({ cache_read_input_tokens: 7 }), 7);
 });

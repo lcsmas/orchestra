@@ -34,6 +34,11 @@ import {
   originLabel,
   type NormalizeContext,
 } from './agent-events.ts';
+import {
+  contextUsageFromTranscript,
+  transcriptContextTokens,
+  type TranscriptUsage,
+} from './context-usage.ts';
 
 /** Block indexes for synthesized history blocks start here — far above any real
  *  SDK content-block index (single digits), so a live session's early blocks
@@ -90,7 +95,11 @@ interface TranscriptEnvelope {
    *  reopened workspace keeps the origin badge (claude.ai / peer / task
    *  notification) its externally-originated turns had live. */
   origin?: { kind?: string; from?: string; name?: string; body?: string };
-  message?: { role?: string; content?: unknown };
+  /** Assistant lines carry the API call's `usage`. Read for the context gauge:
+   *  a history/detached session has no live `Query` to ask, so the last
+   *  main-chain assistant turn's input components are the only context figure
+   *  available (same formula as `activity.ts computeContextTokens`). */
+  message?: { role?: string; content?: unknown; usage?: TranscriptUsage };
 }
 
 interface TranscriptBlock {
@@ -113,6 +122,13 @@ interface TranscriptBlock {
 export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentEvent[] {
   const out: AgentEvent[] = [];
   let blockIndex = HISTORY_INDEX_BASE;
+  /** Context size of the newest main-chain assistant turn seen so far — the
+   *  gauge's only available figure for a session with no live `Query`. Reset at
+   *  a compaction boundary: everything before it is pre-compact and stale, the
+   *  mirror of the on-disk recompute returning 0 when the newest entry IS a
+   *  boundary (activity.ts computeContextTokens). We walk oldest-first, so
+   *  "reset on pass" is equivalent to its "stop at the newest boundary". */
+  let contextTokens = 0;
 
   // The current line's real wall-clock time (envelope `timestamp`), when
   // parsable. `stamp()` assigns `at` from the clock (= backfill-load time here);
@@ -175,6 +191,8 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
       // showed. Surface it as the boundary marker it is (parity with the live
       // stream's compact_boundary notice).
       if (entry.isCompactSummary === true) {
+        // Pre-compact usage is stale the moment the context is rewritten.
+        contextTokens = 0;
         out.push(st(ctx, { type: 'notice', kind: 'compact-boundary', text: 'Conversation compacted' }));
         continue;
       }
@@ -254,6 +272,13 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
     }
 
     if (entry.type === 'assistant') {
+      // Track the newest main-chain assistant turn's context size. Sidechain
+      // lines were already skipped above, so every line reaching here counts.
+      // Captured BEFORE the content guard below: a line whose content is not an
+      // array still carries a usable `usage`, and skipping it would silently
+      // drop the newest (i.e. the correct) reading.
+      const lineTokens = transcriptContextTokens(entry.message?.usage);
+      if (lineTokens > 0) contextTokens = lineTokens;
       const content = entry.message?.content;
       if (!Array.isArray(content)) continue;
       for (const b of content as TranscriptBlock[]) {
@@ -287,6 +312,20 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
   }
 
   if (out.length > 0) {
+    // Seed the context gauge for a history/detached session. Without this the
+    // gauge renders NOTHING at mount for these sessions: the synthetic
+    // turn-end below carries `usage: null`, and there is no live `Query` to
+    // ask. Tagged `transcript`, so if a live session later attaches, its
+    // authoritative reading supersedes this one (isMoreAuthoritative) rather
+    // than the two fighting.
+    if (contextTokens > 0) {
+      out.push(
+        st(ctx, {
+          type: 'session/context',
+          usage: contextUsageFromTranscript(contextTokens, ctx.now ? ctx.now() : Date.now()),
+        }),
+      );
+    }
     // The on-disk transcript has no `result` lines; without a terminal
     // turn-end the fold would leave the session stuck `running` (the
     // user-message fold flips it on). One synthetic quiet turn-end settles it.

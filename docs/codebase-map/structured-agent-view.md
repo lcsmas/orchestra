@@ -1027,8 +1027,25 @@ The gauge has THREE possible sources, normalized to one shape by the pure
 - **Bonus — `/context`.** `normalizeSdkMessage`'s `assistant` case lifts the
   top-level `context_usage` the CLI stamps on the synthetic `/context` message
   (`agent-events.ts:567`). Verified emitted at CLI 2.1.234; costs zero API calls.
-- **Fallback — transcript.** Unchanged: `computeContextTokens` still drives the
-  sidebar badge over `agent:context` for detached/keeper/history/PTY sessions.
+- **Fallback — transcript.** Two places, for two different surfaces:
+  `computeContextTokens` still drives the SIDEBAR badge over `agent:context`
+  (unchanged); and `transcriptToEvents` seeds the STRUCTURED VIEW's gauge by
+  accumulating the newest main-chain assistant line's `input + cache_creation +
+  cache_read` during history replay (`agent-transcript.ts`, via the pure
+  `transcriptContextTokens`) and appending one `session/context` event tagged
+  `transcript`. Sidechain lines are excluded and a compaction boundary resets
+  the accumulator, mirroring the on-disk recompute. Without this seed a
+  history/detached session rendered NO gauge at all: its synthetic terminal
+  turn-end carries `usage: null` and there is no live Query to ask.
+
+**Render trigger is PANE MOUNT for both paths** (spec, issue #15): a live Query
+renders immediately at mount without waiting for a turn-end, then refreshes
+after each turn; a session with no live Query renders the transcript seed at
+mount. `StripStats` therefore no longer returns null when `lastTurn` is absent,
+and `ContextGauge` no longer requires a WINDOW — with an unknown denominator it
+renders the absolute token count ("48k used") rather than nothing, since
+fabricating a 200K denominator would invent a percentage the source cannot
+support.
 
 Two traps the normalizer encodes, both with regression tests:
 - **Deferred categories are excluded from usage math.** Summing every category

@@ -180,22 +180,32 @@ function ContextGauge({
   // gauge vanish outright), and it exists before the first turn closes.
   const used = usage ? usage.totalTokens : turn?.contextUsedTokens;
   const window = usage ? usage.maxTokens : turn?.contextWindow;
-  if (!used || !window || window <= 0) return null;
-  const rawPct = Math.round((used / window) * 100);
+  if (!used) return null;
+  // A window is NOT required. The transcript fallback (history/detached
+  // sessions, which have no live Query) knows how many tokens the last turn fed
+  // in but never what the window was — inventing a 200K denominator there would
+  // fabricate a percentage the source cannot support. So render the absolute
+  // token count instead of nothing: an unknown-denominator reading is still the
+  // only context figure those sessions have, and showing nothing was the bug.
+  const pct = window && window > 0 ? Math.round((used / window) * 100) : null;
   // The BAR is clamped (a fill can't exceed its track), but the NUMBER is not:
   // an over-limit session genuinely reads past 100%, and pinning it to 100
   // would hide exactly the state this gauge exists to warn about.
-  const usedPct = Math.max(0, rawPct);
-  const fillPct = Math.max(0, Math.min(100, rawPct));
-  const level = usedPct >= 90 ? 'critical' : usedPct >= 75 ? 'low' : 'ok';
+  const usedPct = pct == null ? null : Math.max(0, pct);
+  const fillPct = pct == null ? 0 : Math.max(0, Math.min(100, pct));
+  const level = usedPct == null ? 'ok' : usedPct >= 90 ? 'critical' : usedPct >= 75 ? 'low' : 'ok';
   return (
     <div
       className={`av-turn-stat av-turn-context av-turn-context-${level}`}
-      title={`Context: ${formatTokens(used)} of ${formatTokens(window)} tokens in use${
-        level !== 'ok' ? ' — consider /compact' : ''
-      }`}
+      title={
+        window && window > 0
+          ? `Context: ${formatTokens(used)} of ${formatTokens(window)} tokens in use${
+              level !== 'ok' ? ' — consider /compact' : ''
+            }`
+          : `Context: ${formatTokens(used)} tokens in use (window size unknown — no live session to ask)`
+      }
     >
-      <span className="av-turn-stat-value">{usedPct}%</span>
+      <span className="av-turn-stat-value">{usedPct == null ? formatTokens(used) : `${usedPct}%`}</span>
       <span className="av-turn-stat-label">used</span>
       <span className="av-turn-context-bar" aria-hidden="true">
         <span className="av-turn-context-fill" style={{ width: `${fillPct}%` }} />

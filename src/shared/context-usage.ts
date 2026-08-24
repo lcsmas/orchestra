@@ -249,6 +249,36 @@ export function contextUsageFromTranscript(tokens: number, at: number): ContextU
   return { totalTokens: tokens, maxTokens: null, percentage: null, source: 'transcript', at };
 }
 
+/** The three input components that make up a Claude Code turn's context, as
+ *  they appear in a transcript line's `usage`. Output tokens are deliberately
+ *  absent: they are what the model PRODUCED, not what was fed back in. */
+export interface TranscriptUsage {
+  input_tokens?: unknown;
+  cache_creation_input_tokens?: unknown;
+  cache_read_input_tokens?: unknown;
+}
+
+/** Context size implied by one transcript assistant line's `usage` — the sum of
+ *  fresh input, cache writes and cache reads.
+ *
+ *  This is the SAME formula as `activity.ts computeContextTokens`, kept here in
+ *  pure form so the history-replay path can reach it without file I/O (that one
+ *  reads the transcript tail off disk; this one is handed an already-parsed
+ *  line). Deliberately NOT deduplicated into one shared call: the two run in
+ *  different processes over different inputs, and the note below is the thing
+ *  that keeps them honest.
+ *
+ *  Returns 0 when no component is present, so a caller can treat 0 as "this
+ *  line carries no usable usage" — the same three-valued contract the on-disk
+ *  recompute uses. */
+export function transcriptContextTokens(usage: TranscriptUsage | null | undefined): number {
+  if (!usage || typeof usage !== 'object') return 0;
+  const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  return (
+    n(usage.input_tokens) + n(usage.cache_creation_input_tokens) + n(usage.cache_read_input_tokens)
+  );
+}
+
 /** Rank a source's authority. Live SDK readings are the CLI's own accounting;
  *  the transcript recompute is an inference from billing data. */
 function sourceRank(source: ContextUsageSource): number {
