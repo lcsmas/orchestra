@@ -59,16 +59,37 @@ in isolation.
 
 **A boot/E2E gate asserts the ARTIFACT IDENTITY — the version string read out
 of the running thing — and NEVER trusts the shared installed path.** The
-installed AppImage path (`~/Applications/orchestra*.AppImage`,
-`~/.local/bin/orchestra`) is one shared location that ~26 sibling agents
-overwrite continuously, so "I launched the path I built to" proves nothing about
-WHICH build answered. Read the version back from the running instance and
-compare it to the version you built (`node -p "require('./package.json').version"`),
-e.g. over CDP from the app's own about/state, or out of the artifact itself
-(`unsquashfs`/asar read of `resources/app.asar` → `package.json` `version`).
-Report both numbers side by side; a mismatch VOIDS the drive. Same rule as the
-`/json` target-url check below — identity by what the thing SAYS IT IS, never by
-where you found it.
+installed build lives at ONE shared location (resolve it from
+`~/.local/bin/orchestra`, which is a generated shim that `exec`s the real path —
+currently `~/Applications/orchestra/release/Orchestra.AppImage`) and ~26 sibling
+agents overwrite it continuously, so "I launched the path I built to" proves
+nothing about WHICH build answered. Read the version back and compare it to the
+version you built (`node -p "require('./package.json').version"`) — over CDP from
+the app's own state, or straight out of the artifact:
+
+```bash
+AI=~/Applications/orchestra/release/Orchestra.AppImage   # resolve, don't assume
+OFF=$("$AI" --appimage-offset)          # an AppImage is a squashfs at an OFFSET
+rm -rf /tmp/ident && mkdir -p /tmp/ident
+unsquashfs -o "$OFF" -d /tmp/ident/x "$AI" resources/app.asar  # path is POSITIONAL
+cd /tmp/ident && npx --yes asar extract-file x/resources/app.asar package.json
+node -p "require('/tmp/ident/package.json').version"   # ← the INSTALLED version
+```
+
+Three non-obvious steps, each of which silently breaks the chain: without
+`--appimage-offset` unsquashfs sees the ELF header and not a filesystem;
+`unsquashfs -e` does NOT take the member path (it is positional, after the
+image); and **`asar extract-file` writes into the CURRENT DIRECTORY**, ignoring
+any path you put in the argument — so you must `cd` somewhere disposable first,
+or it drops a `package.json` into your worktree and you then read the WRONG
+version (your own) while believing you read the installed one. That last failure
+is the nastiest, because it yields a plausible matching number.
+
+Report both numbers side by side; a mismatch VOIDS the drive. That this matters
+is not hypothetical: the reviewer of this very change measured the installed
+build at `0.5.255` and, minutes later on the same path, it read `0.5.256` — a
+sibling had overwritten it in between. Same rule as the `/json` target-url check
+below: identity by what the thing SAYS IT IS, never by where you found it.
 
 **Pin the account before any live drive.** Seeding the store is a REQUIRED step,
 not a convenience, and its `configDir` is derived from YOUR `CLAUDE_CONFIG_DIR`

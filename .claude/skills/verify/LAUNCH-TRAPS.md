@@ -71,8 +71,11 @@ fabricated store.
 The seeded store MUST carry `accounts: [{ id, label, configDir }]` AND the
 workspace's `accountId` pointing at it, written BEFORE any live drive. This is
 not optional polish: with no `accountId`, `workspaceAccountConfigDir`
-(`src/main/workspaces.ts:86-91`) returns `''` and the agent falls back to the
-default `~/.claude` login. That login can be OAuth-expired MACHINE-WIDE — and
+(`src/main/workspaces.ts:86-91`) returns `''` and its callers fall back to the
+default `~/.claude` login. That fallback is applied at MANY sites, not one —
+enumerate them rather than trusting any list (line numbers rot):
+`grep -rn 'workspaceAccountConfigDir' src/` → 12 call sites, of which 8 apply the
+`|| path.join(os.homedir(), '.claude')` fallback. That login can be OAuth-expired MACHINE-WIDE — and
 the resulting auth failure IMPERSONATES THE FEATURE UNDER TEST (measured twice:
 the #29 keeper harness and a wave-2 live gate each burned a blocked cycle on
 it). The fallback is correct behaviour; the rig is what's wrong when it relies
@@ -114,6 +117,20 @@ equals your `echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"`, and the seeded
 workspace's `accountId` matches the seeded account's `id`. A pin that silently
 did not apply looks exactly like a pin that did, until the drive fails as the
 feature.
+
+**Why that seed omits `repoPath`, and what happens if you add one.** The record
+above survives `pruneOrphanedWorkspaces` only because `repoPath` is ABSENT:
+pruning buckets by `ws.repoPath` and skips any bucket whose path fails
+`existsSync` (`workspaces.ts:783`), and `existsSync(undefined)` is false. It is
+NOT protected by being scratch-like — `isScratchLike` (`shared/types.ts:501-509`)
+keys off `kind`, and this record has no `kind`, so it returns false and the
+record IS pruning-eligible. So if you follow the paragraph above and point
+`worktreePath` at a real git worktree, add `repoPath` too — and then the record
+is only safe while `git worktree list` in that repo still lists your
+`worktreePath` EXACTLY. Add `repoPath` without that, and Orchestra hard-deletes
+your seeded workspace on the next launch, along with its ptys and scrollback.
+Either omit `repoPath` (as above) or make both fields real and verify with
+`git worktree list <repoPath>` before launching.
 
 ## What the env vars actually reach
 
