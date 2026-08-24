@@ -82,6 +82,7 @@ import {
   type NormalizeContext,
   type SdkMessage,
 } from '../shared/agent-events';
+import type { PeerOrigin } from '../shared/peer-messages.ts';
 import { findOversizedMemoryFiles } from './memory-files.ts';
 import { contextWindowFromModelId } from '../shared/memory-size.ts';
 import type {
@@ -1869,6 +1870,11 @@ export async function sdkSend(
   wsId: string,
   text: string,
   images?: AgentImage[],
+  /** Set ONLY when this turn is an inter-agent delivery rather than a human
+   *  prompt (issue #56) — Orchestra's peer channel reaches the session through
+   *  this same function, so the tag is what lets the view tell the two apart and
+   *  render peer traffic as a compact row. See sdk-delivery.ts's `send`. */
+  peerOrigin?: PeerOrigin,
 ): Promise<void> {
   let session: Session;
   try {
@@ -1954,7 +1960,7 @@ export async function sdkSend(
   // for the status dot, so drive status off it directly: it flips the sidebar to
   // `running` the instant the turn is queued, before the first SDK event lands —
   // parity with the terminal path's UserPromptSubmit hook.
-  const userMsg = makeUserMessage(session.ctx, text, images, rewindId, parked);
+  const userMsg = makeUserMessage(session.ctx, text, images, rewindId, parked, peerOrigin);
   emit(session.wsId, userMsg);
   driveStatusFromEvent(session, userMsg);
   // Publish the new queue depth so the tray appears the instant a prompt parks.
@@ -3575,7 +3581,7 @@ export function sdkStopMany(wsIds: readonly string[]): void {
 // wake-on-message run the agent in the structured view instead of a raw PTY.
 registerSdkDelivery({
   hasSession: sdkHasSession,
-  send: (wsId, text) => sdkSend(wsId, text),
+  send: (wsId, text, peerOrigin) => sdkSend(wsId, text, undefined, peerOrigin),
   start: (wsId, text) => sdkWake(wsId, text),
   stop: sdkStop,
 });

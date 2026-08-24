@@ -369,6 +369,42 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   synthetic frames, subagent sidechains (`parent_tool_use_id`) and
   tool_result-only messages stay filtered. `emitFrom` drops replays matching
   `session.recentEchoes` (belt-and-braces vs future SDK replay behavior).
+- **Inter-agent (peer) messages → compact collapsible rows** (issue #56) — a
+  coordinator with an active fleet received dozens of agent-to-agent messages per
+  wave, each rendering as a FULL user bubble and drowning the human's own
+  conversation. They now collapse to ONE quiet row per run (sender + first line),
+  expanding on click; collapsed by default, expansion NOT persisted.
+
+  **Which channel actually produces them.** Not the CLI's cross-session
+  `origin:{kind:'peer'}` — those transcript lines carry `isMeta:true` and are
+  dropped by BOTH the live fold (`msg.isSynthetic !== true`) and the backfill
+  (`entry.isMeta === true`); folding three real captured peer lines yields 0
+  messages (positive control: the same lines with `isMeta` stripped render 3/3).
+  Orchestra also pins `crossSessionInbound:'hold'`, suppressing those turns
+  (`docs/research/cross-session-inbound.md`). The real source is Orchestra's OWN
+  channel: `dispatchMessageRequest` (`src/main/workspaces.ts`) → `sdkDeliver`
+  → `sdkSend` → `makeUserMessage` — the same path a composer prompt takes,
+  historically carrying NO origin, which is why peer traffic was
+  indistinguishable from the human (measured: 1141 such messages across 39 fleet
+  transcripts).
+
+  **Two detection paths.** LIVE is structural: `dispatchMessageRequest` builds a
+  `PeerOrigin {kind,from,name}` (it already knows the sender) and threads it
+  through `sdkDeliver`/`sdkSend`/`makeUserMessage` onto `RenderMessage.origin` —
+  no text is inspected. BACKFILL uses a scoped textual recognizer
+  (`recognizeFormattedPeerMessage`) inside `pushUserText`, because the messages
+  already on disk predate the tag and nothing structural survives for them;
+  it is anchored and requires the full `[message from agent '<branch>' (<id>)]`
+  header line, so prose quoting the phrase does not match.
+
+  Pure logic in `src/shared/peer-messages.ts` (`isPeerMessage`, `peerSender`,
+  `peerPreview`, `describePeerRun`, `peerOriginLabel`,
+  `recognizeFormattedPeerMessage`), unit-tested in `peer-messages.test.ts`.
+  `buildRenderItems` (StructuredView.tsx) groups consecutive peer messages into a
+  `peer-group` item rendered by `PeerMessageGroup.tsx` (built in ToolGroup's
+  image; `.av-peer-run*` classes). Gate: `scripts/peer-rows-render-smoke.mjs`
+  (collapsed + expanded + a human-turn CONTROL whose text mimics a peer
+  envelope), wired into `pnpm run test:render`.
 - **Claude Code's non-conversational user frames** — the stream/transcript
   writes slash-command INVOCATIONS (`<command-name>/x</command-name>…`), their
   acks (`<local-command-stdout>…</local-command-stdout>`) and the interrupt

@@ -41,6 +41,7 @@ import { syncAccountInheritance } from './account-inherit';
 import { refreshAccountsNow } from './account-usage';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
+import type { PeerOrigin } from '../shared/peer-messages.ts';
 import { forgetWorkspaceProbes } from './activity';
 import { clearHibernated } from './hibernation.ts';
 import { forgetHibernationActivity } from './hibernation-activity.ts';
@@ -2758,7 +2759,13 @@ export async function dispatchMessageRequest(
   // typing into a running TUI. Checked first so a structured session always wins
   // over a wake-spawn. (sdkDeliver reports false when no structured session is
   // live, so the PTY path below is unchanged for terminal-mode workspaces.)
-  if (await sdkDeliver(input.to, body)) {
+  // Tag the delivery STRUCTURALLY (issue #56). We already know exactly who sent
+  // it, so the structured view never has to guess from the text: the tag rides
+  // onto the user-message event and renders as a compact collapsible row instead
+  // of a full user bubble. Only this dispatcher sets it — a composer prompt
+  // travelling the same `sdkSend` path stays untagged and unaffected.
+  const peerOrigin: PeerOrigin = { kind: 'peer', from: fromId, name: fromBranch };
+  if (await sdkDeliver(input.to, body, peerOrigin)) {
     return { ok: true, delivery: 'live', branch: target.branch };
   }
 

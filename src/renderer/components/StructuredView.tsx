@@ -28,6 +28,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
+import { isPeerMessage } from '../../shared/peer-messages';
 import { scoped } from '../log';
 import { WorkspaceAccountBadge } from './AccountBadge';
 import { CmComposer, type CmComposerHandle } from './agent/CmComposer';
@@ -58,6 +59,7 @@ import { resolveAnchorIndex } from '../scroll-anchor';
 import {
   AgentMessage,
   ToolGroup,
+  PeerMessageGroup,
   PermissionDialog,
   AgentControls,
   RemoteControl,
@@ -829,7 +831,10 @@ function MeasuredRow({
 
 type RenderItem =
   | { kind: 'message'; id: string; message: RenderMessage; divider?: TurnDivider }
-  | { kind: 'tool-group'; id: string; tools: RenderMessage[] };
+  | { kind: 'tool-group'; id: string; tools: RenderMessage[] }
+  // A run of consecutive INTER-AGENT messages, collapsed to compact rows so
+  // fleet traffic doesn't drown the human's conversation (issue #56).
+  | { kind: 'peer-group'; id: string; messages: RenderMessage[] };
 
 /** Tools that must NOT be folded into a collapsed group — they own a first-class,
  *  always-visible surface. TodoWrite is the live task list (Claude-Code shows it
@@ -849,6 +854,15 @@ function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
   // of item content.
   const nowMs = Date.now();
   let prevAt: number | undefined;
+  // Consecutive peer deliveries group into ONE collapsed item, the same way a
+  // run of tools does — a wave of fleet messages reads as one quiet row.
+  let peerRun: RenderMessage[] | null = null;
+  const flushPeers = () => {
+    if (peerRun && peerRun.length > 0) {
+      items.push({ kind: 'peer-group', id: `pg:${peerRun[0].id}`, messages: peerRun });
+    }
+    peerRun = null;
+  };
   const flush = () => {
     if (run && run.length > 0) {
       items.push({ kind: 'tool-group', id: `tg:${run[0].id}`, tools: run });
@@ -856,6 +870,17 @@ function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
     run = null;
   };
   for (const m of messages) {
+    // Peer messages break a tool run and accumulate into their own run. Checked
+    // FIRST so a peer delivery never falls through to the user-bubble branch.
+    // `isPeerMessage` is structural (the origin tag) — a human turn, whatever
+    // its text, can never land here.
+    if (isPeerMessage(m)) {
+      flush();
+      (peerRun ??= []).push(m);
+      if (m.at !== undefined) prevAt = m.at;
+      continue;
+    }
+    flushPeers();
     if (m.role === 'tool' && !isStandaloneTool(m)) {
       (run ??= []).push(m);
     } else {
@@ -871,6 +896,7 @@ function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
     if (m.at !== undefined) prevAt = m.at;
   }
   flush();
+  flushPeers();
   return items;
 }
 
@@ -882,6 +908,7 @@ function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
 
 function ItemSlot({ item }: { item: RenderItem }) {
   if (item.kind === 'tool-group') return <ToolGroup tools={item.tools} />;
+  if (item.kind === 'peer-group') return <PeerMessageGroup messages={item.messages} />;
   return (
     <>
       {item.divider ? (

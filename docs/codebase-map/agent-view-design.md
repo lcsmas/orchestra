@@ -348,6 +348,20 @@ Expanded body `.av-tool-run-body` holds the individual
 TodoWrite (`isStandaloneTool` in StructuredView). (Replaced the older
 `.av-tool-group*` name-count row.)
 
+**Peer message runs** (`PeerMessageGroup.tsx`, issue #56): a run of consecutive
+INTER-AGENT messages collapses to ONE quiet row, deliberately a sibling of
+`.av-tool-run` so the transcript gains no new visual vocabulary — same borderless
+clickable-label treatment, same base-`button` resets (the app's global button
+rule would otherwise make it read as a raised control), framed surface only when
+`.av-open`. `.av-peer-run` (`.av-open`/`.av-closed`) > `.av-peer-run-header`
+(button) > `.av-caret` + `.av-peer-run-label` (the verb summary — "Message from
+alpha" / "3 messages from 2 agents", built by `describePeerRun`) +
+`.av-peer-run-preview` (first line of a LONE message, dimmer than the label and
+first to ellipse). Expanded body `.av-peer-run-body` > `.av-peer-msg` rows, each
+with an `.av-peer-msg-from` mono microlabel (same treatment as
+`.av-message-origin`) over `.av-peer-msg-text`. All colours route through
+`--av-text-faint`/`--av-text-dim`/`--av-hairline*` — no raw hex.
+
 Tool card (`ToolCard.tsx`): `.av-tool-card` + `.av-tool-<name-lowercased>` +
 `.av-tool-errored`. Header `.av-tool-header-inner` > `.av-tool-icon` (SVG per
 tool, `tool-icons.tsx`) + `.av-tool-name` + `.av-tool-summary`; status

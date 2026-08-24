@@ -3053,3 +3053,64 @@ h6.av-md-h {
 .av-queue-btn[aria-pressed='true'] { color: var(--av-task); }
 .av-queue-remove:hover:not(:disabled) { color: var(--av-error); }
 
+
+/* ── Inter-agent (peer) message rows (issue #56) ───────────────────────────
+   A coordinator with an active fleet receives dozens of agent-to-agent
+   messages per wave; as full user bubbles they drowned the human's own
+   conversation. They collapse to ONE quiet clickable label row instead.
+
+   Styled as a sibling of `.av-tool-run` on purpose — same "a run of things
+   that are not the conversation" idiom, so the transcript gains no new visual
+   vocabulary. Everything routes through --av-* tokens (no raw hex), and the
+   same base-`button` resets apply: the app's global button rule stamps a drop
+   shadow + hover fill that would make this read as a raised control. */
+.av-peer-run {
+  margin: 1px 24px;
+  border: none; border-radius: 8px; background: none;
+}
+.av-peer-run.av-open {
+  margin: 4px 24px 8px;
+  border: 1px solid var(--av-hairline);
+  background: var(--av-surface-raised);
+  overflow: hidden;
+}
+.av-peer-run-header {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 3px 8px; background: none; border: none; box-shadow: none;
+  color: var(--av-text-faint);
+  font: inherit; font-size: var(--av-fs-small); text-align: left; cursor: pointer;
+  transition: color 120ms var(--av-ease);
+}
+.av-peer-run-header:hover { background: none; box-shadow: none; color: var(--av-text-dim); }
+.av-peer-run-header:active { transform: none; }
+.av-peer-run-header:focus-visible {
+  outline: none; box-shadow: none; color: var(--av-text-dim);
+  text-decoration: underline; text-underline-offset: 3px;
+  text-decoration-color: var(--av-hairline-strong);
+}
+.av-peer-run.av-open > .av-peer-run-header { border-radius: 7px 7px 0 0; }
+/* The sender summary ("3 messages from fix-login-race") carries the meaning. */
+.av-peer-run-label {
+  flex: none; font-weight: 500; letter-spacing: 0.005em; color: inherit;
+  white-space: nowrap;
+}
+/* First line of a LONE message, so a single collapsed row still says something.
+   Dimmer than the label and the first thing to be ellipsed when space runs out. */
+.av-peer-run-preview {
+  flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--av-text-faint); opacity: 0.85;
+}
+/* Expanded: the full bodies, stacked with a hairline between them. */
+.av-peer-run-body {
+  padding: 2px 0;
+  border-top: 1px solid var(--av-hairline-faint);
+}
+.av-peer-msg { padding: 8px 12px; }
+.av-peer-msg + .av-peer-msg { border-top: 1px solid var(--av-hairline-faint); }
+.av-peer-msg-from {
+  font-family: var(--font-mono); font-size: 9.5px; font-weight: 600;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--av-text-faint); margin-bottom: 4px;
+}
+.av-peer-msg-text { color: var(--av-text-dim); font-size: var(--av-fs-small); }

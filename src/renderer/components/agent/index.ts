@@ -40,3 +40,4 @@ export {
   parseAskUserQuestion,
   buildAskUserQuestionReply,
 } from './askUserQuestion';
+export { PeerMessageGroup } from './PeerMessageGroup';

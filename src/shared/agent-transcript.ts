@@ -28,6 +28,10 @@ import type { AgentEvent, AgentImage } from './types';
 // Explicit .ts extension: the `node --test` strip-types runner resolves this
 // import at runtime (vite/esbuild don't care either way).
 import {
+  peerOriginLabel,
+  recognizeFormattedPeerMessage,
+} from './peer-messages.ts';
+import {
   stamp,
   normalizeResultContent,
   classifyUserText,
@@ -181,6 +185,23 @@ export function transcriptToEvents(
     text: string,
     extra: { rewindId?: string; images?: AgentImage[]; origin?: string },
   ): boolean => {
+    // INTER-AGENT DELIVERIES ALREADY ON DISK (issue #56). The live path now tags
+    // peer messages structurally at the dispatcher, but the ~1141 already
+    // written to fleet transcripts predate that tag and carry no `origin` at
+    // all — nothing structural survives for them to key on. So here, and ONLY
+    // here, recognize the exact envelope this repo's `formatPeerMessage` emits
+    // and recover its origin, letting a REOPENED coordinator pane collapse the
+    // very history the owner screenshotted. The recognizer is anchored and needs
+    // the full `[message from agent '<branch>' (<id>)]` header line, so prose
+    // that merely quotes the phrase does not match (unit-tested, and the anchor
+    // is mutation-tested). A live turn already carrying an origin is left alone.
+    if (!extra.origin) {
+      const rec = recognizeFormattedPeerMessage(text);
+      if (rec) {
+        text = rec.body;
+        extra = { ...extra, origin: peerOriginLabel(rec.origin) };
+      }
+    }
     const c = classifyUserText(text);
     if (c.kind === 'interrupted') {
       out.push(st(ctx, { type: 'notice', kind: 'interrupted', text: 'Interrupted by user' }));
