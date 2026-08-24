@@ -363,6 +363,27 @@ export interface OrchestraAPI {
    *  opened, `false` when the path is missing/not a file. Backs the "Background
    *  tasks" panel's "View transcript" link. */
   agentSdkOpenTaskTranscript: (filePath: string) => Promise<boolean>;
+  /** Kill a running background task (`Query.stopTask`). Resolves `true` when
+   *  the CLI accepted the request, `false` when no live session exists or the
+   *  SDK call failed (a `warning` notice is emitted in that case).
+   *
+   *  The card does NOT flip to "Stopped" from this call — the CLI's own
+   *  `task_notification { status: 'stopped' }` does, through the normal event
+   *  fold. So a settled card is evidence the task actually died, never merely
+   *  that the button was pressed. */
+  agentSdkStopTask: (wsId: string, taskId: string) => Promise<boolean>;
+  /** Move in-flight FOREGROUND work (a blocking Bash call or subagent) into the
+   *  background — the SDK's Ctrl+B parity (`Query.backgroundTasks`). Omit
+   *  `toolUseId` to background everything in flight; pass one to target a single
+   *  tool_use block. Resolves `true` when at least one task was backgrounded,
+   *  `false` when there was nothing to background (a real contract outcome, not
+   *  an error).
+   *
+   *  NOTE: despite the name this does NOT return background-task state. No
+   *  state-returning background-task method exists on the SDK `Query` interface
+   *  (0.3.241); live state comes from the organic `background_tasks_changed`
+   *  level signal folded into `AgentSession.tasks`. */
+  agentSdkBackgroundTasks: (wsId: string, toolUseId?: string) => Promise<boolean>;
   /** Skills (slash commands) available to the workspace's agent, for the
    *  composer's `/` autocomplete. */
   agentSkills: (wsId: string) => Promise<AgentSkillInfo[]>;

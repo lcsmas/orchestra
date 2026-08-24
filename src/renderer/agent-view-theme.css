@@ -2291,6 +2291,71 @@ h6.av-md-h {
 }
 .av-bgtask-transcript:hover { text-decoration: underline; }
 
+/* Kill control on a running card (#19 — Query.stopTask). Quiet by default and
+   only reddens on hover: it sits on every running card, so a permanently-loud
+   destructive colour would shout over the whole list. Disabled while a stop is
+   in flight — that state reads "Stopping…", never "Stopped", because the
+   terminal claim belongs to the CLI's own task_notification, not to the click.
+   The card's status dot/border is what actually reports the outcome. */
+.av-bgtask-stop {
+  flex: none;
+  border: 1px solid var(--av-hairline-strong);
+  background: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: var(--av-text-faint);
+  font-size: var(--av-fs-caption);
+  line-height: 1.5;
+  cursor: pointer;
+  transition: color 140ms var(--av-ease), border-color 140ms var(--av-ease),
+    background 140ms var(--av-ease);
+}
+.av-bgtask-stop:hover:not(:disabled) {
+  color: var(--av-error);
+  border-color: color-mix(in srgb, var(--av-error) 55%, var(--av-hairline-strong));
+  background: color-mix(in srgb, var(--av-error) 12%, transparent);
+}
+.av-bgtask-stop:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--av-error) 60%, transparent);
+  outline-offset: 1px;
+}
+/* Stop requested, outcome not yet reported by the CLI. */
+.av-bgtask-stop[data-state="stopping"] {
+  color: var(--av-warn);
+  border-color: color-mix(in srgb, var(--av-warn) 45%, var(--av-hairline));
+  cursor: default;
+}
+.av-bgtask-stop:disabled { opacity: 0.75; }
+
+/* Panel footer holding the Ctrl+B parity action. Present only while a turn is
+   in flight, so it never occupies space it cannot act on. */
+.av-bgtask-panel-foot {
+  flex: none;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--av-hairline);
+}
+.av-bgtask-background-now {
+  width: 100%;
+  border: 1px solid var(--av-hairline-strong);
+  background: var(--av-surface);
+  padding: 6px 10px;
+  border-radius: 8px;
+  color: var(--av-text-dim);
+  font-size: var(--av-fs-small);
+  cursor: pointer;
+  transition: color 140ms var(--av-ease), border-color 140ms var(--av-ease),
+    background 140ms var(--av-ease);
+}
+.av-bgtask-background-now:hover {
+  color: var(--av-text);
+  border-color: color-mix(in srgb, var(--av-task) 45%, var(--av-hairline-strong));
+  background: var(--av-highlight);
+}
+.av-bgtask-background-now:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--av-task) 60%, transparent);
+  outline-offset: 1px;
+}
+
 /* ── System notices (rate limit / auth / compaction / refusal / denials /
    command output) — the render surface for AgentNoticeEvent. Quiet rows that
    inform without shouting over the conversation. ─────────────────────────── */

@@ -355,6 +355,17 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   "API error — retrying" footer branch was removed (mid-turn retries surface
   via `statusNotice`). `switchWorkspaceBranch` (workspaces.ts) now calls
   `sdkStopIfLive` so a live structured session can't keep stale branch context.
+- **Background-task control (#19)** — `sdkStopTask(wsId, taskId)` and
+  `sdkBackgroundForegroundTasks(wsId, toolUseId?)` (`agent-sdk.ts`, behind
+  `agent:sdkStopTask` / `agent:sdkBackgroundTasks`) call the SDK's
+  `Query.stopTask()` / `Query.backgroundTasks()` on the retained `session.q`.
+  Both return `false` with no live session (a task cannot outlive the CLI process
+  that owns it) and emit a `warning` notice on a thrown SDK error. **`sdkStopTask`
+  deliberately does NOT patch `session.tasks`** — the CLI's own
+  `task_notification{status:'stopped'}` / `background_tasks_changed` drop does,
+  through the normal fold, which is what keeps "the button was clicked" and "the
+  task actually died" distinguishable. `backgroundTasks()`'s `false` is a contract
+  outcome ("nothing to background"), not an error, so it draws no notice.
 - **Skill / plugin hot-reload** — `sdkReloadSkills(wsId)` and
   `sdkReloadPlugins(wsId)` (`agent-sdk.ts`) call the SDK's `reloadSkills()` /
   `reloadPlugins()` control requests on the retained `session.q`, so a skill or
@@ -643,6 +654,33 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   on the task's `outputFile`. `runningTaskCount`/`totalTaskCount` helpers drive the
   toggle. CSS lives in `agent-view-theme.css` (`av-bgtask-*`; the `--av-task`
   accent-2 token). Pinned inside `.av-view` (position:absolute/inset:0) as an overlay.
+  **Two SDK-reaching actions (#19)**, both taking `workspaceId` (the panel is
+  otherwise a pure projection of `session`):
+  - **Stop** (`av-bgtask-stop`, running cards only) → `agentSdkStopTask` →
+    `sdkStopTask` → `Query.stopTask(taskId)`. The click records only a REQUEST in
+    a renderer-local `stopRequested` set and the button reads **"Stopping…"**; the
+    card is flipped by the CLI's own `task_notification{status:'stopped'}` OR by
+    the id leaving the `background_tasks_changed` live set — both through the
+    ordinary fold. So a settled card is evidence the task actually died, never
+    that the button was pressed. A rejected request rolls the marker back.
+  - **"Run current work in background"** (`av-bgtask-panel-foot`, shown only while
+    `session.running`) → `agentSdkBackgroundTasks` → `sdkBackgroundForegroundTasks`
+    → `Query.backgroundTasks()`. This is the SDK's **Ctrl+B parity**: it moves
+    in-flight FOREGROUND work into the background. ⚠️ Despite the name it is **not
+    a state query** — it returns `Promise<boolean>`, and at SDK 0.3.241 **no
+    state-returning background-task method exists on the `Query` interface at all**
+    (enumerated). Live state comes only from the organic `background_tasks_changed`
+    level signal. The control is deliberately NOT gated on `session.tasks` being
+    non-empty: foreground work has no card yet, which is the case it exists for.
+- **`src/shared/background-task-actions.ts`** (+ `.test.ts`, 19 tests) — the pure
+  decision logic behind those actions, testable without a renderer.
+  `stopButtonState(task, requested)` → `'stoppable' | 'stopping' | 'settled'`,
+  where **terminal status always outranks a pending request** (so a marker can only
+  ever show while the task is genuinely running); `pruneStopRequests(requested,
+  tasks)` drops markers whose task settled or left the live set (returning the same
+  instance when unchanged, so a `setState` can skip a render);
+  `canBackgroundForegroundWork(session)` gates the Ctrl+B control on `running`.
+  All three guards are mutation-tested (revert → named failures).
 - **`src/renderer/components/agent/ToolGroup.tsx`** — the aggregated tool run,
   rendered in the **Claude-Code-desktop compact style**: EVERY tool run (even a
   single tool) collapses to ONE quiet, muted, **borderless** one-line row —

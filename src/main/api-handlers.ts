@@ -109,6 +109,8 @@ import {
   sdkRewindPreview,
   sdkPermissionReply,
   sdkSetModel,
+  sdkStopTask,
+  sdkBackgroundForegroundTasks,
   sdkSetEffort,
   sdkSetPermissionMode,
   sdkSetRemoteControl,
@@ -264,6 +266,8 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   agentSdkHistory: 'agent:sdkHistory',
   agentSdkDefaultModel: 'agent:sdkDefaultModel',
   agentSdkOpenTaskTranscript: 'agent:sdkOpenTaskTranscript',
+  agentSdkStopTask: 'agent:sdkStopTask',
+  agentSdkBackgroundTasks: 'agent:sdkBackgroundTasks',
   agentSkills: 'agent:skills',
   agentModels: 'agent:models',
   browserShow: 'browser:show',
@@ -941,6 +945,19 @@ export const apiHandlers: ApiHandlerTable = {
     if (err) throw new Error(err);
     return true;
   },
+
+  // Kill a running background task (SDK `Query.stopTask`). Deliberately does
+  // NOT patch the folded card: the CLI answers with its own
+  // `task_notification { status: 'stopped' }`, which the normal event path
+  // folds. That keeps "the button was clicked" and "the task actually died"
+  // distinguishable — an optimistic flip here would collapse them.
+  agentSdkStopTask: async (wsId, taskId) => sdkStopTask(wsId, taskId),
+
+  // Ctrl+B parity: move in-flight FOREGROUND work into the background. Returns
+  // the SDK's boolean (false = nothing matched, a contract outcome not an
+  // error). Not a state query — see the ipc.ts note.
+  agentSdkBackgroundTasks: async (wsId, toolUseId) =>
+    sdkBackgroundForegroundTasks(wsId, toolUseId),
 
   agentSkills: async (wsId) => sdkListSkills(wsId),
   agentModels: async (wsId) => sdkListModels(wsId),
