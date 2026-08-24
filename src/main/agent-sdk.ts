@@ -2485,7 +2485,37 @@ export async function sdkMcpToggle(
  *  process is replaced.
  *
  *  Refuses while a turn is in flight rather than killing the agent mid-answer:
- *  the caller surfaces that as an inline popover error. */
+ *  the caller surfaces that as an inline popover error.
+ *
+ *  ## Why NOT `setMcpServers()` (#23 — measured, do not re-litigate)
+ *
+ *  The SDK's `Query.setMcpServers()` looks like the obvious replacement for
+ *  this restart, and its own documentation reads like a drop-in upgrade. It is
+ *  not. Measured live 2026-08-24 against the installed CLI (SDK 0.3.241, real
+ *  `query()` on an isolated CLAUDE_CONFIG_DIR, toy stdio servers stamping their
+ *  pid on boot so a restart is observed at PROCESS level, not inferred from the
+ *  return shape):
+ *
+ *    • reconnect scope is DELTA ONLY — an already-live server named again in
+ *      the payload is NOT restarted (same pid, one line in its start log),
+ *      though the returned `added` list over-reports and claims otherwise;
+ *    • the SESSION SURVIVES — identical `session_id` across add and remove;
+ *    • IN-FLIGHT TOOL CALLS ARE UNHARMED — the call returned in ~108ms while an
+ *      8s MCP tool call ran, and that call completed normally on the same pid;
+ *    • but SETTINGS-FILE SERVERS ARE INVISIBLE TO IT — a server written into
+ *      `<configDir>/.claude.json` mid-session was never added, never spawned,
+ *      and never appeared in `mcpServerStatus()`. CONTROL: a fresh `query()`
+ *      over that same file booted it `connected`, so the config was valid and
+ *      the negative is a property of the API, not the fixture.
+ *
+ *  That last bullet is disqualifying: account-level `claude.ai` connectors and
+ *  settings changes — the ONLY reason this function exists — are exactly the
+ *  class `setMcpServers` cannot see. Swapping it in would turn the popover's ↻
+ *  into a silent no-op for its whole purpose, with no error and no failing
+ *  test. Orchestra's only dynamically-added server is the in-process `browser`
+ *  one (see the `mcpServers` option at the query() launch site), which is never
+ *  what ↻ is for — so `setMcpServers` has nothing useful to do here today.
+ *  Guarded by src/main/mcp-refresh-mechanism.test.ts. */
 export async function sdkMcpRefresh(wsId: string): Promise<AgentMcpServer[]> {
   const live = sessions.get(wsId);
   // `turnGate` is non-null exactly while a turn is in flight (same idiom as

@@ -192,6 +192,25 @@ mechanism is a real process restart: `sdkStop` + `killKeeper` backstop (else
 `sdkSessionId` alone (only `sdkClear` drops it), so the fresh process resumes
 the same transcript. Refuses while `session.turnGate !== null` (a turn is in
 flight) rather than killing the agent mid-answer.
+**The restart is deliberate — `setMcpServers()` cannot replace it (#23,
+measured 2026-08-24, don't re-litigate).** The SDK's `setMcpServers()` reads
+like a drop-in upgrade and is genuinely well-behaved — measured live against
+the installed CLI, its reconnect scope is **delta only** (an already-live
+server named again is not restarted, even though the returned `added` list
+claims it was), the **session survives** (same `session_id` across add and
+remove), and **in-flight tool calls are unharmed** (returned in ~108ms while
+an 8s MCP call ran; that call finished normally). But it is **blind to
+settings-file and account-level servers**: a server written into
+`<configDir>/.claude.json` mid-session was never added, never spawned and
+never appeared in `mcpServerStatus()`, while a *fresh* session over the same
+file booted it `connected` (the control proving the fixture was valid). Since
+account-level `claude.ai` connector changes are the ONLY thing ↻ exists to
+pick up, swapping in `setMcpServers` would make the button a silent no-op for
+its entire purpose. Orchestra's only dynamically-added server is the
+in-process `browser` one, which ↻ is never for. Guarded by
+`src/main/mcp-refresh-mechanism.test.ts`, which fails if the restart steps
+(`sdkStop` + `killKeeper` + `ensureSession`) leave `sdkMcpRefresh` or if
+`setMcpServers` appears in it.
 A **health chip** (`McpIndicator`, exported from McpPopover.tsx; `.av-mcp-ind`,
 `order:3` so it docks right after Remote control in the composer bar) renders
 ONLY while a server is `failed`/`needs-auth` — amber for auth-only, red
