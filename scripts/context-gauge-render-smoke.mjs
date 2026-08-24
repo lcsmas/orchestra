@@ -17,6 +17,15 @@
 // private ContextGauge: this tests the real mount path a user sees, and does not
 // widen the module's API just to be testable.
 //
+// SELECTOR CONTRACT (composition with #16, the breakdown UI): every assertion
+// below keys on a CLASS, `data-context-source`, or rendered TEXT — never on the
+// element's TAG. #16 turns this node into a <button class=av-turn-context-btn>
+// inside .av-ctx-anchor whenever the reading carries a breakdown, so a
+// `div.av-turn-context` assertion would pass here and break legitimately there.
+// Stable across both branches: `.av-turn-context`, `[data-context-source]`.
+// Verified by simulation: patching the component to render a <button> with an
+// aria-label leaves this harness ALL PASS, unchanged.
+//
 // Run: node scripts/context-gauge-render-smoke.mjs
 
 import { createRequire } from 'node:module';

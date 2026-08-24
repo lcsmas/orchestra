@@ -449,3 +449,20 @@ test('gauge: a 0-token reading is a real 0%, not absence', () => {
   assert.ok(v, 'a reset session must render 0%, not vanish');
   assert.equal(v.label, '0%');
 });
+
+// A LIVE reading can itself lack a window — a version-skewed CLI whose
+// getContextUsage() payload omits rawMaxTokens/maxTokens. Flagged by the #16
+// agent, who measured this arm still live. It is a THIRD route to the
+// null-percentage path (transcript pre-v3 and turn-end being the others), so
+// the arm must not be deleted as unreachable.
+test('gauge: a LIVE payload with no window renders tokens, still tagged live', () => {
+  const live = normalizeLiveContextUsage({ totalTokens: 73191 }, 0)!;
+  assert.equal(live.maxTokens, null, 'a window-less live payload must not invent one');
+  assert.equal(live.percentage, null);
+  const v = describeContextGauge(live, undefined)!;
+  assert.ok(v, 'must render rather than vanish');
+  assert.equal(v.label, '73k');
+  assert.equal(v.source, 'live', 'provenance must survive the missing window');
+  assert.equal(v.fillPct, 0);
+  assert.equal(v.level, 'ok');
+});
