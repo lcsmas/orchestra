@@ -181,6 +181,72 @@ console.log('turn-end fallback (no emitted reading):');
     'a fabricated turn-end must be distinguishable from a real live reading');
 }
 
+// ── #16: the breakdown panel's SHOW/HIDE, rendered ──────────────────────────
+// Same coverage argument as everything above, one level up: `expandable` is
+// decided in describeContextGauge (pure, unit-tested), but whether the gauge
+// becomes a BUTTON with a panel is a fact about the rendered DOM, and the unit
+// suite cannot see it. Note every fixture above carries NO categories, so all of
+// them exercise the plain-div path only — without these two cases the button
+// path had zero render coverage and a regression there would have been silent.
+console.log('#16 breakdown panel:');
+{
+  const withBreakdown = {
+    totalTokens: 73191, maxTokens: 200000, percentage: 37, source: 'live', at: 1,
+    categories: [
+      { name: 'Memory files', tokens: 52060, kind: 'used' },
+      { name: 'System tools', tokens: 14144, kind: 'used' },
+      { name: 'MCP tools (deferred)', tokens: 52191, kind: 'deferred' },
+      { name: 'Free space', tokens: 126809, kind: 'free' },
+    ],
+    memoryFiles: [{ path: '/home/u/proj/CLAUDE.md', type: 'Project', tokens: 50815 }],
+    mcpTools: [{ name: 'mcp__github__create_issue', serverName: 'github', tokens: 890 }],
+  };
+  const html = render(session(withBreakdown));
+  check('a reading WITH categories renders a button', html.includes('av-turn-context-btn'));
+  check('the button is wrapped in the popover anchor', html.includes('av-ctx-anchor'));
+  check('it advertises the dialog', html.includes('aria-haspopup="dialog"'));
+  check('closed by default — no panel in the initial DOM', !html.includes('av-ctx-panel'));
+  check('provenance still readable on the button', html.includes('data-context-source="live"'));
+  check('the gauge still reads 37%', html.includes('37%'));
+
+  // The degradation half. A transcript reading can look "complete" (it carries a
+  // window and a percentage on the [1m] path) yet has no breakdown — it must
+  // stay a plain div, or every history pane offers a click that opens nothing.
+  const noBreakdown = render(
+    session({ totalTokens: 502955, maxTokens: 1000000, percentage: 50, source: 'transcript', at: 1 }),
+  );
+  check('a reading WITHOUT a breakdown stays a plain div', !noBreakdown.includes('av-turn-context-btn'));
+  check('...and offers no popover anchor', !noBreakdown.includes('av-ctx-anchor'));
+  check('...but still renders the gauge', noBreakdown.includes('av-turn-context'));
+
+  // The null-window arm INSIDE the button. `label` is computed in the pure layer
+  // ('503k' when there is no percentage), and the aria-label interpolates it —
+  // so a live reading that carries a breakdown but no window must announce the
+  // token count, never a fabricated percentage. Every other button fixture has a
+  // window, so without this case that arm is unexercised.
+  const noWindowExpandable = render(session({
+    totalTokens: 502955, maxTokens: null, percentage: null, source: 'live', at: 1,
+    categories: [{ name: 'Memory files', tokens: 52060, kind: 'used' }],
+  }));
+  check('windowless + breakdown still renders a button', noWindowExpandable.includes('av-turn-context-btn'));
+  check('...and its aria-label reads the token count', noWindowExpandable.includes('Context 503k used'));
+  // Scoped to the READOUT, not the raw HTML: the bar legitimately carries
+  // `width:0%` (a clamped fill for an unknown window), so a bare /\d+%/ over the
+  // markup fails against correct code — my first version of this assertion did
+  // exactly that. Assert on the displayed value and the aria-label instead.
+  check('...with no fabricated percentage in the readout',
+    !/>\s*\d+%\s*</.test(noWindowExpandable) && !/aria-label="[^"]*\d+%/.test(noWindowExpandable));
+
+  // Content-gated, not source-gated: a LIVE reading whose categories all came
+  // back zero has nothing to show and must degrade identically.
+  const zeroCats = render(session({
+    totalTokens: 100, maxTokens: 200000, percentage: 0, source: 'live', at: 1,
+    categories: [{ name: 'Messages', tokens: 0, kind: 'used' }],
+  }));
+  check('a LIVE reading with only zero-token categories degrades too', !zeroCats.includes('av-turn-context-btn'),
+    'this is the case a source-gate would wrongly let through into an empty panel');
+}
+
 console.log('nothing to show:');
 {
   check('no reading and no turn -> renders nothing', render(session(undefined, undefined)) === '');

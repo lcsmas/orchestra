@@ -331,8 +331,10 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   composer autocomplete merges on-disk skills with `session.slashCommands`
   (now captured from init, along with `session.mcpServers`).
 - **CC-desktop parity in the UI** — `ContextGauge` in TurnFooter
-  (`TurnFooter.tsx:170`; "N% used" + a small progress bar, amber ≥75% used /
-  red ≥90%). Since #15 it prefers `AgentSession.contextUsage` — the AUTHORITATIVE
+  (`TurnFooter.tsx:172`; "N% used" + a small progress bar, amber ≥75% used /
+  red ≥90%; since #16 it is a BUTTON opening the breakdown panel when the
+  reading carries one — see "Context breakdown panel" below). Since #15 it
+  prefers `AgentSession.contextUsage` — the AUTHORITATIVE
   live reading from `Query.getContextUsage()` (see "Context gauge sourcing"
   below) — and falls back to turn-end's `contextWindow` (max `modelUsage` entry)
   and `contextUsedTokens` (the LAST top-level assistant message's per-call usage,
@@ -1040,7 +1042,9 @@ pins the threshold styling, the >100% unclamped number vs the clamped bar, and
 ## Context gauge sourcing (issue #15)
 
 The gauge has THREE possible sources, normalized to one shape by the pure
-`src/shared/context-usage.ts` (unit-tested in `context-usage.test.ts`, 20 tests):
+`src/shared/context-usage.ts` (unit-tested in `context-usage.test.ts`, 20 tests;
+the breakdown lists it also normalizes are covered by `context-breakdown.test.ts`,
+25 tests):
 
 | Source | Producer | Shape | When |
 |---|---|---|---|
@@ -1136,6 +1140,70 @@ Two traps the normalizer encodes, both with regression tests:
 
 The gauge no longer clamps its NUMBER at 100% (an over-limit session reads past
 it — the state the gauge exists to warn about); only the bar fill is clamped.
+
+### Context breakdown panel (issue #16)
+
+Clicking the gauge opens a popover answering "what is filling my window?".
+
+- **Normalized data.** `ContextUsage` carries four OPTIONAL detail lists beside
+  `categories`: `memoryFiles`, `mcpTools`, `skills`, `agents`
+  (`context-usage.ts`). Both adapters populate them, which needs more than a key
+  alias — the two wire shapes genuinely diverge: `/context` sends `skills` as a
+  FLAT ARRAY while `getContextUsage()` sends an OBJECT (`{totalSkills,
+  includedSkills, tokens, skillFrontmatter[]}`) with the rows nested under
+  `skillFrontmatter`, and `agents` alternates `agent_type`/`agentType`.
+  `mapSkills` (`context-usage.ts:295`) sniffs the shape; `mapRows` DROPS rows
+  missing a required field rather than defaulting them, so a token-less row
+  never renders a measured-looking `0`. A list that yields nothing becomes
+  `undefined`, not `[]`.
+- **Render model.** `src/shared/context-breakdown.ts` (pure, unit-tested):
+  `buildContextBreakdown` (`:126`) returns ordered `used`/`deferred` rows + the
+  `free` row + the four detail lists, or **`null`** when there is nothing to
+  show — one null check for the renderer instead of five empty-list checks,
+  which is how an empty panel ships. `groupMcpToolsByServer` (`:87`) aggregates
+  tools per server (a user reads "which server costs me", not which of its 40
+  tools); nameless servers collapse into one `unknown` bucket. `truncateList`
+  backs the "+N more" tail (5 rows per list). Zero-token category rows are
+  hidden (the SDK's own docs say renderers typically do).
+- **`percentOfWindow` is a share of `maxTokens`, not of the summed rows** — so
+  the used rows deliberately do NOT total 100%, and `usedTotal` is the legend's
+  own arithmetic while the headline number stays the producer's `totalTokens`.
+- **Graceful degradation is gated on CONTENT, not `source`.** `hasBreakdown`
+  now LIVES IN `context-usage.ts` (moved there when `describeContextGauge` grew
+  an `expandable` field — importing `context-breakdown.ts` from `context-usage.ts`
+  would be circular, and the predicate reads only `ContextUsage` fields, so that
+  is its natural home; `context-breakdown.ts` re-exports it so breakdown callers
+  keep one import site). The renderer does NOT call it: per this file's own
+  "no decisions in the component" rule, the panel's show/hide is decided in the
+  pure layer as `ContextGaugeView.expandable`, where a test can execute it.
+  It is what the gauge checks: true when any category carries tokens or
+  any detail list is non-empty. The transcript fallback has only a token count,
+  so it fails the gate and the gauge renders as the pre-#16 static readout with
+  no button semantics and no hover affordance. A live reading whose categories
+  all came back zero degrades identically — there is no empty-state panel.
+- **Render coverage.** `scripts/context-gauge-render-smoke.mjs` (`pnpm run
+  test:render`) also pins the #16 show/hide against real rendered HTML: a
+  reading WITH categories must produce `.av-turn-context-btn` inside
+  `.av-ctx-anchor` with `aria-haspopup="dialog"` and NO `.av-ctx-panel` before a
+  click; a transcript reading and a live-but-all-zero reading must both stay a
+  plain div. Every pre-#16 fixture in that script carries no categories, so
+  without these cases the BUTTON path had zero render coverage. Mutation-tested
+  both ways: forcing `expandable` true fails the three degradation assertions,
+  forcing it false fails the three button assertions.
+- **UI.** `ContextBreakdownPanel.tsx` — `ContextBreakdownBody` (`:136`, the
+  markup, renderable standalone by a visual rig) inside `ContextBreakdownPanel`
+  (`:237`, the popover shell: outside-click + Escape dismiss, `role="dialog"`,
+  `aria-label="Context breakdown"`; Escape is captured and `stopPropagation`'d
+  so it does not also reach the composer's own handler). The trigger carries
+  `aria-haspopup="dialog"`/`aria-expanded` and an `aria-label` naming the
+  percentage. Deferred rows render in their OWN section with an explicit
+  "Not loaded — excluded from the totals above."
+- **CSS.** The `av-ctx-*` layer in `agent-view-theme.css:2489`, in the view's
+  existing popover language (`.av-rc-panel`'s glass on `--av-*` tokens). The
+  5-slot segment palette is assigned **by rank** (rows arrive sorted
+  largest-first), never keyed by category NAME — the CLI's names are
+  presentation strings that have changed between versions, so a name-keyed map
+  would silently collapse to one colour.
 
 ## Availability by workspace kind
 

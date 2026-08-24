@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import type { AgentSession, AgentTurnEndEvent } from '../../../shared/types';
 import { describeContextGauge, type ContextUsage } from '../../../shared/context-usage';
+import { ContextBreakdownPanel } from './ContextBreakdownPanel';
 
 /** k/M token formatter, mirroring AccountBadge.formatTokens for consistency. */
 function formatTokens(n: number): string {
@@ -175,28 +176,62 @@ function ContextGauge({
   usage: ContextUsage | undefined;
 }) {
   // NO DECISIONS HERE — every one (whether to show at all, what to print, the
-  // threshold level, the bar width, the tooltip) is resolved by the pure
-  // `describeContextGauge`, which the unit suite CAN execute.
+  // threshold level, the bar width, the tooltip, and whether a breakdown panel
+  // is offered) is resolved by the pure `describeContextGauge`, which the unit
+  // suite CAN execute.
   //
   // This component used to own the "no window -> render nothing" branch, and
   // reverting that branch left all 844 unit tests GREEN while the gauge vanished
   // in the built app: `node --test` does not transform JSX, so nothing ever ran
   // this function. A decision no test can execute regresses silently. Keep this
   // component dumb — if you find yourself adding a conditional here, put it in
-  // describeContextGauge instead.
+  // describeContextGauge instead. (#16 followed that rule: `view.expandable` is
+  // decided there, not by a `hasBreakdown` call sited in this file.)
+  //
+  // The one thing that MUST stay here is the open/closed state — it is UI state,
+  // not a render decision, and the hook is declared before the early return so
+  // hook order is unconditional.
+  const [open, setOpen] = useState(false);
   const view = describeContextGauge(usage, turn);
   if (!view) return null;
-  return (
-    <div
-      className={`av-turn-stat av-turn-context av-turn-context-${view.level}`}
-      data-context-source={view.source}
-      title={view.title}
-    >
+  const cls = `av-turn-stat av-turn-context av-turn-context-${view.level}`;
+  const body = (
+    <>
       <span className="av-turn-stat-value">{view.label}</span>
       <span className="av-turn-stat-label">used</span>
       <span className="av-turn-context-bar" aria-hidden="true">
         <span className="av-turn-context-fill" style={{ width: `${view.fillPct}%` }} />
       </span>
+    </>
+  );
+
+  // No breakdown to show (transcript fallback, or a live reading with nothing in
+  // it): render exactly what shipped before #16 — a static readout, no button
+  // semantics, no empty panel. `data-context-source` is emitted in BOTH branches
+  // so a driver can assert provenance either way.
+  if (!view.expandable || !usage) {
+    return (
+      <div className={cls} data-context-source={view.source} title={view.title}>
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <div className="av-ctx-anchor">
+      <button
+        type="button"
+        className={`${cls} av-turn-context-btn`}
+        data-context-source={view.source}
+        title={view.title}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={`Context ${view.label} used — show breakdown`}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {body}
+      </button>
+      {open && <ContextBreakdownPanel usage={usage} onDismiss={() => setOpen(false)} />}
     </div>
   );
 }
