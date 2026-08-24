@@ -128,7 +128,23 @@ interface TranscriptBlock {
 /** Convert raw transcript JSONL text into an ordered AgentEvent list. Unparsable
  *  or irrelevant lines are skipped, never thrown on. Returns `[]` for a
  *  transcript with no renderable content. */
-export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentEvent[] {
+export function transcriptToEvents(
+  jsonl: string,
+  ctx: NormalizeContext,
+  /** The WORKSPACE's configured model (`ws.model`), used only to size the
+   *  context window for the gauge.
+   *
+   *  Why it must come from the caller and cannot be read off the transcript:
+   *  measured against real transcripts, `message.model` records the BASE id
+   *  (`claude-opus-4-8`) and NEVER the `[1m]` long-context alias, while the
+   *  workspace record persists exactly that alias (`opus[1m]`,
+   *  `claude-fable-5[1m]` are live values in the real store). Deriving the
+   *  window from `message.model` alone therefore reported 251% on a real 1M
+   *  session that was actually 50% full — a confidently wrong number, which is
+   *  worse than none. The transcript's own model id is the fallback when the
+   *  caller has none. */
+  workspaceModel?: string | null,
+): AgentEvent[] {
   const out: AgentEvent[] = [];
   let blockIndex = HISTORY_INDEX_BASE;
   /** Context size of the newest main-chain assistant turn seen so far — the
@@ -141,6 +157,8 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
   /** Model id of the line `contextTokens` came from — the transcript's only
    *  window signal (it records no window itself). */
   let contextModel: string | null = null;
+  /** Whether a compaction boundary was passed — see the emit site below. */
+  let sawCompactBoundary = false;
 
   // The current line's real wall-clock time (envelope `timestamp`), when
   // parsable. `stamp()` assigns `at` from the clock (= backfill-load time here);
@@ -206,6 +224,7 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
         // Pre-compact usage is stale the moment the context is rewritten.
         contextTokens = 0;
         contextModel = null;
+        sawCompactBoundary = true;
         out.push(st(ctx, { type: 'notice', kind: 'compact-boundary', text: 'Conversation compacted' }));
         continue;
       }
@@ -337,14 +356,23 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
     // ask. Tagged `transcript`, so if a live session later attaches, its
     // authoritative reading supersedes this one (isMoreAuthoritative) rather
     // than the two fighting.
-    if (contextTokens > 0) {
+    // A transcript ending in a compaction boundary with no assistant turn after
+    // it (common: compaction fires, then the session is detached/closed) leaves
+    // `contextTokens` at 0 — and rendering nothing there was a real regression
+    // found by replaying REAL transcripts, not fixtures. The post-compact size
+    // is genuinely unknown until the next turn, so report the compaction
+    // explicitly with a 0 reading rather than staying silent: 0 is already the
+    // app's "context was reset" sentinel (activity.ts resetContext) and the
+    // gauge renders it as a real 0%, not as absence.
+    if (contextTokens > 0 || sawCompactBoundary) {
       out.push(
         st(ctx, {
           type: 'session/context',
           usage: contextUsageFromTranscript(
             contextTokens,
             ctx.now ? ctx.now() : Date.now(),
-            contextModel,
+            // Workspace model first: it is the only one carrying `[1m]`.
+            workspaceModel ?? contextModel,
           ),
         }),
       );

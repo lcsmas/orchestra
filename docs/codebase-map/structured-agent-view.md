@@ -1064,8 +1064,23 @@ detached/history panes. So `transcriptContextWindow(model)` derives it, reusing
 the app's EXISTING rules rather than minting a second convention:
 `contextWindowFromModelId` for the `[1m]` long-context alias (1M), else
 `DEFAULT_CONTEXT_WINDOW` (200k — the CLI's own `pkr` fallback), both from
-`memory-size.ts`. The model is taken from the SAME line the token figure came
-from, and is cleared at a compaction boundary along with the tokens.
+`memory-size.ts`.
+
+**The model must come from the WORKSPACE record, not the transcript** —
+`sdkHistory` passes `ws.model` into `transcriptToEvents`. Measured against real
+transcripts: `message.model` records the BASE id (`claude-opus-4-8`) and NEVER
+the `[1m]` alias, while the store holds exactly that alias (`opus[1m]`,
+`claude-fable-5[1m]` are live values). Deriving from the line alone reported
+**251%** on a real 1M session that was actually 50% full — a confidently wrong
+number, worse than none. The line's model is the fallback when no workspace
+model is set.
+
+**A transcript ending in a compaction boundary reports 0, not nothing.** Found
+by replaying a real 2159-line transcript whose last boundary sat 19 lines from
+EOF with no assistant turn after it: the accumulator correctly reset, then
+nothing re-seeded it, so a real detached pane rendered a BLANK gauge. It now
+emits a 0 reading — the app's existing "context was reset" sentinel
+(`activity.ts resetContext`) — which the gauge renders as a real 0%.
 
 This is an ASSUMED window, and the distinction is preserved rather than hidden:
 such readings stay tagged `transcript`, so any live reading supersedes them the

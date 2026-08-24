@@ -489,9 +489,12 @@ test('transcript: a compaction boundary discards the stale pre-compact reading',
     { type: 'user', uuid: 'c1', isCompactSummary: true, message: { role: 'user', content: 'summary…' } },
   ]);
   const session = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
-  // Everything before the boundary is pre-compact and stale; showing 150k after
-  // a compaction would be worse than showing nothing.
-  assert.equal(session.contextUsage, undefined);
+  // Everything before the boundary is pre-compact and stale, so 150k must NOT
+  // resurface. But the reading is reported as 0 (the app's "context was reset"
+  // sentinel) rather than omitted — omitting it left a real detached pane with
+  // a blank gauge, which the spec forbids.
+  assert.equal(session.contextUsage?.totalTokens, 0);
+  assert.notEqual(session.contextUsage?.totalTokens, 150000);
 });
 
 test('transcript: a post-compaction turn re-seeds the reading', () => {
@@ -573,4 +576,51 @@ test('transcript: history gauge is reliably non-empty with a percentage at mount
   assert.ok(u.percentage! > 0, 'percentage must be renderable, not null');
   // And it must be there BEFORE any real turn-end usage exists.
   assert.equal(s.lastTurn?.usage, null);
+});
+
+// ── two defects found by replaying REAL transcripts, not fixtures ────────────
+
+// (1) A transcript ENDING in a compaction boundary (compaction fires, then the
+// session is detached/closed) left the gauge blank — the exact "detached pane
+// renders nothing" the spec forbids. Found on a real 2159-line transcript whose
+// last boundary sat 19 lines from EOF with no assistant turn after it.
+test('transcript: a trailing compaction boundary reports 0, not nothing', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', model: 'claude-opus-5', content: [{ type: 'text', text: 'big' }], usage: { input_tokens: 150000 } } },
+    { type: 'user', uuid: 'c1', isCompactSummary: true, message: { role: 'user', content: 'summary…' } },
+    { type: 'user', uuid: 'u2', message: { role: 'user', content: 'after the compaction' } },
+  ]);
+  const s = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.ok(s.contextUsage, 'a compacted session must still report a reading');
+  // 0 is the app's existing "context was reset" sentinel — a real 0%, not absence.
+  assert.equal(s.contextUsage.totalTokens, 0);
+  assert.equal(s.contextUsage.percentage, 0);
+  // And the stale pre-compact figure must NOT resurface.
+  assert.notEqual(s.contextUsage.totalTokens, 150000);
+});
+
+// (2) The transcript records the BASE model id and never the `[1m]` alias, so
+// deriving the window from it alone reported 251% on a real 1M session that was
+// actually 50% full. The workspace record is the only place `[1m]` survives.
+test('transcript: the workspace model supplies the window, outranking the line model', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', model: 'claude-opus-4-8', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 502955 } } },
+  ]);
+  // Without it: the line's base id implies 200k → a wrong 251%.
+  const bare = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.equal(bare.contextUsage?.maxTokens, 200_000);
+  assert.equal(bare.contextUsage?.percentage, 251);
+  // With the workspace's `[1m]` model: the true 1M window → a correct 50%.
+  const withWs = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx(), 'opus[1m]'));
+  assert.equal(withWs.contextUsage?.maxTokens, 1_000_000);
+  assert.equal(withWs.contextUsage?.percentage, 50);
+});
+
+test('transcript: a non-1m workspace model still yields the default window', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', model: 'claude-opus-4-8', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 50000 } } },
+  ]);
+  const s = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx(), 'opus'));
+  assert.equal(s.contextUsage?.maxTokens, 200_000);
+  assert.equal(s.contextUsage?.percentage, 25);
 });

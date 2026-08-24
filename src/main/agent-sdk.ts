@@ -1190,7 +1190,10 @@ export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
       }),
     );
   }
-  events.push(...transcriptToEvents(text, ctx));
+  // Pass the WORKSPACE's model: it is the only place the `[1m]` long-context
+  // alias survives (the transcript records the base id), and without it the
+  // gauge sizes a 1M session against 200k and reports >100%.
+  events.push(...transcriptToEvents(text, ctx, ws.model));
   return events;
 }
 
