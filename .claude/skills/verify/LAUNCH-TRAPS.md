@@ -66,6 +66,49 @@ Write `<home>/userData/orchestra/store.json`
 `pruneOrphanedWorkspaces` deletes records it can't verify, silently emptying a
 fabricated store.
 
+### REQUIRED: pin the account in that seed — never leave it to the default login
+
+The seeded store MUST carry `accounts: [{ id, label, configDir }]` AND the
+workspace's `accountId` pointing at it, written BEFORE any live drive. This is
+not optional polish: with no `accountId`, `workspaceAccountConfigDir`
+(`src/main/workspaces.ts:86-91`) returns `''` and the agent falls back to the
+default `~/.claude` login. That login can be OAuth-expired MACHINE-WIDE — and
+the resulting auth failure IMPERSONATES THE FEATURE UNDER TEST (measured twice:
+the #29 keeper harness and a wave-2 live gate each burned a blocked cycle on
+it). The fallback is correct behaviour; the rig is what's wrong when it relies
+on it.
+
+**`configDir` is DERIVED from the INVOKING agent's own `CLAUDE_CONFIG_DIR`,
+falling back to `~/.claude` — NEVER a hardcoded account.** The rig must run as
+WHOEVER RUNS IT: your sibling agents run this same recipe under different
+logins, so a path copied out of someone else's run pins THEIR account and drives
+a login you cannot renew. Resolve it in YOUR shell at seed time — do not write a
+literal `${CLAUDE_CONFIG_DIR}` into the store, because `expandConfigDir`
+(`src/shared/accounts.ts:142-157`) expands `${VAR}` against the ORCHESTRA MAIN
+PROCESS's env, not yours.
+
+```bash
+CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"   # derived — echo it and eyeball it
+[ -d "$CFG" ] || { echo "ABORT: config dir $CFG does not exist"; exit 1; }
+node -e '
+  const fs = require("fs"), path = require("path");
+  const cfg = process.argv[1], wsId = process.argv[2], wt = process.argv[3];
+  const dir = path.join(process.env.ORCHESTRA_HOME, "userData", "orchestra");
+  fs.mkdirSync(dir, { recursive: true });
+  const account = { id: "rig-" + wsId, label: "rig (" + cfg + ")", configDir: cfg };
+  const ws = { id: wsId, worktreePath: wt, accountId: account.id /* the pin */ };
+  fs.writeFileSync(path.join(dir, "store.json"),
+    JSON.stringify({ repos: [], workspaces: [ws], accounts: [account] }, null, 2));
+  console.log("pinned configDir =", cfg);
+' "$CFG" "$ORCHESTRA_WS_ID" "$PWD"
+```
+
+Then ASSERT the pin landed, rather than assuming it: the printed `configDir`
+equals your `echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"`, and the seeded
+workspace's `accountId` matches the seeded account's `id`. A pin that silently
+did not apply looks exactly like a pin that did, until the drive fails as the
+feature.
+
 ## What the env vars actually reach
 
 - `ORCHESTRA_HOME` relocates userData (store/logs/login dirs) and the events

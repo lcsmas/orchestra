@@ -57,6 +57,26 @@ declared but eslint is not installed, so it exits `command not found`). Always
 rebuild before ANY drive — a stale bundle reproduces a false failure perfectly
 in isolation.
 
+**A boot/E2E gate asserts the ARTIFACT IDENTITY — the version string read out
+of the running thing — and NEVER trusts the shared installed path.** The
+installed AppImage path (`~/Applications/orchestra*.AppImage`,
+`~/.local/bin/orchestra`) is one shared location that ~26 sibling agents
+overwrite continuously, so "I launched the path I built to" proves nothing about
+WHICH build answered. Read the version back from the running instance and
+compare it to the version you built (`node -p "require('./package.json').version"`),
+e.g. over CDP from the app's own about/state, or out of the artifact itself
+(`unsquashfs`/asar read of `resources/app.asar` → `package.json` `version`).
+Report both numbers side by side; a mismatch VOIDS the drive. Same rule as the
+`/json` target-url check below — identity by what the thing SAYS IT IS, never by
+where you found it.
+
+**Pin the account before any live drive.** Seeding the store is a REQUIRED step,
+not a convenience, and its `configDir` is derived from YOUR `CLAUDE_CONFIG_DIR`
+(fallback `~/.claude`) — see the "pin the account in that seed" section of
+[`LAUNCH-TRAPS.md`](LAUNCH-TRAPS.md). An unpinned rig falls back to the default
+login, which can be OAuth-expired machine-wide, and that failure impersonates
+the feature under test.
+
 ## Launch an isolated instance with CDP
 
 ```bash
@@ -133,6 +153,13 @@ rather than omitted:
       the drive used that build.
 - [ ] The `/json` target `url` you drove contains YOUR worktree path, and the
       report quotes it. `app.asar` in that url means the drive is void.
+- [ ] The ARTIFACT IDENTITY was asserted: the version string read out of the
+      RUNNING instance is quoted beside the version you built, and they match.
+      "It was at the installed path" is not an identity — that path is shared.
+- [ ] The account was PINNED before the drive: the report quotes the seeded
+      `accountId`, the seeded account's `id`, and the derived `configDir` value,
+      which equals your own `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`. A drive on
+      the unpinned default login is reported as NOT VERIFIED.
 - [ ] Every changed surface has at least one NAMED state assertion, printed as
       `pre-state -> post-state` and showing a DIFFERENCE. A surface whose
       pre-state already equalled the target is reported as such — the assertion
