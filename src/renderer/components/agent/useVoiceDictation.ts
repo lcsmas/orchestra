@@ -17,7 +17,7 @@
 // tracks are only stopped on unmount.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { DEFAULT_VOCAB } from '../../../shared/voice';
+import { DEFAULT_VOCAB, ghostForEvent } from '../../../shared/voice';
 import type { CmComposerHandle } from './CmComposer';
 
 export type MicState = 'idle' | 'dictate' | 'edit';
@@ -83,10 +83,15 @@ export function useVoiceDictation(
     const off = window.orchestra.onVoiceEvent((wsId, ev) => {
       if (wsId !== workspaceId) return;
       const cm = cmRef.current;
+      // Ghost lifecycle is decided by ONE pure function (unit-tested), not by
+      // each case remembering to clear it — the stranded-ghost bug was every
+      // dead-end path forgetting exactly that.
+      const ghost = ghostForEvent(ev, micStateRef.current);
+      if (ghost !== undefined) cm?.setGhost(ghost, micStateRef.current === 'edit' ? 'edit' : 'dictate');
       switch (ev.type) {
         case 'partial':
-          cm?.setGhost(ev.text ?? '', micStateRef.current === 'edit' ? 'edit' : 'dictate');
-          break;
+        case 'state':
+          break; // ghost-only events, handled above
         case 'endpoint':
           setStatus('transcription…');
           break;
@@ -94,7 +99,6 @@ export function useVoiceDictation(
           setStatus(`stt ${ev.secs?.toFixed(1)}s`);
           break;
         case 'clean': {
-          cm?.setGhost(null);
           const t = (ev.text ?? '').trim();
           if (!t) break;
           if (ev.op === 'replace_last' && lastUtteranceRef.current) {
@@ -112,11 +116,9 @@ export function useVoiceDictation(
           break;
         }
         case 'instruction':
-          cm?.setGhost(`« ${ev.text} »`, 'edit');
           setStatus('révision…');
           break;
         case 'revision': {
-          cm?.setGhost(null);
           const revised = (ev.text ?? '').trim();
           const target = editTargetRef.current;
           if (revised && target) {
@@ -132,7 +134,6 @@ export function useVoiceDictation(
           break;
         }
         case 'error':
-          cm?.setGhost(null);
           setStatus(ev.text ?? 'erreur voix');
           break;
         default:
@@ -180,6 +181,10 @@ export function useVoiceDictation(
     (mode: 'dictate' | 'edit') => {
       if (micStateRef.current !== 'idle') {
         sendingRef.current = false;
+        // Drop the ghost synchronously: micStateRef is what gates late partials,
+        // so set it before awaiting anything from main.
+        micStateRef.current = 'idle';
+        cmRef.current?.setGhost(null);
         void window.orchestra.voiceStop(workspaceId);
         setMicState('idle');
         return;

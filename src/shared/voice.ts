@@ -30,6 +30,42 @@ export interface VoiceEvent {
 
 export type VoiceMode = 'dictate' | 'edit';
 
+/** What the composer's ghost (grey partial) should become for one voice event.
+ *
+ *  `null`  -> clear it, `undefined` -> leave it alone, string -> paint it.
+ *
+ *  Extracted pure because the ghost is the one piece of voice state the user
+ *  SEES while the mic is off, and the failure is silent: several event paths
+ *  are dead ends that emit no terminator (`stop()` skips `finalize()` for a
+ *  sub-0.4s tail; `finalize()` returns early on an empty transcription), and a
+ *  `partial` decode already in flight resolves AFTER the mic goes idle. Any of
+ *  those strands grey text in the composer with the mic visibly off — which is
+ *  exactly the bug this function exists to make untestable-by-inspection no
+ *  longer: the invariant "mic idle => never paint a ghost" is asserted here
+ *  rather than read out of a switch statement in the hook. */
+export function ghostForEvent(
+  ev: Pick<VoiceEvent, 'type' | 'text'>,
+  micState: 'idle' | VoiceMode,
+): string | null | undefined {
+  // Level-triggered: whatever the engine says, an idle mic shows no ghost.
+  if (micState === 'idle') return null;
+  switch (ev.type) {
+    case 'partial':
+      // Empty text is the engine's explicit "this utterance produced nothing".
+      return ev.text || null;
+    case 'instruction':
+      return `\u00ab ${ev.text} \u00bb`;
+    case 'state':
+      return ev.text === 'stopped' ? null : undefined;
+    case 'clean':
+    case 'revision':
+    case 'error':
+      return null;
+    default:
+      return undefined;
+  }
+}
+
 /** Payload for voice:start. */
 export interface VoiceStartOptions {
   mode: VoiceMode;

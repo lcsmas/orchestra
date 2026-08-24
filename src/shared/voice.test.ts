@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   EnergyEndpointer,
   fillPrompt,
+  ghostForEvent,
   parseRouterReply,
   ROUTER_PROMPT,
 } from './voice.ts';
@@ -98,4 +99,53 @@ test('endpointer: adapts to a noisy floor instead of reading it as speech', () =
   let fired = 0;
   for (let i = 0; i < 100; i++) if (ep.feed(fan)) fired++; // 10s of fan
   assert.equal(fired, 0);
+});
+
+// ---- ghostForEvent -----------------------------------------------------------
+// Regression cover for the stranded-ghost bug: grey partial text left painted in
+// the composer while the mic is OFF. Every dead-end path below emitted no
+// terminator before the fix, so the last `partial` stayed on screen forever.
+
+test('ghost: an idle mic never paints a ghost, whatever the engine says', () => {
+  // A partial decode in flight when the user releases the mic resolves AFTER
+  // micState went idle. This is the exact race the user reported.
+  assert.equal(ghostForEvent({ type: 'partial', text: 'late decode' }, 'idle'), null);
+  assert.equal(ghostForEvent({ type: 'instruction', text: 'x' }, 'idle'), null);
+  assert.equal(ghostForEvent({ type: 'state', text: 'listening' }, 'idle'), null);
+});
+
+test('ghost: a live partial paints while dictating', () => {
+  assert.equal(ghostForEvent({ type: 'partial', text: 'bonjour' }, 'dictate'), 'bonjour');
+});
+
+test('ghost: an empty partial clears (engine heard nothing this utterance)', () => {
+  // main emits `partial:''` on the two dead ends that skip finalize(): a
+  // sub-0.4s tail, and an empty transcription.
+  assert.equal(ghostForEvent({ type: 'partial', text: '' }, 'dictate'), null);
+  assert.equal(ghostForEvent({ type: 'partial' }, 'dictate'), null);
+});
+
+test('ghost: state=stopped is a terminator, other states are no-ops', () => {
+  assert.equal(ghostForEvent({ type: 'state', text: 'stopped' }, 'dictate'), null);
+  assert.equal(ghostForEvent({ type: 'state', text: 'listening' }, 'dictate'), undefined);
+});
+
+test('ghost: every terminal event clears it', () => {
+  for (const type of ['clean', 'revision', 'error'] as const) {
+    assert.equal(ghostForEvent({ type, text: 'whatever' }, 'dictate'), null, type);
+  }
+});
+
+test('ghost: instruction shows what the STT heard, quoted', () => {
+  assert.equal(
+    ghostForEvent({ type: 'instruction', text: 'replace country' }, 'edit'),
+    '\u00ab replace country \u00bb',
+  );
+});
+
+test('ghost: non-ghost events leave it untouched mid-utterance', () => {
+  // `endpoint`/`final` arrive between the last partial and the clean; clearing
+  // there would flicker the ghost off and back on.
+  assert.equal(ghostForEvent({ type: 'endpoint' }, 'dictate'), undefined);
+  assert.equal(ghostForEvent({ type: 'final', text: 'raw' }, 'dictate'), undefined);
 });

@@ -230,6 +230,10 @@ class VoiceSession {
       if (pcm.length > SAMPLE_RATE * 0.4) {
         this.emit({ type: 'endpoint' });
         void this.finalize(pcm);
+      } else {
+        // Too short to transcribe: no `final`/`clean` will follow, so tell the
+        // renderer to drop the ghost partial this utterance already painted.
+        this.emit({ type: 'partial', text: '' });
       }
     }
   }
@@ -249,7 +253,12 @@ class VoiceSession {
 
   private async finalize(pcm: Int16Array): Promise<void> {
     const { text: final, secs } = await transcribe(this.tmp, pcm);
-    if (!final) return;
+    if (!final) {
+      // Nothing was heard. Clear the ghost the partials painted, otherwise it
+      // stays on screen with the mic already off.
+      this.emit({ type: 'partial', text: '' });
+      return;
+    }
     const vocab = this.opts.vocab || DEFAULT_VOCAB;
 
     if (this.opts.mode === 'edit') {

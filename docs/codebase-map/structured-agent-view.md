@@ -1311,6 +1311,16 @@ before landing. Dev-gated: `voiceAvailable()` requires `ORCHESTRA_VOICE_DIR`
   syllable: "1469" → "469"), applies events to the composer (`clean append` /
   `replace_last` by last-occurrence string match; edit `revision` splices the
   target). Edit target = CM selection, else last utterance, else full text.
+- `ghostForEvent(ev, micState)` (`src/shared/voice.ts`, unit + mutation tested) is
+  the SINGLE decision point for the composer ghost: `null` clear / `undefined`
+  leave / string paint. It exists because the ghost is the only voice state the
+  user sees while the mic is OFF, and every stranding path failed silently —
+  `stop()` skips `finalize()` for a sub-0.4s tail, `finalize()` returns early on
+  an empty transcription, and a `partial` decode in flight resolves AFTER the mic
+  goes idle. It is LEVEL-triggered on `micState` (idle ⇒ never paint), so the hook
+  no longer relies on each case remembering to clear. Main pairs it with an
+  explicit `partial:''` on both dead ends, and `state:'stopped'` is the
+  guaranteed terminator on every stop path.
 - `CmComposer` — `setGhost(text|null, kind)` renders partials as a `WidgetType`
   pinned at doc end (`.av-ghost`, grey italic; `.av-ghost-edit` amber) — never real
   doc text, so send/undo/caret can't touch it. `getSelection()` feeds edit mode.
