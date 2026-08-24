@@ -114,6 +114,15 @@ globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: 
 
 const { StripStats, ContextBreakdownBody, buildContextBreakdown, ToolCard } = await import(`${outfile}?t=${Date.now()}`);
 
+// #47: real captured payloads + validating builders. Imported rather than
+// hand-written — see scripts/fixtures/README.md for why.
+import {
+  liveContextUsage,
+  contextCommandUsage,
+  toolResultMetaTrio,
+} from './fixtures/index.mjs';
+import { normalizeSdkMessage } from '../src/shared/agent-events.ts';
+
 let failures = 0;
 const check = (label, cond, detail = '') => {
   if (cond) console.log(`  ok   ${label}`);
@@ -122,6 +131,30 @@ const check = (label, cond, detail = '') => {
     console.log(`  FAIL ${label}${detail ? ` — ${detail}` : ''}`);
   }
 };
+
+// ── #41: CLASS-LIST MEMBERSHIP, NOT SUBSTRING ───────────────────────────────
+// `html.includes('av-turn-context')` is SUBSTRING-SHADOWED: the sibling class
+// `av-turn-context-ok` on the very same element satisfies it, so renaming the
+// stable `.av-turn-context` hook while leaving the -level class intact passed
+// every gate (measured on the unfixed harness: RC=0, 45 ok, 0 FAIL — identical
+// to baseline). The selector contract in this file's header advertises
+// `.av-turn-context` as stable, so it must be enforced as a real CLASS.
+//
+// Parse each class attribute and test membership of the whitespace-separated
+// token list — the same rule a CSS selector and DOMTokenList apply. Prefix
+// classes (`av-turn-context-ok`, `-btn`, `-bar`, `-fill`) are DIFFERENT tokens
+// and no longer count as this one.
+const classAttrRe = /\sclass="([^"]*)"/g;
+/** Every distinct class token present anywhere in the rendered HTML. */
+function classTokens(html) {
+  const out = new Set();
+  for (const m of html.matchAll(classAttrRe)) {
+    for (const tok of m[1].split(/\s+/)) if (tok) out.add(tok);
+  }
+  return out;
+}
+/** True when `cls` appears as a WHOLE class token, not as a substring. */
+const hasClass = (html, cls) => classTokens(html).has(cls);
 
 /** A folded session carrying only what the gauge reads. */
 const session = (contextUsage, lastTurn) => ({
@@ -143,7 +176,7 @@ console.log('detached/history session (window unknown):');
   const html = render(
     session({ totalTokens: 502955, maxTokens: null, percentage: null, source: 'transcript', at: 1 }),
   );
-  check('gauge RENDERS with no window (the detached-session bug)', html.includes('av-turn-context'),
+  check('gauge RENDERS with no window (the detached-session bug)', hasClass(html, 'av-turn-context'),
     'a windowless reading must not vanish — this is what the E2E caught');
   check('shows the true token count', html.includes('503k'));
   check('shows NO fabricated percentage', !html.includes('%<') && !/>\d+%</.test(html));
@@ -157,7 +190,7 @@ console.log('live session (window known):');
   );
   check('renders the percentage', html.includes('37%'));
   check('provenance says live', html.includes('data-context-source="live"'));
-  check('quiet at 37% (not amber/red)', html.includes('av-turn-context-ok'));
+  check('quiet at 37% (not amber/red)', hasClass(html, 'av-turn-context-ok'));
 }
 
 console.log('a [1m] transcript reading still gets a real percentage:');
@@ -172,8 +205,8 @@ console.log('threshold styling:');
 {
   const at = (pct) =>
     render(session({ totalTokens: pct * 2000, maxTokens: 200000, percentage: pct, source: 'live', at: 1 }));
-  check('amber at 75%', at(75).includes('av-turn-context-low'));
-  check('red at 90%', at(90).includes('av-turn-context-critical'));
+  check('amber at 75%', hasClass(at(75), 'av-turn-context-low'));
+  check('red at 90%', hasClass(at(90), 'av-turn-context-critical'));
   // An over-limit session must READ past 100% while the BAR stays clamped.
   const over = render(
     session({ totalTokens: 220000, maxTokens: 200000, percentage: 110, source: 'live', at: 1 }),
@@ -214,10 +247,10 @@ console.log('#16 breakdown panel:');
     mcpTools: [{ name: 'mcp__github__create_issue', serverName: 'github', tokens: 890 }],
   };
   const html = render(session(withBreakdown));
-  check('a reading WITH categories renders a button', html.includes('av-turn-context-btn'));
-  check('the button is wrapped in the popover anchor', html.includes('av-ctx-anchor'));
+  check('a reading WITH categories renders a button', hasClass(html, 'av-turn-context-btn'));
+  check('the button is wrapped in the popover anchor', hasClass(html, 'av-ctx-anchor'));
   check('it advertises the dialog', html.includes('aria-haspopup="dialog"'));
-  check('closed by default — no panel in the initial DOM', !html.includes('av-ctx-panel'));
+  check('closed by default — no panel in the initial DOM', !hasClass(html, 'av-ctx-panel'));
   check('provenance still readable on the button', html.includes('data-context-source="live"'));
   check('the gauge still reads 37%', html.includes('37%'));
 
@@ -227,9 +260,9 @@ console.log('#16 breakdown panel:');
   const noBreakdown = render(
     session({ totalTokens: 502955, maxTokens: 1000000, percentage: 50, source: 'transcript', at: 1 }),
   );
-  check('a reading WITHOUT a breakdown stays a plain div', !noBreakdown.includes('av-turn-context-btn'));
-  check('...and offers no popover anchor', !noBreakdown.includes('av-ctx-anchor'));
-  check('...but still renders the gauge', noBreakdown.includes('av-turn-context'));
+  check('a reading WITHOUT a breakdown stays a plain div', !hasClass(noBreakdown, 'av-turn-context-btn'));
+  check('...and offers no popover anchor', !hasClass(noBreakdown, 'av-ctx-anchor'));
+  check('...but still renders the gauge', hasClass(noBreakdown, 'av-turn-context'));
 
   // #31: a plugin-sourced skill must render its PLUGIN as the meta, not the
   // bare source 'plugin'. Rendered via ContextBreakdownBody rather than
@@ -258,7 +291,7 @@ console.log('#16 breakdown panel:');
     );
     check('#31 plugin skill renders its plugin name', html.includes('slack'));
     check('#31 non-plugin skill still renders its source', html.includes('userSettings'));
-    check('detail sections render at all (first coverage)', html.includes('av-ctx-section'));
+    check('detail sections render at all (first coverage)', hasClass(html, 'av-ctx-section'));
     check('memory file path is shortened', html.includes('CLAUDE.md'));
     check('mcp tools group by server', html.includes('github') && html.includes('2 tools'));
   }
@@ -272,7 +305,7 @@ console.log('#16 breakdown panel:');
     totalTokens: 502955, maxTokens: null, percentage: null, source: 'live', at: 1,
     categories: [{ name: 'Memory files', tokens: 52060, kind: 'used' }],
   }));
-  check('windowless + breakdown still renders a button', noWindowExpandable.includes('av-turn-context-btn'));
+  check('windowless + breakdown still renders a button', hasClass(noWindowExpandable, 'av-turn-context-btn'));
   check('...and its aria-label reads the token count', noWindowExpandable.includes('Context 503k used'));
   // Scoped to the READOUT, not the raw HTML: the bar legitimately carries
   // `width:0%` (a clamped fill for an unknown window), so a bare /\d+%/ over the
@@ -287,7 +320,7 @@ console.log('#16 breakdown panel:');
     totalTokens: 100, maxTokens: 200000, percentage: 0, source: 'live', at: 1,
     categories: [{ name: 'Messages', tokens: 0, kind: 'used' }],
   }));
-  check('a LIVE reading with only zero-token categories degrades too', !zeroCats.includes('av-turn-context-btn'),
+  check('a LIVE reading with only zero-token categories degrades too', !hasClass(zeroCats, 'av-turn-context-btn'),
     'this is the case a source-gate would wrongly let through into an empty panel');
 }
 
@@ -353,6 +386,59 @@ const renderTool = (toolResult) =>
   const html = renderTool({ content: 'ok', isError: false, nonExecutionKind: null });
   check('a successful tool call renders no failure word', !html.includes('failed'));
   check('...and no data-nonexec', !html.includes('data-nonexec'));
+}
+
+// ── #47: THE REAL CAPTURED PAYLOADS, RENDERED ───────────────────────────────
+// Every assertion above this line renders a payload that was HAND-WRITTEN in
+// this file — which is exactly the class of rig the fixture library exists to
+// retire (10/10 apparent defects across two fleets were rig-side). These last
+// checks render the REAL captures instead, so the harness proves the component
+// against what the runtime actually sends, not against our idea of it.
+console.log('real captured payloads (scripts/fixtures):');
+{
+  // Both builders VALIDATE on construction — a malformed capture throws here,
+  // as a loud harness failure, rather than becoming a phantom component defect.
+  const live = liveContextUsage();
+  const html = render(session(live));
+  check('the REAL getContextUsage() capture renders a gauge', hasClass(html, 'av-turn-context'));
+  check('...at the captured 37%', html.includes('37%'));
+  check('...tagged live', html.includes('data-context-source="live"'));
+  check('...and is expandable (it carries a breakdown)', hasClass(html, 'av-turn-context-btn'));
+
+  // The nested skills.skillFrontmatter[] arm, rendered end-to-end: this is the
+  // shape a flat-array assumption silently drops.
+  const bodyHtml = renderToString(
+    React.createElement(ContextBreakdownBody, { usage: live, breakdown: buildContextBreakdown(live) }),
+  );
+  check('...its NESTED skills reach the panel', bodyHtml.includes('slack'));
+  check('...and its deferred rows are labelled', /deferred/i.test(bodyHtml));
+
+  // The other wire shape, from its own real capture.
+  const cmd = contextCommandUsage();
+  const cmdHtml = render(session(cmd));
+  check('the REAL /context capture renders too', hasClass(cmdHtml, 'av-turn-context'));
+  check('...at the captured 34%', cmdHtml.includes('34%'));
+  check('...tagged context-command', cmdHtml.includes('data-context-source="context-command"'));
+}
+{
+  // The tool_result_meta trio, normalized from the real sidecar captures and
+  // rendered through the actual card — replacing three hand-built literals.
+  const trio = toolResultMetaTrio();
+  for (const [name, expected] of [
+    ['denied', 'denied'],
+    ['interrupted', 'interrupted'],
+    ['cancelled', 'cancelled'],
+  ]) {
+    const evs = normalizeSdkMessage(trio[name], { seq: 0, now: () => 1 });
+    const ev = evs.find((e) => e.type === 'tool-result');
+    const html = renderTool({
+      content: ev.content,
+      isError: ev.isError,
+      nonExecutionKind: ev.nonExecutionKind,
+      userFeedback: ev.userFeedback,
+    });
+    check(`the REAL '${name}' sidecar capture renders "${expected}"`, html.includes(expected));
+  }
 }
 
 process.exit(failures === 0 ? 0 : 1);

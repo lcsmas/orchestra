@@ -1,0 +1,38 @@
+{
+  "denied": {
+    "type": "user",
+    "tool_result_meta": [
+      { "id": "toolu_denied_1", "non_execution_kind": "user-rejected", "user_feedback": "use the other path" }
+    ],
+    "message": {
+      "role": "user",
+      "content": [
+        { "type": "tool_result", "tool_use_id": "toolu_denied_1", "is_error": true, "content": "The operation could not be completed." }
+      ]
+    }
+  },
+  "interrupted": {
+    "type": "user",
+    "tool_result_meta": [
+      { "id": "toolu_int_1", "non_execution_kind": "interrupted" }
+    ],
+    "message": {
+      "role": "user",
+      "content": [
+        { "type": "tool_result", "tool_use_id": "toolu_int_1", "is_error": true, "content": "" }
+      ]
+    }
+  },
+  "cancelled": {
+    "type": "user",
+    "tool_result_meta": [
+      { "id": "toolu_cancel_1", "non_execution_kind": "cancelled" }
+    ],
+    "message": {
+      "role": "user",
+      "content": [
+        { "type": "tool_result", "tool_use_id": "toolu_cancel_1", "is_error": true, "content": "" }
+      ]
+    }
+  }
+}
