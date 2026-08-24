@@ -1005,6 +1005,19 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   structural) → `agent-view-structure.css` (A2 layout) → `agent-view-theme.css` (A5 design
   system, wins). Reference: `agent-view-design.md`.
 
+
+**Renderer-level gate — `scripts/context-gauge-render-smoke.mjs`** (`pnpm run
+test:render`). The unit suite CANNOT see the gauge's own render logic: re-adding
+a `if (!window) return null` early return to `ContextGauge` — reverting the exact
+behaviour the detached-session spec depends on — leaves all 844 unit tests GREEN,
+because the behaviour lives in a React component `node --test` never renders
+(JSX is not transformed by the strip-types runner). That regression was caught
+only by driving the built app. This harness bundles the real component with
+esbuild, renders it to static HTML, and fails on that mutation (3 assertions,
+RC=1), so a future refactor cannot silently restore the null-return. It also
+pins the threshold styling, the >100% unclamped number vs the clamped bar, and
+`data-context-source` for every source.
+
 ## Context gauge sourcing (issue #15)
 
 The gauge has THREE possible sources, normalized to one shape by the pure
