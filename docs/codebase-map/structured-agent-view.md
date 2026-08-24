@@ -287,6 +287,32 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   opens a turn (a lazy boot from bash mode / Remote Control used to wedge
   "Working…" forever). `sdkInterrupt` with NO live session emits a synthetic
   turn-end so a wedged view self-heals; interrupt failures surface as errors.
+  **Stop means stop (#26 item 3)**: when `system/init` advertises
+  `interrupt_cancel_queued_v1`, the interrupt also cancels QUEUED/pending-dispatch
+  messages (peer deliveries, task notifications) so they cannot start a fresh turn
+  the instant the abort lands. Capabilities are latched onto the session on every
+  init (`session.capabilities`, re-latched each turn since a keeper reattach can hit
+  a different CLI build); the pure gate is `supportsCancelQueued(caps)`
+  (`agent-events.ts`) — absent capabilities read as UNSUPPORTED, never "assume yes".
+  ⚠️ Mechanism note: the SDK's typed `Query.interrupt()` hardcodes
+  `{subtype:'interrupt'}` and CANNOT carry `cancel_queued` (verified in `sdk.mjs` at
+  0.3.241 — it also discards the response's `cancelled` field), and `request()` is not
+  on the public `Query` type. It IS a real runtime method (verified live:
+  `typeof q.request === 'function'`; round-trip returns
+  `{still_queued:[],cancelled:[]}`), so `interruptCancellingQueued` (`agent-sdk.ts`)
+  reaches it behind a narrow local type, gated THREE ways — capability advertised,
+  method present, call succeeded — each falling back to the plain `interrupt()`,
+  which is the pre-#26 behaviour.
+- **Rate-limit / overload terminations (#26 item 2)** — a turn ending with
+  `is_error` is classified STRUCTURALLY from `api_error_status`, never from the error
+  prose: `classifyTurnError` (`agent-events.ts`) maps **429 → `rate-limit`**, **529 →
+  `overload`**, everything else → `error`. A 429 additionally emits the
+  `rate-limit` NOTICE, so a usage-limit termination reaches the same surface a
+  `rate_limit_event` drives (see [accounts-usage.md](accounts-usage.md)) instead of
+  rendering as a generic red error. A 529 deliberately does NOT: it is transient
+  upstream overload, not a quota problem, so it must not park prompts on the queue —
+  it only gets an accurate message. Before this, `apiErrorStatus` was threaded to the
+  error event but nothing ever read it, so 429 and 500 were indistinguishable.
 - **Externally-originated user text** — stream `user` messages carrying TEXT
   (Remote Control turns typed on claude.ai/mobile, channel/peer injections)
   now emit `user-message` (with an `origin` badge, `.av-message-origin`);
@@ -765,7 +791,24 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   renders a one-line summary — file path · kind · +added/−removed — NOT a full editor**.
   Monaco was removed from the app entirely: it was the heaviest thing this view mounted
   and the dominant driver of the GPU-process-crash black screen. No Diff tab in the
-  Electron renderer anymore either),
+  Electron renderer anymore either.
+  **Non-execution classification (#26 item 1)**: an errored card reads
+  *denied / blocked / interrupted / cancelled* instead of a bare *failed*, decided
+  STRUCTURALLY from the CLI's `tool_result_meta` sidecar — never by matching the
+  result prose. The sidecar rides WRAPPER-LEVEL on the `user` message (a sibling of
+  `message`, so it is never replayed to the model), is keyed by `tool_use_id`, and
+  carries `non_execution_kind` (7 values) plus an optional `user_feedback` — the deny
+  comment a human typed, rendered at CARD level above the body (`.av-tool-deny-feedback`)
+  so every tool body shows it, not just the generic one. Normalizer:
+  `indexToolResultMeta` / `toNonExecutionKind` (`agent-events.ts`), label:
+  `nonExecutionLabel` (`tool-util.ts`), state: `.av-tool-nonexec` +
+  `data-nonexec="<kind>"` (muted, NOT red — a denial is not a failure).
+  ⚠️ `tool_result_meta` is a RUNTIME SUPERSET: 0 occurrences in `sdk.d.ts` at SDK
+  0.3.241, present in CLI 2.1.241 — so the shape is hand-written from the binary's own
+  zod schema, and an unknown kind degrades to `null`. It is also LIVE-STREAM ONLY:
+  measured over 300 on-disk transcripts (47 carrying `tool_use_id` as a positive
+  control), ZERO persist it — so `agent-transcript.ts` backfill sets the kind `null`
+  and a reopened workspace correctly falls back to a plain *failed* card),
   `ThinkingIndicator` (shimmer label), `PermissionDialog` (picks first *unanswered*
   pending request, not `pending[0]`; on reply calls `onReplied(requestId)` so the
   store clears the entry — see below), `AskUserQuestionCard` (**pages

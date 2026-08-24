@@ -76,7 +76,12 @@ import { StripStats } from ${JSON.stringify(path.join(repoRoot, 'src/renderer/co
 // exactly this.
 import { ContextBreakdownBody } from ${JSON.stringify(path.join(repoRoot, 'src/renderer/components/agent/ContextBreakdownPanel.tsx'))};
 import { buildContextBreakdown } from ${JSON.stringify(path.join(repoRoot, 'src/shared/context-breakdown.ts'))};
-export { StripStats, ContextBreakdownBody, buildContextBreakdown };
+// #26 item 1: the tool card's STRUCTURAL denied/interrupted/cancelled state.
+// Rendered here for the same reason the gauge is: the classification lives in a
+// React component, so the unit suite can prove the normalizer emits the kind
+// but never that the card SHOWS it.
+import { ToolCard } from ${JSON.stringify(path.join(repoRoot, 'src/renderer/components/agent/ToolCard.tsx'))};
+export { StripStats, ContextBreakdownBody, buildContextBreakdown, ToolCard };
 `;
 const entryFile = path.join(repoRoot, 'node_modules', '.cache', 'context-gauge-entry.tsx');
 fs.mkdirSync(path.dirname(entryFile), { recursive: true });
@@ -107,7 +112,7 @@ globalThis.window = { orchestra: bridge, addEventListener: () => {}, removeEvent
 globalThis.document = { addEventListener: () => {}, removeEventListener: () => {} };
 globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 
-const { StripStats, ContextBreakdownBody, buildContextBreakdown } = await import(`${outfile}?t=${Date.now()}`);
+const { StripStats, ContextBreakdownBody, buildContextBreakdown, ToolCard } = await import(`${outfile}?t=${Date.now()}`);
 
 let failures = 0;
 const check = (label, cond, detail = '') => {
@@ -292,4 +297,62 @@ console.log('nothing to show:');
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
+// ─── #26 item 1: tool card renders the structural classification ────────────
+// SELECTOR CONTRACT: assertions key on rendered TEXT and on `data-nonexec`,
+// never on tags or positions, so restyling cannot silently break them.
+console.log('tool card classification (#26):');
+const toolMsg = (toolResult) => ({
+  id: 'tc1',
+  role: 'tool',
+  at: 0,
+  toolUse: { toolUseId: 'tc1', name: 'Bash', inputJson: '{}', input: { command: 'rm -rf /' } },
+  toolResult,
+  done: true,
+});
+const renderTool = (toolResult) =>
+  renderToString(React.createElement(ToolCard, { message: toolMsg(toolResult) }));
+
+{
+  // A denial classified from the sidecar reads "denied", NOT "failed".
+  const html = renderTool({
+    content: 'The operation could not be completed.',
+    isError: true,
+    nonExecutionKind: 'user-rejected',
+    userFeedback: 'use the other path',
+  });
+  check('a denied tool call renders "denied"', html.includes('denied'), html.slice(0, 200));
+  check('...and is not mislabelled "failed"', !html.includes('failed'));
+  check('...carrying the kind on data-nonexec', html.includes('data-nonexec="user-rejected"'));
+  check('...and quotes the human deny comment', html.includes('use the other path'));
+}
+{
+  const html = renderTool({ content: 'x', isError: true, nonExecutionKind: 'interrupted' });
+  check('an interrupted tool call renders "interrupted"', html.includes('interrupted'));
+  check('...and is not mislabelled "failed"', !html.includes('failed'));
+}
+{
+  const html = renderTool({ content: 'x', isError: true, nonExecutionKind: 'cancelled' });
+  check('a cancelled tool call renders "cancelled"', html.includes('cancelled'));
+}
+{
+  // FALSIFIABILITY: the same errored card WITHOUT a sidecar must still read
+  // "failed" — this is the arm that fails if classification were faked from
+  // prose or defaulted on.
+  const html = renderTool({
+    content: 'The user doesn\u2019t want to proceed with this tool use.',
+    isError: true,
+    nonExecutionKind: null,
+    userFeedback: null,
+  });
+  check('an unclassified error still reads "failed"', html.includes('failed'));
+  check('...and carries no data-nonexec', !html.includes('data-nonexec'));
+  check('...and shows no deny-comment block', !html.includes('av-tool-deny-feedback'));
+}
+{
+  // A SUCCESSFUL call is never given an error/classification state.
+  const html = renderTool({ content: 'ok', isError: false, nonExecutionKind: null });
+  check('a successful tool call renders no failure word', !html.includes('failed'));
+  check('...and no data-nonexec', !html.includes('data-nonexec'));
+}
+
 process.exit(failures === 0 ? 0 : 1);

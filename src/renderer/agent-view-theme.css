@@ -676,6 +676,28 @@ h6.av-md-h {
   padding: 0; border: none; border-radius: 0;
 }
 .av-tool-status-error { color: var(--av-error); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+
+/* NON-EXECUTION (denied / blocked / interrupted / cancelled) — classified from
+   the CLI's `tool_result_meta` sidecar, never from the result prose. These are
+   NOT failures: the tool never ran, usually because a human or a rule said no.
+   Red would cry wolf exactly as it would on a routine non-zero exit, so the
+   card keeps the neutral surface and the status word goes dim instead. */
+.av-tool-nonexec .av-tool-status-error { color: var(--av-text-dim); font-weight: 600; }
+.av-tool-nonexec > .av-collapsible {
+  border-color: var(--av-hairline);
+  background: var(--av-surface-raised);
+}
+/* An interrupt/cancel is even quieter than a deny — it is bookkeeping. */
+.av-tool-nonexec[data-nonexec='interrupted'] .av-tool-status-error,
+.av-tool-nonexec[data-nonexec='cancelled'] .av-tool-status-error { color: var(--av-text-faint); }
+/* The human's own deny comment, quoted above the CLI's framing text. */
+.av-tool-deny-feedback {
+  margin: 4px 0 0; padding: 7px 11px; border-radius: var(--radius, 8px);
+  background: color-mix(in srgb, var(--av-text) 4%, transparent);
+  border-left: 2px solid var(--av-hairline-strong);
+  color: var(--av-text-dim); font-size: var(--av-fs-small); font-style: italic;
+  white-space: pre-wrap; word-break: break-word;
+}
 @keyframes av-pulse {
   0%, 100% { opacity: 1; box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 35%, transparent); }
   50% { opacity: 0.55; box-shadow: 0 0 0 3px transparent; }

@@ -71,6 +71,7 @@ import {
   sdkEventToStatusEvent,
   sdkEventToStopReason,
   stamp,
+  supportsCancelQueued,
   type NormalizeContext,
   type SdkMessage,
 } from '../shared/agent-events';
@@ -219,6 +220,12 @@ interface Session {
    *  this the banner would re-announce on every turn — the same noise that got
    *  per-init MCP notices rejected (see the init branch in agent-events.ts). */
   memoryWarned?: boolean;
+  /** Protocol capabilities the CLI advertised on `system/init`, so control
+   *  requests can be feature-detected instead of assumed. Measured at CLI
+   *  2.1.241: `["interrupt_receipt_v1","interrupt_cancel_queued_v1",
+   *  "msg_lifecycle_v1"]`. Undefined until the first init lands — treat that
+   *  as "no capabilities", never as "assume supported". */
+  capabilities?: string[];
   /** Set by {@link sdkClear}: the user cleared the conversation, so the dying
    *  session's tail events (interrupt error, synthetic turn-end, stray stream
    *  messages) must NOT be emitted — they'd land AFTER the `session/clear`
@@ -405,7 +412,14 @@ function emitFrom(session: Session, msg: SdkMessage): void {
       void markLooping(session.wsId, ev.input?.stop !== true);
     }
     driveStatusFromEvent(session, ev);
-    if (ev.type === 'session/init') emitMemoryWarning(session, ev);
+    if (ev.type === 'session/init') {
+      // Feature-detection state for control requests. `system/init` repeats on
+      // EVERY request, so this re-latches each turn — deliberately, since a
+      // reconnect/keeper-reattach can land on a different CLI build than the
+      // one that started the session.
+      session.capabilities = ev.capabilities ?? [];
+      emitMemoryWarning(session, ev);
+    }
   }
 }
 
@@ -1770,6 +1784,42 @@ export async function sdkRunBash(wsId: string, command: string): Promise<void> {
  *  before the H1 ledger-close existed, or a history backfill ended mid-turn),
  *  the click used to be a silent no-op; now it emits a synthetic turn-end so
  *  the view self-heals (silent-failure audit M4). */
+/** The control-request escape hatch. `Query.interrupt()` hardcodes
+ *  `{subtype:'interrupt'}` and cannot carry `cancel_queued` (verified in
+ *  sdk.mjs at 0.3.241), and `request()` is NOT on the public `Query` type — but
+ *  it IS a real method on the runtime object (verified live: `typeof q.request
+ *  === 'function'`). Same runtime-superset situation as `tool_result_meta`.
+ *  Narrow, local, and only reached behind a capability check. */
+type ControlRequester = {
+  request?: (req: { subtype: 'interrupt'; cancel_queued?: boolean }) => Promise<unknown>;
+};
+
+/** Stop means stop: when the CLI advertises `interrupt_cancel_queued_v1`, the
+ *  interrupt ALSO cancels queued/pending-dispatch messages (peer deliveries,
+ *  task notifications) instead of letting them start a fresh turn the instant
+ *  the abort lands. Orchestra's Stop button is exactly the "Stop-means-stop-
+ *  everything client" the SDK docs describe.
+ *
+ *  Gated three ways, because each can independently be false on an older CLI or
+ *  a future SDK: the capability must be advertised, `request` must exist on the
+ *  runtime object, and the call must succeed — any miss falls back to the plain
+ *  typed `interrupt()`, which is the pre-#26 behavior. */
+async function interruptCancellingQueued(session: Session): Promise<void> {
+  const supported = supportsCancelQueued(session.capabilities);
+  const req = (session.q as unknown as ControlRequester).request;
+  if (supported && typeof req === 'function') {
+    try {
+      await req.call(session.q, { subtype: 'interrupt', cancel_queued: true });
+      return;
+    } catch (err) {
+      // The capability was advertised but the request failed — fall through to
+      // the plain interrupt rather than leaving the turn running.
+      log.warn(`agent-sdk: cancel_queued interrupt failed, falling back`, err);
+    }
+  }
+  await session.q.interrupt();
+}
+
 export async function sdkInterrupt(wsId: string): Promise<void> {
   const session = sessions.get(wsId);
   if (!session) {
@@ -1794,7 +1844,7 @@ export async function sdkInterrupt(wsId: string): Promise<void> {
   // resulting throw an interrupt (not a crash) without text-matching /abort/.
   session.interruptRequested = true;
   try {
-    await session.q.interrupt();
+    await interruptCancellingQueued(session);
   } catch (err) {
     log.warn(`agent-sdk: interrupt failed for ${wsId}`, err);
     emit(

@@ -19,6 +19,8 @@ import {
   describeToolRun,
   aggregateDiff,
   fileBase,
+  nonExecutionLabel,
+  toolMessageEqual,
   type ToolLike,
 } from './tool-util.ts';
 import {
@@ -524,4 +526,52 @@ test('rewindPrefillText returns the undone message text for edit-and-retry', () 
   // undefined — the composer would render the string "undefined".
   assert.equal(rewindPrefillText([row('m3', 'u3')], 'u3'), '');
   assert.equal(rewindPrefillText(msgs, 'nope'), '');
+});
+
+// ─── #26 item 1 (render side): the card's status word ───────────────────────
+
+test('nonExecutionLabel: each CLI kind maps to a user-facing word', () => {
+  assert.equal(nonExecutionLabel('user-rejected'), 'denied');
+  assert.equal(nonExecutionLabel('permission-rule'), 'denied');
+  assert.equal(nonExecutionLabel('automode-blocked'), 'blocked');
+  assert.equal(nonExecutionLabel('automode-unavailable'), 'blocked');
+  assert.equal(nonExecutionLabel('automode-parsing-error'), 'blocked');
+  assert.equal(nonExecutionLabel('interrupted'), 'interrupted');
+  assert.equal(nonExecutionLabel('cancelled'), 'cancelled');
+});
+
+test('nonExecutionLabel: no classification → null, so the card reads "failed"', () => {
+  // A genuine tool failure, an older CLI, and the on-disk backfill all land
+  // here — the card must keep its pre-#26 error state.
+  assert.equal(nonExecutionLabel(null), null);
+  assert.equal(nonExecutionLabel(undefined), null);
+});
+
+test('toolMessageEqual: a change in classification is render-visible', () => {
+  // Without this the memo would freeze a "failed" card that should say
+  // "denied" once the sidecar-classified result lands.
+  const base: RenderMessage = {
+    id: 't1',
+    role: 'tool',
+    at: 0,
+    toolUse: { toolUseId: 't1', name: 'Bash', inputJson: '{}' },
+    toolResult: { content: 'x', isError: true, nonExecutionKind: null, userFeedback: null },
+    done: true,
+  };
+  const denied: RenderMessage = {
+    ...base,
+    toolResult: {
+      content: 'x',
+      isError: true,
+      nonExecutionKind: 'user-rejected',
+      userFeedback: null,
+    },
+  };
+  assert.equal(toolMessageEqual(base, base), true);
+  assert.equal(toolMessageEqual(base, denied), false, 'must re-render on classification');
+  const withFeedback: RenderMessage = {
+    ...denied,
+    toolResult: { ...denied.toolResult!, userFeedback: 'nope' },
+  };
+  assert.equal(toolMessageEqual(denied, withFeedback), false, 'must re-render on feedback');
 });

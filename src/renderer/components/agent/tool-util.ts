@@ -1,4 +1,4 @@
-import type { RenderMessage } from '../../../shared/types';
+import type { AgentToolNonExecutionKind, RenderMessage } from '../../../shared/types';
 
 /**
  * Flatten a `tool_result` content payload into displayable plain text. The SDK
@@ -254,6 +254,39 @@ export function toolMessageEqual(a: RenderMessage, b: RenderMessage): boolean {
   if (!!ar !== !!br) return false;
   if (ar && br) {
     if (ar.isError !== br.isError || ar.content !== br.content) return false;
+    // The classification drives the card's status word, so a change in it is a
+    // render-visible change — omitting it here would memoize a "failed" card
+    // that should read "denied".
+    if (ar.nonExecutionKind !== br.nonExecutionKind) return false;
+    if (ar.userFeedback !== br.userFeedback) return false;
   }
   return true;
+}
+
+/** Human label for a structurally-classified non-execution, or `null` when the
+ *  tool genuinely ran and failed (no sidecar, or an unknown kind).
+ *
+ *  This is the STRUCTURAL replacement for matching result prose: the CLI stamps
+ *  `non_execution_kind` on its `tool_result_meta` sidecar and its own contract
+ *  says clients read that "instead of string-matching the result prose". The
+ *  three automode-* kinds collapse to one user-facing word — the distinction is
+ *  about WHY automode declined, which the result body already explains. */
+export function nonExecutionLabel(
+  kind: AgentToolNonExecutionKind | null | undefined,
+): string | null {
+  switch (kind) {
+    case 'user-rejected':
+    case 'permission-rule':
+      return 'denied';
+    case 'automode-blocked':
+    case 'automode-unavailable':
+    case 'automode-parsing-error':
+      return 'blocked';
+    case 'interrupted':
+      return 'interrupted';
+    case 'cancelled':
+      return 'cancelled';
+    default:
+      return null;
+  }
 }
