@@ -69,7 +69,14 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const outfile = path.join(repoRoot, 'node_modules', '.cache', 'context-gauge-render-smoke.mjs');
 const entry = `
 import { StripStats } from ${JSON.stringify(path.join(repoRoot, 'src/renderer/components/agent/TurnFooter.tsx'))};
-export { StripStats };
+// The panel BODY, exported so its interior can be rendered without a click:
+// the popover is closed in the initial DOM by design, so a StripStats render
+// can never reach the detail lists (issue #31's render assertion failed this
+// way first). ContextBreakdownBody was written standalone-renderable for
+// exactly this.
+import { ContextBreakdownBody } from ${JSON.stringify(path.join(repoRoot, 'src/renderer/components/agent/ContextBreakdownPanel.tsx'))};
+import { buildContextBreakdown } from ${JSON.stringify(path.join(repoRoot, 'src/shared/context-breakdown.ts'))};
+export { StripStats, ContextBreakdownBody, buildContextBreakdown };
 `;
 const entryFile = path.join(repoRoot, 'node_modules', '.cache', 'context-gauge-entry.tsx');
 fs.mkdirSync(path.dirname(entryFile), { recursive: true });
@@ -100,7 +107,7 @@ globalThis.window = { orchestra: bridge, addEventListener: () => {}, removeEvent
 globalThis.document = { addEventListener: () => {}, removeEventListener: () => {} };
 globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 
-const { StripStats } = await import(`${outfile}?t=${Date.now()}`);
+const { StripStats, ContextBreakdownBody, buildContextBreakdown } = await import(`${outfile}?t=${Date.now()}`);
 
 let failures = 0;
 const check = (label, cond, detail = '') => {
@@ -218,6 +225,38 @@ console.log('#16 breakdown panel:');
   check('a reading WITHOUT a breakdown stays a plain div', !noBreakdown.includes('av-turn-context-btn'));
   check('...and offers no popover anchor', !noBreakdown.includes('av-ctx-anchor'));
   check('...but still renders the gauge', noBreakdown.includes('av-turn-context'));
+
+  // #31: a plugin-sourced skill must render its PLUGIN as the meta, not the
+  // bare source 'plugin'. Rendered via ContextBreakdownBody rather than
+  // StripStats: the popover is CLOSED in the initial DOM, so a StripStats
+  // render structurally cannot reach the skills list — my first version of
+  // this assertion failed for exactly that reason, against correct code.
+  // This is also the FIRST render coverage of the detail-list markup
+  // (.av-ctx-section / .av-ctx-list), which no harness had ever exercised.
+  {
+    const usage = {
+      totalTokens: 5000, maxTokens: 200000, percentage: 3, source: 'live', at: 1,
+      categories: [{ name: 'Skills', tokens: 28, kind: 'used' }],
+      skills: [
+        { name: 'channel-digest', source: 'plugin', pluginName: 'slack', tokens: 22 },
+        { name: 'retro', source: 'userSettings', tokens: 6 },
+      ],
+      memoryFiles: [{ path: '/home/u/proj/CLAUDE.md', type: 'Project', tokens: 50815 }],
+      mcpTools: [
+        { name: 'mcp__github__a', serverName: 'github', tokens: 10 },
+        { name: 'mcp__github__b', serverName: 'github', tokens: 20 },
+      ],
+    };
+    const breakdown = buildContextBreakdown(usage);
+    const html = renderToString(
+      React.createElement(ContextBreakdownBody, { usage, breakdown }),
+    );
+    check('#31 plugin skill renders its plugin name', html.includes('slack'));
+    check('#31 non-plugin skill still renders its source', html.includes('userSettings'));
+    check('detail sections render at all (first coverage)', html.includes('av-ctx-section'));
+    check('memory file path is shortened', html.includes('CLAUDE.md'));
+    check('mcp tools group by server', html.includes('github') && html.includes('2 tools'));
+  }
 
   // The null-window arm INSIDE the button. `label` is computed in the pure layer
   // ('503k' when there is no percentage), and the aria-label interpolates it —

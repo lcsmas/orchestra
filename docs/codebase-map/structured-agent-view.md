@@ -1167,8 +1167,18 @@ Clicking the gauge opens a popover answering "what is filling my window?".
   `skillFrontmatter`, and `agents` alternates `agent_type`/`agentType`.
   `mapSkills` (`context-usage.ts:295`) sniffs the shape; `mapRows` DROPS rows
   missing a required field rather than defaulting them, so a token-less row
-  never renders a measured-looking `0`. A list that yields nothing becomes
-  `undefined`, not `[]`.
+  never renders a measured-looking `0`. A list whose rows all fail to parse
+  becomes `undefined`; an EMPTY producer list stays `[]` (issue #31 — `agents: []`
+  means "asked, none configured", which is a different fact from an omitted key,
+  though no renderer branches on it today).
+- **`pluginName` is read off the WIRE, not the `.d.ts`** (issue #31). Plugin
+  skill rows carry it (23 of 50 on a live CLI 2.1.241 capture) while sdk.d.ts
+  0.3.241 does not declare it, so an adapter typed from the declarations drops
+  the only disambiguator between same-named skills from different plugins. It
+  now survives normalization and renders as the skills row's meta.
+  `ContextBreakdown` REUSES `ContextSkill`/`ContextMemoryFile`/`ContextAgent`
+  instead of re-declaring rows inline — the inline copies are how the field was
+  lost, since a duplicated row type silently drops whatever the source gains.
 - **Render model.** `src/shared/context-breakdown.ts` (pure, unit-tested):
   `buildContextBreakdown` (`:126`) returns ordered `used`/`deferred` rows + the
   `free` row + the four detail lists, or **`null`** when there is nothing to

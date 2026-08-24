@@ -188,9 +188,14 @@ export function ContextBreakdownBody({
       <DetailList
         title="Skills"
         rows={breakdown.skills.map((s) => ({
-          key: `${s.source}/${s.name}`,
+          // pluginName is part of the key AND the meta (issue #31): it is the
+          // only thing distinguishing two plugins' same-named skills, so
+          // omitting it risks duplicate React keys and an ambiguous row. Shown
+          // as the source when present, since "plugin" alone says less than
+          // which plugin.
+          key: `${s.source}/${s.pluginName ?? ''}/${s.name}`,
           label: s.name,
-          meta: s.source,
+          meta: s.pluginName ?? s.source,
           tokens: s.tokens,
         }))}
       />
