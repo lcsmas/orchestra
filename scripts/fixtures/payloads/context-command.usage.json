@@ -1,0 +1,26 @@
+{
+  "model": "claude-haiku-4-5-20251001",
+  "total_tokens": 68205,
+  "raw_max_tokens": 200000,
+  "percentage": 34,
+  "categories": [
+    { "name": "System tools", "tokens": 14144, "kind": "used" },
+    { "name": "MCP tools (deferred)", "tokens": 24056, "kind": "deferred" },
+    { "name": "System tools (deferred)", "tokens": 15618, "kind": "deferred" },
+    { "name": "Memory files", "tokens": 52060, "kind": "used" },
+    { "name": "Skills", "tokens": 1993, "kind": "used" },
+    { "name": "Messages", "tokens": 8, "kind": "used" },
+    { "name": "Free space", "tokens": 131795, "kind": "free" }
+  ],
+  "mcp_tools": [
+    { "name": "mcp__github__create_pull_request", "server_name": "github", "tokens": 890 }
+  ],
+  "memory_files": [
+    { "path": "/home/lmas/.claude-mc/CLAUDE.md", "type": "User", "tokens": 1245 }
+  ],
+  "agents": [],
+  "skills": [
+    { "name": "slack:channel-digest", "source": "plugin", "tokens": 6, "pluginName": "slack" },
+    { "name": "retro", "source": "userSettings", "tokens": 8 }
+  ]
+}

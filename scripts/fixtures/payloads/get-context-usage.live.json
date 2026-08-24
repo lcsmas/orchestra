@@ -1,0 +1,39 @@
+{
+  "categories": [
+    { "name": "System tools", "tokens": 14144, "color": "inactive" },
+    { "name": "MCP tools (deferred)", "tokens": 52191, "color": "inactive", "isDeferred": true },
+    { "name": "System tools (deferred)", "tokens": 15618, "color": "inactive", "isDeferred": true },
+    { "name": "Memory files", "tokens": 52060, "color": "claude" },
+    { "name": "Skills", "tokens": 1993, "color": "warning" },
+    { "name": "Messages", "tokens": 4994, "color": "purple_FOR_SUBAGENTS_ONLY" },
+    { "name": "Free space", "tokens": 126809, "color": "promptBorder" }
+  ],
+  "totalTokens": 73191,
+  "maxTokens": 200000,
+  "rawMaxTokens": 200000,
+  "autocompactSource": "auto",
+  "percentage": 37,
+  "model": "claude-haiku-4-5-20251001",
+  "memoryFiles": [
+    { "path": "/home/lmas/.claude-mc/CLAUDE.md", "type": "User", "tokens": 1245 },
+    { "path": "/home/lmas/.orchestra/worktrees/w/CLAUDE.md", "type": "Project", "tokens": 2310 }
+  ],
+  "mcpTools": [
+    { "name": "mcp__github__create_pull_request", "serverName": "github", "tokens": 890 },
+    { "name": "mcp__github__list_issues", "serverName": "github", "tokens": 640 },
+    { "name": "mcp__browser__navigate", "serverName": "browser", "tokens": 410 }
+  ],
+  "skills": {
+    "totalSkills": 50,
+    "includedSkills": 3,
+    "tokens": 1993,
+    "skillFrontmatter": [
+      { "name": "slack:channel-digest", "source": "plugin", "tokens": 6, "pluginName": "slack" },
+      { "name": "retro", "source": "userSettings", "tokens": 8 },
+      { "name": "verified-fanout", "source": "userSettings", "tokens": 11 }
+    ]
+  },
+  "agents": [
+    { "agentType": "Explore", "source": "builtin", "tokens": 120 }
+  ]
+}

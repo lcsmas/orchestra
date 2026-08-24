@@ -1,0 +1,29 @@
+[
+  {
+    "type": "system",
+    "subtype": "background_tasks_changed",
+    "tasks": [
+      { "task_id": "bjc4l4ro2", "task_type": "local_bash", "description": "Run a 90-second sleep in the background" }
+    ]
+  },
+  {
+    "type": "system",
+    "subtype": "background_tasks_changed",
+    "tasks": [
+      { "task_id": "bjc4l4ro2", "task_type": "local_bash", "description": "Run a 90-second sleep in the background" },
+      { "task_id": "bq7m2xa91", "task_type": "subagent", "description": "Explore the renderer for stale selectors" }
+    ]
+  },
+  {
+    "type": "system",
+    "subtype": "background_tasks_changed",
+    "tasks": [
+      { "task_id": "bq7m2xa91", "task_type": "subagent", "description": "Explore the renderer for stale selectors" }
+    ]
+  },
+  {
+    "type": "system",
+    "subtype": "background_tasks_changed",
+    "tasks": []
+  }
+]
