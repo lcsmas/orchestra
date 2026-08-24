@@ -6,6 +6,8 @@ import {
   ghostForEvent,
   parseRouterReply,
   ROUTER_PROMPT,
+  voiceReleaseAction,
+  VOICE_TAP_MS,
 } from './voice.ts';
 
 // ---- parseRouterReply -------------------------------------------------------
@@ -148,4 +150,56 @@ test('ghost: non-ghost events leave it untouched mid-utterance', () => {
   // there would flicker the ghost off and back on.
   assert.equal(ghostForEvent({ type: 'endpoint' }, 'dictate'), undefined);
   assert.equal(ghostForEvent({ type: 'final', text: 'raw' }, 'dictate'), undefined);
+});
+
+// --- push-to-talk: tap latches, hold stops on release ----------------------
+
+test('voiceReleaseAction: a long press is push-to-talk and stops on release', () => {
+  assert.equal(
+    voiceReleaseAction({ pressedAt: 1000, micStarted: true, now: 1000 + VOICE_TAP_MS }),
+    'stop',
+  );
+  assert.equal(voiceReleaseAction({ pressedAt: 1000, micStarted: true, now: 4000 }), 'stop');
+});
+
+test('voiceReleaseAction: a short tap latches the mic on', () => {
+  assert.equal(voiceReleaseAction({ pressedAt: 1000, micStarted: true, now: 1050 }), 'latch');
+  // Boundary: strictly below the threshold is still a tap.
+  assert.equal(
+    voiceReleaseAction({ pressedAt: 1000, micStarted: true, now: 1000 + VOICE_TAP_MS - 1 }),
+    'latch',
+  );
+});
+
+test('voiceReleaseAction: a release beating the async mic start is deferred, not dropped', () => {
+  // The bug this guards: voiceStart + getUserMedia are async, so a fast hold can
+  // release before the mic is up. Dropping that release strands the mic ON after
+  // a gesture the user felt as a hold.
+  assert.equal(voiceReleaseAction({ pressedAt: 1000, micStarted: false, now: 3000 }), 'defer');
+});
+
+test('voiceReleaseAction: a key-up with no press outstanding is ignored', () => {
+  // Mic started by CLICK, then Ctrl+M released: must not stop the click-started
+  // dictation, and must not be mistaken for a zero-length press.
+  assert.equal(voiceReleaseAction({ pressedAt: null, micStarted: true, now: 9999 }), 'ignore');
+});
+
+test('voiceReleaseAction: threshold is configurable and honoured', () => {
+  assert.equal(
+    voiceReleaseAction({ pressedAt: 0, micStarted: true, now: 100, tapMs: 50 }),
+    'stop',
+  );
+  assert.equal(
+    voiceReleaseAction({ pressedAt: 0, micStarted: true, now: 100, tapMs: 5000 }),
+    'latch',
+  );
+});
+
+test('voiceReleaseAction: the key-up after a stop-press is ignored, not treated as a tap', () => {
+  // Tapping the hotkey while the mic is LATCHED means "stop". That press opens
+  // no press window (pressedAt stays null), so its key-up must be inert — if it
+  // were mistaken for a zero-length press it would read as 'latch' and turn the
+  // mic straight back on, making the mic impossible to stop from the keyboard.
+  assert.equal(voiceReleaseAction({ pressedAt: null, micStarted: false, now: 5 }), 'ignore');
+  assert.equal(voiceReleaseAction({ pressedAt: null, micStarted: true, now: 5 }), 'ignore');
 });

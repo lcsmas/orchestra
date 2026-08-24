@@ -17,7 +17,7 @@
 // tracks are only stopped on unmount.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { DEFAULT_VOCAB, ghostForEvent } from '../../../shared/voice';
+import { DEFAULT_VOCAB, ghostForEvent, voiceReleaseAction } from '../../../shared/voice';
 import { readVoiceDictionary } from '../../voice-dictionary';
 import type { CmComposerHandle } from './CmComposer';
 
@@ -49,10 +49,21 @@ export interface VoiceDictation {
   /** Local STT models present — false hides the mic UI entirely. */
   available: boolean;
   micState: MicState;
+  /** True while the mic is held open by a key that is still physically down —
+   *  i.e. releasing that key will stop dictation. False once the press has been
+   *  promoted to a latched (toggle) dictation. Drives the "hold" affordance. */
+  held: boolean;
   /** One-line status for the composer bar (last stage + timing). */
   status: string | null;
   /** Toggle dictation (mode 'dictate') or voice-edit (mode 'edit'). */
   toggle: (mode: 'dictate' | 'edit') => void;
+  /** Key DOWN for push-to-talk: starts dictation if idle (no-op if already on,
+   *  so OS key-repeat is harmless). Pair with `release`. */
+  press: (mode: 'dictate' | 'edit') => void;
+  /** Key UP: stops dictation only if the press turned out to be a HOLD (longer
+   *  than TAP_MS). A short tap latches instead, so the user can keep talking
+   *  hands-free and tap again to stop. */
+  release: (mode: 'dictate' | 'edit') => void;
 }
 
 export function useVoiceDictation(
@@ -63,7 +74,13 @@ export function useVoiceDictation(
 ): VoiceDictation {
   const [available, setAvailable] = useState(false);
   const [micState, setMicState] = useState<MicState>('idle');
+  const [held, setHeld] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+
+  /** When the current press started, or null if the mic was started some other
+   *  way (click, or a press already promoted to latched). `release` consults
+   *  this to decide tap-latches-vs-hold-stops. */
+  const pressAtRef = useRef<number | null>(null);
 
   const micStateRef = useRef<MicState>('idle');
   micStateRef.current = micState;
@@ -185,6 +202,8 @@ export function useVoiceDictation(
         // Drop the ghost synchronously: micStateRef is what gates late partials,
         // so set it before awaiting anything from main.
         micStateRef.current = 'idle';
+        pressAtRef.current = null;
+        setHeld(false);
         cmRef.current?.setGhost(null);
         void window.orchestra.voiceStop(workspaceId);
         setMicState('idle');
@@ -238,5 +257,87 @@ export function useVoiceDictation(
     [workspaceId, cmRef, ensureMic, vocabExtra],
   );
 
-  return { available, micState, status, toggle };
+  // ---- push-to-talk (hold) vs latch (tap) ---------------------------------
+  // One key drives both gestures, decided by how long it was down:
+  //   press ─┬─ released before TAP_MS ──▶ stays on (latched); tap again to stop
+  //          └─ released after  TAP_MS ──▶ stops now (true push-to-talk)
+  // The hard part is that starting the mic is ASYNC (voiceStart + getUserMedia),
+  // so a fast hold can release before `toggle` has even set micState. We record
+  // the release in a ref and re-check it once the start lands, rather than
+  // dropping the release on the floor — otherwise the mic latches ON after a
+  // gesture the user experienced as a short hold, and keeps listening.
+  const releasedInFlightRef = useRef(false);
+  /** Is the hotkey physically down? Debounces OS key-repeat. MUST be cleared on
+   *  every key-up (and on blur), or the hotkey stops responding for good. */
+  const keyDownRef = useRef(false);
+
+  const press = useCallback(
+    (mode: 'dictate' | 'edit') => {
+      // Key-repeat fires keydown continuously while the key is down. Suppress it
+      // by tracking whether a press is PHYSICALLY DOWN — not by testing
+      // `micState !== 'idle'`, which also matches a LATCHED mic and so silently
+      // swallowed the second tap that is supposed to stop it (the mic could then
+      // only be stopped by clicking — caught in the e2e drive, invisible to the
+      // pure-function tests because it lives in this guard, not in the rule).
+      if (keyDownRef.current) return;
+      keyDownRef.current = true;
+
+      // A press while the mic is already running is a deliberate STOP (tapping
+      // the hotkey again to end a latched dictation). No press window opens, so
+      // the matching key-up correctly finds nothing outstanding and ignores it.
+      if (micStateRef.current !== 'idle') {
+        pressAtRef.current = null;
+        setHeld(false);
+        toggle(mode);
+        return;
+      }
+
+      pressAtRef.current = Date.now();
+      releasedInFlightRef.current = false;
+      setHeld(true);
+      toggle(mode);
+    },
+    [toggle],
+  );
+
+  const release = useCallback(
+    (mode: 'dictate' | 'edit') => {
+      // Always clear the key-repeat latch first, whatever the release resolves
+      // to — an early return that skips this wedges the hotkey permanently.
+      keyDownRef.current = false;
+      const action = voiceReleaseAction({
+        pressedAt: pressAtRef.current,
+        micStarted: micStateRef.current !== 'idle',
+        now: Date.now(),
+      });
+      if (action === 'ignore') return;
+      if (action === 'defer') {
+        releasedInFlightRef.current = true;
+        return;
+      }
+      pressAtRef.current = null;
+      setHeld(false);
+      if (action === 'stop') toggle(mode);
+      // 'latch': leave the mic on; an explicit stop ends it.
+    },
+    [toggle],
+  );
+
+  // Settle a release that beat the async start. Runs when micState turns
+  // non-idle: if the key is already back up, apply the same tap/hold rule.
+  useEffect(() => {
+    if (micState === 'idle' || !releasedInFlightRef.current) return;
+    releasedInFlightRef.current = false;
+    const action = voiceReleaseAction({
+      pressedAt: pressAtRef.current,
+      micStarted: true,
+      now: Date.now(),
+    });
+    if (action === 'ignore') return;
+    pressAtRef.current = null;
+    setHeld(false);
+    if (action === 'stop') toggle(micState === 'edit' ? 'edit' : 'dictate');
+  }, [micState, toggle]);
+
+  return { available, micState, held, status, toggle, press, release };
 }

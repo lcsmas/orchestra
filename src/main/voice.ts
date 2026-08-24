@@ -45,6 +45,27 @@ const PARAKEET_BIN = join(VOICE_DIR, 'whisper.cpp/build/bin/parakeet-cli');
 const PARAKEET_MODEL = join(VOICE_DIR, 'models/ggml-parakeet-tdt-0.6b-v3-f16.bin');
 const SAMPLE_RATE = 16000;
 
+// ---------------------------------------------------------------------------
+// Partial-decode budget.
+//
+// Live `partial`s re-decode the ENTIRE utterance-so-far on every pass, so their
+// cost grows with utterance length while the user is still speaking. The
+// original pacing was skip-if-busy only: the next decode launched the moment
+// the previous one returned, giving parakeet a ~100% duty cycle at 8 threads
+// (measured 284% CPU on this machine — the audible fan). Two knobs tame it
+// without giving up the ghost text:
+//
+//   PARTIAL_MIN_GAP_MS — a floor between the END of one decode and the START of
+//     the next, so partials are paced by the clock instead of by however fast
+//     the CPU can churn. ~1.5s still tracks speech usefully (a partial per
+//     phrase, not per syllable).
+//   PARTIAL_THREADS    — partials are throwaway (superseded within seconds and
+//     never inserted as real text), so they get half the threads. The FINAL
+//     decode, whose latency the user actually waits on, keeps all 8.
+const PARTIAL_MIN_GAP_MS = 1500;
+const PARTIAL_THREADS = 4;
+const FINAL_THREADS = 8;
+
 export function voiceAvailable(): boolean {
   return existsSync(PARAKEET_BIN) && existsSync(PARAKEET_MODEL);
 }
@@ -155,11 +176,15 @@ function writeWav(dir: string, pcm: Int16Array): string {
   return path;
 }
 
-function transcribe(dir: string, pcm: Int16Array): Promise<{ text: string; secs: number }> {
+function transcribe(
+  dir: string,
+  pcm: Int16Array,
+  threads = FINAL_THREADS,
+): Promise<{ text: string; secs: number }> {
   return new Promise((resolve) => {
     const wav = writeWav(dir, pcm);
     const t0 = Date.now();
-    const p = spawn(PARAKEET_BIN, ['-m', PARAKEET_MODEL, '-t', '8', '-np', '-f', wav]);
+    const p = spawn(PARAKEET_BIN, ['-m', PARAKEET_MODEL, '-t', String(threads), '-np', '-f', wav]);
     let out = '';
     p.stdout.on('data', (d: Buffer) => (out += d.toString()));
     p.on('close', (code) => {
@@ -185,6 +210,11 @@ class VoiceSession {
   private endpointer = new EnergyEndpointer();
   private gen = 0; // bumped per utterance; stale incremental decodes are dropped
   private incrBusy = false;
+  /** When the last incremental decode FINISHED. 0 = never, so the first partial
+   *  of a session fires as soon as 0.6s of audio exists rather than waiting out
+   *  a gap that no decode has earned yet. Reset per utterance for the same
+   *  reason: each new utterance should paint its first ghost promptly. */
+  private lastIncrDoneAt = 0;
   private lastClean = '';
   private readonly tmp: string;
 
@@ -207,13 +237,20 @@ class VoiceSession {
     this.chunks.push(chunk);
     const endpoint = this.endpointer.feed(chunk);
 
-    // Incremental partial: re-decode the whole buffer, skip-if-busy paces it.
+    // Incremental partial: re-decode the whole buffer. Paced by BOTH skip-if-
+    // busy and a wall-clock floor since the last decode finished — busy alone
+    // let parakeet run back-to-back at ~100% duty cycle (see PARTIAL_MIN_GAP_MS).
     const buffered = this.chunks.reduce((n, c) => n + c.length, 0);
-    if (!this.incrBusy && buffered >= SAMPLE_RATE * 0.6) {
+    const rested = Date.now() - this.lastIncrDoneAt >= PARTIAL_MIN_GAP_MS;
+    if (!this.incrBusy && rested && buffered >= SAMPLE_RATE * 0.6) {
       this.incrBusy = true;
       const gen = this.gen;
-      void transcribe(this.tmp, concat(this.chunks)).then(({ text }) => {
+      void transcribe(this.tmp, concat(this.chunks), PARTIAL_THREADS).then(({ text }) => {
         this.incrBusy = false;
+        // Stamp on COMPLETION, not on start: the gap we want to bound is idle
+        // CPU time between decodes, and a long decode has already spent the
+        // budget its own runtime represents.
+        this.lastIncrDoneAt = Date.now();
         if (gen === this.gen && text) this.emit({ type: 'partial', text });
       });
     }
@@ -227,6 +264,9 @@ class VoiceSession {
       const pcm = concat(this.chunks);
       this.chunks = [];
       this.gen++;
+      // New utterance: let its first partial fire immediately instead of
+      // inheriting the previous utterance's cooldown.
+      this.lastIncrDoneAt = 0;
       if (pcm.length > SAMPLE_RATE * 0.4) {
         this.emit({ type: 'endpoint' });
         void this.finalize(pcm);

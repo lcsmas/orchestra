@@ -1540,7 +1540,14 @@ before landing. Dev-gated: `voiceAvailable()` requires `ORCHESTRA_VOICE_DIR`
   franglais). Unit tests in `src/shared/voice.test.ts`.
 - `src/main/voice.ts` — engine: per-workspace `VoiceSession` (PCM in over
   `voice:pcm`), incremental parakeet re-decode of the live utterance for `partial`s
-  (same model as finals — the industry-standard shape; ~1s cadence, skip-if-busy),
+  (same model as finals — the industry-standard shape). Partials are paced by BOTH
+  skip-if-busy and a wall-clock floor (`PARTIAL_MIN_GAP_MS` = 1500ms since the last
+  decode FINISHED) and run at `PARTIAL_THREADS` = 4 while finals keep
+  `FINAL_THREADS` = 8: because every partial re-decodes the whole utterance-so-far,
+  skip-if-busy alone gave parakeet a ~100% duty cycle — measured 412% CPU / 51
+  CPU-seconds per 12s of speech, versus 112% / 14 CPU-seconds paced (-73%, the
+  audible-fan complaint). `lastIncrDoneAt` resets per utterance so each new one
+  still paints its first ghost immediately,
   parakeet final on endpoint/stop, persistent `claude -p --input/output-format
   stream-json --model haiku` worker (`HaikuWorker`, serialized asks; cold CLI spawn
   measured ~6s vs ~1.5s warm). Handlers registered inline like `pickDirectory`
@@ -1552,6 +1559,27 @@ before landing. Dev-gated: `voiceAvailable()` requires `ORCHESTRA_VOICE_DIR`
   syllable: "1469" → "469"), applies events to the composer (`clean append` /
   `replace_last` by last-occurrence string match; edit `revision` splices the
   target). Edit target = CM selection, else last utterance, else full text.
+- **Push-to-talk hotkey** — `Ctrl+M` (dictate) / `Ctrl+Shift+M` (voice-edit),
+  registered WINDOW-WIDE in `StructuredView` (capture-phase `keydown`/`keyup` on
+  `window`, gated on `isActive` so only the visible pane responds). Deliberately not
+  an OS-level `globalShortcut`, which would steal the chord from every other app.
+  One key expresses two gestures, arbitrated by `voiceReleaseAction`
+  (`src/shared/voice.ts`, pure + unit-tested against `VOICE_TAP_MS` = 400):
+  a HOLD (≥400ms) stops on release — true push-to-talk; a TAP latches the mic on
+  until the next tap. Three traps the pure function encodes, each observed:
+  (1) `voiceStart`+`getUserMedia` are async, so a fast hold can release before the
+  mic exists — that release returns `'defer'` and is re-applied once the start lands,
+  because dropping it strands the mic ON; (2) a key-up with no press outstanding
+  (mic started by CLICK) is `'ignore'`, never a zero-length tap; (3) key-repeat is
+  debounced with a `keyDownRef` "physically down" flag, NOT by testing
+  `micState !== 'idle'` — that also matches a LATCHED mic and silently swallowed the
+  second tap meant to stop it (caught only in the e2e drive: the rule was right, the
+  guard around it wasn't). `window` blur counts as a release for the same
+  stranded-mic reason. The `Ctrl-m` entries in `CmComposer`'s keymap remain as the
+  vim claim + fallback, and normally never fire (the window handler stops
+  propagation first); a CodeMirror keymap sees no keyup so it cannot express a hold.
+  The mic button exposes `data-state='rec'` plus `data-held='1'` while the key is
+  down, which is what distinguishes held (filled halo) from latched (bare pulse).
 - `ghostForEvent(ev, micState)` (`src/shared/voice.ts`, unit + mutation tested) is
   the SINGLE decision point for the composer ghost: `null` clear / `undefined`
   leave / string paint. It exists because the ghost is the only voice state the

@@ -1890,6 +1890,14 @@ h6.av-md-h {
 }
 .av-composer-mic:hover { background: var(--av-surface-raised); color: var(--av-text); }
 .av-composer-mic[data-state='rec'] { color: #f85149; animation: av-mic-pulse 1.1s infinite; }
+/* HELD (push-to-talk, key still down) vs LATCHED (tapped, mic stays on): the
+   two states differ in how they END — release vs another press — so they must
+   be tellable apart at a glance. Held gets a filled halo; latched keeps the
+   bare pulse above. */
+.av-composer-mic[data-held='1'] {
+  background: color-mix(in srgb, #f85149 22%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, #f85149 18%, transparent);
+}
 .av-composer-voice-edit[data-state='rec'] { color: #ffc158; }
 @keyframes av-mic-pulse { 50% { opacity: 0.55; } }
 /* Pipeline status readout beside the mic ("stt 0.9s", "clean 1.5s"). */

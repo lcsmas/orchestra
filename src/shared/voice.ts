@@ -216,3 +216,42 @@ export class EnergyEndpointer {
 export const DEFAULT_VOCAB =
   'PR, repo, merge, rebase, branch, worktree, commit, push, Slack, Linear, ' +
   'Orchestra, review, ping, ticket, deploy, staging, prod, lint, CI';
+
+// ---------------------------------------------------------------------------
+// Push-to-talk gesture arbitration
+// ---------------------------------------------------------------------------
+
+/** A press shorter than this LATCHES the mic (tap-to-toggle); anything longer
+ *  is treated as push-to-talk and ends when the key comes back up. 400ms is the
+ *  Wispr Flow feel: a deliberate tap latches, while the natural "hold the key,
+ *  start speaking" gesture never latches by accident. */
+export const VOICE_TAP_MS = 400;
+
+/** What a key-up should do to a mic that a key-down started.
+ *
+ *  Pure so the tap-vs-hold rule is testable without React, a real keyboard or
+ *  a mic — the timing edge cases (release arriving before the async mic start,
+ *  key-repeat, a blur standing in for a lost key-up) are exactly the kind that
+ *  are miserable to reproduce by hand.
+ *
+ *  - 'stop'   — the press was a HOLD: it is over, so stop dictating.
+ *  - 'latch'  — the press was a TAP: leave the mic on until an explicit stop.
+ *  - 'defer'  — the mic has not finished starting yet; re-run this once it has
+ *               (dropping the release here is what strands the mic ON).
+ *  - 'ignore' — this key-up does not belong to a press we started (a click
+ *               started the mic, or the press already resolved). */
+export type VoiceReleaseAction = 'stop' | 'latch' | 'defer' | 'ignore';
+
+export function voiceReleaseAction(opts: {
+  /** When the key went down, or null if no press is outstanding. */
+  pressedAt: number | null;
+  /** False while voiceStart/getUserMedia are still in flight. */
+  micStarted: boolean;
+  now: number;
+  tapMs?: number;
+}): VoiceReleaseAction {
+  const { pressedAt, micStarted, now, tapMs = VOICE_TAP_MS } = opts;
+  if (pressedAt === null) return 'ignore';
+  if (!micStarted) return 'defer';
+  return now - pressedAt >= tapMs ? 'stop' : 'latch';
+}

@@ -335,6 +335,15 @@ export function CmComposer({
         // Voice dictation chords. Letters with Ctrl so they can never collide
         // with typing (insert mode) — and claimed at highest precedence so vim
         // (Ctrl-m = carriage-return motion in NORMAL) doesn't eat them.
+        //
+        // These are a FALLBACK, and normally never fire: StructuredView owns
+        // Ctrl-M window-wide (capture phase, so the mic works while focus is in
+        // a diff or terminal) and calls stopPropagation, which means CodeMirror
+        // is not reached while that listener is installed. They still matter as
+        // the vim claim — without them vim would bind Ctrl-m to its
+        // carriage-return motion — and they keep the composer working if the
+        // window-level handler is ever gated off. Deliberately still a TOGGLE:
+        // a CodeMirror keymap sees no keyup, so it cannot express hold-to-talk.
         { key: 'Ctrl-m', run: () => cb.current.onVoiceDictate?.() ?? false },
         { key: 'Ctrl-Shift-m', run: () => cb.current.onVoiceEdit?.() ?? false },
       ]),

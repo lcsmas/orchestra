@@ -1101,6 +1101,67 @@ function Composer({
   });
   const voice = useVoiceDictation(workspaceId, cmRef, setText, vocabExtra);
 
+  // WINDOW-SCOPED push-to-talk. The CodeMirror keymap (Ctrl-m in CmComposer)
+  // only fires with focus inside the composer, which is exactly when reaching
+  // for the mouse is least annoying — the gesture is wanted while reading a
+  // diff or a terminal. Capture-phase on window, gated on `isActive` so only
+  // the visible workspace's pane responds (every mounted pane runs this hook).
+  //
+  // Not a `globalShortcut` (OS-wide): that would steal Ctrl+M from every other
+  // app on the desktop, which the user did not ask for.
+  //
+  // keyup is NOT gated on `event.ctrlKey`: releasing Ctrl before M is a normal
+  // way to end the gesture, and the keyup for "m" then reports ctrlKey=false.
+  // Matching on `code`/`key` alone is what makes the release reliable.
+  //
+  // `voice` is read through a REF, not captured: `press` flips micState, which
+  // would re-run this effect and swap the listeners out from under a key that
+  // is still physically down. That happens to survive (the keyup lands on the
+  // replacements) but it makes correctness depend on re-render timing, and the
+  // effect would also churn on every keystroke via `text`. The ref keeps ONE
+  // listener pair installed for the whole gesture.
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
+  // Bash mode (`!…`) disables the hotkey — but ONLY from idle. If dictation is
+  // already running, an utterance that happens to start with "!" must not tear
+  // the listeners down mid-gesture, which would swallow the keyup and strand
+  // the mic on. Once it stops, the guard applies again normally.
+  const micHotkeyOn =
+    isActive && voice.available && (voice.micState !== 'idle' || !text.startsWith('!'));
+  useEffect(() => {
+    if (!micHotkeyOn) return;
+    const isMic = (e: KeyboardEvent) => e.key === 'm' || e.key === 'M' || e.code === 'KeyM';
+    const onDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || !isMic(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      voiceRef.current.press(e.shiftKey ? 'edit' : 'dictate');
+    };
+    // keyup is NOT gated on ctrlKey: releasing Ctrl before M is a normal way to
+    // end the gesture, and the keyup for "m" then reports ctrlKey=false.
+    // Matching the letter alone is what makes the release reliable.
+    const onUp = (e: KeyboardEvent) => {
+      if (!isMic(e)) return;
+      const v = voiceRef.current;
+      v.release(v.micState === 'edit' ? 'edit' : 'dictate');
+    };
+    // A hold whose keyup never arrives (focus lost to another window mid-press)
+    // would latch the mic on silently — treat losing the window as a release so
+    // the mic can never be stranded open.
+    const onBlur = () => {
+      const v = voiceRef.current;
+      v.release(v.micState === 'edit' ? 'edit' : 'dictate');
+    };
+    window.addEventListener('keydown', onDown, true);
+    window.addEventListener('keyup', onUp, true);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onDown, true);
+      window.removeEventListener('keyup', onUp, true);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [micHotkeyOn]);
+
   // Expose PREFILL to the parent (rewind's edit-and-retry). Both the React
   // state and the CodeMirror document must be set: `text` drives bash-mode
   // detection, the send payload and the autocomplete, while the editor holds
@@ -1547,13 +1608,16 @@ function Composer({
                 type="button"
                 className="av-composer-mic"
                 data-state={voice.micState === 'dictate' ? 'rec' : undefined}
+                data-held={voice.micState === 'dictate' && voice.held ? '1' : undefined}
                 onClick={() => voice.toggle('dictate')}
                 aria-pressed={voice.micState === 'dictate'}
                 aria-label={voice.micState === 'dictate' ? 'Stop dictation' : 'Dictate'}
                 title={
                   voice.micState === 'dictate'
-                    ? 'Stop dictation (Ctrl+M)'
-                    : 'Dictate (Ctrl+M) — speech lands here as you talk, cleaned up on each pause'
+                    ? voice.held
+                      ? 'Listening — release Ctrl+M to stop'
+                      : 'Stop dictation (Ctrl+M, or click)'
+                    : 'Dictate — HOLD Ctrl+M to talk, or tap it to keep the mic on. Works anywhere in the window; speech lands here as you talk, cleaned up on each pause'
                 }
               >
                 <svg
@@ -1574,10 +1638,11 @@ function Composer({
                 type="button"
                 className="av-composer-mic av-composer-voice-edit"
                 data-state={voice.micState === 'edit' ? 'rec' : undefined}
+                data-held={voice.micState === 'edit' && voice.held ? '1' : undefined}
                 onClick={() => voice.toggle('edit')}
                 aria-pressed={voice.micState === 'edit'}
                 aria-label="Edit by voice"
-                title="Edit by voice (Ctrl+Shift+M) — select text (or default: the last utterance) and speak an instruction"
+                title="Edit by voice — HOLD Ctrl+Shift+M and speak an instruction (or tap to latch). Select text first, else the last utterance is the target"
               >
                 <svg
                   width="17"
