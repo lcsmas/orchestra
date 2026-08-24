@@ -966,6 +966,12 @@ export interface AgentInitEvent extends AgentEventBase {
    *  Paths only — the CLI reports no sizes here, so the oversized-memory
    *  warning is measured separately in main (see `memory-size.ts`). */
   memoryPaths?: string[];
+  /** Protocol capabilities this CLI advertises, so control requests can be
+   *  FEATURE-DETECTED rather than assumed (`capabilities` on `system/init`).
+   *  Measured at CLI 2.1.241: `interrupt_receipt_v1`,
+   *  `interrupt_cancel_queued_v1`, `msg_lifecycle_v1`. An older CLI sends none
+   *  — absent must read as "unsupported", never "assume yes". */
+  capabilities?: string[];
 }
 
 /** One MCP server as tracked in the structured view — from `session/init`
@@ -1154,6 +1160,23 @@ export interface AgentToolUseEvent extends AgentEventBase {
  *  just success/failure TEXT, not structured diff data (spike g) — the diff is
  *  built from the tool_use input plus the on-disk before. `isError` marks a
  *  failed or denied tool. */
+/** Why an `is_error: true` tool result did NOT carry the tool's own execution
+ *  output — the harness-stamped reason from the CLI's `tool_result_meta`
+ *  sidecar (`non_execution_kind`). Absent/`null` means the tool actually ran.
+ *
+ *  Measured against CLI 2.1.241 (the runtime, not the d.ts — `tool_result_meta`
+ *  is a runtime SUPERSET: 0 occurrences in sdk.d.ts, 3 in the CLI binary). The
+ *  sidecar's own description is explicit that this replaces prose matching:
+ *  "Clients read this instead of string-matching the result prose." */
+export type AgentToolNonExecutionKind =
+  | 'user-rejected'
+  | 'permission-rule'
+  | 'automode-blocked'
+  | 'automode-unavailable'
+  | 'automode-parsing-error'
+  | 'interrupted'
+  | 'cancelled';
+
 export interface AgentToolResultEvent extends AgentEventBase {
   type: 'tool-result';
   /** Matches {@link AgentToolUseEvent.toolUseId}. */
@@ -1163,6 +1186,15 @@ export interface AgentToolResultEvent extends AgentEventBase {
   content: string | unknown[];
   /** True when the tool errored or was denied (`is_error` on the result). */
   isError: boolean;
+  /** Structural classification of an errored result, from the CLI's
+   *  `tool_result_meta` sidecar keyed by `tool_use_id`. `null` when the tool
+   *  genuinely ran and failed, or when the CLI is too old to send the sidecar
+   *  (in which case the card falls back to the plain "failed" state). */
+  nonExecutionKind: AgentToolNonExecutionKind | null;
+  /** The deny comment a human typed at a permission prompt, when the CLI
+   *  captured one. Absent for denials resolved by a rule, hook, or the SDK
+   *  control protocol — those carry no human-provenance signal. */
+  userFeedback: string | null;
 }
 
 /** The agent wants to run a tool and the session's permission mode requires a
@@ -1599,6 +1631,14 @@ export interface RenderMessage {
   toolResult?: {
     content: string | unknown[];
     isError: boolean;
+    /** Structural reason an errored result carried no execution output (from
+     *  the CLI's `tool_result_meta` sidecar) — drives the card's "denied" /
+     *  "interrupted" / "cancelled" state instead of matching the result prose.
+     *  `null`/absent → a genuine tool failure, or a CLI/transcript that carries
+     *  no sidecar. */
+    nonExecutionKind?: AgentToolNonExecutionKind | null;
+    /** Human deny comment typed at a permission prompt, when one was captured. */
+    userFeedback?: string | null;
   };
   /** For a `local-command` message (`!command` bash mode): the command, its
    *  captured stdout+stderr, exit code, and whether it's still running. */

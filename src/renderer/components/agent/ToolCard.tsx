@@ -11,6 +11,7 @@ import {
   truncate,
   todosFrom,
   toolMessageEqual,
+  nonExecutionLabel,
 } from './tool-util';
 
 interface Props {
@@ -33,6 +34,12 @@ function ToolCardImpl({ message }: Props) {
   const name = tool?.name ?? 'tool';
   const input = tool?.input;
   const isError = result?.isError === true;
+  // STRUCTURAL classification from the `tool_result_meta` sidecar — "denied" /
+  // "interrupted" / "cancelled" / "blocked" instead of a bare "failed". Null
+  // when the tool really ran and failed, or when no sidecar was sent (older
+  // CLI, or the on-disk backfill, which never persists it) — the card then
+  // degrades to the plain error state it has always had.
+  const nonExec = isError ? nonExecutionLabel(result?.nonExecutionKind) : null;
 
   // A tool is "pending" until its result lands. TodoWrite/Task have no useful
   // result body; most others do.
@@ -57,7 +64,7 @@ function ToolCardImpl({ message }: Props) {
     return `${done}/${todos.length}`;
   }, [name, input]);
 
-  const statusLabel = isError ? 'failed' : pending ? 'running' : 'done';
+  const statusLabel = isError ? (nonExec ?? 'failed') : pending ? 'running' : 'done';
   const aside = (
     <span
       className={`av-tool-status ${
@@ -68,7 +75,7 @@ function ToolCardImpl({ message }: Props) {
       {todoProgress && <span className="av-tool-progress">{todoProgress}</span>}
       {/* No status dot — a failure says so in words, a running card is carried by
           the accent-tinted border/icon; the rest is screen-reader-only. */}
-      {isError ? 'failed' : <span className="av-sr-only">{statusLabel}</span>}
+      {isError ? statusLabel : <span className="av-sr-only">{statusLabel}</span>}
     </span>
   );
 
@@ -82,8 +89,22 @@ function ToolCardImpl({ message }: Props) {
     isError;
 
   return (
-    <div className={`av-tool-card av-tool-${name.toLowerCase()} ${isError ? 'av-tool-errored' : ''}`}>
+    <div
+      className={`av-tool-card av-tool-${name.toLowerCase()} ${isError ? 'av-tool-errored' : ''} ${
+        nonExec ? 'av-tool-nonexec' : ''
+      }`}
+      {...(result?.nonExecutionKind ? { 'data-nonexec': result.nonExecutionKind } : {})}
+    >
       <Collapsible header={header} aside={aside} defaultOpen={defaultOpen}>
+        {/* The deny comment a human actually typed at the permission prompt.
+            Rendered at CARD level, not inside a body: the per-tool bodies
+            (Bash, diff, summary) each render their own output and only the
+            generic one uses ResultBlock, so putting it there hid it for every
+            tool that matters. Absent for rule/hook/SDK-protocol denials, which
+            carry no human-provenance signal. */}
+        {result?.userFeedback && (
+          <div className="av-tool-deny-feedback">“{result.userFeedback}”</div>
+        )}
         <ToolBody name={name} input={input} result={result} />
       </Collapsible>
     </div>

@@ -144,6 +144,16 @@ ok, data, errorKind, errorMessage, fetchedAt, expired?}`; `UsageErrorKind =
 **Security:** tokens never leave the main process — the renderer sees only
 account identity (id/label) and usage numbers.
 
+## Structural rate-limit detection from a turn result (#26 item 2)
+Besides `rate_limit_event` (the quota surface above), a TURN can terminate on a
+usage limit. `classifyTurnError(api_error_status)` in `src/shared/agent-events.ts`
+reads the HTTP status structurally — **429 → `rate-limit`**, **529 → `overload`**,
+else `error` — and a 429 emits the same `rate-limit` notice this UX already
+renders, so a limit-terminated turn stops looking like a generic error.
+**529 is deliberately excluded**: it is transient upstream overload, not a quota
+problem, so it must never park prompts on the queue. See
+[structured-agent-view.md](structured-agent-view.md).
+
 ## Prompt queue on usage limit — prompt-queue.ts
 While a workspace's account is over its 5h/7d limit, prompts can be parked on
 the workspace record (`Workspace.queuedPrompts`, `types.ts` — persisted, so a

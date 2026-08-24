@@ -36,6 +36,7 @@ import type {
   AgentLocalCommandEvent,
   AgentTaskEvent,
   AgentTaskUsage,
+  AgentToolNonExecutionKind,
   AgentUserMessageEvent,
   BackgroundTask,
   RenderMessage,
@@ -106,6 +107,15 @@ interface RawContentBlock {
   is_error?: boolean;
 }
 
+/** One entry of the `tool_result_meta` sidecar array. `id` is the `tool_use_id`
+ *  the entry describes. Every field is optional on the wire — an older CLI
+ *  sends no sidecar at all, and a future one may add keys. */
+interface RawToolResultMeta {
+  id?: string;
+  non_execution_kind?: string;
+  user_feedback?: string;
+}
+
 interface RawUsage {
   input_tokens?: number;
   output_tokens?: number;
@@ -130,6 +140,9 @@ export interface SdkMessage {
    *  CLI sends PATHS ONLY — no sizes, no over-limit flag — so the oversized-
    *  memory banner has to be recomputed from these (see memory-size.ts). */
   memory_paths?: string[];
+  /** system/init: protocol capabilities the CLI supports, for feature-detecting
+   *  control requests (e.g. `interrupt_cancel_queued_v1`). */
+  capabilities?: string[];
   // stream_event:
   event?: RawStreamEvent;
   // assistant / user (an object); system/permission_denied reuses the key as a
@@ -143,6 +156,13 @@ export interface SdkMessage {
   // at CLI 2.1.234; snake_case, unlike `getContextUsage()`'s camelCase, so it
   // gets its own adapter rather than a cast.
   context_usage?: ContextCommandUsagePayload;
+  /** user: the `tool_result_meta` SIDECAR — display metadata for this message's
+   *  `tool_result` blocks, keyed by `tool_use_id`. A WRAPPER-LEVEL sibling of
+   *  `message` (never inside `message.content`), so it is not replayed to the
+   *  model. Runtime SUPERSET: absent from sdk.d.ts at SDK 0.3.241, present in
+   *  CLI 2.1.241 — hence a hand-written shape, verified against the binary's
+   *  own zod schema rather than the d.ts. */
+  tool_result_meta?: RawToolResultMeta[];
   // user (externally-originated turn provenance / synthetic filtering):
   isSynthetic?: boolean;
   parent_tool_use_id?: string | null;
@@ -538,6 +558,9 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
             ...(Array.isArray(msg.memory_paths)
               ? { memoryPaths: msg.memory_paths.filter((p): p is string => typeof p === 'string') }
               : {}),
+            ...(Array.isArray(msg.capabilities)
+              ? { capabilities: msg.capabilities.filter((c): c is string => typeof c === 'string') }
+              : {}),
           }),
         ];
       }
@@ -592,14 +615,27 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
       const content = raw?.content;
       if (Array.isArray(content)) {
         // Tool results come back as `tool_result` blocks on a synthetic user msg.
+        // The `tool_result_meta` SIDECAR rides beside `message` (wrapper-level,
+        // so it is never replayed to the model) and classifies each errored
+        // result STRUCTURALLY — denied / interrupted / cancelled — replacing any
+        // matching of the result prose. A CLI that sends no sidecar yields an
+        // empty index, so every lookup misses and `nonExecutionKind` stays null.
+        const metaById = indexToolResultMeta(msg.tool_result_meta);
         for (const b of content) {
           if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+            const meta = metaById.get(b.tool_use_id);
             out.push(
               stamp(ctx, {
                 type: 'tool-result',
                 toolUseId: b.tool_use_id,
                 content: normalizeResultContent(b.content),
                 isError: b.is_error === true,
+                // Only an ERRORED result can be a non-execution: the sidecar
+                // documents the kind as the reason an `is_error:true` result
+                // lacked the tool's own output. Guarding on isError keeps a
+                // stray/mismatched entry from mislabelling a successful call.
+                nonExecutionKind: b.is_error === true ? (meta?.kind ?? null) : null,
+                userFeedback: meta?.feedback ?? null,
               }),
             );
           }
@@ -647,10 +683,32 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
       // (spike, note 6). Surface it as an error event alongside the turn-end so
       // the UI shows the failure and the manager can decide to retry.
       if (msg.is_error) {
+        // STRUCTURAL termination classification (#26 item 2): read the HTTP
+        // status, never the error prose. A 429 is a usage-limit termination and
+        // must reach the SAME usage-limit surface a `rate_limit_event` drives
+        // (notice → prompt queue), not a generic red error row. A 529 is an
+        // upstream overload — transient and retryable, but NOT a quota problem,
+        // so it stays an error and merely says so accurately.
+        const kind = classifyTurnError(msg.api_error_status);
+        if (kind === 'rate-limit') {
+          out.push(
+            stamp(ctx, {
+              type: 'notice',
+              kind: 'rate-limit',
+              // No resetsAt: the result carries no reset time. The account
+              // poller owns that, and the notice renders without it.
+              text: 'Usage limit reached — the turn was stopped',
+            }),
+          );
+        }
         out.push(
           stamp(ctx, {
             type: 'error',
-            message: msg.result || `agent turn errored (${msg.subtype ?? 'unknown'})`,
+            message:
+              msg.result ||
+              (kind === 'overload'
+                ? 'Anthropic is overloaded (529) — the turn was stopped'
+                : `agent turn errored (${msg.subtype ?? 'unknown'})`),
             apiErrorStatus: msg.api_error_status ?? null,
             // The manager owns the retry decision; normalize records it as not
             // retrying and the manager overrides if it schedules one.
@@ -969,6 +1027,89 @@ export function normalizeResultContent(content: unknown): string | unknown[] {
   }
   if (content == null) return '';
   return String(content);
+}
+
+/** The `system/init` capability that gates sending `cancel_queued:true` on an
+ *  interrupt. Older CLIs "ignore the field and behave as if false" per the SDK
+ *  docs — but Orchestra must not RELY on that, since a wrapper in between could
+ *  reject an unknown field outright. Feature-detect, never assume. */
+export const CAP_INTERRUPT_CANCEL_QUEUED = 'interrupt_cancel_queued_v1';
+
+/** Whether an interrupt may carry `cancel_queued:true` for this session.
+ *
+ *  Pure so the gate is unit-testable without a live CLI: the whole point of
+ *  #26 item 3 is that the flag is sent ONLY on advertised support, and a gate
+ *  nobody has watched refuse is not a gate. */
+export function supportsCancelQueued(capabilities: readonly string[] | null | undefined): boolean {
+  return Array.isArray(capabilities) && capabilities.includes(CAP_INTERRUPT_CANCEL_QUEUED);
+}
+
+/** How a turn that ended with `is_error` terminated, classified STRUCTURALLY
+ *  from the result's `api_error_status` rather than from the error prose.
+ *   • `rate-limit` (429) — the account hit its usage limit; the existing
+ *     usage-limit UX (notice + prompt queue) should take over.
+ *   • `overload`   (529) — Anthropic is overloaded; transient, worth retrying,
+ *     but NOT a quota problem, so it must not park prompts on the queue.
+ *   • `error`      — anything else (a 500, a crash): the pre-existing path. */
+export type TurnErrorKind = 'rate-limit' | 'overload' | 'error';
+
+/** Classify a terminal turn error from its HTTP status.
+ *
+ *  Structural per issue #26: before this, a 429 and a 500 were indistinguishable
+ *  downstream (`apiErrorStatus` was threaded but nothing ever read it), so a
+ *  usage-limit termination rendered as a generic red error and never reached the
+ *  usage-limit UX. 429/529 are the two the CLI stamps for these cases
+ *  (changelog 0.3.218/0.3.223); everything else stays `error`. */
+export function classifyTurnError(apiErrorStatus: number | null | undefined): TurnErrorKind {
+  if (apiErrorStatus === 429) return 'rate-limit';
+  if (apiErrorStatus === 529) return 'overload';
+  return 'error';
+}
+
+/** The 7 `non_execution_kind` values CLI 2.1.241 can stamp, read out of the
+ *  binary's own zod enum. An UNKNOWN value (a newer CLI adding an eighth) must
+ *  degrade to `null` — "the tool ran and failed" — rather than leak an
+ *  unrenderable string into the card's state machine. */
+const NON_EXECUTION_KINDS: readonly AgentToolNonExecutionKind[] = [
+  'user-rejected',
+  'permission-rule',
+  'automode-blocked',
+  'automode-unavailable',
+  'automode-parsing-error',
+  'interrupted',
+  'cancelled',
+];
+
+/** Narrow a raw wire string to a known {@link AgentToolNonExecutionKind}. */
+export function toNonExecutionKind(raw: unknown): AgentToolNonExecutionKind | null {
+  if (typeof raw !== 'string') return null;
+  return (NON_EXECUTION_KINDS as readonly string[]).includes(raw)
+    ? (raw as AgentToolNonExecutionKind)
+    : null;
+}
+
+/** Index a `tool_result_meta` sidecar array by `tool_use_id`.
+ *
+ *  STRUCTURAL replacement for string-matching result prose: the CLI stamps the
+ *  reason an `is_error:true` result carried no execution output, and its own
+ *  contract says clients read this instead of the text. Tolerates a missing or
+ *  malformed sidecar (older CLIs send none) by returning an empty map, so the
+ *  caller's lookup simply misses and the card falls back to "failed". */
+export function indexToolResultMeta(
+  meta: unknown,
+): Map<string, { kind: AgentToolNonExecutionKind | null; feedback: string | null }> {
+  const out = new Map<string, { kind: AgentToolNonExecutionKind | null; feedback: string | null }>();
+  if (!Array.isArray(meta)) return out;
+  for (const entry of meta) {
+    if (!entry || typeof entry !== 'object') continue;
+    const { id, non_execution_kind, user_feedback } = entry as RawToolResultMeta;
+    if (typeof id !== 'string' || !id) continue;
+    out.set(id, {
+      kind: toNonExecutionKind(non_execution_kind),
+      feedback: typeof user_feedback === 'string' && user_feedback ? user_feedback : null,
+    });
+  }
+  return out;
 }
 
 /** Build a permission-request event from a `canUseTool` callback's arguments.
@@ -1380,7 +1521,12 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
       if (i !== -1) {
         messages[i] = {
           ...messages[i],
-          toolResult: { content: event.content, isError: event.isError },
+          toolResult: {
+            content: event.content,
+            isError: event.isError,
+            nonExecutionKind: event.nonExecutionKind,
+            userFeedback: event.userFeedback,
+          },
           done: true,
         };
         return { ...next, messages };
@@ -1392,7 +1538,12 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         role: 'tool',
         at: event.at,
         toolUse: { toolUseId: event.toolUseId, name: '', inputJson: '' },
-        toolResult: { content: event.content, isError: event.isError },
+        toolResult: {
+            content: event.content,
+            isError: event.isError,
+            nonExecutionKind: event.nonExecutionKind,
+            userFeedback: event.userFeedback,
+          },
         done: true,
       });
       return { ...next, messages };

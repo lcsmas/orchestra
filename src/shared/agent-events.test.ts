@@ -16,6 +16,11 @@ import {
   describeMcpServer,
   firstHttpUrl,
   ASK_USER_QUESTION,
+  indexToolResultMeta,
+  toNonExecutionKind,
+  classifyTurnError,
+  supportsCancelQueued,
+  CAP_INTERRUPT_CANCEL_QUEUED,
   type NormalizeContext,
   type SdkMessage,
 } from './agent-events.ts';
@@ -226,6 +231,10 @@ test('normalize: user tool_result → tool-result correlated by tool_use_id', ()
     toolUseId: 'toolu_01CP3qji1HUiXCr56TP48gqr',
     content: 'File created successfully at: /home/lmas/hello.txt',
     isError: false,
+    // No `tool_result_meta` sidecar on this message, and the result is not an
+    // error — so both classification fields are null.
+    nonExecutionKind: null,
+    userFeedback: null,
   });
 });
 
@@ -2076,4 +2085,274 @@ test('normalize: system/init carries memory_paths through to session/init', () =
   assert.equal(ev.type, 'session/init');
   // Non-string entries are filtered rather than trusted.
   assert.deepEqual(ev.memoryPaths, ['/home/u/.claude/CLAUDE.md']);
+});
+
+// ─── #26 item 1: tool_result_meta sidecar → structural classification ────────
+// Payload shapes measured against CLI 2.1.241 (the runtime), NOT sdk.d.ts:
+// `tool_result_meta` has 0 occurrences in sdk.d.ts at SDK 0.3.241 and 3 in the
+// CLI binary, whose zod schema is
+//   tool_result_meta: array({id, non_execution_kind: enum(...7), user_feedback?})
+// and whose own description says clients read it "instead of string-matching
+// the result prose".
+
+test('toNonExecutionKind: accepts the 7 kinds the CLI can stamp', () => {
+  for (const k of [
+    'user-rejected',
+    'permission-rule',
+    'automode-blocked',
+    'automode-unavailable',
+    'automode-parsing-error',
+    'interrupted',
+    'cancelled',
+  ]) {
+    assert.equal(toNonExecutionKind(k), k, `${k} should round-trip`);
+  }
+});
+
+test('toNonExecutionKind: an UNKNOWN kind degrades to null, never leaks through', () => {
+  // A future CLI adding an 8th kind must not put an unrenderable string into
+  // the card's state machine — it degrades to "the tool ran and failed".
+  assert.equal(toNonExecutionKind('quantum-refused'), null);
+  assert.equal(toNonExecutionKind(''), null);
+  assert.equal(toNonExecutionKind(undefined), null);
+  assert.equal(toNonExecutionKind(null), null);
+  assert.equal(toNonExecutionKind(42), null);
+});
+
+test('indexToolResultMeta: indexes by tool_use_id and keeps user_feedback', () => {
+  const m = indexToolResultMeta([
+    { id: 'toolu_A', non_execution_kind: 'user-rejected', user_feedback: 'no, not that file' },
+    { id: 'toolu_B', non_execution_kind: 'interrupted' },
+  ]);
+  assert.equal(m.size, 2);
+  assert.deepEqual(m.get('toolu_A'), { kind: 'user-rejected', feedback: 'no, not that file' });
+  // A rule/hook deny carries no human provenance → no feedback.
+  assert.deepEqual(m.get('toolu_B'), { kind: 'interrupted', feedback: null });
+});
+
+test('indexToolResultMeta: a missing/malformed sidecar yields an empty index', () => {
+  // An older CLI sends NO sidecar at all — every lookup must simply miss, so
+  // the card falls back to the plain "failed" state it has always had.
+  assert.equal(indexToolResultMeta(undefined).size, 0);
+  assert.equal(indexToolResultMeta(null).size, 0);
+  assert.equal(indexToolResultMeta('nonsense').size, 0);
+  assert.equal(indexToolResultMeta({}).size, 0);
+  // Entries without a usable id are skipped rather than throwing.
+  assert.equal(indexToolResultMeta([null, 7, {}, { non_execution_kind: 'interrupted' }]).size, 0);
+});
+
+test('normalize: a DENIED tool_result is classified from the sidecar, not the prose', () => {
+  const evs = normalizeSdkMessage(
+    {
+      type: 'user',
+      // Wrapper-level sibling of `message` — never inside message.content.
+      tool_result_meta: [
+        { id: 'toolu_X', non_execution_kind: 'user-rejected', user_feedback: 'use the other path' },
+      ],
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_X',
+            is_error: true,
+            // Deliberately prose that says nothing about a denial: the whole
+            // point is that classification does NOT come from this text.
+            content: 'The operation could not be completed.',
+          },
+        ],
+      },
+    },
+    ctx(),
+  );
+  assert.equal(evs.length, 1);
+  const ev = evs[0] as Extract<AgentEvent, { type: 'tool-result' }>;
+  assert.equal(ev.isError, true);
+  assert.equal(ev.nonExecutionKind, 'user-rejected');
+  assert.equal(ev.userFeedback, 'use the other path');
+});
+
+test('normalize: without a sidecar an errored result falls back cleanly to null', () => {
+  // The falsifiable half of the gate: the SAME denial-looking prose must NOT
+  // be classified when the CLI sent no sidecar.
+  const evs = normalizeSdkMessage(
+    {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_X',
+            is_error: true,
+            content: 'The user doesn’t want to proceed with this tool use.',
+          },
+        ],
+      },
+    },
+    ctx(),
+  );
+  const ev = evs[0] as Extract<AgentEvent, { type: 'tool-result' }>;
+  assert.equal(ev.isError, true);
+  assert.equal(ev.nonExecutionKind, null, 'prose must never drive classification');
+  assert.equal(ev.userFeedback, null);
+});
+
+test('normalize: a SUCCESSFUL result is never classified, even if meta is present', () => {
+  // Guards a mismatched/stale sidecar entry from mislabelling a call that ran:
+  // the kind documents why an is_error:true result lacked execution output.
+  const evs = normalizeSdkMessage(
+    {
+      type: 'user',
+      tool_result_meta: [{ id: 'toolu_OK', non_execution_kind: 'cancelled' }],
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_OK', content: 'done' }],
+      },
+    },
+    ctx(),
+  );
+  const ev = evs[0] as Extract<AgentEvent, { type: 'tool-result' }>;
+  assert.equal(ev.isError, false);
+  assert.equal(ev.nonExecutionKind, null);
+});
+
+test('normalize: sidecar entries map to the RIGHT tool_use_id across several results', () => {
+  const evs = normalizeSdkMessage(
+    {
+      type: 'user',
+      tool_result_meta: [
+        { id: 'toolu_2', non_execution_kind: 'interrupted' },
+        { id: 'toolu_3', non_execution_kind: 'permission-rule' },
+      ],
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_1', is_error: true, content: 'real failure' },
+          { type: 'tool_result', tool_use_id: 'toolu_2', is_error: true, content: 'x' },
+          { type: 'tool_result', tool_use_id: 'toolu_3', is_error: true, content: 'y' },
+        ],
+      },
+    },
+    ctx(),
+  );
+  const kinds = evs.map((e) => (e as Extract<AgentEvent, { type: 'tool-result' }>).nonExecutionKind);
+  // toolu_1 has no entry → a genuine failure, still plain "failed".
+  assert.deepEqual(kinds, [null, 'interrupted', 'permission-rule']);
+});
+
+// ─── #26 item 2: api_error_status 429/529 → structural termination kind ──────
+
+test('classifyTurnError: 429 is a rate limit, 529 an overload, everything else an error', () => {
+  assert.equal(classifyTurnError(429), 'rate-limit');
+  assert.equal(classifyTurnError(529), 'overload');
+  assert.equal(classifyTurnError(500), 'error');
+  assert.equal(classifyTurnError(400), 'error');
+  assert.equal(classifyTurnError(null), 'error');
+  assert.equal(classifyTurnError(undefined), 'error');
+});
+
+test('normalize: a 429 result emits the rate-limit notice feeding the usage-limit UX', () => {
+  const evs = normalizeSdkMessage(
+    {
+      type: 'result',
+      subtype: 'error',
+      is_error: true,
+      api_error_status: 429,
+      result: 'rate limited',
+      session_id: 'S',
+    },
+    ctx(),
+  );
+  const notice = evs.find((e) => e.type === 'notice');
+  assert.ok(notice, 'a 429 must surface on the usage-limit surface');
+  assert.equal((notice as Extract<AgentEvent, { type: 'notice' }>).kind, 'rate-limit');
+  // The error event still rides along (the manager owns retry) and carries the
+  // status structurally.
+  const err = evs.find((e) => e.type === 'error') as Extract<AgentEvent, { type: 'error' }>;
+  assert.equal(err.apiErrorStatus, 429);
+});
+
+test('normalize: a 529 overload is NOT a usage limit (must not park the prompt queue)', () => {
+  const evs = normalizeSdkMessage(
+    {
+      type: 'result',
+      subtype: 'error',
+      is_error: true,
+      api_error_status: 529,
+      session_id: 'S',
+    },
+    ctx(),
+  );
+  assert.equal(
+    evs.find((e) => e.type === 'notice'),
+    undefined,
+    '529 is transient overload, not a quota problem',
+  );
+  const err = evs.find((e) => e.type === 'error') as Extract<AgentEvent, { type: 'error' }>;
+  assert.equal(err.apiErrorStatus, 529);
+  assert.match(err.message, /overload/i);
+});
+
+test('normalize: a 500 error keeps the pre-#26 behaviour (no notice)', () => {
+  const evs = normalizeSdkMessage(
+    { type: 'result', subtype: 'error', is_error: true, api_error_status: 500, session_id: 'S' },
+    ctx(),
+  );
+  assert.equal(evs.find((e) => e.type === 'notice'), undefined);
+});
+
+// ─── #26 item 3: cancel_queued gated on the advertised capability ────────────
+
+test('supportsCancelQueued: true ONLY when the capability is advertised', () => {
+  // Measured live at CLI 2.1.241, system/init capabilities:
+  // ["interrupt_receipt_v1","interrupt_cancel_queued_v1","msg_lifecycle_v1"]
+  assert.equal(
+    supportsCancelQueued([
+      'interrupt_receipt_v1',
+      CAP_INTERRUPT_CANCEL_QUEUED,
+      'msg_lifecycle_v1',
+    ]),
+    true,
+  );
+  // An older CLI advertising only the receipt must NOT get the flag.
+  assert.equal(supportsCancelQueued(['interrupt_receipt_v1']), false);
+  // Absent capabilities read as unsupported, never "assume yes".
+  assert.equal(supportsCancelQueued([]), false);
+  assert.equal(supportsCancelQueued(undefined), false);
+  assert.equal(supportsCancelQueued(null), false);
+});
+
+test('normalize: system/init carries the advertised capabilities through', () => {
+  const evs = normalizeSdkMessage(
+    {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'S',
+      model: 'claude-opus-4-8',
+      cwd: '/tmp',
+      tools: [],
+      capabilities: ['interrupt_receipt_v1', CAP_INTERRUPT_CANCEL_QUEUED],
+    },
+    ctx(),
+  );
+  const init = evs.find((e) => e.type === 'session/init') as Extract<
+    AgentEvent,
+    { type: 'session/init' }
+  >;
+  assert.deepEqual(init.capabilities, ['interrupt_receipt_v1', CAP_INTERRUPT_CANCEL_QUEUED]);
+  assert.equal(supportsCancelQueued(init.capabilities), true);
+});
+
+test('normalize: an init WITHOUT capabilities leaves the gate closed', () => {
+  const evs = normalizeSdkMessage(
+    { type: 'system', subtype: 'init', session_id: 'S', model: 'm', cwd: '/tmp', tools: [] },
+    ctx(),
+  );
+  const init = evs.find((e) => e.type === 'session/init') as Extract<
+    AgentEvent,
+    { type: 'session/init' }
+  >;
+  assert.equal(init.capabilities, undefined);
+  assert.equal(supportsCancelQueued(init.capabilities), false);
 });

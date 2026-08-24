@@ -276,6 +276,15 @@ export function transcriptToEvents(
                 // Observed serialized both as a boolean and (in at least one
                 // real file) as the string "true"/"false".
                 isError: b.is_error === true || b.is_error === 'true',
+                // The `tool_result_meta` sidecar is LIVE-STREAM ONLY: it is a
+                // wrapper-level display field that is never replayed to the
+                // model and, measured over 300 on-disk transcripts (47 of which
+                // contain tool_use_id as a positive control), is never persisted
+                // — 0 files carry it. So a reopened workspace cannot recover the
+                // classification and correctly falls back to a plain "failed"
+                // card. Do NOT string-match the result prose to fake it here.
+                nonExecutionKind: null,
+                userFeedback: null,
               }),
             );
           } else if (!synthetic && b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
