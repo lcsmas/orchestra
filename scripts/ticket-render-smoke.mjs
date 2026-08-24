@@ -17,10 +17,30 @@
 // rather than adding one just for this harness.
 import { createRequire } from 'node:module';
 const require_ = createRequire(import.meta.url);
-const { build } = require_(
-  process.env.ORCHESTRA_ESBUILD ??
-    require_.resolve('esbuild', { paths: [process.cwd() + '/node_modules/vite'] }),
-);
+// Resolve the esbuild vite already ships rather than adding a dependency just
+// for this harness. pnpm's layout means it may live under node_modules/vite OR
+// only in the .pnpm store, so try both before giving up.
+function loadEsbuild() {
+  const roots = [
+    process.cwd() + '/node_modules/vite',
+    process.cwd() + '/node_modules',
+    process.cwd(),
+  ];
+  for (const paths of roots) {
+    try {
+      return require_(require_.resolve('esbuild', { paths: [paths] }));
+    } catch {
+      /* try the next root */
+    }
+  }
+  const store = require_('node:fs')
+    .globSync?.(process.cwd() + '/node_modules/.pnpm/esbuild@*/node_modules/esbuild') ?? [];
+  if (store.length) return require_(store[0]);
+  throw new Error('esbuild not resolvable — run `pnpm install` first');
+}
+const { build } = process.env.ORCHESTRA_ESBUILD
+  ? require_(process.env.ORCHESTRA_ESBUILD)
+  : loadEsbuild();
 import { renderToString } from 'react-dom/server';
 import React from 'react';
 import path from 'node:path';

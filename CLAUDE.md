@@ -59,3 +59,17 @@ whole map instead of hand-editing.
 - End git commit messages with the repo's `Co-Authored-By` trailer.
 - Match the surrounding code's style; `src/shared/types.ts` is heavily commented —
   read it to learn the domain model fast.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in this repo's GitHub Issues (`lcsmas/orchestra`, via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` at the repo root (created lazily) + `docs/adr/`. See `docs/agents/domain.md`.

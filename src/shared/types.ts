@@ -1,3 +1,5 @@
+import type { ContextUsage } from './context-usage.ts';
+
 export type WorkspaceStatus = 'idle' | 'running' | 'waiting' | 'error' | 'stopped';
 
 /** Active-tool label meaning "no tool is running — the model is generating".
@@ -1234,6 +1236,26 @@ export interface AgentSessionUpdateEvent extends AgentEventBase {
   permissionMode?: AgentPermissionMode;
 }
 
+/** An authoritative context-window reading, taken from the live SDK session via
+ *  `Query.getContextUsage()` — the CLI's OWN accounting, the same figure its
+ *  `/context` view shows.
+ *
+ *  Why this exists alongside `AgentTurnEndEvent.contextUsedTokens`: that figure
+ *  is INFERRED from what the last API call billed, and it carries two defects
+ *  this one does not. It needs `modelUsage` to report a `contextWindow`, which
+ *  the SDK only does on some turns — when it doesn't, the gauge renders nothing
+ *  at all rather than degrading. And it only exists once a turn has CLOSED, so
+ *  a freshly-opened pane shows no gauge until the agent has run.
+ *
+ *  The manager emits this at pane mount and after each turn. It never replaces
+ *  the turn-end fields (they remain the fallback for detached/keeper/history
+ *  sessions, which have no live `Query` to ask) — see
+ *  `src/shared/context-usage.ts` for the precedence rule. */
+export interface AgentContextUsageEvent extends AgentEventBase {
+  type: 'session/context';
+  usage: ContextUsage;
+}
+
 /** The live Remote Control state of a structured session — Orchestra's parity
  *  with Claude Code's `/remote-control` feature. When ACTIVE, the SDK worker has
  *  opened a bridge to Anthropic's relay and the session can be driven from
@@ -1507,6 +1529,7 @@ export type AgentEvent =
   | AgentUserMessageEvent
   | AgentLocalCommandEvent
   | AgentSessionUpdateEvent
+  | AgentContextUsageEvent
   | AgentRemoteControlEvent
   | AgentMcpServersEvent
   | AgentTaskEvent
@@ -1617,6 +1640,13 @@ export interface AgentSession {
   pendingPermissions: AgentPermissionRequestEvent[];
   /** The most recent turn-end, for the cost/usage footer. */
   lastTurn?: AgentTurnEndEvent;
+  /** Latest authoritative context-window reading from the live SDK session
+   *  (`session/context`). Preferred by the context gauge over the inferred
+   *  per-turn figure on {@link lastTurn}, because it always carries a window
+   *  size and exists before the first turn closes. Absent for sessions with no
+   *  live `Query` (detached keeper, history replay), where the gauge falls back
+   *  to `lastTurn`. */
+  contextUsage?: ContextUsage;
   /** Cumulative cost in USD across every turn this session, for a running
    *  total. */
   totalCostUsd: number;

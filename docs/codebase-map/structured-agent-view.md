@@ -330,12 +330,16 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   new status/compact-boundary/command-output events render the result. The
   composer autocomplete merges on-disk skills with `session.slashCommands`
   (now captured from init, along with `session.mcpServers`).
-- **CC-desktop parity in the UI** — `ContextGauge` in TurnFooter ("N% used" +
-  a small progress bar, amber ≥75% used / red ≥90%, from turn-end's
-  `contextWindow` (max `modelUsage` entry) and `contextUsedTokens` (the LAST
-  top-level assistant message's per-call usage, tracked in
-  `NormalizeContext.lastApiCallUsage` and refreshed by compact_boundary
-  `post_tokens` — never the `result` message's `usage`, which is
+- **CC-desktop parity in the UI** — `ContextGauge` in TurnFooter
+  (`TurnFooter.tsx:172`; "N% used" + a small progress bar, amber ≥75% used /
+  red ≥90%; since #16 it is a BUTTON opening the breakdown panel when the
+  reading carries one — see "Context breakdown panel" below). Since #15 it
+  prefers `AgentSession.contextUsage` — the AUTHORITATIVE
+  live reading from `Query.getContextUsage()` (see "Context gauge sourcing"
+  below) — and falls back to turn-end's `contextWindow` (max `modelUsage` entry)
+  and `contextUsedTokens` (the LAST top-level assistant message's per-call usage,
+  tracked in `NormalizeContext.lastApiCallUsage` and refreshed by
+  compact_boundary `post_tokens` — never the `result` message's `usage`, which is
   session-cumulative and pinned the gauge at 100%); **Esc interrupts** the
   in-flight turn from the composer; **drag-and-drop** files onto the composer
   (images → attachments, other files → absolute path inserted);
@@ -1015,6 +1019,204 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
 - **CSS** — three cascade layers imported in `main.tsx`: `agent-view-defaults.css` (A3
   structural) → `agent-view-structure.css` (A2 layout) → `agent-view-theme.css` (A5 design
   system, wins). Reference: `agent-view-design.md`.
+
+
+**The gauge's render decision is PURE — `describeContextGauge()`** in
+`context-usage.ts` returns `{label, level, fillPct, title, source}` (or null),
+and `ContextGauge` renders it with NO conditionals of its own. This is
+structural, not stylistic: the visibility decision used to live in the
+component, where `node --test` cannot reach it (the strip-types runner does not
+transform JSX), so reverting the null-window branch left all 844 unit tests
+GREEN while the gauge vanished in the built app. If you find yourself adding a
+conditional to the component, put it in `describeContextGauge` instead.
+
+**Renderer-level gate — `scripts/context-gauge-render-smoke.mjs`** (`pnpm run
+test:render`). The unit suite CANNOT see the gauge's own render logic: re-adding
+a `if (!window) return null` early return to `ContextGauge` — reverting the exact
+behaviour the detached-session spec depends on — leaves all 844 unit tests GREEN,
+because the behaviour lives in a React component `node --test` never renders
+(JSX is not transformed by the strip-types runner). That regression was caught
+only by driving the built app. This harness bundles the real component with
+esbuild, renders it to static HTML, and fails on that mutation (RC=1).
+
+BOTH layers are needed, and the mutation matrix shows why — neither alone
+closes the hole:
+
+| Mutation | Unit suite | Render smoke |
+|---|---|---|
+| null-window returns nothing (in `describeContextGauge`) | **3 fail** | fail |
+| a hide-branch re-added to the **component** | **853 pass, 0 fail** | **fail** |
+
+A decision moved into pure code is gated by the unit seam; a decision that
+creeps back into the component is caught only by rendering it. It also
+pins the threshold styling, the >100% unclamped number vs the clamped bar, and
+`data-context-source` for every source.
+
+## Context gauge sourcing (issue #15)
+
+The gauge has THREE possible sources, normalized to one shape by the pure
+`src/shared/context-usage.ts` (unit-tested in `context-usage.test.ts`, 20 tests;
+the breakdown lists it also normalizes are covered by `context-breakdown.test.ts`,
+25 tests):
+
+| Source | Producer | Shape | When |
+|---|---|---|---|
+| `live` | `Query.getContextUsage()` | camelCase, `isDeferred` flags | live SDK session |
+| `context-command` | `context_usage` on a `/context` result | snake_case, `kind` enum | user runs `/context` |
+| `transcript` | `activity.ts computeContextTokens` / history replay | bare token count | no live Query |
+| `turn-end` | `AgentTurnEndEvent` fields (inferred) | tokens + sometimes a window | last resort |
+
+**Provenance is readable, not inferred.** Every reading carries
+`ContextUsage.source`, `resolveContextUsage` (context-usage.ts) makes the ONE
+sourcing decision and tags which producer won, and the rendered gauge carries
+`data-context-source`. A driver can therefore assert WHICH path fed the gauge —
+necessary because a fabricated turn-end and a real live reading can render the
+same number, so the value alone proves nothing. Readable three ways:
+`window.__readAgentSession(wsId).contextUsage.source` (emitted readings),
+the `data-context-source` DOM attribute (the RESOLVED source, incl. `turn-end`),
+or `resolveContextUsage()` directly in a unit test.
+
+- **Primary — live.** `sdkGetContextUsage` (`agent-sdk.ts:1315`) calls
+  `session.q.getContextUsage()`, raced against a 3s timeout exactly like
+  `sdkListModels` (a control request to a dying subprocess parks forever).
+  `refreshContextUsage` (`:1344`) normalizes and emits `session/context`.
+  Called at **session bootstrap** (`:1088`, so a reopened pane has a gauge
+  before any turn) and **after each turn** (`:732`, at the `result` boundary).
+  Returns `null` — never a zeroed reading — on no-session/timeout/bad payload,
+  because `0` is the app's "context was reset" sentinel and would clear the badge.
+- **Bonus — `/context`.** `normalizeSdkMessage`'s `assistant` case lifts the
+  top-level `context_usage` the CLI stamps on the synthetic `/context` message
+  (`agent-events.ts:567`). Verified emitted at CLI 2.1.234; costs zero API calls.
+- **Fallback — transcript.** Two places, for two different surfaces:
+  `computeContextTokens` still drives the SIDEBAR badge over `agent:context`
+  (unchanged); and `transcriptToEvents` seeds the STRUCTURED VIEW's gauge by
+  accumulating the newest main-chain assistant line's `input + cache_creation +
+  cache_read` during history replay (`agent-transcript.ts`, via the pure
+  `transcriptContextTokens`) and appending one `session/context` event tagged
+  `transcript`. Sidechain lines are excluded and a compaction boundary resets
+  the accumulator, mirroring the on-disk recompute. Without this seed a
+  history/detached session rendered NO gauge at all: its synthetic terminal
+  turn-end carries `usage: null` and there is no live Query to ask.
+
+**Render trigger is PANE MOUNT for both paths** (spec, issue #15): a live Query
+renders immediately at mount without waiting for a turn-end, then refreshes
+after each turn; a session with no live Query renders the transcript seed at
+mount. `StripStats` therefore no longer returns null when `lastTurn` is absent,
+and `ContextGauge` no longer requires a caller-supplied WINDOW.
+
+**The transcript fallback NEVER invents a window** (audit ruling, final). A
+percentage computed against a window nobody chose is a fabricated number, and a
+confidently wrong percentage is worse than none — nobody re-checks a figure that
+looks plausible. So `transcriptContextWindow(model)` returns a window ONLY for a
+model id explicitly carrying `[1m]` (a positive statement about the window, not
+an assumption); everything else returns null and the gauge renders the ABSOLUTE
+TOKEN COUNT ("503k used"), which is true.
+
+Measured, which is why this is not a judgement call:
+- The transcript records no window at all: `message.context_management` is
+  ABSENT on all 1,543 main-chain assistant lines scanned across the largest real
+  local transcripts.
+- `message.model` carries only the BASE id (`claude-opus-4-8`), never the `[1m]`
+  alias — so an earlier "derive a default" implementation reported **251%** on a
+  real 1M session that was actually 50% full.
+- 17 of 29 workspaces in the real store have NO model set at all, so a default
+  would be pure guesswork for most of them.
+
+`sdkHistory` still passes `ws.model` into `transcriptToEvents`, because the
+WORKSPACE record is the only place the `[1m]` alias survives (`opus[1m]`,
+`claude-fable-5[1m]` are live values) — that is how a genuine 1M session gets a
+real 50% instead of a token count.
+
+**A transcript ending in a compaction boundary reports 0, not nothing.** Found
+by replaying a real 2159-line transcript whose last boundary sat 19 lines from
+EOF with no assistant turn after it: the accumulator correctly reset, then
+nothing re-seeded it, so a real detached pane rendered a BLANK gauge. It now
+emits a 0 reading — the app's existing "context was reset" sentinel
+(`activity.ts resetContext`) — which the gauge renders as a real 0%.
+
+This is an ASSUMED window, and the distinction is preserved rather than hidden:
+such readings stay tagged `transcript`, so any live reading supersedes them the
+moment a real session attaches. A model whose true window is neither 200k nor 1M
+would render a wrong percentage here — which is precisely why the live source
+exists and outranks it.
+
+Two traps the normalizer encodes, both with regression tests:
+- **Deferred categories are excluded from usage math.** Summing every category
+  row overstates usage badly (the verified capture sums 267,809 against a 200K
+  window — a >100% gauge on a session that is 37% full). The headline number
+  always comes from the producer's own total, never from summing rows;
+  `usedTokens()` exists for breakdown renderers and skips `deferred`/`free`.
+- **Precedence, not recency.** `isMoreAuthoritative` stops the transcript
+  recompute (which fires on every posttool) from clobbering the CLI's exact
+  figure seconds after it lands. A stale live reading yields after `STALE_MS`
+  (60s) so a dead SDK session cannot freeze the gauge forever.
+
+The gauge no longer clamps its NUMBER at 100% (an over-limit session reads past
+it — the state the gauge exists to warn about); only the bar fill is clamped.
+
+### Context breakdown panel (issue #16)
+
+Clicking the gauge opens a popover answering "what is filling my window?".
+
+- **Normalized data.** `ContextUsage` carries four OPTIONAL detail lists beside
+  `categories`: `memoryFiles`, `mcpTools`, `skills`, `agents`
+  (`context-usage.ts`). Both adapters populate them, which needs more than a key
+  alias — the two wire shapes genuinely diverge: `/context` sends `skills` as a
+  FLAT ARRAY while `getContextUsage()` sends an OBJECT (`{totalSkills,
+  includedSkills, tokens, skillFrontmatter[]}`) with the rows nested under
+  `skillFrontmatter`, and `agents` alternates `agent_type`/`agentType`.
+  `mapSkills` (`context-usage.ts:295`) sniffs the shape; `mapRows` DROPS rows
+  missing a required field rather than defaulting them, so a token-less row
+  never renders a measured-looking `0`. A list that yields nothing becomes
+  `undefined`, not `[]`.
+- **Render model.** `src/shared/context-breakdown.ts` (pure, unit-tested):
+  `buildContextBreakdown` (`:126`) returns ordered `used`/`deferred` rows + the
+  `free` row + the four detail lists, or **`null`** when there is nothing to
+  show — one null check for the renderer instead of five empty-list checks,
+  which is how an empty panel ships. `groupMcpToolsByServer` (`:87`) aggregates
+  tools per server (a user reads "which server costs me", not which of its 40
+  tools); nameless servers collapse into one `unknown` bucket. `truncateList`
+  backs the "+N more" tail (5 rows per list). Zero-token category rows are
+  hidden (the SDK's own docs say renderers typically do).
+- **`percentOfWindow` is a share of `maxTokens`, not of the summed rows** — so
+  the used rows deliberately do NOT total 100%, and `usedTotal` is the legend's
+  own arithmetic while the headline number stays the producer's `totalTokens`.
+- **Graceful degradation is gated on CONTENT, not `source`.** `hasBreakdown`
+  now LIVES IN `context-usage.ts` (moved there when `describeContextGauge` grew
+  an `expandable` field — importing `context-breakdown.ts` from `context-usage.ts`
+  would be circular, and the predicate reads only `ContextUsage` fields, so that
+  is its natural home; `context-breakdown.ts` re-exports it so breakdown callers
+  keep one import site). The renderer does NOT call it: per this file's own
+  "no decisions in the component" rule, the panel's show/hide is decided in the
+  pure layer as `ContextGaugeView.expandable`, where a test can execute it.
+  It is what the gauge checks: true when any category carries tokens or
+  any detail list is non-empty. The transcript fallback has only a token count,
+  so it fails the gate and the gauge renders as the pre-#16 static readout with
+  no button semantics and no hover affordance. A live reading whose categories
+  all came back zero degrades identically — there is no empty-state panel.
+- **Render coverage.** `scripts/context-gauge-render-smoke.mjs` (`pnpm run
+  test:render`) also pins the #16 show/hide against real rendered HTML: a
+  reading WITH categories must produce `.av-turn-context-btn` inside
+  `.av-ctx-anchor` with `aria-haspopup="dialog"` and NO `.av-ctx-panel` before a
+  click; a transcript reading and a live-but-all-zero reading must both stay a
+  plain div. Every pre-#16 fixture in that script carries no categories, so
+  without these cases the BUTTON path had zero render coverage. Mutation-tested
+  both ways: forcing `expandable` true fails the three degradation assertions,
+  forcing it false fails the three button assertions.
+- **UI.** `ContextBreakdownPanel.tsx` — `ContextBreakdownBody` (`:136`, the
+  markup, renderable standalone by a visual rig) inside `ContextBreakdownPanel`
+  (`:237`, the popover shell: outside-click + Escape dismiss, `role="dialog"`,
+  `aria-label="Context breakdown"`; Escape is captured and `stopPropagation`'d
+  so it does not also reach the composer's own handler). The trigger carries
+  `aria-haspopup="dialog"`/`aria-expanded` and an `aria-label` naming the
+  percentage. Deferred rows render in their OWN section with an explicit
+  "Not loaded — excluded from the totals above."
+- **CSS.** The `av-ctx-*` layer in `agent-view-theme.css:2489`, in the view's
+  existing popover language (`.av-rc-panel`'s glass on `--av-*` tokens). The
+  5-slot segment palette is assigned **by rank** (rows arrive sorted
+  largest-first), never keyed by category NAME — the CLI's names are
+  presentation strings that have changed between versions, so a name-keyed map
+  would silently collapse to one colour.
 
 ## Availability by workspace kind
 

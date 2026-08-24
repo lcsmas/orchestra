@@ -430,3 +430,201 @@ test('transcript: envelope timestamps override the clock so backfilled messages 
   assert.equal(u2.at, Date.parse('2026-08-16T14:32:30.000Z')); // inherited
   assert.ok(s.messages.every((m) => m.at !== 9_999_999));
 });
+
+// ── context gauge seeding (issue #15) ───────────────────────────────────────
+//
+// A history/detached session has NO live `Query` to ask for context usage, and
+// the synthetic terminal turn-end carries `usage: null`. Without a seed here
+// the gauge renders nothing at all at pane mount for these sessions — the
+// regression these tests pin.
+
+test('transcript: folded session carries a context reading for the gauge', () => {
+  const jsonl = lines([
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } },
+    {
+      type: 'assistant',
+      uuid: 'a1',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'hello' }],
+        usage: { input_tokens: 10, cache_creation_input_tokens: 5, cache_read_input_tokens: 40000 },
+      },
+    },
+  ]);
+  const session = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.ok(session.contextUsage, 'history session must expose a context reading');
+  assert.equal(session.contextUsage.totalTokens, 40015);
+  assert.equal(session.contextUsage.source, 'transcript');
+  // The transcript records no window and this session's model states none, so
+  // the window stays UNKNOWN — the gauge renders the true token count rather
+  // than a percentage against a window nobody chose.
+  assert.equal(session.contextUsage.maxTokens, null);
+  assert.equal(session.contextUsage.percentage, null);
+  // The turn-end it ships alongside carries no usage — proving the reading
+  // could only have come from the seed.
+  assert.equal(session.lastTurn?.usage, null);
+});
+
+test('transcript: the NEWEST assistant turn wins the context reading', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'one' }], usage: { input_tokens: 100 } } },
+    { type: 'assistant', uuid: 'a2', message: { role: 'assistant', content: [{ type: 'text', text: 'two' }], usage: { input_tokens: 900 } } },
+  ]);
+  const session = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.equal(session.contextUsage?.totalTokens, 900);
+});
+
+test('transcript: sidechain turns do not contribute to the context reading', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'main' }], usage: { input_tokens: 100 } } },
+    // A Task-subagent line: its context is not this session's window.
+    { type: 'assistant', uuid: 's1', isSidechain: true, message: { role: 'assistant', content: [{ type: 'text', text: 'sub' }], usage: { input_tokens: 77777 } } },
+  ]);
+  const session = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.equal(session.contextUsage?.totalTokens, 100);
+});
+
+test('transcript: a compaction boundary discards the stale pre-compact reading', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'big' }], usage: { input_tokens: 150000 } } },
+    { type: 'user', uuid: 'c1', isCompactSummary: true, message: { role: 'user', content: 'summary…' } },
+  ]);
+  const session = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  // Everything before the boundary is pre-compact and stale, so 150k must NOT
+  // resurface. But the reading is reported as 0 (the app's "context was reset"
+  // sentinel) rather than omitted — omitting it left a real detached pane with
+  // a blank gauge, which the spec forbids.
+  assert.equal(session.contextUsage?.totalTokens, 0);
+  assert.notEqual(session.contextUsage?.totalTokens, 150000);
+});
+
+test('transcript: a post-compaction turn re-seeds the reading', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'big' }], usage: { input_tokens: 150000 } } },
+    { type: 'user', uuid: 'c1', isCompactSummary: true, message: { role: 'user', content: 'summary…' } },
+    { type: 'assistant', uuid: 'a2', message: { role: 'assistant', content: [{ type: 'text', text: 'after' }], usage: { input_tokens: 8000 } } },
+  ]);
+  const session = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.equal(session.contextUsage?.totalTokens, 8000);
+});
+
+test('transcript: a transcript with no usage yields no context reading', () => {
+  const jsonl = lines([
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } },
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] } },
+  ]);
+  const session = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.equal(session.contextUsage, undefined);
+});
+
+test('transcript: a live reading supersedes the transcript seed on the same session', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 100 } } },
+  ]);
+  let session = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.equal(session.contextUsage?.source, 'transcript');
+  // A live session attaching later must win, even though it arrives second.
+  const liveEv: AgentEvent = {
+    type: 'session/context',
+    seq: 1,
+    at: 2_000,
+    usage: {
+      totalTokens: 73191,
+      maxTokens: 200000,
+      percentage: 37,
+      source: 'live',
+      at: 2_000,
+    },
+  };
+  session = foldEvents(session, [liveEv]);
+  assert.equal(session.contextUsage?.source, 'live');
+  assert.equal(session.contextUsage?.percentage, 37);
+});
+
+test('transcript: the window is derived from the model on the SAME line as the tokens', () => {
+  const jsonl = lines([
+    // An older line on a 1M model, superseded by a newer 200k-model line: the
+    // window must follow the line the FIGURE came from, not the first seen.
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', model: 'claude-opus-4-8[1m]', content: [{ type: 'text', text: 'one' }], usage: { input_tokens: 900000 } } },
+    { type: 'assistant', uuid: 'a2', message: { role: 'assistant', model: 'claude-opus-5', content: [{ type: 'text', text: 'two' }], usage: { input_tokens: 50000 } } },
+  ]);
+  const s = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.equal(s.contextUsage?.totalTokens, 50000);
+  // The newer line's model states no window, so the OLDER line's 1M must not
+  // leak across — an unknown window is the correct answer here.
+  assert.equal(s.contextUsage?.maxTokens, null);
+});
+
+test('transcript: a [1m] session gets the 1M window', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', model: 'claude-opus-4-8[1m]', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 400000 } } },
+  ]);
+  const s = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.equal(s.contextUsage?.maxTokens, 1_000_000);
+  assert.equal(s.contextUsage?.percentage, 40);
+});
+
+// The spec gate: a history/detached pane must be RELIABLY NON-EMPTY at mount,
+// i.e. a real percentage, never a bare token count and never nothing.
+test('transcript: history gauge is reliably non-empty with a percentage at mount', () => {
+  const jsonl = lines([
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } },
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', model: 'claude-opus-5', content: [{ type: 'text', text: 'yo' }], usage: { input_tokens: 12, cache_read_input_tokens: 48000 } } },
+  ]);
+  const s = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  const u = s.contextUsage;
+  // "Non-empty" means the gauge HAS a reading to render — a true token count
+  // when the window is unknown, a percentage when it is known. Never nothing.
+  assert.ok(u, 'gauge must have a reading at mount');
+  assert.ok(u.totalTokens > 0, 'the token figure is what renders');
+  // And it must be there BEFORE any real turn-end usage exists.
+  assert.equal(s.lastTurn?.usage, null);
+});
+
+// ── two defects found by replaying REAL transcripts, not fixtures ────────────
+
+// (1) A transcript ENDING in a compaction boundary (compaction fires, then the
+// session is detached/closed) left the gauge blank — the exact "detached pane
+// renders nothing" the spec forbids. Found on a real 2159-line transcript whose
+// last boundary sat 19 lines from EOF with no assistant turn after it.
+test('transcript: a trailing compaction boundary reports 0, not nothing', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', model: 'claude-opus-5', content: [{ type: 'text', text: 'big' }], usage: { input_tokens: 150000 } } },
+    { type: 'user', uuid: 'c1', isCompactSummary: true, message: { role: 'user', content: 'summary…' } },
+    { type: 'user', uuid: 'u2', message: { role: 'user', content: 'after the compaction' } },
+  ]);
+  const s = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.ok(s.contextUsage, 'a compacted session must still report a reading');
+  // 0 is the app's existing "context was reset" sentinel — a real reading, not absence.
+  assert.equal(s.contextUsage.totalTokens, 0);
+  // And the stale pre-compact figure must NOT resurface.
+  assert.notEqual(s.contextUsage.totalTokens, 150000);
+});
+
+// (2) The transcript records the BASE model id and never the `[1m]` alias, so
+// deriving the window from it alone reported 251% on a real 1M session that was
+// actually 50% full. The workspace record is the only place `[1m]` survives.
+test('transcript: the workspace model supplies the window, outranking the line model', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', model: 'claude-opus-4-8', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 502955 } } },
+  ]);
+  // Without it: the line's base id states no window, so NO percentage is shown
+  // (previously this fabricated 251% against an assumed 200k — the exact lie).
+  const bare = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx()));
+  assert.equal(bare.contextUsage?.maxTokens, null);
+  assert.equal(bare.contextUsage?.percentage, null);
+  // With the workspace's `[1m]` model: the true 1M window → a correct 50%.
+  const withWs = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx(), 'opus[1m]'));
+  assert.equal(withWs.contextUsage?.maxTokens, 1_000_000);
+  assert.equal(withWs.contextUsage?.percentage, 50);
+});
+
+test('transcript: a non-1m workspace model yields NO window, so tokens render', () => {
+  const jsonl = lines([
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', model: 'claude-opus-4-8', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 50000 } } },
+  ]);
+  const s = foldEvents(emptySession(), transcriptToEvents(jsonl, ctx(), 'opus'));
+  assert.equal(s.contextUsage?.totalTokens, 50000);
+  assert.equal(s.contextUsage?.maxTokens, null);
+  assert.equal(s.contextUsage?.percentage, null);
+});

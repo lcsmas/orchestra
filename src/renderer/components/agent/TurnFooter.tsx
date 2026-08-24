@@ -8,6 +8,8 @@
 
 import { useEffect, useState } from 'react';
 import type { AgentSession, AgentTurnEndEvent } from '../../../shared/types';
+import { describeContextGauge, type ContextUsage } from '../../../shared/context-usage';
+import { ContextBreakdownPanel } from './ContextBreakdownPanel';
 
 /** k/M token formatter, mirroring AccountBadge.formatTokens for consistency. */
 function formatTokens(n: number): string {
@@ -101,7 +103,7 @@ export function TurnFooter({ session }: { session: AgentSession | undefined }) {
       {typeof turn.costUsd === 'number' && (
         <Stat label="cost" value={formatCost(turn.costUsd)} title={costDetail} />
       )}
-      <ContextGauge turn={turn} />
+      <ContextGauge turn={turn} usage={session.contextUsage} />
     </div>
   );
 }
@@ -117,61 +119,119 @@ export function TurnFooter({ session }: { session: AgentSession | undefined }) {
  */
 export function StripStats({ session }: { session: AgentSession | undefined }) {
   if (!session) return null;
-  const turn = session.lastTurn;
-  // Nothing to report before the first turn closes; an errored turn is surfaced
-  // by TurnFooterError in the transcript, not repeated in the ambient strip.
-  if (!turn || turn.isError) return null;
+  // The cost readout needs a closed, non-errored turn; an errored turn is
+  // surfaced by TurnFooterError in the transcript, not repeated here. The GAUGE
+  // has no such dependency once a live SDK reading exists — that reading is
+  // available from pane mount, before any turn — so it renders on its own
+  // rather than being suppressed along with the cost.
+  const rawTurn = session.lastTurn;
+  const turn = rawTurn && !rawTurn.isError ? rawTurn : undefined;
+  if (!turn && !session.contextUsage) return null;
 
-  const usage = turn.usage;
+  const usage = turn?.usage;
   const cacheTotal = usage ? usage.cacheCreationInputTokens + usage.cacheReadInputTokens : 0;
   const costDetail = [
     `Session total ${formatCost(session.totalCostUsd)}`,
     usage &&
       `Tokens: ${formatTokens(usage.inputTokens)} in · ${formatTokens(usage.outputTokens)} out · ${formatTokens(cacheTotal)} cache`,
-    turn.numTurns > 0 && `${turn.numTurns} turn${turn.numTurns === 1 ? '' : 's'}`,
-    typeof turn.durationMs === 'number' && `Last turn took ${formatDuration(turn.durationMs)}`,
+    turn && turn.numTurns > 0 && `${turn.numTurns} turn${turn.numTurns === 1 ? '' : 's'}`,
+    typeof turn?.durationMs === 'number' && `Last turn took ${formatDuration(turn.durationMs)}`,
   ]
     .filter(Boolean)
     .join('\n');
 
   return (
     <>
-      {typeof turn.costUsd === 'number' && (
+      {typeof turn?.costUsd === 'number' && (
         <span className="av-strip-item" title={costDetail}>
           {formatCost(turn.costUsd)}
         </span>
       )}
-      <ContextGauge turn={turn} />
+      <ContextGauge turn={turn} usage={session.contextUsage} />
     </>
   );
 }
 
 /**
  * Context-used gauge — the most-felt daily gap: long sessions used to hit the
- * context ceiling with zero warning. Data comes free on every result message
- * (`contextUsedTokens` ≈ the last API call's total input+output — the per-call
- * usage, NOT the result's cumulative one, which once pinned this at 100%;
- * `contextWindow` from modelUsage). Reads as "N% used" plus a small progress
+ * context ceiling with zero warning. Reads as "N% used" plus a small progress
  * bar; quiet by default, amber past 75% used and red past 90%.
+ *
+ * TWO sources, in order of preference:
+ *   • `usage` — the live SDK reading (`session/context`, from
+ *     `Query.getContextUsage()`). The CLI's own accounting, always carries a
+ *     window, and available from pane mount.
+ *   • `turn` — the per-turn inference (`contextUsedTokens` ≈ the last API
+ *     call's input+output — the per-call usage, NOT the result's cumulative
+ *     one, which once pinned this at 100%; `contextWindow` from modelUsage).
+ *     The fallback for sessions with no live Query: detached keeper sessions
+ *     and history replay. Note its `contextWindow` is null on many turns, which
+ *     makes the gauge render nothing — the live source has no such gap.
  */
-function ContextGauge({ turn }: { turn: AgentTurnEndEvent }) {
-  const used = turn.contextUsedTokens;
-  const window = turn.contextWindow;
-  if (!used || !window || window <= 0) return null;
-  const usedPct = Math.max(0, Math.min(100, Math.round((used / window) * 100)));
-  const level = usedPct >= 90 ? 'critical' : usedPct >= 75 ? 'low' : 'ok';
-  return (
-    <div
-      className={`av-turn-stat av-turn-context av-turn-context-${level}`}
-      title={`Context: ${formatTokens(used)} of ${formatTokens(window)} tokens in use${
-        level !== 'ok' ? ' — consider /compact' : ''
-      }`}
-    >
-      <span className="av-turn-stat-value">{usedPct}%</span>
+function ContextGauge({
+  turn,
+  usage,
+}: {
+  turn: AgentTurnEndEvent | undefined;
+  usage: ContextUsage | undefined;
+}) {
+  // NO DECISIONS HERE — every one (whether to show at all, what to print, the
+  // threshold level, the bar width, the tooltip, and whether a breakdown panel
+  // is offered) is resolved by the pure `describeContextGauge`, which the unit
+  // suite CAN execute.
+  //
+  // This component used to own the "no window -> render nothing" branch, and
+  // reverting that branch left all 844 unit tests GREEN while the gauge vanished
+  // in the built app: `node --test` does not transform JSX, so nothing ever ran
+  // this function. A decision no test can execute regresses silently. Keep this
+  // component dumb — if you find yourself adding a conditional here, put it in
+  // describeContextGauge instead. (#16 followed that rule: `view.expandable` is
+  // decided there, not by a `hasBreakdown` call sited in this file.)
+  //
+  // The one thing that MUST stay here is the open/closed state — it is UI state,
+  // not a render decision, and the hook is declared before the early return so
+  // hook order is unconditional.
+  const [open, setOpen] = useState(false);
+  const view = describeContextGauge(usage, turn);
+  if (!view) return null;
+  const cls = `av-turn-stat av-turn-context av-turn-context-${view.level}`;
+  const body = (
+    <>
+      <span className="av-turn-stat-value">{view.label}</span>
       <span className="av-turn-stat-label">used</span>
       <span className="av-turn-context-bar" aria-hidden="true">
-        <span className="av-turn-context-fill" style={{ width: `${usedPct}%` }} />
+        <span className="av-turn-context-fill" style={{ width: `${view.fillPct}%` }} />
       </span>
+    </>
+  );
+
+  // No breakdown to show (transcript fallback, or a live reading with nothing in
+  // it): render exactly what shipped before #16 — a static readout, no button
+  // semantics, no empty panel. `data-context-source` is emitted in BOTH branches
+  // so a driver can assert provenance either way.
+  if (!view.expandable || !usage) {
+    return (
+      <div className={cls} data-context-source={view.source} title={view.title}>
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <div className="av-ctx-anchor">
+      <button
+        type="button"
+        className={`${cls} av-turn-context-btn`}
+        data-context-source={view.source}
+        title={view.title}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={`Context ${view.label} used — show breakdown`}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {body}
+      </button>
+      {open && <ContextBreakdownPanel usage={usage} onDismiss={() => setOpen(false)} />}
     </div>
   );
 }
