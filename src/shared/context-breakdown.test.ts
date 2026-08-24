@@ -132,6 +132,116 @@ test('a list that yields no usable rows becomes undefined, not an empty array', 
   assert.equal(u.skills, undefined);
 });
 
+// ── issue #31: fields the .d.ts does not declare, and empty-vs-absent ───────
+// These fixtures are lifted from a LIVE getContextUsage() capture at CLI
+// 2.1.241 (verifier's raw payload). The bug they pin was invisible to every
+// test written from sdk.d.ts, because the field is undeclared there — which is
+// the whole lesson: an adapter typed from declarations loses whatever the
+// runtime sends beyond them.
+
+test('#31: pluginName survives normalization (undeclared in sdk.d.ts, sent by the runtime)', () => {
+  const u = normalizeLiveContextUsage(
+    {
+      totalTokens: 10,
+      rawMaxTokens: 200000,
+      skills: {
+        totalSkills: 2,
+        includedSkills: 2,
+        tokens: 28,
+        skillFrontmatter: [
+          // Verbatim shape from the live capture.
+          { name: 'slack:channel-digest', source: 'plugin', pluginName: 'slack', tokens: 22 },
+          { name: 'retro', source: 'userSettings', tokens: 6 },
+        ],
+      },
+    },
+    0,
+  )!;
+  assert.deepEqual(u.skills, [
+    { name: 'slack:channel-digest', source: 'plugin', pluginName: 'slack', tokens: 22 },
+    { name: 'retro', source: 'userSettings', tokens: 6 },
+  ]);
+});
+
+// The disambiguation this field exists for. Today's payloads dodge it because
+// plugin skills carry a `slack:` prefix in `name`; a plugin shipping a bare
+// name would collide, and without pluginName the two rows are indistinguishable.
+test('#31: pluginName distinguishes same-named skills from different plugins', () => {
+  const u = normalizeLiveContextUsage(
+    {
+      totalTokens: 10,
+      rawMaxTokens: 200000,
+      skills: {
+        skillFrontmatter: [
+          { name: 'deploy', source: 'plugin', pluginName: 'alpha', tokens: 12 },
+          { name: 'deploy', source: 'plugin', pluginName: 'beta', tokens: 15 },
+        ],
+      },
+    },
+    0,
+  )!;
+  assert.equal(u.skills?.length, 2);
+  assert.deepEqual(u.skills?.map((s) => s.pluginName), ['alpha', 'beta']);
+});
+
+test('#31: a non-plugin skill simply omits pluginName rather than carrying an empty one', () => {
+  const u = normalizeLiveContextUsage(
+    {
+      totalTokens: 10,
+      rawMaxTokens: 200000,
+      skills: { skillFrontmatter: [{ name: 'retro', source: 'userSettings', tokens: 6 }] },
+    },
+    0,
+  )!;
+  assert.equal('pluginName' in u.skills![0], false);
+});
+
+// EMPTY vs ABSENT. Verified on the live capture: `agents` arrives as [] while
+// systemTools / deferredBuiltinTools / systemPromptSections are absent entirely.
+test('#31: an empty producer list stays empty, and an absent one stays undefined', () => {
+  const u = normalizeLiveContextUsage(
+    { totalTokens: 10, rawMaxTokens: 200000, agents: [] },
+    0,
+  )!;
+  assert.deepEqual(u.agents, [], 'agents:[] means "asked, none configured"');
+  assert.equal(u.memoryFiles, undefined, 'an omitted key means "not reported at all"');
+});
+
+// A list whose rows all fail to parse is a PARSE FAILURE, not a producer
+// statement of emptiness — it must not masquerade as "asked, none configured".
+test('#31: junk-only rows still collapse to undefined, not to empty', () => {
+  const u = normalizeLiveContextUsage(
+    { totalTokens: 10, rawMaxTokens: 200000, agents: [{ bogus: true }, null] },
+    0,
+  )!;
+  assert.equal(u.agents, undefined);
+});
+
+// The optional arms the real payload does NOT send. Absent must be handled as
+// cleanly as present — this is the "harden" half of #31.
+test('#31: optional arms absent from a real payload do not break normalization', () => {
+  const u = normalizeLiveContextUsage(
+    { totalTokens: 74938, rawMaxTokens: 200000, categories: [{ name: 'Messages', tokens: 10 }] },
+    0,
+  )!;
+  assert.equal(u.memoryFiles, undefined);
+  assert.equal(u.mcpTools, undefined);
+  assert.equal(u.skills, undefined);
+  assert.equal(u.agents, undefined);
+  assert.equal(u.totalTokens, 74938, 'the headline number is unaffected by absent detail lists');
+});
+
+// Empty lists must not make a reading look expandable — the panel would open
+// with nothing in it, the exact failure #16 exists to prevent.
+test('#31: empty detail lists do not make a reading expandable', () => {
+  const u = normalizeLiveContextUsage(
+    { totalTokens: 10, rawMaxTokens: 200000, agents: [], memoryFiles: [] },
+    0,
+  )!;
+  assert.equal(hasBreakdown(u), false);
+  assert.equal(buildContextBreakdown(u), null);
+});
+
 // ── hasBreakdown: the graceful-degradation gate ─────────────────────────────
 
 test('hasBreakdown is false for the transcript source and for undefined', () => {

@@ -88,6 +88,17 @@ export interface ContextSkill {
    *  'plugin', 'syncedSkills'. */
   source: string;
   tokens: number;
+  /** Owning plugin, for `source: 'plugin'` rows. UNDECLARED in sdk.d.ts 0.3.241
+   *  but genuinely sent by the runtime — verified on a live capture at CLI
+   *  2.1.241, where 23 of 50 skill rows carried it
+   *  (`{name:'slack:channel-digest', source:'plugin', pluginName:'slack'}`).
+   *
+   *  Kept because it is the ONLY disambiguator between same-named skills from
+   *  different plugins. Today's payloads happen not to collide (plugin skills
+   *  carry a `slack:` prefix inside `name`), so dropping it renders nothing
+   *  wrong YET — which is exactly why it needs carrying now rather than after a
+   *  plugin ships a bare colliding name. Optional: non-plugin rows omit it. */
+  pluginName?: string;
 }
 
 /** One subagent definition counted against the window. Same structural
@@ -265,9 +276,23 @@ function mapCommandCategories(raw: unknown): ContextUsageCategory[] | undefined 
  *  Rows that don't produce every required field are DROPPED rather than
  *  defaulted: a memory file with no path or a tool with no token count is not
  *  something the panel can render honestly, and a `0`/`''` placeholder would
- *  read as a measured value. Returns `undefined` (not `[]`) when nothing
- *  survives, so "the producer sent no list" and "every row was junk" collapse
- *  to the one state the renderer already handles: show nothing. */
+ *  read as a measured value.
+ *
+ *  EMPTY vs ABSENT is preserved (issue #31): a producer that sends `agents: []`
+ *  is saying "asked, none configured", which is different from omitting the key
+ *  ("this CLI does not report agents at all"). Verified on a live capture at
+ *  CLI 2.1.241: `agents` arrives as `[]` while `systemTools`,
+ *  `deferredBuiltinTools` and `systemPromptSections` are absent entirely — two
+ *  genuinely different facts that this function used to flatten into
+ *  `undefined`.
+ *
+ *  NOTHING CURRENTLY BEHAVES DIFFERENTLY on the distinction, and that is stated
+ *  rather than implied: every consumer does `?? []` and `hasBreakdown` tests
+ *  `.length`, which is falsy for both. It is preserved because destroying
+ *  information at a wire boundary is how a later question ("does this CLI
+ *  report agents?") becomes unanswerable, not because a renderer reads it
+ *  today. Junk-only input still collapses to `undefined` — that is a parse
+ *  failure, not a producer statement. */
 function mapRows<T>(raw: unknown, read: (row: Record<string, unknown>) => T | null): T[] | undefined {
   if (!Array.isArray(raw)) return undefined;
   const out: T[] = [];
@@ -276,7 +301,10 @@ function mapRows<T>(raw: unknown, read: (row: Record<string, unknown>) => T | nu
     const mapped = read(item as Record<string, unknown>);
     if (mapped) out.push(mapped);
   }
-  return out.length ? out : undefined;
+  // An empty INPUT array is a real answer; an array whose every row failed to
+  // parse is not.
+  if (!out.length) return raw.length === 0 ? ([] as T[]) : undefined;
+  return out;
 }
 
 function mapMemoryFiles(raw: unknown): ContextMemoryFile[] | undefined {
@@ -312,7 +340,11 @@ function mapSkills(raw: unknown): ContextSkill[] | undefined {
     const name = str(r.name);
     const tokens = num(r.tokens);
     if (!name || tokens == null) return null;
-    return { name, source: str(r.source) ?? '', tokens };
+    // `pluginName` is read off the wire, NOT off the .d.ts — typing this adapter
+    // from the declarations is precisely how the field was lost (issue #31).
+    const pluginName = str(r.pluginName);
+    return pluginName ? { name, source: str(r.source) ?? '', tokens, pluginName }
+                      : { name, source: str(r.source) ?? '', tokens };
   });
 }
 

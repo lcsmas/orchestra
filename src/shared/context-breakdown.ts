@@ -22,6 +22,9 @@ import {
   type ContextUsage,
   type ContextUsageCategory,
   type ContextMcpTool,
+  type ContextMemoryFile,
+  type ContextSkill,
+  type ContextAgent,
 } from './context-usage.ts';
 
 // NOTE FOR ANYONE DRIVING THIS WITH HAND-BUILT FIXTURES: a
@@ -68,10 +71,16 @@ export interface ContextBreakdown {
    *  `totalTokens` (which is authoritative and is what the gauge shows); this
    *  is only the legend's own arithmetic. */
   usedTotal: number;
-  memoryFiles: { path: string; type: string; tokens: number }[];
+  /** Detail lists, REUSING the normalized row types rather than re-declaring
+   *  them inline. They were hand-duplicated here originally, which is the shape
+   *  of issue #31: a structurally-identical copy silently drops whatever the
+   *  source type gains (there, `ContextSkill.pluginName`), and the loss is
+   *  invisible until a renderer reaches for the missing field. Referencing the
+   *  interfaces makes that class of drift a compile error instead. */
+  memoryFiles: ContextMemoryFile[];
   mcpServers: McpServerGroup[];
-  skills: { name: string; source: string; tokens: number }[];
-  agents: { agentType: string; source: string; tokens: number }[];
+  skills: ContextSkill[];
+  agents: ContextAgent[];
 }
 
 /** Rows carrying zero tokens are dropped: the CLI emits them (the SDK's own
