@@ -56,6 +56,49 @@ export interface ContextUsageCategory {
   kind: 'used' | 'free' | 'buffer' | 'deferred';
 }
 
+/** One CLAUDE.md-family file loaded into the window. Both wire shapes agree on
+ *  this row (`memory_files` / `memoryFiles`), field-for-field. */
+export interface ContextMemoryFile {
+  path: string;
+  /** Display label of the source, e.g. "Project" or "User" — the producer's
+   *  own wording, not an enum we own. */
+  type: string;
+  tokens: number;
+}
+
+/** One MCP tool schema counted against the window. `serverName` is what makes
+ *  the panel groupable: a user reads "which SERVER is costing me", not which of
+ *  its forty tools. */
+export interface ContextMcpTool {
+  name: string;
+  serverName: string;
+  tokens: number;
+}
+
+/** One skill's frontmatter loaded into the window.
+ *
+ *  NOTE the two producers disagree structurally here, which is why this is
+ *  normalized rather than passed through: `/context` sends a FLAT ARRAY of
+ *  these rows, while `getContextUsage()` sends an OBJECT
+ *  (`{totalSkills, includedSkills, tokens, skillFrontmatter[]}`) with the rows
+ *  nested under `skillFrontmatter`. Both adapters emit this flat row. */
+export interface ContextSkill {
+  name: string;
+  /** Raw source identifier as the producer sends it, e.g. 'userSettings',
+   *  'plugin', 'syncedSkills'. */
+  source: string;
+  tokens: number;
+}
+
+/** One subagent definition counted against the window. Same structural
+ *  divergence as skills: `agent_type` on the command shape, `agentType` on the
+ *  live one. */
+export interface ContextAgent {
+  agentType: string;
+  source: string;
+  tokens: number;
+}
+
 /** A context-window reading, normalized from any of the three sources. */
 export interface ContextUsage {
   /** Tokens in use. Unclamped: MAY exceed {@link maxTokens} when the session is
@@ -73,6 +116,16 @@ export interface ContextUsage {
   model?: string;
   /** By-category breakdown. Absent for the transcript source, which has none. */
   categories?: ContextUsageCategory[];
+  /** Memory files (CLAUDE.md family) loaded into the window. Absent for the
+   *  transcript source, and absent when the producer sent an empty list —
+   *  a breakdown renderer treats absent and empty identically (show nothing). */
+  memoryFiles?: ContextMemoryFile[];
+  /** MCP tool schemas counted against the window. */
+  mcpTools?: ContextMcpTool[];
+  /** Skill frontmatter loaded into the window. */
+  skills?: ContextSkill[];
+  /** Subagent definitions loaded into the window. */
+  agents?: ContextAgent[];
   source: ContextUsageSource;
   /** Epoch ms this reading was taken, so a stale one can be superseded. */
   at: number;
@@ -129,6 +182,12 @@ export interface LiveContextUsagePayload {
   rawMaxTokens?: unknown;
   model?: unknown;
   categories?: unknown;
+  memoryFiles?: unknown;
+  mcpTools?: unknown;
+  /** OBJECT on this shape: `{totalSkills, includedSkills, tokens,
+   *  skillFrontmatter[]}` — not the flat array `/context` sends. */
+  skills?: unknown;
+  agents?: unknown;
 }
 
 /** The snake_case `context_usage` payload the CLI stamps on a `/context`
@@ -138,6 +197,11 @@ export interface ContextCommandUsagePayload {
   raw_max_tokens?: unknown;
   model?: unknown;
   categories?: unknown;
+  memory_files?: unknown;
+  mcp_tools?: unknown;
+  /** FLAT ARRAY on this shape — see {@link ContextSkill}. */
+  skills?: unknown;
+  agents?: unknown;
 }
 
 function num(v: unknown): number | null {
@@ -196,6 +260,71 @@ function mapCommandCategories(raw: unknown): ContextUsageCategory[] | undefined 
   return out.length ? out : undefined;
 }
 
+/** Map a detail list from either wire shape via a per-row reader.
+ *
+ *  Rows that don't produce every required field are DROPPED rather than
+ *  defaulted: a memory file with no path or a tool with no token count is not
+ *  something the panel can render honestly, and a `0`/`''` placeholder would
+ *  read as a measured value. Returns `undefined` (not `[]`) when nothing
+ *  survives, so "the producer sent no list" and "every row was junk" collapse
+ *  to the one state the renderer already handles: show nothing. */
+function mapRows<T>(raw: unknown, read: (row: Record<string, unknown>) => T | null): T[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: T[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const mapped = read(item as Record<string, unknown>);
+    if (mapped) out.push(mapped);
+  }
+  return out.length ? out : undefined;
+}
+
+function mapMemoryFiles(raw: unknown): ContextMemoryFile[] | undefined {
+  return mapRows(raw, (r) => {
+    const path = str(r.path);
+    const tokens = num(r.tokens);
+    if (!path || tokens == null) return null;
+    return { path, type: str(r.type) ?? '', tokens };
+  });
+}
+
+/** Both shapes name the server differently (`server_name` vs `serverName`), so
+ *  read both rather than writing two near-identical mappers. */
+function mapMcpTools(raw: unknown): ContextMcpTool[] | undefined {
+  return mapRows(raw, (r) => {
+    const name = str(r.name);
+    const tokens = num(r.tokens);
+    if (!name || tokens == null) return null;
+    return { name, serverName: str(r.serverName) ?? str(r.server_name) ?? '', tokens };
+  });
+}
+
+/** Skills need a shape sniff, not just a key alias: `/context` sends the flat
+ *  array while `getContextUsage()` nests the same rows under an object's
+ *  `skillFrontmatter`. Unwrap the object form, then map identically. */
+function mapSkills(raw: unknown): ContextSkill[] | undefined {
+  const rows = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === 'object'
+      ? (raw as { skillFrontmatter?: unknown }).skillFrontmatter
+      : undefined;
+  return mapRows(rows, (r) => {
+    const name = str(r.name);
+    const tokens = num(r.tokens);
+    if (!name || tokens == null) return null;
+    return { name, source: str(r.source) ?? '', tokens };
+  });
+}
+
+function mapAgents(raw: unknown): ContextAgent[] | undefined {
+  return mapRows(raw, (r) => {
+    const agentType = str(r.agentType) ?? str(r.agent_type);
+    const tokens = num(r.tokens);
+    if (!agentType || tokens == null) return null;
+    return { agentType, source: str(r.source) ?? '', tokens };
+  });
+}
+
 /** Normalize a `Query.getContextUsage()` response.
  *
  *  Returns `null` when the payload carries no usable token total — a wedged or
@@ -223,6 +352,10 @@ export function normalizeLiveContextUsage(
     percentage: computePercentage(totalTokens, maxTokens),
     model: str(payload.model),
     categories: mapLiveCategories(payload.categories),
+    memoryFiles: mapMemoryFiles(payload.memoryFiles),
+    mcpTools: mapMcpTools(payload.mcpTools),
+    skills: mapSkills(payload.skills),
+    agents: mapAgents(payload.agents),
     source: 'live',
     at,
   };
@@ -244,6 +377,10 @@ export function normalizeContextCommandUsage(
     percentage: computePercentage(totalTokens, maxTokens),
     model: str(payload.model),
     categories: mapCommandCategories(payload.categories),
+    memoryFiles: mapMemoryFiles(payload.memory_files),
+    mcpTools: mapMcpTools(payload.mcp_tools),
+    skills: mapSkills(payload.skills),
+    agents: mapAgents(payload.agents),
     source: 'context-command',
     at,
   };
@@ -387,6 +524,25 @@ export function resolveContextUsage(
  *  bar width are all gated by the existing unit seam.
  *
  *  Returns `null` when there is nothing to show. */
+/** Does this reading carry anything a breakdown panel could show?
+ *
+ *  The transcript source never does (it has a token count and nothing else), so
+ *  this is what the gauge gates its "click for detail" affordance on — the
+ *  issue's "degrade gracefully: no empty panel" requirement. Checked on
+ *  CONTENT, not on `source`: a live reading from a CLI that returned no
+ *  categories must also degrade, and a future source that does carry a
+ *  breakdown gets the panel for free. */
+export function hasBreakdown(usage: ContextUsage | undefined): boolean {
+  if (!usage) return false;
+  return !!(
+    usage.categories?.some((c) => c.tokens > 0) ||
+    usage.memoryFiles?.length ||
+    usage.mcpTools?.length ||
+    usage.skills?.length ||
+    usage.agents?.length
+  );
+}
+
 export interface ContextGaugeView {
   /** What the value reads: a percentage when the window is known, otherwise the
    *  absolute token count — never a percentage against an invented window. */
@@ -405,6 +561,19 @@ export interface ContextGaugeView {
   /** Which producer fed this frame, mirrored to `data-context-source` so a
    *  driver can assert provenance rather than infer it from the number. */
   source: ContextUsageSource;
+  /** Whether this reading carries a by-category/detail breakdown worth opening
+   *  a panel for (#16). The renderer turns the gauge into a button only when
+   *  this is true; otherwise it stays the static readout it was before #16.
+   *
+   *  Decided HERE rather than in the component on purpose: this file's own note
+   *  says a decision the unit suite cannot execute regresses silently (the
+   *  null-window branch did exactly that, green tests and a vanished gauge), and
+   *  `node --test` never runs the JSX. So the panel's show/hide lives in the
+   *  pure layer where a test can reach it.
+   *
+   *  Gated on CONTENT, not on `source`: a live reading whose categories all came
+   *  back zero has nothing to show and must degrade like the transcript path. */
+  expandable: boolean;
 }
 
 /** Format a token count the way the gauge prints it (k/M), mirroring the
@@ -446,6 +615,11 @@ export function describeContextGauge(
           }`
         : `Context: ${formatTokensShort(used)} tokens in use (window size unknown — no live session to ask)`,
     source: resolved.source,
+    // Read off the ORIGINAL `usage`, not `resolved`: the turn-end inference has
+    // no categories at all, so a breakdown can only ever come from an emitted
+    // reading. `hasBreakdown` is the single definition of "is there anything to
+    // show" — see context-breakdown.ts.
+    expandable: hasBreakdown(usage),
   };
 }
 

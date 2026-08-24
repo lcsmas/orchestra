@@ -144,6 +144,23 @@ strip-scoped rules (40px bar, `used` label hidden). Stats come from
 `StripStats` (`TurnFooter.tsx`), which shares its formatters with the retained
 `TurnFooter` (still the error-state renderer).
 
+The gauge is a **button** (`.av-turn-context-btn`, inside `.av-ctx-anchor`)
+whenever its reading carries a breakdown, opening the `av-ctx-*` popover
+(`ContextBreakdownPanel.tsx`, issue #16): `.av-ctx-panel` (the `.av-rc-panel`
+glass language on `--av-*` tokens, `role="dialog"`, `max-height:60vh` with
+internal scroll) > `.av-ctx-head`/`-title`/`-total` + `.av-ctx-model` >
+`.av-ctx-bar` > `.av-ctx-seg{-1..-5}` (segment palette assigned BY RANK, never
+by category name — the CLI's names are presentation strings that drift between
+versions) > `.av-ctx-legend`/`-row` with `.av-ctx-dot` + `-legend-name`/
+`-legend-tokens`/`-legend-pct`, `.av-ctx-free`, then `.av-ctx-section`
+(+`-title`/`-count`) > `.av-ctx-list`/`-row` (`-label`/`-meta`/`-tokens`,
+`-more` for the "+N more" tail) for memory files / MCP servers / skills /
+agents, and a trailing `.av-ctx-deferred` section closed by `.av-ctx-note`.
+The button keeps the readout's quiet look — button chrome fully reset, hover
+tint + the standard `:focus-visible` ring only. When the reading has NO
+breakdown (transcript fallback) the gauge stays a plain `div` with no button
+semantics: there is deliberately no empty-state panel.
+
 The stack holds the pasted-image
 strip above `.av-composer-cm`; the column's `gap:4px` is the ONLY vertical space
 between thumbnails and text — attachments used to be a `width:100%` wrapping sibling of

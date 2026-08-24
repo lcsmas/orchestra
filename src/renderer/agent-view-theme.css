@@ -2486,6 +2486,99 @@ h6.av-md-h {
 .av-turn-context-critical .av-turn-stat-value { color: var(--av-error); }
 .av-turn-context-critical .av-turn-context-fill { background: var(--av-error); }
 
+/* ── Context breakdown panel (issue #16) ───────────────────────────────────
+   Clicking the gauge opens a popover answering "what is filling my window?":
+   a segmented bar + legend of the USED categories, then memory files, MCP
+   servers, skills, agents, and a separate DEFERRED section. Popover language
+   is the view's existing one (.av-rc-panel / the app's branch-popover on
+   --av-* tokens). Live-session readings only — the transcript fallback has no
+   breakdown, so the trigger degrades to a plain readout and this never mounts. */
+.av-ctx-anchor { position: relative; display: inline-flex; align-items: center; }
+/* The gauge becomes a button when a breakdown exists. It must keep reading as
+   the same quiet readout, so the button chrome is fully reset and only a hover
+   tint + the standard focus ring mark it as interactive. */
+.av-turn-context-btn {
+  appearance: none; background: none; border: 0; padding: 2px 4px; margin: -2px -4px;
+  border-radius: 6px; font: inherit; color: inherit; cursor: pointer;
+  transition: background 140ms var(--av-ease);
+}
+.av-turn-context-btn:hover { background: color-mix(in srgb, var(--av-text) 8%, transparent); }
+.av-turn-context-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--av-focus-ring); }
+
+.av-ctx-panel {
+  position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 40;
+  width: 320px; max-height: 60vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px; border-radius: var(--radius, 8px);
+  border: 1px solid var(--av-hairline-strong);
+  background: var(--av-surface-overlay, var(--av-surface-raised));
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+  color: var(--av-text); text-align: left;
+  animation: av-menu-in 140ms var(--av-ease-out);
+}
+@media (prefers-reduced-motion: reduce) { .av-ctx-panel { animation: none; } }
+
+.av-ctx-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.av-ctx-title { font-size: var(--av-fs-small); font-weight: 600; color: var(--av-text); }
+.av-ctx-total { font-size: var(--av-fs-small); color: var(--av-text-dim); font-variant-numeric: tabular-nums; }
+.av-ctx-model {
+  font-family: var(--av-mono, ui-monospace, monospace);
+  font-size: var(--av-fs-tiny, 11px); color: var(--av-text-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: -4px;
+}
+
+/* Segmented bar: one span per used category, width = share of the WINDOW. The
+   track's own background is the free space, so a producer that sends no
+   `free` row still renders a correct bar. */
+.av-ctx-bar {
+  display: flex; width: 100%; height: 6px; border-radius: 3px;
+  background: var(--av-hairline-strong); overflow: hidden;
+}
+.av-ctx-seg { display: block; height: 100%; }
+/* A 5-slot palette assigned by rank (largest category first), not by name —
+   the CLI's category names are presentation strings that change between
+   versions, so a name-keyed map would silently collapse to one colour. */
+.av-ctx-seg-1 { background: var(--av-tool-active); }
+.av-ctx-seg-2 { background: var(--av-task); }
+.av-ctx-seg-3 { background: var(--av-user); }
+.av-ctx-seg-4 { background: var(--av-warn); }
+.av-ctx-seg-5 { background: var(--av-tool); }
+
+.av-ctx-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.av-ctx-legend-row {
+  display: flex; align-items: center; gap: 7px;
+  font-size: var(--av-fs-small); color: var(--av-text-dim);
+}
+.av-ctx-dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.av-ctx-legend-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.av-ctx-legend-tokens { flex: none; color: var(--av-text); font-variant-numeric: tabular-nums; }
+.av-ctx-legend-pct {
+  flex: none; min-width: 42px; text-align: right;
+  color: var(--av-text-faint); font-variant-numeric: tabular-nums;
+}
+.av-ctx-free { font-size: var(--av-fs-small); color: var(--av-text-faint); }
+
+.av-ctx-section { display: flex; flex-direction: column; gap: 4px; padding-top: 6px; border-top: 1px solid var(--av-hairline-faint); }
+.av-ctx-section-title {
+  margin: 0; display: flex; align-items: center; gap: 6px;
+  font-size: var(--av-fs-tiny, 11px); font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--av-text-faint);
+}
+.av-ctx-section-count {
+  font-weight: 500; letter-spacing: 0; color: var(--av-text-faint);
+  background: var(--av-code-bg); border-radius: 999px; padding: 0 6px;
+}
+.av-ctx-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.av-ctx-list-row {
+  display: flex; align-items: baseline; gap: 7px;
+  font-size: var(--av-fs-small); color: var(--av-text-dim);
+}
+.av-ctx-list-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.av-ctx-list-meta { flex: none; color: var(--av-text-faint); font-size: var(--av-fs-tiny, 11px); }
+.av-ctx-list-tokens { flex: none; color: var(--av-text); font-variant-numeric: tabular-nums; }
+.av-ctx-list-more { color: var(--av-text-faint); font-style: italic; }
+.av-ctx-note { margin: 2px 0 0; font-size: var(--av-fs-tiny, 11px); color: var(--av-text-faint); line-height: 1.35; }
+
 /* Transient turn status in the running footer ("Compacting…", "API 529 —
    retrying in 8s"). */
 .av-turn-status-notice { color: var(--av-warn); }
