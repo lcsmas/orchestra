@@ -127,8 +127,16 @@ check_package_json() {
   local when="$1"
   [ "$DRY_RUN" != "1" ] || { printf '  [dry-run] check package.json integrity (%s)\n' "$when"; return 0; }
 
-  local bad=""
-  node -e '
+  # The verdict rides on node's EXIT CODE, never on whether it printed anything.
+  # An earlier version decided on captured stdout alone; any death before the
+  # first console.log (OOM-kill — plausible with ~30 agents on this box — an
+  # unwritable redirect target, a bad NODE_OPTIONS) then produced no output and
+  # was read as success, printing "package.json intact" over a stripped file.
+  # A guard whose instrument can die into a PASS is worse than no guard.
+  # No temp file: command substitution keeps it in-process, so there is nothing
+  # for a sibling to pre-create and nothing to leak on an early return.
+  local bad rc
+  bad="$(node -e '
     const fs = require("node:fs");
     let raw, pkg;
     try { raw = fs.readFileSync("package.json", "utf8"); }
@@ -137,24 +145,51 @@ check_package_json() {
     catch (e) { console.log("does not parse as JSON: " + e.message); process.exit(1); }
     // The keys electron-builder strips for the bundle. Their absence is the
     // signature of a stripped file landing on the source tree.
+    // NOTE: the ">= 5 scripts" floor and the "build" key are assumptions about
+    // THIS repo shape. Pruning devDependencies, moving build config out to
+    // electron-builder.yml, or legitimately dropping below 5 scripts would each
+    // trip this — intentionally, so the layout change gets a deliberate edit here.
     const missing = ["scripts", "devDependencies", "build"].filter(k => pkg[k] == null);
     if (missing.length) { console.log("missing top-level key(s): " + missing.join(", ")); process.exit(1); }
     if (typeof pkg.scripts.release !== "string") { console.log("scripts.release is absent"); process.exit(1); }
     const n = Object.keys(pkg.scripts).length;
     if (n < 5) { console.log("scripts block has only " + n + " entr(y|ies)"); process.exit(1); }
-  ' > /tmp/.orchestra-pkgcheck.$$ 2>&1 || bad="$(cat /tmp/.orchestra-pkgcheck.$$)"
-  rm -f /tmp/.orchestra-pkgcheck.$$
+  ' 2>&1)"; rc=$?
 
-  if [ -n "$bad" ]; then
-    echo "error: package.json integrity check failed ($when): $bad" >&2
-    echo "       This is issue #40. The working-tree file has been mangled — the" >&2
-    echo "       shipped tag is almost certainly fine. Inspect, then restore with:" >&2
-    echo "           git checkout HEAD -- package.json" >&2
-    echo "       and report the observed diff on https://github.com/lcsmas/orchestra/issues/40" >&2
+  # rc != 0 fails the check whether or not anything was captured. A nonzero exit
+  # with empty output means the checker itself died — report that as a failure of
+  # the CHECK, not of package.json, so nobody reads it as a corrupt tree.
+  if [ "$rc" != 0 ]; then
+    if [ -z "$bad" ]; then
+      echo "error: package.json integrity check could not run ($when): the checker exited $rc without output." >&2
+      echo "       Treat package.json as UNVERIFIED — inspect it by hand before trusting this release." >&2
+    else
+      echo "error: package.json integrity check failed ($when): $bad" >&2
+      echo "       This is issue #40. The working-tree file has been mangled — the" >&2
+      echo "       shipped tag is almost certainly fine. Inspect, then restore with:" >&2
+      echo "           git checkout HEAD -- package.json" >&2
+      echo "       and report the observed diff on https://github.com/lcsmas/orchestra/issues/40" >&2
+    fi
     return 1
   fi
   echo "  ok: package.json intact ($when)"
 }
+
+# Any `set -e` abort between the bump and the end-of-run check would skip the
+# check entirely. The sharpest case is the build-failure path: `pnpm run build`
+# IS electron-builder, the only named producer of the corrupt content, and that
+# path tells the operator to `git reset --hard HEAD~1` — which would discard the
+# mangled package.json and destroy the evidence #40 exists to collect. So check
+# on the way out too, however we leave.
+_pkg_check_on_exit() {
+  local ec=$?
+  trap - EXIT                      # never re-enter, whatever the handler does
+  [ "${_PKG_CHECKED_AT_END:-0}" = 1 ] || check_package_json "on exit" || true
+  exit "$ec"                       # preserve the original exit code
+}
+# Armed after the bump, not here: before the bump there is nothing to protect,
+# and a preflight refusal (dirty tree, no gh auth) would otherwise print a
+# spurious "package.json intact" on its way out.
 
 # ---------------------------------------------------------------- preflight ---
 say "Preflight"
@@ -263,6 +298,10 @@ check_package_json "after version bump" || {
   exit 1
 }
 
+# From here on, every exit path — including a `set -e` abort inside the build —
+# passes through the integrity check on its way out (see F3 rationale above).
+trap _pkg_check_on_exit EXIT
+
 # ------------------------------------------------------------ build AppImage ---
 if [ "$CI_ONLY" = 0 ]; then
   say "Build AppImage (local)"
@@ -341,6 +380,7 @@ fi
 # at this point — this does not unship anything, it tells you the worktree needs
 # restoring instead of leaving you to discover it when the next `pnpm run` fails.
 say "Verify package.json integrity"
+_PKG_CHECKED_AT_END=1          # the EXIT trap must not re-run this check
 if ! check_package_json "end of release"; then
   echo "       The release itself completed; only the working tree is affected." >&2
   exit 1
