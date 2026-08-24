@@ -435,7 +435,22 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   omitting it (the pre-fix `['user','project']`) silently disabled all of them in
   structured mode — the branch never auto-renamed and peer messages never reached the
   agent. The terminal path spawns `claude` with no source restriction, so it loads all
-  three by default; matching it requires `'local'`. `buildSdkEnv` sets
+  three by default; matching it requires `'local'`. **An inline `settings` object
+  pins `crossSessionInbound: 'hold'`** (`src/shared/cross-session-inbound.ts`) so an
+  unsolicited cross-session peer message can never auto-run a paid turn: any local
+  Claude session can address an Orchestra agent by peer name (`ListAgents` →
+  `SendMessage`) over the CLI's messaging socket, and the CLI's UNSET default is *mode
+  parity* — bypass↔bypass auto-delivers, which is exactly Orchestra's configuration, so
+  the receiver started a full turn on its own ($0.13 measured, #13/#25). `'hold'` parks
+  it for review without letting Claude act; `'refuse'` also works but discards the
+  message and is indistinguishable to the sender, so `'hold'` is the least-destructive
+  supported policy (matrix in `docs/research/cross-session-inbound.md`). This does NOT
+  affect `orchestra message`, a different channel entirely (`sdkDeliver` / PTY / inbox
+  file — `SendMessage` has zero hits in `src/` code at upstream `48bdbcb`,
+  positive control `sdkDeliver` 4 files; it occurs only in the explanatory
+  comment beside the setting). Inline settings land in the SDK's
+  highest-priority "flag settings" layer, so a stale value in the user's `settings.json`
+  cannot override it and `settingSources` is untouched. `buildSdkEnv` sets
   `ORCHESTRA_BRANCH`/`KIND` **plus `ORCHESTRA_BRANCH_AUTO`/`AUTO_RENAME_COUNT`** (the
   rename-hook's gate/stage vars, from `autoRenameActive(ws)`), the spool-free identity
   plumbing, and **sets `ORCHESTRA_WS_ID`/`EVENTS_DIR` ONLY when no terminal PTY is
