@@ -99,7 +99,16 @@ interface TranscriptEnvelope {
    *  a history/detached session has no live `Query` to ask, so the last
    *  main-chain assistant turn's input components are the only context figure
    *  available (same formula as `activity.ts computeContextTokens`). */
-  message?: { role?: string; content?: unknown; usage?: TranscriptUsage };
+  message?: {
+    role?: string;
+    content?: unknown;
+    usage?: TranscriptUsage;
+    /** Model id the line ran under (e.g. `claude-opus-4-8`, or an alias
+     *  carrying `[1m]`). The transcript records NO window — verified absent on
+     *  every real assistant line — so this is the only signal available to
+     *  derive one for the gauge. */
+    model?: string;
+  };
 }
 
 interface TranscriptBlock {
@@ -129,6 +138,9 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
    *  boundary (activity.ts computeContextTokens). We walk oldest-first, so
    *  "reset on pass" is equivalent to its "stop at the newest boundary". */
   let contextTokens = 0;
+  /** Model id of the line `contextTokens` came from — the transcript's only
+   *  window signal (it records no window itself). */
+  let contextModel: string | null = null;
 
   // The current line's real wall-clock time (envelope `timestamp`), when
   // parsable. `stamp()` assigns `at` from the clock (= backfill-load time here);
@@ -193,6 +205,7 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
       if (entry.isCompactSummary === true) {
         // Pre-compact usage is stale the moment the context is rewritten.
         contextTokens = 0;
+        contextModel = null;
         out.push(st(ctx, { type: 'notice', kind: 'compact-boundary', text: 'Conversation compacted' }));
         continue;
       }
@@ -278,7 +291,13 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
       // array still carries a usable `usage`, and skipping it would silently
       // drop the newest (i.e. the correct) reading.
       const lineTokens = transcriptContextTokens(entry.message?.usage);
-      if (lineTokens > 0) contextTokens = lineTokens;
+      if (lineTokens > 0) {
+        contextTokens = lineTokens;
+        // Track the model alongside the tokens so the window is derived from
+        // the SAME line the figure came from. `<synthetic>` lines carry no real
+        // model and no usage, so they never reach here.
+        contextModel = typeof entry.message?.model === 'string' ? entry.message.model : null;
+      }
       const content = entry.message?.content;
       if (!Array.isArray(content)) continue;
       for (const b of content as TranscriptBlock[]) {
@@ -322,7 +341,11 @@ export function transcriptToEvents(jsonl: string, ctx: NormalizeContext): AgentE
       out.push(
         st(ctx, {
           type: 'session/context',
-          usage: contextUsageFromTranscript(contextTokens, ctx.now ? ctx.now() : Date.now()),
+          usage: contextUsageFromTranscript(
+            contextTokens,
+            ctx.now ? ctx.now() : Date.now(),
+            contextModel,
+          ),
         }),
       );
     }

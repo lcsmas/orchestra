@@ -1053,10 +1053,25 @@ or `resolveContextUsage()` directly in a unit test.
 renders immediately at mount without waiting for a turn-end, then refreshes
 after each turn; a session with no live Query renders the transcript seed at
 mount. `StripStats` therefore no longer returns null when `lastTurn` is absent,
-and `ContextGauge` no longer requires a WINDOW — with an unknown denominator it
-renders the absolute token count ("48k used") rather than nothing, since
-fabricating a 200K denominator would invent a percentage the source cannot
-support.
+and `ContextGauge` no longer requires a caller-supplied WINDOW.
+
+**The transcript fallback derives its window from the model id.** Verified
+across 1,543 main-chain assistant lines in real local transcripts: `usage`
+carries the token components but `message.context_management` is ABSENT on every
+one — the transcript records no window at all. Leaving it null rendered a bare
+token count, which fails the spec's "reliably non-empty at mount" for
+detached/history panes. So `transcriptContextWindow(model)` derives it, reusing
+the app's EXISTING rules rather than minting a second convention:
+`contextWindowFromModelId` for the `[1m]` long-context alias (1M), else
+`DEFAULT_CONTEXT_WINDOW` (200k — the CLI's own `pkr` fallback), both from
+`memory-size.ts`. The model is taken from the SAME line the token figure came
+from, and is cleared at a compaction boundary along with the tokens.
+
+This is an ASSUMED window, and the distinction is preserved rather than hidden:
+such readings stay tagged `transcript`, so any live reading supersedes them the
+moment a real session attaches. A model whose true window is neither 200k nor 1M
+would render a wrong percentage here — which is precisely why the live source
+exists and outranks it.
 
 Two traps the normalizer encodes, both with regression tests:
 - **Deferred categories are excluded from usage math.** Summing every category

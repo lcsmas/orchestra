@@ -35,6 +35,8 @@
 // a real semantic trap), and that reconciliation is exactly the logic worth
 // unit-testing without booting Electron or an SDK subprocess.
 
+import { DEFAULT_CONTEXT_WINDOW, contextWindowFromModelId } from './memory-size.ts';
+
 /** Where a {@link ContextUsage} came from. Rendered as provenance and used to
  *  decide precedence: a `live` reading always supersedes a `transcript` one for
  *  the same workspace, never the reverse (see {@link isMoreAuthoritative}). */
@@ -247,14 +249,51 @@ export function normalizeContextCommandUsage(
   };
 }
 
-/** Wrap a bare transcript-derived token count as a {@link ContextUsage}.
+/** Context window to assume for a transcript reading, given the model id the
+ *  transcript recorded.
+ *
+ *  WHY A DERIVED WINDOW AT ALL: the transcript records what each API call
+ *  consumed but never the window it ran against (verified across 1,543
+ *  main-chain assistant lines from the largest local transcripts: `usage`
+ *  carries the token components, `message.context_management` is ABSENT on
+ *  every one). Leaving it null renders a bare token count, which fails the
+ *  spec's "reliably non-empty percentage at mount" for detached/history panes.
+ *
+ *  So we derive it from the one context signal the transcript DOES carry —
+ *  `message.model` — using the same two rules the rest of the app already uses,
+ *  rather than minting a second convention: the `[1m]` alias means a 1M window
+ *  (`contextWindowFromModelId`), and everything else gets the CLI's own default
+ *  (`DEFAULT_CONTEXT_WINDOW`, 200k — the CLI's `pkr`).
+ *
+ *  This is an ASSUMED window, not a measured one, and the distinction is
+ *  preserved: readings built on it are tagged `transcript`, so any live reading
+ *  supersedes them the moment a real session attaches. A model whose true
+ *  window is neither 200k nor 1M would render a wrong percentage here — the
+ *  reason the live source exists and outranks this one. */
+export function transcriptContextWindow(model?: string | null): number {
+  return contextWindowFromModelId(model) ?? DEFAULT_CONTEXT_WINDOW;
+}
+
+/** Wrap a transcript-derived token count as a {@link ContextUsage}, against the
+ *  window implied by the transcript's model id (see
+ *  {@link transcriptContextWindow}).
  *
  *  Keeps the fallback path in the same currency as the live path so the gauge
- *  has ONE input type. `maxTokens` is null by design: the transcript says how
- *  many tokens the last turn fed in, never what the window was — inventing a
- *  200K default here would fabricate a percentage the source cannot support. */
-export function contextUsageFromTranscript(tokens: number, at: number): ContextUsage {
-  return { totalTokens: tokens, maxTokens: null, percentage: null, source: 'transcript', at };
+ *  has ONE input type and a detached/history pane renders a real percentage. */
+export function contextUsageFromTranscript(
+  tokens: number,
+  at: number,
+  model?: string | null,
+): ContextUsage {
+  const maxTokens = transcriptContextWindow(model);
+  return {
+    totalTokens: tokens,
+    maxTokens,
+    percentage: computePercentage(tokens, maxTokens),
+    model: str(model),
+    source: 'transcript',
+    at,
+  };
 }
 
 /** The three input components that make up a Claude Code turn's context, as
