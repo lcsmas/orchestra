@@ -889,6 +889,68 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   tail-capped at 4MB) and StructuredView requests it through the
   **`shouldRequestHistory`** gate (`src/renderer/history-backfill.ts` + `.test.ts`),
   applying the result via the store's **`applyAgentHistory`** action.
+- **Session DISCOVERY is SDK-backed; the transcript READ is not** (#17). Which
+  session to back the view with comes from the SDK's own session index —
+  `agent-sdk.ts sdkListSessionIds(ws)` wraps `listSessions()` and feeds
+  `scopeSessionsToWorktree` (`src/shared/session-discovery.ts` + `.test.ts`,
+  where the pure decisions live so they are testable without Electron). It
+  replaced a hand-rolled newest-`.jsonl`-by-mtime scan in BOTH `sdkHistory` and
+  `sdkWake`'s terminal-transcript adoption. Four measured constraints, each of
+  which silently breaks something if dropped:
+  - **`CLAUDE_CONFIG_DIR` must be pinned per call** (`withAccountConfigDir`).
+    `ListSessionsOptions` has NO `configDir`; the SDK reads the env var,
+    defaulting to `~/.claude`. Orchestra pins every workspace to an account
+    (`~/.claude-mc`, `~/.claude-perso`, …) and the default dir holds nothing —
+    measured, listing unpinned returned **0 for all 31** workspaces with
+    transcripts. The pin is restored in a `finally`: main-process env is global,
+    so a leak re-homes every later lookup. Safe despite the SDK memoizing its
+    resolved home, because that memo is KEYED on the env value (a change is a
+    miss, not a stale hit — verified over 60+ alternations in one process).
+  - **`includeWorktrees: false`** — the SDK defaults it to **true**, walking every
+    worktree of the repo. With ~24 agents in sibling worktrees of one repo that
+    returned **24 sessions for a workspace owning 8**: every workspace's history
+    contaminated with other agents' conversations.
+  - **`includeProgrammatic: true`** (the default, pinned explicitly) — Orchestra's
+    structured sessions are `sdk-ts` entrypoints, exactly what the "IDE session
+    picker" spelling (`false`) filters out: measured **8 → 4**.
+  - **Never filter on a session's `cwd`.** It records where the session
+    ORIGINALLY ran, so a workspace PROMOTED from scratch to a worktree keeps
+    transcripts whose `cwd` is the old scratch path. A `cwd === worktreePath`
+    "defensive" filter deleted such a workspace's entire history; the parity
+    gate caught it as `onlyScan=1`. Scoping is the query's job (`dir` +
+    `includeWorktrees:false`), not a post-filter's.
+
+  **`getSessionMessages()` is deliberately NOT used for the fold.** It returns a
+  parsed conversation chain that strips envelope fields `transcriptToEvents`
+  depends on — measured against transcripts that actually contain them (positive
+  controls, not vacuous zeroes): **`origin` stripped 6/6** (kills the
+  claude.ai/peer badge on reopen) and **`isCompactSummary` stripped 1/1** (the
+  quiet `compact-boundary` notice becomes a "This session is being continued…"
+  wall-of-text bubble). It does correctly drop `isMeta` frames (5 → 0), so the
+  phantom-skill-bubble class is handled — but two of three envelope behaviours
+  regress, so the raw JSONL read stays until the SDK preserves them.
+
+  Runtime payload note: `SDKSessionInfo` is
+  `{sessionId, summary, lastModified, fileSize, customTitle, firstPrompt,
+  gitBranch, cwd, tag, createdAt}` — there is **no `mtime`**. Recency is
+  `lastModified` (== on-disk mtime to within a ms). Sorting on `mtime` is a
+  no-op that still passes whenever the input arrives pre-sorted, which is how it
+  hides; `session-discovery.test.ts` feeds reversed input to catch exactly that.
+
+  Parity gate: `scripts/verify-session-discovery-parity.mjs` (not in
+  `pnpm run test` — needs a real multi-account home; SKIPs loudly without one).
+  Measured **31 workspaces / 2 accounts / sdk=41 == scan=41, onlyScan=0,
+  onlySdk=0**, with an unpinned-control of 0, and mutation-tested: reinstating
+  the `cwd` filter takes it to 40/41 and FAILS.
+- **`ws.sdkSessionId` has THREE states, not two** — `undefined` (never ran a
+  structured session → fall back to the newest discovered session, so a
+  terminal-only workspace still shows history), `''` (`sdkClear`'s explicit
+  CLEARED marker → blank history AND the fallback disabled, or a remount
+  resurrects the just-cleared conversation), and a uuid (resume that). The
+  decision is `chooseSession()` in `shared/session-discovery.ts`; collapsing
+  `''` and `undefined` into one falsy check is the specific regression its
+  signature exists to prevent, and a test asserts the two DISAGREE rather than
+  only that each is individually right.
   **The gate keys on `AgentSession.historyBackfilled`, NOT on message count** —
   the fix for "part of the transcript disappeared". App.tsx unmounts panes past
   `MAX_MOUNTED_PANES` (12) while the `agent:event` subscription in store.ts is

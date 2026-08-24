@@ -32,6 +32,7 @@ import {
   orchestratorBrief,
 } from './workspaces';
 import { transcriptToEvents, HISTORY_SEQ_BASE } from '../shared/agent-transcript';
+import { scopeSessionsToWorktree, type SessionCandidate } from '../shared/session-discovery';
 import {
   normalizeLiveContextUsage,
   type ContextUsage,
@@ -132,18 +133,40 @@ type QueryFactory = (params: {
   options?: Record<string, unknown>;
 }) => Query;
 
+/** The SDK's `listSessions` signature (mirrors the module's export). Declared
+ *  locally for the same reason as {@link QueryFactory}: no runtime import of
+ *  the ESM package leaks into this CJS module's type graph.
+ *
+ *  NOTE the option bag has NO `configDir` — session discovery reads
+ *  `process.env.CLAUDE_CONFIG_DIR` instead. See {@link withAccountConfigDir}. */
+type ListSessionsFn = (options?: {
+  dir?: string;
+  limit?: number;
+  offset?: number;
+  includeWorktrees?: boolean;
+  includeProgrammatic?: boolean;
+}) => Promise<SessionCandidate[]>;
+
 /** Cached dynamic import of the pure-ESM SDK. `import()` is the only construct
  *  that can pull an ESM package from this CJS bundle; a static import would
  *  compile to `require()` and crash Electron at boot (ERR_REQUIRE_ESM). Cached
  *  so the subprocess-heavy module loads exactly once. */
-let sdkModule: { query: QueryFactory } | null = null;
-async function loadSdk(): Promise<{ query: QueryFactory }> {
+let sdkModule: { query: QueryFactory; listSessions: ListSessionsFn } | null = null;
+async function loadSdk(): Promise<{ query: QueryFactory; listSessions: ListSessionsFn }> {
   if (!sdkModule) {
     sdkModule = (await import('@anthropic-ai/claude-agent-sdk')) as unknown as {
       query: QueryFactory;
+      listSessions: ListSessionsFn;
     };
   }
   return sdkModule;
+}
+
+/** Test seam: override the SDK's `listSessions` (so unit tests can exercise the
+ *  discovery/fallback logic without a real `~/.claude` on disk). */
+let listSessionsOverride: ListSessionsFn | null = null;
+export function __setListSessionsForTests(fn: ListSessionsFn | null): void {
+  listSessionsOverride = fn;
 }
 
 /** Test seam: override the SDK `query` factory (so e2e/tests can inject a fake
@@ -1131,52 +1154,145 @@ function transcriptDir(ws: Workspace): string {
   return path.join(base, 'projects', mangleProjectDir(ws.worktreePath));
 }
 
-/** Absolute path of the newest `.jsonl` transcript in `dir`, or null when the
- *  directory is missing/empty. The newest transcript is exactly the session
- *  `claude --continue` (both drivers) resumes. */
-async function newestTranscriptFile(dir: string): Promise<string | null> {
-  let file: string | null = null;
+/** Run `fn` with `CLAUDE_CONFIG_DIR` pinned to a workspace's ACCOUNT config dir,
+ *  restoring the previous value afterwards.
+ *
+ *  ## Why this exists (measured, SDK 0.3.241)
+ *
+ *  `listSessions` has no `configDir` option — it resolves the Claude home from
+ *  `process.env.CLAUDE_CONFIG_DIR`, falling back to `~/.claude`. Orchestra pins
+ *  every workspace to an ACCOUNT (`~/.claude-mc`, `~/.claude-perso`, …), and on
+ *  a real multi-account home the default dir holds **nothing**: measured across
+ *  31 workspaces with transcripts, listing with the var unset returned 0 for
+ *  every one, and pinning it returned exactly the on-disk set (41/41, no
+ *  asymmetry either way). So this pin is load-bearing, not cosmetic.
+ *
+ *  Mutating `process.env` is safe here despite the SDK memoizing its resolved
+ *  home: the memo is keyed on the env value itself
+ *  (`memoize(() => env.CLAUDE_CONFIG_DIR ?? ~/.claude, () => env.CLAUDE_CONFIG_DIR)`),
+ *  so a changed value is a cache MISS, never a stale hit. Verified by
+ *  alternating both accounts 60+ times in one process with no bleed.
+ *
+ *  Restored in a `finally` because main-process env is global: leaking a pinned
+ *  value would silently re-home every LATER session lookup — including other
+ *  workspaces on other accounts. */
+async function withAccountConfigDir<T>(ws: Workspace, fn: () => Promise<T>): Promise<T> {
+  const configDir = workspaceAccountConfigDir(ws, undefined);
+  if (!configDir) return fn();
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = configDir;
   try {
-    const entries = await fs.promises.readdir(dir);
-    let newest = 0;
-    for (const name of entries) {
-      if (!name.endsWith('.jsonl')) continue;
-      const p = path.join(dir, name);
-      const st = await fs.promises.stat(p);
-      if (st.mtimeMs > newest) {
-        newest = st.mtimeMs;
-        file = p;
-      }
-    }
-  } catch {
-    return null;
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prev;
   }
-  return file;
+}
+
+/** Session ids for a workspace's worktree, newest-first, via the SDK's own
+ *  session index — the replacement for hand-rolled transcript-dir mtime
+ *  scanning. Returns `[]` (never throws) so history stays fail-open.
+ *
+ *  Two non-default options, both measured and both load-bearing:
+ *
+ *  • **`includeWorktrees: false`** — the SDK DEFAULTS this to `true`, which
+ *    walks every git worktree of the same repo. Orchestra runs ~24 agents in
+ *    sibling worktrees of ONE repo, so the default pulled 24 sessions into a
+ *    workspace that owns 8: every workspace's history would be contaminated
+ *    with other agents' conversations. Scope is this worktree, exactly.
+ *  • **`includeProgrammatic: true`** (the SDK default, pinned explicitly so a
+ *    future default flip can't silently truncate us) — Orchestra's structured
+ *    sessions are `sdk-ts` entrypoints, which is precisely what the
+ *    "IDE session picker" spelling (`false`) filters OUT: measured 8 → 4 on a
+ *    real workspace. */
+async function sdkListSessionIds(ws: Workspace): Promise<SessionCandidate[]> {
+  try {
+    const listSessions = listSessionsOverride ?? (await loadSdk()).listSessions;
+    const sessions = await withAccountConfigDir(ws, () =>
+      listSessions({
+        dir: ws.worktreePath,
+        includeWorktrees: false,
+        includeProgrammatic: true,
+      }),
+    );
+    // Order newest-first — that ordering IS the newest-transcript fallback, so
+    // it is asserted rather than assumed (tested in shared/session-discovery).
+    // Scoping is done by the QUERY above (`dir` + includeWorktrees:false) and
+    // deliberately NOT by filtering on each session's `cwd`: a workspace
+    // promoted from scratch to a worktree records the OLD path there, and
+    // filtering on it drops that workspace's entire history.
+    return scopeSessionsToWorktree(sessions, ws.worktreePath);
+  } catch (err) {
+    log.warn(`agent-sdk: listSessions failed for ${ws.id}`, err);
+    return [];
+  }
 }
 
 /** Read a workspace's persisted on-disk session transcript and convert it into
  *  an AgentEvent stream for the structured view's history backfill. Returns []
  *  when there is nothing to backfill (no persisted id, file missing/empty).
- *  Fail-open: an unreadable transcript is a blank history, never an error. */
+ *  Fail-open: an unreadable transcript is a blank history, never an error.
+ *
+ *  ## Why discovery is SDK-backed but the READ is still raw JSONL
+ *
+ *  `getSessionMessages()` is the obvious counterpart to `listSessions()`, and
+ *  it is deliberately NOT used: it returns a PARSED conversation chain that
+ *  drops envelope fields this fold depends on. Measured on real transcripts
+ *  (SDK 0.3.241), with positive controls — i.e. transcripts that actually
+ *  contain the frames in question, so these are observed losses, not the
+ *  vacuous "0 on a transcript that had none":
+ *
+ *  • **`origin` is stripped** (6/6 origin-bearing frames survived as messages,
+ *    0 kept the field). That silently drops the claude.ai / peer / task-
+ *    notification badge on every reopened externally-originated turn.
+ *  • **`isCompactSummary` is stripped** (1/1 survived, flag gone). The fold
+ *    turns that frame into a quiet `compact-boundary` notice; without the flag
+ *    it renders as the full "This session is being continued from a previous
+ *    conversation…" wall-of-text bubble.
+ *
+ *  It does correctly drop `isMeta` frames (5 on disk → 0 emitted), so the
+ *  phantom-skill-bubble class is handled — but two of three envelope
+ *  behaviours regress, so the raw read stays until the SDK preserves them.
+ *  The multi-account win (finding the RIGHT session across per-account config
+ *  dirs) is entirely in discovery, which is what moved to the SDK. */
 export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
   const ws = store.getWorkspace(wsId);
   if (!ws?.worktreePath) return [];
   const dir = transcriptDir(ws);
 
   // `''` is sdkClear's explicit "conversation cleared" marker — no backfill
-  // until a new session mints a fresh id (the newest-.jsonl fallback below
+  // until a new session mints a fresh id (the newest-session fallback below
   // would otherwise resurrect the cleared conversation on remount).
+  //
+  // `''` (cleared) and `undefined` (never had a structured session) are
+  // DIFFERENT states and must stay that way: `undefined` falls through to the
+  // newest-session fallback, `''` short-circuits to a blank history. Collapsing
+  // them into a single falsy check re-opens "/clear then reopen shows the
+  // cleared conversation again".
   if (ws.sdkSessionId === '') return [];
   // Prefer the persisted structured-session transcript; workspaces that have
   // only ever run the TERMINAL agent have no sdkSessionId but DO have
-  // transcripts — fall back to the newest .jsonl, which is exactly the session
+  // transcripts — fall back to the newest session, which is exactly the one
   // `claude --continue` (both drivers) resumes.
+  //
+  // Discovery goes through the SDK's session index (`listSessions`, scoped to
+  // this worktree and this workspace's ACCOUNT config dir); the transcript is
+  // then READ off disk. That split is deliberate — see the note below on why
+  // `getSessionMessages` cannot back the fold.
   let file: string | null = null;
   if (ws.sdkSessionId) {
     const candidate = path.join(dir, `${ws.sdkSessionId}.jsonl`);
     if (fs.existsSync(candidate)) file = candidate;
   }
-  if (!file) file = await newestTranscriptFile(dir);
+  if (!file) {
+    for (const info of await sdkListSessionIds(ws)) {
+      const candidate = path.join(dir, `${info.sessionId}.jsonl`);
+      if (fs.existsSync(candidate)) {
+        file = candidate;
+        break;
+      }
+    }
+  }
   if (!file) return [];
   let text: string;
   let truncated = false;
@@ -1553,8 +1669,14 @@ export async function sdkSend(
 export async function sdkWake(wsId: string, text: string): Promise<void> {
   const ws = store.getWorkspace(wsId);
   if (ws?.worktreePath && ws.hasInput && ws.sdkSessionId === undefined && !sessions.has(wsId)) {
-    const file = await newestTranscriptFile(transcriptDir(ws));
-    const adopted = file ? path.basename(file, '.jsonl') : '';
+    // Newest session for THIS worktree under THIS workspace's account config
+    // dir, via the SDK's session index (see sdkListSessionIds). Requiring the
+    // transcript to exist on disk keeps the adopted id resumable.
+    const dir = transcriptDir(ws);
+    const adopted =
+      (await sdkListSessionIds(ws)).find((info) =>
+        fs.existsSync(path.join(dir, `${info.sessionId}.jsonl`)),
+      )?.sessionId ?? '';
     if (adopted) {
       log.info(`agent-sdk: wake ${wsId} adopting terminal transcript ${adopted} as resume id`);
       await persistWorkspacePatch(wsId, { sdkSessionId: adopted });
