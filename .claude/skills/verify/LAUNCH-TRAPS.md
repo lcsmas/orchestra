@@ -90,6 +90,12 @@ PROCESS's env, not yours.
 ```bash
 CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"   # derived — echo it and eyeball it
 [ -d "$CFG" ] || { echo "ABORT: config dir $CFG does not exist"; exit 1; }
+# Both of these silently produce a BROKEN-BUT-PLAUSIBLE store if empty: an
+# unset ORCHESTRA_WS_ID seeds a workspace with id "" that still self-checks
+# (accountId "rig-" matches account id "rig-"), so the pin looks applied and
+# matches no real workspace. Fail loudly instead.
+: "${ORCHESTRA_HOME:?ABORT: ORCHESTRA_HOME must be set to your isolated tmp home}"
+: "${ORCHESTRA_WS_ID:?ABORT: ORCHESTRA_WS_ID must be set (empty id seeds a store that pins nothing)}"
 node -e '
   const fs = require("fs"), path = require("path");
   const cfg = process.argv[1], wsId = process.argv[2], wt = process.argv[3];
