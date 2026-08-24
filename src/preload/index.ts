@@ -86,6 +86,8 @@ const api: OrchestraAPI = {
     ipcRenderer.invoke('agent:sdkRewindPreview', wsId, rewindId),
   agentSdkPermissionReply: (wsId, requestId, reply) =>
     ipcRenderer.invoke('agent:sdkPermissionReply', wsId, requestId, reply),
+  agentSdkAnswerableReply: (wsId, requestId, answer) =>
+    ipcRenderer.invoke('agent:sdkAnswerableReply', wsId, requestId, answer),
   agentSdkSetModel: (wsId, model) => ipcRenderer.invoke('agent:sdkSetModel', wsId, model),
   agentSdkSetEffort: (wsId, effort) => ipcRenderer.invoke('agent:sdkSetEffort', wsId, effort),
   agentSdkSetPermissionMode: (wsId, mode) =>

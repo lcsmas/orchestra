@@ -6,6 +6,11 @@ import {
   foldEvents,
   emptySession,
   makePermissionRequest,
+  makeUserDialogRequest,
+  makeElicitationRequest,
+  isAnswerableEvent,
+  answerableKind,
+  clearPendingAnswerable,
   makeUserMessage,
   makeLocalCommand,
   clearPendingPermission,
@@ -860,6 +865,124 @@ test('fold: permission-request queues; turn-end clears pending; explicit clear w
   )[0];
   const afterTurn = foldEvent(s, te);
   assert.equal(afterTurn.pendingPermissions.length, 0);
+});
+
+// ─── #21: answerable dialogs & elicitations ──────────────────────────────────
+
+test('makeUserDialogRequest normalizes payload and toolUseId', () => {
+  const ev = makeUserDialogRequest(ctx(), 'req-d', 'refusal_fallback_prompt', { message: 'hi' });
+  assert.equal(ev.type, 'user-dialog-request');
+  assert.equal(ev.dialogKind, 'refusal_fallback_prompt');
+  assert.deepEqual(ev.payload, { message: 'hi' });
+  // Absent toolUseId is NULL, not undefined — the field is always present.
+  assert.equal(ev.toolUseId, null);
+
+  // A missing/garbage payload becomes {}, so the card never null-guards.
+  assert.deepEqual(makeUserDialogRequest(ctx(), 'r', 'k', undefined).payload, {});
+});
+
+test('makeElicitationRequest defaults mode: url present ⇒ url, else form', () => {
+  // The SDK marks `mode` OPTIONAL; we normalize at the boundary.
+  assert.equal(makeElicitationRequest(ctx(), 'r', { serverName: 'gh', message: 'm' }).mode, 'form');
+  // A request carrying a url but no mode is a url elicitation — the url is the
+  // discriminator the server actually sent.
+  assert.equal(
+    makeElicitationRequest(ctx(), 'r', { url: 'https://example.com/auth' }).mode,
+    'url',
+  );
+  // An EXPLICIT mode always wins over the url heuristic.
+  assert.equal(
+    makeElicitationRequest(ctx(), 'r', { mode: 'form', url: 'https://x.test' }).mode,
+    'form',
+  );
+});
+
+test('isAnswerableEvent / answerableKind tag the three parked shapes', () => {
+  const c = ctx();
+  const perm = makePermissionRequest(c, 'p', 'Bash', {});
+  const dlg = makeUserDialogRequest(c, 'd', 'refusal_fallback_prompt', {});
+  const eli = makeElicitationRequest(c, 'e', { serverName: 's' });
+  assert.equal(answerableKind(perm), 'permission');
+  assert.equal(answerableKind(dlg), 'user-dialog');
+  assert.equal(answerableKind(eli), 'elicitation');
+  for (const ev of [perm, dlg, eli]) assert.equal(isAnswerableEvent(ev), true);
+  // A non-answerable event must not be mistaken for one.
+  assert.equal(isAnswerableEvent(makeUserMessage(c, 'hello')), false);
+});
+
+test('fold: dialog + elicitation queue into pendingAnswerables alongside permissions', () => {
+  const c: NormalizeContext = { seq: 0, now: () => 1 };
+  let s = foldEvent(emptySession('ws1'), makePermissionRequest(c, 'req-1', 'Bash', {}));
+  s = foldEvent(s, makeUserDialogRequest(c, 'req-2', 'refusal_fallback_prompt', { message: 'm' }));
+  s = foldEvent(s, makeElicitationRequest(c, 'req-3', { serverName: 'gh', message: 'auth' }));
+
+  // ONE queue, ARRIVAL order — this is what makes the slot show a single card
+  // at a time instead of stacking rival modals.
+  assert.deepEqual(
+    s.pendingAnswerables.map((p) => p.type),
+    ['permission-request', 'user-dialog-request', 'elicitation-request'],
+  );
+  // The permission ALSO stays in the legacy list, so permission-only callers
+  // are unaffected; the dialog/elicitation must NOT leak into it.
+  assert.equal(s.pendingPermissions.length, 1);
+});
+
+test('fold: answerables de-dupe PER TYPE, so a shared requestId keeps both cards', () => {
+  const c: NormalizeContext = { seq: 0, now: () => 1 };
+  let s = foldEvent(emptySession('ws1'), makeUserDialogRequest(c, 'same', 'k', {}));
+  // A redelivered dialog (e.g. after a keeper attach) must not stack twice.
+  s = foldEvent(s, makeUserDialogRequest(c, 'same', 'k', {}));
+  assert.equal(s.pendingAnswerables.length, 1);
+
+  // But the SDK keys each control-request channel independently, so the SAME
+  // requestId can be live as a different kind. De-duping on requestId alone
+  // would swallow this card and leave its callback parked forever.
+  s = foldEvent(s, makeElicitationRequest(c, 'same', { serverName: 'gh' }));
+  assert.equal(s.pendingAnswerables.length, 2);
+});
+
+test('clearPendingAnswerable matches the (kind, requestId) PAIR, not the id alone', () => {
+  const c: NormalizeContext = { seq: 0, now: () => 1 };
+  let s = foldEvent(emptySession('ws1'), makeUserDialogRequest(c, 'same', 'k', {}));
+  s = foldEvent(s, makeElicitationRequest(c, 'same', { serverName: 'gh' }));
+
+  const afterDialog = clearPendingAnswerable(s, 'user-dialog', 'same');
+  assert.deepEqual(
+    afterDialog.pendingAnswerables.map((p) => p.type),
+    ['elicitation-request'],
+  );
+
+  // Unknown pair ⇒ same object back (no needless re-render).
+  assert.equal(clearPendingAnswerable(afterDialog, 'user-dialog', 'same'), afterDialog);
+
+  // Clearing a permission clears it from BOTH lists, so they cannot drift.
+  let p = foldEvent(emptySession('ws1'), makePermissionRequest(c, 'req-1', 'Bash', {}));
+  p = clearPendingAnswerable(p, 'permission', 'req-1');
+  assert.equal(p.pendingAnswerables.length, 0);
+  assert.equal(p.pendingPermissions.length, 0);
+});
+
+test('fold: turn-end clears every parked answerable, not just permissions', () => {
+  const c: NormalizeContext = { seq: 0, now: () => 1 };
+  let s = foldEvent(emptySession('ws1'), makeUserDialogRequest(c, 'd', 'k', {}));
+  s = foldEvent(s, makeElicitationRequest(c, 'e', { serverName: 'gh' }));
+  assert.equal(s.pendingAnswerables.length, 2);
+
+  const te = normalizeSdkMessage(
+    { type: 'result', subtype: 'success', is_error: false, num_turns: 1, session_id: 'S', total_cost_usd: 0.1 },
+    { seq: 10, now: () => 1 },
+  )[0];
+  const afterTurn = foldEvent(s, te);
+  // A turn cannot end with one still parked — main sweeps them on the same
+  // `result` boundary, so a leftover card here would be unanswerable.
+  assert.equal(afterTurn.pendingAnswerables.length, 0);
+});
+
+test('sdkEventToStatusEvent: dialogs/elicitations mark the agent as WAITING', () => {
+  // Without this the sidebar dot stays green while the session is in fact
+  // blocked on a human — the exact "looks busy, is stuck" symptom #21 removes.
+  assert.equal(sdkEventToStatusEvent(at('user-dialog-request', { requestId: 'd' })), 'notify');
+  assert.equal(sdkEventToStatusEvent(at('elicitation-request', { requestId: 'e' })), 'notify');
 });
 
 // ─── fold: turn-end accumulates cost, flips running off ──────────────────────

@@ -920,7 +920,7 @@ function PermissionSlot({
     <PermissionDialog
       workspaceId={workspaceId}
       session={session}
-      onReplied={(requestId) => resolveAgentPermission(workspaceId, requestId)}
+      onReplied={(requestId, kind) => resolveAgentPermission(workspaceId, requestId, kind)}
     />
   );
 }

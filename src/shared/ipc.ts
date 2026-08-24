@@ -11,6 +11,7 @@ import type {
   AgentMcpServer,
   AgentModelInfo,
   AgentPermissionMode,
+  AgentAnswerableReply,
   AgentPermissionReply,
   AgentRewindPreview,
   AgentSessionRewindEvent,
@@ -307,6 +308,16 @@ export interface OrchestraAPI {
     wsId: string,
     requestId: string,
     reply: AgentPermissionReply,
+  ) => Promise<void>;
+  /** Resolve a parked ANSWERABLE (#21) — permission, `onUserDialog` dialog, or
+   *  `onElicitation` MCP request — with the user's answer. The reply's `kind`
+   *  routes it to the right parked-callback map in the manager. Supersedes
+   *  `agentSdkPermissionReply` for the unified dialog slot; that channel stays
+   *  for the permission-only callers. */
+  agentSdkAnswerableReply: (
+    wsId: string,
+    requestId: string,
+    answer: AgentAnswerableReply,
   ) => Promise<void>;
   /** Switch the live SDK session's model (undefined → the session default). */
   agentSdkSetModel: (wsId: string, model: string | undefined) => Promise<void>;

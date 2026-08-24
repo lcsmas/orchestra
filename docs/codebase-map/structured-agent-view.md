@@ -524,7 +524,8 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
       `emitFrom`/`sdkSend` call `driveStatusFromEvent` (agent-sdk.ts), which maps each
       `AgentEvent` onto the same spool event via the pure `sdkEventToStatusEvent`
       (agent-events.ts, unit-tested): `user-message`→`submit`, `tool-use`→`pretool`,
-      `tool-result`→`posttool`, `permission-request`→`notify`, `turn-end`→`stop`.
+      `tool-result`→`posttool`, `permission-request`/`user-dialog-request`/
+      `elicitation-request`→`notify` (#21), `turn-end`→`stop`.
   So exactly ONE writer drives the dot per session (gate is `session.ownsSpool`, fixed at
   spawn — NOT a per-event `isPtyRunning` read, which both missed the PTY-coexist case and
   double-drove the no-PTY case). Remote/sandbox sessions never direct-drive (their dot comes
@@ -1099,6 +1100,69 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   calls `resumeRunning(wsId)` — a guarded `waiting → running` flip (no-op unless
   currently `waiting`, so it never resurrects an idle/stopped session or fights a
   live PTY owner or `driveStatusFromEvent`'s own transitions).
+- **Answerable dialogs & elicitations (#21)** — two MORE ways a live session
+  blocks on the human, both of which used to hang it silently. Wired at the SAME
+  single `query()` site as `canUseTool` (agent-sdk.ts), parked in their own maps,
+  and rendered by the SAME slot.
+  - **`onUserDialog`** — the CLI asks the host to render a blocking dialog
+    (`request_user_dialog`). Bridge: `makeOnUserDialog` (agent-sdk.ts) → parks in
+    `session.pendingDialogs` → emits `makeUserDialogRequest` →
+    `AgentUserDialogRequestEvent`.
+    **`supportedDialogKinds` is a HARD OPT-IN, not a hint:** the CLI fails closed
+    and emits NOTHING for a kind not declared there, so wiring the callback alone
+    is a green build with a dead feature. Orchestra declares
+    `SUPPORTED_DIALOG_KINDS = ['refusal_fallback_prompt']` (agent-sdk.ts) — the
+    one kind SDK 0.3.241's d.ts names. Passing a non-empty list WITHOUT the
+    callback throws at option intake, so the two are set together.
+    **An undeclared kind is left UNANSWERED (`Promise<null>`), never
+    `cancelled`** — `cancelled` is a REAL settlement (the CLI treats it as the
+    user dismissing the dialog and applies its default), so auto-cancelling would
+    settle a dialog another attached client may be the declared renderer for.
+    (sdk.d.ts contradicts itself here — the `UserDialogRequest` doc says answer
+    unrecognized kinds `cancelled`, the wire-protocol comment on
+    `SDKControlRequestUserDialogRequest` says never do that. We follow the
+    wire-protocol one; ratified as ledger #49 D21-1.)
+  - **`onElicitation`** — an MCP server asks the user for input. Bridge:
+    `makeOnElicitation` → `session.pendingElicitations` → `makeElicitationRequest`
+    → `AgentElicitationRequestEvent`. No opt-in list; without the callback the SDK
+    AUTO-DECLINES, which was the silent failure. `mode` is optional on the SDK
+    type and NORMALIZED at the boundary (`url` present ⇒ `'url'`, else `'form'`).
+  - **One queue, one slot.** All three answerables fold into
+    `AgentSession.pendingAnswerables` (agent-events.ts) in ARRIVAL order, so a
+    dialog landing mid-permission QUEUES instead of stacking a rival modal.
+    Permissions stay in `pendingPermissions` too (unchanged for existing callers);
+    both lists are cleared by the same events so they cannot drift.
+    **De-dupe and clear match the (kind, requestId) PAIR, not the id alone** — the
+    SDK keys each control-request channel independently, so one id can be live as
+    two different kinds; de-duping by id would swallow a card and leave its
+    callback parked forever (`clearPendingAnswerable`, unit-tested).
+  - **Replies** route through ONE channel, `agentSdkAnswerableReply(wsId,
+    requestId, {kind, reply})` → `sdkAnswerableReply` (agent-sdk.ts), which
+    dispatches on `kind` to the right parked map (permission delegates to
+    `sdkPermissionReply`, keeping one implementation). Reply shapes mirror the SDK:
+    `UserDialogResult` (`completed`+`result` / `cancelled`) and MCP `ElicitResult`
+    (`accept`+`content` / `decline` / `cancel`). `ElicitResult.content` is flat
+    primitives only — `AgentElicitationValue = string|number|boolean|string[]`,
+    NOT `unknown`.
+  - **Both drive the status dot** exactly like a permission: the bridges call
+    `fireNeedsInput` on park and `resumeRunning` on every exit, and
+    `sdkEventToStatusEvent` maps both new types to `notify` — without which the
+    dot reads `running` (green) while the agent is in fact blocked.
+  - **`consume()`'s turn-end sweep** resolves stragglers in all three maps
+    (`cancelled` / `cancel`), since a turn cannot end with one still parked.
+  - **UI**: `UserDialogCard.tsx` + `ElicitationCard.tsx`, rendered by
+    `PermissionDialog` (the unified slot) inside the existing
+    `.av-permission-backdrop`. The dialog card renders its payload
+    **GENERICALLY** — `dialogKind` is an OPEN union and `payload` is opaque, so it
+    probes conventional keys (`userDialog.ts`: title/message/options, both string
+    and `{value,label}` encodings) and falls back to the humanized kind + raw
+    payload rather than a blank card. That is what makes `SUPPORTED_DIALOG_KINDS`
+    safe to grow without new UI. Elicitation schema→fields lives in
+    `src/shared/elicitation-form.ts` (unit-tested: hostile-schema degradation,
+    required-boolean-`false`-is-an-answer, blank-is-not-zero numeric coercion).
+    Gate: `scripts/answerable-cards-render-smoke.mjs` (chained into
+    `pnpm run test:render`), mutation-tested on the dismiss-must-not-accept,
+    required-field-gate and `rel=noreferrer` guards.
 - **`AvMenu`** (`components/agent/AvMenu.tsx`) — the custom dropdown replacing native
   selects in AgentControls (portalled glass panel; see agent-view-design.md).
 - **`EffortSlider`** (`components/agent/EffortSlider.tsx`, pure logic in

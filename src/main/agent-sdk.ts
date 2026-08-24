@@ -15,6 +15,10 @@ import type {
   SDKUserMessage,
   PermissionResult,
   RewindFilesResult,
+  ElicitationRequest,
+  ElicitationResult,
+  UserDialogRequest,
+  UserDialogResult,
 } from '@anthropic-ai/claude-agent-sdk';
 import { platform } from './platform';
 import { store } from './store';
@@ -63,6 +67,8 @@ import { buildBrowserToolServer } from './agent-browser-tools';
 import {
   normalizeSdkMessage,
   makePermissionRequest,
+  makeUserDialogRequest,
+  makeElicitationRequest,
   describeMcpServer,
   firstHttpUrl,
   makeUserMessage,
@@ -87,6 +93,9 @@ import type {
   AgentPermissionMode,
   AgentModelInfo,
   AgentPermissionReply,
+  AgentAnswerableReply,
+  AgentElicitationReply,
+  AgentUserDialogReply,
   AgentSessionRewindEvent,
   AgentSkillInfo,
   AgentStopReason,
@@ -196,6 +205,16 @@ interface Session {
   /** Parked `canUseTool` calls keyed by requestId; the renderer resolves each
    *  via {@link permissionReply}. */
   pending: Map<string, (result: PermissionResult) => void>;
+  /** Parked `onUserDialog` calls keyed by requestId (#21); the renderer
+   *  resolves each via {@link sdkAnswerableReply} with kind 'user-dialog'.
+   *  A SEPARATE map from {@link Session.pending} — the SDK issues requestIds
+   *  per control-request channel, so an id can be live in two maps at once and
+   *  a single shared map would let one answer settle the wrong callback. */
+  pendingDialogs: Map<string, (result: UserDialogResult) => void>;
+  /** Parked `onElicitation` calls keyed by requestId (#21); resolved via
+   *  {@link sdkAnswerableReply} with kind 'elicitation'. Separate map for the
+   *  same reason as {@link Session.pendingDialogs}. */
+  pendingElicitations: Map<string, (result: ElicitationResult) => void>;
   /** Set once stop()/removal is requested so the generator ends cleanly. */
   stopping: boolean;
   /** The live permission mode, echoed into new-turn behavior. */
@@ -688,6 +707,113 @@ function makeCanUseTool(session: Session) {
   };
 }
 
+/** Dialog kinds Orchestra's structured view can actually RENDER and answer
+ *  (SDK `supportedDialogKinds`, #21).
+ *
+ *  This is a hard opt-in, not a hint: the CLI FAILS CLOSED on absence — a kind
+ *  not listed here is never emitted to this session at all, and the flow behind
+ *  it degrades to its no-dialog behaviour (for 'refusal_fallback_prompt', the
+ *  classic refusal error ends the turn). So wiring `onUserDialog` alone changes
+ *  NOTHING; the callback would simply never fire. Conversely, declaring a kind
+ *  we cannot really render is worse than not declaring it — the CLI would route
+ *  a dialog here that the user then can't answer meaningfully.
+ *
+ *  `payload` is opaque per kind and `dialogKind` is an OPEN union (new kinds
+ *  ship without a protocol bump), so the card renders the payload GENERICALLY.
+ *  That is what makes this list safe to grow: the renderer does not switch on
+ *  the kind, so adding one here is a decision about intent, not new UI code.
+ *
+ *  'refusal_fallback_prompt' is the one kind the SDK 0.3.241 d.ts names. */
+const SUPPORTED_DIALOG_KINDS = ['refusal_fallback_prompt'];
+
+/** The `onUserDialog` bridge (#21): park the call, emit an answerable card
+ *  event, and wait for the renderer's reply (or the turn/session ending).
+ *
+ *  Mirrors {@link makeCanUseTool}, with one contract difference that matters:
+ *  there is NO safe auto-answer. `{behavior:'cancelled'}` is a REAL settlement
+ *  — the CLI treats it as the user dismissing the dialog and applies the
+ *  dialog's default behaviour — so it must never be used as a stand-in for
+ *  "we can't render this". Declining to answer means returning nothing, and the
+ *  CLI's own park deadline settles it. Because `supportedDialogKinds` already
+ *  guarantees we only receive kinds we declared, the unknown-kind path should
+ *  be unreachable; it is handled defensively anyway (the union is open, and a
+ *  multi-client session can see kinds another client declared). */
+function makeOnUserDialog(session: Session) {
+  return (
+    request: UserDialogRequest,
+    opts: { signal: AbortSignal; requestId: string },
+  ): Promise<UserDialogResult | null> => {
+    // A kind we never declared must be left UNANSWERED — see the note above:
+    // answering 'cancelled' here would settle a dialog another attached client
+    // may be the declared renderer for. Resolving `null` tells the SDK to skip
+    // its transport write, i.e. send nothing.
+    if (!SUPPORTED_DIALOG_KINDS.includes(request.dialogKind)) {
+      log.warn(
+        `agent-sdk: undeclared dialog kind '${request.dialogKind}' for ${session.wsId} — leaving unanswered`,
+      );
+      return Promise.resolve(null);
+    }
+    const requestId = opts.requestId || randomUUID();
+    emit(
+      session.wsId,
+      makeUserDialogRequest(session.ctx, requestId, request.dialogKind, request.payload, {
+        toolUseId: request.toolUseID ?? null,
+      }),
+    );
+    // Same "the agent is blocked on the user" signalling as a permission: flip
+    // the sidebar dot to `waiting` and raise the needs-input toast/chime.
+    fireNeedsInput(session.wsId);
+    return new Promise<UserDialogResult | null>((resolve) => {
+      const settle = (result: UserDialogResult) => {
+        resumeRunning(session.wsId);
+        resolve(result);
+      };
+      session.pendingDialogs.set(requestId, settle);
+      // An interrupt kills the turn the dialog belongs to. `cancelled` is the
+      // right answer HERE (unlike the undeclared-kind path): the dialog really
+      // is being dismissed without a user choice, and the CLI applying the
+      // dialog's default is exactly the desired unwind.
+      const onAbort = () => {
+        if (session.pendingDialogs.delete(requestId)) settle({ behavior: 'cancelled' });
+      };
+      if (opts.signal.aborted) onAbort();
+      else opts.signal.addEventListener('abort', onAbort, { once: true });
+    });
+  };
+}
+
+/** The `onElicitation` bridge (#21): park the MCP server's request for user
+ *  input, emit an answerable card, and wait for the renderer's reply.
+ *
+ *  Unlike dialogs there is no opt-in list — the SDK documents that without this
+ *  callback, elicitations "that aren't handled by hooks will be declined
+ *  automatically", which is precisely today's silent-block/auto-decline
+ *  behaviour this ticket removes. */
+function makeOnElicitation(session: Session) {
+  return (
+    request: ElicitationRequest,
+    opts: { signal: AbortSignal; requestId: string },
+  ): Promise<ElicitationResult | null> => {
+    const requestId = opts.requestId || randomUUID();
+    emit(session.wsId, makeElicitationRequest(session.ctx, requestId, request));
+    fireNeedsInput(session.wsId);
+    return new Promise<ElicitationResult | null>((resolve) => {
+      const settle = (result: ElicitationResult) => {
+        resumeRunning(session.wsId);
+        resolve(result);
+      };
+      session.pendingElicitations.set(requestId, settle);
+      // On abort, `cancel` is the MCP-level "dismissed without answering" —
+      // the shape the server expects when the user never got to decide.
+      const onAbort = () => {
+        if (session.pendingElicitations.delete(requestId)) settle({ action: 'cancel' });
+      };
+      if (opts.signal.aborted) onAbort();
+      else opts.signal.addEventListener('abort', onAbort, { once: true });
+    });
+  };
+}
+
 /** The async-generator prompt: yields queued user turns, gating each follow-up
  *  turn on the prior turn's `result` (spike h) so the SDK never has two turns in
  *  flight. Ends when the session stops.
@@ -759,6 +885,19 @@ async function consume(session: Session): Promise<void> {
         for (const [id, resolve] of session.pending) {
           resolve({ behavior: 'deny', message: 'turn ended' });
           session.pending.delete(id);
+        }
+        // Same sweep for the #21 answerables — a turn cannot end with one of
+        // these still parked, and leaving a promise dangling would wedge the
+        // SDK's control channel. `cancelled`/`cancel` are each mechanism's
+        // "dismissed without a user choice", so the CLI/MCP server applies its
+        // own default rather than waiting on a card nobody will answer.
+        for (const [id, resolve] of session.pendingDialogs) {
+          resolve({ behavior: 'cancelled' });
+          session.pendingDialogs.delete(id);
+        }
+        for (const [id, resolve] of session.pendingElicitations) {
+          resolve({ action: 'cancel' });
+          session.pendingElicitations.delete(id);
         }
         const openNext = session.turnGate;
         session.turnGate = null;
@@ -975,6 +1114,8 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     pump: null,
     turnGate: null,
     pending: new Map(),
+    pendingDialogs: new Map(),
+    pendingElicitations: new Map(),
     stopping: false,
     permissionMode,
     driveStatus,
@@ -1049,6 +1190,18 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
       // unaffected. See src/shared/cross-session-inbound.ts for the measurement.
       settings: withCrossSessionInboundPolicy(),
       canUseTool: makeCanUseTool(session) as never,
+      // #21 — the other two ways the CLI blocks on a human. Without these a
+      // session that hits a dialog or an MCP elicitation stalls with no UI:
+      // the dialog parks until the CLI's deadline, and the elicitation is
+      // auto-declined. Both now park in the manager and surface as answerable
+      // cards, exactly like a permission.
+      //
+      // `supportedDialogKinds` is REQUIRED for onUserDialog to ever fire (the
+      // CLI only emits kinds declared here) and throws at option intake if
+      // passed non-empty WITHOUT the callback — so the two are set together.
+      onUserDialog: makeOnUserDialog(session),
+      supportedDialogKinds: SUPPORTED_DIALOG_KINDS,
+      onElicitation: makeOnElicitation(session),
       env: sdkEnv,
       ...(claudeBin ? { pathToClaudeCodeExecutable: claudeBin } : {}),
       // LOCAL sessions run the CLI behind the detached session KEEPER
@@ -2086,6 +2239,63 @@ export async function sdkBackgroundForegroundTasks(
     return false;
   }
 }
+/** Resolve a parked ANSWERABLE (#21) — permission, user dialog, or MCP
+ *  elicitation — with the renderer's answer.
+ *
+ *  Routes on `kind`, not on requestId: the three parked-callback maps are keyed
+ *  independently by the SDK, so the same requestId can be live in two of them
+ *  and a search-all-maps lookup would settle the wrong callback. A reply for a
+ *  requestId that is not parked under that kind is a no-op (already answered,
+ *  or swept by turn-end), matching {@link sdkPermissionReply}. */
+export function sdkAnswerableReply(
+  wsId: string,
+  requestId: string,
+  answer: AgentAnswerableReply,
+): void {
+  const session = sessions.get(wsId);
+  if (!session) return;
+  switch (answer.kind) {
+    case 'permission':
+      // Delegate so the permission path keeps ONE implementation — the older
+      // `agent:sdkPermissionReply` channel still calls it directly.
+      sdkPermissionReply(wsId, requestId, answer.reply);
+      return;
+    case 'user-dialog': {
+      const resolve = session.pendingDialogs.get(requestId);
+      if (!resolve) return;
+      session.pendingDialogs.delete(requestId);
+      resolve(toUserDialogResult(answer.reply));
+      return;
+    }
+    case 'elicitation': {
+      const resolve = session.pendingElicitations.get(requestId);
+      if (!resolve) return;
+      session.pendingElicitations.delete(requestId);
+      resolve(toElicitationResult(answer.reply));
+      return;
+    }
+  }
+}
+
+/** Map Orchestra's dialog reply onto the SDK `UserDialogResult`. Kept as a
+ *  named function (not an inline cast) because the two shapes are only
+ *  incidentally identical — the SDK's `result` is `unknown` per dialogKind. */
+function toUserDialogResult(reply: AgentUserDialogReply): UserDialogResult {
+  return reply.behavior === 'completed'
+    ? { behavior: 'completed', result: reply.result }
+    : { behavior: 'cancelled' };
+}
+
+/** Map Orchestra's elicitation reply onto the MCP `ElicitResult`. `content` is
+ *  only meaningful on `accept` (form values); the SDK/MCP contract has no
+ *  content on decline/cancel. */
+function toElicitationResult(reply: AgentElicitationReply): ElicitationResult {
+  if (reply.action === 'accept') {
+    return reply.content ? { action: 'accept', content: reply.content } : { action: 'accept' };
+  }
+  return { action: reply.action };
+}
+
 /** Persist a partial workspace change and broadcast it so the renderer's store
  *  updates. Used to make the Model/Permissions dropdowns and the resume
  *  session-id stick even when no live session exists. */

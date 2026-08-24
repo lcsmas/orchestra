@@ -1225,6 +1225,109 @@ export type AgentPermissionReply =
   | { behavior: 'allow'; updatedInput?: Record<string, unknown> }
   | { behavior: 'deny'; message: string };
 
+// ── Answerable dialogs & elicitations (#21) ──────────────────────────────────
+//
+// Two more ways a live SDK session can BLOCK on the human, both of which used
+// to hang an Orchestra session silently because nothing rendered them:
+//
+//   • `onUserDialog`   — the CLI asks the host to render a blocking dialog
+//                        (`request_user_dialog`), e.g. 'refusal_fallback_prompt'.
+//   • `onElicitation`  — an MCP server asks the user for input (a form, or a
+//                        URL to visit for auth).
+//
+// Both are parked in the manager exactly like `canUseTool` and surface here as
+// ANSWERABLE cards folded into {@link AgentSession.pendingAnswerables}, sharing
+// the permission dialog's queue/one-at-a-time/clear-on-answer machinery.
+
+/** The CLI asked the host to render a blocking dialog (SDK `onUserDialog`).
+ *  The manager parks the callback and emits this; the renderer answers via
+ *  `agent:sdkAnswerableReply(wsId, requestId, reply)`.
+ *
+ *  `dialogKind` is an OPEN string union — new kinds ship without a protocol
+ *  bump — and `payload` is defined per kind and transported opaquely, so the
+ *  card renders it generically rather than switching on a closed set. A kind
+ *  Orchestra does not declare in `supportedDialogKinds` is never emitted at
+ *  all (the CLI fails closed), so every event that reaches here is one we
+ *  claimed we can render. */
+export interface AgentUserDialogRequestEvent extends AgentEventBase {
+  type: 'user-dialog-request';
+  /** The manager's key for the parked `onUserDialog` call — echo it back. */
+  requestId: string;
+  /** SDK `dialogKind`, e.g. 'refusal_fallback_prompt'. Open union. */
+  dialogKind: string;
+  /** Dialog-specific data. Shape is per-kind and opaque to the protocol. */
+  payload: Record<string, unknown>;
+  /** Set when the dialog is tied to a tool invocation (same id as canUseTool). */
+  toolUseId: string | null;
+}
+
+/** An MCP server requested user input (SDK `onElicitation`). `form` mode wants
+ *  values matching {@link requestedSchema}; `url` mode wants the user to visit
+ *  {@link url} (browser-based auth) and then confirm. */
+export interface AgentElicitationRequestEvent extends AgentEventBase {
+  type: 'elicitation-request';
+  /** The manager's key for the parked `onElicitation` call — echo it back. */
+  requestId: string;
+  /** Name of the MCP server asking. */
+  serverName: string;
+  /** Message to display to the user. */
+  message: string;
+  /** 'form' for structured input, 'url' for browser-based auth. The SDK marks
+   *  this optional; absent is normalized to 'form'. */
+  mode: 'form' | 'url';
+  /** URL to open (url mode only). */
+  url?: string;
+  /** JSON Schema for the requested input (form mode only). */
+  requestedSchema?: Record<string, unknown>;
+  /** Permission-display title from MCP `_meta['anthropic/permissionDisplay']`. */
+  title?: string;
+  /** Short tool/server label from the same `_meta`. */
+  displayName?: string;
+  /** Permission-display subtitle from the same `_meta`. */
+  description?: string;
+}
+
+/** Anything the session is BLOCKED on that the user can answer — the three
+ *  parked-callback shapes share one queue so the renderer shows them one at a
+ *  time in arrival order rather than stacking rival modals. */
+export type AgentAnswerableEvent =
+  | AgentPermissionRequestEvent
+  | AgentUserDialogRequestEvent
+  | AgentElicitationRequestEvent;
+
+/** How the renderer answered an {@link AgentUserDialogRequestEvent}. Mirrors
+ *  the SDK `UserDialogResult`: `completed` carries the per-kind result value,
+ *  `cancelled` makes the CLI apply the dialog's DEFAULT behavior.
+ *
+ *  Note `cancelled` is a real settlement (the user dismissed the dialog), NOT
+ *  a way to decline to answer — declining is "send nothing", which the manager
+ *  does for undeclared kinds and never surfaces as a card. */
+export type AgentUserDialogReply =
+  | { behavior: 'completed'; result: unknown }
+  | { behavior: 'cancelled' };
+
+/** How the renderer answered an {@link AgentElicitationRequestEvent}. Mirrors
+ *  the MCP `ElicitResult`: `accept` carries the form values (absent for url
+ *  mode), `decline` is a considered no, `cancel` is a dismissal. */
+export type AgentElicitationReply =
+  | { action: 'accept'; content?: Record<string, AgentElicitationValue> }
+  | { action: 'decline' }
+  | { action: 'cancel' };
+
+/** A single value in an elicitation form answer. NOT `unknown`: the MCP
+ *  `ElicitResult.content` contract is flat primitives only (an elicitation
+ *  schema is a flat object of scalars), so the narrow type is the real one and
+ *  keeps the renderer from building an answer the server would reject. */
+export type AgentElicitationValue = string | number | boolean | string[];
+
+/** The reply union carried by `agent:sdkAnswerableReply`. The `kind` tag says
+ *  which parked callback the manager must resolve — the requestId spaces are
+ *  independent maps, so the tag is what routes it. */
+export type AgentAnswerableReply =
+  | { kind: 'permission'; reply: AgentPermissionReply }
+  | { kind: 'user-dialog'; reply: AgentUserDialogReply }
+  | { kind: 'elicitation'; reply: AgentElicitationReply };
+
 /** One installed skill (slash command) visible to a workspace's agent — the
  *  structured composer's autocomplete items. Listed by the manager from the
  *  worktree's `.claude/skills/*` and the account config dir's `skills/*`
@@ -1558,6 +1661,8 @@ export type AgentEvent =
   | AgentToolUseEvent
   | AgentToolResultEvent
   | AgentPermissionRequestEvent
+  | AgentUserDialogRequestEvent
+  | AgentElicitationRequestEvent
   | AgentUserMessageEvent
   | AgentLocalCommandEvent
   | AgentSessionUpdateEvent
@@ -1678,6 +1783,17 @@ export interface AgentSession {
   /** Pending permission requests awaiting a renderer reply, keyed by requestId
    *  so the UI can show one prompt per parked call. */
   pendingPermissions: AgentPermissionRequestEvent[];
+  /** Everything the session is BLOCKED on that the user can answer, in ARRIVAL
+   *  order — parked `canUseTool` permissions PLUS the #21 additions
+   *  (`onUserDialog` dialogs, `onElicitation` MCP requests). One queue, so the
+   *  renderer shows a single card at a time instead of stacking rival modals
+   *  when (say) an elicitation lands while a permission is already up.
+   *
+   *  Permission entries appear in BOTH this list and {@link pendingPermissions}:
+   *  the older field stays the source of truth for existing permission-only
+   *  callers, and this one is what the unified dialog slot reads. Both are
+   *  cleared by the same events, so they cannot drift. */
+  pendingAnswerables: AgentAnswerableEvent[];
   /** The most recent turn-end, for the cost/usage footer. */
   lastTurn?: AgentTurnEndEvent;
   /** Latest authoritative context-window reading from the live SDK session

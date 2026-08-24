@@ -25,7 +25,7 @@ import type {
 } from '../shared/types';
 import type { SelfTuneRun } from '../shared/self-tune';
 import type { DesignPick } from '../shared/design-mode';
-import { clearPendingPermission, emptySession, foldEvents } from '../shared/agent-events';
+import { clearPendingAnswerable, emptySession, foldEvents } from '../shared/agent-events';
 import { pickFallbackActive, pushHistory } from './active-fallback';
 import { createAgentEventQueue } from './agent-event-queue';
 import { dialog } from './components/Dialog';
@@ -166,7 +166,15 @@ interface State {
    *  the structured view is left and re-entered (the PermissionDialog's local
    *  `answered` set resets on unmount). Clearing it in the store is durable
    *  across remounts because the store IS the source of truth. */
-  resolveAgentPermission: (workspaceId: string, requestId: string) => void;
+  resolveAgentPermission: (
+    workspaceId: string,
+    requestId: string,
+    /** Which parked-callback map the answer settled (#21). Defaults to
+     *  'permission' so the pre-#21 permission-only callers are unchanged.
+     *  Required for dialogs/elicitations: clearing by requestId alone could
+     *  drop a DIFFERENT card that happens to share the id. */
+    kind?: 'permission' | 'user-dialog' | 'elicitation',
+  ) => void;
   /** Apply an on-disk history backfill to a workspace's session.
    *
    *  History is always OLDER than anything folded live, so it is PREPENDED (and
@@ -281,11 +289,11 @@ export const useStore = create<State>((set, get) => ({
   },
   setView: (v) => set({ view: v }),
   __injectAgentEvent: (workspaceId, event) => enqueueAgentEvent(workspaceId, event),
-  resolveAgentPermission: (workspaceId, requestId) => {
+  resolveAgentPermission: (workspaceId, requestId, kind = 'permission') => {
     const s = useStore.getState();
     const prev = s.agentSessions[workspaceId];
     if (!prev) return;
-    const nextSession = clearPendingPermission(prev, requestId);
+    const nextSession = clearPendingAnswerable(prev, kind, requestId);
     if (nextSession === prev) return; // nothing pending with that id
     useStore.setState({ agentSessions: { ...s.agentSessions, [workspaceId]: nextSession } });
   },
