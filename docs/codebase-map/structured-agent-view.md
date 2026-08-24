@@ -1194,6 +1194,33 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
     Gate: `scripts/answerable-cards-render-smoke.mjs` (chained into
     `pnpm run test:render`), mutation-tested on the dismiss-must-not-accept,
     required-field-gate and `rel=noreferrer` guards.
+  - **Wiring gate — `scripts/verify-answerable-wiring.mjs`** (`pnpm run
+    test:wiring`, also chained into `test:render`; issue #50). The render smoke
+    proves the CARDS draw; nothing proved they are still REACHED. Deleting
+    `onElicitation: makeOnElicitation(session)` from the `query()` launch site
+    (`agent-sdk.ts:1199-1204`) was **measured** to leave both standing
+    instruments green — `npx tsc --noEmit` RC=0 with zero error lines (every
+    option on that bag is optional in the SDK's type) and `pnpm run test`
+    1000/1012 passing, 0 fail (the unit suite never builds the options object;
+    it exercises the fold, normalizers and reply mappers, all of which keep
+    working while the callback feeding them is no longer passed). So this
+    harness bundles the real `agent-sdk.ts` (only `electron` stubbed), drives
+    the real `ensureSession` via the exported `sdkSend`, and captures the actual
+    options bag through the module's own `__setQueryFactoryForTests` seam —
+    asserting the **object**, never the text, because a grep passes on a build
+    where the identifier survives only in a comment. Beyond presence it invokes
+    the captured callbacks and follows the round trip (callback → an
+    `elicitation-request` / `user-dialog-request` card on
+    `platform.broadcast('agent:event')` → `sdkAnswerableReply` settles the
+    parked promise → correct `ElicitResult` / `UserDialogResult` shape), so a
+    present-but-inert callback fails too. All three options are one unit:
+    `supportedDialogKinds` is asserted non-empty because the CLI only emits
+    kinds declared there, making `onUserDialog` unable to fire without it.
+    **Proven to fail**: each of the three deleted individually turns the gate
+    RED (RC=1) with its own named failure. Runs against a mkdtemp userData +
+    seeded `store.json` + its own `$ORCHESTRA_HOME`, and derives the seeded
+    account's `configDir` from `$CLAUDE_CONFIG_DIR` (fallback `~/.claude`) —
+    never a hardcoded account.
 - **`AvMenu`** (`components/agent/AvMenu.tsx`) — the custom dropdown replacing native
   selects in AgentControls (portalled glass panel; see agent-view-design.md).
 - **`EffortSlider`** (`components/agent/EffortSlider.tsx`, pure logic in
