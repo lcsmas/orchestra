@@ -284,6 +284,16 @@ export interface OrchestraAPI {
   /** Interrupt the in-flight turn of a workspace's SDK session. Surfaces to the
    *  UI as a `turn-end`/`error` event (the SDK iterator throws, spike d). */
   agentSdkInterrupt: (wsId: string) => Promise<void>;
+  /** Cancel a prompt parked behind the in-flight turn. Resolves false when the
+   *  id already drained (a benign race, not an error). */
+  agentSdkQueueRemove: (wsId: string, id: string) => Promise<boolean>;
+  /** Rewrite a parked prompt's text. */
+  agentSdkQueueEdit: (wsId: string, id: string, text: string) => Promise<boolean>;
+  /** Move a parked prompt one slot earlier (-1) or later (+1). */
+  agentSdkQueueMove: (wsId: string, id: string, dir: -1 | 1) => Promise<boolean>;
+  /** Merge (or unmerge) a parked prompt with the one after it, so the pair is
+   *  delivered as a single turn. */
+  agentSdkQueueCoalesce: (wsId: string, id: string, on: boolean) => Promise<boolean>;
   /** Clear the structured conversation (composer /clear): stop the live SDK
    *  session, drop the resume id, and broadcast `session/clear` so every
    *  client resets its folded transcript. */

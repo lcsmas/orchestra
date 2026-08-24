@@ -104,6 +104,10 @@ import {
   sdkSend,
   sdkRunBash,
   sdkInterrupt,
+  sdkQueueRemove,
+  sdkQueueEdit,
+  sdkQueueMove,
+  sdkQueueSetCoalesce,
   sdkClear,
   sdkRewind,
   sdkRewindPreview,
@@ -251,6 +255,10 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   agentSdkSend: 'agent:sdkSend',
   agentSdkRunBash: 'agent:sdkRunBash',
   agentSdkInterrupt: 'agent:sdkInterrupt',
+  agentSdkQueueRemove: 'agent:sdkQueueRemove',
+  agentSdkQueueEdit: 'agent:sdkQueueEdit',
+  agentSdkQueueMove: 'agent:sdkQueueMove',
+  agentSdkQueueCoalesce: 'agent:sdkQueueCoalesce',
   agentSdkClear: 'agent:sdkClear',
   agentSdkRewind: 'agent:sdkRewind',
   agentSdkRewindPreview: 'agent:sdkRewindPreview',
@@ -871,6 +879,14 @@ export const apiHandlers: ApiHandlerTable = {
   agentSdkInterrupt: async (wsId) => {
     await sdkInterrupt(wsId);
   },
+
+  // Queue-tray mutations. Each returns false when the id is unknown — the entry
+  // drained while the user was clicking, a benign race the tray ignores (the
+  // authoritative `queue-update` event has already re-rendered it).
+  agentSdkQueueRemove: async (wsId, id) => sdkQueueRemove(wsId, id),
+  agentSdkQueueEdit: async (wsId, id, text) => sdkQueueEdit(wsId, id, text),
+  agentSdkQueueMove: async (wsId, id, dir) => sdkQueueMove(wsId, id, dir),
+  agentSdkQueueCoalesce: async (wsId, id, on) => sdkQueueSetCoalesce(wsId, id, on),
 
   agentSdkClear: async (wsId) => {
     await sdkClear(wsId);

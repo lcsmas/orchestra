@@ -31,6 +31,7 @@ import { useStore } from '../store';
 import { scoped } from '../log';
 import { WorkspaceAccountBadge } from './AccountBadge';
 import { CmComposer, type CmComposerHandle } from './agent/CmComposer';
+import { QueueTray } from './agent/QueueTray';
 import { useVoiceDictation } from './agent/useVoiceDictation';
 import { McpPopover, McpIndicator } from './agent/McpPopover';
 import { readComposerVim, writeComposerVim, vimChipLabel, type VimMode } from '../composer-vim-pref';
@@ -1334,7 +1335,7 @@ function Composer({
     if (isActive) cmRef.current?.focus();
   }, [isActive]);
 
-  const submit = useCallback(() => {
+  const submit = useCallback((interruptFirst = false) => {
     // Bash mode: run the command locally instead of sending a turn to the model.
     // The `!` prefix is the mode trigger; strip it. Empty command → no-op.
     if (text.startsWith('!')) {
@@ -1378,12 +1379,26 @@ function Composer({
     // Main emits an `error` agent event on failure (rendered in the list), so we
     // don't need to surface it here — but log rather than silently swallow, so a
     // failure is never invisible in devtools either.
-    void window.orchestra
-      .agentSdkSend(workspaceId, t, images)
-      .catch((e) => console.error('agentSdkSend failed', e));
+    //
+    // `interruptFirst` (Shift/Cmd+Enter while a turn runs) stops the current
+    // turn so this prompt runs NOW instead of queueing. The interrupt is
+    // awaited: sending first would race the queue-clearing inside
+    // `interruptCancellingQueued` and could discard this very prompt.
+    const send = () =>
+      window.orchestra
+        .agentSdkSend(workspaceId, t, images)
+        .catch((e) => console.error('agentSdkSend failed', e));
+    if (interruptFirst && running) {
+      void window.orchestra
+        .agentSdkInterrupt(workspaceId)
+        .catch((e) => console.error('agentSdkInterrupt failed', e))
+        .then(send);
+    } else {
+      void send();
+    }
     setText('');
     setPendingImages([]);
-  }, [text, pendingImages, workspaceId, setMcpOpen]);
+  }, [text, pendingImages, workspaceId, setMcpOpen, running]);
 
   const completeSkill = (name: string) => {
     setText(`/${name} `);
@@ -1416,6 +1431,25 @@ function Composer({
 
   return (
     <div className="av-composer">
+      {/* Parked prompts sit ABOVE the input, inside the composer frame: they are
+          about to become turns, so they belong to the send surface, and docking
+          them here keeps them on-screen (the transcript scrolls away). */}
+      <QueueTray
+        queued={session?.queuedPrompts ?? []}
+        onRemove={(id) => void window.orchestra.agentSdkQueueRemove(workspaceId, id)}
+        onEdit={(id, t) => void window.orchestra.agentSdkQueueEdit(workspaceId, id, t)}
+        onMove={(id, dir) => void window.orchestra.agentSdkQueueMove(workspaceId, id, dir)}
+        onCoalesce={(id, on) => void window.orchestra.agentSdkQueueCoalesce(workspaceId, id, on)}
+        onMergeAll={() => {
+          // Merge every entry but the last — the last has nothing after it.
+          const q = session?.queuedPrompts ?? [];
+          for (const entry of q.slice(0, -1)) {
+            if (!entry.coalesceWithNext) {
+              void window.orchestra.agentSdkQueueCoalesce(workspaceId, entry.id, true);
+            }
+          }
+        }}
+      />
       <div
         className={`av-composer-field ${bashMode ? 'av-composer-field-bash' : ''}`}
         onDragOver={(e) => e.preventDefault()}
@@ -1526,6 +1560,13 @@ function Composer({
                 return true;
               }
               submit();
+              return true;
+            }}
+            onModEnter={() => {
+              // Cmd/Ctrl+Enter — jump the queue: interrupt the running turn so
+              // this prompt runs now. With nothing running it's just a send.
+              if (acOpen) return false;
+              submit(true);
               return true;
             }}
             onEscape={(mode) => {
@@ -1662,7 +1703,10 @@ function Composer({
           )}
           <button
             className={`av-composer-send${bashMode ? ' av-composer-send-bash' : ''}`}
-            onClick={submit}
+            // Wrapped, NOT `onClick={submit}`: React passes the MouseEvent as
+            // the first argument, which would land in `interruptFirst` and make
+            // every click on the send button kill the running turn.
+            onClick={(e) => submit(e.metaKey || e.ctrlKey)}
             disabled={bashMode ? !bashCommand.trim() : !text.trim() && pendingImages.length === 0}
             aria-label={bashMode ? 'Run command' : running ? 'Queue message' : 'Send message'}
             title={

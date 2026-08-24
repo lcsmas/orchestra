@@ -103,3 +103,18 @@
   border-radius: 16px;
 }
 .av-view .av-message-user .av-message-eyebrow { display: none; }
+
+/* A user bubble still PARKED in the queue: the agent has not seen it yet, so it
+   must not read as a sent message. Dashed outline + dimmed ink, same shape.
+
+   This lives in the FLAT layer, not the theme layer, on purpose: the rule above
+   (`.av-view .av-message-user`) has specificity 0,2,0 and loads AFTER
+   agent-view-theme.css, so a `.av-message-user[data-queued='1']` rule in the
+   theme ties on specificity and LOSES on order — measured in a real drive, where
+   the attribute was correctly applied and the bubble still painted solid. */
+.av-view .av-message-user[data-queued='1'] {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--av-hairline-strong, #333b47);
+  color: var(--av-text-dim);
+}

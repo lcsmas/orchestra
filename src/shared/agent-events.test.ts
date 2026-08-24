@@ -13,6 +13,7 @@ import {
   clearPendingAnswerable,
   makeUserMessage,
   makeLocalCommand,
+  stamp,
   clearPendingPermission,
   shouldAutoApprovePermission,
   isBadResumeError,
@@ -2478,4 +2479,68 @@ test('normalize: an init WITHOUT capabilities leaves the gate closed', () => {
   >;
   assert.equal(init.capabilities, undefined);
   assert.equal(supportsCancelQueued(init.capabilities), false);
+});
+
+// ─── fold: queued prompts (the queue tray) ───────────────────────────────────
+
+test('fold: a queued user-message does not restart the in-flight turn clock', () => {
+  const c = ctx();
+  const first = makeUserMessage(c, 'first');
+  const s1 = foldEvents(emptySession('ws1'), [first]);
+  const startedAt = s1.turnStartedAt;
+  // Simulate output accumulating on the running turn.
+  const s2 = { ...s1, liveOutputChars: 400 };
+  // A prompt parked BEHIND that turn must not look like a new turn starting.
+  const queued = makeUserMessage(c, 'second', undefined, 'uuid-2', true);
+  const s3 = foldEvent(s2, queued);
+  assert.equal(s3.running, true);
+  assert.equal(s3.turnStartedAt, startedAt, 'queued prompt must not restart the clock');
+  assert.equal(s3.liveOutputChars, 400, 'queued prompt must not reset the output counter');
+  assert.equal(s3.messages.at(-1)?.queued, true);
+});
+
+test('fold: queue-update clears `queued` on messages that have drained', () => {
+  const c = ctx();
+  const s0 = foldEvents(emptySession('ws1'), [
+    makeUserMessage(c, 'running'),
+    makeUserMessage(c, 'parked', undefined, 'uuid-2', true),
+  ]);
+  assert.equal(s0.messages.at(-1)?.queued, true);
+  // The entry left main's queue → the bubble stops rendering as pending.
+  const s1 = foldEvent(s0, stamp(c, { type: 'queue-update', queued: [] }));
+  assert.equal(s1.messages.at(-1)?.queued, undefined);
+  assert.deepEqual(s1.queuedPrompts, []);
+});
+
+test('fold: queue-update mirrors a tray edit onto the transcript bubble', () => {
+  const c = ctx();
+  const s0 = foldEvents(emptySession('ws1'), [
+    makeUserMessage(c, 'running'),
+    makeUserMessage(c, 'typo', undefined, 'uuid-2', true),
+  ]);
+  const s1 = foldEvent(
+    s0,
+    stamp(c, {
+      type: 'queue-update',
+      queued: [{ id: 'uuid-2', text: 'fixed', coalesceWithNext: false }],
+    }),
+  );
+  assert.equal(s1.messages.at(-1)?.text, 'fixed');
+  assert.equal(s1.messages.at(-1)?.queued, true, 'still parked — only the text changed');
+  assert.equal(s1.queuedPrompts.length, 1);
+});
+
+test('fold: session/rewind drops parked prompts that can never run', () => {
+  const c = ctx();
+  const s0 = foldEvents(emptySession('ws1'), [
+    makeUserMessage(c, 'target', undefined, 'uuid-1'),
+    makeUserMessage(c, 'parked', undefined, 'uuid-2', true),
+    stamp(c, {
+      type: 'queue-update',
+      queued: [{ id: 'uuid-2', text: 'parked', coalesceWithNext: false }],
+    }),
+  ]);
+  assert.equal(s0.queuedPrompts.length, 1);
+  const s1 = foldEvent(s0, stamp(c, { type: 'session/rewind', rewindId: 'uuid-1' }));
+  assert.deepEqual(s1.queuedPrompts, [], 'the session died — nothing parked can be delivered');
 });

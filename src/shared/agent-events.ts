@@ -1361,12 +1361,14 @@ export function makeUserMessage(
   text: string,
   images?: AgentImage[],
   rewindId?: string,
+  queued?: boolean,
 ): AgentUserMessageEvent {
   return stamp(ctx, {
     type: 'user-message',
     text,
     ...(images && images.length > 0 ? { images } : {}),
     ...(rewindId ? { rewindId } : {}),
+    ...(queued ? { queued: true } : {}),
   });
 }
 
@@ -1394,6 +1396,7 @@ export function emptySession(workspaceId: string): AgentSession {
     permissionMode: 'bypassPermissions',
     running: false,
     messages: [],
+    queuedPrompts: [],
     pendingPermissions: [],
     pendingAnswerables: [],
     totalCostUsd: 0,
@@ -1714,8 +1717,16 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         // The rewind target for this turn, when Orchestra minted one (locally
         // submitted turns) or the history backfill recovered it from disk.
         ...(event.rewindId ? { rewindId: event.rewindId } : {}),
+        // Parked behind an in-flight turn — the agent hasn't seen it yet.
+        ...(event.queued ? { queued: true } : {}),
         done: true,
       });
+      // A QUEUED prompt must not disturb the in-flight turn's state: it did not
+      // start a turn, so restarting the clock here would make the footer report
+      // the running turn as having just begun, and zeroing liveOutputChars would
+      // discard the character count the live token estimate is built from.
+      // (`running` is already true — that's *why* this prompt was parked.)
+      if (event.queued) return { ...next, messages };
       // A fresh prompt starts a new turn: start the live clock and reset the
       // per-turn output-char counter that feeds the live token estimate.
       return {
@@ -1727,6 +1738,30 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         statusNotice: undefined,
         liveThinkingTokens: undefined,
       };
+    }
+
+    case 'queue-update': {
+      // Wholesale snapshot of main's `session.queue`. Reconcile the transcript
+      // bubbles against it: anything no longer listed has been DISPATCHED (or
+      // cancelled), so it stops rendering as pending. Keyed on rewindId, which
+      // both sides mint from the same uuid.
+      const stillQueued = new Set(event.queued.map((q) => q.id));
+      let changed = false;
+      const messages = next.messages.map((m) => {
+        if (!m.queued) return m;
+        // An edit made in the tray must show up on the bubble too.
+        const entry = m.rewindId ? event.queued.find((q) => q.id === m.rewindId) : undefined;
+        if (entry) {
+          if (entry.text === m.text) return m;
+          changed = true;
+          return { ...m, text: entry.text };
+        }
+        if (m.rewindId && stillQueued.has(m.rewindId)) return m;
+        changed = true;
+        const { queued: _dropped, ...rest } = m;
+        return rest;
+      });
+      return { ...next, queuedPrompts: event.queued, ...(changed ? { messages } : {}) };
     }
 
     case 'local-command': {
@@ -1873,6 +1908,11 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         // dialogs/elicitations parked against that same dead query().
         pendingPermissions: [],
         pendingAnswerables: [],
+        // The rewind stopped the session, so nothing parked behind the dead
+        // turn will ever be delivered. Main clears its own `session.queue` on
+        // the same path; leaving them here would show a tray of prompts that
+        // can never run.
+        queuedPrompts: [],
       };
     }
 

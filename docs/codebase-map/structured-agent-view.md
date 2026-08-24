@@ -322,6 +322,37 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   reaches it behind a narrow local type, gated THREE ways — capability advertised,
   method present, call succeeded — each falling back to the plain `interrupt()`,
   which is the pre-#26 behaviour.
+- **The queue tray — prompts parked behind an in-flight turn.** Sending while a
+  turn runs has ALWAYS queued (`sdkSend` pushes onto `session.queue`
+  unconditionally; `promptStream` gates the next yield on the previous turn's
+  `result`), but nothing rendered that queue, so a parked prompt was visually
+  indistinguishable from one the agent was working on. Now `sdkSend` computes
+  `parked = session.turnGate !== null || session.queue.length > 0` and stamps it
+  onto the echo (`AgentUserMessageEvent.queued`); the bubble renders dashed via
+  `data-queued="1"` (`MessageBubble.tsx`, `.av-message-user[data-queued='1']`).
+  The authoritative surface is `QueueTray.tsx`, docked INSIDE `.av-composer`
+  above the input (the transcript scrolls, so ghost bubbles there scroll out of
+  reach exactly when you want to cancel one — measured on the UI prototype).
+  Every mutation goes through main and comes back as an `AgentQueueUpdateEvent`
+  carrying the WHOLE queue (a snapshot cannot drift the way an ordered delta
+  stream can under the RAF-batched queue); the fold reconciles bubbles against it
+  and clears `queued` on anything that drained. IPC: `agent:sdkQueue{Remove,Edit,
+  Move,Coalesce}` → `sdkQueue*` in `agent-sdk.ts`.
+  **Coalescing** — an entry marked `coalesceWithNext` (`session.coalesce`, a Set
+  keyed by minted uuid because the array is spliced/reordered) is absorbed into
+  the following one at drain time, so several thoughts arrive as ONE turn. The
+  tray's `turnCount()` and `promptStream`'s absorb loop are two encodings of that
+  rule and are cross-checked over all 62 merge patterns of length ≤5.
+  ⚠️ Two traps this closed: (a) a queued echo must NOT restart `turnStartedAt` /
+  zero `liveOutputChars`, or the footer reports the running turn as just begun and
+  the live token estimate loses its denominator (the fold returns early on
+  `event.queued`); (b) `interruptCancellingQueued` now clears Orchestra's OWN
+  `session.queue` too — `cancel_queued` reaches only what the CLI already holds,
+  so without this Escape would leave parked prompts to start fresh turns the
+  instant the abort landed. Cancelling/editing also rewrites `sdkPendingPrompts`,
+  or the crash-recovery replay would resurrect a prompt the user cancelled.
+  **Escape hatch**: `Mod+Enter` interrupts and sends immediately (bound in
+  `CmComposer` as `onModEnter` — NOT Shift+Enter, which inserts a newline).
 - **Rate-limit / overload terminations (#26 item 2)** — a turn ending with
   `is_error` is classified STRUCTURALLY from `api_error_status`, never from the error
   prose: `classifyTurnError` (`agent-events.ts`) maps **429 → `rate-limit`**, **529 →

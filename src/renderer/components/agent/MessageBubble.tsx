@@ -57,7 +57,14 @@ function MessageBubbleImpl({ message }: Props) {
   if (!text && !thinking && !hasImages) return null;
 
   return (
-    <div className={`av-message av-message-${role}`} data-role={role}>
+    <div
+      className={`av-message av-message-${role}`}
+      data-role={role}
+      // Parked behind the in-flight turn — styled as pending, not sent. The
+      // queue tray is the place to act on it; the bubble just stops lying about
+      // having been delivered.
+      data-queued={message.queued ? '1' : undefined}
+    >
       {/* Hover-revealed ghost timestamp — invisible until the bubble is
           hovered (same quiet-affordance treatment as the rewind row), so the
           transcript stays chrome-free while per-message precision is one
@@ -147,6 +154,13 @@ function areEqual(a: Props, b: Props): boolean {
     // (`busy` rides the CONTEXT, which re-renders consumers on its own — that is
     // exactly why it isn't a prop.)
     x.rewindId === y.rewindId &&
+    // MUTATES mid-life, unlike everything else here: a prompt parked behind an
+    // in-flight turn clears this the moment the queue drains. Omitting it left
+    // the store correct and the DOM stale — drained bubbles kept rendering as
+    // pending forever, invisible to the fold's own unit tests (caught only by
+    // driving the real DOM). This comparator is an ALLOWLIST: a new field that
+    // affects rendering must be added here or it will not re-render.
+    x.queued === y.queued &&
     // Minted once, immutable — compared anyway (costless) so the hover
     // timestamp can never go stale if that ever changes.
     x.at === y.at

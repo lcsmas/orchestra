@@ -2959,3 +2959,97 @@ h6.av-md-h {
   border-radius: var(--radius-sm, 6px);
 }
 .av-memory-banner-close:hover { color: var(--av-text); background: var(--av-hover, transparent); }
+
+/* ── Queue tray — prompts parked behind the in-flight turn ─────────────────
+   Docked INSIDE the composer frame, above the input. It is deliberately a
+   distinct SUNKEN strip rather than more bubbles: these are not transcript
+   history, they are pending intent the user can still change. */
+.av-queue {
+  margin-bottom: 8px;
+  padding: 8px 10px 9px;
+  background: var(--av-surface-sunken);
+  border: 1px solid var(--av-hairline);
+  border-radius: var(--av-radius-lg, 10px);
+}
+.av-queue-head {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 7px;
+  font-size: var(--av-fs-small);
+}
+.av-queue-count { color: var(--av-text); font-weight: 620; }
+/* The turn count is the load-bearing bit — it answers "will these run as one
+   turn or three?", which the raw queue length cannot. */
+.av-queue-sub { color: var(--av-text-faint); font-size: 12px; }
+.av-queue-spacer { flex: 1; }
+
+.av-queue-list { display: flex; flex-direction: column; gap: 4px; }
+
+.av-queue-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 6px 8px;
+  background: var(--av-surface-raised);
+  border: 1px solid var(--av-hairline);
+  border-radius: 8px;
+  font-size: var(--av-fs-small);
+}
+/* A merged row visually fuses with the one below it: the flat bottom edge plus
+   the accent border reads as "these two are one turn". */
+.av-queue-row-merged {
+  border-bottom-color: var(--av-task);
+  border-bottom-left-radius: 2px;
+  border-bottom-right-radius: 2px;
+  margin-bottom: -2px;
+}
+.av-queue-num {
+  flex: none;
+  width: 17px; height: 17px; margin-top: 1px;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  background: var(--av-hairline-strong);
+  color: var(--av-text-dim);
+  font-size: 10px; font-family: var(--font-mono);
+}
+.av-queue-text {
+  flex: 1; min-width: 0;
+  color: var(--av-text-dim);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  cursor: text;
+}
+.av-queue-edit {
+  flex: 1; min-width: 0;
+  font: inherit; font-family: var(--font-mono); font-size: var(--av-fs-code);
+  color: var(--av-text);
+  background: var(--av-surface-sunken);
+  border: 1px solid var(--av-focus-border, var(--av-assistant));
+  border-radius: 6px;
+  padding: 4px 6px;
+  resize: vertical;
+}
+.av-queue-edit:focus { outline: none; }
+
+/* Actions stay hidden until hover/focus so the strip reads as content, not a
+   toolbar — but focus-within keeps them reachable by keyboard. */
+.av-queue-actions {
+  display: flex; gap: 1px; flex: none;
+  opacity: 0;
+  transition: opacity 120ms var(--av-ease, ease);
+}
+.av-queue-row:hover .av-queue-actions,
+.av-queue-row:focus-within .av-queue-actions { opacity: 1; }
+
+.av-queue-btn {
+  font: inherit; font-size: 12px;
+  padding: 2px 7px; border-radius: 6px;
+  background: none; border: 1px solid transparent;
+  color: var(--av-text-dim);
+  cursor: pointer;
+}
+.av-queue-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--av-text);
+}
+.av-queue-btn:disabled { opacity: 0.3; cursor: default; }
+.av-queue-icon { min-width: 22px; text-align: center; padding: 2px 4px; }
+.av-queue-btn[aria-pressed='true'] { color: var(--av-task); }
+.av-queue-remove:hover:not(:disabled) { color: var(--av-error); }
+

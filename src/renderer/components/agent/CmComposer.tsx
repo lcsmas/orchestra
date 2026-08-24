@@ -230,6 +230,9 @@ interface Props {
    *  Each returns true when it consumed the key. */
   onEnter: () => boolean;
   onShiftEnter?: () => boolean;
+  /** Mod(Cmd/Ctrl)+Enter — interrupt the running turn and send immediately,
+   *  bypassing the queue. */
+  onModEnter?: () => boolean;
   onArrowDown: () => boolean;
   onArrowUp: () => boolean;
   onTab: () => boolean;
@@ -254,6 +257,7 @@ export function CmComposer({
   onVimMode,
   onEnter,
   onShiftEnter,
+  onModEnter,
   onArrowDown,
   onArrowUp,
   onTab,
@@ -273,11 +277,11 @@ export function CmComposer({
   // Latest callbacks, read through a ref so the keymap closure never goes stale
   // (the editor is created once; props change every render).
   const cb = useRef({
-    onChange, onEnter, onShiftEnter, onArrowDown, onArrowUp, onTab, onEscape,
+    onChange, onEnter, onShiftEnter, onModEnter, onArrowDown, onArrowUp, onTab, onEscape,
     onPaste, onDrop, onVimMode, vimEnabled, onVoiceDictate, onVoiceEdit,
   });
   cb.current = {
-    onChange, onEnter, onShiftEnter, onArrowDown, onArrowUp, onTab, onEscape,
+    onChange, onEnter, onShiftEnter, onModEnter, onArrowDown, onArrowUp, onTab, onEscape,
     onPaste, onDrop, onVimMode, vimEnabled, onVoiceDictate, onVoiceEdit,
   };
 
@@ -316,6 +320,17 @@ export function CmComposer({
             return cb.current.onEnter();
           },
           shift: () => (cb.current.onShiftEnter ? cb.current.onShiftEnter() : false),
+        },
+        {
+          // Mod+Enter = "interrupt the running turn and send this NOW", the
+          // escape hatch from the default queue-on-Enter behaviour. NOT bound to
+          // Shift+Enter: that already inserts a newline, and stealing it would
+          // break multi-line prompts.
+          key: 'Mod-Enter',
+          run: (v) => {
+            if (readMode(v) === 'normal') return false;
+            return cb.current.onModEnter ? cb.current.onModEnter() : false;
+          },
         },
         {
           // Ctrl+[ is vim's Esc synonym. `defaultKeymap` binds `Mod-[` to

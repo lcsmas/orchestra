@@ -1469,6 +1469,43 @@ export interface AgentUserMessageEvent extends AgentEventBase {
    *  'peer: <name>'. Locally-typed prompts omit it. Rendered as a small badge
    *  on the user bubble so a remotely-driven session reads coherently. */
   origin?: string;
+  /** True when this prompt was PARKED behind a turn already in flight rather
+   *  than started immediately — i.e. `sdkSend` pushed it onto a non-empty
+   *  `session.queue`, and `promptStream` won't yield it until the current
+   *  turn's `result` lands.
+   *
+   *  The echo is emitted synchronously on send either way, so without this flag
+   *  a queued prompt renders identically to one the agent is actively working
+   *  on — the exact confusion the queue tray exists to remove. Cleared by
+   *  {@link AgentQueueUpdateEvent} when the message is finally dispatched. */
+  queued?: boolean;
+}
+
+/** The queue of prompts parked behind the in-flight turn changed — emitted
+ *  whenever `session.queue` is mutated (a message dispatched, cancelled,
+ *  edited, reordered, or merged). Carries the WHOLE queue rather than a delta:
+ *  the queue is tiny (a handful of messages at most) and a full snapshot can't
+ *  drift out of sync with main the way an ordered delta stream can under the
+ *  RAF-batched event queue. */
+export interface AgentQueueUpdateEvent extends AgentEventBase {
+  type: 'queue-update';
+  /** Every prompt still parked, in the order they will be delivered. Empty when
+   *  the queue drained. Identified by `rewindId` — the uuid minted in `sdkSend`
+   *  and already carried on the user-message echo, so the tray and the
+   *  transcript bubble refer to the same message without a parallel id space. */
+  queued: AgentQueuedPrompt[];
+}
+
+/** One prompt parked in `session.queue`, as surfaced to the renderer. */
+export interface AgentQueuedPrompt {
+  /** The minted `SDKUserMessage.uuid` — matches the user bubble's `rewindId`. */
+  id: string;
+  /** Current text, which the user may have edited since queueing. */
+  text: string;
+  /** When true this prompt is joined to the NEXT one, so the two are delivered
+   *  as a single turn (texts joined by a blank line) instead of two. Lets the
+   *  user fire off several thoughts and have the agent see them together. */
+  coalesceWithNext: boolean;
 }
 
 /** A local shell command run from the composer's **bash mode** (`!command`,
@@ -1664,6 +1701,7 @@ export type AgentEvent =
   | AgentUserDialogRequestEvent
   | AgentElicitationRequestEvent
   | AgentUserMessageEvent
+  | AgentQueueUpdateEvent
   | AgentLocalCommandEvent
   | AgentSessionUpdateEvent
   | AgentContextUsageEvent
@@ -1718,6 +1756,11 @@ export interface RenderMessage {
    *  turns Orchestra minted an id for, or history lines whose on-disk envelope
    *  carried one — the bubble shows its rewind affordance only when set. */
   rewindId?: string;
+  /** For a `user` message: still parked behind an in-flight turn, so the agent
+   *  has NOT seen it yet. Renders the bubble in its pending treatment instead
+   *  of as a sent prompt. Cleared when the queue update reports it dispatched.
+   *  See {@link AgentUserMessageEvent.queued}. */
+  queued?: boolean;
   /** True while a thinking block is open on this message — a spinner indicator,
    *  never rendered text (redacted on Opus 4.8). */
   thinking?: boolean;
@@ -1780,6 +1823,12 @@ export interface AgentSession {
   running: boolean;
   /** The folded transcript, in order. */
   messages: RenderMessage[];
+  /** Prompts parked behind the in-flight turn, in delivery order — the queue
+   *  tray's model. Mirrors main's `session.queue`, refreshed wholesale by every
+   *  {@link AgentQueueUpdateEvent}. Empty between turns and whenever the user
+   *  is typing into an idle session (a prompt sent to an idle agent starts
+   *  immediately and is never parked). */
+  queuedPrompts: AgentQueuedPrompt[];
   /** Pending permission requests awaiting a renderer reply, keyed by requestId
    *  so the UI can show one prompt per parked call. */
   pendingPermissions: AgentPermissionRequestEvent[];

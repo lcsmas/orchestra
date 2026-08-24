@@ -79,6 +79,11 @@ const api: OrchestraAPI = {
   agentSdkSend: (wsId, text, images) => ipcRenderer.invoke('agent:sdkSend', wsId, text, images),
   agentSdkRunBash: (wsId, command) => ipcRenderer.invoke('agent:sdkRunBash', wsId, command),
   agentSdkInterrupt: (wsId) => ipcRenderer.invoke('agent:sdkInterrupt', wsId),
+  agentSdkQueueRemove: (wsId, id) => ipcRenderer.invoke('agent:sdkQueueRemove', wsId, id),
+  agentSdkQueueEdit: (wsId, id, text) => ipcRenderer.invoke('agent:sdkQueueEdit', wsId, id, text),
+  agentSdkQueueMove: (wsId, id, dir) => ipcRenderer.invoke('agent:sdkQueueMove', wsId, id, dir),
+  agentSdkQueueCoalesce: (wsId, id, on) =>
+    ipcRenderer.invoke('agent:sdkQueueCoalesce', wsId, id, on),
   agentSdkClear: (wsId) => ipcRenderer.invoke('agent:sdkClear', wsId),
   agentSdkRewind: (wsId, rewindId, prevRewindId) =>
     ipcRenderer.invoke('agent:sdkRewind', wsId, rewindId, prevRewindId),

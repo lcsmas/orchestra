@@ -195,6 +195,11 @@ interface Session {
   /** Pending user turns not yet yielded to the SDK. The async-generator prompt
    *  drains this; {@link Session.pump} wakes it when a new turn arrives. */
   queue: SDKUserMessage[];
+  /** Per-queue-entry flag: this entry is merged with the NEXT one, so
+   *  {@link promptStream} delivers them as a SINGLE turn. Keyed by the entry's
+   *  minted `uuid` because the queue array is spliced/reordered by the tray, so
+   *  positional indexes would not survive. Entries are pruned as they drain. */
+  coalesce: Set<string>;
   /** Resolver for the generator's current await — called to hand it the next
    *  queued message (or signal shutdown). */
   pump: (() => void) | null;
@@ -844,6 +849,27 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
     if (session.stopping) return;
 
     const msg = session.queue.shift()!;
+    // COALESCE: while the entry just taken is marked "merge with next", absorb
+    // the following entry's text into it so the agent receives ONE turn instead
+    // of several. Marks are dropped as they're consumed. The loop is bounded by
+    // the queue length, and a mark on the LAST entry simply finds nothing to
+    // absorb (the user merged, then cancelled what followed).
+    while (msg.uuid && session.coalesce.has(msg.uuid) && session.queue.length > 0) {
+      const nextMsg = session.queue.shift()!;
+      session.coalesce.delete(msg.uuid);
+      const joined = [queueEntryText(msg), queueEntryText(nextMsg)].filter(Boolean).join('\n\n');
+      setQueueEntryText(msg, joined);
+      // Inherit the absorbed entry's mark so a run of merged prompts collapses
+      // into a single turn rather than stopping after the first pair.
+      if (nextMsg.uuid && session.coalesce.has(nextMsg.uuid)) {
+        session.coalesce.delete(nextMsg.uuid);
+        session.coalesce.add(msg.uuid);
+      }
+    }
+    if (msg.uuid) session.coalesce.delete(msg.uuid);
+    // This entry (and anything it absorbed) has left the queue — tell the tray
+    // before the turn starts, so the dispatched prompt stops rendering pending.
+    emitQueueUpdate(session);
     // Arm the gate for THIS turn before yielding: consume() resolves it on the
     // turn's `result` (or stop()/interrupt() resolves it to unblock shutdown).
     turnInFlight = new Promise<void>((res) => {
@@ -1111,6 +1137,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     // the counter mints ids that collide with rows already in it.
     ctx: cursorFor(wsId),
     queue: [],
+    coalesce: new Set(),
     pump: null,
     turnGate: null,
     pending: new Map(),
@@ -1700,6 +1727,144 @@ export async function sdkListSkills(wsId: string): Promise<AgentSkillInfo[]> {
  *  resume), EMIT an error event so the structured view shows it — the old
  *  behavior rejected silently and the composer swallowed it ("send does
  *  nothing"). Still rethrows so the IPC caller can react too. */
+/** The user-visible text of a queued entry. `sdkSend` builds content as either
+ *  a bare string (the common path) or an array of content blocks when images
+ *  rode along — pull the text block out of the latter so the tray shows the
+ *  prompt rather than `[object Object]`. */
+function queueEntryText(msg: SDKUserMessage): string {
+  const content = msg.message.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((b): b is { type: 'text'; text: string } => {
+      const t = b as { type?: unknown; text?: unknown };
+      return t.type === 'text' && typeof t.text === 'string';
+    })
+    .map((b) => b.text)
+    .join('\n');
+}
+
+/** Rewrite a queued entry's text in place, preserving any image blocks. */
+function setQueueEntryText(msg: SDKUserMessage, text: string): void {
+  const content = msg.message.content;
+  if (typeof content === 'string' || !Array.isArray(content)) {
+    msg.message.content = text as SDKUserMessage['message']['content'];
+    return;
+  }
+  const blocks = content.filter((b) => (b as { type?: unknown }).type !== 'text');
+  msg.message.content = [
+    ...blocks,
+    ...(text ? [{ type: 'text' as const, text }] : []),
+  ] as SDKUserMessage['message']['content'];
+}
+
+/** Remove ONE occurrence of `text` from the workspace's crash-recovery prompt
+ *  insurance (`sdkPendingPrompts`), used when a parked prompt is cancelled.
+ *  One occurrence, not all: the same text queued twice is two real prompts, and
+ *  cancelling one must not silently discard the other. */
+async function dropPendingPrompt(wsId: string, text: string): Promise<void> {
+  const pending = store.getWorkspace(wsId)?.sdkPendingPrompts;
+  if (!pending?.length) return;
+  const i = pending.indexOf(text);
+  if (i < 0) return;
+  const next = [...pending.slice(0, i), ...pending.slice(i + 1)];
+  await persistWorkspacePatch(wsId, {
+    sdkPendingPrompts: next.length ? next : undefined,
+  }).catch(() => {});
+}
+
+/** Rewrite one occurrence of a pending prompt after a tray edit, so a crash
+ *  replays what the user MEANT rather than the superseded text. */
+async function replacePendingPrompt(wsId: string, before: string, after: string): Promise<void> {
+  const pending = store.getWorkspace(wsId)?.sdkPendingPrompts;
+  if (!pending?.length) return;
+  const i = pending.indexOf(before);
+  if (i < 0) return;
+  const next = [...pending];
+  next[i] = after;
+  await persistWorkspacePatch(wsId, { sdkPendingPrompts: next }).catch(() => {});
+}
+
+/** Project main's `session.queue` into the renderer-facing snapshot and emit it.
+ *  Called after EVERY queue mutation (send, drain, cancel, edit, reorder,
+ *  merge) so the tray can never drift from the real delivery order. */
+function emitQueueUpdate(session: Session): void {
+  // Prune coalesce marks for entries that have drained, so the set can't grow
+  // unbounded across a long session.
+  const live = new Set<string>(session.queue.flatMap((m) => (m.uuid ? [m.uuid as string] : [])));
+  for (const id of session.coalesce) if (!live.has(id)) session.coalesce.delete(id);
+  emit(
+    session.wsId,
+    stamp(session.ctx, {
+      type: 'queue-update',
+      queued: session.queue.map((m) => ({
+        id: m.uuid ?? '',
+        text: queueEntryText(m),
+        coalesceWithNext: !!m.uuid && session.coalesce.has(m.uuid),
+      })),
+    }),
+  );
+}
+
+/** Drop a parked prompt the user cancelled from the tray. Returns false when the
+ *  id is unknown — it already drained, which is a benign race (the user clicked
+ *  cancel as the turn ended), not an error. */
+export function sdkQueueRemove(wsId: string, id: string): boolean {
+  const session = sessions.get(wsId);
+  if (!session) return false;
+  const i = session.queue.findIndex((m) => m.uuid === id);
+  if (i < 0) return false;
+  // Read the text BEFORE splicing — after the splice, index `i` is the NEXT
+  // entry, so reading it there would drop the wrong prompt from the insurance.
+  const removedText = queueEntryText(session.queue[i]);
+  session.queue.splice(i, 1);
+  session.coalesce.delete(id);
+  // Keep the crash-recovery insurance in step: `sdkPendingPrompts` re-sends
+  // parked prompts if the app dies before they run, so leaving a CANCELLED
+  // prompt there would resurrect it on next open — the one outcome the user
+  // explicitly asked against.
+  void dropPendingPrompt(wsId, removedText);
+  emitQueueUpdate(session);
+  return true;
+}
+
+/** Replace a parked prompt's text (tray edit). */
+export function sdkQueueEdit(wsId: string, id: string, text: string): boolean {
+  const session = sessions.get(wsId);
+  if (!session) return false;
+  const msg = session.queue.find((m) => m.uuid === id);
+  if (!msg) return false;
+  const before = queueEntryText(msg);
+  setQueueEntryText(msg, text);
+  void replacePendingPrompt(wsId, before, text);
+  emitQueueUpdate(session);
+  return true;
+}
+
+/** Move a parked prompt one slot earlier (-1) or later (+1) in delivery order. */
+export function sdkQueueMove(wsId: string, id: string, dir: -1 | 1): boolean {
+  const session = sessions.get(wsId);
+  if (!session) return false;
+  const i = session.queue.findIndex((m) => m.uuid === id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= session.queue.length) return false;
+  const q = session.queue;
+  [q[i], q[j]] = [q[j], q[i]];
+  emitQueueUpdate(session);
+  return true;
+}
+
+/** Toggle whether a parked prompt is merged into one turn with the next one. */
+export function sdkQueueSetCoalesce(wsId: string, id: string, on: boolean): boolean {
+  const session = sessions.get(wsId);
+  if (!session) return false;
+  if (!session.queue.some((m) => m.uuid === id)) return false;
+  if (on) session.coalesce.add(id);
+  else session.coalesce.delete(id);
+  emitQueueUpdate(session);
+  return true;
+}
+
 export async function sdkSend(
   wsId: string,
   text: string,
@@ -1777,6 +1942,11 @@ export async function sdkSend(
     // image + text blocks match the Messages API vision contract exactly.
     message: { role: 'user', content: content as SDKUserMessage['message']['content'] },
   };
+  // A turn already in flight means this prompt is PARKED, not started —
+  // `turnGate` is non-null exactly while a turn runs (same idiom as consume()'s
+  // hadOpenTurn check). Read it BEFORE pushing, and note that a non-empty queue
+  // also counts: two prompts fired between turns both park behind the first.
+  const parked = session.turnGate !== null || session.queue.length > 0;
   session.queue.push(msg);
   // Echo the prompt (text + images) to every attached UI — the SDK stream never
   // repeats plain user content, so this event is the transcript's only record.
@@ -1784,9 +1954,11 @@ export async function sdkSend(
   // for the status dot, so drive status off it directly: it flips the sidebar to
   // `running` the instant the turn is queued, before the first SDK event lands —
   // parity with the terminal path's UserPromptSubmit hook.
-  const userMsg = makeUserMessage(session.ctx, text, images, rewindId);
+  const userMsg = makeUserMessage(session.ctx, text, images, rewindId, parked);
   emit(session.wsId, userMsg);
   driveStatusFromEvent(session, userMsg);
+  // Publish the new queue depth so the tray appears the instant a prompt parks.
+  if (parked) emitQueueUpdate(session);
   // Remember what we fed the generator so emitFrom can drop a stream replay of
   // this exact text (see the guard there). `sendText` is what a replay would
   // carry (context prefix included). Bounded — this is a dedupe window, not a log.
@@ -2080,6 +2252,15 @@ type ControlRequester = {
  *  runtime object, and the call must succeed — any miss falls back to the plain
  *  typed `interrupt()`, which is the pre-#26 behavior. */
 async function interruptCancellingQueued(session: Session): Promise<void> {
+  // Orchestra's OWN queue holds prompts never handed to the CLI, so
+  // `cancel_queued` cannot see them: without this they would be delivered as
+  // fresh turns the moment the interrupt settles — the user hits Escape and the
+  // agent keeps going. Clear locally and republish so the tray empties too.
+  if (session.queue.length > 0) {
+    session.queue.length = 0;
+    session.coalesce.clear();
+    emitQueueUpdate(session);
+  }
   const supported = supportsCancelQueued(session.capabilities);
   const req = (session.q as unknown as ControlRequester).request;
   if (supported && typeof req === 'function') {
