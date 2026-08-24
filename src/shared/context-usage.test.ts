@@ -193,11 +193,13 @@ test('over-limit usage exceeds 100% rather than clamping', () => {
 // line), but a detached/history pane must still show a percentage — so the
 // window is DERIVED from the model id, reusing the app's existing rules rather
 // than a second convention.
-test('contextUsageFromTranscript derives the default window when the model is unknown', () => {
+test('contextUsageFromTranscript reports an UNKNOWN window rather than inventing one', () => {
   const u = contextUsageFromTranscript(50000, 7);
   assert.equal(u.totalTokens, 50000);
-  assert.equal(u.maxTokens, 200_000);
-  assert.equal(u.percentage, 25);
+  // No default window: a % against a window nobody chose is a fabricated
+  // number, and the gauge renders the true token count instead.
+  assert.equal(u.maxTokens, null);
+  assert.equal(u.percentage, null);
   assert.equal(u.source, 'transcript');
   assert.equal(u.at, 7);
 });
@@ -209,25 +211,29 @@ test('contextUsageFromTranscript honours a [1m] long-context model id', () => {
   assert.equal(u.model, 'claude-opus-4-8[1m]');
 });
 
-test('a plain model id gets the default window, not the 1M one', () => {
+test('a plain model id yields NO window — only [1m] is a positive signal', () => {
   const u = contextUsageFromTranscript(50000, 0, 'claude-opus-4-8');
-  assert.equal(u.maxTokens, 200_000);
-  assert.equal(u.percentage, 25);
+  assert.equal(u.maxTokens, null);
+  assert.equal(u.percentage, null);
 });
 
-test('transcriptContextWindow maps model ids to windows', () => {
-  assert.equal(transcriptContextWindow(null), 200_000);
-  assert.equal(transcriptContextWindow(undefined), 200_000);
-  assert.equal(transcriptContextWindow(''), 200_000);
-  assert.equal(transcriptContextWindow('claude-opus-5'), 200_000);
+test('transcriptContextWindow returns a window ONLY for an explicit [1m] id', () => {
+  // Unknown -> null, never a guess.
+  assert.equal(transcriptContextWindow(null), null);
+  assert.equal(transcriptContextWindow(undefined), null);
+  assert.equal(transcriptContextWindow(''), null);
+  assert.equal(transcriptContextWindow('claude-opus-5'), null);
+  assert.equal(transcriptContextWindow('claude-opus-4-8'), null);
+  // `[1m]` positively STATES a 1M window, so it is honoured, not assumed.
   assert.equal(transcriptContextWindow('claude-opus-4-8[1m]'), 1_000_000);
+  assert.equal(transcriptContextWindow('opus[1m]'), 1_000_000);
 });
 
 // A transcript reading is an ASSUMED window, so it must still lose to a live
 // one — otherwise a wrong assumption would outlive the real measurement.
-test('a derived-window transcript reading still loses to a live reading', () => {
+test('a transcript reading still loses to a live reading', () => {
   const t = contextUsageFromTranscript(50000, 1000, 'claude-opus-5');
-  assert.equal(t.maxTokens, 200_000);
+  assert.equal(t.maxTokens, null);
   assert.equal(isMoreAuthoritative(live(500), t), true);
 });
 

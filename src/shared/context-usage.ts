@@ -35,7 +35,7 @@
 // a real semantic trap), and that reconciliation is exactly the logic worth
 // unit-testing without booting Electron or an SDK subprocess.
 
-import { DEFAULT_CONTEXT_WINDOW, contextWindowFromModelId } from './memory-size.ts';
+import { contextWindowFromModelId } from './memory-size.ts';
 
 /** Where a {@link ContextUsage} came from. Rendered as provenance and used to
  *  decide precedence: a `live` reading always supersedes a `transcript` one for
@@ -249,29 +249,32 @@ export function normalizeContextCommandUsage(
   };
 }
 
-/** Context window to assume for a transcript reading, given the model id the
- *  transcript recorded.
+/** Context window for a transcript reading, or `null` when it is genuinely
+ *  unknown.
  *
- *  WHY A DERIVED WINDOW AT ALL: the transcript records what each API call
- *  consumed but never the window it ran against (verified across 1,543
- *  main-chain assistant lines from the largest local transcripts: `usage`
- *  carries the token components, `message.context_management` is ABSENT on
- *  every one). Leaving it null renders a bare token count, which fails the
- *  spec's "reliably non-empty percentage at mount" for detached/history panes.
+ *  THE RULE (final, audit ruling): never invent a default window. A percentage
+ *  computed against a window nobody chose is a fabricated number, and a
+ *  confidently wrong percentage is worse than no percentage — nobody re-checks
+ *  a figure that looks plausible. When the window is unknown the gauge renders
+ *  the ABSOLUTE TOKEN COUNT instead, which is true.
  *
- *  So we derive it from the one context signal the transcript DOES carry —
- *  `message.model` — using the same two rules the rest of the app already uses,
- *  rather than minting a second convention: the `[1m]` alias means a 1M window
- *  (`contextWindowFromModelId`), and everything else gets the CLI's own default
- *  (`DEFAULT_CONTEXT_WINDOW`, 200k — the CLI's `pkr`).
+ *  Measured, which is why this is not a judgement call:
+ *   - The transcript records NO window: `message.context_management` is ABSENT
+ *     on all 1,543 main-chain assistant lines scanned across the largest real
+ *     local transcripts.
+ *   - `message.model` carries only the BASE id (`claude-opus-4-8`), never the
+ *     `[1m]` alias — so a real 1M session read 251% against an assumed 200k
+ *     when it was actually 50% full. That is the lie this rule kills.
+ *   - 17 of 29 workspaces in the real store have NO model set at all, so a
+ *     default would be pure guesswork for the majority of them.
  *
- *  This is an ASSUMED window, not a measured one, and the distinction is
- *  preserved: readings built on it are tagged `transcript`, so any live reading
- *  supersedes them the moment a real session attaches. A model whose true
- *  window is neither 200k nor 1M would render a wrong percentage here — the
- *  reason the live source exists and outranks this one. */
-export function transcriptContextWindow(model?: string | null): number {
-  return contextWindowFromModelId(model) ?? DEFAULT_CONTEXT_WINDOW;
+ *  The ONE case that yields a real window is a model id explicitly carrying
+ *  `[1m]` (`opus[1m]`, `claude-fable-5[1m]` — live values in the store): that is
+ *  a POSITIVE signal about the window, not an assumption, so it is honoured.
+ *  Everything else returns null and renders as tokens.
+ */
+export function transcriptContextWindow(model?: string | null): number | null {
+  return contextWindowFromModelId(model);
 }
 
 /** Wrap a transcript-derived token count as a {@link ContextUsage}, against the
@@ -285,6 +288,7 @@ export function contextUsageFromTranscript(
   at: number,
   model?: string | null,
 ): ContextUsage {
+  // null unless the model id positively states a 1M window — see above.
   const maxTokens = transcriptContextWindow(model);
   return {
     totalTokens: tokens,

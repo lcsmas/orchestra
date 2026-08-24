@@ -1055,25 +1055,28 @@ after each turn; a session with no live Query renders the transcript seed at
 mount. `StripStats` therefore no longer returns null when `lastTurn` is absent,
 and `ContextGauge` no longer requires a caller-supplied WINDOW.
 
-**The transcript fallback derives its window from the model id.** Verified
-across 1,543 main-chain assistant lines in real local transcripts: `usage`
-carries the token components but `message.context_management` is ABSENT on every
-one — the transcript records no window at all. Leaving it null rendered a bare
-token count, which fails the spec's "reliably non-empty at mount" for
-detached/history panes. So `transcriptContextWindow(model)` derives it, reusing
-the app's EXISTING rules rather than minting a second convention:
-`contextWindowFromModelId` for the `[1m]` long-context alias (1M), else
-`DEFAULT_CONTEXT_WINDOW` (200k — the CLI's own `pkr` fallback), both from
-`memory-size.ts`.
+**The transcript fallback NEVER invents a window** (audit ruling, final). A
+percentage computed against a window nobody chose is a fabricated number, and a
+confidently wrong percentage is worse than none — nobody re-checks a figure that
+looks plausible. So `transcriptContextWindow(model)` returns a window ONLY for a
+model id explicitly carrying `[1m]` (a positive statement about the window, not
+an assumption); everything else returns null and the gauge renders the ABSOLUTE
+TOKEN COUNT ("503k used"), which is true.
 
-**The model must come from the WORKSPACE record, not the transcript** —
-`sdkHistory` passes `ws.model` into `transcriptToEvents`. Measured against real
-transcripts: `message.model` records the BASE id (`claude-opus-4-8`) and NEVER
-the `[1m]` alias, while the store holds exactly that alias (`opus[1m]`,
-`claude-fable-5[1m]` are live values). Deriving from the line alone reported
-**251%** on a real 1M session that was actually 50% full — a confidently wrong
-number, worse than none. The line's model is the fallback when no workspace
-model is set.
+Measured, which is why this is not a judgement call:
+- The transcript records no window at all: `message.context_management` is
+  ABSENT on all 1,543 main-chain assistant lines scanned across the largest real
+  local transcripts.
+- `message.model` carries only the BASE id (`claude-opus-4-8`), never the `[1m]`
+  alias — so an earlier "derive a default" implementation reported **251%** on a
+  real 1M session that was actually 50% full.
+- 17 of 29 workspaces in the real store have NO model set at all, so a default
+  would be pure guesswork for most of them.
+
+`sdkHistory` still passes `ws.model` into `transcriptToEvents`, because the
+WORKSPACE record is the only place the `[1m]` alias survives (`opus[1m]`,
+`claude-fable-5[1m]` are live values) — that is how a genuine 1M session gets a
+real 50% instead of a token count.
 
 **A transcript ending in a compaction boundary reports 0, not nothing.** Found
 by replaying a real 2159-line transcript whose last boundary sat 19 lines from
