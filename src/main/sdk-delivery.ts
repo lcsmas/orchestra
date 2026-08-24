@@ -16,14 +16,20 @@
 // and callers fall back to their existing PTY path unchanged.
 
 import { log } from './logger';
+import type { PeerOrigin } from '../shared/peer-messages.ts';
 
 /** The subset of the SDK session manager the lifecycle dispatchers need. */
 export interface SdkDelivery {
   /** True iff a live (non-stopping) structured session owns this workspace. */
   hasSession(wsId: string): boolean;
   /** Enqueue a text turn to a live structured session (becomes its next turn,
-   *  same "live" semantics as typing into a running TUI). Resolves when queued. */
-  send(wsId: string, text: string): Promise<void>;
+   *  same "live" semantics as typing into a running TUI). Resolves when queued.
+   *
+   *  `peerOrigin` tags the turn as an INTER-AGENT delivery (issue #56). Peer
+   *  messages reach a live session through this very seam, so without the tag
+   *  they are byte-identical to a human prompt and render as full user bubbles.
+   *  Only `dispatchMessageRequest` sets it. */
+  send(wsId: string, text: string, peerOrigin?: PeerOrigin): Promise<void>;
   /** START a structured session (or reuse a live one) and deliver `text` as its
    *  next turn — the spawn/wake entry point. Unlike `send` this does not require
    *  a live session: it lazy-starts one, resuming the workspace's prior
@@ -49,9 +55,13 @@ export function sdkSessionLive(wsId: string): boolean {
 
 /** Deliver a prompt to a live structured session. Returns false (caller falls
  *  back to the PTY path) when there is no live session to deliver to. */
-export async function sdkDeliver(wsId: string, text: string): Promise<boolean> {
+export async function sdkDeliver(
+  wsId: string,
+  text: string,
+  peerOrigin?: PeerOrigin,
+): Promise<boolean> {
   if (!impl?.hasSession(wsId)) return false;
-  await impl.send(wsId, text);
+  await impl.send(wsId, text, peerOrigin);
   return true;
 }
 

@@ -24,6 +24,7 @@
  *     state, which is what makes the renderer store a pure projection.
  */
 
+import { peerOriginLabel, type PeerOrigin } from './peer-messages.ts';
 import type {
   AgentAnswerableEvent,
   AgentElicitationRequestEvent,
@@ -1362,6 +1363,13 @@ export function makeUserMessage(
   images?: AgentImage[],
   rewindId?: string,
   queued?: boolean,
+  /** Structural provenance when this "prompt" is actually an inter-agent
+   *  delivery rather than something the human typed (issue #56). Orchestra's
+   *  own peer channel routes through the SAME `sdkSend` a composer prompt takes
+   *  (dispatchMessageRequest → sdkDeliver → sdkSend), so without this tag the
+   *  two are indistinguishable and peer traffic rendered as full user bubbles.
+   *  Set ONLY by the peer dispatcher; a composer prompt leaves it undefined. */
+  peerOrigin?: PeerOrigin,
 ): AgentUserMessageEvent {
   return stamp(ctx, {
     type: 'user-message',
@@ -1369,6 +1377,7 @@ export function makeUserMessage(
     ...(images && images.length > 0 ? { images } : {}),
     ...(rewindId ? { rewindId } : {}),
     ...(queued ? { queued: true } : {}),
+    ...(peerOrigin ? { origin: peerOriginLabel(peerOrigin) } : {}),
   });
 }
 
