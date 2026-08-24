@@ -44,8 +44,14 @@
  * socket: `dispatchMessageRequest` (workspaces.ts) delivers via one of three
  * Orchestra-owned paths — an enqueued turn on the live SDK session
  * (`sdkDeliver`), a PTY write for terminal-mode workspaces, or the durable
- * per-workspace inbox file drained by a SessionStart hook. `SendMessage`,
- * `crossSessionInbound` and `messaging_socket` appear NOWHERE in `src/`.
+ * per-workspace inbox file drained by a SessionStart hook. In CODE, at
+ * upstream `48bdbcb`, `SendMessage` / `crossSessionInbound` /
+ * `messaging_socket` have zero hits under `src/` (positive control in the same
+ * pass: `sdkDeliver`, 4 files). Scoped that way deliberately — on THIS branch
+ * the string `SendMessage` does occur once, in the explanatory comment at
+ * `agent-sdk.ts` beside the setting, so an unscoped "appears nowhere" claim is
+ * false verbatim here and would read as fabricated to the first reviewer who
+ * greps the working tree.
  * So this setting gates only the unsolicited outside channel, and Orchestra's
  * own comms are untouched — verified with the same two-session probe.
  *

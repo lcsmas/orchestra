@@ -446,7 +446,9 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   message and is indistinguishable to the sender, so `'hold'` is the least-destructive
   supported policy (matrix in `docs/research/cross-session-inbound.md`). This does NOT
   affect `orchestra message`, a different channel entirely (`sdkDeliver` / PTY / inbox
-  file — `SendMessage` appears nowhere in `src/`). Inline settings land in the SDK's
+  file — `SendMessage` has zero hits in `src/` code at upstream `48bdbcb`,
+  positive control `sdkDeliver` 4 files; it occurs only in the explanatory
+  comment beside the setting). Inline settings land in the SDK's
   highest-priority "flag settings" layer, so a stale value in the user's `settings.json`
   cannot override it and `settingSources` is untouched. `buildSdkEnv` sets
   `ORCHESTRA_BRANCH`/`KIND` **plus `ORCHESTRA_BRANCH_AUTO`/`AUTO_RENAME_COUNT`** (the
