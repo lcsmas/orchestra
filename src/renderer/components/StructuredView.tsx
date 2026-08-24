@@ -275,7 +275,11 @@ export function StructuredView({ workspaceId, isActive }: Props) {
       />
       {/* The Background tasks slide-over, over the transcript. */}
       {panelOpen && (
-        <BackgroundTasksPanel session={session} onClose={() => setPanelOpen(false)} />
+        <BackgroundTasksPanel
+          session={session}
+          workspaceId={workspaceId}
+          onClose={() => setPanelOpen(false)}
+        />
       )}
     </div>
     </RewindContext.Provider>

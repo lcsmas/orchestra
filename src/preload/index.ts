@@ -103,6 +103,9 @@ const api: OrchestraAPI = {
   agentSdkDefaultModel: (wsId) => ipcRenderer.invoke('agent:sdkDefaultModel', wsId),
   agentSdkOpenTaskTranscript: (filePath) =>
     ipcRenderer.invoke('agent:sdkOpenTaskTranscript', filePath),
+  agentSdkStopTask: (wsId, taskId) => ipcRenderer.invoke('agent:sdkStopTask', wsId, taskId),
+  agentSdkBackgroundTasks: (wsId, toolUseId) =>
+    ipcRenderer.invoke('agent:sdkBackgroundTasks', wsId, toolUseId),
   agentSkills: (wsId) => ipcRenderer.invoke('agent:skills', wsId),
   agentModels: (wsId) => ipcRenderer.invoke('agent:models', wsId),
   browserShow: (wsId) => ipcRenderer.invoke('browser:show', wsId),

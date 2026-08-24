@@ -1811,6 +1811,93 @@ export function sdkPermissionReply(
   }
 }
 
+// ---------- Background tasks (#19) ----------
+//
+// Two distinct SDK capabilities, easy to conflate because both are named for
+// "background tasks" — they are opposites:
+//
+//  • `Query.stopTask(taskId)` KILLS a task that is already running in the
+//    background. The CLI answers with a `task_notification` carrying
+//    `status: 'stopped'`, which the normal event path folds onto the card — so
+//    this function deliberately does NOT patch `session.tasks` itself. The card
+//    flipping to "Stopped" is therefore evidence the CLI actually killed the
+//    task, not evidence the button was clicked (an optimistic local flip would
+//    make those two indistinguishable, which is exactly the failure the gate
+//    for this issue is written to catch).
+//
+//  • `Query.backgroundTasks(toolUseId?)` MOVES in-flight FOREGROUND work
+//    (a blocking Bash call or subagent) INTO the background — the SDK's Ctrl+B
+//    parity. It returns a boolean, NOT state: there is no state-returning
+//    background-task method anywhere on the `Query` interface at SDK 0.3.241
+//    (verified by enumerating it). Anything that needs the live set reads the
+//    ORGANIC `background_tasks_changed` level signal, which the fold already
+//    reconciles with replace-semantics (see foldTaskEvent in
+//    shared/agent-events.ts).
+
+/** Kill a running background task via the SDK's `Query.stopTask`.
+ *
+ *  Resolves `true` when the request was accepted by the CLI. The card does NOT
+ *  flip here: the CLI's own `task_notification { status: 'stopped' }` (or the
+ *  `background_tasks_changed` level signal dropping the id) is what finalizes
+ *  it through the normal fold, so a green button and a dead task stay separable.
+ *
+ *  Returns `false` when there is no live session — a task cannot outlive the
+ *  CLI process that owns it, so there is nothing to stop and nothing to warn
+ *  about. A genuine SDK failure surfaces as a `warning` notice (matching
+ *  {@link sdkSetModel}'s rule that a UI must never silently lie about what the
+ *  running session did) and also resolves `false`. */
+export async function sdkStopTask(wsId: string, taskId: string): Promise<boolean> {
+  const session = sessions.get(wsId);
+  if (!session) return false;
+  if (!taskId) return false;
+  try {
+    await session.q.stopTask(taskId);
+    return true;
+  } catch (err) {
+    log.warn(`agent-sdk: stopTask failed for ${wsId} (${taskId})`, err);
+    emit(
+      wsId,
+      stamp(session.ctx, {
+        type: 'notice',
+        kind: 'warning',
+        text: `Couldn't stop the background task: ${err instanceof Error ? err.message : String(err)}`,
+      }),
+    );
+    return false;
+  }
+}
+
+/** Move in-flight FOREGROUND work into the background — the SDK's Ctrl+B
+ *  parity (`Query.backgroundTasks`). Without `toolUseId` it backgrounds every
+ *  foreground task; with one it targets just that tool_use block.
+ *
+ *  Resolves the SDK's own boolean: `true` when at least one task was
+ *  backgrounded, `false` when a given `toolUseId` matched no foreground task.
+ *  That `false` is a real contract outcome ("nothing to background"), not an
+ *  error — the caller renders it as a no-op rather than a failure, so this
+ *  function does not emit a notice for it. Only a thrown SDK/transport error
+ *  gets a warning notice. */
+export async function sdkBackgroundForegroundTasks(
+  wsId: string,
+  toolUseId?: string,
+): Promise<boolean> {
+  const session = sessions.get(wsId);
+  if (!session) return false;
+  try {
+    return await session.q.backgroundTasks(toolUseId);
+  } catch (err) {
+    log.warn(`agent-sdk: backgroundTasks failed for ${wsId}`, err);
+    emit(
+      wsId,
+      stamp(session.ctx, {
+        type: 'notice',
+        kind: 'warning',
+        text: `Couldn't move the running work to the background: ${err instanceof Error ? err.message : String(err)}`,
+      }),
+    );
+    return false;
+  }
+}
 /** Persist a partial workspace change and broadcast it so the renderer's store
  *  updates. Used to make the Model/Permissions dropdowns and the resume
  *  session-id stick even when no live session exists. */
