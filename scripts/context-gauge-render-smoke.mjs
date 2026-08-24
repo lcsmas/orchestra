@@ -23,8 +23,13 @@
 // inside .av-ctx-anchor whenever the reading carries a breakdown, so a
 // `div.av-turn-context` assertion would pass here and break legitimately there.
 // Stable across both branches: `.av-turn-context`, `[data-context-source]`.
-// Verified by simulation: patching the component to render a <button> with an
-// aria-label leaves this harness ALL PASS, unchanged.
+// NOR on POSITION: these assertions substring-match the rendered HTML and do no
+// DOM walking (no nth-child, no direct-child paths, no parentElement), so extra
+// nesting cannot break them — #16 wraps the node in <div class=av-ctx-anchor>,
+// one level deeper.
+// Verified by simulation, not assumed: patching the component to render #16's
+// exact structure — a <button class=av-turn-context-btn aria-label=...> inside
+// <div class=av-ctx-anchor> — leaves this harness ALL PASS, unchanged.
 //
 // Run: node scripts/context-gauge-render-smoke.mjs
 
