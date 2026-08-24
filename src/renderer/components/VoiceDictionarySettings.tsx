@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   parseVoiceDictionary,
   readVoiceDictionaryRaw,
@@ -27,7 +28,11 @@ export function VoiceDictionarySettings({ onClose }: Props) {
 
   const terms = parseVoiceDictionary(text);
 
-  return (
+  // Portal to <body>: the sidebar carries `backdrop-filter`, which makes it a
+  // CONTAINING BLOCK for position:fixed — a backdrop rendered in the tree there
+  // is clipped to the 340px sidebar instead of covering the window.
+  // AccountsSettings/RepoScriptsModal portal for the same reason.
+  return createPortal(
     <div
       className="modal-backdrop"
       onMouseDown={(e) => {
@@ -67,6 +72,7 @@ export function VoiceDictionarySettings({ onClose }: Props) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

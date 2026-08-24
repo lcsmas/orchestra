@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { SOUNDS, getSelectedSoundId, playSoundById, setSelectedSoundId } from '../chime';
 
 interface Props {
@@ -22,7 +23,9 @@ export function SoundSettings({ onClose }: Props) {
     playSoundById(id);
   };
 
-  return (
+  // Portal to <body>: the sidebar sets `backdrop-filter`, which makes it a
+  // containing block for position:fixed, clipping this backdrop to the sidebar.
+  return createPortal(
     <div
       className="modal-backdrop"
       // Close only when the press starts on the backdrop, so a text-selection
@@ -71,6 +74,7 @@ export function SoundSettings({ onClose }: Props) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

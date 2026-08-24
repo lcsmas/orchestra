@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   readDefaultAgentView,
   writeDefaultAgentView,
@@ -36,7 +37,9 @@ export function AgentViewSettings({ onClose }: Props) {
     writeDefaultAgentView(id);
   };
 
-  return (
+  // Portal to <body>: the sidebar sets `backdrop-filter`, which makes it a
+  // containing block for position:fixed, clipping this backdrop to the sidebar.
+  return createPortal(
     <div
       className="modal-backdrop"
       onMouseDown={(e) => {
@@ -72,6 +75,7 @@ export function AgentViewSettings({ onClose }: Props) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
