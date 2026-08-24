@@ -41,6 +41,11 @@ import type {
   RenderMessage,
   TokenUsage,
 } from './types';
+import {
+  isMoreAuthoritative,
+  normalizeContextCommandUsage,
+  type ContextCommandUsagePayload,
+} from './context-usage.ts';
 
 // ─── SDK message shapes (only the fields we read) ────────────────────────────
 //
@@ -132,6 +137,12 @@ export interface SdkMessage {
   // Assistant messages are full API BetaMessages, so they carry the PER-CALL
   // `usage` (unlike `result`'s session-cumulative one — see lastApiCallUsage).
   message?: { role?: string; content?: RawContentBlock[] | string; usage?: RawUsage } | string;
+  // assistant (synthetic `/context` result): the CLI stamps a structured
+  // context breakdown TOP-LEVEL on the synthetic assistant message a `/context`
+  // slash command produces — beside `message`, not inside it. Verified emitted
+  // at CLI 2.1.234; snake_case, unlike `getContextUsage()`'s camelCase, so it
+  // gets its own adapter rather than a cast.
+  context_usage?: ContextCommandUsagePayload;
   // user (externally-originated turn provenance / synthetic filtering):
   isSynthetic?: boolean;
   parent_tool_use_id?: string | null;
@@ -546,8 +557,17 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
       // stream_event; here we only lift `tool_use` blocks, which carry the FULL
       // parsed input the diff is reconstructed from (spike g).
       const content = typeof msg.message === 'object' ? msg.message?.content : undefined;
-      if (!Array.isArray(content)) return [];
       const out: AgentEvent[] = [];
+      // A `/context` command yields a synthetic assistant message carrying the
+      // CLI's own structured breakdown. Lifting it here means a user who runs
+      // /context refreshes the gauge for free — no control request, no API call
+      // (the command costs zero turns). Emitted BEFORE the content guard below,
+      // since this message's content is prose we otherwise ignore.
+      if (msg.context_usage) {
+        const usage = normalizeContextCommandUsage(msg.context_usage, ctx.now ? ctx.now() : Date.now());
+        if (usage) out.push(stamp(ctx, { type: 'session/context', usage }));
+      }
+      if (!Array.isArray(content)) return out;
       for (const b of content) {
         if (b.type === 'tool_use' && typeof b.id === 'string') {
           out.push(
@@ -1390,6 +1410,14 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         ...(event.model !== undefined ? { model: event.model } : {}),
         ...(event.permissionMode !== undefined ? { permissionMode: event.permissionMode } : {}),
       };
+
+    case 'session/context':
+      // Guarded rather than assigned: readings arrive from independent
+      // producers, so a weaker/older one must not overwrite a current
+      // authoritative one (see isMoreAuthoritative). Replaying a history
+      // transcript through this fold therefore cannot downgrade a live gauge.
+      if (!isMoreAuthoritative(event.usage, next.contextUsage)) return next;
+      return { ...next, contextUsage: event.usage };
 
     case 'session/remote-control':
       // Full-state replace (the manager always emits the complete state), so a

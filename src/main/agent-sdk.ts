@@ -33,6 +33,11 @@ import {
 } from './workspaces';
 import { transcriptToEvents, HISTORY_SEQ_BASE } from '../shared/agent-transcript';
 import {
+  normalizeLiveContextUsage,
+  type ContextUsage,
+  type LiveContextUsagePayload,
+} from '../shared/context-usage';
+import {
   isPluginReloadFailure,
   summarizeReload,
   type ReloadResult,
@@ -720,6 +725,11 @@ async function consume(session: Session): Promise<void> {
         const openNext = session.turnGate;
         session.turnGate = null;
         openNext?.();
+        // Re-read the authoritative context figure now the turn has settled.
+        // Fire-and-forget: the turn is already complete and the gauge updating
+        // a beat later is fine, but blocking the consume loop on a control
+        // request would stall every subsequent message.
+        refreshContextUsage(session.wsId);
       }
     }
   } catch (err) {
@@ -1070,6 +1080,12 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   sessions.set(wsId, session);
   // Fire-and-forget the consume loop; it self-cleans on end/throw.
   void consume(session);
+  // Seed the context gauge for the freshly-opened pane. `getContextUsage()` is
+  // answerable as soon as the session bootstraps — before any turn has run —
+  // which is the whole point: the inferred per-turn figure does not exist until
+  // a turn CLOSES, so without this a reopened pane shows no gauge until the
+  // agent next replies.
+  refreshContextUsage(wsId);
   return session;
 }
 
@@ -1279,6 +1295,62 @@ export async function sdkListModels(wsId: string): Promise<AgentModelInfo[]> {
     }
   }
   return modelListCache.get(cacheKey) ?? [];
+}
+
+/** Read the workspace's context-window usage from the LIVE SDK session — the
+ *  CLI's own accounting (`Query.getContextUsage()`), the same figure its
+ *  `/context` view renders.
+ *
+ *  Returns `null` when there is no live session, when the control request fails
+ *  or times out, or when the payload is unreadable — in every one of those
+ *  cases the caller must fall back to the transcript recompute in
+ *  `activity.ts`, which is why this reports absence rather than a zeroed
+ *  reading (0 is the app's "context was reset" sentinel and would clear the
+ *  badge).
+ *
+ *  Callable as soon as the session has bootstrapped, before any turn has run —
+ *  verified against CLI 2.1.234 — so the gauge can be seeded at pane mount
+ *  instead of waiting for a turn to end. Time-boxed exactly like
+ *  {@link sdkListModels}: a wedged subprocess must not hang the caller. */
+export async function sdkGetContextUsage(wsId: string): Promise<ContextUsage | null> {
+  const session = sessions.get(wsId);
+  if (!session) return null;
+  try {
+    const payload = await Promise.race([
+      session.q.getContextUsage(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('getContextUsage timed out')), 3000),
+      ),
+    ]);
+    return normalizeLiveContextUsage(payload as LiveContextUsagePayload, Date.now());
+  } catch (err) {
+    // Expected whenever the subprocess is mid-restart or the installed CLI is
+    // too old for the control request — the transcript fallback covers it, so
+    // this is a warn, not an error.
+    log.warn(
+      `agent-sdk: getContextUsage failed for ${wsId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+}
+
+/** Take a live context reading and broadcast it if it beats what the renderer
+ *  already has. Fire-and-forget: every call site (pane mount, turn end) wants
+ *  the gauge refreshed but none should block on it.
+ *
+ *  The precedence check is what stops this from fighting the transcript
+ *  recompute — both producers fire independently, and without it a posttool's
+ *  inferred figure would clobber this exact one moments after it landed. */
+function refreshContextUsage(wsId: string): void {
+  void sdkGetContextUsage(wsId)
+    .then((usage) => {
+      const session = sessions.get(wsId);
+      // The session can end while the control request is in flight; emitting
+      // against a dead session would stamp a seq on a cursor nobody reads.
+      if (!usage || !session) return;
+      emit(wsId, stamp(session.ctx, { type: 'session/context', usage }));
+    })
+    .catch((e) => log.warn(`agent-sdk: refreshContextUsage failed for ${wsId}`, e));
 }
 
 /** List the skills (slash commands) available to a workspace: the worktree's

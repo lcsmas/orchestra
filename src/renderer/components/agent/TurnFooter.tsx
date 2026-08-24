@@ -8,6 +8,7 @@
 
 import { useEffect, useState } from 'react';
 import type { AgentSession, AgentTurnEndEvent } from '../../../shared/types';
+import type { ContextUsage } from '../../../shared/context-usage';
 
 /** k/M token formatter, mirroring AccountBadge.formatTokens for consistency. */
 function formatTokens(n: number): string {
@@ -101,7 +102,7 @@ export function TurnFooter({ session }: { session: AgentSession | undefined }) {
       {typeof turn.costUsd === 'number' && (
         <Stat label="cost" value={formatCost(turn.costUsd)} title={costDetail} />
       )}
-      <ContextGauge turn={turn} />
+      <ContextGauge turn={turn} usage={session.contextUsage} />
     </div>
   );
 }
@@ -117,48 +118,75 @@ export function TurnFooter({ session }: { session: AgentSession | undefined }) {
  */
 export function StripStats({ session }: { session: AgentSession | undefined }) {
   if (!session) return null;
-  const turn = session.lastTurn;
-  // Nothing to report before the first turn closes; an errored turn is surfaced
-  // by TurnFooterError in the transcript, not repeated in the ambient strip.
-  if (!turn || turn.isError) return null;
+  // The cost readout needs a closed, non-errored turn; an errored turn is
+  // surfaced by TurnFooterError in the transcript, not repeated here. The GAUGE
+  // has no such dependency once a live SDK reading exists — that reading is
+  // available from pane mount, before any turn — so it renders on its own
+  // rather than being suppressed along with the cost.
+  const rawTurn = session.lastTurn;
+  const turn = rawTurn && !rawTurn.isError ? rawTurn : undefined;
+  if (!turn && !session.contextUsage) return null;
 
-  const usage = turn.usage;
+  const usage = turn?.usage;
   const cacheTotal = usage ? usage.cacheCreationInputTokens + usage.cacheReadInputTokens : 0;
   const costDetail = [
     `Session total ${formatCost(session.totalCostUsd)}`,
     usage &&
       `Tokens: ${formatTokens(usage.inputTokens)} in · ${formatTokens(usage.outputTokens)} out · ${formatTokens(cacheTotal)} cache`,
-    turn.numTurns > 0 && `${turn.numTurns} turn${turn.numTurns === 1 ? '' : 's'}`,
-    typeof turn.durationMs === 'number' && `Last turn took ${formatDuration(turn.durationMs)}`,
+    turn && turn.numTurns > 0 && `${turn.numTurns} turn${turn.numTurns === 1 ? '' : 's'}`,
+    typeof turn?.durationMs === 'number' && `Last turn took ${formatDuration(turn.durationMs)}`,
   ]
     .filter(Boolean)
     .join('\n');
 
   return (
     <>
-      {typeof turn.costUsd === 'number' && (
+      {typeof turn?.costUsd === 'number' && (
         <span className="av-strip-item" title={costDetail}>
           {formatCost(turn.costUsd)}
         </span>
       )}
-      <ContextGauge turn={turn} />
+      <ContextGauge turn={turn} usage={session.contextUsage} />
     </>
   );
 }
 
 /**
  * Context-used gauge — the most-felt daily gap: long sessions used to hit the
- * context ceiling with zero warning. Data comes free on every result message
- * (`contextUsedTokens` ≈ the last API call's total input+output — the per-call
- * usage, NOT the result's cumulative one, which once pinned this at 100%;
- * `contextWindow` from modelUsage). Reads as "N% used" plus a small progress
+ * context ceiling with zero warning. Reads as "N% used" plus a small progress
  * bar; quiet by default, amber past 75% used and red past 90%.
+ *
+ * TWO sources, in order of preference:
+ *   • `usage` — the live SDK reading (`session/context`, from
+ *     `Query.getContextUsage()`). The CLI's own accounting, always carries a
+ *     window, and available from pane mount.
+ *   • `turn` — the per-turn inference (`contextUsedTokens` ≈ the last API
+ *     call's input+output — the per-call usage, NOT the result's cumulative
+ *     one, which once pinned this at 100%; `contextWindow` from modelUsage).
+ *     The fallback for sessions with no live Query: detached keeper sessions
+ *     and history replay. Note its `contextWindow` is null on many turns, which
+ *     makes the gauge render nothing — the live source has no such gap.
  */
-function ContextGauge({ turn }: { turn: AgentTurnEndEvent }) {
-  const used = turn.contextUsedTokens;
-  const window = turn.contextWindow;
+function ContextGauge({
+  turn,
+  usage,
+}: {
+  turn: AgentTurnEndEvent | undefined;
+  usage: ContextUsage | undefined;
+}) {
+  // Prefer the live SDK reading (`session/context`) over the per-turn
+  // inference: it is the CLI's own accounting, it always carries a window size
+  // (the inferred `contextWindow` is null on many turns, which used to make the
+  // gauge vanish outright), and it exists before the first turn closes.
+  const used = usage ? usage.totalTokens : turn?.contextUsedTokens;
+  const window = usage ? usage.maxTokens : turn?.contextWindow;
   if (!used || !window || window <= 0) return null;
-  const usedPct = Math.max(0, Math.min(100, Math.round((used / window) * 100)));
+  const rawPct = Math.round((used / window) * 100);
+  // The BAR is clamped (a fill can't exceed its track), but the NUMBER is not:
+  // an over-limit session genuinely reads past 100%, and pinning it to 100
+  // would hide exactly the state this gauge exists to warn about.
+  const usedPct = Math.max(0, rawPct);
+  const fillPct = Math.max(0, Math.min(100, rawPct));
   const level = usedPct >= 90 ? 'critical' : usedPct >= 75 ? 'low' : 'ok';
   return (
     <div
@@ -170,7 +198,7 @@ function ContextGauge({ turn }: { turn: AgentTurnEndEvent }) {
       <span className="av-turn-stat-value">{usedPct}%</span>
       <span className="av-turn-stat-label">used</span>
       <span className="av-turn-context-bar" aria-hidden="true">
-        <span className="av-turn-context-fill" style={{ width: `${usedPct}%` }} />
+        <span className="av-turn-context-fill" style={{ width: `${fillPct}%` }} />
       </span>
     </div>
   );

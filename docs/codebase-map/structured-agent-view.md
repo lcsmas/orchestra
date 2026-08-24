@@ -330,12 +330,14 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   new status/compact-boundary/command-output events render the result. The
   composer autocomplete merges on-disk skills with `session.slashCommands`
   (now captured from init, along with `session.mcpServers`).
-- **CC-desktop parity in the UI** — `ContextGauge` in TurnFooter ("N% used" +
-  a small progress bar, amber ≥75% used / red ≥90%, from turn-end's
-  `contextWindow` (max `modelUsage` entry) and `contextUsedTokens` (the LAST
-  top-level assistant message's per-call usage, tracked in
-  `NormalizeContext.lastApiCallUsage` and refreshed by compact_boundary
-  `post_tokens` — never the `result` message's `usage`, which is
+- **CC-desktop parity in the UI** — `ContextGauge` in TurnFooter
+  (`TurnFooter.tsx:170`; "N% used" + a small progress bar, amber ≥75% used /
+  red ≥90%). Since #15 it prefers `AgentSession.contextUsage` — the AUTHORITATIVE
+  live reading from `Query.getContextUsage()` (see "Context gauge sourcing"
+  below) — and falls back to turn-end's `contextWindow` (max `modelUsage` entry)
+  and `contextUsedTokens` (the LAST top-level assistant message's per-call usage,
+  tracked in `NormalizeContext.lastApiCallUsage` and refreshed by
+  compact_boundary `post_tokens` — never the `result` message's `usage`, which is
   session-cumulative and pinned the gauge at 100%); **Esc interrupts** the
   in-flight turn from the composer; **drag-and-drop** files onto the composer
   (images → attachments, other files → absolute path inserted);
@@ -1002,6 +1004,45 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
 - **CSS** — three cascade layers imported in `main.tsx`: `agent-view-defaults.css` (A3
   structural) → `agent-view-structure.css` (A2 layout) → `agent-view-theme.css` (A5 design
   system, wins). Reference: `agent-view-design.md`.
+
+## Context gauge sourcing (issue #15)
+
+The gauge has THREE possible sources, normalized to one shape by the pure
+`src/shared/context-usage.ts` (unit-tested in `context-usage.test.ts`, 20 tests):
+
+| Source | Producer | Shape | When |
+|---|---|---|---|
+| `live` | `Query.getContextUsage()` | camelCase, `isDeferred` flags | live SDK session |
+| `context-command` | `context_usage` on a `/context` result | snake_case, `kind` enum | user runs `/context` |
+| `transcript` | `activity.ts computeContextTokens` | bare token count | no live Query |
+
+- **Primary — live.** `sdkGetContextUsage` (`agent-sdk.ts:1315`) calls
+  `session.q.getContextUsage()`, raced against a 3s timeout exactly like
+  `sdkListModels` (a control request to a dying subprocess parks forever).
+  `refreshContextUsage` (`:1344`) normalizes and emits `session/context`.
+  Called at **session bootstrap** (`:1088`, so a reopened pane has a gauge
+  before any turn) and **after each turn** (`:732`, at the `result` boundary).
+  Returns `null` — never a zeroed reading — on no-session/timeout/bad payload,
+  because `0` is the app's "context was reset" sentinel and would clear the badge.
+- **Bonus — `/context`.** `normalizeSdkMessage`'s `assistant` case lifts the
+  top-level `context_usage` the CLI stamps on the synthetic `/context` message
+  (`agent-events.ts:567`). Verified emitted at CLI 2.1.234; costs zero API calls.
+- **Fallback — transcript.** Unchanged: `computeContextTokens` still drives the
+  sidebar badge over `agent:context` for detached/keeper/history/PTY sessions.
+
+Two traps the normalizer encodes, both with regression tests:
+- **Deferred categories are excluded from usage math.** Summing every category
+  row overstates usage badly (the verified capture sums 267,809 against a 200K
+  window — a >100% gauge on a session that is 37% full). The headline number
+  always comes from the producer's own total, never from summing rows;
+  `usedTokens()` exists for breakdown renderers and skips `deferred`/`free`.
+- **Precedence, not recency.** `isMoreAuthoritative` stops the transcript
+  recompute (which fires on every posttool) from clobbering the CLI's exact
+  figure seconds after it lands. A stale live reading yields after `STALE_MS`
+  (60s) so a dead SDK session cannot freeze the gauge forever.
+
+The gauge no longer clamps its NUMBER at 100% (an over-limit session reads past
+it — the state the gauge exists to warn about); only the bar fill is clamped.
 
 ## Availability by workspace kind
 
