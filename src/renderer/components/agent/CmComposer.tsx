@@ -33,6 +33,7 @@ import {
 import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
 import { vim, Vim, getCM } from '@replit/codemirror-vim';
 import { highlightComposer } from '../../../shared/composer-highlight';
+import { isMiddleClickPaste } from '../../../shared/middle-click-paste';
 import type { VimMode } from '../../composer-vim-pref';
 
 /** Token decorations — the SAME class names the old mirror used, so
@@ -267,6 +268,8 @@ export function CmComposer({
   const viewRef = useRef<EditorView | null>(null);
   const vimComp = useRef(new Compartment());
   const baseKeymapComp = useRef(new Compartment());
+  // timeStamp of the last middle-button mousedown, or null when disarmed.
+  const middleClickAt = useRef<number | null>(null);
   // Latest callbacks, read through a ref so the keymap closure never goes stale
   // (the editor is created once; props change every render).
   const cb = useRef({
@@ -365,7 +368,28 @@ export function CmComposer({
             cb.current.onVimMode(readMode(u.view));
           }),
           EditorView.domEventHandlers({
+            // Middle-click (button 1) on Linux pastes the PRIMARY selection —
+            // text merely *selected* anywhere on the system, no copy involved.
+            // On a clickpad that fires by accident: a trackpad using
+            // `click_method=clickfinger` (the default on Apple hardware) maps a
+            // PHYSICAL click with three fingers resting on the pad to button 2,
+            // so brushing the pad with a third finger while clicking silently
+            // dumps the last-selected text into the prompt. Record the click and
+            // swallow the paste it triggers; see the `paste` handler below.
+            mousedown: (e) => {
+              if (e.button === 1) middleClickAt.current = e.timeStamp;
+              return false;
+            },
             paste: (e) => {
+              // A paste arriving right after a middle click is that click's
+              // primary-selection paste (measured latency ~2ms). Drop it.
+              // Ctrl+V / Cmd+V / the context menu are uncorrelated with a middle
+              // click and fall through untouched.
+              if (isMiddleClickPaste(middleClickAt.current, e.timeStamp)) {
+                middleClickAt.current = null;
+                e.preventDefault();
+                return true;
+              }
               if (cb.current.onPaste(e.clipboardData?.items ?? null)) {
                 e.preventDefault();
                 return true;

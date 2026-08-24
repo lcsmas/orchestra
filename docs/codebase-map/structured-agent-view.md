@@ -837,6 +837,19 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   readout; the preference persists via `renderer/composer-vim-pref.ts`.
   `window.__cmComposerView` is the E2E seam. All the CodeMirror/vim theming and
   keymap collisions are documented in `agent-view-design.md`.
+  Its `domEventHandlers` also drop the Linux **middle-click PRIMARY-selection
+  paste**: a middle click pastes text merely *selected* anywhere on the system,
+  and a trackpad on `click_method=clickfinger` (Apple default) emits button 2
+  for a three-finger PHYSICAL click — so resting a third finger while clicking
+  silently dumped the last selection into the prompt. `mousedown` records a
+  button-1 click and `paste` swallows the paste it triggers, correlated by
+  timestamp via `shared/middle-click-paste.ts` (`isMiddleClickPaste`, ~2ms
+  measured, 1s window); Ctrl+V/Cmd+V and the context menu are uncorrelated and
+  pass through. Note the same hazard exists in the xterm terminals and is NOT
+  fixed there: xterm's helper textarea is permanently focused and Chromium
+  inserts the selection below the DOM, so preventDefault on the paste, on
+  `beforeinput`, and on the middle-click mouse events were all measured
+  ineffective (only the CodeMirror composer has a cancellable paste).
 - **App-quit durability — the detached session keeper.** A LOCAL session's
   `claude` subprocess is spawned THROUGH a tiny detached daemon
   (`spawnClaudeCodeProcess: makeKeeperSpawn(wsId)` in ensureSession →
