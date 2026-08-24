@@ -101,6 +101,61 @@ say()  { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 # In dry-run, mutating steps are printed instead of run.
 run()  { if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] %s\n' "$*"; else eval "$*"; fi; }
 
+# ------------------------------------------------- package.json integrity ---
+# Twice now (v0.5.250, v0.5.253 — issue #40) a ship worktree's package.json was
+# found post-release stripped down to ~50 lines: the whole `scripts` block gone,
+# `devDependencies` gone, `build` gone, but `version` intact. That content is
+# byte-for-byte what electron-builder's `cleanupPackageJson(isMain: true)`
+# produces for the app bundle (app-builder-lib/out/fileTransformer.js) — it
+# deletes exactly {scripts, devDependencies, build, keywords, …} and reserializes
+# with `JSON.stringify(data, null, 2)`. Reproducing that transform over the tag's
+# package.json regenerates the reported diff hunk-for-hunk (`@@ -23,33 +23,6 @@`,
+# `@@ -74,37 +47,5 @@`) and the reported `wc -l` of 50 vs 109.
+#
+# What is NOT established is how that bundle-only content reached the worktree
+# file: under this repo's config (asar enabled) the transform result is held in
+# memory and packed into app.asar, and every copy destination resolves under
+# `release/`. So the writer is unidentified — which is exactly why this is a
+# guard and not a fix. A stripped package.json breaks every later `pnpm run …`
+# in the worktree, and if it ever landed BEFORE the build it would ship broken
+# metadata; nothing in the flow noticed either time.
+#
+# Cheap, total check: the file must parse, and carry the keys a stripped one
+# lacks. Called after the bump (so a pre-build mangling aborts before we ship)
+# and again at the very end (the post-release window where both sightings fell).
+check_package_json() {
+  local when="$1"
+  [ "$DRY_RUN" != "1" ] || { printf '  [dry-run] check package.json integrity (%s)\n' "$when"; return 0; }
+
+  local bad=""
+  node -e '
+    const fs = require("node:fs");
+    let raw, pkg;
+    try { raw = fs.readFileSync("package.json", "utf8"); }
+    catch (e) { console.log("unreadable: " + e.message); process.exit(1); }
+    try { pkg = JSON.parse(raw); }
+    catch (e) { console.log("does not parse as JSON: " + e.message); process.exit(1); }
+    // The keys electron-builder strips for the bundle. Their absence is the
+    // signature of a stripped file landing on the source tree.
+    const missing = ["scripts", "devDependencies", "build"].filter(k => pkg[k] == null);
+    if (missing.length) { console.log("missing top-level key(s): " + missing.join(", ")); process.exit(1); }
+    if (typeof pkg.scripts.release !== "string") { console.log("scripts.release is absent"); process.exit(1); }
+    const n = Object.keys(pkg.scripts).length;
+    if (n < 5) { console.log("scripts block has only " + n + " entr(y|ies)"); process.exit(1); }
+  ' > /tmp/.orchestra-pkgcheck.$$ 2>&1 || bad="$(cat /tmp/.orchestra-pkgcheck.$$)"
+  rm -f /tmp/.orchestra-pkgcheck.$$
+
+  if [ -n "$bad" ]; then
+    echo "error: package.json integrity check failed ($when): $bad" >&2
+    echo "       This is issue #40. The working-tree file has been mangled — the" >&2
+    echo "       shipped tag is almost certainly fine. Inspect, then restore with:" >&2
+    echo "           git checkout HEAD -- package.json" >&2
+    echo "       and report the observed diff on https://github.com/lcsmas/orchestra/issues/40" >&2
+    return 1
+  fi
+  echo "  ok: package.json intact ($when)"
+}
+
 # ---------------------------------------------------------------- preflight ---
 say "Preflight"
 gh auth status >/dev/null 2>&1 || { echo "error: gh CLI not authenticated — run 'gh auth login'" >&2; exit 1; }
@@ -200,6 +255,14 @@ fi
 say "Bump version, commit, tag"
 run "pnpm version '$NEW' --message 'chore: bump version to %s'"
 
+# The bump rewrites package.json — verify it survived before we build and ship
+# from it (issue #40). Aborting here costs a `git reset`; shipping stripped
+# metadata costs a release.
+check_package_json "after version bump" || {
+  echo "       Undo the local bump with: git tag -d $TAG && git reset --hard HEAD~1" >&2
+  exit 1
+}
+
 # ------------------------------------------------------------ build AppImage ---
 if [ "$CI_ONLY" = 0 ]; then
   say "Build AppImage (local)"
@@ -270,6 +333,17 @@ if [ "$CI_ONLY" = 0 ]; then
 else
   say "Tag pushed — GitHub Actions will build and publish release"
   echo "  Monitor: https://github.com/lcsmas/orchestra/actions"
+fi
+
+# ------------------------------------------------ package.json integrity (end) ---
+# Both #40 sightings were noticed only AFTER release.sh had exited, so this is
+# the window that actually caught them. The release itself is already published
+# at this point — this does not unship anything, it tells you the worktree needs
+# restoring instead of leaving you to discover it when the next `pnpm run` fails.
+say "Verify package.json integrity"
+if ! check_package_json "end of release"; then
+  echo "       The release itself completed; only the working tree is affected." >&2
+  exit 1
 fi
 
 if [ "$DRY_RUN" = "1" ]; then echo "(dry run — nothing was changed)"; fi
