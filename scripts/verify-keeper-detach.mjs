@@ -20,7 +20,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn, execSync } from 'node:child_process';
+import { spawn, execSync, spawnSync } from 'node:child_process';
 
 const REPO = process.cwd();
 const RUN = path.join(os.tmpdir(), `keeper-e2e-f3d27106-${process.pid}`);
@@ -89,6 +89,34 @@ const wayland = await waitFor(
 );
 console.log(`[harness] sway up on ${wayland}`);
 
+// ── account: derive from THIS shell, then prove it can authenticate ─────────
+// Taken from CLAUDE_CONFIG_DIR when set (the value this shell is logged in
+// as), else ~/.claude. Deriving beats hardcoding: the harness then runs as
+// whoever invokes it rather than as one machine's account.
+const ACCOUNT_ID = 'keeper-e2e-account';
+const ACCOUNT_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+
+// PREFLIGHT. An auth failure surfaces 60+ seconds later as a keeper check
+// failing, which reads as a defect in the thing under test. Fail here instead,
+// naming auth, before any of that machinery starts.
+{
+  const probe = spawnSync(process.env.CLAUDE_BIN || 'claude', ['-p', 'say ok'], {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: ACCOUNT_CONFIG_DIR },
+    encoding: 'utf8',
+    timeout: 120_000,
+  });
+  const out = `${probe.stdout ?? ''}${probe.stderr ?? ''}`;
+  if (probe.status !== 0 || /Failed to authenticate|OAuth/i.test(out)) {
+    console.error(
+      `PREFLIGHT FAIL — cannot authenticate with CLAUDE_CONFIG_DIR=${ACCOUNT_CONFIG_DIR}\n` +
+        `  ${out.trim().split('\n').slice(0, 3).join('\n  ')}\n` +
+        `This is an AUTH problem, not a keeper problem (see #29). Log in for that\n` +
+        `config dir, or re-run with CLAUDE_CONFIG_DIR set to one that is authenticated.`,
+    );
+    process.exit(1);
+  }
+}
+
 // ── seed store ──────────────────────────────────────────────────────────────
 const scratchDir = path.join(RUN, 'scratch-ws');
 fs.mkdirSync(scratchDir, { recursive: true });
@@ -99,6 +127,14 @@ fs.writeFileSync(
   JSON.stringify(
     {
       repos: [],
+      // Seed the account whose config dir this shell is authenticated as, and
+      // PIN it on the workspace. Without both, agent-sdk.ts deletes
+      // CLAUDE_CONFIG_DIR and re-sets it only from a pinned account
+      // (workspaces.ts workspaceAccountConfigDir), so `claude` falls back to
+      // ~/.claude — whose OAuth is commonly expired non-interactively. The run
+      // then dies at the "sleep 15 running under OUR keeper" check, i.e. it
+      // fails in the one place that looks exactly like a keeper defect. See #29.
+      accounts: [{ id: ACCOUNT_ID, label: 'keeper-e2e', configDir: ACCOUNT_CONFIG_DIR }],
       workspaces: [
         {
           id: WS,
@@ -112,6 +148,7 @@ fs.writeFileSync(
           status: 'idle',
           agent: 'claude',
           model: 'haiku',
+          accountId: ACCOUNT_ID,
         },
       ],
     },
