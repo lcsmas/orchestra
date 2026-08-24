@@ -32,6 +32,7 @@
     "start": "electron .",
     "lint": "eslint src --ext .ts,.tsx",
     "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",
+    "test:render": "node scripts/context-gauge-render-smoke.mjs",
     "release": "bash scripts/release.sh"
   },
   "devDependencies": {
