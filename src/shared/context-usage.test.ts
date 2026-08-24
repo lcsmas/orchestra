@@ -466,3 +466,57 @@ test('gauge: a LIVE payload with no window renders tokens, still tagged live', (
   assert.equal(v.fillPct, 0);
   assert.equal(v.level, 'ok');
 });
+
+// ── precedence edge cases that cost the verifier wrong readings ─────────────
+//
+// Both surfaced from his rig, and both are real behaviours worth pinning rather
+// than "fixing": a caller who omits `at` gets a silent drop, and the staleness
+// boundary is exclusive. Documented here so the next reader hits a test, not a
+// mystery.
+
+test('precedence: a reading with `at` undefined is DROPPED, not accepted', () => {
+  // `undefined >= undefined` is false, so a well-formed-LOOKING reading whose
+  // producer forgot `at` never supersedes anything. Every real producer stamps
+  // `at` (Date.now() at the emit site), so this only bites hand-built fixtures —
+  // which is exactly who needs the warning.
+  const noAt = { totalTokens: 1, maxTokens: 200000, percentage: 1, source: 'live' } as never;
+  assert.equal(isMoreAuthoritative(noAt, { ...(noAt as object) } as never), false);
+  // But it IS accepted when there is no incumbent — the `!prev` arm runs first.
+  assert.equal(isMoreAuthoritative(noAt, undefined), true);
+});
+
+test('precedence: the STALE_MS boundary is EXCLUSIVE', () => {
+  const prev: ContextUsage = { totalTokens: 1, maxTokens: 200000, percentage: 1, source: 'live', at: 1000 };
+  const weakAt = (at: number): ContextUsage => ({ ...prev, source: 'transcript', at });
+  // Exactly STALE_MS later is NOT yet stale (60000 > 60000 is false).
+  assert.equal(isMoreAuthoritative(weakAt(1000 + STALE_MS), prev), false);
+  // One ms past it is.
+  assert.equal(isMoreAuthoritative(weakAt(1000 + STALE_MS + 1), prev), true);
+});
+
+// ── SPEC-FLIP GUARD ─────────────────────────────────────────────────────────
+//
+// The window rule on the transcript path has now flipped three times
+// (derive -> token count -> derive). This test does NOT take a side: it pins
+// the two properties that must hold under EITHER spec, so a future flip cannot
+// silently produce a fabricated or unbounded denominator.
+test('spec-flip guard: a transcript window is either absent or app-sanctioned', () => {
+  for (const model of [undefined, null, '', 'claude-opus-5', 'claude-opus-4-8', 'opus[1m]']) {
+    const u = contextUsageFromTranscript(50000, 0, model);
+    // (1) NEVER an arbitrary number. Only null (unknown) or one of the app's
+    //     own sanctioned windows — no third value may appear without a ruling.
+    assert.ok(
+      u.maxTokens === null || u.maxTokens === 200_000 || u.maxTokens === 1_000_000,
+      `unexpected derived window ${u.maxTokens} for model ${String(model)}`,
+    );
+    // (2) The percentage must AGREE with the window, whichever way the spec
+    //     went — a % with no window (or a window with no %) is incoherent.
+    assert.equal(u.percentage == null, u.maxTokens == null);
+    // (3) The reading stays `transcript`-tagged, so a live reading supersedes
+    //     it. That bound is what makes any derivation acceptable at all.
+    assert.equal(u.source, 'transcript');
+  }
+  // An explicit [1m] opt-in must never be sized as a 200k window — that is the
+  // 251%-on-a-real-1M-session bug, and it is wrong under BOTH specs.
+  assert.notEqual(contextUsageFromTranscript(50000, 0, 'opus[1m]').maxTokens, 200_000);
+});
