@@ -42,6 +42,7 @@ import {
   summarizeReload,
   type ReloadResult,
 } from '../shared/reload-skills';
+import { withCrossSessionInboundPolicy } from '../shared/cross-session-inbound';
 import { syncAccountInheritance } from './account-inherit';
 import { agentCliBinDir } from './cli-shim';
 import { getHookSocketPath } from './hooks-server';
@@ -995,6 +996,21 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
       // to be honored; the active mode is still governed by `permissionMode`
       // (and live changes via `setPermissionMode`).
       allowDangerouslySkipPermissions: true,
+      // Never let an UNSOLICITED cross-session peer message auto-run a paid
+      // turn on an Orchestra-managed session. Any local Claude session can
+      // address this one by peer name (ListAgents -> SendMessage) over the
+      // CLI's messaging socket; with no policy set the CLI delivers it with no
+      // hold and starts a model turn on its own ($0.13 measured, #13/#25).
+      // Orchestra runs bypassPermissions by design, which is exactly the case
+      // the CLI's unset "mode parity" default auto-delivers (bypass<->bypass).
+      // 'hold' parks such a message for review without letting Claude act; it
+      // does NOT touch `orchestra message`, which is a different channel
+      // entirely (sdkDeliver / PTY / inbox file, never the peer socket).
+      // Inline `settings` lands in the SDK's highest-priority "flag settings"
+      // layer, so a stale value in the user's settings.json cannot override it,
+      // and `settingSources` above (which carries every Orchestra hook) is
+      // unaffected. See src/shared/cross-session-inbound.ts for the measurement.
+      settings: withCrossSessionInboundPolicy(),
       canUseTool: makeCanUseTool(session) as never,
       env: sdkEnv,
       ...(claudeBin ? { pathToClaudeCodeExecutable: claudeBin } : {}),
