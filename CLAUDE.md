@@ -48,11 +48,13 @@ whole map instead of hand-editing.
 
 - `pnpm run dev` — Vite + Electron with HMR (`ORCHESTRA_HOME=~/.orchestra-dev`).
 - `pnpm run build` — `vite build && build:cli && electron-builder`.
-- `pnpm run lint` — `eslint src --ext .ts,.tsx`.
+- `npx tsc --noEmit` — the typecheck, and the static gate this repo actually runs.
+  (`pnpm run lint` is declared in `package.json` but eslint is not a dependency, so
+  it exits `eslint: command not found` — use the typecheck instead.)
 - `pnpm run test` — `node --test --experimental-strip-types 'src/**/*.test.ts'`
   (built-in runner; pure logic lives in `src/shared/` so it's testable without Electron).
 - Release: the **`ship` skill** drives `scripts/release.sh` (worktree-safe; never
-  checks out master). See `reference/build-release.md`.
+  checks out master). See `docs/codebase-map/build-release.md`.
 
 ## Conventions
 

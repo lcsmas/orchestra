@@ -457,7 +457,7 @@ export async function createWorkspace(input: CreateWorkspaceInput): Promise<Work
  * session-start hooks. */
 const ORCHESTRATOR_BRIEF_HEAD =
   "You are an orchestrator. Your job is to coordinate work across other agents rather than edit code yourself. " +
-  "Break the user's goal into independent pieces and delegate each to a fresh worktree+agent using the /spawn socket command shown above. ";
+  "Break the user's goal into independent pieces and delegate each to a fresh worktree+agent with `orchestra spawn` (see the orchestra-spawn skill). ";
 
 /** The repo paragraph, which differs by sub-state: a repo-less coordinator must
  * name a repo on every spawn, while one that has adopted a repo inherits it and
@@ -466,13 +466,13 @@ function orchestratorRepoParagraph(
   ws: Pick<Workspace, 'repoPath' | 'branch' | 'baseBranch'>,
 ): string {
   if (!ws.repoPath) {
-    return 'You have no repo of your own, so every /spawn MUST include an explicit "repoPath" naming a repo orchestra already knows about (and optionally a "baseBranch"). ';
+    return 'You have no repo of your own, so every `orchestra spawn` MUST pass an explicit `--repo <path>` naming a repo orchestra already knows about (and optionally `--base <branch>`). ';
   }
   const repoName = path.basename(ws.repoPath);
   return (
     `You own a checkout of the ${repoName} repo, on branch ${ws.branch}${ws.baseBranch ? ` (cut from ${ws.baseBranch})` : ''} — it is your working directory. ` +
     'READ it freely — its docs, notes, scripts and its git-tracked .claude/skills project skills are yours to use for planning and for briefing children, and they update with `git pull`. ' +
-    'A bare /spawn INHERITS this repo, so you only pass an explicit "repoPath" when a child works in a DIFFERENT repo. ' +
+    'A bare `orchestra spawn` INHERITS this repo, so you pass `--repo <path>` only when a child works in a DIFFERENT repo. ' +
     'Your checkout is for coordinating — reading, planning, and integration work that belongs to THIS branch. Delegate implementation to children rather than doing it here. '
   );
 }
@@ -485,9 +485,9 @@ export function orchestratorBrief(
   orchestratorRepoParagraph(ws) +
   'Because THIS session is an orchestrator, spawn children WITHOUT `--detached` so they nest under you in the sidebar — `--detached` is only for spawning from a plain (non-orchestrator) scratch session and would pop the child out top-level. If a child was spawned detached by mistake, repair it with `orchestra attach <child-id> ' +
   "<this-session's-id>`. " +
-  'Track the agents you spawn with /peers, read their progress with /read, and follow up with /message. ' +
-  'Child reporting is PULL-BASED: nothing auto-notifies you when a child makes progress or finishes — the harness Task/Agent auto-re-invoke does NOT apply to `orchestra spawn` peers, and /peers idle/waiting status is a between-tool-calls snapshot, not a progress signal. So in EACH spawn prompt, instruct the child to `/message` you on completion AND when it hits a blocking question; otherwise poll it yourself with /read. ' +
-  "Follow-up work in an area a child agent already owns goes back to THAT child via /message — never take it over yourself, however small. " +
+  'Track the agents you spawn with `orchestra peers`, read their progress with `orchestra read <id>`, and follow up with `orchestra message <id> <text>`. ' +
+  'Child reporting is PULL-BASED: nothing auto-notifies you when a child makes progress or finishes — the harness Task/Agent auto-re-invoke applies only to harness subagents, never to `orchestra spawn` peers, and the idle/waiting status in `orchestra peers` is a between-tool-calls snapshot rather than a progress signal. So in EACH spawn prompt, instruct the child to run `orchestra message <your-id>` on completion AND when it hits a blocking question; between those, poll it yourself with `orchestra read <id>`. ' +
+  "Follow-up work in an area a child agent already owns goes back to THAT child via `orchestra message` — route it to the owner however small it looks. " +
   'For a milestone-sized piece that itself needs several agents, you may create a SUB-orchestrator: spawn it, then run `orchestra promote <child-id>` — its branch becomes that milestone\'s integration branch and the agents IT spawns nest beneath it. Keep the tree shallow: at most one sub-orchestrator level. ' +
   'Spawn every child on Opus 5: pass `--model opus` (spawn\'s "model" param) unless the user asks for a cheaper tier. Do NOT downgrade implementation workers to save tokens — that trade is the user\'s call to make, not yours. Maintain a swarm FIELD GUIDE (see the orchestra-spawn skill) — a line-budgeted notes file injected into every child at session start — so conventions and pitfalls reach all siblings without per-child messages. ' +
   'Close the loop before reporting anything as done: a child\'s "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child must end in one of two EXPLICIT states: LANDED — run `orchestra verify-landed <child-id> --into <branch-it-merged-into>` and require 0 unmerged commits — or INTENTIONALLY UNMERGED, for work whose brief said not to merge (a spike, an experiment, evidence-gathering); state that disposition when you close it. The only forbidden outcome is the silent third state: a child believed merged that isn\'t. ' +
@@ -3298,166 +3298,117 @@ and it owns the resolution. Both children then review the arbiter's merge of
 their own seam.
 `;
 
-const REPO_ROUTES_SKILL = `---
-name: orchestra-repos
-description: Manage Orchestra repos and workspaces over the socket — register a git repo so it becomes a spawn target, or hard-delete a workspace. Use when the user asks to add/register a repo to Orchestra or to delete a workspace.
+const WORKSPACE_ADMIN_SKILL = `---
+name: orchestra-workspace-admin
+description: Restructure Orchestra's workspaces and repos — promote a workspace into an orchestrator, nest or detach one under another, file an orchestrator under a repo section, register a repo, migrate a workspace to another Claude account, or delete a workspace. Use when the user asks for any of these by name.
 ---
 
-# Manage repos and workspaces
+# Workspace and repo administration
 
-Two \`orchestra\` CLI commands let you change what Orchestra tracks (each reads
-\$ORCHESTRA_SOCK from your env).
+Six \`orchestra\` CLI operations that change how Orchestra is structured. Each
+reads \$ORCHESTRA_SOCK from your env; run \`orchestra --help\` for exact
+signatures. This file carries what \`--help\` cannot: when to reach for each, and
+the constraint behind it.
 
-## Register a git repo
+Discover ids with \`orchestra peers\` (the \`orchestra-comms\` skill).
 
-Makes it appear in the app and become a spawn target. Pass an ABSOLUTE path (the
-CLI resolves relative paths against your cwd):
+## Promote a workspace into an orchestrator
 
-\`\`\`bash
-orchestra add-repo <absolute repo path>
-\`\`\`
+An orchestrator is a coordinator that children nest under: every workspace it
+later spawns (or that you attach to it) renders beneath it in the sidebar, so a
+whole fleet is visible at a glance. Both flavours qualify:
 
-Prints \`Added repo <name> (<defaultBranch>) at <path>\` and the app's repo list
-refreshes live; it errors if the path isn't a git repo.
-
-## Delete a workspace
-
-Stops its agent, runs its archive script, removes the git worktree + branch, and
-drops it from the app. **Destructive and irreversible** — only do this when the
-user explicitly asks to delete a workspace. The \`--yes\` flag is required (the
-CLI refuses to delete without it):
+- A **scratch session** (no repo) becomes a pure coordinator that delegates
+  everything.
+- A **git worktree** keeps its repo, branch and full diff/merge/PR flows and
+  gains the coordinator role alongside them — the integration-branch pattern: a
+  branch that coordinates children AND carries its own commits.
 
 \`\`\`bash
-orchestra delete <workspace-id> --yes
+orchestra promote "\$ORCHESTRA_WS_ID"   # this session
+orchestra promote <workspace-id>       # another workspace — e.g. a child of
+                                       # yours, making it a sub-orchestrator
 \`\`\`
-
-Prints \`Deleted workspace <id> (<branch>)\`, or errors with \`unknown workspace:
-<id>\`.
-`;
-
-const PROMOTE_SKILL = `---
-name: orchestra-promote
-description: Promote a workspace into an orchestrator — a coordinator that child agents nest under. Works on THIS session (scratch OR git worktree) and on any other workspace by id, e.g. a spawned child that should coordinate a milestone as a sub-orchestrator.
----
-
-# Promote a workspace to an orchestrator
-
-Promoting makes a workspace a coordinator that children nest under: every
-workspace it later spawns (or you \`orchestra attach\` to it) renders beneath it
-in the sidebar, so a whole fleet of child agents is visible at a glance. Both
-workspace flavours can be promoted:
-
-- A **scratch session** (no repo) becomes a pure coordinator: it delegates
-  everything and never edits code itself.
-- A **git worktree** keeps its repo, branch, and full diff/merge/PR flows, and
-  gains the coordinator role alongside them (dual role). This is the
-  integration-branch pattern: a branch that coordinates child agents AND
-  carries its own commits.
-
-Run this exact command (the \`orchestra\` CLI reads \$ORCHESTRA_SOCK from your
-env). Promote THIS session via \$ORCHESTRA_WS_ID, or any other workspace by its
-id (\`orchestra peers\` lists ids):
-
-\`\`\`bash
-orchestra promote "\$ORCHESTRA_WS_ID"   # promote this session
-orchestra promote <workspace-id>       # promote another workspace — e.g. a child
-                                       # you spawned, making it a sub-orchestrator
-\`\`\`
-
-Prints \`Promoted <id> (<branch>) to orchestrator\` on success; promoting an
-already-promoted workspace succeeds too.
 
 Once promoted, adopt the orchestrator role for the rest of this session:
 
 ${orchestratorBrief({ repoPath: '', branch: '', baseBranch: '' })}
 
-If this session is a promoted GIT WORKTREE, two lines above bend: you DO have a
-repo (spawns inherit it, so "repoPath" is only needed to target a different
-repo), and you keep doing the integration/implementation work that belongs to
-your own branch while delegating the rest — \`orchestra verify-landed <child-id>\`
-then checks children against THIS branch with no --into needed.
+If this session is a promoted GIT WORKTREE, two of those rules bend: you DO have
+a repo (spawns inherit it, so \`--repo\` is only for targeting a DIFFERENT repo),
+and you keep the integration/implementation work that belongs to your own branch
+while delegating the rest — \`orchestra verify-landed <child-id>\` then checks
+children against THIS branch with no \`--into\` needed.
 
 Use the \`orchestra-spawn\` skill for each spawn, and \`orchestra-comms\` to
 track, follow up with, and verify the agents you spawn.
-`;
 
-const ATTACH_SKILL = `---
-name: orchestra-attach
-description: Nest an EXISTING workspace under an orchestrator (or detach it back out). Use to pull a repo branch you did NOT spawn — one you or another agent created earlier — under this orchestrator so it groups beneath it in the sidebar.
----
+## Nest an existing workspace under an orchestrator (or detach it)
 
-# Attach / detach a workspace to an orchestrator
-
-An orchestrator already groups the worktrees it spawns beneath itself. You can
-ALSO pull an existing workspace — one that wasn't spawned by this orchestrator —
-under it after the fact, or pop one back out to its own repo section. Both use
-the \`orchestra\` CLI (reads \$ORCHESTRA_SOCK from your env).
-
-The parent MUST be an orchestrator. If you don't have one yet, promote one
-first with the \`orchestra-promote\` skill — a scratch session (pure
-coordinator) and a git worktree (dual-role integration branch) both qualify.
-Use \`orchestra-comms\` (\`orchestra peers\`) to discover the ids of existing
-workspaces.
-
-## Attach a workspace under an orchestrator
+An orchestrator already groups the worktrees it spawns. Attach pulls in a
+workspace it did NOT spawn — one created earlier by you or another agent.
 
 \`\`\`bash
 orchestra attach <workspace-id> <orchestrator-id>
+orchestra detach <workspace-id>          # back to its own repo section
 \`\`\`
 
-Prints \`Attached <id> under orchestrator <parentId>\` and the sidebar re-nests it
-live; it errors if an id is unknown, the parent isn't an orchestrator, or the
-edge would create a parent cycle (a workspace under itself, directly or through
-a chain of orchestrators).
+The parent must already be an orchestrator (promote it first, above). Attach is
+refused when the edge would create a parent cycle — a workspace under itself,
+directly or through a chain of orchestrators.
 
-## Detach a workspace (back to its own section)
+## File an orchestrator under a repo section
+
+A repo-less orchestrator sits in the pinned **Orchestrators** section. When the
+work it coordinates all belongs to one repo, file it under that repo instead; it
+takes its whole subtree along, so coordinator and children appear together.
 
 \`\`\`bash
-orchestra detach <workspace-id>
+orchestra set-repo "\$ORCHESTRA_WS_ID" /path/to/repo   # omit the path to clear
 \`\`\`
 
-Prints \`Detached <id>\`.
-`;
+Display only. The orchestrator stays repo-less — no branch, diff, merge or PR —
+and \`orchestra spawn\` still requires an explicit \`--repo\`: the association is
+deliberately NOT inherited, so a sidebar choice can never silently decide where a
+child's code gets written. Only an orchestrator-kind session qualifies; a git
+worktree already groups under its own repo and is refused. The path must name a
+repo Orchestra knows (register it below), so a typo cannot create a phantom
+section.
 
-const SET_REPO_SKILL = `---
-name: orchestra-set-repo
-description: Group an ORCHESTRATOR under a repo's sidebar section, alongside the children it coordinates, instead of the pinned "Orchestrators" section. Use when a coordinator's work all belongs to one repo and you want it filed with that repo.
----
+## Register a git repo
 
-# Group an orchestrator under a repo
-
-A repo-less orchestrator normally sits in the pinned **Orchestrators** section at
-the top of the sidebar. If the work it coordinates all belongs to one repo, you
-can file it under that repo's section instead — it takes its whole subtree with
-it, so the coordinator and the children it spawned appear together.
-
-This is a **display preference only**. The orchestrator stays repo-less: it gains
-no branch, diff, merge or PR, and \`orchestra spawn\` still requires an explicit
-\`--repo\` (the association is deliberately NOT inherited, so a sidebar choice can
-never silently decide where a child's code gets written).
-
-Only an orchestrator-kind session can be associated. A git worktree — promoted or
-not — already groups under its own repo and is refused.
-
-## Group it under a repo
+Makes it appear in the app and become a spawn target. Pass an ABSOLUTE path —
+relative paths resolve against your cwd, which is rarely what you mean.
 
 \`\`\`bash
-orchestra set-repo "$ORCHESTRA_WS_ID" /path/to/repo
+orchestra add-repo <absolute-repo-path>
 \`\`\`
 
-Prints \`Grouped <id> under /path/to/repo\`. The path must be a repo Orchestra
-already knows (see the orchestra-repos skill); an unknown path is refused rather
-than creating a phantom sidebar section. Re-running with the same path succeeds
-unchanged.
+## Migrate a workspace to another Claude account
 
-## Clear it (back to the Orchestrators section)
+Each workspace runs its agent under a pinned account (a separate Claude Code
+config dir / login). Migrating stops the agent, relocates its conversation into
+the target account's config dir, re-pins it, and resumes the agent where it left
+off — so it is safe on a RUNNING session and \`claude --continue\` keeps working.
+Works for git, scratch and orchestrator workspaces alike.
 
 \`\`\`bash
-orchestra set-repo "$ORCHESTRA_WS_ID"
+orchestra accounts                                    # list ids + labels
+orchestra migrate-account <workspace-id> <account-id>
+orchestra migrate-account <workspace-id> --default    # back to the default login
 \`\`\`
 
-Prints \`Cleared repo grouping for <id>\`. Clearing an already-clear workspace
-succeeds too.
+Archived workspaces cannot be migrated.
+
+## Delete a workspace
+
+Stops its agent, runs its archive script, removes the git worktree AND its
+branch, and drops it from the app. **Destructive and irreversible** — run it only
+on an explicit user request to delete that workspace.
+
+\`\`\`bash
+orchestra delete <workspace-id> --yes
+\`\`\`
 `;
 
 const LINK_SKILL = `---
@@ -3604,50 +3555,6 @@ orchestra status --clear
 \`\`\`
 
 Prints \`Status set: <note>\` (or \`Status cleared.\`) on success.
-`;
-
-const MIGRATE_ACCOUNT_SKILL = `---
-name: orchestra-migrate-account
-description: Migrate an EXISTING Orchestra workspace to a different Claude account (login), or back to the default login. Use when the user wants a workspace's agent to run under another account — e.g. "move next-api to the mc login".
----
-
-# Migrate a workspace to another account
-
-Each Orchestra workspace runs its Claude agent under a pinned account (a separate
-Claude Code config dir / login). This skill moves an EXISTING workspace to a
-different account: Orchestra stops the agent, relocates its conversation into the
-target account's config dir, re-pins it, and resumes the agent where it left off
-(so \`claude --continue\` keeps working). It works for git workspaces as well as
-scratch and orchestrator sessions.
-
-## 1. Find the account id and the workspace id
-
-List the configured accounts to get the target account's \`id\`:
-
-\`\`\`bash
-orchestra accounts
-\`\`\`
-
-Prints a table of \`id  label  configDir\`, or a note that none are configured
-(everything is on the default login). Use \`orchestra peers\` (the
-\`orchestra-comms\` skill) to find a workspace id if you don't have it.
-
-## 2. Migrate the workspace
-
-\`\`\`bash
-orchestra migrate-account <workspace-id> <account-id>
-\`\`\`
-
-Prints \`Migrated <id> to <label> (resumed)\` on success — \`(resumed)\` appears
-when the agent was running and was auto-resumed. To move a workspace back to the
-default login instead, pass \`--default\`:
-
-\`\`\`bash
-orchestra migrate-account <workspace-id> --default
-\`\`\`
-
-Errors with \`unknown account: <id>\` or \`unknown workspace: <id>\` on a bad id,
-or \`cannot migrate an archived workspace\` for an archived one.
 `;
 
 // Peer-gated, one-line re-surface of the comms capability on every
@@ -4270,13 +4177,9 @@ const HOOKS_VERSION = createHash('sha256')
       LINK_INSTRUCTION_SCRIPT,
       SPAWN_SKILL,
       COMMS_SKILL,
-      REPO_ROUTES_SKILL,
-      PROMOTE_SKILL,
-      ATTACH_SKILL,
-      SET_REPO_SKILL,
+      WORKSPACE_ADMIN_SKILL,
       RENAME_SKILL,
       LINK_SKILL,
-      MIGRATE_ACCOUNT_SKILL,
       STATUS_SKILL,
       HOOK_ACTIVITY_SUBMIT_CMD,
       HOOK_ACTIVITY_STOP_CMD,
@@ -4359,16 +4262,32 @@ export async function installOrchestraHooks(
       await mkdir(d, { recursive: true });
       await writeFile(path.join(d, 'SKILL.md'), body);
     };
+    // Pre-upgrade worktrees carry the five skills that `orchestra-workspace-admin`
+    // now covers. writeSkill only ever writes, so without this they would linger
+    // as orphaned SKILL.md files — still auto-discovered, still spending their
+    // descriptions on every turn, and pointing at a split that no longer exists.
+    // Evict them before writing the current set.
+    const RETIRED_SKILLS = [
+      'orchestra-repos',
+      'orchestra-promote',
+      'orchestra-attach',
+      'orchestra-set-repo',
+      'orchestra-migrate-account',
+    ];
+    await Promise.all(
+      RETIRED_SKILLS.map((name) =>
+        rm(path.join(skillsDir, name), { recursive: true, force: true }).catch(
+          () => undefined,
+        ),
+      ),
+    );
+
     await Promise.all([
       writeSkill('orchestra-spawn', SPAWN_SKILL),
       writeSkill('orchestra-comms', COMMS_SKILL),
-      writeSkill('orchestra-repos', REPO_ROUTES_SKILL),
-      writeSkill('orchestra-promote', PROMOTE_SKILL),
-      writeSkill('orchestra-attach', ATTACH_SKILL),
-      writeSkill('orchestra-set-repo', SET_REPO_SKILL),
+      writeSkill('orchestra-workspace-admin', WORKSPACE_ADMIN_SKILL),
       writeSkill('orchestra-rename', RENAME_SKILL),
       writeSkill('orchestra-link', LINK_SKILL),
-      writeSkill('orchestra-migrate-account', MIGRATE_ACCOUNT_SKILL),
       writeSkill('orchestra-status', STATUS_SKILL),
     ]);
 

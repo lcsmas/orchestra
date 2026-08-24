@@ -54,10 +54,11 @@ renderer (`src/renderer/`). You verify a UI change by launching an isolated
 instance and driving it over CDP, with isolated `ORCHESTRA_HOME` and headless
 sway for frames.
 
-Build first: `npx vite build` (produces `dist/` + `dist-electron/`). Do NOT use
-`pnpm run lint` here (OOMs); `npx tsc --noEmit` is the typecheck. Always rebuild
-before ANY drive — a stale bundle reproduces a false failure perfectly in
-isolation.
+Build first: `npx vite build` (produces `dist/` + `dist-electron/`). Typecheck
+with `npx tsc --noEmit` — that is the static gate here (`pnpm run lint` is
+declared but eslint is not installed, so it exits `command not found`). Always
+rebuild before ANY drive — a stale bundle reproduces a false failure perfectly
+in isolation.
 
 ## Launch an isolated instance with CDP
 
