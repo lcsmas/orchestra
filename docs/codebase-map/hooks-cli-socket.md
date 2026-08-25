@@ -228,6 +228,39 @@ clear for programmatic callers),
 rides on `$ORCHESTRA_LOGIN_ACCOUNT`).
 Fully non-interactive (destructive `delete` needs `--yes`).
 
+### Exiting the CLI: flush before you terminate (issue #62)
+
+Every terminal exit funnels through **`exitAfterFlush(code)`** (`src/cli/index.ts`),
+which awaits a `write('', cb)` on stdout AND stderr before calling
+`process.exit`. `exitWith()` and `fail()` deliberately **do not call
+`process.exit` themselves any more** — they only set `process.exitCode` and
+throw their sentinel (`CliExit` / `CliFailure`); `runCli`'s catch does the
+flush-then-exit. The `: never` signatures and the load-bearing throw from #59
+are unchanged.
+
+**Why.** `process.stdout.write()` to a PIPE is asynchronous — libuv buffers what
+the pipe will not take at once. `process.exit()` in the SAME TICK as a large
+write abandons the remainder: the reader sees a truncated prefix and **no error
+on any stream**. A 3000-commit `verify-landed` verdict is ~182 KB and the
+surviving prefix was 146496 bytes (= 143*1024).
+
+Two properties worth knowing before touching this code:
+
+- **It is a RACE, not a threshold.** The same unfixed bundle with the same input
+  truncated only **4/20** runs; a drain-neutered mutant **9/20**; the fixed
+  build **0/20**. A single run of the *unfixed* build passes most of the time,
+  so any one-shot check here is a dice roll that reads as a measurement.
+- **It is not socket-specific and not Electron-specific**, contrary to what
+  issue #62 originally proposed: the identical byte count reproduces under plain
+  `node` with no socket involved. The axis is same-tick-exit vs
+  flushed-exit. (#62's separate claim that the same payload written *outside*
+  the socket callback flushed completely did **not** reproduce.)
+
+Gate: **`scripts/verify-cli-pipe-flush.mjs`** — drives the built bundle under
+real Electron with stdout on a pipe, N runs per arm, asserting on the
+truncation RATE (`--runs`, `--bundle`, `--expect-broken`). It also guards the
+LANDED/ERROR contracts and that nothing leaks onto stderr.
+
 ## CLI shims (cli-shim.ts)
 - **User-facing** — Linux `~/.local/bin/orchestra` (`exec "<AppImage>" cli "$@"`,
   the path from `APPIMAGE_PATH` in `src/main/app-image.ts` — `process.env.APPIMAGE`

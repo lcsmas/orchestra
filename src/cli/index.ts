@@ -402,12 +402,75 @@ class CliExit extends Error {
  *  the exit-code table in the `verify-landed` handler). */
 const NOT_LANDED_EXIT = 2;
 
+/** Wait until everything already handed to stdout/stderr has actually reached
+ *  the far side of the pipe, then terminate with `code`.
+ *
+ *  WHY THIS EXISTS (issue #62). `process.stdout.write()` to a PIPE is
+ *  asynchronous: libuv buffers what the pipe will not accept immediately and
+ *  flushes it on later ticks. `process.exit()` called in the SAME TICK as a
+ *  large write abandons whatever is still buffered, so the reader sees a
+ *  truncated prefix and no error anywhere. Measured on the built bundle with a
+ *  3000-commit `verify-landed` verdict, stdout on a pipe:
+ *
+ *      write(payload); process.exit(2)          -> 146496/181890 bytes  TRUNCATED
+ *      await drained; process.exit(2)           -> 181890/181890 bytes  complete
+ *
+ *  146496 = 143*1024, the portion libuv had already handed to the kernel.
+ *
+ *  This is NOT specific to the socket-response callback that issue #62
+ *  originally blamed, and NOT specific to Electron: the identical byte count
+ *  reproduces under plain `node` with no socket in the picture. The axis is
+ *  same-tick-exit vs next-tick-exit, so the drain belongs at the exit sites —
+ *  which is here and in {@link runCli} — not in any one verb.
+ *
+ *  `write('')` resolves its callback only after the stream's pending queue has
+ *  drained, so awaiting it is the flush. Streams already fully flushed resolve
+ *  on the next tick, which costs nothing and is itself sufficient (a bare
+ *  `setImmediate` before the exit also fixed the measurement) — so this is safe
+ *  to call unconditionally, including for the small-output and error paths.
+ *
+ *  Exit status is set on `process.exitCode` FIRST so that if anything here
+ *  throws, the natural unwind still carries the right status.
+ *
+ *  Deliberately does NOT end with `throw new CliExit(code)` the way the
+ *  synchronous {@link exitWith} does. There the throw is load-bearing: it stops
+ *  a `switch` case running on into the next one when `process.exit` fails to
+ *  terminate synchronously (issue #59). Here nothing follows — this IS the
+ *  terminal path — so a throw has no fall-through to prevent and can only
+ *  escape `runCli` as an UnhandledPromiseRejectionWarning printed on stderr,
+ *  which is exactly the output stream the caller is parsing. Observed while
+ *  gating this fix; the rig caught it. Park on a never-resolving promise
+ *  instead, which honours `Promise<never>` without emitting anything. */
+async function exitAfterFlush(code: number): Promise<never> {
+  process.exitCode = code;
+  await Promise.all(
+    [process.stdout, process.stderr].map(
+      (stream) =>
+        new Promise<void>((resolve) => {
+          // A destroyed/closed stream never fires the callback — resolve rather
+          // than hang the process forever on a broken pipe.
+          if (stream.destroyed || stream.writableEnded) return resolve();
+          stream.write('', () => resolve());
+        }),
+    ),
+  );
+  process.exit(code);
+  // Under Electron `process.exit` does not necessarily terminate in this tick.
+  // Nothing after this may run, and nothing may be printed, so simply never
+  // settle — the exit lands a tick later.
+  return new Promise<never>(() => {});
+}
+
 /** End the command with `code` after its output has already been written.
- *  Prints nothing — the caller owns the message and the stream it goes to. */
+ *  Prints nothing — the caller owns the message and the stream it goes to.
+ *
+ *  Stays SYNCHRONOUS and `: never` on purpose. The throw is load-bearing (see
+ *  {@link CliExit}) and making this `async` would turn every call site into an
+ *  `await` that TypeScript no longer treats as unreachable-after, silently
+ *  reopening issue #59. So it only throws; {@link runCli}'s catch does the
+ *  actual flush-then-exit via {@link exitAfterFlush}. */
 function exitWith(code: number): never {
   process.exitCode = code;
-  process.exit(code);
-  // Unreachable under plain Node; the guarantee that matters under Electron.
   throw new CliExit(code);
 }
 
@@ -437,8 +500,10 @@ function exitWith(code: number): never {
 function fail(message: string): never {
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
-  process.exit(1);
-  // Unreachable under plain Node; the guarantee that matters under Electron.
+  // No `process.exit(1)` here: exiting in the SAME TICK as the write above
+  // abandons anything libuv has not yet pushed through the pipe (issue #62).
+  // The throw already guarantees control flow stops; runCli's catch flushes
+  // and exits via exitAfterFlush.
   throw new CliFailure(message);
 }
 
@@ -1079,7 +1144,7 @@ async function main(argv: string[]): Promise<void> {
 export async function runCli(argv: string[]): Promise<void> {
   try {
     await main(argv);
-    process.exit(0);
+    await exitAfterFlush(0);
   } catch (err: unknown) {
     // A CliFailure has ALREADY printed its message and set status 1 — it is the
     // sentinel `fail()` throws so a refusal stops the command even where
@@ -1089,17 +1154,21 @@ export async function runCli(argv: string[]): Promise<void> {
     // refusal exit 0 on the packaged build.
     if (err instanceof CliExit) {
       // A verdict that already printed its own message on its own stream —
-      // exit with the status it asked for, printing nothing.
-      process.exitCode = err.code;
-      process.exit(err.code);
+      // exit with the status it asked for, printing nothing. Flushed first:
+      // a NOT-LANDED verdict can run to hundreds of KB and exiting in the same
+      // tick as its write truncates it on a pipe (issue #62).
+      await exitAfterFlush(err.code);
       return;
     }
     if (err instanceof CliFailure) {
-      process.exitCode = 1;
-      process.exit(1);
+      await exitAfterFlush(1);
       return;
     }
-    fail(err instanceof Error ? err.message : String(err));
+    // An UNEXPECTED error. Not `fail()`: since #62 that only throws, and a
+    // throw escaping runCli becomes an unhandled rejection whose exit status
+    // is the runtime's, not ours. Write and flush here instead.
+    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    await exitAfterFlush(1);
   }
 }
 
