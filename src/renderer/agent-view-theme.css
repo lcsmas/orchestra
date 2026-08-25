@@ -1483,6 +1483,13 @@ h6.av-md-h {
   border: 1px solid var(--av-hairline-strong);
   background: transparent;
 }
+/* Plugin-bundled skills (`<plugin>:<skill>`) — distinct from user/project so
+   it's clear the skill comes from an installed plugin, not your own dirs. */
+.av-ac-source-plugin {
+  color: var(--av-text-faint);
+  border: 1px dashed var(--av-hairline-strong);
+  background: transparent;
+}
 .av-ac-hint {
   display: flex; align-items: center; gap: 4px;
   padding: 5px 9px 3px; margin-top: 1px;

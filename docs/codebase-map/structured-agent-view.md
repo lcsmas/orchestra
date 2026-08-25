@@ -1070,13 +1070,37 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   present in BOTH lists (the LRU-eviction overlap) still renders twice; that is
   a separate, still-open bug needing content-based dedupe.
 - **Skills autocomplete** — `agent-sdk.ts sdkListSkills(wsId)` scans the worktree's
-  `.claude/skills/*` + the account config dir's `skills/*` (project shadows user) for
-  `AgentSkillInfo` (shared/types.ts); the Composer shows a popover when the input is a
+  `.claude/skills/*`, the account config dir's `skills/*`, and the ENABLED plugins'
+  skill dirs (project shadows user shadows plugin) for `AgentSkillInfo`
+  (shared/types.ts); the Composer shows a popover when the input is a
   pure `/prefix` (Tab/Enter complete, arrows navigate, Esc dismisses). The popover is
   CSS-fragile: it anchors to `.av-composer-field`, so that rule must keep
   `position:relative` and must never set `overflow:hidden` — see
   `agent-view-design.md`, where a redeclaration once clipped a correctly-rendered
   8-row popover into invisibility (the data/JS path was fine).
+
+  **Plugin skills (`shared/plugin-skills.ts` + `.test.ts`).** Plugin skills live
+  under `<configDir>/plugins/cache/<marketplace>/<plugin>/<version>/`, which is
+  NEITHER plain root — so before this they reached the menu only via
+  `session/init`'s `slash_commands`, i.e. not until the FIRST request started.
+  Typing `/` in a fresh workspace listed no plugin skills at all, even though the
+  runtime could invoke them from turn one (availability and discoverability are
+  different surfaces — the skills always WORKED, only the menu lagged).
+  `pluginSkillDirs(configDir)` now resolves them: `enabledPlugins` in
+  `settings.json` is the gate (installed-but-disabled is skipped, so the menu
+  matches what the runtime accepts), `plugins/installed_plugins.json` gives each
+  `installPath` (one record per scope, all the same path — collapse to one).
+  **Two layouts exist and a manifest-only reader silently misses the second:**
+  mattpocock-skills declares 25 explicit `skills` paths in its manifest (its tree
+  also holds `deprecated/` + `in-progress/` dirs the CLI does NOT load, so trust
+  the manifest over a dir walk), while the slack plugin has no `skills` key and
+  keeps 7 skills in a conventional `skills/` dir. `pluginSkillRoots` picks per
+  plugin — manifest when non-empty, else scan. Measured against the live
+  `~/.claude-mc`: 25 + 7 = **32**. Names are NAMESPACED `<plugin>:<skill>` to
+  match what `session/init` reports, otherwise the composer's name-keyed dedup
+  misses and every plugin skill appears twice once the session starts.
+  Orthogonal to `orchestra reload-skills --plugins`, which hot-reloads the plugin
+  cache into a LIVE session; this is the cold disk scan the popover reads.
 - **Composer editor** — the text surface is a CodeMirror 6 editor
   (`components/agent/CmComposer.tsx`), not a textarea: it decorates the leading
   `/skill` / `!bash` token via `shared/composer-highlight.ts` and carries VIM

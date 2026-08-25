@@ -103,6 +103,14 @@ import type {
   RemoteControlState,
   Workspace,
 } from '../shared/types';
+import {
+  enabledPluginInstalls,
+  pluginSkillName,
+  pluginSkillRoots,
+  type InstalledPlugins,
+  type PluginManifest,
+  type PluginSettings,
+} from '../shared/plugin-skills';
 
 // ─── Structured-agent-view session manager ───────────────────────────────────
 //
@@ -1683,10 +1691,81 @@ function refreshContextUsage(wsId: string): void {
     .catch((e) => log.warn(`agent-sdk: refreshContextUsage failed for ${wsId}`, e));
 }
 
+/** Read a skill dir's SKILL.md and pull the first sentence of its frontmatter
+ *  `description`. Returns null when the dir has no readable SKILL.md — i.e.
+ *  it isn't a skill dir at all, so the caller skips it. */
+async function readSkillDescription(skillDir: string): Promise<string | null> {
+  try {
+    const head = (await fs.promises.readFile(path.join(skillDir, 'SKILL.md'), 'utf8')).slice(
+      0,
+      2000,
+    );
+    const m = /^description:\s*(.+)$/m.exec(head);
+    return m ? m[1].trim().split(/(?<=\.)\s/)[0].slice(0, 140) : '';
+  } catch {
+    return null;
+  }
+}
+
+/** The skill dirs contributed by the config dir's ENABLED plugins, as
+ *  `{dir, name}` pairs where `name` is the CLI's namespaced invocation form
+ *  `<plugin>:<skill>`.
+ *
+ *  Why this exists: plugin skills live under
+ *  `<configDir>/plugins/cache/<marketplace>/<plugin>/<version>/skills/...`,
+ *  which is NEITHER of sdkListSkills' two plain roots — so before this they
+ *  reached the composer ONLY via `session/init`'s `slash_commands`, which the
+ *  SDK emits when the first request starts. That made every plugin skill
+ *  invisible in the `/` menu until the user had already sent a message, even
+ *  though the runtime could invoke it from the very first turn.
+ *
+ *  Enablement is read from settings.json's `enabledPlugins` (the same gate the
+ *  CLI uses); a plugin present in installed_plugins.json but not enabled there
+ *  is skipped, so the menu matches what the runtime will actually accept. */
+export async function pluginSkillDirs(configDir: string): Promise<{ dir: string; name: string }[]> {
+  const readJson = async <T>(...segments: string[]): Promise<T | null> => {
+    try {
+      return JSON.parse(await fs.promises.readFile(path.join(...segments), 'utf8')) as T;
+    } catch {
+      return null;
+    }
+  };
+
+  const settings = await readJson<PluginSettings>(configDir, 'settings.json');
+  const installed = await readJson<InstalledPlugins>(
+    configDir,
+    'plugins',
+    'installed_plugins.json',
+  );
+  const out: { dir: string; name: string }[] = [];
+  for (const { pluginName, installPath } of enabledPluginInstalls(settings, installed)) {
+    const manifest = await readJson<PluginManifest>(installPath, '.claude-plugin', 'plugin.json');
+    const source = pluginSkillRoots(installPath, manifest, path.join);
+    let dirs: string[];
+    if (source.mode === 'manifest') {
+      dirs = source.rels.map((rel) => path.resolve(installPath, rel));
+    } else {
+      // No `skills` key in the manifest (the slack plugin's shape) — fall back
+      // to the conventional dir. readdir failures mean "no skills here".
+      try {
+        const entries = await fs.promises.readdir(source.dir, { withFileTypes: true });
+        dirs = entries.filter((e) => e.isDirectory()).map((e) => path.join(source.dir, e.name));
+      } catch {
+        dirs = [];
+      }
+    }
+    for (const dir of dirs) {
+      out.push({ dir, name: pluginSkillName(pluginName, path.basename(dir)) });
+    }
+  }
+  return out;
+}
+
 /** List the skills (slash commands) available to a workspace: the worktree's
- *  `.claude/skills/*` plus the pinned account config dir's (default ~/.claude)
- *  `skills/*`. Project shadows user on a name clash. Cheap directory scan,
- *  invoked when the composer's autocomplete opens. */
+ *  `.claude/skills/*`, the pinned account config dir's (default ~/.claude)
+ *  `skills/*`, and the enabled plugins' declared skill dirs. Project shadows
+ *  user shadows plugin on a name clash. Cheap directory scan, invoked when the
+ *  composer's autocomplete opens. */
 export async function sdkListSkills(wsId: string): Promise<AgentSkillInfo[]> {
   const ws = store.getWorkspace(wsId);
   if (!ws) return [];
@@ -1707,19 +1786,21 @@ export async function sdkListSkills(wsId: string): Promise<AgentSkillInfo[]> {
     }
     for (const name of entries) {
       if (byName.has(name)) continue;
-      let description = '';
-      try {
-        const head = (
-          await fs.promises.readFile(path.join(dir, name, 'SKILL.md'), 'utf8')
-        ).slice(0, 2000);
-        const m = /^description:\s*(.+)$/m.exec(head);
-        if (m) description = m[1].trim().split(/(?<=\.)\s/)[0].slice(0, 140);
-      } catch {
-        continue; // not a skill dir
-      }
+      const description = await readSkillDescription(path.join(dir, name));
+      if (description === null) continue; // not a skill dir
       byName.set(name, { name, description, source });
     }
   }
+
+  // Plugin skills last: a same-named project/user skill shadows them, matching
+  // the precedence above.
+  for (const { dir, name } of await pluginSkillDirs(configDir)) {
+    if (byName.has(name)) continue;
+    const description = await readSkillDescription(dir);
+    if (description === null) continue;
+    byName.set(name, { name, description, source: 'plugin' });
+  }
+
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 

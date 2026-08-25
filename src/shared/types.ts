@@ -1330,15 +1330,19 @@ export type AgentAnswerableReply =
 
 /** One installed skill (slash command) visible to a workspace's agent — the
  *  structured composer's autocomplete items. Listed by the manager from the
- *  worktree's `.claude/skills/*` and the account config dir's `skills/*`
- *  (agent-sdk.ts sdkListSkills). */
+ *  worktree's `.claude/skills/*`, the account config dir's `skills/*`, and the
+ *  ENABLED plugins' declared skill dirs (agent-sdk.ts sdkListSkills). */
 export interface AgentSkillInfo {
-  /** Invocation name, without the leading slash. */
+  /** Invocation name, without the leading slash. Plugin skills carry the
+   *  CLI's namespaced form (`<plugin>:<skill>`), which is what the runtime
+   *  actually accepts AND what `session/init` reports — so the composer's
+   *  dedup matches instead of listing the skill twice. */
   name: string;
   /** First sentence of the SKILL.md frontmatter description ('' when absent). */
   description: string;
-  /** Where it comes from — the worktree's .claude/skills or the user level. */
-  source: 'project' | 'user';
+  /** Where it comes from — the worktree's .claude/skills, the user level, or
+   *  an enabled plugin's bundled skills. */
+  source: 'project' | 'user' | 'plugin';
 }
 
 /** A model offered by the structured view's model switcher, as reported LIVE by
