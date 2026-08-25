@@ -197,7 +197,7 @@ import { closeAllSandboxConnections } from './transport/sandbox-manager';
 import { startSandboxAutoBackup } from './sandbox-import';
 import { primeLocalSyncStates, syncAllRepos } from './repo-sync';
 import { startPromptQueueFlusher, stopPromptQueueFlusher } from './prompt-queue';
-import { startInboxWatcher, stopInboxWatcher } from './inbox-tray';
+import { reconcileParkedCounts, startInboxWatcher, stopInboxWatcher } from './inbox-tray';
 import { startSelfTuneScheduler, stopSelfTuneScheduler } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
 import { probeDependencies } from './deps';
@@ -336,6 +336,12 @@ async function createMainWindow() {
   // parked peer messages — including drains done by the inbox shell hook, which
   // the main process never initiates and would otherwise never hear about.
   startInboxWatcher();
+  // Re-derive every workspace's parked-inbox count from disk (#88). The counts
+  // are persisted, but the inbox FILES are the source of truth and the shell
+  // hook drains them without the main process — including while the app was
+  // closed. Without this a workspace whose inbox was drained during a quit
+  // would boot showing a queue-stall badge for mail that is no longer parked.
+  void reconcileParkedCounts().catch(() => {});
   // Monthly Insights & Improvements: auto-run the self-tune pipeline once per
   // calendar month (checked shortly after startup and every ~6h).
   startSelfTuneScheduler();

@@ -17,6 +17,22 @@ Event → status (`applyAgentEvent` `:471`):
   label; `posttool` → `running`, label back to `THINKING_TOOL_LABEL`, emit live
   context tokens.
 
+  **`submit` and `pretool` also stamp `Workspace.lastTurnStartAt` (issue #88)**,
+  by passing `turnStart: true` as `setStatus`'s 4th argument — the same
+  piggyback trick `stopReason` uses, so the stamp rides the store write and the
+  broadcast that already happen on the transition. This is the one chokepoint
+  BOTH agent paths cross with the meaning "this workspace picked up work", and
+  it is deliberately NOT `noteActivity`: that stamps on every event including
+  unhandled ones (by design — an unrecognized hook still proves the agent is
+  alive), so it measures ALIVENESS, whereas #88 needs CONSUMPTION. The field is
+  monotonic — assigned only on a turn start, never cleared — because clearing it
+  makes the stall age fall back to `createdAt`, which on an old workspace reads
+  as a stall of days. The write is guarded by `setStatus`'s no-op check, which
+  is correct: repeated `pretool`s inside one turn are not new turn starts.
+  Guarded by `src/main/turn-start-stamp.test.ts` (a SOURCE check, because
+  `activity.ts` cannot be imported under `node --test` — `./platform` is an
+  extensionless directory import only Vite resolves; measured 2026-08-25).
+
   **The thinking label is the between-tools latency fix.** Measured on a live
   session: `pretool`→`posttool` pairs are 40–130 ms apart, but consecutive PAIRS
   are 2.5–6.5 s apart — the model generating, with no lifecycle event in the
@@ -52,6 +68,100 @@ toast is suppressed whenever the window is focused, so the user sitting in
 front of the app never saw it. Since `fireFinished` sets `idle` for EVERY
 terminal reason, a session that had exhausted its turn budget was
 pixel-identical in the sidebar to one that finished cleanly.
+
+### Queue-stall detection (issue #88)
+
+"N deliveries are parked here and no turn has started in N minutes" — the
+CAUSE-AGNOSTIC symptom, surfaced as an amber sidebar pill. Mechanizes the
+lead-heartbeat convention after two same-day incidents where a fleet froze
+silently and the human was the detector.
+
+- **Policy** — `src/shared/queue-stall.ts`, pure and total like
+  `usage-resume.ts`: `decideQueueStall(input)` / `workspaceQueueStall(ws, now)`
+  → verdict or `null`. `QUEUE_STALL_THRESHOLD_MS` = 15 min (reasoned, not
+  measured — the doc comment says so; safety rests on the `running` guard, not
+  the number). Unit + mutation tested (`src/shared/queue-stall.test.ts`).
+- **It is the COMPLEMENT of #69, not an overlay.** It stands down whenever
+  `isActionableStopReason(lastStopReason)` — `max_turns` / `error` /
+  `usage_limit` already carry a glyph naming the cause, and `usage_limit` is
+  additionally being auto-resumed by #74 with a deliberately CALM glyph that a
+  second alarm would undo. Routed through the shared predicate so a new
+  actionable reason suppresses this badge automatically.
+- **Inputs.** `queuedPrompts.length` + `parkedInboxCount` (one number on the
+  badge, split in the tooltip); `lastTurnStartAt` (falling back to `createdAt`
+  for a workspace that never ran); `status`; `hibernatedAt`; `archived`.
+- **`Workspace.parkedInboxCount` is maintained by MAIN** — `inbox-tray.ts`'s
+  `syncParkedCount`, called from `broadcastInbox`, plus `reconcileParkedCounts()`
+  at startup (`src/main/index.ts`) because the shell hook drains inbox files
+  while the app is closed. It exists because the renderer's `store.parkedInbox`
+  cache is hydrated PER-PANE (`StructuredView`'s mount effect), so a workspace
+  nobody has opened has no entry — which is exactly the fleet-freeze case, since
+  nobody looking at the frozen agent is why it stays frozen.
+- **Render** — `src/renderer/components/QueueStallBadge.tsx`, dropped into BOTH
+  Sidebar render paths (spawn-tree rows and repo-section rows) so they cannot
+  drift. A numeric PILL styled on `ws-hidden-count` (`.ws-stall-badge` in
+  styles.css), not a new `WorkspaceStatusGlyph` shape: the glyph slot is the
+  STATUS axis and #69 owns it for stop reasons, while a stall is orthogonal
+  (like `loopingSince`/`autoUnread`) and has a count to show. A shared 30s
+  clock re-derives the verdict, because the threshold is crossed by the passage
+  of time alone — no store event fires at that moment, so an event-only badge
+  would appear just when you were already looking.
+- **Clears three ways**, all derived (nothing persisted, so it cannot go stale):
+  a turn starts (`lastTurnStartAt` moves), the queue/inbox drains
+  (`parkedCount === 0`), or the workspace goes `running`.
+- **The age is floored at `observableSince`** (app/renderer start —
+  `OBSERVABLE_SINCE` in `QueueStallBadge.tsx`), NEVER measured from the raw
+  stamp. `lastTurnStartAt` persists across a restart while the `running` status
+  it pairs with does not (`store.load()` floors it), so without the floor a
+  healthy agent's age included the whole app downtime, and
+  `reconcileParkedCounts()` — added precisely so downtime mail is counted —
+  supplied the non-zero parked count. Two individually-correct halves composed
+  into a guaranteed false alarm: MEASURED 2026-08-25, 3–5 real workspaces on
+  this machine (the wave's own coordinator and build-verifier among them) were
+  holding parked mail while healthy and idle, and all of them badged
+  "stalled 14h" on a cold boot of the unfixed build. Reproduced in the running
+  app and fixed (review-88 R1). **Consequence for any rig: a stall can no
+  longer be SEEDED** — the app must actually observe the silence, so a
+  true-positive arm has to wait the threshold out in real time.
+- **Concurrent-append framing (issue #93) — LATENT, and the headroom is what
+  makes it latent.** `parkedInboxCount` is `parseInboxBlocks(file).length`, and
+  `O_APPEND` atomicity holds per WRITE CHUNK rather than per `appendFile` call,
+  so two concurrent appends of a block over ~448KB splice one block inside
+  another and the parser over-counts (measured: 19 blocks for 10 messages).
+  **Unreachable through the only caller** — `dispatchMessageRequest` truncates
+  to `MESSAGE_MAX_CHARS = 8000` before building the body
+  (`workspaces.ts:2777`), and all three `queueInbox` call sites (`:2825`,
+  `:2862`, `:2872`) pass that body, so the largest block that can reach disk is
+  **8276 bytes, 55x below the boundary**; 30 concurrent max-size real messages
+  parse to exactly 30. The 1 MiB cap at `hooks-server.ts:166` bounds the HTTP
+  REQUEST, not the block — reading that cap as the block size is the mistake
+  that made this look live. If `MESSAGE_MAX_CHARS` is ever raised toward
+  448KB, or a second `queueInbox` caller appears that does NOT truncate, this
+  becomes reachable: fix it at the write boundary (#93), not in the badge.
+  Measured 2026-08-25 on btrfs (the filesystem under `~/.orchestra` — an
+  earlier sweep on `/tmp` measured tmpfs, the wrong filesystem).
+- **The clock measures CONSUMPTION, never ARRIVAL.** The tempting
+  simplification — age from the newest `queuedAt` / parked block, the data
+  closest to hand — is wrong in the direction that hides the bug: an arrival
+  clock RESETS on every new ping, so the more peers notice an agent is stuck,
+  the younger its stall looks. MEASURED on a real incident (2026-08-25, the
+  #88 implementer's own workspace wedged; observables captured by the wave
+  coordinator before re-kicking): the same stall read **41.4 min** on a
+  first-arrival clock and **6.0 min** on a last-arrival clock — opposite
+  verdicts at N=15, and the arrival clock is the silent one. Guarded
+  structurally by `queue-stall.test.ts`'s "QueueStallInput carries no arrival
+  timestamp", which reads the interface out of the source: two earlier versions
+  of that guard were VACUOUS (one asserted the policy uses the number it is
+  handed; one asserted `Object.keys()` of the test's own fixture literal) and
+  both survived the mutant.
+- **`setStatus`'s no-op guard treats a turn start as a third signal**
+  (`turnStartChanged`), beside `reasonChanged`. The guard returns before
+  `updated` is built, and `restoreRunningFromKeeper` / `resumeRunning` both
+  enter `running` WITHOUT the flag — after either, every `submit`/`pretool` of
+  that turn was a no-op and a healthy completed turn never moved the stall
+  clock (review-88 R2). Scoped by `TURN_STAMP_REFRESH_MS` (2 min) so the hot
+  path — `pretool` re-asserting `running` per tool call — still no-ops instead
+  of writing the store and re-rendering every sidebar row.
 
 - `markStoppedOnMaxTurns(id)` (`src/main/activity.ts`) records that a turn died
   on the SDK turn limit (`setStatus(id,'idle','max_turns')` — a stopped session

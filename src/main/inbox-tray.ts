@@ -45,6 +45,7 @@ import path from 'node:path';
 import { log } from './logger';
 import { platform } from './platform';
 import { store } from './store';
+import type { Workspace } from '../shared/types.ts';
 import { sdkDeliverConfirmed } from './sdk-delivery';
 import {
   parseInboxBlocks,
@@ -104,12 +105,66 @@ function writeInbox(workspaceId: string, texts: string[]): boolean {
 
 /** Broadcast the workspace's current parked count so every open renderer view
  *  re-reads. Sent on every mutation AND from the watcher, so a drain performed
- *  by the shell hook retracts the chip too. */
+ *  by the shell hook retracts the chip too.
+ *
+ *  ALSO mirrors the count onto the workspace record (#88). The `inbox:update`
+ *  event is enough for the composer tray, which only ever renders the ONE
+ *  workspace it is mounted on — but the sidebar renders every workspace at
+ *  once, including ones whose pane has never been opened, and those have no
+ *  entry in the renderer's per-pane `parkedInbox` cache at all. Since the
+ *  fleet-freeze case #88 exists for is precisely "nobody is looking at the
+ *  frozen agent", a sidebar badge fed from that cache would be blind exactly
+ *  where it matters. So main keeps an authoritative count on the record, where
+ *  the ordinary `workspace:update` broadcast carries it to every view.
+ *
+ *  Stored as ABSENT rather than 0 for an empty inbox — the common case by far,
+ *  and it keeps the record from growing a field for every workspace that has
+ *  never received a message. `parkedInboxCount ?? 0` is the read. */
 function broadcastInbox(workspaceId: string): void {
-  platform.broadcast('inbox:update', {
-    workspaceId,
-    count: readInbox(workspaceId).length,
-  });
+  const count = readInbox(workspaceId).length;
+  platform.broadcast('inbox:update', { workspaceId, count });
+  void syncParkedCount(workspaceId, count);
+}
+
+/** Persist + broadcast main's authoritative parked-inbox count (#88). No-op
+ *  when unchanged, which is the overwhelmingly common path: the directory
+ *  watcher fires on every inbox write in the fleet, and re-persisting the whole
+ *  store for a count that did not move would put a full store.json flush behind
+ *  each one. */
+async function syncParkedCount(workspaceId: string, count: number): Promise<void> {
+  const ws = store.getWorkspace(workspaceId);
+  if (!ws || ws.archived) return;
+  const next = count > 0 ? count : undefined;
+  if ((ws.parkedInboxCount ?? 0) === (next ?? 0)) return;
+  const updated: Workspace = { ...ws, parkedInboxCount: next };
+  try {
+    await store.upsertWorkspace(updated);
+  } catch (e) {
+    log.warn(`inbox-tray: could not persist parked count for ${workspaceId}`, e);
+    return;
+  }
+  // Assigned explicitly (including to `undefined`) — the renderer merges
+  // `workspace:update`, and a merge cannot unset an absent key, so a dropped
+  // key would leave a stale stall badge on screen after the inbox drained.
+  platform.broadcast('workspace:update', updated);
+}
+
+/** Bring every workspace's {@link Workspace.parkedInboxCount} in line with what
+ *  is actually on disk (#88). Called once at startup, because the counts are
+ *  persisted but the FILES are the source of truth and the shell hook can drain
+ *  them while the app is closed — without this, a workspace whose inbox was
+ *  drained during a quit would boot showing a stall badge for mail that is no
+ *  longer there. Also repairs the reverse: mail parked by a CLI `orchestra
+ *  message` while the app was down.
+ *
+ *  Iterates the STORE's workspaces rather than the directory, so a stale file
+ *  from a deleted workspace contributes nothing — the same rule the watcher
+ *  applies. */
+export async function reconcileParkedCounts(): Promise<void> {
+  for (const ws of store.workspaces) {
+    if (ws.archived) continue;
+    await syncParkedCount(ws.id, readInbox(ws.id).length);
+  }
 }
 
 /** Recover the structural peer origin for a parked block so the released turn

@@ -1489,6 +1489,36 @@ input:focus, textarea:focus, select:focus {
 .ws-hidden-count.running { color: var(--green); border-color: var(--green); }
 .ws-hidden-count.waiting { color: var(--yellow); border-color: var(--yellow); }
 .ws-hidden-count.error { color: var(--red); border-color: var(--red); }
+/* Queue-stall badge (#88) — "N deliveries are waiting here and no turn has
+   started in X". Shares `ws-hidden-count`'s pill geometry deliberately: both
+   are "a count of things you cannot currently see on this row", and giving
+   them one shape means a reader learns the idiom once.
+   Amber, not red: a stall is a condition to LOOK AT, not a failure — the agent
+   may be perfectly fine and merely between wakeups. Red is spoken for by
+   `error`, an actually-failed state, and spending it here would make the two
+   indistinguishable at a glance across a fleet. */
+.ws-stall-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 5px;
+  margin-left: 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--yellow);
+  background: var(--bg-3);
+  border: 1px solid var(--yellow);
+}
+.ws-stall-badge svg {
+  width: 9px;
+  height: 9px;
+  /* The stroke is the badge's colour; the geometry is drawn at 24px and scaled,
+     so the stroke width is set on the element in QueueStallBadge.tsx rather
+     than here — a `vector-effect` would thin it below legibility at 9px. */
+}
 /* Coordinator marker on a sidebar row — a PROMOTED WORKTREE's only cue that it
    coordinates other agents (it stays in its repo section and never appears in
    the pinned Orchestrators list, so nothing else marks it).
