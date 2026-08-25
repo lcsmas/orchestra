@@ -27,6 +27,11 @@ import {
 } from '../../../shared/context-breakdown';
 import type { ContextUsage } from '../../../shared/context-usage';
 
+/** Gap left between the panel's right edge and the window edge when the panel
+ *  has to be shifted back inside the viewport (issue #35). Matches the 8px the
+ *  panel already uses vertically in `bottom:calc(100% + 8px)`. */
+const CTX_PANEL_GUTTER_PX = 8;
+
 /** How many rows each detail list shows before collapsing to "+N more". A
  *  session can load dozens of memory files and hundreds of MCP tools; the
  *  popover must stay shorter than the window or it buries the categories that
@@ -248,6 +253,55 @@ export function ContextBreakdownPanel({
 }) {
   const breakdown = buildContextBreakdown(usage);
   const ref = React.useRef<HTMLDivElement | null>(null);
+
+  // Keep the panel inside the viewport horizontally (issue #35).
+  //
+  // The panel is `position:absolute; left:0` off `.av-ctx-anchor`, with a FIXED
+  // 320px width — so whether it fits is purely a function of how far right the
+  // gauge sits. Measured on the built app at the enforced minimum window width
+  // (`minWidth:900`, src/main/index.ts): dragging the sidebar to its max (560,
+  // clamped in App.tsx) puts the panel's right edge at 1097.63 against a 900px
+  // viewport — 197.63px, 62% of it, off-screen. Overflow starts between a
+  // sidebar of 360 (fits by 2.37px) and 380 (overflows by 17.63px).
+  //
+  // WHY THIS IS JS AND NOT A CSS ONE-LINER — both cheaper fixes were measured
+  // and REJECTED, so don't "simplify" this back into them:
+  //   • `max-width:calc(100vw - 16px)` (the fix issue #35 itself suggests) is a
+  //     NO-OP. It binds only if 100vw-16px < the panel's width; at vw=900 that
+  //     is 884px vs a 320px panel, so it never applies at any reachable width.
+  //     The panel is MISPOSITIONED, not too wide.
+  //   • An unconditional `right:0` flip fixes the right edge but is the mirror
+  //     bug: with the anchor near the left edge it put the panel at left=-248px.
+  //   • `position:fixed` (which WOULD make a pure-CSS clamp possible, since the
+  //     containing block becomes the viewport) breaks the vertical axis —
+  //     `bottom:calc(100% + 8px)` then resolves against the viewport and the
+  //     panel's bottom measured 1108px on a 871px-tall viewport.
+  // So we shift left by exactly the overhang, and by ZERO when it already fits
+  // (placement is unchanged in the common case). The vertical contract
+  // (`max-height:60vh` + internal scroll) is untouched.
+  React.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const apply = () => {
+      // Clear first so we measure the panel's UNSHIFTED position — otherwise a
+      // previous shift is baked into the reading and the correction compounds
+      // toward zero on every resize.
+      el.style.removeProperty('--av-ctx-shift');
+      const rect = el.getBoundingClientRect();
+      const overhang = Math.max(0, rect.right + CTX_PANEL_GUTTER_PX - window.innerWidth);
+      // Never shift so far that the LEFT edge goes off-screen: clamp to the
+      // panel's own distance from x=0. (Both edges can't be satisfied if the
+      // panel is wider than the viewport; the left edge wins, since that is
+      // where the content starts.)
+      const shift = Math.min(overhang, Math.max(0, rect.left));
+      if (shift > 0) el.style.setProperty('--av-ctx-shift', `${shift}px`);
+    };
+    apply();
+    window.addEventListener('resize', apply);
+    return () => {
+      window.removeEventListener('resize', apply);
+    };
+  }, [breakdown]);
 
   React.useEffect(() => {
     const onDown = (e: MouseEvent) => {

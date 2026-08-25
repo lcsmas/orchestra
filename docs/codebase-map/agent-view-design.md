@@ -161,6 +161,25 @@ tint + the standard `:focus-visible` ring only. When the reading has NO
 breakdown (transcript fallback) the gauge stays a plain `div` with no button
 semantics: there is deliberately no empty-state panel.
 
+**The panel is clamped on BOTH axes, and the horizontal clamp is deliberately
+not pure CSS** (issue #35). Vertically it stays `max-height:60vh` + internal
+scroll, as above. Horizontally, `.av-ctx-panel` is `position:absolute; left:0`
+off `.av-ctx-anchor` at a FIXED `width:320px`, so whether it fits depends purely
+on where the gauge sits: measured on the built app at the enforced minimum
+window (`minWidth:900`, `src/main/index.ts`), dragging the sidebar to its max
+(560, clamped in `App.tsx`) put the panel's right edge at 1097.63 against a
+900px viewport — 197.63px off-screen; overflow starts between a sidebar of 360
+(fits by 2.37px) and 380 (over by 17.63px). The fix is a `translateX` driven by
+`--av-ctx-shift`, measured in a `useLayoutEffect` in
+`ContextBreakdownPanel.tsx`, and it is **0px whenever the panel already fits**,
+so normal placement is byte-identical. Three cheaper fixes were measured and
+REJECTED — do not "simplify" into them: `max-width:calc(100vw - 16px)` (what
+issue #35 itself suggests) is a NO-OP because it only binds when
+`100vw - 16px` < the panel's 320px, which no reachable width satisfies; a bare
+`right:0` flip is the mirror bug (left=-248px with the anchor near the left
+edge); and `position:fixed` fixes the horizontal axis but breaks the vertical
+one, since `bottom:calc(100% + 8px)` then resolves against the viewport.
+
 The stack holds the pasted-image
 strip above `.av-composer-cm`; the column's `gap:4px` is the ONLY vertical space
 between thumbnails and text — attachments used to be a `width:100%` wrapping sibling of
