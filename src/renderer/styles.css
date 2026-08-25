@@ -5358,6 +5358,42 @@ button.danger-primary:active {
   opacity: 0.7;
 }
 
+/* Free space per filesystem (issue #87). Wider value column than .res-disk-row
+   because these read "465.3 GB free", not "5.1 MB". */
+.res-volumes .res-disk-row {
+  grid-template-columns: 140px 1fr 120px;
+}
+.res-disk-badge {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  vertical-align: middle;
+}
+.res-disk-badge-warn {
+  color: var(--warning, #d29922);
+  background: color-mix(in srgb, var(--warning, #d29922) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning, #d29922) 45%, transparent);
+}
+.res-disk-badge-critical {
+  color: var(--danger, #e5534b);
+  background: color-mix(in srgb, var(--danger, #e5534b) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger, #e5534b) 45%, transparent);
+}
+.res-disk-note-warn {
+  color: var(--warning, #d29922);
+  opacity: 1;
+}
+.res-section[data-disk-level='critical'] .res-volumes {
+  border-color: color-mix(in srgb, var(--danger, #e5534b) 55%, var(--border));
+}
+.res-section[data-disk-level='warn'] .res-volumes {
+  border-color: color-mix(in srgb, var(--warning, #d29922) 55%, var(--border));
+}
+
 /* Sidebar footer entry highlights while the page is open. */
 .sidebar-footer-link.active { color: var(--accent); }
 
