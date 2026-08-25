@@ -382,9 +382,9 @@ export function FreeSpaceSection({ volumes }: { volumes: VolumeStat[] }) {
                       width: `${Math.min(100, usedPct)}%`,
                       background:
                         level === 'critical'
-                          ? 'var(--danger, #e5534b)'
+                          ? 'var(--red)'
                           : level === 'warn'
-                            ? 'var(--warning, #d29922)'
+                            ? 'var(--yellow)'
                             : 'var(--accent-2)',
                     }}
                   />

@@ -58,9 +58,9 @@ refusal*, and cannot be a cleanup.
 | Constant | Value | Basis |
 |---|---|---|
 | `BUILD_BUNDLES_REQUIRED_BYTES` | 64 MiB | **Measured.** `pnpm run build:bundles` (RC=0), then `du -sk dist dist-electron` → `5204` + `648` KiB ≈ **5.7 MiB** emitted. Rounded up an order of magnitude to cover vite temp files and sourcemaps, which were **not** measured separately. |
-| `BUILD_PACKAGE_REQUIRED_BYTES` | 2 GiB | **Measured.** `du -sk /home/lmas/Applications/orchestra/release/` → `1379824` KiB ≈ **1.32 GiB** final output; the AppImage alone is 280.9 MB. electron-builder stages an unpacked app tree *and then* writes the AppImage, so peak transient use exceeds the final size — hence 2 GiB, not 1.32. The staging peak itself is **UNBASELINED**. |
+| `BUILD_PACKAGE_REQUIRED_BYTES` | **3 GiB** (was 2 GiB) | **Measured, and the first value was WRONG.** I derived 2 GiB from the 1.32 GiB *final* size plus "unmeasured staging headroom". Reviewer C3-F1 then sampled the real build at 1 s, 40 gapless samples: peak `release/` = `2262392` KiB = **2.158 GiB** (unpacked tree and AppImage coexist), settling to 1.215 GiB after cleanup. **My guess was 161 MiB BELOW the real peak** — the guard would pass and the build would then ENOSPC, i.e. the exact failure this ticket exists to eliminate. The instinct (peak > final) was right; the number was not, and only sampling found it. 3 GiB = peak + ~39% margin; **that margin is UNBASELINED** (peak is N=1 on one machine). |
 | `E2E_RIG_REQUIRED_BYTES` | 256 MiB | **UNBASELINED.** Largest observed rig dir is 176 KiB, but a rig boots Electron, which writes caches and can dump a core. Conservative floor. |
-| `WARN_FREE_BYTES` | 1 GiB | **UNBASELINED as "developer slack".** Nothing measured says 1 GiB specifically. Chosen so the warning arrives while a 2 GiB packaging build would still succeed. |
+| `WARN_FREE_BYTES` | 1 GiB | **UNBASELINED as "developer slack".** Nothing measured says 1 GiB specifically. Chosen so the warning arrives with room to spare before a packaging build's 3 GiB requirement. Applied only to volumes ≥ `SMALL_VOLUME_FACTOR`x the floor — see C3-F5 below. |
 | `CRITICAL_FREE_BYTES` | 256 MiB | UNBASELINED, same reasoning one step tighter. |
 | `WARN_FREE_PCT` / `CRITICAL_FREE_PCT` | 10% / 3% | Shape, not magnitude: they exist so a very large disk warns before it is millimetres from full. |
 
@@ -163,3 +163,69 @@ comment* and enforced by nothing:
   the parity test's `require()` executed `main()`, which set
   `process.exitCode = 1` and failed the **whole test file while every subtest
   reported `ok`** — a failure with no `not ok` line pointing at it.
+
+## Review round C3 — seven findings, all confirmed against live source
+
+The reviewer's findings were verified independently before fixing, not relayed.
+Three of them (F1, F2, F3) let the guard say OK and the build die on ENOSPC
+anyway — the precise failure #87 exists to eliminate.
+
+### F3 was the worst, and it was self-inflicted
+
+`sampleVolumes()` (the UI half) probed `os.tmpdir()` correctly from the start.
+The **guard** half was wired `--path .` — the repo. On this machine those are
+different devices (cwd dev **45**, tmpdir dev **46**), and esbuild
+(`esbuild/lib/main.js:2096`) plus electron-builder's `temp-file`
+(`temp-file/out/main.js:24`) stage into the temp filesystem. So **the two halves
+of one feature disagreed about which filesystem mattered**, and the half that
+gates builds was pointed at the wrong one.
+
+Before/after in one namespace, precondition printed beside each arm:
+
+```
+PRECONDITION: os.tmpdir()=/tmp/f3mnt avail=0
+UNFIXED (probes cwd only, as nominated):
+  disk-guard OK: <repo> free 465.2 GB of 550.0 GB, required 3.00 GB     RC=0   ← waved through
+FIXED (probes cwd + tmp):
+  ORCHESTRA_DISK_FULL: ... on /tmp/f3mnt ... free 0 B of 8.00 MB,
+    required 3.00 GB (short by 3.00 GB)                                  RC=17
+```
+
+**Lesson recorded:** a guard's probe target is part of its predicate. I verified
+the guard *fired correctly*, on a filesystem I chose, and never asked whether it
+was the filesystem the guarded operation actually writes to. A rig that fills a
+mount *of its own choosing* validates the mechanism and says nothing about the
+aim.
+
+### F2 — the same shape as my own surviving arm 3, one layer down
+
+`scripts/disk-guard.cjs` is a second implementation of the decision. My parity
+test checked constants and message *format* — never the comparison. Inverting
+`freeBytes < requiredBytes` **survived the entire suite** (23 pass, RC=0) while
+totally inverting behaviour: it refused builds on a 465 GB-free machine and
+waved through a 909 TB requirement, even printing an incoherent "short by 0 B".
+
+I had already found and published exactly this shape (arm 3, `bavail`→`bfree`)
+and still shipped another instance of it in the same change. The fix extracts
+the decision as an exported `isShort()` and asserts it directly in both
+directions, plus a cross-implementation agreement test against the TS half.
+
+### Findings and disposition
+
+| # | Finding | Disposition |
+|---|---|---|
+| F1 | 2 GiB constant below the 2.158 GiB measured peak | **fixed** — 3 GiB, margin declared UNBASELINED |
+| F2 | `.cjs` comparison untested; inversion survives the suite | **fixed** — `isShort()` extracted + tested both directions + parity vs TS |
+| F3 | guard probed the repo; builds stage into tmpdir | **fixed** — presets carry a probe set covering both |
+| F4 | CI calls electron-builder directly, bypassing the guard | **fixed** — explicit preflight in `release.yml` + a test pinning it before the packaging step |
+| F5 | small volumes could never read `ok` (permanent warning) | **fixed** — byte floor applies only above `SMALL_VOLUME_FACTOR`x |
+| F6 | `nearestExisting` walked to `/`, reporting OK for an absent path | **fixed** — refuses the root fallback; a real not-yet-created subdir still resolves |
+| F7 | dead `fsType` field; undefined `--warning`/`--danger` CSS vars | **fixed** — field removed, vars switched to the repo's real `--yellow`/`--red` |
+
+All seven fixes are mutation-defended: each mutant was verified live in the file,
+run individually, and killed (F2 → 2 fail, F3 → 1 fail, F4 → 1 fail, F5 → 3 fail,
+F6 → 1 fail).
+
+**What the reviewer attacked and could not break:** the no-cleanup scope limit,
+verified independently across the whole diff with per-pattern counts and a
+positive control. That constraint held.

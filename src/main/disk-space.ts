@@ -45,7 +45,6 @@ export function statVolume(probePath: string, label: string): VolumeStat | null 
     // on a reserved ext4 filesystem by ~5% of total.
     freeBytes: Number(st.bavail) * bsize,
     totalBytes: Number(st.blocks) * bsize,
-    fsType: st.type === undefined ? null : Number(st.type),
     deviceId,
   };
 }

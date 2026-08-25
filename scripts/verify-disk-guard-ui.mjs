@@ -64,7 +64,6 @@ const vol = (over) => ({
   label: 'x',
   freeBytes: 0,
   totalBytes: 16 * GiB,
-  fsType: null,
   deviceId: 'd0',
   ...over,
 });

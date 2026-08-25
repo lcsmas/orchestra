@@ -5374,24 +5374,24 @@ button.danger-primary:active {
   vertical-align: middle;
 }
 .res-disk-badge-warn {
-  color: var(--warning, #d29922);
-  background: color-mix(in srgb, var(--warning, #d29922) 18%, transparent);
-  border: 1px solid color-mix(in srgb, var(--warning, #d29922) 45%, transparent);
+  color: var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--yellow) 45%, transparent);
 }
 .res-disk-badge-critical {
-  color: var(--danger, #e5534b);
-  background: color-mix(in srgb, var(--danger, #e5534b) 18%, transparent);
-  border: 1px solid color-mix(in srgb, var(--danger, #e5534b) 45%, transparent);
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--red) 45%, transparent);
 }
 .res-disk-note-warn {
-  color: var(--warning, #d29922);
+  color: var(--yellow);
   opacity: 1;
 }
 .res-section[data-disk-level='critical'] .res-volumes {
-  border-color: color-mix(in srgb, var(--danger, #e5534b) 55%, var(--border));
+  border-color: color-mix(in srgb, var(--red) 55%, var(--border));
 }
 .res-section[data-disk-level='warn'] .res-volumes {
-  border-color: color-mix(in srgb, var(--warning, #d29922) 55%, var(--border));
+  border-color: color-mix(in srgb, var(--yellow) 55%, var(--border));
 }
 
 /* Sidebar footer entry highlights while the page is open. */

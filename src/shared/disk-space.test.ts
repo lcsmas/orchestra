@@ -8,6 +8,7 @@ import {
   BUILD_PACKAGE_REQUIRED_BYTES,
   CRITICAL_FREE_BYTES,
   CRITICAL_FREE_PCT,
+  SMALL_VOLUME_FACTOR,
   DISK_FULL_CODE,
   DiskFullError,
   E2E_RIG_REQUIRED_BYTES,
@@ -30,7 +31,6 @@ function vol(freeBytes: number, totalBytes: number, over: Partial<VolumeStat> = 
     label: 'Temp (/tmp)',
     freeBytes,
     totalBytes,
-    fsType: null,
     deviceId: 'dev-1',
     ...over,
   };
@@ -187,6 +187,46 @@ test('formatBytesShort', () => {
   assert.equal(formatBytesShort(2 * GiB), '2.00 GB');
 });
 
+
+// ── C3-F5: a small volume must be able to read `ok` ────────────────────────
+// Before the fix, ANY filesystem smaller than WARN_FREE_BYTES could never
+// classify `ok` — a 100 MiB tmpfs at 0% used read `critical`. worstLevel()
+// takes the max, so one such mount pins the whole page to a permanent
+// "critically low" badge, and a warning that is always on is worse than none.
+
+test('classifyVolume: a small but EMPTY volume reads ok, not critical', () => {
+  assert.equal(classifyVolume(vol(100 * MiB, 100 * MiB)), 'ok', '100% free 100 MiB tmpfs');
+  assert.equal(classifyVolume(vol(512 * MiB, 512 * MiB)), 'ok', '100% free 512 MiB tmpfs');
+  assert.equal(classifyVolume(vol(64 * MiB, 64 * MiB)), 'ok', "100% free container /tmp");
+});
+
+test('classifyVolume: a small volume still warns on PERCENTAGE when actually full', () => {
+  // The floor is skipped for small volumes, so the percentage arm must still
+  // do its job — otherwise the F5 fix would have created a blind spot.
+  // NB the boundaries: CRITICAL_FREE_PCT is 3 and WARN_FREE_PCT is 10, so 4%
+  // is WARN, not critical — my first version of this test asserted 'critical'
+  // at 4% and failed. Pinning the values with the percentage stated.
+  assert.equal(classifyVolume(vol(2 * MiB, 100 * MiB)), 'critical', '2% free < CRITICAL_FREE_PCT 3');
+  assert.equal(classifyVolume(vol(4 * MiB, 100 * MiB)), 'warn', '4% free: >3 critical, <10 warn');
+  assert.equal(classifyVolume(vol(8 * MiB, 100 * MiB)), 'warn', '8% free < WARN_FREE_PCT 10');
+  assert.equal(classifyVolume(vol(50 * MiB, 100 * MiB)), 'ok', '50% free');
+});
+
+test('classifyVolume: the byte floor STILL applies above the small-volume cutoff', () => {
+  // Guard against over-correcting F5 into "the floor never fires".
+  const total = WARN_FREE_BYTES * SMALL_VOLUME_FACTOR; // exactly at the cutoff
+  const v = vol(WARN_FREE_BYTES - 1, total);
+  assert.ok((v.freeBytes / v.totalBytes) * 100 > WARN_FREE_PCT, 'pct arm healthy');
+  assert.equal(classifyVolume(v), 'warn', 'the byte arm must still fire at the cutoff');
+});
+
+test('worstLevel: a small empty mount does NOT pin the page to critical', () => {
+  // The F5 consequence, asserted at the level the UI actually consumes.
+  const healthy = vol(465 * GiB, 550 * GiB);
+  const smallEmptyBoot = vol(100 * MiB, 100 * MiB);
+  assert.equal(worstLevel([healthy, smallEmptyBoot]), 'ok');
+});
+
 // ── source-binding: the .cjs duplicate must not drift ──────────────────────
 // scripts/disk-guard.cjs cannot import this TS module (it runs before any
 // bundling), so it duplicates the constants and the message format. A
@@ -237,4 +277,101 @@ test('scripts/disk-guard.cjs produces the SAME message as the TS module', () => 
 test('the policy constants are ordered sanely (critical is stricter than warn)', () => {
   assert.ok(CRITICAL_FREE_BYTES < WARN_FREE_BYTES);
   assert.ok(CRITICAL_FREE_PCT < WARN_FREE_PCT);
+});
+
+test('scripts/disk-guard.cjs DECISION: isShort is a real comparison, not a constant', () => {
+  // C3-F2: inverting `freeBytes < requiredBytes` inside disk-guard.cjs SURVIVED
+  // the entire suite — the parity test below checks constants and message
+  // FORMAT, and never touched the decision. That is the same shape as the
+  // bavail/bfree survivor, one layer down: a second implementation defended
+  // only by a comment. These assert the decision itself, both directions, so
+  // an inversion cannot pass.
+  const guard = createRequire(import.meta.url)(
+    path.join(process.cwd(), 'scripts', 'disk-guard.cjs'),
+  ) as { isShort: (free: number, req: number) => boolean };
+
+  assert.equal(guard.isShort(0, 1), true, 'no space at all is short');
+  assert.equal(guard.isShort(63 * MiB, 64 * MiB), true, 'just under is short');
+  assert.equal(guard.isShort(64 * MiB, 64 * MiB), false, 'exactly enough is NOT short');
+  assert.equal(guard.isShort(65 * MiB, 64 * MiB), false, 'over is NOT short');
+  assert.equal(guard.isShort(465 * GiB, 64 * MiB), false, 'a healthy machine is NOT short');
+});
+
+test('scripts/disk-guard.cjs agrees with the TS checkRequirement on the same inputs', () => {
+  // Cross-implementation parity on the DECISION, so the two halves cannot
+  // diverge silently the way the constants could have.
+  const guard = createRequire(import.meta.url)(
+    path.join(process.cwd(), 'scripts', 'disk-guard.cjs'),
+  ) as { isShort: (free: number, req: number) => boolean };
+
+  const cases: Array<[number, number]> = [
+    [0, 1],
+    [63 * MiB, 64 * MiB],
+    [64 * MiB, 64 * MiB],
+    [2 * GiB, 3 * GiB],
+    [465 * GiB, 3 * GiB],
+  ];
+  for (const [free, req] of cases) {
+    const tsSaysShort = checkRequirement(vol(free, 550 * GiB), req, 'x') !== null;
+    assert.equal(
+      guard.isShort(free, req),
+      tsSaysShort,
+      `disagreement at free=${free} required=${req}`,
+    );
+  }
+});
+
+test('scripts/disk-guard.cjs presets carry a PROBE SET covering the tmp filesystem', () => {
+  // C3-F3: the build presets used to probe only `.`, while esbuild and
+  // electron-builder stage into os.tmpdir() — a DIFFERENT device here. A full
+  // /tmp beside a roomy repo disk is literally the reported incident, and the
+  // guard said OK through it.
+  const guard = createRequire(import.meta.url)(
+    path.join(process.cwd(), 'scripts', 'disk-guard.cjs'),
+  ) as { PRESETS: Record<string, { bytes: number; op: string; probes: string[] }> };
+
+  for (const name of ['build-bundles', 'build-package']) {
+    const probes = guard.PRESETS[name].probes;
+    assert.ok(Array.isArray(probes), `${name} has no probe set`);
+    assert.ok(probes.includes('tmp'), `${name} must probe the tmp filesystem`);
+    assert.ok(probes.includes('cwd'), `${name} must probe the repo/output filesystem`);
+  }
+  assert.ok(guard.PRESETS['e2e-rig'].probes.includes('tmp'), 'the rig preset must probe tmp');
+});
+
+test('scripts/disk-guard.cjs nearestExisting refuses to fall back to the root fs', () => {
+  // C3-F6: the walk used to run all the way to `/`, so an absent path measured
+  // the ROOT filesystem and printed "OK: /nonexistent/xyz free 465 GB" —
+  // naming a mount it never probed, contradicting the file's own contract.
+  const guard = createRequire(import.meta.url)(
+    path.join(process.cwd(), 'scripts', 'disk-guard.cjs'),
+  ) as { nearestExisting: (p: string) => string | null };
+
+  assert.equal(guard.nearestExisting('/nonexistent/xyz'), null);
+  // ...but a genuinely-not-yet-created subdir of a real tree still resolves.
+  const notYet = path.join(process.cwd(), 'release-not-created-yet');
+  assert.equal(guard.nearestExisting(notYet), process.cwd());
+});
+
+test('CI guards the packaging step, which does not inherit the `build` script guard', () => {
+  // C3-F4: `.github/workflows/release.yml` calls `pnpm exec electron-builder`
+  // DIRECTLY (deliberately — see the argv comment there about `--publish
+  // never`), so it never runs `pnpm run build` and therefore never picked up
+  // the `build-package` preset. CI was unguarded at the single step with the
+  // largest requirement. A workflow file is not covered by any other gate
+  // here, so this test is the only thing that notices if the line is dropped.
+  const wf = path.join(process.cwd(), '.github', 'workflows', 'release.yml');
+  assert.ok(fs.existsSync(wf), `expected ${wf}`);
+  const text = fs.readFileSync(wf, 'utf8');
+
+  // Positive control: the file really is the one we think it is.
+  assert.match(text, /electron-builder --publish never/, 'control: CI packaging step not found');
+
+  const guardLine = /disk-guard\.cjs --preset build-package/;
+  assert.match(text, guardLine, 'CI must run the build-package preflight');
+
+  // ...and it must come BEFORE the packaging command, or it guards nothing.
+  const gi = text.search(guardLine);
+  const ei = text.search(/pnpm exec electron-builder --publish never/);
+  assert.ok(gi >= 0 && ei >= 0 && gi < ei, `guard at ${gi} must precede electron-builder at ${ei}`);
 });

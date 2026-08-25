@@ -120,9 +120,26 @@ It warns, names and refuses. The user-facing error text says so explicitly.
   **parity-tested** by `src/shared/disk-space.test.ts` — a duplicate nothing
   checks becomes two different thresholds silently. It only acts under
   `require.main === module`.
+- **Each preset names a PROBE SET, not one path.** The build presets probe
+  BOTH `cwd` and `os.tmpdir()`, because esbuild (`esbuild/lib/main.js:2096`)
+  and electron-builder's `temp-file` (honouring `APP_BUILDER_TMP_DIR`) stage
+  into the temp filesystem — a *different device* from the repo here (cwd dev
+  45, tmpdir dev 46, measured 2026-08-25). Probing only the repo said "OK"
+  while `/tmp` was at 0 bytes, i.e. it missed the exact reported incident.
+  Every probed filesystem must satisfy the requirement, and the error names
+  *which* mount failed. `--path` overrides the set for single-mount use.
 - Call sites: `package.json` `prebuild:bundles` (preset `build-bundles`) and
   `build` (preset `build-package`); `scripts/e2e-contained-rig.sh` step 0
-  (preset `e2e-rig`, probing `/tmp`).
+  (preset `e2e-rig`); and **`.github/workflows/release.yml` explicitly**, because
+  CI invokes `electron-builder` directly (for `--publish never` argv reasons
+  documented there) and so does NOT inherit the `build` script's guard — that
+  left the largest-requirement step unguarded.
+- `classifyVolume` applies the BYTE floor only to volumes at least
+  `SMALL_VOLUME_FACTOR`x the floor. Without that, any filesystem smaller than
+  the floor could never read `ok` — a 100 MiB tmpfs at 0% used classified
+  `critical`, and since `worstLevel()` takes the max, one such mount pinned the
+  page to a permanent warning. Below the cutoff the percentage arm decides
+  alone.
 - `FreeSpaceSection` in `ResourcesView.tsx` is exported separately from
   `ResourcesView` on purpose: `ResourcesView` takes no props and builds its
   world from the store plus an IPC sample, so a warning-state assertion against

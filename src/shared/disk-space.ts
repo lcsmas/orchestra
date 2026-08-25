@@ -29,9 +29,6 @@ export interface VolumeStat {
   freeBytes: number;
   /** Total bytes in the filesystem (statfs `blocks`). */
   totalBytes: number;
-  /** statfs `type` — lets the UI distinguish a tmpfs (RAM-backed, small, the
-   *  one that actually filled) from a disk. Null when unavailable. */
-  fsType: number | null;
   /** Identity of the underlying filesystem, for de-duplicating probes that
    *  land on the same device (`/tmp` and `$HOME` are the same device on a
    *  machine without a tmpfs). */
@@ -57,13 +54,15 @@ export type DiskLevel = 'ok' | 'warn' | 'critical';
  *   `pnpm run build:bundles` (RC=0) → dist/ 5204 KiB + dist-electron/ 648 KiB
  *      = ~5.7 MiB of emitted bundles.
  *      Command: `du -sk dist dist-electron` immediately after the build.
- *   A full `pnpm run build` additionally runs electron-builder, whose real
- *      output directory measures 1379824 KiB ≈ 1.32 GiB
- *      (`du -sk /home/lmas/Applications/orchestra/release/`; the AppImage
- *      alone is 280.9 MB). electron-builder stages an unpacked app tree AND
- *      then writes the AppImage, so PEAK transient use exceeds the 1.32 GiB
- *      final size — hence a 2 GiB requirement for a packaging build rather
- *      than 1.32.
+ *   A full `pnpm run build` additionally runs electron-builder. Its PEAK
+ *      `release/` size was later sampled directly (1 s interval, 40 gapless
+ *      samples, reviewer C3-F1): 2262392 KiB = 2.158 GiB, when the unpacked
+ *      tree and the AppImage coexist; it settles to 1.215 GiB afterwards.
+ *      DISPROVED EN ROUTE: this comment originally reasoned from the 1.32 GiB
+ *      FINAL size to "hence 2 GiB", and that inference landed 161 MiB UNDER
+ *      the real peak — the guard would have passed and the build then died on
+ *      ENOSPC. "Peak exceeds final" was correct; the arithmetic guess after it
+ *      was not. Sampling the build is the only thing that settled it.
  *   E2E rigs: `scripts/e2e-contained-rig.sh` creates `/tmp/e2e64c-$$` and
  *      DELIBERATELY leaves it for inspection (see its teardown). Measured
  *      2026-08-25: 56 such directories already resident in /tmp, largest
@@ -74,7 +73,7 @@ export type DiskLevel = 'ok' | 'warn' | 'critical';
  *
  * The WARN_BYTES floor of 1 GiB is therefore NOT a measured requirement of any
  * single operation — it is a conservative headroom figure chosen so that the
- * warning arrives while a 2 GiB packaging build would still succeed. It is
+ * warning arrives with room to spare before a packaging build's requirement. It is
  * declared UNBASELINED as "the amount of slack a developer needs": nothing was
  * measured that says 1 GiB specifically. What IS measured is the requirement
  * each caller passes to `requireFreeSpace()` (see BUILD_* below).
@@ -84,16 +83,38 @@ export const CRITICAL_FREE_BYTES = 256 * 1024 * 1024; // 256 MiB
 export const WARN_FREE_PCT = 10;
 export const CRITICAL_FREE_PCT = 3;
 
+/** A volume must be at least this many times the warn floor before the BYTE
+ *  arm is applied to it at all (see classifyVolume). At 2x, the smallest
+ *  volume the floor governs is 2 GiB, where reserving 1 GiB is a coherent
+ *  request. Below that the percentage arm decides alone.
+ *  UNBASELINED: 2 is a judgement, not a measurement — it is the smallest
+ *  multiple for which "warn at 1 GiB free" is not immediately self-defeating. */
+export const SMALL_VOLUME_FACTOR = 2;
+
 /** Measured requirement for `pnpm run build:bundles`: ~5.7 MiB emitted
  *  (2026-08-25, `du -sk dist dist-electron`). Rounded up an order of magnitude
  *  to 64 MiB to cover vite's temp files and sourcemaps, which were not
  *  measured separately. */
 export const BUILD_BUNDLES_REQUIRED_BYTES = 64 * 1024 * 1024;
 
-/** Measured requirement for a full packaging build: final output 1.32 GiB
- *  (2026-08-25, `du -sk .../release/`), plus unmeasured staging headroom →
- *  2 GiB. */
-export const BUILD_PACKAGE_REQUIRED_BYTES = 2 * 1024 * 1024 * 1024;
+/** Requirement for a full packaging build.
+ *
+ *  MEASURED 2026-08-25 (1s sampling, 40 gapless samples, reviewer C3-F1):
+ *  peak `release/` = 2262392 KiB = **2.158 GiB**, reached when the unpacked
+ *  app tree and the finished AppImage coexist; the directory then drops to
+ *  1.215 GiB after electron-builder cleans up.
+ *
+ *  The previous value was 2 GiB, derived from the 1.32 GiB FINAL size plus
+ *  "unmeasured staging headroom". That guess landed **161 MiB BELOW the real
+ *  peak**, so a machine with ~2.05 GiB free passed the guard and then died on
+ *  ENOSPC during packaging — precisely the failure this ticket exists to
+ *  eliminate. The instinct (peak > final) was right; the number was not, and
+ *  only sampling the build found it.
+ *
+ *  3 GiB = measured peak + ~39% margin. That MARGIN is UNBASELINED: the peak
+ *  is N=1 on one machine (aarch64 Fedora asahi), so run-to-run variance is
+ *  unknown and the margin is a judgement, not a measurement. */
+export const BUILD_PACKAGE_REQUIRED_BYTES = 3 * 1024 * 1024 * 1024;
 
 /** Requirement for one contained E2E rig. Largest observed rig dir was
  *  176 KiB (2026-08-25), but a rig boots Electron, which writes caches and can
@@ -106,8 +127,25 @@ export const E2E_RIG_REQUIRED_BYTES = 256 * 1024 * 1024;
  *  this filesystem's size. */
 export function classifyVolume(v: Pick<VolumeStat, 'freeBytes' | 'totalBytes'>): DiskLevel {
   const pct = v.totalBytes > 0 ? (v.freeBytes / v.totalBytes) * 100 : 100;
-  if (v.freeBytes < CRITICAL_FREE_BYTES || pct < CRITICAL_FREE_PCT) return 'critical';
-  if (v.freeBytes < WARN_FREE_BYTES || pct < WARN_FREE_PCT) return 'warn';
+
+  // The byte floor only makes sense on a volume big enough for it to be a
+  // meaningful reserve. C3-F5: without this, ANY filesystem smaller than
+  // WARN_FREE_BYTES could never read 'ok' — a 100 MiB tmpfs at 0% used
+  // classified 'critical', and since worstLevel() takes the max, one such
+  // mount would pin the Resources page to a permanent "critically low" badge.
+  // A warning that is always on is a warning nobody reads, which is a worse
+  // failure than the one this guard exists to prevent.
+  //
+  // The module comment already named the symmetric error (a 1 GiB floor on a
+  // 16 GiB tmpfs never warns until 94%); this is the other end of it. On a
+  // volume too small for the floor, the PERCENTAGE arm alone decides — which
+  // is the arm that is meaningful at that scale.
+  const floorApplies = v.totalBytes >= WARN_FREE_BYTES * SMALL_VOLUME_FACTOR;
+
+  if ((floorApplies && v.freeBytes < CRITICAL_FREE_BYTES) || pct < CRITICAL_FREE_PCT) {
+    return 'critical';
+  }
+  if ((floorApplies && v.freeBytes < WARN_FREE_BYTES) || pct < WARN_FREE_PCT) return 'warn';
   return 'ok';
 }
 
