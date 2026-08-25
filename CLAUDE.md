@@ -53,6 +53,11 @@ whole map instead of hand-editing.
   it exits `eslint: command not found` — use the typecheck instead.)
 - `pnpm run test` — `node --test --experimental-strip-types 'src/**/*.test.ts'`
   (built-in runner; pure logic lives in `src/shared/` so it's testable without Electron).
+  A `pretest` hook runs `build:cli` first, because the 12 `src/cli/*` tests
+  SELF-SKIP when `dist-electron/cli.js` is absent — without it the suite reports
+  a green `1039 pass / 12 skipped` that looks complete and silently omits every
+  CLI regression test. **Cite the PASS count, and check `# skipped` is 0**: a
+  partial green is the failure mode this hook exists to prevent.
 - Release: the **`ship` skill** drives `scripts/release.sh` (worktree-safe; never
   checks out master). See `docs/codebase-map/build-release.md`.
 

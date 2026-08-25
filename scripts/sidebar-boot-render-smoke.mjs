@@ -338,6 +338,33 @@ check('does NOT fall back to the empty state', !htmlSeeded.includes('No agents r
 // `outfile` is esbuild's output for the real `Sidebar.tsx`, which is the same
 // artifact `renderToString` just executed — not a re-read of the .tsx text, so
 // a guard that fails to survive compilation is caught too.
+//
+// ── THE COVERAGE LIMIT OF THE RENDER ASSERTIONS ABOVE (read this before
+// ── trusting a green run to mean "the crash cannot come back")
+//
+// The fix for #38 is THREE INDEPENDENT LAYERS, and any ONE of them alone
+// prevents the crash:
+//   1. `repoSectionKeyOf` returns `?? null`      (orchestrator-repo-grouping.ts)
+//   2. `groupRootsByRepo` collapses to `?? ''`   (Sidebar.tsx)
+//   3. the DnD sites route through `matchesDropTarget` (shared/dnd-drop-target.ts)
+//
+// So the RENDER assertions in sections 1-3 of this file — the ones that boot the
+// component and check it does not throw — can only detect the regression of ALL
+// THREE AT ONCE. Reverting any single layer leaves them green, because the
+// remaining two still prevent the crash. That is correct behaviour for a
+// defence-in-depth fix, not a defect in the rig, but it means a green render
+// section is NOT evidence that any individual layer is still present.
+//
+// Per-layer coverage therefore lives elsewhere, and that is deliberate:
+//   - layer 1 → `src/renderer/orchestrator-repo-grouping.test.ts`
+//   - layer 3 → `src/shared/dnd-drop-target.test.ts` (imports the real functions)
+//   - layer 3 at the call site → the bundle assertions immediately below, which
+//     are what make reverting ONLY the render-site guard fail this file
+//   - layer 2 → deliberately NOT gated: with layers 1 and 3 in place it is
+//     redundant for crash-safety (verified as a surviving mutant) and is kept
+//     only so `repoOrder` cannot contain `undefined` for future consumers.
+//
+// Verified by a one-at-a-time mutant matrix rather than assumed.
 console.log('\nSource-bound guard assertions (bundle, not a literal reconstruction):');
 const bundle = fs.readFileSync(outfile, 'utf8');
 
