@@ -104,27 +104,33 @@ deliberately **not** `unref()`d — an unref'd timer does not hold the loop open
 so in exactly the case it guards it may never fire (measured: with `unref()`, 2/4
 broken-pipe runs still hung, one taking 8.8s).
 
-**But the hang RATE cannot be attributed to any build, and neither can the claim
-that this branch regressed it.** Measured block-wise (all runs of one bundle,
-then the other), the same *unchanged master bytes* produced 0/10, 6/10 (the
-reviewer's independent run), 8/10 and 10/10 within one session. Run
-**interleaved with alternating order**, which cancels machine-state drift:
+**⚠️ EVERY HANG-RATE FIGURE I MEASURED IS UNCONTAINED AND THEREFORE UNVERIFIED.**
+All of my runs below predate the LEAD's containment quarantine and inherited the
+human's real `WAYLAND_DISPLAY`/`DISPLAY`. Per the quarantine ruling they do not
+count as evidence. They are kept only to record *why the numbers swung*, not as
+measurements anyone may cite:
 
-| protocol | MASTER | this branch |
+| protocol (UNCONTAINED — do not cite) | MASTER | this branch |
 |---|---|---|
 | block, early | 0/10 | 8/10 |
 | block, later | 10/10 | 10/10 |
-| **interleaved, 10 pairs** | **0/10** | **1/10** |
-| **interleaved, 25 pairs** | **0/25** | **0/25** |
+| interleaved, 10 pairs | 0/10 | 1/10 |
+| interleaved, 25 pairs | 0/25 | 0/25 |
 
-So the "8/10 vs 0/10 regression" and the later "0/10, fixed" were **both
-artifacts of block structure**, not properties of the code. The honest statement
-is: the hang is real and machine-state-dependent; no measurement here separates
-master from this branch; the code-level defect is fixed on its merits.
+The one lesson that survives: **block-structured A/B on this axis is worthless.**
+The same unchanged master bytes gave 0/10 and 10/10 in one session, so any
+"master vs candidate" hang comparison run as two blocks measures drift.
+Interleaving with alternating order is the minimum honest protocol.
 
-The gate therefore **reports** this rate and fails only on a TOTAL hang (every
-run), which drift does not produce. Asserting `hung === 0` would fail honest
-builds at random — a flaky gate teaches people to ignore it.
+**The only CONTAINED reading on the ledger is the reviewer's: MASTER 8/10 hung.**
+An earlier version of this doc, and a shipped source comment, asserted "0/10 on
+master" from an uncontained run. That claim is **retracted** — it contradicted
+the only contained measurement, and it was load-bearing for a
+"regression-not-inherited" framing it could not support.
+
+The gate **reports** the rate and fails only on a TOTAL hang, which drift does
+not produce. Asserting `hung === 0` on a noisy uncontained box would fail honest
+builds at random; under proper containment a stricter bound is appropriate.
 
 ## Rig containment (LEAD order, ledger #70)
 
@@ -134,3 +140,86 @@ Nothing on the CLI path opens a window, but that is luck rather than
 containment. `verify-cli-pipe-flush.mjs` now blanks both display handles and
 pins a throwaway `--user-data-dir`, so a window cannot reach the user's screen
 and `~/.config/Electron` is never touched.
+
+## NEW-1 — a fixed wall-clock bound truncates a SLOW reader (and how it was fixed)
+
+The first bounded drain used a fixed 2000 ms deadline. A reviewer measured it
+against a reader that was **alive and consuming**, just slowly (one chunk per
+2500 ms), through one rig, three bundles:
+
+| bundle | slow reader @2500 ms/chunk |
+|---|---|
+| `2ebd3fb` master (no flush) | 4/4 TRUNCATED @146496 B |
+| `16b96bf` (UNBOUNDED flush) | 0/4 — 181945/181945 B complete, 5266 ms |
+| `a8baa2a` (bounded 2000 ms) | **4/4 TRUNCATED @146496 B, RC=2** |
+
+Bracketed: @150 ms/chunk 0/5, @900 ms/chunk 0/4 (landing at 2050–2132 ms, right
+at the boundary), @2500 ms/chunk 4/4. **The cliff is the timeout itself.**
+
+That is #62's exact failure reintroduced — and worse than the original, because
+it exits **RC=2**, a successful-looking NOT-LANDED verdict that is silently
+incomplete. The docblock's justification, *"exiting is always preferable to
+hanging"*, is **false for this verb**: a hang is visible and gets investigated; a
+short commit list that exits 2 gets acted on. `verify-landed`'s contract IS the
+complete list.
+
+**Root cause of the design error: a slow reader and a dead reader are
+indistinguishable to a wall-clock timer.** The fix is to bound on *progress*
+instead of elapsed time — the deadline is pushed out every time the stream
+actually accepts bytes (`'drain'`, or a completed write callback). A live-but-slow
+reader keeps extending it no matter how long the transfer takes; a dead reader
+makes no progress by definition and trips it once. `'error'`/`'close'` still
+cover the dead reader promptly; the timer is only the backstop for a stall that
+reports neither.
+
+## R2's real root cause: a listener attached too late (contained measurements)
+
+The broken-pipe hang was NOT a stalled drain. Instrumenting the real bundle
+under a hung-up reader:
+
+```
+[probe 55ms] write returned true writableLength=0
+[probe 1057ms] t+1s destroyed=false ended=false len=0
+[probe 3056ms] t+3s destroyed=false ended=false len=0
+```
+
+`write()` reports success, nothing is buffered, and the stream keeps reporting
+`destroyed=false`/`writableEnded=false` **indefinitely**. So every flag-based
+guard is blind here, and `process.exit()` itself works fine under a hung-up pipe
+(four variants, all RC=2 in <1.3 s).
+
+The discriminator, isolated by one variable:
+
+| child main script | broken-pipe hang |
+|---|---|
+| plain | **5/5 HUNG** |
+| `process.stderr.write(...)` first | 5/5 HUNG |
+| **stdout `'error'`/`'close'` listeners attached BEFORE the write** | **0/5, RC=2 ~280 ms** |
+
+**EPIPE is delivered as the write happens.** Listeners attached later — i.e.
+inside `exitAfterFlush`, which runs after the verdict is written — wait for an
+event that has already fired and been dropped. The fix installs them once at
+module startup (`outputHungUp`), and the drain consults that flag, because the
+stream's own flags never reflect the hang-up.
+
+A late listener is indistinguishable from a correct one by reading the code:
+both look like "we handle EPIPE". Only the measurement separates them.
+
+### Contained gate results (final)
+
+| arm | master `2ebd3fb` | this branch |
+|---|---|---|
+| big verdict truncated | **7/12** | **0/12** |
+| slow live reader @2500 ms/chunk | **3/3 @146496 B** | **0/3, 181945 B** |
+| broken pipe `\| head -1` hung | **5/6** | **0/6** |
+| gate verdict | **RC=1 FAIL** | **RC=0 PASS** |
+
+Master fails all three axes through the identical rig, so none of these arms
+could pass on both builds.
+
+### An earlier retraction that stands
+
+Every hang figure I measured UNCONTAINED is void, including a "master 0/10" that
+briefly reached a shipped source comment and contradicted the only contained
+reading. Contained, master hangs 9/12 on this axis. Block-structured A/B here is
+worthless — interleave, or contain, or both.

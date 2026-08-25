@@ -258,10 +258,34 @@ Two properties worth knowing before touching this code:
   flushed-exit. (#62's separate claim that the same payload written *outside*
   the socket callback flushed completely did **not** reproduce.)
 
+**Two failure modes pull in OPPOSITE directions**, and the drain has to serve
+both:
+
+- **Dead reader** (`… | head -1`). EPIPE is delivered *as the write happens*, and
+  after it the stream still reports `destroyed=false`, `writableEnded=false`,
+  `writableLength=0` **indefinitely** — so flag-based guards are blind. Listeners
+  attached later (inside the drain, after the verdict is written) wait for an
+  event that already fired: measured **5/5 hangs**. The hang-up listeners are
+  therefore installed at **module startup** (`outputHungUp`), giving **0/12**.
+- **Slow but LIVE reader** (a slow parser, a loaded box). A drain bounded on a
+  fixed wall-clock cuts it off — a 2000 ms bound truncated it **4/4 at 146496
+  bytes with RC=2**, i.e. #62's defect wearing a success status. The deadline is
+  therefore reset by **progress** (`'drain'`), not elapsed time, so a slow reader
+  keeps extending it while a dead one does not.
+
+A slow reader and a dead reader are indistinguishable to a timer; that is why
+neither a pure timeout nor a pure listener works alone.
+
 Gate: **`scripts/verify-cli-pipe-flush.mjs`** — drives the built bundle under
-real Electron with stdout on a pipe, N runs per arm, asserting on the
-truncation RATE (`--runs`, `--bundle`, `--expect-broken`). It also guards the
-LANDED/ERROR contracts and that nothing leaks onto stderr.
+real Electron with stdout on a pipe, N runs per arm, asserting on the truncation
+RATE (`--runs`, `--bundle`, `--expect-broken`), plus a **slow-live-reader** arm
+and a **broken-pipe** arm (both required to be 0/N), the LANDED/ERROR contracts,
+and that nothing of ours leaks onto stderr. Master fails all three axes through
+the same rig (7/12, 3/3, 5/6), so no arm can pass on both builds. Wired as
+`pnpm run test:cli-pipe`. It is display-contained: inside
+`scripts/e2e-contained-rig.sh` it inherits that rig's marker-verified display,
+and bare it blanks the display handles — blanking *inside* a rig makes Electron
+fail to boot and read as 0-byte truncation, a fabricated defect.
 
 ## CLI shims (cli-shim.ts)
 - **User-facing** — Linux `~/.local/bin/orchestra` (`exec "<AppImage>" cli "$@"`,

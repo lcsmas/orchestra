@@ -34,12 +34,18 @@ if (ORCHESTRA_CLI_MODE) {
       // PIPE abandons whatever is still buffered. Messages on this path are
       // short, so truncation is unlikely — but the pattern is the defect, and
       // leaving one same-tick exit here would make the CLI's "every terminal
-      // exit flushes" guarantee false. Bounded so a dead reader cannot hang us.
+      // exit flushes" guarantee false. The backstop timer is deliberately NOT
+      // unref'd, matching `exitAfterFlush` in src/cli/index.ts: an unref'd timer
+      // does not hold the event loop open, so in exactly the case it guards it
+      // may never fire. (An earlier version of this file unref'd it while the
+      // CLI argued the opposite — same problem, opposite solution, one commit.)
+      // A long bound is safe here because this path writes ONE short line: it
+      // cannot be cut off mid-verdict the way a fixed bound truncated a slow
+      // reader in the CLI (issue #62 NEW-1).
       process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`, () => {
         process.exit(1);
       });
-      const t = setTimeout(() => process.exit(1), 2000);
-      t.unref?.();
+      setTimeout(() => process.exit(1), 10_000);
     });
 }
 

@@ -65,6 +65,50 @@ const RUNS = Number(flag('--runs', '20'));
 const N = Number(flag('--commits', '3000'));
 const CLI = path.resolve(flag('--bundle', path.join(REPO, 'dist-electron', 'cli.js')));
 
+/**
+ * Display env for every Electron we spawn.
+ *
+ * CONTAINMENT (ledger #70 LEAD order). This rig spawns many Electron processes
+ * and would otherwise inherit the HUMAN'S real WAYLAND_DISPLAY/DISPLAY. Nothing
+ * on the CLI path opens a window, but "it happens not to" is luck, not
+ * containment.
+ *
+ * Two cases, and getting this wrong FABRICATES failures rather than preventing
+ * them (issue #62 NEW-3):
+ *
+ *  - Run INSIDE a contained rig (scripts/e2e-contained-rig.sh, which exports a
+ *    marker-verified WAYLAND_DISPLAY of its own): inherit that display. It is
+ *    already proven not to be the human's. Blanking it here instead makes
+ *    Electron pick x11, fail with "Missing X server or $DISPLAY", and exit at
+ *    0 bytes — which this gate then scores as truncation, a fabricated defect
+ *    that looks exactly like the bug under test.
+ *  - Run BARE (no rig): blank both handles so nothing can reach a real screen,
+ *    and pin the ozone hint so a display-less Electron still boots.
+ *
+ * `RIG_WAYLAND` is set only by the contained rig, so its presence is the
+ * discriminator — and it is compared against WAYLAND_DISPLAY so a stale export
+ * cannot silently re-enable the human's compositor.
+ */
+const CONTAINED_DISPLAY_ENV =
+  process.env.RIG_WAYLAND && process.env.RIG_WAYLAND === process.env.WAYLAND_DISPLAY
+    ? {
+        WAYLAND_DISPLAY: process.env.RIG_WAYLAND,
+        ELECTRON_OZONE_PLATFORM_HINT: 'wayland',
+        ORCHESTRA_OZONE_RELAUNCHED: '1',
+      }
+    : {
+        WAYLAND_DISPLAY: '',
+        DISPLAY: '',
+        ELECTRON_OZONE_PLATFORM_HINT: 'wayland',
+        ORCHESTRA_OZONE_RELAUNCHED: '1',
+      };
+
+// Refuse to run pointed at the human's compositor, whatever the path above did.
+if (CONTAINED_DISPLAY_ENV.WAYLAND_DISPLAY === 'wayland-1') {
+  console.error('\n\u2718 refusing to run with WAYLAND_DISPLAY=wayland-1 (the human\'s compositor)');
+  process.exit(1);
+}
+
 function die(msg) {
   console.error(`\n✘ ${msg}`);
   process.exit(1);
@@ -133,12 +177,20 @@ function run(args, tag) {
         // DISPLAY. Nothing here should ever open a window — the CLI path exits
         // before any BrowserWindow — but "it happens not to" is luck, not
         // containment, and this rig spawns hundreds of Electron processes.
-        // Blank the display handles and pin a throwaway user-data-dir so a
-        // window CANNOT land on the user's screen even if a future edit creates
-        // one. Also keeps ~/.config/Electron untouched.
-        WAYLAND_DISPLAY: '',
-        DISPLAY: '',
-        XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? '',
+        //
+        // Blanking both display handles is what makes a window unable to reach
+        // the human's screen. But blanking them ALONE makes Electron abort with
+        // "Missing X server or $DISPLAY" before it runs a line of our code, and
+        // a 0-byte exit reads to this gate as truncation — a FABRICATED failure
+        // (issue #62 NEW-3). The ozone hint is what lets a display-less Electron
+        // still boot for a headless/CLI run, so it is load-bearing for the gate
+        // being runnable at all, not cosmetic.
+        //
+        // For a rig that must actually PAINT, use the wave's reference
+        // implementation instead (scripts/e2e-contained-rig.sh on impl-64):
+        // it stands up its own sway and proves ownership with a unique marker.
+        // This gate never opens a window, so display-less + the hint is enough.
+        ...CONTAINED_DISPLAY_ENV,
       },
       stdio: ['ignore', 'pipe', 'pipe'], // <-- STDOUT IS A PIPE: the axis under test
     });
@@ -268,10 +320,98 @@ reply = { ok: false, error: 'unknown workspace: some-id' };
 reply = { ok: true, id: 'x', branch: 'child', target: 'main', unmerged: N, commits };
 {
   const r = await run(['verify-landed', 'some-id'], 'noise');
-  const quiet = r.stderr.trim() === '';
+  // Chromium writes its own diagnostics to stderr (dbus/GPU/ozone), and in an
+  // isolated rig with no session bus that is guaranteed noise, not our output.
+  // Filter to lines that are NOT Chromium's, so this control still catches what
+  // it exists to catch — the CLI leaking onto the stream a caller parses — and
+  // does not merely measure the sandbox. It stays a REAL check: an
+  // UnhandledPromiseRejectionWarning, a stack trace, or any verdict text on
+  // stderr survives this filter (that leak is exactly what it caught once).
+  const CHROMIUM_NOISE = /^\[\d+:\d{4}\/\d{6}\.\d+:(ERROR|WARNING|INFO|VERBOSE\d*):/;
+  const ourStderr = r.stderr
+    .split('\n')
+    .filter((l) => l.trim() !== '' && !CHROMIUM_NOISE.test(l))
+    .join('\n');
+  const quiet = ourStderr === '';
   console.log(`CONTROL stderr quiet on big verdict: ${quiet}`);
   if (!quiet && !EXPECT_BROKEN)
-    failures.push(`stderr not empty on the big verdict: ${JSON.stringify(r.stderr.trim().slice(0, 300))}`);
+    failures.push(
+      `stderr not empty on the big verdict (Chromium diagnostics excluded): ` +
+        `${JSON.stringify(ourStderr.slice(0, 300))}`,
+    );
+}
+
+// --- SLOW BUT LIVE READER must NOT be truncated (issue #62 NEW-1) ----------
+// The counterpart to the broken-pipe arm, and it pulls the OPPOSITE way: a
+// reader that is alive and consuming, just slowly. A drain bounded on a fixed
+// wall-clock cannot serve both — a slow reader and a dead reader look identical
+// to a timer — so a 2000 ms bound truncated this 4/4 at 146496 bytes with RC=2,
+// i.e. #62's exact defect wearing a success status. This arm is what makes that
+// regression loud. It must be SLOWER than any fixed bound anyone might
+// reintroduce, hence 2500 ms/chunk against the 2000 ms bound that failed.
+reply = { ok: true, id: 'x', branch: 'child', target: 'main', unmerged: N, commits };
+{
+  const SLOW_RUNS = Math.min(RUNS, 3);
+  const MS_PER_CHUNK = 2500;
+  let slowTruncated = 0;
+  const slowMarks = [];
+  for (let i = 0; i < SLOW_RUNS; i += 1) {
+    const f = path.join(tmp, `slow-${i}.cjs`);
+    writeFileSync(
+      f,
+      `const { app } = require('electron');
+       app.disableHardwareAcceleration();
+       app.whenReady().then(async () => {
+         const { runCli } = require(${JSON.stringify(CLI)});
+         await runCli(['verify-landed', 'some-id']);
+       });`,
+    );
+    const r = await new Promise((resolve) => {
+      const t0 = Date.now();
+      const c = spawn(ELECTRON, [f, '--no-sandbox', `--user-data-dir=${path.join(tmp, 'electron-user-data')}`], {
+        env: {
+          ...process.env,
+          ORCHESTRA_SOCK: SOCK,
+          ELECTRON_DISABLE_SECURITY_WARNINGS: '1',
+          ...CONTAINED_DISPLAY_ENV,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const chunks = [];
+      // ALIVE, but unhurried: pause after each chunk and resume later. The
+      // reader never goes away, so nothing here justifies giving up on it.
+      c.stdout.on('data', (d) => {
+        chunks.push(d);
+        c.stdout.pause();
+        setTimeout(() => c.stdout.resume(), MS_PER_CHUNK);
+      });
+      c.stderr.on('data', () => {});
+      const timer = setTimeout(() => {
+        c.kill('SIGKILL');
+        resolve({ buf: Buffer.concat(chunks), ms: Date.now() - t0, code: -1 });
+      }, 180_000);
+      c.on('close', (code) => {
+        clearTimeout(timer);
+        resolve({ buf: Buffer.concat(chunks), ms: Date.now() - t0, code });
+      });
+    });
+    const short = r.buf.length < EXPECTED_BYTES;
+    if (short) slowTruncated += 1;
+    slowMarks.push(`${r.buf.length}${short ? 'T' : '.'}/${r.ms}ms`);
+  }
+  console.log(
+    `CONTROL slow live reader (@${MS_PER_CHUNK}ms/chunk)  TRUNCATED ${slowTruncated}/${SLOW_RUNS}   ${slowMarks.join(' ')}`,
+  );
+  // Asserted in BOTH modes. Truncating a LIVE reader is never acceptable: the
+  // verdict exits 2 looking successful while the commit list is incomplete,
+  // which is strictly worse than hanging (a hang is visible).
+  if (slowTruncated !== 0)
+    failures.push(
+      `slow-reader truncation: ${slowTruncated}/${SLOW_RUNS} runs cut off a reader that was ` +
+        `ALIVE and consuming at ${MS_PER_CHUNK}ms/chunk. A fixed wall-clock flush bound does ` +
+        `this; bound on PROGRESS ('drain'), not elapsed time, so a slow reader keeps extending ` +
+        `the deadline while a dead one does not.`,
+    );
 }
 
 // --- BROKEN PIPE: `| head -1` must not HANG (issue #62 R2) -----------------
@@ -309,12 +449,20 @@ reply = { ok: true, id: 'x', branch: 'child', target: 'main', unmerged: N, commi
         // DISPLAY. Nothing here should ever open a window — the CLI path exits
         // before any BrowserWindow — but "it happens not to" is luck, not
         // containment, and this rig spawns hundreds of Electron processes.
-        // Blank the display handles and pin a throwaway user-data-dir so a
-        // window CANNOT land on the user's screen even if a future edit creates
-        // one. Also keeps ~/.config/Electron untouched.
-        WAYLAND_DISPLAY: '',
-        DISPLAY: '',
-        XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? '',
+        //
+        // Blanking both display handles is what makes a window unable to reach
+        // the human's screen. But blanking them ALONE makes Electron abort with
+        // "Missing X server or $DISPLAY" before it runs a line of our code, and
+        // a 0-byte exit reads to this gate as truncation — a FABRICATED failure
+        // (issue #62 NEW-3). The ozone hint is what lets a display-less Electron
+        // still boot for a headless/CLI run, so it is load-bearing for the gate
+        // being runnable at all, not cosmetic.
+        //
+        // For a rig that must actually PAINT, use the wave's reference
+        // implementation instead (scripts/e2e-contained-rig.sh on impl-64):
+        // it stands up its own sway and proves ownership with a unique marker.
+        // This gate never opens a window, so display-less + the hint is enough.
+        ...CONTAINED_DISPLAY_ENV,
       },
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
@@ -338,27 +486,27 @@ reply = { ok: true, id: 'x', branch: 'child', target: 'main', unmerged: N, commi
     hangMarks.push(r.hung ? `HUNG(${r.ms}ms)` : `${r.ms}ms`);
   }
   console.log(`CONTROL broken pipe (| head -1)  HUNG ${hung}/${HANG_RUNS}   ${hangMarks.join(' ')}`);
-  // REPORTED, and failed only on a TOTAL hang.
+  // ZERO HANGS REQUIRED (LEAD ruling, ledger #70).
   //
-  // Why not `hung !== 0`: this rate is NOT attributable to the build. Measured
-  // block-wise (all runs of one bundle, then the other) it swings wildly for a
-  // FIXED bundle and for MASTER alike — 0/10, 8/10 and 10/10 were all observed
-  // for the same unchanged master bytes within one session. Run INTERLEAVED
-  // with alternating order, which cancels machine-state drift, master and the
-  // #62 fix came out 0/25 vs 0/25 (and 0/10 vs 1/10 on a smaller run). So a
-  // nonzero count here is evidence about the MACHINE, not the candidate, and
-  // asserting on it would fail honest builds at random.
+  // An earlier version of this gate failed only on a TOTAL hang, on the belief
+  // that the rate was machine noise rather than a property of the build. That
+  // belief came from UNCONTAINED runs; under proper containment the axis is
+  // clean and the separation is large:
   //
-  // A TOTAL hang is still worth failing on: if every run hangs while the
-  // big-verdict arm above completed, the process genuinely cannot terminate on
-  // a closed reader. That is the shape the R2 fix guards (bounded timer +
-  // 'error'/'close' listeners), and it is not something drift produces.
-  if (hung === HANG_RUNS && HANG_RUNS > 1)
+  //     master 2ebd3fb              HUNG  9/12
+  //     drain w/ late listeners     HUNG  5/5   (and 12/12 on another rig)
+  //     drain w/ startup listeners  HUNG  0/12  RC=2 in ~280ms every run
+  //
+  // The mechanism is in exitAfterFlush's docblock: EPIPE is delivered AS the
+  // write happens, so listeners attached later wait for an event that already
+  // fired. Anything above zero here means that regressed.
+  if (hung !== 0)
     failures.push(
-      `broken-pipe hang: ${hung}/${HANG_RUNS} runs — EVERY run failed to terminate when ` +
-        `the reader closed early (\`orchestra verify-landed | head -1\`) while the ` +
-        `big-verdict arm completed. The drain must be bounded and must observe ` +
-        `'error'/'close', not wait on a callback a dead stream never fires.`,
+      `broken-pipe hang: ${hung}/${HANG_RUNS} runs did not terminate when the reader closed ` +
+        `early (\`orchestra verify-landed | head -1\`). Required: 0/${HANG_RUNS}. The ` +
+        `stdout/stderr hang-up listeners must be installed at STARTUP — attaching them inside ` +
+        `the drain is too late, the EPIPE has already fired (master: 9/12, late listeners: ` +
+        `5/5, startup listeners: 0/12).`,
     );
 }
 
