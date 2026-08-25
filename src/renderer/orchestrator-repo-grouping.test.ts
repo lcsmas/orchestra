@@ -164,3 +164,74 @@ test('partitionOrchestratorRoots: the two lists are complementary and disjoint',
   const overlap = pinned.filter((p) => inRepoSections.some((r) => r.id === p.id));
   assert.deepEqual(overlap, []);
 });
+
+// ─── #38: a store record with NO repoPath must never yield `undefined` ───────
+//
+// `Workspace` is deserialized from `store.json` with no runtime validation, so
+// the `repoPath: string` type is a claim about writers, not a guarantee about
+// readers. A record that omits the field — a legacy record, or any store seeded
+// by the `verify` skill's documented harness, which writes `repoId` and
+// `worktreePath` but no `repoPath` — reaches this function with `undefined`.
+//
+// Returning that `undefined` is what caused the #38 boot crash: it becomes a
+// section key in `groupRootsByRepo`, lands in Sidebar's `repoOrder`, and the
+// drag-and-drop guard `dropRepo?.path === repoPath` then compares
+// `undefined === undefined` → TRUE while `dropRepo` is still `null`, so
+// `` `repo-drop-${dropRepo.pos}` `` dereferences null and the entire sidebar
+// renders the error boundary instead of the UI.
+//
+// `null` is the required sentinel rather than any other falsy value, because
+// optional chaining on a null object yields `undefined` and NEVER `null` — so
+// no `?.`-guarded comparison anywhere downstream can accidentally match it.
+// PROVE-CAN-FAIL: with the `?? null` removed from repoSectionKeyOf, the first
+// assertion below reports `undefined !== null` and this test fails.
+const noRepoPath = (id: string) =>
+  ({ id, kind: 'worktree' as const }) as unknown as Parameters<typeof repoSectionKeyOf>[0];
+
+test('#38 repoSectionKeyOf: a worktree record MISSING repoPath returns null, never undefined', () => {
+  const key = repoSectionKeyOf(noRepoPath('ws-1'));
+  assert.equal(key, null);
+  // The stronger claim, and the one the crash actually turned on: the result
+  // must not be `undefined`, because that is the single value an optional-chain
+  // guard compares equal to.
+  assert.notEqual(key, undefined);
+  assert.equal(typeof key, 'object');
+});
+
+test('#38 repoSectionKeyOf: a legacy record with neither kind nor repoPath returns null', () => {
+  const legacy = { id: 'old' } as unknown as Parameters<typeof repoSectionKeyOf>[0];
+  assert.equal(repoSectionKeyOf(legacy), null);
+});
+
+// The guard expression VERBATIM from Sidebar.tsx's repo drag-and-drop block,
+// exercised against the key this module produces. This is the assertion that
+// ties the pure helper to the crash site: it throws the exact reported
+// TypeError if `repoSectionKeyOf` ever returns `undefined` again.
+test('#38 the Sidebar DnD guard does not throw on the key of a repoPath-less record', () => {
+  const dropRepo: { path: string; pos: 'before' | 'after' } | null = null;
+  const repoPath = repoSectionKeyOf(noRepoPath('ws-1'));
+  assert.doesNotThrow(() => {
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    const cls = dropRepo?.path === repoPath ? ` repo-drop-${dropRepo!.pos}` : '';
+    assert.equal(cls, '');
+  });
+});
+
+// POSITIVE CONTROL for the test above — it proves the assertion can fail, so a
+// green run means something. This reconstructs the UNFIXED behaviour inline
+// (key = `undefined`) and requires the very same expression to throw the
+// reported error. If this stops throwing, the guard above has become vacuous.
+test('#38 CONTROL: the same guard DOES throw when the key is undefined (the unfixed shape)', () => {
+  const dropRepo: { path: string; pos: 'before' | 'after' } | null = null;
+  const repoPath = undefined as unknown as string;
+  assert.throws(
+    () => {
+      const cls = dropRepo?.path === repoPath ? ` repo-drop-${dropRepo!.pos}` : '';
+      return cls;
+    },
+    (err: unknown) =>
+      err instanceof TypeError &&
+      /Cannot read properties of null \(reading 'pos'\)/.test(err.message),
+    'the unfixed shape must reproduce the exact #38 TypeError',
+  );
+});

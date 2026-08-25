@@ -347,6 +347,54 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   `host-grouping.ts` `groupByHost` (returns null when all-local → flat list
   byte-identical to pre-sandbox); collapsible `.host-group-header` per node.
 - Drag-reorder for workspaces and repos (`reorderWorkspaces`/`reorderRepos`).
+- **DnD drop targets are a SHARED PURE MODULE — `src/shared/dnd-drop-target.ts`
+  (issue #38).** `dropRepo?.path === repoPath` reads as null-safe and is not:
+  `?.` on a null object yields `undefined`, so an `undefined` right-hand side
+  makes the comparison TRUE and the ternary arm dereferences null, throwing
+  `TypeError: Cannot read properties of null (reading 'pos')`. React's error
+  boundary catches it, so the whole app renders "Something broke in the UI"
+  instead of a sidebar. The right side reached `undefined` because `Workspace`
+  is deserialized from `store.json` with **no runtime validation** — `repoPath:
+  string` is a claim about writers, not a guarantee about readers.
+  There were **four** sites of this shape, and guarding them individually was
+  tried first and rejected in review: two were missed, and nothing in a `.tsx`
+  render body is reachable from `pnpm run test` (it strips types but does not
+  transform JSX; there is no jsdom/testing-library/vitest), so the first gate
+  reconstructed the buggy expression as literals and passed on broken code.
+  All four now route through the shared module:
+  `matchesDropTarget` (`!== null` before any `.pos`, and an `undefined` key
+  never matches), `dropTargetClass` (the class modifier), `nextDropTarget` (the
+  `onDragOver` updater, preserving object identity so a dragover does not
+  re-render the sidebar every pixel). Call sites: `Sidebar.tsx:1941` (repo
+  class), `:2169` (workspace class), `:1956` and `:2269` (the two updaters);
+  state is `DropTarget<string>` at `:930`/`:938`. Gates:
+  `src/shared/dnd-drop-target.test.ts` binds to the real functions, and
+  `scripts/sidebar-boot-render-smoke.mjs` asserts the **compiled bundle** still
+  contains the guard shape and no `?.`-equality shorthand — so reverting the
+  render site fails a gate (it did not before).
+- **The repo-less bucket (`repoPath === ''`) is FIRST-CLASS, with only its
+  REPO-SCOPED affordances removed.** No-repo workspaces are a real, common state
+  (several live ones on this machine), not a corrupt edge case — so the section
+  renders, and its workspace ROWS stay fully clickable/openable. Hiding the
+  section was considered and REJECTED: a user must always be able to reach their
+  workspace. Measured on the built app (trusted `Input.dispatchMouseEvent`, with
+  selection first moved OFF the row so the click is a real transition and not a
+  vacuous no-op): row `pointerEvents:auto`, `cursor:pointer`, click re-selects it
+  and the pane opens; the row keeps its own workspace-scoped actions. What is
+  removed is only what a repo-less section cannot honour —
+  `repoSectionKeyOf` (`orchestrator-repo-grouping.ts:59`) returns `?? null` and
+  `groupRootsByRepo` (`Sidebar.tsx:768`) collapses to `?? ''`, so a malformed
+  record groups under the empty key; `repoLabel` (`:1448`) names it **"No
+  repo"** rather than rendering a blank header — the row must stay visible,
+  since silently dropping a workspace is the worse failure. Its `+` and gear
+  buttons are **suppressed**: with `repoPath: ''` the `+` called
+  `createWorkspace({repoPath:''})` → `createWorktree('')` → `simpleGit('')`,
+  and simple-git does **not** reject an empty baseDir — it falls back to
+  `process.cwd()` (measured), so the click could create a real branch and
+  worktree in whatever repo the app was launched from. The gear was separately
+  dead (its modal is gated on a truthy `repoPath`). The durable guard is in the
+  main process: `createWorkspace` (`workspaces.ts:369`) throws on a falsy
+  `repoPath`, covering every caller including IPC, not just this UI.
 - **Status note**: the agent-authored one-liner (`orchestra status` →
   `Workspace.statusText`) renders as a muted single-line `.ws-status-note`
   under the branch name on both the scratch/orchestrator and repo row

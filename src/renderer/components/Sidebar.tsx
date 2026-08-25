@@ -12,6 +12,11 @@ import type {
 } from '../../shared/types';
 import { isScratchLike, canOrchestrate } from '../../shared/types';
 import { repoSectionKeyOf, partitionOrchestratorRoots } from '../orchestrator-repo-grouping';
+import {
+  type DropTarget,
+  dropTargetClass,
+  nextDropTarget,
+} from '../../shared/dnd-drop-target';
 import { groupByHost, hostLabel } from '../host-grouping';
 import { queuedTickets as selectQueuedTickets } from '../../shared/linear-tickets-queue';
 import { WorkspaceStatusGlyph, statusGlyphTitle } from './WorkspaceStatusGlyph';
@@ -747,7 +752,20 @@ function groupRootsByRepo(roots: Workspace[], forest: SpawnForest): Map<string, 
     // instead — so the key must come from the helper, not the raw field.
     // (`null` is unreachable here: callers pass only git roots and associated
     // orchestrators, but fall back to repoPath rather than crashing.)
-    const key = repoSectionKeyOf(root) ?? root.repoPath;
+    //
+    // The `?? ''` keeps the Map key a real `string`, matching this function's
+    // declared return type, so a record that omits `repoPath` groups with the
+    // other repo-less rows rather than putting `undefined` in `repoOrder`.
+    //
+    // Honest scope, because the first version of this comment overstated it:
+    // this is DEFENCE IN DEPTH, not the load-bearing #38 fix. Since the four
+    // DnD sites route through `shared/dnd-drop-target.ts`, which rejects an
+    // `undefined` key explicitly, reverting this line alone no longer
+    // reproduces the crash (verified as a surviving mutant — the render site is
+    // now correct on its own terms). It is kept because a typed `string[]` that
+    // actually contains `undefined` is a trap for every FUTURE consumer of
+    // `repoOrder`, not because it is what stops the current crash.
+    const key = repoSectionKeyOf(root) ?? root.repoPath ?? '';
     const existing = groups.get(key);
     if (existing) existing.push(...rows);
     else groups.set(key, rows);
@@ -905,7 +923,11 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
      * drags only — never reorder drags. */
     nested: boolean;
   } | null>(null);
-  const [dropWs, setDropWs] = useState<{ id: string; pos: 'before' | 'after' } | null>(null);
+  // `DropTarget` (shared/dnd-drop-target.ts) rather than an inline object type:
+  // the identity comparison against this state is what crashed in #38, and
+  // keeping the type and its guards in one shared module is what stops the four
+  // DnD sites from drifting apart again.
+  const [dropWs, setDropWs] = useState<DropTarget<string>>(null);
   // Re-parent drop target: the id of an orchestrator-capable row the dragged
   // workspace is hovering over, or the repoPath of a repo header hovered as a
   // DETACH target. Kept separate from `dropWs` because a re-parent drop lands
@@ -913,7 +935,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const [attachTo, setAttachTo] = useState<string | null>(null);
   const [detachOver, setDetachOver] = useState<string | null>(null);
   const [dragRepo, setDragRepo] = useState<string | null>(null);
-  const [dropRepo, setDropRepo] = useState<{ path: string; pos: 'before' | 'after' } | null>(null);
+  const [dropRepo, setDropRepo] = useState<DropTarget<string>>(null);
 
   useEffect(() => {
     void window.orchestra.getAppVersion().then(setVersion);
@@ -1000,12 +1022,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   // Commit a workspace move: pull the dragged id out of the full ordering and
   // re-insert it before/after the drop target, then persist the new order.
   const commitWsDrop = () => {
-    if (!dragWs || !dropWs || dragWs.id === dropWs.id) return clearDnd();
+    if (!dragWs || !dropWs || dragWs.id === dropWs.key) return clearDnd();
     const ids = workspaces.map((w) => w.id);
     const from = ids.indexOf(dragWs.id);
     if (from < 0) return clearDnd();
     ids.splice(from, 1);
-    let to = ids.indexOf(dropWs.id);
+    let to = ids.indexOf(dropWs.key);
     if (to < 0) return clearDnd();
     if (dropWs.pos === 'after') to += 1;
     ids.splice(to, 0, dragWs.id);
@@ -1014,12 +1036,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   };
 
   const commitRepoDrop = () => {
-    if (!dragRepo || !dropRepo || dragRepo === dropRepo.path) return clearDnd();
+    if (!dragRepo || !dropRepo || dragRepo === dropRepo.key) return clearDnd();
     const paths = repos.map((r) => r.path);
     const from = paths.indexOf(dragRepo);
     if (from < 0) return clearDnd();
     paths.splice(from, 1);
-    let to = paths.indexOf(dropRepo.path);
+    let to = paths.indexOf(dropRepo.key);
     if (to < 0) return clearDnd();
     if (dropRepo.pos === 'after') to += 1;
     paths.splice(to, 0, dragRepo);
@@ -1426,6 +1448,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const repoLabel = (repoPath: string) => {
     const repo = repos.find((r) => r.path === repoPath);
     if (repo) return repo.name;
+    // A workspace whose record carries no usable `repoPath` groups under the
+    // empty key (see `groupRootsByRepo` — #38). Name that section rather than
+    // rendering a blank header: the row is real and must stay reachable, but a
+    // nameless section reads as a rendering glitch. This is the malformed-record
+    // case only; every well-formed store resolves a name above.
+    if (!repoPath) return 'No repo';
     const segments = repoPath.split('/').filter(Boolean);
     return segments[segments.length - 1] ?? repoPath;
   };
@@ -1903,12 +1931,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           // removed but workspaces remain) always trail and aren't draggable.
           const isRegisteredRepo = repos.some((r) => r.path === repoPath);
           const collapsed = collapsedRepos.has(repoPath);
+          // `dropTargetClass` rather than an inline ternary: the shorthand
+          // `dropRepo?.path === repoPath` is NOT null-safe (it yields
+          // `undefined`, which matches an `undefined` repoPath and then
+          // dereferences null — the #38 crash). The rule lives in
+          // `shared/dnd-drop-target.ts` so all four DnD sites share one
+          // implementation that a `.ts` unit test can actually bind to.
           const repoDnd =
-            dragRepo === repoPath
-              ? ' repo-dragging'
-              : dropRepo?.path === repoPath
-                ? ` repo-drop-${dropRepo.pos}`
-                : '';
+            dragRepo === repoPath ? ' repo-dragging' : dropTargetClass(dropRepo, repoPath, 'repo-drop');
           return (
           <div
             key={repoPath}
@@ -1918,9 +1948,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               e.preventDefault();
               e.dataTransfer.dropEffect = 'move';
               const pos = dropPosFromEvent(e);
-              setDropRepo((prev) =>
-                prev?.path === repoPath && prev.pos === pos ? prev : { path: repoPath, pos },
-              );
+              // Same class of bug as the render site: `prev?.path === repoPath`
+              // short-circuits TRUE on `prev === null` + `repoPath === undefined`
+              // and then throws on `prev.pos`. `nextDropTarget` keeps the
+              // identity optimisation (avoid re-rendering on every dragover)
+              // without the null hazard.
+              setDropRepo((prev) => nextDropTarget(prev, repoPath, pos));
             }}
             onDrop={(e) => {
               if (!dragRepo) return;
@@ -2000,32 +2033,53 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       <GitHubIcon />
                     </button>
                   )}
-                  <button
-                    className="repo-scripts-btn"
-                    title={`Configure setup / run / archive scripts for ${repoLabel(repoPath)}`}
-                    aria-label={`Configure scripts for ${repoLabel(repoPath)}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setScriptsRepoPath(repoPath);
-                    }}
-                  >
-                    <GearIcon />
-                  </button>
+                  {/* Suppressed for the repo-less bucket (`repoPath === ''`,
+                      see groupRootsByRepo — #38): the scripts modal is gated on
+                      `{scriptsRepoPath && …}` and `Boolean('') === false`, so
+                      this button set state and opened NOTHING, with no feedback
+                      — a dead control. `store.setRepoScripts('')` would throw
+                      `repo not found:` anyway. There is no repo to configure. */}
+                  {repoPath && (
+                    <button
+                      className="repo-scripts-btn"
+                      title={`Configure setup / run / archive scripts for ${repoLabel(repoPath)}`}
+                      aria-label={`Configure scripts for ${repoLabel(repoPath)}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setScriptsRepoPath(repoPath);
+                      }}
+                    >
+                      <GearIcon />
+                    </button>
+                  )}
                 </span>
                 <span className="repo-count">{items.length}</span>
-                <button
-                  className="repo-add"
-                  title={`New workspace in ${repoLabel(repoPath)} — right-click to pick the base branch`}
-                  aria-label={`New workspace in ${repoLabel(repoPath)}`}
-                  onClick={(e) => onAddToRepo(e, repoPath)}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setBasePicker({ repoPath, x: e.clientX, y: e.clientY });
-                  }}
-                >
-                  +
-                </button>
+                {/* Suppressed for the repo-less bucket (#38). This is a SAFETY
+                    gate, not cosmetics: with `repoPath === ''` the click ran
+                    `onAddToRepo` → `createWorkspace({repoPath: ''})` →
+                    `createWorktree('')` → `simpleGit('')`, and simple-git does
+                    NOT reject an empty baseDir — it falls back to
+                    `process.cwd()` (measured: inside a git repo it resolved to
+                    a real worktree toplevel). So this button could create a
+                    branch and worktree in whatever repo the app was launched
+                    from. `createWorkspace` now rejects a falsy repoPath as the
+                    durable guard; hiding the control keeps the UI honest, since
+                    there is no repo to add to. */}
+                {repoPath && (
+                  <button
+                    className="repo-add"
+                    title={`New workspace in ${repoLabel(repoPath)} — right-click to pick the base branch`}
+                    aria-label={`New workspace in ${repoLabel(repoPath)}`}
+                    onClick={(e) => onAddToRepo(e, repoPath)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setBasePicker({ repoPath, x: e.clientX, y: e.clientY });
+                    }}
+                  >
+                    +
+                  </button>
+                )}
               </span>
             </div>
             {!collapsed && (() => {
@@ -2104,14 +2158,15 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                   : hiddenKids.some((h) => h.status === 'running')
                     ? 'running'
                     : '';
+              // Shares `dropTargetClass` with the repo section above, so the two
+              // cannot drift apart — the previous version asserted that in a
+              // comment while leaving the two `setState` updaters unguarded.
               const wsDnd =
                 dragWs?.id === w.id
                   ? ' dragging'
                   : attachTo === w.id
                     ? ' attach-target'
-                    : dropWs?.id === w.id
-                      ? ` drop-${dropWs.pos}`
-                      : '';
+                    : dropTargetClass(dropWs, w.id, 'drop');
               // Spawned children are positioned by the orchestrator tree, not by
               // manual order, so they are not drag-reorderable (only depth-0
               // roots are). Indent each level; a child in a different repo than
@@ -2211,9 +2266,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     e.dataTransfer.dropEffect = 'move';
                     setAttachTo(null);
                     const pos = dropPosFromEvent(e);
-                    setDropWs((prev) =>
-                      prev?.id === w.id && prev.pos === pos ? prev : { id: w.id, pos },
-                    );
+                    setDropWs((prev) => nextDropTarget(prev, w.id, pos));
                   }}
                   onDrop={(e) => {
                     if (!dragWs) return;

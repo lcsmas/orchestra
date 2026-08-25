@@ -31,8 +31,9 @@
     "build": "pnpm run build:bundles && electron-builder",
     "start": "electron .",
     "lint": "eslint src --ext .ts,.tsx",
+    "pretest": "pnpm run build:cli",
     "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",
-    "test:render": "node scripts/context-gauge-render-smoke.mjs && node scripts/answerable-cards-render-smoke.mjs && node scripts/queue-tray-render-smoke.mjs && node scripts/peer-rows-render-smoke.mjs && pnpm run test:wiring",
+    "test:render": "node scripts/context-gauge-render-smoke.mjs && node scripts/answerable-cards-render-smoke.mjs && node scripts/queue-tray-render-smoke.mjs && node scripts/peer-rows-render-smoke.mjs && node scripts/sidebar-boot-render-smoke.mjs && pnpm run test:wiring",
     "test:wiring": "node scripts/verify-answerable-wiring.mjs",
     "test:fixtures": "node scripts/fixtures/self-test.mjs",
     "release": "bash scripts/release.sh"
