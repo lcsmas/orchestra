@@ -76,7 +76,32 @@ export interface QueueStallInput {
    *  (`~/.orchestra/inbox/<id>.txt`), counted by main. */
   parkedInboxCount: number;
   /** Epoch ms of the last observed TURN START, or undefined when this
-   *  workspace has never started one. */
+   *  workspace has never started one.
+   *
+   *  ## THE CLOCK IS A CONSUMPTION CLOCK, NOT AN ARRIVAL CLOCK
+   *
+   *  The tempting simplification is to age the stall from when work ARRIVED —
+   *  the newest `queuedAt`, or the newest parked block — since that is the
+   *  data closest to hand. It is wrong, and wrong in the direction that hides
+   *  the bug: an arrival clock RESETS every time another peer pings the wedged
+   *  agent, so **the more people notice it is stuck, the younger the stall
+   *  looks.** A coordinator that six agents are all trying to reach would read
+   *  as freshly-parked forever, which is exactly the freeze this ticket exists
+   *  to surface.
+   *
+   *  MEASURED on a real incident, 2026-08-25 (this workspace, wedged; observed
+   *  and captured by the wave coordinator before re-kicking it): the same
+   *  stall read **41.4 min** on a first-arrival clock and **6.0 min** on a
+   *  last-arrival clock. At the 15-minute threshold those give OPPOSITE
+   *  verdicts, and the last-arrival one — the more "obvious" of the two, since
+   *  it answers "how long has the newest message waited" — is the one that
+   *  stays silent.
+   *
+   *  So the age is measured from the last time this workspace CONSUMED
+   *  anything, which is a property of the agent rather than of its senders and
+   *  cannot be reset by anyone else's behaviour. Asserted by
+   *  `queue-stall.test.ts`'s "arrival clock" cases so the simplification
+   *  cannot be made silently later. */
   lastTurnStartAt?: number;
   /** Epoch ms this workspace was created — the fallback clock for a workspace
    *  that has never taken a turn. Without it, a brand-new workspace with a

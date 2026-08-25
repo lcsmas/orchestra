@@ -16,6 +16,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {
   decideQueueStall,
   workspaceQueueStall,
@@ -289,4 +290,119 @@ test('R1: the never-ran fallback is floored too', () => {
     }),
   );
   assert.equal(v, null, 'never-ran + app up 60s -> the grace period restarts with the app');
+});
+
+
+// ── The clock must be a CONSUMPTION clock, not an ARRIVAL clock ─────────────
+//
+// Fixture values are from a REAL incident, 2026-08-25: this very workspace
+// (the one implementing #88) wedged with 3 deliveries parked and 3 turns
+// withdrawn unstarted, session alive, status idle, no turn starting. The wave
+// coordinator captured the observables before re-kicking it, and a HUMAN was
+// the detector — the exact failure mode this ticket exists to remove.
+//
+// The captured numbers are what make these tests worth having: the same stall
+// read 41.4min on a first-arrival clock and 6.0min on a last-arrival clock.
+// At N=15 those give OPPOSITE verdicts.
+
+const INCIDENT = {
+  parkedCount: 2,
+  firstParkMinAgo: 41.4,
+  lastParkMinAgo: 6.0,
+};
+
+test('INCIDENT 2026-08-25: the real wedged-workspace fixture badges', () => {
+  // Consumption clock: the agent last took a turn before the first park, so
+  // the age is at least the first-park age. It badges — correctly.
+  const v = decideQueueStall(
+    stalled({
+      parkedInboxCount: INCIDENT.parkedCount,
+      lastTurnStartAt: NOW - INCIDENT.firstParkMinAgo * 60_000,
+      observableSince: NOW - 60 * 60_000, // app up an hour, so not the binding floor
+    }),
+  );
+  assert.ok(v, 'the real incident must badge: 2 parked, no turn in 41.4min, session alive');
+  assert.equal(v.parkedCount, 2);
+  assert.equal(Math.round(v.stalledForMs / 60_000), 41);
+});
+
+test('INCIDENT: a LAST-ARRIVAL clock would have stayed silent — the trap', () => {
+  // The plausible simplification: age from when the newest work arrived.
+  // Same incident, 6.0min → under the 15min threshold → NO badge. This test
+  // exists so that substitution is a visible failure rather than a quiet
+  // regression, and it asserts the SIGN of the error, not just a number.
+  const asArrivalClock = decideQueueStall(
+    stalled({
+      parkedInboxCount: INCIDENT.parkedCount,
+      lastTurnStartAt: NOW - INCIDENT.lastParkMinAgo * 60_000,
+      observableSince: NOW - 60 * 60_000,
+    }),
+  );
+  assert.equal(
+    asArrivalClock,
+    null,
+    'a last-arrival clock reads the real incident as 6.0min and stays SILENT — ' +
+      'which is why the clock must measure CONSUMPTION, not arrival',
+  );
+});
+
+test('STRUCTURAL: QueueStallInput carries no arrival timestamp', () => {
+  // Two earlier attempts at this guard were VACUOUS and I only found out by
+  // mutating. Recording both, because each looks like protection:
+  //   1. Asserting decideQueueStall uses the number it is handed — a mutant
+  //      that reads a NEW input field survives, since no fixture sets it.
+  //   2. Asserting `Object.keys()` of the test's own fixture literal — that
+  //      is a constant I control; widening the real interface never touches
+  //      it. It tests the test.
+  // The subject is the INTERFACE, which exists only in the source at runtime,
+  // so the guard must read the source. Comments stripped, so prose about
+  // arrival clocks (there is plenty, deliberately) cannot satisfy or trip it.
+  const src = fs.readFileSync(new URL('./queue-stall.ts', import.meta.url), 'utf8');
+  const code = src
+    .split('\n')
+    .filter((l) => {
+      const t = l.trim();
+      return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+    })
+    .join('\n');
+  const start = code.indexOf('export interface QueueStallInput');
+  assert.notEqual(start, -1, 'QueueStallInput not found — was it renamed?');
+  const end = code.indexOf('}', start);
+  assert.notEqual(end, -1, 'QueueStallInput has no closing brace');
+  const body = code.slice(start, end);
+  // Positive controls: the slice really is the interface body.
+  assert.match(body, /queuedCount:\s*number/, 'sliced text is not QueueStallInput');
+  assert.match(body, /lastTurnStartAt\?:\s*number/, 'sliced text is missing the consumption clock');
+  // The guard. An arrival timestamp entering this contract is the change that
+  // must fail here.
+  assert.doesNotMatch(
+    body,
+    /queuedAt|parkedAt|newestPark|arrivedAt|oldestPark|firstPark|lastPark/i,
+    'QueueStallInput gained an ARRIVAL timestamp. STOP: the stall age must ' +
+      'measure CONSUMPTION, not arrival. Measured on the 2026-08-25 incident, ' +
+      'an arrival clock read 6.0min where the consumption clock read 41.4min — ' +
+      'opposite verdicts at N=15, and the arrival clock is the one that stays ' +
+      'SILENT while more peers pile onto a wedged agent.',
+  );
+});
+
+test('an arrival clock gets YOUNGER as more peers notice — the perverse inversion', () => {
+  // The mechanism behind the trap above, stated as a property rather than a
+  // single data point: with a consumption clock, extra senders cannot move the
+  // age at all. Each new ping only raises the COUNT.
+  const base = {
+    lastTurnStartAt: NOW - OVER,
+    observableSince: NOW - OVER * 10,
+  };
+  const onePeer = decideQueueStall(stalled({ ...base, parkedInboxCount: 1 }));
+  const sixPeers = decideQueueStall(stalled({ ...base, parkedInboxCount: 6 }));
+  assert.ok(onePeer, 'precondition: one parked message already badges');
+  assert.ok(sixPeers, 'six peers piling on must STILL badge — not reset the clock');
+  assert.equal(
+    onePeer.stalledForMs,
+    sixPeers.stalledForMs,
+    'the stall age must be independent of how many peers are trying to reach it; ' +
+      'an arrival clock would make the age SHRINK as more agents noticed',
+  );
+  assert.equal(sixPeers.parkedCount, 6, 'extra senders raise the COUNT, not the clock');
 });

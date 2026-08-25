@@ -123,6 +123,20 @@ silently and the human was the detector.
   app and fixed (review-88 R1). **Consequence for any rig: a stall can no
   longer be SEEDED** — the app must actually observe the silence, so a
   true-positive arm has to wait the threshold out in real time.
+- **The clock measures CONSUMPTION, never ARRIVAL.** The tempting
+  simplification — age from the newest `queuedAt` / parked block, the data
+  closest to hand — is wrong in the direction that hides the bug: an arrival
+  clock RESETS on every new ping, so the more peers notice an agent is stuck,
+  the younger its stall looks. MEASURED on a real incident (2026-08-25, the
+  #88 implementer's own workspace wedged; observables captured by the wave
+  coordinator before re-kicking): the same stall read **41.4 min** on a
+  first-arrival clock and **6.0 min** on a last-arrival clock — opposite
+  verdicts at N=15, and the arrival clock is the silent one. Guarded
+  structurally by `queue-stall.test.ts`'s "QueueStallInput carries no arrival
+  timestamp", which reads the interface out of the source: two earlier versions
+  of that guard were VACUOUS (one asserted the policy uses the number it is
+  handed; one asserted `Object.keys()` of the test's own fixture literal) and
+  both survived the mutant.
 - **`setStatus`'s no-op guard treats a turn start as a third signal**
   (`turnStartChanged`), beside `reasonChanged`. The guard returns before
   `updated` is built, and `restoreRunningFromKeeper` / `resumeRunning` both
