@@ -39,6 +39,11 @@ import {
 } from './pty';
 import { expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
+import {
+  resolveDirectChildTargets,
+  normalizeExplicitTargets,
+  deliverToTargets,
+} from '../shared/broadcast-targets.ts';
 import { workspaceDisplayName } from '../shared/workspace-name.ts';
 import { submitPlan } from '../shared/task-submit';
 import { parseLinearTicketRef, parsePrUrl, prLinkKey } from '../shared/linear';
@@ -2868,6 +2873,133 @@ export async function dispatchMessageRequest(
     return { ok: true, delivery: 'inbox', branch: target.branch };
   }
   return { ok: false, error: 'inbox write failed' };
+}
+
+/** One target's outcome inside a broadcast. Mirrors {@link MessageResult} but
+ * always carries the `id` it belongs to: a broadcast report that cannot say
+ * WHICH target got which status is indistinguishable from one status copied N
+ * times, which is the exact failure the report shape exists to prevent. */
+export interface BroadcastTargetResult {
+  id: string;
+  ok: boolean;
+  branch?: string;
+  delivery?: 'live' | 'started' | 'inbox';
+  error?: string;
+}
+
+export interface BroadcastResult {
+  /** TRUE only when EVERY target succeeded. A partial failure is `false` — the
+   * CLI turns this into a non-zero exit, so a 3-of-7 failure can never hide
+   * behind a success code. */
+  ok: boolean;
+  results?: BroadcastTargetResult[];
+  /** Set only when the broadcast could not be attempted AT ALL (no caller id,
+   * no targets, bad input) — i.e. `results` is absent and there is nothing
+   * per-target to report. */
+  error?: string;
+}
+
+
+/** Deliver ONE prompt to MANY targets, reporting each target independently.
+ *
+ * Field evidence (issue #86): a wave-6 emergency E2E halt took 7 sequential
+ * `orchestra message <id>` calls — slow exactly when speed matters, and with no
+ * aggregate view of who actually received it.
+ *
+ * Semantics, all deliberate:
+ *  - **Every target is attempted.** No abort-on-first-failure: the whole point
+ *    of a broadcast halt is that it reaches everyone, so one unknown id must not
+ *    strand the other six.
+ *  - **Per-target outcome**, each through the SAME `dispatchMessageRequest` used
+ *    by the single-target form, so `live`/`started`/`inbox` keep their exact
+ *    existing meanings rather than growing a second, subtly-different ladder.
+ *  - **`ok` is the AND of every target**, so a partial failure is a failure. The
+ *    caller reports it as a non-zero exit; an all-or-nothing 0 would hide the
+ *    three targets that never got the halt.
+ *  - **Concurrent.** Each target's live path waits up to DELIVERY_START_TIMEOUT_MS
+ *    (10s) for the turn to start, so dispatching sequentially makes those bounds
+ *    ADD UP — a 7-target halt would not even attempt target #7 until T+60s. Since
+ *    the ticket exists because sequential sends were "slow exactly when speed
+ *    matters", the deliveries run concurrently via `allSettled` and the report is
+ *    re-ordered back into the caller's target order.
+ *  - **Duplicate ids collapse.** `--to a,b,a` messages `a` once; delivering the
+ *    same halt twice is not harmless (it becomes two turns for the target).
+ *
+ * A caller that names ITSELF gets one `cannot message yourself` line among the
+ * others (the existing refusal, unchanged) rather than a whole-command abort —
+ * a per-target mistake stays per-target. */
+export async function dispatchBroadcastMessageRequest(input: {
+  from?: string;
+  /** Explicit target ids (`--to`). Mutually exclusive with `children`. */
+  to?: string[];
+  /** Resolve targets as the caller's direct children (`--children`). */
+  children?: boolean;
+  text: string;
+}): Promise<BroadcastResult> {
+  const text = input.text.trim();
+  if (!text) return { ok: false, error: 'empty text' };
+
+  let targets: string[];
+  if (input.children) {
+    // A children-broadcast is meaningless without a known caller: there is no
+    // sensible "children of nobody". Refuse by NAME rather than resolving to an
+    // empty set, or an emergency halt sent from a plain shell would report a
+    // cheerful success having reached nobody.
+    if (!input.from) {
+      return { ok: false, error: 'cannot resolve --children: no caller workspace id' };
+    }
+    // Resolved SERVER-SIDE on purpose: `/peers` deliberately omits `parentId`,
+    // and having the caller enumerate children and THEN send races the store —
+    // a workspace spawned or archived in that gap is silently missed by an
+    // emergency halt. Same flat-list filter the sidebar's own child lookup uses.
+    targets = resolveDirectChildTargets(store.workspaces, input.from);
+    if (targets.length === 0) {
+      // NAMED outcome, not a silent success — see above.
+      return { ok: false, error: 'no children to message' };
+    }
+  } else {
+    targets = normalizeExplicitTargets(input.to ?? []);
+    if (targets.length === 0) return { ok: false, error: 'no targets' };
+  }
+
+  // CONCURRENT, and this is the ticket's point rather than an optimisation.
+  //
+  // Each target's delivery awaits `sdkDeliverConfirmed`, which is bounded by
+  // DELIVERY_START_TIMEOUT_MS (10s, sdk-delivery.ts) and can then additionally
+  // await a wake. Dispatching sequentially makes those bounds ADD UP: for the
+  // 7-target wave-6 halt that motivated issue #86, target #7 is not even
+  // ATTEMPTED until T+60s if the six ahead of it each time out. The first cut of
+  // this ticket did exactly that, on the reasoning that sequential is "at worst
+  // identical to today's baseline of N sequential sends" — true, and beside the
+  // point: the ticket exists because N sequential sends were "slow exactly when
+  // speed matters". A broadcast no faster than the thing the ticket calls too
+  // slow delivers the aggregate report but not the aggregate speed.
+  //
+  // The aggravating case is the one you actually broadcast about: a HUNG agent
+  // is precisely what consumes the full 10s, so the targets most likely to
+  // delay everyone behind them are the ones an emergency halt is aimed at.
+  //
+  // Concurrency is safe here because each target is already an independent unit:
+  // `dispatchMessageRequest` resolves its own workspace, delivers to its own
+  // session and writes its own inbox file, sharing no mutable state across
+  // targets. `allSettled`, not `all`, so one thrown target cannot discard the
+  // outcomes of the others — the whole point of the report is that a partial
+  // failure stays visible per target.
+  const results = await deliverToTargets(
+    targets,
+    async (id) => {
+      const r = await dispatchMessageRequest({ from: input.from, to: id, text });
+      return {
+        ok: r.ok,
+        ...(r.branch ? { branch: r.branch } : {}),
+        ...(r.delivery ? { delivery: r.delivery } : {}),
+        ...(r.error ? { error: r.error } : {}),
+      };
+    },
+    (id, reason) => log.warn(`broadcast delivery threw for ${id}`, reason),
+  );
+
+  return { ok: results.every((r) => r.ok), results };
 }
 
 /** Append a formatted message block to a workspace's inbox file. Returns false

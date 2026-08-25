@@ -12,6 +12,7 @@ import {
   dispatchPeersRequest,
   dispatchReadRequest,
   dispatchMessageRequest,
+  dispatchBroadcastMessageRequest,
   dispatchAddRepoRequest,
   dispatchDeleteWorkspaceRequest,
   dispatchPromoteRequest,
@@ -30,6 +31,7 @@ import {
   dispatchLinearPinRequest,
   dispatchLinearRemoveRequest,
 } from './linear-tickets';
+import { classifyMessageRoute } from '../shared/broadcast-targets.ts';
 import { dispatchLoginUrlRequest } from './login-url';
 import { dispatchReloadSkillsRequest } from './agent-sdk';
 import { log } from './logger';
@@ -273,13 +275,30 @@ export async function startHooksServer(): Promise<void> {
               send(200, { ok: false, error: 'missing id' });
             }
           } else if (route === '/message') {
-            if (typeof msg.to === 'string' && typeof msg.text === 'string') {
+            // THREE shapes on one route (issue #86). The discrimination is pure
+            // and lives in `shared/broadcast-targets.ts` so it is actually
+            // testable — this file imports Electron transitively and cannot be
+            // reached by the test runner.
+            //   { to: '<id>' }        -> single target, the ORIGINAL contract,
+            //                            answering the ORIGINAL {ok,delivery,branch}
+            //                            so an older CLI is byte-for-byte unaffected
+            //   { to: ['<id>', ...] } -> broadcast to an explicit list
+            //   { children: true }    -> broadcast to the caller's DIRECT children
+            // Broadcasts answer `{ok, results:[...]}` instead: a per-target
+            // report cannot be squeezed into one `delivery` field without lying
+            // about which target it describes.
+            const from = typeof msg.from === 'string' ? msg.from : undefined;
+            const shape = classifyMessageRoute(msg);
+            if (shape.kind === 'single') {
+              send(200, await dispatchMessageRequest({ from, to: shape.to, text: msg.text as string }));
+            } else if (shape.kind === 'broadcast') {
               send(
                 200,
-                await dispatchMessageRequest({
-                  from: typeof msg.from === 'string' ? msg.from : undefined,
-                  to: msg.to,
-                  text: msg.text,
+                await dispatchBroadcastMessageRequest({
+                  from,
+                  to: shape.to,
+                  children: shape.children,
+                  text: msg.text as string,
                 }),
               );
             } else {

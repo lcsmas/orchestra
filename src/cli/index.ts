@@ -27,6 +27,17 @@ interface OrchestraResponse {
   [key: string]: unknown;
 }
 
+/** One target's outcome in a broadcast reply (issue #86). Always carries `id`:
+ * a per-target report that cannot say WHICH target a status belongs to is
+ * indistinguishable from one status copied N times. */
+interface BroadcastTargetResult {
+  id: string;
+  ok: boolean;
+  branch?: string;
+  delivery?: string;
+  error?: string;
+}
+
 interface PeerInfo {
   id: string;
   branch: string;
@@ -135,6 +146,12 @@ Usage:
                                                  (--stats: + committed diff vs base per peer)
   orchestra read <id> [--lines N]                Print a workspace's transcript
   orchestra message <id> <text...>               Send a prompt to a workspace
+  orchestra message --children <text...>         Broadcast to your DIRECT children
+                                                 (not the whole subtree)
+  orchestra message --to <id,id,...> <text...>   Broadcast to an explicit list
+                                                 (both broadcast forms print one
+                                                  delivery line PER TARGET and exit
+                                                  non-zero if ANY target failed)
   orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]
                                                  Spawn a new worktree + agent
                                                  (--model: pin the agent's model, e.g. haiku/sonnet/opus;
@@ -660,9 +677,143 @@ async function main(argv: string[]): Promise<void> {
     }
 
     case 'message': {
+      // THE BRANCH IS CHOSEN FROM args[0] ALONE, BEFORE ANY FLAG SCANNING.
+      //
+      // This ordering is load-bearing, not stylistic. `takeBoolFlag`/`takeFlag`
+      // scan the WHOLE argv, so scanning first and branching after let a flag
+      // token sitting INSIDE THE MESSAGE BODY hijack the routing:
+      //
+      //     orchestra message ws1 pass --to bob
+      //       -> {"to":["bob"], "text":"ws1 pass"}   delivered to the WRONG
+      //          workspace, the real target swallowed into the text, RC=0.
+      //
+      // That shipped in the first cut of this ticket and is the mirror image of
+      // the defect #86 exists to fix: there a broadcast reached nobody and
+      // reported success; here a single-target send reaches the wrong agent and
+      // reports success. It is a LIKELY body of text, too — `--to` and
+      // `--children` are now this command's documented vocabulary, so "use
+      // --children for this, not --to" is an ordinary sentence to send a peer.
+      //
+      // A message body is DATA. The only way it can never be parsed as flags is
+      // to stop looking at it: everything after the leading token belongs to the
+      // payload, so `message <id> …` never flag-scans at all.
+      const leading = args[0];
+      const isBroadcast = leading === '--children' || leading === '--to';
+
+      if (isBroadcast) {
+        // Flag parsing is confined to the broadcast branch, where args[0] has
+        // already proven this is not a positional send.
+        const { present: children, rest: m1 } = takeBoolFlag(args, '--children');
+        const { value: toList, rest: m2 } = takeFlag(m1, '--to');
+        if (children && toList !== undefined) {
+          // KNOWN RESIDUAL, documented so it is not rediscovered as a bug
+          // (F-A, raised in review 2026-08-25). Inside a BROADCAST invocation
+          // the body is still flag-scanned, so an UNQUOTED flag token in the
+          // message text trips this refusal:
+          //
+          //   orchestra message --children use --to bob    -> RC=1, nothing sent
+          //   orchestra message --children "use --to bob"  -> delivered, text intact
+          //
+          // This is a shell-quoting distinction, not a parser defect: unquoted,
+          // `--to` genuinely IS its own argv element and nothing can tell it
+          // apart from a real flag. It is deliberately left as a REFUSAL — the
+          // safe direction, never a misdelivery — and it cannot affect the
+          // positional single-target form, which is chosen from args[0] before
+          // any flag scanning and never flag-strips its body at all.
+          fail('--children and --to are mutually exclusive: pass one or the other');
+        }
+        const text = m2.join(' ').trim();
+        if (!text) {
+          fail('usage: orchestra message (--children | --to <id,id,...>) <text...>');
+        }
+        // `--to` takes a COMMA-separated list. Blank entries are dropped here so
+        // a trailing comma (`--to a,b,`) is a typo, not a phantom empty target.
+        // Blanks dropped so a trailing comma (`--to a,b,`) is a typo rather than
+        // a phantom empty target, and DUPLICATES collapsed so `--to a,b,a`
+        // messages `a` once: delivering the same halt twice is not harmless, it
+        // becomes two separate turns for that agent. (The server dedupes too —
+        // it must, since the socket is callable without this CLI — but sending
+        // work we already know is redundant is its own bug.)
+        const ids =
+          toList === undefined
+            ? undefined
+            : [
+                ...new Set(
+                  toList
+                    .split(',')
+                    .map((t) => t.trim())
+                    .filter(Boolean),
+                ),
+              ];
+        if (ids !== undefined && ids.length === 0) {
+          fail('--to needs at least one workspace id');
+        }
+        const res = await request('/message', {
+          from: selfWorkspaceId(),
+          ...(children ? { children: true } : { to: ids }),
+          text,
+        });
+        const results = res.results as BroadcastTargetResult[] | undefined;
+        // No `results`, OR AN EMPTY ONE = the broadcast could not be ATTEMPTED
+        // (no caller id, no children, empty list). Nothing per-target to show,
+        // so this is the ordinary whole-command refusal.
+        //
+        // The `.length === 0` half matters even though today's server returns
+        // before ever building an empty `results` (all three zero-target paths
+        // answer `{ok:false,error}` instead). `[]` is TRUTHY, so a bare
+        // `if (!results)` would sail past it and print an empty table followed
+        // by `Delivered to 0 target(s).` at RC=0 — "reached nobody, reported
+        // success", which is the precise defect this whole ticket exists to
+        // eliminate. The client half is what decides the exit code an
+        // emergency-halt script gates on, so it refuses on its own terms rather
+        // than trusting the server to never hand it an empty list.
+        if (!results || results.length === 0) {
+          fail(res.error ?? 'failed to deliver message');
+        }
+
+        // ONE LINE PER TARGET. Each carries its OWN outcome: a report where
+        // every line says the same thing cannot distinguish a real per-target
+        // result from one status copied N times, which is precisely what this
+        // command exists to make visible.
+        const rows = results.map((r) => ({
+          id: r.id,
+          branch: r.branch ?? '',
+          delivery: r.ok ? (r.delivery ?? 'ok') : 'FAILED',
+          detail: r.ok ? '' : (r.error ?? 'unknown error'),
+        }));
+        const anyDetail = rows.some((r) => r.detail);
+        const columns = anyDetail
+          ? ['id', 'branch', 'delivery', 'detail']
+          : ['id', 'branch', 'delivery'];
+        process.stdout.write(`${table(rows, columns)}\n`);
+
+        const failed = results.filter((r) => !r.ok);
+        if (failed.length > 0) {
+          // The summary goes to STDERR and the exit is NON-ZERO: a partial
+          // failure must be visible both to a human reading the report and to a
+          // script gating on `$?`. An all-or-nothing 0 would hide the targets
+          // that never received an emergency halt behind the ones that did.
+          fail(
+            `${failed.length} of ${results.length} target(s) failed: ${failed
+              .map((r) => r.id)
+              .join(', ')}`,
+          );
+        }
+        process.stdout.write(`Delivered to ${results.length} target(s).\n`);
+        return;
+      }
+
+      // POSITIONAL SINGLE-TARGET FORM. `args` is used RAW — deliberately never
+      // flag-stripped — so the message text is passed through verbatim however
+      // many `--to`/`--children` tokens it happens to contain.
       const id = args[0];
       const text = args.slice(1).join(' ');
-      if (!id || !text) fail('usage: orchestra message <id> <text...>');
+      if (!id || !text)
+        fail(
+          'usage: orchestra message <id> <text...>\n' +
+            '   or: orchestra message --children <text...>\n' +
+            '   or: orchestra message --to <id,id,...> <text...>',
+        );
       const res = await request('/message', { from: selfWorkspaceId(), to: id, text });
       if (!res.ok) fail(res.error ?? 'failed to deliver message');
       const delivery = (res.delivery as string | undefined) ?? 'ok';
