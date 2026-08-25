@@ -238,6 +238,45 @@ export interface Workspace {
    * without a timestamp, a stale "wiring the tests" from yesterday reads as
    * live progress. Absent whenever `statusText` is absent. */
   statusTextAt?: number;
+  /** Why this workspace's LAST turn ended, when it ended for a reason the human
+   * needs to know about — `max_turns` (the session exhausted its turn budget)
+   * or `error`. Absent for the ordinary cases: a clean `end_turn` and the
+   * user's own `interrupted` owe the sidebar no explanation.
+   *
+   * ## Why this field exists (issue #69)
+   *
+   * The reason was already computed — `applyAgentEvent` threads it into
+   * `fireFinished` (activity.ts) — but it was used for ONE thing, a transient
+   * OS toast, and then thrown away. That toast is suppressed whenever the
+   * window is focused, so the user sitting in front of the app is precisely the
+   * one it never reaches; and `fireFinished` sets `status: 'idle'` for EVERY
+   * terminal reason, so a turn that died on the SDK turn limit is
+   * pixel-identical to one that finished cleanly.
+   *
+   * MEASURED (docs/research/issue-69-maxturns-findings.md): in the no-PTY
+   * configuration, 8 consecutive `error_max_turns` wrote no reason ANYWHERE —
+   * the `[WARN]` in the app log was the only record, which is verbatim what
+   * #69 reports. The turns keep running (the cap is per-turn and the queue is
+   * not starved); what the human never learns is that turns are failing, and
+   * why. Persisting the reason is what lets the sidebar say it.
+   *
+   * An axis ORTHOGONAL to {@link WorkspaceStatus}, like {@link autoUnread} and
+   * {@link loopingSince} — deliberately NOT a sixth status value: the status
+   * answers "what is this agent doing now" (nothing, in every terminal case),
+   * while this answers "how did it get here". Folding the two is exactly what
+   * made `waiting` ambiguous before. It also survives the boot reconcile in
+   * store.ts, which floors the nonterminal statuses to `idle` — a terminal
+   * already-happened fact is legitimately restorable where `running` is not.
+   *
+   * CLEARED the moment the agent takes another turn (`submit`/`pretool` in
+   * `applyAgentEvent`), so the marker never outlives the condition it reports.
+   * Stored ABSENT rather than as a sentinel; broadcast with an explicit
+   * `undefined` on clear because `workspace:update` is a MERGE and deleting the
+   * key cannot unset it. */
+  lastStopReason?: AgentStopReason;
+  /** Epoch ms when {@link lastStopReason} was recorded, so the tooltip can age
+   * it. Absent whenever `lastStopReason` is absent. */
+  lastStopReasonAt?: number;
   archived?: boolean;
   archivedAt?: number;
   hasInput?: boolean;

@@ -45,6 +45,43 @@ Event → status (`applyAgentEvent` `:471`):
   Managed Agents (typed `stop_reason` on `session.status_idle`) both model
   turn-end.
 - `notify` → `waiting` via `fireNeedsInput` `:109` ("needs input" toast).
+
+**The stop reason is PERSISTED, not just toasted (issue #69).** Until v0.5.260
+the reason was computed and thrown away after wording one OS toast — and that
+toast is suppressed whenever the window is focused, so the user sitting in
+front of the app never saw it. Since `fireFinished` sets `idle` for EVERY
+terminal reason, a session that had exhausted its turn budget was
+pixel-identical in the sidebar to one that finished cleanly.
+
+- `markStoppedOnMaxTurns(id)` (`src/main/activity.ts`) records that a turn died
+  on the SDK turn limit (`setStatus(id,'idle','max_turns')` — a stopped session
+  is idle; the REASON is the orthogonal axis). Called from `emitFrom`
+  (agent-sdk.ts) OUTSIDE the `driveStatus` single-writer gate: that gate is TRUE
+  only when a terminal PTY coexists, and MEASURED, 8 consecutive exhaustions in
+  the no-PTY configuration wrote no reason anywhere — which is #69's whole bug.
+  An E2E may NOT seed `lastStopReason`; a seeded value proves only that the
+  renderer renders a field.
+- `setStatus` (`src/main/activity.ts`) takes a third arg, `stopReason`:
+  `'max_turns' | 'error'` records, `null` CLEARS, `undefined` leaves alone. It
+  writes `Workspace.lastStopReason` / `lastStopReasonAt` on the SAME store write
+  and broadcast as the status, so the dot and its explanation stay atomic. The
+  marker is compared BEFORE the `ws.status === status` no-op short-circuit — a
+  second budget death on an already-`idle` workspace is a real change to WHY it
+  is idle, and would otherwise be swallowed.
+- `fireFinished` passes the reason through; `submit`/`pretool` pass `null`, so
+  the marker clears the moment the agent takes another turn.
+- Broadcast with an EXPLICIT `undefined` on clear: `workspace:update` is a MERGE
+  in the renderer and deleting a key cannot unset it (same trap as
+  `loopingSince`).
+- Rendered by `WorkspaceStatusGlyph` (`stopReason` prop) ABOVE the autoUnread
+  bell — "stopped and consuming nothing" outranks "finished, unseen" — as a
+  distinct SHAPE (octagon-alert for `max_turns`, circle-x for `error`), so the
+  state survives greyscale and colour-blindness. Tooltip clauses live in
+  `src/renderer/status-glyph-title.ts`. Passed at all five glyph call sites:
+  `src/renderer/components/Sidebar.tsx` (×2),
+  `src/renderer/components/InboxBell.tsx`,
+  `src/renderer/components/JumpPalette.tsx`,
+  `src/renderer/components/ResourcesView.tsx`.
 - **Loop marker** — `Workspace.loopingSince` (persisted, orthogonal to `status`
   like `autoUnread`; full set/clear rules in its types.ts doc). `markLooping`
   (activity.ts, mirrors `markAutoUnread` incl. the explicit-`undefined`

@@ -90,6 +90,15 @@ export async function markLooping(id: string, looping: boolean): Promise<void> {
 async function setStatus(
   id: string,
   status: WorkspaceStatus,
+  /** Why the last turn ended, when this transition is a turn-END and the reason
+   *  is one the human must see (issue #69). `null` explicitly CLEARS the
+   *  marker (the agent is working again); `undefined` leaves it untouched.
+   *
+   *  Threaded through here rather than written by a second `upsertWorkspace`
+   *  so it piggybacks the store write this function already makes — and so it
+   *  crosses the SAME broadcast, keeping the dot and its explanation atomic in
+   *  the renderer. */
+  stopReason?: AgentStopReason | null,
 ): Promise<{ ws: Workspace; changed: boolean } | null> {
   const ws = store.getWorkspace(id);
   if (!ws) {
@@ -103,12 +112,33 @@ async function setStatus(
     alog.trace(`setStatus(${status}) for archived ${ws.name} — dropped`);
     return null;
   }
-  if (ws.status === status) {
+  // The stop-reason marker moves INDEPENDENTLY of the status (issue #69): a
+  // turn that blows its budget ends `running → idle`, but a SECOND one on an
+  // already-`idle` workspace (a queued turn that died instantly on the same
+  // exhausted budget) is a real change to WHY it is idle while the status is
+  // unchanged. Computing this before the no-op guard is what stops that
+  // second, more important, signal being swallowed by it.
+  const nextStopReason = stopReason === null ? undefined : (stopReason ?? ws.lastStopReason);
+  const reasonChanged = nextStopReason !== ws.lastStopReason;
+  if (ws.status === status && !reasonChanged) {
     alog.trace(`${ws.name}: status already ${status} (no-op)`);
     return { ws, changed: false };
   }
-  alog.trace(`${ws.name}: ${ws.status} → ${status}`);
-  const updated: Workspace = { ...ws, status };
+  alog.trace(
+    `${ws.name}: ${ws.status} → ${status}` +
+      (reasonChanged ? ` (stop reason ${ws.lastStopReason ?? 'none'} → ${nextStopReason ?? 'none'})` : ''),
+  );
+  const updated: Workspace = {
+    ...ws,
+    status,
+    // Assigned EXPLICITLY (including to `undefined`) rather than deleted: the
+    // renderer merges `workspace:update` over its current record, and a merge
+    // cannot unset an absent key — deleting it here would leave a cleared
+    // marker rendering forever. Same reason `loopingSince` is broadcast this
+    // way (see types.ts).
+    lastStopReason: nextStopReason,
+    lastStopReasonAt: nextStopReason ? (reasonChanged ? Date.now() : ws.lastStopReasonAt) : undefined,
+  };
   // Broadcast to the renderer first, then persist. upsertWorkspace mutates the
   // in-memory store synchronously (before its first await), so state is already
   // consistent here — but its disk flush is serialized through one write chain
@@ -159,7 +189,14 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
   // your answer". A finished turn owes you nothing — whether you have looked at
   // it is carried by `autoUnread` below, which is a property of your attention
   // rather than of the agent's state.
-  void setStatus(id, 'idle').then((res) => {
+  // Record WHY, on the same write (issue #69). `end_turn`/`interrupted` pass
+  // `null` so a clean finish CLEARS any marker a previous turn left — without
+  // that, one budget exhaustion would brand the row until the app restarted.
+  void setStatus(
+    id,
+    'idle',
+    stopReason === 'max_turns' || stopReason === 'error' ? stopReason : null,
+  ).then((res) => {
     if (!res) return;
     const { ws, changed } = res;
     // EVERY user-facing side effect — the unread bell, the renderer chime
@@ -207,6 +244,48 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
  *  for a parked question — its `canUseTool` bridge (agent-sdk.ts) emits a
  *  renderer-only `permission-request` event — so it calls this directly when it
  *  parks an interactive tool call. Exported for that caller. */
+/** Record that this workspace's session STOPPED because it hit its turn limit
+ *  (issue #69), so the sidebar can say WHY.
+ *
+ *  ## Why this exists rather than riding the normal turn-end path
+ *
+ *  The reason is already known upstream: `toStopReason`
+ *  (`src/shared/agent-events.ts`) NORMALIZES a result carrying
+ *  `subtype: 'error_max_turns'` (or `stop_reason: 'max_turns'`) into a
+ *  `turn-end` event with `stopReason: 'max_turns'`, and `emitFrom`
+ *  (`src/main/agent-sdk.ts`) keys on exactly that normalized value before
+ *  calling this. Nothing here re-derives it from CLI text.
+ *
+ *  What this call adds is REACH. The same reason would otherwise travel only
+ *  via `driveStatusFromEvent`, which is gated on `session.driveStatus` — TRUE
+ *  only when a terminal PTY coexists. In the plain structured-view
+ *  configuration the SDK's own shell hooks own the events spool instead, and
+ *  they carry no reason field at all: MEASURED, 8 consecutive exhaustions in
+ *  that configuration wrote no reason ANYWHERE, leaving only a `[WARN]` in the
+ *  app log — verbatim the bug #69 reports. So `emitFrom` calls this OUTSIDE
+ *  that gate, the same exemption `markLooping` takes and for the same reason:
+ *  the gate exists to stop double-DRIVING the status dot, while this is a
+ *  store field with its own no-change guard (`setStatus` returns
+ *  `changed: false` when neither the status nor the reason moved), so the two
+ *  paths overlap safely.
+ *
+ *  Status stays `idle` — a stopped session is idle; the REASON is the
+ *  orthogonal axis, never a sixth `WorkspaceStatus`.
+ *
+ *  ## History worth keeping (do not delete this paragraph)
+ *
+ *  The first version of this fix passed its E2E only because the drive SEEDED
+ *  `lastStopReason` directly — it proved the renderer renders a field, and was
+ *  structurally blind to the producer being broken. The disclosed gap in that
+ *  attempt's own NOT VERIFIED list ("nothing proves activity.ts actually writes
+ *  lastStopReason on a real max_turns event") was EXACTLY where the defect
+ *  lived. A NOT-VERIFIED entry naming the defect class under test is a STOP,
+ *  not a footnote. Never accept a seeded `lastStopReason` as proof of this
+ *  seam; drive the producer. */
+export async function markStoppedOnMaxTurns(id: string): Promise<void> {
+  await setStatus(id, 'idle', 'max_turns');
+}
+
 export function fireNeedsInput(id: string): void {
   const focused = platform.isFocused();
   void setStatus(id, 'waiting').then((res) => {
@@ -672,11 +751,15 @@ export function applyAgentEvent(
       // and the model is generating before any tool runs. That window is also
       // event-free, so label it rather than clearing.
       emitTool(id, THINKING_TOOL_LABEL);
-      void setStatus(id, 'running');
+      // `null` clears any stop-reason marker (#69): the agent is taking a turn,
+      // so whatever ended the LAST one is no longer the workspace's state. Done
+      // on the running transition rather than on the next turn-end so the badge
+      // disappears the moment work resumes, not one turn later.
+      void setStatus(id, 'running', null);
       break;
     case 'pretool':
       emitTool(id, tool ?? null);
-      void setStatus(id, 'running');
+      void setStatus(id, 'running', null);
       // A ScheduleWakeup call is the /loop skill re-arming its next iteration —
       // the observable that marks this workspace as LOOPING. Detected here
       // because this is the one chokepoint both agent paths cross with the

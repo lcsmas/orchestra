@@ -293,6 +293,34 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   "thinking · N tokens" readout while redacted thinking streams nothing else.
   A `status` message's `permissionMode` also emits `session/update` (CLI-side
   mode changes reflect live).
+- **The turn limit fails ONE turn, and the human must be told (issue #69)** —
+  MEASURED against the real SDK, 2026-08-25 (probes recorded in
+  `docs/research/issue-69-maxturns-findings.md`). Two earlier readings were
+  wrong and are worth knowing so nobody re-derives them:
+  `maxTurns` is **not** a session-lifetime budget (it is PER-TURN: with
+  `maxTurns:1`, one prompt returns `error_max_turns` and the NEXT runs with a
+  full budget), and the "second exhaustion throws and kills the queue" story was
+  a **rig artifact** — that throw needs the async generator to TERMINATE, and
+  Orchestra's `promptStream` is `for(;;)`, returning only on
+  `session.stopping`. Re-probed with a never-ending generator: five consecutive
+  `error_max_turns`, zero throws. **The queue is not starved** — alternating
+  hard/easy prompts under `maxTurns:1` ran 4 of 4, exhaust/succeed/exhaust/succeed.
+  So there is nothing to recover, and an earlier draft's ~250 lines of
+  resume/runaway-guard machinery hung off a `catch` that cannot fire; it was
+  deleted rather than shipped unreachable.
+  What IS broken is the surfacing: measured in the app, **8 consecutive
+  exhaustions in the no-PTY configuration wrote no reason anywhere**, leaving
+  only a `[WARN]` in the app log — verbatim the bug #69 reports. The reason
+  WOULD ride `driveStatusFromEvent → applyAgentEvent('stop', …, 'max_turns') →
+  fireFinished`, but that helper is gated on `session.driveStatus`, TRUE **only
+  when a terminal PTY coexists**; otherwise the SDK's own shell hooks own the
+  spool and they carry no reason field at all. So `emitFrom` calls
+  `markStoppedOnMaxTurns` (activity.ts) on a `turn-end` with
+  `stopReason === 'max_turns'`, deliberately **outside** that gate — the same
+  exemption `markLooping` takes, and for the same reason: the gate exists to
+  stop double-DRIVING the status dot, while this is a store field with its own
+  no-change guard (`setStatus` returns `changed:false` when neither status nor
+  reason moved), so the two paths overlap safely.
 - **Turn-lifecycle ledger close (consume())** — the loop's `catch`/`finally`
   now (a) emits an error for undelivered `session.queue` entries ("N queued
   messages were not delivered") **and settles their delivery watchers as

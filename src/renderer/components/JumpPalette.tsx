@@ -115,6 +115,7 @@ export function JumpPalette({ onClose }: { onClose: () => void }) {
                   unread={!!w.markedUnread}
                   autoUnread={!!w.autoUnread}
                   looping={!!w.loopingSince}
+                  stopReason={w.lastStopReason === 'max_turns' || w.lastStopReason === 'error' ? w.lastStopReason : undefined}
                   title={statusGlyphTitle(w)}
                 />
                 <span className="jump-branch">{t.branch}</span>

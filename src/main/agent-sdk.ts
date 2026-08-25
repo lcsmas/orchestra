@@ -59,6 +59,7 @@ import {
   fireNeedsInput,
   resumeRunning,
   markLooping,
+  markStoppedOnMaxTurns,
 } from './activity';
 import { makeKeeperSpawn, killKeeper, probeKeeper } from './keeper-client';
 import { registerSdkDelivery } from './sdk-delivery';
@@ -474,6 +475,29 @@ function emitFrom(session: Session, msg: SdkMessage): void {
     // no-change guard.
     if (ev.type === 'tool-use' && ev.name === 'ScheduleWakeup') {
       void markLooping(session.wsId, ev.input?.stop !== true);
+    }
+    // ── #69: the turn-limit REASON, outside the single-writer gate ──
+    // MEASURED (docs/research/issue-69-maxturns-findings.md, third correction):
+    // a turn that dies on `error_max_turns` is the ONLY thing #69 actually
+    // reports, and today nothing tells the human. `driveStatusFromEvent` below
+    // WOULD carry the reason — but it is gated on `session.driveStatus`, which
+    // is TRUE ONLY when a terminal PTY coexists. In the plain structured-view
+    // configuration (no PTY) the SDK's own shell hooks own the spool instead,
+    // and they carry no reason field at all: measured, 8 consecutive
+    // exhaustions wrote NO reason anywhere, leaving only the [WARN] in the app
+    // log — verbatim the bug in the issue.
+    //
+    // Written here, deliberately OUTSIDE the gate, for exactly the reason
+    // `markLooping` above is: that gate exists to stop double-DRIVING the
+    // status dot, whereas this is a store field with its own no-change guard
+    // (`setStatus` returns `changed:false` when neither status nor reason
+    // moved), so the two paths can overlap safely.
+    //
+    // Note this is the BENIGN, self-recovering exhaustion — the queue keeps
+    // being consumed (measured: 4 of 4 prompts ran, alternating exhaust/
+    // succeed). Nothing is being recovered here; the human is being TOLD.
+    if (ev.type === 'turn-end' && ev.stopReason === 'max_turns') {
+      void markStoppedOnMaxTurns(session.wsId);
     }
     driveStatusFromEvent(session, ev);
     if (ev.type === 'session/init') {
@@ -951,6 +975,13 @@ async function consume(session: Session): Promise<void> {
           resolve({ action: 'cancel' });
           session.pendingElicitations.delete(id);
         }
+        // #69: an `error_max_turns` result needs no special handling HERE —
+        // MEASURED, the cap is per-TURN and the session recovers on its own
+        // (4 of 4 queued prompts ran, alternating exhaust/succeed). The turn
+        // is already normalized to a `turn-end` with stopReason 'max_turns';
+        // what was missing was telling the HUMAN, which emitFrom now does
+        // outside the driveStatus gate. See the third correction in
+        // docs/research/issue-69-maxturns-findings.md.
         const openNext = session.turnGate;
         session.turnGate = null;
         openNext?.();
