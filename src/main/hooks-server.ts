@@ -31,6 +31,7 @@ import {
   dispatchLinearPinRequest,
   dispatchLinearRemoveRequest,
 } from './linear-tickets';
+import { classifyMessageRoute } from '../shared/broadcast-targets.ts';
 import { dispatchLoginUrlRequest } from './login-url';
 import { dispatchReloadSkillsRequest } from './agent-sdk';
 import { log } from './logger';
@@ -274,31 +275,30 @@ export async function startHooksServer(): Promise<void> {
               send(200, { ok: false, error: 'missing id' });
             }
           } else if (route === '/message') {
-            // THREE shapes on one route, and the discrimination is deliberate:
-            //   { to: '<id>' }            → single target, the ORIGINAL contract
-            //   { to: ['<id>', ...] }     → broadcast to an explicit list
-            //   { children: true }        → broadcast to the caller's children
-            // The single-target branch is checked FIRST and answers the exact
-            // legacy `{ok, delivery, branch}` shape, so an older CLI talking to
-            // a newer app is byte-for-byte unaffected (issue #86). Broadcasts
-            // answer `{ok, results:[...]}` instead — a DIFFERENT shape, because
-            // a per-target report cannot be squeezed into a single `delivery`
-            // field without lying about which target it describes.
+            // THREE shapes on one route (issue #86). The discrimination is pure
+            // and lives in `shared/broadcast-targets.ts` so it is actually
+            // testable — this file imports Electron transitively and cannot be
+            // reached by the test runner.
+            //   { to: '<id>' }        -> single target, the ORIGINAL contract,
+            //                            answering the ORIGINAL {ok,delivery,branch}
+            //                            so an older CLI is byte-for-byte unaffected
+            //   { to: ['<id>', ...] } -> broadcast to an explicit list
+            //   { children: true }    -> broadcast to the caller's DIRECT children
+            // Broadcasts answer `{ok, results:[...]}` instead: a per-target
+            // report cannot be squeezed into one `delivery` field without lying
+            // about which target it describes.
             const from = typeof msg.from === 'string' ? msg.from : undefined;
-            if (typeof msg.text !== 'string') {
-              send(200, { ok: false, error: 'missing to or text' });
-            } else if (typeof msg.to === 'string') {
-              send(200, await dispatchMessageRequest({ from, to: msg.to, text: msg.text }));
-            } else if (Array.isArray(msg.to) || msg.children === true) {
+            const shape = classifyMessageRoute(msg);
+            if (shape.kind === 'single') {
+              send(200, await dispatchMessageRequest({ from, to: shape.to, text: msg.text as string }));
+            } else if (shape.kind === 'broadcast') {
               send(
                 200,
                 await dispatchBroadcastMessageRequest({
                   from,
-                  to: Array.isArray(msg.to)
-                    ? msg.to.filter((t): t is string => typeof t === 'string')
-                    : undefined,
-                  children: msg.children === true,
-                  text: msg.text,
+                  to: shape.to,
+                  children: shape.children,
+                  text: msg.text as string,
                 }),
               );
             } else {

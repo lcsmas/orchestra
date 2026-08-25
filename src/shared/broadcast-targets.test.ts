@@ -84,3 +84,67 @@ test('--to with nothing usable is EMPTY, so the caller refuses instead of broadc
   assert.deepEqual(normalizeExplicitTargets(['', '   ']), []);
   assert.deepEqual(normalizeExplicitTargets([]), []);
 });
+
+// ---------------------------------------------------------------------------
+// ROUTE DISCRIMINATION. `/message` grew two new shapes on the SAME route, so
+// the one change in #86 that could break EXISTING callers is mis-routing a
+// legacy single-target request. These pin that it cannot happen.
+// ---------------------------------------------------------------------------
+import { classifyMessageRoute } from './broadcast-targets.ts';
+
+test('a legacy single-target body still routes to the SINGLE path', () => {
+  // The whole backward-compatibility promise in one assertion: every already
+  // installed CLI and hook sends exactly this shape and must keep receiving the
+  // original {ok, delivery, branch} reply.
+  assert.deepEqual(classifyMessageRoute({ to: 'ws-1', text: 'hi' }), {
+    kind: 'single',
+    to: 'ws-1',
+  });
+});
+
+test('an array `to` routes to BROADCAST, children false', () => {
+  assert.deepEqual(classifyMessageRoute({ to: ['a', 'b'], text: 'hi' }), {
+    kind: 'broadcast',
+    to: ['a', 'b'],
+    children: false,
+  });
+});
+
+test('children:true routes to BROADCAST with no explicit list', () => {
+  assert.deepEqual(classifyMessageRoute({ children: true, text: 'hi' }), {
+    kind: 'broadcast',
+    children: true,
+  });
+});
+
+test('a string `to` WINS over a stray children flag', () => {
+  // Belt and braces: if both arrive, the legacy contract must not be re-routed
+  // into a shape the caller cannot parse.
+  assert.deepEqual(classifyMessageRoute({ to: 'ws-1', children: true, text: 'hi' }), {
+    kind: 'single',
+    to: 'ws-1',
+  });
+});
+
+test('non-string entries in a `to` array are dropped, not passed through', () => {
+  const got = classifyMessageRoute({ to: ['a', 42, null, 'b'], text: 'hi' });
+  assert.deepEqual(got, { kind: 'broadcast', to: ['a', 'b'], children: false });
+});
+
+test('a missing or non-string text is INVALID whatever the target shape', () => {
+  // Guards against a broadcast being dispatched with `undefined` interpolated
+  // into every target's message body.
+  for (const body of [
+    { to: 'ws-1' },
+    { to: ['a'] },
+    { children: true },
+    { to: 'ws-1', text: 42 },
+  ]) {
+    assert.equal(classifyMessageRoute(body).kind, 'invalid', JSON.stringify(body));
+  }
+});
+
+test('no target of any kind is INVALID', () => {
+  assert.equal(classifyMessageRoute({ text: 'hi' }).kind, 'invalid');
+  assert.equal(classifyMessageRoute({ text: 'hi', children: false }).kind, 'invalid');
+});
