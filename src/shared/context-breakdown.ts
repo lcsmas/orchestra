@@ -172,3 +172,52 @@ export function shortenMemoryPath(p: string): string {
   if (parts.length <= 2) return p;
   return `…/${parts.slice(-2).join('/')}`;
 }
+
+/** Default gap between the panel's right edge and the window edge when it has
+ *  to be pulled back inside the viewport. Matches the 8px the panel already
+ *  uses vertically in `bottom:calc(100% + 8px)`. */
+export const CTX_PANEL_GUTTER_PX = 8;
+
+/**
+ * How far LEFT to shift the context-breakdown panel so it stays inside the
+ * viewport (issue #35). Pure arithmetic over a measured rect — no DOM — so the
+ * unit suite can execute it; the caller
+ * (`ContextBreakdownPanel.tsx`) only measures and applies the result.
+ *
+ * WHY THIS IS NOT INLINE IN THE .tsx, even though it is three lines: a decision
+ * living in a component is a decision no test can run. `node --test` does not
+ * transform JSX, so a JSX-resident branch regresses SILENTLY — that is not
+ * hypothetical here, it is the documented history of this very feature
+ * (`TurnFooter.tsx`: reverting a render-time branch "left all 844 unit tests
+ * GREEN while the gauge vanished in the built app"), and it is why
+ * `describeContextGauge` exists. Same rule, same reason.
+ *
+ * The panel is `position:absolute; left:0` off its anchor at a fixed width, so
+ * whether it fits depends entirely on where the anchor sits.
+ *
+ * @param left        the panel's UNSHIFTED left edge, viewport-relative
+ * @param right       the panel's UNSHIFTED right edge, viewport-relative
+ * @param innerWidth  the viewport width
+ * @param gutter      gap to leave at the right edge; defaults to CTX_PANEL_GUTTER_PX
+ * @returns a NON-NEGATIVE shift in px — 0 means "leave placement untouched"
+ */
+export function computeCtxShift({
+  left,
+  right,
+  innerWidth,
+  gutter = CTX_PANEL_GUTTER_PX,
+}: {
+  left: number;
+  right: number;
+  innerWidth: number;
+  gutter?: number;
+}): number {
+  // `Math.max(0, …)` is the FLOOR: without it a panel that already fits yields a
+  // negative overhang and the panel would be shifted RIGHT, off the other edge.
+  const overhang = Math.max(0, right + gutter - innerWidth);
+  // Never shift further than the panel's own distance from x=0, or correcting
+  // the right edge pushes the LEFT edge off-screen. When the panel is wider
+  // than the viewport both edges cannot be satisfied; the left edge wins,
+  // because that is where the content starts.
+  return Math.min(overhang, Math.max(0, left));
+}

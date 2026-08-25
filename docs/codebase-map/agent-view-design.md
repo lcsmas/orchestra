@@ -161,6 +161,44 @@ tint + the standard `:focus-visible` ring only. When the reading has NO
 breakdown (transcript fallback) the gauge stays a plain `div` with no button
 semantics: there is deliberately no empty-state panel.
 
+**The panel is clamped on BOTH axes, and the horizontal clamp is deliberately
+not pure CSS** (issue #35). Vertically it stays `max-height:60vh` + internal
+scroll, as above. Horizontally, `.av-ctx-panel` is `position:absolute; left:0`
+off `.av-ctx-anchor` at a FIXED `width:320px`, so whether it fits depends purely
+on where the gauge sits: measured on the built app at the enforced minimum
+window (`minWidth:900`, `src/main/index.ts`), dragging the sidebar to its max
+(560, clamped in `App.tsx`) put the panel's right edge at 1097.63 against a
+900px viewport — 197.63px off-screen. The exact sidebar width at which overflow
+BEGINS is **rig-dependent** (it moves with chrome height and font metrics — one
+rig measured the last fit at 360, an independent second rig at 350), so treat it
+as "the wide end of the sidebar range overflows", never as a constant.
+
+The shift itself is computed by the pure **`computeCtxShift`**
+(`src/shared/context-breakdown.ts`, unit-tested in `context-breakdown.test.ts`)
+and applied as a `translateX` on `--av-ctx-shift` from a `useLayoutEffect` in
+`ContextBreakdownPanel.tsx`. **The math lives in `src/shared/` deliberately**:
+a decision sited in the `.tsx` is one `node --test` can never execute (it does
+not transform JSX), which is the documented regression this view already had
+once — see the `TurnFooter.tsx` comment and `describeContextGauge`. The
+component only measures and applies.
+
+The shift is **0px once the panel is clear of the gutter**, so normal placement
+is unchanged — though not byte-identical right at the boundary, since the 8px
+gutter engages the shift slightly before true overflow (at sidebar=355 the panel
+fitted at right=894.4 yet took a 4.49px shift).
+
+Three cheaper fixes were measured and REJECTED — do not "simplify" into them:
+`max-width:calc(100vw - 16px)` (what issue #35 itself suggests) is a NO-OP,
+because it only binds when `100vw - 16px` < the panel's 320px, which no
+reachable width satisfies — the panel is mispositioned, not too wide; a bare
+`right:0` flip **re-anchors unconditionally**, moving the panel even where it
+already fitted (sidebar=240: left 463.89 → 211.73) — note the left-edge
+overflow once cited against it came from forcing the anchor to x=4, which
+`SIDEBAR_WIDTH_MIN = 240` makes unreachable, so that reason was wrong even
+though the conclusion holds; and `position:fixed` fixes the horizontal axis but
+breaks the vertical one, since `bottom:calc(100% + 8px)` then resolves against
+the viewport.
+
 The stack holds the pasted-image
 strip above `.av-composer-cm`; the column's `gap:4px` is the ONLY vertical space
 between thumbnails and text — attachments used to be a `width:100%` wrapping sibling of

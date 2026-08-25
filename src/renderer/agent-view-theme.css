@@ -2647,6 +2647,14 @@ h6.av-md-h {
 .av-ctx-panel {
   position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 40;
   width: 320px; max-height: 60vh; overflow-y: auto;
+  /* Horizontal viewport clamp (issue #35), the companion to `max-height:60vh`
+     above: `left:0` is the ANCHOR's left edge, so with the sidebar dragged wide
+     at the 900px minimum window the fixed 320px panel ran up to 197.63px past
+     the right edge. `--av-ctx-shift` is measured in ContextBreakdownPanel.tsx
+     (a pure-CSS clamp cannot do it — see the long comment there for the three
+     candidates that were measured and rejected) and is 0px whenever the panel
+     already fits, so normal placement is unchanged. */
+  transform: translateX(calc(-1 * var(--av-ctx-shift, 0px)));
   display: flex; flex-direction: column; gap: 8px;
   padding: 12px 14px; border-radius: var(--radius, 8px);
   border: 1px solid var(--av-hairline-strong);

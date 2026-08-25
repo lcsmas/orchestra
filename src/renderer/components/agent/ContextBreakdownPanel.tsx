@@ -20,6 +20,7 @@
 import React from 'react';
 import {
   buildContextBreakdown,
+  computeCtxShift,
   shortenMemoryPath,
   truncateList,
   type BreakdownRow,
@@ -248,6 +249,74 @@ export function ContextBreakdownPanel({
 }) {
   const breakdown = buildContextBreakdown(usage);
   const ref = React.useRef<HTMLDivElement | null>(null);
+
+  // Keep the panel inside the viewport horizontally (issue #35).
+  //
+  // The panel is `position:absolute; left:0` off `.av-ctx-anchor`, with a FIXED
+  // 320px width — so whether it fits is purely a function of how far right the
+  // gauge sits. Measured on the built app at the enforced minimum window width
+  // (`minWidth:900`, src/main/index.ts): dragging the sidebar to its max (560,
+  // clamped in App.tsx) puts the panel's right edge at 1097.63 against a 900px
+  // viewport — 197.63px, 62% of it, off-screen. The exact sidebar width at
+  // which overflow BEGINS is RIG-DEPENDENT (it moves with chrome height and
+  // font metrics): this rig saw the last fit at 360, an independent second rig
+  // at 350. Do not quote a threshold as a constant — what is stable is that the
+  // wide end of the sidebar range overflows and the narrow end does not.
+  //
+  // WHY THIS IS JS AND NOT A CSS ONE-LINER — both cheaper fixes were measured
+  // and REJECTED, so don't "simplify" this back into them:
+  //   • `max-width:calc(100vw - 16px)` (the fix issue #35 itself suggests) is a
+  //     NO-OP. It binds only if 100vw-16px < the panel's width; at vw=900 that
+  //     is 884px vs a 320px panel, so it never applies at any reachable width.
+  //     The panel is MISPOSITIONED, not too wide.
+  //   • An unconditional `right:0` flip fixes the right edge but RE-ANCHORS
+  //     UNCONDITIONALLY, moving the panel even where it already fitted
+  //     (measured at sidebar=240: left 463.89 -> 211.73). THAT is the
+  //     disqualifier. An earlier note here claimed it pushed the panel to
+  //     left=-248px; that reading came from forcing the anchor to x=4 with an
+  //     inline style, a state `SIDEBAR_WIDTH_MIN = 240` makes UNREACHABLE, so
+  //     it is not a real-world argument. The conclusion stood, the reason did
+  //     not — recorded so this is not re-litigated. (`computeCtxShift` still
+  //     clamps the left edge: that guard is about the panel being wider than
+  //     the viewport, which IS reachable.)
+  //   • `position:fixed` (which WOULD make a pure-CSS clamp possible, since the
+  //     containing block becomes the viewport) breaks the vertical axis —
+  //     `bottom:calc(100% + 8px)` then resolves against the viewport and the
+  //     panel's bottom measured 1108px on a 871px-tall viewport.
+  // So we shift left by exactly the overhang, and by ZERO once the panel is
+  // clear of the gutter. NOTE the shift engages slightly BEFORE the panel truly
+  // overflows, because the gutter is inside the overhang: at sidebar=355 the
+  // panel still fitted (right=894.4 < 900) yet took a 4.49px shift. Intended —
+  // the gutter is what keeps it off the window edge — so placement is unchanged
+  // in the common case but NOT byte-identical right at the boundary. The
+  // vertical contract (`max-height:60vh` + internal scroll) is untouched.
+  React.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const apply = () => {
+      // Clear first so we measure the panel's UNSHIFTED position — otherwise a
+      // previous shift is baked into the reading and the correction compounds
+      // toward zero on every resize.
+      el.style.removeProperty('--av-ctx-shift');
+      const rect = el.getBoundingClientRect();
+      // The arithmetic (gutter, the zero floor, the left-edge cap) lives in
+      // `computeCtxShift` so the unit suite can execute it — a decision sited
+      // in this .tsx would be untestable, which is the documented failure mode
+      // this component's sibling comment in TurnFooter.tsx warns about. This
+      // effect only MEASURES and APPLIES.
+      const shift = computeCtxShift({
+        left: rect.left,
+        right: rect.right,
+        innerWidth: window.innerWidth,
+      });
+      if (shift > 0) el.style.setProperty('--av-ctx-shift', `${shift}px`);
+    };
+    apply();
+    window.addEventListener('resize', apply);
+    return () => {
+      window.removeEventListener('resize', apply);
+    };
+  }, [breakdown]);
 
   React.useEffect(() => {
     const onDown = (e: MouseEvent) => {

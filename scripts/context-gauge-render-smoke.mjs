@@ -441,4 +441,115 @@ console.log('real captured payloads (scripts/fixtures):');
   }
 }
 
+// ── #35: SOURCE-BOUND ASSERTIONS FOR THE HORIZONTAL VIEWPORT CLAMP ───────────
+//
+// WHAT THIS CANNOT DO: it CANNOT see geometry. `renderToString` has no layout
+// engine — every rect here would be 0x0 — so nothing in this file can prove the
+// panel actually stays inside the viewport. That was measured over CDP against
+// the built app (issue #35: at the enforced 900px minWidth with the sidebar
+// dragged to its max 560, the panel's right edge sat at 1097.63 vs vw=900,
+// i.e. 197.63px off-screen; fixed it lands at 894.4). Those numbers are NOT
+// re-derived here and this file must never be read as re-verifying them.
+//
+// WHAT IT DOES: fails loudly if the clamp is DELETED. The clamp is one small
+// `useLayoutEffect` plus one CSS declaration, exactly the shape a future
+// "simplify" pass removes as dead weight — and with no CI-runnable geometry
+// gate in this repo, nothing else would notice. So assert the mechanism
+// survived into the COMPILED bundle that the renders above executed (not a
+// re-read of the .tsx text, so a clamp that fails to compile is caught too),
+// and that the CSS half is still in the stylesheet.
+console.log('\nContext panel horizontal clamp (#35) — source-bound, NOT geometry:');
+{
+  const bundle = fs.readFileSync(outfile, 'utf8');
+
+  // POSITIVE CONTROLS FIRST — an unreadable path or an empty file would make
+  // every assertion below pass vacuously in the "absent" direction.
+  check(
+    'CONTROL: the bundle is readable and contains the panel code',
+    bundle.length > 10_000 && bundle.includes('av-ctx-panel'),
+    `bundle length ${bundle.length}`,
+  );
+  check(
+    'CONTROL: a pattern that must NOT exist is absent',
+    !bundle.includes('zzzNoSuchPatternZzz'),
+  );
+
+  // Patterns are matched against esbuild's ACTUAL emitted text, read out of
+  // this very bundle while writing them rather than guessed. Both a readable
+  // and a minified spelling are accepted so a config change does not false-fail.
+  check(
+    'the clamp custom property survives compilation',
+    /--av-ctx-shift/.test(bundle),
+    'no `--av-ctx-shift` in the bundle — the horizontal clamp was removed',
+  );
+  check(
+    'the clamp measures the panel rect against the viewport',
+    /getBoundingClientRect\(\)/.test(bundle) && /innerWidth:\s*window\.innerWidth/.test(bundle),
+    'the overhang measurement is gone, or the viewport width is no longer passed to the clamp',
+  );
+  // The var must be CLEARED before measuring, or a previous shift is baked into
+  // the reading and successive corrections compound toward zero.
+  check(
+    'the clamp clears its own shift before measuring',
+    /removeProperty\(\s*["'`]--av-ctx-shift["'`]\s*\)/.test(bundle),
+    'the reset-before-measure step is gone — shifts would compound on resize',
+  );
+  // The left-edge guard: shifting by the raw overhang would push the panel off
+  // the LEFT edge when the anchor sits far left (measured: left=-248.16px).
+  // NB the shape below matches `computeCtxShift` in `shared/context-breakdown.ts`,
+  // NOT inline arithmetic in the .tsx. The math was extracted there so the unit
+  // suite can execute it (see that file's comment); this assertion followed it.
+  // It false-FAILED loudly during that refactor rather than silently passing,
+  // which is the intended failure direction for a structural gate.
+  check(
+    'the left-edge clamp survives compilation',
+    /Math\.min\(\s*overhang\s*,\s*Math\.max\(\s*0\s*,\s*left\s*\)\s*\)/.test(bundle),
+    'the left-edge clamp is gone — the fix would become its own mirror bug',
+  );
+  check(
+    'the panel delegates the shift math to the shared pure function',
+    /computeCtxShift\s*\(/.test(bundle),
+    'the panel no longer calls computeCtxShift — the math may have been re-inlined into the .tsx, where no unit test can reach it',
+  );
+
+  // The CSS half. The JS above only sets a custom property; without this
+  // declaration it is inert, and that failure is invisible to every render
+  // assertion in this file.
+  const css = fs.readFileSync(path.join(repoRoot, 'src/renderer/agent-view-theme.css'), 'utf8');
+  check(
+    'CONTROL: the stylesheet is readable and contains the panel rule',
+    css.length > 10_000 && css.includes('.av-ctx-panel'),
+    `css length ${css.length}`,
+  );
+  // SCOPE TO THE RULE BODY, NOT THE WHOLE FILE. Measured while building this:
+  // a whole-file `/max-height:\s*60vh/` test stayed GREEN after the declaration
+  // was deleted from `.av-ctx-panel`, because the stylesheet carries a second
+  // `max-height:60vh` (and seven `overflow-y:auto`) in unrelated rules. A probe
+  // aimed at the wrong subject cannot fail — it was a vacuous assertion until
+  // the mutant matrix caught it.
+  const panelRule = (() => {
+    const at = css.indexOf('.av-ctx-panel {');
+    if (at < 0) return '';
+    const close = css.indexOf('}', at);
+    return close < 0 ? '' : css.slice(at, close);
+  })();
+  check(
+    'CONTROL: the `.av-ctx-panel` rule body was isolated',
+    panelRule.length > 100 && panelRule.includes('width: 320px'),
+    `panel rule length ${panelRule.length}`,
+  );
+  check(
+    'the panel rule consumes the shift via translateX',
+    /transform:\s*translateX\(\s*calc\([^)]*--av-ctx-shift/.test(panelRule),
+    'the `translateX(calc(... --av-ctx-shift ...))` declaration is gone — the JS is inert',
+  );
+  // The vertical clamp is a documented contract item (agent-view-design.md);
+  // the horizontal one was ADDED ALONGSIDE it, never replacing it.
+  check(
+    'the vertical clamp contract (max-height:60vh + scroll) is still intact',
+    /max-height:\s*60vh/.test(panelRule) && /overflow-y:\s*auto/.test(panelRule),
+    'the #16 vertical contract was dropped while adding the horizontal clamp',
+  );
+}
+
 process.exit(failures === 0 ? 0 : 1);
