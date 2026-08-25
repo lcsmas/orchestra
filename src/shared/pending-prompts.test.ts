@@ -174,3 +174,47 @@ test('a malformed peer field is dropped, not half-carried', () => {
   const got = normalizePendingPrompts([{ key: 'k', text: 'hi', peer: { from: 'w1' } }]);
   assert.equal(got[0].peer, undefined);
 });
+
+// ── LEAD RULING on the resend shape (issue #57) ─────────────────────────────
+// Replay each undelivered prompt as its OWN turn, retagged with its original
+// sender; the fused `join('\n')` shape is rejected. Two refinements ride with
+// the ruling and are pinned here:
+//   (1) the tag must be the STRUCTURAL peer-origin tag, so a replay renders as
+//       an issue-#56 compact peer row and never as a human-shaped turn;
+//   (2) ordering must preserve arrival order when known.
+
+test('RULING: recovery preserves ARRIVAL ORDER through append + filter', () => {
+  const bodies = ['first from ops', 'second from lead', 'third from verifier'];
+  const pending = bodies.map((text, i) => ({
+    id: `send-${i}`,
+    key: pendingPromptKey({ text }),
+    text,
+  }));
+  // The MIDDLE one ran before the quit; the survivors must keep their order.
+  const consumed = countConsumedKeys([{ text: bodies[1] }]);
+  const missing = filterUnconsumedPrompts(pending, consumed).map((p) => p.text);
+  assert.deepEqual(missing, [bodies[0], bodies[2]], 'survivors must stay in arrival order');
+});
+
+test('RULING: filtering never reorders, even when everything survives', () => {
+  const bodies = ['a', 'b', 'c', 'd'];
+  const pending = bodies.map((text, i) => ({ id: `s${i}`, key: pendingPromptKey({ text }), text }));
+  assert.deepEqual(
+    filterUnconsumedPrompts(pending, countConsumedKeys([])).map((p) => p.text),
+    bodies,
+  );
+});
+
+test('RULING: normalizePendingPrompts preserves order (store round-trip)', () => {
+  const bodies = ['one', 'two', 'three'];
+  assert.deepEqual(normalizePendingPrompts(bodies).map((p) => p.text), bodies);
+});
+
+test('RULING: a recovered peer entry keeps the sender needed to RETAG it', () => {
+  // The retag is structural: `peer` survives the store round-trip so
+  // recoverPendingPrompts can rebuild `{kind:'peer', ...}` for sdkSend. If this
+  // is dropped, a replayed peer message re-enters shaped like a human turn.
+  const stored = [{ id: 's1', key: 'k', text: 'body', peer: { from: 'ws-ops', name: 'ops' } }];
+  const got = normalizePendingPrompts(stored);
+  assert.deepEqual(got[0].peer, { from: 'ws-ops', name: 'ops' });
+});
