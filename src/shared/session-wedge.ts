@@ -166,13 +166,51 @@ export interface RecycleInput {
    *  no session cannot be wedged in the sense this watchdog treats — there is
    *  nothing to recycle, and spawning one would be a different feature. */
   sessionLive: boolean;
+  /** Epoch ms of the last message observed on this session's SDK stream, or
+   *  null when there is no live session to read it from.
+   *
+   *  ## Why the DESTRUCTIVE path needs its own evidence (review R1)
+   *
+   *  The first cut of this module passed only #88's stall verdict and argued
+   *  that reusing its guards was deliberate because they "already encode every
+   *  false-positive guard this watchdog needs". **That is true for a BADGE and
+   *  false for a KILL.** Same guards, vastly higher cost of being wrong:
+   *  `recycleSession` calls `sdkStop`, which calls `session.q.interrupt()`.
+   *
+   *  And the guard being leaned on — `status !== 'running'` — is documented as
+   *  unreliable IN THE FILE IT WAS BORROWED FROM. `queue-stall.ts` records that
+   *  `status` does NOT survive a restart (`store.load()` floors every
+   *  `running`/`waiting` to `idle`) and that on 2026-08-25 3–5 workspaces read
+   *  idle while healthy and mid-wave. `status` is a display field maintained by
+   *  a best-effort hook chain; it is not sound evidence for tearing down a live
+   *  subprocess.
+   *
+   *  The sharpest case is `'waiting'`, the DESIGNED status for a permission or
+   *  dialog block: an agent parked on a permission prompt while a peer messages
+   *  it would have its in-flight turn interrupted and its session torn down,
+   *  and the human about to click Allow would lose the turn.
+   *
+   *  So the recycle path now consults the SAME progress evidence layer 1 uses —
+   *  the one whose deletion was measured (mutant 2, `busy_backdated`) to make a
+   *  live turn's gate wrongly released. A session that emitted anything inside
+   *  the silence window is REFUSED regardless of status. */
+  lastStreamAt: number | null;
+  /** Silence window for the progress refusal above. Same constant layer 1 uses;
+   *  injectable for tests. */
+  silenceMs?: number;
   /** The #88 stall verdict for this workspace, or null when it is not stalled.
-   *  Passing the VERDICT rather than re-deriving it is deliberate: #88's
-   *  `decideQueueStall` already encodes every false-positive guard this
-   *  watchdog needs (parked>0, not `running`, not hibernated, no already
-   *  explained stop reason, age floored at `observableSince`), and a second,
-   *  independently-drifting copy of that policy is exactly how a healthy agent
-   *  eventually gets recycled. */
+   *
+   *  Passing the VERDICT rather than re-deriving it keeps there being exactly
+   *  ONE detector — a second, independently-drifting copy of that policy is how
+   *  a healthy agent eventually gets recycled.
+   *
+   *  **CORRECTED (review R1), because the original claim here was wrong and is
+   *  the kind nobody re-derives:** this comment used to say #88's guards
+   *  "already encode every false-positive guard this watchdog needs". They do
+   *  not. They are sufficient for a BADGE and insufficient for a KILL — see
+   *  {@link RecycleInput.lastStreamAt}. #88's verdict is NECESSARY but not
+   *  SUFFICIENT here: it decides "is this workspace worth looking at", and
+   *  `lastStreamAt` decides "is it safe to tear down". */
   stalled: { parkedCount: number; stalledForMs: number } | null;
   /** Epoch ms of recent automatic recycles for this workspace, newest last. */
   recentRecycles: readonly number[];
@@ -201,14 +239,28 @@ export function decideSessionRecycle(input: RecycleInput): RecycleDecision {
   const {
     sessionLive,
     stalled,
+    lastStreamAt,
     recentRecycles,
     now,
     maxPerWindow = MAX_RECYCLES_PER_HOUR,
     windowMs = RECYCLE_WINDOW_MS,
+    silenceMs = GATE_SILENCE_RELEASE_MS,
   } = input;
 
   if (!stalled) return { action: 'none' };
   if (!sessionLive) return { action: 'none' };
+
+  // PROGRESS REFUSAL (review R1), and it is deliberately placed BEFORE the
+  // anti-flap budget: a session that is demonstrably emitting must not even
+  // consume a recycle budget slot, or a healthy-but-noisy workspace could
+  // exhaust its own budget and then be reported as flapping.
+  //
+  // `null` means "no live session to read progress from" — which `sessionLive`
+  // has already excluded above, so reaching here with null is a contradiction
+  // in the caller's inputs. Refuse rather than guess: an unprovable liveness
+  // claim is not a licence to kill a subprocess.
+  if (lastStreamAt === null) return { action: 'none' };
+  if (now - lastStreamAt < silenceMs) return { action: 'none' };
 
   const inWindow = recentRecycles.filter((t) => now - t < windowMs).length;
   if (inWindow >= maxPerWindow) {

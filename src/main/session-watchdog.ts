@@ -32,6 +32,19 @@
 // healthy agent eventually gets recycled — so there is exactly one detector,
 // and this module consumes its verdict.
 //
+// BUT #88's VERDICT IS NECESSARY, NOT SUFFICIENT (review R1). An earlier
+// version of this module argued that reusing #88's guards was enough because
+// they "already encode every false-positive guard this watchdog needs". That is
+// true for a badge and FALSE for a destructive act: `recycleSession` calls
+// `sdkStop`, which calls `session.q.interrupt()`. Worse, the guard being leaned
+// on — `status !== 'running'` — is documented as unreliable in queue-stall.ts
+// itself (`store.load()` floors every `running`/`waiting` to `idle`; 3–5
+// workspaces measured reading idle while healthy on 2026-08-25), and `waiting`
+// is the DESIGNED status for a permission block, so a human about to click
+// Allow would have lost the turn. The recycle path therefore carries its own
+// progress evidence (`lastStreamAt`) and refuses any session that emitted
+// inside the silence window, whatever its status says.
+//
 // The one thing #88 could NOT give us is where it runs: its badge is derived in
 // the renderer (`QueueStallBadge.tsx` holds `OBSERVABLE_SINCE = Date.now()` as
 // a module constant). That is right for a badge — a badge nobody is looking at
@@ -98,7 +111,20 @@ let timer: NodeJS.Timeout | null = null;
  *  So a re-delivery that does not actually become a turn leaves the message
  *  parked and durable, and the next tick tries again. The failure mode of this
  *  function is "the message stays where it was", never "the message is gone". */
-async function recycleSession(wsId: string, reason: string): Promise<void> {
+/** The wake prompt. Deliberately carries NO parked message content (review R2):
+ *  anything sent through `sdkWake` bypasses the inbox entirely, so putting a
+ *  parked message here would deliver it while leaving its block on disk for the
+ *  woken turn's hook to drain a second time. Its only job is to bring the
+ *  session up so `releaseInboxBlock` has somewhere to release into. */
+const WAKE_PROMPT =
+  'Your session was automatically restarted because it had stopped starting turns ' +
+  'while messages were waiting (Orchestra issue #90). Any messages parked for you ' +
+  'are being re-delivered now — continue from where you left off.';
+
+/** Exported for the R2 rig (`scripts/e2e-session-wedge-redelivery.mjs`), which
+ *  drives the REAL recycle against a REAL inbox file to prove each parked
+ *  message is delivered EXACTLY ONCE. */
+export async function recycleSession(wsId: string, reason: string): Promise<void> {
   log.warn(`session-watchdog: recycling wedged session ${wsId} — ${reason} (issue #90)`);
 
   // 1. Tear the wedged session down. This also releases the stranded gate
@@ -108,30 +134,49 @@ async function recycleSession(wsId: string, reason: string): Promise<void> {
   //    how they got parked in the first place.
   await sdkStop(wsId).catch((e) => log.warn(`session-watchdog: stop failed for ${wsId}`, e));
 
-  // 2. Snapshot what is parked BEFORE waking, so the wake prompt and the
-  //    release loop agree on the work set.
+  // 2. Is there anything parked at all?
   const parked = readInbox(wsId);
   if (parked.length === 0) {
     log.info(`session-watchdog: ${wsId} had nothing parked after stop — no wake needed`);
     return;
   }
 
-  // 3. Wake on the SAME conversation with the first parked message as the
-  //    opening turn. `sdkWake` resumes `ws.sdkSessionId`; the released message
-  //    is a real turn, which is also what drains the inbox via the
-  //    UserPromptSubmit hook — the loop the wedge had closed.
-  const first = parked[0];
+  // 3. Wake the session on the SAME conversation with a NEUTRAL prompt that
+  //    carries NO parked content.
+  //
+  //    ## Why the wake prompt must not be a parked message (review R2)
+  //
+  //    The first cut woke with `sdkWake(wsId, parked[0].text)`. That path is
+  //    `sdkWake` -> `sdkSend`, which NEVER touches the inbox — every `inbox`
+  //    match in agent-sdk.ts is a comment. Only `releaseInboxBlock` removes a
+  //    block. So the first message was delivered as a turn while its block
+  //    stayed on disk, and that very turn's `UserPromptSubmit` hook then
+  //    `cat`s AND `rm -f`s the WHOLE file (INBOX_INSTRUCTION_SCRIPT in
+  //    workspaces.ts): the first message arrived TWICE, and every remaining
+  //    block was destroyed without any confirmed delivery.
+  //
+  //    Re-delivery and removal must therefore be ONE ordered operation, and
+  //    `releaseInboxBlock` is the only thing that provides it. The wake prompt
+  //    exists solely to bring the session up so blocks can be released into it.
   try {
-    await sdkWake(wsId, first.text);
+    await sdkWake(wsId, WAKE_PROMPT);
   } catch (e) {
     log.warn(`session-watchdog: wake failed for ${wsId} — messages remain parked`, e);
     return;
   }
 
-  // 4. Release the REMAINING parked blocks into the now-live session. Each goes
-  //    through the confirmed-start path, so anything that does not actually
-  //    start stays parked for the next tick rather than vanishing.
-  for (const block of parked.slice(1)) {
+  // 4. Release EVERY parked block — including the first — through the single
+  //    confirmed-start path. `releaseInboxBlock` removes a block only on a
+  //    confirmed `'started'` and re-reads the file before rewriting it, so a
+  //    hook drain racing us cannot resurrect blocks it already handed over.
+  //    Anything that does not actually start stays parked for the next tick
+  //    rather than vanishing: the failure mode is "the message stays where it
+  //    was", never "the message is gone".
+  //
+  //    Re-read rather than reusing the step-2 snapshot: the wake turn's own
+  //    hook drain may legitimately have taken blocks already, and releasing
+  //    from a stale snapshot would re-deliver what the agent has now seen.
+  for (const block of readInbox(wsId)) {
     const out = await releaseInboxBlock(wsId, block.text).catch(() => null);
     if (!out?.ok) {
       log.info(
@@ -181,9 +226,19 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
     if (ledger.length > 0) recycleLedger.set(ws.id, ledger);
     else recycleLedger.delete(ws.id);
 
+    // Re-probe rather than reusing `probe` from the layer-1 block above: that
+    // read happened before a possible gate release, and stale progress evidence
+    // on a DESTRUCTIVE path is exactly the class review R1 caught.
+    const progress = sdkGateProbe(ws.id);
     const decision: RecycleDecision = decideSessionRecycle({
       sessionLive: sdkSessionLive(ws.id),
       stalled,
+      // The recycle path carries its OWN progress evidence (review R1): #88's
+      // `status` guard is a display field on a best-effort hook chain, and is
+      // documented in queue-stall.ts as not surviving a restart. A session that
+      // emitted anything inside the silence window is refused regardless of
+      // what its status says.
+      lastStreamAt: progress?.lastStreamAt ?? null,
       recentRecycles: ledger,
       now,
     });

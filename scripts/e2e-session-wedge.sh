@@ -25,5 +25,15 @@ for arm in control_healthy wedged control_busy busy_backdated recovered; do
   echo "$line" | grep -q '"ok":true' || RC=1
 done
 rm -rf "$WEDGE_HOME"
+# Review R2 — parked messages delivered EXACTLY ONCE. Separate rig because it
+# needs a real inbox file on disk and drives recycleSession rather than the gate.
+for arm in exactly_once control_nodeliver; do
+  line=$(timeout 120 node --experimental-strip-types --import ./scripts/.r2-register.mjs \
+           scripts/e2e-session-wedge-redelivery.mjs "$arm" 2>/dev/null | tail -1)
+  echo "$line"
+  if [ -z "$line" ]; then echo "ARM $arm produced NO OUTPUT — treating as FAIL"; RC=1; continue; fi
+  echo "$line" | grep -q '"ok":true' || RC=1
+done
+
 if [ "$RC" -eq 0 ]; then echo "e2e-session-wedge: ALL ARMS OK"; else echo "e2e-session-wedge: FAILURES"; fi
 exit "$RC"

@@ -129,6 +129,84 @@ Unit-level mutants on the pure policy (`src/shared/session-wedge.test.ts`, 16
 cases): dropping the reused-gate-slot guard, the progress bound, the anti-flap
 limit, the `sessionLive` guard, and the rolling window each fail ≥1 case.
 
+## Two defects found in review, and what they change (2026-08-26)
+
+Both were in **layer 2**. Layer 1 was attacked and held.
+
+### R1 — a guard adequate for a BADGE is not adequate for a KILL
+
+`decideSessionRecycle` referenced `lastStreamAt` **zero** times (control:
+`decideGateRelease` reads it twice); `RecycleInput` had no progress field at
+all. So the destructive path — `recycleSession` -> `sdkStop` ->
+`session.q.interrupt()` — never consulted the very bound whose deletion mutant 2
+had already proven causes a live turn's gate to be wrongly released. Its only
+false-positive defence was #88's `status !== 'running'` guard.
+
+That guard is documented as unreliable **in the file it was borrowed from**:
+`queue-stall.ts` records that `status` does not survive a restart
+(`store.load()` floors `running`/`waiting` to `idle`) and that 3–5 workspaces
+were measured reading `idle` while healthy on 2026-08-25.
+
+The sharpest case, now a test: **`waiting` is the DESIGNED status for a
+permission/dialog block.** #88 suppresses only `running`, so an agent parked on
+an Allow dialog for 15+ minutes while a peer messages it produces a genuine
+stall verdict — and the first cut would have interrupted its in-flight turn and
+torn the session down, losing the turn the human was about to approve.
+
+**Fix:** `RecycleInput.lastStreamAt` is required, and the recycle refuses any
+session that emitted inside the silence window **regardless of status**. `null`
+(unprovable liveness) refuses rather than guesses. The refusal is placed
+*before* the anti-flap budget so a healthy-but-noisy workspace cannot burn its
+own budget and then be reported as flapping.
+
+**The original rationale was wrong and is retracted at the site.** The comment
+claiming #88's guards "already encode every false-positive guard this watchdog
+needs" is replaced: #88's verdict is NECESSARY but not SUFFICIENT — it decides
+*is this worth looking at*, `lastStreamAt` decides *is it safe to tear down*.
+
+### R2 — re-delivery and removal were not one operation
+
+`recycleSession` woke via `sdkWake(wsId, parked[0].text)`. `sdkWake` -> `sdkSend`
+**never touches the inbox** (every `inbox` match in `agent-sdk.ts` is a comment;
+control: 99 `queue` matches). Only `releaseInboxBlock` removes a block. So the
+first message was delivered as a turn while its block stayed on disk, and that
+turn's `UserPromptSubmit` hook then `cat`s **and** `rm -f`s the WHOLE file
+(`INBOX_INSTRUCTION_SCRIPT`, workspaces.ts): message 1 arrives twice, messages
+2..N are destroyed with no confirmed delivery.
+
+**Fix:** wake with a neutral `WAKE_PROMPT` carrying no parked content, then
+route **every** block — including the first — through `releaseInboxBlock`, which
+removes a block only on a confirmed `'started'` and re-reads the file before
+rewriting so a hook drain cannot be raced. The blocks are re-read after the wake
+rather than reusing the pre-wake snapshot.
+
+**Gate:** `scripts/e2e-session-wedge-redelivery.mjs` drives the REAL
+`recycleSession` against a REAL inbox file.
+
+```
+exactly_once       ok=true  counts={ALPHA:1, BRAVO:1, CHARLIE:1}  remainingAfter=0
+control_nodeliver  ok=true  counts={ALPHA:0, BRAVO:0, CHARLIE:0}  remainingAfter=3
+```
+
+`control_nodeliver` is the instrument audit: nothing starts, so nothing may be
+removed — without it, "inbox empty" could not be distinguished from a rig that
+simply deletes files.
+
+**Mutation (defect reinstated):** waking with `parked[0].text` and skipping the
+first block in the release loop → `ok:false`, `remainingAfter:1`. **Reported
+honestly: `duplicates` stays empty in that arm**, because the rig has no live
+shell hook to perform the `cat`+`rm -f`. The rig therefore catches R2 via the
+ORPHANED block, not via the duplicate itself; the duplicate half is argued from
+the hook source, not observed.
+
+### Mutation results for R1 (one mutant per arm, each verified live)
+
+| Mutant | Result |
+|---|---|
+| progress refusal deleted (the R1 defect reinstated) | **KILLED** — 21→18 pass, 3 fail |
+| `null` progress treated as killable instead of refusing | **KILLED** — 1 fail |
+| anti-flap budget charged BEFORE the progress check | **KILLED** — 1 fail (placement is load-bearing, not just presence) |
+
 ## The false-positive fixture (ledger #89, verbatim)
 
 `parked=2, status=idle, session alive, age 46s → MUST NOT TRIGGER`. Real: five

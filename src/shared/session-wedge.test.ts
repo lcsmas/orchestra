@@ -10,6 +10,10 @@ import {
 import { decideQueueStall } from './queue-stall.ts';
 
 const NOW = 1_800_000_000_000;
+/** A stream stamp old enough to clear the progress refusal, so cases that are
+ *  ABOUT something else (anti-flap, sessionLive, the stall verdict) are not
+ *  silently passing because of the progress guard instead. */
+const SILENT = NOW - GATE_SILENCE_RELEASE_MS - 1;
 
 // ── Layer 1: the turn gate ──────────────────────────────────────────────────
 //
@@ -87,6 +91,7 @@ test('recycle: a stalled workspace with a live session is recycled', () => {
   const d = decideSessionRecycle({
     sessionLive: true,
     stalled,
+    lastStreamAt: SILENT,
     recentRecycles: [],
     now: NOW,
   });
@@ -95,14 +100,14 @@ test('recycle: a stalled workspace with a live session is recycled', () => {
 
 test('recycle: NOT stalled -> never recycled', () => {
   assert.deepEqual(
-    decideSessionRecycle({ sessionLive: true, stalled: null, recentRecycles: [], now: NOW }),
+    decideSessionRecycle({ sessionLive: true, stalled: null, lastStreamAt: SILENT, recentRecycles: [], now: NOW }),
     { action: 'none' },
   );
 });
 
 test('recycle: no live session -> nothing to recycle', () => {
   assert.deepEqual(
-    decideSessionRecycle({ sessionLive: false, stalled, recentRecycles: [], now: NOW }),
+    decideSessionRecycle({ sessionLive: false, stalled, lastStreamAt: SILENT, recentRecycles: [], now: NOW }),
     { action: 'none' },
   );
 });
@@ -113,6 +118,7 @@ test('recycle: anti-flap stops at the budget and SURFACES rather than going sile
   const d = decideSessionRecycle({
     sessionLive: true,
     stalled,
+    lastStreamAt: SILENT,
     recentRecycles: recent,
     now: NOW,
   });
@@ -127,6 +133,7 @@ test('recycle: anti-flap stops at the budget and SURFACES rather than going sile
     decideSessionRecycle({
       sessionLive: true,
       stalled,
+      lastStreamAt: SILENT,
       recentRecycles: recent.slice(1),
       now: NOW,
     }).action,
@@ -137,7 +144,7 @@ test('recycle: anti-flap stops at the budget and SURFACES rather than going sile
 test('recycle: stamps outside the rolling window do not count against the budget', () => {
   const old = [NOW - 90 * 60_000, NOW - 80 * 60_000, NOW - 70 * 60_000];
   assert.equal(
-    decideSessionRecycle({ sessionLive: true, stalled, recentRecycles: old, now: NOW }).action,
+    decideSessionRecycle({ sessionLive: true, stalled, lastStreamAt: SILENT, recentRecycles: old, now: NOW }).action,
     'recycle',
     'hour-old recycles must age out, or the watchdog permanently disables itself',
   );
@@ -166,7 +173,7 @@ test('FIELD FIXTURE: parked=2, idle, alive, age 46s -> MUST NOT recycle', () => 
   });
   assert.equal(stall, null, '#88 detector must not call a 46s-old park a stall');
   assert.deepEqual(
-    decideSessionRecycle({ sessionLive: true, stalled: stall, recentRecycles: [], now: NOW }),
+    decideSessionRecycle({ sessionLive: true, stalled: stall, lastStreamAt: SILENT, recentRecycles: [], now: NOW }),
     { action: 'none' },
   );
 });
@@ -187,7 +194,7 @@ test('FIELD FIXTURE: a busy (running) agent with parked work is NEVER recycled',
   });
   assert.equal(stall, null);
   assert.deepEqual(
-    decideSessionRecycle({ sessionLive: true, stalled: stall, recentRecycles: [], now: NOW }),
+    decideSessionRecycle({ sessionLive: true, stalled: stall, lastStreamAt: SILENT, recentRecycles: [], now: NOW }),
     { action: 'none' },
   );
 });
@@ -210,8 +217,108 @@ test('POSITIVE CONTROL: occurrence-1 shape (parked=3, idle, 35min) IS recycled',
   const d = decideSessionRecycle({
     sessionLive: true,
     stalled: stall,
+    lastStreamAt: SILENT,
     recentRecycles: [],
     now: NOW,
   });
   assert.equal(d.action, 'recycle');
+});
+
+// ── Review R1: the DESTRUCTIVE path carries its own progress evidence ───────
+//
+// These are the cases whose absence let the first cut reach `sdkStop` — which
+// calls `session.q.interrupt()` — on nothing but #88's `status` guard, a
+// display field documented in queue-stall.ts as not surviving a restart.
+
+test('R1: a session that emitted INSIDE the silence window is never recycled', () => {
+  // Everything else says "recycle": stalled verdict present, session live,
+  // budget empty. The ONLY thing standing between a healthy agent and an
+  // interrupt is the progress evidence.
+  assert.deepEqual(
+    decideSessionRecycle({
+      sessionLive: true,
+      stalled,
+      lastStreamAt: NOW - 1_000, // emitted 1s ago
+      recentRecycles: [],
+      now: NOW,
+    }),
+    { action: 'none' },
+  );
+});
+
+test('R1: THE PERMISSION-BLOCK CASE — a `waiting` agent mid-prompt is not torn down', () => {
+  // The sharpest real case (review R1): `waiting` is the DESIGNED status for a
+  // permission/dialog block. #88's detector does NOT suppress `waiting` — only
+  // `running` — so a human parked on an Allow dialog for 15+ minutes while a
+  // peer messages them produces a genuine stall verdict.
+  const stall = decideQueueStall({
+    status: 'waiting',
+    lastStopReason: undefined,
+    queuedCount: 0,
+    parkedInboxCount: 2,
+    lastTurnStartAt: NOW - 20 * 60_000,
+    createdAt: NOW - 3_600_000,
+    hibernated: false,
+    observableSince: NOW - 3_600_000,
+    now: NOW,
+  });
+  // Pin the premise: if #88 ever starts suppressing `waiting`, this test must
+  // be re-argued rather than silently passing for a different reason.
+  assert.ok(stall, 'premise: #88 DOES produce a stall verdict for `waiting`');
+
+  // The session is alive and its subprocess emitted recently (it is sitting on
+  // a permission request, not wedged). The recycle must refuse.
+  assert.deepEqual(
+    decideSessionRecycle({
+      sessionLive: true,
+      stalled: stall,
+      lastStreamAt: NOW - 30_000,
+      recentRecycles: [],
+      now: NOW,
+    }),
+    { action: 'none' },
+    'a permission-blocked agent must not have its turn interrupted',
+  );
+});
+
+test('R1: unprovable progress (null) refuses rather than guessing', () => {
+  assert.deepEqual(
+    decideSessionRecycle({
+      sessionLive: true,
+      stalled,
+      lastStreamAt: null,
+      recentRecycles: [],
+      now: NOW,
+    }),
+    { action: 'none' },
+  );
+});
+
+test('R1: the progress refusal does not consume anti-flap budget', () => {
+  // Placement matters: if the budget were charged before the progress check, a
+  // healthy-but-noisy workspace could exhaust its own budget and then be
+  // REPORTED as flapping — a false alarm manufactured by the guard itself.
+  const d = decideSessionRecycle({
+    sessionLive: true,
+    stalled,
+    lastStreamAt: NOW - 1_000,
+    recentRecycles: [NOW - 50 * 60_000, NOW - 30 * 60_000, NOW - 10 * 60_000],
+    now: NOW,
+  });
+  assert.deepEqual(d, { action: 'none' }, 'must be none, NOT flap-limit');
+});
+
+test('R1 POSITIVE CONTROL: a genuinely silent stalled session IS still recycled', () => {
+  // Without this, every R1 assertion above would also pass on a watchdog that
+  // refuses everything — i.e. one that does nothing at all.
+  assert.equal(
+    decideSessionRecycle({
+      sessionLive: true,
+      stalled,
+      lastStreamAt: NOW - GATE_SILENCE_RELEASE_MS - 1,
+      recentRecycles: [],
+      now: NOW,
+    }).action,
+    'recycle',
+  );
 });

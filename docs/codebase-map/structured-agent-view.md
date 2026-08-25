@@ -458,6 +458,14 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
     removes a block only on a confirmed `'started'`. Anti-flap:
     `MAX_RECYCLES_PER_HOUR`, and exceedance is logged at **error** level and
     stands the watchdog down rather than flapping.
+    Two review findings shaped this path and are worth knowing before touching
+    it: the recycle carries its **own** progress evidence (`RecycleInput.
+    lastStreamAt`) and refuses any session that emitted inside the silence
+    window **regardless of status** — #88's guards are sufficient for a badge
+    but not for a kill, and `waiting` is the DESIGNED status for a permission
+    block; and the wake prompt carries **no** parked content, because `sdkWake`
+    -> `sdkSend` never touches the inbox, so every block must go through
+    `releaseInboxBlock` or the woken turn's hook `cat`+`rm -f`s the whole file.
   Full mechanism, field captures, refuted hypotheses and the measurement
   provenance: `docs/research/issue-90-session-wedge.md`. Rig:
   `scripts/e2e-session-wedge.sh`.
