@@ -122,9 +122,24 @@ if (!RIG_WAYLAND) {
   );
 }
 if (RIG_WAYLAND !== WAYLAND_DISPLAY) {
+  // WHAT THIS BRANCH ACTUALLY DISCRIMINATES — and what it does NOT.
+  //
+  // It catches an INCONSISTENT env: the two variables disagree, or only one of
+  // them is set. `e2e-contained-rig.sh` assigns BOTH from the same `${MINE}` in
+  // one CHILD_ENV array (:171 and :180), so that pairing is the rig's
+  // signature and anything else means the env was assembled some other way —
+  // hand-set, partially copied, or forwarded by a wrapper that passed one and
+  // dropped the other.
+  //
+  // It does NOT detect a STALE export, and the message must not claim it does
+  // (issue #76 review finding). Because the rig sets both together, an env left
+  // behind by a rig whose compositor has since died still has them EQUAL, so it
+  // sails through this check. Liveness is not tested here at all — what makes a
+  // dead compositor safe is that the sway socket is gone, so Electron fails to
+  // connect rather than landing on somebody's screen.
   diePrecondition(
     `RIG_WAYLAND='${RIG_WAYLAND}' does not match WAYLAND_DISPLAY=${WAYLAND_DISPLAY ? `'${WAYLAND_DISPLAY}'` : '<unset>'}.`,
-    'A stale RIG_WAYLAND export is present without the compositor it names.',
+    'These are set together by scripts/e2e-contained-rig.sh, so disagreeing values mean this env was not produced by the rig.',
   );
 }
 if (RIG_WAYLAND === 'wayland-1') {
