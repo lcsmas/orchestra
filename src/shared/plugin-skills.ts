@@ -84,3 +84,13 @@ export function pluginSkillRoots(
 export function pluginSkillName(pluginName: string, skillDirName: string): string {
   return `${pluginName}:${skillDirName}`;
 }
+
+/** First sentence of a frontmatter `description` value, with YAML quoting
+ *  stripped. Split out of agent-sdk.ts's file reader so the parsing rule is
+ *  testable on its own: plugin frontmatter routinely QUOTES the description
+ *  (mandatory when the text contains a colon), and without stripping, the
+ *  composer popover renders a stray leading `"`. */
+export function firstSentenceOfDescription(rawValue: string): string {
+  const unquoted = rawValue.trim().replace(/^(['"])([\s\S]*)\1$/, '$2');
+  return unquoted.trim().split(/(?<=\.)\s/)[0].slice(0, 140);
+}

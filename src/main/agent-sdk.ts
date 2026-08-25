@@ -105,6 +105,7 @@ import type {
 } from '../shared/types';
 import {
   enabledPluginInstalls,
+  firstSentenceOfDescription,
   pluginSkillName,
   pluginSkillRoots,
   type InstalledPlugins,
@@ -1701,7 +1702,7 @@ async function readSkillDescription(skillDir: string): Promise<string | null> {
       2000,
     );
     const m = /^description:\s*(.+)$/m.exec(head);
-    return m ? m[1].trim().split(/(?<=\.)\s/)[0].slice(0, 140) : '';
+    return m ? firstSentenceOfDescription(m[1]) : '';
   } catch {
     return null;
   }

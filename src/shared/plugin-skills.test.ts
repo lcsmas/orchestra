@@ -5,6 +5,7 @@ import {
   manifestSkillPaths,
   pluginSkillName,
   pluginSkillRoots,
+  firstSentenceOfDescription,
 } from './plugin-skills.ts';
 
 // ─── Guard: plugin skills must reach the composer WITHOUT a session ──────────
@@ -120,4 +121,26 @@ test('a manifest WITHOUT skills falls back to scanning skills/', () => {
   assert.deepEqual(pluginSkillRoots('/i', { skills: [] }, join), { mode: 'scan', dir: '/i/skills' });
   // An unreadable/absent manifest still scans rather than giving up.
   assert.deepEqual(pluginSkillRoots('/i', null, join), { mode: 'scan', dir: '/i/skills' });
+});
+
+test('a QUOTED description is unwrapped before the first sentence is taken', () => {
+  // Observed in the live popover: mattpocock-skills:code-review rendered as
+  // `"Review the changes since a fi...` — a stray leading quote. Its
+  // frontmatter is double-quoted because the text contains a colon.
+  assert.equal(
+    firstSentenceOfDescription('"Review the changes since a fixed point. More text here."'),
+    'Review the changes since a fixed point.',
+  );
+  assert.equal(firstSentenceOfDescription("'Single quoted. Rest.'"), 'Single quoted.');
+  // CONTROL: an UNQUOTED description must be untouched — proving the strip is
+  // the quote rule and not a blanket first/last-character chop.
+  assert.equal(
+    firstSentenceOfDescription('Test-driven development. Use when...'),
+    'Test-driven development.',
+  );
+  // A description containing but not wrapped in quotes keeps them.
+  assert.equal(
+    firstSentenceOfDescription('Use the "grill" trigger. Rest.'),
+    'Use the "grill" trigger.',
+  );
 });
