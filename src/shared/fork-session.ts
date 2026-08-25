@@ -23,19 +23,34 @@ import type { RenderMessage } from './types.ts';
  * The consequence that drives {@link forkTargetId}: because the cut is
  * inclusive, forking at a **user** message's own id yields a transcript ending
  * with that user message and **no assistant reply** — measured, the resumed
- * fork then answers that dangling message as its first act. "Resume from here"
- * means *branch off before this point*, so the fork must be cut at the
- * PREDECESSOR user message instead, ending the copied transcript on a complete
- * exchange.
+ * fork then answers that dangling message as its first act.
+ *
+ * ## What the fork actually contains (measured in the built app, not inferred)
+ *
+ * Only USER messages carry an Orchestra-minted `rewindId` (assistant uuids
+ * exist on disk but are never surfaced to the renderer — verified in the e2e
+ * rig), so the cut point is ALWAYS a user message and the fork therefore always
+ * ends on one, WITHOUT its reply. Forking from message N yields turns 1..N-2
+ * complete, plus user message N-1 unanswered; the resumed fork re-answers that
+ * prompt as its first act.
+ *
+ * That is the intended "resume from here" behaviour — the user branches off
+ * *before* the message they clicked and the agent re-attempts the previous
+ * prompt — but it is NOT "the transcript ends on a complete exchange", which an
+ * earlier version of this comment claimed. Cutting at the target itself would
+ * be strictly worse: it re-answers the very message the user is trying to move
+ * PAST, so the fork would be indistinguishable from the original.
  */
 
 /**
  * The id to pass as `forkSession`'s `upToMessageId` for a "resume from here"
  * on the message `rewindId`.
  *
- * Returns the **predecessor** user message's id, so the forked transcript ends
- * on the last COMPLETE exchange before `rewindId` — the user then re-asks (or
- * re-words) the question themselves in the new workspace.
+ * Returns the **predecessor** user message's id. The forked transcript then
+ * holds every complete exchange before that predecessor, plus the predecessor's
+ * own prompt unanswered — which the resumed fork re-answers as its first act
+ * (measured; see the class comment above for why it can never end on a complete
+ * exchange).
  *
  * `undefined` means "there is nothing to fork": either the target is the FIRST
  * rewindable turn (the fork would be empty, and the SDK throws

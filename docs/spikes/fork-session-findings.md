@@ -67,16 +67,41 @@ answered. *(That reading cost one wrong measurement before the transcript dump
 explained it — the codeword instrument is contaminated by a dangling unanswered
 turn, which is why Fact 1 forks at ASSISTANT uuids.)*
 
-So "resume from **here**" must cut at the **PREDECESSOR** user message, ending
-the copied transcript on a complete exchange. `forkTargetId()` owns that rule and
-its off-by-one is pinned by tests in `src/shared/fork-session.test.ts`.
+So "resume from **here**" cuts at the **PREDECESSOR** user message.
+`forkTargetId()` owns that rule and its off-by-one is pinned by tests in
+`src/shared/fork-session.test.ts`.
+
+### Correction (measured in the built app, 2026-08-25) — the fork NEVER ends on a complete exchange
+
+An earlier draft of this doc and of `fork-session.ts` claimed the predecessor cut
+makes the fork "end on a complete exchange". **That is wrong**, and the e2e drive
+disproved it. Only USER messages carry an Orchestra-minted `rewindId` — assistant
+uuids exist on disk but are never surfaced to the renderer (verified by dumping
+every rendered `.av-message`: `HAS-FORK` appears on user rows only). So the cut
+point is always a user message, and the fork always ends on one **without its
+reply**.
+
+Observed on the real drive — forking from the BETA bubble of an
+ALPHA/BETA/GAMMA session produced a 3-line fork containing exactly:
+
+```
+user | Reply with exactly: ALPHA        ← and NOT its "ALPHA" reply
+```
+
+Forking from message N therefore yields turns 1..N−2 complete, plus user message
+N−1 unanswered, which the resumed fork re-answers as its first act. That IS the
+intended behaviour (branch off before the clicked message, re-attempt the prior
+prompt); cutting at the target itself would be strictly worse, since the fork
+would re-answer the very message the user is moving past and be
+indistinguishable from the original. The finding stands; only the rationale
+attached to it was wrong, and it is corrected here rather than left in place.
 
 Note this is a DIFFERENT boundary rule from rewind's, for a different reason:
 
 | | target | rule |
 |---|---|---|
 | `resumeSessionAt` (rewind) | keeps turns 1..N **including N's reply** | cut at N−1 to DROP turn N |
-| `forkSession` (fork) | copies up to and including the targeted MESSAGE | cut at N−1 to end on a COMPLETE turn |
+| `forkSession` (fork) | copies up to and including the targeted MESSAGE | cut at N−1 to branch off BEFORE turn N (ends on N−1's unanswered prompt) |
 
 They coincide in the id they compute and differ in why — hence
 `previousRewindId()` and `forkTargetId()` are deliberately kept as separate

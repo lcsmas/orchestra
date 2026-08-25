@@ -110,7 +110,10 @@ truncates and mutates nothing, so there is no teardown to race.
   copies up to and INCLUDING the targeted message, so forking at the resumed-from
   message's own `rewindId` would copy that user turn WITHOUT its reply — and the
   fork then answers that dangling turn as its first act (measured). `forkTargetId`
-  (`shared/fork-session.ts`, unit- + mutation-tested) owns that off-by-one, and
+  (`shared/fork-session.ts`, unit- + mutation-tested) owns that off-by-one. Note
+  only USER messages carry a `rewindId`, so the cut always lands on one and the
+  fork always ends on an UNANSWERED prompt which the resumed fork re-answers —
+  it never ends on a complete exchange. And
   `canForkFrom` hides the affordance on the FIRST turn, where the slice would be
   empty and the SDK rejects it outright.
 - **`sdkFork(wsId, upToMessageId, title?)`** (`main/agent-sdk.ts`) pins the

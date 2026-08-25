@@ -4087,7 +4087,19 @@ export async function sdkFork(
 
   // Seed the resume id so opening the new workspace's structured view continues
   // the BRANCHED conversation instead of starting blank.
-  await persistWorkspacePatch(forked.id, { sdkSessionId: forkedSessionId });
+  // Seed the resume id AND inherit the SOURCE workspace's account.
+  //
+  // The account pin is load-bearing, not cosmetic: `forkSession` wrote the fork
+  // next to the SOURCE transcript, i.e. under the SOURCE workspace's account
+  // config dir. `createWorkspace` pins from the REPO's `accountId`, which can be
+  // a different account (or absent entirely — measured in the e2e rig, where the
+  // fork came out with no `accountId` at all and its badge read "default"). A
+  // fork pinned to the wrong account resolves a different `~/.claude*` home and
+  // CANNOT SEE the session it was just given, so it would silently open blank.
+  await persistWorkspacePatch(forked.id, {
+    sdkSessionId: forkedSessionId,
+    ...(ws.accountId ? { accountId: ws.accountId } : {}),
+  });
   log.info(
     `agent-sdk: forked ${wsId} session ${ws.sdkSessionId} at ${upToMessageId} -> ` +
       `workspace ${forked.id} (session ${forkedSessionId}, branch ${forked.branch} off ${ws.branch})`,
