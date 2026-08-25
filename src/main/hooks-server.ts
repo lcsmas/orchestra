@@ -125,6 +125,31 @@ export async function startHooksServer(): Promise<void> {
   }
 
   server = http.createServer((req, res) => {
+    // A CLI client can vanish mid-response — `orchestra verify-landed | head -1`
+    // closes the pipe as soon as it has its first line, and the socket write
+    // then raises EPIPE/ECONNRESET. An 'error' event with no listener on an
+    // http.ServerResponse is THROWN (issue #62 B2).
+    //
+    // Scope of the claim, deliberately narrow: what happens next is that the
+    // throw escapes into `process.on('uncaughtException')` in logger.ts, which
+    // currently LOGS WITHOUT RETHROWING OR EXITING — so today the process
+    // survives and the incident is a log line, not a crash. NOBODY HAS DRIVEN
+    // this to a crash, and an earlier version of this comment asserted one; that
+    // was unverified and is retracted.
+    //
+    // This guard is therefore defence in depth, and it is worth having on two
+    // counts: it stops a routine client hang-up from being reported as an
+    // uncaught exception at all, and it keeps the behaviour correct if that
+    // last-resort handler is ever tightened to exit (the usual reason to add
+    // one). Handled at the WRITE SITE rather than by widening the process-wide
+    // catch-all, which would also hide unrelated crashes.
+    // Anything that is not a hang-up is re-surfaced as a warning, not dropped.
+    const onHangUp = (err: NodeJS.ErrnoException): void => {
+      if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
+      console.warn('[hooks-server] response error:', err.message);
+    };
+    res.on('error', onHangUp);
+    req.on('error', onHangUp);
     if (req.method !== 'POST') {
       res.writeHead(405).end();
       return;

@@ -29,8 +29,23 @@ if (ORCHESTRA_CLI_MODE) {
   void import('../cli')
     .then(({ runCli }) => runCli(argv.slice(start + 1)))
     .catch((err: unknown) => {
-      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-      process.exit(1);
+      // Flush before exiting, for the same reason as every exit inside the CLI
+      // itself (issue #62): `process.exit()` in the same tick as a write to a
+      // PIPE abandons whatever is still buffered. Messages on this path are
+      // short, so truncation is unlikely — but the pattern is the defect, and
+      // leaving one same-tick exit here would make the CLI's "every terminal
+      // exit flushes" guarantee false. The backstop timer is deliberately NOT
+      // unref'd, matching `exitAfterFlush` in src/cli/index.ts: an unref'd timer
+      // does not hold the event loop open, so in exactly the case it guards it
+      // may never fire. (An earlier version of this file unref'd it while the
+      // CLI argued the opposite — same problem, opposite solution, one commit.)
+      // A long bound is safe here because this path writes ONE short line: it
+      // cannot be cut off mid-verdict the way a fixed bound truncated a slow
+      // reader in the CLI (issue #62 NEW-1).
+      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`, () => {
+        process.exit(1);
+      });
+      setTimeout(() => process.exit(1), 10_000);
     });
 }
 

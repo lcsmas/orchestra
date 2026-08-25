@@ -402,12 +402,156 @@ class CliExit extends Error {
  *  the exit-code table in the `verify-landed` handler). */
 const NOT_LANDED_EXIT = 2;
 
+/** Wait until everything already handed to stdout/stderr has actually reached
+ *  the far side of the pipe, then terminate with `code`.
+ *
+ *  WHY THIS EXISTS (issue #62). `process.stdout.write()` to a PIPE is
+ *  asynchronous: what the pipe will not accept immediately is buffered and
+ *  flushed on later ticks. `process.exit()` called in the SAME TICK as a large
+ *  write abandons whatever is still buffered, so the reader sees a truncated
+ *  prefix and no error anywhere. Measured on the built bundle under real
+ *  Electron with a 3000-commit `verify-landed` verdict (181945 bytes) piped:
+ *
+ *      write(payload); process.exit(2)   -> 146496 bytes  TRUNCATED
+ *      await drained;  process.exit(2)   -> 181945 bytes  complete
+ *
+ *  146496 is the prefix that happened to survive; it is NOT a round buffer size
+ *  (143*1024 = 146432, 64 bytes short) and no mechanism is asserted for it.
+ *
+ *  The defect is a RACE, not a threshold: the unfixed build truncated only
+ *  4/20 runs, so a single run passes most of the time. See
+ *  `scripts/verify-cli-pipe-flush.mjs`, which asserts on the rate.
+ *
+ *  Not socket-specific and not Electron-specific: the same truncation
+ *  reproduces under plain `node` with no socket in the picture. The axis is
+ *  same-tick-exit vs flushed-exit, so the drain belongs at the exit sites.
+ *
+ *  ───────────────────────────────────────────────────────────────────────────
+ *  WHY THE DEADLINE IS RESET BY PROGRESS AND NOT A FIXED WALL-CLOCK.
+ *
+ *  Two failure modes pull in OPPOSITE directions, and a fixed timeout cannot
+ *  serve both, because a slow reader and a dead reader look identical to a
+ *  timer:
+ *
+ *    - DEAD reader (`… | head -1`): the reader closes mid-write. A drain that
+ *      waits on a write callback that will never fire HANGS FOREVER.
+ *    - SLOW reader (a slow parser, a loaded box, a slow sink): the reader is
+ *      alive and consuming, just unhurried. A drain that gives up on a fixed
+ *      deadline TRUNCATES it — and exits with the verb's SUCCESS status, so the
+ *      caller cannot tell. That is issue #62's exact failure, reintroduced.
+ *
+ *  A fixed 2000 ms bound did exactly that: measured against a live reader
+ *  draining one chunk per 2500 ms, it truncated 4/4 at 146496 bytes with RC=2 —
+ *  byte-identical to the original defect — while the unbounded version
+ *  delivered all 181945 bytes in 5266 ms. Truncating a verdict is WORSE than
+ *  hanging: a hang is visible and gets investigated, a short commit list that
+ *  exits 2 is acted on. `verify-landed`'s contract IS the complete list.
+ *
+ *  So the deadline bounds STALLED streams, not SLOW ones: every time the stream
+ *  actually accepts bytes ('drain', or a completed write callback) the deadline
+ *  is pushed out again. A live-but-slow reader therefore never trips it no
+ *  matter how long the total transfer takes, while a dead reader — which makes
+ *  no progress by definition — trips it once and lets the process exit. The
+ *  'error'/'close' listeners cover the dead reader promptly; the timer is the
+ *  backstop for a stall that reports neither. */
+const FLUSH_STALL_MS = 10_000;
+
+/** True once stdout/stderr has hung up (EPIPE / stream closed).
+ *
+ *  WHY THIS IS INSTALLED AT STARTUP AND NOT INSIDE {@link exitAfterFlush}
+ *  (issue #62 R2). When the reader closes early — `orchestra verify-landed |
+ *  head -1` — the EPIPE is delivered to the stream AS THE WRITE HAPPENS. By the
+ *  time `exitAfterFlush` runs and attaches its own listeners, that event has
+ *  already fired and been dropped, so those listeners wait for something that
+ *  will never come again. Measured on the built bundle under real Electron: with
+ *  the listeners attached only inside the drain, `| head -1` hung **5/5** (10 s
+ *  timeout each); with the identical drain but these listeners installed BEFORE
+ *  the first write, **0/5**, RC=2 in ~280 ms.
+ *
+ *  A late listener for an already-delivered event is indistinguishable from a
+ *  correct one by reading the code — both look like "we handle EPIPE" — which is
+ *  why this needs the comment and the gate, not just the fix.
+ *
+ *  Installing them here also keeps an unhandled 'error' on stdout from crashing
+ *  the CLI, which is a real outcome of a hung-up pipe. */
+let outputHungUp = false;
+for (const stream of [process.stdout, process.stderr]) {
+  const markHungUp = (): void => {
+    outputHungUp = true;
+  };
+  // EPIPE/ERR_STREAM_DESTROYED are the EXPECTED result of a reader going away,
+  // not an error worth reporting: swallow deliberately.
+  stream.on('error', markHungUp);
+  stream.on('close', markHungUp);
+}
+
+async function exitAfterFlush(code: number): Promise<never> {
+  process.exitCode = code;
+  await Promise.all(
+    [process.stdout, process.stderr].map(
+      (stream) =>
+        new Promise<void>((resolve) => {
+          // Already gone: nothing can be flushed to it. `outputHungUp` covers
+          // the case the stream flags do NOT: after `| head -1` the stream
+          // still reports destroyed=false / writableEnded=false and
+          // writableLength=0 indefinitely, so only the startup listeners know.
+          if (outputHungUp || stream.destroyed || stream.writableEnded) return resolve();
+
+          let done = false;
+          let timer: NodeJS.Timeout;
+
+          const finish = (): void => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            stream.off('error', finish);
+            stream.off('close', finish);
+            stream.off('drain', bump);
+            resolve();
+          };
+
+          // PROGRESS, not elapsed time: every accepted chunk buys more time, so
+          // a slow reader is never cut off. Deliberately NOT unref'd — an
+          // unref'd timer does not hold the event loop open, so in exactly the
+          // case it guards (nothing else pending) it may never fire at all.
+          function bump(): void {
+            if (done) return;
+            clearTimeout(timer);
+            timer = setTimeout(finish, FLUSH_STALL_MS);
+          }
+
+          timer = setTimeout(finish, FLUSH_STALL_MS);
+          stream.on('drain', bump);
+          // The reader hung up (`| head -1`). EPIPE/ERR_STREAM_DESTROYED are
+          // the EXPECTED outcome of that, not an error worth reporting — and an
+          // unhandled 'error' on stdout would itself crash us.
+          stream.on('error', finish);
+          stream.on('close', finish);
+          stream.write('', finish);
+        }),
+    ),
+  );
+  process.exit(code);
+  // Under Electron `process.exit` does not necessarily terminate in this tick.
+  // Nothing after this may run and nothing may be printed. Park on a timer
+  // rather than a never-resolving promise so that, if `process.exit` somehow
+  // does not land, the process still ends instead of hanging forever. Not
+  // unref'd, for the same reason as above.
+  return new Promise<never>(() => {
+    setTimeout(() => process.exit(code), FLUSH_STALL_MS);
+  });
+}
+
 /** End the command with `code` after its output has already been written.
- *  Prints nothing — the caller owns the message and the stream it goes to. */
+ *  Prints nothing — the caller owns the message and the stream it goes to.
+ *
+ *  Stays SYNCHRONOUS and `: never` on purpose. The throw is load-bearing (see
+ *  {@link CliExit}) and making this `async` would turn every call site into an
+ *  `await` that TypeScript no longer treats as unreachable-after, silently
+ *  reopening issue #59. So it only throws; {@link runCli}'s catch does the
+ *  actual flush-then-exit via {@link exitAfterFlush}. */
 function exitWith(code: number): never {
   process.exitCode = code;
-  process.exit(code);
-  // Unreachable under plain Node; the guarantee that matters under Electron.
   throw new CliExit(code);
 }
 
@@ -437,8 +581,10 @@ function exitWith(code: number): never {
 function fail(message: string): never {
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
-  process.exit(1);
-  // Unreachable under plain Node; the guarantee that matters under Electron.
+  // No `process.exit(1)` here: exiting in the SAME TICK as the write above
+  // abandons anything libuv has not yet pushed through the pipe (issue #62).
+  // The throw already guarantees control flow stops; runCli's catch flushes
+  // and exits via exitAfterFlush.
   throw new CliFailure(message);
 }
 
@@ -1079,7 +1225,7 @@ async function main(argv: string[]): Promise<void> {
 export async function runCli(argv: string[]): Promise<void> {
   try {
     await main(argv);
-    process.exit(0);
+    await exitAfterFlush(0);
   } catch (err: unknown) {
     // A CliFailure has ALREADY printed its message and set status 1 — it is the
     // sentinel `fail()` throws so a refusal stops the command even where
@@ -1089,17 +1235,21 @@ export async function runCli(argv: string[]): Promise<void> {
     // refusal exit 0 on the packaged build.
     if (err instanceof CliExit) {
       // A verdict that already printed its own message on its own stream —
-      // exit with the status it asked for, printing nothing.
-      process.exitCode = err.code;
-      process.exit(err.code);
+      // exit with the status it asked for, printing nothing. Flushed first:
+      // a NOT-LANDED verdict can run to hundreds of KB and exiting in the same
+      // tick as its write truncates it on a pipe (issue #62).
+      await exitAfterFlush(err.code);
       return;
     }
     if (err instanceof CliFailure) {
-      process.exitCode = 1;
-      process.exit(1);
+      await exitAfterFlush(1);
       return;
     }
-    fail(err instanceof Error ? err.message : String(err));
+    // An UNEXPECTED error. Not `fail()`: since #62 that only throws, and a
+    // throw escaping runCli becomes an unhandled rejection whose exit status
+    // is the runtime's, not ours. Write and flush here instead.
+    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    await exitAfterFlush(1);
   }
 }
 
