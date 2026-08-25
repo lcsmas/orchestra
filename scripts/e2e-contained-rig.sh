@@ -23,6 +23,17 @@ RIG_ID="e2e64c-$$"
 RIG_DIR="/tmp/${RIG_ID}"
 SWAYSOCK_MINE="${RIG_DIR}/sway.sock"
 FAKE_HOME="${RIG_DIR}/home"
+
+# ── 0. disk preflight (issue #87) ───────────────────────────────────────────
+# /tmp here is a SEPARATE tmpfs. It reached 100% during wave 6 and a verifier
+# died on ENOSPC before writing a byte — indistinguishable from "the feature
+# does not trigger", so it was investigated as a code defect. Fail NAMED and
+# EARLY instead. This never deletes anything: the teardown below deliberately
+# leaves rig dirs for inspection, and they may belong to a sibling agent
+# (the sleeping-owner rule).
+_RIG_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+node "${_RIG_REPO_ROOT}/scripts/disk-guard.cjs" --preset e2e-rig --path /tmp || exit $?
+
 mkdir -p "${RIG_DIR}" "${FAKE_HOME}/.orchestra/inbox" "${RIG_DIR}/oh/userData"
 
 log() { printf '[rig] %s\n' "$*" >&2; }

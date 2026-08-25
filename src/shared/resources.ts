@@ -1,3 +1,5 @@
+import type { VolumeStat } from './disk-space.ts';
+
 // Pure logic for the Resources page: parsing the OS process table, walking
 // process trees, and turning raw jiffy counters into per-session CPU/memory
 // figures. Lives in shared/ (dependency-free) so it's unit-testable with the
@@ -85,6 +87,12 @@ export interface ResourceSnapshot {
   sessions: SessionResourceStat[];
   app: AppProcessStat[];
   disk: DiskStats | null;
+  /** FREE space per filesystem (issue #87) — a different question from
+   *  `disk`, which is Orchestra's own USED footprint via `du`. Deliberately
+   *  NOT folded into DiskStats: these come from `statfs(2)`, cost one syscall,
+   *  and so are sampled fresh every tick rather than served from the 60s `du`
+   *  cache. Empty array when statfs is unavailable — never silently "fine". */
+  volumes: VolumeStat[];
 }
 
 /** Classify a PTY id into its session kind + owning workspace. Login PTYs

@@ -66,8 +66,16 @@ jobs:
         # detection), which then fails with "GitHub Personal Access Token is
         # not set". This job only builds + uploads artifacts; the `publish` job
         # creates the release.
+        #
+        # The disk preflight is invoked EXPLICITLY here (issue #87). Because
+        # electron-builder is called directly rather than via `pnpm run build`
+        # for the argv reason above, it does NOT inherit that script's
+        # `build-package` guard — so without this line CI is unguarded at the
+        # single step with the largest requirement (measured peak `release/` =
+        # 2.158 GiB). `build:bundles` brings its own `prebuild:bundles` guard.
         run: |
           pnpm run build:bundles
+          node scripts/disk-guard.cjs --preset build-package
           pnpm exec electron-builder --publish never
 
       - name: Rename artifact

@@ -23,3 +23,11 @@ docs/swarm-dashboard.html
 # scripts/diff-pane-render-smoke.mjs bundles inside the repo (bare react
 # specifiers must resolve against node_modules); the dir is removed on exit.
 .diffpane-smoke-*/
+
+# scripts/verify-disk-guard-ui.mjs bundles inside the repo for the same reason
+# (externalised react resolves relative to the OUTPUT file); removed on exit.
+.diskguard-ui-*/
+
+# Rig-produced screenshots (scripts/verify-disk-guard-ui.mjs). Regenerate with
+# the rig rather than tracking binaries; the findings live in docs/research/.
+.evidence/

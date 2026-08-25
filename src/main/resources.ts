@@ -13,6 +13,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { listPtySessions } from './pty';
 import { getEventsDir } from './events-spool';
+import { sampleVolumes } from './disk-space';
 import {
   aggregateSession,
   computeCpuPcts,
@@ -139,6 +140,13 @@ export async function sampleResources(): Promise<ResourceSnapshot> {
 
   maybeRefreshDisk(); // fire-and-forget; this tick serves the cached figures
 
+  // Free space is NOT cached like the `du` pass above: statfs is one syscall
+  // per mount, so it is sampled fresh every tick. Caching it would be the
+  // wrong trade for the thing this exists to catch — a mount filling FAST
+  // (issue #87: /tmp went to 100% mid-wave) is exactly when a 60s-stale
+  // reading is most dangerous.
+  const volumes = sampleVolumes();
+
   return {
     at: now,
     cpuCores: os.cpus().length || 1,
@@ -146,5 +154,6 @@ export async function sampleResources(): Promise<ResourceSnapshot> {
     sessions,
     app: metrics,
     disk: diskCache,
+    volumes,
   };
 }

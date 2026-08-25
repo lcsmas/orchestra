@@ -7,6 +7,7 @@ import { WorkspaceStatusGlyph, statusGlyphTitle } from './WorkspaceStatusGlyph';
 import { isActionableStopReason } from '../../shared/usage-resume';
 import type { ResourceSnapshot, SessionResourceStat } from '../../shared/resources';
 import type { UsageErrorKind, UsageWindow, Workspace } from '../../shared/types';
+import { classifyVolume, worstLevel, type DiskLevel, type VolumeStat } from '../../shared/disk-space';
 
 // The Resources page: a live monitor of everything Orchestra is consuming.
 // System side (CPU / memory / processes / disk) comes from `resources:sample`,
@@ -324,6 +325,86 @@ function LimitRow({
   );
 }
 
+/** Free space per filesystem (issue #87).
+ *
+ *  EXPORTED, and separate from ResourcesView, on purpose: ResourcesView takes
+ *  no props and pulls its whole world from the store plus an IPC sample, so a
+ *  warning-state assertion against it could only be made by stubbing that
+ *  world — i.e. by asserting against my own stub. This component takes the
+ *  volumes as a prop, so a rig can render the REAL component with a REAL
+ *  full-volume reading and screenshot the result. Both arms (warning and
+ *  normal) differ only in the input.
+ *
+ *  It renders a level even when every volume is healthy; the WARNING chrome
+ *  (badge, colour, the do-not-delete note) appears only when a volume actually
+ *  breaches the policy — see scripts/verify-disk-guard-ui.mjs, which drives
+ *  both arms so "renders the warning" is distinguishable from "always renders
+ *  the warning".
+ */
+export function FreeSpaceSection({ volumes }: { volumes: VolumeStat[] }) {
+  const volumesLevel: DiskLevel = worstLevel(volumes);
+  return (
+    <section className="res-section" data-disk-level={volumesLevel}>
+      <div className="res-section-title">
+        Free space
+        {volumesLevel !== 'ok' && (
+          <span
+            className={`res-disk-badge res-disk-badge-${volumesLevel}`}
+            data-testid="disk-warning-badge"
+          >
+            {volumesLevel === 'critical' ? 'critically low' : 'low'}
+          </span>
+        )}
+      </div>
+      <div className="res-disk res-volumes">
+        {volumes.length === 0 ? (
+          // Never render this as "fine". No volumes means statfs gave us
+          // nothing, which is an UNMEASURED state, not a healthy one.
+          <div className="res-disk-note">free space unmeasured on this platform</div>
+        ) : (
+          volumes.map((v) => {
+            const level = classifyVolume(v);
+            const usedPct =
+              v.totalBytes > 0 ? ((v.totalBytes - v.freeBytes) / v.totalBytes) * 100 : 0;
+            return (
+              <div
+                key={v.deviceId + v.path}
+                className="res-disk-row"
+                data-volume-level={level}
+                data-volume-path={v.path}
+                title={`${v.path} — ${formatBytes(v.freeBytes)} free of ${formatBytes(v.totalBytes)}`}
+              >
+                <span className="res-disk-label">{v.label}</span>
+                <div className="usage-bar-track">
+                  <div
+                    className="usage-bar-fill"
+                    style={{
+                      width: `${Math.min(100, usedPct)}%`,
+                      background:
+                        level === 'critical'
+                          ? 'var(--red)'
+                          : level === 'warn'
+                            ? 'var(--yellow)'
+                            : 'var(--accent-2)',
+                    }}
+                  />
+                </div>
+                <span className="res-cell">{formatBytes(v.freeBytes)} free</span>
+              </div>
+            );
+          })
+        )}
+        {volumesLevel !== 'ok' && (
+          <div className="res-disk-note res-disk-note-warn">
+            Orchestra does not auto-delete anything — another agent's rig may live on
+            a full mount. Free space yourself.
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export function ResourcesView() {
   const setPage = useStore((s) => s.setPage);
   const workspaces = useStore((s) => s.workspaces);
@@ -537,6 +618,12 @@ export function ResourcesView() {
   ];
   const diskMax = diskItems.reduce((m, d) => Math.max(m, d.bytes ?? 0), 0);
 
+  // FREE space per filesystem (issue #87). Distinct from `disk` above, which
+  // is Orchestra's own USED footprint: a machine can have Orchestra using
+  // 200 MB while the tmpfs it writes rigs into is at 100%, which is exactly
+  // the incident this section exists to surface.
+  const volumes = snap?.volumes ?? [];
+
   const memPctOfSystem = snap ? ((agentMem + appMem) / snap.memTotalBytes) * 100 : 0;
   const accountLabelFor = (row: AgentRow): string | null =>
     row.ws ? workspaceAccounts[row.ws.id]?.label ?? null : null;
@@ -720,6 +807,8 @@ export function ResourcesView() {
             ))}
           </div>
         </section>
+
+        <FreeSpaceSection volumes={volumes} />
 
         <section className="res-section">
           <div className="res-section-title">Orchestra data on disk</div>
