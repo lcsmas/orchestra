@@ -38,6 +38,7 @@
     "test:fixtures": "node scripts/fixtures/self-test.mjs",
     "test:cli-pipe": "pnpm run build:cli && node scripts/verify-verify-landed-exit.mjs && node scripts/verify-cli-pipe-flush.mjs",
     "test:rig-selftest": "bash scripts/run-rig-selftest.sh",
+    "test:fork-control": "node scripts/verify-fork-control.mjs",
     "release": "bash scripts/release.sh"
   },
   "devDependencies": {

@@ -232,6 +232,23 @@ async function main() {
 main()
   .catch((e) => {
     console.error(`DRIVER ERROR: ${e.message}`);
+    // NAME the precondition rather than leaving a bare "fetch failed". This gate
+    // needs a compositor AND a built artifact, so it is deliberately NOT part of
+    // `pnpm run test` (it would fail on headless CI, and a self-skip is the
+    // wave-6 vacuous-green shape this repo already got burned by). It fails
+    // CLOSED with rc=2 — never a silent pass — but rc=2 is only useful if the
+    // reader knows what to start.
+    if (/fetch failed|ECONNREFUSED|ws failed/i.test(e.message)) {
+      console.error(
+        `PRECONDITION NOT MET: no CDP endpoint on port ${PORT}.\n` +
+          '  This gate drives a REAL built Orchestra inside a contained headless\n' +
+          '  compositor. It does not launch one for you. Required first:\n' +
+          '    1. pnpm run build\n' +
+          '    2. launch the built artifact under scripts/e2e-contained-rig.sh\n' +
+          `       with ORCHESTRA_DEBUG_PORT=${PORT} (NEVER the human's display)\n` +
+          '    3. pnpm run test:fork-control',
+      );
+    }
     process.exitCode = 2;
   })
   .finally(() => {
