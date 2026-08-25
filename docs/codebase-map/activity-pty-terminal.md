@@ -61,8 +61,18 @@ pixel-identical in the sidebar to one that finished cleanly.
   the no-PTY configuration wrote no reason anywhere — which is #69's whole bug.
   An E2E may NOT seed `lastStopReason`; a seeded value proves only that the
   renderer renders a field.
+- `markStoppedOnUsageLimit(id, resetsAtMs)` (`src/main/activity.ts`) is the #74
+  sibling for a turn killed by the account's USAGE LIMIT — the one reason that
+  resolves by itself, and the only one the app auto-resumes from (see
+  [accounts-usage.md](accounts-usage.md)). Same outside-the-gate exemption and
+  the same rationale. It also writes `Workspace.usageLimitResetsAt` (epoch MS —
+  the notice reports SECONDS; `resetsAtMsFromNotice` is the one conversion
+  point). `clearStopReason(id)` is its counterpart, clearing ONLY a
+  `usage_limit` marker once the resume driver has acted — without it every
+  20s tick would re-decide to nudge.
 - `setStatus` (`src/main/activity.ts`) takes a third arg, `stopReason`:
-  `'max_turns' | 'error'` records, `null` CLEARS, `undefined` leaves alone. It
+  `'max_turns' | 'error' | 'usage_limit'` records, `null` CLEARS, `undefined`
+  leaves alone. It
   writes `Workspace.lastStopReason` / `lastStopReasonAt` on the SAME store write
   and broadcast as the status, so the dot and its explanation stay atomic. The
   marker is compared BEFORE the `ws.status === status` no-op short-circuit — a
@@ -75,13 +85,23 @@ pixel-identical in the sidebar to one that finished cleanly.
   `loopingSince`).
 - Rendered by `WorkspaceStatusGlyph` (`stopReason` prop) ABOVE the autoUnread
   bell — "stopped and consuming nothing" outranks "finished, unseen" — as a
-  distinct SHAPE (octagon-alert for `max_turns`, circle-x for `error`), so the
-  state survives greyscale and colour-blindness. Tooltip clauses live in
-  `src/renderer/status-glyph-title.ts`. Passed at all five glyph call sites:
-  `src/renderer/components/Sidebar.tsx` (×2),
+  distinct SHAPE (octagon-alert for `max_turns`, circle-x for `error`,
+  circle-pause for `usage_limit`), so the state survives greyscale and
+  colour-blindness. The pause is deliberately MUTED rather than red: nothing is
+  wrong and nobody is needed, since the app resumes it itself. Tooltip clauses
+  live in `src/renderer/status-glyph-title.ts`.
+- The allowlist deciding which reasons get a marker is the SHARED predicate
+  `isActionableStopReason` (`src/shared/usage-resume.ts`), not a per-site
+  literal. It is routed through **seven** sites — the five that pass the prop
+  (`src/renderer/components/Sidebar.tsx` ×2,
   `src/renderer/components/InboxBell.tsx`,
   `src/renderer/components/JumpPalette.tsx`,
-  `src/renderer/components/ResourcesView.tsx`.
+  `src/renderer/components/ResourcesView.tsx`) plus the two that CONSUME it: the
+  `stopReason` prop type in `src/renderer/components/WorkspaceStatusGlyph.tsx`
+  and the tooltip in `src/renderer/status-glyph-title.ts`. #74 originally
+  mapped only the first five; routing those alone pushes an unmodelled reason
+  into a narrower prop type (a tsc error) and drops the tooltip silently to the
+  "Agent is idle" phrase.
 - **Loop marker** — `Workspace.loopingSince` (persisted, orthogonal to `status`
   like `autoUnread`; full set/clear rules in its types.ts doc). `markLooping`
   (activity.ts, mirrors `markAutoUnread` incl. the explicit-`undefined`

@@ -112,3 +112,53 @@ test('statusGlyphTitle: hibernated suppresses the looping clause', () => {
 test('statusGlyphTitle: no loop marker means no clause (control)', () => {
   assert.equal(statusGlyphTitle(ws({ status: 'idle' })), 'Agent is idle');
 });
+
+// ─── the usage-limit PAUSE (#74) ─────────────────────────────────────────────
+//
+// This is site 7 of the seven that hardcoded the `max_turns|error` allowlist,
+// and the one the #74 spec did not name — yet it is where the pause string has
+// to live, because it is the only place the tooltip text is produced. Without
+// a branch here a limit-paused agent falls through to the `autoUnread`/`idle`
+// phrase and the sidebar cheerfully reports "Agent is idle" about a session
+// that is frozen on a usage limit.
+
+test('statusGlyphTitle: a usage-limit pause states the ETA', () => {
+  // Built from LOCAL time parts so the assertion is timezone-independent.
+  const at6pm = new Date(2026, 7, 25, 18, 0, 0).getTime();
+  assert.equal(
+    statusGlyphTitle(ws({ status: 'idle', lastStopReason: 'usage_limit', usageLimitResetsAt: at6pm })),
+    '⏸ limit reached — resumes ~6pm',
+  );
+});
+
+test('statusGlyphTitle: a usage-limit pause with NO known reset drops the ETA', () => {
+  // The 429-turn-result path reports no reset time. Inventing one would be
+  // read as measured; omitting the whole branch would say "Agent is idle".
+  const title = statusGlyphTitle(ws({ status: 'idle', lastStopReason: 'usage_limit' }));
+  assert.match(title, /limit reached/);
+  assert.ok(!title.includes('~'), 'must not imply an ETA it does not have');
+});
+
+test('statusGlyphTitle: the pause OUTRANKS the unread bell', () => {
+  // Same precedence the glyph itself uses: "stopped and consuming nothing"
+  // beats "finished, unseen". A branch placed below the autoUnread check would
+  // silently lose to it, which is how this class of bug shipped in #69.
+  assert.equal(
+    statusGlyphTitle(ws({ status: 'idle', autoUnread: true, lastStopReason: 'usage_limit' })),
+    '⏸ limit reached — waiting for the usage window to reset',
+  );
+});
+
+test('statusGlyphTitle: the pause does NOT hijack the other stop reasons', () => {
+  // Control: the two reasons that still need a human keep their own phrasing.
+  // Without this, a branch matching any truthy lastStopReason would pass every
+  // assertion above while destroying the #69 strings.
+  assert.equal(
+    statusGlyphTitle(ws({ status: 'idle', lastStopReason: 'max_turns' })),
+    'Agent stopped — turn budget exhausted; send a message to resume it',
+  );
+  assert.equal(
+    statusGlyphTitle(ws({ status: 'idle', lastStopReason: 'error' })),
+    'Agent stopped — its last turn ended on an error',
+  );
+});

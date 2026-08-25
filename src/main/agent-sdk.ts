@@ -60,6 +60,7 @@ import {
   resumeRunning,
   markLooping,
   markStoppedOnMaxTurns,
+  markStoppedOnUsageLimit,
 } from './activity';
 import { makeKeeperSpawn, killKeeper, probeKeeper } from './keeper-client';
 import { registerSdkDelivery } from './sdk-delivery';
@@ -83,6 +84,10 @@ import {
   type NormalizeContext,
   type SdkMessage,
 } from '../shared/agent-events';
+// Value import (.ts extension required — see the THINKING_TOOL_LABEL note in
+// activity.ts): the epoch-SECONDS → epoch-MS conversion for a rate-limit
+// notice's `resetsAt`, done in exactly one place on purpose (#74).
+import { resetsAtMsFromNotice } from '../shared/usage-resume.ts';
 import type { PeerOrigin } from '../shared/peer-messages.ts';
 import {
   countConsumedKeys,
@@ -274,6 +279,18 @@ interface Session {
    *  OUR OWN action instead of pattern-matching /abort/ against arbitrary error
    *  text (which relabeled genuine crashes as interrupts). */
   interruptRequested?: boolean;
+  /** Latched when a `rate-limit` notice is seen during the CURRENT turn (#74),
+   *  carrying the reset time in epoch MS (null = reported without one).
+   *
+   *  A latch is needed because the two structural signals arrive at DIFFERENT
+   *  points and neither alone says "the turn died of this": the SDK's
+   *  `rate_limit_event` lands mid-turn (and also fires for a mere
+   *  `allowed_warning`, which must NOT pause anything), while the fact that
+   *  the turn actually ENDED only becomes known at `turn-end`. So the notice
+   *  records the evidence and `turn-end` decides. Cleared at every turn
+   *  boundary, so a limit hit on one turn can never mark a later, healthy turn
+   *  as limit-killed. */
+  rateLimitHit?: { resetsAtMs: number | null };
   /** The last few user texts sdkSend fed the generator, so emitFrom can drop a
    *  hypothetical stream replay of a LOCALLY-sent prompt (the spike says the
    *  stream never replays them; this is the belt-and-braces for a future SDK
@@ -499,6 +516,40 @@ function emitFrom(session: Session, msg: SdkMessage): void {
     if (ev.type === 'turn-end' && ev.stopReason === 'max_turns') {
       void markStoppedOnMaxTurns(session.wsId);
     }
+    // ── #74: latch a usage-limit REJECTION seen during this turn ──
+    // Structural only: `ev.rejected` is the SDK's own
+    // `rate_limit_info.status === 'rejected'` (or a 429 turn result) carried
+    // through normalization. An `allowed_warning` notice shares this same
+    // `kind` and is excluded here by that bit alone — never by its prose,
+    // which is UI copy and free to change.
+    //
+    // Latched rather than acted on immediately because a rejection mid-turn
+    // does not by itself mean the turn DIED: the decision belongs at the
+    // turn-end boundary below, where the outcome is actually known.
+    if (ev.type === 'notice' && ev.kind === 'rate-limit' && ev.rejected === true) {
+      session.rateLimitHit = { resetsAtMs: resetsAtMsFromNotice(ev.resetsAt) };
+    }
+    // ── #74: the turn ENDED and a rejection was latched → it died on the limit ──
+    // Ordered AFTER the max_turns branch and made mutually exclusive with it:
+    // a turn cannot meaningfully be both, and `usage_limit` is the reason that
+    // resolves by itself, so mislabelling either way breaks auto-resume.
+    //
+    // Requires `isError`: a turn that hit the limit, recovered and still
+    // completed normally is not a stopped session and must not be marked as
+    // one (the SDK can emit a rejection the CLI then retries through).
+    if (
+      ev.type === 'turn-end' &&
+      ev.stopReason !== 'max_turns' &&
+      ev.isError &&
+      session.rateLimitHit
+    ) {
+      void markStoppedOnUsageLimit(session.wsId, session.rateLimitHit.resetsAtMs);
+    }
+    // Clear the latch at EVERY turn boundary, whatever the outcome — including
+    // the healthy ones above that deliberately ignored it. Without this a
+    // rejection survives into later turns and marks a perfectly healthy one as
+    // limit-killed, which would auto-resume a session nobody stopped.
+    if (ev.type === 'turn-end') session.rateLimitHit = undefined;
     driveStatusFromEvent(session, ev);
     if (ev.type === 'session/init') {
       // Feature-detection state for control requests. `system/init` repeats on

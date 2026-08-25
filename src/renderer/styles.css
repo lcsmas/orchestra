@@ -1626,6 +1626,12 @@ input:focus, textarea:focus, select:focus {
    "finished, unseen" — so it takes `--red` and the octagon shape rather than
    the amber attention hue. Shape carries it in greyscale; colour only ranks it. */
 .ws-glyph-maxturns { color: var(--red); }
+/* The usage-limit PAUSE (#74) is the one stopped state that resolves BY ITSELF
+   — the app auto-resumes it when the window resets — so it deliberately does
+   NOT take `--red`: nothing is wrong and nobody is needed. It sits at the
+   quiet end with the same muted hue the idle/hibernated states use, and the
+   pause-bars SHAPE (not the colour) is what distinguishes it in greyscale. */
+.ws-glyph-usagelimit { color: var(--text-dim); }
 /* Dot states — rendered as an empty span, so the dot IS the element.
    8px = Orca's `size-2` (0.5rem) dot, and the `/40` alpha on the quiet states
    is its `bg-neutral-500/40`. */

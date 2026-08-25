@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useStore } from '../store';
 import { computeAttention } from '../../shared/attention';
 import { WorkspaceStatusGlyph, statusGlyphTitle } from './WorkspaceStatusGlyph';
+import { isActionableStopReason } from '../../shared/usage-resume';
 import type { Workspace } from '../../shared/types';
 
 function rowRepoLabel(w: Workspace): string {
@@ -93,7 +94,7 @@ export function InboxBell() {
         unread={!!w.markedUnread}
         autoUnread={!!w.autoUnread}
         looping={!!w.loopingSince}
-        stopReason={w.lastStopReason === 'max_turns' || w.lastStopReason === 'error' ? w.lastStopReason : undefined}
+        stopReason={isActionableStopReason(w.lastStopReason) ? w.lastStopReason : undefined}
         title={statusGlyphTitle(w)}
       />
       <span className="inbox-branch">{w.branch}</span>

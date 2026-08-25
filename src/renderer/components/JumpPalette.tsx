@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { rankJumpTargets } from '../../shared/jump-rank';
 import { WorkspaceStatusGlyph, statusGlyphTitle } from './WorkspaceStatusGlyph';
+import { isActionableStopReason } from '../../shared/usage-resume';
 import type { Workspace } from '../../shared/types';
 
 /** Repo label for a palette row. Mirrors the Sidebar's basename labeling for
@@ -115,7 +116,7 @@ export function JumpPalette({ onClose }: { onClose: () => void }) {
                   unread={!!w.markedUnread}
                   autoUnread={!!w.autoUnread}
                   looping={!!w.loopingSince}
-                  stopReason={w.lastStopReason === 'max_turns' || w.lastStopReason === 'error' ? w.lastStopReason : undefined}
+                  stopReason={isActionableStopReason(w.lastStopReason) ? w.lastStopReason : undefined}
                   title={statusGlyphTitle(w)}
                 />
                 <span className="jump-branch">{t.branch}</span>

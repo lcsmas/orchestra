@@ -286,6 +286,85 @@ export async function markStoppedOnMaxTurns(id: string): Promise<void> {
   await setStatus(id, 'idle', 'max_turns');
 }
 
+/** Sibling of {@link markStoppedOnMaxTurns} for a turn killed by the account's
+ *  USAGE LIMIT (#74) — the reason that resolves by itself at the reset, and so
+ *  the only one the app auto-resumes from.
+ *
+ *  Takes the same OUTSIDE-the-gate exemption and for the identical reason: in
+ *  the plain structured-view configuration `driveStatusFromEvent` is gated on
+ *  `session.driveStatus` (a coexisting PTY), so a limit death there would
+ *  otherwise write the reason nowhere. That is precisely the field failure #74
+ *  exists to fix — a coordinator died on the limit and NOTHING recorded why,
+ *  so nothing could ever decide to restart it.
+ *
+ *  `resetsAtMs` is epoch MILLISECONDS and must already have been converted
+ *  from the notice's epoch-SECONDS by `resetsAtMsFromNotice` — see the unit
+ *  trap documented at length in src/shared/usage-resume.ts. Null is a real,
+ *  expected value ("limited, reset time unknown"): the 429-turn-result
+ *  detection path reports no reset time, and the resume driver then waits for
+ *  fresh usage evidence rather than guessing.
+ *
+ *  Status stays `idle` for the same reason as max_turns: a stopped session is
+ *  idle, and the reason is the orthogonal axis. */
+export async function markStoppedOnUsageLimit(
+  id: string,
+  resetsAtMs: number | null,
+): Promise<void> {
+  const res = await setStatus(id, 'idle', 'usage_limit');
+  // Persist the reset time alongside the reason. Written AFTER setStatus so we
+  // build on the record it just wrote (setStatus owns `lastStopReason` /
+  // `lastStopReasonAt`); re-reading from the store rather than reusing a stale
+  // capture keeps this correct if setStatus changed anything else.
+  const current = store.getWorkspace(id);
+  if (!current) return;
+  const next: Workspace = {
+    ...current,
+    ...(resetsAtMs === null
+      ? // Clear a stale reset from an earlier limit rather than leaving it to
+        // be read as this one's — an old timestamp is already in the past, so
+        // it would make the resume driver fire IMMEDIATELY, straight back into
+        // the wall it is supposed to be waiting out.
+        { usageLimitResetsAt: undefined }
+      : { usageLimitResetsAt: resetsAtMs }),
+  };
+  await store.upsertWorkspace(next);
+  // Only broadcast when setStatus did not already (it broadcasts on a real
+  // transition); an unconditional second broadcast is harmless but noisy, and
+  // the renderer re-renders every workspace row on each one.
+  if (!res?.changed) platform.broadcast('workspace:update', next);
+}
+
+/** Clear the usage-limit pause marker after the auto-resume driver has acted on
+ *  it (#74) — the counterpart to {@link markStoppedOnUsageLimit}.
+ *
+ *  Load-bearing for two reasons, not merely cosmetic:
+ *   1. **Idempotence.** The driver's verdict is derived from
+ *      `lastStopReason === 'usage_limit'`, so a marker left in place makes
+ *      EVERY subsequent tick decide to resume again — a nudge every 20s at the
+ *      flusher's cadence. Clearing it is what makes the resume happen once.
+ *   2. **Honesty.** The sidebar would otherwise keep saying "⏸ limit reached"
+ *      about a session that is running again.
+ *
+ *  Only ever clears a `usage_limit` marker: a workspace that stopped for a
+ *  DIFFERENT reason since (max_turns, error) has a marker the human still needs,
+ *  and silently dropping it would resurrect the #69 bug this machinery exists
+ *  to fix. `setStatus(_, null)` explicitly clears (see its `stopReason` doc);
+ *  the status itself is left alone — the wake path owns that. */
+export async function clearStopReason(id: string): Promise<void> {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.lastStopReason !== 'usage_limit') return;
+  await setStatus(id, ws.status, null);
+  // Drop the reset time with the reason it belonged to, so a later limit that
+  // reports no reset cannot inherit this stale (already-past) one and resume
+  // instantly. Assigned explicitly rather than deleted — the renderer merges
+  // `workspace:update` and a merge cannot unset an absent key.
+  const current = store.getWorkspace(id);
+  if (!current || current.usageLimitResetsAt === undefined) return;
+  const next: Workspace = { ...current, usageLimitResetsAt: undefined };
+  await store.upsertWorkspace(next);
+  platform.broadcast('workspace:update', next);
+}
+
 export function fireNeedsInput(id: string): void {
   const focused = platform.isFocused();
   void setStatus(id, 'waiting').then((res) => {
