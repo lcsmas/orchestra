@@ -26,7 +26,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | `/spawn` | `task` (+ optional `repoPath`,`baseBranch`,`from`,`detached`,`model` — `detached:true` skips parent nesting; `from` still drives repo inheritance; `model` pins the agent's model, passed as `claude --model` on every launch) | `{ ok, id?, branch? }` |
 | `/peers` | — (+ `stats?: true` — adds each git peer's committed three-dot diff vs base as `diff: {files,insertions,deletions}\|null`; one git subprocess per peer, so opt-in — the comms-resurface hook hits `/peers` on every prompt) | `{ ok, peers?: PeerInfo[] }` |
 | `/read` | `id` (+ `lines?`) | `{ ok, branch?, transcript? }` |
-| `/message` | `to`, `text` (+ `from`) | `{ ok, delivery?: 'live'|'started'|'inbox' }` |
+| `/message` | `to`, `text` (+ `from`) | `{ ok, delivery?: 'live'\|'started'\|'inbox' }` — **`'live'` is a PROVEN claim, not an optimistic one (issue #57 fault b):** it is returned only once the message actually became the target's turn (`sdkDeliverConfirmed` awaits the delivery watcher; see `structured-agent-view.md`). A turn discarded before running (Escape, session end, tray cancel, stop) or still unconfirmed after `DELIVERY_START_TIMEOUT_MS` falls back to the durable inbox and reports **`'inbox'`** — it previously reported `'live'` on the queue push alone and never corrected it, which is how senders lost messages silently. The CLI prints this verbatim as `Delivered (<delivery>).` |
 | `/addRepo` | `path` | `{ ok, repo? }` |
 | `/deleteWorkspace` | `id` | `{ ok, id?, branch? }` |
 | `/promote` | `id` | `{ ok, id?, branch?, kind? }` |

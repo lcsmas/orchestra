@@ -30,6 +30,23 @@ export interface SdkDelivery {
    *  they are byte-identical to a human prompt and render as full user bubbles.
    *  Only `dispatchMessageRequest` sets it. */
   send(wsId: string, text: string, peerOrigin?: PeerOrigin): Promise<void>;
+  /** Enqueue a text turn AND wait to learn whether it actually BECAME the
+   *  session's turn (issue #57 fault b).
+   *
+   *  `send` resolves on the QUEUE PUSH, which is not delivery: the target's
+   *  user can hit Escape, the session can end, the prompt can be cancelled from
+   *  the tray. Callers that report a delivery status to a human or a peer must
+   *  use this instead, so 'live' means the message really started rather than
+   *  merely being hoped for.
+   *
+   *  Resolves 'started' | 'dropped' | 'timeout'. A 'timeout' is NOT a licence to
+   *  claim 'live' — the caller falls back to the durable inbox. */
+  sendAwaitingStart(
+    wsId: string,
+    text: string,
+    peerOrigin: PeerOrigin | undefined,
+    timeoutMs: number,
+  ): Promise<'started' | 'dropped' | 'timeout'>;
   /** START a structured session (or reuse a live one) and deliver `text` as its
    *  next turn — the spawn/wake entry point. Unlike `send` this does not require
    *  a live session: it lazy-starts one, resuming the workspace's prior
@@ -54,7 +71,12 @@ export function sdkSessionLive(wsId: string): boolean {
 }
 
 /** Deliver a prompt to a live structured session. Returns false (caller falls
- *  back to the PTY path) when there is no live session to deliver to. */
+ *  back to the PTY path) when there is no live session to deliver to.
+ *
+ *  Reports success on the QUEUE PUSH. Callers that surface a delivery status to
+ *  a human or a peer must use {@link sdkDeliverConfirmed} instead — see issue
+ *  #57 fault (b): a queued turn can still be discarded unrun, and this function
+ *  cannot tell the caller that happened. */
 export async function sdkDeliver(
   wsId: string,
   text: string,
@@ -63,6 +85,31 @@ export async function sdkDeliver(
   if (!impl?.hasSession(wsId)) return false;
   await impl.send(wsId, text, peerOrigin);
   return true;
+}
+
+/** How long to wait for a queued turn to actually start before falling back to
+ *  the durable inbox. A turn parked behind a long-running one is normal, so this
+ *  is generous; it exists only so a sender's CLI cannot hang forever. */
+export const DELIVERY_START_TIMEOUT_MS = 10_000;
+
+/** Deliver to a live structured session and report what ACTUALLY happened.
+ *
+ *  - `'none'`     — no live structured session; the caller's other paths apply.
+ *  - `'started'`  — the message really became the session's turn. Only this
+ *                   result may be reported to a sender as 'live'.
+ *  - `'dropped'`  — the turn was discarded before running (Escape, session end,
+ *                   tray cancel, stop). The caller must NOT claim delivery.
+ *  - `'timeout'`  — still queued when we stopped waiting. Also not 'live'.
+ *
+ *  This is the seam that makes issue #57's 'Delivered (live)' honest. */
+export async function sdkDeliverConfirmed(
+  wsId: string,
+  text: string,
+  peerOrigin?: PeerOrigin,
+  timeoutMs: number = DELIVERY_START_TIMEOUT_MS,
+): Promise<'none' | 'started' | 'dropped' | 'timeout'> {
+  if (!impl?.hasSession(wsId)) return 'none';
+  return impl.sendAwaitingStart(wsId, text, peerOrigin, timeoutMs);
 }
 
 /** Start a structured session for the workspace (resuming prior context when

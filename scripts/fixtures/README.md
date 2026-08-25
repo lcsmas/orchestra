@@ -63,6 +63,7 @@ Every file under `payloads/` is a **real capture**. None was authored by hand.
 | `context-command.usage.json` | the snake_case `context_usage` field the CLI stamps on the synthetic `/context` assistant message — same doc, §2. |
 | `tool-result-meta.trio.json` | the `denied` / `interrupted` / `cancelled` `tool_result_meta` sidecar, shipped by PR #46 (#26). |
 | `background-tasks-changed.sequence.json` | 4-frame replace-semantics sequence; frame 1 is the organic capture from the same doc, §4. |
+| `peer-message.envelopes.json` | Two REAL inter-agent deliveries lifted from fleet transcripts under `~/.claude/projects` (2026-08-25), used by issue #57's gates. `currentFormat` carries today's `Reply with: orchestra message …` footer; `legacyFooterFormat` carries the older `Reply via the orchestra socket: curl …` one. **Both matter:** the pending-prompt identity must normalize either envelope to the same inner body, and a fixture covering only the current footer would miss every message already on disk. Note `isMeta` is ABSENT on both — these come from Orchestra's OWN `dispatchMessageRequest` channel, not the CLI's `{kind:'peer'}` one (which the fold drops); see `src/shared/peer-messages.ts`. |
 
 ### The two context shapes are DIFFERENT — never conflate them
 

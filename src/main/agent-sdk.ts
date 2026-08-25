@@ -83,6 +83,12 @@ import {
   type SdkMessage,
 } from '../shared/agent-events';
 import type { PeerOrigin } from '../shared/peer-messages.ts';
+import {
+  filterUnconsumedPrompts,
+  normalizePendingPrompts,
+  pendingPromptKey,
+  type PendingPrompt,
+} from '../shared/pending-prompts.ts';
 import { findOversizedMemoryFiles } from './memory-files.ts';
 import { contextWindowFromModelId } from '../shared/memory-size.ts';
 import type {
@@ -867,6 +873,9 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
     while (msg.uuid && session.coalesce.has(msg.uuid) && session.queue.length > 0) {
       const nextMsg = session.queue.shift()!;
       session.coalesce.delete(msg.uuid);
+      // The absorbed entry's TEXT does reach the model (inside this turn), so
+      // its delivery receipt is honest: settle it STARTED (issue #57 fault b).
+      settleDelivery(nextMsg.uuid, true);
       const joined = [queueEntryText(msg), queueEntryText(nextMsg)].filter(Boolean).join('\n\n');
       setQueueEntryText(msg, joined);
       // Inherit the absorbed entry's mark so a run of merged prompts collapses
@@ -885,6 +894,12 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
     turnInFlight = new Promise<void>((res) => {
       session.turnGate = res;
     });
+    // This entry is now genuinely the session's turn — tell anyone who is
+    // holding a delivery receipt for it (issue #57 fault b). Settled BEFORE the
+    // yield: the yield hands control to the SDK and does not return until the
+    // NEXT turn is requested, so settling after it would strand the sender for
+    // the whole duration of the turn it just started.
+    settleDelivery(msg.uuid, true);
     yield msg;
   }
 }
@@ -914,7 +929,7 @@ async function consume(session: Session): Promise<void> {
         // The turn ran to a boundary — the pending-prompt insurance (sdkSend)
         // has served its purpose; drop it so a later reopen can't replay.
         if (store.getWorkspace(session.wsId)?.sdkPendingPrompts?.length) {
-          void persistWorkspacePatch(session.wsId, { sdkPendingPrompts: undefined });
+          void clearPendingPrompts(session.wsId);
         }
         // Resolve any parked permission (belt & suspenders) and
         // open the gate so the next queued turn can proceed.
@@ -1005,6 +1020,10 @@ async function consume(session: Session): Promise<void> {
       // Queued turns that never reached the model: their user-message echoes
       // are already in the transcript, so say plainly that they were dropped —
       // a transcript that LOOKS sent but never was is the worst kind of lie.
+      // The same truth is owed to the SENDER of an inter-agent message, who
+      // otherwise holds a 'Delivered (live)' receipt for a message that died
+      // here and is never told (issue #57 fault b).
+      settleQueuedAsDropped(session);
       session.queue.length = 0;
       emit(
         session.wsId,
@@ -1846,26 +1865,57 @@ function setQueueEntryText(msg: SDKUserMessage, text: string): void {
  *  One occurrence, not all: the same text queued twice is two real prompts, and
  *  cancelling one must not silently discard the other. */
 async function dropPendingPrompt(wsId: string, text: string): Promise<void> {
-  const pending = store.getWorkspace(wsId)?.sdkPendingPrompts;
-  if (!pending?.length) return;
-  const i = pending.indexOf(text);
-  if (i < 0) return;
-  const next = [...pending.slice(0, i), ...pending.slice(i + 1)];
-  await persistWorkspacePatch(wsId, {
-    sdkPendingPrompts: next.length ? next : undefined,
-  }).catch(() => {});
+  await mutatePendingPrompts(wsId, (pending) => {
+    // Match on IDENTITY, not raw text (issue #57): entries are keyed, and the
+    // key normalizes a peer envelope to its inner body so a cancel still finds
+    // the entry it belongs to.
+    const key = pendingPromptKey({ text });
+    const i = pending.findIndex((p) => p.key === key);
+    if (i < 0) return null;
+    return [...pending.slice(0, i), ...pending.slice(i + 1)];
+  });
 }
 
 /** Rewrite one occurrence of a pending prompt after a tray edit, so a crash
  *  replays what the user MEANT rather than the superseded text. */
 async function replacePendingPrompt(wsId: string, before: string, after: string): Promise<void> {
-  const pending = store.getWorkspace(wsId)?.sdkPendingPrompts;
-  if (!pending?.length) return;
-  const i = pending.indexOf(before);
-  if (i < 0) return;
-  const next = [...pending];
-  next[i] = after;
-  await persistWorkspacePatch(wsId, { sdkPendingPrompts: next }).catch(() => {});
+  await mutatePendingPrompts(wsId, (pending) => {
+    const key = pendingPromptKey({ text: before });
+    const i = pending.findIndex((p) => p.key === key);
+    if (i < 0) return null;
+    const next = [...pending];
+    // Re-key: the edited text is a DIFFERENT prompt, and leaving the old key
+    // would make the recovery pass match the superseded body.
+    next[i] = { ...next[i], key: pendingPromptKey({ text: after }), text: after };
+    return next;
+  });
+}
+
+/** Read-modify-write `ws.sdkPendingPrompts` through the same per-workspace chain
+ *  the appends use, so a tray edit/cancel cannot race a concurrent send (issue
+ *  #57). `mutate` returns the new list, or null to leave the store untouched. */
+function mutatePendingPrompts(
+  wsId: string,
+  mutate: (pending: PendingPrompt[]) => PendingPrompt[] | null,
+): Promise<void> {
+  const prev = pendingPromptWrites.get(wsId) ?? Promise.resolve();
+  const next = prev
+    .catch(() => {})
+    .then(async () => {
+      const pending = normalizePendingPrompts(store.getWorkspace(wsId)?.sdkPendingPrompts);
+      if (!pending.length) return;
+      const updated = mutate(pending);
+      if (!updated) return;
+      await persistWorkspacePatch(wsId, {
+        sdkPendingPrompts: updated.length ? updated : undefined,
+      });
+    })
+    .catch((err) => log.warn(`agent-sdk: pending-prompt mutate failed for ${wsId}`, err));
+  pendingPromptWrites.set(wsId, next);
+  void next.then(() => {
+    if (pendingPromptWrites.get(wsId) === next) pendingPromptWrites.delete(wsId);
+  });
+  return next;
 }
 
 /** Project main's `session.queue` into the renderer-facing snapshot and emit it.
@@ -1900,6 +1950,10 @@ export function sdkQueueRemove(wsId: string, id: string): boolean {
   // Read the text BEFORE splicing — after the splice, index `i` is the NEXT
   // entry, so reading it there would drop the wrong prompt from the insurance.
   const removedText = queueEntryText(session.queue[i]);
+  // The user cancelled this prompt from the tray — it will never run, so any
+  // sender holding a delivery receipt for it must be told (issue #57 fault b)
+  // rather than left believing it was delivered.
+  settleDelivery(session.queue[i].uuid, false);
   session.queue.splice(i, 1);
   session.coalesce.delete(id);
   // Keep the crash-recovery insurance in step: `sdkPendingPrompts` re-sends
@@ -1957,7 +2011,9 @@ export async function sdkSend(
    *  this same function, so the tag is what lets the view tell the two apart and
    *  render peer traffic as a compact row. See sdk-delivery.ts's `send`. */
   peerOrigin?: PeerOrigin,
-): Promise<void> {
+  /** Resolves to the minted turn uuid — the handle a caller uses to await
+   *  whether this turn actually STARTED (issue #57 b, sdkSendAwaitingStart). */
+): Promise<string> {
   let session: Session;
   try {
     session = await ensureSession(wsId);
@@ -2022,6 +2078,10 @@ export async function sdkSend(
   // NO stream path to learn a CLI-assigned uuid, and reading it off disk would
   // be racy. It rides the echo below so the bubble is rewindable immediately.
   const rewindId = randomUUID();
+  // Arm the delivery watcher HERE (issue #57 fault b) — before the entry is
+  // pushed, so `promptStream` cannot shift and settle it in the window between
+  // the push and the caller learning the id. See sdkSendAwaitingStart.
+  pendingWatcherResolve?.(rewindId);
   const msg: SDKUserMessage = {
     type: 'user',
     parent_tool_use_id: null,
@@ -2059,14 +2119,91 @@ export async function sdkSend(
   // otherwise exist nowhere — recoverPendingPrompts re-sends it on the next
   // structured-view open. Raw `text`, not sendText: a replay must not carry a
   // stale local-command context prefix.
+  //
+  // The entry carries a STABLE KEY (issue #57): consumption is decided by
+  // identity, never by text-matching the transcript — the store holds a peer
+  // message's full envelope while the backfill strips it to the bare body, so
+  // the old `includes()` predicate re-sent consumed messages on every reopen.
+  // The `peerOrigin` rides along so a recovery re-enters TAGGED rather than
+  // impersonating a human turn.
+  //
+  // AWAITED, and appended through a serialized read-modify-write (issue #57):
+  // the old `void` fire-and-forget read `sdkPendingPrompts` synchronously and
+  // wrote it after an await, so two sends racing this window each appended to
+  // the SAME base array and the first entry was LOST (measured: two concurrent
+  // sends → one surviving entry). Losing the insurance silently is exactly the
+  // silent-drop class fault (b) is about, so it is fixed here too.
   if (text.trim()) {
-    const wsNow = store.getWorkspace(wsId);
-    void persistWorkspacePatch(wsId, {
-      sdkPendingPrompts: [...(wsNow?.sdkPendingPrompts ?? []), text],
-    });
+    const entry: PendingPrompt = {
+      key: pendingPromptKey({ text }),
+      text,
+      ...(peerOrigin ? { peer: { from: peerOrigin.from, name: peerOrigin.name } } : {}),
+    };
+    await appendPendingPrompt(wsId, entry);
   }
   session.pump?.();
+  return rewindId;
 }
+
+/** How a delivery to a live structured session actually ended (issue #57 b). */
+export type SdkDeliveryOutcome = 'started' | 'dropped';
+
+/** Enqueue a turn AND wait to learn whether it really became the session's turn.
+ *
+ *  ── Why this exists ─────────────────────────────────────────────────────────
+ *  `sdkDeliver` used to report success the instant `sdkSend` pushed onto
+ *  `session.queue`, and `dispatchMessageRequest` turned that into the CLI's
+ *  `Delivered (live).` But a queued entry is not a delivered one: the target's
+ *  user can press Escape (`interruptCancellingQueued` wipes the queue), the
+ *  session can end with turns still queued (`consume`'s finally), the user can
+ *  cancel the prompt from the tray, or the session can be stopped. In every one
+ *  of those cases the sender had already been told 'live' and was never
+ *  corrected — the silent drop half of issue #57.
+ *
+ *  So the queue push is now only the START of the delivery. This resolves
+ *  'started' when `promptStream` yields the entry to the SDK (or absorbs it
+ *  into a coalesced turn), and 'dropped' when any path discards it.
+ *
+ *  ── Why it is bounded ───────────────────────────────────────────────────────
+ *  A turn can legitimately sit queued for a long time behind a running turn, so
+ *  waiting forever would hang the sender's CLI. On timeout the caller does NOT
+ *  get to claim 'live': it falls back to the durable inbox, which is the only
+ *  branch that proves a file write. Reporting a weaker TRUE status beats
+ *  reporting a stronger false one. */
+export async function sdkSendAwaitingStart(
+  wsId: string,
+  text: string,
+  peerOrigin: PeerOrigin | undefined,
+  timeoutMs: number,
+): Promise<SdkDeliveryOutcome | 'timeout'> {
+  let uuid: string;
+  const outcome = new Promise<SdkDeliveryOutcome>((resolve) => {
+    // Registered by the watcher map keyed on the uuid sdkSend mints. Because
+    // `sdkSend` is async, register through a thunk the moment we know the id.
+    pendingWatcherResolve = (id: string) => {
+      deliveryWatchers.set(id, (started) => resolve(started ? 'started' : 'dropped'));
+    };
+  });
+  try {
+    uuid = await sdkSend(wsId, text, undefined, peerOrigin);
+  } finally {
+    pendingWatcherResolve = null;
+  }
+  // sdkSend can complete synchronously enough that promptStream already shifted
+  // the entry; the watcher is registered from inside sdkSend (below) so that
+  // window is closed rather than raced.
+  const timed = new Promise<'timeout'>((resolve) =>
+    setTimeout(() => resolve('timeout'), timeoutMs).unref?.(),
+  );
+  const result = await Promise.race([outcome, timed]);
+  if (result === 'timeout') deliveryWatchers.delete(uuid);
+  return result;
+}
+
+/** Set only while {@link sdkSendAwaitingStart} is arming a watcher, so `sdkSend`
+ *  can register it at the exact moment the turn uuid is minted — before the
+ *  entry is pushed and therefore before `promptStream` can possibly shift it. */
+let pendingWatcherResolve: ((uuid: string) => void) | null = null;
 
 /** Start (or reuse) a structured session for `wsId` and deliver `text` as its
  *  next turn — the spawn/wake entry point behind the sdk-delivery seam
@@ -2151,19 +2288,40 @@ export async function sdkAttachIfDetached(wsId: string): Promise<boolean> {
  *  session start. */
 export async function recoverPendingPrompts(wsId: string, history: AgentEvent[]): Promise<void> {
   const ws = store.getWorkspace(wsId);
-  const pending = ws?.sdkPendingPrompts ?? [];
+  const pending = normalizePendingPrompts(ws?.sdkPendingPrompts);
   if (pending.length === 0) return;
-  const userTexts = history.filter((e) => e.type === 'user-message').map((e) => e.text ?? '');
-  const missing = pending.filter((p) => !userTexts.some((t) => t.includes(p)));
+  // IDENTITY, not text (issue #57). The old predicate asked whether any
+  // transcript user-text `includes()` the stored prompt. For an inter-agent
+  // message that is false BY CONSTRUCTION: sdkSend stored the full
+  // `formatPeerMessage` envelope, while the backfill strips the header and
+  // reply footer to render a compact peer row (issue #56), so the stored string
+  // is strictly LONGER than anything on disk. Every reopen therefore re-sent an
+  // already-consumed message — the reported "same message queued 3 times".
+  // `pendingPromptKey` normalizes both sides to the same inner body, so the
+  // match survives that rewrite (verified against real captured envelopes in
+  // scripts/verify-peer-redelivery.mjs, which also reproduces the old fault).
+  const consumedKeys = new Set(
+    history.filter((e) => e.type === 'user-message').map((e) => pendingPromptKey(e)),
+  );
+  const missing = filterUnconsumedPrompts(pending, consumedKeys);
   // Clear FIRST: the resend below re-appends via sdkSend, so leaving the old
   // entries would double them; and a transcript-covered entry is done for good.
-  await persistWorkspacePatch(wsId, { sdkPendingPrompts: undefined });
+  await clearPendingPrompts(wsId);
   if (missing.length === 0) return;
   log.info(`agent-sdk: re-sending ${missing.length} pending prompt(s) lost to a quit for ${wsId}`);
-  try {
-    await sdkSend(wsId, missing.join('\n'));
-  } catch (err) {
-    log.warn(`agent-sdk: pending-prompt recovery send failed for ${wsId}`, err);
+  // ONE TURN PER PROMPT (issue #57). This used to `missing.join('\n')`, fusing N
+  // recovered prompts into a single turn — two orders from two different senders
+  // arrived as one blob, and both lost their peer origin because the joined text
+  // re-entered untagged, rendering as a human bubble. Each entry is re-sent
+  // separately and re-tagged with the origin it was delivered under, so a
+  // recovered peer message is still a peer message. They queue in order behind
+  // one another (sdkSend pushes; promptStream drains sequentially).
+  for (const p of missing) {
+    try {
+      await sdkSend(wsId, p.text, undefined, p.peer ? { kind: 'peer', ...p.peer } : undefined);
+    } catch (err) {
+      log.warn(`agent-sdk: pending-prompt recovery send failed for ${wsId}`, err);
+    }
   }
 }
 
@@ -2345,6 +2503,10 @@ async function interruptCancellingQueued(session: Session): Promise<void> {
   // fresh turns the moment the interrupt settles — the user hits Escape and the
   // agent keeps going. Clear locally and republish so the tray empties too.
   if (session.queue.length > 0) {
+    // Tell every sender still holding a delivery receipt that its message was
+    // thrown away rather than run (issue #57 fault b) — before the array is
+    // emptied, while the entries are still readable.
+    settleQueuedAsDropped(session);
     session.queue.length = 0;
     session.coalesce.clear();
     emitQueueUpdate(session);
@@ -2583,6 +2745,89 @@ async function persistWorkspacePatch(
 
 function persistSessionId(wsId: string, sessionId: string): Promise<void> {
   return persistWorkspacePatch(wsId, { sdkSessionId: sessionId });
+}
+
+/** Watchers waiting to learn whether a specific queued turn actually STARTED
+ *  (issue #57 fault b).
+ *
+ *  Keyed by the turn's minted `uuid` (the same id `sdkSend` puts on the
+ *  SDKUserMessage). `promptStream` settles the watcher `true` when it shifts the
+ *  entry and yields it to the SDK — the first moment the message is genuinely
+ *  the target's turn rather than a hope. Every path that DESTROYS a queued entry
+ *  without running it settles `false`:
+ *    • `interruptCancellingQueued` — the target's user pressed Escape
+ *    • `consume`'s finally — the session ended with turns still queued
+ *    • `sdkClear` / `sdkStop`
+ *  so the sender is told, instead of holding a 'Delivered (live)' receipt for a
+ *  message that was thrown away.
+ *
+ *  A coalesced entry counts as STARTED: its text is absorbed into the turn that
+ *  does run, so the message really does reach the model. */
+const deliveryWatchers = new Map<string, (started: boolean) => void>();
+
+/** Settle a queued turn's delivery watcher, if anyone is waiting on it. */
+function settleDelivery(uuid: string | undefined, started: boolean): void {
+  if (!uuid) return;
+  const w = deliveryWatchers.get(uuid);
+  if (!w) return;
+  deliveryWatchers.delete(uuid);
+  w(started);
+}
+
+/** Settle every watcher for turns still sitting in a session's queue as DROPPED.
+ *  Called by each path that discards queued entries. */
+function settleQueuedAsDropped(session: Session): void {
+  for (const m of session.queue) settleDelivery(m.uuid, false);
+}
+
+/** Per-workspace tail of in-flight pending-prompt writes, so concurrent sends
+ *  append to the SAME list instead of racing (issue #57).
+ *
+ *  {@link persistWorkspacePatch} is a read-modify-write with an `await` in the
+ *  middle: it reads the workspace synchronously, then awaits the store write.
+ *  Two `sdkSend`s landing inside that window both read the pre-append array and
+ *  the second write clobbers the first — measured, two concurrent sends left ONE
+ *  entry. Chaining every append for a workspace onto its predecessor makes the
+ *  read happen after the previous write has landed. Keyed per workspace so
+ *  unrelated workspaces never serialize against each other. */
+const pendingPromptWrites = new Map<string, Promise<void>>();
+
+/** Append one entry to `ws.sdkPendingPrompts`, serialized per workspace.
+ *  Re-reads the workspace INSIDE the chain — reading before awaiting the tail
+ *  would reintroduce the very race this exists to close. */
+function appendPendingPrompt(wsId: string, entry: PendingPrompt): Promise<void> {
+  const prev = pendingPromptWrites.get(wsId) ?? Promise.resolve();
+  const next = prev
+    .catch(() => {})
+    .then(async () => {
+      const wsNow = store.getWorkspace(wsId);
+      const existing = normalizePendingPrompts(wsNow?.sdkPendingPrompts);
+      await persistWorkspacePatch(wsId, { sdkPendingPrompts: [...existing, entry] });
+    })
+    .catch((err) => log.warn(`agent-sdk: pending-prompt append failed for ${wsId}`, err));
+  pendingPromptWrites.set(wsId, next);
+  // Drop the tail once it settles so the map can't grow without bound across a
+  // long-lived app run (only if we are still the tail — a later append owns it).
+  void next.then(() => {
+    if (pendingPromptWrites.get(wsId) === next) pendingPromptWrites.delete(wsId);
+  });
+  return next;
+}
+
+/** Clear `ws.sdkPendingPrompts`, serialized against in-flight appends so a
+ *  clear can never be overtaken by an append that read the pre-clear array.
+ *  Used at the turn result and by the recovery pass. */
+function clearPendingPrompts(wsId: string): Promise<void> {
+  const prev = pendingPromptWrites.get(wsId) ?? Promise.resolve();
+  const next = prev
+    .catch(() => {})
+    .then(() => persistWorkspacePatch(wsId, { sdkPendingPrompts: undefined }))
+    .catch((err) => log.warn(`agent-sdk: pending-prompt clear failed for ${wsId}`, err));
+  pendingPromptWrites.set(wsId, next);
+  void next.then(() => {
+    if (pendingPromptWrites.get(wsId) === next) pendingPromptWrites.delete(wsId);
+  });
+  return next;
 }
 
 /** Set the workspace's model. Persists to `ws.model` so the Model dropdown
@@ -3471,6 +3716,12 @@ export async function sdkStop(wsId: string): Promise<void> {
     return;
   }
   session.stopping = true;
+  // Anything still queued when the session is torn down will never run, so any
+  // sender holding a delivery receipt for it is told now (issue #57 fault b).
+  // Done here as well as in consume()'s finally because an explicit stop can
+  // beat the consume loop's unwind, and a watcher that is never settled would
+  // hang the sender rather than fail it.
+  settleQueuedAsDropped(session);
   // Wake any waiters so the generator returns, then interrupt to unwind the SDK.
   session.pump?.();
   session.turnGate?.();
@@ -3663,7 +3914,11 @@ export function sdkStopMany(wsIds: readonly string[]): void {
 // wake-on-message run the agent in the structured view instead of a raw PTY.
 registerSdkDelivery({
   hasSession: sdkHasSession,
-  send: (wsId, text, peerOrigin) => sdkSend(wsId, text, undefined, peerOrigin),
+  send: async (wsId, text, peerOrigin) => {
+    await sdkSend(wsId, text, undefined, peerOrigin);
+  },
+  sendAwaitingStart: (wsId, text, peerOrigin, timeoutMs) =>
+    sdkSendAwaitingStart(wsId, text, peerOrigin, timeoutMs),
   start: (wsId, text) => sdkWake(wsId, text),
   stop: sdkStop,
 });

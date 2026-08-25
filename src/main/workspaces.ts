@@ -7,7 +7,13 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from './platform';
 import { store } from './store';
-import { sdkDeliver, sdkStartAndDeliver, sdkStopIfLive, sdkSessionLive } from './sdk-delivery';
+import {
+  sdkDeliver,
+  sdkDeliverConfirmed,
+  sdkStartAndDeliver,
+  sdkStopIfLive,
+  sdkSessionLive,
+} from './sdk-delivery';
 import {
   createWorktree,
   detectDefaultBranch,
@@ -42,6 +48,7 @@ import { refreshAccountsNow } from './account-usage';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
 import type { PeerOrigin } from '../shared/peer-messages.ts';
+import { reportedDeliveryFor, requiresInboxFallback } from '../shared/delivery-status.ts';
 import { forgetWorkspaceProbes } from './activity';
 import { clearHibernated } from './hibernation.ts';
 import { forgetHibernationActivity } from './hibernation-activity.ts';
@@ -2787,8 +2794,41 @@ export async function dispatchMessageRequest(
   // of a full user bubble. Only this dispatcher sets it — a composer prompt
   // travelling the same `sdkSend` path stays untagged and unaffected.
   const peerOrigin: PeerOrigin = { kind: 'peer', from: fromId, name: fromBranch };
-  if (await sdkDeliver(input.to, body, peerOrigin)) {
+  // 'live' MUST MEAN THE MESSAGE BECAME THE TARGET'S TURN (issue #57 fault b).
+  // This used to report 'live' the moment the turn was pushed onto the session
+  // queue — but a queued turn is routinely discarded without running: the
+  // target's user presses Escape (interruptCancellingQueued wipes the queue),
+  // the session ends with turns queued (consume's finally), the prompt is
+  // cancelled from the tray, or the session is stopped. The sender had already
+  // been told 'Delivered (live).' and was never corrected. That is the silent
+  // half of #57, and it is the dangerous half: a duplicated order is idempotent
+  // against a ledger, a dropped one is invisible.
+  //
+  // So we now WAIT for the turn to actually start, and every non-'started'
+  // outcome falls through to the durable inbox rather than claiming delivery.
+  // Reporting the weaker TRUE status beats reporting the stronger false one.
+  const confirmed = await sdkDeliverConfirmed(input.to, body, peerOrigin);
+  const reported = reportedDeliveryFor(confirmed);
+  if (reported === 'live') {
     return { ok: true, delivery: 'live', branch: target.branch };
+  }
+  if (requiresInboxFallback(confirmed)) {
+    // The structured session took it and then discarded it (or is still sitting
+    // on it). Park the message durably so it is not lost, and tell the sender
+    // the TRUTH about where it ended up — never 'live'.
+    if (await queueInbox(input.to, body)) {
+      log.info(
+        `message to ${input.to}: live delivery ${confirmed} — parked in inbox instead of reporting 'live'`,
+      );
+      return { ok: true, delivery: 'inbox', branch: target.branch };
+    }
+    return {
+      ok: false,
+      error:
+        confirmed === 'dropped'
+          ? 'the target discarded the message before running it, and the inbox fallback failed'
+          : 'the target never started the message, and the inbox fallback failed',
+    };
   }
 
   if (isRunning(input.to)) {

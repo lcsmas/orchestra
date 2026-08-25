@@ -1,3 +1,4 @@
+import type { PendingPrompt } from './pending-prompts.ts';
 import type { ContextUsage } from './context-usage.ts';
 
 export type WorkspaceStatus = 'idle' | 'running' | 'waiting' | 'error' | 'stopped';
@@ -174,8 +175,20 @@ export interface Workspace {
    *  the prompt would otherwise vanish — it lived only in the CLI's internal
    *  queue and the quit app's memory. On the next structured-view open,
    *  `recoverPendingPrompts` (agent-sdk.ts) re-sends any entry the on-disk
-   *  transcript does not contain. */
-  sdkPendingPrompts?: string[];
+   *  transcript does not contain.
+   *
+   *  ENTRIES CARRY A STABLE KEY, NOT BARE TEXT (issue #57). Consumption used to
+   *  be decided by text-matching these strings against the backfilled
+   *  transcript, which is unsound for inter-agent messages: the store holds the
+   *  full `formatPeerMessage` envelope while the backfill strips it to the bare
+   *  body (issue #56's peer rows), so `body.includes(envelope)` was false BY
+   *  CONSTRUCTION and every reopen re-sent an already-consumed message — the
+   *  reported "same message queued 3 times". Identity now decides; text is only
+   *  what gets re-sent. See src/shared/pending-prompts.ts.
+   *
+   *  Legacy `string[]` values written by older builds are migrated on read by
+   *  `normalizePendingPrompts` rather than dropped. */
+  sdkPendingPrompts?: PendingPrompt[];
   repoPath: string;
   /** DISPLAY-ONLY repo association for a repo-less coordinator (`kind:
    * 'orchestrator'`). Purely a sidebar-grouping preference: it files the
