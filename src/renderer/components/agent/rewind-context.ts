@@ -10,6 +10,15 @@ export interface RewindApi {
   /** True while a turn is in flight — the control disables rather than racing
    *  the session teardown against a stream still writing rows. */
   busy: boolean;
+  /** **Resume from here** (#18): fork the conversation at this message into a
+   *  NEW workspace, leaving this one intact. Non-destructive, so unlike
+   *  {@link RewindApi.onConfirm} it is NOT disabled by `busy` — the source
+   *  session keeps running and the fork is a copy on disk. */
+  onFork: (rewindId: string) => Promise<void>;
+  /** Whether a fork is possible from this message. False for the FIRST turn:
+   *  the fork would be empty and the SDK rejects it outright, so the affordance
+   *  is hidden rather than offered-and-failing (see `canForkFrom`). */
+  canFork: (rewindId: string) => boolean;
 }
 
 /**

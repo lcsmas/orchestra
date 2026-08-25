@@ -117,6 +117,7 @@ import {
   sdkClear,
   sdkRewind,
   sdkRewindPreview,
+  sdkFork,
   sdkPermissionReply,
   sdkAnswerableReply,
   sdkSetModel,
@@ -272,6 +273,7 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   agentSdkClear: 'agent:sdkClear',
   agentSdkRewind: 'agent:sdkRewind',
   agentSdkRewindPreview: 'agent:sdkRewindPreview',
+  agentSdkFork: 'agent:sdkFork',
   agentSdkPermissionReply: 'agent:sdkPermissionReply',
   agentSdkAnswerableReply: 'agent:sdkAnswerableReply',
   agentSdkSetModel: 'agent:sdkSetModel',
@@ -923,6 +925,7 @@ export const apiHandlers: ApiHandlerTable = {
     sdkRewind(wsId, rewindId, prevRewindId),
 
   agentSdkRewindPreview: async (wsId, rewindId) => sdkRewindPreview(wsId, rewindId),
+  agentSdkFork: async (wsId, upToMessageId, title) => sdkFork(wsId, upToMessageId, title),
 
   agentSdkPermissionReply: async (wsId, requestId, reply) => {
     sdkPermissionReply(wsId, requestId, reply);
