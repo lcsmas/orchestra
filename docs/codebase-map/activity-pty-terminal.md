@@ -123,6 +123,23 @@ silently and the human was the detector.
   app and fixed (review-88 R1). **Consequence for any rig: a stall can no
   longer be SEEDED** — the app must actually observe the silence, so a
   true-positive arm has to wait the threshold out in real time.
+- **Concurrent-append framing (issue #93) — LATENT, and the headroom is what
+  makes it latent.** `parkedInboxCount` is `parseInboxBlocks(file).length`, and
+  `O_APPEND` atomicity holds per WRITE CHUNK rather than per `appendFile` call,
+  so two concurrent appends of a block over ~448KB splice one block inside
+  another and the parser over-counts (measured: 19 blocks for 10 messages).
+  **Unreachable through the only caller** — `dispatchMessageRequest` truncates
+  to `MESSAGE_MAX_CHARS = 8000` before building the body
+  (`workspaces.ts:2777`), and all three `queueInbox` call sites (`:2825`,
+  `:2862`, `:2872`) pass that body, so the largest block that can reach disk is
+  **8276 bytes, 55x below the boundary**; 30 concurrent max-size real messages
+  parse to exactly 30. The 1 MiB cap at `hooks-server.ts:166` bounds the HTTP
+  REQUEST, not the block — reading that cap as the block size is the mistake
+  that made this look live. If `MESSAGE_MAX_CHARS` is ever raised toward
+  448KB, or a second `queueInbox` caller appears that does NOT truncate, this
+  becomes reachable: fix it at the write boundary (#93), not in the badge.
+  Measured 2026-08-25 on btrfs (the filesystem under `~/.orchestra` — an
+  earlier sweep on `/tmp` measured tmpfs, the wrong filesystem).
 - **The clock measures CONSUMPTION, never ARRIVAL.** The tempting
   simplification — age from the newest `queuedAt` / parked block, the data
   closest to hand — is wrong in the direction that hides the bug: an arrival
