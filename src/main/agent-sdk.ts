@@ -48,7 +48,6 @@ import {
   type ReloadResult,
 } from '../shared/reload-skills';
 import { withCrossSessionInboundPolicy } from '../shared/cross-session-inbound';
-import { shouldRecycleForBudget } from '../shared/turn-budget.ts';
 import { syncAccountInheritance } from './account-inherit';
 import { agentCliBinDir } from './cli-shim';
 import { getHookSocketPath } from './hooks-server';
@@ -60,6 +59,7 @@ import {
   fireNeedsInput,
   resumeRunning,
   markLooping,
+  markStoppedOnMaxTurns,
 } from './activity';
 import { makeKeeperSpawn, killKeeper, probeKeeper } from './keeper-client';
 import { registerSdkDelivery } from './sdk-delivery';
@@ -240,26 +240,6 @@ interface Session {
   pendingElicitations: Map<string, (result: ElicitationResult) => void>;
   /** Set once stop()/removal is requested so the generator ends cleanly. */
   stopping: boolean;
-  /** Set SYNCHRONOUSLY the instant a budget recycle begins (issue #69), before
-   *  the function's first `await`.
-   *
-   *  `stopping` cannot serve as this guard: it is only set later, by the
-   *  `sdkStop` inside the recycle, and the consume loop keeps delivering
-   *  messages across every await before that. A second `error_max_turns`
-   *  arriving in that window would see `stopping === false`, re-enter, splice an
-   *  already-empty queue and race a second `sdkStop`/`ensureSession` pair
-   *  against the first — tearing down the replacement session that the first
-   *  call had just booted. A field on the SESSION rather than a module-level
-   *  map, so it dies with the object it describes and cannot leak across a
-   *  restart. */
-  recycling?: boolean;
-  /** Set when a turn ended on `error_max_turns` (issue #69). MEASURED: the
-   *  first such result is benign — no throw, and the next queued turn runs with
-   *  a full budget (the cap is per-TURN, not per-session). The SECOND one
-   *  throws and kills the query, discarding every still-queued prompt. This
-   *  flag is what lets `consume()`'s catch tell that budget-driven death from
-   *  an unrelated crash, so only the former is recovered by a resume. */
-  sawMaxTurns?: boolean;
   /** The live permission mode, echoed into new-turn behavior. */
   permissionMode: AgentPermissionMode;
   /** The SDK session id last persisted to `ws.sdkSessionId`, to avoid rewriting
@@ -495,6 +475,29 @@ function emitFrom(session: Session, msg: SdkMessage): void {
     // no-change guard.
     if (ev.type === 'tool-use' && ev.name === 'ScheduleWakeup') {
       void markLooping(session.wsId, ev.input?.stop !== true);
+    }
+    // ── #69: the turn-limit REASON, outside the single-writer gate ──
+    // MEASURED (docs/research/issue-69-maxturns-findings.md, third correction):
+    // a turn that dies on `error_max_turns` is the ONLY thing #69 actually
+    // reports, and today nothing tells the human. `driveStatusFromEvent` below
+    // WOULD carry the reason — but it is gated on `session.driveStatus`, which
+    // is TRUE ONLY when a terminal PTY coexists. In the plain structured-view
+    // configuration (no PTY) the SDK's own shell hooks own the spool instead,
+    // and they carry no reason field at all: measured, 8 consecutive
+    // exhaustions wrote NO reason anywhere, leaving only the [WARN] in the app
+    // log — verbatim the bug in the issue.
+    //
+    // Written here, deliberately OUTSIDE the gate, for exactly the reason
+    // `markLooping` above is: that gate exists to stop double-DRIVING the
+    // status dot, whereas this is a store field with its own no-change guard
+    // (`setStatus` returns `changed:false` when neither status nor reason
+    // moved), so the two paths can overlap safely.
+    //
+    // Note this is the BENIGN, self-recovering exhaustion — the queue keeps
+    // being consumed (measured: 4 of 4 prompts ran, alternating exhaust/
+    // succeed). Nothing is being recovered here; the human is being TOLD.
+    if (ev.type === 'turn-end' && ev.stopReason === 'max_turns') {
+      void markStoppedOnMaxTurns(session.wsId);
     }
     driveStatusFromEvent(session, ev);
     if (ev.type === 'session/init') {
@@ -926,174 +929,9 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
   }
 }
 
-/** Does this thrown error message mean "the turn cap was hit"?
- *
- *  MEASURED text, SDK/CLI as installed 2026-08-25:
- *    `Claude Code returned an error result: Reached maximum number of turns (1)`
- *  Matched loosely (case-insensitive, number-agnostic) because the phrasing is
- *  the CLI's, not a stable API contract — but still specific enough that an
- *  unrelated failure mentioning "turns" in passing does not qualify. Paired
- *  with `session.sawMaxTurns` at the call site so a match alone never triggers
- *  the recovery. */
-function isMaxTurnsFailure(message: string): boolean {
-  return /maximum number of turns/i.test(message);
-}
-
-/** Recover a session whose `query()` just exhausted its `maxTurns` budget
- *  (issue #69) — either by recycling the query with a fresh budget, or by
- *  stopping it as a runaway. NEITHER outcome is silent.
- *
- *  ## Why a resume, and what the budget actually does
- *
- *  MEASURED, not inferred (docs/research/issue-69-maxturns-findings.md, probes
- *  4-6, real `query()` against the installed CLI). An earlier draft of this fix
- *  claimed `maxTurns` was a session-LIFETIME budget; that is REFUTED. The cap
- *  is PER-TURN: with `maxTurns:1`, one prompt returns `error_max_turns` and the
- *  NEXT prompt then runs with a full budget. A first exhaustion is benign and
- *  self-recovering, which is why nothing here reacts to it.
- *
- *  The failure is the SECOND exhaustion: it does not return a result, it
- *  THROWS ("Reached maximum number of turns"), killing the query and silently
- *  discarding every prompt still queued behind it (measured: 3 of 5 never
- *  consumed). That is #69's starved queue. Raising the cap would not fix it —
- *  it only moves which turn throws — and the budget cannot be reset in place
- *  (it is fixed at `query()` construction, no setter). Resuming from the
- *  persisted `ws.sdkSessionId` is what rescues the queue: same conversation,
- *  fresh query, and the entries get delivered instead of dropped.
- *
- *  ## What must survive the restart
- *
- *  THE QUEUE. The entries piled up behind the exhausted turn are the messages
- *  #69 watched rot; they are moved onto the replacement session so they are
- *  delivered rather than dropped. The delivery watchers are deliberately NOT
- *  settled here — those entries have not failed, they are about to run, and
- *  settling them `false` would tell senders their message died when it did
- *  not. */
-async function recycleForBudget(
-  session: Session,
-  /** Queue entries the caller already detached (consume()'s finally does this
-   *  before the teardown, so the normal drop-and-report path cannot claim
-   *  them). Omitted on any path where this function should take the queue
-   *  itself. */
-  preCarried?: SDKUserMessage[],
-): Promise<void> {
-  const wsId = session.wsId;
-  // Re-entry guard, set SYNCHRONOUSLY before the first `await` below. The
-  // consume loop keeps running while this function is suspended, so a second
-  // `error_max_turns` can arrive mid-teardown; without this flag it would see
-  // `stopping === false` (sdkStop has not run yet), splice an already-empty
-  // queue, and race a second sdkStop/ensureSession pair against this one —
-  // killing the replacement session this call is about to boot.
-  if (session.stopping || session.recycling) return;
-  session.recycling = true;
-
-  const ws = store.getWorkspace(wsId);
-  const decision = shouldRecycleForBudget(ws?.budgetRecycles ?? [], Date.now());
-
-  // Persist the decision's pruned history BEFORE the restart: the guard's whole
-  // job is to survive the teardown it is about to trigger, and an in-memory
-  // counter would be reset by the very restart it counts.
-  await persistWorkspacePatch(wsId, { budgetRecycles: decision.history }).catch(() => {});
-
-  // Take the queue off the dying session. Done before `stopping` is set so no
-  // other path (sdkStop's settleQueuedAsDropped) can mark these as failed.
-  // When the caller already detached it (consume()'s finally), use that —
-  // splicing again would silently return [] and strand those entries.
-  const carried = preCarried ?? session.queue.splice(0, session.queue.length);
-
-  if (!decision.recycle) {
-    // RUNAWAY: stop, and tell the human why in the transcript.
-    //
-    // The queued entries must still be accounted for. When this function was
-    // entered from consume()'s finally the teardown has ALREADY run, so
-    // pushing them back onto `session.queue` would strand them where nothing
-    // reads them — settle and report them here instead. On the live-session
-    // path they go back so the ledger close reports them as it always has.
-    // Silently eating them is the #69 bug in either case.
-    if (preCarried) {
-      for (const m of carried) settleDelivery(m.uuid, false);
-      if (carried.length > 0) {
-        emit(
-          wsId,
-          stamp(session.ctx, {
-            type: 'error',
-            message: `${carried.length} queued message${carried.length === 1 ? ' was' : 's were'} not delivered because the session stopped — send again.`,
-            apiErrorStatus: null,
-            willRetry: false,
-          }),
-        );
-      }
-    } else {
-      session.queue.push(...carried);
-    }
-    emit(
-      wsId,
-      stamp(session.ctx, {
-        type: 'error',
-        message: decision.reason,
-        apiErrorStatus: null,
-        willRetry: false,
-      }),
-    );
-    slog.warn(`ws ${wsId}: turn budget exhausted ${decision.history.length}× in the window — stopping as a runaway`);
-    await sdkStop(wsId);
-    return;
-  }
-
-  // RECYCLE. Say so first: a fix that quietly papered over exhaustion would
-  // reproduce the exact failure #69 reports ("nothing tells the human why").
-  emit(
-    wsId,
-    stamp(session.ctx, {
-      type: 'notice',
-      kind: 'budget-recycled',
-      text: decision.reason,
-    }),
-  );
-  slog.info(`ws ${wsId}: turn budget exhausted — recycling query (${carried.length} queued)`);
-
-  // Tear the exhausted query down. `sdkStop` sets `stopping`, which is also
-  // what lets `ensureSession` build a replacement rather than hand back this
-  // one. The queue is already detached, so its settleQueuedAsDropped is a
-  // no-op. Safe on BOTH entry paths: from consume()'s finally the query is
-  // already dead and `sessions` may no longer hold this id, in which case
-  // sdkStop takes its no-session branch (best-effort killKeeper) and returns.
-  await sdkStop(wsId);
-
-  try {
-    const fresh = await ensureSession(wsId);
-    // Re-queue the carried entries at the FRONT (they were first in line) and
-    // wake the new pump so they run without waiting for another send.
-    fresh.queue.unshift(...carried);
-    emitQueueUpdate(fresh);
-    fresh.pump?.();
-  } catch (err) {
-    // The replacement failed to boot: the carried entries are genuinely dead,
-    // so settle their senders rather than leaving them holding a receipt — and
-    // say so where the human reads it, not only in the log.
-    for (const m of carried) settleDelivery(m.uuid, false);
-    emit(
-      wsId,
-      stamp(cursorFor(wsId), {
-        type: 'error',
-        message:
-          `The session's turn budget was exhausted and it could not be restarted ` +
-          `(${err instanceof Error ? err.message : String(err)}). ` +
-          `${carried.length} queued message${carried.length === 1 ? '' : 's'} were not delivered.`,
-        apiErrorStatus: null,
-        willRetry: false,
-      }),
-    );
-  }
-}
-
 /** Consume the SDK message stream for a session until it ends or throws. */
 async function consume(session: Session): Promise<void> {
   let endedByInterrupt = false;
-  // Set in the catch when the query died because a turn blew its budget for the
-  // SECOND time (#69) — the case the finally can recover by resuming instead of
-  // merely reporting the queue as lost.
-  let budgetDeath = false;
   try {
     for await (const raw of session.q) {
       const msg = raw as unknown as SdkMessage;
@@ -1137,26 +975,13 @@ async function consume(session: Session): Promise<void> {
           resolve({ action: 'cancel' });
           session.pendingElicitations.delete(id);
         }
-        // ── #69: note a turn that blew its budget, but do NOT act yet ──
-        // MEASURED against the real SDK (docs/research/issue-69-maxturns-findings.md,
-        // probes 4-6), correcting the reading this fix was first written
-        // against: the budget is PER-TURN, not per-session. A first
-        // `error_max_turns` is benign — it arrives as an ordinary result with
-        // no throw, and the very next queued turn runs normally with a full
-        // budget. So recycling here would tear down a healthy session on a
-        // self-recovering event.
-        //
-        // What is NOT benign is the SECOND one: measured twice, identically,
-        // the second exhaustion THROWS ("Claude Code returned an error result:
-        // Reached maximum number of turns"), killing the query and taking every
-        // still-queued prompt with it (3 of 5 never consumed). That throw lands
-        // in the catch below, which is where the recovery belongs.
-        //
-        // All this branch does is remember, so the catch can tell a
-        // budget-driven death from an unrelated crash.
-        if (msg.subtype === 'error_max_turns' || msg.stop_reason === 'max_turns') {
-          session.sawMaxTurns = true;
-        }
+        // #69: an `error_max_turns` result needs no special handling HERE —
+        // MEASURED, the cap is per-TURN and the session recovers on its own
+        // (4 of 4 queued prompts ran, alternating exhaust/succeed). The turn
+        // is already normalized to a `turn-end` with stopReason 'max_turns';
+        // what was missing was telling the HUMAN, which emitFrom now does
+        // outside the driveStatus gate. See the third correction in
+        // docs/research/issue-69-maxturns-findings.md.
         const openNext = session.turnGate;
         session.turnGate = null;
         openNext?.();
@@ -1204,22 +1029,6 @@ async function consume(session: Session): Promise<void> {
     if (!interrupted) {
       log.warn(`agent-sdk: session ${session.wsId} consume loop errored`, err);
     }
-    // ── #69: a budget-driven query death, recovered by resuming ──
-    // MEASURED (probes 5-6): the SECOND `error_max_turns` throws here and takes
-    // every still-queued prompt with it — the starved queue #69 reports. The
-    // finally block below will honestly report those as undelivered, which is
-    // already better than silence, but the session is DEAD and the human has to
-    // notice and restart it by hand. Since `ws.sdkSessionId` is persisted, a
-    // resume continues the SAME conversation, so we can hand the queue to a
-    // fresh query() instead — bounded by the same runaway guard, and never
-    // silently (recycleForBudget emits a notice either way).
-    //
-    // Keyed on BOTH the flag and the message text: the flag alone could be set
-    // by a benign first exhaustion many turns earlier, and the text alone would
-    // match an unrelated error that merely mentions turns.
-    if (!interrupted && session.sawMaxTurns && isMaxTurnsFailure(message)) {
-      budgetDeath = true;
-    }
     // A stream-surfaced BAD-RESUME error (the transcript for ws.sdkSessionId is
     // gone / the id is malformed) would otherwise wedge EVERY future send into
     // the same failure: ensureSession never awaits the subprocess, so the resume
@@ -1238,22 +1047,6 @@ async function consume(session: Session): Promise<void> {
     // worker shutdown, kill) left the folded view `running` forever — elapsed
     // timer counting up, composer stuck on "Queue", interrupt a dead button.
     const hadOpenTurn = session.turnGate !== null && !session.cleared;
-    // ── #69: a budget-driven death is RECOVERABLE, so don't drop the queue ──
-    // The query died on a second `error_max_turns` (measured: it throws and
-    // discards every still-queued prompt). Because `ws.sdkSessionId` is
-    // persisted, a resume continues the SAME conversation — so hand the queue
-    // to a replacement rather than reporting it lost. recycleForBudget applies
-    // the runaway guard and emits a notice either way, so this is never silent
-    // and never unbounded. On the runaway path it puts the queue back, and the
-    // reporting below still runs on the NEXT teardown.
-    // NB: deliberately NOT an early `return`. A `return` inside `finally`
-    // SWALLOWS the in-flight exception and skips everything below — including
-    // `sessions.delete(wsId)`, which would leave a dead session in the map for
-    // `ensureSession` to hand back as if it were live. Instead we DETACH the
-    // queue here and let the normal teardown run to completion, then hand the
-    // carried entries to a replacement at the very end.
-    const rescuing = budgetDeath && !session.cleared;
-    const rescued = rescuing ? session.queue.splice(0, session.queue.length) : [];
     const undelivered = session.cleared ? 0 : session.queue.length;
     if (undelivered > 0) {
       // Queued turns that never reached the model: their user-message echoes
@@ -1303,10 +1096,6 @@ async function consume(session: Session): Promise<void> {
     // a still-live terminal agent. reconcileExited itself no-ops unless status is
     // currently `running`, so this is safe when the agent legitimately idled.
     if (!isPtyRunning(session.wsId)) reconcileExited(session.wsId);
-    // #69: the teardown is complete and this session is out of `sessions`, so a
-    // replacement can now be booted cleanly. Fire-and-forget — `finally` must
-    // not await, and recycleForBudget reports every outcome itself.
-    if (rescuing) void recycleForBudget(session, rescued);
   }
 }
 

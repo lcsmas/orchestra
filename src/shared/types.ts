@@ -250,10 +250,15 @@ export interface Workspace {
    * OS toast, and then thrown away. That toast is suppressed whenever the
    * window is focused, so the user sitting in front of the app is precisely the
    * one it never reaches; and `fireFinished` sets `status: 'idle'` for EVERY
-   * terminal reason, so a session that blew its budget is pixel-identical to
-   * one that finished cleanly. A coordinator whose queue was rotting read as
-   * "done, ready for review". Persisting the reason is what lets the sidebar
-   * say WHY, which is the whole of #69.
+   * terminal reason, so a turn that died on the SDK turn limit is
+   * pixel-identical to one that finished cleanly.
+   *
+   * MEASURED (docs/research/issue-69-maxturns-findings.md): in the no-PTY
+   * configuration, 8 consecutive `error_max_turns` wrote no reason ANYWHERE —
+   * the `[WARN]` in the app log was the only record, which is verbatim what
+   * #69 reports. The turns keep running (the cap is per-turn and the queue is
+   * not starved); what the human never learns is that turns are failing, and
+   * why. Persisting the reason is what lets the sidebar say it.
    *
    * An axis ORTHOGONAL to {@link WorkspaceStatus}, like {@link autoUnread} and
    * {@link loopingSince} — deliberately NOT a sixth status value: the status
@@ -272,18 +277,6 @@ export interface Workspace {
   /** Epoch ms when {@link lastStopReason} was recorded, so the tooltip can age
    * it. Absent whenever `lastStopReason` is absent. */
   lastStopReasonAt?: number;
-  /** Epoch-ms timestamps of the times this workspace's structured session had
-   * its `query()` RECYCLED after exhausting its `maxTurns` budget (issue #69),
-   * oldest-first, pruned to the guard's sliding window on every write.
-   *
-   * Persisted rather than held in memory for one reason: the guard has to
-   * survive the session teardown that a recycle performs. An in-memory counter
-   * would be reset by the very restart it is supposed to be counting, so the
-   * runaway guard could never fire — the failure mode where a looping agent
-   * recycles forever and nothing stops it.
-   *
-   * Policy (window size, allowance) lives in `src/shared/turn-budget.ts`. */
-  budgetRecycles?: number[];
   archived?: boolean;
   archivedAt?: number;
   hasInput?: boolean;
@@ -1075,8 +1068,7 @@ export type AgentNoticeKind =
   | 'command-output' // output of a built-in slash command (/compact, /usage …)
   | 'interrupted' // the user interrupted the turn (stream marker / manager notice)
   | 'mcp' // an MCP server connected / was enabled (green-dot hairline)
-  | 'mcp-error' // an MCP server failed / needs auth / was disabled (red-dot hairline)
-  | 'budget-recycled'; // the session's turn budget ran out and was renewed (#69)
+  | 'mcp-error'; // an MCP server failed / needs auth / was disabled (red-dot hairline)
 
 /** A user-relevant system notice the SDK surfaced outside the assistant text
  *  stream. Before this event existed, `normalizeSdkMessage` silently dropped

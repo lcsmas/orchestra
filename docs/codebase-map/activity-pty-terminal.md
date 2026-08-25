@@ -53,6 +53,14 @@ front of the app never saw it. Since `fireFinished` sets `idle` for EVERY
 terminal reason, a session that had exhausted its turn budget was
 pixel-identical in the sidebar to one that finished cleanly.
 
+- `markStoppedOnMaxTurns(id)` (`src/main/activity.ts`) records that a turn died
+  on the SDK turn limit (`setStatus(id,'idle','max_turns')` — a stopped session
+  is idle; the REASON is the orthogonal axis). Called from `emitFrom`
+  (agent-sdk.ts) OUTSIDE the `driveStatus` single-writer gate: that gate is TRUE
+  only when a terminal PTY coexists, and MEASURED, 8 consecutive exhaustions in
+  the no-PTY configuration wrote no reason anywhere — which is #69's whole bug.
+  An E2E may NOT seed `lastStopReason`; a seeded value proves only that the
+  renderer renders a field.
 - `setStatus` (`src/main/activity.ts`) takes a third arg, `stopReason`:
   `'max_turns' | 'error'` records, `null` CLEARS, `undefined` leaves alone. It
   writes `Workspace.lastStopReason` / `lastStopReasonAt` on the SAME store write

@@ -244,6 +244,28 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
  *  for a parked question — its `canUseTool` bridge (agent-sdk.ts) emits a
  *  renderer-only `permission-request` event — so it calls this directly when it
  *  parks an interactive tool call. Exported for that caller. */
+/** Record that this workspace's session STOPPED because it hit its turn limit
+ *  (issue #69), so the sidebar can say WHY.
+ *
+ *  ## Why this exists rather than riding the normal turn-end path
+ *
+ *  The synthetic `turn-end` that `consume()`'s catch/finally emits hardcodes
+ *  `stopReason: 'error'` — it cannot distinguish a budget death from any other
+ *  crash, because at that point all it has is a thrown Error. So on the REAL
+ *  failure path the workspace was marked `'error'` and the max_turns surface
+ *  (the octagon glyph, the "send a message to resume it" tooltip) was
+ *  UNREACHABLE. The first version of this fix passed its E2E only because the
+ *  drive SEEDED `lastStopReason` directly — the disclosed gap in its own
+ *  NOT VERIFIED list was exactly where the defect lived.
+ *
+ *  The SDK path knows the difference (it matched the CLI's "maximum number of
+ *  turns" text and set `sawMaxTurns`), so it tells the store here, overwriting
+ *  the coarser `'error'` the generic turn-end just wrote. Status stays `idle` —
+ *  a stopped session is idle; the REASON is the orthogonal axis. */
+export async function markStoppedOnMaxTurns(id: string): Promise<void> {
+  await setStatus(id, 'idle', 'max_turns');
+}
+
 export function fireNeedsInput(id: string): void {
   const focused = platform.isFocused();
   void setStatus(id, 'waiting').then((res) => {

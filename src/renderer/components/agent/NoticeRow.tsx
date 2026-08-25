@@ -31,10 +31,6 @@ const LABEL: Record<AgentNoticeKind, string> = {
   // ("context7 connected · 12 tools") is the whole story, no label.
   mcp: '',
   'mcp-error': '',
-  // The session's turn budget ran out and the query was renewed (#69). Labelled
-  // rather than bare: this one explains a visible discontinuity (the session
-  // restarted mid-conversation), so the reader needs to know it was deliberate.
-  'budget-recycled': 'Turn budget',
 };
 
 function NoticeRowImpl({ message }: { message: RenderMessage }) {

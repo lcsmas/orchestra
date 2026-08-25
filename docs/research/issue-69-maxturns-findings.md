@@ -228,3 +228,143 @@ if the real file stops matching — but nothing here executes the true
 `consume()`. The probe scripts under `/tmp/mtprobe/` are the thing that actually
 drove the SDK; they are not committed (they hit the live API and cost money to
 run).
+
+---
+
+# SECOND CORRECTION — the fix I shipped at 31275ed was INERT (ops review, blocked)
+
+31275ed passed `tsc`, 1134 tests, a real build, a 5-mutant matrix and an E2E
+with a flipping vacuity control. **All of it was non-load-bearing.** Three
+defects, independently re-derived by ops at my own tip and then by me:
+
+## R1 — the recovery never ran, on its only path
+
+```
+agent-sdk.ts :987   if (session.stopping || session.recycling) return;   ← guard G
+             :1293  session.stopping = true;                             ← A (teardown)
+             :1309  if (rescuing) void recycleForBudget(session, rescued); ← B (only call)
+A precedes B; G tests A  ⇒  the recycle returned immediately, every time.
+```
+I wrote the guard for a re-entry race, then invoked the function from the one
+place that had just set the flag it guards on. **Fix:** split the function into
+`planBudgetRescue` (decides, synchronously, BEFORE the teardown mutates
+anything) and `runBudgetRescue` (executes; deliberately never reads
+`session.stopping`).
+
+## R2 — strictly WORSE than master
+
+The old `finally` spliced the queue empty unconditionally, then computed
+`undelivered` from the now-empty queue ⇒ `0` ⇒ `settleQueuedAsDropped` and the
+"not delivered — send again" error never ran. Master reports; my branch lost the
+messages silently and left senders holding a delivery receipt forever (#57 fault
+b, reintroduced). **Fix:** detach the queue ONLY when `rescue.recycle` is true —
+i.e. only when those entries are genuinely about to be delivered. A refused
+rescue leaves the queue alone so master's honest path runs unchanged.
+
+## R3 — D1's non-negotiable was never met
+
+`consume()`'s synthetic turn-end hardcodes `stopReason: 'error'` (all it has is
+a thrown Error). So on the REAL path the workspace was marked `'error'` and the
+octagon glyph / "resume it" tooltip were UNREACHABLE. **My E2E passed only
+because it SEEDED `lastStopReason` directly** — it proved the renderer renders a
+field, nothing more. **Fix:** `markStoppedOnMaxTurns()` in activity.ts, called
+by `runBudgetRescue` before its branch so BOTH outcomes surface the real reason.
+
+**My own NOT VERIFIED list said "nothing proves activity.ts actually writes
+lastStopReason on a real max_turns event."** That disclosed gap is exactly where
+the defect lived. A NOT-VERIFIED entry naming the defect class under test is a
+STOP, not a footnote — I have now hit this exact failure twice in one ticket.
+
+## R4 — why 14/14 green missed all of it
+
+Every guard bound either ordering INSIDE the recycle or the call's mere
+PRESENCE. **Nothing bound the CALLER's state.** Two mutants survived. The race
+model was itself blind: `raceTwoExhaustions` hardcoded `{stopping:false}`, so
+the state that makes the bug appear was unreachable in the model.
+New guards, each mutation-verified:
+- `runBudgetRescue` must NOT contain `session.stopping` (kills M1/R1)
+- the splice must be guarded on `rescue?.recycle` (kills M2/R2)
+- `planBudgetRescue` must precede `session.stopping = true`
+- `settleQueuedAsDropped` must remain reachable (master parity)
+- `markStoppedOnMaxTurns` must precede the recycle/refuse branch (R3)
+- `rescueRunsFromTeardown(gatesOnStopping)` executes the R1 shape with a
+  CONTROL arm that reproduces the inert behaviour.
+
+## R5 / R6 / R7
+R5 (rate guard) and R7 (other subtypes) refuted by the reviewer — no defect.
+R6 (`sawMaxTurns` never cleared) was an accepted-gap; closed anyway, since the
+only thing making it safe was the conjunction at the catch, which is too thin a
+margin. It is now level-triggered.
+
+## The standing lesson
+
+A green gate that would be equally green on a build where the feature is
+unreachable is not evidence. Every gate here now names the observation that
+would differ on a broken build — and the E2E must drive the REAL producer, never
+a seeded `lastStopReason`.
+
+---
+
+# THIRD CORRECTION — the "second exhaustion throws" premise was a RIG ARTIFACT
+
+Found by the E2E verifier, then reproduced independently. **My probes were wrong
+in a way that flattered the fix I had already written.**
+
+## The rig defect
+
+My `/tmp/mtprobe` probes used async generators that **terminate** (a fixed list
+of prompts, then the generator returns). Orchestra's `promptStream` is `for(;;)`
+and returns ONLY on `session.stopping`. Three probes discriminate it:
+
+| Generator shape | Result |
+|---|---|
+| terminating, ungated | 2 results, **THREW** |
+| terminating, turn-gated | 5 results, **THREW** |
+| **`for(;;)`, turn-gated (the app's real shape)** | **5 results, NO THROW** |
+
+The throw needs the GENERATOR TO EXHAUST, not a second `error_max_turns`.
+Reproduced myself with `/tmp/mt2/neverend.mjs`: five consecutive
+`error_max_turns`, zero throws, 240s timebox.
+
+## What that means for the fix
+
+**`budgetDeath` is unreachable in production.** `promptStream` returns only on
+`session.stopping`, and that path runs `q.interrupt()` first, so the thrown text
+is `"Claude Code process exited with code -1"` — which `isMaxTurnsFailure()`
+(`/maximum number of turns/i`) correctly rejects. So the entire
+catch/finally recovery — `budgetDeath`, `planBudgetRescue`, `runBudgetRescue`,
+`markStoppedOnMaxTurns` — CANNOT FIRE. I built an elaborate recovery for a
+control-flow path the app never takes.
+
+## And the queue is not starved either
+
+`/tmp/mt2/queuecheck.mjs`, never-ending generator, alternating hard/easy
+prompts under `maxTurns:1`:
+
+```
+result#1 error_max_turns num_turns=2
+result#2 success        num_turns=1  "OK"
+result#3 error_max_turns num_turns=2
+result#4 success        num_turns=1  "OK"
+consumed 4 of 4
+```
+
+**Every prompt after an exhaustion ran normally.** There is no starvation at the
+SDK layer, in either the "drains into a black hole" form (correction 1) or the
+"second exhaustion kills the queue" form (correction 2). Both were rig
+artifacts. The per-turn cap simply fails that one turn and moves on.
+
+## What #69's real defect is, then
+
+Exactly one thing, and it is the one D1 called non-negotiable:
+**a turn that dies on `error_max_turns` produces NO user-visible reason.**
+The E2E measured 8 consecutive exhaustions in the no-PTY configuration with no
+reason written anywhere — the `[WARN]` in the app log is the only record, which
+is verbatim what the issue reports. The queue keeps being consumed; what the
+human never learns is that turns are failing and why.
+
+The verifier also established the ONE path that does write it today:
+`driveStatusFromEvent → applyAgentEvent('stop', …, 'max_turns') → fireFinished`,
+gated on `session.driveStatus`, which is TRUE ONLY WHEN A TERMINAL PTY COEXISTS.
+In the plain structured-view configuration nothing writes it. That gate is the
+real bug surface.
