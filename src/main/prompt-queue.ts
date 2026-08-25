@@ -14,6 +14,12 @@ import {
   type UsageWindows,
 } from '../shared/accounts';
 import type { QueuedPrompt, Workspace } from '../shared/types';
+import {
+  decideResume,
+  isCoordinatorWorkspace,
+  RESUME_NUDGE_TEXT,
+} from '../shared/usage-resume.ts';
+import { clearStopReason, markStoppedOnUsageLimit } from './activity';
 
 // Prompt queue for usage-limited accounts. While a workspace's account is over
 // its 5h/7d limit, Claude answers every prompt with a "limit reached" error —
@@ -37,6 +43,11 @@ const TICK_MS = 20_000;
 // Don't nudge the per-account poller more often than this per workspace, even
 // if the reset time has long passed (e.g. the endpoint keeps reporting 100%).
 const REFRESH_NUDGE_MS = 120_000;
+// Max usage-limit resumes started per tick (#74, review-74 R5). At TICK_MS this
+// spreads a large fleet over successive ticks rather than waking every
+// workspace on one account in the same pass. Deliberately > 1 so a small fleet
+// still recovers promptly, and small enough that a big one ramps.
+const MAX_RESUMES_PER_TICK = 3;
 
 function broadcast(ws: Workspace): void {
   platform.broadcast('workspace:update', ws);
@@ -179,8 +190,132 @@ let timer: ReturnType<typeof setInterval> | null = null;
 // Last time this workspace's stale limit made us nudge the account poller.
 const lastNudge = new Map<string, number>();
 
+/** Auto-resume the sessions a usage limit killed (#74).
+ *
+ *  Runs on the flusher's existing tick rather than a loop of its own: it needs
+ *  exactly the same inputs (each workspace's freshest usage reading) and the
+ *  same cadence, and sharing the tick keeps the queue-vs-nudge precedence
+ *  decidable in ONE place instead of racing two timers against each other.
+ *
+ *  All policy lives in `decideResume` (src/shared/usage-resume.ts) — this
+ *  function only gathers inputs and executes the verdict, which is what makes
+ *  the behaviour testable without Electron, a network, or a real usage limit.
+ *
+ *  COORDINATORS FIRST: the list is sorted so orchestrators are handled before
+ *  their children within a single tick. A coordinator's first act after waking
+ *  is to re-read its ledger and re-dispatch, so it must be up before the fleet
+ *  starts asking it for work — which is exactly what did NOT happen in the
+ *  field incident this ticket comes from. */
+async function resumeUsageLimited(now: number): Promise<void> {
+  const candidates = store.workspaces
+    .filter((ws) => !ws.archived && ws.lastStopReason === 'usage_limit')
+    // Coordinators first (see above). Stable within each group otherwise.
+    .sort((a, b) => Number(isCoordinatorWorkspace(b)) - Number(isCoordinatorWorkspace(a)));
+
+  // Spread over TIME, not just order (review-74 R5). Coordinators-first only
+  // orders resumes WITHIN one tick; without a cap, 20 workspaces sharing one
+  // account all gate open on the same cache reading and are woken in the same
+  // pass — which is the thundering herd #74 §3 set out to avoid, just arriving
+  // in a fixed order. Capping resumes per tick spreads the fleet across
+  // successive ticks (TICK_MS apart) instead; the remainder is not dropped,
+  // it is simply reconsidered next tick, because a workspace keeps its
+  // `usage_limit` marker until it is actually woken.
+  let budget = MAX_RESUMES_PER_TICK;
+  for (const ws of candidates) {
+    if (budget <= 0) {
+      log.info(
+        `usage-limit auto-resume: ${candidates.length - MAX_RESUMES_PER_TICK} workspace(s) ` +
+          `deferred to a later tick (cap ${MAX_RESUMES_PER_TICK}/tick)`,
+      );
+      break;
+    }
+    const usage = usageForWorkspace(ws);
+    // The staggering gate for non-coordinators, and the ONLY evidence a
+    // workspace with no known reset time has. Reuses `canAutoFlushQueue`'s
+    // fetchedAt-after-block rule verbatim rather than reimplementing it:
+    // a reading fetched BEFORE the limit hit predates the block and would
+    // flush straight back into it. `lastStopReasonAt` is when the limit was
+    // recorded, which is the "block" instant for this purpose.
+    const blockedAt = ws.lastStopReasonAt ?? 0;
+    const freshUsageSaysRecovered = canAutoFlushQueue(blockedAt, usage, now);
+
+    const action = decideResume({
+      lastStopReason: ws.lastStopReason,
+      resetsAtMs: ws.usageLimitResetsAt ?? null,
+      isCoordinator: isCoordinatorWorkspace(ws),
+      queuedCount: (ws.queuedPrompts ?? []).length,
+      freshUsageSaysRecovered,
+      now,
+    });
+
+    if (action === 'wait') continue;
+    // Consumed only by a real resume — a `wait` costs nothing, or a fleet of
+    // not-yet-due workspaces would exhaust the budget and starve the ones that
+    // ARE due (the cap would then delay resumes instead of spreading them).
+    budget--;
+
+    if (action === 'queue') {
+      // Banner-queued prompts carry real user intent and WIN over the
+      // synthesized nudge (#74). Deliberately NOT delivered here: the queue
+      // loop below already owns that path, gated on the same usage evidence.
+      // Clearing the pause marker is what hands it over — without this the
+      // queue would flush AND this driver would keep re-deciding every tick.
+      await clearStopReason(ws.id).catch(() => {});
+      continue;
+    }
+
+    // action === 'nudge'. Clear the marker BEFORE waking so a wake slower than
+    // one tick cannot be started twice — but RE-MARK on failure (review-74 R1).
+    //
+    // The clear-before-delivery ordering is borrowed from flushQueuedPrompts,
+    // and the first version of this code borrowed only half of it. That path
+    // pairs the early clear with a `requeue()` COMPENSATOR on every failure
+    // exit; this one had none, which made the failure path the worst outcome in
+    // the whole feature:
+    //   wake returns false → marker already cleared → the workspace has left
+    //   the `lastStopReason === 'usage_limit'` candidate filter above → NO
+    //   later tick ever reconsiders it → the session is frozen FOREVER, and
+    //   the ⏸ glyph is gone too, so nothing on screen tells a human to look.
+    // That is strictly worse than never having shipped auto-resume.
+    //
+    // Reachable, not theoretical: `wakeAgentWithPrompt` returns false when
+    // `!ws || ws.archived || isRunning(id)`, and `isRunning` is a plain
+    // PTY-session check (`pty.ts`) — the candidate filter does NOT exclude a
+    // workspace with a coexisting terminal PTY, which is precisely the
+    // `driveStatus` configuration `markStoppedOnUsageLimit`'s own doc discusses.
+    await clearStopReason(ws.id).catch(() => {});
+    let woke = false;
+    try {
+      // GENERIC nudge — never the interrupted input. The killed turn may have
+      // half-executed, so replaying it would re-run side effects (#57 family).
+      woke = await wakeAgentWithPrompt(ws.id, RESUME_NUDGE_TEXT);
+    } catch (e) {
+      log.warn(`usage-limit auto-resume failed for ${ws.id}`, e);
+    }
+    if (woke) {
+      log.info(
+        `usage-limit auto-resume: nudged ${ws.id}` +
+          `${isCoordinatorWorkspace(ws) ? ' (coordinator)' : ''}`,
+      );
+      continue;
+    }
+    // THE COMPENSATOR. Restore the pause marker so the workspace re-enters the
+    // candidate filter and a later tick retries — and so the ⏸ glyph comes
+    // back, which is the only thing that tells a human this session is stuck.
+    // Re-marked with its ORIGINAL reset time: the limit did not move, and
+    // fabricating a new one would push the retry further out each attempt.
+    log.warn(`usage-limit auto-resume: could not wake ${ws.id} — re-marking so a later tick retries`);
+    await markStoppedOnUsageLimit(ws.id, ws.usageLimitResetsAt ?? null).catch((e) =>
+      log.warn(`usage-limit auto-resume: re-mark failed for ${ws.id}`, e),
+    );
+  }
+}
+
 async function tick(): Promise<void> {
   const now = Date.now();
+  // Before the queue loop: a coordinator that is still marked limit-killed must
+  // be back up before its fleet starts asking it for work.
+  await resumeUsageLimited(now).catch((e) => log.warn('usage-limit resume tick failed', e));
   for (const ws of store.workspaces) {
     if (ws.archived) continue;
     const queue = ws.queuedPrompts ?? [];

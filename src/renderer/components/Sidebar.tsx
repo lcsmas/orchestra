@@ -10,6 +10,7 @@ import type {
   Workspace,
   WorkspaceStatus,
 } from '../../shared/types';
+import { isActionableStopReason } from '../../shared/usage-resume';
 import { isScratchLike, canOrchestrate } from '../../shared/types';
 import { repoSectionKeyOf, partitionOrchestratorRoots } from '../orchestrator-repo-grouping';
 import {
@@ -1599,7 +1600,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               unread={!!w.markedUnread}
               autoUnread={!!w.autoUnread}
               looping={!!w.loopingSince}
-              stopReason={w.lastStopReason === 'max_turns' || w.lastStopReason === 'error' ? w.lastStopReason : undefined}
+              stopReason={isActionableStopReason(w.lastStopReason) ? w.lastStopReason : undefined}
               title={statusGlyphTitle(w, tools[w.id])}
             />
             <div className="ws-body">
@@ -2289,7 +2290,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     unread={!!w.markedUnread}
                     autoUnread={!!w.autoUnread}
                     looping={!!w.loopingSince}
-                    stopReason={w.lastStopReason === 'max_turns' || w.lastStopReason === 'error' ? w.lastStopReason : undefined}
+                    stopReason={isActionableStopReason(w.lastStopReason) ? w.lastStopReason : undefined}
                     title={statusGlyphTitle(w, tools[w.id])}
                   />
                   <div className="ws-body">

@@ -4,6 +4,7 @@ import { loginColor } from './AccountBadge';
 import { dialog } from './Dialog';
 import { formatResetsIn, formatUpdatedAgo } from './UsageBars';
 import { WorkspaceStatusGlyph, statusGlyphTitle } from './WorkspaceStatusGlyph';
+import { isActionableStopReason } from '../../shared/usage-resume';
 import type { ResourceSnapshot, SessionResourceStat } from '../../shared/resources';
 import type { UsageErrorKind, UsageWindow, Workspace } from '../../shared/types';
 
@@ -234,7 +235,7 @@ function AgentRowView({
           unread={!!row.ws?.markedUnread}
           autoUnread={!!row.ws?.autoUnread}
           looping={!!row.ws?.loopingSince}
-          stopReason={row.ws?.lastStopReason === 'max_turns' || row.ws?.lastStopReason === 'error' ? row.ws.lastStopReason : undefined}
+          stopReason={isActionableStopReason(row.ws?.lastStopReason) ? row.ws.lastStopReason : undefined}
           title={row.ws ? statusGlyphTitle(row.ws) : 'Agent is idle'}
         />
         <span className="res-agent-name">

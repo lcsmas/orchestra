@@ -154,6 +154,90 @@ renders, so a limit-terminated turn stops looking like a generic error.
 problem, so it must never park prompts on the queue. See
 [structured-agent-view.md](structured-agent-view.md).
 
+## Auto-resume when the usage limit resets (#74)
+
+A session whose turn DIED on the usage limit is now restarted automatically
+when the window resets — the fleet-freeze fix (a coordinator died on "resets
+6pm" and nothing noticed for 75 minutes). Distinct from the prompt queue above:
+the queue delivers prompts a USER parked; this resumes an agent that was cut
+off mid-task and had nothing queued.
+
+- **Detection is STRUCTURAL, never the error prose.** Two producers, both in
+  `src/shared/agent-events.ts`, and both now set `rejected: true` on the
+  `rate-limit` notice: the SDK's `rate_limit_event` (`status === 'rejected'`,
+  carrying `resetsAt`) and the 429 turn result via `classifyTurnError` (see the
+  section above; it carries NO reset time). The `rejected` flag exists because
+  normalization otherwise collapses a real rejection and a mere
+  `allowed_warning` into one notice kind distinguishable only by its English
+  text — which is UI copy, free to be reworded.
+- **Pure logic** (`src/shared/usage-resume.ts`, tested in `usage-resume.test.ts`):
+  - `resetsAtMsFromNotice` — **the unit boundary**. The notice's `resetsAt` is
+    epoch **SECONDS**; `usageLimitedUntil` and `Workspace.usageLimitResetsAt`
+    are epoch **MS**. The conversion happens here and nowhere else, and refuses
+    a value already in ms rather than silently producing a year-51000 date.
+  - `decideResume` — the whole policy: only `lastStopReason === 'usage_limit'`
+    is eligible (never blanket-wake idle workspaces); the reset must have
+    passed; **banner-queued prompts WIN over the nudge** (user intent beats a
+    synthesized one); then staggering — coordinators resume at the reset,
+    everyone else additionally needs a usage reading fetched after the block.
+  - `isActionableStopReason` / `ACTIONABLE_STOP_REASONS` — the shared predicate
+    replacing what were **seven** hardcoded `'max_turns' || 'error'` copies
+    across the renderer (the five in `Sidebar.tsx` / `InboxBell.tsx` /
+    `JumpPalette.tsx` / `ResourcesView.tsx`, plus the `stopReason` prop type in
+    `WorkspaceStatusGlyph.tsx` and the tooltip in `status-glyph-title.ts`).
+  - `RESUME_NUDGE_TEXT` — a GENERIC nudge. The interrupted input is **never**
+    replayed: the killed turn may have half-executed, so a replay re-runs side
+    effects. It tells the agent to re-read its own durable state instead.
+- **Producer** (`src/main/agent-sdk.ts`): a rejection seen mid-turn is LATCHED
+  on the session (`rateLimitHit`) and applied at `turn-end` only if the turn
+  actually ended in error — a limit the CLI retried through is not a stopped
+  session. The latch is cleared at every turn boundary so it cannot mark a
+  later healthy turn.
+- **Store** (`src/main/activity.ts`): `markStoppedOnUsageLimit(id, resetsAtMs)`,
+  the sibling of `markStoppedOnMaxTurns`, writing `lastStopReason:
+  'usage_limit'` plus `Workspace.usageLimitResetsAt`; `clearStopReason(id)`
+  drops it once resumed (without which every 20s tick would nudge again).
+  Both take the same outside-the-`driveStatus`-gate exemption `markLooping`
+  does, and for the same reason.
+- **Driver** (`src/main/prompt-queue.ts`): `resumeUsageLimited(now)` runs at the
+  head of the existing flusher tick — same inputs, same cadence, and one place
+  where the queue-vs-nudge precedence is decided. Candidates are sorted
+  coordinators-first so a coordinator is back up before its fleet asks it for
+  work, and capped at `MAX_RESUMES_PER_TICK` so a large fleet spreads over
+  successive ticks instead of waking in one pass (the budget is spent only by a
+  real resume — a `wait` costs nothing, or not-yet-due workspaces would starve
+  the due ones).
+- **The failure compensator is load-bearing.** The nudge path clears the pause
+  marker BEFORE waking (so a slow wake is not started twice) and **re-marks on
+  failure**. Without that re-mark a failed wake leaves the workspace outside the
+  `lastStopReason === 'usage_limit'` candidate filter, so no later tick
+  reconsiders it: frozen forever, with the ⏸ glyph gone so nothing on screen
+  says to look. Reachable — `wakeAgentWithPrompt` returns false when a terminal
+  PTY coexists (`isRunning`), which the filter does not exclude. `flushQueuedPrompts`
+  pairs the same ordering with `requeue()`; this path needs its own equivalent.
+- **Session death is a SECOND detection site.** `consume()`'s `finally`
+  (`src/main/agent-sdk.ts`) builds its own `turn-end` and emits it directly,
+  bypassing `emitFrom` where the latch lives (`emitFrom` has exactly one call
+  site). So a rejection followed by the subprocess dying before any `result`
+  must be marked there too, or the die-before-result shape — plausibly the
+  original incident — is never detected. Interrupted sessions are excluded on
+  both paths.
+- **The gate excludes `max_turns` AND `interrupted`.** Enumerated over the
+  reachable `result` shapes: 429-limit and plain error → (`'error'`, true);
+  `error_during_execution` → (`'interrupted'`, true); clean success →
+  (`'end_turn'`, **false**); max_turns → (`'max_turns'`, true). The pair
+  (`'end_turn'`, true) is impossible by construction, since `toStopReason`
+  returns `'error'` whenever `is_error` is truthy. Without the `interrupted`
+  exclusion a user who hits the limit and then stops the turn would be
+  auto-resumed against their own interrupt.
+- **Surface**: the sidebar/inbox/palette/Resources glyph gains a pause shape
+  (`.ws-glyph-usagelimit`, muted rather than red — nothing is wrong and nobody
+  is needed), and the tooltip reads `⏸ limit reached — resumes ~6pm`, dropping
+  the ETA when the reset time is unknown rather than inventing one.
+- **Scope**: STRUCTURED (SDK) sessions only — the raw PTY path carries no
+  structured limit signal. A `/loop` wakeup armed before a limit hit is still
+  not re-armed at the reset (`src/main/loop-scan.ts`): declared OUT of v1.
+
 ## Prompt queue on usage limit — prompt-queue.ts
 While a workspace's account is over its 5h/7d limit, prompts can be parked on
 the workspace record (`Workspace.queuedPrompts`, `types.ts` — persisted, so a
@@ -203,3 +287,7 @@ queue survives restarts) instead of burning turns on "limit reached" errors.
 `parseUsageResponse`, `classifyHttpError`, `resolveWorkspaceAccountId`,
 `planAccountMigration` (migrate/noop/error, default-login clear, trimming),
 `sanitizeAccountInherit`, `usageLimitedUntil`, and `canAutoFlushQueue`.
+`usage-resume.test.ts` covers the auto-resume policy above: the
+seconds→ms conversion (both wrong-direction failures), the shared
+stop-reason predicate, and every `decideResume` clause — each proven by
+mutation to fail on the unfixed logic.

@@ -6,6 +6,7 @@
 
 import type { Workspace } from '../shared/types.ts';
 import { THINKING_TOOL_LABEL } from '../shared/types.ts';
+import { usageLimitPausedText } from '../shared/usage-resume.ts';
 
 /** Tooltip for a workspace's status marker, wherever agents are listed (sidebar
  *  rows, Inbox, jump palette, Resources table).
@@ -16,7 +17,13 @@ import { THINKING_TOOL_LABEL } from '../shared/types.ts';
 export function statusGlyphTitle(
   w: Pick<
     Workspace,
-    'status' | 'markedUnread' | 'hibernatedAt' | 'autoUnread' | 'loopingSince' | 'lastStopReason'
+    | 'status'
+    | 'markedUnread'
+    | 'hibernatedAt'
+    | 'autoUnread'
+    | 'loopingSince'
+    | 'lastStopReason'
+    | 'usageLimitResetsAt'
   >,
   tool?: string,
 ): string {
@@ -49,6 +56,14 @@ export function statusGlyphTitle(
   // so any value here is worth saying.
   if (w.lastStopReason === 'max_turns')
     return loop('Agent stopped — turn budget exhausted; send a message to resume it');
+  // The usage-limit PAUSE (#74). Phrased differently from the two above on
+  // purpose: those need a human, this one does not — the app resumes it by
+  // itself at the reset, so the tooltip states the ETA rather than asking for
+  // an action. When the reset time is unknown (the 429-turn-result detection
+  // path reports none) the ETA is DROPPED rather than invented: a made-up time
+  // is worse than no time, because a reader takes it as measured.
+  if (w.lastStopReason === 'usage_limit')
+    return loop(usageLimitPausedText(w.usageLimitResetsAt ?? null));
   if (w.lastStopReason === 'error') return loop('Agent stopped — its last turn ended on an error');
   if (w.autoUnread) return loop('Agent finished — you have not opened this yet');
   if (w.status === 'idle') return loop('Agent is idle');

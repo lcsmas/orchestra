@@ -173,6 +173,52 @@ function finishedToast(reason: AgentStopReason | undefined, name: string): {
   }
 }
 
+/** What `fireFinished` should record as the stop reason for a turn that just
+ *  ended — and, critically, what it must NOT erase.
+ *
+ *  The `max_turns`/`error` allowlist is #69's: those two are worth showing, and
+ *  every other reason passes `null` so a clean finish CLEARS a stale marker.
+ *
+ *  The `usage_limit` clause is #74's, and it exists because that rule is WRONG
+ *  for a limit death. A limit-killed turn's own `turn-end` carries `stopReason`
+ *  `'error'` — never `'usage_limit'`, which is written out-of-band by
+ *  `markStoppedOnUsageLimit` from a latched `rate_limit_event`.
+ *
+ *  CORRECTED (review-74 R3). An earlier version of this paragraph said
+ *  `'error'`/`'end_turn'`/`undefined` and labelled itself "MEASURED, not
+ *  reasoned". That was wrong on both counts: no rig backed it, and the
+ *  `'end_turn'` case is IMPOSSIBLE BY CONSTRUCTION — `toStopReason`
+ *  (agent-events.ts) returns `'error'` whenever `msg.is_error` is truthy, so it
+ *  can only return `'end_turn'` when `isError` is false. Enumerated over the
+ *  five reachable `result` shapes: 429-limit and plain error both give
+ *  (`'error'`, true); `error_during_execution` gives (`'interrupted'`, true);
+ *  a clean success gives (`'end_turn'`, FALSE); max_turns gives (`'max_turns'`,
+ *  true). The (`'end_turn'`, true) pair occurs zero times. The consequence for
+ *  this function is unchanged — a limit death still arrives as `'error'` and
+ *  would still erase the marker — but the claim is now the enumeration above
+ *  rather than an unsupported label. So this function runs AFTER that marker
+ *  is set and, under the old allowlist, overwrote it with `'error'` or cleared
+ *  it outright. Either way `lastStopReason` stops being `'usage_limit'`, the
+ *  resume driver's filter matches nothing, and **auto-resume silently never
+ *  fires** — the whole feature dead, with every unit test still green, because
+ *  the defect lives in a consumer downstream of the guard.
+ *
+ *  So: never clear a `usage_limit` marker here. Only the resume driver
+ *  (`clearStopReason`) and a genuinely new turn (`submit`/`pretool`, which pass
+ *  `null` on the RUNNING transition) may retire it — both of which mean the
+ *  session actually moved on. */
+function finishedStopReason(
+  id: string,
+  stopReason?: AgentStopReason,
+): AgentStopReason | null | undefined {
+  if (stopReason === 'max_turns' || stopReason === 'error' || stopReason === 'usage_limit') {
+    return stopReason;
+  }
+  // No reason worth recording of its own. Preserve an existing usage-limit
+  // pause rather than clearing it (see above); anything else still clears.
+  return store.getWorkspace(id)?.lastStopReason === 'usage_limit' ? undefined : null;
+}
+
 function fireFinished(id: string, stopReason?: AgentStopReason): void {
   // Focus of the Electron window (the seam guards a destroyed window
   // internally — an isFocused throw here used to abort the whole spool drain
@@ -195,7 +241,7 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
   void setStatus(
     id,
     'idle',
-    stopReason === 'max_turns' || stopReason === 'error' ? stopReason : null,
+    finishedStopReason(id, stopReason),
   ).then((res) => {
     if (!res) return;
     const { ws, changed } = res;
@@ -284,6 +330,98 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
  *  seam; drive the producer. */
 export async function markStoppedOnMaxTurns(id: string): Promise<void> {
   await setStatus(id, 'idle', 'max_turns');
+}
+
+/** Sibling of {@link markStoppedOnMaxTurns} for a turn killed by the account's
+ *  USAGE LIMIT (#74) — the reason that resolves by itself at the reset, and so
+ *  the only one the app auto-resumes from.
+ *
+ *  Takes the same OUTSIDE-the-gate exemption and for the identical reason: in
+ *  the plain structured-view configuration `driveStatusFromEvent` is gated on
+ *  `session.driveStatus` (a coexisting PTY), so a limit death there would
+ *  otherwise write the reason nowhere. That is precisely the field failure #74
+ *  exists to fix — a coordinator died on the limit and NOTHING recorded why,
+ *  so nothing could ever decide to restart it.
+ *
+ *  `resetsAtMs` is epoch MILLISECONDS and must already have been converted
+ *  from the notice's epoch-SECONDS by `resetsAtMsFromNotice` — see the unit
+ *  trap documented at length in src/shared/usage-resume.ts. Null is a real,
+ *  expected value ("limited, reset time unknown"): the 429-turn-result
+ *  detection path reports no reset time, and the resume driver then waits for
+ *  fresh usage evidence rather than guessing.
+ *
+ *  Status stays `idle` for the same reason as max_turns: a stopped session is
+ *  idle, and the reason is the orthogonal axis. */
+export async function markStoppedOnUsageLimit(
+  id: string,
+  resetsAtMs: number | null,
+): Promise<void> {
+  const res = await setStatus(id, 'idle', 'usage_limit');
+  // Persist the reset time alongside the reason. Written AFTER setStatus so we
+  // build on the record it just wrote (setStatus owns `lastStopReason` /
+  // `lastStopReasonAt`); re-reading from the store rather than reusing a stale
+  // capture keeps this correct if setStatus changed anything else.
+  const current = store.getWorkspace(id);
+  if (!current) return;
+  const next: Workspace = {
+    ...current,
+    // ALWAYS refresh the timestamp (review-74 R4). A SECOND limit death on a
+    // workspace already `idle` + `usage_limit` hits `setStatus`'s no-op guard
+    // (status unchanged AND reason unchanged), so it returns without writing,
+    // and the spread above would preserve the FIRST death's timestamp.
+    //
+    // That matters here because #74 is the first consumer to make a RESUME
+    // DECISION from this field: the driver passes it to `canAutoFlushQueue` as
+    // `blockedAt`, whose whole rule is "the usage reading must have been
+    // fetched AFTER the block". Measured discrimination — a snapshot fetched
+    // 10:02 with deaths at 10:00 and 10:05: the correct `blockedAt` (10:05)
+    // says wait; the stale one (10:00) says the reading is fresh enough and
+    // resumes PREMATURELY, straight back into the wall.
+    lastStopReasonAt: Date.now(),
+    ...(resetsAtMs === null
+      ? // Clear a stale reset from an earlier limit rather than leaving it to
+        // be read as this one's — an old timestamp is already in the past, so
+        // it would make the resume driver fire IMMEDIATELY, straight back into
+        // the wall it is supposed to be waiting out.
+        { usageLimitResetsAt: undefined }
+      : { usageLimitResetsAt: resetsAtMs }),
+  };
+  await store.upsertWorkspace(next);
+  // Only broadcast when setStatus did not already (it broadcasts on a real
+  // transition); an unconditional second broadcast is harmless but noisy, and
+  // the renderer re-renders every workspace row on each one.
+  if (!res?.changed) platform.broadcast('workspace:update', next);
+}
+
+/** Clear the usage-limit pause marker after the auto-resume driver has acted on
+ *  it (#74) — the counterpart to {@link markStoppedOnUsageLimit}.
+ *
+ *  Load-bearing for two reasons, not merely cosmetic:
+ *   1. **Idempotence.** The driver's verdict is derived from
+ *      `lastStopReason === 'usage_limit'`, so a marker left in place makes
+ *      EVERY subsequent tick decide to resume again — a nudge every 20s at the
+ *      flusher's cadence. Clearing it is what makes the resume happen once.
+ *   2. **Honesty.** The sidebar would otherwise keep saying "⏸ limit reached"
+ *      about a session that is running again.
+ *
+ *  Only ever clears a `usage_limit` marker: a workspace that stopped for a
+ *  DIFFERENT reason since (max_turns, error) has a marker the human still needs,
+ *  and silently dropping it would resurrect the #69 bug this machinery exists
+ *  to fix. `setStatus(_, null)` explicitly clears (see its `stopReason` doc);
+ *  the status itself is left alone — the wake path owns that. */
+export async function clearStopReason(id: string): Promise<void> {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.lastStopReason !== 'usage_limit') return;
+  await setStatus(id, ws.status, null);
+  // Drop the reset time with the reason it belonged to, so a later limit that
+  // reports no reset cannot inherit this stale (already-past) one and resume
+  // instantly. Assigned explicitly rather than deleted — the renderer merges
+  // `workspace:update` and a merge cannot unset an absent key.
+  const current = store.getWorkspace(id);
+  if (!current || current.usageLimitResetsAt === undefined) return;
+  const next: Workspace = { ...current, usageLimitResetsAt: undefined };
+  await store.upsertWorkspace(next);
+  platform.broadcast('workspace:update', next);
 }
 
 export function fireNeedsInput(id: string): void {

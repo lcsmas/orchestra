@@ -277,6 +277,23 @@ export interface Workspace {
   /** Epoch ms when {@link lastStopReason} was recorded, so the tooltip can age
    * it. Absent whenever `lastStopReason` is absent. */
   lastStopReasonAt?: number;
+  /** Epoch MILLISECONDS at which the usage limit that killed the last turn
+   * resets — set alongside `lastStopReason: 'usage_limit'` (#74), and the
+   * clock the auto-resume driver waits out.
+   *
+   * NOTE THE UNIT. The SDK reports this as epoch SECONDS on the rate-limit
+   * notice; it is converted exactly once, by `resetsAtMsFromNotice` in
+   * src/shared/usage-resume.ts, which documents why mixing the two is a bug
+   * that ships green in both directions.
+   *
+   * Absent means "limited, but the reset time is unknown" — a real state, not
+   * a missing value: a turn killed by a 429 result carries no reset time
+   * (`classifyTurnError`), and the driver then gates on a fresh usage reading
+   * instead of guessing. Deliberately CLEARED (assigned `undefined`, never
+   * deleted — the renderer merge cannot unset an absent key) when a new limit
+   * arrives without one, so a stale past timestamp cannot make the driver
+   * resume instantly. */
+  usageLimitResetsAt?: number;
   archived?: boolean;
   archivedAt?: number;
   hasInput?: boolean;
@@ -959,6 +976,12 @@ export type AgentStopReason =
   | 'end_turn'
   | 'interrupted'
   | 'max_turns'
+  /** The turn died because the account hit its usage limit (#74). Distinct
+   *  from `'error'`: this one RESOLVES BY ITSELF at the reset, so it is the
+   *  only stop reason the app will auto-resume from. Set structurally — from
+   *  the SDK's `rate_limit_event` or a 429 turn result — never by matching
+   *  error prose. See src/shared/usage-resume.ts. */
+  | 'usage_limit'
   | 'error';
 
 /** Token accounting for one turn, lifted verbatim from the SDK result's
@@ -1082,6 +1105,20 @@ export interface AgentNoticeEvent extends AgentEventBase {
   text: string;
   /** For `rate-limit`: epoch seconds the limit resets, when reported. */
   resetsAt?: number;
+  /** For `rate-limit` ONLY: true when the request was actually REJECTED (the
+   *  SDK's `rate_limit_info.status === 'rejected'`, or a 429 turn result),
+   *  false/absent for a mere `allowed_warning` — "you are at 80%", which must
+   *  never pause or auto-resume anything.
+   *
+   *  This field exists because normalization otherwise collapses the two into
+   *  the same `kind: 'rate-limit'` notice, distinguishable only by their PROSE
+   *  ("Usage limit reached" vs "Approaching usage limit"). #74 forbids reading
+   *  limit semantics out of error text — and rightly: the strings are UI copy,
+   *  free to be reworded or localized, and a silent mismatch would either stop
+   *  auto-resume working or pause healthy sessions at 80% usage. So the
+   *  structural bit the SDK gave us is carried through explicitly instead of
+   *  being reconstructed downstream. */
+  rejected?: boolean;
 }
 
 /** The CLAUDE.md memory files that exceed the model's per-file char limit.

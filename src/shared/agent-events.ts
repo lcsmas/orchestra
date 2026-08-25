@@ -702,6 +702,10 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
               // No resetsAt: the result carries no reset time. The account
               // poller owns that, and the notice renders without it.
               text: 'Usage limit reached — the turn was stopped',
+              // A 429 result IS a rejection — the turn died on it (#74). It
+              // reports no reset time, so the resume driver will gate this
+              // workspace on a fresh usage reading instead of a clock.
+              rejected: true,
             }),
           );
         }
@@ -761,6 +765,10 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
             type: 'notice',
             kind: 'rate-limit',
             text: 'Usage limit reached',
+            // STRUCTURAL rejection bit (#74): the auto-resume driver must tell
+            // a real rejection from the `allowed_warning` below, and the only
+            // other difference between the two notices is their prose.
+            rejected: true,
             ...(typeof info.resetsAt === 'number' ? { resetsAt: info.resetsAt } : {}),
           }),
         ];

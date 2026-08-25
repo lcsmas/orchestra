@@ -1,6 +1,7 @@
 import type React from 'react';
 import type { Workspace, WorkspaceStatus } from '../../shared/types.ts';
 import { THINKING_TOOL_LABEL } from '../../shared/types.ts';
+import type { ActionableStopReason } from '../../shared/usage-resume.ts';
 
 /**
  * The status marker for a workspace, shown wherever the app lists agents:
@@ -61,7 +62,7 @@ export function WorkspaceStatusGlyph({
    *  that exhausted its turn budget while its queue rotted is pixel-identical
    *  to one that finished cleanly. Ranked ABOVE the autoUnread bell below:
    *  "stopped and needs you" outranks "finished, unseen". */
-  stopReason?: 'max_turns' | 'error';
+  stopReason?: ActionableStopReason;
   title: string;
   /** Optional context class, e.g. `'sm'` for denser lists. */
   size?: 'sm';
@@ -112,25 +113,41 @@ export function WorkspaceStatusGlyph({
   // agent is `running` again the marker is stale by definition (and
   // applyAgentEvent clears it on the next turn anyway).
   if (stopReason && (status === 'idle' || status === 'stopped')) {
-    // Lucide `octagon-alert` for a budget stop, `circle-x` for an error — a
-    // distinct SHAPE, not just a colour, so the state survives a colour-blind
-    // reader and a greyscale screenshot.
-    return stopReason === 'max_turns'
-      ? svg(
-          <>
-            <path d="M8.7 3h6.6a1 1 0 0 1 .7.3l4.7 4.7a1 1 0 0 1 .3.7v6.6a1 1 0 0 1-.3.7l-4.7 4.7a1 1 0 0 1-.7.3H8.7a1 1 0 0 1-.7-.3l-4.7-4.7a1 1 0 0 1-.3-.7V8.7a1 1 0 0 1 .3-.7l4.7-4.7a1 1 0 0 1 .7-.3z" />
-            <path d="M12 8v4" />
-            <path d="M12 16h.01" />
-          </>,
-          'maxturns',
-        )
-      : svg(
-          <>
-            <circle cx="12" cy="12" r="10" />
-            <path d="m15 9-6 6M9 9l6 6" />
-          </>,
-          'error',
-        );
+    // Lucide `octagon-alert` for a budget stop, `circle-pause` for a usage
+    // limit, `circle-x` for an error — a distinct SHAPE, not just a colour, so
+    // each state survives a colour-blind reader and a greyscale screenshot.
+    //
+    // The usage-limit PAUSE is deliberately the calmest of the three (#74): it
+    // is the one reason that resolves BY ITSELF at the reset, and which the app
+    // now auto-resumes from, so it must not read as an alarm demanding action
+    // the way the octagon and the cross do.
+    if (stopReason === 'max_turns') {
+      return svg(
+        <>
+          <path d="M8.7 3h6.6a1 1 0 0 1 .7.3l4.7 4.7a1 1 0 0 1 .3.7v6.6a1 1 0 0 1-.3.7l-4.7 4.7a1 1 0 0 1-.7.3H8.7a1 1 0 0 1-.7-.3l-4.7-4.7a1 1 0 0 1-.3-.7V8.7a1 1 0 0 1 .3-.7l4.7-4.7a1 1 0 0 1 .7-.3z" />
+          <path d="M12 8v4" />
+          <path d="M12 16h.01" />
+        </>,
+        'maxturns',
+      );
+    }
+    if (stopReason === 'usage_limit') {
+      return svg(
+        <>
+          <circle cx="12" cy="12" r="10" />
+          <path d="M10 15V9" />
+          <path d="M14 15V9" />
+        </>,
+        'usagelimit',
+      );
+    }
+    return svg(
+      <>
+        <circle cx="12" cy="12" r="10" />
+        <path d="m15 9-6 6M9 9l6 6" />
+      </>,
+      'error',
+    );
   }
   if (autoUnread && (status === 'idle' || status === 'stopped')) {
     // A FILLED bell — the exact path from Orca's `FilledBellIcon`
