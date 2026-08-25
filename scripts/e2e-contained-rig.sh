@@ -62,13 +62,27 @@ done
 # ── 2. identify MY socket by ACTIVE MARKER, never by number/mtime/newest ────
 # Seven wayland sockets exist; wayland-1 is the HUMAN's and others belong to
 # sibling agents. Only a colour we set through OUR OWN SWAYSOCK discriminates.
+#
+# THE MARKER COLOUR IS A SHARED NAMESPACE, and that is not theoretical: during
+# this rig's own self-test a sibling agent was painting #FF00FF at the same
+# moment (every agent follows the same documented recipe), and the
+# two-sockets-read-100% guard below correctly refused to guess. Refusing is safe
+# but it also makes the rig flaky for no reason, so the marker is now UNIQUE PER
+# RIG: the pid is folded into the green+blue channels, keeping red pinned at FF
+# so the colour stays obviously synthetic and unlike any real UI.
+MARK_G="$(printf '%02X' $(( ($$ / 251) % 256 )))"
+MARK_B="$(printf '%02X' $(( $$ % 251 + 5 )))"
+MARKER="FF${MARK_G}${MARK_B}"
+MARK_R_DEC=255; MARK_G_DEC=$((16#${MARK_G})); MARK_B_DEC=$((16#${MARK_B}))
+log "unique marker for this rig: #${MARKER} (rgb ${MARK_R_DEC},${MARK_G_DEC},${MARK_B_DEC})"
 swaymsg_mine() { SWAYSOCK="${SWAYSOCK_MINE}" swaymsg "$@" >/dev/null 2>&1; }
-swaymsg_mine -- 'output HEADLESS-1 background #FF00FF solid_color' \
+swaymsg_mine -- "output HEADLESS-1 background #${MARKER} solid_color" \
   || die "could not set the marker on my own output"
 
-decode_magenta() {  # $1 = png path -> prints percentage of exact (255,0,255)
-  python3 - "$1" <<'PY'
+decode_marker() {  # $1 = png -> % of pixels exactly equal to THIS rig's marker
+  python3 - "$1" "${MARK_R_DEC}" "${MARK_G_DEC}" "${MARK_B_DEC}" <<'PY'
 import sys, struct, zlib
+WANT = (int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]))
 d = open(sys.argv[1], 'rb').read()
 pos, idat = 8, b''
 w = h = ct = None
@@ -101,7 +115,7 @@ for _y in range(h):
             line[x] = (line[x]+pr) & 255
     for x in range(0, stride, ch):
         tot += 1
-        if (line[x], line[x+1], line[x+2]) == (255, 0, 255): mag += 1
+        if (line[x], line[x+1], line[x+2]) == WANT: mag += 1
     prev = line
 print(f"{mag/tot*100:.2f}")
 PY
@@ -114,61 +128,117 @@ for sock in /run/user/1000/wayland-*; do
   n="$(basename "${sock}")"
   shot="${RIG_DIR}/marker-${n}.png"
   env -u DISPLAY WAYLAND_DISPLAY="${n}" grim -o HEADLESS-1 "${shot}" 2>/dev/null || continue
-  pct="$(decode_magenta "${shot}")"
+  pct="$(decode_marker "${shot}")"
   READINGS="${READINGS}${n}=${pct}%  "
   if [[ "${pct}" == "100.00" ]]; then
-    [[ -n "${MINE}" ]] && die "TWO sockets read 100% magenta (${MINE} and ${n}) — cannot disambiguate"
+    [[ -n "${MINE}" ]] && die "TWO sockets read 100% of MY unique marker #${MARKER} (${MINE} and ${n}) — cannot disambiguate"
     MINE="${n}"
   fi
 done
-log "magenta readings: ${READINGS}"
-[[ -n "${MINE}" ]] || die "no socket read 100% magenta — cannot prove which display is mine"
+log "marker #${MARKER} readings: ${READINGS}"
+[[ -n "${MINE}" ]] || die "no socket read 100% of marker #${MARKER} — cannot prove which display is mine"
 log "verified MY display: ${MINE}"
 
 # Reset the background, then re-grim: a later 100% reading can then only mean we
 # re-set it, never a stale frame.
 swaymsg_mine -- 'output HEADLESS-1 background #1a1f26 solid_color'
 env -u DISPLAY WAYLAND_DISPLAY="${MINE}" grim -o HEADLESS-1 "${RIG_DIR}/marker-reset.png" 2>/dev/null || true
-RESET_PCT="$(decode_magenta "${RIG_DIR}/marker-reset.png" 2>/dev/null || echo 'n/a')"
-log "after reset, ${MINE} reads ${RESET_PCT}% magenta (must be 0.00)"
+RESET_PCT="$(decode_marker "${RIG_DIR}/marker-reset.png" 2>/dev/null || echo 'n/a')"
+log "after reset, ${MINE} reads ${RESET_PCT}% of #${MARKER} (must be 0.00)"
 [[ "${RESET_PCT}" == "0.00" ]] || die "marker did not clear (${RESET_PCT}%) — the reading may be stale"
 
-# ── 3. THE PRE-FLIGHT ASSERT ────────────────────────────────────────────────
-# Not "print WAYLAND_DISPLAY". Compare it to the socket THIS script created and
-# painted, and abort on any mismatch. Also refuse to proceed if DISPLAY is set,
-# so X11 cannot be reached even by accident.
-preflight_assert() {
-  local want="$1" got="${2-}"
-  log "PREFLIGHT: WAYLAND_DISPLAY='${got:-<unset>}' must equal my sway's socket '${want}'"
-  [[ "${got}" == "${want}" ]] \
-    || die "PREFLIGHT FAILED: WAYLAND_DISPLAY='${got:-<unset>}' != my socket '${want}' (refusing to launch — this is the check that prevents landing on the human's screen)"
-  [[ -z "${DISPLAY_IN_CHILD:-}" ]] \
-    || die "PREFLIGHT FAILED: DISPLAY is present in the child env ('${DISPLAY_IN_CHILD}') — X11 must be unreachable by construction"
-  # And the human's compositor must NOT be the target.
-  [[ "${got}" != "wayland-1" ]] || die "PREFLIGHT FAILED: refusing wayland-1 (the human's real compositor)"
-  log "PREFLIGHT PASSED: launching against ${want}"
-}
-preflight_assert "${MINE}" "${MINE}"
+# ── 3. BUILD THE CHILD ENV ONCE, THEN ASSERT WHAT THE CHILD WILL ACTUALLY GET ─
+# The env is constructed as an ARRAY first so the assert can read the very values
+# that will reach the child, rather than the variables we hope produced them.
+#
+# Two defects this shape exists to prevent, both found in review of the previous
+# version, and both of the same class — a guard that reads as protection but
+# provably cannot fire:
+#   (1) a `DISPLAY_IN_CHILD` check that was never assigned anywhere, so the
+#       branch was unreachable decoration;
+#   (2) `preflight_assert "$MINE" "$MINE"` — the same variable on both sides, so
+#       the equality compared a value to itself and could not fail regardless of
+#       what the child actually received.
+# The containment was still real (env -i pins WAYLAND_DISPLAY and omits DISPLAY),
+# but the check DOCUMENTED as load-bearing was not. Now the assert parses the
+# constructed env, so it fails if the construction and the intent ever drift.
+CHILD_ENV=(
+  PATH="/usr/local/bin:/usr/bin:/bin"
+  HOME="${FAKE_HOME}"
+  XDG_RUNTIME_DIR="/run/user/1000"
+  XDG_CONFIG_HOME="${FAKE_HOME}/.config"
+  XDG_CACHE_HOME="${FAKE_HOME}/.cache"
+  WAYLAND_DISPLAY="${MINE}"
+  SWAYSOCK="${SWAYSOCK_MINE}"
+  ELECTRON_OZONE_PLATFORM_HINT=wayland
+  ORCHESTRA_OZONE=wayland
+  ORCHESTRA_OZONE_RELAUNCHED=1
+  ORCHESTRA_HOME="${RIG_DIR}/oh"
+  ORCHESTRA_DEBUG_PORT="${ORCHESTRA_DEBUG_PORT:-9384}"
+  CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR_PIN:-${HOME}/.claude}"
+  RIG_DIR="${RIG_DIR}"
+  RIG_WAYLAND="${MINE}"
+)
+# RIG_SELFTEST_* exist ONLY so the self-test can inject a hostile env and watch
+# the assert abort. They are never set in normal operation; the assert reads the
+# array either way, so the tested code path is the shipped one.
+if [[ -n "${RIG_SELFTEST_FORCE_WAYLAND:-}" ]]; then
+  CHILD_ENV=("${CHILD_ENV[@]/#WAYLAND_DISPLAY=*/WAYLAND_DISPLAY=${RIG_SELFTEST_FORCE_WAYLAND}}")
+fi
+[[ -n "${RIG_SELFTEST_ADD_DISPLAY:-}" ]] && CHILD_ENV+=(DISPLAY="${RIG_SELFTEST_ADD_DISPLAY}")
 
-# ── 4. run the command with an ALLOWLIST env (DISPLAY absent by construction) ─
-# `env -i` starts from EMPTY, so nothing can leak: every variable below is one
-# we chose. This is the difference between contained-by-construction and
-# contained-by-convention.
+# Read a variable back OUT of the constructed child env. Prints nothing when the
+# variable is absent, which is how the DISPLAY check becomes real: absence is now
+# an observed property of the array, not an assumption.
+child_env_get() {
+  local key="$1" kv
+  for kv in "${CHILD_ENV[@]}"; do
+    [[ "${kv}" == "${key}="* ]] && { printf '%s' "${kv#*=}"; return 0; }
+  done
+  return 1
+}
+child_env_has() {
+  local key="$1" kv
+  for kv in "${CHILD_ENV[@]}"; do
+    [[ "${kv}" == "${key}="* ]] && return 0
+  done
+  return 1
+}
+
+# THE PRE-FLIGHT ASSERT. Not "print WAYLAND_DISPLAY" — that goes green while
+# pointing at the human's screen, which is exactly how test windows kept
+# escaping. This compares the value THE CHILD WILL RECEIVE against the socket
+# this script's own sway created and painted magenta, and aborts otherwise.
+preflight_assert() {
+  local want="$1"
+  local got; got="$(child_env_get WAYLAND_DISPLAY || true)"
+  log "PREFLIGHT: child WAYLAND_DISPLAY='${got:-<unset>}' must equal my sway's socket '${want}'"
+
+  [[ -n "${got}" ]] \
+    || die "PREFLIGHT FAILED: the child env carries no WAYLAND_DISPLAY at all"
+
+  # ORDER MATTERS, and getting it wrong makes a guard unreachable — which is the
+  # same defect class as an unassigned variable, just wearing control flow. The
+  # wayland-1 refusal used to sit AFTER the equality check, where it could never
+  # fire: wayland-1 can only equal ${want} if the human's compositor somehow
+  # painted our unique marker. Checking it FIRST makes it an independent,
+  # reachable guard (proven by the self-test, which requires THIS message).
+  [[ "${got}" != "wayland-1" ]] \
+    || die "PREFLIGHT FAILED: refusing wayland-1 (the human's real compositor)"
+  [[ "${got}" == "${want}" ]] \
+    || die "PREFLIGHT FAILED: child WAYLAND_DISPLAY='${got}' != my marker-verified socket '${want}' (refusing to launch — this is the check that prevents landing on the human's or a sibling's screen)"
+
+  # DISPLAY must be ABSENT FROM THE ARRAY. `env -i` already guarantees nothing
+  # leaks, so this is not a second layer of protection — it is the assertion
+  # that our own construction did not ADD one back.
+  if child_env_has DISPLAY; then
+    die "PREFLIGHT FAILED: the child env sets DISPLAY='$(child_env_get DISPLAY)' — X11 must be unreachable by construction"
+  fi
+  log "PREFLIGHT PASSED: child gets WAYLAND_DISPLAY=${got}, DISPLAY absent (verified against the constructed env)"
+}
+preflight_assert "${MINE}"
+
+
+# ── 4. run the command with that exact env ─────────────────────────────────
 log "rig dir: ${RIG_DIR} | fake HOME: ${FAKE_HOME} | ORCHESTRA_HOME: ${RIG_DIR}/oh"
-env -i \
-  PATH="/usr/local/bin:/usr/bin:/bin" \
-  HOME="${FAKE_HOME}" \
-  XDG_RUNTIME_DIR="/run/user/1000" \
-  XDG_CONFIG_HOME="${FAKE_HOME}/.config" \
-  XDG_CACHE_HOME="${FAKE_HOME}/.cache" \
-  WAYLAND_DISPLAY="${MINE}" \
-  SWAYSOCK="${SWAYSOCK_MINE}" \
-  ELECTRON_OZONE_PLATFORM_HINT=wayland \
-  ORCHESTRA_OZONE=wayland \
-  ORCHESTRA_OZONE_RELAUNCHED=1 \
-  ORCHESTRA_HOME="${RIG_DIR}/oh" \
-  ORCHESTRA_DEBUG_PORT="${ORCHESTRA_DEBUG_PORT:-9384}" \
-  CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR_PIN:-${HOME}/.claude}" \
-  RIG_DIR="${RIG_DIR}" \
-  RIG_WAYLAND="${MINE}" \
-  "$@"
+env -i "${CHILD_ENV[@]}" "$@"
