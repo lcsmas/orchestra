@@ -13,216 +13,190 @@ import {
 //
 // Two kinds of test live here, and the split is deliberate:
 //
-//   (A) An EXECUTING reproduction of the starvation mechanism. `agent-sdk.ts`
-//       cannot be imported by this runner (it pulls in `platform`/`store`/
-//       `pty`, i.e. Electron), so the queue-pump loop is re-executed here in
-//       the shape the real one has. That makes it a MODEL, and a model that
-//       was faithful when written goes stale silently — so:
+//   (A) An EXECUTING reproduction of the failure. `agent-sdk.ts` cannot be
+//       imported by this runner (it pulls in `platform`/`store`/`pty`, i.e.
+//       Electron), so the queue pump is re-executed here in the shape the real
+//       one has. That makes it a MODEL, and a model that was faithful when
+//       written goes stale silently — so:
 //
 //   (B) SOURCE-BINDING GUARDS that read the real agent-sdk.ts and refuse a
 //       verdict if the structural properties the model assumes stop holding.
-//       Without these, (A) would keep printing green about a program that no
-//       longer exists.
 //
-// The mechanism being reproduced, verified against master 2ebd3fb:
-// `error_max_turns` arrives as an ordinary `result` message, NOT as a throw.
-// So consume()'s catch/finally — which drains the queue, settles delivery
-// receipts and emits "N queued messages were not delivered" — never runs.
-// The result branch opens the turn gate, promptStream yields the next queued
-// entry, and it dies on the same exhausted budget. Repeat until the queue is
-// empty. Nothing surfaces.
+// The mechanism reproduced here was MEASURED against the real SDK on
+// 2026-08-25 (docs/research/issue-69-maxturns-findings.md, probes 4-6), NOT
+// inferred from sdk.d.ts. An earlier draft of this file modelled `maxTurns` as
+// a session-lifetime budget that starved the queue one entry per round-trip.
+// Driving a real `query()` REFUTED that:
+//
+//   • The cap is PER-TURN. With maxTurns:1, prompt P1 returns
+//     `error_max_turns` and P2 then runs with a FULL budget. A first
+//     exhaustion is benign, self-recovering, and does NOT throw.
+//   • The SECOND exhaustion is the failure: it THROWS ("Reached maximum
+//     number of turns"), killing the query and discarding every prompt still
+//     queued behind it. Measured twice, identically: 5 prompts yielded, 2
+//     results seen, 3 never consumed.
+//
+// So #69's starved queue is a hard kill on the second exhaustion, not a slow
+// drain — and the recovery belongs in consume()'s catch/finally (where the
+// throw lands), not in its result branch.
 
 const ROOT = process.cwd(); // pnpm test runs from the repo root
 const AGENT_SDK = path.join(ROOT, 'src', 'main', 'agent-sdk.ts');
 
-/** One turn's outcome in the harness below. */
-type Outcome = 'ran' | 'died-on-exhausted-budget';
+/** What a yielded turn did, per MEASURED SDK behaviour. */
+type Outcome = 'ran' | 'exhausted';
 
 interface RunResult {
-  /** Entries that genuinely reached the model. */
+  /** Entries that reached the model (including ones whose turn then exhausted). */
   ran: string[];
-  /** Entries shifted out of the queue that died without being processed —
-   *  the starvation. */
-  starved: string[];
-  /** Entries still queued when the session came to rest. */
-  leftQueued: string[];
+  /** Entries still queued when the query DIED — discarded by the throw. This is
+   *  #69's starved queue. */
+  discarded: string[];
   /** Terminal notices the human would see. */
   surfaced: string[];
-  /** Number of times the query was recycled with a fresh budget. */
+  /** Number of times a replacement query was booted. */
   recycles: number;
+  /** Did the query die (second-exhaustion throw, or a refused runaway)? */
+  died: boolean;
 }
 
 /**
- * Re-execute Orchestra's queue pump against a budget that can be exhausted.
+ * Re-execute the measured failure: per-TURN budget, first exhaustion benign,
+ * SECOND exhaustion throws and takes the still-queued prompts with it.
  *
- * This mirrors the real control flow: a queue, a turn gate opened by the
- * `result` branch, and a generator that shifts the next entry once the gate
- * opens. `budget` is the session-lifetime `maxTurns`; each yielded turn spends
- * one. When it is spent, the SDK returns `error_max_turns` as a RESULT (not a
- * throw) — modelled by `outcomeFor` below.
- *
- * @param fixed  false = the unfixed build (the result branch just reopens the
- *               gate); true = the fix (exhaustion recycles the query).
+ * `exhausting` names the entries whose turn needs more round-trips than the
+ * per-turn cap allows. Modelling that as a per-ENTRY fact rather than a running
+ * counter is what keeps this faithful to a per-turn cap — the refuted model's
+ * running counter is exactly what made it wrong.
  */
 function runQueuePump(opts: {
   queue: string[];
-  budget: number;
+  exhausting: string[];
   fixed: boolean;
-  /** Recycle timestamps, and a clock, so the runaway guard is exercised for
-   *  real rather than assumed. */
   now?: number;
   priorRecycles?: number[];
 }): RunResult {
   const queue = [...opts.queue];
+  const exhausting = new Set(opts.exhausting);
   const ran: string[] = [];
-  const starved: string[] = [];
   const surfaced: string[] = [];
-  let spent = 0;
-  let budget = opts.budget;
   let recycles = 0;
   let history = opts.priorRecycles ? [...opts.priorRecycles] : [];
   const now = opts.now ?? 1_000_000;
-  let stopped = false;
+  // Exhaustions seen by the CURRENT query. Reset by a recycle: a fresh query()
+  // starts the count over, which is the whole point of resuming.
+  let exhaustionsThisQuery = 0;
+  let died = false;
 
-  while (queue.length > 0 && !stopped) {
+  while (queue.length > 0) {
     const entry = queue.shift()!;
+    const outcome: Outcome = exhausting.has(entry) ? 'exhausted' : 'ran';
+    ran.push(entry);
 
-    // The turn is yielded to the SDK. Does it run, or is the budget gone?
-    const outcome: Outcome = spent >= budget ? 'died-on-exhausted-budget' : 'ran';
+    if (outcome === 'ran') continue;
 
-    if (outcome === 'ran') {
-      spent += 1;
-      ran.push(entry);
-      // `result` (success) → the gate reopens, loop continues. Nothing to do.
-      continue;
-    }
+    exhaustionsThisQuery += 1;
+    // MEASURED: the FIRST exhaustion is a benign result — no throw, and the
+    // next queued turn runs normally. There is nothing to recover.
+    if (exhaustionsThisQuery < 2) continue;
 
-    // ── error_max_turns. This is a RESULT, not a throw. ──
+    // MEASURED: the SECOND one throws and kills the query. Everything still
+    // queued dies with it.
     if (!opts.fixed) {
-      // UNFIXED: the result branch opens the turn gate exactly as it does for a
-      // successful turn (agent-sdk.ts:955 `session.turnGate = null; openNext?.()`).
-      // The entry is already shifted out of the queue and is simply lost. The
-      // loop comes straight back for the next one, which meets the same
-      // exhausted budget. Nothing is emitted; the ONLY record is a [WARN] in
-      // the app log, which is not modelled because it is not a UI surface.
-      starved.push(entry);
-      continue;
+      died = true;
+      return { ran, discarded: queue, surfaced, recycles, died };
     }
 
-    // FIXED: exhaustion is recognised as terminal-for-this-query. Decide
-    // whether to recycle (fresh budget, same conversation via `resume`) or to
-    // stop as a runaway. Either way the human is told.
+    // FIXED: carry the queue to a resumed session, bounded by the guard.
     const decision = shouldRecycleForBudget(history, now);
     history = decision.history;
     surfaced.push(decision.reason);
     if (!decision.recycle) {
-      // Runaway: stop, and put the entry BACK so it is reported as undelivered
-      // rather than silently eaten.
-      queue.unshift(entry);
-      stopped = true;
-      break;
+      died = true;
+      return { ran, discarded: queue, surfaced, recycles, died };
     }
     recycles += 1;
-    // A fresh query() means a fresh session-lifetime budget.
-    spent = 0;
-    budget = opts.budget;
-    // The entry was never processed — it is re-queued and delivered by the
-    // renewed session. THIS is the line that kills the starvation.
-    queue.unshift(entry);
+    exhaustionsThisQuery = 0; // a fresh query() starts over
   }
 
-  return { ran, starved, leftQueued: queue, surfaced, recycles };
+  return { ran, discarded: queue, surfaced, recycles, died };
 }
 
 // ─── (A) The measurement: unfixed arm vs fixed arm, SAME rig ────────────────
 
-test('#69 UNFIXED ARM: an exhausted budget silently eats the whole queue', () => {
-  // The field failure's shape: a coordinator with messages piled up. Budget 3
-  // is already spent by the first 3 entries; the remaining 5 are the "43
-  // messages with nothing consuming them".
-  const res = runQueuePump({
-    queue: ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8'],
-    budget: 3,
-    fixed: false,
-  });
+// Fixture note: TWO exhausting entries, because the measured failure needs a
+// SECOND exhaustion to fire. A fixture with only one would exercise the benign
+// case and prove nothing — the trap of building a fixture from the defect's
+// DESCRIPTION rather than its measured code path.
+const QUEUE = ['m1', 'm2', 'm3', 'm4', 'm5', 'm6'];
+const EXHAUSTING = ['m2', 'm4'];
 
-  // Positive control: the rig CAN run turns — otherwise "nothing ran" would be
-  // a dead-harness artifact rather than a finding.
-  assert.deepEqual(res.ran, ['m1', 'm2', 'm3'], 'the first 3 turns must genuinely run');
+test('#69 UNFIXED ARM: the second exhaustion kills the query and discards the queue', () => {
+  const res = runQueuePump({ queue: QUEUE, exhausting: EXHAUSTING, fixed: false });
 
-  // The defect, stated as an observation: five messages left the queue and
-  // reached nobody.
-  assert.deepEqual(
-    res.starved,
-    ['m4', 'm5', 'm6', 'm7', 'm8'],
-    'unfixed: every post-exhaustion message is consumed from the queue and lost',
-  );
-  assert.equal(res.leftQueued.length, 0, 'unfixed: the queue is drained to empty');
+  // Positive control: the rig CAN run turns, so "the rest died" is a finding
+  // rather than a dead harness. m3 running is the load-bearing one — it proves
+  // the FIRST exhaustion (m2) was benign, the per-turn behaviour that refuted
+  // the original model.
+  assert.deepEqual(res.ran, ['m1', 'm2', 'm3', 'm4'], 'turns run until the second exhaustion');
 
-  // And the non-negotiable half — NOTHING was surfaced to the human.
-  assert.deepEqual(res.surfaced, [], 'unfixed: the human is told nothing (the bug)');
-  assert.equal(res.recycles, 0, 'unfixed: the query is never recycled');
+  assert.ok(res.died, 'unfixed: the query dies on the second exhaustion');
+  assert.deepEqual(res.discarded, ['m5', 'm6'], 'unfixed: the still-queued prompts are discarded');
+  assert.deepEqual(res.surfaced, [], 'unfixed: nothing is surfaced to the human');
+  assert.equal(res.recycles, 0, 'unfixed: no replacement query is booted');
 });
 
-test('#69 FIXED ARM: the same starvation is eliminated AND surfaced', () => {
-  const res = runQueuePump({
-    queue: ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8'],
-    budget: 3,
-    fixed: true,
-  });
+test('#69 FIXED ARM: the same queue survives, and the recovery is announced', () => {
+  const res = runQueuePump({ queue: QUEUE, exhausting: EXHAUSTING, fixed: true });
 
-  // Every message is delivered — nothing starves.
-  assert.deepEqual(
-    res.ran,
-    ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8'],
-    'fixed: every queued message reaches the model',
-  );
-  assert.deepEqual(res.starved, [], 'fixed: nothing is eaten from the queue');
-  assert.equal(res.leftQueued.length, 0, 'fixed: the queue is fully consumed');
+  assert.deepEqual(res.ran, QUEUE, 'fixed: every queued message reaches the model');
+  assert.deepEqual(res.discarded, [], 'fixed: nothing is discarded');
+  assert.ok(!res.died, 'fixed: the session is not left dead');
+  assert.equal(res.recycles, 1, 'fixed: one resume, on the second exhaustion');
+  assert.equal(res.surfaced.length, 1, 'fixed: the recovery is announced');
+  assert.match(res.surfaced[0], /turn limit/i, 'the notice names the turn limit as the cause');
+});
 
-  // Budget 3 over 8 messages = exhausted after m3 and again after m6.
-  assert.equal(res.recycles, 2, 'fixed: the query is recycled once per exhaustion');
-
-  // The surfacing is what #69 actually demands: not silent.
-  assert.equal(res.surfaced.length, 2, 'fixed: every recycle is announced');
-  for (const s of res.surfaced) {
-    assert.match(s, /budget/i, 'the notice must name the budget as the cause');
-  }
+test('#69 a FIRST exhaustion alone is benign and needs no recovery (measured)', () => {
+  // The property that refuted the original model, pinned so the fix cannot
+  // become trigger-happy and tear down healthy sessions on a benign event.
+  const res = runQueuePump({ queue: QUEUE, exhausting: ['m2'], fixed: true });
+  assert.deepEqual(res.ran, QUEUE, 'every message still runs');
+  assert.equal(res.recycles, 0, 'no query is recycled for a single exhaustion');
+  assert.deepEqual(res.surfaced, [], 'and nothing is announced — there is nothing to announce');
 });
 
 test('#69 the runaway guard still stops a genuine loop — and says so', () => {
-  // A session that has ALREADY burned its allowance inside the window.
   const now = 5_000_000;
-  const prior = [now - 1000, now - 2000, now - 3000]; // 3 recycles, all recent
+  const prior = [now - 1000, now - 2000, now - 3000]; // allowance already spent
   const res = runQueuePump({
-    queue: ['m1', 'm2', 'm3'],
-    budget: 0, // exhausted immediately
+    queue: QUEUE,
+    exhausting: EXHAUSTING,
     fixed: true,
     now,
     priorRecycles: prior,
   });
-
-  assert.equal(res.recycles, 0, 'a runaway must NOT be granted a fresh budget');
-  assert.deepEqual(res.ran, [], 'no turn runs on an exhausted runaway');
-  // Crucially the messages are NOT silently eaten — they stay queued so the
-  // undelivered path can report them.
-  assert.deepEqual(res.leftQueued, ['m1', 'm2', 'm3'], 'the queue survives for reporting');
-  assert.equal(res.starved.length, 0, 'a stopped runaway eats nothing');
-  assert.match(res.surfaced[0] ?? '', /runaway|Stopped/i, 'the stop must be explained');
+  assert.equal(res.recycles, 0, 'a runaway must NOT be granted a fresh query');
+  assert.ok(res.died, 'it stops');
+  assert.deepEqual(res.discarded, ['m5', 'm6'], 'the remaining queue is reported, not eaten');
+  assert.match(res.surfaced[0] ?? '', /runaway|Stopped/i, 'and the stop is explained');
 });
 
 // ─── The policy itself ──────────────────────────────────────────────────────
 
 test('shouldRecycleForBudget prunes recycles outside the window', () => {
   const now = 10_000_000;
-  // Three recycles, but all older than the window — must NOT hold the guard.
-  const stale = [now - RECYCLE_WINDOW_MS - 1, now - RECYCLE_WINDOW_MS - 2, now - RECYCLE_WINDOW_MS - 3];
+  const stale = [
+    now - RECYCLE_WINDOW_MS - 1,
+    now - RECYCLE_WINDOW_MS - 2,
+    now - RECYCLE_WINDOW_MS - 3,
+  ];
   const d = shouldRecycleForBudget(stale, now);
   assert.equal(d.recycle, true, 'stale recycles must not permanently wedge a workspace');
   assert.deepEqual(d.history, [now], 'stale entries are pruned, not accumulated');
 
-  // Control: the SAME count inside the window does block, proving the guard
-  // can fire at all and that the difference above is the WINDOW, not the count.
+  // CONTROL: the SAME count inside the window DOES block, proving the guard can
+  // fire at all and that the difference above is the WINDOW, not the count.
   const fresh = [now - 1, now - 2, now - 3];
   assert.equal(shouldRecycleForBudget(fresh, now).recycle, false, 'in-window recycles do block');
 });
@@ -235,7 +209,6 @@ test('shouldRecycleForBudget allows exactly MAX_RECYCLES_PER_WINDOW', () => {
     assert.equal(d.recycle, true, `recycle ${i + 1} must be allowed`);
     history = d.history;
   }
-  // The next one is the runaway.
   const denied = shouldRecycleForBudget(history, now);
   assert.equal(denied.recycle, false, 'the N+1th recycle in-window is refused');
   assert.match(denied.reason, /Stopped/, 'and the refusal is explained to the human');
@@ -256,8 +229,8 @@ test('stopReasonNote decorates only the reasons a human must act on', () => {
 /** Re-execute the recycle's re-entry guard across a suspension point.
  *
  *  `recycleForBudget` awaits (persist, sdkStop, ensureSession) while the
- *  consume loop keeps delivering messages, so a SECOND `error_max_turns` can
- *  land mid-teardown. The guard must therefore be set SYNCHRONOUSLY, before the
+ *  consume loop keeps delivering messages, so a SECOND budget death can land
+ *  mid-teardown. The guard must therefore be set SYNCHRONOUSLY, before the
  *  first await — the exact shape that bit issue #57 when a registrar was routed
  *  across an await. `syncGuard: false` models checking only a flag that is set
  *  later (by sdkStop), which is what the first draft of this fix did. */
@@ -274,8 +247,6 @@ async function raceTwoExhaustions(syncGuard: boolean): Promise<number> {
     await Promise.resolve(); // the persist/sdkStop suspension point
     session.stopping = true; // what sdkStop eventually does
   };
-  // Two results arrive back-to-back, as they do when queued turns each die
-  // instantly on the same spent budget.
   await Promise.all([recycle(), recycle()]);
   return entries;
 }
@@ -284,11 +255,11 @@ test('#69 the recycle guard is set before the first await (re-entry race)', asyn
   assert.equal(
     await raceTwoExhaustions(true),
     1,
-    'a second error_max_turns arriving mid-teardown must NOT start a second recycle',
+    'a second budget death arriving mid-teardown must NOT start a second recycle',
   );
   // CONTROL: the same rig with only the LATE flag (the first draft) lets both
-  // in — proving this test can fail and that the sync guard is what fixes it,
-  // not the rig being unable to express the race.
+  // in — proving this test can fail, and that the sync guard is what fixes it
+  // rather than the rig being unable to express the race.
   assert.equal(
     await raceTwoExhaustions(false),
     2,
@@ -296,30 +267,7 @@ test('#69 the recycle guard is set before the first await (re-entry race)', asyn
   );
 });
 
-test('GUARD: the recycle re-entry flag is set synchronously in the real source', () => {
-  const code = agentSdkCode();
-  const start = code.indexOf('async function recycleForBudget(');
-  assert.notEqual(start, -1, 'recycleForBudget() not found — was it renamed?');
-  const body = code.slice(start, start + 1200);
-  assert.ok(body.length > 300, 'the recycleForBudget slice came back suspiciously short');
-  // The assignment must appear BEFORE the first `await` in the function body,
-  // or the race above is live in the real program.
-  const setAt = body.indexOf('session.recycling = true');
-  const firstAwait = body.indexOf('await ');
-  assert.notEqual(setAt, -1, 'recycleForBudget must set session.recycling');
-  assert.notEqual(firstAwait, -1, 'recycleForBudget should contain an await (it tears down + reboots)');
-  assert.ok(
-    setAt < firstAwait,
-    'session.recycling must be set BEFORE the first await — a guard set after a ' +
-      'suspension point cannot stop the re-entry it exists to stop (#57 shape)',
-  );
-});
-
 // ─── (B) Source-binding guards — refuse a verdict if the model went stale ───
-//
-// Each of these names a structural property the harness above ASSUMES. If one
-// stops holding, the harness is modelling a program that no longer exists and
-// its green means nothing, so these fail loudly rather than letting it pass.
 
 /** agent-sdk.ts with line comments stripped, so prose ABOUT the old design
  *  cannot satisfy a structural code check. */
@@ -334,6 +282,39 @@ function agentSdkCode(): string {
   return stripped;
 }
 
+/** consume()'s body, sliced out so assertions bind to it rather than to the
+ *  whole file (where a policy function's own definition can satisfy a check the
+ *  call site was supposed to). */
+function consumeBody(code: string): string {
+  const start = code.indexOf('async function consume(');
+  assert.notEqual(start, -1, 'consume() not found in agent-sdk.ts — was it renamed?');
+  const rest = code.slice(start);
+  const end = rest.indexOf('\nasync function ');
+  const body = end === -1 ? rest : rest.slice(0, end);
+  // Positive control: the slice really is consume(), not an empty or misaligned
+  // string that would make every assertion below pass for free.
+  assert.ok(body.length > 1000, 'the consume() slice came back suspiciously short');
+  assert.match(body, /session\.turnGate = null;/, 'the consume() slice lacks the turn gate');
+  return body;
+}
+
+test('GUARD: session.recycling is set synchronously in the real source', () => {
+  const code = agentSdkCode();
+  const start = code.indexOf('async function recycleForBudget(');
+  assert.notEqual(start, -1, 'recycleForBudget() not found — was it renamed?');
+  const body = code.slice(start, start + 1600);
+  assert.ok(body.length > 300, 'the recycleForBudget slice came back suspiciously short');
+  const setAt = body.indexOf('session.recycling = true');
+  const firstAwait = body.indexOf('await ');
+  assert.notEqual(setAt, -1, 'recycleForBudget must set session.recycling');
+  assert.notEqual(firstAwait, -1, 'recycleForBudget should contain an await');
+  assert.ok(
+    setAt < firstAwait,
+    'session.recycling must be set BEFORE the first await — a guard set after a ' +
+      'suspension point cannot stop the re-entry it exists to stop (#57 shape)',
+  );
+});
+
 test('GUARD: maxTurns is still a single construction-time literal (#69 premise)', () => {
   const code = agentSdkCode();
   const hits = code.match(/maxTurns:/g) ?? [];
@@ -341,70 +322,69 @@ test('GUARD: maxTurns is still a single construction-time literal (#69 premise)'
     hits.length,
     1,
     `expected exactly ONE maxTurns option site in agent-sdk.ts, found ${hits.length}. ` +
-      'The #69 model assumes one session-lifetime budget; more than one means the ' +
-      'budget shape changed and the harness above must be re-derived.',
+      'More than one means the budget shape changed and this model must be re-derived.',
   );
 });
 
 test('GUARD: the result branch is still what reopens the turn gate', () => {
   const code = agentSdkCode();
-  // The starvation depends on `result` reopening the gate so the next queued
-  // entry is yielded. If this moves, the model is stale.
-  assert.match(
-    code,
-    /session\.turnGate = null;/,
-    'the turn-gate reset vanished from agent-sdk.ts — re-derive the #69 model',
-  );
-  assert.match(
-    code,
-    /msg\.type === 'result'/,
-    "the `result` branch vanished — the #69 starvation path is no longer where the model thinks",
-  );
+  assert.match(code, /msg\.type === 'result'/, "the `result` branch vanished from agent-sdk.ts");
+  assert.match(code, /session\.turnGate = null;/, 'the turn-gate reset vanished');
 });
 
-test('GUARD: the fix is actually wired into consume()\'s result branch, not merely defined', () => {
+test('GUARD: the recovery is wired where the throw LANDS (catch/finally), not the result branch', () => {
   const code = agentSdkCode();
+  const body = consumeBody(code);
 
-  // FOUND BY MUTATION (see this test's history): asserting the mere PRESENCE of
-  // `shouldRecycleForBudget` in the file is VACUOUS — deleting the call site
-  // from the consume loop leaves the policy function's own definition, which
-  // still contains the name, so the check passed on a build where the fix was
-  // inert and the queue starved exactly as before. Scope the assertion to the
-  // CONSUME LOOP's slice, and assert on the CALL SITE, not the identifier.
-  const start = code.indexOf('async function consume(');
-  assert.notEqual(start, -1, 'consume() not found in agent-sdk.ts — was it renamed?');
-  const rest = code.slice(start);
-  const end = rest.indexOf('\nasync function ');
-  const consumeBody = end === -1 ? rest : rest.slice(0, end);
-  // Positive control: the slice is really consume(), not an empty/misaligned
-  // string that would make every assertion below pass for free.
-  assert.ok(consumeBody.length > 1000, 'the consume() slice came back suspiciously short');
-  assert.match(consumeBody, /session\.turnGate = null;/, 'the consume() slice does not contain the turn gate');
-
-  // The wiring itself: consume() must CALL the recycle on budget exhaustion.
+  // TWO lessons are baked into this guard, both learned the hard way:
+  //  1. Asserting the mere PRESENCE of `shouldRecycleForBudget` in the file is
+  //     VACUOUS — deleting the call site leaves the policy function's own
+  //     definition, which contains the name, so it passed on an inert build.
+  //  2. The first version pinned the wiring to consume()'s RESULT branch.
+  //     Driving the real SDK showed the killing exhaustion arrives as a THROW,
+  //     so the recovery moved to catch/finally — and this guard stayed GREEN
+  //     through that relocation, i.e. it was not binding what it claimed to.
   assert.match(
-    consumeBody,
+    body,
     /recycleForBudget\(/,
-    'consume() must call recycleForBudget() when the budget is exhausted — ' +
-      'without this call the #69 fix is inert and the queue still starves',
+    'consume() must call recycleForBudget() — without this the #69 fix is inert',
   );
-  assert.match(
-    consumeBody,
-    /error_max_turns/,
-    "consume() must branch on the `error_max_turns` result subtype — it arrives as a " +
-      'RESULT, not a throw, which is the whole reason the queue starved',
+  const catchAt = body.indexOf('} catch (err)');
+  const callAt = body.indexOf('recycleForBudget(');
+  assert.notEqual(catchAt, -1, 'consume() should still have a catch block');
+  assert.ok(
+    callAt > catchAt,
+    'recycleForBudget() must be invoked from the catch/finally path — MEASURED: the ' +
+      'killing exhaustion THROWS, so a result-branch-only hook never fires for it',
   );
-  // And the policy must be the thing deciding, not an inlined guess.
-  assert.match(
-    code,
-    /shouldRecycleForBudget\(/,
-    'the runaway decision must go through shouldRecycleForBudget()',
+  // The benign first exhaustion must still be NOTED in the result branch, or
+  // the catch cannot tell a budget death from an unrelated crash.
+  assert.match(body, /sawMaxTurns = true/, 'the result branch must record error_max_turns');
+  assert.match(body, /error_max_turns/, 'consume() must branch on the error_max_turns subtype');
+  assert.match(code, /shouldRecycleForBudget\(/, 'the runaway decision must go through the policy');
+});
+
+test('GUARD: consume() does not early-return from finally (it would swallow the error)', () => {
+  const code = agentSdkCode();
+  const body = consumeBody(code);
+  const finallyAt = body.indexOf('} finally {');
+  assert.notEqual(finallyAt, -1, 'consume() should still have a finally block');
+  const tail = body.slice(finallyAt);
+  // A bare `return;` inside finally swallows the in-flight exception AND skips
+  // `sessions.delete(wsId)`, leaving a dead session in the map for
+  // ensureSession to hand back as live. An earlier draft of this fix did
+  // exactly that.
+  assert.doesNotMatch(
+    tail,
+    /\n\s+return;/,
+    "no bare `return;` inside consume()'s finally — it swallows the exception and " +
+      'skips sessions.delete(), stranding a dead session in the map',
   );
+  assert.match(tail, /sessions\.delete\(/, 'the finally must still drop the session');
 });
 
 test('GUARD: the terminal stop reason is persisted for the sidebar to render', () => {
   // #69's non-negotiable: the state must surface in the UI, not only the log.
-  // A persisted field is what survives the session teardown the recycle does.
   const types = fs.readFileSync(path.join(ROOT, 'src', 'shared', 'types.ts'), 'utf8');
   assert.match(
     types,

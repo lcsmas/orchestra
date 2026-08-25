@@ -2,76 +2,61 @@
  * Turn-budget exhaustion policy — what to do when a session's `maxTurns` cap
  * runs out (issue #69).
  *
- * ## The defect this closes (measured against master 2ebd3fb, v0.5.260)
+ * ## The defect this closes — MEASURED, not inferred
  *
- * Orchestra opens ONE `query()` per structured session and streams every turn
- * of that session's life through it (`promptStream` in agent-sdk.ts). The SDK's
- * `maxTurns` is an option on THAT construction — its own type doc reads
- * "Maximum number of conversation turns before the query stops" — so the
- * hard-coded `maxTurns: 200` is a **session-lifetime** budget, not a per-turn
- * one. The literal's in-source comment ("a large cap: real turns end on their
- * own; this only backstops runaways") is false for any long-lived role: a
- * coordinator takes a turn per fleet ping, so it reaches 200 in normal use.
+ * An earlier draft of this module was written from `sdk.d.ts` and claimed
+ * `maxTurns` was a session-LIFETIME budget that starved the queue one entry per
+ * round-trip. Driving a real `query()` REFUTED that (probes in
+ * docs/research/issue-69-maxturns-findings.md, 2026-08-25). What actually
+ * happens, reproduced twice identically:
  *
- * What made this a SILENT failure rather than a loud one is that exhaustion is
- * not a throw. It arrives as an `SDKResultError` with
- * `subtype: 'error_max_turns'` on the message stream (sdk.d.ts) — an ordinary
- * `result`. So `consume()`'s catch/finally — the code that drains the queue,
- * settles senders' delivery receipts and emits "N queued messages were not
- * delivered" — NEVER RUNS. Instead the normal result branch opens the turn
- * gate, `promptStream` yields the next queued turn, and that turn dies on the
- * same already-exhausted budget immediately. The queue drains into a black
- * hole one entry per round-trip while every sender holds a
- * 'Delivered (live)' receipt.
+ *   - The cap is **PER-TURN**. With `maxTurns:1`, prompt P1 returns
+ *     `error_max_turns` and P2 then runs with a FULL budget. A first exhaustion
+ *     is benign, self-recovering, and does NOT throw — so nothing should react
+ *     to it.
+ *   - The **SECOND** exhaustion is the failure. It THROWS ("Reached maximum
+ *     number of turns"), killing the `query()` and discarding every prompt
+ *     still queued behind it. Measured: 5 prompts yielded, 2 results seen,
+ *     3 never consumed.
  *
- * Field failure (#69, fix-wave-5): a coordinator hit `error_max_turns` mid
- * close-out and 43 messages piled up with nothing consuming them. The only
- * record was a `[WARN]` in the app log.
+ * That is #69's starved queue: a hard kill on the second exhaustion, not a slow
+ * drain. Because it IS a throw it lands in `consume()`'s catch/finally, which
+ * already reports the lost queue honestly — so the queue is not silently eaten
+ * at the SDK seam. What was genuinely missing, and what #69 names as the bug,
+ * is that the session is DEAD and the human is not told WHY: `fireFinished`
+ * lands every terminal reason on `idle`, and its only differentiator was an OS
+ * toast suppressed whenever the window is focused.
  *
- * ## Why RECYCLE the query rather than raise the cap
+ * ## What this policy decides
  *
- * Rejected — **raise the cap / make it per-workspace.** A bigger number moves
- * the wall without removing it: a coordinator that legitimately runs for days
- * reaches 2000 exactly as it reached 200, and the failure at the new wall is
- * identical and just as silent. It also forces a guess about how many turns a
- * role "should" need, which nothing in the app knows.
- *
- * Rejected — **reset the budget per user-initiated turn.** Unimplementable
- * against this SDK: `maxTurns` is fixed when `query()` is constructed and there
- * is no setter on the `Query` handle. The only way to obtain a fresh budget IS
- * to construct a new `query()`.
- *
- * Chosen — **recycle the query on exhaustion, with a runaway guard.** Tearing
- * the exhausted query down and re-entering `ensureSession` is lossless because
- * `ws.sdkSessionId` is persisted continuously and passed back as `resume`, so
- * the replacement query continues the SAME conversation with a fresh budget.
- * That makes `maxTurns` do the job its comment claims — backstop a runaway —
- * because a runaway is now caught by {@link shouldRecycleForBudget}'s rate
- * guard rather than by the raw count. A session that exhausts its budget
- * repeatedly in a short window is not a busy coordinator, it is a loop; that
- * one stops, and (this is the non-negotiable half) says so in the UI.
- *
- * The recycle is deliberately NOT silent either: every recycle is a visible
- * notice in the transcript. "Nothing tells the human why" is the actual bug in
- * #69, so a fix that quietly papered over exhaustion would reproduce it.
+ * On that budget-driven death, the queue can be rescued: `ws.sdkSessionId` is
+ * persisted, so a fresh `query()` resumes the SAME conversation and the carried
+ * entries get delivered instead of dropped. Raising `maxTurns` would not fix
+ * this — it only changes WHICH turn throws — and the budget cannot be reset in
+ * place, since it is fixed at construction with no setter. So the question is
+ * not "how big should the cap be" but "how many times may a session be resumed
+ * before we conclude it is looping". That is what this module answers.
  */
 
-/** How many budget recycles are allowed inside {@link RECYCLE_WINDOW_MS} before
- *  a session is treated as a runaway and left stopped.
+/** How many budget-driven resumes are allowed inside {@link RECYCLE_WINDOW_MS}
+ *  before a session is treated as a runaway and left stopped.
  *
- *  Three, not one: exhausting a 200-turn budget is legitimate for a coordinator
- *  and may genuinely happen more than once in a long wave. What is NOT
- *  legitimate is burning 200 turns three times inside the window below — that
- *  is ~600 model round-trips with no human input, which is the runaway shape
- *  `maxTurns` was always meant to stop. */
+ *  Three, not one: a long-running session can legitimately hit the per-turn cap
+ *  more than once (a couple of genuinely hard turns), and killing it on the
+ *  first would be worse than the bug. What is NOT legitimate is doing it three
+ *  times inside the window below with no human input — that is the runaway
+ *  shape `maxTurns` exists to stop.
+ *
+ *  NOT a measured threshold. An earlier draft justified the window with "200
+ *  turns is hours of honest coordinator work", which rested on the refuted
+ *  session-lifetime model; there is no measurement of a real coordinator's
+ *  exhaustion rate behind these numbers. They are a deliberately loose
+ *  backstop: tight enough to stop an unattended loop, loose enough that normal
+ *  work never meets them. Revise on evidence, not on taste. */
 export const MAX_RECYCLES_PER_WINDOW = 3;
 
 /** The sliding window for {@link MAX_RECYCLES_PER_WINDOW}, in ms (1 hour).
- *
- *  Sized against the thing being measured: 200 turns is hours of honest
- *  coordinator work, so three of them inside ONE hour cannot be honest work —
- *  while a wave that spans a day and recycles a few times, spaced out, stays
- *  under the guard and keeps running. */
+ *  See the note above: chosen as a backstop, not derived from a measurement. */
 export const RECYCLE_WINDOW_MS = 60 * 60 * 1000;
 
 /** A recorded budget recycle: the epoch-ms timestamps of prior recycles for one
@@ -122,8 +107,8 @@ export function shouldRecycleForBudget(prior: RecycleHistory, now: number): Recy
       // immediately-reset guard.
       history: recent,
       reason:
-        `Stopped: this session exhausted its ${MAX_RECYCLES_PER_WINDOW}-turn-budget allowance ` +
-        `${recent.length} times in the last hour, which is the runaway shape the turn cap ` +
+        `Stopped: this session hit its per-turn limit and was resumed ` +
+        `${recent.length} times in the last hour — the runaway shape the turn cap ` +
         `exists to stop. Send a message to resume it.`,
     };
   }
@@ -132,7 +117,7 @@ export function shouldRecycleForBudget(prior: RecycleHistory, now: number): Recy
     recycle: true,
     history: [...recent, now],
     reason:
-      'Turn budget exhausted — the session was renewed with a fresh budget and the ' +
+      'Turn limit reached and the session stopped — it was resumed automatically and the ' +
       'queued messages will be delivered. The conversation is intact.',
   };
 }

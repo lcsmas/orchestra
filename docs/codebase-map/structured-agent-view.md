@@ -293,33 +293,34 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   "thinking · N tokens" readout while redacted thinking streams nothing else.
   A `status` message's `permissionMode` also emits `session/update` (CLI-side
   mode changes reflect live).
-- **Turn BUDGET exhaustion is a `result`, not a throw (issue #69)** — Orchestra
-  streams every turn of a session's life through ONE `query()`, so the
-  `maxTurns` literal in `ensureSessionInner` is a **session-lifetime** budget,
-  not a per-turn one (its old comment, "this only backstops runaways", was
-  false for any coordinator: every fleet ping is a turn). When it runs out the
-  SDK emits `subtype: 'error_max_turns'` as an ordinary `result`, so consume()'s
-  `catch`/`finally` — the ledger close described below, which drains the queue
-  and settles senders — **never runs**. Left alone the result branch reopens the
-  turn gate, `promptStream` yields the next queued entry, and it dies on the
-  same spent budget instantly: the queue drained into a black hole one entry per
-  round-trip while every sender held a 'Delivered (live)' receipt. That was the
-  reported field failure (43 messages, nothing consuming them).
-  consume() now branches on `error_max_turns` BEFORE reopening the gate and
-  calls `recycleForBudget(session)`, which: reads the workspace's
-  `budgetRecycles` history, asks `shouldRecycleForBudget`
-  (`src/shared/turn-budget.ts` — 3 recycles per sliding hour), and either
-  (a) **recycles** — detaches the queue, `sdkStop`s the spent query,
-  `ensureSession`s a replacement (lossless: `ws.sdkSessionId` is passed as
-  `resume`, so it is the same conversation with a fresh budget), re-queues the
-  carried entries at the FRONT and pumps them; or (b) **stops as a runaway** —
-  puts the queue back so the ledger close reports it as undelivered, and emits
-  an error saying so. Neither path is silent: a recycle emits a
-  `budget-recycled` notice, and the terminal state is persisted to
-  `Workspace.lastStopReason` for the sidebar (see
-  `docs/codebase-map/activity-pty-terminal.md`). Delivery watchers for carried
-  entries are deliberately NOT settled — those messages have not failed, they
-  are about to run.
+- **Turn-budget exhaustion kills the query on the SECOND hit (issue #69)** —
+  MEASURED against the real SDK, 2026-08-25 (probes in
+  `docs/research/issue-69-maxturns-findings.md`); an earlier reading of
+  `sdk.d.ts` said otherwise and was refuted. `maxTurns` is a **PER-TURN** cap,
+  not a session-lifetime one: with `maxTurns:1`, one prompt returns
+  `error_max_turns` and the NEXT prompt runs with a full budget. So a first
+  exhaustion is benign, arrives as an ordinary `result`, and nothing reacts to
+  it beyond setting `session.sawMaxTurns`.
+  The **second** exhaustion is the failure: it THROWS ("Reached maximum number
+  of turns"), killing the `query()` and discarding every prompt still queued
+  behind it (measured: 5 yielded, 2 results, 3 never consumed). That is #69's
+  starved queue. Because it is a throw it lands in `consume()`'s catch, which
+  sets `budgetDeath` (gated on BOTH `sawMaxTurns` and `isMaxTurnsFailure(msg)`,
+  so an unrelated crash cannot trigger it). The `finally` then DETACHES the
+  queue and, after the normal teardown has run to completion, hands the carried
+  entries to `recycleForBudget`, which resumes from the persisted
+  `ws.sdkSessionId` — same conversation, fresh query — or refuses as a runaway
+  (`shouldRecycleForBudget`, `src/shared/turn-budget.ts`: 3 resumes per sliding
+  hour, a deliberately loose backstop, not a measured threshold).
+  Two traps this code is shaped around, both hit while writing it: the recovery
+  must NOT be an early `return` inside `finally` (that swallows the in-flight
+  exception and skips `sessions.delete`, stranding a dead session for
+  `ensureSession` to hand back as live), and `recycleForBudget`'s re-entry flag
+  must be assigned SYNCHRONOUSLY before its first `await` (the #57 shape).
+  Neither outcome is silent: a resume emits a `budget-recycled` notice, a
+  runaway emits an error and settles the carried entries, and the terminal
+  state is persisted to `Workspace.lastStopReason` for the sidebar (see
+  `docs/codebase-map/activity-pty-terminal.md`).
 - **Turn-lifecycle ledger close (consume())** — the loop's `catch`/`finally`
   now (a) emits an error for undelivered `session.queue` entries ("N queued
   messages were not delivered") **and settles their delivery watchers as

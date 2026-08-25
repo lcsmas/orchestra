@@ -112,3 +112,119 @@ after the persist await) → the source guard fails. Killed.
 
 Worth stating plainly: no test I had written would have caught this. It came
 from re-reading the diff for await seams.
+
+---
+
+# CORRECTION (measured against the REAL SDK, 2026-08-25) — my first mechanism was WRONG
+
+Everything above between "Mechanism (three defects)" and the fix rationale was
+derived by READING `sdk.d.ts` and the source, not by driving the SDK. I then
+drove it. Two of the three claims survive; the headline one does not.
+
+## Rig
+`/tmp/mtprobe/probe*.mjs` — real `query()` against the installed CLI, haiku,
+`allowedTools:['Bash']`, streaming-input generator (Orchestra's mode), prompts
+crafted to require >1 agentic round-trip so a small `maxTurns` actually binds.
+
+## What I measured
+
+| Claim | Verdict |
+|---|---|
+| `error_max_turns` arrives as a `result`, not a throw | **TRUE (first occurrence)** — `THREW: null`, result seen, next prompt ran |
+| The budget is CUMULATIVE per `query()` (session-lifetime) | **FALSE — REFUTED** |
+| A post-exhaustion queue starves | **TRUE, but by a DIFFERENT mechanism** |
+
+**REFUTED — cumulative budget.** With `maxTurns:1` and three prompts that each
+need 2 round-trips, P1 returned `error_max_turns num_turns=2` and P2 then
+*independently* returned `error_max_turns num_turns=2`. A spent turn does not
+poison the next one; the counter resets per turn. `maxTurns:3` likewise
+completed a task with `num_turns=6`. So "200 is a session-lifetime budget" —
+the headline of my commit and of my first ledger comment — is simply wrong, and
+the in-source comment I called false ("a large cap; only backstops runaways")
+is closer to right than I was.
+
+**THE ACTUAL DEFECT — the SECOND exhaustion throws and kills the queue.**
+Reproduced twice, identically (probe5 3 prompts, probe6 5 prompts):
+
+```
+result#1 error_max_turns num_turns=2
+result#2 error_max_turns num_turns=2
+THREW: Error: Claude Code returned an error result: Reached maximum number of turns (1)
+results: 2 | prompts yielded: 5
+```
+
+The 1st exhaustion is a benign result. The 2nd tears the whole `query()` down
+with a throw, and **every prompt still queued behind it is never consumed** —
+P3/P4/P5 were yielded by the generator and silently discarded. THAT is the
+starved queue in #69: not a slow drain into a black hole, but a hard kill on
+the second exhaustion that takes the remaining queue with it.
+
+Because it IS a throw, it lands in `consume()`'s `catch`/`finally` — which does
+emit "N queued messages were not delivered" and settles senders. So the queue
+is not silently eaten at the SDK seam. What was genuinely missing is defect (3),
+which stands: `fireFinished` lands every terminal reason on `idle`, and the
+only differentiator was a focus-suppressed OS toast, so the human saw a normal
+idle dot and no reason. The `[WARN]` in the app log was the only record — which
+is exactly what #69 reports.
+
+## Consequence for the fix
+
+- The UI half (`lastStopReason` persisted + rendered) is **unaffected and still
+  correct** — it addresses the defect that survived measurement, and it is the
+  ticket's stated non-negotiable.
+- The recycle half was designed against a refuted premise and its *stated*
+  justification is wrong. It is not useless — recycling on exhaustion still
+  converts a hard query-death into a resumed session, which is a real
+  improvement for the second-exhaustion case — but it must be re-argued from
+  the measured behaviour, and the rate guard's rationale ("200 is a lifetime
+  budget") has to go.
+- **A number I published and would have been quoted**: "200 turns is hours of
+  honest coordinator work" sized the 1-hour window. It rests on the refuted
+  cumulative model. Unbaselined — I have no measurement of a real coordinator's
+  turn rate.
+
+## Final shape of the fix (post-correction)
+
+1. **Result branch** (`consume()`): a first `error_max_turns` only sets
+   `session.sawMaxTurns`. It does NOT recycle — measured, that exhaustion is
+   benign and the next turn runs fine; reacting would tear down healthy
+   sessions.
+2. **Catch**: sets `budgetDeath` when BOTH `sawMaxTurns` is set AND the thrown
+   message matches `isMaxTurnsFailure` — either alone would misfire (a stale
+   flag from a benign exhaustion many turns earlier; or an unrelated error that
+   merely mentions turns).
+3. **Finally**: detaches the queue, lets the NORMAL teardown run to completion,
+   then hands the carried entries to `recycleForBudget`. Deliberately not an
+   early `return` — a `return` inside `finally` swallows the in-flight
+   exception and skips `sessions.delete`, stranding a dead session in the map
+   for `ensureSession` to hand back as live. (I wrote that bug, then guarded it.)
+4. **`recycleForBudget`**: resumes from `ws.sdkSessionId` (same conversation,
+   fresh query) or refuses as a runaway; either way it emits a notice, and on
+   the post-teardown path it settles+reports the carried entries rather than
+   pushing them onto a queue nothing reads any more.
+5. **UI**: `Workspace.lastStopReason` persisted on the same store write and
+   broadcast as the status; sidebar renders a distinct SHAPE above the bell.
+
+## Why the tests almost lied, twice
+
+- The "fix is wired in" guard first matched the identifier anywhere in the
+  file, so deleting the CALL SITE left the policy function's own definition and
+  it passed on an inert build.
+- After measurement moved the recovery from the result branch to catch/finally,
+  that same guard **stayed green through the relocation** — it was not binding
+  what it claimed to bind. It now asserts the call appears AFTER `} catch`.
+
+Both were found by mutation, not by reading. Current matrix (one mutant at a
+time, all killed): remove catch/finally recovery; drop `sawMaxTurns`; reinstate
+the bare `return` in `finally`; move the `recycling` flag after the first
+await; drop `lastStopReason` from `Workspace`.
+
+## Standing caveat
+
+The reproduction in `src/main/turn-budget-starvation.test.ts` is still a MODEL
+(agent-sdk.ts can't be imported by `node --test`). It is now built from measured
+behaviour rather than from a reading, and source-binding guards refuse a verdict
+if the real file stops matching — but nothing here executes the true
+`consume()`. The probe scripts under `/tmp/mtprobe/` are the thing that actually
+drove the SDK; they are not committed (they hit the live API and cost money to
+run).
