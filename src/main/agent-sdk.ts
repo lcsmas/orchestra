@@ -48,6 +48,7 @@ import {
   type ReloadResult,
 } from '../shared/reload-skills';
 import { withCrossSessionInboundPolicy } from '../shared/cross-session-inbound';
+import { shouldRecycleForBudget } from '../shared/turn-budget.ts';
 import { syncAccountInheritance } from './account-inherit';
 import { agentCliBinDir } from './cli-shim';
 import { getHookSocketPath } from './hooks-server';
@@ -239,6 +240,19 @@ interface Session {
   pendingElicitations: Map<string, (result: ElicitationResult) => void>;
   /** Set once stop()/removal is requested so the generator ends cleanly. */
   stopping: boolean;
+  /** Set SYNCHRONOUSLY the instant a budget recycle begins (issue #69), before
+   *  the function's first `await`.
+   *
+   *  `stopping` cannot serve as this guard: it is only set later, by the
+   *  `sdkStop` inside the recycle, and the consume loop keeps delivering
+   *  messages across every await before that. A second `error_max_turns`
+   *  arriving in that window would see `stopping === false`, re-enter, splice an
+   *  already-empty queue and race a second `sdkStop`/`ensureSession` pair
+   *  against the first — tearing down the replacement session that the first
+   *  call had just booted. A field on the SESSION rather than a module-level
+   *  map, so it dies with the object it describes and cannot leak across a
+   *  restart. */
+  recycling?: boolean;
   /** The live permission mode, echoed into new-turn behavior. */
   permissionMode: AgentPermissionMode;
   /** The SDK session id last persisted to `ws.sdkSessionId`, to avoid rewriting
@@ -905,6 +919,113 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
   }
 }
 
+/** Recover a session whose `query()` just exhausted its `maxTurns` budget
+ *  (issue #69) — either by recycling the query with a fresh budget, or by
+ *  stopping it as a runaway. NEITHER outcome is silent.
+ *
+ *  ## Why a recycle and not a bigger number
+ *
+ *  `maxTurns` is a session-LIFETIME budget (Orchestra streams every turn
+ *  through one `query()`), and it is fixed at construction with no setter. So
+ *  raising it only moves the wall — a coordinator that legitimately runs for
+ *  days reaches 2000 exactly as it reached 200 — while a new `query()` is the
+ *  only thing that actually resets the budget. Resuming from `ws.sdkSessionId`
+ *  makes that lossless: same conversation, fresh budget.
+ *
+ *  ## What must survive the restart
+ *
+ *  THE QUEUE. The entries piled up behind the exhausted turn are the messages
+ *  #69 watched rot; they are moved onto the replacement session so they are
+ *  delivered rather than dropped. The delivery watchers are deliberately NOT
+ *  settled here — those entries have not failed, they are about to run, and
+ *  settling them `false` would tell senders their message died when it did
+ *  not. */
+async function recycleForBudget(session: Session): Promise<void> {
+  const wsId = session.wsId;
+  // Re-entry guard, set SYNCHRONOUSLY before the first `await` below. The
+  // consume loop keeps running while this function is suspended, so a second
+  // `error_max_turns` can arrive mid-teardown; without this flag it would see
+  // `stopping === false` (sdkStop has not run yet), splice an already-empty
+  // queue, and race a second sdkStop/ensureSession pair against this one —
+  // killing the replacement session this call is about to boot.
+  if (session.stopping || session.recycling) return;
+  session.recycling = true;
+
+  const ws = store.getWorkspace(wsId);
+  const decision = shouldRecycleForBudget(ws?.budgetRecycles ?? [], Date.now());
+
+  // Persist the decision's pruned history BEFORE the restart: the guard's whole
+  // job is to survive the teardown it is about to trigger, and an in-memory
+  // counter would be reset by the very restart it counts.
+  await persistWorkspacePatch(wsId, { budgetRecycles: decision.history }).catch(() => {});
+
+  // Take the queue off the dying session. Done before `stopping` is set so no
+  // other path (sdkStop's settleQueuedAsDropped) can mark these as failed.
+  const carried = session.queue.splice(0, session.queue.length);
+
+  if (!decision.recycle) {
+    // RUNAWAY: stop, and tell the human why in the transcript. The queued
+    // entries go back so consume()'s finally reports them as undelivered and
+    // settles their senders honestly — silently eating them is the #69 bug.
+    session.queue.push(...carried);
+    emit(
+      wsId,
+      stamp(session.ctx, {
+        type: 'error',
+        message: decision.reason,
+        apiErrorStatus: null,
+        willRetry: false,
+      }),
+    );
+    slog.warn(`ws ${wsId}: turn budget exhausted ${decision.history.length}× in the window — stopping as a runaway`);
+    await sdkStop(wsId);
+    return;
+  }
+
+  // RECYCLE. Say so first: a fix that quietly papered over exhaustion would
+  // reproduce the exact failure #69 reports ("nothing tells the human why").
+  emit(
+    wsId,
+    stamp(session.ctx, {
+      type: 'notice',
+      kind: 'budget-recycled',
+      text: decision.reason,
+    }),
+  );
+  slog.info(`ws ${wsId}: turn budget exhausted — recycling query (${carried.length} queued)`);
+
+  // Tear the exhausted query down. `sdkStop` sets `stopping`, which is also
+  // what lets `ensureSession` build a replacement rather than hand back this
+  // one. The queue is already detached, so its settleQueuedAsDropped is a no-op.
+  await sdkStop(wsId);
+
+  try {
+    const fresh = await ensureSession(wsId);
+    // Re-queue the carried entries at the FRONT (they were first in line) and
+    // wake the new pump so they run without waiting for another send.
+    fresh.queue.unshift(...carried);
+    emitQueueUpdate(fresh);
+    fresh.pump?.();
+  } catch (err) {
+    // The replacement failed to boot: the carried entries are genuinely dead,
+    // so settle their senders rather than leaving them holding a receipt — and
+    // say so where the human reads it, not only in the log.
+    for (const m of carried) settleDelivery(m.uuid, false);
+    emit(
+      wsId,
+      stamp(cursorFor(wsId), {
+        type: 'error',
+        message:
+          `The session's turn budget was exhausted and it could not be restarted ` +
+          `(${err instanceof Error ? err.message : String(err)}). ` +
+          `${carried.length} queued message${carried.length === 1 ? '' : 's'} were not delivered.`,
+        apiErrorStatus: null,
+        willRetry: false,
+      }),
+    );
+  }
+}
+
 /** Consume the SDK message stream for a session until it ends or throws. */
 async function consume(session: Session): Promise<void> {
   let endedByInterrupt = false;
@@ -950,6 +1071,28 @@ async function consume(session: Session): Promise<void> {
         for (const [id, resolve] of session.pendingElicitations) {
           resolve({ action: 'cancel' });
           session.pendingElicitations.delete(id);
+        }
+        // ── #69: the session's turn BUDGET, not this turn's outcome ──
+        // `error_max_turns` arrives here as an ordinary `result`, never as a
+        // throw, so consume()'s catch/finally — the code that drains the queue
+        // and settles senders — does not run. Left alone, the gate below
+        // reopens, promptStream yields the next queued entry, and it dies on
+        // the same exhausted budget instantly: the queue drains into a black
+        // hole one entry per round-trip while every sender holds a
+        // 'Delivered (live)' receipt. That is the reported failure.
+        //
+        // maxTurns is fixed when query() is constructed and has no setter, so
+        // the ONLY way to get a fresh budget is a new query(). Recycling is
+        // lossless because ws.sdkSessionId is persisted continuously and passed
+        // back as `resume`, so the replacement continues this conversation.
+        if (msg.subtype === 'error_max_turns' || msg.stop_reason === 'max_turns') {
+          // Return WITHOUT reopening the gate: promptStream must not yield
+          // another entry into a budget that is already spent. recycleForBudget
+          // either restarts the session (which re-pumps the intact queue) or
+          // stops it as a runaway (which reports the queue as undelivered).
+          void recycleForBudget(session);
+          refreshContextUsage(session.wsId);
+          continue;
         }
         const openNext = session.turnGate;
         session.turnGate = null;

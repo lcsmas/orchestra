@@ -1599,6 +1599,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               unread={!!w.markedUnread}
               autoUnread={!!w.autoUnread}
               looping={!!w.loopingSince}
+              stopReason={w.lastStopReason === 'max_turns' || w.lastStopReason === 'error' ? w.lastStopReason : undefined}
               title={statusGlyphTitle(w, tools[w.id])}
             />
             <div className="ws-body">
@@ -2288,6 +2289,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     unread={!!w.markedUnread}
                     autoUnread={!!w.autoUnread}
                     looping={!!w.loopingSince}
+                    stopReason={w.lastStopReason === 'max_turns' || w.lastStopReason === 'error' ? w.lastStopReason : undefined}
                     title={statusGlyphTitle(w, tools[w.id])}
                   />
                   <div className="ws-body">

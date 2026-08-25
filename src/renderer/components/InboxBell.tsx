@@ -93,6 +93,7 @@ export function InboxBell() {
         unread={!!w.markedUnread}
         autoUnread={!!w.autoUnread}
         looping={!!w.loopingSince}
+        stopReason={w.lastStopReason === 'max_turns' || w.lastStopReason === 'error' ? w.lastStopReason : undefined}
         title={statusGlyphTitle(w)}
       />
       <span className="inbox-branch">{w.branch}</span>

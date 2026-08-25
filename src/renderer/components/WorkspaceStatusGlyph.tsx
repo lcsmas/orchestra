@@ -37,6 +37,7 @@ export function WorkspaceStatusGlyph({
   unread,
   autoUnread,
   looping,
+  stopReason,
   title,
   size,
 }: {
@@ -54,6 +55,13 @@ export function WorkspaceStatusGlyph({
    *  so it renders as a small cycle-arrows BADGE on the glyph's corner,
    *  overlaid on every state's shape rather than replacing any of them. */
   looping?: boolean;
+  /** Why the LAST turn ended, when it ended for a reason the human must act on
+   *  ({@link Workspace.lastStopReason} — `max_turns` or `error`). Issue #69:
+   *  every terminal reason lands on `status: 'idle'`, so without this a session
+   *  that exhausted its turn budget while its queue rotted is pixel-identical
+   *  to one that finished cleanly. Ranked ABOVE the autoUnread bell below:
+   *  "stopped and needs you" outranks "finished, unseen". */
+  stopReason?: 'max_turns' | 'error';
   title: string;
   /** Optional context class, e.g. `'sm'` for denser lists. */
   size?: 'sm';
@@ -98,6 +106,32 @@ export function WorkspaceStatusGlyph({
   // claims that must keep their own glyph, and `running` means a NEW turn is
   // already underway so a stale bell would misreport it. That leaves exactly
   // `idle`/`stopped`, which is where a finished-unseen turn lands.
+  // STOPPED FOR A REASON (#69). Checked before the bell: a budget-exhausted or
+  // errored session is not merely "unseen output", it is a session that will
+  // consume nothing until someone acts. Only for the quiet statuses — if the
+  // agent is `running` again the marker is stale by definition (and
+  // applyAgentEvent clears it on the next turn anyway).
+  if (stopReason && (status === 'idle' || status === 'stopped')) {
+    // Lucide `octagon-alert` for a budget stop, `circle-x` for an error — a
+    // distinct SHAPE, not just a colour, so the state survives a colour-blind
+    // reader and a greyscale screenshot.
+    return stopReason === 'max_turns'
+      ? svg(
+          <>
+            <path d="M8.7 3h6.6a1 1 0 0 1 .7.3l4.7 4.7a1 1 0 0 1 .3.7v6.6a1 1 0 0 1-.3.7l-4.7 4.7a1 1 0 0 1-.7.3H8.7a1 1 0 0 1-.7-.3l-4.7-4.7a1 1 0 0 1-.3-.7V8.7a1 1 0 0 1 .3-.7l4.7-4.7a1 1 0 0 1 .7-.3z" />
+            <path d="M12 8v4" />
+            <path d="M12 16h.01" />
+          </>,
+          'maxturns',
+        )
+      : svg(
+          <>
+            <circle cx="12" cy="12" r="10" />
+            <path d="m15 9-6 6M9 9l6 6" />
+          </>,
+          'error',
+        );
+  }
   if (autoUnread && (status === 'idle' || status === 'stopped')) {
     // A FILLED bell — the exact path from Orca's `FilledBellIcon`
     // (WorktreeCardHelpers.tsx), which it renders in amber for this same

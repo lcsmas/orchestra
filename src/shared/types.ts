@@ -238,6 +238,52 @@ export interface Workspace {
    * without a timestamp, a stale "wiring the tests" from yesterday reads as
    * live progress. Absent whenever `statusText` is absent. */
   statusTextAt?: number;
+  /** Why this workspace's LAST turn ended, when it ended for a reason the human
+   * needs to know about — `max_turns` (the session exhausted its turn budget)
+   * or `error`. Absent for the ordinary cases: a clean `end_turn` and the
+   * user's own `interrupted` owe the sidebar no explanation.
+   *
+   * ## Why this field exists (issue #69)
+   *
+   * The reason was already computed — `applyAgentEvent` threads it into
+   * `fireFinished` (activity.ts) — but it was used for ONE thing, a transient
+   * OS toast, and then thrown away. That toast is suppressed whenever the
+   * window is focused, so the user sitting in front of the app is precisely the
+   * one it never reaches; and `fireFinished` sets `status: 'idle'` for EVERY
+   * terminal reason, so a session that blew its budget is pixel-identical to
+   * one that finished cleanly. A coordinator whose queue was rotting read as
+   * "done, ready for review". Persisting the reason is what lets the sidebar
+   * say WHY, which is the whole of #69.
+   *
+   * An axis ORTHOGONAL to {@link WorkspaceStatus}, like {@link autoUnread} and
+   * {@link loopingSince} — deliberately NOT a sixth status value: the status
+   * answers "what is this agent doing now" (nothing, in every terminal case),
+   * while this answers "how did it get here". Folding the two is exactly what
+   * made `waiting` ambiguous before. It also survives the boot reconcile in
+   * store.ts, which floors the nonterminal statuses to `idle` — a terminal
+   * already-happened fact is legitimately restorable where `running` is not.
+   *
+   * CLEARED the moment the agent takes another turn (`submit`/`pretool` in
+   * `applyAgentEvent`), so the marker never outlives the condition it reports.
+   * Stored ABSENT rather than as a sentinel; broadcast with an explicit
+   * `undefined` on clear because `workspace:update` is a MERGE and deleting the
+   * key cannot unset it. */
+  lastStopReason?: AgentStopReason;
+  /** Epoch ms when {@link lastStopReason} was recorded, so the tooltip can age
+   * it. Absent whenever `lastStopReason` is absent. */
+  lastStopReasonAt?: number;
+  /** Epoch-ms timestamps of the times this workspace's structured session had
+   * its `query()` RECYCLED after exhausting its `maxTurns` budget (issue #69),
+   * oldest-first, pruned to the guard's sliding window on every write.
+   *
+   * Persisted rather than held in memory for one reason: the guard has to
+   * survive the session teardown that a recycle performs. An in-memory counter
+   * would be reset by the very restart it is supposed to be counting, so the
+   * runaway guard could never fire — the failure mode where a looping agent
+   * recycles forever and nothing stops it.
+   *
+   * Policy (window size, allowance) lives in `src/shared/turn-budget.ts`. */
+  budgetRecycles?: number[];
   archived?: boolean;
   archivedAt?: number;
   hasInput?: boolean;
@@ -1029,7 +1075,8 @@ export type AgentNoticeKind =
   | 'command-output' // output of a built-in slash command (/compact, /usage …)
   | 'interrupted' // the user interrupted the turn (stream marker / manager notice)
   | 'mcp' // an MCP server connected / was enabled (green-dot hairline)
-  | 'mcp-error'; // an MCP server failed / needs auth / was disabled (red-dot hairline)
+  | 'mcp-error' // an MCP server failed / needs auth / was disabled (red-dot hairline)
+  | 'budget-recycled'; // the session's turn budget ran out and was renewed (#69)
 
 /** A user-relevant system notice the SDK surfaced outside the assistant text
  *  stream. Before this event existed, `normalizeSdkMessage` silently dropped

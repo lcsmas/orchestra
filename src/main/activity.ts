@@ -90,6 +90,15 @@ export async function markLooping(id: string, looping: boolean): Promise<void> {
 async function setStatus(
   id: string,
   status: WorkspaceStatus,
+  /** Why the last turn ended, when this transition is a turn-END and the reason
+   *  is one the human must see (issue #69). `null` explicitly CLEARS the
+   *  marker (the agent is working again); `undefined` leaves it untouched.
+   *
+   *  Threaded through here rather than written by a second `upsertWorkspace`
+   *  so it piggybacks the store write this function already makes — and so it
+   *  crosses the SAME broadcast, keeping the dot and its explanation atomic in
+   *  the renderer. */
+  stopReason?: AgentStopReason | null,
 ): Promise<{ ws: Workspace; changed: boolean } | null> {
   const ws = store.getWorkspace(id);
   if (!ws) {
@@ -103,12 +112,33 @@ async function setStatus(
     alog.trace(`setStatus(${status}) for archived ${ws.name} — dropped`);
     return null;
   }
-  if (ws.status === status) {
+  // The stop-reason marker moves INDEPENDENTLY of the status (issue #69): a
+  // turn that blows its budget ends `running → idle`, but a SECOND one on an
+  // already-`idle` workspace (a queued turn that died instantly on the same
+  // exhausted budget) is a real change to WHY it is idle while the status is
+  // unchanged. Computing this before the no-op guard is what stops that
+  // second, more important, signal being swallowed by it.
+  const nextStopReason = stopReason === null ? undefined : (stopReason ?? ws.lastStopReason);
+  const reasonChanged = nextStopReason !== ws.lastStopReason;
+  if (ws.status === status && !reasonChanged) {
     alog.trace(`${ws.name}: status already ${status} (no-op)`);
     return { ws, changed: false };
   }
-  alog.trace(`${ws.name}: ${ws.status} → ${status}`);
-  const updated: Workspace = { ...ws, status };
+  alog.trace(
+    `${ws.name}: ${ws.status} → ${status}` +
+      (reasonChanged ? ` (stop reason ${ws.lastStopReason ?? 'none'} → ${nextStopReason ?? 'none'})` : ''),
+  );
+  const updated: Workspace = {
+    ...ws,
+    status,
+    // Assigned EXPLICITLY (including to `undefined`) rather than deleted: the
+    // renderer merges `workspace:update` over its current record, and a merge
+    // cannot unset an absent key — deleting it here would leave a cleared
+    // marker rendering forever. Same reason `loopingSince` is broadcast this
+    // way (see types.ts).
+    lastStopReason: nextStopReason,
+    lastStopReasonAt: nextStopReason ? (reasonChanged ? Date.now() : ws.lastStopReasonAt) : undefined,
+  };
   // Broadcast to the renderer first, then persist. upsertWorkspace mutates the
   // in-memory store synchronously (before its first await), so state is already
   // consistent here — but its disk flush is serialized through one write chain
@@ -159,7 +189,14 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
   // your answer". A finished turn owes you nothing — whether you have looked at
   // it is carried by `autoUnread` below, which is a property of your attention
   // rather than of the agent's state.
-  void setStatus(id, 'idle').then((res) => {
+  // Record WHY, on the same write (issue #69). `end_turn`/`interrupted` pass
+  // `null` so a clean finish CLEARS any marker a previous turn left — without
+  // that, one budget exhaustion would brand the row until the app restarted.
+  void setStatus(
+    id,
+    'idle',
+    stopReason === 'max_turns' || stopReason === 'error' ? stopReason : null,
+  ).then((res) => {
     if (!res) return;
     const { ws, changed } = res;
     // EVERY user-facing side effect — the unread bell, the renderer chime
@@ -672,11 +709,15 @@ export function applyAgentEvent(
       // and the model is generating before any tool runs. That window is also
       // event-free, so label it rather than clearing.
       emitTool(id, THINKING_TOOL_LABEL);
-      void setStatus(id, 'running');
+      // `null` clears any stop-reason marker (#69): the agent is taking a turn,
+      // so whatever ended the LAST one is no longer the workspace's state. Done
+      // on the running transition rather than on the next turn-end so the badge
+      // disappears the moment work resumes, not one turn later.
+      void setStatus(id, 'running', null);
       break;
     case 'pretool':
       emitTool(id, tool ?? null);
-      void setStatus(id, 'running');
+      void setStatus(id, 'running', null);
       // A ScheduleWakeup call is the /loop skill re-arming its next iteration —
       // the observable that marks this workspace as LOOPING. Detected here
       // because this is the one chokepoint both agent paths cross with the

@@ -14,7 +14,10 @@ import { THINKING_TOOL_LABEL } from '../shared/types.ts';
  *  while one is running, or {@link THINKING_TOOL_LABEL} in the gap between
  *  tools where the model is generating. */
 export function statusGlyphTitle(
-  w: Pick<Workspace, 'status' | 'markedUnread' | 'hibernatedAt' | 'autoUnread' | 'loopingSince'>,
+  w: Pick<
+    Workspace,
+    'status' | 'markedUnread' | 'hibernatedAt' | 'autoUnread' | 'loopingSince' | 'lastStopReason'
+  >,
   tool?: string,
 ): string {
   // The /loop badge's clause, APPENDED to whichever state phrase wins below —
@@ -40,6 +43,13 @@ export function statusGlyphTitle(
   // is `idle` + `autoUnread`, which is the bell.
   if (w.status === 'waiting') return loop('Agent is blocked on your answer');
   if (w.status === 'error') return loop('Agent hit an error');
+  // Why the last turn ended (#69), ranked above the bell for the same reason
+  // the glyph ranks it there: "stopped and consuming nothing" outranks
+  // "finished, unseen". Only the two reasons a human must act on are stored,
+  // so any value here is worth saying.
+  if (w.lastStopReason === 'max_turns')
+    return loop('Agent stopped — turn budget exhausted; send a message to resume it');
+  if (w.lastStopReason === 'error') return loop('Agent stopped — its last turn ended on an error');
   if (w.autoUnread) return loop('Agent finished — you have not opened this yet');
   if (w.status === 'idle') return loop('Agent is idle');
   return loop(w.status);

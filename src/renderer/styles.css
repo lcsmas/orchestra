@@ -1621,6 +1621,11 @@ input:focus, textarea:focus, select:focus {
    mark to answer, a bell to go look. */
 .ws-glyph-waiting { color: var(--glyph-attention); }
 .ws-glyph-autounread { color: var(--glyph-attention); }
+/* A session STOPPED for a reason the human must act on (#69): it will consume
+   nothing until someone sends to it, which is a stronger claim than the bell's
+   "finished, unseen" — so it takes `--red` and the octagon shape rather than
+   the amber attention hue. Shape carries it in greyscale; colour only ranks it. */
+.ws-glyph-maxturns { color: var(--red); }
 /* Dot states — rendered as an empty span, so the dot IS the element.
    8px = Orca's `size-2` (0.5rem) dot, and the `/40` alpha on the quiet states
    is its `bg-neutral-500/40`. */
