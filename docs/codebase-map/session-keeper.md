@@ -95,6 +95,39 @@ completion, relaunch reattach + transcript, explicit-stop kill).
     re-sends any entry the on-disk transcript lacks — the normal echo
     restores the bubble, `running`, and the status dot. Entries the
     transcript covers just clear (the turn ran, possibly detached).
+    ⚠️ **Consumption is decided by IDENTITY, not by text (issue #57 fault a).**
+    Entries are `PendingPrompt{id,key,text,peer?}` (`src/shared/pending-prompts.ts`),
+    not bare strings, and `recoverPendingPrompts` compares `pendingPromptKey`
+    against the keys of the backfilled transcript's user messages. The old
+    predicate — `!userTexts.some((t) => t.includes(p))` — was unsound for
+    INTER-AGENT messages: `sdkSend` stores the full `formatPeerMessage`
+    envelope while the backfill strips the header and reply footer to render a
+    compact peer row (issue #56), so the stored string is strictly LONGER than
+    anything on disk and `includes()` was false **by construction**. Every
+    reopen therefore re-sent an already-consumed message — the user-reported
+    "same message queued 3 times" (measured: 421-char envelope → 255-char
+    rendered body). `pendingPromptKey` normalizes BOTH sides to the inner body
+    so the match survives that rewrite; legacy `string[]` stores migrate via
+    `normalizePendingPrompts`.
+    ⚠️ **`key` is a TRANSCRIPT-MATCHING key, not an identity — entries also
+    carry a per-send `id`, and consumption is counted as a MULTISET**
+    (`countConsumedKeys` + `filterUnconsumedPrompts`). Because the key is
+    body-derived, two senders posting the same body share it; deciding
+    consumption by set membership meant ONE consumed occurrence suppressed ALL
+    such entries, so the second sender's message was silently LOST (measured:
+    2 pending, 1 transcript occurrence, 0 recovered). Each occurrence now
+    cancels at most ONE entry, restoring the ticket's required asymmetry — at
+    worst re-send a message that ran, never swallow one that did not.
+    Recovery now also re-sends **one turn per
+    prompt, re-tagged with its original `PeerOrigin`** (it used to
+    `missing.join('\n')`, fusing N orders from different senders into one
+    untagged human-looking turn). Writes go through a per-workspace serialized
+    chain (`appendPendingPrompt`/`clearPendingPrompts`/`mutatePendingPrompts`)
+    because the old `void persistWorkspacePatch(...)` was a read-modify-write
+    across an `await`: two concurrent sends both read the pre-append array and
+    one entry was silently LOST (measured). Gates:
+    `scripts/verify-peer-redelivery.mjs` (both arms, driving the REAL backfill
+    over a real captured envelope) + `src/shared/pending-prompts.test.ts`.
   - **`session/attach`** (`AgentSessionAttachEvent`, types.ts): emitted from
     the keeper-spawn `onAttached` callback when a genuine mid-turn reattach
     happens; the fold flips `running`/`turnStartedAt` so the reattached turn

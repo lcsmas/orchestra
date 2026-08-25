@@ -295,7 +295,10 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   mode changes reflect live).
 - **Turn-lifecycle ledger close (consume())** — the loop's `catch`/`finally`
   now (a) emits an error for undelivered `session.queue` entries ("N queued
-  messages were not delivered"), (b) emits a **synthetic `turn-end`** whenever
+  messages were not delivered") **and settles their delivery watchers as
+  `dropped` (`settleQueuedAsDropped`) so the SENDER of an inter-agent message is
+  told too — the transcript error reaches only the TARGET's pane, which was
+  exactly issue #57's silent half**, (b) emits a **synthetic `turn-end`** whenever
   a turn was open (`turnGate` armed) so the pane can never wedge on a
   perpetual "Working…" after the subprocess dies, (c) runs `isBadResumeError`
   on stream-surfaced errors and clears `ws.sdkSessionId` (the resume failure
@@ -351,6 +354,41 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   so without this Escape would leave parked prompts to start fresh turns the
   instant the abort landed. Cancelling/editing also rewrites `sdkPendingPrompts`,
   or the crash-recovery replay would resurrect a prompt the user cancelled.
+  ⚠️ **(c) A WIPED QUEUE MUST TELL THE SENDER (issue #57 fault b).** Peer
+  messages reach a live session through this same queue
+  (`dispatchMessageRequest` → `sdkDeliverConfirmed` → `sdkSend`), and the
+  dispatcher used to report `delivery:'live'` — printed by the CLI as
+  `Delivered (live).` — on the QUEUE PUSH ALONE. Every path that discards a
+  queued entry therefore silently broke that promise:
+  `interruptCancellingQueued` (Escape), `consume()`'s `finally` (session ended),
+  `sdkQueueRemove` (tray cancel) and `sdkStop`. Each now calls
+  `settleQueuedAsDropped`, settling the entry's **delivery watcher**
+  (`deliveryWatchers`, keyed by the turn's minted uuid) as `dropped`;
+  `promptStream` settles it `started` at the shift/yield — and also settles an
+  **absorbed coalesce entry** `started`, since its text does reach the model.
+  ⚠️ **The registrar is a PARAMETER (`sdkSend`'s `onTurnQueued`), never a module
+  global.** It was first a module-level `pendingWatcherResolve`, written by
+  `sdkSendAwaitingStart` and read in `sdkSend` **across `await ensureSession`**.
+  `/message` is served per-connection with no mutex (`hooks-server.ts`), so two
+  concurrent senders interleaved — A arms, B clobbers during A's suspension, A's
+  uuid registers B's resolver, A's `finally` nulls the slot so B registers
+  nothing. Measured: A ran / B Escaped → **B was told `live` while dropped**, the
+  exact fault the mechanism exists to prevent, reachable *through* it. Awaiting
+  the outcome also widened the collision window to `DELIVERY_START_TIMEOUT_MS`.
+  ⚠️ **A timed-out turn is WITHDRAWN (`dequeueUnstartedTurn`), not just
+  unwatched.** Deleting only the watcher left the entry on `session.queue`, so
+  it still ran while the caller ALSO wrote the inbox — one live turn plus one
+  inbox drain, i.e. fault (a) reintroduced by fault (b)'s fix. Withdrawal is safe
+  by construction: `promptStream` shifts before yielding, so anything still in
+  the queue provably has not started (a started turn is simply not found). It
+  drops the entry's `sdkPendingPrompts` insurance too, as a tray cancel does.
+  `sdkDeliverConfirmed` awaits that outcome (bounded by
+  `DELIVERY_START_TIMEOUT_MS`), and `src/shared/delivery-status.ts` maps it:
+  **only `started` earns `live`**; `dropped`/`timeout` fall back to the durable
+  inbox and are reported as `inbox`. Reporting a weaker TRUE status beats a
+  stronger false one — a duplicated order is idempotent against a ledger, a
+  dropped one is silent. Gates: `scripts/verify-peer-delivery-honesty.mjs`
+  (both arms) + `src/shared/delivery-status.test.ts`.
   **Escape hatch**: `Mod+Enter` interrupts and sends immediately (bound in
   `CmComposer` as `onModEnter` — NOT Shift+Enter, which inserts a newline).
 - **Rate-limit / overload terminations (#26 item 2)** — a turn ending with

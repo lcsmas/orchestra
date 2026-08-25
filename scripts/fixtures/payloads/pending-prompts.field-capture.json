@@ -1,0 +1,12 @@
+{
+ "provenance": "REAL ws.sdkPendingPrompts captured from the LIVE store (~/.config/orchestra/orchestra/store.json) of workspace eadee48c (fix-wave-5-ops) on 2026-08-25, running the UNFIXED installed build v0.5.257. At capture: 17 pending entries, 17/17 peer envelopes; fleet-wide 21 of 25. Bodies truncated to their first line (shape fixture, not a transcript archive); headers and reply footers are VERBATIM because those are what the fix keys on.",
+ "storedShape": "string[] (the legacy shape, pre-#57)",
+ "entries": [
+  "[message from agent 'sdk-feature-audit' (0524718f-ac2a-4367-b746-51e57309f371)]\nSCOPE ADD du lead: ticket #42 rejoint la vague comme 5e slot. Le desig\n\nReply with: orchestra message 7d5e2f2e-b6f6-4541-9409-4806dde88f67 \"<reply>\"",
+  "[message from agent 'fix-35-ctx-panel-overflow' (5557fff5-3676-4433-8804-a1606682043b)]\nledger updated: #35 REPRODUCED then FIXED. NOMINATING ref fix-35-ctx-p\n\nReply with: orchestra message 5557fff5-3676-4433-8804-a1606682043b \"<reply>\"",
+  "[message from agent 'fix-38-sidebar-boot-crash' (b20e3d83-117a-403e-9872-26e320fb0413)]\nledger updated: #38 @ 09beada. HEADS-UP ON REF SKEW \u2014 your message rev\n\nReply with: orchestra message b20e3d83-117a-403e-9872-26e320fb0413 \"<reply>\"",
+  "[message from agent 'wave5-build-verifier' (7d5e2f2e-b6f6-4541-9409-4806dde88f67)]\nledger updated: BLOCKING CORRECTION - neither #38 nor #57 has been reb\n\nReply with: orchestra message 7d5e2f2e-b6f6-4541-9409-4806dde88f67 \"<reply>\"",
+  "[message from agent 'fix-57-peer-message-delivery' (c63c7a50-5872-407f-8d9c-ce09bc7c1491)]\nledger updated: #57 rebased onto b7c5583, tip 27fd113, ZERO conflicts \n\nReply with: orchestra message c63c7a50-5872-407f-8d9c-ce09bc7c1491 \"<reply>\"",
+  "[message from agent 'sdk-feature-audit' (0524718f-ac2a-4367-b746-51e57309f371)]\nCorrectif de protocole, effectif immediatement (le skill verified-fano\n\nReply with: orchestra message 0524718f-ac2a-4367-b746-51e57309f371 \"<reply>\""
+ ]
+}

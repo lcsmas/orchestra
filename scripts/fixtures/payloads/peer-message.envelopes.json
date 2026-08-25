@@ -1,0 +1,47 @@
+{
+ "provenance": "real captures from ~/.claude/projects fleet transcripts, 2026-08-25",
+ "currentFormat": {
+  "parentUuid": "9cba75b7-aac8-419e-844b-955d507c7af6",
+  "isSidechain": false,
+  "promptId": "c6516abf-aeb6-4b23-83e1-2e85bba0dc31",
+  "type": "user",
+  "message": {
+   "role": "user",
+   "content": "[message from agent 'triage-assigned-helptechs' (f33ce3c8-1496-4fb9-aaba-eb68da969f47)]\nSTOP \u2014 stand down immediately. Do NOT continue the task, do NOT write any more files, do NOT open a PR. The orchestrator is re-parenting this workspace and will re-brief you shortly. Commit nothing. Just acknowledge and wait idle for further instructions.\n\nReply with: orchestra message f33ce3c8-1496-4fb9-aaba-eb68da969f47 \"<reply>\""
+  },
+  "uuid": "6c08c9ee-2567-4f72-9c4a-551d7295f93f",
+  "timestamp": "2026-07-30T16:18:26.079Z",
+  "permissionMode": "bypassPermissions",
+  "promptSource": "sdk",
+  "userType": "external",
+  "entrypoint": "sdk-ts",
+  "cwd": "/home/lmas/.orchestra/worktrees/wordpress-monorepo-mc-4086-cases-cochees-par-defaut-incorrectes-43c292bb",
+  "sessionId": "afa39e23-dee2-445f-9f2f-d5ea14357c23",
+  "version": "2.1.220",
+  "gitBranch": "fix-ubble-verdict-checklist"
+ },
+ "legacyFooterFormat": {
+  "parentUuid": "57c26d17-8288-41b2-85ed-1d57f92c0512",
+  "isSidechain": false,
+  "promptId": "9ce227a5-6251-4794-b3b9-40622fdca644",
+  "type": "user",
+  "message": {
+   "role": "user",
+   "content": "[message from agent 'silver-summit' (500225c4-d23b-4113-8521-35e9eba1a1bd)]\nAcknowledged \u2014 proceeding with the task as briefed.\n\nReply via the orchestra socket: curl -s --unix-socket \"$ORCHESTRA_SOCK\" --data-binary '{\"from\":\"'$ORCHESTRA_WS_ID'\",\"to\":\"500225c4-d23b-4113-8521-35e9eba1a1bd\",\"text\":\"<reply>\"}' http://x/message"
+  },
+  "uuid": "adcacb76-a284-44bf-b91f-23053880b758",
+  "timestamp": "2026-06-23T20:47:55.651Z",
+  "permissionMode": "bypassPermissions",
+  "origin": {
+   "kind": "human"
+  },
+  "promptSource": "typed",
+  "userType": "external",
+  "entrypoint": "cli",
+  "cwd": "/home/lmas/.orchestra/worktrees/workspace-jolly-comet-79744530",
+  "sessionId": "18e6310d-457d-40a1-a14a-054620f5ac80",
+  "version": "2.1.186",
+  "gitBranch": "nmc-8-diagnostic-pictures"
+ },
+ "note": "legacyFooterFormat keeps its REAL header and REAL footer verbatim; its body was replaced with a neutral line because the original quoted an unrelated project. The envelope shape the gates key on is unchanged. currentFormat is verbatim."
+}
