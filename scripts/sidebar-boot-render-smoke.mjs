@@ -263,6 +263,33 @@ check(
   htmlUnseeded.includes('No repo'),
   'the empty-key section rendered without a label',
 );
+// BLOCKER 2 (#38 review): the repo-less bucket must ship NO interactive repo
+// actions. With `repoPath === ''` the "+" ran onAddToRepo -> createWorkspace
+// -> createWorktree('') -> simpleGit(''), and simple-git does NOT reject an
+// empty baseDir — it falls back to process.cwd() (measured: inside a git repo
+// it resolved to a real worktree toplevel), so the click could create a branch
+// and worktree in an unrelated repo. The gear was separately DEAD (the modal is
+// gated on a truthy repoPath). Assert on the accessible NAME, which is the
+// user-facing contract and survives restyling.
+check(
+  'the repo-less section ships NO "+" new-workspace button',
+  !htmlUnseeded.includes('New workspace in No repo'),
+  'the phantom section still offers workspace creation',
+);
+check(
+  'the repo-less section ships NO scripts/gear button',
+  !htmlUnseeded.includes('Configure scripts for No repo'),
+  'the phantom section still offers a dead scripts button',
+);
+// POSITIVE CONTROL for the two assertions above — they must be able to SEE
+// these labels when they legitimately exist, or they pass vacuously on any
+// build where the aria-label wording merely changed.
+check(
+  'CONTROL: a real repo section DOES ship both buttons',
+  htmlUnseeded.includes('New workspace in orchestra') &&
+    htmlUnseeded.includes('Configure scripts for orchestra'),
+  'the control labels are absent — the two assertions above are vacuous',
+);
 
 // ── 3. CONTROL: an ordinary record is unaffected ─────────────────────────────
 console.log('\nControl — workspace record WITH repoPath (ordinary case):');
@@ -295,28 +322,95 @@ check('rendered a repo section', htmlSeeded.includes('repo-section'));
 check('rendered the workspace row', htmlSeeded.includes('ws-item'));
 check('does NOT fall back to the empty state', !htmlSeeded.includes('No agents running'));
 
-// ── 4. CAN-FAIL CONTROL ──────────────────────────────────────────────────────
+// ── 4. SOURCE-BOUND GUARD ASSERTIONS ─────────────────────────────────────────
 //
-// Reconstructs the UNFIXED guard shape and requires it to throw the exact
-// reported error. If this ever stops throwing, the assertions above have become
-// unable to detect the regression they exist for, and this file is decoration.
-console.log('\nCan-fail control — the unfixed guard shape still reproduces #38:');
-{
-  const dropRepo = null;
-  const repoPathUndefined = undefined;
-  let reproduced = null;
-  try {
-    // eslint-disable-next-line no-unused-expressions
-    dropRepo?.path === repoPathUndefined ? ` repo-drop-${dropRepo.pos}` : '';
-  } catch (err) {
-    reproduced = err;
-  }
+// WHY THIS REPLACED THE ORIGINAL "can-fail control". That control reconstructed
+// the unfixed expression INLINE AS LITERALS (`const dropRepo = null; const
+// repoPathUndefined = undefined`) and asserted it threw. It never read
+// Sidebar.tsx, so it was a CONSTANT: it emitted the identical `ok` on the fixed
+// build, on the unfixed build, and on a build where Sidebar.tsx had been
+// deleted. Measured consequence — reverting ONLY the render-site guard left
+// this whole file green at RC=0, so the gate was structurally incapable of
+// detecting a regression at the exact line the ticket is about.
+//
+// These assertions instead read the COMPILED bundle that the render above was
+// produced from, so they fail if the guard is removed from the real source.
+// `outfile` is esbuild's output for the real `Sidebar.tsx`, which is the same
+// artifact `renderToString` just executed — not a re-read of the .tsx text, so
+// a guard that fails to survive compilation is caught too.
+console.log('\nSource-bound guard assertions (bundle, not a literal reconstruction):');
+const bundle = fs.readFileSync(outfile, 'utf8');
+
+// POSITIVE CONTROL FIRST — prove the instrument can see this bundle at all
+// before trusting anything it reports absent. A path typo or an empty file
+// would otherwise make every "not present" assertion below pass vacuously.
+check(
+  'CONTROL: the bundle is readable and contains Sidebar code',
+  bundle.length > 10_000 && bundle.includes('repo-section'),
+  `bundle length ${bundle.length}`,
+);
+check(
+  'CONTROL: a pattern that must NOT exist is absent',
+  !bundle.includes('zzzNoSuchPatternZzz'),
+);
+
+// The four DnD sites now route through `shared/dnd-drop-target.ts`, so the
+// guarded comparison exists exactly once. Assert the guard SHAPE survived into
+// the bundle: an explicit null check before any `.pos` read.
+// Patterns are matched against esbuild's ACTUAL emitted text (read out of the
+// bundle while writing this, not guessed): it preserves the source shape here,
+// emitting `if (target === null) return false;` and `if (key === void 0) return
+// false;`. Both alternates cover a minifying build (`return !1`).
+const guardNull = /if\s*\(\s*\w+\s*===\s*null\s*\)\s*return\s*(?:false|!1)/;
+const guardUndef = /if\s*\(\s*\w+\s*===\s*(?:void 0|undefined)\s*\)\s*return\s*(?:false|!1)/;
+check(
+  'the compiled drop-target guard rejects a null target',
+  guardNull.test(bundle),
+  'no explicit null-check survived compilation in the drop-target helper',
+);
+// And that it rejects an undefined key — the other half of the #38 pair.
+check(
+  'the compiled drop-target guard rejects an undefined key',
+  guardUndef.test(bundle),
+  'no explicit undefined-key check survived compilation in the helper',
+);
+// THE BINDING ASSERTION for BLOCKER 1: the render site must NOT contain the
+// optional-chain shorthand. This is what actually fails when the guard at the
+// crash site is reverted — the previous literal-reconstruction control did not.
+check(
+  'no optional-chain equality shorthand remains at a DnD site',
+  !/dropRepo\?\.path\s*===/.test(bundle) && !/dropWs\?\.id\s*===/.test(bundle),
+  'a DnD site still compares via `?.` — that shape is the #38 crash',
+);
+
+// The regression this file exists for, asserted against the REAL module rather
+// than a literal: import the shared helper the Sidebar actually calls and drive
+// it with the crashing inputs. If a future edit reintroduces the optional-chain
+// shorthand at any call site, `dropTargetClass`/`nextDropTarget` stop being the
+// single decision point and `src/shared/dnd-drop-target.test.ts` fails.
+const dnd = await import(
+  `${path.join(repoRoot, 'src/shared/dnd-drop-target.ts')}?t=${Date.now()}`
+).catch(() => null);
+if (dnd) {
   check(
-    'the unfixed expression throws the exact #38 TypeError',
-    reproduced instanceof TypeError &&
-      /Cannot read properties of null \(reading 'pos'\)/.test(reproduced.message),
-    reproduced ? reproduced.message : 'it did NOT throw — this gate cannot fail',
+    'the shared guard returns empty string for null target + undefined key',
+    dnd.dropTargetClass(null, undefined, 'repo-drop') === '',
   );
+  check(
+    'the shared updater does not throw for null prev + undefined key',
+    (() => {
+      try {
+        dnd.nextDropTarget(null, undefined, 'before');
+        return true;
+      } catch {
+        return false;
+      }
+    })(),
+  );
+} else {
+  // Node cannot import .ts without --experimental-strip-types; the dedicated
+  // unit suite covers this. Say so rather than silently skipping.
+  console.log('  note  shared-module direct import unavailable here — covered by dnd-drop-target.test.ts');
 }
 
 console.log(

@@ -350,6 +350,28 @@ export async function ensureRoot() {
 
 export async function createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
   await ensureRoot();
+  // REJECT a falsy repoPath before anything touches git. This is the durable
+  // guard for a whole failure class, not defensive noise — `simpleGit('')` does
+  // NOT throw on an empty baseDir, it silently falls back to `process.cwd()`.
+  // Measured both arms: OUTSIDE a git repo it fails with "fatal: not a git
+  // repository"; INSIDE one it resolves to the cwd's toplevel and returned a
+  // real worktree path. So an empty `repoPath` reaching `createWorktree`
+  // (`:372` → `git.ts:144`) would create a REAL branch and worktree inside
+  // whatever repo the Electron process happened to be launched from — silent
+  // writes to an unrelated repo, which is far worse than a visible failure.
+  // `path.basename('')` is also `''` (measured), so the worktree would be named
+  // `--<id8>`, giving no clue where it came from.
+  //
+  // Found via #38: a malformed store record produced a repo-less sidebar
+  // section whose "+" button called through here with `repoPath: ''`. Guarding
+  // at the UI would fix that one caller; guarding HERE fixes every caller,
+  // including IPC (`api-handlers.ts:618`) and any future one.
+  if (!input.repoPath) {
+    throw new Error(
+      'createWorkspace: repoPath is required — refusing to create a worktree with an empty repo path ' +
+        '(git would silently resolve it against the current working directory)',
+    );
+  }
   const id = randomUUID();
   const repoName = path.basename(input.repoPath);
   const repo = store.repos.find((r) => r.path === input.repoPath);

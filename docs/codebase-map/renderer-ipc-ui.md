@@ -347,29 +347,45 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   `host-grouping.ts` `groupByHost` (returns null when all-local → flat list
   byte-identical to pre-sandbox); collapsible `.host-group-header` per node.
 - Drag-reorder for workspaces and repos (`reorderWorkspaces`/`reorderRepos`).
-- **DnD null-safety — `dropRepo?.path === repoPath` is NOT null-safe (issue
-  #38).** The repo (`Sidebar.tsx:1916-1928`) and workspace (`:2126-2140`) drop
-  classes each pick a `repo-drop-*` / `drop-*` modifier from a ternary whose
-  arm dereferences `dropRepo.pos` / `dropWs.pos`. Optional chaining on the
-  LEFT looks sufficient and is not: with the state `null` the left side is
-  `undefined`, so a RIGHT side that is also `undefined` makes the branch TRUE
-  and the arm throws `TypeError: Cannot read properties of null (reading
-  'pos')` — which the error boundary catches, so the whole app renders
-  "Something broke in the UI" instead of a sidebar. Both sites therefore test
-  `dropRepo !== null &&` / `dropWs !== null &&` explicitly; keep the two in the
-  same shape so they cannot drift.
-  The `undefined` reached `repoOrder` because `Workspace` records are
-  deserialized from `store.json` with NO runtime validation, so `repoPath:
-  string` is a claim about writers only. `repoSectionKeyOf`
-  (`orchestrator-repo-grouping.ts:59`) now returns `ws.repoPath ?? null` and
-  `groupRootsByRepo` (`Sidebar.tsx:759`) collapses to `?? ''`, so a malformed
-  record groups under the empty key instead of poisoning the section list.
-  `repoLabel` (`:1435-1447`) names that bucket **"No repo"** rather than
-  rendering a blank header — the row must stay visible, since silently
-  dropping a workspace is the worse failure. Regression gates:
-  `orchestrator-repo-grouping.test.ts` (the pure key, plus a control that the
-  unfixed expression still throws) and `scripts/sidebar-boot-render-smoke.mjs`,
-  which renders the REAL `Sidebar.tsx` against the crashing store shape.
+- **DnD drop targets are a SHARED PURE MODULE — `src/shared/dnd-drop-target.ts`
+  (issue #38).** `dropRepo?.path === repoPath` reads as null-safe and is not:
+  `?.` on a null object yields `undefined`, so an `undefined` right-hand side
+  makes the comparison TRUE and the ternary arm dereferences null, throwing
+  `TypeError: Cannot read properties of null (reading 'pos')`. React's error
+  boundary catches it, so the whole app renders "Something broke in the UI"
+  instead of a sidebar. The right side reached `undefined` because `Workspace`
+  is deserialized from `store.json` with **no runtime validation** — `repoPath:
+  string` is a claim about writers, not a guarantee about readers.
+  There were **four** sites of this shape, and guarding them individually was
+  tried first and rejected in review: two were missed, and nothing in a `.tsx`
+  render body is reachable from `pnpm run test` (it strips types but does not
+  transform JSX; there is no jsdom/testing-library/vitest), so the first gate
+  reconstructed the buggy expression as literals and passed on broken code.
+  All four now route through the shared module:
+  `matchesDropTarget` (`!== null` before any `.pos`, and an `undefined` key
+  never matches), `dropTargetClass` (the class modifier), `nextDropTarget` (the
+  `onDragOver` updater, preserving object identity so a dragover does not
+  re-render the sidebar every pixel). Call sites: `Sidebar.tsx:1941` (repo
+  class), `:2169` (workspace class), `:1956` and `:2269` (the two updaters);
+  state is `DropTarget<string>` at `:930`/`:938`. Gates:
+  `src/shared/dnd-drop-target.test.ts` binds to the real functions, and
+  `scripts/sidebar-boot-render-smoke.mjs` asserts the **compiled bundle** still
+  contains the guard shape and no `?.`-equality shorthand — so reverting the
+  render site fails a gate (it did not before).
+- **The repo-less bucket (`repoPath === ''`) is NON-INTERACTIVE by design.**
+  `repoSectionKeyOf` (`orchestrator-repo-grouping.ts:59`) returns `?? null` and
+  `groupRootsByRepo` (`Sidebar.tsx:768`) collapses to `?? ''`, so a malformed
+  record groups under the empty key; `repoLabel` (`:1448`) names it **"No
+  repo"** rather than rendering a blank header — the row must stay visible,
+  since silently dropping a workspace is the worse failure. Its `+` and gear
+  buttons are **suppressed**: with `repoPath: ''` the `+` called
+  `createWorkspace({repoPath:''})` → `createWorktree('')` → `simpleGit('')`,
+  and simple-git does **not** reject an empty baseDir — it falls back to
+  `process.cwd()` (measured), so the click could create a real branch and
+  worktree in whatever repo the app was launched from. The gear was separately
+  dead (its modal is gated on a truthy `repoPath`). The durable guard is in the
+  main process: `createWorkspace` (`workspaces.ts:369`) throws on a falsy
+  `repoPath`, covering every caller including IPC, not just this UI.
 - **Status note**: the agent-authored one-liner (`orchestra status` →
   `Workspace.statusText`) renders as a muted single-line `.ws-status-note`
   under the branch name on both the scratch/orchestrator and repo row
