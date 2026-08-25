@@ -452,6 +452,19 @@ still works. **Multiple questions PAGE one at a time** (pill shows `page/N`,
 Next advances, Submit on the last page); a **single** question shows `1/1` and
 Next submits directly.
 
+Inbox tray (`InboxTray.tsx`, issue #64): `.av-inbox{,-chip,-collapse,-glyph,
+-head,-spacer,-list,-row,-from,-preview,-actions,-btn,-release,-refuse}`.
+**AMBER (`--av-warn`)** via `color-mix`, matching the usage-limit and
+MCP-pending chips — "needs your attention, nothing is broken", deliberately not
+the error red, since a parked message is not a failure. Collapsed by default to
+a single pill chip (mail that waited hours does not earn a list's vertical
+space; the COUNT is the whole decision), expanding to an `--av-surface-sunken`
+panel like `.av-queue`. Two deliberate departures from `.av-queue`: the row
+actions stay **visible** rather than revealing on hover (they are the point of
+the row, and a message the human has never seen must not hide its only
+affordances), and `.av-inbox-preview` needs `min-width:0` or a long one-line
+preview refuses to shrink and pushes the actions out of the row.
+
 Buttons: `.av-btn` + `.av-btn-{primary,danger,ghost}` (permission/question actions
 and the interrupt button share this family).
 

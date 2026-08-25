@@ -485,6 +485,21 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   flush live in main (see
   [accounts-usage.md](accounts-usage.md) "Prompt queue").
 
+- **agent/InboxTray.tsx** — the inbox tray (issue #64): peer messages parked on
+  disk in `~/.orchestra/inbox/<id>.txt` while this workspace was unreachable.
+  Docked inside `.av-composer` above `QueueTray`. Collapsed to an amber
+  `✉ N messages held` chip; expanded, one row per block with **Release ▶** /
+  **Refuse ✕** and a header **Release all**. Channels: `inbox:list`,
+  `inbox:release`, `inbox:refuse`, `inbox:releaseAll`, plus the `inbox:update`
+  push (main watches the inbox DIRECTORY, so drains performed by the
+  `inbox-instruction.sh` shell hook retract the chip even though the main
+  process never initiated them). Renderer cache is
+  `store.parkedInbox[workspaceId]`; the FILE is the source of truth. Blocks are
+  addressed by exact TEXT, never index — the hook can drain the file between
+  render and click. Backend `src/main/inbox-tray.ts`, parser
+  `src/shared/inbox-blocks.ts`. NOT the SDK `crossSessionInbound: 'hold'`
+  channel (issue #42, heap-only upstream).
+
 ## chime.ts (~517 lines) & debug.ts
 **chime.ts** synthesizes ~20 notification sounds with the Web Audio API (no
 shipped assets); `playFinishedChime()` plays the selected sound when
