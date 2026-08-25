@@ -109,6 +109,28 @@ silently and the human was the detector.
 - **Clears three ways**, all derived (nothing persisted, so it cannot go stale):
   a turn starts (`lastTurnStartAt` moves), the queue/inbox drains
   (`parkedCount === 0`), or the workspace goes `running`.
+- **The age is floored at `observableSince`** (app/renderer start —
+  `OBSERVABLE_SINCE` in `QueueStallBadge.tsx`), NEVER measured from the raw
+  stamp. `lastTurnStartAt` persists across a restart while the `running` status
+  it pairs with does not (`store.load()` floors it), so without the floor a
+  healthy agent's age included the whole app downtime, and
+  `reconcileParkedCounts()` — added precisely so downtime mail is counted —
+  supplied the non-zero parked count. Two individually-correct halves composed
+  into a guaranteed false alarm: MEASURED 2026-08-25, 3–5 real workspaces on
+  this machine (the wave's own coordinator and build-verifier among them) were
+  holding parked mail while healthy and idle, and all of them badged
+  "stalled 14h" on a cold boot of the unfixed build. Reproduced in the running
+  app and fixed (review-88 R1). **Consequence for any rig: a stall can no
+  longer be SEEDED** — the app must actually observe the silence, so a
+  true-positive arm has to wait the threshold out in real time.
+- **`setStatus`'s no-op guard treats a turn start as a third signal**
+  (`turnStartChanged`), beside `reasonChanged`. The guard returns before
+  `updated` is built, and `restoreRunningFromKeeper` / `resumeRunning` both
+  enter `running` WITHOUT the flag — after either, every `submit`/`pretool` of
+  that turn was a no-op and a healthy completed turn never moved the stall
+  clock (review-88 R2). Scoped by `TURN_STAMP_REFRESH_MS` (2 min) so the hot
+  path — `pretool` re-asserting `running` per tool call — still no-ops instead
+  of writing the store and re-rendering every sidebar row.
 
 - `markStoppedOnMaxTurns(id)` (`src/main/activity.ts`) records that a turn died
   on the SDK turn limit (`setStatus(id,'idle','max_turns')` — a stopped session

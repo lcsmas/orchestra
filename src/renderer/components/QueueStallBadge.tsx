@@ -9,6 +9,23 @@ import { workspaceQueueStall, QUEUE_STALL_THRESHOLD_MS } from '../../shared/queu
  *  re-derives a pure function over fields it already has. */
 const TICK_MS = 30_000;
 
+/** When this renderer became able to observe turn starts (review-88 R1).
+ *
+ *  Module-eval time is the honest answer: the sidebar cannot render before the
+ *  renderer loads, and everything earlier — the app being closed, a previous
+ *  session, a reload — is time during which no `agent:event` could reach this
+ *  process. `lastTurnStartAt` PERSISTS across a restart while the `running`
+ *  status it pairs with does not (`store.load()` floors it), so without this
+ *  floor a healthy agent's stall age would include the entire app downtime and
+ *  every workspace holding parked mail would badge on the first restart —
+ *  measured as 3–5 real workspaces on this machine, the wave's own coordinator
+ *  among them.
+ *
+ *  A module constant, not state: it must NOT advance on re-render, or the age
+ *  would reset to zero every 30s tick and the badge could never appear at all.
+ *  Captured once, at load, deliberately. */
+const OBSERVABLE_SINCE = Date.now();
+
 /** A monotonically-advancing coarse clock, shared by every badge on screen.
  *
  *  Why a clock at all: a stall CROSSES its threshold by the mere passage of
@@ -73,7 +90,7 @@ function formatAge(ms: number): string {
  */
 export function QueueStallBadge({ w }: { w: Workspace }): React.ReactElement | null {
   const now = useStallClock();
-  const stall = workspaceQueueStall(w, now);
+  const stall = workspaceQueueStall(w, now, OBSERVABLE_SINCE);
   if (!stall) return null;
   const parts: string[] = [];
   if (stall.queuedCount > 0) {

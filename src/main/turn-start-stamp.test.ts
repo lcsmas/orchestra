@@ -117,6 +117,37 @@ test('the stamp is CONDITIONED on the turnStart flag, not unconditional', () => 
   );
 });
 
+test('the turnStart parameter REACHES the stamp — no delegating shim', () => {
+  // review-88 R3. The four checks around this one all passed against a mutant
+  // that extracted `setStatusImpl` and dropped `turnStart` on the way through:
+  // both case arms still contained the literal call, the stamp expression
+  // still existed (in the impl), and the signature slice matched the SHIM,
+  // which redeclares the parameter. 4/4 green, feature dead, G1+G2+G3 all
+  // passing — `tsconfig.json` has `strict` but not `noUnusedParameters`, so a
+  // discarded parameter is not a type error.
+  //
+  // The fix is to assert the RELATIONSHIP rather than the co-existence of two
+  // strings: the function whose body contains the `lastTurnStartAt` write must
+  // be the SAME function the event arms call. Anchor on the enclosing
+  // declaration, so any relocation of the write out of `setStatus` fails here.
+  const code = codeOf(ACTIVITY);
+  const stampIdx = code.indexOf('lastTurnStartAt: turnStart');
+  assert.notEqual(stampIdx, -1, 'the #88 stamp expression is gone from activity.ts');
+  // Walk back to the nearest preceding function declaration — the one that
+  // actually contains the write.
+  const before = code.slice(0, stampIdx);
+  const declIdx = before.lastIndexOf('async function ');
+  assert.notEqual(declIdx, -1, 'no enclosing async function found for the stamp');
+  const enclosing = code.slice(declIdx + 'async function '.length).match(/^([A-Za-z0-9_$]+)/)?.[1];
+  assert.equal(
+    enclosing,
+    'setStatus',
+    `the #88 stamp lives in '${enclosing}', not in setStatus — the event arms call ` +
+      `setStatus, so a delegating wrapper can (and in review-88 R3 did) drop ` +
+      `turnStart on the way through while every other guard stayed green`,
+  );
+});
+
 test('setStatus declares the turnStart parameter', () => {
   const code = codeOf(ACTIVITY);
   const start = code.indexOf('async function setStatus(');
@@ -130,4 +161,57 @@ test('setStatus declares the turnStart parameter', () => {
   // Positive control: the slice must contain the parameters we know are there.
   assert.match(sig, /status:\s*WorkspaceStatus/, 'the sliced text is not setStatus\'s parameter list');
   assert.match(sig, /turnStart\?:\s*boolean/, 'setStatus must take the #88 turnStart flag');
+});
+
+
+// ── review-88 R2: the no-op guard must not swallow a stale turn-start stamp ──
+//
+// MEASURED on 861fa16: `setStatus` returned at the no-op guard BEFORE the
+// `updated` object was built, so for a workspace already `running` with the
+// reason unchanged the stamp was unreachable. Two existing writers enter
+// `running` WITHOUT the flag — `restoreRunningFromKeeper` (the detached-keeper
+// startup reconcile) and `resumeRunning` (the user answering a parked tool
+// call) — after which an entire healthy turn never moved the stall clock.
+
+test('R2: a turn start is a THIRD signal the no-op guard must consider', () => {
+  const code = codeOf(ACTIVITY);
+  const guardIdx = code.indexOf('alog.trace(`${ws.name}: status already');
+  assert.notEqual(guardIdx, -1, 'the no-op guard trace line is gone — was it renamed?');
+  // Slice the guard's own condition: from the `if (` that precedes the trace.
+  const before = code.slice(0, guardIdx);
+  const ifIdx = before.lastIndexOf('if (');
+  assert.notEqual(ifIdx, -1, 'no `if (` found before the no-op trace');
+  const cond = code.slice(ifIdx, guardIdx);
+  // Positive control: the slice really is the guard condition.
+  assert.match(cond, /ws\.status === status/, 'the sliced text is not the no-op guard condition');
+  assert.match(cond, /reasonChanged/, 'positive control: the #69 signal is in the guard');
+  assert.match(
+    cond,
+    /turnStartChanged/,
+    'the no-op guard must also consider a turn start (#88 / review-88 R2), or a ' +
+      'workspace already `running` (restoreRunningFromKeeper / resumeRunning) ' +
+      'never gets its stall clock stamped for the whole turn',
+  );
+});
+
+test('R2: turnStartChanged opens on STALENESS, not merely on the flag', () => {
+  // An unconditional bypass would be correct but expensive: `pretool` re-asserts
+  // `running` on every tool call, so it would trade a free no-op for a store
+  // write plus a full sidebar re-render, per tool. Pin the staleness scoping so
+  // that trade cannot be reintroduced silently in either direction.
+  const code = codeOf(ACTIVITY);
+  const idx = code.indexOf('const turnStartChanged');
+  assert.notEqual(idx, -1, 'turnStartChanged is gone');
+  const expr = code.slice(idx, code.indexOf(';', idx));
+  assert.match(expr, /turnStart === true/, 'must still require the flag');
+  assert.match(
+    expr,
+    /lastTurnStartAt === undefined/,
+    'a never-stamped workspace must always be allowed through',
+  );
+  assert.match(
+    expr,
+    /TURN_STAMP_REFRESH_MS/,
+    'the staleness window must gate the bypass, so the hot path keeps no-opping',
+  );
 });

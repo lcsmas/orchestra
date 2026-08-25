@@ -85,6 +85,35 @@ export interface QueueStallInput {
   /** True while the agent's process is deliberately stopped by the user
    *  (hibernated). A hibernated workspace is not consuming ON PURPOSE. */
   hibernated: boolean;
+  /** Epoch ms this Orchestra process became able to observe turn starts —
+   *  i.e. app/renderer start (review-88 R1). The stall age is measured from
+   *  `max(lastTurnStartAt, observableSince)`, never from the raw stamp.
+   *
+   *  ## Why this is REQUIRED and not a refinement
+   *
+   *  `lastTurnStartAt` persists across a restart; the `status` it pairs with
+   *  does NOT — `store.load()` floors every `running`/`waiting` to `idle`
+   *  because no process survives a quit. So without this, the age of a
+   *  perfectly healthy agent includes THE ENTIRE TIME THE APP WAS CLOSED, and
+   *  every guard passes: parked count non-zero (`reconcileParkedCounts` counts
+   *  mail parked during downtime — by design), status floored to `idle`, stop
+   *  reason cleared by the last clean finish, age = hours.
+   *
+   *  MEASURED 2026-08-25 on this machine: 3–5 workspaces (the count drifts as
+   *  hooks drain) were holding parked mail while healthy, idle and mid-wave —
+   *  including the wave's own coordinator and build-verifier. Close the app
+   *  overnight, reopen, and every one of them would have badged "stalled 14h"
+   *  at once. A false alarm on a healthy agent is the failure that makes a
+   *  human ignore the badge forever, so this is the defect that mattered most
+   *  in the whole ticket, and the E2E rig could not see it: the rig SEEDS the
+   *  restart state and reads those same bytes as a stall.
+   *
+   *  Deliberately a FLOOR rather than a reset of the stored value: the recorded
+   *  turn start stays a true fact about the workspace, and the correction lives
+   *  where the decision is made. It also gives the right answer for free after
+   *  a renderer reload, which is likewise a point past which nothing earlier
+   *  was observed. */
+  observableSince: number;
   /** Epoch ms now. */
   now: number;
 }
@@ -150,6 +179,7 @@ export function decideQueueStall(input: QueueStallInput): QueueStallVerdict | nu
     lastTurnStartAt,
     createdAt,
     hibernated,
+    observableSince,
     now,
   } = input;
 
@@ -167,7 +197,15 @@ export function decideQueueStall(input: QueueStallInput): QueueStallVerdict | nu
   if (causeAlreadyExplained(lastStopReason)) return null;
 
   // 5. Long enough since anything was consumed here.
-  const since = lastTurnStartAt ?? createdAt;
+  //
+  // Floored at `observableSince` (review-88 R1): a turn start recorded BEFORE
+  // this process could observe anything says nothing about whether the agent
+  // is consuming NOW, and counting the app's own downtime as stall time makes
+  // every healthy workspace with parked mail badge on the first restart. After
+  // a restart the age therefore starts from zero and has to be earned by real
+  // observed silence — which is the only kind this detector can honestly claim.
+  const recorded = lastTurnStartAt ?? createdAt;
+  const since = Math.max(recorded, observableSince);
   const stalledForMs = now - since;
   if (stalledForMs < QUEUE_STALL_THRESHOLD_MS) return null;
 
@@ -190,6 +228,10 @@ export function workspaceQueueStall(
     | 'archived'
   >,
   now: number,
+  /** See {@link QueueStallInput.observableSince}. Required — defaulting it to 0
+   *  would silently restore the R1 false-alarm, and a parameter whose wrong
+   *  value is invisible is one every future caller gets wrong. */
+  observableSince: number,
 ): QueueStallVerdict | null {
   // An archived workspace has no live agent behind it — its status is a frozen
   // leftover, so every liveness claim about it is unsupported. Same exclusion
@@ -203,6 +245,7 @@ export function workspaceQueueStall(
     lastTurnStartAt: ws.lastTurnStartAt,
     createdAt: ws.createdAt,
     hibernated: ws.hibernatedAt !== undefined,
+    observableSince,
     now,
   });
 }

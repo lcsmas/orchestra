@@ -41,6 +41,11 @@ function stalled(over: Partial<QueueStallInput> = {}): QueueStallInput {
     lastTurnStartAt: NOW - OVER,
     createdAt: NOW - OVER * 10,
     hibernated: false,
+    // Long before any fixture's turn start, so it is NOT the binding
+    // constraint by default — each test that cares about R1 sets it
+    // explicitly. A default that silently floored every age would make the
+    // whole suite pass for the wrong reason.
+    observableSince: NOW - OVER * 100,
     now: NOW,
     ...over,
   };
@@ -178,7 +183,7 @@ function ws(over: Partial<Workspace> = {}): Workspace {
 }
 
 test('workspaceQueueStall reads the real record shape', () => {
-  const v = workspaceQueueStall(ws(), NOW);
+  const v = workspaceQueueStall(ws(), NOW, NOW - OVER * 100);
   assert.ok(v, 'precondition: the record fixture is stalled');
   assert.equal(v.parkedCount, 2);
   assert.equal(v.stalledForMs, OVER);
@@ -193,13 +198,14 @@ test('workspaceQueueStall sums queuedPrompts with the inbox count', () => {
       ],
     }),
     NOW,
+    NOW - OVER * 100,
   );
   assert.ok(v);
   assert.equal(v.parkedCount, 4, '2 queued + 2 parked');
 });
 
 test('workspaceQueueStall treats an absent parkedInboxCount as zero', () => {
-  const v = workspaceQueueStall(ws({ parkedInboxCount: undefined }), NOW);
+  const v = workspaceQueueStall(ws({ parkedInboxCount: undefined }), NOW, NOW - OVER * 100);
   assert.equal(v, null, 'absent means no parked mail, not "unknown"');
 });
 
@@ -207,11 +213,80 @@ test('workspaceQueueStall never badges an ARCHIVED workspace', () => {
   // An archived record's status is a frozen leftover with no live agent behind
   // it, so every liveness claim about it is unsupported — the same exclusion
   // WorkspaceStatusGlyph makes.
-  const v = workspaceQueueStall(ws({ archived: true }), NOW);
+  const v = workspaceQueueStall(ws({ archived: true }), NOW, NOW - OVER * 100);
   assert.equal(v, null);
 });
 
 test('workspaceQueueStall respects hibernatedAt', () => {
-  const v = workspaceQueueStall(ws({ hibernatedAt: NOW - 1000 }), NOW);
+  const v = workspaceQueueStall(ws({ hibernatedAt: NOW - 1000 }), NOW, NOW - OVER * 100);
   assert.equal(v, null);
+});
+
+
+// ── review-88 R1: the age must not span app downtime ────────────────────────
+//
+// The defect these guard: `lastTurnStartAt` persists across a restart while
+// the `running` status it pairs with is floored to `idle` by `store.load()`.
+// So a HEALTHY agent's age included the whole time the app was closed, and
+// every other guard passed — measured on this machine as 3-5 real workspaces
+// holding parked mail while idle and healthy, the wave's own coordinator
+// among them. They would all have badged "stalled 14h" on the first restart.
+
+test('R1: a HEALTHY workspace does not badge just because the app was closed', () => {
+  // The exact field shape: turn started 14h ago (before the quit), app has been
+  // up 1 minute, mail parked during the downtime by reconcileParkedCounts.
+  const appUpFor = 60_000;
+  const v = decideQueueStall(
+    stalled({
+      lastTurnStartAt: NOW - 14 * 60 * 60 * 1000,
+      observableSince: NOW - appUpFor,
+    }),
+  );
+  assert.equal(
+    v,
+    null,
+    'app up 60s, 2 parked, last turn 14h ago (BEFORE the quit) -> must NOT badge',
+  );
+});
+
+test('R1: after a restart the age is earned from app start, not from the stamp', () => {
+  const old = NOW - 14 * 60 * 60 * 1000;
+  // Just under the threshold measured from APP START — still silent.
+  const under = decideQueueStall(
+    stalled({ lastTurnStartAt: old, observableSince: NOW - UNDER }),
+  );
+  assert.equal(under, null, `app up ${UNDER}ms with a 14h-old stamp -> no badge`);
+
+  // Past it — now the silence is real, observed silence.
+  const over = decideQueueStall(
+    stalled({ lastTurnStartAt: old, observableSince: NOW - OVER }),
+  );
+  assert.ok(over, `app up ${OVER}ms with nothing observed -> badge`);
+  assert.equal(
+    over.stalledForMs,
+    OVER,
+    'the age is measured from app start, NOT from the 14h-old stamp',
+  );
+});
+
+test('R1: observableSince is a FLOOR, never a ceiling', () => {
+  // A turn that started AFTER the app came up must still win — otherwise a
+  // long-running app would report every workspace as stalled since boot.
+  const v = decideQueueStall(
+    stalled({ lastTurnStartAt: NOW - UNDER, observableSince: NOW - OVER * 5 }),
+  );
+  assert.equal(v, null, 'a recent REAL turn start beats an old app start');
+});
+
+test('R1: the never-ran fallback is floored too', () => {
+  // createdAt long ago + app just up: a workspace created days ago and never
+  // run must not badge the instant the app opens.
+  const v = decideQueueStall(
+    stalled({
+      lastTurnStartAt: undefined,
+      createdAt: NOW - OVER * 100,
+      observableSince: NOW - 60_000,
+    }),
+  );
+  assert.equal(v, null, 'never-ran + app up 60s -> the grace period restarts with the app');
 });

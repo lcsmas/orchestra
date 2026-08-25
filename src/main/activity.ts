@@ -19,6 +19,25 @@ import { THINKING_TOOL_LABEL, isScratchLike } from '../shared/types.ts';
 // strip-types test runner.
 import { getActiveWorkspaceId, noteActivity } from './hibernation-activity.ts';
 
+/** How stale {@link Workspace.lastTurnStartAt} may get before a turn-start
+ *  event is allowed through `setStatus`'s no-op guard to refresh it (#88,
+ *  review-88 R2).
+ *
+ *  The guard exists so a `running → running` re-assertion costs nothing, and
+ *  `pretool` re-asserts on EVERY tool call — so an unconditional bypass would
+ *  trade a free no-op for a store write and a full sidebar re-render, per tool.
+ *  Within a live turn, events arrive seconds apart (measured for the thinking
+ *  label: pretool→posttool 40–130ms, consecutive PAIRS 2.5–6.5s), so a window
+ *  well above that keeps the hot path on the no-op.
+ *
+ *  Two minutes is comfortably above the observed inter-event gap and far below
+ *  the 15-minute stall threshold, so a stamp repaired by this path is still
+ *  vastly fresher than anything that could badge. UNBASELINED as a distribution
+ *  — no measurement of the longest legitimate event-free gap inside one turn
+ *  exists; the cost of being wrong in either direction is bounded (too small =
+ *  an occasional extra write; too large = the repair waits one more event). */
+const TURN_STAMP_REFRESH_MS = 2 * 60 * 1000;
+
 // Status transitions are the most bug-prone surface in the app (a stuck or wrong
 // dot has been the visible symptom of spool wipes, missed turn-end events, and
 // dead PTYs). At `trace` every transition is logged with its cause, so a stuck
@@ -108,12 +127,22 @@ async function setStatus(
    *  stall badge clears in the SAME frame the dot turns green rather than one
    *  broadcast later.
    *
-   *  Note this rides the function's no-op guard, and that is CORRECT: the
-   *  repeated `setStatus(id,'running',null)` on every `pretool` within one
-   *  turn is not a new turn start, and re-stamping on each would make a single
-   *  very long turn indistinguishable from a stream of short ones. The first
-   *  event of a turn is a real `idle|waiting|stopped → running` transition, so
-   *  it is never swallowed. */
+   *  RETRACTED (review-88 R2). An earlier version of this comment claimed the
+   *  flag "rides the no-op guard, and that is CORRECT … the first event of a
+   *  turn is a real transition, so it is never swallowed." That was true of the
+   *  two `applyAgentEvent` arms the source check pins and FALSE of two other
+   *  writers — `restoreRunningFromKeeper` and `resumeRunning` both enter
+   *  `running` without the flag, after which the whole turn's events are
+   *  no-ops and the stamp never lands. The disproof is recorded here rather
+   *  than deleted, because a comment asserting an invariant is exactly what
+   *  suppresses the check that would catch its violation.
+   *
+   *  So the guard now treats a turn start as its own signal (see
+   *  `turnStartChanged` below). Re-stamping on every `pretool` of one long turn
+   *  is still avoided — but by the STATUS transition, not by the guard: only
+   *  the first event moves `idle → running`, and subsequent ones now write the
+   *  same `Date.now()`-fresh stamp, which is harmless (the clock only ever
+   *  moves forward while a turn is genuinely in flight). */
   turnStart?: boolean,
 ): Promise<{ ws: Workspace; changed: boolean } | null> {
   const ws = store.getWorkspace(id);
@@ -136,7 +165,40 @@ async function setStatus(
   // second, more important, signal being swallowed by it.
   const nextStopReason = stopReason === null ? undefined : (stopReason ?? ws.lastStopReason);
   const reasonChanged = nextStopReason !== ws.lastStopReason;
-  if (ws.status === status && !reasonChanged) {
+  // A TURN START is a third independent signal, for the same reason the stop
+  // reason is (review-88 R2). The no-op guard below returns before `updated` is
+  // built, so anything not accounted for here is unreachable for as long as the
+  // status does not move — and `running → running` is the NORMAL shape of a
+  // whole turn, not an edge case.
+  //
+  // MEASURED on 861fa16: two existing writers enter `running` WITHOUT the flag
+  // — `restoreRunningFromKeeper` (:730, the detached-keeper startup reconcile)
+  // and `resumeRunning` (:704, the user answering a parked tool call). After
+  // either, every `submit`/`pretool` of that turn hit `ws.status === 'running'`
+  // with the reason already clear, so the stamp never landed and a healthy
+  // completed turn never moved the stall clock.
+  //
+  // Fixing it HERE rather than by passing the flag at those two call sites is
+  // deliberate: neither is semantically a turn start (one restores a status,
+  // one un-parks a tool call), and a rule that depends on every future writer
+  // remembering a flag is the drift this guard already exists to prevent.
+  //
+  // SCOPED so it does not defeat the guard on the hot path. `pretool` fires
+  // once per tool call and re-asserts `running` every time; letting all of
+  // those through would turn a free no-op into a store write plus a broadcast
+  // that re-renders every sidebar row, for a clock that is already fresh.
+  //
+  // The discriminator is STALENESS, not the status — in the R2 scenario the
+  // status IS already `running`, which is exactly why the guard swallowed the
+  // stamp. So: let it through only when the recorded start is missing or older
+  // than the freshness window. Within a live turn the events are seconds apart
+  // and the stamp stays fresh, so the common path still no-ops; after a
+  // keeper-restore or a resume the recorded value is minutes-to-hours old and
+  // the very next event repairs it.
+  const turnStartChanged =
+    turnStart === true &&
+    (ws.lastTurnStartAt === undefined || Date.now() - ws.lastTurnStartAt > TURN_STAMP_REFRESH_MS);
+  if (ws.status === status && !reasonChanged && !turnStartChanged) {
     alog.trace(`${ws.name}: status already ${status} (no-op)`);
     return { ws, changed: false };
   }
