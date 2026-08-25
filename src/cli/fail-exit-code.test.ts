@@ -158,9 +158,10 @@ test('verify-landed: an unreachable socket exits 1 (error), never 2', needsBuild
   assert.notEqual(r.code, 2, 'an error must never masquerade as a NOT LANDED verdict');
 });
 
-// The fallthrough is the part plain Node CAN see: on the broken build the
-// verdict was followed by a whoami record. Even on a failure path, no second
-// command's output may ever appear.
+// This pins the CONTRACT, not the Electron defect: these runs point
+// ORCHESTRA_SOCK at a nonexistent path, so they `fail()` at connect and never
+// reach `exitWith` at all. It would still catch a regression that let one
+// command's output leak into another's under node.
 test('verify-landed: a failed call never prints another command\'s output', needsBuild, () => {
   const r = runCli(['verify-landed', 'some-id']);
   assert.doesNotMatch(r.stdout, /orchestrator\s+(yes|no)|kind\s+worktree/,

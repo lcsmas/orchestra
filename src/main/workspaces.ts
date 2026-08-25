@@ -3275,7 +3275,10 @@ orchestra verify-landed <peer-id> --into <branch>  # against an explicit branch 
 
 Prints \`LANDED: … (0 unmerged)\` and exits 0 when every commit on the peer's
 branch TIP is on the target, or \`NOT LANDED: <n> commit(s) …\` listing the
-missing shas and exits 1.
+missing shas and exits 2. Exit 1 means the check could NOT be run at all
+(unknown id, no git branch, no target branch, different repos, git failed) —
+so never treat a bare non-zero as "not landed": 2 is a verdict, 1 is a
+broken invocation, and only 0 lets you close the loop.
 
 Require one of two EXPLICIT outcomes for every child before reporting a
 milestone done: **LANDED**, or **INTENTIONALLY UNMERGED** for work whose brief
