@@ -17,6 +17,42 @@ set -uo pipefail
 RIG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-contained-rig.sh"
 [[ -x "${RIG}" ]] || { echo "FATAL: ${RIG} not executable"; exit 2; }
 
+# ── FAIL-CLOSED PRECONDITIONS (issue #76) ──────────────────────────────────
+# This self-test needs a REAL compositor: every arm boots the rig's own sway and
+# decodes a painted marker. It therefore cannot live in `pnpm run test`, which
+# must stay runnable on a headless CI box.
+#
+# The failure mode being designed against is NOT "it errors on CI" — it is a
+# SELF-SKIP that reports a comfortable green. Wave-6 shipped exactly that shape:
+# 12 CLI tests self-skipped on a missing build artifact inside a suite reported
+# as "1039 pass", silently omitting every CLI regression test. A test that skips
+# itself is an ABSENT FAILURE wearing a pass.
+#
+# So this script NEVER skips. A missing dependency is a NAMED, non-zero exit
+# (rc=2, distinct from rc=1 "an arm failed"), and the outcome is emitted as a
+# single machine-readable RIG-SELFTEST: line that a caller can grep. Absence of
+# that line is itself a detectable outcome — silence is never scored as success.
+missing=()
+for dep in sway swaymsg grim python3; do
+  command -v "${dep}" >/dev/null 2>&1 || missing+=("${dep}")
+done
+if (( ${#missing[@]} > 0 )); then
+  echo "RIG-SELFTEST: PRECONDITION-UNMET missing=${missing[*]}"
+  cat >&2 <<EOF
+FATAL: cannot run the rig self-test — missing: ${missing[*]}
+
+  This self-test boots a real headless sway compositor and decodes a painted
+  marker from a screenshot; it cannot be simulated. It is deliberately NOT part
+  of \`pnpm run test\` for that reason.
+
+  Run it on a host with sway available:   pnpm run test:rig-selftest
+
+  It exits 2 (precondition unmet) rather than skipping, because a self-skipping
+  test reports a green that hides an absent gate. (issue #76)
+EOF
+  exit 2
+fi
+
 SENTINEL='CHILD-LAUNCHED-SENTINEL-64'
 fails=0
 pass() { printf '  PASS  %s\n' "$1"; }
@@ -87,7 +123,9 @@ arm "CONTROL: normal operation PASSES and the child runs" 0 yes \
 echo
 if (( fails == 0 )); then
   echo "SELF-TEST PASSED: 4 hostile arms aborted rc=90 without launching; the control launched."
+  echo "RIG-SELFTEST: PASSED arms=5"
   exit 0
 fi
 echo "SELF-TEST FAILED: ${fails} arm(s) did not behave as required."
+echo "RIG-SELFTEST: FAILED arms=5 failed=${fails}"
 exit 1

@@ -282,10 +282,50 @@ RATE (`--runs`, `--bundle`, `--expect-broken`), plus a **slow-live-reader** arm
 and a **broken-pipe** arm (both required to be 0/N), the LANDED/ERROR contracts,
 and that nothing of ours leaks onto stderr. Master fails all three axes through
 the same rig (7/12, 3/3, 5/6), so no arm can pass on both builds. Wired as
-`pnpm run test:cli-pipe`. It is display-contained: inside
-`scripts/e2e-contained-rig.sh` it inherits that rig's marker-verified display,
-and bare it blanks the display handles — blanking *inside* a rig makes Electron
-fail to boot and read as 0-byte truncation, a fabricated defect.
+`pnpm run test:cli-pipe`.
+
+**It refuses to run outside the contained rig (issue #76).** It requires
+`RIG_WAYLAND` to be set *and* to equal `WAYLAND_DISPLAY` — the signature only
+`scripts/e2e-contained-rig.sh` produces — and otherwise exits **rc=3** with a
+NAMED precondition error naming the unmet condition and the command that
+satisfies it. This is fail-closed by design, and a generic non-zero exit would
+not have been enough: the earlier version silently blanked both display handles
+when run bare, so Electron died on "Missing X server or $DISPLAY" and exited at
+**0 bytes**, which this gate scored as TRUNCATION — a **fabricated failure
+shaped exactly like #62, the bug under test**. Wave-6's verifier hit it for real
+(`TRUNCATED 20/20`, `HUNG 6/6`, RC=1) and correctly blamed its own rig; a naive
+CI invocation would have "reproduced" #62 forever. Run it as:
+
+```
+scripts/e2e-contained-rig.sh pnpm run test:cli-pipe
+```
+
+### The rig's own self-test — `pnpm run test:rig-selftest`
+
+`scripts/e2e-contained-rig-selftest.sh` proves the rig's pre-flight assert can
+FAIL: four hostile arms (the human's `wayland-1`, a sibling socket, a bogus
+socket, an added `DISPLAY`) must each abort **rc=90 without launching the
+child**, and a fifth CONTROL arm must launch — without it, an assert that
+aborted unconditionally would score 4/4. Each arm also requires its **own abort
+reason**, so an arm that aborts for a different reason than the one it tests is
+a failure, not a pass.
+
+It needs a live compositor, so it is deliberately **not** in `pnpm run test`
+(which must stay runnable on a headless CI box). The wrapper
+`scripts/run-rig-selftest.sh` makes the two bad outcomes distinguishable:
+
+- **it never self-skips** — missing `sway`/`swaymsg`/`grim` is a NAMED failure,
+  **rc=2**, not a skip. A test that skips itself is an absent failure wearing a
+  pass (wave-6 shipped exactly that: 12 self-skipping CLI tests inside a green
+  suite, now guarded by the `pretest` hook);
+- **silence is never success** — the child emits one `RIG-SELFTEST: <outcome>`
+  line and the wrapper *requires* it. A child that dies early, is killed, or is
+  replaced by something printing plausible `PASS` lines and exiting 0 yields no
+  terminator and **fails (rc=1)**. A `PASSED` terminator is additionally
+  cross-checked against the child's exit code, so the line alone is not trusted.
+
+Exit codes: `0` ran and passed · `1` ran and an arm failed, or the terminator was
+missing/inconsistent · `2` precondition unmet (no compositor) — named, never a skip.
 
 ## CLI shims (cli-shim.ts)
 - **User-facing** — Linux `~/.local/bin/orchestra` (`exec "<AppImage>" cli "$@"`,

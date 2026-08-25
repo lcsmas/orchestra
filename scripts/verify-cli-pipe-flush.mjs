@@ -73,41 +73,72 @@ const CLI = path.resolve(flag('--bundle', path.join(REPO, 'dist-electron', 'cli.
  * on the CLI path opens a window, but "it happens not to" is luck, not
  * containment.
  *
- * Two cases, and getting this wrong FABRICATES failures rather than preventing
- * them (issue #62 NEW-3):
+ * FAIL-CLOSED ON A MISSING RIG (issue #76). The previous version silently fell
+ * back to blanking both display handles when `RIG_WAYLAND` was absent. That is
+ * the defect this block now exists to prevent, and it is worse than a crash:
+ * a display-less Electron dies on "Missing X server or $DISPLAY" and exits at
+ * ZERO BYTES, which this gate then scores as TRUNCATION — i.e. running the
+ * script bare FABRICATES a failure shaped exactly like issue #62, the very bug
+ * under test. Wave-6's verifier hit this for real and read `TRUNCATED 20/20`,
+ * `HUNG 6/6`, RC=1; it correctly diagnosed its own rig rather than the product,
+ * but a naive CI invocation would have "reproduced" #62 forever.
  *
- *  - Run INSIDE a contained rig (scripts/e2e-contained-rig.sh, which exports a
- *    marker-verified WAYLAND_DISPLAY of its own): inherit that display. It is
- *    already proven not to be the human's. Blanking it here instead makes
- *    Electron pick x11, fail with "Missing X server or $DISPLAY", and exit at
- *    0 bytes — which this gate then scores as truncation, a fabricated defect
- *    that looks exactly like the bug under test.
- *  - Run BARE (no rig): blank both handles so nothing can reach a real screen,
- *    and pin the ozone hint so a display-less Electron still boots.
+ * A generic non-zero exit is NOT sufficient here — the whole defect is that the
+ * failure LOOKS like the bug. So the precondition is checked BEFORE any Electron
+ * is spawned and reported by NAME, saying which precondition is unmet and the
+ * exact command that satisfies it.
  *
- * `RIG_WAYLAND` is set only by the contained rig, so its presence is the
- * discriminator — and it is compared against WAYLAND_DISPLAY so a stale export
- * cannot silently re-enable the human's compositor.
+ * `RIG_WAYLAND` is set only by scripts/e2e-contained-rig.sh, so its presence is
+ * the discriminator — and it is compared against WAYLAND_DISPLAY so a stale
+ * export cannot silently re-enable the human's compositor.
  */
-const CONTAINED_DISPLAY_ENV =
-  process.env.RIG_WAYLAND && process.env.RIG_WAYLAND === process.env.WAYLAND_DISPLAY
-    ? {
-        WAYLAND_DISPLAY: process.env.RIG_WAYLAND,
-        ELECTRON_OZONE_PLATFORM_HINT: 'wayland',
-        ORCHESTRA_OZONE_RELAUNCHED: '1',
-      }
-    : {
-        WAYLAND_DISPLAY: '',
-        DISPLAY: '',
-        ELECTRON_OZONE_PLATFORM_HINT: 'wayland',
-        ORCHESTRA_OZONE_RELAUNCHED: '1',
-      };
+const RIG_PRECONDITION_RC = 3;
 
-// Refuse to run pointed at the human's compositor, whatever the path above did.
-if (CONTAINED_DISPLAY_ENV.WAYLAND_DISPLAY === 'wayland-1') {
-  console.error('\n\u2718 refusing to run with WAYLAND_DISPLAY=wayland-1 (the human\'s compositor)');
-  process.exit(1);
+/** Exit with a NAMED precondition failure: what is unmet, and how to satisfy it.
+ *  Distinct RC so a caller can tell "rig not provisioned" from "gate failed". */
+function diePrecondition(what, detail) {
+  console.error(`\n\u2718 PRECONDITION NOT MET: ${what}`);
+  console.error(`  ${detail}`);
+  console.error('');
+  console.error('  This gate spawns Electron and MUST run inside the contained rig,');
+  console.error('  which creates its own headless sway, verifies it with a unique');
+  console.error('  marker, and exports RIG_WAYLAND. Run it as:');
+  console.error('');
+  console.error('      scripts/e2e-contained-rig.sh pnpm run test:cli-pipe');
+  console.error('');
+  console.error('  Refusing to run bare: a display-less Electron exits at 0 bytes,');
+  console.error('  which this gate would score as TRUNCATION — a FABRICATED failure');
+  console.error('  shaped exactly like issue #62, the bug under test. (issue #76)');
+  process.exit(RIG_PRECONDITION_RC);
 }
+
+const RIG_WAYLAND = process.env.RIG_WAYLAND;
+const WAYLAND_DISPLAY = process.env.WAYLAND_DISPLAY;
+
+if (!RIG_WAYLAND) {
+  diePrecondition(
+    'RIG_WAYLAND is not set — this gate is not running inside the contained rig.',
+    `WAYLAND_DISPLAY=${WAYLAND_DISPLAY ? `'${WAYLAND_DISPLAY}'` : '<unset>'}, RIG_WAYLAND=<unset>.`,
+  );
+}
+if (RIG_WAYLAND !== WAYLAND_DISPLAY) {
+  diePrecondition(
+    `RIG_WAYLAND='${RIG_WAYLAND}' does not match WAYLAND_DISPLAY=${WAYLAND_DISPLAY ? `'${WAYLAND_DISPLAY}'` : '<unset>'}.`,
+    'A stale RIG_WAYLAND export is present without the compositor it names.',
+  );
+}
+if (RIG_WAYLAND === 'wayland-1') {
+  diePrecondition(
+    "RIG_WAYLAND='wayland-1' is the HUMAN'S real compositor.",
+    'Refusing to launch: test windows must never reach the human\'s screen.',
+  );
+}
+
+const CONTAINED_DISPLAY_ENV = {
+  WAYLAND_DISPLAY: RIG_WAYLAND,
+  ELECTRON_OZONE_PLATFORM_HINT: 'wayland',
+  ORCHESTRA_OZONE_RELAUNCHED: '1',
+};
 
 function die(msg) {
   console.error(`\n✘ ${msg}`);
