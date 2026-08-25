@@ -69,6 +69,19 @@ const api: OrchestraAPI = {
   removeQueuedPrompt: (id, promptId) => ipcRenderer.invoke('queue:remove', id, promptId),
   flushQueuedPrompts: (id) => ipcRenderer.invoke('queue:flush', id),
 
+  listInbox: (id) => ipcRenderer.invoke('inbox:list', id),
+  releaseInboxMessage: (id, text) => ipcRenderer.invoke('inbox:release', id, text),
+  refuseInboxMessage: (id, text) => ipcRenderer.invoke('inbox:refuse', id, text),
+  releaseAllInboxMessages: (id) => ipcRenderer.invoke('inbox:releaseAll', id),
+  onInboxUpdate: (cb) => {
+    const listener = (_e: unknown, payload: unknown) => {
+      const p = payload as { workspaceId: string; count: number };
+      cb(p.workspaceId, p.count);
+    };
+    ipcRenderer.on('inbox:update', listener);
+    return () => ipcRenderer.off('inbox:update', listener);
+  },
+
   ptyStart: (id, cols, rows) => ipcRenderer.invoke('pty:start', id, cols, rows),
   ptyWrite: (id, data) => ipcRenderer.invoke('pty:write', id, data),
   ptyResize: (id, cols, rows) => ipcRenderer.invoke('pty:resize', id, cols, rows),

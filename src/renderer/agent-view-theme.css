@@ -3069,6 +3069,107 @@ h6.av-md-h {
 .av-queue-remove:hover:not(:disabled) { color: var(--av-error); }
 
 
+/* ── Inbox tray — peer messages parked on disk while unreachable (issue #64) ─
+   Orchestra parks a message in ~/.orchestra/inbox/<id>.txt when it cannot hand
+   it to a live session. That file used to be invisible until a shell hook
+   dumped it into the agent's context; this tray surfaces it with Release /
+   Refuse actions.
+
+   AMBER (`--av-warn`), matching the usage-limit and MCP-pending chips: "needs
+   your attention, nothing is broken". Not the error red — a parked message is
+   not a failure. Sits INSIDE the composer frame above the input, like
+   `.av-queue`, because the transcript scrolls away from it.
+
+   Collapsed by default to a single chip: mail that has waited hours does not
+   earn the vertical space of a list, and the COUNT is the whole decision. */
+.av-inbox-chip,
+.av-inbox-collapse {
+  display: inline-flex; align-items: center; gap: 7px;
+  font: inherit; font-size: var(--av-fs-small);
+  padding: 3px 11px;
+  border-radius: 999px;
+  color: var(--av-warn);
+  background: color-mix(in srgb, var(--av-warn) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--av-warn) 38%, transparent);
+  cursor: pointer;
+}
+.av-inbox-chip { margin-bottom: 8px; }
+.av-inbox-chip:hover,
+.av-inbox-collapse:hover {
+  background: color-mix(in srgb, var(--av-warn) 22%, transparent);
+}
+.av-inbox-glyph { font-size: 12px; }
+
+.av-inbox {
+  margin-bottom: 8px;
+  padding: 8px 10px 9px;
+  background: var(--av-surface-sunken);
+  border: 1px solid color-mix(in srgb, var(--av-warn) 32%, transparent);
+  border-radius: var(--av-radius-lg, 10px);
+}
+.av-inbox-head {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 7px;
+  font-size: var(--av-fs-small);
+}
+.av-inbox-spacer { flex: 1; }
+
+.av-inbox-list { display: flex; flex-direction: column; gap: 4px; }
+
+.av-inbox-row {
+  display: flex; align-items: baseline; gap: 9px;
+  padding: 6px 8px;
+  background: var(--av-surface-raised);
+  border: 1px solid var(--av-hairline);
+  border-radius: 8px;
+  font-size: var(--av-fs-small);
+}
+/* The sender leads and never wraps — it is what decides whether the message
+   matters, so it must survive any preview length. */
+.av-inbox-from {
+  flex: none;
+  color: var(--av-assistant);
+  font-weight: 620;
+  white-space: nowrap;
+}
+/* min-width:0 is load-bearing: without it a long single-line preview refuses to
+   shrink and pushes the actions out of the row. */
+.av-inbox-preview {
+  flex: 1; min-width: 0;
+  color: var(--av-text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Actions stay VISIBLE here, unlike `.av-queue-actions` which reveal on hover:
+   these two are the whole point of the row, and a parked message the human has
+   never seen should not hide its only affordances behind a hover. */
+.av-inbox-actions { display: flex; gap: 4px; flex: none; }
+
+.av-inbox-btn {
+  font: inherit; font-size: 12px;
+  padding: 2px 8px; border-radius: 6px;
+  background: none;
+  border: 1px solid var(--av-hairline);
+  color: var(--av-text-dim);
+  cursor: pointer;
+}
+.av-inbox-btn:hover:not(:disabled) { color: var(--av-text); }
+.av-inbox-release {
+  color: var(--av-add);
+  border-color: color-mix(in srgb, var(--av-add) 40%, transparent);
+}
+.av-inbox-release:hover:not(:disabled) {
+  color: var(--av-add);
+  background: color-mix(in srgb, var(--av-add) 14%, transparent);
+}
+.av-inbox-refuse {
+  color: var(--av-error);
+  border-color: color-mix(in srgb, var(--av-error) 35%, transparent);
+}
+.av-inbox-refuse:hover:not(:disabled) {
+  color: var(--av-error);
+  background: color-mix(in srgb, var(--av-error) 14%, transparent);
+}
+
 /* ── Inter-agent (peer) message rows (issue #56) ───────────────────────────
    A coordinator with an active fleet receives dozens of agent-to-agent
    messages per wave; as full user bubbles they drowned the human's own

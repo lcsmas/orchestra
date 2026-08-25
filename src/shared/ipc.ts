@@ -2,6 +2,7 @@ import type { SelfTuneReport, SelfTuneRun } from './self-tune';
 import type { VoiceEvent, VoiceStartOptions } from './voice';
 import type { DesignPick } from './design-mode';
 import type { WorktreeSizes } from './worktree-sizes';
+import type { InboxActionOutcome, InboxBlock } from './inbox-blocks';
 import type {
   Account,
   AccountUsageStatus,
@@ -241,6 +242,25 @@ export interface OrchestraAPI {
   removeQueuedPrompt: (id: string, promptId: string) => Promise<Workspace>;
   /** Deliver the whole queue to the agent NOW, skipping the limit check. */
   flushQueuedPrompts: (id: string) => Promise<{ ok: boolean; delivered: number; error?: string }>;
+
+  // ---- Inbox tray (issue #64). Messages other agents sent to a workspace
+  //      while it was unreachable, parked in `~/.orchestra/inbox/<id>.txt`.
+  //      A DIFFERENT channel from the Claude CLI's `crossSessionInbound: 'hold'`
+  //      buffer (issue #42), which is heap-only and has no API handle.
+  //      Blocks are addressed by their exact TEXT, never by index: a shell hook
+  //      can drain the file between render and click, so an index would address
+  //      the wrong message. `count` updates arrive via `onInboxUpdate`.
+  /** The blocks currently parked for a workspace, in arrival order. */
+  listInbox: (id: string) => Promise<InboxBlock[]>;
+  /** Deliver one parked block as the session's next turn, peer-origin tagged,
+   *  and remove it from the file — but ONLY once delivery is confirmed. */
+  releaseInboxMessage: (id: string, text: string) => Promise<InboxActionOutcome>;
+  /** Discard one parked block (recorded in the app log, never silent). */
+  refuseInboxMessage: (id: string, text: string) => Promise<InboxActionOutcome>;
+  /** Deliver every parked block, oldest first, stopping at the first failure. */
+  releaseAllInboxMessages: (
+    id: string,
+  ) => Promise<{ released: number; remaining: number; error?: string }>;
 
   // Terminal (pty)
   ptyStart: (id: string, cols: number, rows: number) => Promise<void>;
@@ -584,6 +604,10 @@ export interface OrchestraAPI {
   /** Pushed whenever the pinned-ticket list changes (pin/un-pin/refresh/graduate). */
   onTicketsUpdate: (cb: (tickets: PinnedTicket[]) => void) => () => void;
 
+  /** Pushed when a workspace's parked-inbox count changes — including drains
+   *  performed by the `inbox-instruction.sh` hook, which the main process never
+   *  initiates, so the tray retracts instead of showing stale rows (issue #64). */
+  onInboxUpdate: (cb: (wsId: string, count: number) => void) => () => void;
   onWorkspaceUpdate: (cb: (w: Workspace) => void) => () => void;
   onWorkspaceRemoved: (cb: (id: string) => void) => () => void;
   /** Batched removal: fires once with all ids from a `deleteWorkspaces` call so

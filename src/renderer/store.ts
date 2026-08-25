@@ -23,6 +23,7 @@ import type {
   Workspace,
   WorkspaceAccount,
 } from '../shared/types';
+import type { InboxBlock } from '../shared/inbox-blocks';
 import type { SelfTuneRun } from '../shared/self-tune';
 import type { DesignPick } from '../shared/design-mode';
 import { clearPendingAnswerable, emptySession, foldEvents } from '../shared/agent-events';
@@ -109,6 +110,11 @@ interface State {
    *  returns and clears a workspace's queue in one atomic set. Never persisted —
    *  a pick is a live editing gesture, not durable state. */
   designPicks: Record<string, DesignPick[]>;
+  /** Peer messages parked on disk for a workspace that was unreachable, keyed
+   *  by workspace id (issue #64). Source of truth is the inbox FILE, which a
+   *  shell hook can drain without the main process's involvement — so this is a
+   *  cache refreshed by `inbox:update` events, never authoritative. */
+  parkedInbox: Record<string, InboxBlock[]>;
   /** Per-repo base-branch sync state (behind/ahead of origin/<base>),
    *  keyed by repoPath. Updated by `repo:syncState` events. */
   repoSync: Record<string, RepoSyncState>;
@@ -240,6 +246,7 @@ export const useStore = create<State>((set, get) => ({
   contextTokens: {},
   agentSessions: {},
   designPicks: {},
+  parkedInbox: {},
   repoSync: {},
   accountUsage: {},
   workspaceAccounts: {},
@@ -785,7 +792,8 @@ window.orchestra.onWorkspaceRemoved((id) => {
     const { [id]: _goneTool, ...tools } = s.tools;
     const { [id]: _goneCtx, ...contextTokens } = s.contextTokens;
     const { [id]: _goneSession, ...agentSessions } = s.agentSessions;
-    return { workspaces, activeId, prs, checks, linear, stats, tools, contextTokens, agentSessions };
+    const { [id]: _goneInbox, ...parkedInbox } = s.parkedInbox;
+    return { workspaces, activeId, prs, checks, linear, stats, tools, contextTokens, agentSessions, parkedInbox };
   });
 });
 window.orchestra.onWorkspacesRemoved((ids) => {
@@ -808,6 +816,7 @@ window.orchestra.onWorkspacesRemoved((ids) => {
       tools: prune(s.tools),
       contextTokens: prune(s.contextTokens),
       agentSessions: prune(s.agentSessions),
+      parkedInbox: prune(s.parkedInbox),
     };
   });
 });
@@ -912,6 +921,22 @@ window.orchestra.onRepoSyncState((s) => {
 // didn't initiate.
 window.orchestra.onReposUpdate((repos) => {
   useStore.setState({ repos });
+});
+// A workspace's parked-inbox file changed. The count rides on the event so the
+// common "still empty" case costs nothing; the block list is fetched only when
+// there is actually something parked. Fires for hook-performed drains too (main
+// watches the directory), which is what makes the tray retract on its own.
+window.orchestra.onInboxUpdate((wsId, count) => {
+  if (count === 0) {
+    // Guard before setState: zustand notifies every subscriber on ANY set, and
+    // an empty inbox staying empty is by far the most common event.
+    if (!useStore.getState().parkedInbox[wsId]?.length) return;
+    useStore.setState((s) => ({ parkedInbox: { ...s.parkedInbox, [wsId]: [] } }));
+    return;
+  }
+  void window.orchestra.listInbox(wsId).then((blocks) => {
+    useStore.setState((s) => ({ parkedInbox: { ...s.parkedInbox, [wsId]: blocks } }));
+  });
 });
 // A self-tune run advanced (step started/finished, run completed). Upsert by
 // id, keeping newest-first order — a brand-new run is always the newest.

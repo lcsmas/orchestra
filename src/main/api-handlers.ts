@@ -65,6 +65,12 @@ import {
 import { clearHibernated, setActiveWorkspace } from './hibernation.ts';
 import { sampleResources } from './resources';
 import { getHookSocketPath } from './hooks-server';
+import {
+  readInbox,
+  releaseInboxBlock,
+  refuseInboxBlock,
+  releaseAllInboxBlocks,
+} from './inbox-tray';
 import { installLoginBrowserShim } from './cli-shim';
 import { getLastUsage } from './usage';
 import {
@@ -245,6 +251,10 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   queuePrompt: 'queue:add',
   removeQueuedPrompt: 'queue:remove',
   flushQueuedPrompts: 'queue:flush',
+  listInbox: 'inbox:list',
+  releaseInboxMessage: 'inbox:release',
+  refuseInboxMessage: 'inbox:refuse',
+  releaseAllInboxMessages: 'inbox:releaseAll',
   ptyStart: 'pty:start',
   ptyWrite: 'pty:write',
   ptyResize: 'pty:resize',
@@ -721,6 +731,23 @@ export const apiHandlers: ApiHandlerTable = {
 
   // The UI's "Send now" — deliver regardless of what the usage cache says.
   flushQueuedPrompts: (id) => flushQueuedPrompts(id, { force: true }),
+
+  // ---- Inbox tray (issue #64). Blocks are addressed by TEXT, not index: the
+  //      `inbox-instruction.sh` hook can drain the file between the tray
+  //      rendering a row and the human clicking it, so an index would act on the
+  //      wrong message. The action result reports what actually happened
+  //      (including the normal 'gone' outcome) rather than throwing.
+  listInbox: async (id) => readInbox(id),
+  releaseInboxMessage: (id, text) => releaseInboxBlock(id, text),
+  refuseInboxMessage: (id, text) => refuseInboxBlock(id, text),
+  releaseAllInboxMessages: async (id) => {
+    const res = await releaseAllInboxBlocks(id);
+    return {
+      released: res.released,
+      remaining: res.remaining,
+      ...(res.failed ? { error: res.failed.reason } : {}),
+    };
+  },
 
   // ---------- Terminal (pty) ----------
 

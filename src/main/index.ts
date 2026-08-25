@@ -182,6 +182,7 @@ import { closeAllSandboxConnections } from './transport/sandbox-manager';
 import { startSandboxAutoBackup } from './sandbox-import';
 import { primeLocalSyncStates, syncAllRepos } from './repo-sync';
 import { startPromptQueueFlusher, stopPromptQueueFlusher } from './prompt-queue';
+import { startInboxWatcher, stopInboxWatcher } from './inbox-tray';
 import { startSelfTuneScheduler, stopSelfTuneScheduler } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
 import { probeDependencies } from './deps';
@@ -316,6 +317,10 @@ async function createMainWindow() {
   startAccountUsagePolling();
   // Deliver usage-limit-parked prompts once their account's window resets.
   startPromptQueueFlusher();
+  // Watch ~/.orchestra/inbox so the composer's inbox tray (issue #64) reflects
+  // parked peer messages — including drains done by the inbox shell hook, which
+  // the main process never initiates and would otherwise never hear about.
+  startInboxWatcher();
   // Monthly Insights & Improvements: auto-run the self-tune pipeline once per
   // calendar month (checked shortly after startup and every ~6h).
   startSelfTuneScheduler();
@@ -574,6 +579,7 @@ function shutdownSubsystems(): void {
   stopUsagePolling();
   stopAccountUsagePolling();
   stopPromptQueueFlusher();
+  stopInboxWatcher();
   stopSelfTuneScheduler();
   stopHibernationSweeper();
   closeAllSandboxConnections();

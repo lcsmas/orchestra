@@ -33,6 +33,8 @@ import { scoped } from '../log';
 import { WorkspaceAccountBadge } from './AccountBadge';
 import { CmComposer, type CmComposerHandle } from './agent/CmComposer';
 import { QueueTray } from './agent/QueueTray';
+import { InboxTray } from './agent/InboxTray';
+import type { InboxBlock } from '../../shared/inbox-blocks';
 import { useVoiceDictation } from './agent/useVoiceDictation';
 import { McpPopover, McpIndicator } from './agent/McpPopover';
 import { readComposerVim, writeComposerVim, vimChipLabel, type VimMode } from '../composer-vim-pref';
@@ -1089,6 +1091,9 @@ const BUILTIN_DESC: Record<string, string> = {
  *  status/compact events. */
 const ALWAYS_COMMANDS = ['clear', 'compact', 'mcp'];
 
+/** Stable empty list for the inbox selector — see the note at its use site. */
+const EMPTY_BLOCKS: InboxBlock[] = [];
+
 function Composer({
   session,
   workspaceId,
@@ -1126,6 +1131,26 @@ function Composer({
   // Imperative handle on the CodeMirror editor (focus / read / set text).
   const cmRef = useRef<CmComposerHandle | null>(null);
   const running = !!session?.running;
+
+  // Peer messages parked on disk for this workspace (issue #64). Atomic
+  // selector — subscribing to the whole store here would re-render the composer
+  // on every agent:tool tick. EMPTY_BLOCKS is a module constant, not a fresh
+  // `[]`, because a new array identity every render would defeat the memo.
+  const parkedInbox = useStore((s) => s.parkedInbox[workspaceId]) ?? EMPTY_BLOCKS;
+  // The `inbox:update` event only fires on CHANGE, so a workspace whose file
+  // was already non-empty when this view mounted needs one explicit read.
+  useEffect(() => {
+    let live = true;
+    void window.orchestra.listInbox(workspaceId).then((blocks) => {
+      if (!live || blocks.length === 0) return;
+      useStore.setState((st) => ({
+        parkedInbox: { ...st.parkedInbox, [workspaceId]: blocks },
+      }));
+    });
+    return () => {
+      live = false;
+    };
+  }, [workspaceId]);
 
   // Voice dictation (mic + voice-edit in the bar; ghost partials in the doc).
   // The workspace's branch + repo folder ride into the speaker dictionary so
@@ -1509,6 +1534,15 @@ function Composer({
 
   return (
     <div className="av-composer">
+      {/* Peer messages parked on disk while this workspace was unreachable
+          (issue #64). Above the queue because they arrived BEFORE anything the
+          user has queued, so the strip reads oldest-first top-down. */}
+      <InboxTray
+        blocks={parkedInbox}
+        onRelease={(text) => void window.orchestra.releaseInboxMessage(workspaceId, text)}
+        onRefuse={(text) => void window.orchestra.refuseInboxMessage(workspaceId, text)}
+        onReleaseAll={() => void window.orchestra.releaseAllInboxMessages(workspaceId)}
+      />
       {/* Parked prompts sit ABOVE the input, inside the composer frame: they are
           about to become turns, so they belong to the send surface, and docking
           them here keeps them on-screen (the transcript scrolls away). */}

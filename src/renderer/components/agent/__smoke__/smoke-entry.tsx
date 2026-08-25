@@ -12,6 +12,8 @@ import { AgentMessage } from '../AgentMessage';
 import { ThinkingIndicator } from '../ThinkingIndicator';
 import { MarkdownView } from '../MarkdownView';
 import { RewindContext } from '../rewind-context';
+import { InboxTray } from '../InboxTray';
+import { parseInboxBlocks } from '../../../../shared/inbox-blocks';
 
 let failures = 0;
 const check = (label: string, fn: () => string, assertHtml?: (html: string) => void) => {
@@ -380,5 +382,73 @@ check('rewind button is DISABLED while a turn is running', () =>
   (html) => {
     if (!html.includes('disabled')) throw new Error('control was enabled mid-turn');
   });
+
+// ── Inbox tray (issue #64) ─────────────────────────────────────────────────
+// Parsed from the REAL on-disk framing rather than hand-built objects, so these
+// checks exercise the same path the app does.
+const INBOX_FIXTURE =
+  '\n' + '='.repeat(40) + '\n' +
+  "[message from agent 'ops-fix-wave-6' (ws-ops)]\nledger #70 updated — pull it\n\n" +
+  'Reply with: orchestra message ws-ops "<reply>"\n' +
+  '='.repeat(40) + '\n';
+const inboxBlocks = parseInboxBlocks(INBOX_FIXTURE);
+
+check('inbox tray renders NOTHING when no message is parked', () =>
+  renderToString(
+    <InboxTray blocks={[]} onRelease={() => {}} onRefuse={() => {}} onReleaseAll={() => {}} />
+  ),
+  (html) => {
+    // The common case is an empty inbox on every composer paint — the tray must
+    // cost zero DOM, not an empty container.
+    if (html.trim() !== '') throw new Error(`expected empty render, got: ${html}`);
+  });
+
+check('collapsed tray shows the amber chip with the parked COUNT', () =>
+  renderToString(
+    <InboxTray blocks={inboxBlocks} onRelease={() => {}} onRefuse={() => {}} onReleaseAll={() => {}} />
+  ),
+  (html) => {
+    if (!html.includes('av-inbox-chip')) throw new Error('no chip rendered');
+    if (!html.includes('1 message held')) throw new Error(`chip lacks the count: ${html}`);
+    // Collapsed means collapsed: the row actions must NOT be in the DOM yet.
+    if (html.includes('av-inbox-row')) throw new Error('collapsed tray leaked the list');
+  });
+
+check('expanded tray renders sender, preview and BOTH actions per row', () =>
+  renderToString(
+    <InboxTray
+      blocks={inboxBlocks}
+      defaultOpen
+      onRelease={() => {}}
+      onRefuse={() => {}}
+      onReleaseAll={() => {}}
+    />
+  ),
+  (html) => {
+    if (!html.includes('av-inbox-row')) throw new Error('no rows rendered');
+    if (!html.includes('ops-fix-wave-6')) throw new Error('sender missing');
+    if (!html.includes('ledger #70 updated')) throw new Error('preview missing');
+    if (!html.includes('Release')) throw new Error('Release action missing');
+    if (!html.includes('Refuse')) throw new Error('Refuse action missing');
+    // The envelope boilerplate must not reach the preview — it is noise the
+    // human already knows (every parked message carries it).
+    if (html.includes('Reply with: orchestra message ws-ops')) {
+      throw new Error('reply footer leaked into the row');
+    }
+  });
+
+check('"Release all" appears only when MORE THAN ONE message is parked', () => {
+  const two = parseInboxBlocks(INBOX_FIXTURE + INBOX_FIXTURE.replace('ledger #70 updated', 'second one'));
+  if (two.length !== 2) throw new Error(`fixture control failed: parsed ${two.length} blocks, expected 2`);
+  const one = renderToString(
+    <InboxTray blocks={inboxBlocks} defaultOpen onRelease={() => {}} onRefuse={() => {}} onReleaseAll={() => {}} />
+  );
+  const many = renderToString(
+    <InboxTray blocks={two} defaultOpen onRelease={() => {}} onRefuse={() => {}} onReleaseAll={() => {}} />
+  );
+  if (one.includes('Release all')) throw new Error('offered "Release all" for a single message');
+  if (!many.includes('Release all')) throw new Error('no "Release all" with 2 parked');
+  return many;
+});
 
 if (failures > 0) process.exit(1);
