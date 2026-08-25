@@ -180,10 +180,23 @@ function finishedToast(reason: AgentStopReason | undefined, name: string): {
  *  every other reason passes `null` so a clean finish CLEARS a stale marker.
  *
  *  The `usage_limit` clause is #74's, and it exists because that rule is WRONG
- *  for a limit death. MEASURED, not reasoned: a limit-killed turn's own
- *  `turn-end` carries `stopReason` `'error'`/`'end_turn'`/`undefined` — never
- *  `'usage_limit'`, which is written out-of-band by `markStoppedOnUsageLimit`
- *  from a latched `rate_limit_event`. So this function runs AFTER that marker
+ *  for a limit death. A limit-killed turn's own `turn-end` carries `stopReason`
+ *  `'error'` — never `'usage_limit'`, which is written out-of-band by
+ *  `markStoppedOnUsageLimit` from a latched `rate_limit_event`.
+ *
+ *  CORRECTED (review-74 R3). An earlier version of this paragraph said
+ *  `'error'`/`'end_turn'`/`undefined` and labelled itself "MEASURED, not
+ *  reasoned". That was wrong on both counts: no rig backed it, and the
+ *  `'end_turn'` case is IMPOSSIBLE BY CONSTRUCTION — `toStopReason`
+ *  (agent-events.ts) returns `'error'` whenever `msg.is_error` is truthy, so it
+ *  can only return `'end_turn'` when `isError` is false. Enumerated over the
+ *  five reachable `result` shapes: 429-limit and plain error both give
+ *  (`'error'`, true); `error_during_execution` gives (`'interrupted'`, true);
+ *  a clean success gives (`'end_turn'`, FALSE); max_turns gives (`'max_turns'`,
+ *  true). The (`'end_turn'`, true) pair occurs zero times. The consequence for
+ *  this function is unchanged — a limit death still arrives as `'error'` and
+ *  would still erase the marker — but the claim is now the enumeration above
+ *  rather than an unsupported label. So this function runs AFTER that marker
  *  is set and, under the old allowlist, overwrote it with `'error'` or cleared
  *  it outright. Either way `lastStopReason` stops being `'usage_limit'`, the
  *  resume driver's filter matches nothing, and **auto-resume silently never
@@ -352,6 +365,19 @@ export async function markStoppedOnUsageLimit(
   if (!current) return;
   const next: Workspace = {
     ...current,
+    // ALWAYS refresh the timestamp (review-74 R4). A SECOND limit death on a
+    // workspace already `idle` + `usage_limit` hits `setStatus`'s no-op guard
+    // (status unchanged AND reason unchanged), so it returns without writing,
+    // and the spread above would preserve the FIRST death's timestamp.
+    //
+    // That matters here because #74 is the first consumer to make a RESUME
+    // DECISION from this field: the driver passes it to `canAutoFlushQueue` as
+    // `blockedAt`, whose whole rule is "the usage reading must have been
+    // fetched AFTER the block". Measured discrimination — a snapshot fetched
+    // 10:02 with deaths at 10:00 and 10:05: the correct `blockedAt` (10:05)
+    // says wait; the stale one (10:00) says the reading is fresh enough and
+    // resumes PREMATURELY, straight back into the wall.
+    lastStopReasonAt: Date.now(),
     ...(resetsAtMs === null
       ? // Clear a stale reset from an earlier limit rather than leaving it to
         // be read as this one's — an old timestamp is already in the past, so

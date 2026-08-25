@@ -228,25 +228,16 @@ test('GUARD: the driver nudges GENERICALLY and never replays the interrupted inp
   );
 });
 
-test('GUARD: the driver clears the marker before waking (idempotence)', () => {
+test('GUARD: clear before wake AND RE-MARK on failure (no permanent freeze)', () => {
   const code = codeOf(PROMPT_QUEUE);
   const driver = code.indexOf('async function resumeUsageLimited(');
-  const body = code.slice(driver, driver + 2500);
-  // SCOPE THE SLICE TO THE NUDGE BRANCH FIRST. Found by mutation (W5): there
-  // are TWO clearStopReason calls — one in the `queue` branch, one in the
-  // nudge path — so a whole-body `indexOf('clearStopReason')` always finds the
-  // queue one, which precedes the wake no matter where the nudge's clear sits.
-  // The guard passed with the nudge clear moved AFTER the wake, i.e. it was
-  // vacuous for exactly the defect it names. Isolate the branch, then assert.
-  // Anchor on the queue branch's own clear, then take everything after it —
-  // anchoring on a bare `continue;` picks up the earlier `action === 'wait'`
-  // one instead (the control below caught exactly that mistake).
+  const body = code.slice(driver, driver + 4000);
+  // Isolate the nudge branch: there are TWO clearStopReason calls (one in the
+  // `queue` branch), so a whole-body indexOf always finds the queue one and the
+  // assertion below would hold no matter where the nudge's clear sat.
   const queueClear = body.indexOf('clearStopReason');
   assert.notEqual(queueClear, -1, 'expected the queue branch to clear the marker');
   const nudgeBranch = body.slice(queueClear + 'clearStopReason'.length);
-  // Control: the isolation actually dropped the queue branch's call and kept a
-  // real slice — without this, an over-eager slice would make the assertions
-  // below pass on an empty string.
   assert.ok(nudgeBranch.length > 200, 'the nudge-branch slice came back suspiciously short');
   assert.equal(
     (nudgeBranch.match(/clearStopReason/g) ?? []).length,
@@ -256,14 +247,47 @@ test('GUARD: the driver clears the marker before waking (idempotence)', () => {
 
   const clearAt = nudgeBranch.indexOf('clearStopReason');
   const wakeAt = nudgeBranch.indexOf('wakeAgentWithPrompt');
-  assert.notEqual(clearAt, -1, 'the nudge path must clear the marker');
-  assert.notEqual(wakeAt, -1, 'the nudge path must wake the agent');
-  // A marker left in place makes every subsequent 20s tick decide to resume
-  // again — a nudge storm. Clearing first also means a wake slower than one
-  // tick cannot be started twice (same ordering flushQueuedPrompts uses).
+  assert.ok(clearAt !== -1 && wakeAt !== -1, 'the nudge path must clear and wake');
   assert.ok(
     clearAt < wakeAt,
     'the marker must be cleared BEFORE the wake, or a slow wake is started on every tick',
+  );
+
+  // THE HALF THIS GUARD USED TO MISS (review-74 R1). An EARLIER version of this
+  // test asserted only `clearAt < wakeAt` — and thereby PINNED THE BUG IN
+  // PLACE: it demanded the early clear while saying nothing about restoring the
+  // marker when the wake fails. With the marker cleared and the wake failed,
+  // the workspace has left the `lastStopReason === 'usage_limit'` candidate
+  // filter, so NO later tick reconsiders it: the session is frozen forever and
+  // the pause glyph is gone, so nothing on screen tells a human to look.
+  //
+  // The ordering was borrowed from flushQueuedPrompts, which pairs it with a
+  // `requeue()` compensator; this path had none. So assert the COMPENSATOR,
+  // not just the ordering.
+  const reMarkAt = nudgeBranch.indexOf('markStoppedOnUsageLimit');
+  assert.notEqual(
+    reMarkAt,
+    -1,
+    'the nudge path must RE-MARK on failure — without it a failed wake freezes the ' +
+      'workspace permanently, which is strictly worse than not shipping auto-resume',
+  );
+  assert.ok(
+    reMarkAt > wakeAt,
+    'the re-mark must come AFTER the wake — it is the failure compensator, not a second mark',
+  );
+  // It must be reachable on the failure path specifically, i.e. guarded by the
+  // wake's own result rather than run unconditionally.
+  assert.match(
+    nudgeBranch,
+    /if \(woke\)/,
+    'the wake result must be branched on, so the re-mark runs only when the wake failed',
+  );
+  // And the restored reset time must be the ORIGINAL one: minting a new one
+  // would push the retry further out on every attempt.
+  assert.match(
+    nudgeBranch,
+    /markStoppedOnUsageLimit\(ws\.id, ws\.usageLimitResetsAt/,
+    'the re-mark must restore the ORIGINAL reset time, not fabricate a new one',
   );
 });
 
@@ -377,5 +401,102 @@ test('GUARD: a finished turn must NOT erase a usage_limit pause marker', () => {
     fired,
     /stopReason === 'max_turns' \|\| stopReason === 'error' \? stopReason : null/,
     'the inlined allowlist must be gone, not merely shadowed',
+  );
+});
+
+// ─── review-74 R2: the session-death path must not bypass the latch ─────────
+
+test('GUARD: the synthetic turn-end on session death also marks the limit', () => {
+  const code = codeOf(AGENT_SDK);
+  // consume()'s finally builds its OWN turn-end and calls emit() +
+  // driveStatusFromEvent() directly — it does NOT go through emitFrom, where
+  // the latch lives (emitFrom has exactly ONE call site, the stream loop).
+  // So `rate_limit_event{rejected}` → subprocess dies before any `result`
+  // would never be marked, never resumed: it satisfies every other gate in
+  // the feature and simply never reaches them. Plausibly the ACTUAL wave-6
+  // shape (the coordinator's CLI exited rather than returning a result).
+  // Anchor on the EMIT, not on driveStatusFromEvent: the mark is inserted
+  // BETWEEN them, so a window starting at the latter cannot contain it.
+  const at = code.indexOf('emit(session.wsId, turnEnd)');
+  assert.notEqual(at, -1, 'the synthetic turn-end path is gone — was it renamed?');
+  const branch = code.slice(at, at + 700);
+  // Control: the slice really spans this path, so the assertions below are not
+  // being applied to some unrelated region of the file.
+  assert.match(branch, /driveStatusFromEvent\(session, turnEnd\)/,
+    'control: the slice must reach the status drive that closes this path');
+  assert.match(
+    branch,
+    /markStoppedOnUsageLimit\(session\.wsId, session\.rateLimitHit\.resetsAtMs\)/,
+    'the session-death path must mark a latched limit, or detection misses the ' +
+      'die-before-result shape entirely',
+  );
+  // A user-requested interrupt is not a limit death; auto-resuming it would
+  // restart a session the human just stopped.
+  assert.match(branch, /!endedByInterrupt/, 'an interrupted session must NOT be marked');
+  // And the latch must be cleared here too, or it leaks past this teardown.
+  assert.match(branch, /session\.rateLimitHit = undefined/, 'the latch must be cleared');
+});
+
+test('GUARD: emitFrom still has exactly one call site (the R2 premise)', () => {
+  const code = codeOf(AGENT_SDK);
+  // R2 exists BECAUSE emitFrom is called from only the stream loop. If a second
+  // call site appears, the reasoning above needs re-deriving rather than
+  // silently continuing to hold. Definition + one call = 2 occurrences.
+  const hits = (code.match(/emitFrom\(/g) ?? []).length;
+  assert.equal(hits, 2, `expected defn + 1 call site, found ${hits} occurrences of emitFrom(`);
+});
+
+// ─── the interrupted gap (found while settling R3) ──────────────────────────
+
+test('GUARD: an INTERRUPTED turn is never marked as a usage limit', () => {
+  const body = emitFromBody(codeOf(AGENT_SDK));
+  const at = body.indexOf('markStoppedOnUsageLimit(');
+  const branch = body.slice(Math.max(0, at - 500), at);
+  // Enumerating the reachable (stopReason, isError) pairs while settling R3
+  // showed `error_during_execution` normalizes to ('interrupted', true) — which
+  // the original gate ADMITTED, because it excluded only max_turns. A user who
+  // hits the limit and then interrupts would have their session marked and
+  // auto-resumed against their explicit stop.
+  assert.match(
+    branch,
+    /ev\.stopReason !== 'interrupted'/,
+    'the gate must exclude interrupted turns, not only max_turns',
+  );
+});
+
+// ─── review-74 R4 / R5 ─────────────────────────────────────────────────────
+
+test('GUARD: a repeat limit death refreshes lastStopReasonAt', () => {
+  const code = codeOf(ACTIVITY);
+  const start = code.indexOf('export async function markStoppedOnUsageLimit(');
+  const body = code.slice(start, start + 1800);
+  // A SECOND limit death on an already idle+usage_limit workspace hits
+  // setStatus's no-op guard and writes nothing, so the spread would preserve
+  // the FIRST death's timestamp. #74 is the first consumer to make a RESUME
+  // decision from that field (it is the driver's `blockedAt`), and a stale one
+  // makes canAutoFlushQueue accept a reading older than the real block —
+  // resuming prematurely, straight back into the wall.
+  assert.match(
+    body,
+    /lastStopReasonAt: Date\.now\(\)/,
+    'the timestamp must be refreshed explicitly — setStatus no-ops on a repeat mark',
+  );
+});
+
+test('GUARD: resumes are capped per tick (thundering-herd spread)', () => {
+  const code = codeOf(PROMPT_QUEUE);
+  assert.match(code, /const MAX_RESUMES_PER_TICK = \d+/, 'a per-tick cap must exist');
+  const driver = code.indexOf('async function resumeUsageLimited(');
+  const body = code.slice(driver, driver + 4000);
+  assert.match(body, /budget/, 'the driver must consume a per-tick budget');
+  // The budget must be spent by a real resume, NOT by a `wait` — otherwise a
+  // fleet of not-yet-due workspaces exhausts it and starves the due ones,
+  // turning a spread into a delay.
+  const waitAt = body.indexOf("action === 'wait'");
+  const decAt = body.indexOf('budget--');
+  assert.ok(waitAt !== -1 && decAt !== -1, 'expected both the wait skip and the decrement');
+  assert.ok(
+    decAt > waitAt,
+    'the budget must be decremented AFTER the wait skip, so a wait costs nothing',
   );
 });

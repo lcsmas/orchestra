@@ -153,5 +153,46 @@ console.log('\n[5] decideResume on the two real shapes — observation (b): stag
       queuedCount: 0, freshUsageSaysRecovered: true, now: after }), 'nudge');
 }
 
+// ── 8. review-74 R3: enumerate the reachable (stopReason, isError) pairs ────
+// The review challenged a "MEASURED" label claiming a limit-killed turn-end
+// can carry 'end_turn'. It cannot: toStopReason returns 'error' whenever
+// is_error is truthy, so 'end_turn' implies isError===false. The rig could not
+// see this because the rate_limit_event arm stops at the notice and never
+// drives a turn-end. This arm closes that hole: it enumerates every reachable
+// `result` shape and asserts which ones the gate admits.
+console.log('\n[8] (stopReason, isError) enumeration — the arm review-74 R3 said was missing');
+{
+  const shapes = [
+    ['429 limit',            { type:'result', is_error:true,  api_error_status:429, subtype:'error' }],
+    ['plain error',          { type:'result', is_error:true,  subtype:'error' }],
+    ['user interrupt',       { type:'result', is_error:true,  subtype:'error_during_execution' }],
+    ['clean success',        { type:'result', is_error:false, subtype:'success' }],
+    ['max_turns',            { type:'result', is_error:true,  subtype:'error_max_turns' }],
+  ];
+  const pairs = shapes.map(([name, m]) => {
+    const te = normalizeSdkMessage({ ...m, num_turns: 1, session_id: 's' }, ctx())
+      .find((e) => e.type === 'turn-end');
+    return { name, stopReason: te?.stopReason, isError: te?.isError };
+  });
+  for (const p of pairs) console.log(`       ${p.name.padEnd(16)} (${p.stopReason}, ${p.isError})`);
+
+  check("('end_turn', isError=true) is UNREACHABLE",
+    pairs.filter((p) => p.stopReason === 'end_turn' && p.isError === true).length, 0,
+    "the old MEASURED prose claimed this pair occurs; it cannot — corrected in activity.ts");
+  check('a real limit death IS admitted by the gate',
+    (() => { const p = pairs.find((x) => x.name === '429 limit');
+      return p.stopReason !== 'max_turns' && p.stopReason !== 'interrupted' && p.isError === true; })(),
+    true, 'so detection is NOT broken — only the documentation was wrong');
+  check('a user INTERRUPT is refused by the gate',
+    (() => { const p = pairs.find((x) => x.name === 'user interrupt');
+      return p.stopReason !== 'max_turns' && p.stopReason !== 'interrupted' && p.isError === true; })(),
+    false, 'found while settling R3: the original gate admitted it and would auto-resume a stopped session');
+  check('a clean success is refused',
+    (() => { const p = pairs.find((x) => x.name === 'clean success'); return p.isError === true; })(),
+    false);
+  check('max_turns stays with #69, not #74',
+    (() => { const p = pairs.find((x) => x.name === 'max_turns'); return p.stopReason; })(), 'max_turns');
+}
+
 console.log(`\n${failures === 0 ? 'CHAIN PASS' : `CHAIN FAIL (${failures})`} — ${results.length} checks, ${results.filter(r => r.ok).length} ok`);
 process.exit(failures === 0 ? 0 : 1);

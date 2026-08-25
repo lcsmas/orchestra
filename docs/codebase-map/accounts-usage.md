@@ -203,7 +203,33 @@ off mid-task and had nothing queued.
   head of the existing flusher tick — same inputs, same cadence, and one place
   where the queue-vs-nudge precedence is decided. Candidates are sorted
   coordinators-first so a coordinator is back up before its fleet asks it for
-  work.
+  work, and capped at `MAX_RESUMES_PER_TICK` so a large fleet spreads over
+  successive ticks instead of waking in one pass (the budget is spent only by a
+  real resume — a `wait` costs nothing, or not-yet-due workspaces would starve
+  the due ones).
+- **The failure compensator is load-bearing.** The nudge path clears the pause
+  marker BEFORE waking (so a slow wake is not started twice) and **re-marks on
+  failure**. Without that re-mark a failed wake leaves the workspace outside the
+  `lastStopReason === 'usage_limit'` candidate filter, so no later tick
+  reconsiders it: frozen forever, with the ⏸ glyph gone so nothing on screen
+  says to look. Reachable — `wakeAgentWithPrompt` returns false when a terminal
+  PTY coexists (`isRunning`), which the filter does not exclude. `flushQueuedPrompts`
+  pairs the same ordering with `requeue()`; this path needs its own equivalent.
+- **Session death is a SECOND detection site.** `consume()`'s `finally`
+  (`src/main/agent-sdk.ts`) builds its own `turn-end` and emits it directly,
+  bypassing `emitFrom` where the latch lives (`emitFrom` has exactly one call
+  site). So a rejection followed by the subprocess dying before any `result`
+  must be marked there too, or the die-before-result shape — plausibly the
+  original incident — is never detected. Interrupted sessions are excluded on
+  both paths.
+- **The gate excludes `max_turns` AND `interrupted`.** Enumerated over the
+  reachable `result` shapes: 429-limit and plain error → (`'error'`, true);
+  `error_during_execution` → (`'interrupted'`, true); clean success →
+  (`'end_turn'`, **false**); max_turns → (`'max_turns'`, true). The pair
+  (`'end_turn'`, true) is impossible by construction, since `toStopReason`
+  returns `'error'` whenever `is_error` is truthy. Without the `interrupted`
+  exclusion a user who hits the limit and then stops the turn would be
+  auto-resumed against their own interrupt.
 - **Surface**: the sidebar/inbox/palette/Resources glyph gains a pause shape
   (`.ws-glyph-usagelimit`, muted rather than red — nothing is wrong and nobody
   is needed), and the tooltip reads `⏸ limit reached — resumes ~6pm`, dropping

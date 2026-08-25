@@ -537,9 +537,17 @@ function emitFrom(session: Session, msg: SdkMessage): void {
     // Requires `isError`: a turn that hit the limit, recovered and still
     // completed normally is not a stopped session and must not be marked as
     // one (the SDK can emit a rejection the CLI then retries through).
+    // `'interrupted'` is excluded for the same reason as `max_turns`, and the
+    // omission was a real defect (found while settling review-74 R3 by
+    // enumerating the reachable (stopReason, isError) pairs): a turn that hits
+    // the limit and is then INTERRUPTED BY THE USER normalizes to
+    // `stopReason: 'interrupted', isError: true` — which the previous gate
+    // admitted. That marked the session `usage_limit` and auto-resumed it
+    // against the human's explicit stop.
     if (
       ev.type === 'turn-end' &&
       ev.stopReason !== 'max_turns' &&
+      ev.stopReason !== 'interrupted' &&
       ev.isError &&
       session.rateLimitHit
     ) {
@@ -1131,6 +1139,25 @@ async function consume(session: Session): Promise<void> {
         durationMs: null,
       });
       emit(session.wsId, turnEnd);
+      // #74 (review-74 R2): this synthetic turn-end BYPASSES `emitFrom`, where
+      // the usage-limit latch lives — `emitFrom`'s only call site is the stream
+      // loop, and this path builds and emits its own event directly. Without
+      // this check the sequence
+      //     rate_limit_event{rejected} → subprocess DIES before any `result`
+      // is never marked `usage_limit` and is therefore never auto-resumed. It
+      // satisfies every gate in the feature; it simply never reaches them.
+      //
+      // That is plausibly the ACTUAL wave-6 shape this ticket exists to fix:
+      // the coordinator's CLI exited rather than returning a result, so the
+      // motivating incident may be exactly the case the first cut missed.
+      //
+      // `endedByInterrupt` is excluded deliberately: a user-requested stop is
+      // not a limit death, and auto-resuming it would restart a session the
+      // human just interrupted.
+      if (!endedByInterrupt && session.rateLimitHit) {
+        void markStoppedOnUsageLimit(session.wsId, session.rateLimitHit.resetsAtMs);
+      }
+      session.rateLimitHit = undefined;
       driveStatusFromEvent(session, turnEnd);
     }
     // Release any waiter and drop the session; the renderer can restart it.
