@@ -107,7 +107,14 @@ They coincide in the id they compute and differ in why — hence
 `previousRewindId()` and `forkTargetId()` are deliberately kept as separate
 functions rather than shared.
 
-## Fact 3 — the fork lands in the SOURCE project dir, and that is FINE
+## Fact 3 — the fork lands in the SOURCE project dir, and `--resume` STILL FINDS IT
+
+> **Scope warning (added 2026-08-25).** This Fact is about `--resume` and NOTHING
+> else. An earlier heading read "and that is FINE", which generalised a
+> `--resume`-only measurement into a claim about every consumer — and Orchestra's
+> own history backfill does not use `--resume`. See **Fact 6**: the fork must be
+> relocated, or it opens blank. Keep the scope of a headline no wider than the
+> arm that was actually run.
 
 `forkSession` writes the new `.jsonl` into the **source session's**
 `projectDir` (`sdk.mjs` `ZW()` → `cf(xa(o.projectDir, ...))`), and the copied
@@ -183,18 +190,76 @@ This is the caveat accepted and declared as Q1b on ledger #77. It is immaterial
 for #18 because the forked workspace has its own git worktree as the safety net —
 but it is stated in the UI affordance copy and here, never silently.
 
-## Fact 5 — every uuid is REMAPPED, so `rewindId`s do not survive
+## Fact 5 — every uuid is REMAPPED (but this costs Orchestra nothing)
 
 Copied entries get fresh uuids plus a `forkedFrom: {sessionId, messageUuid}`
 back-reference. Measured on three forks: **0** source user uuids survive
 verbatim; 8 / 13 / 16 entries carry `forkedFrom`.
 
-Consequence for Orchestra: the forked workspace's backfilled history carries **no
-Orchestra-minted `rewindId`s**, so its historical bubbles render **without**
-rewind or fork affordances until the user sends a new turn (which mints one).
-This is the pre-existing behaviour for un-idd history — `RewindControl` renders
-nothing without an id — so it degrades gracefully rather than breaking, but it is
-a real v1 gap.
+**Correction (2026-08-25, found by review-18).** An earlier version of this Fact
+concluded that the fork therefore "carries no Orchestra-minted `rewindId`s" and
+renders without rewind/fork affordances. **The observation was right and the
+consequence was wrong.** `agent-transcript.ts:263` mints `rewindId` from
+*whatever uuid a user line carries* — remapped or not — and the fork's user
+lines DO carry uuids:
+
+```
+fork user lines: 3 | with non-empty uuid: 3
+CONTROL non-user lines with uuid: 14      (the instrument reads uuids fine)
+```
+
+Only *verbatim survival of SOURCE uuids* fails, and nothing in the backfill
+depends on that. The affordances really were missing in the first build of this
+feature — but because of **Fact 6 (the transcript was unreachable)**, not
+because of the remap. A wrong mechanism recorded here is exactly what would stop
+the next reader from finding the real one, which is why it is corrected in place
+rather than quietly dropped.
+
+## Fact 6 — the fork MUST be relocated into the fork workspace's project dir
+
+`forkSession` always writes next to the SOURCE transcript. The SDK's `dir`
+option only LOCATES the source; the write goes to the source's `projectDir`
+(source-read of `sdk.mjs` `ZW()`, and observed on disk). Fact 3 established that
+this is fine **for `--resume`** — and that is exactly as far as the evidence
+went. Generalising it to "and that is FINE" was an over-broad headline.
+
+Orchestra's own history backfill does NOT use `--resume`. `sdkHistory` reads
+`transcriptDir(ws)/<sdkSessionId>.jsonl`, keyed on `ws.worktreePath`, so for a
+fork workspace (different worktree ⇒ different mangled project dir) **both** its
+lookups miss:
+
+```
+existsSync(<forkWs dir>/<forkId>.jsonl) = false   <- primary lookup MISSES
+CONTROL   existsSync(<srcDir>/<forkId>) = true    <- the fork WAS written
+listSessions({dir: forkWorktree})       = 0       <- fallback MISSES
+CONTROL   listSessions({dir: srcWorktree}) = 4    <- the instrument works
+```
+
+`sdkHistory` then returns `[]`, and an empty backfill is **silent** — the
+"Couldn't load the conversation history" notice only fires on a THROW. So the
+fork opened blank, permanently, while the model still had the history via
+`--resume`. A second defect rode along: the fork became the NEWEST session in the
+SOURCE's project dir, so the source's own `claude --continue` and
+`newestResumeTokenCount` would resume the FORK's branch.
+
+**The fix — move the file after forking — was measured on every axis before
+being adopted, including the one that could have killed it (is a relocated
+transcript still resumable?):**
+
+```
+moved to fork dir       : true
+gone from source dir    : true     <- the source's --continue is no longer hijacked
+listSessions(FORK_WT)   : 1        (was 0)
+listSessions(SRC_WT)    : 4        (control)
+RESUMED after move      : "ALPHA"  <- still resumable, correct codeword
+turns landing in forkDir: 1 file
+```
+
+**Ordering trap in the fix**: the destination must be computed from a workspace
+record that already carries the inherited `accountId`. `transcriptDir` falls back
+to `~/.claude` when `accountId` is absent, and `createWorkspace` pins from the
+REPO — so deriving the path from the raw new record would move the transcript
+into the DEFAULT account's tree, where the fork still could not see it.
 
 ## What #18 builds on this
 

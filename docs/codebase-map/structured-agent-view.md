@@ -122,18 +122,26 @@ truncates and mutates nothing, so there is no teardown to race.
   then `createWorkspace`s with `baseBranch` = the ORIGINAL workspace's current
   branch, and seeds the new workspace's `sdkSessionId` with the fork so opening
   its structured view resumes the branched conversation.
-- **The fork file lands in the SOURCE project dir** and keeps the source `cwd`,
-  which looks fatal for a new-worktree workspace but is not: `--resume <uuid>`
-  searches all project directories. Measured through Orchestra's own option set,
-  with controls both ways.
+- **The fork file lands in the SOURCE project dir, so `sdkFork` RELOCATES it**
+  into the fork workspace's own project dir (`transcriptDir(forkedPinned)`).
+  `--resume <uuid>` searches all project directories and would have found it
+  either way — but **`sdkHistory` does not use `--resume`**: it reads
+  `transcriptDir(ws)/<sdkSessionId>.jsonl`, keyed on `ws.worktreePath`, so
+  without the move both its lookups miss and the fork opens **blank and
+  silently** (an empty backfill is not an error). The move also stops the fork
+  becoming the NEWEST session in the SOURCE's dir, which would hijack the
+  source's own `claude --continue`. Compute the destination from a record that
+  already carries the inherited `accountId` — `transcriptDir` falls back to
+  `~/.claude` without one.
 - **Two DECLARED v1 gaps, stated in the affordance copy and the docs, never
   silently:** the fork starts with **no file-checkpoint/undo history** (inherent
   to `forkSession`; the new git worktree is the safety net instead), and the
   **conversation/file skew** — the conversation truncates at the fork point while
   the worktree is cut from the branch's CURRENT tip. v1 makes no attempt to
-  reconstruct historical file state. A third consequence: `forkSession` REMAPS
-  every uuid, so the forked workspace's backfilled history carries no
-  `rewindId`s and renders without these affordances until the user sends a turn.
+  reconstruct historical file state. this message — specifically the last COMMIT on it, so uncommitted work is not
+  carried. v1 makes no attempt to reconstruct historical file state. Uuids are
+  REMAPPED by the fork, but that costs nothing: `agent-transcript.ts` mints
+  `rewindId` from whatever uuid a user line carries, remapped or not.
 
 Measured semantics, controls and the surviving-mutant report:
 `docs/spikes/fork-session-findings.md`.
