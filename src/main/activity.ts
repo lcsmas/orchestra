@@ -249,19 +249,39 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
  *
  *  ## Why this exists rather than riding the normal turn-end path
  *
- *  The synthetic `turn-end` that `consume()`'s catch/finally emits hardcodes
- *  `stopReason: 'error'` — it cannot distinguish a budget death from any other
- *  crash, because at that point all it has is a thrown Error. So on the REAL
- *  failure path the workspace was marked `'error'` and the max_turns surface
- *  (the octagon glyph, the "send a message to resume it" tooltip) was
- *  UNREACHABLE. The first version of this fix passed its E2E only because the
- *  drive SEEDED `lastStopReason` directly — the disclosed gap in its own
- *  NOT VERIFIED list was exactly where the defect lived.
+ *  The reason is already known upstream: `toStopReason`
+ *  (`src/shared/agent-events.ts`) NORMALIZES a result carrying
+ *  `subtype: 'error_max_turns'` (or `stop_reason: 'max_turns'`) into a
+ *  `turn-end` event with `stopReason: 'max_turns'`, and `emitFrom`
+ *  (`src/main/agent-sdk.ts`) keys on exactly that normalized value before
+ *  calling this. Nothing here re-derives it from CLI text.
  *
- *  The SDK path knows the difference (it matched the CLI's "maximum number of
- *  turns" text and set `sawMaxTurns`), so it tells the store here, overwriting
- *  the coarser `'error'` the generic turn-end just wrote. Status stays `idle` —
- *  a stopped session is idle; the REASON is the orthogonal axis. */
+ *  What this call adds is REACH. The same reason would otherwise travel only
+ *  via `driveStatusFromEvent`, which is gated on `session.driveStatus` — TRUE
+ *  only when a terminal PTY coexists. In the plain structured-view
+ *  configuration the SDK's own shell hooks own the events spool instead, and
+ *  they carry no reason field at all: MEASURED, 8 consecutive exhaustions in
+ *  that configuration wrote no reason ANYWHERE, leaving only a `[WARN]` in the
+ *  app log — verbatim the bug #69 reports. So `emitFrom` calls this OUTSIDE
+ *  that gate, the same exemption `markLooping` takes and for the same reason:
+ *  the gate exists to stop double-DRIVING the status dot, while this is a
+ *  store field with its own no-change guard (`setStatus` returns
+ *  `changed: false` when neither the status nor the reason moved), so the two
+ *  paths overlap safely.
+ *
+ *  Status stays `idle` — a stopped session is idle; the REASON is the
+ *  orthogonal axis, never a sixth `WorkspaceStatus`.
+ *
+ *  ## History worth keeping (do not delete this paragraph)
+ *
+ *  The first version of this fix passed its E2E only because the drive SEEDED
+ *  `lastStopReason` directly — it proved the renderer renders a field, and was
+ *  structurally blind to the producer being broken. The disclosed gap in that
+ *  attempt's own NOT VERIFIED list ("nothing proves activity.ts actually writes
+ *  lastStopReason on a real max_turns event") was EXACTLY where the defect
+ *  lived. A NOT-VERIFIED entry naming the defect class under test is a STOP,
+ *  not a footnote. Never accept a seeded `lastStopReason` as proof of this
+ *  seam; drive the producer. */
 export async function markStoppedOnMaxTurns(id: string): Promise<void> {
   await setStatus(id, 'idle', 'max_turns');
 }
