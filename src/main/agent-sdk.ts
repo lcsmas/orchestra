@@ -23,6 +23,7 @@ import type {
 import { platform } from './platform';
 import { store } from './store';
 import { log, scoped } from './logger';
+import { decideGateRelease } from '../shared/session-wedge.ts';
 
 /** SDK-scoped logger. The structured agent view spans two processes (events are
  *  produced here, folded in the renderer), so attributing a wrong pane to the
@@ -302,6 +303,38 @@ interface Session {
    *  its NEXT real turn (never a turn of their own). {@link sdkSend} drains this and
    *  prepends it (as `<local-command-stdout>` blocks) to the next user message. */
   pendingLocalContext: string[];
+  /** Epoch ms of the last message observed on the SDK stream for this session,
+   *  and the id of the turn the gate is currently held for (issue #90).
+   *
+   *  ## Why a PROGRESS stamp and not an elapsed-time bound
+   *
+   *  `session.turnGate` is released on the normal path in exactly ONE place —
+   *  {@link consume}'s `msg.type === 'result'` branch. A turn that is yielded
+   *  but whose stream never produces a `result` therefore parks
+   *  {@link promptStream} at `await turnInFlight` FOREVER: `session.pump` is
+   *  null (the generator is at the gate, not the pump), so every later
+   *  `sdkSend` push is a no-op wake, every `sdkDeliverConfirmed` times out and
+   *  is withdrawn unstarted, and the messages park in the durable inbox — which
+   *  only drains on a turn that can never start. That is the self-sustaining
+   *  freeze issue #90 exists to kill; both 2026-08-25 field captures match it
+   *  observable-for-observable (see docs/research/issue-90-session-wedge.md).
+   *
+   *  The bound is on PROGRESS, never on elapsed time, and that distinction is
+   *  load-bearing rather than stylistic. A wall-clock bound cannot tell a DEAD
+   *  turn from a SLOW-BUT-LIVE one — they look identical to a timer — so it
+   *  would cut off exactly the legitimate long turn (a full build, a test
+   *  suite, a headless E2E boot) that this codebase runs constantly. Issue #62
+   *  shipped precisely that mistake in a different subsystem and made a live
+   *  reader truncate at the byte-identical length of the original bug. So the
+   *  stamp is refreshed by EVERY stream message, and the gate is only ever
+   *  force-released after a long silence with no stream activity at all — a
+   *  turn that is still emitting is never touched, however long it runs. */
+  lastStreamAt: number;
+  /** The `uuid` of the turn {@link Session.turnGate} is currently held for, so
+   *  a force-release can prove it is releasing the turn it observed going
+   *  silent rather than a later, healthy one that reused the gate slot. Null
+   *  whenever no turn is in flight. */
+  gateTurnUuid: string | null;
   /** Set by {@link sdkInterrupt} just before calling the SDK's `interrupt()`, so
    *  the consume loop's catch can label the resulting throw "interrupted" from
    *  OUR OWN action instead of pattern-matching /abort/ against arbitrary error
@@ -1006,6 +1039,11 @@ async function* promptStream(session: Session): AsyncGenerator<SDKUserMessage> {
     turnInFlight = new Promise<void>((res) => {
       session.turnGate = res;
     });
+    // Remember WHICH turn the gate is held for (issue #90) so a force-release
+    // can prove it is releasing the turn it watched go silent, never a later
+    // healthy turn that reused the slot.
+    session.gateTurnUuid = msg.uuid ?? null;
+    session.lastStreamAt = Date.now();
     // This entry is now genuinely the session's turn — tell anyone who is
     // holding a delivery receipt for it (issue #57 fault b). Settled BEFORE the
     // yield: the yield hands control to the SDK and does not return until the
@@ -1022,6 +1060,10 @@ async function consume(session: Session): Promise<void> {
   try {
     for await (const raw of session.q) {
       const msg = raw as unknown as SdkMessage;
+      // Progress stamp (issue #90): refreshed by EVERY message, so a turn that
+      // is still emitting anything at all is provably alive and the gate
+      // watchdog will never touch it. See Session.lastStreamAt.
+      session.lastStreamAt = Date.now();
       emitFrom(session, msg);
       // Persist the SDK session id the first time the stream reports it, so
       // re-opening the structured view resumes THIS conversation (see the
@@ -1071,6 +1113,7 @@ async function consume(session: Session): Promise<void> {
         // docs/research/issue-69-maxturns-findings.md.
         const openNext = session.turnGate;
         session.turnGate = null;
+        session.gateTurnUuid = null;
         openNext?.();
         // Re-read the authoritative context figure now the turn has settled.
         // Fire-and-forget: the turn is already complete and the gauge updating
@@ -1307,6 +1350,8 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     coalesce: new Set(),
     pump: null,
     turnGate: null,
+    lastStreamAt: Date.now(),
+    gateTurnUuid: null,
     pending: new Map(),
     pendingDialogs: new Map(),
     pendingElicitations: new Map(),
@@ -2417,6 +2462,89 @@ function dequeueUnstartedTurn(wsId: string, uuid: string): void {
   void dropPendingPrompt(wsId, withdrawnText);
   emitQueueUpdate(session);
   log.info(`agent-sdk: withdrew unstarted turn ${uuid} for ${wsId} after delivery timeout`);
+}
+
+/** ── Issue #90: the stranded-turn-gate watchdog ─────────────────────────────
+ *
+ *  Read `src/shared/session-wedge.ts`'s module header for the full mechanism.
+ *  The short version: `session.turnGate` is released on the normal path in
+ *  exactly ONE place — consume()'s `result` branch — so a turn whose stream
+ *  never produces a `result` parks `promptStream` at `await turnInFlight`
+ *  forever, and every later send is silently no-op'd because `session.pump` is
+ *  null (the generator is parked at the GATE, not at the pump).
+ *
+ *  This is the ONE-SHOT observation half: it reports what the gate looks like
+ *  right now, so the caller can compare two observations separated in time and
+ *  prove the SAME turn was silent across both. A single sample cannot
+ *  distinguish "wedged" from "between messages", which is why the decision
+ *  function demands a matching turn uuid. */
+export function sdkGateProbe(
+  wsId: string,
+): {
+  gateHeld: boolean;
+  turnUuid: string | null;
+  lastStreamAt: number;
+  queuedCount: number;
+} | null {
+  const session = sessions.get(wsId);
+  if (!session) return null;
+  return {
+    gateHeld: session.turnGate !== null,
+    turnUuid: session.gateTurnUuid,
+    lastStreamAt: session.lastStreamAt,
+    queuedCount: session.queue.length,
+  };
+}
+
+/** Force-release a stranded turn gate so the queued turns can drain.
+ *
+ *  Returns true iff a gate was actually released. The decision itself lives in
+ *  the pure `decideGateRelease`; this function only supplies live state and
+ *  performs the effect, so the policy stays unit- and mutation-testable without
+ *  an Electron session.
+ *
+ *  NON-DESTRUCTIVE BY DESIGN: releasing the gate does not kill the turn, touch
+ *  the transcript, or discard anything. It lets `promptStream` proceed to the
+ *  next queued turn — exactly what happens when a turn ends normally. No
+ *  message is lost by this path, which is what makes it safe to run
+ *  automatically without a human in the loop. */
+/** Test/rig seam: age this session's stream-progress stamp by `ms`, so a rig
+ *  can exercise the REAL {@link sdkReleaseStrandedGate} silence bound without
+ *  waiting out ten real minutes. Returns false when there is no session.
+ *
+ *  Deliberately moves the CLOCK STAMP rather than shortening the window: the
+ *  rig then drives the same comparison, against the same constant, that ships. */
+export function __backdateStreamForTests(wsId: string, ms: number): boolean {
+  const session = sessions.get(wsId);
+  if (!session) return false;
+  session.lastStreamAt -= ms;
+  return true;
+}
+
+export function sdkReleaseStrandedGate(wsId: string, observedTurnUuid: string | null): boolean {
+  const session = sessions.get(wsId);
+  if (!session) return false;
+  const now = Date.now();
+  const release = decideGateRelease({
+    gateHeld: session.turnGate !== null,
+    observedTurnUuid,
+    currentTurnUuid: session.gateTurnUuid,
+    lastStreamAt: session.lastStreamAt,
+    stopping: session.stopping,
+    queuedCount: session.queue.length,
+    now,
+  });
+  if (!release) return false;
+  log.warn(
+    `agent-sdk: releasing STRANDED turn gate for ${wsId} (turn=${observedTurnUuid}, ` +
+      `silent ${Math.round((now - session.lastStreamAt) / 1000)}s, ` +
+      `${session.queue.length} turn(s) queued) — issue #90`,
+  );
+  const openNext = session.turnGate;
+  session.turnGate = null;
+  session.gateTurnUuid = null;
+  openNext?.();
+  return true;
 }
 
 /** Start (or reuse) a structured session for `wsId` and deliver `text` as its
