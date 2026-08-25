@@ -222,6 +222,7 @@ let truncated = 0;
 let badCode = 0;
 let inexact = 0;
 let notAPrefix = 0;
+let silentTruncation = 0;
 for (let i = 0; i < RUNS; i += 1) {
   const r = await run(['verify-landed', 'some-id'], `big-${i}`);
   const bytes = r.buf.length;
@@ -237,13 +238,25 @@ for (let i = 0; i < RUNS; i += 1) {
   if (isTrunc) truncated += 1;
   if (isTrunc && !isPrefix) notAPrefix += 1;
   if (r.code !== 2) badCode += 1;
+  // ASSERT 3, with a LIVE subject: this is the arm that actually truncates on a
+  // broken build (master: 7/12), so the pair is reachable here and the check is
+  // not merely guarding an absent bug.
+  if (isTrunc && r.code === 2) silentTruncation += 1;
   if (!isTrunc && text !== EXPECTED) inexact += 1;
   marks.push(isTrunc ? `${bytes}${isPrefix ? 'T' : 'X'}` : `${bytes}.`);
 }
 console.log(
   `big verdict  TRUNCATED ${truncated}/${RUNS}   RC!=2 ${badCode}/${RUNS}   ` +
-    `short-but-NOT-a-prefix ${notAPrefix}/${RUNS}`,
+    `short-but-NOT-a-prefix ${notAPrefix}/${RUNS}   silent-truncation(RC=2) ${silentTruncation}/${RUNS}`,
 );
+// Reported in BOTH modes. In --expect-broken this is EXPECTED (that is the very
+// shape of the #62 defect and of a8baa2a's regression), so it is informational
+// there and only an error on a build claiming to be fixed.
+if (!EXPECT_BROKEN && silentTruncation !== 0)
+  failures.push(
+    `SILENT TRUNCATION: ${silentTruncation}/${RUNS} big-verdict runs delivered an INCOMPLETE ` +
+      `verdict while exiting RC=2 (the success code). Truncation must never carry a success status.`,
+  );
 console.log(`  runs: ${marks.join(' ')}`);
 
 if (EXPECT_BROKEN) {
@@ -354,6 +367,7 @@ reply = { ok: true, id: 'x', branch: 'child', target: 'main', unmerged: N, commi
   const SLOW_RUNS = Math.min(RUNS, 3);
   const MS_PER_CHUNK = 2500;
   let slowTruncated = 0;
+  let slowSilentTruncation = 0;
   const slowMarks = [];
   for (let i = 0; i < SLOW_RUNS; i += 1) {
     const f = path.join(tmp, `slow-${i}.cjs`);
@@ -397,11 +411,28 @@ reply = { ok: true, id: 'x', branch: 'child', target: 'main', unmerged: N, commi
     });
     const short = r.buf.length < EXPECTED_BYTES;
     if (short) slowTruncated += 1;
-    slowMarks.push(`${r.buf.length}${short ? 'T' : '.'}/${r.ms}ms`);
+    // ASSERT 3: a TRUNCATED verdict must never carry the SUCCESS status.
+    // `code` was captured here and never tested until now — which is exactly
+    // how a8baa2a shipped green while truncating 4/4 at 146496 bytes with
+    // RC=2, through a gate that already had an arm pointed at this arm's
+    // subject. Our own close-out consumes these verdicts: a short commit list
+    // that exits 2 reads as authoritative and is acted on.
+    if (short && r.code === 2) slowSilentTruncation += 1;
+    slowMarks.push(`${r.buf.length}${short ? 'T' : '.'}/RC=${r.code}/${r.ms}ms`);
   }
   console.log(
-    `CONTROL slow live reader (@${MS_PER_CHUNK}ms/chunk)  TRUNCATED ${slowTruncated}/${SLOW_RUNS}   ${slowMarks.join(' ')}`,
+    `CONTROL slow live reader (@${MS_PER_CHUNK}ms/chunk)  TRUNCATED ${slowTruncated}/${SLOW_RUNS}   ` +
+      `silent-truncation(RC=2) ${slowSilentTruncation}/${SLOW_RUNS}   ${slowMarks.join(' ')}`,
   );
+  // Asserted in BOTH modes and independently of the truncation count above: a
+  // build may legitimately truncate a dead reader, but a truncated verdict that
+  // reports SUCCESS is never acceptable, because nothing downstream can detect it.
+  if (slowSilentTruncation !== 0)
+    failures.push(
+      `SILENT TRUNCATION: ${slowSilentTruncation}/${SLOW_RUNS} slow-reader runs delivered an ` +
+        `INCOMPLETE verdict while exiting RC=2 (the success code). A truncated commit list must ` +
+        `carry a failure status — a short list that looks authoritative is acted on.`,
+    );
   // Asserted in BOTH modes. Truncating a LIVE reader is never acceptable: the
   // verdict exits 2 looking successful while the commit list is incomplete,
   // which is strictly worse than hanging (a hang is visible).
