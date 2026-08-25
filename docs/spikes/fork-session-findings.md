@@ -137,6 +137,33 @@ Arm C proves the probe **can fail**; arm D proves it **can see more** than arm B
 reported, so B's truncated recall is a real property of the fork and not a
 limitation of reading across directories.
 
+## Fact 3b — forking a LIVE, mid-stream session is SAFE (measured 2026-08-25)
+
+The UI deliberately leaves the fork control enabled during a turn, so this path
+is reachable and had to be measured rather than assumed.
+
+Probe: a 2-turn session where turn 2 is a long streaming reply ("count slowly
+from 1 to 40"), with `forkSession` fired **on the first streamed delta of that
+turn** — i.e. while the source CLI is actively appending to the very transcript
+the fork reads.
+
+```
+forked WHILE streaming : true      <- the PRECONDITION, printed beside the result
+fork result            : 2b182ff9-…   (no error)
+fork lines             : 3         -> user "Reply with exactly: ALPHA"  (correct cut)
+SOURCE lines after fork: 25        <- positive control: the source kept growing
+```
+
+The precondition is printed next to the verdict on purpose: the first run of
+this probe reported a comfortable "no error" with
+`forked WHILE streaming: false` — it had never provoked the condition, because
+`stream_event` messages require `includePartialMessages`. A probe that does not
+reach the boundary reports a false negative, so the precondition is asserted in
+the same output as the result.
+
+Result: no error, a correctly truncated fork, and an unharmed source that kept
+streaming. No gate is needed on the live path.
+
 ## Fact 4 — file checkpoints ARE discarded (directly observed)
 
 The doc says "Forked sessions start without undo history (file-history snapshots
@@ -209,10 +236,6 @@ appear to pin it.
 - **Forking a session with a COMPACT boundary in it** — untested here, and also
   left open by `rewind-sdk-findings.md`. Unknown whether the fork's slice
   interacts correctly with a compact summary entry.
-- **Forking a LIVE/running session.** Every probe forked a torn-down session.
-  The UI can reach the affordance mid-turn (the control is deliberately not
-  disabled), so the interaction between an in-flight turn appending to the source
-  transcript and a concurrent fork read is **not measured**.
 - **Image / multi-block user turns** — probes sent plain string content only, not
   the base64-image block array `sdkSend` builds.
 - **A per-account config dir other than `~/.claude-mc`.** Only my own account was
