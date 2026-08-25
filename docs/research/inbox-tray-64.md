@@ -219,6 +219,39 @@ Reachability was low but adversary-independent: a markdown rule or setext
 underline of 40+ chars is routine in agent-authored reports, which is this
 channel's entire traffic. 39 `=` was always safe; ≥40 split.
 
+### RESIDUAL (declared, not fixed): a PRE-EXISTING file keeps the hazard
+
+The guard is at WRITE time, so it cannot retroactively repair a file that was
+appended to before the fix shipped. Measured on a reproduction of such a file:
+
+```
+pre-existing (unsanitized) file -> 3 rows, senders ["impl-62", "", "ops"]
+refusing the sender-less orphan  -> "All gates green." destroyed  (still true)
+```
+
+**This is a residual, not a fix.** Anyone reading "R1 fixed" should read it as
+"no NEW park can carry the hazard", not "no inbox file can".
+
+**Why no migration is shipped.** Enumerated every live inbox file on this
+machine at the time of writing (6 files), counting delimiter lines and
+sender-less blocks, with a synthetic hazardous file as a positive control that
+correctly reported 1 orphan:
+
+| file | delimiter lines | blocks | orphans |
+|---|---|---|---|
+| 6 live files | exactly 2 x blocks in every case | 1–7 | **0** |
+
+So the hazard has **zero present instances**. A repair-on-read would mean
+rewriting the user's actual parked mail — a destructive operation on the one
+durable copy — to fix a condition that does not currently exist anywhere. The
+cost/benefit is wrong, and the failure mode of a buggy migration (silently
+mangling real messages) is exactly the failure class this ticket is about.
+
+If a migration is ever wanted, the honest shape is: detect a sender-less block
+whose predecessor parses cleanly, and REFUSE TO ACT on that file in the tray
+(surface "this file looks mis-framed") rather than rewriting it. Declining to
+act is safe; rewriting is not.
+
 ## 8. Accepted gap: CRLF drops peer attribution (R3)
 
 If an inbox file's newlines become CRLF, block counting still works but

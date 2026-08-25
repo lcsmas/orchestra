@@ -184,6 +184,57 @@ test('REGRESSION: a message cannot be delivered as a semantic FRAGMENT', () => {
   assert.equal(rows[0].from, 'ops', 'attribution preserved');
 });
 
+test('BOUNDARY: 39 "=" is left byte-identical; 40+ is defused', () => {
+  // The measured boundary the reviewer carries in: 39 was always safe, >=40
+  // splits. The sanitizer must respect it EXACTLY — defusing 39 would corrupt
+  // legitimate bodies (a 39-char rule is a perfectly ordinary markdown rule),
+  // and missing 40 would leave the hazard live.
+  for (const n of [1, 20, 38, 39]) {
+    const body = `text\n${'='.repeat(n)}\nmore`;
+    assert.equal(sanitizeInboxBody(body), body, `n=${n} must be untouched`);
+    assert.equal(parseInboxBlocks(file(body)).length, 1, `n=${n} never framed anyway`);
+  }
+  for (const n of [40, 41, 60]) {
+    const body = `text\n${'='.repeat(n)}\nmore`;
+    assert.notEqual(sanitizeInboxBody(body), body, `n=${n} must be defused`);
+    // CONTROL: unsanitized really does split, so the fixed arm is measuring something.
+    assert.ok(parseInboxBlocks(file(body)).length > 1, `CONTROL n=${n} splits unsanitized`);
+    assert.equal(parseInboxBlocks(file(sanitizeInboxBody(body))).length, 1, `n=${n} one block after`);
+  }
+});
+
+test('sanitizing does not CORRUPT a legitimate document body', () => {
+  // Defusing must be recoverable and minimal: the only change is one leading
+  // space per delimiter line, so the reader still sees every rule and the
+  // original text is reconstructible.
+  const doc = `report:\n${'='.repeat(45)}\n| a | b |\n${'='.repeat(40)}\ndone`;
+  const safe = sanitizeInboxBody(doc);
+  assert.equal(parseInboxBlocks(file(safe)).length, 1, 'stays one block');
+  assert.ok(safe.includes('='.repeat(45)), 'the 45-rule is still present');
+  assert.ok(safe.includes('='.repeat(40)), 'the 40-rule is still present');
+  assert.ok(safe.includes('| a | b |'), 'content preserved');
+  assert.equal(safe.replace(/^ /gm, ''), doc, 'original recoverable by stripping one leading space');
+});
+
+test('RESIDUAL: a PRE-EXISTING unsanitized file still carries the hazard', () => {
+  // Pins the honest scope of the fix so nobody later reads "R1 fixed" as "no
+  // inbox file can be mis-framed". The guard is at WRITE time; it cannot repair
+  // a file appended to before it shipped. Documented in
+  // docs/research/inbox-tray-64.md (RESIDUAL) — deliberately NOT migrated,
+  // because rewriting a user's real parked mail is more dangerous than the
+  // condition, which has zero measured instances.
+  const D = '='.repeat(40);
+  const legacy =
+    `\n${D}\n[message from agent 'impl-62' (id-1)]\ndiff:\n${D}\nAll gates green.\n${D}\n` +
+    `\n${D}\n[message from agent 'ops' (id-2)]\nMERGE BLOCKED\n${D}\n`;
+  const rows = parseInboxBlocks(legacy);
+  assert.equal(rows.length, 3, 'a legacy file still splits into 3');
+  const orphan = rows.find((b) => !b.from);
+  assert.ok(orphan, 'and still shows a sender-less orphan row');
+  const after = removeBlock(legacy, orphan.text);
+  assert.ok(!after.contents.includes('All gates green.'), 'acting on it still loses text');
+});
+
 test('removeBlock removes only the addressed block and reports it', () => {
   const a = "[message from agent 'alpha' (id-a)]\nfirst\n\nReply with: orchestra message id-a \"<reply>\"";
   const b = "[message from agent 'beta' (id-b)]\nsecond\n\nReply with: orchestra message id-b \"<reply>\"";

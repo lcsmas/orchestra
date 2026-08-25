@@ -104,6 +104,58 @@ test('a block drained under us during the window is reported gone, not written b
   fs.rmSync(path.dirname(file), { recursive: true, force: true });
 });
 
+test('Release all accounts for EVERY block, and a mid-run failure leaves the rest parked', () => {
+  // Re-attacked because it was the highest-risk path found sound in review, so
+  // it is the natural regression target once the framing changed. Models
+  // `releaseAllInboxBlocks`: snapshot the list, then act on each BY TEXT,
+  // treating a miss as 'gone' -> continue.
+  const release = (file: string, deliver: (i: number) => boolean) => {
+    const snapshot = parseInboxBlocks(file);
+    let cur = file;
+    const released: string[] = [];
+    const skipped: string[] = [];
+    snapshot.forEach((b, i) => {
+      const probe = parseInboxBlocks(cur).find((x) => x.text.trim() === b.text.trim());
+      if (!probe) return void skipped.push(b.from || '(orphan)');
+      if (!deliver(i)) return; // stop: the rest must stay parked
+      const r = removeBlock(cur, b.text);
+      if (!r.removed) return void skipped.push(b.from || '(orphan)');
+      cur = serializeInboxBlocks(parseInboxBlocks(r.contents).map((x) => x.text));
+      released.push(b.from || '(orphan)');
+    });
+    return { released, skipped, left: parseInboxBlocks(cur) };
+  };
+
+  const file2 = (() => {
+    const D = '='.repeat(40);
+    const m1 = sanitizeInboxBody(`[message from agent 'impl-62' (id-1)]\ndiff:\n${D}\nAll gates green.`);
+    const m2 = sanitizeInboxBody(`[message from agent 'ops' (id-2)]\nMERGE BLOCKED`);
+    return `\n${D}\n${m1}\n${D}\n` + `\n${D}\n${m2}\n${D}\n`;
+  })();
+
+  // All deliveries succeed: exactly the 2 real messages go, file ends empty.
+  const all = release(file2, () => true);
+  assert.deepEqual(all.released, ['impl-62', 'ops']);
+  assert.deepEqual(all.skipped, []);
+  assert.equal(all.left.length, 0, 'file drained');
+
+  // First succeeds, second fails: the survivor must remain PARKED, never fired
+  // at a session that stopped accepting turns.
+  const partial = release(file2, (i) => i === 0);
+  assert.deepEqual(partial.released, ['impl-62']);
+  assert.equal(partial.left.length, 1, 'the undelivered message is still parked');
+  assert.equal(partial.left[0].from, 'ops');
+
+  // Nothing may be silently unaccounted for in either run.
+  for (const r of [all, partial]) {
+    assert.equal(
+      r.released.length + r.skipped.length + r.left.length,
+      2,
+      'every block is released, skipped or still parked — never vanished',
+    );
+  }
+});
+
 test('SOURCE-BINDING GUARD: both mutators really do re-read before writing', () => {
   // This file MODELS inbox-tray.ts rather than importing it (Electron deps), and
   // a model that was faithful when written goes stale silently. So assert the
