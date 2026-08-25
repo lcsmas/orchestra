@@ -294,6 +294,24 @@ test('#85 GUARD: the per-turn runaway backstop survives (no role-based raise)', 
 // Scoped deliberately to the ONE case #85 changed. It is NOT coverage for
 // finishedToast as a whole — the other branches are untouched and stay
 // unguarded rather than being pinned by a test that never reviewed them.
+//
+// LIMITATION, stated because a source assertion normally has a fatal one:
+// this checks the SOURCE TEXT, it does not EXECUTE finishedToast. The usual
+// failure of that idiom is that it goes green across a RELOCATION of the code
+// it guards — review-88's R3 finding, on this same file one ticket ago, where
+// a delegating shim passed 4/4 guards with the feature dead.
+//
+// This guard does NOT have that hole, and it was mutation-tested for exactly
+// it rather than argued:
+//   M10  move the copy to a helper, leave `case 'max_turns': return
+//        maxTurnsToast(name)` — feature still ALIVE elsewhere  -> FAILS (killed)
+//   M11  the true R3 shape: same shim, helper returns the OLD refuted copy —
+//        feature DEAD                                          -> FAILS (killed)
+// It survives relocation-blindness because the assertions run against the
+// `case 'max_turns':` ARM extracted by indexOf, not against the file: the
+// binding is the STRUCTURAL relationship "this copy sits inside this arm",
+// so moving the string out of the arm breaks the check by construction.
+// What it still cannot see: whether the toast is ever RENDERED.
 
 test('#85: finishedToast max_turns toast is turn-scoped, not session-terminal', () => {
   const code = codeOf(ACTIVITY);
