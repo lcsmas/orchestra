@@ -37,6 +37,7 @@
     "test:wiring": "node scripts/verify-answerable-wiring.mjs",
     "test:fixtures": "node scripts/fixtures/self-test.mjs",
     "test:cli-pipe": "pnpm run build:cli && node scripts/verify-verify-landed-exit.mjs && node scripts/verify-cli-pipe-flush.mjs",
+    "test:rig-selftest": "bash scripts/run-rig-selftest.sh",
     "release": "bash scripts/release.sh"
   },
   "devDependencies": {
