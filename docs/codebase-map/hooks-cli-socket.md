@@ -32,7 +32,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | `/promote` | `id` | `{ ok, id?, branch?, kind? }` |
 | `/attach` | `id` (+ `parentId?`) | `{ ok, id?, parentId? }` |
 | `/setRepoAssociation` | `id` (+ `repoPath?`) | `{ ok, id?, branch?, repoAssociation? }` — files an orchestrator under a repo's sidebar section (omit `repoPath` to clear). DISPLAY ONLY: writes `repoAssociation`, never `repoPath`, so the coordinator stays repo-less and `/spawn` still won't inherit from it. |
-| `/verifyLanded` | `id` (+ `from?`, `into?`) | `{ ok, id?, branch?, target?, unmerged?, commits? }` — coordinator close-out: are all commits on the child's branch tip on the target (explicit `into` ref, else the `from` caller's branch)? |
+| `/verifyLanded` | `id` (+ `from?`, `into?`) | `{ ok, id?, branch?, target?, unmerged?, commits? }` — coordinator close-out: are all commits on the child's branch tip on the target (explicit `into` ref, else the `from` caller's branch)? The route never throws and answers `{ ok }`; the CLI maps that to exit `0` LANDED / `2` NOT LANDED / `1` could-not-check (see the `verify-landed` entry below). |
 | `/link` | `id` (+ `prUrls?: string[]`, `linearKey?`, `clear?`) | `{ ok, prUrls?, linearKey?, cleared? }` — attach the PR(s) / Linear issue this workspace is working on. The **only** writer of `linkedPrs`/`linkedLinearKey`; both badges are agent-reported, never derived. Validates strictly (`parsePrUrl`, `parseLinearTicketRef`) and rejects a branch name or non-PR URL. PRs **accumulate**: each call appends, deduped on `prLinkKey` (`owner/repo#number`), because one workspace can own several PRs across different repos. `clear:true` + a *named* `prUrls` drops those PRs; `prUrls: []` (flag present, no value) drops them **all** — so the route must not collapse an empty array to `undefined`, which would silently turn clear-all into a no-op. `prUrls` in the reply is the resulting full set, not the delta. |
 | `/whoami` | `id` | `{ ok, id?, name?, branch?, kind?, orchestrator?, parentId?, repoPath?, baseBranch?, linkedPrUrls?: string[], linkedLinearKey? }` — a workspace's own record; the only in-band way an agent learns its `parentId` (peers excludes the caller). The two link fields are what `link-instruction.sh` reads to decide whether to nudge. |
 | `/status` | `id` (+ `text?`) | `{ ok, statusText? }` — set/clear the workspace's agent-authored one-line status note (`Workspace.statusText`, shown under the sidebar row and in `/peers`). Empty/absent `text` clears; sanitized to a single ≤160-char line (`shared/status-text.ts`). |
@@ -187,8 +187,21 @@ over every live session; `--plugins` also reloads plugins, which unlike plain
 it is visible WHICH sessions picked the install up, and exits non-zero only on a
 real failure — "no live session" is a normal outcome, not an error),
 `promote <id>`, `attach <id> <parentId>`, `detach <id>`, `verify-landed <id>
-[--into <branch>]` (close-out check: exits 0 only when every commit on the
-workspace's branch tip is on the target — the caller's branch by default),
+[--into <branch>]` (close-out check: is every commit on the workspace's branch
+tip on the target — the caller's branch by default? **Exit codes: `0` LANDED ·
+`2` NOT LANDED · `1` could-not-check** — unknown/missing id, no git branch, no
+target branch, different repos, or git itself failed. The `1`/`2` split is the
+point: a coordinator gating close-out must tell "this branch has unmerged work"
+apart from "I never actually checked", and collapsing them lets a broken
+invocation read as a verdict. The NOT-LANDED text goes to **stdout** and is
+unchanged; errors go to stderr via `fail()`. Terminating is done by throwing
+(`exitWith`/`CliExit`, `cli/index.ts`) — a bare `process.exit()` does not
+terminate synchronously inside the socket-response callback in the Electron
+main process, so it used to fall through into the next `switch` case and exit 0,
+printing a whoami record under the verdict (issue #59; same class as the
+v0.5.209 `fail()` bug). Gate: `scripts/verify-verify-landed-exit.mjs`, which
+drives the built bundle under real Electron — a plain-Node unit test cannot
+observe this),
 `whoami` (this workspace's own record: kind, orchestrator role, parent, and the
 `pr`/`linear` link rows), `link [--pr <url>]... [--linear <KEY>] [--clear] [id]`
 (report which PR(s) / Linear issue this workspace is working on — defaults to
