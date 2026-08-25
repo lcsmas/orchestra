@@ -173,6 +173,39 @@ function finishedToast(reason: AgentStopReason | undefined, name: string): {
   }
 }
 
+/** What `fireFinished` should record as the stop reason for a turn that just
+ *  ended — and, critically, what it must NOT erase.
+ *
+ *  The `max_turns`/`error` allowlist is #69's: those two are worth showing, and
+ *  every other reason passes `null` so a clean finish CLEARS a stale marker.
+ *
+ *  The `usage_limit` clause is #74's, and it exists because that rule is WRONG
+ *  for a limit death. MEASURED, not reasoned: a limit-killed turn's own
+ *  `turn-end` carries `stopReason` `'error'`/`'end_turn'`/`undefined` — never
+ *  `'usage_limit'`, which is written out-of-band by `markStoppedOnUsageLimit`
+ *  from a latched `rate_limit_event`. So this function runs AFTER that marker
+ *  is set and, under the old allowlist, overwrote it with `'error'` or cleared
+ *  it outright. Either way `lastStopReason` stops being `'usage_limit'`, the
+ *  resume driver's filter matches nothing, and **auto-resume silently never
+ *  fires** — the whole feature dead, with every unit test still green, because
+ *  the defect lives in a consumer downstream of the guard.
+ *
+ *  So: never clear a `usage_limit` marker here. Only the resume driver
+ *  (`clearStopReason`) and a genuinely new turn (`submit`/`pretool`, which pass
+ *  `null` on the RUNNING transition) may retire it — both of which mean the
+ *  session actually moved on. */
+function finishedStopReason(
+  id: string,
+  stopReason?: AgentStopReason,
+): AgentStopReason | null | undefined {
+  if (stopReason === 'max_turns' || stopReason === 'error' || stopReason === 'usage_limit') {
+    return stopReason;
+  }
+  // No reason worth recording of its own. Preserve an existing usage-limit
+  // pause rather than clearing it (see above); anything else still clears.
+  return store.getWorkspace(id)?.lastStopReason === 'usage_limit' ? undefined : null;
+}
+
 function fireFinished(id: string, stopReason?: AgentStopReason): void {
   // Focus of the Electron window (the seam guards a destroyed window
   // internally — an isFocused throw here used to abort the whole spool drain
@@ -195,7 +228,7 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
   void setStatus(
     id,
     'idle',
-    stopReason === 'max_turns' || stopReason === 'error' ? stopReason : null,
+    finishedStopReason(id, stopReason),
   ).then((res) => {
     if (!res) return;
     const { ws, changed } = res;

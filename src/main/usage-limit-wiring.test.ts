@@ -335,3 +335,47 @@ test('GUARD: the glyph surface types its prop from the shared predicate', () => 
     'the prop must be typed from the shared union, not a local literal',
   );
 });
+
+// ─── The consumer that silently undid the whole feature ─────────────────────
+//
+// Found by tracing DOWNSTREAM of a guard that was itself correct, which is the
+// only way this class of defect surfaces: every policy test stayed green while
+// auto-resume could never fire once.
+//
+// The mechanism, measured on the real code rather than reasoned about: a
+// limit-killed turn's own `turn-end` carries stopReason 'error' / 'end_turn' /
+// undefined — NEVER 'usage_limit', which is written out-of-band by
+// markStoppedOnUsageLimit from a latched rate_limit_event. fireFinished then
+// runs on that same turn-end, and its #69 allowlist mapped every non-
+// max_turns/error reason to `null` — i.e. CLEAR. So the marker was overwritten
+// with 'error' or erased, `lastStopReason` stopped being 'usage_limit', and the
+// resume driver's filter matched nothing. Feature dead, tests green.
+
+test('GUARD: a finished turn must NOT erase a usage_limit pause marker', () => {
+  const code = codeOf(ACTIVITY);
+  const start = code.indexOf('function finishedStopReason(');
+  assert.notEqual(
+    start,
+    -1,
+    'finishedStopReason() not found — fireFinished must not inline the #69 allowlist, ' +
+      'which clears a usage_limit marker and kills auto-resume silently',
+  );
+  const body = code.slice(start, start + 800);
+  // The reason must survive when it arrives explicitly...
+  assert.match(body, /stopReason === 'usage_limit'/, 'must record an explicit usage_limit');
+  // ...AND, the load-bearing half, must be PRESERVED when the turn-end carries
+  // no reason of its own — which is the actual observed shape.
+  assert.match(
+    body,
+    /lastStopReason === 'usage_limit'/,
+    'must read the CURRENT marker and preserve it rather than clearing unconditionally',
+  );
+  // fireFinished must route through it, not keep its own copy of the allowlist.
+  const fired = code.slice(code.indexOf('function fireFinished('), code.indexOf('function fireFinished(') + 1500);
+  assert.match(fired, /finishedStopReason\(id, stopReason\)/, 'fireFinished must delegate');
+  assert.doesNotMatch(
+    fired,
+    /stopReason === 'max_turns' \|\| stopReason === 'error' \? stopReason : null/,
+    'the inlined allowlist must be gone, not merely shadowed',
+  );
+});
