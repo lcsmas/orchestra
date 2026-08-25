@@ -332,6 +332,24 @@ export interface OrchestraAPI {
   /** Preview a rewind without changing anything (SDK `dryRun`) — backs the
    *  confirmation's "N files, +x/−y" line and its can't-restore caveat. */
   agentSdkRewindPreview: (wsId: string, rewindId: string) => Promise<AgentRewindPreview>;
+  /** **Resume from here** (#18) — fork the conversation at a chosen point into
+   *  a NEW workspace, leaving this one INTACT and still running. The
+   *  non-destructive sibling of `agentSdkRewind`: nothing is stopped or
+   *  truncated here, the fork is a copy.
+   *
+   *  `upToMessageId` must come from `forkTargetId()` in
+   *  `src/shared/fork-session.ts` — the PREDECESSOR of the message the user
+   *  resumed from, because the SDK's cut is INCLUSIVE (measured; see
+   *  `docs/spikes/fork-session-findings.md`). `title` names the fork and seeds
+   *  its branch name.
+   *
+   *  Resolves with the new workspace (its `sdkSessionId` pre-seeded with the
+   *  fork) so the caller can select it. */
+  agentSdkFork: (
+    wsId: string,
+    upToMessageId: string,
+    title?: string,
+  ) => Promise<Workspace>;
   /** Resolve a parked `canUseTool` permission request with the user's decision
    *  (allow, optionally with edited input, or deny with a message). */
   agentSdkPermissionReply: (

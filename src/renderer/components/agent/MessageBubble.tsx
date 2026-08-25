@@ -5,6 +5,7 @@ import { NoticeRow } from './NoticeRow';
 import { ThinkingIndicator } from './ThinkingIndicator';
 import { useTypewriter } from './useTypewriter';
 import { RewindControl } from './RewindControl';
+import { ForkControl } from './ForkControl';
 import { useRewind } from './rewind-context';
 import { formatClock, formatFullStamp } from '../../../shared/message-time';
 
@@ -131,6 +132,12 @@ function MessageBubbleImpl({ message }: Props) {
             onConfirm={rewind.onConfirm}
             disabled={rewind.busy}
           />
+          {/* "Resume from here" (#18) — the NON-destructive sibling. Hidden on
+              the first turn, where the fork would be empty and the SDK rejects
+              it. Not gated on `rewind.busy`: forking mutates nothing here. */}
+          {rewind.canFork(message.rewindId) ? (
+            <ForkControl rewindId={message.rewindId} onFork={rewind.onFork} />
+          ) : null}
         </div>
       ) : null}
     </div>

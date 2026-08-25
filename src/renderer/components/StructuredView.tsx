@@ -82,6 +82,7 @@ import {
 import { MemorySizeBanner } from './agent/MemorySizeBanner';
 import { RewindContext } from './agent/rewind-context';
 import { previousRewindId, rewindPrefillText } from './agent/rewind-util';
+import { forkTargetId, canForkFrom } from '../../shared/fork-session';
 
 interface Props {
   workspaceId: string;
@@ -118,6 +119,8 @@ export function StructuredView({ workspaceId, isActive }: Props) {
   );
   const injectEvent = useStore((s) => s.__injectAgentEvent);
   const applyHistory = useStore((s) => s.applyAgentHistory);
+  // "Resume from here" selects the forked workspace once it exists.
+  const setActive = useStore((s) => s.setActive);
 
   // The "Background tasks" slide-over. Stays closed by default when a task
   // spins up — a background task should not steal the transcript view; its
@@ -200,9 +203,67 @@ export function StructuredView({ workspaceId, isActive }: Props) {
     [workspaceId, session, injectEvent],
   );
 
+  // ── Resume from here (#18) ────────────────────────────────────────────────
+  // The NON-destructive sibling of rewind: fork the conversation into a NEW
+  // workspace and leave this one intact and running. The fork target is the
+  // PREDECESSOR of the resumed-from message, because the SDK's cut is
+  // INCLUSIVE — passing the message's own id copies it WITHOUT its reply and
+  // the fork answers that dangling turn as its first act (measured; see
+  // docs/spikes/fork-session-findings.md). `forkTargetId` owns that rule.
+  const onFork = useCallback(
+    async (rewindId: string) => {
+      const msgs = session?.messages ?? [];
+      const upTo = forkTargetId(msgs, rewindId);
+      if (!upTo) {
+        // Should be unreachable — the affordance is gated on canForkFrom — but
+        // an undefined id means "full copy" to the SDK, which is the OPPOSITE
+        // of the user's intent. Refuse rather than silently forking everything.
+        injectEvent(workspaceId, {
+          type: 'notice',
+          kind: 'warning',
+          text: 'Cannot resume from here: there is no earlier exchange to branch from.',
+          seq: 0,
+          at: Date.now(),
+        });
+        return;
+      }
+      // Title the fork (and seed its branch name) from the message the user
+      // resumed from, so the new workspace's sidebar row is self-describing.
+      const title = rewindPrefillText(msgs, rewindId);
+      try {
+        const forked = await window.orchestra.agentSdkFork(workspaceId, upTo, title);
+        // Select the new workspace — the fork IS the thing the user asked for,
+        // so landing them in it is the completion of the action.
+        setActive(forked.id);
+      } catch (e) {
+        injectEvent(workspaceId, {
+          type: 'notice',
+          kind: 'warning',
+          text: `Resume from here failed: ${e instanceof Error ? e.message : String(e)}`,
+          seq: 0,
+          at: Date.now(),
+        });
+      }
+    },
+    [workspaceId, session, injectEvent, setActive],
+  );
+
+  // Hide the affordance where the fork would be EMPTY (the first turn) — the
+  // SDK rejects an empty slice outright, so offering it could only fail.
+  const canFork = useCallback(
+    (rewindId: string) => canForkFrom(session?.messages ?? [], rewindId),
+    [session],
+  );
+
   const rewindApi = useMemo(
-    () => ({ onPreview: onRewindPreview, onConfirm: onRewindConfirm, busy: rewindBusy }),
-    [onRewindPreview, onRewindConfirm, rewindBusy],
+    () => ({
+      onPreview: onRewindPreview,
+      onConfirm: onRewindConfirm,
+      busy: rewindBusy,
+      onFork,
+      canFork,
+    }),
+    [onRewindPreview, onRewindConfirm, rewindBusy, onFork, canFork],
   );
 
   const alreadyBackfilled = session?.historyBackfilled === true;

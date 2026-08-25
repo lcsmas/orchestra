@@ -97,6 +97,44 @@ envelope's `uuid` (camelCase on disk vs snake_case on the wire), so a REOPENED
 workspace can rewind its history too. A message with no id — externally-originated
 turns, pre-feature history — simply renders no affordance.
 
+**Resume from here — fork into a NEW workspace (#18).** The same hover action
+row carries a second, **non-destructive** control
+(`components/agent/ForkControl.tsx`, `.av-fork*`): it copies the conversation up
+to the previous complete exchange into a **brand-new Orchestra workspace** with
+its own worktree, and leaves the current workspace **intact and still running**.
+Parallel workspaces are Orchestra's native model for branching, so a fork IS a
+workspace. Deliberately **not** disabled mid-turn — unlike rewind it stops,
+truncates and mutates nothing, so there is no teardown to race.
+
+- **The cut is INCLUSIVE, and the target is the PREDECESSOR.** `forkSession`
+  copies up to and INCLUDING the targeted message, so forking at the resumed-from
+  message's own `rewindId` would copy that user turn WITHOUT its reply — and the
+  fork then answers that dangling turn as its first act (measured). `forkTargetId`
+  (`shared/fork-session.ts`, unit- + mutation-tested) owns that off-by-one, and
+  `canForkFrom` hides the affordance on the FIRST turn, where the slice would be
+  empty and the SDK rejects it outright.
+- **`sdkFork(wsId, upToMessageId, title?)`** (`main/agent-sdk.ts`) pins the
+  source workspace's account config dir (the SDK reads
+  `process.env.CLAUDE_CONFIG_DIR` — same constraint as `listSessions`), forks,
+  then `createWorkspace`s with `baseBranch` = the ORIGINAL workspace's current
+  branch, and seeds the new workspace's `sdkSessionId` with the fork so opening
+  its structured view resumes the branched conversation.
+- **The fork file lands in the SOURCE project dir** and keeps the source `cwd`,
+  which looks fatal for a new-worktree workspace but is not: `--resume <uuid>`
+  searches all project directories. Measured through Orchestra's own option set,
+  with controls both ways.
+- **Two DECLARED v1 gaps, stated in the affordance copy and the docs, never
+  silently:** the fork starts with **no file-checkpoint/undo history** (inherent
+  to `forkSession`; the new git worktree is the safety net instead), and the
+  **conversation/file skew** — the conversation truncates at the fork point while
+  the worktree is cut from the branch's CURRENT tip. v1 makes no attempt to
+  reconstruct historical file state. A third consequence: `forkSession` REMAPS
+  every uuid, so the forked workspace's backfilled history carries no
+  `rewindId`s and renders without these affordances until the user sends a turn.
+
+Measured semantics, controls and the surviving-mutant report:
+`docs/spikes/fork-session-findings.md`.
+
 The fold's **`session/rewind`** case drops the target and everything after it
 (`slice(0, cut)`), settles live turn state so the pane can't wedge on "Working…",
 and clears `pendingPermissions` (their `canUseTool` promises died with the
@@ -108,6 +146,7 @@ several memo boundaries kept deliberately render-free on the streaming hot path.
 **Reverse path (user → agent):** `window.orchestra.agentSdk*` invoke handlers call into
 the live `query` object in main — `agentSdkSend(wsId, text, images?)`, `agentSdkRunBash(wsId, command)`, `agentSdkInterrupt(wsId)`,
 `agentSdkRewind(wsId, rewindId, prevRewindId?)`, `agentSdkRewindPreview(wsId, rewindId)`,
+`agentSdkFork(wsId, upToMessageId, title?)`,
 `agentSdkPermissionReply(wsId, requestId, reply)`, `agentSdkSetModel`,
 `agentSdkSetEffort`, `agentSdkSetPermissionMode`, `agentSdkSetRemoteControl(wsId, enabled)`. Multi-turn uses the
 **streaming-input pattern**: one long-lived `query()` per session fed by an async-generator
