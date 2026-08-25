@@ -1,42 +1,52 @@
 #!/usr/bin/env node
-// REPRO + REGRESSION GATE for issue #57 fault (b): 'Delivered (live)' is
-// reported for messages that are then silently discarded without ever running.
+// REPRO + REGRESSION GATE for issue #57 fault (b): 'Delivered (live)' reported
+// for messages that are then silently discarded, or delivered twice.
 //
-// ── What is actually under test ──────────────────────────────────────────────
+// ══ WHY THIS FILE WAS REWRITTEN — read before changing it ════════════════════
 //
-// Two things, at the two seams where the lie was told:
+// The FIRST version of this rig modelled `Session.send()` as
+//     new Promise(resolve => this.watchers.set(uuid, resolve))
+// registering the watcher DIRECTLY, SYNCHRONOUSLY, keyed to its own uuid.
 //
-// 1. THE QUEUE LIFECYCLE (this file's `Session` harness). The real
-//    `promptStream` drains `session.queue` and the real drop paths
-//    (interruptCancellingQueued / consume's finally / sdkQueueRemove / sdkStop)
-//    empty it. The OLD code reported success on the PUSH, so a message wiped by
-//    any of those was reported delivered and never corrected. This rig models
-//    that queue exactly — push, shift-and-yield, wipe — and asserts what a
-//    sender would have been told in each case.
+// The real path does not do that. It routes the registrar through the call
+// stack across `await ensureSession` — and the first implementation parked that
+// registrar in a MODULE-LEVEL GLOBAL. So the model could not express the very
+// defect that lived at the seam it certified: two concurrent senders aliasing
+// each other's watcher. A §3b reviewer ran that rig against the candidate and
+// got `all checks passed (fault eliminated)`, RC=0, WHILE THE HEADLINE FAULT
+// WAS LIVE — a sender being told `Delivered (live)` for an Escaped message.
 //
-// 2. THE DECISION TABLE (`src/shared/delivery-status.ts`, imported REAL, not
-//    copied). That is the module the shipped dispatcher calls, so a mutation
-//    there fails this gate.
+// The lesson is specific and worth more than the fix: a model that omits the
+// SUSPENSION POINT cannot catch a concurrency bug, and it fails in the
+// *passing* direction, which is the direction nobody investigates. So this rig
+// now transcribes the real control flow including every await, and every
+// scenario is driven CONCURRENTLY as well as sequentially.
 //
-// ── Why not drive the full Electron app for this one ─────────────────────────
-//
-// The fault is main-process control flow with no rendered surface: the sender
-// is a CLI in another process, and what it prints is `Delivered (${delivery})`
-// straight off the socket reply. Driving two live agents through a real
-// interrupt to catch a *missing* correction is a race with no positive
-// terminator — the absence of a message is exactly what a flaky E2E cannot
-// distinguish from "not yet". So the queue lifecycle is exercised
-// deterministically here, and `scripts/verify-peer-redelivery.mjs` covers the
-// half that DOES have a durable artifact. This limitation is reported, not
-// hidden: see the NOT VERIFIED list in the ledger report.
+// ── What it covers ───────────────────────────────────────────────────────────
+//   F1  two concurrent senders must not alias watchers (the registrar is a
+//       PARAMETER now, not a module global)
+//   F2  multiplicity: N pending entries sharing a body are cancelled by at most
+//       N transcript occurrences — never all-by-one (imports the REAL module)
+//   F3  a timed-out turn must be WITHDRAWN from the queue, or the inbox
+//       fallback double-delivers it
+//   plus the original honest-status table (REAL src/shared/delivery-status.ts)
 //
 // ── Both arms ────────────────────────────────────────────────────────────────
-//   node scripts/verify-peer-delivery-honesty.mjs                # expect FIXED
+//   node scripts/verify-peer-delivery-honesty.mjs                 # expect FIXED
 //   node scripts/verify-peer-delivery-honesty.mjs --expect-broken # expect FAULT
-// The broken arm asserts the fault REPRODUCES, and is how this gate was watched
-// to fail. A gate nobody has seen fail is not a gate.
+// The broken arm re-creates the OLD module-global/no-withdraw behaviour and
+// asserts each fault reproduces. Every fault below has been SEEN to fail there.
 
 import { reportedDeliveryFor, requiresInboxFallback } from '../src/shared/delivery-status.ts';
+import {
+  countConsumedKeys,
+  filterUnconsumedPrompts,
+  pendingPromptKey,
+} from '../src/shared/pending-prompts.ts';
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const expectBroken = process.argv.includes('--expect-broken');
 let fails = 0;
@@ -45,34 +55,87 @@ const check = (label, cond, detail = '') => {
   if (!cond) fails++;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// A faithful model of the real session queue + the delivery watchers.
-// Mirrors agent-sdk.ts: queue.push (sdkSend) / shift+settle(true) (promptStream)
-// / settleQueuedAsDropped + wipe (the four drop paths).
-// ─────────────────────────────────────────────────────────────────────────────
-class Session {
-  constructor() {
+// ═════════════════════════════════════════════════════════════════════════════
+// A transcription of the REAL control flow, including the suspension points.
+// `legacy: true` reinstates the two defects the review found, so the repro arm
+// exercises the actual historical behaviour rather than a caricature.
+// ═════════════════════════════════════════════════════════════════════════════
+class Manager {
+  constructor({ legacy }) {
+    this.legacy = legacy;
     this.queue = [];
     this.watchers = new Map();
-    this.seq = 0;
+    this.n = 0;
+    /** The module-level singleton the FIRST implementation used (the F1 bug). */
+    this.pendingWatcherResolve = null;
   }
 
-  /** sdkSend: mint an id, ARM the watcher, then push. Arming before the push is
-   *  what closes the race where promptStream drains before the caller has a
-   *  handle (agent-sdk.ts does exactly this via pendingWatcherResolve). */
-  send() {
-    const uuid = `turn-${++this.seq}`;
-    const started = new Promise((resolve) => this.watchers.set(uuid, resolve));
+  /** Mirrors agent-sdk.ts `sdkSend`. The `await` is the load-bearing detail:
+   *  `ensureSession` suspends between the caller arming a watcher and this
+   *  function minting the uuid that the watcher must be keyed to. */
+  async sdkSend(onTurnQueued) {
+    await new Promise((r) => setImmediate(r)); // <- await ensureSession
+    const uuid = `turn-${++this.n}`;
+    if (this.legacy) {
+      // BUGGY: read the module global, which a concurrent send may have
+      // overwritten while we were suspended above.
+      this.pendingWatcherResolve?.(uuid);
+    } else {
+      // FIXED: our own caller's registrar, passed down the stack. No aliasing
+      // is possible because nothing shared is read.
+      onTurnQueued?.(uuid);
+    }
     this.queue.push({ uuid });
-    return { uuid, started };
+    return uuid;
   }
 
-  /** promptStream: shift the next entry and yield it to the SDK. */
+  /** Mirrors `sdkSendAwaitingStart`. */
+  async sendAwaitingStart(timeoutMs = 60) {
+    let uuid;
+    let settled = false;
+    const outcome = new Promise((resolve) => {
+      const register = (id) => {
+        this.watchers.set(id, (ok) => {
+          settled = true;
+          resolve(ok ? 'started' : 'dropped');
+        });
+      };
+      if (this.legacy) {
+        this.pendingWatcherResolve = register; // the singleton write
+        void this.sdkSend().then((id) => {
+          uuid = id;
+          this.pendingWatcherResolve = null; // the `finally` that nulls the slot
+        });
+      } else {
+        void this.sdkSend(register).then((id) => {
+          uuid = id;
+        });
+      }
+    });
+    const timed = new Promise((r) => setTimeout(() => r('timeout'), timeoutMs));
+    const result = await Promise.race([outcome, timed]);
+    if (result === 'timeout' && !settled && uuid) {
+      this.watchers.delete(uuid);
+      // FIXED: also WITHDRAW the turn, or it runs while the caller writes the
+      // inbox — one live turn plus one inbox drain (F3). Legacy skips this.
+      if (!this.legacy) this.dequeueUnstarted(uuid);
+    }
+    return result;
+  }
+
+  /** Mirrors `promptStream` shifting an entry and yielding it. */
   runNext() {
     const msg = this.queue.shift();
-    if (!msg) return null;
-    this.settle(msg.uuid, true);
-    return msg;
+    if (msg) this.settle(msg.uuid, true);
+    return msg ?? null;
+  }
+
+  /** Mirrors `dequeueUnstartedTurn`. */
+  dequeueUnstarted(uuid) {
+    const i = this.queue.findIndex((m) => m.uuid === uuid);
+    if (i < 0) return false;
+    this.queue.splice(i, 1);
+    return true;
   }
 
   settle(uuid, ok) {
@@ -82,117 +145,195 @@ class Session {
     w(ok);
   }
 
-  /** Every path that discards queued turns: Escape, session end, tray cancel,
-   *  stop. In the FIXED build each settles its watchers false first. */
-  wipeQueue({ notify }) {
-    if (notify) for (const m of this.queue) this.settle(m.uuid, false);
+  /** Mirrors the four discard paths (Escape / session end / tray / stop). */
+  wipeQueue() {
+    for (const m of this.queue) this.settle(m.uuid, false);
     this.queue.length = 0;
   }
 }
 
-/** What the dispatcher reports, given a live attempt outcome. Uses the REAL
- *  shared decision table so a mutation there is caught here. */
+const mgr = () => new Manager({ legacy: expectBroken });
 const report = (attempt) => reportedDeliveryFor(attempt);
 
-/** Await a delivery with a bound, exactly as sdkDeliverConfirmed does. */
-async function awaitDelivery(started, ms = 50) {
-  return Promise.race([
-    started.then((ok) => (ok ? 'started' : 'dropped')),
-    new Promise((r) => setTimeout(() => r('timeout'), ms)),
-  ]);
+// ═════════════════════════════════════════════════════════════════════════════
+// SOURCE-BINDING GUARD — the fix for THIS RIG'S OWN historical defect.
+//
+// The previous version of this file modelled a control flow that had drifted
+// from `agent-sdk.ts`, and therefore returned GREEN while the headline fault
+// was live. A model is only evidence while it still matches the thing modelled,
+// and nothing was checking that. So before asserting anything, verify the REAL
+// source still has the structural properties this model assumes. If it stops
+// matching, this rig must FAIL LOUDLY rather than keep certifying a fiction.
+// ═════════════════════════════════════════════════════════════════════════════
+{
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const src = fs.readFileSync(path.join(here, '../src/main/agent-sdk.ts'), 'utf8');
+  // Strip comments so prose ABOUT the old design cannot satisfy a code check.
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('//'))
+    .join('\n');
+
+  const props = [
+    ['registrar is a PARAMETER of sdkSend', /onTurnQueued\?*:?\s*\(/.test(code)],
+    ['sdkSend invokes the passed registrar', /onTurnQueued\?\.\(/.test(code)],
+    ['NO module-global watcher registrar survives', !/^let pendingWatcherResolve/m.test(code)],
+    ['a timed-out turn is withdrawn from the queue', /dequeueUnstartedTurn\(/.test(code)],
+    ['consumption is counted as a multiset', /countConsumedKeys\(/.test(code)],
+  ];
+  let drift = 0;
+  console.log('\n  source-binding guard (does the model still match agent-sdk.ts?)');
+  for (const [label, ok] of props) {
+    console.log(`    ${ok ? 'ok  ' : 'DRIFT'} ${label}`);
+    if (!ok) drift++;
+  }
+  // Positive control: a string that MUST be present, proving we read real source.
+  if (!/export async function sdkSend/.test(code)) {
+    console.error('  rig-side: could not read agent-sdk.ts source — refusing a verdict');
+    process.exit(2);
+  }
+  if (drift && !expectBroken) {
+    console.error(`\n  MODEL DRIFT: ${drift} property/properties no longer hold in the real source.`);
+    console.error('  This rig models control flow it no longer matches — fix the rig, do not trust this run.');
+    process.exit(2);
+  }
 }
 
-console.log('\nissue #57 fault (b) — is "Delivered (live)" honest?');
-console.log(`  arm: ${expectBroken ? 'REPRO (expect the fault present)' : 'GATE (expect it fixed)'}\n`);
+console.log('\nissue #57 fault (b) — honest delivery, driven CONCURRENTLY');
+console.log(`  arm: ${expectBroken ? 'REPRO (expect the faults present)' : 'GATE (expect them fixed)'}\n`);
 
-// ── Scenario 1: the target's user presses Escape (interruptCancellingQueued) ──
+// ── CONTROL: sequential send still works (proves the rig discriminates) ──────
 {
-  const s = new Session();
-  const { started } = s.send();
-  // OLD BEHAVIOUR: report 'live' right after the push, notify nobody on wipe.
-  const legacyReport = 'live';
-  s.wipeQueue({ notify: expectBroken ? false : true });
-  const attempt = await awaitDelivery(started);
-  const fixedReport = report(attempt);
+  const m = mgr();
+  const p = m.sendAwaitingStart();
+  await new Promise((r) => setTimeout(r, 5));
+  m.runNext();
+  const res = await p;
+  console.log('  CONTROL sequential, turn runs');
+  console.log(`    outcome: ${res} -> reported ${report(res)}`);
+  check('CONTROL: a sequential started turn is reported live', report(res) === 'live', `got ${res}`);
+}
 
-  console.log('  scenario: target pressed Escape while the message was queued');
-  console.log(`    legacy reported : ${legacyReport}`);
-  console.log(`    actual outcome  : ${attempt}`);
-  console.log(`    fixed reported  : ${fixedReport}`);
-
+// ── F1: two CONCURRENT senders — A runs, B is Escaped ────────────────────────
+// This is the scenario the old rig structurally could not express.
+{
+  const m = mgr();
+  const pa = m.sendAwaitingStart();
+  const pb = m.sendAwaitingStart();
+  await new Promise((r) => setTimeout(r, 5));
+  m.settle(m.queue[0].uuid, true); // A's turn runs
+  m.settle(m.queue[1].uuid, false); // B is Escaped -> dropped
+  const [ra, rb] = await Promise.all([pa, pb]);
+  console.log('\n  F1 CONCURRENT: A runs, B is Escaped');
+  console.log(`    A: ${ra} -> ${report(ra)}    B: ${rb} -> ${report(rb)}`);
+  const bLies = report(rb) === 'live';
   if (expectBroken) {
-    // The fault: the message never ran, yet the sender was told 'live'.
+    check('REPRO F1: the dropped sender B is told "live"', bLies, `B reported ${report(rb)}`);
+  } else {
+    check('GATE F1: B was dropped and is NOT told live', !bLies, `B reported ${report(rb)}`);
+    check('GATE F1: A actually started and IS told live', report(ra) === 'live', `A=${ra}`);
+    check('GATE F1: watchers did not alias', ra === 'started' && rb === 'dropped', `${ra}/${rb}`);
+  }
+}
+
+// ── F1b: two CONCURRENT senders, BOTH turns run ─────────────────────────────
+// The aliasing also corrupts the happy path: one sender times out despite
+// having run. Guards against a "fix" that merely reorders the corruption.
+{
+  const m = mgr();
+  const pa = m.sendAwaitingStart();
+  const pb = m.sendAwaitingStart();
+  await new Promise((r) => setTimeout(r, 5));
+  m.runNext();
+  m.runNext();
+  const [ra, rb] = await Promise.all([pa, pb]);
+  console.log('\n  F1b CONCURRENT: both turns run');
+  console.log(`    A: ${ra}    B: ${rb}`);
+  if (expectBroken) {
+    check('REPRO F1b: a sender whose turn RAN is not told live', ra !== 'started' || rb !== 'started', `${ra}/${rb}`);
+  } else {
+    check('GATE F1b: both senders are told live', report(ra) === 'live' && report(rb) === 'live', `${ra}/${rb}`);
+  }
+}
+
+// ── F3: a timed-out turn must be WITHDRAWN, not left to run ─────────────────
+{
+  const m = mgr();
+  const res = await m.sendAwaitingStart(20); // nobody runs it -> timeout
+  const stillQueued = m.queue.length;
+  const wouldWriteInbox = requiresInboxFallback(res);
+  console.log('\n  F3 timeout: does the turn still run AND get an inbox copy?');
+  console.log(`    outcome: ${res} | still queued: ${stillQueued} | inbox write: ${wouldWriteInbox}`);
+  const doubleDelivers = stillQueued > 0 && wouldWriteInbox;
+  if (expectBroken) {
+    check('REPRO F3: turn stays queued AND the inbox is written (double delivery)', doubleDelivers);
+  } else {
+    check('GATE F3: the unstarted turn was withdrawn from the queue', stillQueued === 0);
+    check('GATE F3: so the inbox copy is the ONLY delivery', wouldWriteInbox && stillQueued === 0);
+    check('GATE F3: and it is not reported live', report(res) !== 'live');
+  }
+}
+
+// ── F3b: a turn that ALREADY STARTED must never be withdrawn ────────────────
+// The anti-control for F3: withdrawing indiscriminately would cancel real work.
+{
+  const m = new Manager({ legacy: false });
+  const p = m.sendAwaitingStart();
+  await new Promise((r) => setTimeout(r, 5));
+  const ran = m.runNext();
+  await p;
+  check('ANTI-CONTROL: a started turn is not withdrawable', m.dequeueUnstarted(ran.uuid) === false);
+}
+
+// ── F2: multiplicity — REAL module, not a model ─────────────────────────────
+{
+  const body = 'ledger updated: please re-read the artifact';
+  const key = pendingPromptKey({ text: body });
+  const two = [
+    { id: 'send-ops', key, text: body },
+    { id: 'send-lead', key, text: body },
+  ];
+  // The transcript contains ONE occurrence: one of the two turns ran.
+  const consumedOnce = countConsumedKeys([{ text: body }]);
+  const recovered = expectBroken
+    ? two.filter((p) => !new Set([key]).has(p.key)) // the old set-membership rule
+    : filterUnconsumedPrompts(two, consumedOnce);
+  console.log('\n  F2 multiplicity: 2 senders, same body, 1 turn ran');
+  console.log(`    recovered: ${recovered.length} (1 = the other sender survives, 0 = LOST)`);
+  if (expectBroken) {
+    check('REPRO F2: one consumed occurrence suppresses BOTH entries', recovered.length === 0);
+  } else {
+    check('GATE F2: exactly one entry survives', recovered.length === 1, `got ${recovered.length}`);
+    // CONTROLS, both directions.
     check(
-      'REPRO: sender is told "live" for a message that was discarded unrun',
-      legacyReport === 'live' && attempt !== 'started',
-      'legacy reports on the push and never corrects',
+      'CONTROL F2: both consumed -> nothing recovered',
+      filterUnconsumedPrompts(two, countConsumedKeys([{ text: body }, { text: body }])).length === 0,
     );
-  } else {
-    check('GATE: a discarded message is NOT reported live', fixedReport !== 'live');
-    check('GATE: it is reported as inbox (durable, honest)', fixedReport === 'inbox');
-    check('GATE: the caller is told to write an inbox file', requiresInboxFallback(attempt));
+    check(
+      'CONTROL F2: neither consumed -> both recovered',
+      filterUnconsumedPrompts(two, countConsumedKeys([])).length === 2,
+    );
+    check(
+      'CONTROL F2: a Set still behaves as one occurrence (back-compat)',
+      filterUnconsumedPrompts(two, new Set([key])).length === 1,
+    );
   }
 }
 
-// ── Scenario 2: session ended with turns still queued (consume's finally) ─────
+// ── The honest-status decision table (the REAL shipped module) ──────────────
 {
-  const s = new Session();
-  const { started } = s.send();
-  s.wipeQueue({ notify: expectBroken ? false : true });
-  const attempt = await awaitDelivery(started);
-  console.log('\n  scenario: session ended with the message still queued');
-  console.log(`    actual outcome  : ${attempt} | reported: ${report(attempt)}`);
-  if (expectBroken) {
-    check('REPRO: no failure ever reaches the sender', attempt === 'timeout');
-  } else {
-    check('GATE: sender learns it was dropped', attempt === 'dropped');
-    check('GATE: not reported live', report(attempt) !== 'live');
-  }
-}
-
-// ── POSITIVE CONTROL: a message that REALLY runs must still report live ──────
-// Without this, "never report live" would pass the fixed arm while destroying
-// the feature. This is the control that makes the gate mean something.
-{
-  const s = new Session();
-  const { started } = s.send();
-  const ran = s.runNext();
-  const attempt = await awaitDelivery(started);
-  console.log('\n  control: message actually became the target\'s turn');
-  console.log(`    actual outcome  : ${attempt} | reported: ${report(attempt)}`);
-  check('CONTROL: a genuinely started message IS reported live', report(attempt) === 'live');
-  check('CONTROL: it really left the queue', ran !== null && s.queue.length === 0);
-  check('CONTROL: no inbox fallback for a started message', !requiresInboxFallback(attempt));
-}
-
-// ── CONTROL: ordering — a message queued behind a running turn still starts ──
-// Guards against "fix" that reports dropped for anything merely parked.
-{
-  const s = new Session();
-  const a = s.send();
-  const b = s.send();
-  s.runNext(); // a starts
-  s.runNext(); // b starts
-  const [ra, rb] = await Promise.all([awaitDelivery(a.started), awaitDelivery(b.started)]);
-  console.log('\n  control: two queued messages, both run');
-  console.log(`    outcomes: ${ra}, ${rb}`);
-  check('CONTROL: a parked-then-run message is live, not dropped', report(ra) === 'live' && report(rb) === 'live');
-}
-
-// ── Decision-table completeness (mutation surface) ───────────────────────────
-{
-  console.log('\n  decision table (the shipped module):');
+  console.log('\n  decision table (src/shared/delivery-status.ts):');
   const table = { started: 'live', dropped: 'inbox', timeout: 'inbox', none: null };
   for (const [attempt, want] of Object.entries(table)) {
     const got = report(attempt);
     console.log(`    ${attempt.padEnd(8)} -> ${String(got)}`);
     check(`table: ${attempt} -> ${String(want)}`, got === want, `got ${String(got)}`);
   }
-  check('table: only "started" earns live', ['dropped', 'timeout', 'none'].every((a) => report(a) !== 'live'));
 }
 
 if (fails) {
   console.error(`\n${fails} check(s) FAILED`);
   process.exit(1);
 }
-console.log(`\nall checks passed (${expectBroken ? 'fault reproduced' : 'fault eliminated'})`);
+console.log(`\nall checks passed (${expectBroken ? 'faults reproduced' : 'faults eliminated'})`);

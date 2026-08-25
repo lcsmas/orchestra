@@ -96,7 +96,7 @@ completion, relaunch reattach + transcript, explicit-stop kill).
     restores the bubble, `running`, and the status dot. Entries the
     transcript covers just clear (the turn ran, possibly detached).
     ⚠️ **Consumption is decided by IDENTITY, not by text (issue #57 fault a).**
-    Entries are `PendingPrompt{key,text,peer?}` (`src/shared/pending-prompts.ts`),
+    Entries are `PendingPrompt{id,key,text,peer?}` (`src/shared/pending-prompts.ts`),
     not bare strings, and `recoverPendingPrompts` compares `pendingPromptKey`
     against the keys of the backfilled transcript's user messages. The old
     predicate — `!userTexts.some((t) => t.includes(p))` — was unsound for
@@ -108,7 +108,17 @@ completion, relaunch reattach + transcript, explicit-stop kill).
     "same message queued 3 times" (measured: 421-char envelope → 255-char
     rendered body). `pendingPromptKey` normalizes BOTH sides to the inner body
     so the match survives that rewrite; legacy `string[]` stores migrate via
-    `normalizePendingPrompts`. Recovery now also re-sends **one turn per
+    `normalizePendingPrompts`.
+    ⚠️ **`key` is a TRANSCRIPT-MATCHING key, not an identity — entries also
+    carry a per-send `id`, and consumption is counted as a MULTISET**
+    (`countConsumedKeys` + `filterUnconsumedPrompts`). Because the key is
+    body-derived, two senders posting the same body share it; deciding
+    consumption by set membership meant ONE consumed occurrence suppressed ALL
+    such entries, so the second sender's message was silently LOST (measured:
+    2 pending, 1 transcript occurrence, 0 recovered). Each occurrence now
+    cancels at most ONE entry, restoring the ticket's required asymmetry — at
+    worst re-send a message that ran, never swallow one that did not.
+    Recovery now also re-sends **one turn per
     prompt, re-tagged with its original `PeerOrigin`** (it used to
     `missing.join('\n')`, fusing N orders from different senders into one
     untagged human-looking turn). Writes go through a per-workspace serialized

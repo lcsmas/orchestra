@@ -45,7 +45,20 @@
  *  Persisted on `ws.sdkPendingPrompts` as insurance against the
  *  quit-right-after-send window (see types.ts). */
 export interface PendingPrompt {
-  /** Stable identity — see {@link pendingPromptKey}. Decides consumption. */
+  /** Per-SEND unique id — this entry's own identity, distinct from every other
+   *  entry even when the bodies are byte-identical.
+   *
+   *  Separate from {@link PendingPrompt.key} because the two answer different
+   *  questions, and conflating them silently DROPPED messages (issue #57,
+   *  review finding F2). `key` matches this prompt against the TRANSCRIPT and
+   *  is necessarily body-derived, so two senders posting the same body share
+   *  it. When consumption was decided by set membership on that shared key, ONE
+   *  consumed occurrence suppressed BOTH entries and the second sender's
+   *  message was lost — a drop, the direction this ticket explicitly forbids.
+   *  Counting is done over `id`, matching over `key`. */
+  id: string;
+  /** Transcript-matching key — see {@link pendingPromptKey}. NOT an identity:
+   *  two distinct prompts with the same body share it, by design. */
   key: string;
   /** The raw text to re-send if this prompt really was lost. Never used to
    *  decide whether it was consumed. */
@@ -100,18 +113,57 @@ export function pendingPromptKey(m: { text?: string | null }): string {
   return `${hash(body)}-${body.length.toString(36)}`;
 }
 
-/** The entries that were NOT consumed — i.e. whose key does not appear among the
- *  keys the transcript actually contains. This is the whole dedupe decision, and
- *  it is pure so it can be unit-tested and mutation-tested directly.
+/** The entries that were NOT consumed, counted as a MULTISET.
  *
- *  Note the asymmetry the issue demands: a FALSE "consumed" silently loses a
- *  message, a false "missing" merely duplicates one. Keys are derived from the
- *  body, so a body genuinely absent from the transcript stays recoverable. */
+ *  Each occurrence of a key in the transcript cancels AT MOST ONE pending entry
+ *  carrying that key. So two senders whose bodies happen to be identical, of
+ *  which only one turn ran before the quit, leave exactly one entry recoverable.
+ *
+ *  ── Why multiplicity and not set membership (issue #57, review finding F2) ──
+ *  This was first written as `!consumedKeys.has(p.key)`. Because the key is
+ *  body-derived, N pending entries sharing a body were ALL suppressed by ONE
+ *  consumed occurrence — measured: 2 pending, 1 in the transcript, 0 recovered,
+ *  i.e. the second sender's message silently LOST. That is a drop, and the
+ *  issue is explicit that drops are the forbidden direction (*a duplicated
+ *  order is idempotent against a ledger; a dropped one is silent*). Counting
+ *  restores the intended asymmetry: at worst we re-send a message that did run
+ *  (a duplicate), never swallow one that did not.
+ *
+ *  `counts` is consumed destructively against a local copy, so callers may pass
+ *  the same map twice without the first call poisoning the second. */
 export function filterUnconsumedPrompts<T extends { key: string }>(
   pending: readonly T[],
-  consumedKeys: ReadonlySet<string>,
+  consumedKeys: ReadonlySet<string> | ReadonlyMap<string, number>,
 ): T[] {
-  return pending.filter((p) => !consumedKeys.has(p.key));
+  // Accept a bare Set for the degenerate "at most one of each" case so existing
+  // callers and tests keep working; a Set contributes one occurrence per key.
+  const remaining = new Map<string, number>();
+  if (consumedKeys instanceof Map) {
+    for (const [k, n] of consumedKeys) remaining.set(k, n);
+  } else {
+    for (const k of consumedKeys as ReadonlySet<string>) remaining.set(k, 1);
+  }
+  const out: T[] = [];
+  for (const p of pending) {
+    const left = remaining.get(p.key) ?? 0;
+    if (left > 0) {
+      remaining.set(p.key, left - 1); // this occurrence is spoken for
+      continue;
+    }
+    out.push(p);
+  }
+  return out;
+}
+
+/** Tally how many times each key occurs among the transcript's user messages —
+ *  the multiset {@link filterUnconsumedPrompts} cancels against. */
+export function countConsumedKeys(messages: readonly { text?: string | null }[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const m of messages) {
+    const k = pendingPromptKey(m);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  return counts;
 }
 
 /** Migrate a persisted value that may predate the typed shape.
@@ -121,18 +173,22 @@ export function filterUnconsumedPrompts<T extends { key: string }>(
  *  lose exactly the prompts this feature exists to protect. Bare strings are
  *  re-keyed with the same function, so a legacy entry participates in the new
  *  identity match rather than being trusted or discarded wholesale. */
-export function normalizePendingPrompts(raw: unknown): PendingPrompt[] {
+export function normalizePendingPrompts(raw: unknown, mintId: () => string = defaultId): PendingPrompt[] {
   if (!Array.isArray(raw)) return [];
   const out: PendingPrompt[] = [];
   for (const item of raw) {
     if (typeof item === 'string') {
-      if (item.trim()) out.push({ key: pendingPromptKey({ text: item }), text: item });
+      // Legacy `string[]` entry: mint a fresh per-send id. Two legacy entries
+      // with the same body are two REAL prompts and must stay distinguishable,
+      // which is exactly what the shared `key` alone could not express.
+      if (item.trim()) out.push({ id: mintId(), key: pendingPromptKey({ text: item }), text: item });
       continue;
     }
     if (item && typeof item === 'object') {
       const rec = item as Partial<PendingPrompt>;
       if (typeof rec.text === 'string' && rec.text.trim()) {
         out.push({
+          id: typeof rec.id === 'string' && rec.id ? rec.id : mintId(),
           key: typeof rec.key === 'string' && rec.key ? rec.key : pendingPromptKey({ text: rec.text }),
           text: rec.text,
           ...(rec.peer && typeof rec.peer.from === 'string' && typeof rec.peer.name === 'string'
@@ -143,4 +199,12 @@ export function normalizePendingPrompts(raw: unknown): PendingPrompt[] {
     }
   }
   return out;
+}
+
+/** Monotonic fallback id source. Injectable so tests can be deterministic; the
+ *  main process passes `randomUUID`. Uniqueness only has to hold within one
+ *  workspace's pending list, which never survives a turn boundary. */
+let idSeq = 0;
+function defaultId(): string {
+  return `pp-${(++idSeq).toString(36)}-${Math.trunc(performance.now()).toString(36)}`;
 }

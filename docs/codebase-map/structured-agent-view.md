@@ -366,6 +366,22 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   (`deliveryWatchers`, keyed by the turn's minted uuid) as `dropped`;
   `promptStream` settles it `started` at the shift/yield — and also settles an
   **absorbed coalesce entry** `started`, since its text does reach the model.
+  ⚠️ **The registrar is a PARAMETER (`sdkSend`'s `onTurnQueued`), never a module
+  global.** It was first a module-level `pendingWatcherResolve`, written by
+  `sdkSendAwaitingStart` and read in `sdkSend` **across `await ensureSession`**.
+  `/message` is served per-connection with no mutex (`hooks-server.ts`), so two
+  concurrent senders interleaved — A arms, B clobbers during A's suspension, A's
+  uuid registers B's resolver, A's `finally` nulls the slot so B registers
+  nothing. Measured: A ran / B Escaped → **B was told `live` while dropped**, the
+  exact fault the mechanism exists to prevent, reachable *through* it. Awaiting
+  the outcome also widened the collision window to `DELIVERY_START_TIMEOUT_MS`.
+  ⚠️ **A timed-out turn is WITHDRAWN (`dequeueUnstartedTurn`), not just
+  unwatched.** Deleting only the watcher left the entry on `session.queue`, so
+  it still ran while the caller ALSO wrote the inbox — one live turn plus one
+  inbox drain, i.e. fault (a) reintroduced by fault (b)'s fix. Withdrawal is safe
+  by construction: `promptStream` shifts before yielding, so anything still in
+  the queue provably has not started (a started turn is simply not found). It
+  drops the entry's `sdkPendingPrompts` insurance too, as a tray cancel does.
   `sdkDeliverConfirmed` awaits that outcome (bounded by
   `DELIVERY_START_TIMEOUT_MS`), and `src/shared/delivery-status.ts` maps it:
   **only `started` earns `live`**; `dropped`/`timeout` fall back to the durable

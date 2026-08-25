@@ -84,6 +84,7 @@ import {
 } from '../shared/agent-events';
 import type { PeerOrigin } from '../shared/peer-messages.ts';
 import {
+  countConsumedKeys,
   filterUnconsumedPrompts,
   normalizePendingPrompts,
   pendingPromptKey,
@@ -2011,6 +2012,22 @@ export async function sdkSend(
    *  this same function, so the tag is what lets the view tell the two apart and
    *  render peer traffic as a compact row. See sdk-delivery.ts's `send`. */
   peerOrigin?: PeerOrigin,
+  /** Called with the minted turn uuid the instant it exists, BEFORE the entry is
+   *  pushed onto the queue — the hook {@link sdkSendAwaitingStart} uses to arm a
+   *  delivery watcher for exactly this turn (issue #57 b).
+   *
+   *  A PARAMETER, deliberately, and this is load-bearing. It was first written
+   *  as a module-level `pendingWatcherResolve` global that `sdkSendAwaitingStart`
+   *  set and this function read — but there is an `await ensureSession` between
+   *  those two points, and `/message` is served per-connection with no mutex
+   *  (hooks-server.ts). Two concurrent senders therefore interleaved: A armed,
+   *  B overwrote the global during A's suspension, A's uuid registered B's
+   *  resolver, and A's `finally` nulled the slot so B's uuid registered nothing.
+   *  Measured: A ran / B was Escaped → A reported `inbox`, B reported **`live`
+   *  while dropped** — the exact fault this ticket exists to kill, reachable
+   *  through the fix meant to close it. Passing the registrar down the call
+   *  stack gives each send its own binding, so no two sends can alias. */
+  onTurnQueued?: (uuid: string) => void,
   /** Resolves to the minted turn uuid — the handle a caller uses to await
    *  whether this turn actually STARTED (issue #57 b, sdkSendAwaitingStart). */
 ): Promise<string> {
@@ -2081,7 +2098,19 @@ export async function sdkSend(
   // Arm the delivery watcher HERE (issue #57 fault b) — before the entry is
   // pushed, so `promptStream` cannot shift and settle it in the window between
   // the push and the caller learning the id. See sdkSendAwaitingStart.
-  pendingWatcherResolve?.(rewindId);
+  //
+  // DISPROVED HYPOTHESIS, recorded at the site so it is not re-derived: this
+  // arming was first done by reading a MODULE-LEVEL `pendingWatcherResolve`
+  // global, and the comment here claimed that "closed rather than raced" the
+  // window. That was false, and measurably so. The global is written by
+  // sdkSendAwaitingStart and read HERE — with `await ensureSession` in between,
+  // and `/message` served per-connection with no mutex. Two concurrent senders
+  // interleaved (A arms → B clobbers during A's suspension → A's uuid registers
+  // B's resolver → A's `finally` nulls the slot so B registers nothing),
+  // yielding a sender told `Delivered (live)` for a message that was Escaped.
+  // Being local to the call is what actually closes it; nothing about the
+  // ordering here ever did.
+  onTurnQueued?.(rewindId);
   const msg: SDKUserMessage = {
     type: 'user',
     parent_tool_use_id: null,
@@ -2135,6 +2164,10 @@ export async function sdkSend(
   // silent-drop class fault (b) is about, so it is fixed here too.
   if (text.trim()) {
     const entry: PendingPrompt = {
+      // Per-SEND id (review finding F2): two senders posting the same body are
+      // two distinct prompts, and the body-derived `key` alone cannot tell them
+      // apart — which silently dropped one of them.
+      id: randomUUID(),
       key: pendingPromptKey({ text }),
       text,
       ...(peerOrigin ? { peer: { from: peerOrigin.from, name: peerOrigin.name } } : {}),
@@ -2176,34 +2209,78 @@ export async function sdkSendAwaitingStart(
   peerOrigin: PeerOrigin | undefined,
   timeoutMs: number,
 ): Promise<SdkDeliveryOutcome | 'timeout'> {
-  let uuid: string;
+  // The registrar is passed DOWN to sdkSend rather than parked in a module
+  // global: concurrent senders must not be able to alias each other's watcher.
+  // See the long note on sdkSend's `onTurnQueued` parameter — the global
+  // version measurably reported 'live' for an Escaped message.
+  let uuid: string | undefined;
+  let settled = false;
   const outcome = new Promise<SdkDeliveryOutcome>((resolve) => {
-    // Registered by the watcher map keyed on the uuid sdkSend mints. Because
-    // `sdkSend` is async, register through a thunk the moment we know the id.
-    pendingWatcherResolve = (id: string) => {
-      deliveryWatchers.set(id, (started) => resolve(started ? 'started' : 'dropped'));
+    const register = (id: string) => {
+      deliveryWatchers.set(id, (started) => {
+        settled = true;
+        resolve(started ? 'started' : 'dropped');
+      });
     };
+    // Kick the send from inside the executor so `register` is bound before any
+    // await can interleave another sender.
+    void sdkSend(wsId, text, undefined, peerOrigin, register).then(
+      (id) => {
+        uuid = id;
+      },
+      () => {
+        // A send that threw never queued anything, so there is nothing to wait
+        // for; surface it as a drop rather than hanging until the timeout.
+        settled = true;
+        resolve('dropped');
+      },
+    );
   });
-  try {
-    uuid = await sdkSend(wsId, text, undefined, peerOrigin);
-  } finally {
-    pendingWatcherResolve = null;
-  }
-  // sdkSend can complete synchronously enough that promptStream already shifted
-  // the entry; the watcher is registered from inside sdkSend (below) so that
-  // window is closed rather than raced.
-  const timed = new Promise<'timeout'>((resolve) =>
-    setTimeout(() => resolve('timeout'), timeoutMs).unref?.(),
-  );
+  const timed = new Promise<'timeout'>((resolve) => {
+    const t = setTimeout(() => resolve('timeout'), timeoutMs);
+    t.unref?.();
+  });
   const result = await Promise.race([outcome, timed]);
-  if (result === 'timeout') deliveryWatchers.delete(uuid);
+  if (result === 'timeout' && !settled) {
+    // TIMEOUT MUST NOT DOUBLE-DELIVER (issue #57, review finding F3). Deleting
+    // only the watcher left the entry ON `session.queue`, so the turn still ran
+    // — while the caller, seeing 'timeout', ALSO wrote the message to the
+    // durable inbox, which the UserPromptSubmit hook drains into the target's
+    // context. One live turn plus one inbox drain is the very redelivery this
+    // ticket's other half exists to kill. So give up the turn as well as the
+    // watcher: dequeue it, and only then may the caller park it in the inbox.
+    // (workspaces.ts:2828-2834 already guards this same race on the wake path;
+    // this is the equivalent guarantee for the live path.)
+    if (uuid) {
+      deliveryWatchers.delete(uuid);
+      dequeueUnstartedTurn(wsId, uuid);
+    }
+  }
   return result;
 }
 
-/** Set only while {@link sdkSendAwaitingStart} is arming a watcher, so `sdkSend`
- *  can register it at the exact moment the turn uuid is minted — before the
- *  entry is pushed and therefore before `promptStream` can possibly shift it. */
-let pendingWatcherResolve: ((uuid: string) => void) | null = null;
+/** Remove a turn that is still QUEUED (never yielded to the SDK) so it cannot
+ *  run after its sender has already been told it was not delivered.
+ *
+ *  Safe by construction: `promptStream` shifts an entry off `session.queue`
+ *  before yielding it, so anything still IN the queue provably has not started.
+ *  A turn that already started is simply not found and is left alone. */
+function dequeueUnstartedTurn(wsId: string, uuid: string): void {
+  const session = sessions.get(wsId);
+  if (!session) return;
+  const i = session.queue.findIndex((m) => m.uuid === uuid);
+  if (i < 0) return; // already started (or already gone) — nothing to withdraw
+  const withdrawnText = queueEntryText(session.queue[i]);
+  session.queue.splice(i, 1);
+  session.coalesce.delete(uuid);
+  // Drop the crash-recovery insurance for this turn as well, exactly as a tray
+  // cancel does. The caller is about to park this message in the durable inbox;
+  // leaving it in `sdkPendingPrompts` too would replay it on the next open —
+  // a THIRD copy of a message we just decided not to deliver once.
+  void dropPendingPrompt(wsId, withdrawnText);
+  emitQueueUpdate(session);
+  log.info(`agent-sdk: withdrew unstarted turn ${uuid} for ${wsId} after delivery timeout`);
+}
 
 /** Start (or reuse) a structured session for `wsId` and deliver `text` as its
  *  next turn — the spawn/wake entry point behind the sdk-delivery seam
@@ -2300,9 +2377,10 @@ export async function recoverPendingPrompts(wsId: string, history: AgentEvent[])
   // `pendingPromptKey` normalizes both sides to the same inner body, so the
   // match survives that rewrite (verified against real captured envelopes in
   // scripts/verify-peer-redelivery.mjs, which also reproduces the old fault).
-  const consumedKeys = new Set(
-    history.filter((e) => e.type === 'user-message').map((e) => pendingPromptKey(e)),
-  );
+  // A MULTISET, not a set (review finding F2): each transcript occurrence
+  // cancels at most ONE pending entry, so two senders with identical bodies of
+  // which only one ran leave the other recoverable instead of silently lost.
+  const consumedKeys = countConsumedKeys(history.filter((e) => e.type === 'user-message'));
   const missing = filterUnconsumedPrompts(pending, consumedKeys);
   // Clear FIRST: the resend below re-appends via sdkSend, so leaving the old
   // entries would double them; and a transcript-covered entry is done for good.
