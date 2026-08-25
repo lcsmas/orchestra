@@ -156,7 +156,8 @@ Usage:
                                                  and is never inherited by spawn
   orchestra verify-landed <id> [--into <branch>] Check every commit on a workspace's branch tip
                                                  landed on the target (default: YOUR branch);
-                                                 exit 0 = landed, 1 = unmerged commits remain
+                                                 exit 0 = landed, 2 = unmerged commits remain,
+                                                 1 = could not check (unknown id, no branch, …)
   orchestra whoami                               Print THIS workspace's own record (id, branch,
                                                  kind, orchestrator role, parent, repo, base)
   orchestra status <text...>                     Set THIS workspace's one-line status note —
@@ -374,6 +375,41 @@ export function taskAsksForStandaloneWorkspace(task: string): boolean {
 /** Sentinel thrown by {@link fail} so a refusal genuinely stops the command.
  *  Caught only by {@link runCli}, which exits 1 without re-printing. */
 class CliFailure extends Error {}
+
+/** Sentinel thrown by {@link exitWith} to end the command with a SPECIFIC
+ *  non-zero status after its output has already been written.
+ *
+ *  Same load-bearing reason as {@link CliFailure} (see `fail`'s docblock): a
+ *  bare `process.exit(n)` does not terminate synchronously inside a socket
+ *  response callback in the Electron main process, so execution ran on into
+ *  `runCli`'s `process.exit(0)`. `fail()` cannot be used for these cases
+ *  because it writes to STDERR and forces status 1, whereas a *verdict* is
+ *  legitimate output on STDOUT that merely needs to be reportable via `$?`. */
+class CliExit extends Error {
+  // NOT a TypeScript parameter property: the test runner strips types only
+  // (`node --test --experimental-strip-types`) and rejects `constructor(readonly
+  // code: number)` with ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX, which breaks every
+  // test file that imports this module.
+  readonly code: number;
+  constructor(code: number) {
+    super(`exit ${code}`);
+    this.code = code;
+  }
+}
+
+/** `orchestra verify-landed` exit status for a NOT LANDED verdict — distinct
+ *  from `1`, which every verb uses for "could not answer the question" (see
+ *  the exit-code table in the `verify-landed` handler). */
+const NOT_LANDED_EXIT = 2;
+
+/** End the command with `code` after its output has already been written.
+ *  Prints nothing — the caller owns the message and the stream it goes to. */
+function exitWith(code: number): never {
+  process.exitCode = code;
+  process.exit(code);
+  // Unreachable under plain Node; the guarantee that matters under Electron.
+  throw new CliExit(code);
+}
 
 /** Abort the command with `message` on stderr and exit status 1.
  *
@@ -732,8 +768,25 @@ async function main(argv: string[]): Promise<void> {
       // The coordinator close-out check: a child's "done"/"merged" report is a
       // claim, not a state (agents keep committing after they report), so this
       // asks git the only question that matters at close — is every commit on
-      // the child's branch TIP reachable from the target branch? Exit code is
-      // the verdict (0 landed / 1 not), so scripts and briefs can gate on it.
+      // the child's branch TIP reachable from the target branch?
+      //
+      // EXIT CODES (documented in docs/codebase-map/hooks-cli-socket.md):
+      //   0 — LANDED: 0 unmerged commits.
+      //   1 — ERROR: the question could not be answered (missing/unknown id,
+      //       workspace has no git branch, no target branch, different repos,
+      //       git failed). Emitted by `fail()` on stderr, as for every verb.
+      //   2 — NOT LANDED: the question was answered and the answer is no.
+      // The 1/2 split matters because a coordinator gating close-out must
+      // distinguish "this branch has unmerged work" from "I never actually
+      // checked" — collapsing them lets a broken invocation read as a verdict.
+      //
+      // The NOT-LANDED verdict stays on STDOUT (`fail()` writes stderr and
+      // forces 1, so it is deliberately NOT used here) and its wording is
+      // unchanged; only the status differs. The throw inside `exitWith` is
+      // load-bearing — a bare `process.exit(2)` here runs inside the socket
+      // response callback, which does not terminate synchronously in the
+      // Electron main process, so it fell through to `runCli`'s
+      // `process.exit(0)` and reported NOT LANDED with RC=0 (issue #59).
       const { value: into, rest } = takeFlag(args, '--into');
       const id = rest[0];
       if (!id) fail('usage: orchestra verify-landed <id> [--into <branch>]');
@@ -753,7 +806,7 @@ async function main(argv: string[]): Promise<void> {
         `NOT LANDED: ${unmerged} commit(s) on ${branch} missing from ${target}:\n` +
           `${commits.map((c) => `  ${c}`).join('\n')}\n`,
       );
-      process.exit(1);
+      exitWith(NOT_LANDED_EXIT);
     }
 
     case 'whoami': {
@@ -1034,6 +1087,13 @@ export async function runCli(argv: string[]): Promise<void> {
     // Re-printing it here would duplicate the error, and falling through to the
     // `process.exit(0)` above is precisely the bug that made every socket-level
     // refusal exit 0 on the packaged build.
+    if (err instanceof CliExit) {
+      // A verdict that already printed its own message on its own stream —
+      // exit with the status it asked for, printing nothing.
+      process.exitCode = err.code;
+      process.exit(err.code);
+      return;
+    }
     if (err instanceof CliFailure) {
       process.exitCode = 1;
       process.exit(1);

@@ -125,3 +125,46 @@ for (const args of [
       `${args[0]} must not interpolate undefined into a success line`);
   });
 }
+
+// ---------------------------------------------------------------------------
+// ISSUE #59 — `verify-landed`'s NOT-LANDED verdict.
+//
+// Same bug class as the block above, one verb later: the NOT-LANDED path ended
+// in a bare `process.exit(1)` (present since the original commit f9a4199 — it
+// was never "missing", so the ticket's "add a nonzero exit" framing was wrong).
+// Under Electron that does not terminate synchronously, so execution fell
+// THROUGH the switch into `case 'whoami'` — the built binary printed the
+// verdict, then a contradictory whoami record, then exited 0.
+//
+// ⚠️ READ THE HEADER OF THIS FILE. These run under plain Node, where
+// `process.exit()` IS synchronous, so the UNFIXED code passes the exit-code
+// assertions here too. What actually gates #59 is
+// `scripts/verify-verify-landed-exit.mjs`, which drives the built bundle inside
+// a REAL Electron main process (and has a `--expect-broken` arm proving it can
+// fail). These tests pin the CONTRACT — the code split and, critically, the
+// no-fallthrough invariant, which IS observable under node.
+//
+// Codes: 0 landed · 1 could not check · 2 not landed.
+
+test('verify-landed: a usage error exits 1, not the not-landed code 2', needsBuild, () => {
+  const r = runCli(['verify-landed']);
+  assert.equal(r.code, 1, 'a usage error must be the ERROR code, never the verdict code');
+  assert.match(r.stderr, /usage: orchestra verify-landed/);
+});
+
+test('verify-landed: an unreachable socket exits 1 (error), never 2', needsBuild, () => {
+  const r = runCli(['verify-landed', 'some-id']);
+  assert.equal(r.code, 1, 'could-not-check must stay 1 so it is distinguishable from NOT LANDED');
+  assert.notEqual(r.code, 2, 'an error must never masquerade as a NOT LANDED verdict');
+});
+
+// This pins the CONTRACT, not the Electron defect: these runs point
+// ORCHESTRA_SOCK at a nonexistent path, so they `fail()` at connect and never
+// reach `exitWith` at all. It would still catch a regression that let one
+// command's output leak into another's under node.
+test('verify-landed: a failed call never prints another command\'s output', needsBuild, () => {
+  const r = runCli(['verify-landed', 'some-id']);
+  assert.doesNotMatch(r.stdout, /orchestrator\s+(yes|no)|kind\s+worktree/,
+    'output of the following switch case leaked — the exit did not terminate the command');
+  assert.doesNotMatch(r.stdout + r.stderr, /undefined/);
+});
