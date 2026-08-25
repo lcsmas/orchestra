@@ -137,9 +137,9 @@ truncates and mutates nothing, so there is no teardown to race.
   silently:** the fork starts with **no file-checkpoint/undo history** (inherent
   to `forkSession`; the new git worktree is the safety net instead), and the
   **conversation/file skew** — the conversation truncates at the fork point while
-  the worktree is cut from the branch's CURRENT tip. v1 makes no attempt to
-  reconstruct historical file state. this message — specifically the last COMMIT on it, so uncommitted work is not
-  carried. v1 makes no attempt to reconstruct historical file state. Uuids are
+  the worktree is cut from the branch's CURRENT tip, and specifically from the
+  last **commit** on it, so uncommitted and untracked work is not carried
+  either. v1 makes no attempt to reconstruct historical file state. Uuids are
   REMAPPED by the fork, but that costs nothing: `agent-transcript.ts` mints
   `rewindId` from whatever uuid a user line carries, remapped or not.
 
