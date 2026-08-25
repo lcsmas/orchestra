@@ -42,6 +42,7 @@ import { sanitizeStatusText } from '../shared/status-text.ts';
 import {
   resolveDirectChildTargets,
   normalizeExplicitTargets,
+  deliverToTargets,
 } from '../shared/broadcast-targets.ts';
 import { workspaceDisplayName } from '../shared/workspace-name.ts';
 import { submitPlan } from '../shared/task-submit';
@@ -2915,12 +2916,12 @@ export interface BroadcastResult {
  *  - **`ok` is the AND of every target**, so a partial failure is a failure. The
  *    caller reports it as a non-zero exit; an all-or-nothing 0 would hide the
  *    three targets that never got the halt.
- *  - **Sequential**, not parallel. `dispatchMessageRequest` is not a pure
- *    function — it wakes agents, writes PTYs and appends to inbox files, and its
- *    live path WAITS for the target's turn to actually start (#57). Fanning N
- *    wakes out concurrently is a change to that path's concurrency, which this
- *    ticket is not about; sequential is at worst identical to today's baseline,
- *    which is literally N sequential sends.
+ *  - **Concurrent.** Each target's live path waits up to DELIVERY_START_TIMEOUT_MS
+ *    (10s) for the turn to start, so dispatching sequentially makes those bounds
+ *    ADD UP — a 7-target halt would not even attempt target #7 until T+60s. Since
+ *    the ticket exists because sequential sends were "slow exactly when speed
+ *    matters", the deliveries run concurrently via `allSettled` and the report is
+ *    re-ordered back into the caller's target order.
  *  - **Duplicate ids collapse.** `--to a,b,a` messages `a` once; delivering the
  *    same halt twice is not harmless (it becomes two turns for the target).
  *
@@ -2961,17 +2962,42 @@ export async function dispatchBroadcastMessageRequest(input: {
     if (targets.length === 0) return { ok: false, error: 'no targets' };
   }
 
-  const results: BroadcastTargetResult[] = [];
-  for (const id of targets) {
-    const r = await dispatchMessageRequest({ from: input.from, to: id, text });
-    results.push({
-      id,
-      ok: r.ok,
-      ...(r.branch ? { branch: r.branch } : {}),
-      ...(r.delivery ? { delivery: r.delivery } : {}),
-      ...(r.error ? { error: r.error } : {}),
-    });
-  }
+  // CONCURRENT, and this is the ticket's point rather than an optimisation.
+  //
+  // Each target's delivery awaits `sdkDeliverConfirmed`, which is bounded by
+  // DELIVERY_START_TIMEOUT_MS (10s, sdk-delivery.ts) and can then additionally
+  // await a wake. Dispatching sequentially makes those bounds ADD UP: for the
+  // 7-target wave-6 halt that motivated issue #86, target #7 is not even
+  // ATTEMPTED until T+60s if the six ahead of it each time out. The first cut of
+  // this ticket did exactly that, on the reasoning that sequential is "at worst
+  // identical to today's baseline of N sequential sends" — true, and beside the
+  // point: the ticket exists because N sequential sends were "slow exactly when
+  // speed matters". A broadcast no faster than the thing the ticket calls too
+  // slow delivers the aggregate report but not the aggregate speed.
+  //
+  // The aggravating case is the one you actually broadcast about: a HUNG agent
+  // is precisely what consumes the full 10s, so the targets most likely to
+  // delay everyone behind them are the ones an emergency halt is aimed at.
+  //
+  // Concurrency is safe here because each target is already an independent unit:
+  // `dispatchMessageRequest` resolves its own workspace, delivers to its own
+  // session and writes its own inbox file, sharing no mutable state across
+  // targets. `allSettled`, not `all`, so one thrown target cannot discard the
+  // outcomes of the others — the whole point of the report is that a partial
+  // failure stays visible per target.
+  const results = await deliverToTargets(
+    targets,
+    async (id) => {
+      const r = await dispatchMessageRequest({ from: input.from, to: id, text });
+      return {
+        ok: r.ok,
+        ...(r.branch ? { branch: r.branch } : {}),
+        ...(r.delivery ? { delivery: r.delivery } : {}),
+        ...(r.error ? { error: r.error } : {}),
+      };
+    },
+    (id, reason) => log.warn(`broadcast delivery threw for ${id}`, reason),
+  );
 
   return { ok: results.every((r) => r.ok), results };
 }

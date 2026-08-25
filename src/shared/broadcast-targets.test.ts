@@ -126,9 +126,21 @@ test('a string `to` WINS over a stray children flag', () => {
   });
 });
 
-test('non-string entries in a `to` array are dropped, not passed through', () => {
-  const got = classifyMessageRoute({ to: ['a', 42, null, 'b'], text: 'hi' });
-  assert.deepEqual(got, { kind: 'broadcast', to: ['a', 'b'], children: false });
+// F4 (found in review, 2026-08-25). These used to be FILTERED OUT, so a caller
+// asking for 3 targets was told "Delivered to 2 target(s)." at RC=0 and never
+// learned which one vanished — a silent miss on the one route whose report shape
+// exists precisely so nobody is silently missed.
+test('a non-string entry in a `to` array is REFUSED, not silently dropped', () => {
+  assert.equal(classifyMessageRoute({ to: ['a', 42, 'b'], text: 'hi' }).kind, 'invalid');
+  assert.equal(classifyMessageRoute({ to: ['a', null], text: 'hi' }).kind, 'invalid');
+  assert.equal(classifyMessageRoute({ to: [{}, 'a'], text: 'hi' }).kind, 'invalid');
+  // CONTROL: an all-string array must still be accepted, or "refuse bad input"
+  // would be a fix that deletes the feature.
+  assert.deepEqual(classifyMessageRoute({ to: ['a', 'b'], text: 'hi' }), {
+    kind: 'broadcast',
+    to: ['a', 'b'],
+    children: false,
+  });
 });
 
 test('a missing or non-string text is INVALID whatever the target shape', () => {
@@ -147,4 +159,90 @@ test('a missing or non-string text is INVALID whatever the target shape', () => 
 test('no target of any kind is INVALID', () => {
   assert.equal(classifyMessageRoute({ text: 'hi' }).kind, 'invalid');
   assert.equal(classifyMessageRoute({ text: 'hi', children: false }).kind, 'invalid');
+});
+
+// ---------------------------------------------------------------------------
+// F3 (found in review, 2026-08-25) — DISPATCH MUST BE CONCURRENT.
+//
+// Each delivery awaits a bounded turn-start (DELIVERY_START_TIMEOUT_MS = 10s)
+// and can then await a wake. Dispatching sequentially makes those bounds ADD
+// UP: the 7-target wave-6 halt that motivated #86 would not even ATTEMPT target
+// #7 until T+60s. The first cut of this ticket was sequential on the reasoning
+// that it is "at worst identical to today's baseline of N sequential sends" —
+// true, and beside the point, since the ticket exists BECAUSE N sequential
+// sends were "slow exactly when speed matters".
+//
+// These assert on OVERLAP and on ORDER, which is the only way to tell the two
+// implementations apart: a sequential version returns the same rows, in the
+// same order, with the same contents. Only the timing differs.
+// ---------------------------------------------------------------------------
+import { deliverToTargets } from './broadcast-targets.ts';
+
+test('deliveries run CONCURRENTLY, not one after another', async () => {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const deliver = async (): Promise<{ ok: boolean }> => {
+    inFlight++;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((r) => setTimeout(r, 20));
+    inFlight--;
+    return { ok: true };
+  };
+  await deliverToTargets(['a', 'b', 'c', 'd'], deliver);
+  // A sequential loop can never exceed 1 concurrent delivery. This is THE
+  // assertion that fails on the pre-review implementation.
+  assert.equal(maxInFlight, 4, `expected all 4 in flight at once, peak was ${maxInFlight}`);
+});
+
+test('ONE SLOW TARGET DOES NOT DELAY THE OTHERS (the emergency-halt property)', async () => {
+  // The aggravating case is the one you broadcast ABOUT: a hung agent is exactly
+  // what consumes the full timeout, so under sequential dispatch the targets
+  // most likely to stall everyone are the ones the halt is aimed at.
+  const finishedAt: Record<string, number> = {};
+  const t0 = Date.now();
+  await deliverToTargets(['slow', 'fast1', 'fast2'], async (id) => {
+    await new Promise((r) => setTimeout(r, id === 'slow' ? 120 : 5));
+    finishedAt[id] = Date.now() - t0;
+    return { ok: true };
+  });
+  // Sequentially, 'slow' is first, so both fast targets would finish AFTER
+  // ~120ms. Concurrently they finish while it is still hanging.
+  assert.ok(
+    finishedAt.fast1 < 100 && finishedAt.fast2 < 100,
+    `fast targets waited on the slow one: ${JSON.stringify(finishedAt)}`,
+  );
+});
+
+test('the report is in the CALLER’S order, never completion order', async () => {
+  // Deliberately finish in reverse. A report whose row order shifted with timing
+  // would be unreadable next to the command that produced it, and would make the
+  // output non-deterministic run to run.
+  const delays: Record<string, number> = { a: 60, b: 30, c: 5 };
+  const got = await deliverToTargets(['a', 'b', 'c'], async (id) => {
+    await new Promise((r) => setTimeout(r, delays[id]));
+    return { ok: true, delivery: 'live' };
+  });
+  assert.deepEqual(
+    got.map((r) => r.id),
+    ['a', 'b', 'c'],
+    'rows must follow the order the caller asked for',
+  );
+});
+
+test('a THROWN delivery becomes that target’s failure row, not a lost broadcast', async () => {
+  // `allSettled`, not `all`: one thrown target must not discard the outcomes of
+  // the others, or the sender never learns who DID receive the halt.
+  const seen: string[] = [];
+  const got = await deliverToTargets(
+    ['ok1', 'boom', 'ok2'],
+    async (id) => {
+      if (id === 'boom') throw new Error('kaboom');
+      return { ok: true, delivery: 'live' };
+    },
+    (id) => seen.push(id),
+  );
+  assert.equal(got.length, 3, 'every target must still have a row');
+  assert.deepEqual(got.map((r) => r.ok), [true, false, true]);
+  assert.match(got[1].error ?? '', /kaboom/, 'the failure reason must reach the report');
+  assert.deepEqual(seen, ['boom'], 'the error hook fires for exactly the thrown target');
 });

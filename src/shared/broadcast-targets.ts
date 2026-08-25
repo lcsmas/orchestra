@@ -91,12 +91,65 @@ export function classifyMessageRoute(msg: {
   // keep the legacy path and the legacy response shape.
   if (typeof msg.to === 'string') return { kind: 'single', to: msg.to };
   if (Array.isArray(msg.to)) {
-    return {
-      kind: 'broadcast',
-      to: msg.to.filter((t): t is string => typeof t === 'string'),
-      children: false,
-    };
+    // A non-string member is REFUSED, never silently dropped. Filtering them out
+    // would let a caller ask for 3 targets, be told "Delivered to 2 target(s)."
+    // at RC=0, and never learn which one vanished — a silent miss on the one
+    // route whose entire report shape exists so that nobody can be silently
+    // missed. Only reachable by a non-CLI socket caller (the CLI always sends
+    // strings), which is exactly why it should fail loudly rather than guess.
+    if (msg.to.some((t) => typeof t !== 'string')) return { kind: 'invalid' };
+    return { kind: 'broadcast', to: msg.to as string[], children: false };
   }
   if (msg.children === true) return { kind: 'broadcast', children: true };
   return { kind: 'invalid' };
+}
+
+/** One target's outcome, as the broadcast report renders it. Structural rather
+ * than importing the main-process type, for the same reason as
+ * {@link BroadcastCandidate}. */
+export interface TargetOutcome<D extends string = string> {
+  id: string;
+  ok: boolean;
+  branch?: string;
+  /** Generic so the main process keeps its NARROW `'live'|'started'|'inbox'`
+   * union instead of widening to `string` on the way through here — tsc caught
+   * exactly that widening when this was extracted. */
+  delivery?: D;
+  error?: string;
+}
+
+/** Deliver to every target CONCURRENTLY and re-assemble the outcomes in the
+ * CALLER'S order.
+ *
+ * Extracted here for the usual reason — `src/main/workspaces.ts` is unreachable
+ * by the test runner — but this one earns it twice over, because the two
+ * properties it guarantees are both invisible to a passing single-target test:
+ *
+ *  1. **Concurrency.** Each delivery awaits a bounded turn-start (10s) and can
+ *     then await a wake, so dispatching sequentially makes those bounds ADD UP:
+ *     a 7-target emergency halt would not even ATTEMPT target #7 until T+60s.
+ *     The aggravating case is the one you broadcast about — a hung agent is
+ *     exactly what consumes the full bound.
+ *  2. **Caller order.** Reports are re-ordered back to the order the caller
+ *     asked for, never completion order, so `--to a,b,c` always reads a,b,c.
+ *     A row order that shifted with timing would be unreadable next to the
+ *     command that produced it, and would make the report non-deterministic.
+ *
+ * A REJECTED delivery becomes that target's own failure row rather than taking
+ * the whole broadcast down: the sender must still learn who DID receive the
+ * halt. That is why this uses `allSettled` and not `all`. */
+export async function deliverToTargets<D extends string = string>(
+  targets: readonly string[],
+  deliver: (id: string) => Promise<Omit<TargetOutcome<D>, 'id'>>,
+  onError?: (id: string, reason: unknown) => void,
+): Promise<Array<TargetOutcome<D>>> {
+  const settled = await Promise.allSettled(targets.map((id) => deliver(id)));
+  return settled.map((outcome, i) => {
+    const id = targets[i];
+    if (outcome.status === 'rejected') {
+      onError?.(id, outcome.reason);
+      return { id, ok: false, error: `delivery failed: ${String(outcome.reason)}` };
+    }
+    return { id, ...outcome.value };
+  });
 }

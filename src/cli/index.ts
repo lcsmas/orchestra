@@ -677,16 +677,37 @@ async function main(argv: string[]): Promise<void> {
     }
 
     case 'message': {
-      const { present: children, rest: m1 } = takeBoolFlag(args, '--children');
-      const { value: toList, rest: m2 } = takeFlag(m1, '--to');
-      if (children && toList !== undefined) {
-        fail('--children and --to are mutually exclusive: pass one or the other');
-      }
+      // THE BRANCH IS CHOSEN FROM args[0] ALONE, BEFORE ANY FLAG SCANNING.
+      //
+      // This ordering is load-bearing, not stylistic. `takeBoolFlag`/`takeFlag`
+      // scan the WHOLE argv, so scanning first and branching after let a flag
+      // token sitting INSIDE THE MESSAGE BODY hijack the routing:
+      //
+      //     orchestra message ws1 pass --to bob
+      //       -> {"to":["bob"], "text":"ws1 pass"}   delivered to the WRONG
+      //          workspace, the real target swallowed into the text, RC=0.
+      //
+      // That shipped in the first cut of this ticket and is the mirror image of
+      // the defect #86 exists to fix: there a broadcast reached nobody and
+      // reported success; here a single-target send reaches the wrong agent and
+      // reports success. It is a LIKELY body of text, too — `--to` and
+      // `--children` are now this command's documented vocabulary, so "use
+      // --children for this, not --to" is an ordinary sentence to send a peer.
+      //
+      // A message body is DATA. The only way it can never be parsed as flags is
+      // to stop looking at it: everything after the leading token belongs to the
+      // payload, so `message <id> …` never flag-scans at all.
+      const leading = args[0];
+      const isBroadcast = leading === '--children' || leading === '--to';
 
-      // BROADCAST FORMS (issue #86). Kept in a separate branch from the
-      // positional form below so that form's output stays byte-for-byte what it
-      // has always been — agents and scripts already parse `Delivered (live).`.
-      if (children || toList !== undefined) {
+      if (isBroadcast) {
+        // Flag parsing is confined to the broadcast branch, where args[0] has
+        // already proven this is not a positional send.
+        const { present: children, rest: m1 } = takeBoolFlag(args, '--children');
+        const { value: toList, rest: m2 } = takeFlag(m1, '--to');
+        if (children && toList !== undefined) {
+          fail('--children and --to are mutually exclusive: pass one or the other');
+        }
         const text = m2.join(' ').trim();
         if (!text) {
           fail('usage: orchestra message (--children | --to <id,id,...>) <text...>');
@@ -719,10 +740,22 @@ async function main(argv: string[]): Promise<void> {
           text,
         });
         const results = res.results as BroadcastTargetResult[] | undefined;
-        // No `results` at all = the broadcast could not be ATTEMPTED (no caller
-        // id, no children, empty list). Nothing per-target to show, so this is
-        // the ordinary whole-command refusal.
-        if (!results) fail(res.error ?? 'failed to deliver message');
+        // No `results`, OR AN EMPTY ONE = the broadcast could not be ATTEMPTED
+        // (no caller id, no children, empty list). Nothing per-target to show,
+        // so this is the ordinary whole-command refusal.
+        //
+        // The `.length === 0` half matters even though today's server returns
+        // before ever building an empty `results` (all three zero-target paths
+        // answer `{ok:false,error}` instead). `[]` is TRUTHY, so a bare
+        // `if (!results)` would sail past it and print an empty table followed
+        // by `Delivered to 0 target(s).` at RC=0 — "reached nobody, reported
+        // success", which is the precise defect this whole ticket exists to
+        // eliminate. The client half is what decides the exit code an
+        // emergency-halt script gates on, so it refuses on its own terms rather
+        // than trusting the server to never hand it an empty list.
+        if (!results || results.length === 0) {
+          fail(res.error ?? 'failed to deliver message');
+        }
 
         // ONE LINE PER TARGET. Each carries its OWN outcome: a report where
         // every line says the same thing cannot distinguish a real per-target
@@ -756,8 +789,11 @@ async function main(argv: string[]): Promise<void> {
         return;
       }
 
-      const id = m2[0];
-      const text = m2.slice(1).join(' ');
+      // POSITIONAL SINGLE-TARGET FORM. `args` is used RAW — deliberately never
+      // flag-stripped — so the message text is passed through verbatim however
+      // many `--to`/`--children` tokens it happens to contain.
+      const id = args[0];
+      const text = args.slice(1).join(' ');
       if (!id || !text)
         fail(
           'usage: orchestra message <id> <text...>\n' +

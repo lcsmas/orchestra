@@ -307,3 +307,98 @@ test('a broadcast with no text is a usage error, not an empty broadcast', needsB
   assert.match(r.stderr, /usage: orchestra message/);
   assert.equal(r.seen.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// F1 REGRESSION (found in review, 2026-08-25) — A MESSAGE BODY IS DATA.
+//
+// The first cut of this ticket ran takeBoolFlag/takeFlag over the WHOLE argv
+// and chose the positional-vs-broadcast branch AFTERWARDS. So a flag token
+// sitting inside the message TEXT hijacked the routing:
+//
+//     orchestra message ws1 pass --to bob
+//       -> {"to":["bob"],"text":"ws1 pass"}   RC=0
+//
+// i.e. delivered to the WRONG workspace, with the intended target swallowed
+// into the text, reporting SUCCESS. That is the mirror image of the defect #86
+// exists to eliminate, and it is likely text: `--to`/`--children` are now this
+// command's documented vocabulary, so "use --children for this, not --to" is an
+// ordinary sentence to send a peer.
+//
+// WHY THE ORIGINAL SUITE COULD NOT CATCH IT: all nine fixtures above put the
+// flag at args[0]. Not one drives a positional send whose TEXT contains a flag
+// token, so the D6 backward-compatibility guard was structurally incapable of
+// failing on this input class. A guard that cannot fail on the defect it guards
+// IS the defect. These fixtures exist specifically to close that class, so the
+// assertions below are on the WIRE BODY — where misdelivery is visible — not
+// merely on the printed output.
+// ---------------------------------------------------------------------------
+for (const [label, body] of [
+  ['--to inside the text', ['pass', '--to', 'bob']],
+  ['--children inside the text', ['halt', '--children', 'now']],
+  ['a flag as the LAST word', ['stop', 'using', '--to']],
+  ['both flag tokens in the text', ['prefer', '--children', 'over', '--to']],
+  ['a flag token repeated later in the body', ['says', '--to', 'is', 'not', '--to']],
+] as Array<[string, string[]]>) {
+  test(`positional send is NOT re-routed by ${label}`, needsBuild, () => {
+    const r = driveCli(
+      ['message', 'ws1', ...body],
+      `return { ok: true, delivery: 'live', branch: 'br' };`,
+    );
+
+    const sent = r.seen[0];
+    assert.ok(sent, `no request reached the socket: ${r.stderr}`);
+
+    // THE MISDELIVERY ASSERTION. `to` must be the STRING 'ws1' — not an array,
+    // not 'bob', not absent. This is the one that fails on the unfixed build.
+    assert.equal(
+      sent.to,
+      'ws1',
+      `MISDELIVERY: message intended for ws1 was routed to ${JSON.stringify(sent.to)}`,
+    );
+    assert.equal(sent.children, undefined, 'a body token must never set children:true');
+
+    // The payload must survive VERBATIM — the target id must not be swallowed
+    // into it, and no word may be stripped out of the message.
+    assert.equal(
+      sent.text,
+      body.join(' '),
+      'the message text must pass through unchanged, flags and all',
+    );
+
+    // And the legacy output contract still holds for this input class.
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout, 'Delivered (live).\n');
+  });
+}
+
+// The flags must still WORK in their legitimate leading position — otherwise
+// "never parse flags" would be a fix that silently deletes the feature. This is
+// the positive control for the guard above.
+test('CONTROL: a LEADING --to is still parsed as a flag, not as a target id', needsBuild, () => {
+  const r = driveCli(
+    ['message', '--to', 'a,b', 'hello', '--to', 'world'],
+    `return { ok: true, results: body.to.map((id) => ({ id, ok: true, delivery: 'live' })) };`,
+  );
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(r.seen[0].to, ['a', 'b'], 'the LEADING --to must still select targets');
+  // ...and a second occurrence inside the text stays part of the payload.
+  assert.equal(r.seen[0].text, 'hello --to world', 'only the leading flag is consumed');
+});
+
+// ---------------------------------------------------------------------------
+// F2 (found in review, 2026-08-25) — `results: []` is TRUTHY.
+//
+// A bare `if (!results)` sails past an empty array and prints an empty table
+// plus `Delivered to 0 target(s).` at RC=0 — "reached nobody, reported
+// success", the exact founding defect of this ticket. Latent today (the server
+// returns before building an empty list), gated anyway: the client half decides
+// the exit code an emergency-halt script reads.
+// ---------------------------------------------------------------------------
+test('an EMPTY results array is a refusal, never a success', needsBuild, () => {
+  const r = driveCli(
+    ['message', '--children', 'EMERGENCY HALT'],
+    `return { ok: true, results: [] };`,
+  );
+  assert.notEqual(r.code, 0, 'reaching zero targets must never exit 0');
+  assert.doesNotMatch(r.stdout, /Delivered to 0 target\(s\)/, 'must not claim delivery to nobody');
+});
