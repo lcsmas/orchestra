@@ -276,7 +276,33 @@ selftest() {
   echo "SELFTEST FAIL ($fails)"; return 1
 }
 
+# ── drive: observation (a), behind the verified pre-flight ──────────────────
+drive() {
+  local app="$REPO/release/Orchestra.AppImage"
+  [ -x "$app" ] || die "no-artifact" "$app missing — run pnpm run build first"
+  # NEVER the shared installed AppImage: a ship agent is live on that path.
+  case "$app" in
+    "$REPO"/release/*) : ;;
+    *) die "shared-install" "refusing to drive anything outside my own worktree" ;;
+  esac
+
+  start_sway
+  local child_env
+  child_env="$(preflight "$MY_SWAY_DISPLAY")" || exit 1   # dies naming its clause
+  log "pre-flight PASSED for $MY_SWAY_DISPLAY"
+
+  # CDP port derived from the pid: ~19 sibling agents share this box, and the
+  # drive additionally filters targets by URL after connecting.
+  local port=$(( 9600 + (RIG_PID % 300) ))
+  local rc=0
+  RIG_WAYLAND="$MY_SWAY_DISPLAY" RIG_HOME="$RIG_HOME" RIG_APP="$app" RIG_CDP_PORT="$port" \
+    node "$REPO/scripts/e2e-usage-resume-drive.mjs" || rc=$?
+  teardown
+  return $rc
+}
+
 case "${1:-selftest}" in
   selftest) selftest ;;
+  drive)    drive ;;
   *) die "unknown-mode" "usage: $0 selftest|drive" ;;
 esac
