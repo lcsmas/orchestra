@@ -706,6 +706,20 @@ async function main(argv: string[]): Promise<void> {
         const { present: children, rest: m1 } = takeBoolFlag(args, '--children');
         const { value: toList, rest: m2 } = takeFlag(m1, '--to');
         if (children && toList !== undefined) {
+          // KNOWN RESIDUAL, documented so it is not rediscovered as a bug
+          // (F-A, raised in review 2026-08-25). Inside a BROADCAST invocation
+          // the body is still flag-scanned, so an UNQUOTED flag token in the
+          // message text trips this refusal:
+          //
+          //   orchestra message --children use --to bob    -> RC=1, nothing sent
+          //   orchestra message --children "use --to bob"  -> delivered, text intact
+          //
+          // This is a shell-quoting distinction, not a parser defect: unquoted,
+          // `--to` genuinely IS its own argv element and nothing can tell it
+          // apart from a real flag. It is deliberately left as a REFUSAL — the
+          // safe direction, never a misdelivery — and it cannot affect the
+          // positional single-target form, which is chosen from args[0] before
+          // any flag scanning and never flag-strips its body at all.
           fail('--children and --to are mutually exclusive: pass one or the other');
         }
         const text = m2.join(' ').trim();

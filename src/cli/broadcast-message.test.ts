@@ -402,3 +402,47 @@ test('an EMPTY results array is a refusal, never a success', needsBuild, () => {
   assert.notEqual(r.code, 0, 'reaching zero targets must never exit 0');
   assert.doesNotMatch(r.stdout, /Delivered to 0 target\(s\)/, 'must not claim delivery to nobody');
 });
+
+// ---------------------------------------------------------------------------
+// F-A (raised by the verifier, 2026-08-25) — KNOWN RESIDUAL, pinned so the next
+// reader finds a documented decision instead of rediscovering it as a bug.
+//
+// Inside a BROADCAST invocation the message body is still flag-scanned, so an
+// UNQUOTED flag token in the text trips the mutual-exclusion refusal. Quoted —
+// as any real caller writes it — it is delivered with the text intact.
+//
+// This is a shell-quoting distinction, not a parser defect: unquoted, `--to` IS
+// its own argv element and nothing can distinguish it from a real flag. It is
+// deliberately a REFUSAL (RC=1, nothing sent) — the safe direction. The
+// property that actually matters is that it can never MISDELIVER, which is what
+// the second assertion pins.
+//
+// Note this cannot affect the positional single-target form: that branch is
+// chosen from args[0] before any flag scanning and never flag-strips its body
+// (see the F1 fixtures above, which pass unquoted flag tokens through verbatim).
+// ---------------------------------------------------------------------------
+test('F-A: --children with an UNQUOTED --to in the body REFUSES (never misdelivers)', needsBuild, () => {
+  const r = driveCli(
+    ['message', '--children', 'use', '--to', 'bob'],
+    `return { ok: true, results: [{ id: 'kid1', ok: true, delivery: 'live' }] };`,
+    'parent-1',
+  );
+  assert.equal(r.code, 1, 'the ambiguous form must refuse, not guess');
+  assert.match(r.stderr, /mutually exclusive/);
+  // THE PROPERTY THAT MATTERS: refusing is safe, misdelivering is not. Nothing
+  // may reach the socket — in particular nothing addressed to 'bob'.
+  assert.equal(r.seen.length, 0, 'a refusal must send NOTHING');
+});
+
+test('F-A: the same body QUOTED is delivered with its text intact', needsBuild, () => {
+  // The positive control. Without it, "refuses on --to in the body" would be
+  // indistinguishable from a broadcast that cannot carry the word at all.
+  const r = driveCli(
+    ['message', '--children', 'use --to bob'],
+    `return { ok: true, results: [{ id: 'kid1', ok: true, branch: 'b1', delivery: 'live' }] };`,
+    'parent-1',
+  );
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.seen[0].children, true);
+  assert.equal(r.seen[0].text, 'use --to bob', 'the quoted body must survive verbatim');
+});
