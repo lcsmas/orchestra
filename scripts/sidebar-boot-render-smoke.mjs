@@ -290,6 +290,30 @@ check(
     htmlUnseeded.includes('Configure scripts for orchestra'),
   'the control labels are absent — the two assertions above are vacuous',
 );
+// THE LEAD'S RULING (#38): show the section, and keep the workspace ROWS fully
+// reachable — a user must always be able to open their workspace. Only
+// REPO-SCOPED affordances (create-in-repo, repo tools) are removed. No-repo
+// workspaces are a REAL, COMMON state, not a corrupt edge case, so this section
+// is first-class and must not become an inert error bin.
+//
+// The two assertions above only prove the repo-scoped pills are GONE. Suppressing
+// them via a wrongly-scoped guard could also have killed the row itself, and that
+// would satisfy every assertion above while violating the ruling — so assert the
+// row's presence separately and in the opposite direction.
+check(
+  'RULING: the repo-less section still renders its workspace ROW',
+  htmlUnseeded.includes('ws-item'),
+  'the row vanished — the section became an inert error bin',
+);
+// Rows carry an onClick that selects the workspace. In SSR we cannot fire it, so
+// assert the markup that carries it survived; the live click is driven in the
+// CDP gate (measured: selection moved off the row and back onto it, with
+// pointerEvents:auto and cursor:pointer read off the live element).
+check(
+  'RULING: the row is not rendered disabled or inert',
+  !/<div[^>]*class="[^"]*ws-item[^"]*"[^>]*(disabled|inert)/.test(htmlUnseeded),
+  'the repo-less row rendered disabled/inert',
+);
 
 // ── 3. CONTROL: an ordinary record is unaffected ─────────────────────────────
 console.log('\nControl — workspace record WITH repoPath (ordinary case):');

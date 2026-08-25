@@ -372,7 +372,16 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   `scripts/sidebar-boot-render-smoke.mjs` asserts the **compiled bundle** still
   contains the guard shape and no `?.`-equality shorthand — so reverting the
   render site fails a gate (it did not before).
-- **The repo-less bucket (`repoPath === ''`) is NON-INTERACTIVE by design.**
+- **The repo-less bucket (`repoPath === ''`) is FIRST-CLASS, with only its
+  REPO-SCOPED affordances removed.** No-repo workspaces are a real, common state
+  (several live ones on this machine), not a corrupt edge case — so the section
+  renders, and its workspace ROWS stay fully clickable/openable. Hiding the
+  section was considered and REJECTED: a user must always be able to reach their
+  workspace. Measured on the built app (trusted `Input.dispatchMouseEvent`, with
+  selection first moved OFF the row so the click is a real transition and not a
+  vacuous no-op): row `pointerEvents:auto`, `cursor:pointer`, click re-selects it
+  and the pane opens; the row keeps its own workspace-scoped actions. What is
+  removed is only what a repo-less section cannot honour —
   `repoSectionKeyOf` (`orchestrator-repo-grouping.ts:59`) returns `?? null` and
   `groupRootsByRepo` (`Sidebar.tsx:768`) collapses to `?? ''`, so a malformed
   record groups under the empty key; `repoLabel` (`:1448`) names it **"No
