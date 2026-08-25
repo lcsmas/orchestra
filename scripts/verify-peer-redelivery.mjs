@@ -47,7 +47,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { transcriptToEvents } from '../src/shared/agent-transcript.ts';
-import { pendingPromptKey, filterUnconsumedPrompts } from '../src/shared/pending-prompts.ts';
+import {
+  countConsumedKeys,
+  filterUnconsumedPrompts,
+  pendingPromptKey,
+} from '../src/shared/pending-prompts.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const payload = JSON.parse(
@@ -167,6 +171,61 @@ const humanFixed = filterUnconsumedPrompts(
 );
 check('control: a consumed HUMAN prompt is not redelivered (legacy)', humanLegacy.length === 0);
 check('control: a consumed HUMAN prompt is not redelivered (fixed)', humanFixed.length === 0);
+
+// ── FIELD CAPTURE: the same predicates over REAL production data ────────────
+// This is the strongest evidence in the ticket and it is not a model. These are
+// REAL `ws.sdkPendingPrompts` entries lifted from the live store of workspace
+// eadee48c (fix-wave-5-ops) while it ran the UNFIXED installed build v0.5.257 —
+// the run that logged, verbatim:
+//   2026-08-25T10:04:19.940Z [INFO] agent-sdk: re-sending 26 pending prompt(s)
+//   lost to a quit for eadee48c-05dd-48b1-b9f6-21e45db5fdd8
+// At capture the workspace held 17 pending entries, 17 of 17 peer envelopes
+// (21 of 25 fleet-wide) — the accumulation signature of fault (a): peer
+// messages that CAN NEVER match the legacy text predicate, so every reopen
+// re-sends them.
+{
+  const field = JSON.parse(
+    fs.readFileSync(path.join(here, 'fixtures/payloads/pending-prompts.field-capture.json'), 'utf8'),
+  );
+  const entries = field.entries;
+  const lines = entries.map((t, i) =>
+    JSON.stringify({
+      type: 'user',
+      uuid: `field-${i}`,
+      timestamp: '2026-08-25T10:00:00Z',
+      message: { role: 'user', content: t },
+    }),
+  );
+  const fieldEvents = transcriptToEvents(lines.join('\n'), ctx(), null).filter(
+    (e) => e.type === 'user-message',
+  );
+  // Instrument audit before any verdict.
+  if (fieldEvents.length !== entries.length) {
+    console.error('rig-side: field capture did not round-trip through the backfill — no verdict');
+    process.exit(2);
+  }
+  const fieldTexts = fieldEvents.map((e) => e.text ?? '');
+  const legacyResend = entries.filter((p) => !fieldTexts.some((t) => t.includes(p))).length;
+  const fixedResend = filterUnconsumedPrompts(
+    entries.map((t, i) => ({ id: `s${i}`, key: pendingPromptKey({ text: t }), text: t })),
+    countConsumedKeys(fieldEvents),
+  ).length;
+
+  console.log(`\n  FIELD CAPTURE (real store, unfixed build v0.5.257)`);
+  console.log(`    entries: ${entries.length} | all tagged peer by the backfill: ${fieldEvents.every((e) => String(e.origin ?? '').startsWith('peer: '))}`);
+  console.log(`    LEGACY predicate would RE-SEND : ${legacyResend}/${entries.length}`);
+  console.log(`    FIXED  predicate would re-send : ${fixedResend}/${entries.length}`);
+  check(
+    'FIELD: the legacy predicate re-sends EVERY consumed peer message',
+    legacyResend === entries.length,
+    'this is fault (a) observed on production data',
+  );
+  check(
+    'FIELD: the fixed predicate re-sends NONE of them',
+    fixedResend === 0,
+    `got ${fixedResend}`,
+  );
+}
 
 // ── Verdict ──────────────────────────────────────────────────────────────────
 console.log(`\nissue #57 fault (a) — peer-message redelivery`);
