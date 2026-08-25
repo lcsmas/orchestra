@@ -466,6 +466,11 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
     block; and the wake prompt carries **no** parked content, because `sdkWake`
     -> `sdkSend` never touches the inbox, so every block must go through
     `releaseInboxBlock` or the woken turn's hook `cat`+`rm -f`s the whole file.
+    That hook drain is ASYNC, so the release loop re-reads the inbox before
+    every release and yields `INBOX_DRAIN_GRACE_MS` first — a one-shot
+    `for…of readInbox()` snapshot predates the drain and delivers a block twice
+    (measured 3/3). `src/main/session-watchdog.test.ts` drives the module itself
+    and kills all three reviewed defects.
   Full mechanism, field captures, refuted hypotheses and the measurement
   provenance: `docs/research/issue-90-session-wedge.md`. Rig:
   `scripts/e2e-session-wedge.sh`.

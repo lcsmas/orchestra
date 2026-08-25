@@ -193,11 +193,32 @@ removed — without it, "inbox empty" could not be distinguished from a rig that
 simply deletes files.
 
 **Mutation (defect reinstated):** waking with `parked[0].text` and skipping the
-first block in the release loop → `ok:false`, `remainingAfter:1`. **Reported
-honestly: `duplicates` stays empty in that arm**, because the rig has no live
-shell hook to perform the `cat`+`rm -f`. The rig therefore catches R2 via the
-ORPHANED block, not via the duplicate itself; the duplicate half is argued from
-the hook source, not observed.
+first block in the release loop → `ok:false`, `remainingAfter:1`.
+
+### R2 RESIDUAL — the snapshot boundary (found by review on the first fix)
+
+The first fix was **not** complete. The wake turn's `UserPromptSubmit` hook
+drains the inbox **asynchronously**, and step 4's `for (const block of
+readInbox(wsId))` evaluates its iterable **once** — so the snapshot predated the
+drain and the loop released a block the hook was about to show the agent too.
+
+**MEASURED against the real module, 3/3 deterministic** (2026-08-26):
+`PARKED-ALPHA` delivered **twice**, `remaining: 0`. Show-twice, not lose.
+
+The structural point: **neither path is individually wrong.** The hook drain is
+a legitimate delivery and the release loop is a legitimate delivery; they
+compose wrong at the snapshot boundary. My own comment there claimed the re-read
+avoided exactly this, and was wrong.
+
+**Fix:** re-read the inbox before **every** release and yield
+`INBOX_DRAIN_GRACE_MS` first, letting the already-in-flight hook drain win the
+race; `releaseInboxBlock` remains the only remover, so a surviving block is
+delivered exactly once. Bounded by the block count so nothing can spin.
+
+**Gate:** the `hook_drain_race` arm, which fires the drain during the release
+loop. Fixed build **5/5** `duplicates: []`; residual reinstated **5/5**
+`duplicates: ["PARKED-ALPHA"]`. The duplicate is now **observed directly** —
+this retires the earlier honest limit that it was only argued from hook source.
 
 ### Mutation results for R1 (one mutant per arm, each verified live)
 
@@ -206,6 +227,33 @@ the hook source, not observed.
 | progress refusal deleted (the R1 defect reinstated) | **KILLED** — 21→18 pass, 3 fail |
 | `null` progress treated as killable instead of refusing | **KILLED** — 1 fail |
 | anti-flap budget charged BEFORE the progress check | **KILLED** — 1 fail (placement is load-bearing, not just presence) |
+
+### R4 — the module performing the destructive act had NO test importing it
+
+Verified: `grep -rl session-watchdog src --include='*.test.ts'` → **0** (control:
+`session-wedge.test.ts` imports `session-wedge`, so the probe discriminates).
+
+This is the finding that explains the other three. R1, R2 and the residual all
+lived in how the **module** composes `sdkStop`, `sdkWake`, `readInbox` and
+`releaseInboxBlock` against a real file and a real session — none were reachable
+from a pure function taking a plain object. The policy tests were good and
+structurally incapable of catching any of them.
+
+`src/main/session-watchdog.test.ts` now drives the module itself (in a
+subprocess through `scripts/.r2-register.mjs`, because a bare import fails with
+ERR_MODULE_NOT_FOUND — verified, which is why the naive version of this test
+could not exist). **All three reviewed defects are killed by it**, each mutant
+verified live in the file:
+
+| Mutant | Result |
+|---|---|
+| `lastStreamAt: 0` (R1 defect) | **KILLED** — 1 fail |
+| `sdkWake(wsId, parked[0].text)` (R2 defect) | **KILLED** — 3 fail |
+| `for…of readInbox()` one-shot snapshot (residual) | **KILLED** — 1 fail |
+
+Plus source-binding guards (comments stripped, with positive controls) pinning
+the three structural properties, so a refactor that reintroduces a reviewed
+defect fails with a NAME rather than as a flaky race.
 
 ## The false-positive fixture (ledger #89, verbatim)
 

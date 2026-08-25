@@ -116,6 +116,19 @@ let timer: NodeJS.Timeout | null = null;
  *  parked message here would deliver it while leaving its block on disk for the
  *  woken turn's hook to drain a second time. Its only job is to bring the
  *  session up so `releaseInboxBlock` has somewhere to release into. */
+/** How long to let the wake turn's `UserPromptSubmit` hook drain land before
+ *  reading the inbox to decide what still needs releasing (review R2 residual).
+ *
+ *  This is a RACE-LOSER, not a correctness bound: the hook drain and this
+ *  loop are two legitimate delivery paths for the same block, and the cheapest
+ *  way to guarantee exactly-once is to let the already-in-flight one win.
+ *  If the grace is too short the loop simply falls back to what it read, and
+ *  `releaseInboxBlock`'s own 'gone' check still prevents removing a block the
+ *  hook handled — the cost of being wrong here is a retry on the next tick,
+ *  never a lost message. UNBASELINED; chosen as a short human-imperceptible
+ *  pause on a path that only runs after a multi-minute stall. */
+const INBOX_DRAIN_GRACE_MS = 250;
+
 const WAKE_PROMPT =
   'Your session was automatically restarted because it had stopped starting turns ' +
   'while messages were waiting (Orchestra issue #90). Any messages parked for you ' +
@@ -165,22 +178,48 @@ export async function recycleSession(wsId: string, reason: string): Promise<void
     return;
   }
 
-  // 4. Release EVERY parked block — including the first — through the single
-  //    confirmed-start path. `releaseInboxBlock` removes a block only on a
-  //    confirmed `'started'` and re-reads the file before rewriting it, so a
-  //    hook drain racing us cannot resurrect blocks it already handed over.
-  //    Anything that does not actually start stays parked for the next tick
-  //    rather than vanishing: the failure mode is "the message stays where it
-  //    was", never "the message is gone".
+  // 4. Release whatever the WAKE TURN'S OWN HOOK DRAIN did not already take.
   //
-  //    Re-read rather than reusing the step-2 snapshot: the wake turn's own
-  //    hook drain may legitimately have taken blocks already, and releasing
-  //    from a stale snapshot would re-deliver what the agent has now seen.
-  for (const block of readInbox(wsId)) {
-    const out = await releaseInboxBlock(wsId, block.text).catch(() => null);
+  //    ## The snapshot boundary (review R2 residual) — why this re-reads
+  //    ## on EVERY iteration and yields between them
+  //
+  //    The wake turn runs `UserPromptSubmit`, whose INBOX_INSTRUCTION_SCRIPT
+  //    `cat`s and `rm -f`s the WHOLE inbox file. That drain is a LEGITIMATE
+  //    delivery — the agent really does see those blocks — and it is
+  //    asynchronous with respect to this loop.
+  //
+  //    The previous cut called `readInbox(wsId)` ONCE, in the `for…of` head.
+  //    A `for…of` evaluates its iterable a single time, so that snapshot was
+  //    taken before the drain landed and the loop then released a block the
+  //    hook was about to show too: MEASURED 3/3 deterministic, ALPHA delivered
+  //    twice with `remaining:0` (`/tmp/residual-real.mjs`, 2026-08-26). The
+  //    comment there claimed the re-read avoided exactly this and was wrong.
+  //
+  //    Neither this loop nor the hook is individually incorrect — they compose
+  //    wrong at the snapshot boundary. So the loop now re-reads the file before
+  //    EVERY release and yields first, letting the drain (which is the cheaper,
+  //    already-in-flight delivery) win the race. `releaseInboxBlock` is still
+  //    the only remover, so a block that survives the drain is delivered
+  //    exactly once, and a block that does not start stays parked for the next
+  //    tick. The failure mode remains "the message stays where it was", never
+  //    "the message is gone".
+  //
+  //    Bounded by the block count so a pathological re-appearing block cannot
+  //    spin: each pass either releases one block or stops.
+  const maxReleases = parked.length;
+  for (let i = 0; i < maxReleases; i++) {
+    // Yield first: give the wake turn's hook drain a chance to land before we
+    // read, so we observe the post-drain state rather than racing it.
+    await new Promise((r) => setTimeout(r, INBOX_DRAIN_GRACE_MS));
+    const remaining = readInbox(wsId);
+    if (remaining.length === 0) break; // the hook drained everything — done.
+    const out = await releaseInboxBlock(wsId, remaining[0].text).catch(() => null);
     if (!out?.ok) {
+      // 'gone' means the hook took it while we were delivering — that is a
+      // successful delivery by the other path, not a failure. Either way we
+      // stop: the next watchdog tick re-evaluates from the real file.
       log.info(
-        `session-watchdog: ${wsId} re-delivery of a parked block did not start — left parked`,
+        `session-watchdog: ${wsId} stopping re-delivery (${out?.ok === false ? out.reason : 'error'})`,
       );
       break;
     }

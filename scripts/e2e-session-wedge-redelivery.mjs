@@ -24,9 +24,18 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARM = process.argv[2] ?? 'exactly_once';
+//   hook_drain_race — the R2 RESIDUAL arm. The wake turn's UserPromptSubmit
+//                   hook drains the inbox ASYNCHRONOUSLY (cat + rm -f the whole
+//                   file) while the release loop is running. Before the fix,
+//                   step 4's `for…of readInbox()` took ONE snapshot before that
+//                   drain landed and released a block the hook was about to show
+//                   too: MEASURED 3/3 deterministic, ALPHA delivered twice with
+//                   remaining=0. Both paths are individually correct; they
+//                   composed wrong at the snapshot boundary.
 const ARMS = {
   exactly_once: { startTurns: true },
   control_nodeliver: { startTurns: false },
+  hook_drain_race: { startTurns: true, hookDrain: true },
 };
 const arm = ARMS[ARM];
 if (!arm) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
@@ -76,12 +85,27 @@ if (parkedBefore !== 3) {
 
 // Count how many times each body reaches the session as a real turn.
 const delivered = [];
+let hookFired = false;
 sdk.__setQueryFactoryForTests(({ prompt }) => {
   void (async () => {
     try {
       for await (const m of prompt) {
         const txt = JSON.stringify(m?.message?.content ?? '');
         for (const b of BODIES) if (txt.includes(b)) delivered.push(b);
+        // The wake turn's UserPromptSubmit hook: cat the whole inbox to the
+        // agent (a REAL delivery — it is how a parked message normally lands)
+        // then rm -f the file. Async, exactly as the shell hook is.
+        if (arm.hookDrain && !hookFired && !BODIES.some((b) => txt.includes(b))) {
+          hookFired = true;
+          setTimeout(() => {
+            try {
+              for (const blk of tray.readInbox(WS_ID)) {
+                for (const b of BODIES) if (blk.text.includes(b)) delivered.push(b);
+              }
+              fs.rmSync(inboxPath, { force: true });
+            } catch { /* the file may already be gone; that is the race */ }
+          }, 40);
+        }
       }
     } catch { /* torn down; expected */ }
   })();
