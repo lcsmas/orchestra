@@ -406,28 +406,43 @@ const NOT_LANDED_EXIT = 2;
  *  the far side of the pipe, then terminate with `code`.
  *
  *  WHY THIS EXISTS (issue #62). `process.stdout.write()` to a PIPE is
- *  asynchronous: libuv buffers what the pipe will not accept immediately and
- *  flushes it on later ticks. `process.exit()` called in the SAME TICK as a
- *  large write abandons whatever is still buffered, so the reader sees a
- *  truncated prefix and no error anywhere. Measured on the built bundle with a
- *  3000-commit `verify-landed` verdict, stdout on a pipe:
+ *  asynchronous: what the pipe will not accept immediately is buffered and
+ *  flushed on later ticks. `process.exit()` called in the SAME TICK as a large
+ *  write abandons whatever is still buffered, so the reader sees a truncated
+ *  prefix and no error anywhere. Measured on the built bundle under real
+ *  Electron with a 3000-commit `verify-landed` verdict (181945 bytes) piped:
  *
- *      write(payload); process.exit(2)          -> 146496/181890 bytes  TRUNCATED
- *      await drained; process.exit(2)           -> 181890/181890 bytes  complete
+ *      write(payload); process.exit(2)   -> 146496 bytes  TRUNCATED
+ *      await drained;  process.exit(2)   -> 181945 bytes  complete
  *
- *  146496 = 143*1024, the portion libuv had already handed to the kernel.
+ *  146496 is the prefix that happened to survive; it is NOT a round buffer size
+ *  (143*1024 = 146432, which is 64 bytes short) and no mechanism here is
+ *  asserted for it. The number is an observation, not an explanation.
+ *
+ *  The defect is a RACE, not a threshold: the unfixed build truncated only
+ *  4/20 runs, so a single run passes most of the time. See
+ *  `scripts/verify-cli-pipe-flush.mjs`, which asserts on the rate.
  *
  *  This is NOT specific to the socket-response callback that issue #62
- *  originally blamed, and NOT specific to Electron: the identical byte count
+ *  originally blamed, and NOT specific to Electron: the same truncation
  *  reproduces under plain `node` with no socket in the picture. The axis is
- *  same-tick-exit vs next-tick-exit, so the drain belongs at the exit sites —
- *  which is here and in {@link runCli} — not in any one verb.
+ *  same-tick-exit vs flushed-exit, so the drain belongs at the exit sites —
+ *  here and in {@link runCli} — not in any one verb.
  *
- *  `write('')` resolves its callback only after the stream's pending queue has
- *  drained, so awaiting it is the flush. Streams already fully flushed resolve
- *  on the next tick, which costs nothing and is itself sufficient (a bare
- *  `setImmediate` before the exit also fixed the measurement) — so this is safe
- *  to call unconditionally, including for the small-output and error paths.
+ *  BROKEN PIPES ARE THE HARD PART (issue #62 R2). `orchestra verify-landed |
+ *  head -1` closes the reader while we are still writing. The first cut of this
+ *  function tested `destroyed || writableEnded` ONCE, before `write('', cb)`:
+ *  when the reader hung up microseconds later the callback never fired, the
+ *  `Promise.all` never settled, and a deliberate never-resolving tail promise
+ *  meant NOTHING could end the process. Measured 8/10 hangs of 10s+ against
+ *  0/10 on master — a regression, not an inherited flaw. So the wait must be
+ *  bounded and must observe the stream dying:
+ *    - resolve on the write callback (the normal flush), AND
+ *    - resolve on 'error'/'close' (the reader went away — nothing left to
+ *      flush, and EPIPE here is expected, not exceptional), AND
+ *    - resolve on a short timer, so an unforeseen fourth case degrades to
+ *      "exit slightly early" rather than "hang forever".
+ *  Exiting is always preferable to hanging: the caller already has its status.
  *
  *  Exit status is set on `process.exitCode` FIRST so that if anything here
  *  throws, the natural unwind still carries the right status.
@@ -438,27 +453,54 @@ const NOT_LANDED_EXIT = 2;
  *  terminate synchronously (issue #59). Here nothing follows — this IS the
  *  terminal path — so a throw has no fall-through to prevent and can only
  *  escape `runCli` as an UnhandledPromiseRejectionWarning printed on stderr,
- *  which is exactly the output stream the caller is parsing. Observed while
- *  gating this fix; the rig caught it. Park on a never-resolving promise
- *  instead, which honours `Promise<never>` without emitting anything. */
+ *  which is exactly the stream the caller is parsing. */
+const FLUSH_TIMEOUT_MS = 2000;
+
 async function exitAfterFlush(code: number): Promise<never> {
   process.exitCode = code;
   await Promise.all(
     [process.stdout, process.stderr].map(
       (stream) =>
         new Promise<void>((resolve) => {
-          // A destroyed/closed stream never fires the callback — resolve rather
-          // than hang the process forever on a broken pipe.
+          // Already gone: nothing can be flushed to it.
           if (stream.destroyed || stream.writableEnded) return resolve();
-          stream.write('', () => resolve());
+          let done = false;
+          const finish = (): void => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            stream.off('error', finish);
+            stream.off('close', finish);
+            resolve();
+          };
+          // Bounded: never let an unobserved stream state hang the process.
+          // Deliberately NOT unref'd. An unref'd timer does not hold the event
+          // loop open, so in exactly the case it exists for — the reader hung
+          // up and nothing else is pending — it may never fire, and the
+          // process sits there anyway. Measured: with `unref()` a broken-pipe
+          // run hung 2/4 (one taking 8.8s to return); without it, 0/10. The
+          // timer is cleared on every settle path, so it cannot delay a normal
+          // exit beyond the flush it is guarding.
+          const timer = setTimeout(finish, FLUSH_TIMEOUT_MS);
+          // The reader hung up (`| head -1`). EPIPE/ERR_STREAM_DESTROYED are
+          // the EXPECTED outcome of that, not an error worth reporting — and
+          // an unhandled 'error' on stdout would itself crash us.
+          stream.on('error', finish);
+          stream.on('close', finish);
+          stream.write('', finish);
         }),
     ),
   );
   process.exit(code);
   // Under Electron `process.exit` does not necessarily terminate in this tick.
-  // Nothing after this may run, and nothing may be printed, so simply never
-  // settle — the exit lands a tick later.
-  return new Promise<never>(() => {});
+  // Nothing after this may run and nothing may be printed. Park on a timer
+  // rather than a never-resolving promise so that, if `process.exit` somehow
+  // does not land, the process still ends instead of hanging forever.
+  return new Promise<never>(() => {
+    // Same reasoning: this last-resort exit must be able to fire, so it is not
+    // unref'd either. Nothing after `process.exit` above is expected to run.
+    setTimeout(() => process.exit(code), FLUSH_TIMEOUT_MS);
+  });
 }
 
 /** End the command with `code` after its output has already been written.

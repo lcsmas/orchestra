@@ -242,7 +242,9 @@ are unchanged.
 the pipe will not take at once. `process.exit()` in the SAME TICK as a large
 write abandons the remainder: the reader sees a truncated prefix and **no error
 on any stream**. A 3000-commit `verify-landed` verdict is ~182 KB and the
-surviving prefix was 146496 bytes (= 143*1024).
+surviving prefix was 146496 bytes. (That is NOT a round buffer size — 143*1024
+is 146432, 64 bytes short — and no mechanism for the exact figure is asserted
+here. It is an observation, not an explanation.)
 
 Two properties worth knowing before touching this code:
 

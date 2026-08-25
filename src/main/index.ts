@@ -29,8 +29,17 @@ if (ORCHESTRA_CLI_MODE) {
   void import('../cli')
     .then(({ runCli }) => runCli(argv.slice(start + 1)))
     .catch((err: unknown) => {
-      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-      process.exit(1);
+      // Flush before exiting, for the same reason as every exit inside the CLI
+      // itself (issue #62): `process.exit()` in the same tick as a write to a
+      // PIPE abandons whatever is still buffered. Messages on this path are
+      // short, so truncation is unlikely — but the pattern is the defect, and
+      // leaving one same-tick exit here would make the CLI's "every terminal
+      // exit flushes" guarantee false. Bounded so a dead reader cannot hang us.
+      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`, () => {
+        process.exit(1);
+      });
+      const t = setTimeout(() => process.exit(1), 2000);
+      t.unref?.();
     });
 }
 

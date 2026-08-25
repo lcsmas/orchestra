@@ -36,6 +36,7 @@
     "test:render": "node scripts/context-gauge-render-smoke.mjs && node scripts/answerable-cards-render-smoke.mjs && node scripts/queue-tray-render-smoke.mjs && node scripts/peer-rows-render-smoke.mjs && node scripts/sidebar-boot-render-smoke.mjs && pnpm run test:wiring",
     "test:wiring": "node scripts/verify-answerable-wiring.mjs",
     "test:fixtures": "node scripts/fixtures/self-test.mjs",
+    "test:cli-pipe": "pnpm run build:cli && node scripts/verify-verify-landed-exit.mjs && node scripts/verify-cli-pipe-flush.mjs",
     "release": "bash scripts/release.sh"
   },
   "devDependencies": {

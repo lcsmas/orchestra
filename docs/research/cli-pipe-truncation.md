@@ -11,7 +11,10 @@ pipe will not accept immediately and flushes it on later ticks. `process.exit()`
 called in the **same tick** as a large write abandons the remainder. The reader
 gets a truncated prefix and **no error on any stream**, so the caller cannot
 tell. A 3000-commit `verify-landed` NOT-LANDED verdict is 181945 bytes; the
-surviving prefix was 146496 bytes (= 143 * 1024).
+surviving prefix was 146496 bytes. **No mechanism is asserted for that exact
+figure.** An earlier version of this doc called it `143 * 1024`; that is wrong
+(`143 * 1024 = 146432`, 64 bytes short) and the "portion libuv had handed to the
+kernel" gloss attached to it was invented. It is an observation.
 
 ## It is a RACE, not a threshold — this is the load-bearing finding
 
@@ -41,7 +44,13 @@ written *outside* that context flushed completely (298890/298890).
 
 **That did not reproduce.** With the same payload and no socket anywhere:
 
-| arm | RC | bytes |
+All rows below come from the **STEP-1 ad-hoc discriminator rig**, whose payload
+is a bare commit list of **181890** bytes. The committed gate
+(`verify-cli-pipe-flush.mjs`) uses the full verdict — header plus zero-padded
+shas — which is **181945** bytes. Two different payloads, hence two totals; both
+are correct for their own rig. Recomputed from each rig's own generator.
+
+| arm (STEP-1 rig, 181890-byte payload) | RC | bytes |
 |---|---|---|
 | `write(P); process.exit(2)` (Electron) | 2 | **146496/181890 truncated** |
 | `write(P); exitCode=2; app.quit()` | **0** | 181890 complete, but RC is wrong |
@@ -80,3 +89,48 @@ caller parses. The gate's "stderr quiet" control now covers that.
   *smaller* than master's — is **not re-measured and remains UNEXPLAINED**. Given
   the race demonstrated above, prefix-size comparisons drawn from 3 runs per arm
   should be treated as unreliable rather than as a finding to explain.
+
+## The broken-pipe hang (#62 R2) — and why its rate is NOT attributable
+
+`orchestra verify-landed | head -1` closes the reader mid-write. The first cut of
+`exitAfterFlush` tested `destroyed || writableEnded` **once, before**
+`write('', cb)`, so when the reader hung up microseconds later the callback never
+fired, `Promise.all` never settled, and a deliberate never-resolving tail promise
+meant nothing could end the process.
+
+The code defect is real and is fixed: the drain now resolves on the write
+callback **or** `'error'`/`'close'` **or** a bounded timer. Those timers are
+deliberately **not** `unref()`d — an unref'd timer does not hold the loop open,
+so in exactly the case it guards it may never fire (measured: with `unref()`, 2/4
+broken-pipe runs still hung, one taking 8.8s).
+
+**But the hang RATE cannot be attributed to any build, and neither can the claim
+that this branch regressed it.** Measured block-wise (all runs of one bundle,
+then the other), the same *unchanged master bytes* produced 0/10, 6/10 (the
+reviewer's independent run), 8/10 and 10/10 within one session. Run
+**interleaved with alternating order**, which cancels machine-state drift:
+
+| protocol | MASTER | this branch |
+|---|---|---|
+| block, early | 0/10 | 8/10 |
+| block, later | 10/10 | 10/10 |
+| **interleaved, 10 pairs** | **0/10** | **1/10** |
+| **interleaved, 25 pairs** | **0/25** | **0/25** |
+
+So the "8/10 vs 0/10 regression" and the later "0/10, fixed" were **both
+artifacts of block structure**, not properties of the code. The honest statement
+is: the hang is real and machine-state-dependent; no measurement here separates
+master from this branch; the code-level defect is fixed on its merits.
+
+The gate therefore **reports** this rate and fails only on a TOTAL hang (every
+run), which drift does not produce. Asserting `hung === 0` would fail honest
+builds at random — a flaky gate teaches people to ignore it.
+
+## Rig containment (LEAD order, ledger #70)
+
+These rigs spawn hundreds of Electron processes and inherit `{...process.env}`,
+which in an agent workspace carries the human's real `WAYLAND_DISPLAY`/`DISPLAY`.
+Nothing on the CLI path opens a window, but that is luck rather than
+containment. `verify-cli-pipe-flush.mjs` now blanks both display handles and
+pins a throwaway `--user-data-dir`, so a window cannot reach the user's screen
+and `~/.config/Electron` is never touched.

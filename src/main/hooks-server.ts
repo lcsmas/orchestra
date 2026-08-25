@@ -125,6 +125,20 @@ export async function startHooksServer(): Promise<void> {
   }
 
   server = http.createServer((req, res) => {
+    // A CLI client can vanish mid-response — `orchestra verify-landed | head -1`
+    // closes the pipe as soon as it has its first line, and the socket write
+    // then raises EPIPE/ECONNRESET. An 'error' event with no listener on an
+    // http.ServerResponse is thrown, which would take down the ENTIRE Electron
+    // main process because a caller hung up early (issue #62 B2). Swallow the
+    // hang-up classes at the write site — deliberately NOT via a process-wide
+    // uncaughtException catch-all, which would also hide unrelated crashes.
+    // Anything else is re-surfaced as a warning rather than silently dropped.
+    const onHangUp = (err: NodeJS.ErrnoException): void => {
+      if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
+      console.warn('[hooks-server] response error:', err.message);
+    };
+    res.on('error', onHangUp);
+    req.on('error', onHangUp);
     if (req.method !== 'POST') {
       res.writeHead(405).end();
       return;
