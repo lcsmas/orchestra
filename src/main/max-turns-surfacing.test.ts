@@ -198,3 +198,61 @@ test('GUARD: the terminal stop reason is persisted for the sidebar to render', (
     'Workspace must carry lastStopReason so the sidebar can show WHY a session stopped',
   );
 });
+
+// ─── Issue #85: the runaway backstop must SURVIVE ────────────────────────────
+//
+// #85 asked for a role-based cap raise on the premise that "a coordinator can
+// die at 200 turns". MEASURED 2026-08-25 (/tmp/t85probe/probe{1,2,3}.mjs, real
+// query(), SDK 0.3.241, Orchestra's `for(;;)` turn-gated generator shape):
+// that premise is FALSE. `maxTurns` resets on every user turn. Probe 3 is the
+// positive control — 4 prompts costing 3 round-trips each ran under a cap of
+// 5, letting a CUMULATIVE 12 through with zero exhaustions, so the counter
+// provably does not accumulate across turns.
+//
+// So no coordinator can exhaust a session budget, because there is no session
+// budget. `maxTurns: 200` is exactly what its comment claims: a per-turn
+// backstop against a runaway. Raising or removing it for "coordinators" would
+// delete the wave's non-negotiable guard to fix a defect that does not exist.
+//
+// This guard makes that conclusion load-bearing rather than a note in a doc.
+
+test('#85 GUARD: the per-turn runaway backstop survives (no role-based raise)', () => {
+  const code = codeOf(AGENT_SDK);
+
+  // (1) The cap exists and is still finite. `Infinity`/`undefined`/0 would all
+  //     hand a wedged session an unbounded turn — the one outcome #85 declares
+  //     an automatic FAIL regardless of how green everything else gates.
+  const m = code.match(/maxTurns:\s*([^,\n]+)/);
+  assert.ok(m, 'maxTurns must still be passed to query() — removing it uncaps the turn');
+  const value = m[1].trim();
+  assert.match(
+    value,
+    /^\d+$/,
+    `maxTurns must be a finite integer literal (found ${value}) — a variable, Infinity or a ` +
+      'role-conditional expression is how the runaway guard gets silently disabled for the ' +
+      'exact sessions (coordinators) most able to spin forever',
+  );
+  assert.ok(Number(value) > 0, 'maxTurns must be positive');
+
+  // (2) Exactly ONE site. A second, role-gated `maxTurns` elsewhere is how a
+  //     raise would arrive without touching this literal.
+  assert.equal(
+    (code.match(/maxTurns:/g) ?? []).length,
+    1,
+    'maxTurns must be configured in exactly one place — a second site means a conditional cap',
+  );
+
+  // (3) The cap must not be derived from the workspace's ROLE. #85's spec says
+  //     a `role` field should not be added lightly; measurement says it buys
+  //     nothing here, since the budget the raise would target does not exist.
+  const optionsAt = code.indexOf('maxTurns:');
+  const window = code.slice(Math.max(0, optionsAt - 400), optionsAt);
+  for (const pred of ['canOrchestrate', 'isCoordinatorWorkspace']) {
+    assert.doesNotMatch(
+      window,
+      new RegExp(`\\b${pred}\\b`),
+      `the turn cap must not branch on ${pred} — the per-turn counter resets every turn ` +
+        '(probe 3, 2026-08-25), so a coordinator raise weakens the runaway guard for nothing',
+    );
+  }
+});

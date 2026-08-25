@@ -54,8 +54,17 @@ export function statusGlyphTitle(
   // the glyph ranks it there: "stopped and consuming nothing" outranks
   // "finished, unseen". Only the two reasons a human must act on are stored,
   // so any value here is worth saying.
+  // #85: scoped to the TURN, deliberately. MEASURED 2026-08-25
+  // (/tmp/t85probe/probe{1,2,3}.mjs, SDK 0.3.241, real query() with Orchestra's
+  // `for(;;)` turn-gated generator): `maxTurns` resets on EVERY user turn —
+  // probe 3 is the positive control, letting a CUMULATIVE 12 round-trips
+  // through a cap of 5 with zero exhaustions. The old copy ("turn budget
+  // exhausted") stated the refuted session-lifetime model, which reads as "this
+  // workspace is spent" and invites abandoning a session whose next turn would
+  // start from a full budget. Only that ONE turn died; the remedy is one more
+  // message. See docs/research/issue-69-maxturns-findings.md (fourth section).
   if (w.lastStopReason === 'max_turns')
-    return loop('Agent stopped — turn budget exhausted; send a message to resume it');
+    return loop('Agent stopped — that turn hit the step limit; send a message to continue');
   // The usage-limit PAUSE (#74). Phrased differently from the two above on
   // purpose: those need a human, this one does not — the app resumes it by
   // itself at the reset, so the tooltip states the ETA rather than asking for
