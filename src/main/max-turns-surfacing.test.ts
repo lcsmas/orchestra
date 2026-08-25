@@ -232,7 +232,27 @@ test('#85 GUARD: the per-turn runaway backstop survives (no role-based raise)', 
       'role-conditional expression is how the runaway guard gets silently disabled for the ' +
       'exact sessions (coordinators) most able to spin forever',
   );
-  assert.ok(Number(value) > 0, 'maxTurns must be positive');
+
+  // REVIEW F1 (wave-8): "a finite integer literal" is NOT a runaway guard.
+  // `maxTurns: 999999999` satisfies every clause above — finite, integral, one
+  // site, no role predicate — and is a USELESS backstop: no real turn reaches
+  // it, so a wedged session spins effectively forever while this test stays
+  // green. That is the ticket's stated automatic-FAIL condition passing its own
+  // guard, and it is the INNOCENT-looking bypass (no adversary needed — a
+  // well-meaning "just raise it" edit lands exactly here).
+  //
+  // So bound the VALUE, not just its shape. The ceiling is what makes the
+  // guard load-bearing; the floor keeps a panicked "lower it" edit from
+  // breaking honest long turns. MEASURED (2026-08-25, /tmp/t85probe/probe4.mjs,
+  // ARM=B): a genuine runaway — one turn told to loop 400x — was stopped by the
+  // shipped cap at num_turns=201, so a cap in this band demonstrably fires.
+  const n = Number(value);
+  assert.ok(
+    n >= 50 && n <= 1000,
+    `maxTurns must stay a MEANINGFUL backstop (found ${n}; band 50..1000). A huge value ` +
+      'passes every structural clause and still lets a wedged session spin forever — ' +
+      'measured, the shipped cap stops a real runaway at num_turns=201 (probe4 ARM=B).',
+  );
 
   // (2) Exactly ONE site. A second, role-gated `maxTurns` elsewhere is how a
   //     raise would arrive without touching this literal.

@@ -185,28 +185,37 @@ test('statusGlyphTitle: the pause does NOT hijack the other stop reasons', () =>
 test('#85: the max_turns tooltip scopes the limit to the TURN, not the session', () => {
   const title = statusGlyphTitle(ws({ status: 'idle', lastStopReason: 'max_turns' }));
 
-  // (1) It must say what actually hit a limit: this one turn.
-  assert.match(
+  // REVIEW F2 (wave-8): the first version of this test was VACUOUS against its
+  // own stated purpose. It blacklisted PHRASINGS (/budget exhausted|out of
+  // turns/i) and called that "asserting the model" — but the model can be
+  // stated in unlimited other words. Measured, three strings that state the
+  // REFUTED session-lifetime model passed all three of its clauses:
+  //
+  //   "Agent stopped — this session used up all its turns; send a message to resume it"
+  //   "Agent stopped — the session ran out of its turn allowance; send a message"
+  //   "Agent stopped — no turns left in this session; send a message to resume it"
+  //
+  // A blacklist cannot express "does not mean X". So the honest gate is the
+  // PINNED STRING — which the earlier version disparaged while relying on it,
+  // since the pin (below, and the control in the sibling test) is what actually
+  // killed the mutant. Pin the copy; review the pin when it changes.
+  const EXPECTED = 'Agent stopped — that turn hit the step limit; send a message to continue';
+  assert.equal(
     title,
-    /turn/i,
-    'the tooltip must name the TURN as the thing that hit the limit',
+    EXPECTED,
+    'the max_turns tooltip is PINNED. Changing it is fine — but the replacement must scope ' +
+      'the limit to THAT TURN and must not imply the session is spent (measured 2026-08-25: ' +
+      'maxTurns resets per user turn, probe3 positive control). Update this pin deliberately.',
   );
 
-  // (2) It must NOT imply a spent session/budget. This is the clause that
-  //     FAILS on the unfixed build, whose copy is
-  //     "Agent stopped — turn budget exhausted; send a message to resume it".
+  // Belt-and-braces on the pin, in the two directions that matter, so a future
+  // edit that changes the string still cannot silently reintroduce the refuted
+  // model or drop the remedy. These are NOT the primary gate — the pin is.
+  assert.match(title, /that turn/i, 'must scope the limit to THAT TURN, not the session');
   assert.doesNotMatch(
     title,
-    /budget exhausted|exhausted its|session (is )?(over|spent|exhausted)|out of turns/i,
-    'must not state the REFUTED session-lifetime budget model (probe 3, 2026-08-25)',
+    /session/i,
+    'the word "session" here almost always encodes the refuted session-lifetime model',
   );
-
-  // (3) It must still tell the human the remedy — the session is alive and one
-  //     more message restarts it. Losing this would trade one wrong reading
-  //     ("session spent") for another ("nothing I can do").
-  assert.match(
-    title,
-    /send|message|resume/i,
-    'the tooltip must still state the remedy (the session is alive)',
-  );
+  assert.match(title, /send a message/i, 'must state the remedy — the session is alive');
 });

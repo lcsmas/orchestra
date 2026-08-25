@@ -433,18 +433,32 @@ abandons or respawns it — when the true remedy is to send one more message,
 because the next turn starts from a full budget. The OS toast
 (`activity.ts:167`) had the same session-scoped reading.
 
-All four sites are now turn-scoped. The guard in
-`src/renderer/status-glyph-title.test.ts` asserts the **model**, not a fixed
-string: it requires the copy to name the turn, to state the remedy, and to
-**not** match `/budget exhausted|exhausted its|out of turns/i`. A pinned string
-would go green on any reword, including a reword back into the wrong model.
+All four sites are now turn-scoped. The guard in `src/renderer/status-glyph-title.test.ts` **pins the string.**
+
+That is a CORRECTION (wave-8 review, F2). The first version blacklisted
+phrasings and claimed to "assert the model, not a fixed string" — it did not.
+A blacklist cannot express "does not mean X", and three strings stating the
+refuted session-lifetime model passed all of its clauses:
+`"…this session used up all its turns; send a message to resume it"`,
+`"…the session ran out of its turn allowance; send a message"`,
+`"…no turns left in this session; send a message to resume it"`.
+The pinned control assertion I disparaged in the same breath was what actually
+killed the mutant. The pin is now the primary gate, with narrow belt-and-braces
+clauses (`/that turn/i`, no `/session/i`, `/send a message/i`) beneath it.
 
 ## The runaway guard is now load-bearing, not a note
 
 `src/main/max-turns-surfacing.test.ts` gained
 `#85 GUARD: the per-turn runaway backstop survives`, asserting the cap is a
-**finite integer literal**, configured at **exactly one site**, and **not
-branched on `canOrchestrate`/`isCoordinatorWorkspace`**. Mutation matrix, one
+finite integer literal, at exactly one site, not branched on
+`canOrchestrate`/`isCoordinatorWorkspace`, **and — the clause that makes it
+load-bearing — within a 50..1000 band.**
+
+The band is a CORRECTION (wave-8 review, F1). Structure alone is not a runaway
+guard: `maxTurns: 999999999` satisfies every structural clause and passed the
+whole suite green while making the backstop useless. That is the ticket's
+automatic-FAIL condition passing its own guard, reachable by a well-meaning
+"just raise it" edit rather than by an adversary. Mutation matrix, one
 mutant per arm, each verified live in the file before the run:
 
 | Arm | Mutant | Result |
@@ -453,7 +467,15 @@ mutant per arm, each verified live in the file before the run:
 | M2 | `maxTurns: canOrchestrate(ws) ? 100000 : 200` — literally #85's ask | **FAIL** (killed) |
 | M3 | delete the `maxTurns` option | **FAIL** (killed) |
 | M4 | revert the copy fix to "turn budget exhausted" | **FAIL** (killed, 2 tests) |
-| control | restored | **8/8 and 15/15 pass** |
+| **M5** | `maxTurns: 999999999` — **survived the FIRST guard** | **FAIL** (killed by the band) |
+| **M6** | `maxTurns: 300` — legitimate in-band change, **must PASS** | **PASS** (band is not over-tight) |
+| **M7** | copy → "this session used up all its turns…" — **passed the FIRST guard** | **FAIL** (killed by the pin) |
+| control | restored | **8/8 and 15/15 pass → now 23/23** |
+
+M5 and M7 are the wave-8 review findings F1/F2: both mutants **survived** the
+guards as first written, and M6 is the control proving the new band still
+admits an honest change. A guard that has been watched to MISS and then to
+catch is the only kind worth trusting.
 
 ## NOT VERIFIED
 

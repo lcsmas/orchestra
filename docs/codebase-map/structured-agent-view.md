@@ -373,11 +373,14 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   workspace is spent" and invites abandoning a session whose next turn starts
   fresh. Now turn-scoped at `status-glyph-title.ts:58`, `activity.ts:167`,
   `types.ts:242`, `WorkspaceStatusGlyph.tsx:62`. The guard
-  (`status-glyph-title.test.ts`) asserts the MODEL — copy must name the turn and
-  must not match `/budget exhausted|out of turns/i` — not a pinned string, which
-  would go green on a reword back into session-scoped language. The cap itself is
-  pinned by `#85 GUARD` in `max-turns-surfacing.test.ts` (finite integer literal,
-  exactly one site, never branched on `canOrchestrate`).
+  (`status-glyph-title.test.ts`) **pins the string** — a wave-8 review showed the
+  earlier "assert the model" blacklist was vacuous (three session-scoped
+  rewordings passed it), so the pin is the gate and `/that turn/i` + no
+  `/session/i` + `/send a message/i` ride beneath it. The cap is guarded by
+  `#85 GUARD` in `max-turns-surfacing.test.ts`: finite integer literal, exactly
+  one site, never branched on `canOrchestrate`, **and within a 50..1000 band** —
+  the band is the load-bearing clause, since `maxTurns: 999999999` passes every
+  structural check while making the backstop useless.
   What IS broken is the surfacing: measured in the app, **8 consecutive
   exhaustions in the no-PTY configuration wrote no reason anywhere**, leaving
   only a `[WARN]` in the app log — verbatim the bug #69 reports. The reason
