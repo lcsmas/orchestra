@@ -191,7 +191,19 @@ export async function refuseInboxBlock(
         target?.body ?? ''
       }`,
   );
-  if (!writeInbox(workspaceId, parseInboxBlocks(res.contents).map((b) => b.text))) {
+  // RE-READ before rewriting, exactly as `releaseInboxBlock` does. The write
+  // below replaces the WHOLE file, so a `queueInbox` append that landed while we
+  // were matching and logging would be clobbered — measured: a peer's message
+  // appended inside this window vanished from disk. The window is short (no
+  // await between the read and the write) but it is not zero, and the asymmetry
+  // with release was an oversight, not an accepted risk.
+  const fresh = removeBlock(readFileOrEmpty(inboxFilePath(workspaceId)), text);
+  if (!fresh.removed) {
+    // Drained under us after all — nothing to write, and nothing was lost.
+    broadcastInbox(workspaceId);
+    return { ok: false, reason: 'gone', remaining: readInbox(workspaceId).length };
+  }
+  if (!writeInbox(workspaceId, parseInboxBlocks(fresh.contents).map((b) => b.text))) {
     broadcastInbox(workspaceId);
     return { ok: false, reason: 'write-failed', remaining: readInbox(workspaceId).length };
   }

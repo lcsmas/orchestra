@@ -48,6 +48,7 @@ import { refreshAccountsNow } from './account-usage';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
 import type { PeerOrigin } from '../shared/peer-messages.ts';
+import { INBOX_DELIMITER, sanitizeInboxBody } from '../shared/inbox-blocks.ts';
 import { reportedDeliveryFor, requiresInboxFallback } from '../shared/delivery-status.ts';
 import { forgetWorkspaceProbes } from './activity';
 import { clearHibernated } from './hibernation.ts';
@@ -2871,11 +2872,19 @@ export async function dispatchMessageRequest(
 
 /** Append a formatted message block to a workspace's inbox file. Returns false
  * on write failure. The inbox SessionStart/UserPromptSubmit hook prints + clears
- * this file on the target's next session. */
+ * this file on the target's next session, and the composer inbox tray (#64)
+ * parses the same framing.
+ *
+ * The body is SANITIZED first: a line of 40+ `=` inside a message would
+ * otherwise be indistinguishable from the block delimiter, splitting one
+ * message into several rows in the tray — and since removal re-serializes the
+ * file from that parse, acting on a phantom row destroyed a NEIGHBOURING real
+ * message (measured; see `sanitizeInboxBody`). Guarding here rather than in the
+ * parser keeps "one appended block is one message" true by construction. */
 async function queueInbox(id: string, body: string): Promise<boolean> {
   try {
     await mkdir(INBOX_ROOT, { recursive: true });
-    const block = `\n========================================\n${body}\n========================================\n`;
+    const block = `\n${INBOX_DELIMITER}\n${sanitizeInboxBody(body)}\n${INBOX_DELIMITER}\n`;
     await appendFile(inboxPathFor(id), block, 'utf8');
     return true;
   } catch (e) {

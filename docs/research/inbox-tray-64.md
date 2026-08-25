@@ -55,11 +55,24 @@ involvement at all. Three consequences, all load-bearing:
    inbox **directory** (not each file: files are created and deleted, and a watch
    on a deleted path dies with it) and pushes `inbox:update`.
 3. There is **no lock anywhere** on this file — `queueInbox` uses `appendFile`,
-   the hook uses `cat` + `rm -f`, and the tray rewrites it. Every tray mutation
-   is a read-modify-write that re-reads immediately before writing, so a stale
-   snapshot cannot resurrect blocks the hook already handed to the agent. This is
-   a narrowed race, not an eliminated one; a genuine fix would need the hook to
-   take a lock (see "Not done" below).
+   the hook uses `cat` + `rm -f`, and the tray rewrites it. Both tray mutations
+   (`releaseInboxBlock` and `refuseInboxBlock`) re-read the file immediately
+   before writing, so a stale snapshot cannot resurrect blocks the hook already
+   handed to the agent, nor clobber a `queueInbox` append that lands mid-window.
+   This is a narrowed race, not an eliminated one; a genuine fix would need the
+   hook to take a lock (see "Not done" below).
+
+   > **CORRECTION (adversarial review, R2).** An earlier version of this
+   > paragraph claimed "*every* tray mutation" already did this. **That was false
+   > as written**: `refuseInboxBlock` read once and wrote the whole file, so a
+   > peer message appended during the match-and-log window was measurably lost
+   > (reproduced: `gamma`'s message gone from disk). Release was guarded; refuse
+   > was not — an oversight, not an accepted risk. Now fixed, with a both-arms
+   > regression test and a source-binding guard
+   > (`src/main/inbox-tray-rmw.test.ts`) that fails if either mutator stops
+   > re-reading. Recorded rather than silently edited because I wrote the
+   > invariant I *intended* instead of the one I had shipped, and that is the
+   > failure mode a research doc most needs to warn its next reader about.
 
 ## 3. Release does not need new delivery machinery
 
@@ -112,6 +125,22 @@ tray must never be presented as doing so.
   is a binary `app.asar`. Re-run with `grep -a` plus pre-existing positive
   controls (`av-composer-field`, `av-queue-row`) in the same command.
 
+- **A guard whose *consequence* I never traced (the worst of these).** My own
+  test asserted the 40-`=` own-line split as *deliberate* — I fixed the regex's
+  anchor clause, watched a mutant fail, and stopped. What I never asked was what
+  happens when a human ACTS on the rows that split produces. Because removal
+  re-serializes the file from the parse, refusing a phantom row rewrote the file
+  around a mis-parse and destroyed a neighbouring real message — the exact
+  failure direction this feature's design section claims to exclude. A passing
+  mutation test on clause A is no evidence at all about consequence B; the
+  question "what does the rest of the system do with this output?" is the one a
+  local guard cannot answer. Found by an adversarial reviewer, not by me.
+- **A void verdict from a shell variable.** Re-running the mutation matrix I put
+  the test command in a shell variable and invoked it as `$T`; both arms printed
+  `RC=127` (command not found) having executed nothing. Two "results" that were
+  neither pass nor fail. Only reading the RC caught it — a habit worth keeping
+  precisely because the output *looked* like a completed run.
+
 ## 6. E2E evidence (built app, own headless sway)
 
 Driven against `release/linux-arm64-unpacked/orchestra` (the packaged build, CDP
@@ -158,6 +187,53 @@ structured session started in the worktree and its `inbox-instruction.sh` hook
 drained the seeded file out from under the tray. The content-addressed design
 absorbed it (no crash, no wrong-message delivery) — which is the scenario
 invariant (a) exists for.
+
+## 7. Delimiter injection (R1) — the one that could invert a message
+
+Found by adversarial review, reproduced here before fixing. `parseInboxBlocks`
+splits on `^={40,}$`, and `dispatchMessageRequest` only trims + length-caps, so
+nothing stopped a delimiter-shaped LINE inside a message body from reaching the
+file. Measured consequences, with an honest-2-block positive control passing in
+the same harness:
+
+| Input | Rendered | Acting on it |
+|---|---|---|
+| msg1 body contains a 40-`=` rule; msg2 unrelated | **3 rows** (one with `from:""`) | refusing the orphan **destroyed `"All gates green."`** from msg1 |
+| body `APPROVED: merge it` / 40-`=` / `NOT APPROVED: hold` | **2 rows** | **Release delivered `"APPROVED: merge it"` alone**, peer-tagged and attributed to the real sender |
+
+The second is worse than data loss: the message arrives **inverted in meaning**,
+with the qualifier demoted to a row the human can refuse.
+
+Mechanism: `removeBlock` → `serializeInboxBlocks` re-frames the WHOLE file from
+the parse rather than splicing, so any mis-parse is written back as the new
+truth and compounds.
+
+**Fixed at WRITE time** (`sanitizeInboxBody`, called from `queueInbox`), not in
+the parser: after a delimiter line is on disk it is genuinely
+indistinguishable from real framing, so the information needed to act correctly
+is already gone. The transform is minimal — a leading space on a
+`^={40,}$` line, so it still reads as a rule to human and agent but can no
+longer frame — and the on-disk grammar the shell hook `cat`s is unchanged.
+
+Reachability was low but adversary-independent: a markdown rule or setext
+underline of 40+ chars is routine in agent-authored reports, which is this
+channel's entire traffic. 39 `=` was always safe; ≥40 split.
+
+## 8. Accepted gap: CRLF drops peer attribution (R3)
+
+If an inbox file's newlines become CRLF, block counting still works but
+`PEER_HEADER` in `peer-messages.ts` is `\n`-anchored, so `from` resolves to `""`
+for every block, the envelope leaks into the preview, and `originFor()` returns
+`undefined` — the released turn is delivered **untagged**, losing the #56 compact
+row. It fails SOFT (the message is still delivered, in full) and reachability is
+genuinely low: `appendFile` writes `\n` literally on every platform, so this
+needs an external editor to rewrite the file.
+
+**Recorded as an accepted gap, deliberately not fixed here.** The honest fix is
+to make the peer-header recognizer newline-agnostic, which touches the #56
+backfill path shared with `agent-transcript.ts` — a wider blast radius than this
+ticket's remit, and normalizing CRLF at the tray boundary instead would leave
+the same bug live for the shell hook's own `cat`.
 
 ## Not done / not verified
 

@@ -406,7 +406,14 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   Parsing lives in `src/shared/inbox-blocks.ts` (pure, unit-tested): it owns only
   the OUTER `=`×40 framing and delegates the envelope to
   `recognizeFormattedPeerMessage` (`peer-messages.ts`), so the envelope has ONE
-  definition rather than two that must agree. Backend: `src/main/inbox-tray.ts`;
+  definition rather than two that must agree. **`queueInbox` sanitizes the body
+  at WRITE time** (`sanitizeInboxBody`, same module): a delimiter-shaped line
+  inside a message would otherwise frame as extra rows, and since removal
+  re-serializes the file FROM THE PARSE, acting on a phantom row destroyed a
+  neighbouring real message and could deliver one sender's message as a
+  semantic fragment (measured). Guarding at the write site keeps "one appended
+  block is one message" true by construction; the parser cannot recover that
+  distinction after the fact. Backend: `src/main/inbox-tray.ts`;
   IPC `inbox:{list,release,refuse,releaseAll}` + the `inbox:update` push.
   ⚠️ **This is a DIFFERENT CHANNEL from the SDK's `crossSessionInbound: 'hold'`
   buffer (issue #42)**, which lives in the CLI process heap with no API handle and
@@ -415,7 +422,10 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   ⚠️ **Two invariants the implementation is built around.** (a) THE FILE IS SHARED
   WITH A SHELL HOOK that can drain it between render and click, so every block is
   addressed by its exact TEXT, never by index, and a vanished block reports
-  `{ok:false, reason:'gone'}` — a normal outcome, not an error. (b) DELIVERY IS
+  `{ok:false, reason:'gone'}` — a normal outcome, not an error. **Both** mutators
+  re-read the file immediately before rewriting it (release AND refuse — the
+  latter did not, and measurably clobbered a concurrent append); a source-binding
+  guard in `src/main/inbox-tray-rmw.test.ts` fails if either stops. (b) DELIVERY IS
   CONFIRMED BEFORE REMOVAL: release goes through `sdkDeliverConfirmed` (the #57
   seam) and removes the block ONLY on `'started'`; anything else leaves it parked,
   because losing a message is strictly worse than showing it twice. The released

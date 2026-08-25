@@ -46,6 +46,40 @@ import { recognizeFormattedPeerMessage, peerPreview } from './peer-messages.ts';
 /** The delimiter `queueInbox` writes around every block: exactly 40 '='. */
 export const INBOX_DELIMITER = '='.repeat(40);
 
+/** Make `body` safe to append as ONE block.
+ *
+ *  WHY THIS EXISTS (measured, adversarial review of #64). The framing delimiter
+ *  is a line of 40 `=`. A message BODY may legitimately contain such a line — a
+ *  markdown horizontal rule or a setext underline of 40+ chars is routine in the
+ *  agent-authored reports that are this channel's entire traffic — and
+ *  `dispatchMessageRequest` only trims and length-caps, so nothing stopped it
+ *  reaching the file. The body then framed as SEVERAL blocks, and because
+ *  removal re-serializes the whole file FROM THE PARSE, acting on one of those
+ *  phantom rows rewrote the file around a mis-parse and **destroyed a
+ *  neighbouring real message**. Sharpest measured form: a body
+ *  `"APPROVED: merge it\n<40 =>\nNOT APPROVED: hold"` rendered as two
+ *  independently-actionable rows, so Release delivered `"APPROVED: merge it"`
+ *  alone — peer-tagged and attributed to the sender, with the qualifier
+ *  stripped into a row the human could refuse. That is a message inverted in
+ *  meaning, which is worse than losing it.
+ *
+ *  FIXED AT WRITE TIME, ON PURPOSE. The parser cannot distinguish a real
+ *  delimiter from an injected one after the fact — by then the information is
+ *  gone. Sanitizing on the way in keeps the invariant "one appended block is
+ *  one message" true by construction, and leaves the on-disk grammar (which the
+ *  `inbox-instruction.sh` shell hook also `cat`s) completely unchanged.
+ *
+ *  The transformation is deliberately MINIMAL and lossless-to-the-reader: a
+ *  run-of-40-or-more `=` alone on its line gets a leading space, so it still
+ *  reads as a rule to both the human and the agent but can no longer match the
+ *  `^={40,}$` framing pattern. Nothing else is touched — no escaping scheme the
+ *  hook would have to learn, no metadata, no truncation. */
+export function sanitizeInboxBody(body: string): string {
+  // Only a delimiter-shaped LINE is dangerous; a run inside prose never matched
+  // the anchored pattern, so it must not be rewritten.
+  return body.replace(/^(={40,})$/gm, ' $1');
+}
+
 /** One parked message, as the tray renders it. */
 export interface InboxBlock {
   /** Stable-per-content identity: index within the file plus a hash-free slice
