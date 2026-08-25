@@ -268,6 +268,40 @@ backfill path shared with `agent-transcript.ts` — a wider blast radius than th
 ticket's remit, and normalizing CRLF at the tray boundary instead would leave
 the same bug live for the shell hook's own `cat`.
 
+## 9. G6 RE-DRIVEN under the hardened rig (the evidence that counts)
+
+The first E2E run happened under a rig that inherited `DISPLAY=:0` and whose
+pre-flight assert was tautological, so its provenance was disowned rather than
+carried. Re-driven end to end at tip `894dffe` via
+`scripts/e2e-contained-rig.sh`, which enforces containment before the app
+starts. Production files are byte-identical to the earlier tip (11/11 sha256
+SAME, with a changed test file as the control that the comparison discriminates)
+— but the point of the re-drive was the RIG, not the code.
+
+Containment asserted from INSIDE the child, not just by the launcher:
+```
+DISPLAY absent in this process                 -> undefined
+WAYLAND_DISPLAY == the rig-verified socket     -> wayland-7 (and != wayland-1)
+HOME is isolated                               -> /tmp/e2e64c-*/home
+marker #FFC0AC: wayland-2..6 = 0.00%, wayland-7 = 100.00%, 0.00% after reset
+```
+
+| Assertion | Result |
+|---|---|
+| artifact identity (CDP url + version) | my worktree build, `0.5.260` |
+| seeded file canonically framed | writer-identical |
+| chip counts N=2 (**no phantom row**) | `✉2 messages held` |
+| R1: 2 rows, every one has a real sender | `["impl-62-cli-flush","ops2-fix-wave-6-recovery"]` |
+| Refuse removes the addressed message | 492 -> 230 bytes |
+| **R1: the NEIGHBOUR survives intact** | `MERGE BLOCKED…` still on disk |
+| R1: file canonically framed, no orphan | senders `["ops2-fix-wave-6-recovery"]` |
+| R2/watcher: concurrent append surfaces, nothing clobbered | `["ops2…","gamma"]` |
+
+**14/14 PASS.** Screenshots under the rig dir's `shots/`. Teardown verified with
+bracketed patterns and controls (positive `[c]laude`=26, negative=0); the
+human's compositor held 3 windows, all theirs; the real `~/.orchestra/inbox/`
+contained **zero** G6 payload.
+
 ## Not done / not verified
 
 - **The hook still does not lock the file.** The tray's races are narrowed by
