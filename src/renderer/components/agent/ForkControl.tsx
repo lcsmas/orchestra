@@ -154,10 +154,14 @@ export function ForkControl({ rewindId, onFork }: Props) {
                 {/* Q1b: the checkpoint-loss and file-skew caveats are DECLARED in
                     the affordance copy, never left silent. The new worktree's own
                     git history is the safety net that makes this acceptable. */}
+                {/* Q1b/Q1c caveats, DECLARED rather than silent. "last commit" is
+                    precise on purpose: the worktree is cut with `git branch <new>
+                    <base>`, so uncommitted and untracked work is NOT carried —
+                    "today's state" read as "what I see right now" and was wrong. */}
                 <div className="av-fork-pop-note">
-                  The branch is cut from this workspace&apos;s current tip, so its files
-                  are at today&apos;s state — not the state at this message. The fork also
-                  starts without file-undo history.
+                  The branch is cut from the last <strong>commit</strong> on this branch —
+                  uncommitted changes aren&apos;t carried, and the files are not rewound to
+                  this message. The fork also starts without file-undo history.
                 </div>
                 <div className="av-fork-pop-actions">
                   <button

@@ -4113,10 +4113,15 @@ export async function sdkRewind(
  *    point while the new worktree's FILES are cut from the original branch's
  *    CURRENT tip. That skew is inherent (checkpoints are exactly what forking
  *    discards); v1 makes NO attempt to reconstruct historical file state.
- *  • **The fork's messages have no Orchestra `rewindId`s.** `forkSession`
- *    remaps every uuid, so the forked workspace's backfilled history renders
- *    without rewind/fork affordances until the user sends a new turn. This is
- *    the pre-existing behaviour for un-idd history, so it degrades gracefully.
+ *  • **Uuids are REMAPPED, but affordances still work.** `forkSession` gives
+ *    every copied entry a fresh uuid, so no SOURCE uuid survives verbatim —
+ *    which is immaterial, because `agent-transcript.ts` mints `rewindId` from
+ *    whatever uuid a user line carries, remapped or not (measured: 3/3 of a
+ *    fork's user lines carry one). An earlier version of this comment claimed
+ *    the fork has no `rewindId`s and therefore no affordances; that was the
+ *    right observation with the wrong consequence attached — the affordances
+ *    were missing because the transcript was UNREACHABLE (see the relocation
+ *    below), not because of the remap.
  *
  *  Returns the new workspace, whose `sdkSessionId` is pre-seeded with the fork
  *  so opening its structured view resumes the branched conversation. */
@@ -4140,6 +4145,25 @@ export async function sdkFork(
     throw new Error('Resume from here needs a repo-backed workspace (scratch sessions have no branch).');
   }
 
+  // Q1c: the fork's worktree is cut from the ORIGINAL workspace's current
+  // branch tip, not from the repo's default branch — the user is branching off
+  // THIS line of work. NOTE this is the last COMMIT on that branch:
+  // `createWorktree` does `git branch <new> <base>`, so uncommitted and
+  // untracked work in the source worktree is NOT carried (measured — the UI
+  // copy says so explicitly).
+  //
+  // Created BEFORE the fork on purpose: `createWorkspace` is the step that can
+  // fail (a missing base branch exits 128), and forking first would leave an
+  // ORPHANED fork transcript behind in the source's project dir with nothing
+  // pointing at it.
+  const forked = await createWorkspace({
+    repoPath: ws.repoPath,
+    baseBranch: ws.branch,
+    branch: forkBranchName(title),
+    ...(ws.parentId ? { parentId: ws.parentId } : {}),
+    ...(ws.model ? { model: ws.model } : {}),
+  });
+
   const { forkSession } = await loadSdk();
   const fork = forkSessionOverride ?? forkSession;
   // Pinned to the SOURCE workspace's account: the fork is written next to the
@@ -4152,19 +4176,45 @@ export async function sdkFork(
     }),
   );
 
-  // Q1c: the fork's worktree is cut from the ORIGINAL workspace's current
-  // branch tip, not from the repo's default branch — the user is branching off
-  // THIS line of work, files included.
-  const forked = await createWorkspace({
-    repoPath: ws.repoPath,
-    baseBranch: ws.branch,
-    branch: forkBranchName(title),
-    ...(ws.parentId ? { parentId: ws.parentId } : {}),
-    ...(ws.model ? { model: ws.model } : {}),
-  });
+  // RELOCATE the fork transcript into the FORK workspace's own project dir.
+  //
+  // This is load-bearing, not tidiness — without it the feature silently fails
+  // its own success criterion. `forkSession` always writes next to the SOURCE
+  // transcript (the SDK's `dir` option only LOCATES the source; the write goes
+  // to the source's `projectDir` — source-read of `sdk.mjs`, and measured). Two
+  // separate defects follow from leaving it there:
+  //
+  //  1. The fork opens BLANK, permanently and silently. `sdkHistory` does not
+  //     use `--resume`; it reads `transcriptDir(ws)/<sdkSessionId>.jsonl`, keyed
+  //     on `ws.worktreePath`. A different worktree is a different mangled
+  //     project dir, so BOTH its lookups miss (`existsSync` false; the
+  //     `listSessions` fallback returns 0) and `sdkHistory` returns `[]` — which
+  //     the renderer treats as "nothing to backfill" with no error, because the
+  //     failure notice only fires on a THROW.
+  //  2. The fork would be the NEWEST session in the SOURCE's project dir, so
+  //     the SOURCE's own `claude --continue` (terminal agent) and
+  //     `newestResumeTokenCount` would resume the FORK's branch — breaking the
+  //     "original stays intact" premise on the terminal path.
+  //
+  // Moving it fixes both at once. Measured: after the move the primary lookup
+  // hits, `listSessions({dir: forkWorktree})` goes 0 -> 1, the source's dir no
+  // longer contains it, and the fork is STILL resumable from the fork worktree
+  // (recalled its codeword correctly).
+  //
+  // ORDERING TRAP: the destination is computed from a workspace record that
+  // ALREADY carries the inherited `accountId`. `transcriptDir` resolves the
+  // account config dir from `ws.accountId` and falls back to `~/.claude` when
+  // it is absent — and `createWorkspace` pins from the REPO, which may leave it
+  // unset. Computing the destination off the raw `forked` record would move the
+  // transcript into the DEFAULT account's tree, where the fork workspace (once
+  // pinned to the source's account) still cannot see it. So build the pinned
+  // record first and derive the path from THAT.
+  const forkedPinned: Workspace = { ...forked, ...(ws.accountId ? { accountId: ws.accountId } : {}) };
+  const from = path.join(transcriptDir(ws), `${forkedSessionId}.jsonl`);
+  const to = path.join(transcriptDir(forkedPinned), `${forkedSessionId}.jsonl`);
+  await fs.promises.mkdir(path.dirname(to), { recursive: true });
+  await fs.promises.rename(from, to);
 
-  // Seed the resume id so opening the new workspace's structured view continues
-  // the BRANCHED conversation instead of starting blank.
   // Seed the resume id AND inherit the SOURCE workspace's account.
   //
   // The account pin is load-bearing, not cosmetic: `forkSession` wrote the fork
@@ -4182,7 +4232,12 @@ export async function sdkFork(
     `agent-sdk: forked ${wsId} session ${ws.sdkSessionId} at ${upToMessageId} -> ` +
       `workspace ${forked.id} (session ${forkedSessionId}, branch ${forked.branch} off ${ws.branch})`,
   );
-  return { ...forked, sdkSessionId: forkedSessionId };
+  // Return the record as PERSISTED, not the pre-patch one from createWorkspace:
+  // `forkedPinned` already carries the inherited accountId, and the caller uses
+  // this to select the new workspace. Returning the un-pinned record made the
+  // fork's account badge read "<NONE>" in the e2e drive even though the store
+  // was correct — a returned value that disagrees with persisted state.
+  return { ...forkedPinned, sdkSessionId: forkedSessionId };
 }
 
 /** Preview a rewind WITHOUT changing anything — the SDK's `dryRun`, so the
