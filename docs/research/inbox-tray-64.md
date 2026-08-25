@@ -112,6 +112,53 @@ tray must never be presented as doing so.
   is a binary `app.asar`. Re-run with `grep -a` plus pre-existing positive
   controls (`av-composer-field`, `av-queue-row`) in the same command.
 
+## 6. E2E evidence (built app, own headless sway)
+
+Driven against `release/linux-arm64-unpacked/orchestra` (the packaged build, CDP
+target URL asserted to point at this worktree, version read back = `0.5.260` =
+the version built). Compositor identity proven by the magenta marker:
+`wayland-6` measured **100.00%** `(255,0,255)` while four sibling `HEADLESS-1`
+candidates measured **0.00%** — name and emptiness are not identity.
+
+Seeded a real inbox file for the workspace and asserted its bytes were identical
+to canonical `queueInbox` framing before driving (so the fixture is a real inbox
+file, not an approximation).
+
+| Assertion | Result |
+|---|---|
+| chip renders with correct N | `✉2 messages held`, N matches the 2 blocks on disk |
+| chip is amber | `rgb(255, 200, 87)` = `--av-warn` |
+| chip/rows fully inside the viewport | chip `l=360 r=490`, rows `371..1565` of `vw=1596` |
+| expanded list: one row per block | 2 rows, each with sender + preview + both actions |
+| reply-footer absent from previews | clean |
+| **Refuse discards** | block gone from file, **614 → 302 bytes**; row count 2 → 1; header became `1 message held`; logged `inbox-tray: REFUSED … discarded by the human, not delivered` |
+| **Release with NO live session** | reports `not-delivered`, file **unchanged** — the block stays parked (logged `block left parked`) |
+| **Release with a LIVE session** | `{ok:true, remaining:0}`, file **301 → 0 bytes**, chip retracted |
+| released turn renders as a #56 PEER row | `› Message from ops-fix-wave-6`, collapsed — not a user bubble (a human turn in the same shot IS a bubble) |
+| released body actually reached the transcript | expanded the row: `RELEASE-PROOF-64` present |
+| chip re-appears from the fs watcher | re-seeding the file surfaced the chip with **no reload** |
+
+Screenshots: `01-booted`, `02-chip-collapsed`, `03-expanded-list`,
+`04-after-refuse`, `06-released-peer-row`, `07-peer-row-expanded`.
+
+Two honest notes on that evidence:
+
+- The test instance's account could not authenticate (isolated `ORCHESTRA_HOME`
+  has no login), so the released turn ends in an `OAuth session expired` error
+  row. This does **not** weaken the delivery claim: `sdkDeliverConfirmed`
+  returned `'started'`, which is by definition "the message became the session's
+  turn". The model's failure is strictly downstream of delivery.
+- The delivered text keeps the full envelope **including** the
+  `Reply with: orchestra message …` footer. That is deliberate and matches the
+  pre-existing hook, which `cat`s the whole file into context. The footer is
+  stripped only from the tray PREVIEW (unit-tested).
+
+**The hook race was observed live, not just reasoned about**: mid-drive a real
+structured session started in the worktree and its `inbox-instruction.sh` hook
+drained the seeded file out from under the tray. The content-addressed design
+absorbed it (no crash, no wrong-message delivery) — which is the scenario
+invariant (a) exists for.
+
 ## Not done / not verified
 
 - **The hook still does not lock the file.** The tray's races are narrowed by
