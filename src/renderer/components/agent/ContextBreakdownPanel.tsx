@@ -20,17 +20,13 @@
 import React from 'react';
 import {
   buildContextBreakdown,
+  computeCtxShift,
   shortenMemoryPath,
   truncateList,
   type BreakdownRow,
   type ContextBreakdown,
 } from '../../../shared/context-breakdown';
 import type { ContextUsage } from '../../../shared/context-usage';
-
-/** Gap left between the panel's right edge and the window edge when the panel
- *  has to be shifted back inside the viewport (issue #35). Matches the 8px the
- *  panel already uses vertically in `bottom:calc(100% + 8px)`. */
-const CTX_PANEL_GUTTER_PX = 8;
 
 /** How many rows each detail list shows before collapsing to "+N more". A
  *  session can load dozens of memory files and hundreds of MCP tools; the
@@ -261,8 +257,11 @@ export function ContextBreakdownPanel({
   // gauge sits. Measured on the built app at the enforced minimum window width
   // (`minWidth:900`, src/main/index.ts): dragging the sidebar to its max (560,
   // clamped in App.tsx) puts the panel's right edge at 1097.63 against a 900px
-  // viewport — 197.63px, 62% of it, off-screen. Overflow starts between a
-  // sidebar of 360 (fits by 2.37px) and 380 (overflows by 17.63px).
+  // viewport — 197.63px, 62% of it, off-screen. The exact sidebar width at
+  // which overflow BEGINS is RIG-DEPENDENT (it moves with chrome height and
+  // font metrics): this rig saw the last fit at 360, an independent second rig
+  // at 350. Do not quote a threshold as a constant — what is stable is that the
+  // wide end of the sidebar range overflows and the narrow end does not.
   //
   // WHY THIS IS JS AND NOT A CSS ONE-LINER — both cheaper fixes were measured
   // and REJECTED, so don't "simplify" this back into them:
@@ -270,15 +269,27 @@ export function ContextBreakdownPanel({
   //     NO-OP. It binds only if 100vw-16px < the panel's width; at vw=900 that
   //     is 884px vs a 320px panel, so it never applies at any reachable width.
   //     The panel is MISPOSITIONED, not too wide.
-  //   • An unconditional `right:0` flip fixes the right edge but is the mirror
-  //     bug: with the anchor near the left edge it put the panel at left=-248px.
+  //   • An unconditional `right:0` flip fixes the right edge but RE-ANCHORS
+  //     UNCONDITIONALLY, moving the panel even where it already fitted
+  //     (measured at sidebar=240: left 463.89 -> 211.73). THAT is the
+  //     disqualifier. An earlier note here claimed it pushed the panel to
+  //     left=-248px; that reading came from forcing the anchor to x=4 with an
+  //     inline style, a state `SIDEBAR_WIDTH_MIN = 240` makes UNREACHABLE, so
+  //     it is not a real-world argument. The conclusion stood, the reason did
+  //     not — recorded so this is not re-litigated. (`computeCtxShift` still
+  //     clamps the left edge: that guard is about the panel being wider than
+  //     the viewport, which IS reachable.)
   //   • `position:fixed` (which WOULD make a pure-CSS clamp possible, since the
   //     containing block becomes the viewport) breaks the vertical axis —
   //     `bottom:calc(100% + 8px)` then resolves against the viewport and the
   //     panel's bottom measured 1108px on a 871px-tall viewport.
-  // So we shift left by exactly the overhang, and by ZERO when it already fits
-  // (placement is unchanged in the common case). The vertical contract
-  // (`max-height:60vh` + internal scroll) is untouched.
+  // So we shift left by exactly the overhang, and by ZERO once the panel is
+  // clear of the gutter. NOTE the shift engages slightly BEFORE the panel truly
+  // overflows, because the gutter is inside the overhang: at sidebar=355 the
+  // panel still fitted (right=894.4 < 900) yet took a 4.49px shift. Intended —
+  // the gutter is what keeps it off the window edge — so placement is unchanged
+  // in the common case but NOT byte-identical right at the boundary. The
+  // vertical contract (`max-height:60vh` + internal scroll) is untouched.
   React.useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -288,12 +299,16 @@ export function ContextBreakdownPanel({
       // toward zero on every resize.
       el.style.removeProperty('--av-ctx-shift');
       const rect = el.getBoundingClientRect();
-      const overhang = Math.max(0, rect.right + CTX_PANEL_GUTTER_PX - window.innerWidth);
-      // Never shift so far that the LEFT edge goes off-screen: clamp to the
-      // panel's own distance from x=0. (Both edges can't be satisfied if the
-      // panel is wider than the viewport; the left edge wins, since that is
-      // where the content starts.)
-      const shift = Math.min(overhang, Math.max(0, rect.left));
+      // The arithmetic (gutter, the zero floor, the left-edge cap) lives in
+      // `computeCtxShift` so the unit suite can execute it — a decision sited
+      // in this .tsx would be untestable, which is the documented failure mode
+      // this component's sibling comment in TurnFooter.tsx warns about. This
+      // effect only MEASURES and APPLIES.
+      const shift = computeCtxShift({
+        left: rect.left,
+        right: rect.right,
+        innerWidth: window.innerWidth,
+      });
       if (shift > 0) el.style.setProperty('--av-ctx-shift', `${shift}px`);
     };
     apply();

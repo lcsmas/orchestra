@@ -484,8 +484,8 @@ console.log('\nContext panel horizontal clamp (#35) — source-bound, NOT geomet
   );
   check(
     'the clamp measures the panel rect against the viewport',
-    /getBoundingClientRect\(\)/.test(bundle) && /innerWidth/.test(bundle),
-    'the overhang measurement is gone',
+    /getBoundingClientRect\(\)/.test(bundle) && /innerWidth:\s*window\.innerWidth/.test(bundle),
+    'the overhang measurement is gone, or the viewport width is no longer passed to the clamp',
   );
   // The var must be CLEARED before measuring, or a previous shift is baked into
   // the reading and successive corrections compound toward zero.
@@ -496,10 +496,20 @@ console.log('\nContext panel horizontal clamp (#35) — source-bound, NOT geomet
   );
   // The left-edge guard: shifting by the raw overhang would push the panel off
   // the LEFT edge when the anchor sits far left (measured: left=-248.16px).
+  // NB the shape below matches `computeCtxShift` in `shared/context-breakdown.ts`,
+  // NOT inline arithmetic in the .tsx. The math was extracted there so the unit
+  // suite can execute it (see that file's comment); this assertion followed it.
+  // It false-FAILED loudly during that refactor rather than silently passing,
+  // which is the intended failure direction for a structural gate.
   check(
-    'the shift is clamped so the left edge cannot go off-screen',
-    /Math\.min\(\s*overhang\s*,\s*Math\.max\(\s*0\s*,\s*\w+\.left\s*\)\s*\)/.test(bundle),
+    'the left-edge clamp survives compilation',
+    /Math\.min\(\s*overhang\s*,\s*Math\.max\(\s*0\s*,\s*left\s*\)\s*\)/.test(bundle),
     'the left-edge clamp is gone — the fix would become its own mirror bug',
+  );
+  check(
+    'the panel delegates the shift math to the shared pure function',
+    /computeCtxShift\s*\(/.test(bundle),
+    'the panel no longer calls computeCtxShift — the math may have been re-inlined into the .tsx, where no unit test can reach it',
   );
 
   // The CSS half. The JS above only sets a custom property; without this

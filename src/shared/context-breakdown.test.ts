@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildContextBreakdown,
+  computeCtxShift,
+  CTX_PANEL_GUTTER_PX,
   groupMcpToolsByServer,
   hasBreakdown,
   truncateList,
@@ -416,4 +418,80 @@ test('shortenMemoryPath keeps the last two segments', () => {
 test('shortenMemoryPath leaves already-short paths alone', () => {
   assert.equal(shortenMemoryPath('CLAUDE.md'), 'CLAUDE.md');
   assert.equal(shortenMemoryPath('a/CLAUDE.md'), 'a/CLAUDE.md');
+});
+
+// ── #35: the panel's horizontal viewport clamp ───────────────────────────────
+//
+// The five cases and their expected values come from the #35 REVIEWER's own
+// CDP measurements against a built app (his rig, not the implementer's — the
+// two rigs differ by a few px of chrome, which is exactly why the numbers are
+// carried over verbatim rather than re-derived from the implementer's run).
+//
+// This test proves the MATH. It cannot prove the panel is positioned correctly
+// on screen — that is a geometry property, measured over CDP and additionally
+// guarded structurally by `scripts/context-gauge-render-smoke.mjs`, which
+// asserts the clamp survives compilation. The three gates are complementary:
+// math here, survival there, geometry over CDP.
+//
+// Mutation-tested (by the reviewer, re-run by the implementer): each mutant is
+// killed by a DIFFERENT assertion, so no case is vacuous —
+//   drop the gutter          -> C2 and C3 fail
+//   drop the left-edge clamp -> C4 and C5 fail
+//   drop the Math.max(0,…)   -> C1 fails
+/** Compare a px measurement within sub-pixel tolerance. These expectations come
+ *  from real `getBoundingClientRect()` readings, which are floats: `783.89 +
+ *  320` is not exactly `1103.89` in IEEE-754, and `computeCtxShift` legitimately
+ *  returns `211.8900000000001`. A strict `assert.equal` there tests the float
+ *  representation, not the clamp — the property under test is "within a pixel". */
+const eqPx = (got: number, want: number, msg?: string) =>
+  assert.ok(
+    Math.abs(got - want) < 0.01,
+    msg ?? `expected ${want} +/- 0.01, got ${got} (diff ${got - want})`,
+  );
+
+test('computeCtxShift: a panel that already fits is not moved at all', () => {
+  // C1 — the "placement is unchanged where it fitted" property. Also the case
+  // that dies if the Math.max(0, …) floor is dropped: the raw overhang is
+  // negative there, which would shift the panel RIGHT, off the other edge.
+  assert.equal(computeCtxShift({ left: 563.89, right: 883.89, innerWidth: 900 }), 0);
+});
+
+test('computeCtxShift: a real measured overflow shifts by the overhang plus the gutter', () => {
+  // C2 — reviewer's sidebar=560 reading at the enforced 900px minimum window.
+  eqPx(computeCtxShift({ left: 783.89, right: 1103.89, innerWidth: 900 }), 211.89);
+});
+
+test('computeCtxShift: the gutter still engages when the edge exactly touches', () => {
+  // C3 — right === innerWidth is NOT yet an overflow, but the gutter means the
+  // panel is still pulled in by exactly the gutter width.
+  assert.equal(computeCtxShift({ left: 580, right: 900, innerWidth: 900 }), CTX_PANEL_GUTTER_PX);
+});
+
+test('computeCtxShift: never shifts so far that the left edge leaves the viewport', () => {
+  // C4 — panel wider than the viewport: the right edge cannot be satisfied, so
+  // the shift is capped at the panel's own distance from x=0.
+  assert.equal(computeCtxShift({ left: 10, right: 1000, innerWidth: 900 }), 10);
+});
+
+test('computeCtxShift: an anchor flush at x=0 cannot be shifted', () => {
+  // C5 — there is no room to move; the clamp must return 0, not a negative.
+  assert.equal(computeCtxShift({ left: 0, right: 1000, innerWidth: 900 }), 0);
+});
+
+test('computeCtxShift: the shift is never negative for any edge combination', () => {
+  // A property check over the whole grid rather than another point sample: a
+  // negative shift would move the panel the WRONG WAY, and every individual
+  // case above is a point that a future refactor could accidentally satisfy.
+  for (const left of [-50, 0, 10, 300, 880, 1200]) {
+    for (const right of [-10, 0, 320, 900, 1103.89, 2000]) {
+      for (const innerWidth of [320, 900, 1400]) {
+        const shift = computeCtxShift({ left, right, innerWidth });
+        assert.ok(shift >= 0, `negative shift ${shift} for left=${left} right=${right} vw=${innerWidth}`);
+        assert.ok(
+          shift <= Math.max(0, left) + 0.001,
+          `shift ${shift} would push left=${left} off-screen`,
+        );
+      }
+    }
+  }
 });
