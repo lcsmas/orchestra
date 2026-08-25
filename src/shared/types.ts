@@ -277,6 +277,50 @@ export interface Workspace {
   /** Epoch ms when {@link lastStopReason} was recorded, so the tooltip can age
    * it. Absent whenever `lastStopReason` is absent. */
   lastStopReasonAt?: number;
+  /** Epoch ms when this workspace last STARTED a turn (issue #88) — the clock
+   * the queue-stall detector ages. Absent until the workspace takes its first
+   * turn, which is a real and interesting state: a spawned agent whose session
+   * never came up has never started one, and that is precisely a stall worth
+   * catching (see `workspaceQueueStall`, which falls back to `createdAt`).
+   *
+   * ## Why this is not `lastActivityAt`
+   *
+   * `noteActivity` (activity.ts) stamps on EVERY lifecycle event, including
+   * ones we don't map to a status — by its own doc, deliberately, because an
+   * unrecognized hook still proves the agent is alive. That makes it a measure
+   * of ALIVENESS, not of consumption: a session emitting `posttool`/`notify`
+   * while never beginning a new turn looks perfectly healthy to it. #88 needs
+   * the narrower signal — "did this workspace actually pick up work" — so this
+   * is stamped at the one chokepoint both agent paths cross with that meaning:
+   * `applyAgentEvent`'s `submit` and `pretool` cases, the same transition where
+   * #69's stop-reason marker is cleared. Threaded through `setStatus` so it
+   * rides the store write and the broadcast that already happen there.
+   *
+   * MONOTONIC by construction: it is only ever assigned `Date.now()` on a
+   * turn-start transition, never cleared. A cleared value would make an active
+   * workspace's stall age jump backwards to `createdAt`, which for an old
+   * workspace reads as a stall of days. */
+  lastTurnStartAt?: number;
+  /** How many peer messages are parked on disk for this workspace, in
+   * `~/.orchestra/inbox/<id>.txt` (issue #88). Maintained by the main process
+   * (inbox-tray.ts), which already reads that file to drive the inbox tray.
+   *
+   * ## Why main computes this and the renderer does not
+   *
+   * The renderer HAS a parked-inbox cache (`store.parkedInbox`), but it is
+   * hydrated per-pane: `inbox:update` only fires on CHANGE, and the one
+   * explicit read runs when a workspace's StructuredView MOUNTS. So a
+   * workspace whose pane nobody has opened has no entry at all — which is
+   * exactly the fleet-freeze case #88 is about, since the human not looking at
+   * the frozen agent is WHY it stays frozen. A sidebar badge derived from that
+   * cache would be structurally blind to every workspace it most needs to
+   * cover.
+   *
+   * The inbox FILE remains the source of truth (a shell hook drains it with no
+   * main-process involvement); this is a broadcast mirror of main's count,
+   * refreshed on every inbox mutation and by the directory watcher. Absent is
+   * equivalent to 0. */
+  parkedInboxCount?: number;
   /** Epoch MILLISECONDS at which the usage limit that killed the last turn
    * resets — set alongside `lastStopReason: 'usage_limit'` (#74), and the
    * clock the auto-resume driver waits out.

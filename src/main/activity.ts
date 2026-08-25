@@ -99,6 +99,22 @@ async function setStatus(
    *  crosses the SAME broadcast, keeping the dot and its explanation atomic in
    *  the renderer. */
   stopReason?: AgentStopReason | null,
+  /** True when this transition IS a turn starting (issue #88) — the `submit`
+   *  and `pretool` cases of `applyAgentEvent`, which are the one chokepoint
+   *  both agent paths cross with that meaning. Stamps
+   *  {@link Workspace.lastTurnStartAt}, the clock the queue-stall detector
+   *  ages. Threaded here for the same reason `stopReason` is: it piggybacks
+   *  the store write and the broadcast this function already makes, so the
+   *  stall badge clears in the SAME frame the dot turns green rather than one
+   *  broadcast later.
+   *
+   *  Note this rides the function's no-op guard, and that is CORRECT: the
+   *  repeated `setStatus(id,'running',null)` on every `pretool` within one
+   *  turn is not a new turn start, and re-stamping on each would make a single
+   *  very long turn indistinguishable from a stream of short ones. The first
+   *  event of a turn is a real `idle|waiting|stopped → running` transition, so
+   *  it is never swallowed. */
+  turnStart?: boolean,
 ): Promise<{ ws: Workspace; changed: boolean } | null> {
   const ws = store.getWorkspace(id);
   if (!ws) {
@@ -138,6 +154,10 @@ async function setStatus(
     // way (see types.ts).
     lastStopReason: nextStopReason,
     lastStopReasonAt: nextStopReason ? (reasonChanged ? Date.now() : ws.lastStopReasonAt) : undefined,
+    // #88. Only ever moves FORWARD, never cleared: a cleared value would make
+    // an active workspace's stall age fall back to `createdAt`, which for an
+    // old workspace reads as a stall of days.
+    lastTurnStartAt: turnStart ? Date.now() : ws.lastTurnStartAt,
   };
   // Broadcast to the renderer first, then persist. upsertWorkspace mutates the
   // in-memory store synchronously (before its first await), so state is already
@@ -893,11 +913,13 @@ export function applyAgentEvent(
       // so whatever ended the LAST one is no longer the workspace's state. Done
       // on the running transition rather than on the next turn-end so the badge
       // disappears the moment work resumes, not one turn later.
-      void setStatus(id, 'running', null);
+      // `true` = this is a TURN START (#88): stamps `lastTurnStartAt`, which
+      // is what makes a queue-stall badge CLEAR the moment work resumes.
+      void setStatus(id, 'running', null, true);
       break;
     case 'pretool':
       emitTool(id, tool ?? null);
-      void setStatus(id, 'running', null);
+      void setStatus(id, 'running', null, true);
       // A ScheduleWakeup call is the /loop skill re-arming its next iteration —
       // the observable that marks this workspace as LOOPING. Detected here
       // because this is the one chokepoint both agent paths cross with the

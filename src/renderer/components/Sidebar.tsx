@@ -21,6 +21,7 @@ import {
 import { groupByHost, hostLabel } from '../host-grouping';
 import { queuedTickets as selectQueuedTickets } from '../../shared/linear-tickets-queue';
 import { WorkspaceStatusGlyph, statusGlyphTitle } from './WorkspaceStatusGlyph';
+import { QueueStallBadge } from './QueueStallBadge';
 import { RowActionsPopover, useRowActionsPopover } from './RowActionsPopover';
 import { InboxBell } from './InboxBell';
 import { SoundSettings } from './SoundSettings';
@@ -1670,6 +1671,10 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                   )}
                 </span>
                 <HibernatedChip w={w} />
+                {/* #88 — "N deliveries waiting, no turn started in X". Renders
+                    null unless this workspace is actually stalled, so it costs
+                    nothing on the ordinary row. */}
+                <QueueStallBadge w={w} />
                 <WorkspaceContextBadge workspaceId={w.id} />
                 {/* Login is omitted when it just repeats the parent's — see
                     WorkspaceRowAccountBadge. Root rows always show theirs. */}
@@ -2322,6 +2327,10 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         </div>
                       )}
                       <HibernatedChip w={w} />
+                      {/* #88 — same badge on the repo-section render path.
+                          Both paths render the same component so the two can
+                          never drift apart. */}
+                      <QueueStallBadge w={w} />
                       <WorkspaceContextBadge workspaceId={w.id} />
                       <WorkspaceRowAccountBadge workspaceId={w.id} parentId={w.parentId} />
                       <span className="ws-pills">
