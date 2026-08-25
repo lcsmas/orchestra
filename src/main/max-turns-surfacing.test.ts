@@ -276,3 +276,60 @@ test('#85 GUARD: the per-turn runaway backstop survives (no role-based raise)', 
     );
   }
 });
+
+// ─── #85 / wave-8 review: finishedToast's max_turns copy, previously UNGATED ──
+//
+// This test exists because the review measured that ZERO test files referenced
+// `finishedToast` at all, while #85 EDITED it — in `activity.ts`, a file #88
+// also owns. An edited function with no coverage in a shared file is the
+// weakest point a candidate can carry.
+//
+// It is a SOURCE-BINDING test, not a unit test, and that is forced, not lazy:
+// `activity.ts` cannot be imported by `node --test` (measured — it resolves
+// `./platform`, a DIRECTORY import ESM rejects: "Directory import … is not
+// supported"), and `finishedToast` is not exported. That is precisely why it
+// went untested. The file's other guards use the same read-the-source idiom
+// for the same reason.
+//
+// Scoped deliberately to the ONE case #85 changed. It is NOT coverage for
+// finishedToast as a whole — the other branches are untouched and stay
+// unguarded rather than being pinned by a test that never reviewed them.
+
+test('#85: finishedToast max_turns toast is turn-scoped, not session-terminal', () => {
+  const code = codeOf(ACTIVITY);
+
+  // Isolate the function body. A file-wide grep would be VACUOUS here: the
+  // strings below also appear in this repo's renderer copy and in comments, so
+  // an unscoped assertion could pass while the toast itself said anything.
+  const start = code.indexOf('function finishedToast(');
+  assert.notEqual(start, -1, 'finishedToast not found — the anchor moved');
+  const rest = code.slice(start);
+  const end = rest.indexOf('\nfunction ');
+  const body = end === -1 ? rest : rest.slice(0, end);
+  // Control that the isolation itself worked, before asserting on the slice.
+  assert.ok(body.length > 200 && body.length < 4000, `finishedToast slice looks wrong (${body.length} chars)`);
+  assert.match(body, /case 'max_turns':/, 'the isolated slice must contain the max_turns case');
+
+  // Narrow to the max_turns arm specifically — the neighbouring arms have
+  // their own copy and must not be able to satisfy these assertions.
+  const armAt = body.indexOf("case 'max_turns':");
+  const nextArmAt = body.indexOf("case '", armAt + 10);
+  const arm = nextArmAt === -1 ? body.slice(armAt) : body.slice(armAt, nextArmAt);
+
+  // The claim: this toast must scope the limit to the TURN and must not read
+  // as a spent session. MEASURED 2026-08-25 (/tmp/t85probe/probe{3,4}.mjs,
+  // SDK 0.3.241): maxTurns resets per user turn — probe 3's positive control
+  // put a cumulative 12 round-trips through a cap of 5 with zero exhaustions.
+  assert.match(arm, /step limit/, 'the max_turns toast must name the STEP/turn limit it actually hit');
+  assert.doesNotMatch(
+    arm,
+    /reaching max turns|turn budget|exhausted/i,
+    'the max_turns toast must not state the REFUTED session-lifetime budget model — ' +
+      'a human reading "budget exhausted" abandons a session whose next turn starts full',
+  );
+  assert.match(
+    arm,
+    /send a message/i,
+    'the toast must state the remedy: the session is alive and one more message continues it',
+  );
+});
