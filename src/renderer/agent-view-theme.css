@@ -2785,6 +2785,20 @@ h6.av-md-h {
   top: 100%;
   right: 0;
   padding: 3px 0 6px 16px;
+  /* LOAD-BEARING since a SECOND control joined this row (#18's fork button).
+     Without an explicit row layout the two inline-flex children WRAP, which
+     doubles the row's height and pushes the lower button clean outside the
+     bubble's box — and since the row is only revealed by
+     `.av-message-user:hover`, a button outside that box can never be hovered,
+     so it renders and is permanently unclickable. Measured in the built app
+     before this rule: row 297→351 (54px tall), fork button centre at y=333
+     against a bubble ending at y=317. */
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  white-space: nowrap;
   /* Opacity-only hide — NEVER `visibility:hidden`/`display:none` here, or the
      control stops hit-testing and becomes unreachable again (see above). */
   opacity: 0;

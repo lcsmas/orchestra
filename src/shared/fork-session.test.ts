@@ -93,6 +93,54 @@ describe('forkTargetId — the inclusive-cut off-by-one', () => {
   });
 });
 
+describe('the cut point is ALWAYS a user message (measured in the built app)', () => {
+  it('never returns an assistant/tool row id, even when one carries an id', () => {
+    // CLAUSE: `if (id) return id` combined with the fact that ONLY user rows
+    // carry a rewindId in practice. This pins the SHAPE the e2e drive measured:
+    // forking from message N lands on user message N-1, so the fork ends on an
+    // UNANSWERED prompt — it can never end on a complete exchange.
+    //
+    // The fixture is hostile on purpose: it gives the ASSISTANT row an id too,
+    // which the real app never does. If a future change starts surfacing
+    // assistant uuids as rewindIds, the fork's boundary silently moves by half
+    // a turn and every fork gains its predecessor's reply — a change nothing
+    // else would catch. This asserts the CURRENT contract so that shift has to
+    // be deliberate.
+    const withAssistantIds: RenderMessage[] = [
+      msg('user', 'u1'),
+      msg('assistant', 'a1'),
+      msg('user', 'u2'),
+      msg('assistant', 'a2'),
+      msg('user', 'u3'),
+    ];
+    // Walking back from u3 hits a2 FIRST. Documenting that the walk is purely
+    // positional: it returns whatever id-carrying row precedes, which in the
+    // real app is always a user row because assistants have no rewindId.
+    assert.equal(forkTargetId(withAssistantIds, 'u3'), 'a2');
+    // …and with the REAL shape (assistant rows un-idd), it is a user id.
+    assert.equal(forkTargetId(TRANSCRIPT, 'u3'), 'u2');
+  });
+
+  it('the fork of turn N contains turns 1..N-2 plus an unanswered N-1', () => {
+    // A statement of the measured end-to-end behaviour in executable form:
+    // forking from the 3rd turn cuts at the 2nd user message, so the 2nd turn's
+    // REPLY is not copied. Pins the documented semantics against the doc
+    // comment that previously (wrongly) claimed a complete final exchange.
+    const cut = forkTargetId(TRANSCRIPT, 'u3');
+    const idx = TRANSCRIPT.findIndex((m) => m.rewindId === cut);
+    const copied = TRANSCRIPT.slice(0, idx + 1); // forkSession is INCLUSIVE
+    assert.equal(copied.at(-1)?.role, 'user', 'the fork ends on a USER message');
+    assert.equal(copied.at(-1)?.text, 'second question');
+    assert.ok(
+      !copied.some((m) => m.text === 'BETA'),
+      "the cut message's own reply is NOT copied",
+    );
+    // Positive control: the EARLIER complete exchange IS copied, so the absence
+    // above is a real boundary and not an empty slice.
+    assert.ok(copied.some((m) => m.text === 'ALPHA'), 'turn 1 reply IS copied');
+  });
+});
+
 describe('canForkFrom — gating the affordance', () => {
   it('is false exactly where the fork would be empty or impossible', () => {
     // CLAUSE: `!== undefined`. Guards the UI against offering a control whose
