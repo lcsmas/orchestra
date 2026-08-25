@@ -27,6 +27,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | `/peers` | — (+ `stats?: true` — adds each git peer's committed three-dot diff vs base as `diff: {files,insertions,deletions}\|null`; one git subprocess per peer, so opt-in — the comms-resurface hook hits `/peers` on every prompt) | `{ ok, peers?: PeerInfo[] }` |
 | `/read` | `id` (+ `lines?`) | `{ ok, branch?, transcript? }` |
 | `/message` | `to`, `text` (+ `from`) | `{ ok, delivery?: 'live'\|'started'\|'inbox' }` — **`'live'` is a PROVEN claim, not an optimistic one (issue #57 fault b):** it is returned only once the message actually became the target's turn (`sdkDeliverConfirmed` awaits the delivery watcher; see `structured-agent-view.md`). A turn discarded before running (Escape, session end, tray cancel, stop) or still unconfirmed after `DELIVERY_START_TIMEOUT_MS` falls back to the durable inbox and reports **`'inbox'`** — it previously reported `'live'` on the queue push alone and never corrected it, which is how senders lost messages silently. The CLI prints this verbatim as `Delivered (<delivery>).` |
+| `/message` (broadcast) | `to: string[]` **or** `children: true` (+ `from`, `text`) | `{ ok, results?: [{id, ok, branch?, delivery?, error?}] }` — issue #86. **Three shapes share this one route** and are discriminated by the TYPE of `to`: a `string` takes the original single-target path above and answers the original `{ok,delivery,branch}` shape (so an older CLI against a newer app is byte-for-byte unaffected); an ARRAY, or `children:true`, takes `dispatchBroadcastMessageRequest` and answers `results` instead — a per-target report cannot be squeezed into one `delivery` field without lying about which target it describes. `children:true` resolves the caller's **DIRECT children only**, never the descendant subtree (a subtree broadcast is a foot-gun mid-wave), SERVER-SIDE — `/peers` deliberately omits `parentId`, and client-side enumeration would race the store. A missing `from` with `children:true`, and an empty child set, are both NAMED refusals (`{ok:false,error}` with no `results`), never a silent success: a halt that reached nobody must not exit 0. Each target goes through the SAME `dispatchMessageRequest` as the single form, so `live`/`started`/`inbox` keep their exact meanings; dispatch is SEQUENTIAL, every target is attempted (no abort-on-first-failure — the point of a broadcast halt is that it reaches everyone), and `ok` is the AND of all targets so a partial failure is a failure. |
 | `/addRepo` | `path` | `{ ok, repo? }` |
 | `/deleteWorkspace` | `id` | `{ ok, id?, branch? }` |
 | `/promote` | `id` | `{ ok, id?, branch?, kind? }` |
@@ -175,7 +176,15 @@ Standalone Node HTTP client (no npm deps) that POSTs to the socket. Reads
 `$ORCHESTRA_WS_ID` in a structured-view session. Exit 0 on `{ok:true}`, 1 otherwise
 (error to stderr).
 Subcommands: `peers [--stats]` (`--stats` adds per-peer committed diff vs base),
-`read <id> [--lines N]`, `message <id> <text…>`, `spawn
+`read <id> [--lines N]`, `message <id> <text…>`,
+`message --children <text…>` / `message --to <id,id,…> <text…>` (issue #86 broadcast:
+one delivery line PER TARGET as a table, `--children` = your DIRECT children only,
+`--to` collapses duplicates and drops blanks so a trailing comma is a typo not a
+phantom target. Exits **non-zero if ANY target failed** while still delivering to the
+rest — an all-or-nothing 0 would hide the targets an emergency halt never reached —
+and prints a `N of M target(s) failed: <ids>` summary to stderr. The positional
+single-target form is unchanged, byte for byte, including its `Delivered (<kind>).`
+line, which agents and scripts already parse), `spawn
 --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]`
 (`--model` pins the agent's model — alias or full id; `--detached`
 creates the workspace parentless — its own top-level section), `rename <id> <branch>`,

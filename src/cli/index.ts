@@ -27,6 +27,17 @@ interface OrchestraResponse {
   [key: string]: unknown;
 }
 
+/** One target's outcome in a broadcast reply (issue #86). Always carries `id`:
+ * a per-target report that cannot say WHICH target a status belongs to is
+ * indistinguishable from one status copied N times. */
+interface BroadcastTargetResult {
+  id: string;
+  ok: boolean;
+  branch?: string;
+  delivery?: string;
+  error?: string;
+}
+
 interface PeerInfo {
   id: string;
   branch: string;
@@ -135,6 +146,12 @@ Usage:
                                                  (--stats: + committed diff vs base per peer)
   orchestra read <id> [--lines N]                Print a workspace's transcript
   orchestra message <id> <text...>               Send a prompt to a workspace
+  orchestra message --children <text...>         Broadcast to your DIRECT children
+                                                 (not the whole subtree)
+  orchestra message --to <id,id,...> <text...>   Broadcast to an explicit list
+                                                 (both broadcast forms print one
+                                                  delivery line PER TARGET and exit
+                                                  non-zero if ANY target failed)
   orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]
                                                  Spawn a new worktree + agent
                                                  (--model: pin the agent's model, e.g. haiku/sonnet/opus;
@@ -660,9 +677,93 @@ async function main(argv: string[]): Promise<void> {
     }
 
     case 'message': {
-      const id = args[0];
-      const text = args.slice(1).join(' ');
-      if (!id || !text) fail('usage: orchestra message <id> <text...>');
+      const { present: children, rest: m1 } = takeBoolFlag(args, '--children');
+      const { value: toList, rest: m2 } = takeFlag(m1, '--to');
+      if (children && toList !== undefined) {
+        fail('--children and --to are mutually exclusive: pass one or the other');
+      }
+
+      // BROADCAST FORMS (issue #86). Kept in a separate branch from the
+      // positional form below so that form's output stays byte-for-byte what it
+      // has always been — agents and scripts already parse `Delivered (live).`.
+      if (children || toList !== undefined) {
+        const text = m2.join(' ').trim();
+        if (!text) {
+          fail('usage: orchestra message (--children | --to <id,id,...>) <text...>');
+        }
+        // `--to` takes a COMMA-separated list. Blank entries are dropped here so
+        // a trailing comma (`--to a,b,`) is a typo, not a phantom empty target.
+        // Blanks dropped so a trailing comma (`--to a,b,`) is a typo rather than
+        // a phantom empty target, and DUPLICATES collapsed so `--to a,b,a`
+        // messages `a` once: delivering the same halt twice is not harmless, it
+        // becomes two separate turns for that agent. (The server dedupes too —
+        // it must, since the socket is callable without this CLI — but sending
+        // work we already know is redundant is its own bug.)
+        const ids =
+          toList === undefined
+            ? undefined
+            : [
+                ...new Set(
+                  toList
+                    .split(',')
+                    .map((t) => t.trim())
+                    .filter(Boolean),
+                ),
+              ];
+        if (ids !== undefined && ids.length === 0) {
+          fail('--to needs at least one workspace id');
+        }
+        const res = await request('/message', {
+          from: selfWorkspaceId(),
+          ...(children ? { children: true } : { to: ids }),
+          text,
+        });
+        const results = res.results as BroadcastTargetResult[] | undefined;
+        // No `results` at all = the broadcast could not be ATTEMPTED (no caller
+        // id, no children, empty list). Nothing per-target to show, so this is
+        // the ordinary whole-command refusal.
+        if (!results) fail(res.error ?? 'failed to deliver message');
+
+        // ONE LINE PER TARGET. Each carries its OWN outcome: a report where
+        // every line says the same thing cannot distinguish a real per-target
+        // result from one status copied N times, which is precisely what this
+        // command exists to make visible.
+        const rows = results.map((r) => ({
+          id: r.id,
+          branch: r.branch ?? '',
+          delivery: r.ok ? (r.delivery ?? 'ok') : 'FAILED',
+          detail: r.ok ? '' : (r.error ?? 'unknown error'),
+        }));
+        const anyDetail = rows.some((r) => r.detail);
+        const columns = anyDetail
+          ? ['id', 'branch', 'delivery', 'detail']
+          : ['id', 'branch', 'delivery'];
+        process.stdout.write(`${table(rows, columns)}\n`);
+
+        const failed = results.filter((r) => !r.ok);
+        if (failed.length > 0) {
+          // The summary goes to STDERR and the exit is NON-ZERO: a partial
+          // failure must be visible both to a human reading the report and to a
+          // script gating on `$?`. An all-or-nothing 0 would hide the targets
+          // that never received an emergency halt behind the ones that did.
+          fail(
+            `${failed.length} of ${results.length} target(s) failed: ${failed
+              .map((r) => r.id)
+              .join(', ')}`,
+          );
+        }
+        process.stdout.write(`Delivered to ${results.length} target(s).\n`);
+        return;
+      }
+
+      const id = m2[0];
+      const text = m2.slice(1).join(' ');
+      if (!id || !text)
+        fail(
+          'usage: orchestra message <id> <text...>\n' +
+            '   or: orchestra message --children <text...>\n' +
+            '   or: orchestra message --to <id,id,...> <text...>',
+        );
       const res = await request('/message', { from: selfWorkspaceId(), to: id, text });
       if (!res.ok) fail(res.error ?? 'failed to deliver message');
       const delivery = (res.delivery as string | undefined) ?? 'ok';

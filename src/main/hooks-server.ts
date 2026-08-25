@@ -12,6 +12,7 @@ import {
   dispatchPeersRequest,
   dispatchReadRequest,
   dispatchMessageRequest,
+  dispatchBroadcastMessageRequest,
   dispatchAddRepoRequest,
   dispatchDeleteWorkspaceRequest,
   dispatchPromoteRequest,
@@ -273,12 +274,30 @@ export async function startHooksServer(): Promise<void> {
               send(200, { ok: false, error: 'missing id' });
             }
           } else if (route === '/message') {
-            if (typeof msg.to === 'string' && typeof msg.text === 'string') {
+            // THREE shapes on one route, and the discrimination is deliberate:
+            //   { to: '<id>' }            → single target, the ORIGINAL contract
+            //   { to: ['<id>', ...] }     → broadcast to an explicit list
+            //   { children: true }        → broadcast to the caller's children
+            // The single-target branch is checked FIRST and answers the exact
+            // legacy `{ok, delivery, branch}` shape, so an older CLI talking to
+            // a newer app is byte-for-byte unaffected (issue #86). Broadcasts
+            // answer `{ok, results:[...]}` instead — a DIFFERENT shape, because
+            // a per-target report cannot be squeezed into a single `delivery`
+            // field without lying about which target it describes.
+            const from = typeof msg.from === 'string' ? msg.from : undefined;
+            if (typeof msg.text !== 'string') {
+              send(200, { ok: false, error: 'missing to or text' });
+            } else if (typeof msg.to === 'string') {
+              send(200, await dispatchMessageRequest({ from, to: msg.to, text: msg.text }));
+            } else if (Array.isArray(msg.to) || msg.children === true) {
               send(
                 200,
-                await dispatchMessageRequest({
-                  from: typeof msg.from === 'string' ? msg.from : undefined,
-                  to: msg.to,
+                await dispatchBroadcastMessageRequest({
+                  from,
+                  to: Array.isArray(msg.to)
+                    ? msg.to.filter((t): t is string => typeof t === 'string')
+                    : undefined,
+                  children: msg.children === true,
                   text: msg.text,
                 }),
               );
