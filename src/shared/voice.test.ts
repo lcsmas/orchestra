@@ -6,6 +6,7 @@ import {
   ghostForEvent,
   parseRouterReply,
   ROUTER_PROMPT,
+  shouldDecodePartial,
   voiceReleaseAction,
   VOICE_TAP_MS,
 } from './voice.ts';
@@ -202,4 +203,71 @@ test('voiceReleaseAction: the key-up after a stop-press is ignored, not treated 
   // mic straight back on, making the mic impossible to stop from the keyboard.
   assert.equal(voiceReleaseAction({ pressedAt: null, micStarted: false, now: 5 }), 'ignore');
   assert.equal(voiceReleaseAction({ pressedAt: null, micStarted: true, now: 5 }), 'ignore');
+});
+
+// ---- shouldDecodePartial (anti-hallucination gate) --------------------------
+
+/** A decode-worthy state: everything green, so each test below can flip ONE
+ *  term and prove THAT term is what blocks. */
+const decodable = {
+  busy: false,
+  hasSpeech: true,
+  buffered: 16000, // 1.0s
+  sinceLastDoneMs: 5000,
+};
+
+test('partial: decodes when speech is present and the gap has elapsed', () => {
+  assert.equal(shouldDecodePartial(decodable), true);
+});
+
+test('partial: SILENCE never decodes, however much is buffered', () => {
+  // The reported bug: parakeet invents a sentence from room tone and the ghost
+  // sticks until dictation is switched off. Plenty of audio, plenty of rest,
+  // not busy — the ONLY thing false is hasSpeech, and that must be decisive.
+  assert.equal(shouldDecodePartial({ ...decodable, hasSpeech: false }), false);
+  assert.equal(
+    shouldDecodePartial({ ...decodable, hasSpeech: false, buffered: 16000 * 30 }),
+    false,
+    '30s of silence still must not be sent to the model',
+  );
+});
+
+test('partial: never queues behind an in-flight decode', () => {
+  assert.equal(shouldDecodePartial({ ...decodable, busy: true }), false);
+});
+
+test('partial: respects the wall-clock floor since the last decode finished', () => {
+  assert.equal(shouldDecodePartial({ ...decodable, sinceLastDoneMs: 1499 }), false);
+  assert.equal(shouldDecodePartial({ ...decodable, sinceLastDoneMs: 1500 }), true);
+});
+
+test('partial: needs a minimum of buffered audio', () => {
+  assert.equal(shouldDecodePartial({ ...decodable, buffered: 16000 * 0.59 }), false);
+  assert.equal(shouldDecodePartial({ ...decodable, buffered: 16000 * 0.6 }), true);
+});
+
+test('partial: an endpointer that never heard speech gates the real decoder', () => {
+  // Wire the REAL endpointer to the gate: pure silence in, no decode out.
+  const ep = new EnergyEndpointer();
+  let buffered = 0;
+  let decodes = 0;
+  for (let i = 0; i < 100; i++) {
+    ep.feed(silence());
+    buffered += N;
+    if (shouldDecodePartial({ busy: false, hasSpeech: ep.hasSpeech, buffered, sinceLastDoneMs: 5000 }))
+      decodes++;
+  }
+  assert.equal(decodes, 0, '10s of silence must produce zero partial decodes');
+
+  // Positive control: the same wiring DOES decode once real speech arrives, so
+  // the zero above is a working gate and not a dead harness.
+  for (let i = 0; i < 5; i++) {
+    ep.feed(speech());
+    buffered += N;
+  }
+  assert.ok(ep.hasSpeech, 'endpointer heard the speech');
+  assert.equal(
+    shouldDecodePartial({ busy: false, hasSpeech: ep.hasSpeech, buffered, sinceLastDoneMs: 5000 }),
+    true,
+  );
 });

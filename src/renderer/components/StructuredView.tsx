@@ -37,6 +37,14 @@ import { useVoiceDictation } from './agent/useVoiceDictation';
 import { McpPopover, McpIndicator } from './agent/McpPopover';
 import { readComposerVim, writeComposerVim, vimChipLabel, type VimMode } from '../composer-vim-pref';
 import {
+  readVoiceHotkey,
+  writeVoiceHotkey,
+  matchesVoiceHotkey,
+  voiceHotkeyLabel,
+  hotkeyFromEvent,
+  type VoiceHotkey,
+} from '../voice-hotkey-pref';
+import {
   isScratchLike,
   type AgentImage,
   type AgentSession,
@@ -1154,13 +1162,31 @@ function Composer({
   // already running, an utterance that happens to start with "!" must not tear
   // the listeners down mid-gesture, which would swallow the keyup and strand
   // the mic on. Once it stops, the guard applies again normally.
+  // The push-to-talk hotkey is USER-BOUND (see voice-hotkey-pref.ts): the old
+  // hardcoded Ctrl+M is dead on AZERTY hardware driven by a `us` layout, where
+  // the key labelled M reports code='Semicolon'. Held in a ref for the same
+  // reason `voice` is — rebinding must not swap listeners mid-gesture.
+  const [voiceHotkey, setVoiceHotkey] = useState<VoiceHotkey>(() => readVoiceHotkey());
+  const hotkeyRef = useRef(voiceHotkey);
+  hotkeyRef.current = voiceHotkey;
+  // "Press a key" capture: shift-click the mic to rebind. Recording SUSPENDS the
+  // normal hotkey (see micHotkeyOn) so the next keypress is captured instead of
+  // starting dictation.
+  const [rebinding, setRebinding] = useState(false);
+  const rebindVoiceHotkey = useCallback((next: VoiceHotkey) => {
+    setVoiceHotkey(next);
+    writeVoiceHotkey(next);
+  }, []);
+
   const micHotkeyOn =
-    isActive && voice.available && (voice.micState !== 'idle' || !text.startsWith('!'));
+    isActive &&
+    voice.available &&
+    !rebinding &&
+    (voice.micState !== 'idle' || !text.startsWith('!'));
   useEffect(() => {
     if (!micHotkeyOn) return;
-    const isMic = (e: KeyboardEvent) => e.key === 'm' || e.key === 'M' || e.code === 'KeyM';
     const onDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || !isMic(e)) return;
+      if (!matchesVoiceHotkey(e, hotkeyRef.current)) return;
       e.preventDefault();
       e.stopPropagation();
       voiceRef.current.press(e.shiftKey ? 'edit' : 'dictate');
@@ -1169,7 +1195,10 @@ function Composer({
     // end the gesture, and the keyup for "m" then reports ctrlKey=false.
     // Matching the letter alone is what makes the release reliable.
     const onUp = (e: KeyboardEvent) => {
-      if (!isMic(e)) return;
+      // `false` = do not require the modifier: releasing Ctrl before the letter
+      // is normal, and the keyup then reports ctrlKey=false. Matching on the
+      // physical `code` alone is what makes the release reliable.
+      if (!matchesVoiceHotkey(e, hotkeyRef.current, false)) return;
       const v = voiceRef.current;
       v.release(v.micState === 'edit' ? 'edit' : 'dictate');
     };
@@ -1189,6 +1218,28 @@ function Composer({
       window.removeEventListener('blur', onBlur);
     };
   }, [micHotkeyOn]);
+
+  // Capture the next real keypress as the new hotkey. Escape cancels. Runs at
+  // capture phase so the composer never sees the keystroke it is binding.
+  useEffect(() => {
+    if (!rebinding) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setRebinding(false);
+        return;
+      }
+      const next = hotkeyFromEvent(e);
+      if (!next) return; // modifier-only: keep waiting for the real key
+      e.preventDefault();
+      e.stopPropagation();
+      rebindVoiceHotkey(next);
+      setRebinding(false);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [rebinding, rebindVoiceHotkey]);
 
   // Expose PREFILL to the parent (rewind's edit-and-retry). Both the React
   // state and the CodeMirror document must be set: `text` drives bash-mode
@@ -1667,25 +1718,38 @@ function Composer({
           </button>
           {voice.available && !bashMode && (
             <>
-              {voice.status && (
+              {rebinding ? (
                 <span className="av-voice-status" aria-live="polite">
-                  {voice.status}
+                  press a key… (Esc to cancel)
                 </span>
+              ) : (
+                voice.status && (
+                  <span className="av-voice-status" aria-live="polite">
+                    {voice.status}
+                  </span>
+                )
               )}
               <button
                 type="button"
                 className="av-composer-mic"
                 data-state={voice.micState === 'dictate' ? 'rec' : undefined}
                 data-held={voice.micState === 'dictate' && voice.held ? '1' : undefined}
-                onClick={() => voice.toggle('dictate')}
+                onClick={(e) => {
+                  if (e.shiftKey) {
+                    setRebinding(true);
+                    return;
+                  }
+                  voice.toggle('dictate');
+                }}
+                data-rebinding={rebinding ? '1' : undefined}
                 aria-pressed={voice.micState === 'dictate'}
                 aria-label={voice.micState === 'dictate' ? 'Stop dictation' : 'Dictate'}
                 title={
                   voice.micState === 'dictate'
                     ? voice.held
-                      ? 'Listening — release Ctrl+M to stop'
-                      : 'Stop dictation (Ctrl+M, or click)'
-                    : 'Dictate — HOLD Ctrl+M to talk, or tap it to keep the mic on. Works anywhere in the window; speech lands here as you talk, cleaned up on each pause'
+                      ? `Listening — release ${voiceHotkeyLabel(voiceHotkey)} to stop`
+                      : `Stop dictation (${voiceHotkeyLabel(voiceHotkey)}, or click)`
+                    : `Dictate — HOLD ${voiceHotkeyLabel(voiceHotkey)} to talk, or tap it to keep the mic on. Works anywhere in the window; speech lands here as you talk, cleaned up on each pause. Shift-click this button to rebind the key.`
                 }
               >
                 <svg

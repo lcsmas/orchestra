@@ -1660,7 +1660,16 @@ before landing. Dev-gated: `voiceAvailable()` requires `ORCHESTRA_VOICE_DIR`
   skip-if-busy alone gave parakeet a ~100% duty cycle — measured 412% CPU / 51
   CPU-seconds per 12s of speech, versus 112% / 14 CPU-seconds paced (-73%, the
   audible-fan complaint). `lastIncrDoneAt` resets per utterance so each new one
-  still paints its first ghost immediately,
+  still paints its first ghost immediately. The whole decision is the pure
+  `shouldDecodePartial` (`src/shared/voice.ts`, unit + mutation-tested), whose
+  `hasSpeech` term is an ANTI-HALLUCINATION gate: parakeet does not return empty
+  on silence — fed ~0.6s of room tone it invents a fluent sentence, which the
+  renderer paints as a ghost. `finalize` already drops a blank final, but nothing
+  clears a ghost MID-utterance, so a hallucination painted while the user is
+  silent sat on screen until dictation was switched off (reported from the real
+  app: text appeared during `ecoute...` having said nothing). Gating on the
+  endpointer's own `hasSpeech` means the model is never asked about speechless
+  audio,
   parakeet final on endpoint/stop, persistent `claude -p --input/output-format
   stream-json --model haiku` worker (`HaikuWorker`, serialized asks; cold CLI spawn
   measured ~6s vs ~1.5s warm). Handlers registered inline like `pickDirectory`
@@ -1672,7 +1681,8 @@ before landing. Dev-gated: `voiceAvailable()` requires `ORCHESTRA_VOICE_DIR`
   syllable: "1469" → "469"), applies events to the composer (`clean append` /
   `replace_last` by last-occurrence string match; edit `revision` splices the
   target). Edit target = CM selection, else last utterance, else full text.
-- **Push-to-talk hotkey** — `Ctrl+M` (dictate) / `Ctrl+Shift+M` (voice-edit),
+- **Push-to-talk hotkey** — USER-BOUND, default `Ctrl+M` (dictate) /
+  `Ctrl+Shift+M` (voice-edit),
   registered WINDOW-WIDE in `StructuredView` (capture-phase `keydown`/`keyup` on
   `window`, gated on `isActive` so only the visible pane responds). Deliberately not
   an OS-level `globalShortcut`, which would steal the chord from every other app.
@@ -1691,6 +1701,24 @@ before landing. Dev-gated: `voiceAvailable()` requires `ORCHESTRA_VOICE_DIR`
   stranded-mic reason. The `Ctrl-m` entries in `CmComposer`'s keymap remain as the
   vim claim + fallback, and normally never fire (the window handler stops
   propagation first); a CodeMirror keymap sees no keyup so it cannot express a hold.
+- **Hotkey binding** — `src/renderer/voice-hotkey-pref.ts` (pure, localStorage,
+  unit + mutation-tested; mirrors `composer-vim-pref.ts`). Matching is on
+  `KeyboardEvent.code` (PHYSICAL position), never on `key`. Why: the original
+  hardcoded guard (`key==='m' || code==='KeyM'`) is silently DEAD on a physical
+  AZERTY keyboard driven by a `us` software layout — a common MacBook setup. The
+  key LABELLED M is `<AC10>`, which `us` maps to semicolon, so it reports
+  `key=';' code='Semicolon'` and matches neither term; `code='KeyM'` meanwhile
+  lands on `<AB07>`, the key labelled `,`. The bug is INVISIBLE to synthetic
+  tests — CDP `Input.dispatchKeyEvent` injects `code:'KeyM'` directly and always
+  matches, so three headless drives passed against it; it only exists between a
+  real keyboard and xkb. Binding by `code` also makes the key-up reliable across
+  layouts (`matchesVoiceHotkey(e, hk, false)` skips the modifier check, since
+  releasing Ctrl first reports `ctrlKey=false`). Rebind: SHIFT-CLICK the mic
+  button -> `rebinding` state suspends `micHotkeyOn` and a capture-phase listener
+  records the next non-modifier press via `hotkeyFromEvent` (Esc cancels); the
+  bar shows `press a key...`. Tooltips render the live chord via
+  `voiceHotkeyLabel`. A corrupt localStorage record falls back to Ctrl+M rather
+  than leaving the user with a dead mic.
   The mic button exposes `data-state='rec'` plus `data-held='1'` while the key is
   down, which is what distinguishes held (filled halo) from latched (bare pulse).
 - `ghostForEvent(ev, micState)` (`src/shared/voice.ts`, unit + mutation tested) is

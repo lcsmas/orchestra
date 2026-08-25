@@ -255,3 +255,46 @@ export function voiceReleaseAction(opts: {
   if (!micStarted) return 'defer';
   return now - pressedAt >= tapMs ? 'stop' : 'latch';
 }
+
+/** Should a live PARTIAL re-decode run right now?
+ *
+ *  Pure so the pacing rule is testable without a mic, a model or a clock.
+ *
+ *  The `hasSpeech` term is the anti-hallucination guard and the reason this
+ *  exists: parakeet (like whisper) does not return empty on silence — fed ~0.6s
+ *  of room tone it invents a fluent sentence ("I think that's a good thing."),
+ *  which the renderer then paints as a ghost. The `final` path already drops
+ *  those (it emits an empty partial when the transcript is blank), but nothing
+ *  clears a ghost mid-utterance, so a hallucination painted while the user is
+ *  silent SITS THERE until dictation is switched off. Gating on the endpointer's
+ *  own speech detector means we never ask the model about audio that has no
+ *  speech in it. Reported from the real app: a ghost appeared during `écoute…`
+ *  having said nothing at all. */
+export function shouldDecodePartial(opts: {
+  /** A decode is already in flight (partials are throwaway; never queue). */
+  busy: boolean;
+  /** The endpointer has accumulated >= minSpeechMs of real speech. */
+  hasSpeech: boolean;
+  /** Samples buffered for this utterance. */
+  buffered: number;
+  /** ms since the last decode FINISHED (bounds idle CPU, not decode time). */
+  sinceLastDoneMs: number;
+  sampleRate?: number;
+  minGapMs?: number;
+  /** Minimum audio before a partial is worth attempting. */
+  minSeconds?: number;
+}): boolean {
+  const {
+    busy,
+    hasSpeech,
+    buffered,
+    sinceLastDoneMs,
+    sampleRate = 16000,
+    minGapMs = 1500,
+    minSeconds = 0.6,
+  } = opts;
+  if (busy) return false;
+  if (!hasSpeech) return false;
+  if (sinceLastDoneMs < minGapMs) return false;
+  return buffered >= sampleRate * minSeconds;
+}

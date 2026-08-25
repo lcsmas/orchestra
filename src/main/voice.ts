@@ -34,6 +34,7 @@ import {
   DEFAULT_VOCAB,
   fillPrompt,
   parseRouterReply,
+  shouldDecodePartial,
   type VoiceEvent,
   type VoiceStartOptions,
 } from '../shared/voice.ts';
@@ -241,8 +242,18 @@ class VoiceSession {
     // busy and a wall-clock floor since the last decode finished — busy alone
     // let parakeet run back-to-back at ~100% duty cycle (see PARTIAL_MIN_GAP_MS).
     const buffered = this.chunks.reduce((n, c) => n + c.length, 0);
-    const rested = Date.now() - this.lastIncrDoneAt >= PARTIAL_MIN_GAP_MS;
-    if (!this.incrBusy && rested && buffered >= SAMPLE_RATE * 0.6) {
+    if (
+      shouldDecodePartial({
+        busy: this.incrBusy,
+        // Anti-hallucination: parakeet invents fluent text from room tone, and
+        // a ghost painted mid-utterance is never cleared until the mic stops.
+        hasSpeech: this.endpointer.hasSpeech,
+        buffered,
+        sinceLastDoneMs: Date.now() - this.lastIncrDoneAt,
+        sampleRate: SAMPLE_RATE,
+        minGapMs: PARTIAL_MIN_GAP_MS,
+      })
+    ) {
       this.incrBusy = true;
       const gen = this.gen;
       void transcribe(this.tmp, concat(this.chunks), PARTIAL_THREADS).then(({ text }) => {
