@@ -116,13 +116,18 @@ arm "adding DISPLAY=:0 to the child env ABORTS (branch is now REACHABLE)" 90 no 
 
 # 5. POSITIVE CONTROL — normal operation must still reach the child. Without
 #    this, an assert that aborts unconditionally would score 4/4 above.
+#    It injects NO hostile env at all, which is the whole point: the control is
+#    carried by the OUTCOME (rc=0 + launched=yes + "PREFLIGHT PASSED"), not by
+#    any variable. It used to pass `RIG_SELFTEST_CONTROL=1`, which no code
+#    anywhere read (0 consumers tree-wide) — inert decoration that made the arm
+#    read as if it selected a mode in the rig. Removed; the arm is unchanged in
+#    what it proves. (issue #76 review finding)
 arm "CONTROL: normal operation PASSES and the child runs" 0 yes \
-  "PREFLIGHT PASSED" \
-  RIG_SELFTEST_CONTROL=1
+  "PREFLIGHT PASSED"
 
 echo
 if (( fails == 0 )); then
-  echo "SELF-TEST PASSED: 4 hostile arms aborted rc=90 without launching; the control launched."
+  echo "SELF-TEST PASSED: 4 hostile arms (3 distinct refusal clauses; arm 3 is a data variant of arm 2) aborted rc=90 without launching; the control launched."
   echo "RIG-SELFTEST: PASSED arms=5"
   exit 0
 fi

@@ -288,7 +288,17 @@ the same rig (7/12, 3/3, 5/6), so no arm can pass on both builds. Wired as
 `RIG_WAYLAND` to be set *and* to equal `WAYLAND_DISPLAY` — the signature only
 `scripts/e2e-contained-rig.sh` produces — and otherwise exits **rc=3** with a
 NAMED precondition error naming the unmet condition and the command that
-satisfies it. This is fail-closed by design, and a generic non-zero exit would
+satisfies it.
+
+**What that pairing does and does not prove.** The rig assigns both variables
+from the same value in one `CHILD_ENV` array (`scripts/e2e-contained-rig.sh`
+:171 and :180), so they agree *only* when the env came from the rig — that is
+the discriminator. It is **not** a liveness check: because they are set
+together, an env left over from a rig whose compositor has since exited still
+has them equal and passes. What makes that case safe is that the sway socket is
+gone, so Electron fails to connect rather than landing on somebody's screen.
+The signature is also forgeable by hand — an accepted gap, declared in PR #79
+and pre-existing at `561e3e9`. This is fail-closed by design, and a generic non-zero exit would
 not have been enough: the earlier version silently blanked both display handles
 when run bare, so Electron died on "Missing X server or $DISPLAY" and exited at
 **0 bytes**, which this gate scored as TRUNCATION — a **fabricated failure
@@ -305,7 +315,9 @@ scripts/e2e-contained-rig.sh pnpm run test:cli-pipe
 `scripts/e2e-contained-rig-selftest.sh` proves the rig's pre-flight assert can
 FAIL: four hostile arms (the human's `wayland-1`, a sibling socket, a bogus
 socket, an added `DISPLAY`) must each abort **rc=90 without launching the
-child**, and a fifth CONTROL arm must launch — without it, an assert that
+child**, and a fifth CONTROL arm must launch. The four arms exercise **three
+distinct refusal clauses** — the bogus-socket arm is a data variant of the
+sibling-socket one, both asserting the mismatch message — without it, an assert that
 aborted unconditionally would score 4/4. Each arm also requires its **own abort
 reason**, so an arm that aborts for a different reason than the one it tests is
 a failure, not a pass.
