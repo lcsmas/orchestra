@@ -343,6 +343,8 @@ check('user bubble WITH provider renders the rewind control', () =>
       onPreview: async () => ({ canRewind: true, filesChanged: ['a.ts'], insertions: 1, deletions: 1 }),
       onConfirm: async () => {},
       busy: false,
+      onFork: async () => {},
+      canFork: () => true,
     }}>
       <AgentMessage message={msg({ role: 'user', text: 'undo me', rewindId: 'uuid-1' })} />
     </RewindContext.Provider>
@@ -355,7 +357,7 @@ check('user bubble WITH provider renders the rewind control', () =>
 
 check('a user bubble with NO rewindId offers no control', () =>
   renderToString(
-    <RewindContext.Provider value={{ onPreview: async () => ({ canRewind: false }), onConfirm: async () => {}, busy: false }}>
+    <RewindContext.Provider value={{ onPreview: async () => ({ canRewind: false }), onConfirm: async () => {}, busy: false, onFork: async () => {}, canFork: () => true }}>
       <AgentMessage message={msg({ role: 'user', text: 'remote turn' })} />
     </RewindContext.Provider>
   ),
@@ -365,7 +367,7 @@ check('a user bubble with NO rewindId offers no control', () =>
 
 check('an ASSISTANT message never offers rewind', () =>
   renderToString(
-    <RewindContext.Provider value={{ onPreview: async () => ({ canRewind: true }), onConfirm: async () => {}, busy: false }}>
+    <RewindContext.Provider value={{ onPreview: async () => ({ canRewind: true }), onConfirm: async () => {}, busy: false, onFork: async () => {}, canFork: () => true }}>
       <AgentMessage message={msg({ role: 'assistant', text: 'my reply', rewindId: 'uuid-9' })} />
     </RewindContext.Provider>
   ),
@@ -375,12 +377,84 @@ check('an ASSISTANT message never offers rewind', () =>
 
 check('rewind button is DISABLED while a turn is running', () =>
   renderToString(
-    <RewindContext.Provider value={{ onPreview: async () => ({ canRewind: true }), onConfirm: async () => {}, busy: true }}>
+    <RewindContext.Provider value={{ onPreview: async () => ({ canRewind: true }), onConfirm: async () => {}, busy: true, onFork: async () => {}, canFork: () => true }}>
       <AgentMessage message={msg({ role: 'user', text: 'undo me', rewindId: 'uuid-1' })} />
     </RewindContext.Provider>
   ),
   (html) => {
     if (!html.includes('disabled')) throw new Error('control was enabled mid-turn');
+  });
+
+// ── Resume from here (#18) ────────────────────────────────────────────────
+// The fork affordance is gated on `canFork`, NOT on `busy`: forking mutates
+// nothing in the source session, so it stays live mid-turn (that is the
+// substantive difference from rewind, whose control disables).
+check('user bubble renders the FORK control when canFork is true', () =>
+  renderToString(
+    <RewindContext.Provider value={{
+      onPreview: async () => ({ canRewind: true }),
+      onConfirm: async () => {},
+      busy: false,
+      onFork: async () => {},
+      canFork: () => true,
+    }}>
+      <AgentMessage message={msg({ role: 'user', text: 'branch me', rewindId: 'uuid-2' })} />
+    </RewindContext.Provider>
+  ),
+  (html) => {
+    if (!html.includes('av-fork-btn')) throw new Error('no fork button');
+    if (!html.includes('Resume from here in a new workspace')) throw new Error('missing aria-label/title');
+    // Positive control: the SIBLING rewind control is still there, so this
+    // check is discriminating about the fork control specifically rather than
+    // just observing that the action row rendered at all.
+    if (!html.includes('av-rewind-btn')) throw new Error('lost the rewind control');
+  });
+
+check('the FORK control is HIDDEN when canFork is false (first turn)', () =>
+  renderToString(
+    <RewindContext.Provider value={{
+      onPreview: async () => ({ canRewind: true }),
+      onConfirm: async () => {},
+      busy: false,
+      onFork: async () => {},
+      canFork: () => false,
+    }}>
+      <AgentMessage message={msg({ role: 'user', text: 'first turn', rewindId: 'uuid-3' })} />
+    </RewindContext.Provider>
+  ),
+  (html) => {
+    if (html.includes('av-fork')) throw new Error('offered a fork that could only fail');
+    // Positive control for the absence claim above: rewind IS still offered on
+    // this same bubble, so the missing fork control is a real gate and not a
+    // bubble that failed to render its action row.
+    if (!html.includes('av-rewind-btn')) throw new Error('control arm broken: no rewind either');
+  });
+
+check('the FORK control stays ENABLED while a turn is running', () =>
+  renderToString(
+    <RewindContext.Provider value={{
+      onPreview: async () => ({ canRewind: true }),
+      onConfirm: async () => {},
+      busy: true,
+      onFork: async () => {},
+      canFork: () => true,
+    }}>
+      <AgentMessage message={msg({ role: 'user', text: 'branch me', rewindId: 'uuid-2' })} />
+    </RewindContext.Provider>
+  ),
+  (html) => {
+    // Isolate the fork button's own markup before asserting on `disabled` —
+    // a stylesheet-wide search would match the REWIND button, which IS
+    // disabled here, and the assertion could never fail.
+    const i = html.indexOf('av-fork-btn');
+    if (i < 0) throw new Error('no fork button');
+    const start = html.lastIndexOf('<button', i);
+    const end = html.indexOf('>', i);
+    const tag = html.slice(start, end);
+    if (tag.includes('disabled')) throw new Error('fork control was disabled mid-turn');
+    // Control that the isolation actually worked: the rewind button IS
+    // disabled in this same html, so `disabled` is genuinely present nearby.
+    if (!html.includes('disabled')) throw new Error('isolation control failed: nothing was disabled');
   });
 
 // ── Inbox tray (issue #64) ─────────────────────────────────────────────────

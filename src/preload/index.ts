@@ -102,6 +102,8 @@ const api: OrchestraAPI = {
     ipcRenderer.invoke('agent:sdkRewind', wsId, rewindId, prevRewindId),
   agentSdkRewindPreview: (wsId, rewindId) =>
     ipcRenderer.invoke('agent:sdkRewindPreview', wsId, rewindId),
+  agentSdkFork: (wsId, upToMessageId, title) =>
+    ipcRenderer.invoke('agent:sdkFork', wsId, upToMessageId, title),
   agentSdkPermissionReply: (wsId, requestId, reply) =>
     ipcRenderer.invoke('agent:sdkPermissionReply', wsId, requestId, reply),
   agentSdkAnswerableReply: (wsId, requestId, answer) =>
