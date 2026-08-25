@@ -43,7 +43,20 @@ export function repoSectionKeyOf(
     return assoc ? assoc : null;
   }
   if (ws.kind === 'scratch') return null;
-  return ws.repoPath;
+  // `?? null` is NOT redundant despite the `string` type. `Workspace` records
+  // are deserialized from `store.json` with no runtime validation, so a record
+  // written before `repoPath` existed — or by any seeder that omits it, which
+  // the `verify` skill's documented harness does — arrives with the field
+  // ABSENT and this returns `undefined`, violating the declared `string | null`.
+  //
+  // That `undefined` is not a cosmetic type lie: it becomes a section key in
+  // `groupRootsByRepo`, flows into Sidebar's `repoOrder`, and there the
+  // drag-and-drop guard `dropRepo?.path === repoPath` compares
+  // `undefined === undefined` → TRUE with `dropRepo` still `null`, so
+  // `dropRepo.pos` throws and the whole sidebar renders the error boundary
+  // (issue #38). `null` is the safe sentinel because optional chaining yields
+  // `undefined`, never `null`, so no `?.` guard can ever match it.
+  return ws.repoPath ?? null;
 }
 
 /** True when this workspace is an orchestrator that has been filed into a repo

@@ -347,6 +347,29 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   `host-grouping.ts` `groupByHost` (returns null when all-local → flat list
   byte-identical to pre-sandbox); collapsible `.host-group-header` per node.
 - Drag-reorder for workspaces and repos (`reorderWorkspaces`/`reorderRepos`).
+- **DnD null-safety — `dropRepo?.path === repoPath` is NOT null-safe (issue
+  #38).** The repo (`Sidebar.tsx:1916-1928`) and workspace (`:2126-2140`) drop
+  classes each pick a `repo-drop-*` / `drop-*` modifier from a ternary whose
+  arm dereferences `dropRepo.pos` / `dropWs.pos`. Optional chaining on the
+  LEFT looks sufficient and is not: with the state `null` the left side is
+  `undefined`, so a RIGHT side that is also `undefined` makes the branch TRUE
+  and the arm throws `TypeError: Cannot read properties of null (reading
+  'pos')` — which the error boundary catches, so the whole app renders
+  "Something broke in the UI" instead of a sidebar. Both sites therefore test
+  `dropRepo !== null &&` / `dropWs !== null &&` explicitly; keep the two in the
+  same shape so they cannot drift.
+  The `undefined` reached `repoOrder` because `Workspace` records are
+  deserialized from `store.json` with NO runtime validation, so `repoPath:
+  string` is a claim about writers only. `repoSectionKeyOf`
+  (`orchestrator-repo-grouping.ts:59`) now returns `ws.repoPath ?? null` and
+  `groupRootsByRepo` (`Sidebar.tsx:759`) collapses to `?? ''`, so a malformed
+  record groups under the empty key instead of poisoning the section list.
+  `repoLabel` (`:1435-1447`) names that bucket **"No repo"** rather than
+  rendering a blank header — the row must stay visible, since silently
+  dropping a workspace is the worse failure. Regression gates:
+  `orchestrator-repo-grouping.test.ts` (the pure key, plus a control that the
+  unfixed expression still throws) and `scripts/sidebar-boot-render-smoke.mjs`,
+  which renders the REAL `Sidebar.tsx` against the crashing store shape.
 - **Status note**: the agent-authored one-liner (`orchestra status` →
   `Workspace.statusText`) renders as a muted single-line `.ws-status-note`
   under the branch name on both the scratch/orchestrator and repo row

@@ -747,7 +747,16 @@ function groupRootsByRepo(roots: Workspace[], forest: SpawnForest): Map<string, 
     // instead — so the key must come from the helper, not the raw field.
     // (`null` is unreachable here: callers pass only git roots and associated
     // orchestrators, but fall back to repoPath rather than crashing.)
-    const key = repoSectionKeyOf(root) ?? root.repoPath;
+    //
+    // The `?? ''` is load-bearing, not defensive noise: a store record that
+    // omits `repoPath` entirely (legacy records, and every store seeded by the
+    // `verify` skill's harness) makes BOTH operands `undefined`, and an
+    // `undefined` Map key reaches `repoOrder` where the DnD guard
+    // `dropRepo?.path === repoPath` matches `undefined === undefined` and
+    // dereferences `null.pos` — issue #38. Collapsing to `''` keeps the key a
+    // real `string`, so it groups with the other repo-less rows instead of
+    // becoming a key no `?.` comparison can safely miss.
+    const key = repoSectionKeyOf(root) ?? root.repoPath ?? '';
     const existing = groups.get(key);
     if (existing) existing.push(...rows);
     else groups.set(key, rows);
@@ -1426,6 +1435,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const repoLabel = (repoPath: string) => {
     const repo = repos.find((r) => r.path === repoPath);
     if (repo) return repo.name;
+    // A workspace whose record carries no usable `repoPath` groups under the
+    // empty key (see `groupRootsByRepo` — #38). Name that section rather than
+    // rendering a blank header: the row is real and must stay reachable, but a
+    // nameless section reads as a rendering glitch. This is the malformed-record
+    // case only; every well-formed store resolves a name above.
+    if (!repoPath) return 'No repo';
     const segments = repoPath.split('/').filter(Boolean);
     return segments[segments.length - 1] ?? repoPath;
   };
@@ -1903,10 +1918,19 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           // removed but workspaces remain) always trail and aren't draggable.
           const isRegisteredRepo = repos.some((r) => r.path === repoPath);
           const collapsed = collapsedRepos.has(repoPath);
+          // `dropRepo !== null` before the path comparison, NOT just optional
+          // chaining. `dropRepo?.path === repoPath` looks null-safe and is not:
+          // when `dropRepo` is `null` the left side is `undefined`, so a
+          // `repoPath` that is ALSO `undefined` makes the branch TRUE and the
+          // `.pos` arm dereferences `null` — the #38 boot crash. The two fixes
+          // upstream (`repoSectionKeyOf`, `groupRootsByRepo`) stop `undefined`
+          // entering `repoOrder`; this guard makes the render site correct on
+          // its own terms, since `repoOrder` also carries `repos.map(r=>r.path)`
+          // straight from the unvalidated store.
           const repoDnd =
             dragRepo === repoPath
               ? ' repo-dragging'
-              : dropRepo?.path === repoPath
+              : dropRepo !== null && dropRepo.path === repoPath
                 ? ` repo-drop-${dropRepo.pos}`
                 : '';
           return (
@@ -2104,12 +2128,19 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                   : hiddenKids.some((h) => h.status === 'running')
                     ? 'running'
                     : '';
+              // Same null-safety shape as `repoDnd` above (#38): compare only
+              // after an explicit `!== null`, because `dropWs?.id` is
+              // `undefined` when `dropWs` is null and would match a `w.id` that
+              // is itself `undefined`, then throw on `.pos`. `id` is always
+              // written by the app today — unlike `repoPath` — so this is the
+              // latent twin of the crash rather than a reproduced one, kept in
+              // the same shape so the two sites cannot drift apart.
               const wsDnd =
                 dragWs?.id === w.id
                   ? ' dragging'
                   : attachTo === w.id
                     ? ' attach-target'
-                    : dropWs?.id === w.id
+                    : dropWs !== null && dropWs.id === w.id
                       ? ` drop-${dropWs.pos}`
                       : '';
               // Spawned children are positioned by the orchestrator tree, not by
