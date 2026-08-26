@@ -198,6 +198,7 @@ import { startSandboxAutoBackup } from './sandbox-import';
 import { primeLocalSyncStates, syncAllRepos } from './repo-sync';
 import { startPromptQueueFlusher, stopPromptQueueFlusher } from './prompt-queue';
 import { reconcileParkedCounts, startInboxWatcher, stopInboxWatcher } from './inbox-tray';
+import { startSessionWatchdog, stopSessionWatchdog } from './session-watchdog';
 import { startSelfTuneScheduler, stopSelfTuneScheduler } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
 import { probeDependencies } from './deps';
@@ -341,7 +342,21 @@ async function createMainWindow() {
   // hook drains them without the main process — including while the app was
   // closed. Without this a workspace whose inbox was drained during a quit
   // would boot showing a queue-stall badge for mail that is no longer parked.
-  void reconcileParkedCounts().catch(() => {});
+  // Chained, not fire-and-forget beside the watchdog: the watchdog ACTS on
+  // parked counts, and starting it before the reconcile lands would let its
+  // first tick read counts that are stale in the direction that recycles a
+  // healthy workspace. The watchdog's own `observableSince` floor is stamped
+  // at start, so gating it behind this also gives it an honest zero.
+  void reconcileParkedCounts()
+    .catch(() => {})
+    .finally(() => {
+      // Self-healing session watchdog (#90): recycles a session that has
+      // stopped starting turns entirely while work is parked for it, so the
+      // wedge #88 badges never needs a human to act on it. Main-side and
+      // single-writer by necessity — a renderer-derived check cannot act with
+      // no window open, and would act N times with N windows.
+      startSessionWatchdog();
+    });
   // Monthly Insights & Improvements: auto-run the self-tune pipeline once per
   // calendar month (checked shortly after startup and every ~6h).
   startSelfTuneScheduler();
@@ -601,6 +616,7 @@ function shutdownSubsystems(): void {
   stopAccountUsagePolling();
   stopPromptQueueFlusher();
   stopInboxWatcher();
+  stopSessionWatchdog();
   stopSelfTuneScheduler();
   stopHibernationSweeper();
   closeAllSandboxConnections();

@@ -426,6 +426,54 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   reaches it behind a narrow local type, gated THREE ways — capability advertised,
   method present, call succeeded — each falling back to the plain `interrupt()`,
   which is the pre-#26 behaviour.
+- **The stranded turn gate, and the self-healing watchdog (issue #90).**
+  `session.turnGate` is armed by `promptStream` before every yield and, on the
+  normal path, released in **exactly one place** — `consume()`'s
+  `msg.type === 'result'` branch. Everything else that releases it is teardown
+  (`sdkStop`, `consume()`'s `finally`). So a turn whose stream never produces a
+  `result` parks the generator at `await turnInFlight` **forever**, and the
+  resulting state reads healthy from every angle: `sessions.has()` is true,
+  control requests still answer (they ride `session.q`, a different channel),
+  `session.pump` is `null` — so each later `sdkSend`'s `session.pump?.()` is a
+  silent no-op — deliveries time out and are withdrawn unstarted, and the
+  messages park in an inbox that only the `UserPromptSubmit` hook drains, i.e.
+  only a turn that can never start. Twice on 2026-08-25 that froze a live
+  session for ~35 min until a human re-kicked it.
+  Two layers fix it, both keyed off `src/shared/session-wedge.ts` (pure policy,
+  unit- and mutation-tested):
+  - `Session.lastStreamAt` is stamped by `consume()` on **every** stream message
+    and `Session.gateTurnUuid` records which turn holds the gate.
+    `sdkGateProbe` / `sdkReleaseStrandedGate` let a caller observe the same turn
+    twice and force-release a gate whose stream has been **completely silent**
+    past `GATE_SILENCE_RELEASE_MS`. The bound is on PROGRESS, never duration —
+    a turn still emitting is never touched, however long it runs (a duration
+    bound cannot tell a dead turn from a slow one; see issue #62).
+    The release is non-destructive: it only lets the generator proceed.
+  - `src/main/session-watchdog.ts` runs main-side (`startSessionWatchdog` from
+    `index.ts`, chained AFTER `reconcileParkedCounts` so the first tick never
+    reads stale parked counts). It consumes **#88's** `workspaceQueueStall`
+    verdict rather than re-deriving detection, and on a stall recycles the
+    session — `sdkStop` then `sdkWake` on the **same** `ws.sdkSessionId` (resume,
+    never clear), re-delivering parked blocks via `releaseInboxBlock`, which
+    removes a block only on a confirmed `'started'`. Anti-flap:
+    `MAX_RECYCLES_PER_HOUR`, and exceedance is logged at **error** level and
+    stands the watchdog down rather than flapping.
+    Two review findings shaped this path and are worth knowing before touching
+    it: the recycle carries its **own** progress evidence (`RecycleInput.
+    lastStreamAt`) and refuses any session that emitted inside the silence
+    window **regardless of status** — #88's guards are sufficient for a badge
+    but not for a kill, and `waiting` is the DESIGNED status for a permission
+    block; and the wake prompt carries **no** parked content, because `sdkWake`
+    -> `sdkSend` never touches the inbox, so every block must go through
+    `releaseInboxBlock` or the woken turn's hook `cat`+`rm -f`s the whole file.
+    That hook drain is ASYNC, so the release loop re-reads the inbox before
+    every release and yields `INBOX_DRAIN_GRACE_MS` first — a one-shot
+    `for…of readInbox()` snapshot predates the drain and delivers a block twice
+    (measured 3/3). `src/main/session-watchdog.test.ts` drives the module itself
+    and kills all three reviewed defects.
+  Full mechanism, field captures, refuted hypotheses and the measurement
+  provenance: `docs/research/issue-90-session-wedge.md`. Rig:
+  `scripts/e2e-session-wedge.sh`.
 - **The queue tray — prompts parked behind an in-flight turn.** Sending while a
   turn runs has ALWAYS queued (`sdkSend` pushes onto `session.queue`
   unconditionally; `promptStream` gates the next yield on the previous turn's
