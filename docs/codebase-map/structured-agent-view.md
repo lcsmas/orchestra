@@ -358,6 +358,29 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   So there is nothing to recover, and an earlier draft's ~250 lines of
   resume/runaway-guard machinery hung off a `catch` that cannot fire; it was
   deleted rather than shipped unreachable.
+  **Re-probed AT THE REAL CAP for issue #85 (2026-08-25)** — every earlier probe
+  used `maxTurns:1`, which cannot tell per-turn from per-query at 200. Positive
+  control: 4 prompts costing 3 round-trips each under `maxTurns:5` all
+  succeeded, so a CUMULATIVE 12 passed a cap of 5. The counter resets per user
+  turn at the real cap too. **#85's premise ("a coordinator dies at 200 turns")
+  is therefore refuted, and its requested role-based cap raise was deliberately
+  NOT implemented** — there is no session budget to exhaust, and raising the cap
+  for coordinators would remove the only runaway backstop from the sessions most
+  able to spin forever. `maxTurns: 200` (`agent-sdk.ts:1476`, the sole site) is
+  exactly the per-turn backstop its comment claims.
+  What #85 DID fix is the **copy**: four sites told the human the session had
+  "exhausted its turn budget" — the refuted model — which reads as "this
+  workspace is spent" and invites abandoning a session whose next turn starts
+  fresh. Now turn-scoped at `status-glyph-title.ts:58`, `activity.ts:167`,
+  `types.ts:242`, `WorkspaceStatusGlyph.tsx:62`. The guard
+  (`status-glyph-title.test.ts`) **pins the string** — a wave-8 review showed the
+  earlier "assert the model" blacklist was vacuous (three session-scoped
+  rewordings passed it), so the pin is the gate and `/that turn/i` + no
+  `/session/i` + `/send a message/i` ride beneath it. The cap is guarded by
+  `#85 GUARD` in `max-turns-surfacing.test.ts`: finite integer literal, exactly
+  one site, never branched on `canOrchestrate`, **and within a 50..1000 band** —
+  the band is the load-bearing clause, since `maxTurns: 999999999` passes every
+  structural check while making the backstop useless.
   What IS broken is the surfacing: measured in the app, **8 consecutive
   exhaustions in the no-PTY configuration wrote no reason anywhere**, leaving
   only a `[WARN]` in the app log — verbatim the bug #69 reports. The reason

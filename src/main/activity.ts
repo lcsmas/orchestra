@@ -246,7 +246,13 @@ function finishedToast(reason: AgentStopReason | undefined, name: string): {
     case 'error':
       return { title: 'Agent stopped on an error', body: `${name} ended its turn with an error` };
     case 'max_turns':
-      return { title: 'Agent hit its turn limit', body: `${name} stopped after reaching max turns` };
+      // #85: turn-scoped. The cap resets every user turn (MEASURED
+      // 2026-08-25, probe 3 positive control) — the session is alive and one
+      // more message continues it, so the toast must not read as terminal.
+      return {
+        title: 'Agent hit its step limit',
+        body: `${name}'s turn hit the step limit — send a message to continue`,
+      };
     case 'interrupted':
       return { title: 'Agent interrupted', body: `${name} was interrupted mid-turn` };
     // end_turn (and the spool path's absent reason) — the normal, good case.

@@ -368,3 +368,123 @@ The verifier also established the ONE path that does write it today:
 gated on `session.driveStatus`, which is TRUE ONLY WHEN A TERMINAL PTY COEXISTS.
 In the plain structured-view configuration nothing writes it. That gate is the
 real bug surface.
+
+---
+
+# FOURTH SECTION — issue #85 re-probed the cap AT 200 (2026-08-25)
+
+Everything above measured the cap with **`maxTurns: 1`**. That is enough to show
+the counter resets, but only at a cap so small it binds on the first tool call.
+It cannot distinguish *per-user-turn* from *per-query-lifetime* **at 200** —
+which is the only number issue #85 is about. #85 asserted "a coordinator can
+still die at 200 turns" and asked for a role-based raise. I re-probed before
+designing anything, per the wave-8 brief.
+
+## Rig
+
+`/tmp/t85probe/probe{1,2,3}.mjs` — real `query()` against the installed SDK
+**0.3.241** (`package.json:59`), `claude-haiku-4-5`, `allowedTools:['Bash']`,
+`permissionMode:'bypassPermissions'`, and — critically — a **`for(;;)`
+turn-gated generator**, matching `promptStream` (`agent-sdk.ts:958`). The
+terminating-generator artifact that produced corrections 1 and 2 is avoided by
+construction. Not committed: the probes hit the live API and cost money. The
+recipe is fully specified here; the discriminator is what matters, not the file.
+
+## Measurements
+
+| # | Setup | Result |
+|---|---|---|
+| P1 | `maxTurns:2`, 4 prompts × 3 required round-trips | **4/4 consumed, `threw=null`**, 4 consecutive `error_max_turns num_turns=3` |
+| P2 | `maxTurns:200`, 6 prompts × 3 round-trips | `num_turns=3` **six times** — flat, never climbs |
+| P3 | **positive control**: `maxTurns:5`, 4 prompts × 3 round-trips | **4/4 `success`; cumulative 12 round-trips passed a cap of 5** |
+
+**P3 is the load-bearing arm.** P2 alone is an unaudited null: `num_turns=3` six
+times is equally consistent with "the counter resets" and with "the cap never
+came near binding". P3 picks a cap that **could only bind if the counter were
+cumulative** — 12 needed against 5 available — and nothing exhausted. The
+counter demonstrably **resets on every user turn**, at the real cap, not just
+at 1.
+
+P1 also re-confirms the third correction on 0.3.241: no throw, no starved
+queue, consecutive exhaustions recover.
+
+## What this REFUTES (the part that earns the doc)
+
+**Issue #85's headline is false.** There is no session-lifetime turn budget, so
+no coordinator can "die at 200 turns", and wave-6 OPS-1's death cannot be
+attributed to `maxTurns` — its "26 replayed prompts + fleet traffic" spend a
+cumulative count that **does not exist as a quantity**. The field evidence is
+real; the causal story attached to it is not. (This is the same shape as the
+first correction: a true finding with a false cause attached.)
+
+Consequently **the fix #85 requested — a higher/unlimited cap for coordinators —
+was not implemented, deliberately.** It would delete the wave's non-negotiable
+runaway guard for the sessions most able to spin forever, in exchange for
+nothing. `maxTurns: 200` is precisely what its in-source comment claims: a
+per-turn backstop. The comment was right and three tickets have now doubted it.
+
+## What #85 DID change
+
+The defect that survived measurement is **user-facing copy stating the refuted
+model**. `status-glyph-title.ts` told the human "Agent stopped — turn budget
+exhausted", and `Workspace.lastStopReason`'s own doc said "the session exhausted
+its turn budget". A human reading that concludes the workspace is spent and
+abandons or respawns it — when the true remedy is to send one more message,
+because the next turn starts from a full budget. The OS toast
+(`activity.ts:167`) had the same session-scoped reading.
+
+All four sites are now turn-scoped. The guard in `src/renderer/status-glyph-title.test.ts` **pins the string.**
+
+That is a CORRECTION (wave-8 review, F2). The first version blacklisted
+phrasings and claimed to "assert the model, not a fixed string" — it did not.
+A blacklist cannot express "does not mean X", and three strings stating the
+refuted session-lifetime model passed all of its clauses:
+`"…this session used up all its turns; send a message to resume it"`,
+`"…the session ran out of its turn allowance; send a message"`,
+`"…no turns left in this session; send a message to resume it"`.
+The pinned control assertion I disparaged in the same breath was what actually
+killed the mutant. The pin is now the primary gate, with narrow belt-and-braces
+clauses (`/that turn/i`, no `/session/i`, `/send a message/i`) beneath it.
+
+## The runaway guard is now load-bearing, not a note
+
+`src/main/max-turns-surfacing.test.ts` gained
+`#85 GUARD: the per-turn runaway backstop survives`, asserting the cap is a
+finite integer literal, at exactly one site, not branched on
+`canOrchestrate`/`isCoordinatorWorkspace`, **and — the clause that makes it
+load-bearing — within a 50..1000 band.**
+
+The band is a CORRECTION (wave-8 review, F1). Structure alone is not a runaway
+guard: `maxTurns: 999999999` satisfies every structural clause and passed the
+whole suite green while making the backstop useless. That is the ticket's
+automatic-FAIL condition passing its own guard, reachable by a well-meaning
+"just raise it" edit rather than by an adversary. Mutation matrix, one
+mutant per arm, each verified live in the file before the run:
+
+| Arm | Mutant | Result |
+|---|---|---|
+| M1 | `maxTurns: Infinity` | **FAIL** (killed) |
+| M2 | `maxTurns: canOrchestrate(ws) ? 100000 : 200` — literally #85's ask | **FAIL** (killed) |
+| M3 | delete the `maxTurns` option | **FAIL** (killed) |
+| M4 | revert the copy fix to "turn budget exhausted" | **FAIL** (killed, 2 tests) |
+| **M5** | `maxTurns: 999999999` — **survived the FIRST guard** | **FAIL** (killed by the band) |
+| **M6** | `maxTurns: 300` — legitimate in-band change, **must PASS** | **PASS** (band is not over-tight) |
+| **M7** | copy → "this session used up all its turns…" — **passed the FIRST guard** | **FAIL** (killed by the pin) |
+| control | restored | **8/8 and 15/15 pass → now 23/23** |
+
+M5 and M7 are the wave-8 review findings F1/F2: both mutants **survived** the
+guards as first written, and M6 is the control proving the new band still
+admits an honest change. A guard that has been watched to MISS and then to
+catch is the only kind worth trusting.
+
+## NOT VERIFIED
+
+- **A real coordinator's per-turn round-trip count is still UNBASELINED.** I did
+  not measure whether any real turn approaches 200. The retraction at `:170-184`
+  stands and is **not** replaced with a new number.
+- I did not drive a single turn to 200 actual round-trips (cost/time). The reset
+  semantics rest on P3's control, not on exhausting 200.
+- Probes ran on haiku-4.5 only. The cap is CLI-side so divergence by model is
+  not expected, but it is unmeasured.
+- The probes drive the SDK directly with Orchestra's generator shape; they do
+  not drive a full Orchestra app session (env, hooks, spool).

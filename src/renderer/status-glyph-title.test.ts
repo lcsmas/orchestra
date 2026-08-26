@@ -155,10 +155,67 @@ test('statusGlyphTitle: the pause does NOT hijack the other stop reasons', () =>
   // assertion above while destroying the #69 strings.
   assert.equal(
     statusGlyphTitle(ws({ status: 'idle', lastStopReason: 'max_turns' })),
-    'Agent stopped — turn budget exhausted; send a message to resume it',
+    'Agent stopped — that turn hit the step limit; send a message to continue',
   );
   assert.equal(
     statusGlyphTitle(ws({ status: 'idle', lastStopReason: 'error' })),
     'Agent stopped — its last turn ended on an error',
   );
+});
+
+// ─── Issue #85: the turn-limit copy must not claim the SESSION is spent ──────
+//
+// MEASURED 2026-08-25 (/tmp/t85probe/probe{1,2,3}.mjs, SDK 0.3.241, real
+// query() with Orchestra's `for(;;)` turn-gated generator shape):
+// `maxTurns` resets on EVERY user turn. Probe 3 is the positive control — a
+// cap of 5 against 4 prompts costing 3 round-trips each let a CUMULATIVE 12
+// through with zero exhaustions, so the counter provably does not accumulate.
+//
+// Consequence for this string: only THAT ONE TURN died. The session is intact
+// and its next turn starts from a full budget. Copy saying the agent
+// "exhausted its turn budget" states the refuted session-lifetime model to the
+// human, who then reasonably concludes the workspace is spent and abandons or
+// respawns it — the opposite of the true remedy, which is simply to send it
+// another message.
+//
+// The assertion is deliberately SEMANTIC, not a string pin: it forbids the
+// wrong MODEL rather than freezing one phrasing. A pinned string would go
+// green on any reword, including a reword back into session-scoped language.
+
+test('#85: the max_turns tooltip scopes the limit to the TURN, not the session', () => {
+  const title = statusGlyphTitle(ws({ status: 'idle', lastStopReason: 'max_turns' }));
+
+  // REVIEW F2 (wave-8): the first version of this test was VACUOUS against its
+  // own stated purpose. It blacklisted PHRASINGS (/budget exhausted|out of
+  // turns/i) and called that "asserting the model" — but the model can be
+  // stated in unlimited other words. Measured, three strings that state the
+  // REFUTED session-lifetime model passed all three of its clauses:
+  //
+  //   "Agent stopped — this session used up all its turns; send a message to resume it"
+  //   "Agent stopped — the session ran out of its turn allowance; send a message"
+  //   "Agent stopped — no turns left in this session; send a message to resume it"
+  //
+  // A blacklist cannot express "does not mean X". So the honest gate is the
+  // PINNED STRING — which the earlier version disparaged while relying on it,
+  // since the pin (below, and the control in the sibling test) is what actually
+  // killed the mutant. Pin the copy; review the pin when it changes.
+  const EXPECTED = 'Agent stopped — that turn hit the step limit; send a message to continue';
+  assert.equal(
+    title,
+    EXPECTED,
+    'the max_turns tooltip is PINNED. Changing it is fine — but the replacement must scope ' +
+      'the limit to THAT TURN and must not imply the session is spent (measured 2026-08-25: ' +
+      'maxTurns resets per user turn, probe3 positive control). Update this pin deliberately.',
+  );
+
+  // Belt-and-braces on the pin, in the two directions that matter, so a future
+  // edit that changes the string still cannot silently reintroduce the refuted
+  // model or drop the remedy. These are NOT the primary gate — the pin is.
+  assert.match(title, /that turn/i, 'must scope the limit to THAT TURN, not the session');
+  assert.doesNotMatch(
+    title,
+    /session/i,
+    'the word "session" here almost always encodes the refuted session-lifetime model',
+  );
+  assert.match(title, /send a message/i, 'must state the remedy — the session is alive');
 });

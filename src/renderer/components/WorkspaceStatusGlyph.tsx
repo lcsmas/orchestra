@@ -59,7 +59,8 @@ export function WorkspaceStatusGlyph({
   /** Why the LAST turn ended, when it ended for a reason the human must act on
    *  ({@link Workspace.lastStopReason} — `max_turns` or `error`). Issue #69:
    *  every terminal reason lands on `status: 'idle'`, so without this a session
-   *  that exhausted its turn budget while its queue rotted is pixel-identical
+   *  whose turn died on the per-turn step cap (#85: the cap resets each turn,
+   *  so the session survives) is pixel-identical
    *  to one that finished cleanly. Ranked ABOVE the autoUnread bell below:
    *  "stopped and needs you" outranks "finished, unseen". */
   stopReason?: ActionableStopReason;

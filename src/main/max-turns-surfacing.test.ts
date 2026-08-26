@@ -198,3 +198,156 @@ test('GUARD: the terminal stop reason is persisted for the sidebar to render', (
     'Workspace must carry lastStopReason so the sidebar can show WHY a session stopped',
   );
 });
+
+// ─── Issue #85: the runaway backstop must SURVIVE ────────────────────────────
+//
+// #85 asked for a role-based cap raise on the premise that "a coordinator can
+// die at 200 turns". MEASURED 2026-08-25 (/tmp/t85probe/probe{1,2,3}.mjs, real
+// query(), SDK 0.3.241, Orchestra's `for(;;)` turn-gated generator shape):
+// that premise is FALSE. `maxTurns` resets on every user turn. Probe 3 is the
+// positive control — 4 prompts costing 3 round-trips each ran under a cap of
+// 5, letting a CUMULATIVE 12 through with zero exhaustions, so the counter
+// provably does not accumulate across turns.
+//
+// So no coordinator can exhaust a session budget, because there is no session
+// budget. `maxTurns: 200` is exactly what its comment claims: a per-turn
+// backstop against a runaway. Raising or removing it for "coordinators" would
+// delete the wave's non-negotiable guard to fix a defect that does not exist.
+//
+// This guard makes that conclusion load-bearing rather than a note in a doc.
+
+test('#85 GUARD: the per-turn runaway backstop survives (no role-based raise)', () => {
+  const code = codeOf(AGENT_SDK);
+
+  // (1) The cap exists and is still finite. `Infinity`/`undefined`/0 would all
+  //     hand a wedged session an unbounded turn — the one outcome #85 declares
+  //     an automatic FAIL regardless of how green everything else gates.
+  const m = code.match(/maxTurns:\s*([^,\n]+)/);
+  assert.ok(m, 'maxTurns must still be passed to query() — removing it uncaps the turn');
+  const value = m[1].trim();
+  assert.match(
+    value,
+    /^\d+$/,
+    `maxTurns must be a finite integer literal (found ${value}) — a variable, Infinity or a ` +
+      'role-conditional expression is how the runaway guard gets silently disabled for the ' +
+      'exact sessions (coordinators) most able to spin forever',
+  );
+
+  // REVIEW F1 (wave-8): "a finite integer literal" is NOT a runaway guard.
+  // `maxTurns: 999999999` satisfies every clause above — finite, integral, one
+  // site, no role predicate — and is a USELESS backstop: no real turn reaches
+  // it, so a wedged session spins effectively forever while this test stays
+  // green. That is the ticket's stated automatic-FAIL condition passing its own
+  // guard, and it is the INNOCENT-looking bypass (no adversary needed — a
+  // well-meaning "just raise it" edit lands exactly here).
+  //
+  // So bound the VALUE, not just its shape. The ceiling is what makes the
+  // guard load-bearing; the floor keeps a panicked "lower it" edit from
+  // breaking honest long turns. MEASURED (2026-08-25, /tmp/t85probe/probe4.mjs,
+  // ARM=B): a genuine runaway — one turn told to loop 400x — was stopped by the
+  // shipped cap at num_turns=201, so a cap in this band demonstrably fires.
+  const n = Number(value);
+  assert.ok(
+    n >= 50 && n <= 1000,
+    `maxTurns must stay a MEANINGFUL backstop (found ${n}; band 50..1000). A huge value ` +
+      'passes every structural clause and still lets a wedged session spin forever — ' +
+      'measured, the shipped cap stops a real runaway at num_turns=201 (probe4 ARM=B).',
+  );
+
+  // (2) Exactly ONE site. A second, role-gated `maxTurns` elsewhere is how a
+  //     raise would arrive without touching this literal.
+  assert.equal(
+    (code.match(/maxTurns:/g) ?? []).length,
+    1,
+    'maxTurns must be configured in exactly one place — a second site means a conditional cap',
+  );
+
+  // (3) The cap must not be derived from the workspace's ROLE. #85's spec says
+  //     a `role` field should not be added lightly; measurement says it buys
+  //     nothing here, since the budget the raise would target does not exist.
+  const optionsAt = code.indexOf('maxTurns:');
+  const window = code.slice(Math.max(0, optionsAt - 400), optionsAt);
+  for (const pred of ['canOrchestrate', 'isCoordinatorWorkspace']) {
+    assert.doesNotMatch(
+      window,
+      new RegExp(`\\b${pred}\\b`),
+      `the turn cap must not branch on ${pred} — the per-turn counter resets every turn ` +
+        '(probe 3, 2026-08-25), so a coordinator raise weakens the runaway guard for nothing',
+    );
+  }
+});
+
+// ─── #85 / wave-8 review: finishedToast's max_turns copy, previously UNGATED ──
+//
+// This test exists because the review measured that ZERO test files referenced
+// `finishedToast` at all, while #85 EDITED it — in `activity.ts`, a file #88
+// also owns. An edited function with no coverage in a shared file is the
+// weakest point a candidate can carry.
+//
+// It is a SOURCE-BINDING test, not a unit test, and that is forced, not lazy:
+// `activity.ts` cannot be imported by `node --test` (measured — it resolves
+// `./platform`, a DIRECTORY import ESM rejects: "Directory import … is not
+// supported"), and `finishedToast` is not exported. That is precisely why it
+// went untested. The file's other guards use the same read-the-source idiom
+// for the same reason.
+//
+// Scoped deliberately to the ONE case #85 changed. It is NOT coverage for
+// finishedToast as a whole — the other branches are untouched and stay
+// unguarded rather than being pinned by a test that never reviewed them.
+//
+// LIMITATION, stated because a source assertion normally has a fatal one:
+// this checks the SOURCE TEXT, it does not EXECUTE finishedToast. The usual
+// failure of that idiom is that it goes green across a RELOCATION of the code
+// it guards — review-88's R3 finding, on this same file one ticket ago, where
+// a delegating shim passed 4/4 guards with the feature dead.
+//
+// This guard does NOT have that hole, and it was mutation-tested for exactly
+// it rather than argued:
+//   M10  move the copy to a helper, leave `case 'max_turns': return
+//        maxTurnsToast(name)` — feature still ALIVE elsewhere  -> FAILS (killed)
+//   M11  the true R3 shape: same shim, helper returns the OLD refuted copy —
+//        feature DEAD                                          -> FAILS (killed)
+// It survives relocation-blindness because the assertions run against the
+// `case 'max_turns':` ARM extracted by indexOf, not against the file: the
+// binding is the STRUCTURAL relationship "this copy sits inside this arm",
+// so moving the string out of the arm breaks the check by construction.
+// What it still cannot see: whether the toast is ever RENDERED.
+
+test('#85: finishedToast max_turns toast is turn-scoped, not session-terminal', () => {
+  const code = codeOf(ACTIVITY);
+
+  // Isolate the function body. A file-wide grep would be VACUOUS here: the
+  // strings below also appear in this repo's renderer copy and in comments, so
+  // an unscoped assertion could pass while the toast itself said anything.
+  const start = code.indexOf('function finishedToast(');
+  assert.notEqual(start, -1, 'finishedToast not found — the anchor moved');
+  const rest = code.slice(start);
+  const end = rest.indexOf('\nfunction ');
+  const body = end === -1 ? rest : rest.slice(0, end);
+  // Control that the isolation itself worked, before asserting on the slice.
+  assert.ok(body.length > 200 && body.length < 4000, `finishedToast slice looks wrong (${body.length} chars)`);
+  assert.match(body, /case 'max_turns':/, 'the isolated slice must contain the max_turns case');
+
+  // Narrow to the max_turns arm specifically — the neighbouring arms have
+  // their own copy and must not be able to satisfy these assertions.
+  const armAt = body.indexOf("case 'max_turns':");
+  const nextArmAt = body.indexOf("case '", armAt + 10);
+  const arm = nextArmAt === -1 ? body.slice(armAt) : body.slice(armAt, nextArmAt);
+
+  // The claim: this toast must scope the limit to the TURN and must not read
+  // as a spent session. MEASURED 2026-08-25 (/tmp/t85probe/probe{3,4}.mjs,
+  // SDK 0.3.241): maxTurns resets per user turn — probe 3's positive control
+  // put a cumulative 12 round-trips through a cap of 5 with zero exhaustions.
+  assert.match(arm, /step limit/, 'the max_turns toast must name the STEP/turn limit it actually hit');
+  assert.doesNotMatch(
+    arm,
+    /reaching max turns|turn budget|exhausted/i,
+    'the max_turns toast must not state the REFUTED session-lifetime budget model — ' +
+      'a human reading "budget exhausted" abandons a session whose next turn starts full',
+  );
+  assert.match(
+    arm,
+    /send a message/i,
+    'the toast must state the remedy: the session is alive and one more message continues it',
+  );
+});

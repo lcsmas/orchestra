@@ -239,8 +239,9 @@ export interface Workspace {
    * live progress. Absent whenever `statusText` is absent. */
   statusTextAt?: number;
   /** Why this workspace's LAST turn ended, when it ended for a reason the human
-   * needs to know about — `max_turns` (the session exhausted its turn budget)
-   * or `error`. Absent for the ordinary cases: a clean `end_turn` and the
+   * needs to know about — `max_turns` (ONE turn hit the per-turn step cap;
+   * the cap resets each user turn, so the session is NOT spent — MEASURED
+   * 2026-08-25, see docs/research/issue-69-maxturns-findings.md) or `error`. Absent for the ordinary cases: a clean `end_turn` and the
    * user's own `interrupted` owe the sidebar no explanation.
    *
    * ## Why this field exists (issue #69)
