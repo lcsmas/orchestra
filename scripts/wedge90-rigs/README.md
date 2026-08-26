@@ -22,6 +22,15 @@ node --experimental-strip-types --import ./scripts/.r2-register.mjs \
 
 An **empty line is a FAILED run, never a pass.**
 
+**Run variants from INSIDE this directory, never from `/tmp`.** Each rig resolves
+the repo root from its own path (`path.resolve(dirname(fileURLToPath(
+import.meta.url)), '..', '..')`), so a copy placed elsewhere resolves to the
+wrong root and dies with `ERR_INVALID_FILE_URL_HOST` /
+`file://src/main/platform/index.ts` — which prints NOTHING on stdout and is
+therefore indistinguishable from a failed arm. To try a variation, write it
+beside the originals (e.g. `.tmp-<name>.mjs`, which is gitignored by the leading
+dot only if you add it — just delete it after).
+
 | rig | arms | what it pins |
 |---|---|---|
 | `false-positive.mjs` | `running` `idle` `waiting` | A busy, still-emitting session must NEVER be recycled — whatever `status` says. |
