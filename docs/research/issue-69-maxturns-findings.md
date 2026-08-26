@@ -382,13 +382,23 @@ designing anything, per the wave-8 brief.
 
 ## Rig
 
-`/tmp/t85probe/probe{1,2,3}.mjs` — real `query()` against the installed SDK
+**`scripts/probes/maxturns-probe{1,2,3}.mjs`** (committed — see that dir's
+README) — real `query()` against the installed SDK
 **0.3.241** (`package.json:59`), `claude-haiku-4-5`, `allowedTools:['Bash']`,
 `permissionMode:'bypassPermissions'`, and — critically — a **`for(;;)`
 turn-gated generator**, matching `promptStream` (`agent-sdk.ts:958`). The
 terminating-generator artifact that produced corrections 1 and 2 is avoided by
-construction. Not committed: the probes hit the live API and cost money. The
-recipe is fully specified here; the discriminator is what matters, not the file.
+construction. They hit the live API and cost money, so nothing runs them
+automatically.
+
+**They are COMMITTED, and that is a correction to what this section first
+said.** It originally claimed the probes need not be kept because "the recipe
+is fully specified here". That was false: the prose omits the turn-gate wiring
+and the exact prompt texts — the two things that decide whether the cap binds
+at all. Three corrections above were caused by probe SHAPE, not probe logic,
+and each time the script had been discarded, so the next reader re-derived the
+error instead of reading it. A rig that lives only in `/tmp` dies with the
+workspace and takes the evidence with it.
 
 ## Measurements
 
