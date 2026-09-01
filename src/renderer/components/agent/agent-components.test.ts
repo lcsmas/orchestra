@@ -185,6 +185,7 @@ test('fileBase returns the last path segment', () => {
 
 test('MODEL_CHOICES offers Fable and uses date-suffix-free aliases', () => {
   const values = MODEL_CHOICES.map((c) => c.value);
+  assert.ok(values.includes('claude-fable-5-1'), 'Fable 5.1 must be selectable');
   assert.ok(values.includes('claude-fable-5'), 'Fable 5 must be selectable');
   assert.ok(values.includes('claude-opus-5'));
   // Canonical aliases only — never date-suffixed (e.g. not claude-haiku-4-5-20251001).
@@ -386,7 +387,8 @@ test('describeLiveModel resolves Claude Code short aliases', () => {
   });
   assert.equal(describeLiveModel('sonnet').label, 'Sonnet 5');
   assert.equal(describeLiveModel('haiku').label, 'Haiku 4.5');
-  assert.equal(describeLiveModel('fable').label, 'Fable 5');
+  // `fable` resolves to Fable 5.1 since CLI 2.1.257 (measured 2026-09-01).
+  assert.equal(describeLiveModel('fable').label, 'Fable 5.1');
   // Case-insensitive on the alias.
   assert.equal(describeLiveModel('OPUS').label, 'Opus 5');
 });

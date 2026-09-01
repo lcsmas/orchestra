@@ -21,7 +21,8 @@ export interface ModelChoice {
  *  e.g. the account default resolves to a context-suffixed variant like
  *  `claude-opus-5[1m]`. Ids are the canonical aliases (never date-suffixed). */
 export const MODEL_CHOICES: ModelChoice[] = [
-  { value: 'claude-fable-5', label: 'Fable 5', description: 'Most capable — hardest work' },
+  { value: 'claude-fable-5-1', label: 'Fable 5.1', description: 'Most capable — hardest work' },
+  { value: 'claude-fable-5', label: 'Fable 5', description: 'Previous Fable release' },
   { value: 'claude-opus-5', label: 'Opus 5', description: 'Highly capable — deep work' },
   { value: 'claude-sonnet-5', label: 'Sonnet 5', description: 'Balanced speed and depth' },
   { value: 'claude-haiku-4-5', label: 'Haiku 4.5', description: 'Fastest — light tasks' },
@@ -30,12 +31,13 @@ export const MODEL_CHOICES: ModelChoice[] = [
 /** Claude Code's short model aliases → the canonical id we hold a card for.
  *  The account default is stored in `settings.json` as an alias (e.g. `opus[1m]`,
  *  `sonnet`), so a base of `opus` must resolve to `claude-opus-5` to reuse its
- *  card. Kept deliberately small — the mapping the CLI ships today (opus → Opus 5 since 2026-07-24). */
+ *  card. Kept deliberately small — the mapping the CLI ships today (opus → Opus 5 since
+ *  2026-07-24; fable → claude-fable-5-1, measured on CLI 2.1.257, 2026-09-01). */
 const MODEL_ALIASES: Record<string, string> = {
   opus: 'claude-opus-5',
   sonnet: 'claude-sonnet-5',
   haiku: 'claude-haiku-4-5',
-  fable: 'claude-fable-5',
+  fable: 'claude-fable-5-1',
 };
 
 /** Turn a live row into the label we render: the VERSIONED family name, with no
