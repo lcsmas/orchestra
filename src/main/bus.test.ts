@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import {
   SCHEMA_VERSION,
   ack,
@@ -559,6 +560,119 @@ test('the cursor is NOT advanced at take time — a lot lost before its ack is r
   // asserting "check() always returns everything".
   assert.equal(ack(db, RUN, 'worker-1', after.delivery!.id), true);
   assert.deepEqual(check(db, RUN, 'worker-1').messages, [], 'and after the ack, nothing repeats');
+});
+
+test('N concurrent PROCESSES checking as the same reader still open exactly ONE lot', async (t) => {
+  // WHAT THIS TEST IS, STATED HONESTLY. It closes an open item on spike #109's
+  // NOT VERIFIED list — "Multi-consumer concurrency: two consumers of the same
+  // run checking simultaneously ... no concurrent-consumer race was run" — by
+  // running 8 real processes released on a barrier. Result: all 8 succeed, ONE
+  // delivery row, one shared lot id, zero errors.
+  //
+  // IT IS NOT A MUTATION-GATED TEST, AND I CHECKED RATHER THAN ASSUMED. It stays
+  // GREEN with the unique partial index dropped, and green again with the index
+  // dropped AND check()'s transaction weakened from immediate() to deferred().
+  // The reason is structural: check() does its read-then-insert inside ONE
+  // transaction, and SQLite allows only one writer at a time, so the double-take
+  // this test looks for cannot be constructed from the public API no matter
+  // which guard is removed. The index's load-bearing role is proven by the
+  // dedicated raw-insert test above, which DOES go red when its WHERE clause is
+  // dropped; that is the mutation gate for this invariant, not this test.
+  //
+  // Kept anyway, because it answers a different question from every other test
+  // here — "does this survive real cross-process contention" — and because a
+  // future change to check()'s transaction shape would show up here first.
+  //
+  // The control that makes the count meaningful is the second arm: with DISTINCT
+  // readers the same rig produces N rows. Without it, "1 row" would be equally
+  // consistent with a rig that cannot count past one — and my first version of
+  // this test used spawnSync, which ran the children SEQUENTIALLY and measured
+  // no concurrency at all under a name that claimed it.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-bus-concurrent-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'bus.sqlite');
+  const seeded = openBus(file);
+  seed(seeded, Array.from({ length: 50 }, (_, i) => `m${i}`));
+  seeded.close();
+
+  const kid = path.join(dir, 'kid.ts');
+  const busModule = JSON.stringify(path.resolve(import.meta.dirname, 'bus.ts'));
+  fs.writeFileSync(
+    kid,
+    `import { openBus, check } from ${busModule};\n` +
+      `import fs from 'node:fs';\n` +
+      `const barrier = process.argv[3];\n` +
+      `while (!fs.existsSync(barrier)) {}\n` +
+      `const db = openBus(${JSON.stringify(file)});\n` +
+      `const reader = process.argv[2] === 'same' ? 'one-reader' : 'reader-' + process.pid;\n` +
+      `try { const lot = check(db, '${RUN}', reader, 10);\n` +
+      `  process.stdout.write(JSON.stringify({ ok: true, id: lot.delivery && lot.delivery.id })); }\n` +
+      `catch (e) { process.stdout.write(JSON.stringify({ ok: false, err: String(e.code || e.message) })); }\n` +
+      `db.close();\n`,
+  );
+
+  // TRULY CONCURRENT, and this detail is the whole test. My first version used
+  // spawnSync, which runs the children ONE AT A TIME — so check()'s replay
+  // branch handled every call and no race ever happened. It stayed GREEN with
+  // the unique index dropped, i.e. it was decoration under a name that claimed
+  // concurrency. Launch all N first, then collect; and have each child park on
+  // a barrier file so they contend on the same instant rather than on spawn
+  // latency (~65 ms apart is not concurrency either).
+  const N = 8;
+  const barrier = path.join(dir, 'GO');
+  const spawnAll = (mode: string) => {
+    const cwd = path.resolve(import.meta.dirname, '..', '..');
+    const kids = Array.from({ length: N }, () =>
+      spawn('node', ['--experimental-strip-types', kid, mode, barrier], { cwd, encoding: 'utf8' }),
+    );
+    const done = kids.map(
+      (c) =>
+        new Promise<{ ok: boolean; id?: number; err?: string }>((resolve) => {
+          let out = '';
+          c.stdout.on('data', (d) => (out += d));
+          // Await EXIT, never the stdout chunk alone: reading a child's buffer
+          // in the same tick as its death yields '' and reads as "nothing ran".
+          c.on('exit', (code) =>
+            resolve(out ? JSON.parse(out) : { ok: false, err: `exit ${code}` }),
+          );
+        }),
+    );
+    return { done: Promise.all(done) };
+  };
+
+  const sameRun = spawnAll('same');
+  // Release every child at once.
+  fs.writeFileSync(barrier, 'go');
+  const same = await sameRun.done;
+  fs.rmSync(barrier, { force: true });
+  const failures = same.filter((r) => !r.ok);
+  assert.deepEqual(failures, [], `every concurrent check must succeed, got: ${JSON.stringify(failures)}`);
+
+  const check2 = open(file);
+  t.after(() => {
+    try { check2.close(); } catch { /* already closed */ }
+  });
+  const outstanding = (
+    check2.prepare("SELECT COUNT(*) c FROM deliveries WHERE reader='one-reader' AND acked_at IS NULL").get() as { c: number }
+  ).c;
+  assert.equal(outstanding, 1, `${N} concurrent processes must open exactly ONE lot, not ${outstanding}`);
+  assert.equal(
+    new Set(same.map((r) => r.id)).size,
+    1,
+    'and every process must have been handed that same lot id',
+  );
+
+  // THE CONTROL: distinct readers on the same rig must produce N rows. If this
+  // also produced 1, the assertion above would be measuring the rig, not the index.
+  const distinctRun = spawnAll('distinct');
+  fs.writeFileSync(barrier, 'go');
+  const distinct = await distinctRun.done;
+  fs.rmSync(barrier, { force: true });
+  assert.deepEqual(distinct.filter((r) => !r.ok), []);
+  const manyRows = (
+    check2.prepare("SELECT COUNT(*) c FROM deliveries WHERE reader LIKE 'reader-%' AND acked_at IS NULL").get() as { c: number }
+  ).c;
+  assert.equal(manyRows, N, `control: ${N} DISTINCT readers must open ${N} lots (got ${manyRows})`);
 });
 
 // ─── durability across a reopen ─────────────────────────────────────────────
