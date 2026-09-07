@@ -59,15 +59,20 @@ export function currentAbi(): string {
  * mismatch needs diagnosing. So: name the unpacked path explicitly, and let it
  * fail loudly if it is missing.
  */
+export function isPackaged(): boolean {
+  return HERE.includes(`app.asar${path.sep}`) || HERE.includes('app.asar/');
+}
+
+/** Where the unpacked binding MUST be when running packaged. */
 export function unpackedBindingPath(): string | null {
-  if (!HERE.includes(`app.asar${path.sep}`) && !HERE.includes('app.asar/')) return null;
+  if (!isPackaged()) return null;
   const root = HERE.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`).replace(
     'app.asar/',
     'app.asar.unpacked/',
   );
   // dist-electron/ -> the app root, then into node_modules.
   const appRoot = path.resolve(root, '..');
-  const p = path.join(
+  return path.join(
     appRoot,
     'node_modules',
     'better-sqlite3',
@@ -75,7 +80,6 @@ export function unpackedBindingPath(): string | null {
     'Release',
     'better_sqlite3.node',
   );
-  return fs.existsSync(p) ? p : null;
 }
 
 /**
@@ -110,10 +114,36 @@ type DatabaseCtor = new (file: string, opts?: Record<string, unknown>) => unknow
  */
 export function loadDatabaseCtor(): DatabaseCtor {
   const Base = require_('better-sqlite3') as DatabaseCtor;
-  // Packaged: pin the UNPACKED .node (see unpackedBindingPath for why).
-  // Dev/test: pin the per-ABI build. Neither is a fallback for the other —
-  // they apply to disjoint situations.
-  const binding = unpackedBindingPath() ?? abiBindingPath();
+
+  // PACKAGED: the unpacked binding is MANDATORY, and its absence is FATAL.
+  //
+  // Not "preferred with a fallback" — that distinction is the whole finding.
+  // My first attempt pinned the unpacked path but fell through to a bare
+  // require() when it was missing, and a bare require resolves the copy asar
+  // leaves INSIDE the archive. So the G6 arm (rename the unpacked .node away)
+  // still booted the bus, off the in-asar copy, and reported a green that meant
+  // nothing. Degrading silently to a second binary is precisely what makes
+  // "which .node am I running" unanswerable when an ABI mismatch needs
+  // diagnosing. Refuse instead.
+  if (isPackaged()) {
+    const packaged = unpackedBindingPath();
+    if (!packaged || !fs.existsSync(packaged)) {
+      throw new Error(
+        `bus: the unpacked native binding is missing at ${packaged ?? '<unresolved>'} — ` +
+          'refusing to fall back to the copy inside app.asar (loading a .node from an asar ' +
+          'is unsupported and hides which binary is actually in use). Check ' +
+          "package.json build.asarUnpack still lists '**/node_modules/better-sqlite3/build/Release/*.node'.",
+      );
+    }
+    const Bound = function (this: unknown, file: string, opts?: Record<string, unknown>) {
+      return new Base(file, { ...(opts ?? {}), nativeBinding: packaged });
+    } as unknown as DatabaseCtor;
+    Bound.prototype = Base.prototype;
+    return Bound;
+  }
+
+  // DEV/TEST: pin the per-ABI build from build/bus-abi/ when one exists.
+  const binding = abiBindingPath();
   if (!binding) return Base;
   // Hand the wrapper our per-ABI binding instead of letting `bindings` resolve
   // whatever is in node_modules. Never mutate the installed copy: the suite and

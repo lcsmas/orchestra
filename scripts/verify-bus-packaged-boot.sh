@@ -33,13 +33,26 @@ MARK_B_DEC=$(( RIG_PID % 251 + 5 ))
 
 cleanup() {
   [ -n "$SWAY_PID" ] && kill "$SWAY_PID" 2>/dev/null
-  rm -rf "$WORK"
+  if [ -n "${KEEP_WORK:-}" ]; then echo "  (kept rig dir: $WORK)"; else rm -rf "$WORK"; fi
 }
 trap cleanup EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 [ -f "$APPIMAGE" ] || fail "no built AppImage at $APPIMAGE — run pnpm run build first"
+
+# ─── 0. BUILD IDENTITY — is this AppImage built from the CURRENT source? ────
+# A stale binary reproduces a stale verdict PERFECTLY, and nothing about the run
+# looks wrong. I hit exactly this while writing #114: edited bus-binding.ts,
+# re-ran the rig against a build that predated the edit, and read the unchanged
+# failure as "the fix does not work". Assert identity before measuring, not after
+# being confused.
+if [ -n "$(find "$ROOT/src/main" -name '*.ts' -newer "$APPIMAGE" -print -quit 2>/dev/null)" ]; then
+  newer="$(find "$ROOT/src/main" -name '*.ts' -newer "$APPIMAGE" -printf '%f ' 2>/dev/null)"
+  fail "STALE BUILD: source newer than the AppImage ($newer) — run pnpm run build before gating"
+fi
+echo "  build identity: AppImage is newer than every src/main/*.ts"
+
 
 # ─── 1. Start our own compositor ────────────────────────────────────────────
 cat > "$WORK/sway.conf" <<EOF
