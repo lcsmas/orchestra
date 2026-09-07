@@ -21,7 +21,7 @@ reads or writes the bus yet, and nothing changes for any agent.
 | `src/main/bus.ts` | Schema, migrations, `open()`, and the five verbs |
 | `src/main/bus-binding.ts` | Which native `.node` to load, and the ABI trap it exists for |
 | `src/main/better-sqlite3.d.ts` | Minimal ambient types (the package ships none) |
-| `src/main/bus.test.ts` | 15 tests over a real SQLite file; each names the clause it kills |
+| `src/main/bus.test.ts` | 18 tests over a real SQLite file; each names the clause it kills |
 | `scripts/build-bus-abi.mjs` | Builds both ABIs; gates each by CONSTRUCTION |
 | `scripts/verify-bus-contention.mjs` | Spike #109 arm 1 + its must-FAIL control |
 | `scripts/after-pack-check.cjs` | Packaged-binary gate (constructs a DB, does not just look) |
@@ -37,13 +37,13 @@ reads or writes the bus yet, and nothing changes for any agent.
 | `decision_gates` | A question parked on the bus awaiting a Ruling. |
 
 Schema version lives in `PRAGMA user_version`; `SCHEMA_VERSION` is at
-`src/main/bus.ts:91` and `migrate()` (`:219`) applies forward-only migrations. A
+`src/main/bus.ts:91` and `migrate()` (`:228`) applies forward-only migrations. A
 DB written by a **newer** Orchestra is refused rather than run against an older
-schema's expectations (`:221`).
+schema's expectations (`:230`).
 
 ## The four non-obvious decisions
 
-### 1. `busy_timeout` lives in the ONE `open()` helper — `src/main/bus.ts:192`
+### 1. `busy_timeout` lives in the ONE `open()` helper — `src/main/bus.ts:201`
 
 Set on **every** connection, read-only ones included, deliberately *outside* the
 `if (!opts.readonly)` block. Spike #109 condition 1: without it, 10 concurrent
@@ -53,8 +53,8 @@ it at call sites is how one connection eventually misses it.
 `scripts/verify-bus-contention.mjs` re-measures this on every run, and its
 `busy_timeout=0` control **must lose inserts** — a clean control fails the
 script, because it would mean the rig created no contention and the passing arm
-proved nothing. Measured on btrfs: must-PASS `1000/1000, 0 BUSY, 0 gaps` in 4/4
-runs; control lost 193–397 (19–40%).
+proved nothing. Measured on btrfs: must-PASS `1000/1000, 0 BUSY, 0 missing bodies` in 4/4
+runs; control lost 62–397 (6–40%).
 
 **A vacuity trap worth knowing:** better-sqlite3's constructor *already* defaults
 `timeout: 5000` and applies it. So asserting `busy_timeout === 5000` passes even
@@ -68,7 +68,7 @@ CREATE UNIQUE INDEX idx_deliveries_outstanding
   ON deliveries(run_id, reader) WHERE acked_at IS NULL;
 ```
 
-At most **one outstanding lot per (run, reader)**. `check()` (`:301`) replays an
+At most **one outstanding lot per (run, reader)**. `check()` (`:312`) replays an
 outstanding lot from its **frozen** `from_seq`/`to_seq`, so a redelivered lot is
 byte-identical and does *not* fold in messages that arrived meanwhile — that is
 what makes redelivery safe (spike arm 2).
@@ -80,7 +80,7 @@ lot. Spike arm 2b probed the index directly and found it load-bearing, so
 `SQLITE_CONSTRAINT_UNIQUE`, plus two positive controls proving it does not
 refuse *everything*).
 
-**The ack belongs to the reader** (#108 round-4 hardening 1): `ack()` (`:350`)
+**The ack belongs to the reader** (#108 round-4 hardening 1): `ack()` (`:361`)
 keys on `AND run_id=? AND reader=?`, so nothing can ack on a reader's behalf —
 that would rebuild the lying "Delivered" the bus exists to kill.
 
@@ -103,7 +103,7 @@ ELECTRON_RUN_AS_NODE=1 electron -e "…new Database…"      → abi 130, constr
 ```
 
 **Every ABI check in this repo constructs a DB** — the boot gate (`initBus()`,
-`:441`), `scripts/build-bus-abi.mjs`, and the afterPack hook.
+`:452`), `scripts/build-bus-abi.mjs`, and the afterPack hook.
 
 **Two builds exist in a tree that ships one.** node is ABI 127, Electron 33.4.11
 is ABI 130, and the binaries are mutually unusable. The AppImage ships **only**
@@ -132,22 +132,50 @@ file is present. A build shipping a node-ABI binary would pass a presence check
 
 ## Boot
 
-`src/main/index.ts:322` calls `initBus()` inside `createMainWindow()`, right
-after `ensureRoot()`, and logs:
+`src/main/index.ts:341` calls `initBus()` inside `createMainWindow()` — **after
+`new BrowserWindow` (`:308`), not before** — and logs:
 
 ```
 bus: opened /home/<user>/.orchestra/bus.sqlite (schema v1)
 ```
 
 The line is emitted **after a real `new Database()` + `migrate()`** — that is the
-boot gate. Failure is **fatal and loud** (`index.ts:325`), unlike the
-best-effort subsystems around it: the app is usable without usage polling, but a
-silently absent bus would let agents coordinate against a source of truth that is
-not there. `closeBus()` runs last in `shutdownSubsystems()` (`:657`); a clean
-close checkpoints the WAL back into the main file and truncates it (a crash
-leaves ~600 KB behind — spike arm 3), which is hygiene, not durability.
+boot gate; a `require()` would print it under the wrong ABI too.
 
-`busPath()` (`:181`) follows `$ORCHESTRA_HOME`, so a dev instance never writes
+### THE BUS NEVER BLOCKS BOOT (LEAD ruling D1, ledger #122)
+
+The window opens **first**; the bus opens **after**; a failure is logged loudly
+and broadcast on `bus:unavailable` (`:348`) for the UI to surface (#118 renders
+it properly), and boot **continues**. An unread subsystem may not brick a working
+app — agents, keepers and PTYs stay reachable with no bus at all. Do not "fix"
+this back to a fatal pre-window open.
+
+Reconciliation with ADR 0002: "source of truth" means messages are never
+*silently* dropped, not that the app dies without the bus.
+
+**The ordering is load-bearing, not incidental.** `initBus()` now runs alongside
+a live renderer that can start agent PTYs, so when a later ticket (#115–#121)
+makes a subsystem *read* the bus, that reader must tolerate `getBus() === null`.
+
+**Gating this needs four assertions, and a window count is not enough.** Measured:
+a mutant restoring `throw e` **passed** a two-arm gate that only counted
+toplevels, because the window object is constructed *before* `initBus()` and
+lingers as an empty shell after the throw aborts startup. The discriminator is
+the `main window ready` line, logged only after the full startup sequence. So
+`scripts/verify-bus-packaged-boot.sh` asserts, per arm:
+
+| arm | window | startup | bus |
+|---|---|---|---|
+| binding intact | present | `main window ready` | `bus: opened … schema v1` |
+| binding broken | present | `main window ready`, no `startup failed` | `bus: FAILED to open …` |
+
+Verified in both directions: RC 0 on the fix, **RC 1 on the D1-violating mutant**.
+
+`closeBus()` runs last in `shutdownSubsystems()`; a clean close checkpoints the
+WAL back into the main file and truncates it (a crash leaves ~600 KB behind —
+spike arm 3), which is hygiene, not durability.
+
+`busPath()` (`:190`) follows `$ORCHESTRA_HOME`, so a dev instance never writes
 into the real home's bus (#108 ruling Q3: one DB per home, `run_id` isolates).
 
 ## Running the gates

@@ -148,6 +148,23 @@ echo "  positive arm: $MY_DISPLAY accepted"
 # env -i (allowlist), not env -u: starting from the inherited env keeps DISPLAY
 # and the real profile by convention. HOME is overridden too — ORCHESTRA_HOME
 # does not relocate everything.
+# Count toplevel windows on OUR compositor. This is the D1 assertion: the window
+# must exist regardless of the bus's fate.
+windows_on_my_sway() {
+  SWAYSOCK="$SWAY_SOCK" swaymsg -t get_tree 2>/dev/null \
+    | python3 -c 'import json,sys
+try: t=json.load(sys.stdin)
+except Exception: print(0); sys.exit()
+n=0
+def walk(x):
+  global n
+  if isinstance(x,dict):
+    if x.get("type")in("con","floating_con") and x.get("pid") and (x.get("name") or x.get("app_id")): n+=1
+    for k in ("nodes","floating_nodes"):
+      for c in x.get(k) or []: walk(c)
+walk(t); print(n)'
+}
+
 boot_once() {
   local home="$1" logtag="$2"
   mkdir -p "$home"
@@ -158,7 +175,7 @@ boot_once() {
     WAYLAND_DISPLAY="$MY_DISPLAY" \
     ELECTRON_OZONE_PLATFORM_HINT=wayland \
     ORCHESTRA_HOME="$home/.orchestra" \
-    "$APPIMAGE" --ozone-platform=wayland --no-sandbox \
+    "${APPBIN:-$APPIMAGE}" --ozone-platform=wayland --no-sandbox \
     >"$WORK/$logtag.stdout" 2>&1 &
   local pid=$!
   # Wait for the app's own log file to carry a bus line, or the process to die.
@@ -176,6 +193,9 @@ boot_once() {
     waited=$((waited + 1))
   done
   sleep 1
+  # Sample the window BEFORE killing the app — after the kill there is nothing
+  # to see, and "0 windows" would be indistinguishable from "never opened".
+  windows_on_my_sway > "$WORK/$logtag.windows"
   kill "$pid" 2>/dev/null
   wait "$pid" 2>/dev/null
   cat "$applog" 2>/dev/null > "$WORK/$logtag.applog" || true
@@ -198,6 +218,10 @@ echo "  $PASS_LINE"
 BUSFILE="$(echo "$PASS_LINE" | sed -E 's/.*bus: opened ([^ ]+) .*/\1/')"
 [ -f "$BUSFILE" ] || fail "the log claims $BUSFILE was opened but no such file exists"
 echo "  and the file really exists: $(stat -c '%s bytes' "$BUSFILE")"
+PASS_WINS="$(cat "$WORK/pass.windows" 2>/dev/null || echo 0)"
+[ "${PASS_WINS:-0}" -ge 1 ] || fail "must-PASS arm: no window on our compositor (D1 requires the window regardless)"
+grep -qF 'main window ready' "$WORK/pass.applog" || fail "must-PASS arm: startup never completed ('main window ready' absent)"
+echo "  window present on $MY_DISPLAY: $PASS_WINS toplevel(s), startup COMPLETED"
 
 # ─── 5. The arm that MUST FAIL ──────────────────────────────────────────────
 # Rename the unpacked .node away and boot the SAME build. If it boots anyway,
@@ -214,35 +238,49 @@ NODE_FILE="$(find "$EXTRACT" -name 'better_sqlite3.node' | head -1)"
 echo "  found: ${NODE_FILE#$EXTRACT/}"
 mv "$NODE_FILE" "$NODE_FILE.moved" || fail "could not rename the binding"
 
-FAILHOME="$WORK/home-fail"; mkdir -p "$FAILHOME/.orchestra"
-env -i HOME="$FAILHOME" PATH=/usr/bin:/bin \
-  XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
-  WAYLAND_DISPLAY="$MY_DISPLAY" ELECTRON_OZONE_PLATFORM_HINT=wayland \
-  ORCHESTRA_HOME="$FAILHOME/.orchestra" \
-  "$EXTRACT/AppRun" --ozone-platform=wayland --no-sandbox \
-  >"$WORK/fail.stdout" 2>&1 &
-FPID=$!
-fwaited=0
-while [ "$fwaited" -lt 240 ]; do
-  if [ -f "$FAILHOME/.orchestra/logs/orchestra.log" ] && \
-     grep -qE 'bus: (opened|FAILED)' "$FAILHOME/.orchestra/logs/orchestra.log" 2>/dev/null; then break; fi
-  kill -0 "$FPID" 2>/dev/null || break
-  sleep 0.5
-  fwaited=$((fwaited + 1))
-done
-sleep 1
-kill "$FPID" 2>/dev/null; wait "$FPID" 2>/dev/null
-cat "$FAILHOME/.orchestra/logs/orchestra.log" 2>/dev/null > "$WORK/fail.applog" || true
+# Boot the EXTRACTED tree (AppRun) so the renamed binding actually applies.
+APPBIN="$EXTRACT/AppRun" boot_once "$WORK/home-fail" fail
 mv "$NODE_FILE.moved" "$NODE_FILE"   # RESTORE, always
 
-if grep -qE 'bus: opened .*schema v[0-9]+' "$WORK/fail.applog" 2>/dev/null; then
-  fail "must-FAIL arm BOOTED THE BUS without its .node — the module resolved from elsewhere, so the must-PASS line proves nothing"
+REFUSAL="$(grep -iE 'bus: FAILED to open' "$WORK/fail.applog" 2>/dev/null | head -2)"
+[ -n "$REFUSAL" ] || {
+  echo "  fail-arm applog tail:" >&2; tail -15 "$WORK/fail.applog" 2>/dev/null >&2
+  fail "must-FAIL arm produced no LOUD bus failure line — D1 requires it to fail loudly, not silently"
+}
+echo "  bus failed LOUDLY:"
+echo "$REFUSAL" | sed 's/^/    /' | cut -c1-160
+
+# D1's load-bearing half — AND THE PART A NAIVE WINDOW COUNT GETS WRONG.
+#
+# Counting toplevels is NOT sufficient, measured: I built a mutant that restores
+# `throw e` (bus blocks boot again) and this gate PASSED it. The window object is
+# constructed BEFORE initBus(), so it lingers on the compositor as an empty shell
+# even when the throw aborts startup immediately afterwards. A window on screen
+# does not mean the app booted.
+#
+# The discriminator is 'main window ready', logged only after the FULL startup
+# sequence (hooks server, spools, pollers, CLI shim). In the mutant's fail arm
+# the log shows 'startup failed' + 'unhandledRejection' and NO 'main window
+# ready'; in the correct build it is present. That is what separates "failed
+# loudly and CONTINUED" from "failed loudly and died behind a visible window".
+FAIL_WINS="$(cat "$WORK/fail.windows" 2>/dev/null || echo 0)"
+[ "${FAIL_WINS:-0}" -ge 1 ] || fail "must-FAIL arm: the bus failure took the WINDOW down — D1 says the bus never blocks boot"
+grep -qF 'main window ready' "$WORK/fail.applog" || {
+  echo "  fail-arm shows:" >&2
+  grep -iE 'startup failed|unhandledRejection' "$WORK/fail.applog" 2>/dev/null | head -2 | cut -c1-120 >&2
+  fail "must-FAIL arm: startup ABORTED after the bus failed ('main window ready' absent) — D1 says the bus never blocks boot"
+}
+if grep -qE 'startup failed' "$WORK/fail.applog" 2>/dev/null; then
+  fail "must-FAIL arm: 'startup failed' logged — the bus failure aborted boot, violating D1"
 fi
-REFUSAL="$(grep -iE 'bus: FAILED|Cannot find module|NODE_MODULE_VERSION|better.sqlite3|startup failed' \
-  "$WORK/fail.applog" "$WORK/fail.stdout" 2>/dev/null | head -3)"
-[ -n "$REFUSAL" ] || fail "must-FAIL arm produced no diagnosable error — it must REFUSE, not fail silently"
-echo "  boot REFUSED, diagnosably:"
-echo "$REFUSAL" | sed 's/^/    /'
+echo "  window STILL present: $FAIL_WINS toplevel(s), and startup COMPLETED anyway"
+
+# It must also not have secretly succeeded.
+if grep -qE 'bus: opened .*schema v[0-9]+' "$WORK/fail.applog" 2>/dev/null; then
+  fail "must-FAIL arm OPENED the bus without its .node — the module resolved from elsewhere"
+fi
 
 echo
-echo "PASS — packaged boot opens the bus (G5), and the same build without its .node refuses with a diagnosable error (G6)."
+echo "PASS — D1 gate, 2 arms x 2 assertions:"
+echo "  intact : window ($PASS_WINS) + startup COMPLETED + bus opened (schema v1)"
+echo "  broken : window ($FAIL_WINS) + startup COMPLETED + bus failed LOUDLY, no abort"

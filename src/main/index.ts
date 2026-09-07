@@ -298,34 +298,6 @@ async function createMainWindow() {
   void syncAllAccountsInheritance();
   await ensureRoot();
 
-  // THE BUS BOOT GATE (#114). Open <ORCHESTRA_HOME>/bus.sqlite and log the
-  // schema version it reached.
-  //
-  // This CONSTRUCTS a Database — that is the whole point, and it is why the log
-  // line is emitted after initBus() rather than after an import. better-sqlite3
-  // defers loading its native binding until the first `new Database()`, so a
-  // `require()` SUCCEEDS under the WRONG ABI and would print a confident,
-  // completely false "bus ready". Spike #109's headline trap; see bus-binding.ts
-  // for the measurement.
-  //
-  // Failure is FATAL and loud rather than swallowed. Every other subsystem here
-  // is best-effort because the app is still usable without it; the bus is the
-  // fleet's source of truth (ADR 0002), so a silent "no bus" would let agents
-  // coordinate against a store that is not there — exactly the lost-message
-  // class the bus exists to kill. A missing/mismatched .node lands here with a
-  // diagnosable NODE_MODULE_VERSION error, which is the packaged-boot must-FAIL
-  // arm (G6).
-  //
-  // SCOPE: opening the DB is ALL this does. Nothing reads or writes it yet — no
-  // CLI verbs, no wake, no mirror (#115–#121). Nothing changes for any agent.
-  try {
-    const version = initBus();
-    log.info(`bus: opened ${busPath()} (schema v${version})`);
-  } catch (e) {
-    log.error(`bus: FAILED to open ${busPath()} — the fleet bus is unavailable`, e);
-    throw e;
-  }
-
   // Drop the default Electron menu (File/Edit/View/Window/Help). We don't ship
   // any custom menu commands; the strip just eats vertical space.
   Menu.setApplicationMenu(null);
@@ -349,6 +321,38 @@ async function createMainWindow() {
     },
   });
   mainWindow.setMenuBarVisibility(false);
+
+  // THE BUS OPENS *AFTER* THE WINDOW, AND ITS FAILURE NEVER BLOCKS BOOT.
+  // The order is deliberate (LEAD ruling D1, ledger #122): an unread subsystem
+  // may not brick a working app, so agents/keepers/PTYs stay reachable even
+  // with no bus. Do not "fix" this back to a fatal pre-window open.
+  // Load-bearing consequence: initBus() now runs alongside a LIVE renderer that
+  // can start agent PTYs, so the moment a later ticket (#115–#121) makes a
+  // subsystem READ the bus, that reader must tolerate `getBus() === null`.
+  //
+  // Still a real gate, not a best-effort shrug: it CONSTRUCTS a Database
+  // (better-sqlite3 defers its native load, so `require()` succeeds under the
+  // WRONG ABI and would log a confident false "bus ready" — spike #109's
+  // headline trap), and a failure is logged loudly AND broadcast so the UI can
+  // show "bus unavailable" (#118 renders it properly).
+  //
+  // SCOPE: opening the DB is ALL this does. Nothing reads or writes it yet.
+  try {
+    const version = initBus();
+    log.info(`bus: opened ${busPath()} (schema v${version})`);
+  } catch (e) {
+    log.error(`bus: FAILED to open ${busPath()} — the fleet bus is unavailable`, e);
+    // Best-effort surface for the renderer; never let the notification itself
+    // become the thing that breaks boot.
+    try {
+      mainWindow?.webContents.send('bus:unavailable', {
+        path: busPath(),
+        error: e instanceof Error ? e.message : String(e),
+      });
+    } catch {
+      /* the UI may not be listening yet — the log line above is the record */
+    }
+  }
 
   // Hook server must be ready before any PTY spawns: spawned claude inherits
   // ORCHESTRA_SOCK from the env set on the pty.spawn call, and that value is
