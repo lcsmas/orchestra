@@ -32,17 +32,8 @@
 // dropped anything.
 
 import fs from 'node:fs';
-import { getBus, busPath, type BusDb } from './bus';
-import { store } from './store';
-import { log } from './logger';
-// Through the sdk-delivery SEAM, not agent-sdk directly. That file exists to
-// break an import cycle (agent-sdk imports workspaces, so workspaces-land
-// cannot import agent-sdk back), and `sdkStartAndDeliver` is its wake entry:
-// it lazy-starts a session, resuming the workspace's prior conversation, and
-// delivers the order as that turn. It returns FALSE rather than throwing when
-// the SDK module has not registered — which is itself a state this module must
-// treat as "not woken", never as success.
-import { sdkStartAndDeliver } from './sdk-delivery';
+import { getBus, busPath, type BusDb } from './bus.ts';
+import { log } from './logger.ts';
 import {
   decideWake,
   pruneWakeLedger,
@@ -160,16 +151,47 @@ export function readPendingReaders(db: BusDb, readers: readonly string[]): Reade
 }
 
 /** The readers the host could wake — every live workspace, keyed by its id,
- *  which is what `$ORCHESTRA_WS_ID` (and therefore #115's `--as` default) is. */
-function wakeableReaders(): { reader: string; wakeable: boolean }[] {
-  return store.workspaces.map((ws) => ({
-    reader: ws.id,
-    // An archived workspace's session is a frozen leftover; waking it would
-    // resurrect a workspace the human retired. `ws.archived` is the flag the
-    // watchdog gates on too (session-watchdog.ts:233) — `archivedAt` alone is a
-    // timestamp that an un-archive does not necessarily clear.
-    wakeable: !ws.archived && !!ws.worktreePath,
-  }));
+ *  which is what `$ORCHESTRA_WS_ID` (and therefore #115's `--as` default) is.
+ *
+ *  INJECTED rather than imported. `store.ts` reaches the platform seam through
+ *  a directory import that node's --experimental-strip-types runner cannot
+ *  resolve, so importing it here would make this module — and the pending
+ *  predicate with it — untestable under `pnpm run test`. The seam is also the
+ *  honest shape: which workspaces exist is not something the wake policy should
+ *  know, and a rig can now drive the sweep over a hand-written roster. */
+export interface WakeableReader {
+  reader: string;
+  wakeable: boolean;
+}
+
+let readRoster: () => WakeableReader[] = () => [];
+
+/** Wired at boot (index.ts) with the real store, and by rigs with a fixture. */
+export function setWakeRoster(fn: () => WakeableReader[]): void {
+  readRoster = fn;
+}
+
+/** How a wake reaches the reader's session. Resolves TRUE only when the turn
+ *  was actually started or queued for the session — never merely attempted.
+ *
+ *  Injected for the same two reasons as the roster. First, mechanically:
+ *  `sdk-delivery.ts` imports `./logger` extensionless, which the strip-types
+ *  test runner cannot resolve, so a direct import makes this module untestable.
+ *  Second, and more importantly, it is the seam that lets the gate assert what
+ *  a wake DID rather than that no error was thrown — a rig binds a recorder
+ *  here and counts turns, which is the observable T117.1/T117.2 actually name.
+ *
+ *  Wired at boot to `sdkStartAndDeliver` (src/main/sdk-delivery.ts), itself the
+ *  cycle-safe seam over `sdkWake`: it lazy-starts a session, resuming the
+ *  workspace's prior conversation, and delivers the order as that turn. It
+ *  returns FALSE rather than throwing when the SDK module has not registered —
+ *  a state this module must treat as "not woken", never as success. */
+export type WakeDeliver = (wsId: string, text: string) => Promise<boolean>;
+
+let deliverWake: WakeDeliver = async () => false;
+
+export function setWakeDeliver(fn: WakeDeliver): void {
+  deliverWake = fn;
 }
 
 // ─── The sweep ─────────────────────────────────────────────────────────────
@@ -195,7 +217,7 @@ export async function sweepBusWake(): Promise<void> {
   if (switchOnForRun === null) return; // not started
   sweeping = true;
   try {
-    const readers = wakeableReaders();
+    const readers = readRoster();
     const pending = readPendingReaders(db, readers.map((r) => r.reader));
     const stillPending = new Set(pending.filter((p) => p.pending).map((p) => p.reader));
     pruneWakeLedger(ledger, stillPending);
@@ -217,7 +239,7 @@ export async function sweepBusWake(): Promise<void> {
       }
       let delivered = false;
       try {
-        delivered = await sdkStartAndDeliver(action.reader, WAKE_ORDER);
+        delivered = await deliverWake(action.reader, WAKE_ORDER);
       } catch (e) {
         log.warn(`bus-wake: wake threw for ${action.reader}`, e);
       }
