@@ -16,7 +16,19 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APPIMAGE="$ROOT/release/Orchestra.AppImage"
 RIG_PID=$$
-WORK="$(mktemp -d /tmp/bus-boot-rig-XXXXXX)"
+# NOT /tmp. It is a 16G tmpfs SHARED with ~17 sibling agents, and this rig
+# extracts a ~300 MB AppImage into it. Measured: an extract failed with /tmp at
+# 64% and the rig reported "could not extract the AppImage" — a rig fault that
+# reads exactly like a product failure. Work under ORCHESTRA_HOME (real disk)
+# and require headroom before starting.
+RIG_ROOT="${ORCHESTRA_HOME:-$HOME/.orchestra}"
+mkdir -p "$RIG_ROOT" 2>/dev/null
+WORK="$(mktemp -d "$RIG_ROOT/bus-boot-rig-XXXXXX")"
+avail_kb=$(df -Pk "$WORK" | awk 'NR==2{print $4}')
+if [ "${avail_kb:-0}" -lt 2097152 ]; then
+  echo "FAIL: only $((avail_kb/1024)) MB free at $WORK — need ~2 GB to extract the AppImage" >&2
+  rm -rf "$WORK"; exit 1
+fi
 SWAY_PID=""
 SWAY_SOCK="$WORK/sway.sock"
 MY_DISPLAY=""
@@ -150,11 +162,18 @@ boot_once() {
     >"$WORK/$logtag.stdout" 2>&1 &
   local pid=$!
   # Wait for the app's own log file to carry a bus line, or the process to die.
+  # Wait for a DECISIVE line, not a fixed nap. Under sibling load the app has
+  # taken >30 s to reach the bus; a too-short window makes a healthy build look
+  # like it never opened the DB — a fabricated failure in the passing direction
+  # for the must-FAIL arm and a false alarm for must-PASS. 120 s, and we stop the
+  # instant either outcome is on disk.
   local applog="$home/.orchestra/logs/orchestra.log"
-  for _ in $(seq 1 60); do
+  local waited=0
+  while [ "$waited" -lt 240 ]; do
     if [ -f "$applog" ] && grep -qE 'bus: (opened|FAILED)' "$applog" 2>/dev/null; then break; fi
     kill -0 "$pid" 2>/dev/null || break
     sleep 0.5
+    waited=$((waited + 1))
   done
   sleep 1
   kill "$pid" 2>/dev/null
@@ -167,9 +186,12 @@ echo "── must-PASS: the built AppImage boots and opens the bus ──"
 boot_once "$WORK/home-pass" pass
 PASS_LINE="$(grep -E 'bus: opened .*schema v[0-9]+' "$WORK/pass.applog" 2>/dev/null | head -1)"
 if [ -z "$PASS_LINE" ]; then
-  echo "  no 'bus: opened' line. Log tail:" >&2
-  tail -20 "$WORK/pass.applog" 2>/dev/null >&2
-  tail -20 "$WORK/pass.stdout" 2>/dev/null >&2
+  echo "  no 'bus: opened' line. applog ($(wc -l < "$WORK/pass.applog" 2>/dev/null || echo 0) lines):" >&2
+  tail -25 "$WORK/pass.applog" 2>/dev/null >&2
+  echo "  --- stdout ---" >&2
+  tail -15 "$WORK/pass.stdout" 2>/dev/null >&2
+  echo "  --- disk ---" >&2
+  df -h "$WORK" >&2
   fail "must-PASS arm: the packaged app did not log the bus opening"
 fi
 echo "  $PASS_LINE"
@@ -183,7 +205,10 @@ echo "  and the file really exists: $(stat -c '%s bytes' "$BUSFILE")"
 echo
 echo "── must-FAIL: same build, better_sqlite3.node renamed away ──"
 EXTRACT="$WORK/squashfs-root"
-( cd "$WORK" && "$APPIMAGE" --appimage-extract >/dev/null 2>&1 ) || fail "could not extract the AppImage"
+if ! ( cd "$WORK" && "$APPIMAGE" --appimage-extract >"$WORK/extract.log" 2>&1 ); then
+  echo "  extract log:" >&2; tail -5 "$WORK/extract.log" >&2; df -h "$WORK" >&2
+  fail "could not extract the AppImage (see log + free space above)"
+fi
 NODE_FILE="$(find "$EXTRACT" -name 'better_sqlite3.node' | head -1)"
 [ -n "$NODE_FILE" ] || fail "no better_sqlite3.node inside the extracted AppImage — it never shipped"
 echo "  found: ${NODE_FILE#$EXTRACT/}"
@@ -197,11 +222,13 @@ env -i HOME="$FAILHOME" PATH=/usr/bin:/bin \
   "$EXTRACT/AppRun" --ozone-platform=wayland --no-sandbox \
   >"$WORK/fail.stdout" 2>&1 &
 FPID=$!
-for _ in $(seq 1 60); do
+fwaited=0
+while [ "$fwaited" -lt 240 ]; do
   if [ -f "$FAILHOME/.orchestra/logs/orchestra.log" ] && \
      grep -qE 'bus: (opened|FAILED)' "$FAILHOME/.orchestra/logs/orchestra.log" 2>/dev/null; then break; fi
   kill -0 "$FPID" 2>/dev/null || break
   sleep 0.5
+  fwaited=$((fwaited + 1))
 done
 sleep 1
 kill "$FPID" 2>/dev/null; wait "$FPID" 2>/dev/null
