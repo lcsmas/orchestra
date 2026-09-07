@@ -194,3 +194,137 @@ the read-only pane, shadow-mode dual-write and its promotion bar, heartbeat
 staleness and escalation, fencing/generation bumps. The spike's own NOT VERIFIED
 list still stands for scale (aged DB, millions of rows, retention), non-linux
 platforms, network filesystems, and `synchronous=NORMAL` under host power loss.
+
+---
+
+# Wake-as-turn (#117)
+
+**The host detects new bus rows and ORDERS the reader to check. It never checks
+for an agent, and never acks on one's behalf.** Frozen on #108 comments 4-5.
+
+| File | What it is |
+|---|---|
+| `src/shared/bus-wake.ts` | The wake DECISION — pure, no bus, no session, no Electron |
+| `src/main/bus-wake.ts` | The effectful half: reads durable state, fires the turn |
+| `src/shared/bus-wake.test.ts` | 11 policy tests; each names the clause it kills |
+| `src/main/bus-wake.test.ts` | 9 tests of the pending predicate over a real SQLite bus |
+| `src/main/bus-wake-sweep.test.ts` | 11 tests driving the sweep end to end (T117.1–T117.5, D1) |
+
+## Why the host watches instead of the agent polling
+
+A turn that runs a blocking `orchestra check` burns against the **600s Bash cap**
+and reads as a hang. So the waiting lives where waiting is free — the main
+process — and what reaches the agent is a fixed ORDER string
+(`WAKE_ORDER`, `src/shared/bus-wake.ts:139`), never the message body. The reader
+then runs `orchestra check` itself and acks with its own `orchestra ack`.
+
+## `fs.watch` is NOT the mechanism — only an accelerator
+
+The sweep (`sweepBusWake`, `src/main/bus-wake.ts:219`) is **level-triggered over
+durable state**: it reads what is pending *now* and acts on that, with no memory
+of which inserts it saw. Three things drive it, and they are not equals:
+
+| Driver | `src/main/bus-wake.ts` | Role |
+|---|---|---|
+| Startup sweep | `:290` | Fires wakes for inserts that landed while the app was closed |
+| 60s interval (`SWEEP_MS`) | `:46`, `:292` | The guarantee — every wake is produced by this alone |
+| `fs.watch` on `bus.sqlite-wal` | `:299` | Latency only (spike #109 arm 4: p50 0.23ms) |
+
+Watching the **`-wal`** file, not `bus.sqlite`: in WAL mode the main DB file is
+barely touched, so a watch on it misses nearly every insert. Debounced 150ms
+(`WATCH_DEBOUNCE_MS`, `:51`) because a `check` writes a delivery row, which
+itself touches the WAL — an undebounced watcher re-enters the sweep it caused.
+
+**An edge-triggered design (watch fires → wake) reads identically in every happy
+path and loses every wake that lands while the app is closed.** The failure is
+invisible precisely because the mechanism that would report it is the one that
+is off. `bus-wake-sweep.test.ts`'s T117.3 arm is the discriminator: it inserts
+with nothing armed, then requires the first sweep to fire.
+
+## The pending predicate — `readPendingReaders` (`src/main/bus-wake.ts:113`)
+
+Pending = **an unread lot OR an open ask/gate addressed to the reader** (#108 Q15).
+
+The lot half asks *"is there anything past the reader's durable cursor"*, **not**
+*"is there an outstanding `deliveries` row"*. Those differ in the case that
+matters: a reader that has never checked has **no delivery row at all**, so an
+outstanding-row predicate reports the reader that most needs waking as quiet.
+
+The cursor read is `cursors.acked_seq`, which **only `ack()` advances**. So
+`check()` alone does not clear pending — a reader SIGKILLed between check and
+ack is woken again. Keying on `deliveries.to_seq` instead would rebuild the lying
+"Delivered" the bus exists to kill, one layer up.
+
+`asked_by <> ?` excludes the asker's own gate: otherwise a reader that opens a
+gate wakes itself forever, since answering is someone else's act.
+
+## Dedup: ledger PRESENCE, not a sequence comparison
+
+`decideWake` (`src/shared/bus-wake.ts:98`) suppresses when the reader already has
+a ledger entry. **Recorded disproof:** this first compared a high-water sequence
+(`wokeThroughSeq >= pendingThroughSeq`). Three inserts arriving while the reader
+is mid-turn come in at *rising* sequences (5, 6, 7), each passes that test, and
+the reader is woken **three** times — the exact failure T117.2 exists to catch,
+shipped by the guard meant to prevent it.
+
+The only re-arm is `pruneWakeLedger` (`src/shared/bus-wake.ts:123`) dropping the
+entry once the reader's own ack clears its pending state. That is the right
+shape: one order to `orchestra check` covers everything outstanding when the
+reader obeys it.
+
+The ledger entry is written **before** the `await` on delivery (`:250`) — a
+second sweep entering during that yield would otherwise see no entry and fire a
+duplicate (the #112 shape). A delivery the seam *refuses* (`sdkStartAndDeliver`
+returns `false`, never throws) **withdraws** the entry so the next sweep retries;
+treating a refusal as success would suppress every future wake for that lot.
+
+## Two injected seams, and why they are not just for tests
+
+`setWakeRoster` (`:170`) and `setWakeDeliver` (`:193`), wired at
+`src/main/index.ts:412` / `:423`.
+
+Mechanically: `store.ts` and `sdk-delivery.ts` both reach imports through
+extensionless paths that node's `--experimental-strip-types` runner cannot
+resolve, so importing them here would make the whole module — and the pending
+predicate with it — untestable under `pnpm run test`.
+
+But the delivery seam is also **where the gate counts turns**. Counting the dedup
+ledger or the pending predicate instead would count bookkeeping this module's own
+code writes, so a dedup bug would move them together and every arm would stay
+green (the #112 lesson: count the observable the bug does not also touch).
+
+## The switch — COUNTED, not FIRED (`src/main/bus-wake.ts:53`)
+
+Read **once**, in `startBusWake()` (`:288`), into `switchOnForRun` (`:75`), and
+never again: a flip mid-run cannot change what a running run does (switches are
+frozen per run). #118 owns the storage; this module only READS, via
+`setWakeSwitchReader` (`:70`), which **defaults to OFF**.
+
+With the switch off `decideWake` returns `count`, **not** `skip`, and
+`counters.counted` increments (`busWakeCounters`, `:90`). The distinction is the
+whole point: a mechanism whose off-state is indistinguishable from the feature
+being absent cannot be observed in shadow, and the switch-off gate arm would be
+vacuous.
+
+## D1 — the bus never blocks boot
+
+`readBusDb()` returning `null` makes the sweep log nothing and return (`:221`).
+Nothing is lost, because nothing was stored in an event: a bus that comes back is
+reconciled by the next sweep. `startBusWake()` is deliberately **not** gated on
+`initBus()` having succeeded, and `stopBusWake()` runs **before** `closeBus()`
+(`src/main/index.ts:684`) so no timer can fire against a closed handle.
+
+## Running the gates
+
+```bash
+node --test --experimental-strip-types src/shared/bus-wake.test.ts       # policy
+node --test --experimental-strip-types src/main/bus-wake.test.ts          # predicate, real DB
+node --test --experimental-strip-types src/main/bus-wake-sweep.test.ts    # sweep end to end
+```
+
+## Not covered here
+
+The switch STORAGE and its pane (#118), the CLI verbs the order names (#115),
+and the shadow mirror's counters (#116). Honest gap: the unit arms stop at the
+delivery seam — they prove the order is handed to `sdkStartAndDeliver`, not that
+a turn RENDERS in the reader's session.
