@@ -172,6 +172,7 @@ import { initBrowserPanels } from './browser-panel';
 import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
 import { initBus, closeBus, busPath } from './bus';
+import { startBusWake, stopBusWake } from './bus-wake';
 import {
   ensureRoot,
   pruneOrphanedWorkspaces,
@@ -397,6 +398,13 @@ async function createMainWindow() {
   // container is the only copy of unpushed work, so a dead sandbox must cost
   // at most one backup interval.
   startSandboxAutoBackup();
+  // Wake-as-turn (#117): watch the bus for rows addressed to a reader and order
+  // that reader to run `orchestra check` — the host never checks FOR an agent
+  // and never acks on its behalf. Started AFTER initBus() and deliberately not
+  // gated on it succeeding: the sweep tolerates `getBus() === null` (D1) and a
+  // bus that opens later is picked up by the next tick. SHIPS OFF — the switch
+  // (#118) defaults to false, so out of the box this only COUNTS would-have-woken.
+  startBusWake();
   // Stop the agent processes of long-idle workspaces to reclaim their memory;
   // the conversation survives (terminal `--continue`, SDK sdkSessionId) so a
   // hibernated agent restores on the next keystroke/send/activation.
@@ -654,6 +662,9 @@ function shutdownSubsystems(): void {
   stopHibernationSweeper();
   closeAllSandboxConnections();
   disposeVoice();
+  // Before closeBus(): the sweep reads the bus connection, so stopping it after
+  // the close would leave a timer able to fire against a closed handle.
+  stopBusWake();
   // Last: a clean close checkpoints the WAL back into the main file and
   // truncates it to 0 (spike #109 arm 3 measured ~600 KB left behind by a
   // crash). Committed rows survive either way — WAL recovery reads them on the
