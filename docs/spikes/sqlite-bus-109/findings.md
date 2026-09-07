@@ -15,6 +15,14 @@
 > `busy_timeout` (without it we lose 7–27% of inserts) and the fact that the
 > ~70 ms cross-process wake floor is **node process spawn, not the bus**.
 
+> **⚠ CARRY THIS INTO THE IMPLEMENTATION — the most useful finding here.**
+> **`require('better-sqlite3')` SUCCEEDS under the WRONG ABI.** The native binding
+> load is deferred to the first `new Database()`, so a bare `require` proves
+> nothing and returns a plausible pass under both runtimes. This produced a
+> **false "node can load it"** result in this very spike, caught only by loading
+> the same bytes by absolute path. **Any ABI check — in a build gate, a preflight,
+> or a test — must CONSTRUCT a DB, never just require the module.**
+
 Issue: [#109 — Spike: better-sqlite3 WAL bus shared by app main process + concurrent CLI writers](https://github.com/lcsmas/orchestra/issues/109)
 (child of the wayfinder map [#104](https://github.com/lcsmas/orchestra/issues/104); constraints from
 [#108 — wake-as-turn, level-triggered re-wake, batch+ack](https://github.com/lcsmas/orchestra/issues/108)).
