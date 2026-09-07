@@ -31,3 +31,7 @@ docs/swarm-dashboard.html
 # Rig-produced screenshots (scripts/verify-disk-guard-ui.mjs). Regenerate with
 # the rig rather than tracking binaries; the findings live in docs/research/.
 .evidence/
+
+# Per-ABI better-sqlite3 bindings built by scripts/build-bus-abi.mjs (#114).
+# ~2 MB each and machine/ABI specific — regenerate, never commit.
+build/bus-abi/
