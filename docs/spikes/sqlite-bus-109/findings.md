@@ -5,7 +5,12 @@
 > long-lived process and 10 concurrent short-lived CLI writers lost **0 of 1000
 > inserts with 0 SQLITE_BUSY, 5 runs out of 5**, replayed a SIGKILLed consumer's
 > batch **identically**, and recovered **50/50 committed rows** from a double
-> SIGKILL mid-transaction. The four conditions are in
+> SIGKILL mid-transaction. **Arm 5 re-ran contention and ack-replay with the REAL
+> Electron main (33.4.11, windowless) as the long-lived process — same results:
+> 1000/1000, 0 BUSY, identical replay.** The Electron ABI risk flagged in the
+> first pass is now **measured and closed**: node ABI 127 vs Electron ABI 130,
+> **two builds required**, but `ELECTRON_RUN_AS_NODE` is also ABI 130, so **one
+> Electron build serves both main and the packaged CLI**. Conditions in
 > [Conditions](#conditions-what-go-is-contingent-on) — the load-bearing ones are
 > `busy_timeout` (without it we lose 7–27% of inserts) and the fact that the
 > ~70 ms cross-process wake floor is **node process spawn, not the bus**.
@@ -27,14 +32,16 @@ code and nothing in `src/` was touched.** Reference model: [stablyai/orca](https
 | Host | linux/arm64, 10 CPUs |
 | Node | v22.22.0 |
 | SQLite | 3.49.2 (via better-sqlite3 11.10.0, built from source — no arm64 prebuild) |
+| ABIs | node **127** vs Electron 33.4.11 **130** — two builds, kept in `abi/` |
 | DB filesystem | btrfs on `/dev/nvme0n1p6` (**not** tmpfs — checked with `df -T`) |
 | PRAGMAs | `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000` |
-| Long-lived process | separate node process holding the DB open, reading continuously (Electron-main stand-in) |
+| Long-lived process | arms 1–4: node stand-in. **Arm 5: the REAL Electron 33.4.11 main**, windowless, `env -i`, no `DISPLAY`/`WAYLAND_DISPLAY` |
 | CLI clients | separate short-lived `node writer-cli.js` / `consumer-cli.js` processes — real spawn, real exit |
 
 Every arm has a **must-PASS** and a **must-FAIL** control. A rig that cannot
 fail is decoration; `controlValid: true` in each JSON is the assertion that the
-must-FAIL arm actually failed. All six arms: `verdict PASS, controlValid true`.
+must-FAIL arm actually failed. All **seven** arms: `verdict PASS, controlValid true`
+(arm 5 additionally asserts `rigValid: true` — a real, windowless Electron main was attached).
 
 ---
 
@@ -154,6 +161,61 @@ process that inserted. Writer is a genuinely separate short-lived CLI process:
 
 ---
 
+### 5. Real Electron main as the long-lived process (closes the #1 open risk)
+
+Arms 1 and 2 rerun with the **actual Electron 33.4.11 main process** from this
+repo's `node_modules` holding the DB open — not a node stand-in. No
+`BrowserWindow` is ever created; Electron is launched under an `env -i`
+allowlist with **`DISPLAY` and `WAYLAND_DISPLAY` absent**, and the main process
+aborts with exit 97 if either is present. Each run records
+`browserWindowsCreated: 0` and `hadDisplayEnv: false` **from inside the process**.
+
+**ABI — the packaging answer:**
+
+| | value |
+|---|---|
+| node ABI (`process.versions.modules`) | **127** |
+| Electron 33.4.11 ABI | **130** |
+| Same binary serves both? | **NO** |
+| `ELECTRON_RUN_AS_NODE` ABI | **130** (Electron's V8, *not* system node) |
+| Electron's bundled node | 20.18.3 |
+
+A `.node` built for one runtime is **unusable** under the other
+(`NODE_MODULE_VERSION 130` vs required 127), so the spike keeps **two builds** in
+`abi/` and loads the right one per runtime via `nativeBinding`.
+
+> **Which runtime do the CLI clients run under? — this decides packaging.**
+> `ELECTRON_RUN_AS_NODE` reports **ABI 130**, so the packaged `orchestra` CLI
+> (which is the Electron binary in as-node mode, per `src/main/keeper-client.ts`)
+> needs the **same Electron-ABI build as main — one build ships, not two.**
+> The `#!/usr/bin/env node` shebang path is the exception: a CLI invoked through
+> **system node** would need the ABI-127 build. So: **ship the Electron build and
+> ensure the CLI always runs on the bundled Electron binary.**
+
+**Results (must-PASS / must-FAIL per sub-arm, `rigValid: true`):**
+
+| | must-PASS (`busy_timeout=5000`) | must-FAIL (`busy_timeout=0`) |
+|---|---|---|
+| Committed / expected | **1000 / 1000** | 777 / 1000 |
+| Lost inserts | **0** | **223** |
+| SQLITE_BUSY | **0** | **223** |
+| Sequence gaps | **0** | 0 |
+| p50 / p99 insert | **0.013 / 0.342 ms** | 0.014 / 0.371 ms |
+| Electron main reads | 105 121 @ **0 read-BUSY** | 107 325 @ 0 read-BUSY |
+| BrowserWindows created | **0** | **0** |
+
+Ack-replay under a live Electron main: batch replays **`[1,2,3,4,5]`** identically
+after SIGKILL, then **`[6,7,8]`** only after ack; the naive control again loses
+`[1,2,3,4,5]`. Both `controlValid: true`.
+
+> **One number in `arm5.json` must NOT be read as a bus result:**
+> `throughputInsertsPerSec` (~8/s) is a **harness artifact** — this arm waits for
+> writer exit with a 20 ms poll per writer, inflating `wallMs` to 120 s. The 1000
+> inserts represent only **~65 ms** of actual SQLite work. Arm 1's ~7 600 ins/s
+> is the throughput figure; arm 5's latency and correctness numbers are unaffected.
+
+---
+
 ## Conditions (what GO is contingent on)
 
 1. **`busy_timeout` is mandatory, on every connection, including read-only ones.**
@@ -171,6 +233,12 @@ process that inserted. Writer is a genuinely separate short-lived CLI process:
 4. **Budget the wake path for process spawn, not for SQLite.** At ~65 ms per node
    spawn, a design that spawns per message is bounded by spawn cost; the bus
    itself is ~0.01 ms per insert.
+
+5. **Ship the Electron-ABI build, and keep the CLI on the bundled Electron
+   binary.** node and Electron ABIs differ (127 vs 130) and the binaries are
+   mutually unusable; `ELECTRON_RUN_AS_NODE` is ABI 130, so one build covers main
+   *and* the packaged CLI. A CLI run through **system node** would need a second
+   build — avoid that path, or ship both. Add `@electron/rebuild` to the build.
 
 **Coexistence** ([#108](https://github.com/lcsmas/orchestra/issues/108)'s standing constraint) is unaffected by anything measured
 here: the bus is a plain file with its own tables, so shadow-mode dual-writing
@@ -194,8 +262,19 @@ node arm3-restart-recovery.js    # double SIGKILL mid-txn + wal-deleted control
 node arm4-wake-latency.js        # fswatch vs socket vs poll + dead-watcher control
 node arm4b-crossproc-fswatch.js  # fswatch across real processes + other-db control
 
+# ARM 5 — real Electron main. Needs BOTH ABI builds in abi/ (gitignored, ~4 MB;
+# regenerate them, do not commit them):
+mkdir -p abi
+cp node_modules/.pnpm/better-sqlite3@11.10.0/node_modules/better-sqlite3/build/Release/better_sqlite3.node \
+   abi/better_sqlite3-node-abi127.node            # the node-ABI build from above
+npx @electron/rebuild@3.7.1 -v 33.4.11 -m . -f -w better-sqlite3
+cp node_modules/.pnpm/better-sqlite3@11.10.0/node_modules/better-sqlite3/build/Release/better_sqlite3.node \
+   abi/better_sqlite3-electron-abi130.node        # now the Electron-ABI build
+node arm5-electron.js            # contention + ack-replay under Electron 33.4.11
+# bus.js picks the right one per runtime; it never mutates the installed copy.
+
 # every arm writes out/<arm>.json; check BOTH fields:
-node -e "for(const a of['arm1','arm2','arm2b','arm3','arm4','arm4b']){
+node -e "for(const a of['arm1','arm2','arm2b','arm3','arm4','arm4b','arm5']){
   const r=require('./out/'+a+'.json');console.log(a,r.verdict,'controlValid',r.controlValid)}"
 ```
 
@@ -242,12 +321,40 @@ node -e "for(const a of['arm1','arm2','arm2b','arm3','arm4','arm4b']){
 - **`fs.watch` fires cross-process 100/100 and never for an unrelated DB (0/100)** —
   `node arm4b-crossproc-fswatch.js`.
 
+- **Electron 33.4.11 ABI is 130, node's is 127, and the binaries are mutually
+  unusable** — `electron -e "process.versions.modules"` → `130` vs `node -p` →
+  `127`; loading each `.node` under the other runtime → `NODE_MODULE_VERSION 130.
+  This version of Node.js requires ... 127`.
+- **`ELECTRON_RUN_AS_NODE` is still ABI 130** (so the packaged CLI needs the
+  Electron build, not a node build) — `ELECTRON_RUN_AS_NODE=1 electron -e
+  "process.versions.modules"` → `130`, and it loads the ABI-130 binary while
+  refusing the ABI-127 one.
+- **`require('better-sqlite3')` SUCCEEDS under the wrong ABI and only
+  `new Database()` fails** — the native load is deferred. My first ABI probe
+  reported "node CAN load current build" and was a **false pass**; constructing a
+  DB gave `require OK but UNUSABLE`. Every ABI claim here constructs a DB.
+- **Electron direct-loads its own binary and does not mutate the installed one** —
+  installed the *wrong* (ABI-127) binary as a trap, ran Electron: it succeeded and
+  the installed file's sha was unchanged (`5eb30f31…` before and after).
+- **1000/1000 inserts, 0 BUSY, 0 gaps with a REAL Electron main attached** (which
+  did 105 121 reads at 0 read-BUSY, `browserWindowsCreated: 0`,
+  `hadDisplayEnv: false`) — `node arm5-electron.js`, `out/arm5.json`.
+- **Same rig without `busy_timeout` loses 223 inserts** — same file, `contention.mustFail`.
+- **Ack-replay is identical under Electron**: `[1,2,3,4,5]` replayed then `[6,7,8]`
+  after ack; naive control loses `[1,2,3,4,5]` — `out/arm5.json.ackReplay`.
+
 ## NOT VERIFIED
 
-- **Anything under Electron.** Every process here is plain `node`. better-sqlite3
-  is a native module and Electron uses a **different ABI** — it will need
-  `electron-rebuild`, and that is a real integration risk this spike did not
-  touch. The Electron main process is *simulated* by a long-lived node process.
+- **~~Anything under Electron~~ — CLOSED by arm 5.** Contention and ack-replay now
+  run against the real Electron 33.4.11 main. Still untested *under Electron*:
+  arms 3 (crash recovery) and 4 (wake latency) — both were run only with the node
+  stand-in, and `fs.watch` inside Electron's main event loop is **not** measured.
+- **A packaged/asar build.** Arm 5 runs Electron from `node_modules`, not a built
+  AppImage; native-module resolution inside `app.asar` is a known separate trap
+  and was not exercised.
+- **Arm 5's `throughputInsertsPerSec` (~8/s) is a HARNESS ARTIFACT, not a
+  measurement** — the writer-exit poll inflates `wallMs` to 120 s for ~65 ms of
+  real SQLite work. Use arm 1's ~7 600 ins/s.
 - **Any platform except linux/arm64.** No macOS, no Windows, no x64. Notably
   `fs.watch` is inotify here; macOS FSEvents and Windows have different
   coalescing and latency, and condition 2 rests on this.

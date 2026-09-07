@@ -3,3 +3,4 @@ out/
 *.db
 *.db-wal
 *.db-shm
+abi/*.node

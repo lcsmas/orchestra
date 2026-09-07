@@ -2,7 +2,35 @@
 // Spike #109 — shared bus helpers. THROWAWAY. Never imported by src/.
 // Schema modelled on stablyai/orca (MIT): messages.sequence AUTOINCREMENT = total
 // order; deliveries with a unique partial index = ONE outstanding batch per consumer.
-const Database = require('better-sqlite3')
+// ABI SELECTION (arm 5). node and Electron have DIFFERENT ABIs here (127 vs 130)
+// and a .node built for one is UNUSABLE under the other. Two traps this encodes:
+//  1) better-sqlite3 defers the native load until the first `new Database()`, so a
+//     bare require() SUCCEEDS under both and proves nothing. Only constructing a
+//     DB tests an ABI. (This produced a false "node can load it" pass once.)
+//  2) Arm 5 runs Electron and node CONCURRENTLY, so we must NOT swap a shared
+//     file in place — each runtime loads its own binary directly, no mutation.
+const path = require('path')
+const fs = require('fs')
+const abiDir = path.join(__dirname, 'abi')
+const abiFile = path.join(
+  abiDir,
+  `better_sqlite3-${process.versions.modules === '130' ? 'electron-abi130' : 'node-abi127'}.node`,
+)
+const pkgDir = path.join(
+  __dirname,
+  'node_modules/.pnpm/better-sqlite3@11.10.0/node_modules/better-sqlite3',
+)
+let Database
+if (fs.existsSync(abiFile)) {
+  // Load the JS wrapper but hand it OUR per-ABI binding, bypassing `bindings`.
+  Database = require(path.join(pkgDir, 'lib/database.js'))
+  const bindingPath = abiFile
+  const orig = Database
+  Database = function (file, opts) { return new orig(file, { ...opts, nativeBinding: bindingPath }) }
+  Database.prototype = orig.prototype
+} else {
+  Database = require('better-sqlite3')
+}
 
 /**
  * @param {string} file
