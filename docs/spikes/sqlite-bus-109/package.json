@@ -1,0 +1,10 @@
+{
+  "name": "sqlite-bus-spike-109",
+  "private": true,
+  "version": "0.0.0",
+  "description": "THROWAWAY spike for issue #109 — never merged, never imported by src/",
+  "type": "commonjs",
+  "dependencies": {
+    "better-sqlite3": "^11.10.0"
+  }
+}
