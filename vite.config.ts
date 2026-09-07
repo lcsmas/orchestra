@@ -30,6 +30,11 @@ export default defineConfig({
               external: [
                 'electron',
                 'node-pty',
+                // Native module (the fleet bus, #114). Must stay a runtime
+                // require so electron-builder ships the real .node —
+                // asarUnpack in package.json keeps it OUT of app.asar, because
+                // a .node cannot be dlopen'd from inside an asar archive.
+                'better-sqlite3',
                 'simple-git',
                 // The Agent SDK is a heavy dep tree that spawns a bundled
                 // native `claude` CLI; inlining it into main.js fails rollup.

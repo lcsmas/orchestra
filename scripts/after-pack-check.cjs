@@ -61,4 +61,78 @@ exports.default = async function afterPack(context) {
   }
 
   console.log(`  • afterPack: verified ${REQUIRED.length} required bundles in the package`);
+
+  // ── The fleet bus native binding (#114) ───────────────────────────────────
+  //
+  // better-sqlite3 is a NATIVE module: a `.node` cannot be dlopen'd from inside
+  // an asar archive, so package.json's `asarUnpack` must place it in
+  // app.asar.unpacked. If that ever silently stops working, main throws at boot
+  // and every launch dies — a failure no compile, typecheck or unit test can see.
+  //
+  // AND THE CHECK CONSTRUCTS A DATABASE, it does not merely look for the file.
+  // Spike #109's headline trap: better-sqlite3 defers loading its binding until
+  // the first `new Database()`, so `require()` SUCCEEDS under the WRONG ABI and
+  // returns a confident false pass. A build that shipped a node-ABI (127) binary
+  // instead of the Electron-ABI (130) one would pass a presence check and a
+  // require check, and fail only on the user's machine. So: find it, then RUN it
+  // under Electron's own ABI.
+  const unpackedGlobDir = path.join(resources, 'app.asar.unpacked', 'node_modules');
+  const found = [];
+  (function walk(dir) {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.name === 'better_sqlite3.node') found.push(full);
+    }
+  })(unpackedGlobDir);
+
+  if (found.length === 0) {
+    throw new Error(
+      'afterPack: better_sqlite3.node is NOT in app.asar.unpacked — the fleet bus (#114) cannot ' +
+        'open at boot, because a native .node cannot be loaded from inside app.asar.\n' +
+        "Check package.json build.asarUnpack contains '**/node_modules/better-sqlite3/build/Release/*.node' " +
+        "and that vite.config.ts keeps 'better-sqlite3' external."
+    );
+  }
+
+  // Construct a real DB with this exact binary, under the packaged Electron
+  // binary running as node — which is ABI 130, the same ABI main uses.
+  const { execFileSync } = require('node:child_process');
+  const electronBin = path.join(context.appOutDir, 'orchestra');
+  const binding = found[0];
+  const probe =
+    'const D=require(' +
+    JSON.stringify(path.join(path.dirname(path.dirname(path.dirname(binding))), 'lib', 'database.js')) +
+    ');' +
+    'const db=new D(":memory:",{nativeBinding:' + JSON.stringify(binding) + '});' +
+    'db.exec("CREATE TABLE t(x)");db.prepare("INSERT INTO t VALUES (?)").run(1);' +
+    'if(db.prepare("SELECT x FROM t").get().x!==1)throw new Error("readback");' +
+    'console.log("BUS_ABI_OK abi="+process.versions.modules);';
+  let out = '';
+  try {
+    out = execFileSync(electronBin, ['-e', probe], {
+      encoding: 'utf8',
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      timeout: 60000,
+    });
+  } catch (e) {
+    throw new Error(
+      'afterPack: the packaged better_sqlite3.node could not CONSTRUCT a database under the ' +
+        'packaged Electron runtime — the shipped binary is built for the wrong ABI.\n' +
+        'Run `pnpm run build:bus-abi` (which rebuilds for Electron 33.4.11 = ABI 130) and rebuild.\n' +
+        String((e.stderr || e.message) || '').split('\n').slice(0, 5).join('\n')
+    );
+  }
+  if (!out.includes('BUS_ABI_OK')) {
+    throw new Error(`afterPack: bus ABI probe produced no BUS_ABI_OK line (got: ${out.trim()})`);
+  }
+  console.log(
+    `  • afterPack: bus native binding unpacked and CONSTRUCTS a DB — ${out.trim().replace('BUS_ABI_OK ', '')}`
+  );
 };

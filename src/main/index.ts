@@ -171,6 +171,7 @@ import { createElectronPlatform } from './platform/electron';
 import { initBrowserPanels } from './browser-panel';
 import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
+import { initBus, closeBus, busPath } from './bus';
 import {
   ensureRoot,
   pruneOrphanedWorkspaces,
@@ -296,6 +297,34 @@ async function createMainWindow() {
   );
   void syncAllAccountsInheritance();
   await ensureRoot();
+
+  // THE BUS BOOT GATE (#114). Open <ORCHESTRA_HOME>/bus.sqlite and log the
+  // schema version it reached.
+  //
+  // This CONSTRUCTS a Database — that is the whole point, and it is why the log
+  // line is emitted after initBus() rather than after an import. better-sqlite3
+  // defers loading its native binding until the first `new Database()`, so a
+  // `require()` SUCCEEDS under the WRONG ABI and would print a confident,
+  // completely false "bus ready". Spike #109's headline trap; see bus-binding.ts
+  // for the measurement.
+  //
+  // Failure is FATAL and loud rather than swallowed. Every other subsystem here
+  // is best-effort because the app is still usable without it; the bus is the
+  // fleet's source of truth (ADR 0002), so a silent "no bus" would let agents
+  // coordinate against a store that is not there — exactly the lost-message
+  // class the bus exists to kill. A missing/mismatched .node lands here with a
+  // diagnosable NODE_MODULE_VERSION error, which is the packaged-boot must-FAIL
+  // arm (G6).
+  //
+  // SCOPE: opening the DB is ALL this does. Nothing reads or writes it yet — no
+  // CLI verbs, no wake, no mirror (#115–#121). Nothing changes for any agent.
+  try {
+    const version = initBus();
+    log.info(`bus: opened ${busPath()} (schema v${version})`);
+  } catch (e) {
+    log.error(`bus: FAILED to open ${busPath()} — the fleet bus is unavailable`, e);
+    throw e;
+  }
 
   // Drop the default Electron menu (File/Edit/View/Window/Help). We don't ship
   // any custom menu commands; the strip just eats vertical space.
@@ -621,6 +650,11 @@ function shutdownSubsystems(): void {
   stopHibernationSweeper();
   closeAllSandboxConnections();
   disposeVoice();
+  // Last: a clean close checkpoints the WAL back into the main file and
+  // truncates it to 0 (spike #109 arm 3 measured ~600 KB left behind by a
+  // crash). Committed rows survive either way — WAL recovery reads them on the
+  // next open — so this is hygiene, not durability.
+  closeBus();
 }
 
 if (!ORCHESTRA_CLI_MODE) {
