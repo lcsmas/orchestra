@@ -172,7 +172,8 @@ import { initBrowserPanels } from './browser-panel';
 import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
 import { initBus, closeBus, busPath } from './bus';
-import { startBusWake, stopBusWake } from './bus-wake';
+import { startBusWake, stopBusWake, setWakeRoster, setWakeDeliver } from './bus-wake';
+import { sdkStartAndDeliver } from './sdk-delivery';
 import {
   ensureRoot,
   pruneOrphanedWorkspaces,
@@ -404,6 +405,22 @@ async function createMainWindow() {
   // gated on it succeeding: the sweep tolerates `getBus() === null` (D1) and a
   // bus that opens later is picked up by the next tick. SHIPS OFF — the switch
   // (#118) defaults to false, so out of the box this only COUNTS would-have-woken.
+  // The roster is injected, not imported by bus-wake: `store.ts` reaches the
+  // platform seam through a directory import that node's strip-types test
+  // runner cannot resolve, and importing it there would make the whole wake
+  // module untestable under `pnpm run test`.
+  setWakeRoster(() =>
+    store.workspaces.map((ws) => ({
+      reader: ws.id,
+      // An archived workspace's session is a frozen leftover; waking it would
+      // resurrect a workspace the human retired. `ws.archived` is the flag the
+      // #90 watchdog gates on too (session-watchdog.ts:233).
+      wakeable: !ws.archived && !!ws.worktreePath,
+    })),
+  );
+  // `sdkStartAndDeliver` is the cycle-safe seam over sdkWake: it lazy-starts a
+  // session (resuming prior context) and delivers the order as that turn.
+  setWakeDeliver((wsId, text) => sdkStartAndDeliver(wsId, text));
   startBusWake();
   // Stop the agent processes of long-idle workspaces to reclaim their memory;
   // the conversation survives (terminal `--continue`, SDK sdkSessionId) so a
