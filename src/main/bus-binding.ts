@@ -45,6 +45,40 @@ export function currentAbi(): string {
 }
 
 /**
+ * In a packaged app, the absolute path to the UNPACKED better_sqlite3.node.
+ *
+ * WHY THIS IS PINNED AND NOT LEFT TO `bindings`. electron-builder's `asarUnpack`
+ * COPIES the file out of the archive — it does not remove it — so a packaged app
+ * carries the .node in BOTH `app.asar` and `app.asar.unpacked`. Left to resolve
+ * itself, better-sqlite3 can load the in-ARCHIVE copy. Measured: the G6 arm
+ * renamed the unpacked binary away and the app booted the bus ANYWAY, off the
+ * asar copy (scripts/verify-bus-packaged-boot.sh caught it). That fallback is
+ * not something to rely on — loading a native module from inside an asar works
+ * only via Electron's fs shim, is documented as unsupported, and would make
+ * "which binary am I actually running" unanswerable at exactly the moment an ABI
+ * mismatch needs diagnosing. So: name the unpacked path explicitly, and let it
+ * fail loudly if it is missing.
+ */
+export function unpackedBindingPath(): string | null {
+  if (!HERE.includes(`app.asar${path.sep}`) && !HERE.includes('app.asar/')) return null;
+  const root = HERE.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`).replace(
+    'app.asar/',
+    'app.asar.unpacked/',
+  );
+  // dist-electron/ -> the app root, then into node_modules.
+  const appRoot = path.resolve(root, '..');
+  const p = path.join(
+    appRoot,
+    'node_modules',
+    'better-sqlite3',
+    'build',
+    'Release',
+    'better_sqlite3.node',
+  );
+  return fs.existsSync(p) ? p : null;
+}
+
+/**
  * Absolute path to a per-ABI binding built by scripts/build-bus-abi.mjs, or null
  * when none exists for this runtime (the packaged app: it ships the binding in
  * node_modules at the right ABI already, so no override is wanted).
@@ -76,7 +110,10 @@ type DatabaseCtor = new (file: string, opts?: Record<string, unknown>) => unknow
  */
 export function loadDatabaseCtor(): DatabaseCtor {
   const Base = require_('better-sqlite3') as DatabaseCtor;
-  const binding = abiBindingPath();
+  // Packaged: pin the UNPACKED .node (see unpackedBindingPath for why).
+  // Dev/test: pin the per-ABI build. Neither is a fallback for the other —
+  // they apply to disjoint situations.
+  const binding = unpackedBindingPath() ?? abiBindingPath();
   if (!binding) return Base;
   // Hand the wrapper our per-ABI binding instead of letting `bindings` resolve
   // whatever is in node_modules. Never mutate the installed copy: the suite and
