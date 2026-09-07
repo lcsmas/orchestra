@@ -88,7 +88,7 @@ export interface BusDecisionGate {
 // ─── Schema ─────────────────────────────────────────────────────────────────
 
 /** Bumped by appending a migration to MIGRATIONS; never edit a shipped one. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /**
  * Forward-only migrations, indexed by the version they PRODUCE. `migrate()`
@@ -168,6 +168,35 @@ const MIGRATIONS: Record<number, string> = {
     );
     CREATE INDEX IF NOT EXISTS idx_gates_open
       ON decision_gates(run_id) WHERE resolved_at IS NULL;
+  `,
+  2: `
+    -- SHADOW MIRROR (#116). Every send on an OLD, still-authoritative channel
+    -- also lands as a messages row; THIS table records what the old channel
+    -- actually did with that same send, so the two can be compared.
+    --
+    -- Separate table rather than a column on messages, deliberately: messages
+    -- is the bus's own total order and will outlive shadow mode, whereas every
+    -- column here is scaffolding that gets DROPPED when the last mechanism is
+    -- promoted (ADR 0002: "the old channel is removed two waves after
+    -- promotion"). Keeping the temporary shape out of the permanent table is
+    -- what makes that removal a DROP TABLE instead of a migration.
+    CREATE TABLE IF NOT EXISTS mirror_records (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id     TEXT NOT NULL,
+      mechanism  TEXT NOT NULL,     -- 'peer-message' (shared/bus-mirror.ts)
+      send_id    TEXT NOT NULL,     -- one id per SEND, minted by the host
+      sequence   INTEGER,           -- the messages.sequence mirrored, NULL if the insert failed
+      outcome    TEXT NOT NULL,     -- 'live' | 'inbox' | 'withdrawn' (the OLD channel's fate)
+      sender     TEXT NOT NULL,
+      recipient  TEXT,
+      created_at INTEGER NOT NULL
+    );
+    -- The duplicate detector's primitive. NOT a unique index: a duplicate must
+    -- be RECORDABLE, not refused -- refusing it at the DB would make the
+    -- divergence counter structurally unable to ever leave zero, which is the
+    -- exact "counter that never moves" this ticket's T116.4 calls a disproof.
+    CREATE INDEX IF NOT EXISTS idx_mirror_send ON mirror_records(run_id, send_id);
+    CREATE INDEX IF NOT EXISTS idx_mirror_mechanism ON mirror_records(run_id, mechanism, id);
   `,
 };
 
@@ -431,6 +460,74 @@ export function openGates(db: BusDb, runId: string): BusDecisionGate[] {
       'SELECT * FROM decision_gates WHERE run_id=? AND resolved_at IS NULL ORDER BY opened_at, id',
     )
     .all(runId) as BusDecisionGate[];
+}
+
+// ─── Shadow mirror (#116) ───────────────────────────────────────────────────
+
+/** One `mirror_records` row — what the OLD channel did with a send the bus
+ *  shadowed. `sequence` is NULL when the messages insert itself failed. */
+export interface BusMirrorRecord {
+  id: number;
+  run_id: string;
+  mechanism: string;
+  send_id: string;
+  sequence: number | null;
+  outcome: string;
+  sender: string;
+  recipient: string | null;
+  created_at: number;
+}
+
+export interface MirrorRecordInput {
+  runId: string;
+  mechanism: string;
+  sendId: string;
+  sequence: number | null;
+  outcome: string;
+  sender: string;
+  recipient?: string | null;
+}
+
+/** Record what the old channel did with one shadowed send. */
+export function recordMirror(db: BusDb, input: MirrorRecordInput): number {
+  const info = db
+    .prepare(
+      `INSERT INTO mirror_records
+         (run_id, mechanism, send_id, sequence, outcome, sender, recipient, created_at)
+       VALUES (?,?,?,?,?,?,?,?)`,
+    )
+    .run(
+      input.runId,
+      input.mechanism,
+      input.sendId,
+      input.sequence,
+      input.outcome,
+      input.sender,
+      input.recipient ?? null,
+      Date.now(),
+    );
+  return Number(info.lastInsertRowid);
+}
+
+/** How many bus `messages` rows exist for one shadowed send.
+ *
+ *  Counted from mirror_records rather than from messages because a message body
+ *  is not unique — two agents can legitimately send identical text — so only the
+ *  host-minted `send_id` can tell "mirrored twice" from "sent twice". */
+export function mirroredRowCount(db: BusDb, runId: string, sendId: string): number {
+  const row = db
+    .prepare(
+      'SELECT COUNT(*) AS n FROM mirror_records WHERE run_id=? AND send_id=? AND sequence IS NOT NULL',
+    )
+    .get(runId, sendId) as { n: number };
+  return Number(row.n);
+}
+
+/** Every mirror record of a run, oldest first — the pane's and bus-status's read. */
+export function mirrorRecords(db: BusDb, runId: string): BusMirrorRecord[] {
+  return db
+    .prepare('SELECT * FROM mirror_records WHERE run_id=? ORDER BY id')
+    .all(runId) as BusMirrorRecord[];
 }
 
 // ─── Boot ───────────────────────────────────────────────────────────────────
