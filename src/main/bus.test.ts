@@ -220,6 +220,60 @@ test('send() refuses an unknown kind at the WRITE boundary', (t) => {
   );
 });
 
+test('send() refuses a whitespace-only runId or sender, not just an empty one', (t) => {
+  // COVERS: the `.trim()` in send()'s runId/sender guards.
+  // MUTANT: drop `?.trim()` back to a bare falsy check.
+  // WHY: '' was already refused but '   ' was accepted, so a whitespace handle
+  // became a DISTINCT reader — cursors and deliveries key on the raw string, so
+  // messages addressed to '  ops  ' are invisible to every relève by 'ops' and
+  // nothing anywhere reports a problem. Reported by the adversarial review (F6).
+  const db = tmpBus(t);
+  for (const bad of ['', '   ', '\t', '\n']) {
+    assert.throws(
+      () => send(db, { runId: bad, sender: 'ops', kind: 'status', body: 'x' }),
+      /runId is required/,
+      `runId ${JSON.stringify(bad)} must be refused`,
+    );
+    assert.throws(
+      () => send(db, { runId: RUN, sender: bad, kind: 'status', body: 'x' }),
+      /sender is required/,
+      `sender ${JSON.stringify(bad)} must be refused`,
+    );
+  }
+  // Positive control: a legitimate handle with INTERNAL spaces is still fine —
+  // the guard must reject blank, not reject spaces.
+  assert.equal(send(db, { runId: RUN, sender: 'ops wave a', kind: 'status', body: 'x' }), 1);
+});
+
+test('every migration SQL string parses — no stray backtick terminates it early', (t) => {
+  // WHY THIS EXISTS, twice over. The migration lives in a template literal, and
+  // I twice wrote prose in a SQL comment containing backticks (`sequence`,
+  // `messages.run_id`). Each time the backtick CLOSED the literal and the whole
+  // file stopped parsing — caught only because the suite refused to load at all.
+  // That is luck, not a gate: the same mistake inside a rarely-run branch would
+  // ship. This asserts the shipped SQL is intact and executable.
+  const db = tmpBus(t);
+  // If a literal had been cut short, these tables would simply not exist.
+  const tables = (
+    db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as {
+      name: string;
+    }[]
+  ).map((r) => r.name);
+  for (const t of ['cursors', 'decision_gates', 'deliveries', 'messages', 'runs']) {
+    assert.ok(tables.includes(t), `${t} missing — a migration string was truncated`);
+  }
+  // And the indexes, which live at the END of the migration: a backtick anywhere
+  // above would drop them while still leaving the earlier tables present.
+  const indexes = (
+    db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'").all() as {
+      name: string;
+    }[]
+  ).map((r) => r.name);
+  for (const i of ['idx_messages_run', 'idx_messages_thread', 'idx_deliveries_outstanding', 'idx_gates_open']) {
+    assert.ok(indexes.includes(i), `${i} missing — the migration was cut short before its indexes`);
+  }
+});
+
 // ─── clause 2: ONE OUTSTANDING LOT PER READER ───────────────────────────────
 
 test('a second check before ack returns the SAME lot, byte-identical, folding in NOTHING', (t) => {

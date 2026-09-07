@@ -3,7 +3,7 @@
 // DB path shape: 10 concurrent short-lived CLI writers × 100 inserts each, with
 // a long-lived reader attached, into one WAL database.
 //
-// REQUIRED: 1000/1000 committed, 0 SQLITE_BUSY, 0 sequence gaps.
+// REQUIRED: 1000/1000 committed, 0 SQLITE_BUSY, 0 missing message bodies.
 //
 // AND THE MUST-FAIL CONTROL, which is the reason this script is worth running:
 // the same rig with `busy_timeout = 0` MUST LOSE INSERTS. The spike measured
@@ -11,9 +11,18 @@
 // creating contention at all, and the must-PASS arm then proves nothing — so a
 // clean control is a FAILURE of this script, not a pass.
 //
-// This drives the real src/main/bus.ts through a tiny CJS bridge (the module is
-// TypeScript and the writers are separate processes), so the PRAGMAs and the
-// insert path under test are the ones the app ships — not a copy.
+// THE WRITERS CALL THE SHIPPED open() AND send(), NOT A COPY OF THEM.
+//
+// This is the correction to a real defect in the first version of this rig: the
+// writer child used to require better-sqlite3 directly and hand-write its own
+// INSERT plus its own three pragmas, "mirroring" open(). That made the whole
+// script green with open()'s busy_timeout line DELETED — measured — i.e. the rig
+// certified the one condition the spike calls mandatory while never executing
+// it. A rig that re-implements its subject measures the re-implementation.
+//
+// So each writer is a real short-lived process running a .ts entry that imports
+// src/main/bus.ts and calls send() through a connection from open(). The only
+// knob is busyTimeoutMs, which is the variable under test.
 //
 // Usage: node scripts/verify-bus-contention.mjs [--writers N] [--inserts N]
 
@@ -37,29 +46,22 @@ const EXPECTED = WRITERS * INSERTS;
 // Each writer is a genuinely separate short-lived process with its own
 // connection — real spawn, real exit — because that is the shape the CLI will
 // have (#108 ruling Q2: the CLI writes SQLite directly, N concurrent writers).
-const WRITER_SRC = `
-const path = require('path');
-const ROOT = ${JSON.stringify(ROOT)};
-const file = process.argv[2];
-const n = Number(process.argv[3]);
-const who = process.argv[4];
-const busyTimeoutMs = Number(process.argv[5]);
+const WRITER_SRC = (root, file) => `
+import { open, send } from ${JSON.stringify(path.join(root, 'src/main/bus.ts'))};
 
-const Database = require(path.join(ROOT, 'node_modules/.pnpm/better-sqlite3@11.10.0/node_modules/better-sqlite3/lib/database.js'));
-const binding = path.join(ROOT, 'build', 'bus-abi', 'better_sqlite3-abi' + process.versions.modules + '.node');
+const n = Number(process.argv[2]);
+const who = process.argv[3];
+const busyTimeoutMs = Number(process.argv[4]);
 
-// Mirrors src/main/bus.ts open() exactly — same PRAGMAs, same order. The one
-// knob is busy_timeout, which is the variable under test.
-const db = new Database(file, { nativeBinding: binding });
-db.pragma('journal_mode = WAL');
-db.pragma('synchronous = NORMAL');
-db.pragma('busy_timeout = ' + busyTimeoutMs);
+// THE SHIPPED open(). If its busy_timeout line is deleted, this arm loses
+// inserts and the script fails — which is the whole point of the rig.
+const db = open(${JSON.stringify(file)}, { busyTimeoutMs });
 
-const stmt = db.prepare('INSERT INTO messages (run_id, thread_id, sender, recipient, kind, body, created_at) VALUES (?,?,?,?,?,?,?)');
 let committed = 0, busy = 0, otherErr = 0;
 for (let i = 0; i < n; i++) {
   try {
-    stmt.run('contention', null, who, null, 'dispatch', who + ':' + i, Date.now());
+    // THE SHIPPED send(), not a hand-written INSERT.
+    send(db, { runId: 'contention', sender: who, kind: 'dispatch', body: who + ':' + i });
     committed++;
   } catch (e) {
     // SQLITE_BUSY is the failure this rig is about. Anything else is a rig fault
@@ -118,7 +120,7 @@ async function runArm({ label, busyTimeoutMs, dir }) {
   );
   execFileSync('node', ['--experimental-strip-types', seedTs], { cwd: ROOT, stdio: 'pipe' });
 
-  const writerJs = writeTmp(dir, 'writer.cjs', WRITER_SRC);
+  const writerJs = writeTmp(dir, 'writer.ts', WRITER_SRC(ROOT, file));
   const readerJs = writeTmp(dir, 'reader.cjs', READER_SRC);
 
   const reader = spawn('node', [readerJs, file], { stdio: ['ignore', 'pipe', 'inherit'] });
@@ -129,7 +131,7 @@ async function runArm({ label, busyTimeoutMs, dir }) {
   const results = await Promise.all(
     Array.from({ length: WRITERS }, (_, i) => {
       return new Promise((resolve, reject) => {
-        const c = spawn('node', [writerJs, file, String(INSERTS), `w${i}`, String(busyTimeoutMs)], {
+        const c = spawn('node', ['--experimental-strip-types', writerJs, String(INSERTS), `w${i}`, String(busyTimeoutMs)], {
           stdio: ['ignore', 'pipe', 'inherit'],
         });
         let out = '';
@@ -160,13 +162,32 @@ async function runArm({ label, busyTimeoutMs, dir }) {
     const binding=path.join(${JSON.stringify(ROOT)},'build','bus-abi','better_sqlite3-abi'+process.versions.modules+'.node');
     const db=new Database(process.argv[2],{readonly:true,nativeBinding:binding});
     db.pragma('busy_timeout = 5000');
-    const rows=db.prepare("SELECT sequence FROM messages WHERE run_id='contention' ORDER BY sequence").all();
-    let gaps=0;
-    for(let i=1;i<rows.length;i++) if(rows[i].sequence !== rows[i-1].sequence+1) gaps++;
-    process.stdout.write(JSON.stringify({rowsInDb:rows.length,gaps,minSeq:rows[0]&&rows[0].sequence,maxSeq:rows[rows.length-1]&&rows[rows.length-1].sequence}));
+    const rows=db.prepare("SELECT sequence, body FROM messages WHERE run_id='contention' ORDER BY sequence").all();
+    // NO GAP CHECK HERE, DELIBERATELY. A "sequence gap" cannot detect a lost
+    // insert: a row that never existed consumes no sequence, so AUTOINCREMENT
+    // hands the next writer a contiguous number and gaps is structurally 0. The
+    // spike's own control table proves it -- it lost 128-295 inserts at gaps: 0.
+    // A metric pinned to 0 reads as evidence while asserting nothing, so it is
+    // gone rather than softened.
+    //
+    // These two CAN fire, and they check different failures:
+    //   strictlyIncreasing -- the ordering property AUTOINCREMENT actually buys.
+    //   missingBodies      -- WHICH writes were lost, by set difference against
+    //                         the exact bodies every writer was told to send.
+    let strictlyIncreasing=true;
+    for(let i=1;i<rows.length;i++) if(rows[i].sequence <= rows[i-1].sequence) strictlyIncreasing=false;
+    const seen=new Set(rows.map(r=>r.body));
+    const writers=Number(process.argv[3]), inserts=Number(process.argv[4]);
+    const missing=[];
+    for(let w=0;w<writers;w++) for(let i=0;i<inserts;i++){
+      const b='w'+w+':'+i; if(!seen.has(b)) missing.push(b);
+    }
+    process.stdout.write(JSON.stringify({rowsInDb:rows.length,strictlyIncreasing,missingCount:missing.length,missingSample:missing.slice(0,3),minSeq:rows[0]&&rows[0].sequence,maxSeq:rows[rows.length-1]&&rows[rows.length-1].sequence}));
   `,
   );
-  const truth = JSON.parse(execFileSync('node', [verifyJs, file], { encoding: 'utf8' }));
+  const truth = JSON.parse(
+    execFileSync('node', [verifyJs, file, String(WRITERS), String(INSERTS)], { encoding: 'utf8' }),
+  );
 
   const committed = results.reduce((a, r) => a + r.committed, 0);
   const busy = results.reduce((a, r) => a + r.busy, 0);
@@ -181,14 +202,16 @@ async function runArm({ label, busyTimeoutMs, dir }) {
     lost: EXPECTED - truth.rowsInDb,
     busy,
     otherErr,
-    gaps: truth.gaps,
+    strictlyIncreasing: truth.strictlyIncreasing,
+    missingCount: truth.missingCount,
+    missingSample: truth.missingSample,
     wallMs,
     readerReport,
   };
 }
 
 function line(r) {
-  return `  ${r.label.padEnd(28)} committed=${String(r.rowsInDb).padStart(4)}/${r.expected}  lost=${String(r.lost).padStart(4)}  BUSY=${String(r.busy).padStart(4)}  gaps=${r.gaps}  reads=${r.readerReport?.reads ?? '?'}@${r.readerReport?.readBusy ?? '?'}readBusy  ${r.wallMs}ms`;
+  return `  ${r.label.padEnd(28)} committed=${String(r.rowsInDb).padStart(4)}/${r.expected}  lost=${String(r.lost).padStart(4)}  BUSY=${String(r.busy).padStart(4)}  missingBodies=${String(r.missingCount).padStart(4)}  incr=${r.strictlyIncreasing}  reads=${r.readerReport?.reads ?? '?'}@${r.readerReport?.readBusy ?? '?'}readBusy  ${r.wallMs}ms`;
 }
 
 // ─── Run both arms ──────────────────────────────────────────────────────────
@@ -245,7 +268,13 @@ const problems = [];
 if (mustPass.rowsInDb !== EXPECTED)
   problems.push(`must-PASS lost ${mustPass.lost} of ${EXPECTED} inserts`);
 if (mustPass.busy !== 0) problems.push(`must-PASS saw ${mustPass.busy} SQLITE_BUSY`);
-if (mustPass.gaps !== 0) problems.push(`must-PASS has ${mustPass.gaps} sequence gaps`);
+if (!mustPass.strictlyIncreasing)
+  problems.push('must-PASS produced a non-increasing sequence — AUTOINCREMENT is not holding the total order');
+if (mustPass.missingCount !== 0)
+  problems.push(
+    `must-PASS is missing ${mustPass.missingCount} of the exact bodies the writers were told to send ` +
+      `(e.g. ${mustPass.missingSample.join(', ')}) — this is the check that can actually fire, unlike a sequence-gap count`,
+  );
 if (mustPass.otherErr !== 0) problems.push(`must-PASS hit ${mustPass.otherErr} non-BUSY errors`);
 if (!mustPass.readerReport || mustPass.readerReport.reads === 0)
   problems.push('the live reader recorded 0 reads — it was not actually attached, so this arm did not measure a reader/writer mix');
@@ -267,6 +296,6 @@ if (problems.length) {
 
 const lossPct = ((control.lost / EXPECTED) * 100).toFixed(1);
 console.log(
-  `\nPASS — ${mustPass.rowsInDb}/${EXPECTED} committed, 0 SQLITE_BUSY, 0 sequence gaps; ` +
+  `\nPASS — ${mustPass.rowsInDb}/${EXPECTED} committed, 0 SQLITE_BUSY, 0 missing bodies, sequence strictly increasing; ` +
     `control lost ${control.lost} (${lossPct}%) with busy_timeout=0, so the rig demonstrably creates contention.`,
 );

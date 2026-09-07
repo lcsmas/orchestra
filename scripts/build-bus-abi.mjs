@@ -116,24 +116,56 @@ for (const [runner, binding, expectOk, label] of arms) {
   if (!pass) console.log(`        ${r.detail}`);
 }
 
-// 4. And the trap itself, asserted rather than described: a bare require of the
-//    WRONG-ABI binding must SUCCEED. If this ever starts failing, better-sqlite3
-//    changed its loading strategy and a require-only check would no longer be
-//    silently wrong — but until then, this is why every gate constructs.
-const requireOnly = (() => {
+// 4. THE TRAP ITSELF, asserted so that it can fail.
+//
+// This arm used to require lib/database.js and call the success "proof" that a
+// require is not a gate. That assertion CANNOT FAIL: measured, it prints ok even
+// with the binding DELETED from the tree, so it was true for every state and the
+// `if (!requireOnly)` branch was dead code — decoration in the one script whose
+// entire thesis is "a require-only check is not a check".
+//
+// The honest form needs BOTH halves against the SAME wrong-ABI binding, in the
+// SAME runtime, in one command:
+//   (a) require SUCCEEDS   — the false pass a require-only gate would report
+//   (b) construct THROWS   — the truth only construction reveals
+// Only the pair is evidence. (a) alone is what fooled the spike; (b) alone would
+// not show that require is misleading.
+const trapScript = (binding) => `
+  const path = require('path');
+  let requireOk = false, constructOk = false, err = '';
+  try { require(${JSON.stringify(path.join(PKG, 'lib/database.js'))}); requireOk = true; } catch (e) { err = String(e.message); }
   try {
-    sh('node', ['-e', `require(${JSON.stringify(path.join(PKG, 'lib/database.js'))}); console.log('ok')`]);
-    return true;
-  } catch {
-    return false;
-  }
-})();
+    const D = require(${JSON.stringify(path.join(PKG, 'lib/database.js'))});
+    new D(':memory:', { nativeBinding: ${JSON.stringify(binding)} });
+    constructOk = true;
+  } catch (e) { err = String(e.message).split('\\n')[0]; }
+  console.log(JSON.stringify({ requireOk, constructOk, abi: process.versions.modules, err: err.slice(0, 90) }));
+`;
+
+// Run under node (ABI 127) pointed at the ELECTRON (130) binding: the mismatch.
+let trap;
+try {
+  trap = JSON.parse(sh('node', ['-e', trapScript(electronBinding)]).trim());
+} catch (e) {
+  console.error('FAIL: the require-trap arm did not run:', String(e.message).slice(0, 120));
+  process.exit(1);
+}
+
+const trapOk = trap.requireOk === true && trap.constructOk === false;
 console.log(
-  `  ${requireOnly ? 'PASS' : 'FAIL'}  require-only under node with the Electron binding installed → ${
-    requireOnly ? 'SUCCEEDS (the trap: this is why require() is not a gate)' : 'threw'
-  }`,
+  `  ${trapOk ? 'PASS' : 'FAIL'}  require-trap under node(abi ${trap.abi}) with the abi${electronAbi} binding: ` +
+    `require=${trap.requireOk ? 'SUCCEEDED' : 'threw'}, construct=${trap.constructOk ? 'SUCCEEDED' : 'THREW'}`,
 );
-if (!requireOnly) bad++;
+if (!trapOk) {
+  console.error(
+    trap.constructOk
+      ? '        construct SUCCEEDED against a wrong-ABI binding — the arm is not testing what it claims'
+      : '        require THREW, so this arm no longer demonstrates the trap (did better-sqlite3 stop deferring the native load?)',
+  );
+  bad++;
+} else {
+  console.log(`        ^ this is why every ABI gate here CONSTRUCTS. (${trap.err})`);
+}
 
 if (bad > 0) {
   console.error(`\nbuild-bus-abi: ${bad} arm(s) did not behave as required`);

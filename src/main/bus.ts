@@ -98,6 +98,15 @@ export const SCHEMA_VERSION = 1;
  */
 const MIGRATIONS: Record<number, string> = {
   1: `
+    -- NOT YET WRITTEN BY ANYTHING, AND DELIBERATELY UNCONSTRAINED IN v1.
+    -- No verb in #114 creates a run, and messages.run_id carries NO
+    -- REFERENCES runs(id) -- so a foreign_keys pragma reading back 1 is inert
+    -- here, and send() will accept a run_id that was never declared. That is
+    -- intentional for this ticket (the run lifecycle is #115) but it is a real
+    -- gap, not an oversight: until #115 lands, a mistyped run_id silently
+    -- creates a parallel universe of messages no reader is checking. Add the FK
+    -- WITH the writer, not before -- a REFERENCES against a table nothing
+    -- populates would reject every send() the CLI makes today.
     CREATE TABLE IF NOT EXISTS runs (
       id            TEXT PRIMARY KEY,
       kind          TEXT NOT NULL,          -- 'mission' | 'vague' (CONTEXT.md)
@@ -262,8 +271,10 @@ export function send(db: BusDb, input: SendInput): number {
   if (!MESSAGE_KINDS.includes(input.kind)) {
     throw new Error(`bus.send: unknown message kind ${JSON.stringify(input.kind)}`);
   }
-  if (!input.runId) throw new Error('bus.send: runId is required');
-  if (!input.sender) throw new Error('bus.send: sender is required');
+  // Trim-then-check: '' was already refused, but '   ' was accepted, so a
+  // whitespace handle became a distinct reader no relève would ever match.
+  if (!input.runId?.trim()) throw new Error('bus.send: runId is required');
+  if (!input.sender?.trim()) throw new Error('bus.send: sender is required');
   const info = db
     .prepare(
       `INSERT INTO messages (run_id, thread_id, sender, recipient, kind, body, created_at)

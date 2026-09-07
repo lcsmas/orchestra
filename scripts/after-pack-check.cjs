@@ -92,12 +92,31 @@ exports.default = async function afterPack(context) {
     }
   })(unpackedGlobDir);
 
+  // Print every path found, unconditionally. A count assertion whose inputs are
+  // invisible is hard to diagnose when it fires.
+  for (const f of found) console.log(`  • afterPack: bus binding present — ${path.relative(resources, f)}`);
+
   if (found.length === 0) {
     throw new Error(
       'afterPack: better_sqlite3.node is NOT in app.asar.unpacked — the fleet bus (#114) cannot ' +
         'open at boot, because a native .node cannot be loaded from inside app.asar.\n' +
         "Check package.json build.asarUnpack contains '**/node_modules/better-sqlite3/build/Release/*.node' " +
         "and that vite.config.ts keeps 'better-sqlite3' external."
+    );
+  }
+
+  // EXACTLY ONE. Probing found[0] while tolerating N was a real gap: the walk
+  // order is readdirSync's, not a guarantee, so a package shipping BOTH a
+  // 130 and a stray 127 binding would pass whenever the good one happened to
+  // come first — and the two-ABI decision (build/bus-abi/ holds an ABI-127 copy
+  // for the test suite) is precisely what makes a second binding plausible.
+  // Which one main would then load is undefined, so refuse the ambiguity.
+  if (found.length > 1) {
+    throw new Error(
+      `afterPack: ${found.length} better_sqlite3.node files are unpacked, expected exactly 1:\n` +
+        found.map((f) => `  - ${path.relative(resources, f)}`).join('\n') +
+        '\n\nWhich one the main process loads is resolution-order dependent, and only the ' +
+        'Electron-ABI (130) build works. A stray ABI-127 copy (e.g. build/bus-abi/) must not be packaged.'
     );
   }
 
