@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<!-- PROTOTYPE #107 (wayfinder map #104) — THROWAWAY
+     Logic walkthrough: orca delivery/ack/fencing/ask semantics adapted to Orchestra.
+     Free play + 3 guided scenarios = our 3 real field failures replayed on the new model. -->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>PROTO — Le bus de fleet (sémantique orca adaptée à Orchestra)</title>
+<style>
+  :root { --bg:#0b0c0f; --card:#14161b; --border:#262a33; --text:#d8dce3; --dim:#8b93a1;
+          --accent:#6ea8ff; --amber:#ffc857; --green:#5bd68b; --red:#ff7a7a; --violet:#c792ea; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:Inter,system-ui,sans-serif;
+         font-size:13.5px; line-height:1.5; }
+  .top { padding:14px 20px; border-bottom:1px solid var(--border); background:var(--card); }
+  .top h1 { font-size:16px; margin:0; } .top .sub { color:var(--dim); font-size:12px; }
+  .tabs { display:flex; gap:6px; padding:10px 20px 0; }
+  .tab { padding:7px 14px; border:1px solid var(--border); border-bottom:none; border-radius:8px 8px 0 0;
+         background:#101218; color:var(--dim); cursor:pointer; font-size:12.5px; }
+  .tab.on { background:var(--card); color:var(--text); font-weight:600; }
+  .main { display:grid; grid-template-columns: 300px 1fr 360px; gap:0; min-height:calc(100vh - 110px); }
+  .col { padding:16px; border-right:1px solid var(--border); }
+  h3 { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--dim); margin:14px 0 8px; }
+  h3:first-child { margin-top:0; }
+  button { background:#1b1e26; border:1px solid var(--border); color:var(--text); border-radius:7px;
+           padding:6px 10px; cursor:pointer; font-size:12px; margin:0 4px 6px 0; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:#1c2c47; border-color:var(--accent); color:var(--accent); font-weight:600; }
+  button:disabled { opacity:.35; cursor:default; }
+  .narr { background:#101218; border:1px solid var(--border); border-radius:9px; padding:11px 13px;
+          margin-bottom:12px; font-size:12.5px; min-height:52px; color:var(--dim); }
+  .narr b { color:var(--text); }
+  .narr.ok { border-color:rgba(91,214,139,.4); } .narr.bad { border-color:rgba(255,122,122,.4); }
+  table { width:100%; border-collapse:collapse; font-size:11.5px; font-family:ui-monospace,monospace; }
+  th { text-align:left; color:var(--dim); font-weight:600; padding:3px 6px; border-bottom:1px solid var(--border); }
+  td { padding:3px 6px; border-bottom:1px solid #1a1d24; }
+  .t-status{color:var(--dim)} .t-worker_done{color:var(--green)} .t-escalation{color:var(--red)}
+  .t-question{color:var(--amber)} .t-heartbeat{color:#556} .t-reply{color:var(--accent)}
+  .pill { padding:0 7px; border-radius:999px; font-size:10.5px; border:1px solid var(--border); }
+  .pill.outstanding{color:var(--amber);border-color:rgba(255,200,87,.5)}
+  .pill.acked{color:var(--green);border-color:rgba(91,214,139,.5)}
+  .pill.fenced{color:var(--red);border-color:rgba(255,122,122,.5)}
+  .pill.pending{color:var(--amber)} .pill.resolved{color:var(--green)}
+  .wk { display:flex; align-items:center; gap:8px; padding:5px 8px; border:1px solid var(--border);
+        border-radius:8px; margin-bottom:6px; font-size:12px; }
+  .dot{width:8px;height:8px;border-radius:50%;}
+  .log { font-family:ui-monospace,monospace; font-size:11px; color:var(--dim); }
+  .log div { padding:2px 0; border-bottom:1px solid #14161c; }
+  .log .hl { color:var(--text); }
+  .seqno { color:var(--violet); }
+  .dead { opacity:.45; text-decoration:line-through; }
+  .batchbox { border:1px dashed rgba(255,200,87,.5); border-radius:8px; padding:8px; margin:8px 0; }
+  .flash { animation: fl .8s; } @keyframes fl { 0%{background:rgba(110,168,255,.25)} 100%{background:none} }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>🚌 Le bus de fleet — joue le coordinateur</h1>
+  <div class="sub">Sémantique orca (messages ordonnés · lot rejoué jusqu'à l'ack · fencing · ask durable) adaptée à Orchestra. Tout l'état est visible à droite après chaque action.</div>
+</div>
+<div class="tabs" id="tabs"></div>
+<div class="main">
+  <div class="col" id="actions"></div>
+  <div class="col">
+    <div class="narr" id="narr">Choisis un scénario guidé (onglets) ou joue librement.</div>
+    <h3>Journal</h3><div class="log" id="log"></div>
+  </div>
+  <div class="col" id="state"></div>
+</div>
+<script>
+/* ---------- the machine (the thing being evaluated) ---------- */
+let S;
+function reset(){ S = { seq:0, msgs:[], deliveries:[], nextDid:1, gen:1, coordWaiting:false,
+  workers:{ A:{alive:true, hb:0, ask:null}, B:{alive:true, hb:0, ask:null} }, now:0, log:[] }; }
+reset();
+const CAP = { A:'dcap_A1', B:'dcap_B1' };            // capability tokens per dispatch
+let staleCapUsed = 'dcap_A0';                          // a token from a failed earlier retry
+
+function send(worker, type, body, cap){
+  // worker_done requires the CURRENT capability token — a late completion from a dead retry is rejected
+  if (type==='worker_done' && cap !== CAP[worker]) {
+    logline(`⛔ worker_done de ${worker} REJETÉ : jeton de capacité périmé (${cap}) — un retry mort ne peut pas clôturer le dispatch courant`, true);
+    return null;
+  }
+  S.seq++; const m = { seq:S.seq, from:worker, type, body, read:false };
+  S.msgs.push(m);
+  logline(`ins seq=${S.seq} <${type}> de ${worker} — écrit DURABLEMENT dans l'ordre total`);
+  if (S.coordWaiting) { S.coordWaiting=false; logline('🔔 PUSH : le coordinateur parké est réveillé à l\'instant de l\'insert', false, true); }
+  return m;
+}
+function check(){
+  // one outstanding delivery per run; replay the SAME batch until acked
+  const out = S.deliveries.find(d=>d.status==='outstanding' && d.gen===S.gen);
+  if (out) { logline(`check → REJOUE le lot #${out.id} tel quel (non acké) — at-least-once, jamais un lot différent`, false, true); return out; }
+  const unread = S.msgs.filter(m=>!m.read).slice(0,50);
+  if (!unread.length) { S.coordWaiting=true; logline('check --wait → rien : le coordinateur se PARQUE (réveil par push, pas par cron)'); return null; }
+  const d = { id:S.nextDid++, status:'outstanding', gen:S.gen, batch:unread.map(m=>m.seq) };
+  S.deliveries.push(d);
+  logline(`check → lot #${d.id} : messages [${d.batch.join(', ')}] (les plus anciens d'abord)`);
+  return d;
+}
+function ack(){
+  const out = S.deliveries.find(d=>d.status==='outstanding');
+  if (!out) { logline('ack → rien d\'outstanding'); return; }
+  if (out.gen !== S.gen) { out.status='fenced'; logline(`⛔ ack du lot #${out.id} REFUSÉ : génération ${out.gen} < ${S.gen} — l'ancien coordinateur est FENCÉ`, true); return; }
+  out.status='acked'; out.batch.forEach(s=>S.msgs.find(m=>m.seq===s).read=true);
+  logline(`ack lot #${out.id} → consommation DURABLE : ces messages ne reviendront jamais`, false, true);
+}
+function appRestart(){
+  logline('💥 REDÉMARRAGE APP — (l\'ancien monde re-livrait ici tout ce qu\'il "croyait" perdu…)');
+  const out = S.deliveries.find(d=>d.status==='outstanding');
+  logline(out ? `…le nouveau monde : SEUL le lot non-acké #${out.id} sera rejoué, À L'IDENTIQUE. Les lots ackés sont durables.`
+              : '…le nouveau monde : rien d\'outstanding → RIEN n\'est rejoué. Zéro doublon.', false, true);
+}
+function newCoord(){ S.gen++; S.coordWaiting=false; logline(`👑 Nouveau coordinateur (génération ${S.gen}) — les acks de l'ancien seront fencés`); }
+function askFrom(w){ S.workers[w].ask={t:S.now, resolved:false}; send(w,'question',`(bloquant) ${w} attend une réponse`);
+  logline(`${w} est BLOQUÉ sur son ask — durable : survivra à un timeout, reprenable par son ID`); }
+function reply(w){ const a=S.workers[w].ask; if(!a||a.resolved){logline('rien à répondre');return;}
+  a.resolved=true; S.seq++; S.msgs.push({seq:S.seq,from:'coord',type:'reply',body:`réponse à ${w}`,read:true});
+  logline(`réponse au ask de ${w} → ${w} se DÉBLOQUE et reprend`, false, true); }
+function tick(){ S.now+=5; Object.entries(S.workers).forEach(([k,w])=>{ if(w.alive){w.hb=S.now; send(k,'heartbeat','♡');} });
+  render(); }
+function kill(w){ S.workers[w].alive=false; logline(`☠️ ${w} meurt silencieusement (keeper down)`); }
+function staleScan(){ S.now+=10; let found=false;
+  Object.entries(S.workers).forEach(([k,w])=>{ if(S.now-w.hb>=10){found=true;
+    logline(`⏱️ ${k} : dernier heartbeat il y a ${S.now-w.hb} min → PÉRIMÉ, surfacé au coordinateur (message escalation)`, false, true);
+    send(k==='A'?'B':'A','escalation',`${k} stale`);}});
+  if(!found) logline('scan : tous les heartbeats sont frais'); }
+
+/* ---------- rendering ---------- */
+function logline(t,bad,ok){ S.log.unshift({t,bad,ok});
+  const n=document.getElementById('narr'); n.textContent=''; n.className='narr '+(bad?'bad':ok?'ok':'');
+  n.innerHTML=t; render(); }
+function render(){
+  document.getElementById('log').innerHTML = S.log.slice(0,14).map(l=>`<div class="${l.ok?'hl':''}">${l.t}</div>`).join('');
+  const st=document.getElementById('state');
+  st.innerHTML = `
+   <h3>Messages (ordre total)</h3>
+   <table><tr><th>seq</th><th>type</th><th>de</th><th>lu</th></tr>
+   ${S.msgs.slice(-9).map(m=>`<tr class="flash"><td class="seqno">${m.seq}</td><td class="t-${m.type}">${m.type}</td><td>${m.from}</td><td>${m.read?'✓':'—'}</td></tr>`).join('')}</table>
+   <h3>Livraisons (1 seule outstanding)</h3>
+   ${S.deliveries.slice(-4).map(d=>`<div class="batchbox">lot #${d.id} <span class="pill ${d.status}">${d.status}</span> gén.${d.gen}<br><small>[${d.batch.join(', ')}]</small></div>`).join('')||'<span style="color:var(--dim)">aucune</span>'}
+   <h3>Workers</h3>
+   ${Object.entries(S.workers).map(([k,w])=>`<div class="wk ${w.alive?'':'dead'}"><span class="dot" style="background:${w.alive?'var(--green)':'var(--red)'}"></span>${k}
+     ${w.ask&&!w.ask.resolved?'<span class="pill pending">bloqué sur ask</span>':''}
+     <span style="margin-left:auto;color:var(--dim)">hb: t+${w.hb}</span></div>`).join('')}
+   <h3>Coordinateur</h3>
+   <div class="wk"><span class="dot" style="background:var(--accent)"></span>génération ${S.gen}
+     ${S.coordWaiting?'<span class="pill pending">parké (--wait)</span>':''}
+     <span style="margin-left:auto;color:var(--dim)">t+${S.now}</span></div>`;
+}
+
+/* ---------- free play actions ---------- */
+function freeplay(){
+  document.getElementById('actions').innerHTML = `
+   <h3>Workers émettent</h3>
+   <button onclick="send('A','status','avance');">A : status</button>
+   <button onclick="send('B','status','avance');">B : status</button>
+   <button onclick="send('A','worker_done','fini',CAP.A);">A : worker_done ✅</button>
+   <button onclick="send('A','worker_done','fini (vieux retry)',staleCapUsed);">A : worker_done avec jeton PÉRIMÉ</button>
+   <button onclick="send('B','escalation','bloqué');">B : escalation</button>
+   <h3>Ask bloquant</h3>
+   <button onclick="askFrom('B')">B : ask (bloque B)</button>
+   <button onclick="reply('B')">Coordinateur : répondre à B</button>
+   <h3>Coordinateur</h3>
+   <button class="primary" onclick="check()">check (--wait si vide)</button>
+   <button class="primary" onclick="ack()">ack le lot</button>
+   <button onclick="newCoord()">💥 coordinateur remplacé (fencing)</button>
+   <h3>Le monde bouge</h3>
+   <button onclick="appRestart()">💥 redémarrage app</button>
+   <button onclick="tick()">⏲ +5 min (heartbeats)</button>
+   <button onclick="kill('A')">☠️ tuer A en silence</button>
+   <button onclick="staleScan()">⏱ +10 min & scan péremption</button>
+   <h3></h3><button onclick="reset();logline('remise à zéro');">↺ reset</button>`;
+}
+
+/* ---------- guided scenarios: our 3 REAL field failures ---------- */
+const SCEN = {
+ replay: { name:'🌊 L\'avalanche de 26 replays', steps:[
+  ()=>{ reset(); logline('<b>Le vécu :</b> l\'app a redémarré et a re-livré 26 messages DÉJÀ traités au coordinateur de la vague 6 — doublons en cascade, budget de tours brûlé. Rejouons-le sur le bus.'); },
+  ()=>{ send('A','status','rapport 1'); send('B','status','rapport 2'); send('A','worker_done','T1 fini',CAP.A); logline('3 messages arrivent pendant que le coordinateur travaille. Chacun a son <b>numéro d\'ordre définitif</b>.'); },
+  ()=>{ check(); logline('Le coordinateur fait <b>check</b> : il reçoit le lot #1 — les 3 messages, les plus anciens d\'abord.'); },
+  ()=>{ ack(); logline('Il <b>ack</b> : la consommation est écrite en base. <b>C\'est ça qui manquait</b> : avant, "consommé" ne vivait que dans la mémoire de l\'app.'); },
+  ()=>{ send('B','status','rapport 3'); check(); logline('Un 4e message arrive, nouveau lot #2 formé… et là —'); },
+  ()=>{ appRestart(); logline('💥 <b>Redémarrage.</b> L\'ancien monde re-livrait TOUT (« lost to a quit »). Le nouveau : les lots ackés ne reviennent jamais ; seul le lot #2 non-acké est rejoué — <b>à l\'identique, une fois</b>.'); },
+  ()=>{ check(); ack(); logline('<b>Verdict :</b> zéro doublon possible par construction. Le replay existe, mais c\'est un replay <i>du même lot jusqu\'à l\'ack</i> — pas une avalanche.'); } ]},
+ lost: { name:'📭 Le rapport de ship perdu', steps:[
+  ()=>{ reset(); logline('<b>Le vécu :</b> deux agents de release ont fini leur travail et leur rapport n\'est JAMAIS arrivé — l\'un avalé par le canal, l\'autre jamais envoyé. On a appris la release par le tag git.'); },
+  ()=>{ S.coordWaiting=true; render(); logline('Le coordinateur n\'a rien à faire : il se <b>parque</b> (check --wait). Pas de cron, pas de sonde toutes les 15 min.'); },
+  ()=>{ send('A','worker_done','v0.5.263 shippée',CAP.A); logline('Le ship termine → son <b>worker_done est un message typé, durable, ordonné</b>. Et regarde le journal : le coordinateur parké a été <b>réveillé par push</b> à l\'instant de l\'insert.'); },
+  ()=>{ check(); ack(); logline('Lot livré, acké. <b>Un rapport ne peut plus "ne pas partir"</b> : c\'est le même acte que finir la tâche — et s\'il partait pendant que le coordinateur est occupé, il attendrait dans l\'ordre, jamais dans le vide.'); },
+  ()=>{ send('A','worker_done','(vieux retry qui se réveille)',staleCapUsed); logline('<b>Bonus :</b> un vieux retry zombie tente de clôturer le dispatch → <b>rejeté par jeton de capacité</b>. Le "faux done tardif" qu\'on gérait par des refs gelées à la main est mort structurellement.'); } ]},
+ stall: { name:'🧊 L\'inbox que personne ne lit', steps:[
+  ()=>{ reset(); logline('<b>Le vécu :</b> un agent coincé, 43 messages parqués dans une boîte qui n\'est lue qu\'« au prochain tour »… qui ne venait jamais. Toi en vigie à 23h.'); },
+  ()=>{ tick(); logline('Heartbeats : chaque worker émet un ♡ toutes les 5 min. C\'est un <b>message comme un autre</b>, dans le même ordre total.'); },
+  ()=>{ kill('A'); logline('A meurt en silence — keeper down, aucun message d\'adieu. L\'ancien monde : invisible jusqu\'à ce que quelqu\'un remarque.'); },
+  ()=>{ staleScan(); logline('10 min sans ♡ → A est <b>déclaré périmé et SURFACÉ</b> : une escalation arrive au coordinateur par le bus. Pas un badge que tu dois voir — un événement qu\'il DOIT traiter.'); },
+  ()=>{ check(); ack(); logline('<b>Verdict :</b> le silence n\'existe plus comme état stable — il devient un message. (Notre watchdog v0.5.262 fait déjà la moitié app-locale de ça ; le bus le rend natif de bout en bout.)'); } ]}
+};
+let cur=null, step=0;
+function tabs(){
+  const t=document.getElementById('tabs');
+  t.innerHTML = `<div class="tab ${cur===null?'on':''}" onclick="cur=null;step=0;reset();logline('Jeu libre.');tabs();freeplay();">🎮 Jeu libre</div>` +
+   Object.entries(SCEN).map(([k,s])=>`<div class="tab ${cur===k?'on':''}" onclick="startScen('${k}')">${s.name}</div>`).join('');
+}
+function startScen(k){ cur=k; step=0; reset(); tabs();
+  document.getElementById('actions').innerHTML =
+   `<h3>Scénario guidé</h3><div class="narr">${SCEN[k].name} — avance pas à pas.</div>
+    <button class="primary" id="next" onclick="nextStep()">Étape suivante ▶</button>
+    <button onclick="startScen('${k}')">↺ recommencer</button>
+    <h3>Et ensuite ?</h3><div style="color:var(--dim);font-size:12px">À la fin, repasse en Jeu libre pour torturer le modèle toi-même (jeton périmé, fencing, double coordinateur…).</div>`;
+  nextStep(); }
+function nextStep(){ const s=SCEN[cur]; if(step<s.steps.length){ s.steps[step](); step++;
+  if(step===s.steps.length){ const b=document.getElementById('next'); if(b){b.disabled=true;b.textContent='Scénario terminé ✓';} } } }
+tabs(); freeplay(); render();
+</script>
+</body>
+</html>
