@@ -194,3 +194,101 @@ the read-only pane, shadow-mode dual-write and its promotion bar, heartbeat
 staleness and escalation, fencing/generation bumps. The spike's own NOT VERIFIED
 list still stands for scale (aged DB, millions of rows, retention), non-linux
 platforms, network filesystems, and `synchronous=NORMAL` under host power loss.
+
+---
+
+## Shadow mirror (#116) — the old channel also lands in the bus
+
+Shadow mode (ADR 0002 "coexistence until proven", #108 Q8a). The OLD peer-message
+channel stays **authoritative**; the host ALSO writes each send into the bus and
+records what the old channel actually did with it, so the two can be compared.
+Agents change nothing. Promotion bar: 2 complete waves at 0/0/0 divergence.
+
+### Files
+
+| File | What |
+|---|---|
+| `src/shared/bus-mirror.ts` | The PURE half — outcome mapping + the divergence accumulator. No Electron imports, so it is unit- and mutation-testable directly. |
+| `src/main/bus-mirror.ts` | The IMPURE half — run id, the guarded insert, the report builder. |
+| `src/main/bus.ts:492` | `recordMirror` / `mirroredRowCount` (`:517`) / `mirrorRecords` (`:527`) — persistence, in the ONE schema owner. |
+| `src/main/bus.ts:172` | Migration **v2**, `mirror_records`. |
+
+### The one invariant
+
+`mirrorDispatch()` (`src/main/bus-mirror.ts:100`) is **read-only with respect to
+delivery**: it runs AFTER the old channel produced its result, returns an outcome
+(never a `MessageResult`), and never throws. A bus failure LOGS and CONTINUES.
+
+Wired as a **wrapper** — `dispatchMessageRequest` (`src/main/workspaces.ts:2771`)
+calls an untouched `dispatchMessageRequestUnmirrored` and returns `res` verbatim.
+Deliberately not N calls inside the body: that body has twelve `return`s, and a
+per-return mirror is one that silently misses the path added next — which would
+surface as a permanently non-zero `missed` nobody could attribute.
+
+### The three outcomes (`outcomeFor`, `src/shared/bus-mirror.ts:52`)
+
+`live` (SDK turn started, PTY write, or a woken agent — `started` maps here),
+`inbox` (parked durably), `withdrawn` (`ok:false`). `ok:false` is checked FIRST,
+before `delivery`, so a stale field on a failed dispatch can never be recorded as
+a delivery. A `withdrawn` send with no bus row is **agreement, not a miss** — the
+old channel delivered nothing either.
+
+### Divergence counters — the FROZEN inter-ticket contract (ledger #123 §Seams)
+
+`{ mechanism, missed, duplicate, lostWake }[]`, scoped to a run, wrapped in
+`BusDivergenceReport` (`src/shared/bus-mirror.ts:190`) which also carries
+`busAvailable`. Three surfaces, ONE builder (`busDivergenceReport`,
+`src/main/bus-mirror.ts:153`) so they cannot drift:
+
+| Surface | Anchor |
+|---|---|
+| IPC `bus:divergence` | `src/main/api-handlers.ts:213` / `:459` |
+| socket `/busStatus` | `src/main/hooks-server.ts:378` |
+| `orchestra bus-status` | `src/cli/index.ts:1169` |
+
+The counters live in **main-process memory, not in the bus**: D1 says `getBus()`
+may be null at any moment, and the counter that must record "the bus was down for
+this send" cannot itself live in the bus.
+
+`busAvailable` is printed unconditionally, and that is load-bearing — without it
+an all-zero row on a healthy run and an all-zero row taken while nothing could be
+written are the same observable.
+
+`duplicate` keys on a host-minted `send_id`, never on the body: two agents sending
+identical text are two SENDS. `mirror_records` deliberately carries **no unique
+index** on `send_id` — a duplicate must be RECORDABLE, not refused, or the counter
+could never leave zero.
+
+### D1 consequence (LEAD reconciliation, ledger #123)
+
+Bus down + an authoritative mechanism → the mechanism reads **OFF for the run**
+(`busAvailable: false`) **and** `missed` increments. Both halves, because either
+alone is unobservable: counting without saying why, or saying why while forgetting
+the sends.
+
+### Gates
+
+`src/main/bus-mirror.test.ts` runs the **real** `dispatchMessageRequestUnmirrored`
+body, extracted from source and type-stripped, against a **real** SQLite file —
+`workspaces.ts` cannot be imported under `node --test` (Electron platform seam).
+The stripper is narrow and asserts what it removed; an audit confirmed all 12
+`return`s, 4 `await`s, 10 `if`s and every collaborator survive stripping. A
+source-binding test fails loudly if the wrapper shape changes, and has its own
+must-fail arm (a body that merely *mentions* `mirrorDispatch` must not satisfy it).
+
+```bash
+node --test --experimental-strip-types src/main/bus-mirror.test.ts    # 13 pass
+node --test --experimental-strip-types src/shared/bus-mirror.test.ts  #  9 pass
+```
+
+Mutants seen RED (C10): the wrapper manufacturing a result; the catch's
+`log.error` removed (silent swallow); the duplicate detector removed; `outcomeFor`
+collapsed to one value — the last is T116.3's own stated disproof.
+
+### Not covered here
+
+The run LIFECYCLE (#115 owns `runs` rows; the mirror names a run from
+`$ORCHESTRA_RUN_ID` or a per-boot id and never INSERTs into `runs`, which
+migration v1 documents as legal). `lostWake` is exposed and tested but is
+INCREMENTED by the staleness sweep #117 owns — this ticket ships the counter, not
+the sweep. The pane rendering these numbers is #118.

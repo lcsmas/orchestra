@@ -3,6 +3,7 @@ import type { VoiceEvent, VoiceStartOptions } from './voice';
 import type { DesignPick } from './design-mode';
 import type { WorktreeSizes } from './worktree-sizes';
 import type { InboxActionOutcome, InboxBlock } from './inbox-blocks';
+import type { BusDivergenceReport } from './bus-mirror';
 import type {
   Account,
   AccountUsageStatus,
@@ -81,6 +82,18 @@ export interface OrchestraAPI {
   /** Optional-setup status (e.g. is a Linear API key configured?). Drives the
    *  sidebar's "needs setup" notice. */
   getEnvStatus: () => Promise<EnvStatusItem[]>;
+
+  /** Shadow-mirror divergence counters for the CURRENT RUN (#116).
+   *
+   *  THE FROZEN INTER-TICKET CONTRACT (ledger #123 §Seams): the shape below is
+   *  what #118's pane renders and what `orchestra bus-status` prints, and it was
+   *  written into the ledger BEFORE either side was coded so neither had to wait
+   *  on the other. Changing it is a §Open-questions entry, not a unilateral edit.
+   *
+   *  Never rejects when the bus is down: the counters are held in main-process
+   *  memory precisely so a bus outage is COUNTED (as `missed`) rather than lost
+   *  with the connection (LEAD ruling D1 — `getBus()` may be null at any moment). */
+  getBusDivergence: () => Promise<BusDivergenceReport>;
 
   /** Where the active Linear API key comes from ('stored' | 'env' | 'none'). */
   getLinearKeySource: () => Promise<LinearKeySource>;

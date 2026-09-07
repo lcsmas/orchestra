@@ -52,6 +52,7 @@ import { syncAccountInheritance } from './account-inherit';
 import { refreshAccountsNow } from './account-usage';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
+import { mirrorDispatch } from './bus-mirror.ts';
 import type { PeerOrigin } from '../shared/peer-messages.ts';
 import { INBOX_DELIMITER, sanitizeInboxBody } from '../shared/inbox-blocks.ts';
 import { reportedDeliveryFor, requiresInboxFallback } from '../shared/delivery-status.ts';
@@ -2768,6 +2769,33 @@ export async function wakeAgentWithPrompt(id: string, prompt: string): Promise<b
  * Only if waking fails do we fall back to the durable inbox file, which the
  * target drains into context on its next SessionStart. */
 export async function dispatchMessageRequest(
+  input: {
+    from?: string;
+    to: string;
+    text: string;
+  },
+): Promise<MessageResult> {
+  // SHADOW MIRROR (#116). The old channel runs FIRST and UNCHANGED; the mirror
+  // sees only its finished result and returns void. Written as a wrapper around
+  // the untouched body rather than as N calls inside it, deliberately:
+  // `dispatchMessageRequestUnmirrored` has SIX `return`s on five different
+  // paths, and a mirror bolted onto each one is a mirror that silently misses a
+  // path the day a seventh is added -- which would show up as a permanently
+  // non-zero `missed` nobody could attribute. One wrapper cannot miss a path.
+  //
+  // The mirror is READ-ONLY with respect to delivery: `res` is returned
+  // untouched, `mirrorDispatch` never throws, and nothing here awaits it.
+  const res = await dispatchMessageRequestUnmirrored(input);
+  mirrorDispatch({
+    sender: input.from ?? 'external',
+    recipient: input.to,
+    body: input.text.trim().slice(0, MESSAGE_MAX_CHARS),
+    result: res,
+  });
+  return res;
+}
+
+async function dispatchMessageRequestUnmirrored(
   input: {
     from?: string;
     to: string;

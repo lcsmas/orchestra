@@ -30,6 +30,7 @@ import {
 } from './linear-tickets';
 import { setLinearApiKey, clearLinearApiKey } from './secrets';
 import { getEnvStatus } from './env-status';
+import { busDivergenceReport } from './bus-mirror.ts';
 import {
   addRepoByPath,
   removeRepoByPath,
@@ -209,6 +210,7 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   openExternal: 'app:openExternal',
   getAppVersion: 'app:version',
   getEnvStatus: 'app:envStatus',
+  getBusDivergence: 'bus:divergence',
   getLinearKeySource: 'linear:keySource',
   checkLinearKey: 'linear:checkKey',
   saveLinearKey: 'linear:saveKey',
@@ -451,6 +453,10 @@ export const apiHandlers: ApiHandlerTable = {
   // Optional-setup status (e.g. Linear API key present?). The renderer reads
   // this on load and on a slow poll to surface a small "needs setup" notice.
   getEnvStatus: async () => getEnvStatus(),
+  // #116 shadow mirror. Cannot throw when the bus is down — busDivergenceReport
+  // reports `busAvailable: false` instead, so the pane renders a state rather
+  // than an error boundary (D1).
+  getBusDivergence: async () => busDivergenceReport(),
 
   // ---------- Linear API key (set in-app, stored encrypted) ----------
 

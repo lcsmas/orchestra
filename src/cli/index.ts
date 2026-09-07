@@ -12,6 +12,7 @@ import {
   reloadExitCode,
   type ReloadResult,
 } from '../shared/reload-skills.ts';
+import type { DivergenceCounters } from '../shared/bus-mirror.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -180,6 +181,10 @@ Usage:
   orchestra status <text...>                     Set THIS workspace's one-line status note —
                                                  shown under its sidebar row and in peers
   orchestra status --clear                       Clear the status note
+  orchestra bus-status                           Print the shadow mirror's divergence counters
+                                                 for the current run (missed / duplicate /
+                                                 lost-wake per mechanism), and whether the bus
+                                                 is reachable at all. Read-only.
   orchestra linear add <url|TEAM-123> [--repo <path>] [--spawn] [--model <m>]
                                                  Pin a Linear ticket into the sidebar
                                                  (--spawn: also create a worktree + agent for it,
@@ -1157,6 +1162,39 @@ async function main(argv: string[]): Promise<void> {
       if (!res.ok) fail(res.error ?? 'failed to set status');
       process.stdout.write(
         res.statusText ? `Status set: ${res.statusText as string}\n` : 'Status cleared.\n',
+      );
+      return;
+    }
+
+    case 'bus-status': {
+      // #116. READ-ONLY: prints the shadow mirror's divergence counters for the
+      // current run and nothing else. It has no write path by construction --
+      // /busStatus takes no input.
+      //
+      // The numbers come from the app's own builder over the socket rather than
+      // being re-derived here from the DB. Re-deriving them would give a SECOND
+      // implementation of the same aggregate, and T116.4 requires the CLI and
+      // the pane to print the SAME numbers -- two assemblers is how they drift.
+      const res = await request('/busStatus', {});
+      if (!res.ok) fail(res.error ?? 'failed to read bus status');
+      const counters = (res.counters as DivergenceCounters[] | undefined) ?? [];
+      process.stdout.write(`run: ${(res.runId as string) ?? '?'}\n`);
+      // Printed unconditionally, not only when it is false: an operator reading
+      // a row of zeros must be able to tell "nothing diverged" from "nothing
+      // could be written" without going to the log (D1).
+      process.stdout.write(`bus: ${res.busAvailable ? 'available' : 'UNAVAILABLE'}\n`);
+      if (counters.length === 0) {
+        process.stdout.write('No mechanisms mirroring.\n');
+        return;
+      }
+      const rows = counters.map((c) => ({
+        mechanism: c.mechanism,
+        missed: String(c.missed),
+        duplicate: String(c.duplicate),
+        'lost-wake': String(c.lostWake),
+      }));
+      process.stdout.write(
+        `${table(rows, ['mechanism', 'missed', 'duplicate', 'lost-wake'])}\n`,
       );
       return;
     }

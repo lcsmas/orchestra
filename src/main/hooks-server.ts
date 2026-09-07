@@ -25,6 +25,7 @@ import {
   dispatchAccountsListRequest,
   dispatchStatusRequest,
 } from './workspaces';
+import { busDivergenceReport } from './bus-mirror.ts';
 import {
   dispatchLinearAddRequest,
   dispatchLinearListRequest,
@@ -374,6 +375,12 @@ export async function startHooksServer(): Promise<void> {
             } else {
               send(200, { ok: false, error: 'missing id' });
             }
+          } else if (route === '/busStatus') {
+            // #116. Read-only, no input: the shadow mirror's divergence
+            // counters for the current run, in the frozen ledger-#123 shape.
+            // Same builder the IPC method uses, so `orchestra bus-status` and
+            // #118's pane can never print different numbers.
+            send(200, { ok: true, ...busDivergenceReport() });
           } else if (route === '/whoami') {
             if (typeof msg.id === 'string') {
               send(200, dispatchWhoamiRequest({ id: msg.id }));
