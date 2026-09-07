@@ -196,6 +196,16 @@ export function setWakeDeliver(fn: WakeDeliver): void {
 
 // ─── The sweep ─────────────────────────────────────────────────────────────
 
+/** Where the sweep gets its connection. Defaults to the boot bus; a rig points
+ *  it at a temp file so the sweep can be driven end to end without an Electron
+ *  main process, and so the `null` arm (D1) can be exercised on purpose rather
+ *  than only in production. */
+let readBusDb: () => BusDb | null = getBus;
+
+export function __setBusReaderForTests(fn: () => BusDb | null): void {
+  readBusDb = fn;
+}
+
 let sweeping = false;
 
 /**
@@ -208,7 +218,7 @@ let sweeping = false;
  */
 export async function sweepBusWake(): Promise<void> {
   if (sweeping) return;
-  const db = getBus();
+  const db = readBusDb();
   if (!db) {
     // D1: no bus is not an error here and must not throw into the host path.
     // Nothing is lost — the next sweep re-reads durable state.
@@ -323,4 +333,17 @@ export function __resetBusWakeForTests(): void {
   counters.fired = 0;
   counters.counted = 0;
   counters.failed = 0;
+  switchOnForRun = null;
+  readBusDb = getBus;
+  readRoster = () => [];
+  deliverWake = async () => false;
+}
+
+/** Rig seam: freeze the switch for a driven sweep WITHOUT starting the timer or
+ *  the fs watcher. `startBusWake()` is the production path and does both; a unit
+ *  rig wants neither, but must still exercise the SAME frozen-per-run read that
+ *  ships rather than a second copy of the rule. */
+export function __freezeSwitchForTests(on: boolean): void {
+  setWakeSwitchReader(() => on);
+  switchOnForRun = readWakeSwitch();
 }
