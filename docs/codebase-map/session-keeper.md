@@ -157,10 +157,21 @@ completion, relaunch reattach + transcript, explicit-stop kill).
     ⚠️ **The turn-`result` clear in `consume()` is no longer blanket either**
     (same issue): it keeps entries whose turns are STILL in `session.queue`
     behind the one that just ended, which a full clear used to delete unrun.
-    Gate: `src/main/spawn-prompt-duplication.test.ts` (12 tests — the pure
+    Gates: `src/main/spawn-prompt-duplication.test.ts` (12 tests — the pure
     decision executed, an explicit control reproducing the pre-fix
-    misclassification so the gate cannot go vacuous, plus source assertions
-    pinning all three wiring points; each verified to redden on its mutant).
+    misclassification, plus source assertions pinning all three wiring points;
+    each verified to redden on its mutant) **and
+    `scripts/e2e-spawn-prompt-duplication.mjs`**, which drives the REAL
+    `sdkSend` + `recoverPendingPrompts` against a REAL store. Its `slow_init`
+    arm is the discriminating one — MEASURED 3/3 deterministic: **2 deliveries
+    unfixed, 1 fixed**. ⚠️ Two observables were VACUOUS first and are recorded
+    in that file so they are not re-tried: counting prompts YIELDED to the SDK
+    iterator (a duplicate parks at the turn gate and is never yielded) and
+    counting `sdkPendingPrompts` (the resend re-appends, restoring the count).
+    The sound observable is the `user-message` `agent:event` broadcast — the
+    transcript bubble itself. The `exactly_once` arm passes on the unfixed code
+    too (its turn completes before the pass can misjudge it) and is labelled
+    non-discriminating in the file rather than counted as a gate.
   - **`session/attach`** (`AgentSessionAttachEvent`, types.ts): emitted from
     the keeper-spawn `onAttached` callback when a genuine mid-turn reattach
     happens; the fold flips `running`/`turnStartedAt` so the reattached turn
