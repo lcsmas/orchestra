@@ -128,6 +128,39 @@ completion, relaunch reattach + transcript, explicit-stop kill).
     one entry was silently LOST (measured). Gates:
     `scripts/verify-peer-redelivery.mjs` (both arms, driving the REAL backfill
     over a real captured envelope) + `src/shared/pending-prompts.test.ts`.
+    ⚠️ **"Absent from the transcript" does NOT mean "lost" — a prompt the LIVE
+    session still holds is skipped (issue #112).** `recoverPendingPrompts` first
+    calls `partitionLivePrompts(pending, livePromptIds(wsId))`
+    (`agent-sdk.ts`); `livePromptIds` returns the uuids of `session.queue`
+    entries **plus `session.gateTurnUuid`** (a yielded turn has left the queue
+    but may not have flushed its user line yet), and an empty set when no
+    session is live — which is exactly the quit case, so the guard costs that
+    path nothing. Live entries are neither re-sent nor cleared:
+    `keepOnlyPendingPrompts` writes them back, and the owning session clears
+    them at its own turn boundary. **Why it matters:** the CLI writes a user
+    line only once it STARTS the turn, and on a big repo (a 55 KB `CLAUDE.md`
+    with 25 `@imports` + MCP handshakes) init takes tens of seconds — so a task
+    sent 4 seconds ago is byte-for-byte indistinguishable from one lost to a
+    quit. `startWorkspaceAgentHeadless` hits that window on EVERY spawn: it
+    sends the task, then the renderer mounts the new workspace's
+    `StructuredView` (panes mount for the whole LRU set, not just the active
+    one) which calls `agentSdkHistory` → straight into here. Field log, 4s
+    after the spawn: `re-sending 1 pending prompt(s) lost to a quit`. The
+    spawned agent got its brief TWICE (issue #112: two PRs for one brief) and
+    the clear destroyed the real insurance.
+    ⚠️ **`PendingPrompt.id` IS the turn's `rewindId`** — the same uuid that
+    becomes `SDKUserMessage.uuid` and therefore `session.queue[n].uuid`. That
+    is what makes the live check an exact identity match instead of a body
+    heuristic (two sends of the same brief, one live and one lost, separate
+    correctly). Minting a fresh `randomUUID()` there silently disarms the whole
+    guard — `livePromptIds` would match nothing, ever.
+    ⚠️ **The turn-`result` clear in `consume()` is no longer blanket either**
+    (same issue): it keeps entries whose turns are STILL in `session.queue`
+    behind the one that just ended, which a full clear used to delete unrun.
+    Gate: `src/main/spawn-prompt-duplication.test.ts` (12 tests — the pure
+    decision executed, an explicit control reproducing the pre-fix
+    misclassification so the gate cannot go vacuous, plus source assertions
+    pinning all three wiring points; each verified to redden on its mutant).
   - **`session/attach`** (`AgentSessionAttachEvent`, types.ts): emitted from
     the keeper-spawn `onAttached` callback when a genuine mid-turn reattach
     happens; the fold flips `running`/`turnStartedAt` so the reattached turn

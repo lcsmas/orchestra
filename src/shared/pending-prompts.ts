@@ -208,3 +208,23 @@ let idSeq = 0;
 function defaultId(): string {
   return `pp-${(++idSeq).toString(36)}-${Math.trunc(performance.now()).toString(36)}`;
 }
+
+/** Split pending entries into the ones the live session still HOLDS and the
+ *  ones eligible for quit-recovery — issue #112.
+ *
+ *  `recoverPendingPrompts` used to read "absent from the transcript" as "lost
+ *  to a quit", but a prompt still queued behind session init is absent too —
+ *  the CLI writes the user line only once it STARTS the turn. Every spawn hits
+ *  that window, so spawned agents were re-sent their brief and ran it twice.
+ *  Matching is on `PendingPrompt.id` (= the queue entry's uuid), not a time
+ *  window: a threshold would just be the same guess with a new constant.
+ *  Live entries are neither re-sent NOR cleared. See session-keeper.md. */
+export function partitionLivePrompts<T extends { id: string }>(
+  pending: readonly T[],
+  liveIds: ReadonlySet<string>,
+): { live: T[]; recoverable: T[] } {
+  const live: T[] = [];
+  const recoverable: T[] = [];
+  for (const p of pending) (liveIds.has(p.id) ? live : recoverable).push(p);
+  return { live, recoverable };
+}

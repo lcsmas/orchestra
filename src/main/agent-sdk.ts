@@ -96,6 +96,7 @@ import {
   countConsumedKeys,
   filterUnconsumedPrompts,
   normalizePendingPrompts,
+  partitionLivePrompts,
   pendingPromptKey,
   type PendingPrompt,
 } from '../shared/pending-prompts.ts';
@@ -1082,8 +1083,20 @@ async function consume(session: Session): Promise<void> {
         session.interruptRequested = false;
         // The turn ran to a boundary — the pending-prompt insurance (sdkSend)
         // has served its purpose; drop it so a later reopen can't replay.
+        // Only what this session no longer holds: a blanket clear also deleted
+        // the insurance for turns STILL queued behind this one, unrun (#112).
         if (store.getWorkspace(session.wsId)?.sdkPendingPrompts?.length) {
-          void clearPendingPrompts(session.wsId);
+          const stillQueued = new Set<string>();
+          for (const m of session.queue) if (m.uuid) stillQueued.add(m.uuid);
+          if (stillQueued.size === 0) {
+            void clearPendingPrompts(session.wsId);
+          } else {
+            const { live } = partitionLivePrompts(
+              normalizePendingPrompts(store.getWorkspace(session.wsId)?.sdkPendingPrompts),
+              stillQueued,
+            );
+            void keepOnlyPendingPrompts(session.wsId, live);
+          }
         }
         // Resolve any parked permission (belt & suspenders) and
         // open the gate so the next queued turn can proceed.
@@ -2349,7 +2362,9 @@ export async function sdkSend(
       // Per-SEND id (review finding F2): two senders posting the same body are
       // two distinct prompts, and the body-derived `key` alone cannot tell them
       // apart — which silently dropped one of them.
-      id: randomUUID(),
+      // It is the turn's `rewindId` — the same uuid as the queue entry — so
+      // `livePromptIds` can match it exactly. A fresh uuid disarms #112.
+      id: rewindId,
       key: pendingPromptKey({ text }),
       text,
       ...(peerOrigin ? { peer: { from: peerOrigin.from, name: peerOrigin.name } } : {}),
@@ -2627,11 +2642,23 @@ export async function sdkAttachIfDetached(wsId: string): Promise<boolean> {
  *  indicator, and the status dot. Entries the transcript DOES contain simply
  *  clear (the turn ran — possibly to completion while the app was closed).
  *  Runs AFTER sdkAttachIfDetached so a resend can never race the attach's
- *  session start. */
+ *  session start.
+ *
+ *  Entries the LIVE session still holds are skipped (issue #112) — see
+ *  `partitionLivePrompts`. */
 export async function recoverPendingPrompts(wsId: string, history: AgentEvent[]): Promise<void> {
   const ws = store.getWorkspace(wsId);
   const pending = normalizePendingPrompts(ws?.sdkPendingPrompts);
   if (pending.length === 0) return;
+  // "Absent from the transcript" != "lost": a prompt still queued behind
+  // session init is absent too. Ask the live session (#112, session-keeper.md).
+  const { live, recoverable } = partitionLivePrompts(pending, livePromptIds(wsId));
+  if (live.length > 0) {
+    log.info(
+      `agent-sdk: ${live.length} pending prompt(s) for ${wsId} are still live in this session — not recovering`,
+    );
+  }
+  if (recoverable.length === 0) return;
   // IDENTITY, not text (issue #57). The old predicate asked whether any
   // transcript user-text `includes()` the stored prompt. For an inter-agent
   // message that is false BY CONSTRUCTION: sdkSend stored the full
@@ -2646,10 +2673,10 @@ export async function recoverPendingPrompts(wsId: string, history: AgentEvent[])
   // cancels at most ONE pending entry, so two senders with identical bodies of
   // which only one ran leave the other recoverable instead of silently lost.
   const consumedKeys = countConsumedKeys(history.filter((e) => e.type === 'user-message'));
-  const missing = filterUnconsumedPrompts(pending, consumedKeys);
-  // Clear FIRST: the resend below re-appends via sdkSend, so leaving the old
-  // entries would double them; and a transcript-covered entry is done for good.
-  await clearPendingPrompts(wsId);
+  const missing = filterUnconsumedPrompts(recoverable, consumedKeys);
+  // Drop the recoverable ones first (the resend re-appends via sdkSend); KEEP
+  // the live ones — their session clears them at its own turn boundary (#112).
+  await keepOnlyPendingPrompts(wsId, live);
   if (missing.length === 0) return;
   log.info(`agent-sdk: re-sending ${missing.length} pending prompt(s) lost to a quit for ${wsId}`);
   // ONE TURN PER PROMPT (issue #57). This used to `missing.join('\n')`, fusing N
@@ -3171,6 +3198,36 @@ function clearPendingPrompts(wsId: string): Promise<void> {
     if (pendingPromptWrites.get(wsId) === next) pendingPromptWrites.delete(wsId);
   });
   return next;
+}
+
+/** Replace `ws.sdkPendingPrompts` with exactly `keep` — the partial form of
+ *  {@link clearPendingPrompts} the #112 recovery needs. Serialized on the same
+ *  chain, or a racing append would resurrect what we just resolved. */
+function keepOnlyPendingPrompts(wsId: string, keep: readonly PendingPrompt[]): Promise<void> {
+  const prev = pendingPromptWrites.get(wsId) ?? Promise.resolve();
+  const next = prev
+    .catch(() => {})
+    .then(() =>
+      persistWorkspacePatch(wsId, { sdkPendingPrompts: keep.length ? [...keep] : undefined }),
+    )
+    .catch((err) => log.warn(`agent-sdk: pending-prompt replace failed for ${wsId}`, err));
+  pendingPromptWrites.set(wsId, next);
+  void next.then(() => {
+    if (pendingPromptWrites.get(wsId) === next) pendingPromptWrites.delete(wsId);
+  });
+  return next;
+}
+
+/** Pending-prompt ids the live session still holds: queued turns PLUS
+ *  `gateTurnUuid` — a yielded turn has left the queue but may not have flushed
+ *  its user line yet. Empty when no session is live = the quit case (#112). */
+function livePromptIds(wsId: string): Set<string> {
+  const session = sessions.get(wsId);
+  if (!session) return new Set();
+  const ids = new Set<string>();
+  for (const m of session.queue) if (m.uuid) ids.add(m.uuid);
+  if (session.gateTurnUuid) ids.add(session.gateTurnUuid);
+  return ids;
 }
 
 /** Set the workspace's model. Persists to `ws.model` so the Model dropdown
