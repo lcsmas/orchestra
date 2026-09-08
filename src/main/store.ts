@@ -51,6 +51,13 @@ interface StoreShape {
    *  describes — a restored/copied store must not re-run a backfill it already
    *  had, nor skip one it never did. */
   linkBackfillVersion?: number;
+  /** Per-mechanism fleet-bus flip switches (#118). One boolean per mechanism,
+   *  ALL OFF by default — the coexistence ruling as data: the bus ships in
+   *  shadow mode and an adopter turns a mechanism on deliberately. These are the
+   *  LIVE values the settings UI edits; a RUN obeys the copy frozen onto its run
+   *  row at wave start (src/main/bus-runs.ts), never this field. Absent on
+   *  stores predating the feature → every mechanism off. */
+  busSwitches?: Partial<Record<string, boolean>>;
 }
 
 const DEFAULT: StoreShape = { repos: [], workspaces: [], accounts: [] };
@@ -345,6 +352,21 @@ class Store {
 
   get tickets(): PinnedTicket[] {
     return this.data.tickets ?? [];
+  }
+
+  /** The LIVE fleet-bus switches (#118). Raw — {@link normalizeSwitches} in
+   *  shared/bus-switches.ts is what turns this into a complete, validated set;
+   *  the store deliberately does not know the mechanism list, so adding a
+   *  mechanism never needs a store migration. */
+  getBusSwitches(): Partial<Record<string, boolean>> {
+    return this.data.busSwitches ?? {};
+  }
+
+  /** Persist the live switches. Touches NO run row — a flip is picked up by the
+   *  next run's freeze, never by a run already in flight (#118 T118.2). */
+  async setBusSwitches(next: Partial<Record<string, boolean>>): Promise<void> {
+    this.data.busSwitches = next;
+    await this.save();
   }
 
   /** Upsert one pinned ticket, keyed by canonical identifier — pinning the same

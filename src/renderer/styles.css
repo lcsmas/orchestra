@@ -5923,3 +5923,137 @@ button.danger-primary:active {
   padding: 0 6px;
   flex-shrink: 0;
 }
+
+/* ── Fleet-bus pane (#118) — read-only projection of the bus ──────────────── */
+.bus-pane {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: 16px 20px 40px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+}
+.bus-pane h3 {
+  margin: 18px 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.65;
+}
+.bus-switches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.bus-switch {
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.bus-switch[data-live-state='ON'] {
+  border-color: var(--accent, #4a9);
+  color: var(--accent, #4a9);
+}
+.bus-switch-note { opacity: 0.6; flex-basis: 100%; }
+
+.bus-run-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 4px 8px;
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.bus-run-row:hover { background: var(--hover, rgba(127, 127, 127, 0.12)); }
+.bus-run-row.is-selected { border-left-color: var(--accent, #4a9); }
+.bus-run-kind { opacity: 0.6; text-transform: uppercase; font-size: 10px; }
+.bus-run-title { font-weight: 600; }
+.bus-run-coordinator { opacity: 0.7; }
+.bus-run-flags { display: flex; gap: 4px; margin-left: auto; }
+.bus-run-flag {
+  padding: 1px 5px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 10px;
+  opacity: 0.55;
+}
+.bus-run-flag[data-frozen-state='ON'] {
+  opacity: 1;
+  border-color: var(--accent, #4a9);
+  color: var(--accent, #4a9);
+}
+.bus-run-closed { opacity: 0.5; font-style: italic; }
+
+.bus-messages, .bus-members, .bus-counters {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.bus-messages td, .bus-members td, .bus-counters td, .bus-counters th {
+  padding: 3px 8px 3px 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.bus-counters th { text-align: left; opacity: 0.6; font-weight: 500; }
+.bus-seq { opacity: 0.5; }
+.bus-kind { text-transform: uppercase; font-size: 10px; opacity: 0.8; }
+.bus-body { width: 100%; white-space: pre-wrap; }
+.bus-at, .bus-thread, .bus-recipient { opacity: 0.6; white-space: nowrap; }
+
+.bus-gate {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+.bus-gate-badge {
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  border: 1px solid var(--border);
+}
+.bus-gate.is-open .bus-gate-badge { border-color: #d29922; color: #d29922; }
+.bus-gate-question { flex: 1; }
+.bus-gate-ruling { opacity: 0.8; font-style: italic; }
+
+.bus-empty { padding: 6px 0; opacity: 0.55; font-style: italic; }
+
+/* The bus-unavailable state (D1 / T118.5). Deliberately LOUD and distinct from
+   any empty list — a dead bus must never read as a quiet one. */
+.bus-unavailable {
+  margin: 24px auto;
+  max-width: 640px;
+  padding: 16px 18px;
+  border: 1px solid #d29922;
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: rgba(210, 153, 34, 0.08);
+}
+.bus-unavailable-title {
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 6px;
+  color: #d29922;
+}
+.bus-unavailable-body { opacity: 0.85; margin-bottom: 10px; }
+.bus-unavailable-path, .bus-unavailable-error { margin-top: 4px; }
+.bus-unavailable-label {
+  display: inline-block;
+  min-width: 64px;
+  opacity: 0.6;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+.bus-unavailable code { user-select: text; word-break: break-all; }

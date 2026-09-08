@@ -179,7 +179,21 @@ type ApiMethodName = {
  *  (registered inline by src/main/voice.ts: high-frequency PCM, dev-gated). */
 type ServableApi = Omit<
   Pick<OrchestraAPI, ApiMethodName>,
-  'pickDirectory' | 'voiceAvailable' | 'voiceStart' | 'voicePcm' | 'voiceStop'
+  | 'pickDirectory'
+  | 'voiceAvailable'
+  | 'voiceStart'
+  | 'voicePcm'
+  | 'voiceStop'
+  // The bus pane's three READ-ONLY channels (#118) are registered by
+  // registerBusPaneIpc() in src/main/bus-pane.ts, not from this generic table.
+  // That is the point: the registrar iterates BUS_PANE_IPC_CHANNELS and REFUSES
+  // any entry marked `writes: true`, so the v1 read-only boundary is enforced by
+  // code at registration time. Routing them through the generic table would
+  // silently bypass that check the day someone adds a write handler.
+  | 'busSnapshot'
+  | 'busListRuns'
+  | 'busSwitches'
+  | 'setBusSwitches'
 >;
 
 /** Served backend methods that are not part of the renderer-facing

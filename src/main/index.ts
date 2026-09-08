@@ -172,6 +172,8 @@ import { initBrowserPanels } from './browser-panel';
 import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
 import { initBus, closeBus, busPath } from './bus';
+import { registerBusPaneIpc } from './bus-pane';
+import { setLiveSwitches, getLiveSwitches } from './bus-settings';
 import {
   ensureRoot,
   pruneOrphanedWorkspaces,
@@ -337,6 +339,22 @@ async function createMainWindow() {
   // show "bus unavailable" (#118 renders it properly).
   //
   // SCOPE: opening the DB is ALL this does. Nothing reads or writes it yet.
+  // The pane's READ-ONLY IPC is registered BEFORE the open attempt, and
+  // unconditionally. If it were registered only on success, a failed open would
+  // leave `bus:snapshot` unhandled — the renderer's invoke would reject and the
+  // pane would render nothing at all, which is precisely the blank-pane failure
+  // D1/T118.5 forbid. Registered up front, a down bus answers with a proper
+  // `available: false` snapshot the pane can render loudly.
+  registerBusPaneIpc();
+  // The switch WRITE, registered here and NOT through registerBusPaneIpc().
+  // That separation is the read-only boundary (T118.4): the pane's registrar
+  // refuses write handlers, so a settings write must not be smuggled in as a
+  // pane channel. It writes the store ONLY — no run row is touched, which is
+  // what makes a mid-wave flip a no-op for runs already in flight (T118.2).
+  ipcMain.handle('bus:setSwitches', async (_e, next: Record<string, boolean>) => {
+    await setLiveSwitches(next ?? {});
+    return getLiveSwitches();
+  });
   try {
     const version = initBus();
     log.info(`bus: opened ${busPath()} (schema v${version})`);

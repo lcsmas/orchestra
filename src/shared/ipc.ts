@@ -1,3 +1,5 @@
+import type { BusSnapshot, BusRunSummary } from './bus-view.ts';
+import type { BusSwitches } from './bus-switches.ts';
 import type { SelfTuneReport, SelfTuneRun } from './self-tune';
 import type { VoiceEvent, VoiceStartOptions } from './voice';
 import type { DesignPick } from './design-mode';
@@ -95,6 +97,24 @@ export interface OrchestraAPI {
    *  usage windows, or null before the first successful poll (or if not signed
    *  in via OAuth). Live updates flow via `onUsageUpdate`. */
   getUsage: () => Promise<UsageSnapshot | null>;
+
+  // ---- Fleet bus, READ-ONLY (#118). Every channel here is a read; gate
+  //      resolution from the UI is v2. The enumeration that enforces it is
+  //      BUS_PANE_IPC_CHANNELS in src/main/bus-pane.ts.
+  /** The whole pane projection for one run. NEVER rejects: a bus that is down
+   *  comes back as `available: false` carrying the reason, because an empty
+   *  snapshot and a dead bus must not look alike (D1 / T118.5). */
+  busSnapshot: (runId?: string | null) => Promise<BusSnapshot>;
+  /** The mission -> wave tree alone, each run carrying its FROZEN flags. */
+  busListRuns: () => Promise<BusRunSummary[]>;
+  /** The LIVE switch values (what Settings edits) - distinct from a run's frozen copy. */
+  busSwitches: () => Promise<BusSwitches>;
+  /** Flip one or more live switches. NOT a pane channel: the pane is read-only
+   *  in v1 and its registrar refuses write handlers, so this write is
+   *  registered separately (src/main/index.ts). Returns the normalized set.
+   *  Touches NO run already in flight — a flip is picked up by the next run's
+   *  freeze (#118 T118.2). */
+  setBusSwitches: (next: Partial<BusSwitches>) => Promise<BusSwitches>;
 
   // ---- Accounts. Each account is a Claude Code config dir (CLAUDE_CONFIG_DIR)
   //      with its own login. store.json holds only {id, label, configDir} —
