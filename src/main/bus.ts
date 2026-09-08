@@ -96,7 +96,14 @@ export const SCHEMA_VERSION = 2;
  * written by an older Orchestra upgrades in place and a DB written by a NEWER
  * one is left alone (a downgrade is refused rather than silently corrupted).
  */
-const MIGRATIONS: Record<number, string> = {
+/**
+ * EXPORTED for the C11 gate only (ledger #123): a test that replays the chain to
+ * an intermediate version must run the SHIPPED SQL. A hand-copied migration body
+ * in the test file would certify the copy, and would keep passing after the real
+ * one changed. Nothing in production reads this map directly — go through
+ * {@link migrate}.
+ */
+export const MIGRATIONS: Record<number, string> = {
   1: `
     -- NOT YET WRITTEN BY ANYTHING, AND DELIBERATELY UNCONSTRAINED IN v1.
     -- No verb in #114 creates a run, and messages.run_id carries NO

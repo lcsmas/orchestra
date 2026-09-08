@@ -11,9 +11,9 @@
 // `migrate()` applies BY VERSION INDEX, so two tickets claiming the same number
 // means the later one's SQL is skipped forever on a DB already stamped with it.
 // The ruling: take the next free number and RENUMBER AT REBASE (#118 is 4th in
-// merge order, so expect to land on 5). `ensureRunFlagsSchema` remains as an
-// idempotent belt for rigs that open a DB directly — it is the SAME DDL, and
-// `CREATE TABLE IF NOT EXISTS` makes running both a no-op, never a conflict.
+// merge order, so expect to land on 5). The migration is the ONLY mechanism that
+// creates this table — see the note below on why the idempotent "belt" helper was
+// removed rather than kept alongside it.
 
 import type { BusDb } from './bus.ts';
 import {
@@ -38,33 +38,28 @@ export interface BusRunRow {
   flags: BusSwitches;
 }
 
-/**
- * The same DDL as `MIGRATIONS[2]`, applied idempotently.
- *
- * Kept alongside the migration rather than instead of it: a rig (or a test) that
- * opens a bus file directly gets the table without having to know the migration
- * number, and `CREATE TABLE IF NOT EXISTS` makes the overlap a no-op. If you
- * change the columns, change BOTH — they are one schema in two places, which is
- * a real duplication and the reason this comment names it.
- *
- * `run_flags` is a SIDECAR table rather than an `ALTER TABLE runs ADD COLUMN`,
- * for one reason that matters: `ADD COLUMN` is not expressible as
- * `IF NOT EXISTS` in SQLite, so a second call throws `duplicate column name`
- * and any caller that swallows that error is also swallowing every real DDL
- * failure. A sidecar keyed on run_id is idempotent by construction.
- */
-export function ensureRunFlagsSchema(db: BusDb): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS run_flags (
-      run_id     TEXT PRIMARY KEY,
-      -- JSON object, one boolean per mechanism. See shared/bus-switches.ts for
-      -- why it is not a bitmask (a bitmask silently reassigns meaning when the
-      -- mechanism list grows).
-      flags      TEXT NOT NULL,
-      frozen_at  INTEGER NOT NULL
-    );
-  `);
-}
+// THE `ensureRunFlagsSchema()` HELPER IS DELIBERATELY GONE. Do not reintroduce it.
+//
+// It used to run `CREATE TABLE IF NOT EXISTS run_flags` at the top of every read
+// and write, as an "idempotent belt" beside the real migration. OPS-B ruled it
+// out (ledger #123, Q-B1) for two reasons, and the second one bit me before I
+// removed it:
+//
+//   1. Schema creation in two places with two mechanisms means `schemaVersion(db)`
+//      stops describing the DB's actual shape — the version no longer predicts
+//      which tables exist.
+//   2. `CREATE TABLE IF NOT EXISTS` is a SILENT NO-OP against a table that
+//      already exists with a DIFFERENT shape, so a later migration altering this
+//      table would leave the old columns and report success. Wrong-shape-passes-
+//      green: failing in the direction that looks fine.
+//
+// MEASURED, not theoretical: with the belt in place I deleted `run_flags` from
+// `MIGRATIONS[2]` — the exact slot-collision failure C11 exists to catch — and
+// the whole suite stayed GREEN at 26/26, because the first read re-created the
+// table. The belt was silently repairing the defect the gate was looking for.
+// With it removed, that same mutant turns C11 red.
+//
+// The table now comes from ONE place: the migration in `src/main/bus.ts`.
 
 /**
  * START A RUN: snapshot the live switches ONCE and write them to the row.
@@ -94,7 +89,6 @@ export function startRun(
 ): BusRunRow {
   if (!input.id?.trim()) throw new Error('bus.startRun: run id is required');
   if (!input.coordinator?.trim()) throw new Error('bus.startRun: coordinator is required');
-  ensureRunFlagsSchema(db);
   const frozen = freezeSwitches(liveSwitches, busAvailable);
   const now = Date.now();
   const tx = db.transaction(() => {
@@ -128,7 +122,6 @@ export function startRun(
 
 /** Read one run row with its frozen flags, or null. */
 export function getRun(db: BusDb, runId: string): BusRunRow | null {
-  ensureRunFlagsSchema(db);
   const row = db
     .prepare(
       `SELECT r.*, f.flags AS flags_json
@@ -174,7 +167,6 @@ export function busSwitch(db: BusDb, runId: string, mechanism: string): boolean 
 
 /** Every run, newest first — the pane's mission/wave tree source. */
 export function listRuns(db: BusDb, limit = 200): BusRunRow[] {
-  ensureRunFlagsSchema(db);
   const rows = db
     .prepare(
       `SELECT r.*, f.flags AS flags_json

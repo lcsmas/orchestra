@@ -14,14 +14,23 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { openBus, send, check, type BusDb } from './bus.ts';
+import {
+  openBus,
+  open as openRaw,
+  migrate,
+  schemaVersion,
+  SCHEMA_VERSION,
+  MIGRATIONS,
+  send,
+  check,
+  type BusDb,
+} from './bus.ts';
 import {
   startRun,
   getRun,
   runFlags,
   busSwitch,
   listRuns,
-  ensureRunFlagsSchema,
 } from './bus-runs.ts';
 import {
   mechanismFromWire,
@@ -41,7 +50,6 @@ import {
 function tmpDb(): { db: BusDb; dir: string } {
   const dir = mkdtempSync(path.join(tmpdir(), 'bus-runs-118-'));
   const db = openBus(path.join(dir, 'bus.sqlite'));
-  ensureRunFlagsSchema(db);
   return { db, dir };
 }
 
@@ -334,9 +342,9 @@ test('listRuns returns nested runs with their own frozen flags', () => {
 });
 
 test('the wave-A core verbs still work alongside run rows (no schema collision)', () => {
-  // ensureRunFlagsSchema() runs additive DDL on the same DB the core uses. This
-  // is the positive control that it did not disturb messages/deliveries — the
-  // failure mode of a badly-scoped migration.
+  // MIGRATIONS[2] adds run_flags to the same DB the core verbs use. This is the
+  // positive control that it did not disturb messages/deliveries — the failure
+  // mode of a badly-scoped migration.
   const { db, dir } = tmpDb();
   try {
     startRun(db, { id: 'run-1', kind: 'vague', coordinator: 'ops-b' }, ALL_ON);
@@ -398,5 +406,92 @@ test('the wire names map to the internal keys, both ways', () => {
   // spot check, so adding a mechanism without a wire name fails here.
   for (const m of BUS_MECHANISMS) {
     assert.equal(mechanismFromWire(mechanismToWire(m)), m);
+  }
+});
+
+// ─── C11 — the migration chain applies from EVERY intermediate version ──────
+//
+// OPS-B's gate, added mid-wave: "a candidate tested only against a fresh DB has
+// not tested its migration at all". Four wave-B tickets each append a migration,
+// so the real population is DBs stamped at every version below ours, not just
+// fresh files.
+//
+// The loop iterates 1..SCHEMA_VERSION-1 as a RANGE (as #116 built theirs), so
+// when my slot is renumbered at rebase this test needs NO edit — the renumber
+// stays one integer in two places, which is the whole point of the ruling.
+
+test('C11 — run_flags survives migrate() from EVERY intermediate schema version', () => {
+  for (let from = 1; from < SCHEMA_VERSION; from++) {
+    const dir = mkdtempSync(path.join(tmpdir(), `bus-c11-v${from}-`));
+    const file = path.join(dir, 'bus.sqlite');
+    try {
+      // Stamp a DB at `from` by running the chain only that far, exactly as a
+      // real older Orchestra would have left it.
+      const seed = openRaw(file);
+      const current = schemaVersion(seed);
+      assert.equal(current, 0, 'a fresh file must start at user_version 0');
+      // migrate() always goes to SCHEMA_VERSION, so replay the prefix by hand:
+      // apply migrations 1..from and stamp, which is what an older build did.
+      seed.exec('BEGIN IMMEDIATE');
+      for (let v = 1; v <= from; v++) {
+        // Reach into the same MIGRATIONS the shipped code uses — a hand-written
+        // copy of the SQL here would test the copy.
+        const sql = MIGRATIONS[v];
+        assert.ok(sql, `no migration body for v${v}`);
+        seed.exec(sql);
+      }
+      seed.pragma(`user_version = ${from}`);
+      seed.exec('COMMIT');
+      assert.equal(schemaVersion(seed), from, `DB must be stamped at v${from}`);
+      seed.close();
+
+      // Now upgrade with the SHIPPED migrate(), and require my table to exist
+      // AND BE QUERYABLE — a table that exists with the wrong shape is the
+      // silent-no-op failure the CREATE TABLE IF NOT EXISTS workaround had.
+      const db = openBus(file);
+      assert.equal(schemaVersion(db), SCHEMA_VERSION, `must reach v${SCHEMA_VERSION} from v${from}`);
+      startRun(db, { id: `from-v${from}`, kind: 'vague', coordinator: 'c11' }, ALL_ON);
+      assert.deepEqual(runFlags(db, `from-v${from}`), ALL_ON, `flags must round-trip from v${from}`);
+      // Queryable with the columns the code expects, not merely present.
+      const row = db
+        .prepare('SELECT run_id, flags, frozen_at FROM run_flags WHERE run_id=?')
+        .get(`from-v${from}`) as { run_id: string; flags: string; frozen_at: number };
+      assert.equal(row.run_id, `from-v${from}`);
+      assert.equal(typeof row.frozen_at, 'number');
+      assert.deepEqual(JSON.parse(row.flags), ALL_ON);
+      db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('C11 — the fresh-file arm, and the loop above actually RAN', () => {
+  // Carry-forward 4: if SCHEMA_VERSION were ever 1, the loop above would iterate
+  // ZERO times and report a tidy green having tested nothing. Assert the range
+  // is non-empty, and cover the fresh path explicitly.
+  assert.ok(SCHEMA_VERSION >= 2, `SCHEMA_VERSION is ${SCHEMA_VERSION} — the C11 loop would be vacuous`);
+  const { db, dir } = tmpDb();
+  try {
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
+    startRun(db, { id: 'fresh', kind: 'vague', coordinator: 'c11' }, ALL_ON);
+    assert.deepEqual(runFlags(db, 'fresh'), ALL_ON);
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('C11 — a DB stamped ABOVE SCHEMA_VERSION is REFUSED, not silently run', () => {
+  // The other end of the chain: a file written by a NEWER Orchestra must not be
+  // run against this build's expectations.
+  const dir = mkdtempSync(path.join(tmpdir(), 'bus-c11-future-'));
+  try {
+    const file = path.join(dir, 'bus.sqlite');
+    const db = openBus(file);
+    db.pragma(`user_version = ${SCHEMA_VERSION + 5}`);
+    assert.throws(() => migrate(db), /newer than this build supports/);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

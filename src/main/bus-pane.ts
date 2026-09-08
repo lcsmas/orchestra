@@ -15,10 +15,11 @@
 
 import { ipcMain } from 'electron';
 import { getBus, busPath, type BusDb } from './bus.ts';
-import { listRuns, ensureRunFlagsSchema } from './bus-runs.ts';
+import { listRuns } from './bus-runs.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import {
   type BusSnapshot,
+  type BusDivergenceReportView,
   type BusMessageView,
   type BusGateView,
   type BusMemberLiveness,
@@ -145,52 +146,69 @@ function readMembers(d: BusDb, runId: string): BusMemberLiveness[] {
   return members.sort((a, b) => a.handle.localeCompare(b.handle));
 }
 
-/**
- * Divergence counters — read through #116's main-process API when it is
- * present, otherwise `[]`.
- *
- * WHY A DYNAMIC LOOKUP AND NOT A STATIC IMPORT: #116 and #118 are parallel
- * tickets and merge in that order. A static `import { ... } from './bus-mirror'`
- * would not compile until #116 lands, which would make #118 unbuildable — and
- * "unbuildable until my dependency merges" is how a wave serializes itself.
- * The SHAPE is frozen in ledger #123 §Seams and typed as
- * {@link BusDivergenceCounter}; this reads that shape off whatever module
- * exposes it, and returns `[]` (not a throw) when it is absent.
- *
- * The absence is LOGGED once, not swallowed: an empty counter list that means
- * "#116 has not landed" and one that means "zero divergence" are the same JSON,
- * and carry-forward 4 says a null from an unaudited instrument is not evidence
- * of absence. The pane renders the distinction (see `countersAvailable`).
- */
 let counterSourceWarned = false;
-export function readCounters(runId: string): BusDivergenceCounter[] {
+
+/**
+ * Read #116's divergence report, or `null` when no source is registered.
+ *
+ * WHY A RUNTIME SEAM AND NOT A STATIC IMPORT: #116 and #118 are parallel
+ * tickets merging in that order. `import { busDivergenceReport } from
+ * './bus-mirror'` would not compile until #116 lands, and "unbuildable until my
+ * dependency merges" is how a wave serializes itself. #116 confirmed the symbol
+ * (`busDivergenceReport()` in `src/main/bus-mirror.ts`, returning
+ * `BusDivergenceReport` from `src/shared/bus-mirror.ts`) — verified by me at
+ * `835eb757`, not taken on trust. At merge, replace this seam with the direct
+ * import and delete the registrar; the SHAPE does not change.
+ *
+ * NULL vs EMPTY is the whole point of the return type. `null` means no source
+ * answered; an empty-but-present report means the mirror answered and had
+ * nothing to say. Collapsing the two is exactly the unaudited-instrument
+ * failure (carry-forward 4) — and #116's own API never returns `[]` for a down
+ * bus, precisely so the outage is COUNTED rather than lost.
+ */
+export function readDivergenceReport(runId: string): BusDivergenceReportView | null {
   const src = (globalThis as Record<string, unknown>).__orchestraBusCounters as
-    | ((runId: string) => BusDivergenceCounter[])
+    | ((runId: string) => unknown)
     | undefined;
   if (typeof src !== 'function') {
     if (!counterSourceWarned) {
       counterSourceWarned = true;
       log.info(
-        'bus-pane: no divergence-counter source registered (#116 not present) — the pane will say so rather than show 0',
+        'bus-pane: no divergence-counter source registered (#116 not present) — the pane will SAY SO rather than show 0',
       );
     }
-    return [];
+    return null;
   }
   try {
-    const out = src(runId);
-    return Array.isArray(out) ? out : [];
+    const raw = src(runId) as Partial<BusDivergenceReportView> | BusDivergenceCounter[] | null;
+    if (!raw) return null;
+    // Accept BOTH the wrapper and a bare array. #116 ships the wrapper, but the
+    // ledger froze the bare array, and a consumer that hard-fails on the shape
+    // it did not expect would turn a contract nuance into a blank pane.
+    if (Array.isArray(raw)) {
+      return { runId, busAvailable: true, counters: raw };
+    }
+    return {
+      runId: typeof raw.runId === 'string' ? raw.runId : runId,
+      // Absent flag reads as AVAILABLE: only #116 can assert an outage, and
+      // inventing `false` from a missing field would render a scary, unfounded
+      // claim about the bus.
+      busAvailable: raw.busAvailable !== false,
+      counters: Array.isArray(raw.counters) ? raw.counters : [],
+    };
   } catch (e) {
     log.error('bus-pane: divergence-counter source threw — rendering none', e);
-    return [];
+    return null;
   }
 }
 
 /**
- * The seam #116 calls to publish its counters. Named on a global rather than
- * imported, for the merge-order reason above; #116 owns the producer, #118 owns
- * this consumer, and the frozen shape is the contract between them.
+ * The seam #116 calls to publish its counters. Accepts the wrapper
+ * (`BusDivergenceReport`) or the bare frozen array.
  */
-export function registerBusCounterSource(fn: (runId: string) => BusDivergenceCounter[]): void {
+export function registerBusCounterSource(
+  fn: (runId: string) => BusDivergenceReportView | BusDivergenceCounter[],
+): void {
   (globalThis as Record<string, unknown>).__orchestraBusCounters = fn;
 }
 
@@ -209,7 +227,6 @@ export function busSnapshot(runId?: string | null): BusSnapshot {
     );
   }
   try {
-    ensureRunFlagsSchema(d);
     const runs: BusRunSummary[] = listRuns(d).map((r) => ({
       id: r.id,
       kind: r.kind,
@@ -233,8 +250,10 @@ export function busSnapshot(runId?: string | null): BusSnapshot {
         gates: [],
         members: [],
         counters: [],
+        countersBusAvailable: null,
       };
     }
+    const report = readDivergenceReport(selected);
     const messages = (
       d
         .prepare('SELECT * FROM messages WHERE run_id=? ORDER BY sequence')
@@ -255,7 +274,8 @@ export function busSnapshot(runId?: string | null): BusSnapshot {
       messages,
       gates,
       members: readMembers(d, selected),
-      counters: readCounters(selected),
+      counters: report?.counters ?? [],
+      countersBusAvailable: report ? report.busAvailable : null,
     };
   } catch (e) {
     // A malformed/locked DB is "unavailable", not a crashed pane. Same D1

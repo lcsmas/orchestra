@@ -208,17 +208,45 @@ export function BusGateList({ gates }: { gates: BusGateView[] }) {
  * for the first would be a fabricated measurement from an instrument that was
  * never connected (carry-forward 4). So the empty case says exactly that.
  */
-export function BusCounterTable({ counters }: { counters: BusDivergenceCounter[] }) {
-  if (!counters.length) {
+export function BusCounterTable({
+  counters,
+  busAvailable,
+}: {
+  counters: BusDivergenceCounter[];
+  /** null = no source answered; false = the mirror says the bus was DOWN. */
+  busAvailable: boolean | null;
+}) {
+  if (busAvailable === null) {
     return (
-      <div className="bus-empty" data-bus-empty="counters">
+      <div className="bus-empty" data-bus-empty="counters" data-counters-source="absent">
         No divergence counters reported for this run — the shadow mirror is not
         publishing counters. This is NOT the same as zero divergence.
       </div>
     );
   }
   return (
-    <table className="bus-counters">
+    <>
+      {/* #116's ask, and it is right: without this, an all-zero row on a healthy
+          run and an all-zero row taken while NOTHING COULD BE WRITTEN are the
+          same observable. D1 has two halves — a bus-down mechanism reads OFF for
+          the run AND the counter records it — and only this line carries the
+          second. The counters live in main-process memory, not in the bus, so
+          they stay populated through an outage rather than vanishing with the
+          connection. */}
+      {busAvailable === false ? (
+        <div className="bus-counters-degraded" data-counters-bus="unavailable" role="status">
+          The bus was UNAVAILABLE while these were counted — every mechanism reads
+          OFF for this run, and that is what the numbers below record. These are
+          not zero-divergence readings from a healthy run.
+        </div>
+      ) : null}
+      {!counters.length ? (
+        <div className="bus-empty" data-bus-empty="counters" data-counters-source="present">
+          The shadow mirror is reporting, and has recorded no divergence for this
+          run. (This is a measured zero, not a missing instrument.)
+        </div>
+      ) : (
+    <table className="bus-counters" data-counters-bus={busAvailable ? 'available' : 'unavailable'}>
       <thead>
         <tr>
           <th>mechanism</th>
@@ -238,6 +266,8 @@ export function BusCounterTable({ counters }: { counters: BusDivergenceCounter[]
         ))}
       </tbody>
     </table>
+      )}
+    </>
   );
 }
 
@@ -330,7 +360,10 @@ export function BusPaneView({
       </section>
       <section className="bus-section" data-section="counters">
         <h3>Shadow divergence</h3>
-        <BusCounterTable counters={snapshot.counters} />
+        <BusCounterTable
+          counters={snapshot.counters}
+          busAvailable={snapshot.countersBusAvailable}
+        />
       </section>
       <section className="bus-section" data-section="messages">
         <h3>Messages</h3>
@@ -364,6 +397,7 @@ export function BusPane() {
         gates: [],
         members: [],
         counters: [],
+        countersBusAvailable: null,
       });
     }
   }, [runId]);
