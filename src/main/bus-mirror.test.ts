@@ -549,3 +549,108 @@ test('C8/D1 — a HEALTHY run is distinguishable from a bus-down run at the repo
     'the two states are not the same observable',
   );
 });
+
+// ─── C11 — the migration chain applies from EVERY intermediate version ─────
+
+test('C11 — migrate() upgrades a DB STAMPED at each version below v2, not just a fresh file', (t) => {
+  // The asymmetry C11 exists to catch (ledger #123, Q-B1): a candidate tested
+  // only against a fresh file has not tested its migration at all, because the
+  // fresh-file path runs EVERY migration in one go and can hide a v_n → v_n+1
+  // step that is broken in isolation.
+  //
+  // So each arm below STAMPS `user_version` and runs the real `migrate()` from
+  // there — it does not merely open a file that happens to be old.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bus-mirror-116-c11-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  // Every version strictly below this build's own. Written as a range, not a
+  // hardcoded [1], so appending migration v3 (a sibling in this wave may take
+  // that number) extends the matrix automatically instead of silently leaving
+  // the new step untested.
+  const intermediates = Array.from({ length: SCHEMA_VERSION - 1 }, (_, i) => i + 1);
+  assert.ok(intermediates.length >= 1, 'there must be at least one intermediate version to test');
+
+  for (const from of intermediates) {
+    const file = path.join(dir, `from-v${from}.sqlite`);
+    // Build a DB that really is at version `from`: open it (which migrates to
+    // HEAD), then rewind the stamp and drop what `from` did not have. Rewinding
+    // alone would leave v2's table present and the arm would pass vacuously.
+    const seed = openBus(file);
+    seed.exec('DROP TABLE IF EXISTS mirror_records');
+    seed.pragma(`user_version = ${from}`);
+    // A row written BEFORE the upgrade — it must survive.
+    const seq = busSend(seed, {
+      runId: RUN,
+      sender: 'pre-upgrade',
+      recipient: 'peer',
+      kind: 'dispatch',
+      body: `written at v${from}`,
+    });
+    seed.close();
+
+    // MUST-FAIL CONTROL, in the same command (carry-forward 4): at version
+    // `from` the mirror table is genuinely absent. Without it, the assertion
+    // after the upgrade could be passing on a table that was never dropped —
+    // i.e. on a DB that was already at HEAD. Run on a SEPARATE file, because
+    // opening the real one immediately migrates it past the state under audit.
+    const probeFile = path.join(dir, `probe-v${from}.sqlite`);
+    const probe = openBus(probeFile);
+    probe.exec('DROP TABLE IF EXISTS mirror_records');
+    probe.pragma(`user_version = ${from}`);
+    const absent = probe
+      .prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='mirror_records'")
+      .get() as { n: number };
+    assert.equal(absent.n, 0, `control: at v${from} mirror_records really is absent`);
+    probe.close();
+
+    // Now the real upgrade: opening runs migrate() from the stamped version.
+    const raw = openBus(file);
+
+    // THE ASSERTION: after migrate() from v`from`, the table exists AND is
+    // QUERYABLE (present ≠ usable — a table can exist and reject every write).
+    t.after(() => raw.close());
+    assert.equal(
+      (raw.pragma('user_version', { simple: true }) as number),
+      SCHEMA_VERSION,
+      `a v${from} DB reached v${SCHEMA_VERSION}`,
+    );
+    const id = recordMirror(raw, {
+      runId: RUN,
+      mechanism: PEER_MESSAGE_MECHANISM,
+      sendId: `c11-${from}`,
+      sequence: seq,
+      outcome: 'live',
+      sender: 'pre-upgrade',
+      recipient: 'peer',
+    });
+    assert.ok(id > 0, `mirror_records is WRITEABLE after upgrading from v${from}`);
+    assert.equal(mirroredRowCount(raw, RUN, `c11-${from}`), 1, 'and READ-BACK returns the row');
+
+    // The pre-existing v1 data survived the upgrade.
+    const row = raw.prepare('SELECT body FROM messages WHERE sequence=?').get(seq) as {
+      body: string;
+    };
+    assert.equal(row.body, `written at v${from}`, `v${from} data survived the upgrade`);
+  }
+});
+
+test('C12 — better-sqlite3 is proven by CONSTRUCT + read-back, never by require or install RC', (t) => {
+  // Spike #109's headline trap: the native load is DEFERRED, so `require()`
+  // succeeds under the WRONG ABI. Only constructing a DB and reading a written
+  // row back proves the binding is usable under the runtime running this suite.
+  const { db } = tmpBus(t);
+  const seq = busSend(db, {
+    runId: RUN,
+    sender: 'abi-probe',
+    recipient: 'peer',
+    kind: 'dispatch',
+    body: 'construct + read-back',
+  });
+  const back = db.prepare('SELECT body, sender FROM messages WHERE sequence=?').get(seq) as {
+    body: string;
+    sender: string;
+  };
+  assert.equal(back.body, 'construct + read-back', 'the row READ BACK matches what was written');
+  assert.equal(back.sender, 'abi-probe');
+  assert.equal(process.versions.modules, '127', 'this suite runs on system node (ABI 127)');
+});
