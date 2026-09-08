@@ -368,8 +368,24 @@ gate hides which ones are decoration):
 | `switch_off` | the switch check — fires with the switch off |
 | `fires` | a body leak — `bodyLeaks: 1` |
 | `check_no_ack` | a host-side ack — 1 turn instead of 2 |
+| `real_verb` | a host/CLI run-or-handle mismatch — the ONLY arm proving the order is a command that WORKS |
 | `control_second` | nothing; it proves the rig CAN see turn #2, without which every "exactly 1" above would pass on a rig that renders nothing after the first |
 | `ack_clears` | nothing on its own — the dedup ledger already suppresses a second wake, so it passes on a build that ignores the ack entirely |
+
+`real_verb` obeys the order through **#115's real `verbCheck`/`verbAck`** — the
+same functions the CLI binary calls — and requires the lot to carry the message
+the wake was about, then the ack to clear pending *as read back through the
+host's own predicate*. Identity comes from `resolveBusIdentity()` on the env
+Orchestra sets, never a hand-built `{runId, handle}`: a hand-built one agrees
+with the host by construction and proves nothing about whether the two meet.
+
+Three mutants killed by it: host roster on a different run than the CLI resolves
+(0 turns); host waking a handle the CLI does not resolve to
+(`pendingAfterVerbAck: true`); and `check()` acking on the reader's behalf, which
+surfaces as the reader's OWN ack being refused (`verbFailure` set) — the ADR's
+central property, caught at the verb rather than at the predicate. Note
+`check_no_ack` does **not** catch that third one: it covers a host-side ack in
+the predicate, not one inside the CLI verb.
 
 `check_no_ack` exists because a mutant reading the cursor from
 `deliveries.to_seq` instead of `cursors.acked_seq` — the host treating its own
@@ -394,7 +410,6 @@ scripts/verify-bus-packaged-boot.sh                                       # + th
 The switch STORAGE and its pane (#118), the CLI verbs the order names (#115),
 and the shadow mirror's counters (#116).
 
-**Honest gaps.** The stub CLI is not the real Claude binary, so this proves the
-turn is queued, echoed and yielded to the SDK — not that a human sees it on
-screen. And nothing here drives the real `orchestra check` verb: the order names
-it, but #115 owns it, so what the reader DOES on waking is that ticket's gate.
+**Honest gap.** The stub CLI is not the real Claude binary, so this proves the
+turn is queued, echoed and yielded to the SDK — not that a human sees it painted
+on screen. (The real `orchestra check` verb IS now driven, by `real_verb`.)
