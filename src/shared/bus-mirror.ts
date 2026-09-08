@@ -156,6 +156,12 @@ export class DivergenceLedger {
    * it would make the counter permanently non-zero for every self-send typo and
    * drown the signal the promotion bar reads.
    */
+  // NOTE on `duplicate` (#116): as shipped, NO path can produce it — there is
+  // exactly one `mirrorDispatch` call site, and the broadcast's N targets are N
+  // distinct sends, not one send mirrored N times. So the counter is proven by
+  // construction (feed it rows>1) and by the send_id primitive, NOT by a rig
+  // that makes the live app double-write, because none can. It exists for the
+  // channels #117/#118 add on top, where a level-triggered wake CAN re-fire.
   record(attempt: MirrorAttempt): void {
     const c = this.slot(attempt.mechanism);
     const delivered = attempt.outcome === 'live' || attempt.outcome === 'inbox';
