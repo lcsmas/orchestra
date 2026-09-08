@@ -215,6 +215,7 @@ if [ -z "$PASS_LINE" ]; then
   fail "must-PASS arm: the packaged app did not log the bus opening"
 fi
 echo "  $PASS_LINE"
+PASS_SCHEMA="$(echo "$PASS_LINE" | sed -E 's/.*schema v([0-9]+).*/\1/')"
 BUSFILE="$(echo "$PASS_LINE" | sed -E 's/.*bus: opened ([^ ]+) .*/\1/')"
 [ -f "$BUSFILE" ] || fail "the log claims $BUSFILE was opened but no such file exists"
 echo "  and the file really exists: $(stat -c '%s bytes' "$BUSFILE")"
@@ -282,5 +283,5 @@ fi
 
 echo
 echo "PASS — D1 gate, 2 arms x 2 assertions:"
-echo "  intact : window ($PASS_WINS) + startup COMPLETED + bus opened (schema v1)"
+echo "  intact : window ($PASS_WINS) + startup COMPLETED + bus opened (schema v${PASS_SCHEMA:-?})"
 echo "  broken : window ($FAIL_WINS) + startup COMPLETED + bus failed LOUDLY, no abort"
