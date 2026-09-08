@@ -30,7 +30,7 @@ design decisions, so you get accurate context without grepping the tree first.
 | Detached session keeper: structured sessions surviving app quit — keeper daemon, `spawnClaudeCodeProcess` bridge, attach/reattach, linger policy, kill/quit semantics | `docs/codebase-map/session-keeper.md` |
 | Structured agent-view design system: the 3 `av-*` CSS layers, tokens, theming, states, a11y contract the SDK-view components render against | `docs/codebase-map/agent-view-design.md` |
 | Embedded browser panel: per-workspace `WebContentsView`, user + agent shared surface, `webContents.debugger` driving, `mcp__browser__*` SDK tools, URL bar / pane wiring | `docs/codebase-map/browser-panel.md` |
-| Fleet bus: `<ORCHESTRA_HOME>/bus.sqlite` (WAL) as the fleet's source of truth — schema (runs/messages/deliveries/cursors/decision_gates), `send`/`check`/`ack`/`openGate`/`resolveGate`, the better-sqlite3 Electron-ABI native build and its `require()`-is-not-a-gate trap, boot gate, contention rig | `docs/codebase-map/bus.md` |
+| Fleet bus: `<ORCHESTRA_HOME>/bus.sqlite` (WAL) as the fleet's source of truth — schema (runs/messages/deliveries/cursors/decision_gates), `send`/`check`/`ack`/`openGate`/`resolveGate`, the better-sqlite3 Electron-ABI native build and its `require()`-is-not-a-gate trap, boot gate, contention rig; the read-only bus PANE and the per-mechanism SWITCHES frozen on the run row (`run_flags`, `busSwitch()`, the startup-notice injection) | `docs/codebase-map/bus.md` |
 
 The map is reference material — verify a `file:line` against live source before
 relying on it, since line numbers drift.

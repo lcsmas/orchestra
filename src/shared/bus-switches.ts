@@ -16,7 +16,16 @@
 //
 // COEXISTENCE RULING (ledger #122/#123, inherited): the old channels stay
 // AUTHORITATIVE. A switch that is OFF means the mechanism is COUNTED, not
-// FIRED — see `src/main/bus-mechanism.ts` for the counted-not-fired seam.
+// FIRED.
+//
+// #118 OWNS THE READ, NOT THE FIRING. This ticket ships the switches, the
+// freeze and a read-only pane; it has no mechanism of its own to fire or
+// suppress. The counted-not-fired seam therefore lives with the tickets that
+// own a mechanism — #116 (mirror counters) and #117 (wake) — and they consume
+// this module's `busSwitch()` / `mechanismEnabled()` to decide. Do not go
+// looking for a firing site here; there is deliberately none, and an earlier
+// draft of this comment pointed at a `src/main/bus-mechanism.ts` that does not
+// exist.
 
 /** The four mechanisms wave B is adopting behind independent switches. */
 export type BusMechanism = 'delivery' | 'wake' | 'askGate' | 'liveness';
