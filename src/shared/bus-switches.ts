@@ -139,6 +139,42 @@ export function mechanismEnabled(frozen: BusSwitches, mechanism: BusMechanism): 
   return frozen[mechanism] === true;
 }
 
+/**
+ * THE WIRE NAMES, frozen with #117 on ledger #123 (OPS-B, wave B).
+ *
+ * `busSwitch(runId, mechanism)` takes `'delivery' | 'wake' | 'ask_gate' |
+ * 'liveness'` — snake_case for `ask_gate`, because that is the string #117 is
+ * coding against and a contract is worth more than a naming preference. The
+ * INTERNAL key stays `askGate` (it is a TS object key), so this is the one place
+ * the two vocabularies meet. Everything else reads through here.
+ *
+ * Two mappings and no third: if you find yourself writing `'ask_gate'` anywhere
+ * outside this file, route it through `mechanismFromWire` instead — N copies of
+ * a mapping is how the wire and the enum drift apart.
+ */
+export type BusMechanismWire = 'delivery' | 'wake' | 'ask_gate' | 'liveness';
+
+const WIRE_TO_MECHANISM: Record<BusMechanismWire, BusMechanism> = {
+  delivery: 'delivery',
+  wake: 'wake',
+  ask_gate: 'askGate',
+  liveness: 'liveness',
+};
+
+/** Wire name → internal key. Returns null for an unknown name (never a guess). */
+export function mechanismFromWire(name: string): BusMechanism | null {
+  return WIRE_TO_MECHANISM[name as BusMechanismWire] ?? null;
+}
+
+/** Internal key → wire name, for anything that publishes the contract. */
+export function mechanismToWire(m: BusMechanism): BusMechanismWire {
+  const found = (Object.keys(WIRE_TO_MECHANISM) as BusMechanismWire[]).find(
+    (w) => WIRE_TO_MECHANISM[w] === m,
+  );
+  if (!found) throw new Error(`bus: mechanism ${m} has no wire name`);
+  return found;
+}
+
 /** The startup-notice wording for one mechanism — see busSwitchNoticeLines. */
 export function switchStateWord(on: boolean): 'ON' | 'OFF' {
   return on ? 'ON' : 'OFF';

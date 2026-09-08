@@ -19,10 +19,13 @@ import {
   startRun,
   getRun,
   runFlags,
+  busSwitch,
   listRuns,
   ensureRunFlagsSchema,
 } from './bus-runs.ts';
 import {
+  mechanismFromWire,
+  mechanismToWire,
   DEFAULT_BUS_SWITCHES,
   freezeSwitches,
   mechanismEnabled,
@@ -344,5 +347,56 @@ test('the wave-A core verbs still work alongside run rows (no schema collision)'
     assert.equal(lot.messages[0].body, 'hello');
   } finally {
     cleanup(db, dir);
+  }
+});
+
+// ─── busSwitch() — the signature frozen with #117 on ledger #123 ────────────
+
+test('busSwitch(runId, wire) reads the FROZEN row, both directions', () => {
+  const { db, dir } = tmpDb();
+  try {
+    const live: BusSwitches = { delivery: true, wake: false, askGate: true, liveness: false };
+    startRun(db, { id: 'run-1', kind: 'vague', coordinator: 'ops-b' }, live);
+    // Mid-wave flip: every value inverted.
+    live.delivery = false;
+    live.wake = true;
+    live.askGate = false;
+    live.liveness = true;
+    // The contract function still reports the FROZEN values, not the live ones.
+    assert.equal(busSwitch(db, 'run-1', 'delivery'), true);
+    assert.equal(busSwitch(db, 'run-1', 'wake'), false);
+    assert.equal(busSwitch(db, 'run-1', 'ask_gate'), true);
+    assert.equal(busSwitch(db, 'run-1', 'liveness'), false);
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('busSwitch returns FALSE for an unknown run and an unknown mechanism', () => {
+  const { db, dir } = tmpDb();
+  try {
+    startRun(db, { id: 'run-1', kind: 'vague', coordinator: 'ops-b' }, ALL_ON);
+    // Unknown run → false, never the live switches.
+    assert.equal(busSwitch(db, 'no-such-run', 'delivery'), false);
+    // Unknown mechanism name → false, never a guess or a throw. A typo'd
+    // mechanism firing would be worse than one that stays off.
+    assert.equal(busSwitch(db, 'run-1', 'askGate'), false, 'the WIRE name is ask_gate');
+    assert.equal(busSwitch(db, 'run-1', 'nonsense'), false);
+    // Positive control in the same test: a known name on a known run IS true,
+    // so the falses above are not "this function always returns false".
+    assert.equal(busSwitch(db, 'run-1', 'ask_gate'), true);
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('the wire names map to the internal keys, both ways', () => {
+  assert.equal(mechanismFromWire('ask_gate'), 'askGate');
+  assert.equal(mechanismToWire('askGate'), 'ask_gate');
+  assert.equal(mechanismFromWire('unknown'), null);
+  // Every mechanism has a wire name and round-trips — an enumeration, not a
+  // spot check, so adding a mechanism without a wire name fails here.
+  for (const m of BUS_MECHANISMS) {
+    assert.equal(mechanismFromWire(mechanismToWire(m)), m);
   }
 });

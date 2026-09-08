@@ -88,7 +88,7 @@ export interface BusDecisionGate {
 // ─── Schema ─────────────────────────────────────────────────────────────────
 
 /** Bumped by appending a migration to MIGRATIONS; never edit a shipped one. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /**
  * Forward-only migrations, indexed by the version they PRODUCE. `migrate()`
@@ -96,7 +96,7 @@ export const SCHEMA_VERSION = 2;
  * written by an older Orchestra upgrades in place and a DB written by a NEWER
  * one is left alone (a downgrade is refused rather than silently corrupted).
  */
-const MIGRATIONS: Record<number, string> = {
+export const MIGRATIONS: Record<number, string> = {
   1: `
     -- NOT YET WRITTEN BY ANYTHING, AND DELIBERATELY UNCONSTRAINED IN v1.
     -- No verb in #114 creates a run, and messages.run_id carries NO
@@ -197,6 +197,31 @@ const MIGRATIONS: Record<number, string> = {
     -- exact "counter that never moves" this ticket's T116.4 calls a disproof.
     CREATE INDEX IF NOT EXISTS idx_mirror_send ON mirror_records(run_id, send_id);
     CREATE INDEX IF NOT EXISTS idx_mirror_mechanism ON mirror_records(run_id, mechanism, id);
+  `,
+  // #118 — the per-mechanism switch snapshot FROZEN at wave start.
+  //
+  // A SIDECAR TABLE, not `ALTER TABLE runs ADD COLUMN`: SQLite has no
+  // `ADD COLUMN IF NOT EXISTS`, so a re-run throws `duplicate column name` and
+  // any caller that swallows it is also swallowing every real DDL failure.
+  //
+  // SLOT NUMBERING (ledger #123 §Open-questions Q-B1): wave B has four tickets
+  // that each need DDL, and `migrate()` applies BY VERSION INDEX — so two
+  // tickets both claiming a number means the second one's SQL is skipped forever
+  // on any DB already stamped it, silently. OPS-B's ruling: write the next free
+  // number and RENUMBER AT REBASE. #116 merged first and took `2` (mirror_records
+  // above); per OPS-B2's rebase instruction this block is renumbered `2 -> 3` and
+  // SCHEMA_VERSION bumped 2 -> 3, SQL body untouched. #116's merged `2` is never
+  // edited. C11 asserts run_flags survives migrate() from v1 AND the merged v2.
+  3: `
+    CREATE TABLE IF NOT EXISTS run_flags (
+      run_id     TEXT PRIMARY KEY,
+      -- JSON object, one boolean per mechanism. Not a bitmask: a bitmask
+      -- silently reassigns meaning when the mechanism list grows, and this
+      -- string is read back by builds that know more mechanisms than the
+      -- writer did. See src/shared/bus-switches.ts.
+      flags      TEXT NOT NULL,
+      frozen_at  INTEGER NOT NULL
+    );
   `,
 };
 
