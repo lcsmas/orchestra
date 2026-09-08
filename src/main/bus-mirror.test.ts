@@ -33,10 +33,23 @@ import {
   mirroredRowCount,
   mirrorRecords,
   send as busSend,
+  check as busCheck,
   SCHEMA_VERSION,
   type BusDb,
 } from './bus.ts';
 import { DivergenceLedger, PEER_MESSAGE_MECHANISM, outcomeFor } from '../shared/bus-mirror.ts';
+// THE REAL SHIPPED MIRROR. Review finding F2 (2026-09-08): every earlier
+// reference to `mirrorDispatch` in this file was a STRING assertion over source
+// text, and `runDispatch` re-implemented the wrapper by hand — so the shipped
+// try/catch, the getBus() null branch and `ledger.record` never executed, and a
+// mutant throwing on mirrorDispatch's FIRST LINE left the suite at 1389 pass
+// while production rejected every `orchestra message`. These arms call it.
+import {
+  mirrorDispatch,
+  setMirrorRunId,
+  divergenceCounters,
+  busDivergenceReport,
+} from './bus-mirror.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WORKSPACES = path.join(HERE, 'workspaces.ts');
@@ -64,8 +77,15 @@ function tmpBus(t: { after: (fn: () => void) => void }): { db: BusDb; file: stri
 /** Extract one top-level function body from workspaces.ts. */
 function extract(name: string): string {
   const code = fs.readFileSync(WORKSPACES, 'utf8');
-  const start = code.indexOf(name);
-  assert.notEqual(start, -1, `${name} not found in workspaces.ts — was it renamed?`);
+  // Anchored to a LINE START (`\n` + name), not a bare indexOf. A bare match
+  // also hits the name inside a COMMENT — the wrapper's own comment names
+  // `dispatchMessageRequestUnmirrored`, so the unanchored form silently
+  // extracted the wrapper instead of the body and every assertion about "the
+  // untouched delivery path" was really reading the mirror. It failed loudly
+  // here only because of the length floor below; without that it would have
+  // passed while testing the wrong function.
+  const start = code.indexOf(`\n${name}`) + 1;
+  assert.notEqual(start, 0, `${name} not found at a line start in workspaces.ts — renamed?`);
   const rest = code.slice(start);
   const end = rest.indexOf('\n}\n');
   assert.notEqual(end, -1, `${name} has no closing brace at column 0`);
@@ -108,8 +128,8 @@ test('SOURCE BINDING — the wiring this rig asserts on is actually in workspace
   const wrapper = extract('export async function dispatchMessageRequest');
   assert.match(
     wrapper,
-    /const res = await dispatchMessageRequestUnmirrored\(input\);/,
-    'the wrapper must call the untouched body',
+    /const res = await dispatchMessageRequestUnmirrored\(\{ \.\.\.input, text: body \}\);/,
+    'the wrapper must call the untouched body with the shared normalized text',
   );
   assert.match(wrapper, /mirrorDispatch\(\{/, 'the wrapper must call the mirror');
   assert.match(wrapper, /\n  return res;\n/, 'the wrapper must return the OLD result untouched');
@@ -139,7 +159,10 @@ test('SOURCE BINDING — the source-binding guard can actually fail', () => {
   const fake = 'export async function dispatchMessageRequest() { /* mirrorDispatch */ }';
   assert.throws(
     () => {
-      assert.match(fake, /const res = await dispatchMessageRequestUnmirrored\(input\);/);
+      assert.match(
+        fake,
+        /const res = await dispatchMessageRequestUnmirrored\(\{ \.\.\.input, text: body \}\);/,
+      );
     },
     /match/i,
     'a body that merely names mirrorDispatch must NOT satisfy the wrapper assertion',
@@ -170,7 +193,10 @@ async function runDispatch(fate: Fate, db: BusDb | null): Promise<RunResult> {
     fate === 'unknown-target' ? undefined : { id: 'ws-target', branch: 'target-branch', archived: false };
 
   const scope = {
-    MESSAGE_MAX_CHARS: 10_000,
+    // The PRODUCTION value (workspaces.ts:2683), not a round number. Review F5:
+    // stubbing 10_000 against a real cap of 8000 meant no arm could ever reach
+    // the truncation boundary, so the rig was structurally blind to it.
+    MESSAGE_MAX_CHARS: 8000,
     store: { getWorkspace: (_id: string) => target },
     formatPeerMessage: (branch: string, id: string, text: string) => `[${branch}/${id}] ${text}`,
     // 'started' → reportedDeliveryFor gives 'live'; 'dropped' → 'inbox' fallback;
@@ -199,27 +225,17 @@ async function runDispatch(fate: Fate, db: BusDb | null): Promise<RunResult> {
 
   const result = await fn({ from: 'ws-sender', to: 'ws-target', text: 'hello peer' });
 
-  // Mirror exactly as the shipped wrapper does — outcomeFor on the finished
-  // result, one messages row + one mirror_records row, never throwing.
-  const outcome = outcomeFor(result);
-  if (db) {
-    const seq = busSend(db, {
-      runId: RUN,
-      sender: 'ws-sender',
-      recipient: 'ws-target',
-      kind: 'dispatch',
-      body: 'hello peer',
-    });
-    recordMirror(db, {
-      runId: RUN,
-      mechanism: PEER_MESSAGE_MECHANISM,
-      sendId: `send-${seq}`,
-      sequence: seq,
-      outcome,
-      sender: 'ws-sender',
-      recipient: 'ws-target',
-    });
-  }
+  // Mirror through the REAL SHIPPED FUNCTION (F2). Not a transcription of it:
+  // the point is that the try/catch, the withdrawn guard, the null-bus branch
+  // and the ledger write are the ones that ship.
+  setMirrorRunId(RUN);
+  mirrorDispatch({
+    sender: 'ws-sender',
+    recipient: 'ws-target',
+    body: 'hello peer',
+    result,
+    db,
+  });
   return { result, inboxWrites };
 }
 
@@ -251,15 +267,30 @@ test('T116.3 — the old channel really produces all three outcomes, and each is
   const withdrawn = await runDispatch('unknown-target', db);
   assert.equal(withdrawn.result.ok, false, 'an unknown target is a withdrawal');
 
+  // Five DELIVERED sends are mirrored; the sixth was REFUSED and is deliberately
+  // NOT in the bus (review F1) — the old channel delivered nothing, so a row
+  // here would be the bus asserting a message the authoritative channel refused.
   const outcomes = mirrorRecords(db, RUN).map((r) => r.outcome);
-  assert.equal(outcomes.length, 6, 'every dispatch produced exactly one mirror record');
+  assert.deepEqual(
+    outcomes,
+    ['live', 'live', 'live', 'inbox', 'inbox'],
+    'the five DELIVERED sends are mirrored, in order, with the right outcomes',
+  );
   assert.deepEqual(
     [...new Set(outcomes)].sort(),
-    ['inbox', 'live', 'withdrawn'],
-    'THE DISCRIMINATING ASSERTION: three distinct outcomes came out of the real branches',
+    ['inbox', 'live'],
+    'THE DISCRIMINATING ASSERTION: the outcome column is not one constant',
   );
-  // And the mapping is right, not merely varied.
-  assert.deepEqual(outcomes, ['live', 'live', 'live', 'inbox', 'inbox', 'withdrawn']);
+  // `withdrawn` is a real recorded outcome of the DECISION function, and the
+  // reason it is absent from the table is the F1 guard, not a collapsed mapping.
+  // Asserted positively so "absent because refused" can never be confused with
+  // "absent because the outcome does not exist".
+  assert.equal(outcomeFor(withdrawn.result), 'withdrawn');
+  assert.equal(
+    db.prepare('SELECT COUNT(*) AS n FROM messages').get().n,
+    5,
+    'and the REFUSED send wrote no messages row either',
+  );
 });
 
 // ─── T116.1 — exactly one row per send, and zero for a non-message ─────────
@@ -270,7 +301,12 @@ test('T116.1 — one send → exactly 1 bus row; a non-message action → 0', as
   await runDispatch('sdk-live', db);
   const n = db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=?').get(RUN) as { n: number };
   assert.equal(n.n, 1, 'exactly one bus row for one send');
-  assert.equal(mirroredRowCount(db, RUN, 'send-1'), 1, 'and exactly one mirror record for it');
+  // The send id is minted INSIDE the shipped mirrorDispatch (a randomUUID), so
+  // the rig reads it back rather than assuming a shape — assuming one is how a
+  // rig ends up asserting against its own convention instead of the code's.
+  const recs = mirrorRecords(db, RUN);
+  assert.equal(recs.length, 1, 'exactly one mirror record for it');
+  assert.equal(mirroredRowCount(db, RUN, recs[0].send_id), 1, 'and it counts as exactly 1');
 
   // THE POSITIVE CONTROL (carry-forward 4): a null from an unaudited instrument
   // is not evidence of absence. A counter that can only ever read 1 would pass
@@ -533,10 +569,11 @@ test('C8/D1 — a HEALTHY run is distinguishable from a bus-down run at the repo
   const led = new DivergenceLedger(RUN);
   led.register(PEER_MESSAGE_MECHANISM);
   const ok = await runDispatch('sdk-live', db);
+  const rec = mirrorRecords(db, RUN)[0];
   led.record({
     mechanism: PEER_MESSAGE_MECHANISM,
     outcome: outcomeFor(ok.result),
-    rows: mirroredRowCount(db, RUN, 'send-1'),
+    rows: mirroredRowCount(db, RUN, rec.send_id),
   });
   const healthy = { runId: RUN, busAvailable: true, counters: led.snapshot() };
   assert.deepEqual(healthy.counters, [
@@ -653,4 +690,284 @@ test('C12 — better-sqlite3 is proven by CONSTRUCT + read-back, never by requir
   assert.equal(back.body, 'construct + read-back', 'the row READ BACK matches what was written');
   assert.equal(back.sender, 'abi-probe');
   assert.equal(process.versions.modules, '127', 'this suite runs on system node (ABI 127)');
+});
+
+// ─── F1 — a REFUSED send writes NO bus row, per refusal shape ──────────────
+
+test('F1 — each of the four refusal shapes writes ZERO messages rows (delivered send = control)', (t) => {
+  // The blocking finding: `busSend` was unconditional, so every refusal landed
+  // as a real kind='dispatch' row that `bus.check` (no recipient filter) hands
+  // to a reader — the bus asserting messages the AUTHORITATIVE channel refused,
+  // in the artifact ADR 0002 calls the source of truth.
+  //
+  // Per SHAPE, not one representative: they arrive from four different `return`
+  // statements, and a guard keyed on the wrong field would stop some and pass
+  // others. The shapes are exactly what dispatchMessageRequestUnmirrored
+  // returns on each refusal path.
+  const { db } = tmpBus(t);
+  setMirrorRunId(RUN);
+
+  const refusals: Array<[string, { ok: boolean; error: string }]> = [
+    ['empty text', { ok: false, error: 'empty text' }],
+    ['unknown target', { ok: false, error: 'unknown target workspace' }],
+    ['message yourself', { ok: false, error: 'cannot message yourself' }],
+    ['inbox write failed', { ok: false, error: 'inbox write failed' }],
+  ];
+
+  for (const [label, result] of refusals) {
+    const before = (db.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n;
+    const outcome = mirrorDispatch({
+      sender: 'ws-sender',
+      recipient: 'ws-target',
+      body: 'a refused message',
+      result,
+      db,
+    });
+    const after = (db.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n;
+    assert.equal(outcome, 'withdrawn', `${label} is a withdrawal`);
+    assert.equal(after, before, `${label}: ZERO messages rows written`);
+    assert.equal(
+      mirrorRecords(db, RUN).length,
+      0,
+      `${label}: and no mirror record either — a refusal is not a message`,
+    );
+  }
+
+  // SAME-COMMAND POSITIVE CONTROL (carry-forward 4). Without it, "0 rows" is
+  // equally consistent with a mirror that writes nothing at all, and every
+  // assertion above would pass on a completely broken build.
+  const outcome = mirrorDispatch({
+    sender: 'ws-sender',
+    recipient: 'ws-target',
+    body: 'a real message',
+    result: { ok: true, delivery: 'live' },
+    db,
+  });
+  assert.equal(outcome, 'live');
+  assert.equal(
+    (db.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n,
+    1,
+    'CONTROL: a DELIVERED send through the same instrument DOES write exactly one row',
+  );
+
+  // And the divergence counters still read the promotion bar — refusals are
+  // agreement, not divergence. (Fixing F1 by counting them as `missed` would
+  // break the bar from the other side; this asserts we did not.)
+  assert.deepEqual(divergenceCounters(), [
+    { mechanism: PEER_MESSAGE_MECHANISM, missed: 0, duplicate: 0, lostWake: 0 },
+  ]);
+});
+
+test('F1 — a refused send is invisible to a READER, which is the actual harm', (t) => {
+  // The finding is not "an extra row exists", it is "a reader is handed a
+  // message that was refused". Asserted at the READER, through bus.check —
+  // the surface the harm actually appears on.
+  const { db } = tmpBus(t);
+  setMirrorRunId(RUN);
+  mirrorDispatch({
+    sender: 'ws-sender',
+    recipient: 'ws-target',
+    body: 'REFUSED-SENTINEL',
+    result: { ok: false, error: 'unknown target workspace' },
+    db,
+  });
+  const lot = busCheck(db, RUN, 'ws-target');
+  assert.equal(lot.messages.length, 0, 'the reader is handed NOTHING for a refused send');
+  assert.ok(
+    !JSON.stringify(lot).includes('REFUSED-SENTINEL'),
+    'and the refused body appears nowhere in the lot',
+  );
+
+  // Control: a delivered send IS handed to the reader, so the assertion above
+  // is not passing because check() is simply broken here.
+  mirrorDispatch({
+    sender: 'ws-sender',
+    recipient: 'ws-target',
+    body: 'DELIVERED-SENTINEL',
+    result: { ok: true, delivery: 'live' },
+    db,
+  });
+  const lot2 = busCheck(db, RUN, 'ws-target');
+  assert.equal(lot2.messages.length, 1, 'CONTROL: check() DOES deliver a real message');
+  assert.equal(lot2.messages[0].body, 'DELIVERED-SENTINEL');
+});
+
+// ─── F2 — the SHIPPED mirrorDispatch is executed, not transcribed ─────────
+
+test('F2 — the REAL mirrorDispatch RETURNS (does not throw) with the DB destroyed', (t) => {
+  // THE ARM THE REVIEW REQUIRED. Every previous "the mirror never throws" claim
+  // in this file asserted over SOURCE TEXT or over a hand-rolled copy, so a
+  // mutant throwing on mirrorDispatch's first line left the suite fully green
+  // while production rejected every `orchestra message` (workspaces.ts:2789 is
+  // a bare call, unguarded by the caller).
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bus-mirror-116-f2-'));
+  const file = path.join(dir, 'bus.sqlite');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const db = openBus(file);
+  db.close();
+  fs.rmSync(file, { force: true });
+  setMirrorRunId(RUN);
+
+  // A destroyed DB: every statement below throws. The SHIPPED catch must absorb
+  // it and the function must RETURN a value.
+  let returned: unknown = Symbol('never-returned');
+  assert.doesNotThrow(() => {
+    returned = mirrorDispatch({
+      sender: 'ws-sender',
+      recipient: 'ws-target',
+      body: 'delivery already happened',
+      result: { ok: true, delivery: 'live' },
+      db,
+    });
+  }, 'the SHIPPED mirrorDispatch must not throw into its caller');
+  assert.equal(returned, 'live', 'and it returns the outcome the old channel reported');
+
+  // The divergence counter saw it — a swallowed failure that also forgot to
+  // count would be silent in both directions.
+  assert.equal(divergenceCounters()[0].missed, 1, 'the failure was COUNTED as a miss');
+});
+
+test('F2 — the REAL mirrorDispatch tolerates getBus() === null (D1) and a malformed result', () => {
+  setMirrorRunId(RUN);
+  // db: null is the explicit "bus is down" case D1 requires.
+  assert.doesNotThrow(() => {
+    const out = mirrorDispatch({
+      sender: 's',
+      recipient: 'r',
+      body: 'b',
+      result: { ok: true, delivery: 'live' },
+      db: null,
+    });
+    assert.equal(out, 'live');
+  });
+  assert.equal(divergenceCounters()[0].missed, 1, 'a null bus is a counted miss');
+
+  // F3: a malformed result must not throw either — `outcomeFor` now runs INSIDE
+  // the try. This is the input that used to escape the "never throws" contract.
+  assert.doesNotThrow(() => {
+    const out = mirrorDispatch({
+      sender: 's',
+      recipient: 'r',
+      body: 'b',
+      result: undefined as unknown as { ok: boolean },
+      db: null,
+    });
+    assert.equal(out, 'withdrawn', 'an unreadable result is a withdrawal, not a crash');
+  }, 'F3: outcomeFor must be inside the try');
+});
+
+test('F2 — busDivergenceReport() is the SHIPPED builder, executed', () => {
+  setMirrorRunId('report-run');
+  const report = busDivergenceReport();
+  assert.equal(report.runId, 'report-run');
+  assert.equal(report.busAvailable, false, 'no boot connection in a unit test → false, not a throw');
+  assert.deepEqual(report.counters, [
+    { mechanism: PEER_MESSAGE_MECHANISM, missed: 0, duplicate: 0, lostWake: 0 },
+  ]);
+  assert.deepEqual(Object.keys(report).sort(), ['busAvailable', 'counters', 'runId']);
+});
+
+// ─── F4 — the two INSERTs are ONE transaction ─────────────────────────────
+
+test('F4 — a partial write cannot leave a messages row the mirror cannot see', (t) => {
+  // Before the fix the two INSERTs were bare, so a failure between them left a
+  // `messages` row while `mirroredRowCount` read 0 → `missed++` for a message
+  // the bus DOES hold: the counter reporting the exact opposite of the truth.
+  //
+  // Forced by making the SECOND insert fail: drop mirror_records, so the
+  // messages insert succeeds and recordMirror throws. Under one transaction the
+  // messages row must roll back.
+  const { db } = tmpBus(t);
+  setMirrorRunId(RUN);
+  db.exec('DROP TABLE mirror_records');
+
+  const before = (db.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n;
+  const out = mirrorDispatch({
+    sender: 'ws-sender',
+    recipient: 'ws-target',
+    body: 'partial write',
+    result: { ok: true, delivery: 'live' },
+    db,
+  });
+  const after = (db.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n;
+
+  assert.equal(out, 'live', 'delivery is still reported honestly');
+  assert.equal(after, before, 'THE ROLLBACK: no orphan messages row survived the partial write');
+
+  // Control that the rig really did reach the failing path — otherwise "no new
+  // row" would also be true of a mirror that never ran at all.
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name='mirror_records'").get() as {
+      n: number;
+    }).n,
+    0,
+    'CONTROL: mirror_records really was dropped, so the second insert really failed',
+  );
+});
+
+// ─── F5 — the mirrored body is the DELIVERED body, cap included ────────────
+
+test('F5 — MESSAGE_MAX_CHARS matches production, and the rig can reach the boundary', () => {
+  // The stub used to be 10_000 against a production 8000, so no arm could ever
+  // cross the cap: the rig was blind to truncation by construction.
+  const src = fs.readFileSync(WORKSPACES, 'utf8');
+  const m = src.match(/const MESSAGE_MAX_CHARS = (\d+);/);
+  assert.ok(m, 'MESSAGE_MAX_CHARS not found — renamed?');
+  const production = Number(m![1]);
+  assert.equal(production, 8000, 'production cap');
+
+  const rig = fs.readFileSync(path.join(HERE, 'bus-mirror.test.ts'), 'utf8');
+  const stub = rig.match(/MESSAGE_MAX_CHARS: (\d+)/);
+  assert.ok(stub, 'the rig stub not found');
+  assert.equal(
+    Number(stub![1].replace(/_/g, '')),
+    production,
+    'THE RIG MUST STUB THE PRODUCTION VALUE — a looser stub cannot reach the boundary',
+  );
+});
+
+test('F5 — the body the mirror records is byte-identical to the body delivered', () => {
+  // The wrapper now normalizes ONCE and hands the same string to both. Asserted
+  // over a body that actually CROSSES the cap, so a second divergent
+  // `trim().slice()` reappearing anywhere would show up here.
+  // Comment lines stripped first: the wrapper's own comment DISCUSSES the
+  // duplication it removed, and counting that mention as a copy would make this
+  // assertion fail on correct code (and, worse, pass if someone deleted the
+  // comment and added a real second copy).
+  const wrapper = extract('export async function dispatchMessageRequest')
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('//'))
+    .join('\n');
+  const copies = (wrapper.match(/trim\(\)\.slice\(/g) ?? []).length;
+  assert.equal(copies, 1, 'exactly ONE trim().slice() in the wrapper CODE, not two');
+  assert.match(
+    wrapper,
+    /const body = input\.text\.trim\(\)\.slice\(0, MESSAGE_MAX_CHARS\);/,
+    'the shared normalization',
+  );
+  assert.match(
+    wrapper,
+    /dispatchMessageRequestUnmirrored\(\{ \.\.\.input, text: body \}\)/,
+    'delivery receives the normalized body',
+  );
+  assert.match(wrapper, /\n {4}body,\n/, 'and the mirror receives the SAME binding');
+});
+
+test('F5 — an over-cap send mirrors the TRUNCATED body, and the row proves it', (t) => {
+  const { db } = tmpBus(t);
+  setMirrorRunId(RUN);
+  const long = 'x'.repeat(9000);
+  const truncated = long.trim().slice(0, 8000);
+  mirrorDispatch({
+    sender: 'ws-sender',
+    recipient: 'ws-target',
+    body: truncated,
+    result: { ok: true, delivery: 'live' },
+    db,
+  });
+  const row = db.prepare('SELECT body FROM messages ORDER BY sequence DESC LIMIT 1').get() as {
+    body: string;
+  };
+  assert.equal(row.body.length, 8000, 'the bus holds the CAPPED body');
+  assert.notEqual(row.body.length, 9000, 'not the raw one');
 });
