@@ -280,7 +280,53 @@ if grep -qE 'bus: opened .*schema v[0-9]+' "$WORK/fail.applog" 2>/dev/null; then
   fail "must-FAIL arm OPENED the bus without its .node — the module resolved from elsewhere"
 fi
 
+# ─── 6. Wake-as-turn started, and SHIPS OFF (#117) ──────────────────────────
+#
+# The arms above prove the bus opens and that its failure does not block boot.
+# They say NOTHING about the wake subsystem, which is a separate claim needing
+# its own positive assertion: absence of a wake error is not presence of a
+# started sweep (carry-forward 3).
+#
+# Three assertions, and the third is the one that matters most.
+echo
+echo "── #117 wake-as-turn: started, and OFF by default ──"
+
+WAKE_PASS="$(grep -F 'bus-wake: started' "$WORK/pass.applog" 2>/dev/null | head -1)"
+[ -n "$WAKE_PASS" ] || {
+  echo "  applog tail:" >&2; tail -15 "$WORK/pass.applog" 2>/dev/null >&2
+  fail "#117: the packaged app never logged 'bus-wake: started' — the sweep does not run in the shipped build"
+}
+echo "  ${WAKE_PASS#*] }"
+
+# THE SWITCH SHIPS OFF. Asserting the literal OFF string, not merely the absence
+# of the ON string: 'no evidence it fired' is the same observable as 'the feature
+# is not built', and the standing ruling is that a switch-gated mechanism must be
+# COUNTED, not fired, while its switch is off.
+case "$WAKE_PASS" in
+  *"switch OFF"*) echo "  ships OFF — counted, not fired (standing ruling)" ;;
+  *"switch ON"*)  fail "#117: the wake switch is ON in a shipped build — shadow mode requires OFF" ;;
+  *)              fail "#117: the wake start line names no switch state: $WAKE_PASS" ;;
+esac
+
+# And no wake may actually have fired during this boot.
+if grep -qF 'bus-wake: woke ' "$WORK/pass.applog" 2>/dev/null; then
+  fail "#117: a wake FIRED with the switch off — coexistence-ruling violation"
+fi
+echo "  and no wake fired: 'bus-wake: woke ' absent from the must-PASS arm"
+
+# D1 for #117 specifically: with the bus DEAD, the wake subsystem must still
+# start (it tolerates getBus() === null) and must not take startup down. If this
+# line is missing from the fail arm, the wake is gated on the bus opening —
+# which would make a bus hiccup permanently disable wakes for the whole run.
+WAKE_FAIL="$(grep -F 'bus-wake: started' "$WORK/fail.applog" 2>/dev/null | head -1)"
+[ -n "$WAKE_FAIL" ] || {
+  echo "  fail-arm applog tail:" >&2; tail -15 "$WORK/fail.applog" 2>/dev/null >&2
+  fail "#117: with the bus DEAD the wake never started — it is gated on the bus, violating D1"
+}
+echo "  bus DEAD: wake still started (tolerates getBus() === null)"
+
 echo
 echo "PASS — D1 gate, 2 arms x 2 assertions:"
 echo "  intact : window ($PASS_WINS) + startup COMPLETED + bus opened (schema v1)"
 echo "  broken : window ($FAIL_WINS) + startup COMPLETED + bus failed LOUDLY, no abort"
+echo "  #117   : wake started in BOTH arms, switch OFF, no wake fired"
