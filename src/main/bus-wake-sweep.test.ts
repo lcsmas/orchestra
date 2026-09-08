@@ -12,6 +12,7 @@ import {
   __setBusReaderForTests,
   __resetBusWakeForTests,
   __freezeSwitchForTests,
+  stopBusWake,
 } from './bus-wake.ts';
 import { WAKE_ORDER, isWakeOrder } from '../shared/bus-wake.ts';
 
@@ -56,7 +57,7 @@ function rig(db: BusDb, opts: { switchOn: boolean; readers?: string[]; deliver?:
   const wakes: { reader: string; text: string }[] = [];
   __resetBusWakeForTests();
   __setBusReaderForTests(() => db);
-  setWakeRoster(() => (opts.readers ?? [R1]).map((reader) => ({ reader, wakeable: true })));
+  setWakeRoster(() => (opts.readers ?? [R1]).map((reader) => ({ reader, wakeable: true, runId: RUN })));
   setWakeDeliver(async (reader, text) => {
     wakes.push({ reader, text });
     return opts.deliver ?? true;
@@ -251,7 +252,7 @@ test('an archived (unwakeable) reader is never woken, even with pending mail', a
   const wakes: { reader: string; text: string }[] = [];
   __resetBusWakeForTests();
   __setBusReaderForTests(() => db);
-  setWakeRoster(() => [{ reader: R1, wakeable: false }]);
+  setWakeRoster(() => [{ reader: R1, wakeable: false, runId: RUN }]);
   setWakeDeliver(async (reader, text) => {
     wakes.push({ reader, text });
     return true;
@@ -263,4 +264,150 @@ test('an archived (unwakeable) reader is never woken, even with pending mail', a
 
   assert.equal(wakes.length, 0);
   assert.equal(busWakeCounters().fired, 0);
+});
+
+// ── Q1: the switch is frozen PER RUN, and two runs can differ ──────────────
+
+test('Q1 two runs in ONE process: run A OFF only COUNTS, run B ON FIRES', async (t) => {
+  // THE ARM ONE BOOT-SCOPED BOOLEAN CANNOT PASS. Every gate in this ticket
+  // exercises a single run, so a single cached flag answers all of them
+  // correctly; the defect is not in any clause a mutant could delete, it is in
+  // WHICH EVENT the value binds to (boot, vs the run being swept).
+  //
+  // Both readers have pending mail in the same sweep. The switch says OFF for
+  // run A and ON for run B, so the correct behaviour is: exactly one turn, for
+  // B's reader, and exactly one counted, for A's.
+  const db = tmpDb(t);
+  const RUN_OFF = 'run-A-off';
+  const RUN_ON = 'run-B-on';
+  const READER_OFF = 'ws-in-run-A';
+  const READER_ON = 'ws-in-run-B';
+
+  const wakes: { reader: string; text: string }[] = [];
+  __resetBusWakeForTests();
+  __setBusReaderForTests(() => db);
+  setWakeRoster(() => [
+    { reader: READER_OFF, wakeable: true, runId: RUN_OFF },
+    { reader: READER_ON, wakeable: true, runId: RUN_ON },
+  ]);
+  setWakeDeliver(async (reader, text) => {
+    wakes.push({ reader, text });
+    return true;
+  });
+  __freezeSwitchForTests((runId: string) => runId === RUN_ON);
+
+  send(db, { runId: RUN_OFF, sender: 'ops', kind: 'dispatch', body: 'a', recipient: READER_OFF });
+  send(db, { runId: RUN_ON, sender: 'ops', kind: 'dispatch', body: 'b', recipient: READER_ON });
+
+  await sweepBusWake();
+
+  assert.deepEqual(wakes.map((w) => w.reader), [READER_ON], 'only the ON run fires');
+  assert.equal(busWakeCounters().fired, 1);
+  assert.equal(busWakeCounters().counted, 1, "the OFF run's wake is counted, not fired");
+});
+
+test('Q1 an app RESTART does not change a running run\'s frozen flags', async (t) => {
+  // The freeze lives in the STORAGE (#118 writes the flags onto the run row when
+  // the run starts), not in this process's uptime. So a restart mid-run must
+  // re-read the same row and behave identically — which is only expressible
+  // because the switch is read per sweep from the run rather than cached at boot.
+  //
+  // Simulated as: full teardown + re-arm (a new "process"), with the run row's
+  // answer unchanged. The reader must still only be COUNTED, never fired.
+  const db = tmpDb(t);
+  const RUN_OFF = 'run-frozen-off';
+  const wakes: { reader: string; text: string }[] = [];
+  const rowSaysOff = (runId: string) => runId !== RUN_OFF; // OFF for our run
+
+  const arm = () => {
+    __setBusReaderForTests(() => db);
+    setWakeRoster(() => [{ reader: R1, wakeable: true, runId: RUN_OFF }]);
+    setWakeDeliver(async (reader, text) => {
+      wakes.push({ reader, text });
+      return true;
+    });
+    __freezeSwitchForTests(rowSaysOff);
+  };
+
+  __resetBusWakeForTests();
+  arm();
+  send(db, { runId: RUN_OFF, sender: 'ops', kind: 'dispatch', body: 'work', recipient: R1 });
+  await sweepBusWake();
+  assert.equal(wakes.length, 0);
+  assert.equal(busWakeCounters().counted, 1);
+
+  // ── "restart": tear the whole subsystem down and bring it back up ──
+  stopBusWake();
+  __resetBusWakeForTests();
+  arm();
+
+  await sweepBusWake();
+  assert.equal(wakes.length, 0, "the running run's flag survived the restart — still OFF");
+  assert.equal(busWakeCounters().counted, 1, 'and it is still COUNTED, not silently skipped');
+});
+
+test('a reader is NOT woken for mail in a run it does not belong to', async (t) => {
+  // Run-scoping of the PENDING PREDICATE, which the per-run switch depends on.
+  // Unscoped, this reader is reported pending for another run's traffic and gets
+  // ordered to `orchestra check` — which, scoped to ITS run by the CLI, returns
+  // an empty lot. Nothing is acked, pending never clears, and the reader is
+  // woken again every sweep: a permanent loop whose only symptom is an agent
+  // repeatedly told to check an empty mailbox.
+  const db = tmpDb(t);
+  const wakes = rig(db, { switchOn: true });
+  send(db, { runId: 'some-other-run', sender: 'ops', kind: 'dispatch', body: 'not yours', recipient: R1 });
+
+  await sweepBusWake();
+  assert.equal(wakes.length, 0, 'another run\'s mail must not wake this reader');
+
+  // Positive control, same command: mail in the reader's OWN run does wake it,
+  // so the zero above is a scoping decision and not a dead rig.
+  send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'yours', recipient: R1 });
+  await sweepBusWake();
+  assert.equal(wakes.length, 1);
+});
+
+test('a switch accessor that THROWS is treated as OFF, and does not kill the sweep', async (t) => {
+  // COVERS: the `let switchOn = false` initialiser guarding the try/catch.
+  // MUTANT: initialise it to `true` → red here.
+  // WHY IT MATTERS: the accessor is #118's code reached through a seam. If it
+  // throws, the two wrong answers are opposite and unequal: defaulting ON fires
+  // real wakes on a flag nobody could read (a coexistence violation, and the
+  // standing ruling's exact prohibition), while an unguarded throw takes the
+  // whole sweep down for every OTHER reader too. Safe direction is OFF, counted.
+  // (Caught by mutation: this initialiser survived its first mutant.)
+  const db = tmpDb(t);
+  const wakes: { reader: string; text: string }[] = [];
+  __resetBusWakeForTests();
+  __setBusReaderForTests(() => db);
+  setWakeRoster(() => [
+    { reader: R1, wakeable: true, runId: RUN },
+    { reader: 'ws-2', wakeable: true, runId: 'run-ok' },
+  ]);
+  setWakeDeliver(async (reader, text) => {
+    wakes.push({ reader, text });
+    return true;
+  });
+  __freezeSwitchForTests((runId: string) => {
+    if (runId === RUN) throw new Error('#118 switch storage unavailable');
+    return true;
+  });
+
+  send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'a', recipient: R1 });
+  send(db, { runId: 'run-ok', sender: 'ops', kind: 'dispatch', body: 'b', recipient: 'ws-2' });
+
+  await sweepBusWake();
+
+  assert.equal(
+    wakes.filter((w) => w.reader === R1).length,
+    0,
+    'an unreadable flag must NOT fire — OFF is the safe direction',
+  );
+  assert.equal(busWakeCounters().counted, 1, 'it is COUNTED, not silently dropped');
+  // The sweep survived: the OTHER reader, whose switch reads fine, still fired.
+  assert.equal(
+    wakes.filter((w) => w.reader === 'ws-2').length,
+    1,
+    'one reader\'s broken switch must not take the whole sweep down',
+  );
 });

@@ -37,8 +37,8 @@ function tmpBus(t: { after: (fn: () => void) => void }): BusDb {
   return db;
 }
 
-function pendingFor(db: BusDb, reader: string) {
-  const rows = readPendingReaders(db, [reader]);
+function pendingFor(db: BusDb, reader: string, runId = RUN) {
+  const rows = readPendingReaders(db, [{ reader, runId }]);
   assert.equal(rows.length, 1);
   return rows[0];
 }
@@ -159,9 +159,28 @@ test('a gate the reader itself asked does NOT keep that reader pending', (t) => 
 test('readPendingReaders answers per reader in one pass, not one answer for all', (t) => {
   const db = tmpBus(t);
   send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'yours', recipient: READER });
-  const rows = readPendingReaders(db, [READER, OTHER]);
+  const rows = readPendingReaders(db, [
+    { reader: READER, runId: RUN },
+    { reader: OTHER, runId: RUN },
+  ]);
   assert.deepEqual(
     rows.map((r) => [r.reader, r.pending]),
     [[READER, true], [OTHER, false]],
   );
+});
+
+test('an open gate in ANOTHER run does not make this reader pending', (t) => {
+  // COVERS: `run_id = ?` in the openAsk query.
+  // MUTANT: replace it with `? IS NOT NULL` → red.
+  // WHY IT MATTERS: gates are the half of the predicate with NO cursor to clear
+  // it. A gate leaking across runs makes the reader permanently pending — woken
+  // every sweep, forever, over a question asked in a run it cannot even see.
+  // (Caught by mutation: this clause survived its first mutant, so it was
+  // decoration until this arm existed.)
+  const db = tmpBus(t);
+  openGate(db, 'a-different-run', OTHER, 'ship it?');
+  assert.equal(pendingFor(db, READER, RUN).pending, false);
+  // Positive control, same command: the SAME gate read from ITS run does make
+  // the reader pending, so the zero above is scoping, not a blind query.
+  assert.equal(pendingFor(db, READER, 'a-different-run').pending, true);
 });
