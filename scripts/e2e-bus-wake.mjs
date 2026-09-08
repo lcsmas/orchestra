@@ -60,6 +60,16 @@ const ARMS = {
   // Here the ledger is cleared by an ack that never happened, so the two
   // behaviours finally differ.
   check_no_ack:   { switchOn: true,  inserts: 1, ack: false, checkOnly: true, newMailAfterAck: false, expectTurns: 2, expectCounted: 0 },
+  // ★ THE ORDER IS RUNNABLE. Every arm above proves a turn carrying the ORDER
+  // appears; none proves the order is a command that WORKS. This one obeys it
+  // through #115's REAL `verbCheck`/`verbAck` — the same functions the CLI
+  // binary calls — and requires the lot to carry the message the wake was about,
+  // then the ack to clear pending. An order naming a verb that returned an empty
+  // lot (host and CLI disagreeing about run or handle) would satisfy T117.1 and
+  // be useless in the field, and no other arm here could tell the difference.
+  // Verified to fail: pointing the host's roster at a different run than the CLI
+  // resolves gives turnsCarryingOrder 0.
+  real_verb:      { switchOn: true,  inserts: 1, ack: false, realVerb: true, newMailAfterAck: false, expectTurns: 1, expectCounted: 0 },
 };
 const arm = ARMS[ARM];
 if (!arm) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
@@ -162,6 +172,41 @@ for (let i = 0; i < arm.inserts; i++) {
 
 const turnsAfterInserts = orderTurns();
 
+// Obey the order with #115's REAL verbs, exactly as the woken agent would.
+let verbLot = null;
+let verbAckOut = null;
+let pendingAfterVerbAck = null;
+if (arm.realVerb) {
+  const verbs = await import(`${REPO}/src/cli/bus-verbs.ts`);
+  // The identity the CLI itself would resolve inside the woken workspace: no
+  // --run/--as flags, just the env Orchestra sets on the agent's shell. Driving
+  // resolveBusIdentity rather than passing {runId, handle} by hand is the point
+  // — a hand-built identity would agree with the host by construction and prove
+  // nothing about whether the two actually meet in the field.
+  const id = verbs.resolveBusIdentity(
+    {},
+    { ORCHESTRA_RUN_ID: RUN, ORCHESTRA_WS_ID: WS_ID },
+  );
+  if (!id) { console.error('rig fault: identity did not resolve'); process.exit(2); }
+  let stdout = '';
+  const ctx = {
+    db, id, bus: busMod,
+    out: (t) => { stdout += t; },
+    fail: (m) => { throw new Error(`verb failed: ${m}`); },
+  };
+  verbs.verbCheck(ctx, { limit: 100 });
+  verbLot = JSON.parse(stdout);
+  // The reader acks its OWN lot with the real verb.
+  stdout = '';
+  verbs.verbAck(ctx, String(verbLot.lot));
+  verbAckOut = stdout.trim();
+  // Pending must now be clear — read through the HOST's own predicate, so this
+  // also proves host and CLI agree about what "read" means.
+  pendingAfterVerbAck = wake.readPendingReaders(db, [{ reader: WS_ID, runId: RUN }])[0].pending;
+  await wake.sweepBusWake();
+  await new Promise((r) => setTimeout(r, 250));
+}
+
 if (arm.checkOnly) {
   // The reader TAKES its lot and then dies before acking (SIGKILL between check
   // and ack — spike #109 arm 2's case). Nothing acked it, so the host must wake
@@ -214,7 +259,15 @@ const ok =
   // In check_no_ack the counters were deliberately reset mid-arm (simulating a
   // restart), so only the TURN count is meaningful there — and the turn count is
   // the observable this rig exists to trust.
-  (arm.expectTurns === 0 || arm.checkOnly || counters.fired === arm.expectTurns);
+  (arm.expectTurns === 0 || arm.checkOnly || counters.fired === arm.expectTurns) &&
+  // The real-verb arm's own assertions: the order the wake carried, when OBEYED,
+  // must return the lot the wake was about — and the ack must clear pending.
+  (!arm.realVerb || (
+    verbLot?.count === 1 &&
+    String(verbLot?.messages?.[0]?.body ?? '').includes(BODY) &&
+    verbAckOut === `acked ${verbLot.lot}` &&
+    pendingAfterVerbAck === false
+  ));
 
 console.log(JSON.stringify({
   arm: ARM, ok,
@@ -226,5 +279,11 @@ console.log(JSON.stringify({
   order: WAKE_ORDER,
   yieldedToSdk: yielded.length,
   totalUserMessages: userMessages.length,
+  ...(arm.realVerb ? {
+    verbLotCount: verbLot?.count ?? null,
+    verbLotCarriedBody: String(verbLot?.messages?.[0]?.body ?? '').includes(BODY),
+    verbAckOut,
+    pendingAfterVerbAck,
+  } : {}),
 }));
 process.exit(ok ? 0 : 1);
