@@ -225,6 +225,27 @@ Deliberately not N calls inside the body: that body has twelve `return`s, and a
 per-return mirror is one that silently misses the path added next — which would
 surface as a permanently non-zero `missed` nobody could attribute.
 
+### A REFUSED send is NOT mirrored (review F1 — the wave's most serious finding)
+
+`busSend` used to be unconditional, so all four refusal shapes (empty text,
+unknown target, message-yourself, inbox write failed) landed as real
+`kind='dispatch'` rows — and `bus.check` has no recipient filter, so a reader was
+handed messages the **authoritative** channel explicitly refused, inside the
+artifact ADR 0002 calls the source of truth. Old channel delivers 1, bus asserts 5.
+
+It was invisible to the very instrument built to detect it: `withdrawn` is
+deliberately not `missed`, so the counters read the exact **0/0/0 promotion bar**
+while diverging badly. The guard is `outcome === 'withdrawn'` → skip the insert,
+**fall through to `ledger.record`** (not an early `return`, which would drop the
+event from the ledger). Fixing it by counting refusals as `missed` was explicitly
+rejected — that breaks the promotion bar from the other side.
+
+### Both INSERTs are ONE transaction (review F4)
+
+A partial write left a `messages` row that `mirroredRowCount` could not see, so
+the ledger scored `missed++` for a message the bus **does** hold — the counter
+reporting the exact opposite of the truth, in the passing-looking direction.
+
 ### The three outcomes (`outcomeFor`, `src/shared/bus-mirror.ts:52`)
 
 `live` (SDK turn started, PTY write, or a woken agent — `started` maps here),
@@ -277,13 +298,23 @@ source-binding test fails loudly if the wrapper shape changes, and has its own
 must-fail arm (a body that merely *mentions* `mirrorDispatch` must not satisfy it).
 
 ```bash
-node --test --experimental-strip-types src/main/bus-mirror.test.ts    # 13 pass
+node --test --experimental-strip-types src/main/bus-mirror.test.ts    # 24 pass
 node --test --experimental-strip-types src/shared/bus-mirror.test.ts  #  9 pass
 ```
 
-Mutants seen RED (C10): the wrapper manufacturing a result; the catch's
-`log.error` removed (silent swallow); the duplicate detector removed; `outcomeFor`
-collapsed to one value — the last is T116.3's own stated disproof.
+**The arms call the SHIPPED `mirrorDispatch`.** Review F2 found that every earlier
+reference to it here was a STRING assertion over source text while `runDispatch`
+re-implemented the wrapper by hand — so the shipped try/catch, the null-bus branch
+and the ledger write never executed, and a mutant throwing on `mirrorDispatch`'s
+FIRST LINE left the suite at 1389 pass while production would reject every
+`orchestra message` (`workspaces.ts:2789` is a bare, unguarded call). That mutant
+now reddens 10 arms.
+
+Mutants seen RED: throw on `mirrorDispatch`'s first line (10 arms) · the F1
+withdrawn guard removed (3) · `outcomeFor` moved back outside the `try` (1) · the
+F4 transaction unwrapped (1) · a second `trim().slice()` reintroduced (1) · the
+duplicate detector removed (3) · `outcomeFor` collapsed to one value (4, T116.3's
+own stated disproof) · the v2 migration's table renamed (C11 + 9).
 
 ### Not covered here
 

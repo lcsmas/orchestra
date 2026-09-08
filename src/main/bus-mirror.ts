@@ -99,13 +99,44 @@ export interface MirrorInput {
  */
 export function mirrorDispatch(input: MirrorInput): MirrorOutcome {
   const mechanism = input.mechanism ?? PEER_MESSAGE_MECHANISM;
-  const outcome = outcomeFor(input.result);
-  const runId = mirrorRunId();
-  const sendId = randomUUID();
+  // INSIDE the try (review F3): `input.result` is data from a caller, and
+  // `outcomeFor` dereferences it. Reading it before the guard put a TypeError
+  // on a path whose entire contract is "never throws" — and F1's fix below adds
+  // a second reader of this value, which is what made the latent bug live.
+  let outcome: MirrorOutcome = 'withdrawn';
   let rows = 0;
   try {
+    outcome = outcomeFor(input.result);
+    const runId = mirrorRunId();
+    const sendId = randomUUID();
+    // ── F1 (BLOCKING, review 2026-09-08) ────────────────────────────────────
+    // A REFUSED send must NOT become a bus row.
+    //
+    // `busSend` used to be unconditional, so all four refusal shapes — empty
+    // text, unknown target, message-yourself, inbox write failed — landed as
+    // real `kind='dispatch'` rows. `bus.check` has no recipient filter, so a
+    // reader is handed messages the AUTHORITATIVE channel explicitly refused,
+    // in the artifact ADR 0002 calls the SOURCE OF TRUTH. Old channel delivers
+    // 1, bus asserts 5.
+    //
+    // And it was invisible to the instrument built to detect it: `withdrawn` is
+    // deliberately not `missed` (a refusal the bus also skipped is agreement),
+    // so the counters read the exact 0/0/0 promotion bar while diverging badly.
+    //
+    // The fix is to SKIP THE INSERT, not to count refusals as `missed` — that
+    // would break the promotion bar from the other side, making every self-send
+    // typo look like a mirror fault.
     const db = input.db !== undefined ? input.db : getBus();
-    if (!db) {
+    if (outcome === 'withdrawn') {
+      // NOT an early `return`: that would skip `ledger.record` at the bottom,
+      // and a refusal is still a real event the ledger must see — it simply is
+      // not a MESSAGE. Falling through with `rows` left at 0 also keeps the
+      // accounting honest, since `record()` does not score a withdrawn send as
+      // `missed`.
+      log.info(
+        `bus mirror: ${mechanism} send to ${input.recipient ?? '?'} was REFUSED by the old channel — not mirrored`,
+      );
+    } else if (!db) {
       // D1: the bus is down. This is a real divergence for a delivered
       // message — record it and say so out loud. It is NOT an error for the
       // delivery, which already happened.
@@ -113,22 +144,29 @@ export function mirrorDispatch(input: MirrorInput): MirrorOutcome {
         `bus mirror: bus unavailable — ${mechanism} send to ${input.recipient ?? '?'} (${outcome}) not mirrored`,
       );
     } else {
-      const sequence = busSend(db, {
-        runId,
-        sender: input.sender,
-        recipient: input.recipient,
-        kind: 'dispatch',
-        body: input.body,
-      });
-      recordMirror(db, {
-        runId,
-        mechanism,
-        sendId,
-        sequence,
-        outcome,
-        sender: input.sender,
-        recipient: input.recipient,
-      });
+      // ── F4 (review 2026-09-08) — ONE transaction, not two bare INSERTs ────
+      // A partial write (crash/lock between the two) left a `messages` row that
+      // `mirroredRowCount` could not see, so the ledger scored `missed++` for a
+      // message the bus DOES hold — a divergence counter reporting the exact
+      // opposite of the truth, in the passing-looking direction.
+      db.transaction(() => {
+        const sequence = busSend(db, {
+          runId,
+          sender: input.sender,
+          recipient: input.recipient,
+          kind: 'dispatch',
+          body: input.body,
+        });
+        recordMirror(db, {
+          runId,
+          mechanism,
+          sendId,
+          sequence,
+          outcome,
+          sender: input.sender,
+          recipient: input.recipient,
+        });
+      })();
       rows = mirroredRowCount(db, runId, sendId);
     }
   } catch (e) {

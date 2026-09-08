@@ -2778,18 +2778,31 @@ export async function dispatchMessageRequest(
   // SHADOW MIRROR (#116). The old channel runs FIRST and UNCHANGED; the mirror
   // sees only its finished result and returns void. Written as a wrapper around
   // the untouched body rather than as N calls inside it, deliberately:
-  // `dispatchMessageRequestUnmirrored` has SIX `return`s on five different
-  // paths, and a mirror bolted onto each one is a mirror that silently misses a
-  // path the day a seventh is added -- which would show up as a permanently
-  // non-zero `missed` nobody could attribute. One wrapper cannot miss a path.
+  // `dispatchMessageRequestUnmirrored` carries TWELVE `return`s, and a mirror
+  // bolted onto each is one that silently misses the path added next -- which
+  // would surface as a permanently non-zero `missed` nobody could attribute.
+  // One wrapper cannot miss a path. (Count measured, not estimated:
+  //   node -e "const s=require('fs').readFileSync('src/main/workspaces.ts','utf8');
+  //            const i=s.indexOf('async function dispatchMessageRequestUnmirrored');
+  //            const b=s.slice(i).split('\n}\n')[0];
+  //            console.log((b.match(/\breturn\b/g)||[]).length)"
+  // An earlier revision of this comment said SIX, and the wrong number was
+  // copied into docs/codebase-map/bus.md -- a near-true claim nobody re-derives.)
   //
   // The mirror is READ-ONLY with respect to delivery: `res` is returned
   // untouched, `mirrorDispatch` never throws, and nothing here awaits it.
-  const res = await dispatchMessageRequestUnmirrored(input);
+  //
+  // ONE normalization, shared (review F5): the body is trimmed and capped in
+  // exactly one place and handed to both the delivery path and the mirror. Two
+  // copies of `trim().slice(0, MESSAGE_MAX_CHARS)` is how the mirror silently
+  // starts recording a different string from the one delivered the day either
+  // cap moves.
+  const body = input.text.trim().slice(0, MESSAGE_MAX_CHARS);
+  const res = await dispatchMessageRequestUnmirrored({ ...input, text: body });
   mirrorDispatch({
     sender: input.from ?? 'external',
     recipient: input.to,
-    body: input.text.trim().slice(0, MESSAGE_MAX_CHARS),
+    body,
     result: res,
   });
   return res;
