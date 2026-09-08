@@ -164,13 +164,28 @@ async function shoot(win, state, file) {
   await win.loadFile(path.join(PAGE, 'index.html'), { search: 'state=' + state });
   // Wait for the pane root to actually exist rather than sleeping: a fixed
   // delay measures the delay, not the render.
-  for (let i = 0; i < 100; i++) {
+  // Wait for the pane root AND for fonts to be READY. Waiting on the DOM alone
+  // is not enough and this is measured, not theoretical: a run of this rig
+  // captured correct layout with EVERY GLYPH MISSING (12450 bytes vs 25k) while
+  // every innerText assertion passed — text exists in the DOM long before it is
+  // painted. document.fonts.ready is the event that separates the two.
+  for (let i = 0; i < 200; i++) {
     const ok = await win.webContents.executeJavaScript(
-      "!!document.querySelector('[data-bus-pane=\\"root\\"]')",
+      "(async () => { const el = document.querySelector('[data-bus-pane=\\"root\\"]');" +
+        " if (!el) return false; await document.fonts.ready;" +
+        " return document.fonts.status === 'loaded' && el.innerText.length > 200; })()",
     );
     if (ok) break;
     await new Promise((r) => setTimeout(r, 50));
   }
+  // MEASURED, not assumed (2026-09-08, this rig, wayland-3, 6 runs per arm,
+  // alternating): WITHOUT the fonts.ready wait, 3/6 captures came back with
+  // correct layout and ZERO GLYPHS (12450 bytes); WITH it, 6/6 painted
+  // (98388-99159 bytes). Every innerText assertion passed on BOTH arms — the
+  // text is in the DOM long before it is painted, so the DOM checks cannot see
+  // this failure at all. The byte threshold is the only assertion that can.
+  // One more frame after fonts settle, so the paint that USES them has landed.
+  await new Promise((r) => setTimeout(r, 250));
   const img = await win.webContents.capturePage();
   fs.writeFileSync(path.join(OUT, file), img.toPNG());
   const text = await win.webContents.executeJavaScript('document.body.innerText');
@@ -279,7 +294,11 @@ check('the two captures DIFFER', seeded.text !== down.text);
 // compresses far smaller than a text-dense one.
 const seededBytes = fs.statSync(path.join(outDir, seeded.file)).size;
 const downBytes = fs.statSync(path.join(outDir, down.file)).size;
-check('seeded PNG is text-dense (not a blank frame)', seededBytes > 20000, `${seededBytes} bytes`);
+check(
+  'seeded PNG is text-dense (not a glyph-less frame)',
+  seededBytes > 60000,
+  `${seededBytes} bytes — a font-race capture (correct layout, ZERO glyphs) measured 12450 and a painted one ~98000; if this fires, look at the PNG before blaming the threshold`,
+);
 check('the two PNGs differ in size (different content)', seededBytes !== downBytes, `${seededBytes} vs ${downBytes}`);
 
 console.log(`\nScreenshots: ${path.join(outDir, seeded.file)}\n             ${path.join(outDir, down.file)}`);
