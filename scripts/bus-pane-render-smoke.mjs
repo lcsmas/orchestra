@@ -243,6 +243,7 @@ const SEEDED = {
   gates,
   members,
   counters,
+  countersBusAvailable: true,
 };
 
 const EMPTY = {
@@ -256,6 +257,7 @@ const EMPTY = {
   gates: [],
   members: [],
   counters: [],
+  countersBusAvailable: null,
 };
 
 const render = (snapshot) =>
@@ -379,14 +381,57 @@ check(
 );
 
 // The counters' honest-empty state (carry-forward 4 at the UI boundary).
-console.log('\nCounters — an absent source is not reported as zero:');
+// THREE distinct counter states, because two of them are all-zeros-shaped and
+// only the flag tells them apart (#116's ask, and it is right):
+//   null  — no source answered. NOT "zero divergence".
+//   true  — the mirror answered, bus was up. A zero here is a real measurement.
+//   false — the mirror answered, bus was DOWN. Counters are still populated
+//           (they live in main memory), and every mechanism read OFF for the run.
+console.log('\nCounters — the three states are mutually distinguishable:');
 check(
-  'empty counters say so explicitly',
-  emptyHtml.includes('NOT the same as zero divergence'),
+  'no source: says so explicitly',
+  emptyHtml.includes('NOT the same as zero divergence') &&
+    emptyHtml.includes('data-counters-source="absent"'),
 );
 check(
-  'seeded counters do NOT show that message',
+  'seeded (source present, bus up): does NOT show the absent-source message',
   !seededHtml.includes('NOT the same as zero divergence'),
+);
+
+const measuredZero = render({
+  ...EMPTY,
+  counters: [],
+  countersBusAvailable: true,
+});
+check(
+  'measured zero: labelled a MEASURED zero, not a missing instrument',
+  measuredZero.includes('measured zero, not a missing instrument') &&
+    measuredZero.includes('data-counters-source="present"'),
+);
+check(
+  'measured zero and no-source render DIFFERENTLY',
+  measuredZero !== emptyHtml,
+  'if these were identical the pane could not tell an unlanded mirror from a clean run',
+);
+
+const busDown = render({ ...SEEDED, countersBusAvailable: false });
+check(
+  'bus-down counters: carry the degraded banner',
+  busDown.includes('data-counters-bus="unavailable"') &&
+    /bus was UNAVAILABLE while these were counted/.test(busDown),
+);
+check(
+  'bus-down counters still SHOW the numbers (they live in main memory)',
+  busDown.includes('>41<') && busDown.includes('>13<'),
+  'a bus outage must not blank the counters — that is what it exists to record',
+);
+check(
+  'bus-up seeded render does NOT carry the degraded banner',
+  !seededHtml.includes('data-counters-bus="unavailable"'),
+);
+check(
+  'bus-down and bus-up renders DIFFER',
+  busDown !== seededHtml,
 );
 
 try {

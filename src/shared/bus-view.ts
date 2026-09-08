@@ -28,6 +28,28 @@ export interface BusDivergenceCounter {
   lostWake: number;
 }
 
+/**
+ * #116's wrapper around the counters, confirmed at source on
+ * `bus-shadow-mirror-116@835eb757:src/shared/bus-mirror.ts:196`.
+ *
+ * `counters` is the frozen array byte for byte; `busAvailable` is the field
+ * #116 added and asked the pane to RENDER, and the ask is right: without it, an
+ * all-zero row on a healthy run and an all-zero row taken while nothing could be
+ * written are THE SAME OBSERVABLE. D1's consequence per the LEAD has two halves
+ * — a bus-down mechanism reads OFF for the run AND the counter records it — and
+ * only this flag carries the second half.
+ *
+ * NOTE the counters deliberately live in main-process MEMORY, not in the bus:
+ * that is what lets a bus outage be COUNTED rather than lost with the
+ * connection. So `busAvailable: false` arrives WITH a populated array, and the
+ * pane must not treat a down bus as "no counters".
+ */
+export interface BusDivergenceReportView {
+  runId: string;
+  busAvailable: boolean;
+  counters: BusDivergenceCounter[];
+}
+
 /** A member's liveness + phase, as the pane shows it. */
 export interface BusMemberLiveness {
   handle: string;
@@ -103,6 +125,15 @@ export interface BusSnapshot {
   gates: BusGateView[];
   members: BusMemberLiveness[];
   counters: BusDivergenceCounter[];
+  /**
+   * Did a counter SOURCE answer at all? Distinct from `counters.length === 0`
+   * and from the snapshot's own `available`:
+   *   null  — no source registered (#116 not present). NOT "zero divergence".
+   *   true  — the mirror answered and the bus was up when it did.
+   *   false — the mirror answered and reports the bus was DOWN; the counters
+   *           are still populated (they live in memory, not in the bus).
+   */
+  countersBusAvailable: boolean | null;
 }
 
 /** The all-empty, bus-down snapshot. */
@@ -122,5 +153,6 @@ export function unavailableSnapshot(
     gates: [],
     members: [],
     counters: [],
+    countersBusAvailable: null,
   };
 }
