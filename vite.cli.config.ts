@@ -26,6 +26,16 @@ export default defineConfig({
       external: [/^node:/, 'http', 'fs', 'os', 'path', 'process', 'buffer'],
       output: {
         banner: '#!/usr/bin/env node',
+        // ONE file. The published `bin` is `dist-electron/cli.js` and nothing
+        // else, so a code-split chunk would be a second artifact the bin entry
+        // does not name. The bus verbs (#115) `await import('../main/bus.ts')`
+        // — deliberately dynamic, to keep better-sqlite3's cost and its ABI
+        // failure mode off every non-bus invocation — and rollup answers a
+        // dynamic import with a separate hashed chunk unless told otherwise.
+        // Inlining keeps the laziness (it becomes a `Promise.resolve().then`
+        // around code that still only touches the native binding when a
+        // Database is CONSTRUCTED) while keeping the output a single file.
+        inlineDynamicImports: true,
       },
     },
   },
