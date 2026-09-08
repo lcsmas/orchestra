@@ -416,6 +416,15 @@ async function createMainWindow() {
       // resurrect a workspace the human retired. `ws.archived` is the flag the
       // #90 watchdog gates on too (session-watchdog.ts:233).
       wakeable: !ws.archived && !!ws.worktreePath,
+      // `'default'` MATCHES THE CLI'S OWN FALLBACK (#115: `--run` >
+      // `$ORCHESTRA_RUN_ID` > `default`), so the host looks for a reader's
+      // pending mail in the same run the CLI wrote it to. There is no
+      // per-workspace bus run to read yet — the run lifecycle is #115/#118's —
+      // and inventing one here would put every workspace in a run no CLI writes
+      // to, which reads as a permanently quiet fleet: the wake would fire for
+      // nobody, and nothing would report it. When a workspace carries its run,
+      // this maps it; the seam is already the right shape.
+      runId: 'default',
     })),
   );
   // `sdkStartAndDeliver` is the cycle-safe seam over sdkWake: it lazy-starts a

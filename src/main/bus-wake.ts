@@ -53,26 +53,45 @@ const WATCH_DEBOUNCE_MS = 150;
 // ─── The switch seam (#118 owns the storage; this module only READS) ────────
 //
 // The standing ruling: a switch-gated mechanism is COUNTED, not fired, while its
-// switch is off, and switches are read at wave start and FROZEN for the run. So
-// this reads the flag exactly once, in startBusWake(), and never again — a flip
-// mid-run cannot change what a running run does.
+// switch is off, and switches are read at wave start and FROZEN FOR THE RUN.
+//
+// "THE RUN" IS A BUS `run_id`, NOT THE APP PROCESS. This is the whole content of
+// ledger #123 Q1, and getting it wrong is invisible to every gate in this
+// ticket. An earlier version cached ONE boolean in `startBusWake()` and reused
+// it for every sweep. That is correct-looking and correct for a single run, and
+// it cannot be right for two: run A frozen OFF and run B frozen ON are the
+// normal steady state of a fleet mid-wave, and one process-wide boolean must
+// answer the same for both. The defect is not in a clause any mutant could
+// delete — it is in WHICH EVENT the value binds to — so all 17 mutants and all
+// of C1-C10 pass on it. The `Q1 two runs in ONE process` arm in
+// bus-wake-sweep.test.ts is what actually discriminates.
+//
+// So the switch is read PER SWEEP, keyed on the run the reader belongs to. The
+// FREEZE is the storage's job (#118 writes the flags onto the run row when the
+// run starts, and never mutates them), which is where it belongs: freezing is a
+// property of the run's data, not of how long this process has been up. An app
+// restart mid-run therefore cannot change a running run's flags — it re-reads
+// the same row.
 //
 // #118 owns the storage and src/main/workspaces.ts; this file must not. Until
-// its accessor lands, the default reader below returns false (OFF), so the
-// shipped default is shadow — counted, never fired. See ledger #123 Q1.
+// its accessor lands, the default reader below returns false (OFF) for every
+// run, so the shipped default is shadow — counted, never fired.
 
-type WakeSwitchReader = () => boolean;
+/** Reads the wake flag OFF THE RUN ROW for `runId`. Must be a pure read: it is
+ *  called once per reader per sweep, and it must return the value frozen when
+ *  that run started, not a live setting. */
+export type WakeSwitchReader = (runId: string) => boolean;
 
 let readWakeSwitch: WakeSwitchReader = () => false;
 
-/** Wire in #118's switch accessor (or a rig's). Takes effect at the NEXT
- *  startBusWake(); it deliberately cannot change a run already in flight. */
+/** Wire in #118's switch accessor (or a rig's). */
 export function setWakeSwitchReader(fn: WakeSwitchReader): void {
   readWakeSwitch = fn;
 }
 
-/** The frozen value for THIS run — null before startBusWake(). */
-let switchOnForRun: boolean | null = null;
+/** True once startBusWake() has run — the sweep is inert before it. Replaces
+ *  the old `switchOnForRun` cache, which conflated "started" with "the flag". */
+let started = false;
 
 // ─── Shadow counters ───────────────────────────────────────────────────────
 
@@ -110,14 +129,23 @@ const ledger = new Map<string, WakeLedgerEntry>();
  * pending — the reader that most needs waking is the one such a predicate is
  * blind to.
  */
-export function readPendingReaders(db: BusDb, readers: readonly string[]): ReaderPendingState[] {
-  // Highest sequence addressed to this reader (or broadcast, recipient IS NULL)
-  // that its durable cursor has not passed. COALESCE so a reader with no cursor
-  // row reads 0 rather than dropping out of the join.
+export function readPendingReaders(
+  db: BusDb,
+  readers: readonly { reader: string; runId: string }[],
+): ReaderPendingState[] {
+  // EVERY query is scoped to the reader's OWN run. Without `run_id = ?` a reader
+  // in run A is reported pending for run B's traffic, and would then be woken to
+  // run `orchestra check`, which — scoped to ITS run by the CLI — returns an
+  // empty lot. The reader is ordered to look at nothing, finds nothing, acks
+  // nothing, and the pending state never clears, so it is woken again on every
+  // sweep: a permanent wake loop whose only symptom is an agent repeatedly told
+  // to check an empty mailbox. Run-scoping is also what makes the per-run switch
+  // coherent — flags frozen per run are meaningless if the mail is not.
   const lotHigh = db.prepare(`
     SELECT COALESCE(MAX(m.sequence), 0) AS hi
       FROM messages m
-     WHERE (m.recipient = ? OR m.recipient IS NULL)
+     WHERE m.run_id = ?
+       AND (m.recipient = ? OR m.recipient IS NULL)
        AND m.sequence > COALESCE(
              (SELECT c.acked_seq FROM cursors c WHERE c.reader = ? AND c.run_id = m.run_id), 0)
   `);
@@ -125,21 +153,21 @@ export function readPendingReaders(db: BusDb, readers: readonly string[]): Reade
   // parked on an ask is `waiting`, never stale (#117 Intent).
   const openAsk = db.prepare(`
     SELECT COUNT(*) AS n FROM decision_gates
-     WHERE resolved_at IS NULL AND asked_by <> ?
+     WHERE run_id = ? AND resolved_at IS NULL AND asked_by <> ?
   `);
   const openQuestion = db.prepare(`
     SELECT COALESCE(MAX(m.sequence), 0) AS hi
       FROM messages m
-     WHERE m.kind = 'question' AND m.recipient = ?
+     WHERE m.run_id = ? AND m.kind = 'question' AND m.recipient = ?
        AND m.sequence > COALESCE(
              (SELECT c.acked_seq FROM cursors c WHERE c.reader = ? AND c.run_id = m.run_id), 0)
   `);
 
   const out: ReaderPendingState[] = [];
-  for (const reader of readers) {
-    const hi = Number((lotHigh.get(reader, reader) as { hi: number }).hi);
-    const qhi = Number((openQuestion.get(reader, reader) as { hi: number }).hi);
-    const asks = Number((openAsk.get(reader) as { n: number }).n);
+  for (const { reader, runId } of readers) {
+    const hi = Number((lotHigh.get(runId, reader, reader) as { hi: number }).hi);
+    const qhi = Number((openQuestion.get(runId, reader, reader) as { hi: number }).hi);
+    const asks = Number((openAsk.get(runId, reader) as { n: number }).n);
     const pendingThroughSeq = Math.max(hi, qhi);
     out.push({
       reader,
@@ -162,6 +190,10 @@ export function readPendingReaders(db: BusDb, readers: readonly string[]): Reade
 export interface WakeableReader {
   reader: string;
   wakeable: boolean;
+  /** The bus run this reader belongs to. The switch is keyed on it (each run
+   *  carries its own frozen flags), and so is the reader's cursor — the same
+   *  handle in two runs has two independent positions. */
+  runId: string;
 }
 
 let readRoster: () => WakeableReader[] = () => [];
@@ -224,17 +256,30 @@ export async function sweepBusWake(): Promise<void> {
     // Nothing is lost — the next sweep re-reads durable state.
     return;
   }
-  if (switchOnForRun === null) return; // not started
+  if (!started) return; // startBusWake() has not run
   sweeping = true;
   try {
     const readers = readRoster();
-    const pending = readPendingReaders(db, readers.map((r) => r.reader));
+    const pending = readPendingReaders(db, readers);
     const stillPending = new Set(pending.filter((p) => p.pending).map((p) => p.reader));
     pruneWakeLedger(ledger, stillPending);
 
     for (const p of pending) {
-      const session = { wakeable: readers.find((r) => r.reader === p.reader)?.wakeable ?? false };
-      const action = decideWake(p, session, ledger.get(p.reader), switchOnForRun);
+      const entry = readers.find((r) => r.reader === p.reader);
+      const session = { wakeable: entry?.wakeable ?? false };
+      // PER SWEEP, PER RUN — never a process-wide cache. See the switch seam
+      // header: two runs with different frozen flags are the normal steady
+      // state of a fleet mid-wave, and one boolean cannot answer for both.
+      // Read defensively: the accessor is #118's code reached through a seam,
+      // and the safe direction on an unreadable flag is OFF — counted, never
+      // fired — rather than taking the whole sweep down.
+      let switchOn = false;
+      try {
+        switchOn = entry ? readWakeSwitch(entry.runId) : false;
+      } catch (e) {
+        log.warn(`bus-wake: switch read failed for ${p.reader} — treating as OFF`, e);
+      }
+      const action = decideWake(p, session, ledger.get(p.reader), switchOn);
       if (action.kind === 'skip') continue;
       // Mark BEFORE the await, not after: `sdkWake` yields, and a second sweep
       // entering during that yield would otherwise see no ledger entry and fire
@@ -285,8 +330,17 @@ let debounce: ReturnType<typeof setTimeout> | null = null;
 /** Start the wake subsystem (idempotent). Reads the switch ONCE, here. */
 export function startBusWake(): void {
   if (timer) return;
-  switchOnForRun = readWakeSwitch();
-  log.info(`bus-wake: started (switch ${switchOnForRun ? 'ON — firing' : 'OFF — counting only'})`);
+  started = true;
+  // The line the packaged boot gate asserts. It reports the DEFAULT run's flag
+  // purely as a shipped-state signal for that gate; it is NOT the value any
+  // sweep uses, because each reader's flag is read from its own run row.
+  let defaultOn = false;
+  try {
+    defaultOn = readWakeSwitch('default');
+  } catch {
+    /* an unreadable switch is OFF — the sweep logs its own warning */
+  }
+  log.info(`bus-wake: started (switch ${defaultOn ? 'ON — firing' : 'OFF — counting only'})`);
 
   // The startup sweep is half of what makes this level-triggered: it is what
   // fires a wake for an insert that landed while the app was closed (#117
@@ -323,7 +377,7 @@ export function stopBusWake(): void {
   }
   watcher?.close();
   watcher = null;
-  switchOnForRun = null;
+  started = false;
 }
 
 /** Test/rig seam: clear the dedup ledger and counters so a rig drives from a
@@ -333,17 +387,20 @@ export function __resetBusWakeForTests(): void {
   counters.fired = 0;
   counters.counted = 0;
   counters.failed = 0;
-  switchOnForRun = null;
+  started = false;
+  readWakeSwitch = () => false;
   readBusDb = getBus;
   readRoster = () => [];
   deliverWake = async () => false;
 }
 
-/** Rig seam: freeze the switch for a driven sweep WITHOUT starting the timer or
- *  the fs watcher. `startBusWake()` is the production path and does both; a unit
- *  rig wants neither, but must still exercise the SAME frozen-per-run read that
- *  ships rather than a second copy of the rule. */
-export function __freezeSwitchForTests(on: boolean): void {
-  setWakeSwitchReader(() => on);
-  switchOnForRun = readWakeSwitch();
+/** Rig seam: arm the sweep WITHOUT starting the timer or the fs watcher.
+ *  `startBusWake()` is the production path and does both; a unit rig wants
+ *  neither, but must drive the SAME per-run switch read that ships — so this
+ *  takes the ACCESSOR, never a pre-resolved boolean. The `boolean` overload is
+ *  sugar for "every run answers this"; it deliberately cannot express a two-run
+ *  case, which is exactly why the Q1 arm passes a function. */
+export function __freezeSwitchForTests(on: boolean | WakeSwitchReader): void {
+  setWakeSwitchReader(typeof on === 'function' ? on : () => on);
+  started = true;
 }

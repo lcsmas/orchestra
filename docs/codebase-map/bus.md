@@ -293,12 +293,44 @@ ledger or the pending predicate instead would count bookkeeping this module's ow
 code writes, so a dedup bug would move them together and every arm would stay
 green (the #112 lesson: count the observable the bug does not also touch).
 
-## The switch — COUNTED, not FIRED (`src/main/bus-wake.ts:53`)
+## The switch — COUNTED, not FIRED, and frozen PER RUN
 
-Read **once**, in `startBusWake()` (`:288`), into `switchOnForRun` (`:75`), and
-never again: a flip mid-run cannot change what a running run does (switches are
-frozen per run). #118 owns the storage; this module only READS, via
-`setWakeSwitchReader` (`:70`), which **defaults to OFF**.
+**"The run" is a bus `run_id`, not the app process.** This distinction is the
+entire content of ledger #123 Q1, and getting it wrong is invisible to every
+gate in this ticket.
+
+An earlier version cached one boolean in `startBusWake()` and reused it for every
+sweep. That is correct for a single run and *cannot* be right for two: run A
+frozen OFF and run B frozen ON are the normal steady state of a fleet mid-wave,
+and one process-wide boolean must answer the same for both. The defect is not in
+any clause a mutant could delete — it is in **which event the value binds to** —
+so all 17 mutants and all of C1–C10 passed on it, and the switch-off gate arm
+(`wakes == 0 && counted == 1`, within one run) was correct and blind.
+
+So the switch is read **per sweep, keyed on the run the reader belongs to**
+(`src/main/bus-wake.ts:265`), via `setWakeSwitchReader` (`:70`,
+`(runId: string) => boolean`), which **defaults to OFF for every run**.
+`WakeableReader.runId` (`:170`) is what carries the key.
+
+The **freeze** is then the storage's job — #118 writes the flags onto the run row
+when the run starts and never mutates them — which is where it belongs: freezing
+is a property of the run's data, not of how long this process has been up. An app
+restart mid-run re-reads the same row and behaves identically.
+
+A switch accessor that **throws** is treated as OFF and counted, and does not
+take the sweep down for other readers (`:266`): the two wrong answers are
+opposite and unequal — defaulting ON fires real wakes on a flag nobody could
+read.
+
+The pending predicate is run-scoped for the same reason (`:120`). Unscoped, a
+reader is reported pending for another run's traffic and ordered to
+`orchestra check`, which — scoped to *its* run by the CLI — returns an empty lot;
+nothing is acked, pending never clears, and the reader is woken on every sweep
+forever.
+
+The discriminating tests are `Q1 two runs in ONE process`, `Q1 an app RESTART …`
+and `a reader is NOT woken for mail in a run it does not belong to`
+(`src/main/bus-wake-sweep.test.ts`).
 
 With the switch off `decideWake` returns `count`, **not** `skip`, and
 `counters.counted` increments (`busWakeCounters`, `:90`). The distinction is the
