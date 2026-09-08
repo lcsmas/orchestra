@@ -194,3 +194,152 @@ the read-only pane, shadow-mode dual-write and its promotion bar, heartbeat
 staleness and escalation, fencing/generation bumps. The spike's own NOT VERIFIED
 list still stands for scale (aged DB, millions of rows, retention), non-linux
 platforms, network filesystems, and `synchronous=NORMAL` under host power loss.
+
+
+---
+
+# Pane + switches (#118) — the read-only projection and the frozen flags
+
+Appended by #118 (ledger [#123](https://github.com/lcsmas/orchestra/issues/123)).
+Wave A's sections above are untouched.
+
+## What this adds
+
+A **read-only** pane rendering the bus (runs → waves nested, messages in total
+order, pending lots per reader, open asks/gates, liveness+phase, shadow
+divergence counters), and **four per-mechanism switches** — `delivery`, `wake`,
+`askGate`, `liveness` — read **at wave start** and **frozen onto the run row**.
+
+| File | What it is |
+|---|---|
+| `src/shared/bus-switches.ts` | The mechanisms, the freeze, the wire-name mapping, and the startup-notice wording |
+| `src/shared/bus-view.ts` | The `BusSnapshot` wire shape the pane renders |
+| `src/main/bus-runs.ts` | Run rows + their frozen flags; `busSwitch()` |
+| `src/main/bus-settings.ts` | The LIVE switches (store-backed) — deliberately a different module from the frozen read |
+| `src/main/bus-pane.ts` | The read-only IPC and the snapshot assembly |
+| `src/renderer/components/BusPane.tsx` | The pane, incl. the bus-unavailable state |
+| `src/renderer/components/BusSwitchSettings.tsx` | Flipping the live switches (a WRITE, deliberately not a pane channel) |
+
+## The freeze — the one thing to understand
+
+`startRun()` (`src/main/bus-runs.ts:83`) snapshots the live switches **once** and
+writes them to `run_flags`. Everything that asks "is mechanism X on for this
+run?" goes through `runFlags()` (`:151`) or `busSwitch()` (`:169`), which read
+**the row**. A human flipping a switch mid-wave changes the store and **nothing
+else**: the running run's row is untouched, and the next `startRun` picks the new
+value up. Two runs with contradictory flags coexist in one DB by design.
+
+Three details that are load-bearing, each of which was a bug in an earlier draft:
+
+- **`INSERT OR IGNORE`, never `REPLACE`** (`:112`). A resume path calling
+  `startRun` again must be a no-op, not a re-freeze — a re-freeze is exactly the
+  mid-wave mutation the feature forbids, arriving through the most innocent path
+  there is.
+- **`startRun` reads the row BACK** (`:124`) instead of returning what it meant
+  to write. Otherwise a second call *looks* like a re-freeze to its caller while
+  the row says otherwise, and the two drift silently.
+- **An unknown run reads all-OFF, never live** (`:151`). A mechanism firing
+  because its row was missing is indistinguishable in the field from the switch
+  genuinely being on.
+
+`freezeSwitches()` (`src/shared/bus-switches.ts:122`) also implements the LEAD's
+D1 reconciliation: **bus down ⇒ every mechanism freezes OFF for that run**, and
+that is recorded on the row, so the run stays self-describing about why it
+behaved as unadopted.
+
+### The contract with #117
+
+```
+busSwitch(db, runId, 'delivery' | 'wake' | 'ask_gate' | 'liveness') -> boolean
+```
+
+Note `ask_gate` (snake) on the **wire** vs `askGate` (camel) as the internal TS
+key. The mapping lives in exactly one place — `mechanismFromWire` /
+`mechanismToWire` (`src/shared/bus-switches.ts:155`) — because N copies is how a
+wire contract and an enum drift apart. Unknown run **or** unknown mechanism
+returns `false`, never a throw: false leaves the old channel authoritative.
+
+## Read-only in v1 — enforced, not promised
+
+`BUS_PANE_IPC_CHANNELS` (`src/main/bus-pane.ts:43`) is the enumeration, and
+`registerBusPaneIpc()` (`:278`) **refuses to register** any entry marked
+`writes: true`. So adding a v2 write handler requires editing the table, which
+turns the test red at the same moment. The switch WRITE lives on its own
+`bus:setSwitches` channel registered in `src/main/index.ts`, deliberately outside
+that registrar — routing it through the pane would defeat the check.
+
+## `getBus() === null` is normal (D1)
+
+`busSnapshot()` (`src/main/bus-pane.ts:201`) **never throws**: a missing bus, or
+a query that throws, both become `available: false` carrying the DB path and the
+error. The pane renders that as a loud block (`BusUnavailable`,
+`src/renderer/components/BusPane.tsx:252`).
+
+Why `available` exists at all: a down bus and a quiet bus have *identical* empty
+runs/messages/gates arrays. Without the flag the pane could not tell them apart —
+and "an empty pane indistinguishable from no-messages-yet" is precisely what D1
+forbids. The pane's IPC is also registered **before** the open attempt
+(`src/main/index.ts`), so a failed open cannot leave `bus:snapshot` unhandled and
+blank the pane.
+
+Divergence counters come from #116 through `registerBusCounterSource()`
+(`:193`) — a runtime seam rather than a static import, so #118 builds before
+#116 lands. An **absent** source renders as an explicit "not publishing counters"
+message, never as `0/0/0`: "#116 has not landed" and "zero divergence" are the
+same empty array on the wire, and showing zeros for the first would be a
+fabricated measurement.
+
+## The startup notice
+
+`writeBusSwitchState()` (`src/main/workspaces.ts:4506`) writes
+`.orchestra/bus-switches` on **every spawn**, and
+`BUS_SWITCHES_INSTRUCTION_SCRIPT` (`:3931`) cats it on SessionStart.
+
+The state lives in a **file, not a script constant**, for a specific reason:
+`installOrchestraHooks` short-circuits on a **hash of the script bodies**, so a
+value baked into a body would be written once at provision time and never
+corrected — the notice would confidently report last month's switch states
+forever.
+
+Every mechanism prints in **both** states (`busSwitchNoticeLines`,
+`src/shared/bus-switches.ts:195`): `delivery=ON — the bus is AUTHORITATIVE…` or
+`delivery=OFF — the OLD channel stays authoritative; the bus only COUNTS this
+mechanism…`. OFF is never encoded as silence, because an agent cannot distinguish
+an OFF switch from a build without switches from a truncated notice. A missing
+state file makes the script a **silent no-op** rather than a false "all off".
+
+## Schema
+
+`MIGRATIONS[2]` in `src/main/bus.ts:185` creates `run_flags` (a sidecar, because
+SQLite has no `ADD COLUMN IF NOT EXISTS` and a re-run would throw
+`duplicate column name`). **Wave B renumbering rule** (ledger #123 Q-B1): four
+tickets each need DDL and `migrate()` applies **by version index**, so two
+tickets claiming the same number means the later one's SQL is skipped forever on
+a DB already stamped with it. Take the next free number and renumber at rebase.
+
+## Running the gates
+
+```bash
+node scripts/bus-pane-render-smoke.mjs        # T118.1 — seeded values reach the HTML;
+                                              #   every assertion re-run against an EMPTY
+                                              #   bus and REQUIRED to fail (vacuity detector)
+node scripts/verify-bus-startup-notice.mjs    # T118.3 — 4 arms: ON / OFF / must-FAIL decoy /
+                                              #   absent state file
+RIG_WAYLAND=<marker-verified> node scripts/verify-bus-pane.mjs
+                                              # T118.4+T118.5 under REAL Electron: bus-down,
+                                              #   seeded control arm, broken-table arm, and the
+                                              #   registrar refusing a writes:true channel
+RIG_WAYLAND=<marker-verified> node scripts/bus-pane-screenshot.mjs
+                                              # T118.1 second half — pixels, both states
+```
+
+The two `RIG_WAYLAND` rigs **refuse to run** (RC 3) without a marker-verified
+headless-sway display, and refuse if X11 `DISPLAY` is set — Electron falls back
+to X11 and would reach the human's screen even with a correct `WAYLAND_DISPLAY`.
+
+## Not covered here
+
+Gate resolution from the UI (v2). Who calls `startRun` for a real wave — no
+production caller creates runs yet; the pane renders whatever rows exist, and
+the run lifecycle is #115's. Counter *production* is #116's; #118 only renders
+the frozen shape.
