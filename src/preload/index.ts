@@ -22,6 +22,11 @@ const api: OrchestraAPI = {
   clearLinearKey: () => ipcRenderer.invoke('linear:clearKey'),
   getUsage: () => ipcRenderer.invoke('usage:get'),
 
+  busSnapshot: (runId) => ipcRenderer.invoke('bus:snapshot', runId ?? null),
+  busListRuns: () => ipcRenderer.invoke('bus:listRuns'),
+  busSwitches: () => ipcRenderer.invoke('bus:switches'),
+  setBusSwitches: (next) => ipcRenderer.invoke('bus:setSwitches', next),
+
   listAccounts: () => ipcRenderer.invoke('accounts:list'),
   setAccounts: (accounts) => ipcRenderer.invoke('accounts:set', accounts),
   isSecretStorageEncrypted: () => ipcRenderer.invoke('accounts:secretsEncrypted'),

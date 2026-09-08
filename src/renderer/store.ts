@@ -154,7 +154,7 @@ interface State {
    *  or the full-page Resources view (opened from the sidebar footer). The
    *  workspace panes stay mounted underneath so xterm scrollback survives a
    *  visit to the Resources page. */
-  page: 'workspaces' | 'resources';
+  page: 'workspaces' | 'resources' | 'bus';
   loaded: boolean;
 
   setActive: (id: string | null) => void;
@@ -191,7 +191,7 @@ interface State {
    *  re-reads the file on a later remount. See renderer/history-backfill.ts. */
   applyAgentHistory: (workspaceId: string, events: AgentEvent[]) => void;
   setInsightsOpen: (open: boolean) => void;
-  setPage: (p: 'workspaces' | 'resources') => void;
+  setPage: (p: 'workspaces' | 'resources' | 'bus') => void;
   setHelpOpen: (open: boolean) => void;
   load: () => Promise<void>;
   refreshRepos: () => Promise<void>;
@@ -341,8 +341,11 @@ export const useStore = create<State>((set, get) => ({
     set(open ? { insightsOpen: true, helpOpen: false, page: 'workspaces' } : { insightsOpen: false }),
   setHelpOpen: (open) =>
     set(open ? { helpOpen: true, insightsOpen: false, page: 'workspaces' } : { helpOpen: false }),
+  // Any full-page surface (Resources, the read-only Bus pane) must close the
+  // Insights/Help overlays, which render ABOVE the pane row — leaving one up
+  // would cover the page the user just navigated to.
   setPage: (p) =>
-    set(p === 'resources' ? { page: p, insightsOpen: false, helpOpen: false } : { page: p }),
+    set(p !== 'workspaces' ? { page: p, insightsOpen: false, helpOpen: false } : { page: p }),
 
   load: async () => {
     // Each of these falls back to an EMPTY value on failure, so a broken backend

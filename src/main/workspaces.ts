@@ -40,6 +40,8 @@ import {
 } from './pty';
 import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
+import { busSwitchNotice } from '../shared/bus-switches.ts';
+import { getLiveSwitches } from './bus-settings.ts';
 import {
   resolveDirectChildTargets,
   normalizeExplicitTargets,
@@ -3332,6 +3334,15 @@ const ORCHESTRATOR_GUARD_MATCHER = 'Edit|MultiEdit|Write|NotebookEdit';
 const HOOK_SELF_MODIFY_CMD =
   'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/self-modify-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
 
+// Fleet-bus switch states, SessionStart only (#118, ledger #123). Tells the
+// agent — and the fleet skill that branches on it — which bus mechanisms are
+// AUTHORITATIVE for this run and which are merely COUNTED. Same cadence
+// rationale as the other SessionStart injections: the switch set is frozen for
+// the run, so re-printing it every turn would buy nothing and be re-billed as
+// input forever.
+const HOOK_BUS_SWITCHES_CMD =
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/bus-switches-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
+
 // Touches the readiness sentinel the instant the TUI fires SessionStart, so the
 // task injector knows the prompt box is live and can submit deterministically
 // instead of guessing with a fixed delay. $ORCHESTRA_READY_FILE is set per-PTY
@@ -3994,6 +4005,39 @@ EOF
 exit 0
 `;
 
+// Fleet-bus switch states injected into the startup notice (#118 acceptance 3,
+// ledger #123 T118.3).
+//
+// WHY A STATE FILE AND NOT A CONSTANT: every other script here is a compile-time
+// constant, and `installOrchestraHooks` short-circuits on a HASH of those
+// constants — so a value that changes when a human flips a checkbox cannot live
+// in the script body. It would be written once, at the version the workspace was
+// first provisioned at, and then never again: the notice would confidently
+// report last month's switch states forever, which is worse than not reporting
+// them. The script therefore reads `.orchestra/bus-switches` — a plain file
+// rewritten on EVERY spawn by writeBusSwitchState(), outside the hash gate.
+//
+// WHY EVERY MECHANISM PRINTS IN BOTH STATES: an agent cannot distinguish "the
+// switch is off" from "this build has no switches" from "the notice got
+// truncated" if OFF is encoded as silence. So OFF prints its own sentence
+// naming the old channel as authoritative. That asymmetry is exactly what
+// T118.3's negative control asserts — it requires the OPPOSITE string, not the
+// absence of the positive one.
+//
+// The `-s` guard makes a missing/empty state file a silent no-op (a workspace
+// spawned by an older build, or a sandbox where the file was never shipped)
+// rather than a notice claiming every mechanism is off.
+const BUS_SWITCHES_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
+# Auto-installed by orchestra (#118). Prints the fleet-bus switch states that
+# were frozen for this run, so the fleet skill can branch on them. The states
+# live in .orchestra/bus-switches, rewritten on every spawn — never edit this
+# script to change them; edit src/main/workspaces.ts.
+f="\${ORCHESTRA_WORKTREE:-.}/.orchestra/bus-switches"
+[ -s "\$f" ] || exit 0
+cat "\$f"
+exit 0
+`;
+
 // Nudge to report which PR / Linear issue this workspace is working on.
 //
 // Orchestra no longer infers either from the branch name (that guessed wrong in
@@ -4440,6 +4484,9 @@ export async function startAgentPty(ws: Workspace, cols: number, rows: number): 
   const remote = ws.host?.kind === 'sandbox';
   // Idempotent: upgrades workspaces created before the activity hook landed.
   if (!remote) await installOrchestraHooks(ws.worktreePath);
+  // Refreshed on EVERY spawn, unlike the hash-gated hook bundle: the switch
+  // states change whenever a human flips one (#118).
+  if (!remote) await writeBusSwitchState(ws.worktreePath);
   // Materialize the pinned account's inherited global config into its login dir
   // right before spawn, so the agent sees the user's settings/skills/MCP. Pinned
   // account only (resolveRepoAgentEnv uses the same pin for CLAUDE_CONFIG_DIR).
@@ -4507,6 +4554,7 @@ const HOOKS_VERSION = createHash('sha256')
       ORCHESTRATOR_INSTRUCTION_SCRIPT,
       ORCHESTRATOR_GUARD_SCRIPT,
       SELF_MODIFY_INSTRUCTION_SCRIPT,
+      BUS_SWITCHES_INSTRUCTION_SCRIPT,
       FIELDGUIDE_INSTRUCTION_SCRIPT,
       LINK_INSTRUCTION_SCRIPT,
       SPAWN_SKILL,
@@ -4528,6 +4576,7 @@ const HOOKS_VERSION = createHash('sha256')
       HOOK_ORCHESTRATOR_INSTRUCTION_CMD,
       HOOK_ORCHESTRATOR_GUARD_CMD,
       HOOK_SELF_MODIFY_CMD,
+      HOOK_BUS_SWITCHES_CMD,
       HOOK_FIELDGUIDE_CMD,
       HOOK_LINK_INSTRUCTION_CMD,
       HOOK_LINK_PROMPT_CMD,
@@ -4535,6 +4584,39 @@ const HOOKS_VERSION = createHash('sha256')
     ].join('\0'),
   )
   .digest('hex');
+
+/**
+ * Write the fleet-bus switch states into the worktree, for the SessionStart
+ * notice to print (#118 acceptance 3, ledger #123 T118.3).
+ *
+ * DELIBERATELY OUTSIDE the hook-bundle hash short-circuit: `installOrchestraHooks`
+ * skips its whole install when the script bundle is unchanged, and these values
+ * change whenever a human flips a switch. Baking them into a hashed script body
+ * would pin the notice to the switch states the workspace was FIRST provisioned
+ * at, and no later spawn would ever correct it.
+ *
+ * Every mechanism is named in BOTH states — never "print the ON ones and stay
+ * silent" — because an agent cannot tell an OFF switch from a build without
+ * switches from a truncated notice. See busSwitchNotice().
+ *
+ * Best-effort: a write failure must not block a spawn (D1's spirit — no bus
+ * concern blocks the app). The notice is then simply absent, and the script's
+ * `-s` guard makes that a silent no-op rather than a false "all off" claim.
+ */
+export async function writeBusSwitchState(worktreePath: string): Promise<void> {
+  try {
+    const notice = busSwitchNotice(getLiveSwitches());
+    const file = path.join(worktreePath, '.orchestra', 'bus-switches');
+    if (!notice) {
+      await rm(file, { force: true });
+      return;
+    }
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, notice + '\n');
+  } catch (err) {
+    log.warn('bus-switches: could not write the per-worktree switch state', err);
+  }
+}
 
 export async function installOrchestraHooks(
   worktreePath: string,
@@ -4574,6 +4656,7 @@ export async function installOrchestraHooks(
       w('orchestrator-instruction.sh', ORCHESTRATOR_INSTRUCTION_SCRIPT),
       w('orchestrator-guard.sh', ORCHESTRATOR_GUARD_SCRIPT),
       w('self-modify-instruction.sh', SELF_MODIFY_INSTRUCTION_SCRIPT),
+      w('bus-switches-instruction.sh', BUS_SWITCHES_INSTRUCTION_SCRIPT),
       w('fieldguide-instruction.sh', FIELDGUIDE_INSTRUCTION_SCRIPT),
       w('link-instruction.sh', LINK_INSTRUCTION_SCRIPT),
     ]);
@@ -4740,6 +4823,9 @@ export async function installOrchestraHooks(
     upsertHookCommand(sessionStartList, HOOK_INBOX_DELIVER_CMD);
     upsertHookCommand(sessionStartList, HOOK_ORCHESTRATOR_INSTRUCTION_CMD);
     upsertHookCommand(sessionStartList, HOOK_SELF_MODIFY_CMD);
+    // Fleet-bus switch states (#118) — SessionStart only; the set is frozen for
+    // the run, so a per-turn injection would re-bill an unchanging block forever.
+    upsertHookCommand(sessionStartList, HOOK_BUS_SWITCHES_CMD);
     // Parent's swarm field guide, re-injected at every context reset (the
     // script self-silences without a parent or a guide file).
     upsertHookCommand(sessionStartList, HOOK_FIELDGUIDE_CMD);

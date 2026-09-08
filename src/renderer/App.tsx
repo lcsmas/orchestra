@@ -14,6 +14,7 @@ import { SandboxControlBar } from './components/SandboxControlBar';
 import { InsightsView } from './components/Insights';
 import { JumpPalette } from './components/JumpPalette';
 import { ResourcesView } from './components/ResourcesView';
+import { BusPane } from './components/BusPane';
 import { HelpView, HelpIcon } from './components/Help';
 import { DialogHost, dialog } from './components/Dialog';
 import { playFinishedChime } from './chime';
@@ -929,7 +930,7 @@ export function App() {
                         browserOpen &&
                         !insightsOpen &&
                         !helpOpen &&
-                        page !== 'resources' &&
+                        page === 'workspaces' &&
                         !overlayUp
                       }
                     />
@@ -946,6 +947,8 @@ export function App() {
             exclusive, so at most one renders. */}
         {loaded && insightsOpen && <InsightsView />}
         {loaded && page === 'resources' && <ResourcesView />}
+        {/* Read-only fleet-bus projection (#118) — same overlay contract. */}
+        {loaded && page === 'bus' && <BusPane />}
         {/* Help / feature guide pane — same overlay contract as Insights. */}
         {loaded && helpOpen && <HelpView />}
       </main>

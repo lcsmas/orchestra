@@ -26,6 +26,7 @@ import { RowActionsPopover, useRowActionsPopover } from './RowActionsPopover';
 import { InboxBell } from './InboxBell';
 import { SoundSettings } from './SoundSettings';
 import { AgentViewSettings } from './AgentViewSettings';
+import { BusSwitchSettings } from './BusSwitchSettings';
 import { VoiceDictionarySettings } from './VoiceDictionarySettings';
 import { LinearSettings } from './LinearSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
@@ -538,6 +539,22 @@ function LogsIcon() {
   );
 }
 
+/** Lucide `radio-tower` — the fleet bus: one channel every agent speaks on. */
+function BusIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor"
+      strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M4.9 16.1C1 12.2 1 5.8 4.9 1.9" />
+      <path d="M7.8 4.7a6.14 6.14 0 0 0-.8 7.5" />
+      <circle cx="12" cy="9" r="2" />
+      <path d="M16.2 4.8c2 2 2.26 5.11.8 7.47" />
+      <path d="M19.1 1.9a9.96 9.96 0 0 1 0 14.2" />
+      <path d="M9.5 18h5" />
+      <path d="m8 22 4-11 4 11" />
+    </svg>
+  );
+}
+
 function ResourcesIcon() {
   // A pulse/heartbeat trace — the Resources page is a live monitor.
   return (
@@ -869,6 +886,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   });
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
   const [agentViewSettingsOpen, setAgentViewSettingsOpen] = useState(false);
+  const [busSwitchSettingsOpen, setBusSwitchSettingsOpen] = useState(false);
   const [voiceDictOpen, setVoiceDictOpen] = useState(false);
   const setHelpOpen = useStore((s) => s.setHelpOpen);
   const [linearSettingsOpen, setLinearSettingsOpen] = useState(false);
@@ -1742,6 +1760,16 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           >
             <BellIcon />
           </button>
+          {/* Fleet-bus mechanism switches (#118). The SETTINGS write lives here,
+              never in the bus pane — the pane is read-only in v1. */}
+          <button
+            className="header-icon-btn"
+            onClick={() => setBusSwitchSettingsOpen(true)}
+            title="Fleet bus mechanisms — one switch per mechanism, frozen per run"
+            aria-label="Fleet bus mechanism switches"
+          >
+            <BusIcon size={16} />
+          </button>
           <button
             className="header-icon-btn"
             onClick={() => setVoiceDictOpen(true)}
@@ -2536,6 +2564,9 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         {agentViewSettingsOpen && (
           <AgentViewSettings onClose={() => setAgentViewSettingsOpen(false)} />
         )}
+        {busSwitchSettingsOpen && (
+          <BusSwitchSettings onClose={() => setBusSwitchSettingsOpen(false)} />
+        )}
         {voiceDictOpen && <VoiceDictionarySettings onClose={() => setVoiceDictOpen(false)} />}
         {accountsSettingsOpen && (
           <AccountsSettings onClose={() => setAccountsSettingsOpen(false)} />
@@ -2758,6 +2789,17 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           aria-pressed={page === 'resources'}
         >
           <ResourcesIcon />
+        </button>
+        {/* Read-only fleet-bus projection (#118). Same toggle contract as
+            Resources: clicking the active entry returns to the workspaces. */}
+        <button
+          className={`sidebar-footer-link${page === 'bus' ? ' active' : ''}`}
+          onClick={() => setPage(page === 'bus' ? 'workspaces' : 'bus')}
+          title="Fleet bus — runs, messages, lots, gates and shadow divergence (read-only)"
+          aria-label="Open the fleet bus page"
+          aria-pressed={page === 'bus'}
+        >
+          <BusIcon />
         </button>
         <button
           className="sidebar-footer-link"
