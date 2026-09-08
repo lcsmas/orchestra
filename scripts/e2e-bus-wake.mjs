@@ -173,6 +173,8 @@ for (let i = 0; i < arm.inserts; i++) {
 const turnsAfterInserts = orderTurns();
 
 // Obey the order with #115's REAL verbs, exactly as the woken agent would.
+class VerbRefusal extends Error {}
+let verbFailure = null;
 let verbLot = null;
 let verbAckOut = null;
 let pendingAfterVerbAck = null;
@@ -189,17 +191,27 @@ if (arm.realVerb) {
   );
   if (!id) { console.error('rig fault: identity did not resolve'); process.exit(2); }
   let stdout = '';
+  // A verb refusal is CAPTURED, not thrown. A throw here exits the rig before it
+  // prints its JSON, so the arm reports an empty payload and its failure reads
+  // as a crash rather than as the finding it is — and the finding is real: the
+  // reader's own ack failing is exactly what a host that acked on its behalf
+  // produces (measured with that mutant). Recording it keeps the diagnosis in
+  // the output instead of in a stack trace.
   const ctx = {
     db, id, bus: busMod,
     out: (t) => { stdout += t; },
-    fail: (m) => { throw new Error(`verb failed: ${m}`); },
+    fail: (m) => { verbFailure = m; throw new VerbRefusal(m); },
   };
-  verbs.verbCheck(ctx, { limit: 100 });
-  verbLot = JSON.parse(stdout);
-  // The reader acks its OWN lot with the real verb.
-  stdout = '';
-  verbs.verbAck(ctx, String(verbLot.lot));
-  verbAckOut = stdout.trim();
+  try {
+    verbs.verbCheck(ctx, { limit: 100 });
+    verbLot = JSON.parse(stdout);
+    // The reader acks its OWN lot with the real verb.
+    stdout = '';
+    verbs.verbAck(ctx, String(verbLot.lot));
+    verbAckOut = stdout.trim();
+  } catch (e) {
+    if (!(e instanceof VerbRefusal)) throw e;
+  }
   // Pending must now be clear — read through the HOST's own predicate, so this
   // also proves host and CLI agree about what "read" means.
   pendingAfterVerbAck = wake.readPendingReaders(db, [{ reader: WS_ID, runId: RUN }])[0].pending;
@@ -263,6 +275,7 @@ const ok =
   // The real-verb arm's own assertions: the order the wake carried, when OBEYED,
   // must return the lot the wake was about — and the ack must clear pending.
   (!arm.realVerb || (
+    verbFailure === null &&
     verbLot?.count === 1 &&
     String(verbLot?.messages?.[0]?.body ?? '').includes(BODY) &&
     verbAckOut === `acked ${verbLot.lot}` &&
@@ -284,6 +297,7 @@ console.log(JSON.stringify({
     verbLotCarriedBody: String(verbLot?.messages?.[0]?.body ?? '').includes(BODY),
     verbAckOut,
     pendingAfterVerbAck,
+    verbFailure,
   } : {}),
 }));
 process.exit(ok ? 0 : 1);
