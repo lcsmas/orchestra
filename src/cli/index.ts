@@ -12,6 +12,16 @@ import {
   reloadExitCode,
   type ReloadResult,
 } from '../shared/reload-skills.ts';
+import {
+  resolveBusIdentity,
+  describeBusOpenFailure,
+  verbSend,
+  verbCheck,
+  verbAck,
+  verbAsk,
+  verbGate,
+  type BusVerbCtx,
+} from './bus-verbs.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -196,6 +206,28 @@ Usage:
   orchestra link --clear [--pr [<url>]] [--linear]
                                                  Drop links: --pr <url> removes one,
                                                  a bare --pr removes them all
+  orchestra send --type <kind> [--to <handle>] [--thread <id>] <body...>
+                                                 Append a message to the FLEET BUS. Writes
+                                                 SQLite directly, so it lands even while the
+                                                 app is down. Prints the message's sequence.
+                                                 <kind>: status dispatch worker_done escalation
+                                                         handoff decision_gate question heartbeat
+  orchestra check [--ack-previous] [--markdown] [--limit N]
+                                                 Relève: print YOUR pending lot as JSON
+                                                 (--markdown for a human render). NEVER acks —
+                                                 the same lot replays until you ack it, so a
+                                                 crash between check and ack loses nothing.
+                                                 --ack-previous: ack the outstanding lot first,
+                                                 then take the next one.
+  orchestra ack <lot-id>                         Accusé: close the lot 'check' handed you and
+                                                 advance your cursor past it
+  orchestra ask --to <handle> <question...>      Park a question on the bus for <handle>, print
+                                                 its id and EXIT — never waits (the answer comes
+                                                 back as an ordinary bus message)
+  orchestra gate open <question...>              Open a decision gate awaiting a human Ruling
+  orchestra gate resolve <id> <ruling...>        Record the Ruling (refuses to overwrite one)
+                                                 All five accept --run <id> (default: $ORCHESTRA_RUN_ID
+                                                 or 'default') and --as <handle> (default: $ORCHESTRA_WS_ID)
   orchestra add-repo <path>                       Register a repo by path
   orchestra delete <id> [--yes]                  Delete a workspace (worktree + branch)
   orchestra accounts                              List configured Claude accounts (id + label)
@@ -603,6 +635,113 @@ function fail(message: string): never {
   // The throw already guarantees control flow stops; runCli's catch flushes
   // and exits via exitAfterFlush.
   throw new CliFailure(message);
+}
+
+/**
+ * Open the fleet bus for a bus verb, or refuse with a sentence a human can act on.
+ *
+ * DIRECT, not over the socket — see the header of src/cli/bus-verbs.ts (#108
+ * Q2: a message must land while the app is down). The app may hold the same
+ * file open at the same instant; WAL plus the busy_timeout that bus.ts's
+ * `open()` sets on EVERY connection is what makes that safe.
+ *
+ * The import is DYNAMIC and inside the try on purpose. src/main/bus.ts pulls in
+ * better-sqlite3's native binding, and a top-level import would make EVERY
+ * `orchestra` invocation — `peers`, `read`, `message` — pay for it and, worse,
+ * die at load time on an ABI mismatch, turning a bus-only problem into a CLI
+ * that cannot run at all. Loading it here confines the failure to the verb that
+ * actually needs a database.
+ *
+ * `new Database()` is the ABI gate and `require()` is NOT: better-sqlite3 defers
+ * the native load until the first construction, so a require-only probe passes
+ * under the WRONG ABI (spike #109's headline finding, reproduced in #114). This
+ * helper therefore returns only after openBus() has really constructed and
+ * migrated — the same reason bus.ts's initBus() logs only after a real open.
+ */
+async function openBusForVerb(): Promise<{
+  db: import('../main/bus.ts').BusDb;
+  bus: BusVerbCtx['bus'];
+  file: string;
+}> {
+  let bus: typeof import('../main/bus.ts');
+  let file = '<unresolved>';
+  try {
+    bus = await import('../main/bus.ts');
+    file = bus.busPath();
+    // The CONSTRUCT + migrate. Anything ABI-shaped throws here, not above.
+    const db = bus.openBus(file, { busyTimeoutMs: busyTimeoutOverride() });
+    return { db, bus, file };
+  } catch (err) {
+    fail(describeBusOpenFailure(err, file));
+  }
+}
+
+/** Bind a bus verb to this process's stdout and this file's `fail()`.
+ *
+ *  `fail` is passed in rather than imported by bus-verbs.ts because the throw is
+ *  load-bearing: a bare process.exit() inside the Electron main process does not
+ *  terminate in that tick (issue #59), so every refusal must go through the
+ *  CliFailure sentinel runCli catches. Injecting it also keeps bus-verbs.ts
+ *  unit-testable with no process at all. */
+function busCtx(
+  db: import('../main/bus.ts').BusDb,
+  bus: BusVerbCtx['bus'],
+  id: { runId: string; handle: string },
+): BusVerbCtx {
+  return {
+    db,
+    bus,
+    id,
+    out: (text: string) => {
+      process.stdout.write(text);
+    },
+    fail,
+  };
+}
+
+/**
+ * `busy_timeout` for a bus verb's connection, in ms. Normally undefined, which
+ * lets bus.ts's `open()` apply its own mandatory 5000ms default.
+ *
+ * `$ORCHESTRA_BUS_BUSY_TIMEOUT_MS` exists for exactly ONE caller:
+ * scripts/verify-bus-cli-verbs.mjs's must-FAIL control arm, which needs to run
+ * the SHIPPED binary with the timeout at 0 and watch it lose rows. Without it
+ * that control would have to re-implement `send()` against a hand-rolled
+ * connection — and a rig that re-implements its subject measures the
+ * re-implementation, which is a real defect this repo has already been bitten
+ * by (see scripts/verify-bus-contention.mjs's header: the first version of that
+ * rig stayed green with open()'s busy_timeout line DELETED).
+ *
+ * A CLEAN control is a FAILURE of that script, so this override is what makes
+ * the passing arm mean anything. It is deliberately NOT a CLI flag: it is not a
+ * knob any agent should reach for, and spike #109 measured 7-27% silent loss
+ * with the timeout off.
+ */
+function busyTimeoutOverride(): number | undefined {
+  const raw = process.env.ORCHESTRA_BUS_BUSY_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const n = Number(raw);
+  // A non-numeric value must not silently become the 5000ms default: that would
+  // make the control arm pass while measuring the ordinary configuration.
+  if (!Number.isFinite(n) || n < 0) {
+    fail(`ORCHESTRA_BUS_BUSY_TIMEOUT_MS must be a non-negative number, got ${JSON.stringify(raw)}`);
+  }
+  return n;
+}
+
+/** `{ runId, handle }` for a bus verb, or a refusal naming both ways to set it. */
+function busIdentityOrFail(flags: { run?: string; as?: string }): {
+  runId: string;
+  handle: string;
+} {
+  const id = resolveBusIdentity(flags, process.env);
+  if (!id) {
+    fail(
+      'orchestra: cannot tell who you are on the bus — set $ORCHESTRA_WS_ID (automatic inside an ' +
+        'Orchestra agent) or pass --as <handle>',
+    );
+  }
+  return id;
 }
 
 async function main(argv: string[]): Promise<void> {
@@ -1104,6 +1243,101 @@ async function main(argv: string[]): Promise<void> {
           `${commits.map((c) => `  ${c}`).join('\n')}\n`,
       );
       exitWith(NOT_LANDED_EXIT);
+    }
+
+    // ─── Fleet-bus verbs (#115) ─────────────────────────────────────────
+    // These five write $ORCHESTRA_HOME/bus.sqlite DIRECTLY instead of asking
+    // the app — the ONLY verbs in this file that do. See openBusForVerb().
+
+    case 'send': {
+      const t = takeFlag(args, '--type');
+      const to = takeFlag(t.rest, '--to');
+      const th = takeFlag(to.rest, '--thread');
+      const run = takeFlag(th.rest, '--run');
+      const as = takeFlag(run.rest, '--as');
+      const id = busIdentityOrFail({ run: run.value, as: as.value });
+      const { db, bus } = await openBusForVerb();
+      try {
+        verbSend(busCtx(db, bus, id), {
+          kind: t.value,
+          to: to.value ?? null,
+          thread: th.value ?? null,
+          body: as.rest.join(' '),
+        });
+      } finally {
+        db.close();
+      }
+      return;
+    }
+
+    case 'check': {
+      const ackPrev = takeBoolFlag(args, '--ack-previous');
+      const md = takeBoolFlag(ackPrev.rest, '--markdown');
+      const json = takeBoolFlag(md.rest, '--json');
+      void json;
+      const lim = takeFlag(json.rest, '--limit');
+      const run = takeFlag(lim.rest, '--run');
+      const as = takeFlag(run.rest, '--as');
+      const limit = lim.value === undefined ? 100 : Number(lim.value);
+      if (!Number.isInteger(limit) || limit <= 0) {
+        fail(`orchestra check: --limit must be a positive integer, got ${JSON.stringify(lim.value)}`);
+      }
+      const id = busIdentityOrFail({ run: run.value, as: as.value });
+      const { db, bus } = await openBusForVerb();
+      try {
+        // `--markdown` opts IN to the human render; JSON is the default because
+        // the réveil (#117) orders an agent to run this and parse it.
+        verbCheck(busCtx(db, bus, id), {
+          ackPrevious: ackPrev.present,
+          markdown: md.present,
+          limit,
+        });
+      } finally {
+        db.close();
+      }
+      return;
+    }
+
+    case 'ack': {
+      const run = takeFlag(args, '--run');
+      const as = takeFlag(run.rest, '--as');
+      const id = busIdentityOrFail({ run: run.value, as: as.value });
+      const { db, bus } = await openBusForVerb();
+      try {
+        verbAck(busCtx(db, bus, id), as.rest[0]);
+      } finally {
+        db.close();
+      }
+      return;
+    }
+
+    case 'ask': {
+      const to = takeFlag(args, '--to');
+      const run = takeFlag(to.rest, '--run');
+      const as = takeFlag(run.rest, '--as');
+      const id = busIdentityOrFail({ run: run.value, as: as.value });
+      const { db, bus } = await openBusForVerb();
+      try {
+        // Writes the row, prints the id, RETURNS. No wait — the Bash tool caps
+        // at 600s, so a blocking ask would report a false timeout (#108).
+        verbAsk(busCtx(db, bus, id), to.value, as.rest.join(' '));
+      } finally {
+        db.close();
+      }
+      return;
+    }
+
+    case 'gate': {
+      const run = takeFlag(args, '--run');
+      const as = takeFlag(run.rest, '--as');
+      const id = busIdentityOrFail({ run: run.value, as: as.value });
+      const { db, bus } = await openBusForVerb();
+      try {
+        verbGate(busCtx(db, bus, id), as.rest[0], as.rest.slice(1));
+      } finally {
+        db.close();
+      }
+      return;
     }
 
     case 'whoami': {
