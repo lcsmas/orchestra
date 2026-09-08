@@ -42,6 +42,7 @@
     "test:wiring": "node scripts/verify-answerable-wiring.mjs",
     "test:fixtures": "node scripts/fixtures/self-test.mjs",
     "test:cli-pipe": "pnpm run build:cli && node scripts/verify-verify-landed-exit.mjs && node scripts/verify-cli-pipe-flush.mjs",
+    "test:bus-wake-e2e": "scripts/verify-bus-wake-e2e.sh",
     "test:bus-contention": "node scripts/verify-bus-contention.mjs",
     "build:bus-abi": "node scripts/build-bus-abi.mjs",
     "test:rig-selftest": "bash scripts/run-rig-selftest.sh",

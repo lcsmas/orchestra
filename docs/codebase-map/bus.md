@@ -346,17 +346,55 @@ reconciled by the next sweep. `startBusWake()` is deliberately **not** gated on
 `initBus()` having succeeded, and `stopBusWake()` runs **before** `closeBus()`
 (`src/main/index.ts:684`) so no timer can fire against a closed handle.
 
+## The E2E — counting turns a reader's transcript would RENDER
+
+`scripts/e2e-bus-wake.mjs` (runner: `scripts/verify-bus-wake-e2e.sh`,
+`pnpm run test:bus-wake-e2e`) drives the real sweep against a real SQLite bus and
+a **real structured session** through the production `sdkStartAndDeliver` path,
+with a stub CLI standing in for the Claude binary. The observable is the
+`user-message` AgentEvent — the transcript bubble the reader's human sees.
+
+It is deliberately not the ledger, the predicate, or the delivery seam's return
+value: all three are bookkeeping #117's own code writes, so a dedup bug moves
+them together and every arm stays green. #112 burned two observables exactly this
+way, both failing in the passing direction.
+
+**Which arms discriminate** (stated, because a matrix where every arm counts as a
+gate hides which ones are decoration):
+
+| Arm | Kills |
+|---|---|
+| `coalesce` | the dedup guard — 3 turns instead of 1 |
+| `switch_off` | the switch check — fires with the switch off |
+| `fires` | a body leak — `bodyLeaks: 1` |
+| `check_no_ack` | a host-side ack — 1 turn instead of 2 |
+| `control_second` | nothing; it proves the rig CAN see turn #2, without which every "exactly 1" above would pass on a rig that renders nothing after the first |
+| `ack_clears` | nothing on its own — the dedup ledger already suppresses a second wake, so it passes on a build that ignores the ack entirely |
+
+`check_no_ack` exists because a mutant reading the cursor from
+`deliveries.to_seq` instead of `cursors.acked_seq` — the host treating its own
+hand-off as the reader's confirmation, the exact lying "Delivered" the bus exists
+to kill — **survived every other arm**. The ledger masks it everywhere else: the
+reader is already marked, so "no second wake" looks identical whether pending
+cleared correctly or not. That arm takes the lot, never acks, and clears the
+in-memory ledger as a restart would, so durable state is what is under test.
+
 ## Running the gates
 
 ```bash
 node --test --experimental-strip-types src/shared/bus-wake.test.ts       # policy
 node --test --experimental-strip-types src/main/bus-wake.test.ts          # predicate, real DB
 node --test --experimental-strip-types src/main/bus-wake-sweep.test.ts    # sweep end to end
+pnpm run test:bus-wake-e2e                                                # real session, 6 arms
+scripts/verify-bus-packaged-boot.sh                                       # + the #117 packaged arms
 ```
 
 ## Not covered here
 
 The switch STORAGE and its pane (#118), the CLI verbs the order names (#115),
-and the shadow mirror's counters (#116). Honest gap: the unit arms stop at the
-delivery seam — they prove the order is handed to `sdkStartAndDeliver`, not that
-a turn RENDERS in the reader's session.
+and the shadow mirror's counters (#116).
+
+**Honest gaps.** The stub CLI is not the real Claude binary, so this proves the
+turn is queued, echoed and yielded to the SDK — not that a human sees it on
+screen. And nothing here drives the real `orchestra check` verb: the order names
+it, but #115 owns it, so what the reader DOES on waking is that ticket's gate.
