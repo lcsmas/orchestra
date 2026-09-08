@@ -323,3 +323,138 @@ The run LIFECYCLE (#115 owns `runs` rows; the mirror names a run from
 migration v1 documents as legal). `lostWake` is exposed and tested but is
 INCREMENTED by the staleness sweep #117 owns — this ticket ships the counter, not
 the sweep. The pane rendering these numbers is #118.
+
+---
+
+# The CLI verbs (#115)
+
+`src/cli/bus-verbs.ts` (the verb bodies) + the five `case` blocks in
+`src/cli/index.ts:1252-1344`. Owner of `src/cli/*` for wave B; #116 adds only
+`bus-status` there.
+
+## Why these five bypass the socket
+
+Every other verb in `src/cli/index.ts` is an HTTP POST over the app's Unix
+socket, so "Orchestra is not running" is a legitimate refusal. These five are
+not: decision #108 Q2 says a message must land while the app is **down or
+restarting**, and the bus is the source of truth. So `send`/`check`/`ack`/
+`ask`/`gate` open `$ORCHESTRA_HOME/bus.sqlite` themselves and write it
+concurrently with the app's own connection. WAL plus the mandatory
+`busy_timeout` that `bus.ts open()` (`:214`) sets on *every* connection is what
+makes that safe — spike #109 measured 7–27 % silent loss without it.
+
+| Verb | Entry | Body |
+|---|---|---|
+| `send --type <kind> [--to] [--thread]` | `index.ts:1252` | `verbSend` `bus-verbs.ts:160` |
+| `check [--ack-previous] [--markdown] [--limit]` | `index.ts:1273` | `verbCheck` `bus-verbs.ts:253` |
+| `ack <lot-id>` | `index.ts:1301` | `verbAck` `bus-verbs.ts:277` |
+| `ask --to <handle> <q…>` | `index.ts:1314` | `verbAsk` `bus-verbs.ts:308` |
+| `gate open … / gate resolve <id> …` | `index.ts:1330` | `verbGate` `bus-verbs.ts:334` |
+
+All five take `--run` (`$ORCHESTRA_RUN_ID`, else `default`) and `--as`
+(`$ORCHESTRA_WS_ID`, else `ORCHESTRA_WS_ID_IDENTITY`) — `resolveBusIdentity`
+`bus-verbs.ts:68`, refused with a message naming both sources at
+`busIdentityOrFail` `index.ts:733`.
+
+## `check` NEVER acks — the invariant the ticket turns on
+
+`verbCheck` (`bus-verbs.ts:253`) has exactly one call to `ack`, gated on
+`--ack-previous`. Nothing acks on a reader's behalf: that is the ADR's rule and
+it is what makes redelivery safe, because a consumer SIGKILLed between `check`
+and `ack` gets the **byte-identical** lot back (same `deliveries.id`, same
+`from_seq`/`to_seq`, so the same rows — new arrivals are deliberately not folded
+in).
+
+The subtle branch is `--ack-previous` **with no outstanding lot**
+(`bus-verbs.ts:262`): `check` has just taken a *fresh* lot, and acking it would
+ack messages the caller has not seen. The caller asked to close the *previous*
+lot and there was none, so the fresh one is handed over unacked.
+
+`check`'s stdout is JSON by default (`CheckOutput`, `bus-verbs.ts:184`) because
+the réveil (#117) orders an agent to run `orchestra check` and parse it;
+`--markdown` opts into the human render (`renderLotMarkdown` `:229`).
+
+## `ask` writes and exits
+
+`verbAsk` (`:308`) appends one `question` row and prints its sequence. **No
+blocking wait** — an agent's Bash tool caps at 600 s, so a waiting verb would
+report a false timeout. The wait is host-driven: the answer is an ordinary bus
+message and #117's wake starts a turn. The kind is pinned to `question` rather
+than taken from a flag, so an ask cannot be parked under a kind no reader scans.
+
+## Runtime: the ABI seam
+
+`openBusForVerb` (`index.ts:661`) imports `src/main/bus.ts` **dynamically, inside
+the try**. Two reasons, both measured:
+
+- A top-level import would make every `orchestra peers`/`message` pay for
+  better-sqlite3 and, worse, die at *load* time on an ABI mismatch — turning a
+  bus-only problem into a CLI that cannot run at all.
+- `require()` is **not** an ABI gate. better-sqlite3 defers the native load to
+  the first `new Database()`, so a require-only probe passes under the wrong ABI
+  (spike #109's headline finding). `openBusForVerb` returns only after
+  `openBus()` has really constructed and migrated.
+
+`describeBusOpenFailure` (`bus-verbs.ts:101`) converts the native
+`NODE_MODULE_VERSION` error into a sentence naming the runtime and the fix, and
+**carries the original error** rather than swallowing it. Measured, system node
+against the Electron-ABI binding:
+
+```
+bus: cannot open …/bus.sqlite — the better-sqlite3 native binding does not match
+this runtime (node ABI 127, no electron).
+  The bus verbs must run under the SAME runtime as the app: the packaged CLI is
+  the Electron binary itself (Orchestra.AppImage cli …, ELECTRON_RUN_AS_NODE=1) …
+```
+
+RC 1, nothing on stdout, no stack frames. It is deliberately keyed on the error
+TEXT, not on `process.versions.modules`: the mismatch is between the runtime and
+whichever binding actually resolved, and only the thrown error knows which.
+
+**Exit discipline.** Nothing in `bus-verbs.ts` calls `process.exit()` — under
+Electron a bare exit after an await does not terminate in that tick (issue #59).
+Refusals go through `index.ts`'s `fail()` (throws `CliFailure`), injected as a
+callback (`busCtx` `index.ts:686`), which also makes every verb unit-testable
+with no process at all.
+
+`vite.cli.config.ts` sets `inlineDynamicImports: true`: the published `bin` is
+`dist-electron/cli.js` and nothing else, and rollup would otherwise answer the
+dynamic import with a second hashed chunk the bin entry does not name.
+
+## `ORCHESTRA_BUS_BUSY_TIMEOUT_MS`
+
+`busyTimeoutOverride` (`index.ts:720`) exists for exactly one caller: the
+must-FAIL control arm of `scripts/verify-bus-cli-verbs.mjs`, which runs the
+**shipped binary** with the timeout at 0 and watches it lose rows. Without it
+that control would have to re-implement `send()` — and a rig that re-implements
+its subject measures the re-implementation, a defect this repo has already been
+bitten by (see `scripts/verify-bus-contention.mjs`'s header). A non-numeric
+value is refused rather than silently becoming the 5000 ms default, which would
+make the control arm pass while measuring the ordinary configuration.
+
+## Running the gates
+
+```bash
+pnpm run test                                     # includes 25 bus-verb tests; # skipped must be 0
+bash scripts/e2e-contained-rig.sh node scripts/verify-bus-cli-verbs.mjs
+```
+
+The second one is the runtime half and needs the contained sway rig: the arms
+drive **real Electron** (not `ELECTRON_RUN_AS_NODE`, which degrades it to plain
+node and hides the #59 exit defect), so they need a compositor — and no test
+window may reach the user's screen. Its arms: T115.1 concurrency + its
+must-FAIL `busy_timeout=0` control · T115.2 ack-replay across a real SIGKILL ·
+T115.3 app-down · T115.4 check-does-not-ack · T115.5 the ABI matrix with its
+positive control · T115.6 `ask` does not block.
+
+Each arm gets its **own** `ORCHESTRA_HOME` (`freshHome`). They shared one at
+first, and T115.4's reader then took a lot of five messages in an arm that sent
+two — the code claim held, but the count was being asserted over state the arm
+did not control.
+
+## Not covered here
+
+`run_id` is still an unconstrained string: no verb creates a row in `runs`, so
+`messages.run_id` carries no FK (bus.ts's migration comment). `--to` is a
+free-form handle, unvalidated in v1. Delivery of what `send` writes — the réveil
+that makes a reader run `check` — is #117.

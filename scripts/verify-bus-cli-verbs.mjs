@@ -127,6 +127,31 @@ function cliStderr(r) {
     .join('\n');
 }
 
+/**
+ * A FRESH, EMPTY bus for one arm.
+ *
+ * THE DEFECT THIS EXISTS FOR, found by running this script: every arm used to
+ * share one ORCHESTRA_HOME, so T115.4's reader took a lot containing five
+ * messages when the arm had sent two — earlier arms' rows, addressed to other
+ * readers but on the same run, were in range. The replay assertion still held
+ * (the code was fine), but "the second check returns the same lot" was being
+ * asserted over a lot the arm did not control, and a count assertion over it
+ * could only be written by reading off the answer. An arm whose subject
+ * includes state from another arm measures neither.
+ *
+ * So each arm gets its own home, and the count in each arm is the number that
+ * arm sent — a quantity written before the run, not read off it.
+ */
+function freshHome(tag) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `orchestra-bus-${tag}-`));
+  homes.push(dir);
+  return dir;
+}
+const homes = [];
+process.on('exit', () => {
+  for (const d of homes) fs.rmSync(d, { recursive: true, force: true });
+});
+
 // ─── artifact identity (never assert by path) ───────────────────────────────
 
 const electronVersion = spawnSync(ELECTRON, ['--version'], {
@@ -158,12 +183,16 @@ record(
 // ─── T115.5 — runtime: construct a DB under real Electron, read the row back ─
 
 {
-  const send = await runElectronCli(['send', '--type', 'dispatch', '--to', 'w1', '--as', 'ops', 'RUNTIME-PROBE']);
+  const home = freshHome('runtime');
+  const send = await runElectronCli(
+    ['send', '--type', 'dispatch', '--to', 'w1', '--as', 'ops', 'RUNTIME-PROBE'],
+    { ORCHESTRA_HOME: home },
+  );
   const seq = Number(send.stdout.trim());
   // READ THE ROW BACK, and read it back through a SEPARATE process — a send
   // that printed an id while writing nothing would satisfy any check that only
   // looked at stdout.
-  const check = await runElectronCli(['check', '--as', 'w1']);
+  const check = await runElectronCli(['check', '--as', 'w1'], { ORCHESTRA_HOME: home });
   let lot = null;
   try {
     lot = JSON.parse(check.stdout.trim());
@@ -176,8 +205,6 @@ record(
       !!lot && lot.count === 1 && lot.messages[0].body === 'RUNTIME-PROBE',
     `send RC=${send.code} seq=${seq}; check RC=${check.code} count=${lot?.count} body=${JSON.stringify(lot?.messages?.[0]?.body)}`,
   );
-  // Leave the bus clean for the later arms.
-  if (lot?.lot) await runElectronCli(['ack', String(lot.lot), '--as', 'w1']);
 }
 
 // ─── T115.5b — the must-FAIL arm: system node against the Electron ABI ──────
@@ -190,6 +217,7 @@ record(
 // is the configuration a human hits by running `node dist-electron/cli.js`.
 
 {
+  const abiHome = freshHome('abi');
   const abiDir = path.join(ROOT, 'build', 'bus-abi');
   const hidden = `${abiDir}.hidden-by-rig`;
   const hadAbiDir = fs.existsSync(abiDir);
@@ -197,7 +225,7 @@ record(
   let r;
   try {
     r = spawnSync(process.execPath, [CLI, 'send', '--type', 'status', '--as', 'nobody', 'x'], {
-      env: { ...process.env, ORCHESTRA_HOME: HOME },
+      env: { ...process.env, ORCHESTRA_HOME: abiHome },
       encoding: 'utf8',
     });
   } finally {
@@ -222,7 +250,7 @@ record(
   // Without this, "RC=1 under node" could just mean the CLI is broken for
   // everyone, and the arm would prove nothing about the ABI.
   const ctl = spawnSync(process.execPath, [CLI, 'send', '--type', 'status', '--as', 'nodectl', 'ABI-CONTROL'], {
-    env: { ...process.env, ORCHESTRA_HOME: HOME },
+    env: { ...process.env, ORCHESTRA_HOME: abiHome },
     encoding: 'utf8',
   });
   record(
@@ -241,7 +269,10 @@ record(
 // ─── T115.6 — ask does not block ────────────────────────────────────────────
 
 {
-  const r = await runElectronCli(['ask', '--to', 'ops', '--as', 'w1', 'may I proceed?']);
+  const home = freshHome('ask');
+  const r = await runElectronCli(['ask', '--to', 'ops', '--as', 'w1', 'may I proceed?'], {
+    ORCHESTRA_HOME: home,
+  });
   const seq = Number(r.stdout.trim());
   // The bound is wall-clock, and generous: the claim is "it does not WAIT", and
   // an Electron cold start is a few hundred ms. A verb that waited on an answer
@@ -251,7 +282,7 @@ record(
     r.code === 0 && Number.isInteger(seq) && seq > 0 && r.ms < 30_000,
     `RC=${r.code}, printed id=${seq}, wall clock ${r.ms}ms (Bash cap is 600000ms)`,
   );
-  const back = await runElectronCli(['check', '--as', 'ops']);
+  const back = await runElectronCli(['check', '--as', 'ops'], { ORCHESTRA_HOME: home });
   const lot = JSON.parse(back.stdout.trim());
   const q = lot.messages.find((m) => m.sequence === seq);
   record(
@@ -259,16 +290,18 @@ record(
     !!q && q.kind === 'question' && q.recipient === 'ops' && q.body === 'may I proceed?',
     `kind=${q?.kind}, recipient=${q?.recipient}, body=${JSON.stringify(q?.body)}`,
   );
-  if (lot.lot) await runElectronCli(['ack', String(lot.lot), '--as', 'ops']);
 }
 
 // ─── T115.4 — check never acks, through the real binary ─────────────────────
 
 {
-  await runElectronCli(['send', '--type', 'dispatch', '--to', 'r4', '--as', 'ops', 'NOACK-1']);
-  await runElectronCli(['send', '--type', 'dispatch', '--to', 'r4', '--as', 'ops', 'NOACK-2']);
-  const a = JSON.parse((await runElectronCli(['check', '--as', 'r4'])).stdout.trim());
-  const b = JSON.parse((await runElectronCli(['check', '--as', 'r4'])).stdout.trim());
+  const home = freshHome('noack');
+  const E = { ORCHESTRA_HOME: home };
+  // TWO messages, a number written down BEFORE the run — not read off the lot.
+  await runElectronCli(['send', '--type', 'dispatch', '--to', 'r4', '--as', 'ops', 'NOACK-1'], E);
+  await runElectronCli(['send', '--type', 'dispatch', '--to', 'r4', '--as', 'ops', 'NOACK-2'], E);
+  const a = JSON.parse((await runElectronCli(['check', '--as', 'r4'], E)).stdout.trim());
+  const b = JSON.parse((await runElectronCli(['check', '--as', 'r4'], E)).stdout.trim());
   record(
     'T115.4 a plain check does NOT ack: the second check replays the same lot, same ids',
     a.count === 2 && a.replay === false && b.replay === true &&
@@ -276,8 +309,8 @@ record(
     `first: lot=${a.lot} count=${a.count} replay=${a.replay}; second: lot=${b.lot} count=${b.count} replay=${b.replay}, ` +
       `messages byte-identical=${JSON.stringify(b.messages) === JSON.stringify(a.messages)}`,
   );
-  const acked = await runElectronCli(['ack', String(a.lot), '--as', 'r4']);
-  const c = JSON.parse((await runElectronCli(['check', '--as', 'r4'])).stdout.trim());
+  const acked = await runElectronCli(['ack', String(a.lot), '--as', 'r4'], E);
+  const c = JSON.parse((await runElectronCli(['check', '--as', 'r4'], E)).stdout.trim());
   record(
     'T115.4b after the reader acks, the lot is gone (so the replay above was not just "check is broken")',
     acked.code === 0 && c.count === 0 && c.lot === null,
@@ -287,86 +320,103 @@ record(
 
 // ─── T115.2 — ack-replay across a SIGKILL ───────────────────────────────────
 //
-// The consumer is KILLED between `check` and `ack`, which is the scenario the
-// unique partial index on deliveries exists for. Killing the CLI process after
-// it has already exited would prove nothing, so the kill happens inside a child
-// that has done its `check` and is waiting for a signal.
+// The consumer is SIGKILLed after its `check` and before any `ack` — the
+// scenario the unique partial index on `deliveries` exists for.
+//
+// THE KILL IS ON THE REAL CLI PROCESS, MID-FLIGHT. Two designs were tried and
+// rejected, and both failures are worth recording because each looked correct:
+//
+//   (a) Kill the CLI after it exits. That leaves the same DB state, so the arm
+//       would pass — but it would be asserting over "nobody acked", not over a
+//       crash, and would go green on a rig that never opened the window at all.
+//   (b) Shadow `process.exit` inside an Electron holder so the child parks with
+//       the lot outstanding. It WEDGED: runCli ends in exitAfterFlush(), which
+//       awaits a stream flush and then calls process.exit — neutered, so the
+//       await never settles, runCli never returns, and the lot never reaches
+//       stdout. A rig that hangs is at least honest; a rig that hung and were
+//       given a shorter timeout would have reported "no lot" as a code defect.
+//
+// So: spawn the real CLI `check`, wait for its lot to arrive on stdout (bounded
+// wait-until-or-fail, never sleep-then-read), and SIGKILL it THERE — before it
+// has exited, which the arm asserts rather than assumes. The window between the
+// relève's COMMIT and the process's exit is exactly where a real consumer dies.
 
 {
-  await runElectronCli(['send', '--type', 'dispatch', '--to', 'crashy', '--as', 'ops', 'CRASH-1']);
-  await runElectronCli(['send', '--type', 'dispatch', '--to', 'crashy', '--as', 'ops', 'CRASH-2']);
+  const home = freshHome('crash');
+  const E = { ORCHESTRA_HOME: home };
+  await runElectronCli(['send', '--type', 'dispatch', '--to', 'crashy', '--as', 'ops', 'CRASH-1'], E);
+  await runElectronCli(['send', '--type', 'dispatch', '--to', 'crashy', '--as', 'ops', 'CRASH-2'], E);
 
-  // The check is done by the real CLI; the "crash" is that nothing ever acks it,
-  // which is byte-for-byte the state a SIGKILLed consumer leaves behind. To make
-  // the kill REAL rather than simulated, run the check in a child we then
-  // SIGKILL while it is still alive, and assert the lot survived it.
-  const holder = spawn(
-    ELECTRON,
-    [
-      (() => {
-        const p = path.join(HOME, 'holder.cjs');
-        fs.writeFileSync(
-          p,
-          `const { app } = require('electron');
-           app.disableHardwareAcceleration();
-           app.whenReady().then(async () => {
-             const { runCli } = require(${JSON.stringify(CLI)});
-             // runCli exits the process on completion, so intercept: we want the
-             // process ALIVE after the check so the SIGKILL lands between check
-             // and ack, not after a clean exit.
-             const realExit = process.exit.bind(process);
-             process.exit = () => {};
-             await runCli(['check', '--as', 'crashy']);
-             process.exit = realExit;
-             setInterval(() => {}, 1000); // stay alive, un-acked, until killed
-           });`,
-        );
-        return p;
-      })(),
-      '--no-sandbox',
-    ],
-    {
-      env: { ...process.env, ORCHESTRA_HOME: HOME, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
+  const mainJs = path.join(home, 'consumer.cjs');
+  fs.writeFileSync(
+    mainJs,
+    `const { app } = require('electron');
+     app.disableHardwareAcceleration();
+     app.whenReady().then(async () => {
+       const { runCli } = require(${JSON.stringify(CLI)});
+       await runCli(['check', '--as', 'crashy']);
+     });`,
   );
-  let holderOut = '';
-  holder.stdout.on('data', (d) => (holderOut += d));
-  // Wait for the check to have PRODUCED its lot — bounded wait-until-or-fail,
-  // never sleep-then-read: a fixed sleep either flakes or measures the sleep.
-  const deadline = Date.now() + 45_000;
-  while (Date.now() < deadline && !holderOut.trim().endsWith('}')) {
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  let killedLot = null;
-  try {
-    killedLot = JSON.parse(holderOut.trim());
-  } catch {
-    /* reported below */
-  }
-  const alive = holder.exitCode === null && holder.signalCode === null;
-  holder.kill('SIGKILL');
-  await new Promise((r) => holder.on('close', r));
+  const consumer = spawn(ELECTRON, [mainJs, '--no-sandbox'], {
+    env: { ...process.env, ORCHESTRA_HOME: home, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let out = '';
+  let err = '';
+  consumer.stdout.on('data', (d) => (out += d));
+  consumer.stderr.on('data', (d) => (err += d));
 
-  const after = JSON.parse((await runElectronCli(['check', '--as', 'crashy'])).stdout.trim());
+  const parseLot = (text) => {
+    const i = text.indexOf('{');
+    if (i < 0) return null;
+    try {
+      return JSON.parse(text.slice(i, text.lastIndexOf('}') + 1));
+    } catch {
+      return null;
+    }
+  };
+  const deadline = Date.now() + 60_000;
+  let killedLot = null;
+  let aliveAtKill = false;
+  while (Date.now() < deadline) {
+    killedLot = parseLot(out);
+    if (killedLot) {
+      // Kill IMMEDIATELY, in the same tick the lot became readable — the
+      // process is still winding down its flush-and-exit, so this lands in the
+      // window the acceptance names.
+      aliveAtKill = consumer.exitCode === null && consumer.signalCode === null;
+      consumer.kill('SIGKILL');
+      break;
+    }
+    if (consumer.exitCode !== null) break;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  consumer.kill('SIGKILL');
+  const [, killSignal] = await new Promise((r) =>
+    consumer.on('close', (c, sig) => r([c, sig])),
+  );
+
+  const after = JSON.parse((await runElectronCli(['check', '--as', 'crashy'], E)).stdout.trim());
   record(
     'T115.2 consumer SIGKILLed after check, before ack → the next check returns the BYTE-IDENTICAL lot',
-    !!killedLot && killedLot.count === 2 && alive &&
+    !!killedLot && killedLot.count === 2 && aliveAtKill && killSignal === 'SIGKILL' &&
       after.lot === killedLot.lot &&
       JSON.stringify(after.messages) === JSON.stringify(killedLot.messages) &&
       after.replay === true,
-    `killed consumer held lot=${killedLot?.lot} count=${killedLot?.count} (process was alive at kill time: ${alive}); ` +
-      `after the kill: lot=${after.lot} count=${after.count} replay=${after.replay}, ` +
-      `messages byte-identical=${JSON.stringify(after.messages) === JSON.stringify(killedLot?.messages)}`,
+    `killed consumer held lot=${killedLot?.lot} count=${killedLot?.count}; it was STILL RUNNING when we signalled: ` +
+      `${aliveAtKill}, and died BY ${killSignal} (not a clean exit); after the kill: lot=${after.lot} ` +
+      `count=${after.count} replay=${after.replay}, ` +
+      `messages byte-identical=${JSON.stringify(after.messages) === JSON.stringify(killedLot?.messages)}` +
+      (killedLot ? '' : ` | consumer stderr: ${err.slice(-300)}`),
   );
-  // …and after the ack, ONLY NEWER rows. The second half of the acceptance:
-  // without it, "the same lot forever" would also pass the assertion above.
-  await runElectronCli(['ack', String(after.lot), '--as', 'crashy']);
-  await runElectronCli(['send', '--type', 'dispatch', '--to', 'crashy', '--as', 'ops', 'CRASH-3']);
-  const fresh = JSON.parse((await runElectronCli(['check', '--as', 'crashy'])).stdout.trim());
+  // …and after the ack, ONLY NEWER rows. Without this half, "the same lot
+  // forever" — a check that could never advance — would also pass the arm above.
+  await runElectronCli(['ack', String(after.lot), '--as', 'crashy'], E);
+  await runElectronCli(['send', '--type', 'dispatch', '--to', 'crashy', '--as', 'ops', 'CRASH-3'], E);
+  const fresh = JSON.parse((await runElectronCli(['check', '--as', 'crashy'], E)).stdout.trim());
   record(
     'T115.2b after the ack, check returns ONLY newer rows',
-    fresh.count === 1 && fresh.messages[0].body === 'CRASH-3' && fresh.lot !== after.lot,
+    fresh.count === 1 && fresh.messages[0]?.body === 'CRASH-3' && fresh.lot !== after.lot,
     `count=${fresh.count}, bodies=${JSON.stringify(fresh.messages.map((m) => m.body))}, lot=${fresh.lot} (was ${after.lot})`,
   );
 }
