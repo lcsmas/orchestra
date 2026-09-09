@@ -239,6 +239,10 @@ export async function startPty(opts: {
    * before TERM and the hook vars). Used by the run-script PTY to expose
    * `ORCHESTRA_PORT`, `ORCHESTRA_ROOT_PATH`, etc. */
   extraEnv?: Record<string, string>;
+  /** Inherited process.env keys to DROP before `extraEnv` applies — a pinned
+   * account's ambient auth vars (see ACCOUNT_AUTH_ENV_VARS). Local spawns only:
+   * a remote env starts from `extraEnv`, so there is nothing to drop. */
+  stripEnv?: string[];
   /** Where the agent runs. Absent / `{kind:'local'}` → local node-pty (default).
    * `{kind:'sandbox'}` → RemoteTransport over the connection to its endpoint;
    * `cwd` is then a sandbox-side path and the local existence check is skipped. */
@@ -280,13 +284,15 @@ export async function startPty(opts: {
     COLORTERM: 'truecolor',
     CLAUDE_CODE_FORCE_SYNC_OUTPUT: '1',
   };
+  const inherited: Record<string, string> = { ...(process.env as Record<string, string>) };
+  for (const k of opts.stripEnv ?? []) delete inherited[k];
   const env: Record<string, string> = remote
     ? {
         ...(opts.extraEnv ?? {}),
         ...termCaps,
       }
     : {
-        ...(process.env as Record<string, string>),
+        ...inherited,
         ...(opts.extraEnv ?? {}),
         ...termCaps,
       };

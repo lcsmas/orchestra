@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { Account, PinnedTicket, RepoEntry, RepoScripts, Workspace } from '../shared/types';
-import { sanitizeAccountInherit } from '../shared/accounts';
+import { sanitizeAccountEnv, sanitizeAccountInherit } from '../shared/accounts';
 import type { SelfTuneRun } from '../shared/self-tune';
 import { scoped } from './logger';
 
@@ -308,11 +308,12 @@ class Store {
   }
 
   /** Replace the whole accounts list. Drops entries missing an id or label,
-   *  trims fields, and keeps `id`/`label`/`configDir`/`inherit`. `configDir` is
-   *  a path (optionally with `~`/`${VAR}`) — never a secret; the credentials
+   *  trims fields, and keeps `id`/`label`/`configDir`/`inherit`/`env`. `configDir`
+   *  is a path (optionally with `~`/`${VAR}`) — never a secret; the credentials
    *  live in that dir's `.credentials.json`, which Orchestra never persists here.
-   *  `inherit` is normalized via {@link sanitizeAccountInherit} and omitted when
-   *  empty. */
+   *  `inherit` / `env` are normalized via {@link sanitizeAccountInherit} /
+   *  {@link sanitizeAccountEnv} and omitted when empty (`env` values are
+   *  `${VAR}` templates, expanded only at spawn — never a secret either). */
   async setAccounts(accounts: Account[]): Promise<Account[]> {
     const cleaned: Account[] = [];
     // At most one account may be the scratch-session default — keep the first.
@@ -322,6 +323,7 @@ class Store {
       const label = (a?.label ?? '').trim();
       if (!id || !label) continue;
       const inherit = sanitizeAccountInherit(a?.inherit);
+      const env = sanitizeAccountEnv(a?.env);
       const scratchDefault = a?.scratchDefault === true && !scratchDefaultSeen;
       if (scratchDefault) scratchDefaultSeen = true;
       cleaned.push({
@@ -330,6 +332,7 @@ class Store {
         configDir: typeof a.configDir === 'string' ? a.configDir.trim() : '',
         ...(scratchDefault ? { scratchDefault: true } : {}),
         ...(inherit ? { inherit } : {}),
+        ...(env ? { env } : {}),
       });
     }
     this.data.accounts = cleaned;

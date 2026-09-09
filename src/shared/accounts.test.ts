@@ -11,6 +11,11 @@ import {
   scratchDefaultAccountId,
   parseCredentials,
   parseUsageResponse,
+  accountAgentEnv,
+  expandAccountEnv,
+  formatEnvLines,
+  parseEnvLines,
+  sanitizeAccountEnv,
   sanitizeAccountInherit,
   usageLimitedUntil,
   type RawUsageResponse,
@@ -437,4 +442,68 @@ test('isClaudeAuthUrl accepts the claude.com OAuth hosts the CLI now uses', () =
   assert.equal(isClaudeAuthUrl('https://notclaude.com/oauth/authorize'), false);
   assert.equal(isClaudeAuthUrl('https://evilclaude.com/'), false);
   assert.equal(isClaudeAuthUrl('http://claude.com/cai/oauth/authorize'), false);
+});
+
+// ---- per-account env ----------------------------------------------------------
+
+test('sanitizeAccountEnv returns undefined for empty / non-object / nothing usable', () => {
+  assert.equal(sanitizeAccountEnv(undefined), undefined);
+  assert.equal(sanitizeAccountEnv(null), undefined);
+  assert.equal(sanitizeAccountEnv([]), undefined);
+  assert.equal(sanitizeAccountEnv({}), undefined);
+  assert.equal(sanitizeAccountEnv({ A: '', B: 7, 'bad-key': 'x', CLAUDE_CONFIG_DIR: '~/x' }), undefined);
+});
+
+test('sanitizeAccountEnv keeps identifier keys with non-blank string values, trimmed', () => {
+  assert.deepEqual(
+    sanitizeAccountEnv({ ' ANTHROPIC_BASE_URL ': ' ${ANTHROPIC_BASE_URL} ', _X1: 'y', 'no key': 'z' }),
+    { ANTHROPIC_BASE_URL: '${ANTHROPIC_BASE_URL}', _X1: 'y' },
+  );
+});
+
+test('expandAccountEnv expands ${VAR}/~ and drops entries that expand to nothing', () => {
+  assert.deepEqual(
+    expandAccountEnv(
+      { ANTHROPIC_BASE_URL: '${ANTHROPIC_BASE_URL}', ANTHROPIC_API_KEY: '${ANTHROPIC_API_KEY}', P: '~/bin', LIT: 'v' },
+      '/home/u',
+      { ANTHROPIC_BASE_URL: 'https://proxy:3456' },
+    ),
+    { ANTHROPIC_BASE_URL: 'https://proxy:3456', P: '/home/u/bin', LIT: 'v' },
+  );
+  assert.deepEqual(expandAccountEnv(undefined, '/home/u', {}), {});
+});
+
+test('accountAgentEnv: no account → nothing set, nothing stripped', () => {
+  assert.deepEqual(accountAgentEnv(undefined, '/home/u', { ANTHROPIC_API_KEY: 'k' }), { set: {}, strip: [] });
+});
+
+test('accountAgentEnv: a pinned account with no env strips every ambient auth var', () => {
+  assert.deepEqual(accountAgentEnv({ env: undefined }, '/home/u', { ANTHROPIC_API_KEY: 'k' }), {
+    set: {},
+    strip: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL'],
+  });
+});
+
+test('accountAgentEnv: vars the account re-supplies are set, the rest stripped', () => {
+  const r = accountAgentEnv(
+    { env: { ANTHROPIC_API_KEY: '${ANTHROPIC_API_KEY}', ANTHROPIC_BASE_URL: '${ANTHROPIC_BASE_URL}' } },
+    '/home/u',
+    { ANTHROPIC_API_KEY: 'k', ANTHROPIC_BASE_URL: 'https://p' },
+  );
+  assert.deepEqual(r.set, { ANTHROPIC_API_KEY: 'k', ANTHROPIC_BASE_URL: 'https://p' });
+  assert.deepEqual(r.strip, ['ANTHROPIC_AUTH_TOKEN']);
+});
+
+test('accountAgentEnv: a template whose source var is unset is stripped, not set to ""', () => {
+  const r = accountAgentEnv({ env: { ANTHROPIC_API_KEY: '${ANTHROPIC_API_KEY}' } }, '/home/u', {});
+  assert.deepEqual(r.set, {});
+  assert.deepEqual(r.strip, ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL']);
+});
+
+test('parseEnvLines / formatEnvLines round-trip; comments, blanks and =-less lines are ignored', () => {
+  const env = parseEnvLines('# proxy\nANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}\n\nA = b=c \nNOEQ\n=nokey');
+  assert.deepEqual(env, { ANTHROPIC_BASE_URL: '${ANTHROPIC_BASE_URL}', A: 'b=c' });
+  assert.equal(formatEnvLines(env), 'ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}\nA=b=c');
+  assert.equal(formatEnvLines(undefined), '');
+  assert.deepEqual(parseEnvLines(formatEnvLines(env)), env);
 });

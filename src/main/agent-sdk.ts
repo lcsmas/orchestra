@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { accountAgentEnv } from '../shared/accounts';
 // TYPE-ONLY import: erased at compile time, so it emits NO runtime require().
 // @anthropic-ai/claude-agent-sdk is a pure-ESM package (type:module, exports
 // only ./sdk.mjs, no CJS entry). Because it's externalized, a static value
@@ -31,6 +32,7 @@ import { decideGateRelease } from '../shared/session-wedge.ts';
 const slog = scoped('sdk');
 import {
   installOrchestraHooks,
+  workspaceAccount,
   workspaceAccountConfigDir,
   mangleProjectDir,
   autoRenameActive,
@@ -706,7 +708,14 @@ function buildSdkEnv(ws: Workspace): { env: Record<string, string>; driveStatus:
   // frozen env keeps resolving the CURRENT app instance.)
   delete env.ORCHESTRA_SOCK;
   const configDir = workspaceAccountConfigDir(ws, undefined);
-  if (configDir) env.CLAUDE_CONFIG_DIR = configDir;
+  if (configDir) {
+    env.CLAUDE_CONFIG_DIR = configDir;
+    // Account env parity with the terminal path (resolveRepoAgentEnv /
+    // resolveRepoAgentStripEnv): drop the ambient auth vars, inject the account's.
+    const acct = accountAgentEnv(workspaceAccount(ws), os.homedir(), process.env);
+    for (const k of acct.strip) delete env[k];
+    Object.assign(env, acct.set);
+  }
   env.ORCHESTRA_BRANCH = ws.branch;
   env.ORCHESTRA_KIND = ws.kind ?? 'worktree';
   // Auto-rename gate parity with startAgentPty (workspaces.ts): the SessionStart

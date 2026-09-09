@@ -4568,6 +4568,22 @@ button.danger-primary:active {
   border-color: rgba(110, 168, 255, 0.75);
   box-shadow: 0 0 0 3px rgba(110, 168, 255, 0.16);
 }
+.accounts-input.env {
+  width: 100%;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  resize: vertical;
+  min-height: 44px;
+}
+.account-field-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  font-style: normal;
+  opacity: 0.6;
+  line-height: 1.4;
+}
+.account-field-hint code { font-size: 11px; }
 .accounts-input.dir {
   flex: 1 1 auto;
   min-width: 0;

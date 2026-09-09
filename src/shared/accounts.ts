@@ -34,6 +34,14 @@ export interface Account {
    *  for files/skills, a selective merge for MCP servers — see
    *  src/main/account-inherit.ts). Absent → nothing inherited. */
   inherit?: AccountInherit;
+  /** Extra env vars injected into every agent this account spawns, right after
+   *  `CLAUDE_CONFIG_DIR`. Values are templates like `configDir` (`~`, `${VAR}`,
+   *  expanded at spawn time against Orchestra's env, which carries the user's
+   *  login-shell exports), so store.json holds `${ANTHROPIC_API_KEY}`, never
+   *  the secret; an entry expanding to '' is skipped. Typical use: one account
+   *  on an API key + proxy (`ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`) while
+   *  the others stay on their OAuth login — see {@link accountAgentEnv}. */
+  env?: Record<string, string>;
 }
 
 /** Per-account selection of what to inherit from the global `~/.claude`.
@@ -129,6 +137,94 @@ export interface AccountUsageStatus {
    *  then refers to when that cached data was fetched, not when expiry was
    *  detected. */
   expired?: boolean;
+}
+
+// ---- per-account env ----------------------------------------------------------
+
+/** Ambient auth vars Claude Code honours OVER the login in `CLAUDE_CONFIG_DIR`
+ *  (measured 2026-09-09 with a capture proxy: OAuth login present AND
+ *  `ANTHROPIC_API_KEY` set → `claude` sends `x-api-key`, not the Bearer token).
+ *  Orchestra inherits the login shell's exports, so a pinned account would
+ *  otherwise be silently hijacked by whatever the user's rc exports. Removed
+ *  from a pinned account's agent env unless its own `env` re-supplies them. */
+export const ACCOUNT_AUTH_ENV_VARS = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+] as const;
+
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Normalize an untrusted `env` value (store.json / IPC) into clean
+ *  `{KEY: template}` pairs, or `undefined` when nothing survives. Drops
+ *  non-identifier keys, non-string or blank values, and `CLAUDE_CONFIG_DIR`
+ *  (owned by `configDir`). Pure — no fs, usable from both processes. */
+export function sanitizeAccountEnv(v: unknown): Record<string, string> | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    const key = k.trim();
+    if (!ENV_KEY_RE.test(key) || key === 'CLAUDE_CONFIG_DIR') continue;
+    if (typeof val !== 'string') continue;
+    const value = val.trim();
+    if (!value) continue;
+    out[key] = value;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** Expand an account's `env` templates (same rules as {@link expandConfigDir})
+ *  into the literal pairs to inject. Entries expanding to '' are dropped, so an
+ *  unset `${VAR}` injects nothing rather than an empty string. */
+export function expandAccountEnv(
+  env: Record<string, string> | undefined,
+  home: string,
+  source: Record<string, string | undefined>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, tmpl] of Object.entries(sanitizeAccountEnv(env) ?? {})) {
+    const value = expandConfigDir(tmpl, home, source);
+    if (value) out[k] = value;
+  }
+  return out;
+}
+
+/** The agent env a pinned account dictates: `set` is injected (after
+ *  `CLAUDE_CONFIG_DIR`), `strip` is deleted from the inherited process env
+ *  FIRST — the {@link ACCOUNT_AUTH_ENV_VARS} this account's `env` does not
+ *  re-supply. No account → nothing set, nothing stripped (the default login
+ *  keeps the ambient env exactly as before). */
+export function accountAgentEnv(
+  account: Pick<Account, 'env'> | undefined,
+  home: string,
+  source: Record<string, string | undefined>,
+): { set: Record<string, string>; strip: string[] } {
+  if (!account) return { set: {}, strip: [] };
+  const set = expandAccountEnv(account.env, home, source);
+  const strip = ACCOUNT_AUTH_ENV_VARS.filter((k) => !(k in set));
+  return { set, strip };
+}
+
+/** `KEY=value` lines → env map (settings textarea). Blank lines and `#`
+ *  comments are ignored; the first `=` splits; a line without `=` is dropped.
+ *  Output still goes through {@link sanitizeAccountEnv} on save. */
+export function parseEnvLines(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    out[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+  }
+  return out;
+}
+
+/** Inverse of {@link parseEnvLines}: one `KEY=value` per line, '' when empty. */
+export function formatEnvLines(env: Record<string, string> | undefined): string {
+  return Object.entries(env ?? {})
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n');
 }
 
 // ---- config-dir expansion ----------------------------------------------------

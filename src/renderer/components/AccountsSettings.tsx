@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Account, AccountInherit } from '../../shared/types';
+import { formatEnvLines, parseEnvLines, sanitizeAccountEnv } from '../../shared/accounts';
 import { AccountLoginModal } from './AccountLoginModal';
 
 interface Props {
@@ -21,6 +22,8 @@ interface Row {
   inheritMcp: string[];
   /** New scratch/orchestrator sessions pin this account (at most one row). */
   scratchDefault: boolean;
+  /** Per-account env as `KEY=value` lines (see Account.env). */
+  env: string;
 }
 
 /** Map a stored Account into the editable Row shape. */
@@ -34,6 +37,7 @@ function rowFromAccount(a: Account): Row {
     inheritSkills: a.inherit?.skills ?? [],
     inheritMcp: a.inherit?.mcpServers ?? [],
     scratchDefault: a.scratchDefault ?? false,
+    env: formatEnvLines(a.env),
   };
 }
 
@@ -144,6 +148,7 @@ export function AccountsSettings({ onClose }: Props) {
         inheritSkills: [],
         inheritMcp: [],
         scratchDefault: false,
+        env: '',
       },
     ]);
 
@@ -171,12 +176,14 @@ export function AccountsSettings({ onClose }: Props) {
     const accounts: Account[] = rows
       .map((r) => {
         const inherit = inheritFromRow(r);
+        const env = sanitizeAccountEnv(parseEnvLines(r.env));
         return {
           id: r.id,
           label: r.label.trim(),
           configDir: r.configDir.trim(),
           ...(r.scratchDefault ? { scratchDefault: true } : {}),
           ...(inherit ? { inherit } : {}),
+          ...(env ? { env } : {}),
         };
       })
       .filter((r) => r.label);
@@ -302,6 +309,25 @@ export function AccountsSettings({ onClose }: Props) {
                         …
                       </button>
                     </div>
+                  </label>
+
+                  <label className="account-field">
+                    <span className="account-field-label">Extra env</span>
+                    <textarea
+                      className="accounts-input env"
+                      placeholder={'ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}\nANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}'}
+                      value={r.env}
+                      rows={2}
+                      spellCheck={false}
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      onChange={(e) => update(r.id, { env: e.target.value })}
+                    />
+                    <em className="account-field-hint">
+                      <code>KEY=value</code> per line; <code>{'${VAR}'}</code> expands from your shell env at
+                      spawn. Your shell&apos;s <code>ANTHROPIC_API_KEY</code> / <code>ANTHROPIC_AUTH_TOKEN</code> /{' '}
+                      <code>ANTHROPIC_BASE_URL</code> are dropped for this account unless set here.
+                    </em>
                   </label>
 
                   <label className="account-inherit-check account-scratch-default">

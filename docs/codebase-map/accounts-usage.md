@@ -14,9 +14,28 @@ under different accounts by injecting that dir into the spawned `claude` PTY.
 **Orchestra never mints/refreshes tokens** — Claude Code does; Orchestra only
 reads them transiently to query usage.
 
-`Account = {id, label, configDir, scratchDefault?, inherit?}` (`accounts.ts:18`).
+`Account = {id, label, configDir, scratchDefault?, inherit?, env?}` (`accounts.ts:18`).
 `configDir` supports templates (`~`, `${VAR}`) expanded by
-`expandConfigDir(template, home, source)` `:130`.
+`expandConfigDir(template, home, source)` `:230`.
+
+- **Per-account env + auth ownership:** `env` is `{KEY: template}` (same `~`/`${VAR}`
+  expansion, so store.json holds `${ANTHROPIC_API_KEY}`, never the secret;
+  `sanitizeAccountEnv` / `expandAccountEnv` / `accountAgentEnv` in `accounts.ts`,
+  `## per-account env`). `accountAgentEnv(account, home, process.env)` returns
+  `{set, strip}`: `set` is injected right after `CLAUDE_CONFIG_DIR`, `strip` is the
+  subset of `ACCOUNT_AUTH_ENV_VARS` (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+  `ANTHROPIC_BASE_URL`) the account does NOT re-supply — deleted from the inherited
+  env for every PINNED account. Why: Orchestra merges the login shell's exports at
+  boot (`shellEnvSync`, `index.ts`), and Claude Code sends `x-api-key` over an
+  existing OAuth login whenever `ANTHROPIC_API_KEY` is in its env (measured
+  2026-09-09 with a capture proxy) — an rc export would silently hijack every
+  login-dir account. Unpinned (default-login) sessions keep the ambient env
+  untouched. Applied on all three spawn paths: terminal PTYs via
+  `resolveRepoAgentEnv` + `resolveRepoAgentStripEnv` → `startPty({extraEnv, stripEnv})`
+  (`workspaces.ts`, `pty.ts`), SDK sessions in `buildSdkEnv` (`agent-sdk.ts`).
+  NOT applied to self-tune runs (`self-tune.ts` passes only `configDirEnv`).
+  UI: the "Extra env" textarea in `AccountsSettings` (`KEY=value` lines,
+  `parseEnvLines`/`formatEnvLines`).
 
 - **Pinning:** a workspace snapshots its repo's `accountId` at creation and keeps
   it for life (else `claude --continue` finds no session). `resolveWorkspaceAccountId(pinned,

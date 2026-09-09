@@ -37,7 +37,7 @@ import {
   readScrollback,
   getPtySize,
 } from './pty';
-import { expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
+import { accountAgentEnv, expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
 import {
   resolveDirectChildTargets,
@@ -59,7 +59,7 @@ import { forgetWorkspaceProbes } from './activity';
 import { clearHibernated } from './hibernation.ts';
 import { forgetHibernationActivity } from './hibernation-activity.ts';
 import { destroyPanel as destroyBrowserPanel } from './browser-panel';
-import type { CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
+import type { Account, CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
 import { canOrchestrate, isScratchLike, SANDBOX_WORKSPACE_DIR } from '../shared/types';
 import { parseBtrfsDuSizes, parseDuSizes, type WorktreeSizes } from '../shared/worktree-sizes';
 
@@ -81,9 +81,29 @@ const execFileP = promisify(execFile);
  *
  * Returns `{}` when the repo has no account. */
 function resolveRepoAgentEnv(ws: Workspace): Record<string, string> {
-  const repo = store.repos.find((r) => r.path === ws.repoPath);
-  const configDir = workspaceAccountConfigDir(ws, repo);
-  return configDir ? { CLAUDE_CONFIG_DIR: configDir } : {};
+  const configDir = workspaceAccountConfigDir(ws, undefined);
+  if (!configDir) return {};
+  // The account's own `env` (templates expanded here, so `${ANTHROPIC_API_KEY}`
+  // resolves from the shell exports shellEnvSync merged at boot) rides along.
+  return {
+    CLAUDE_CONFIG_DIR: configDir,
+    ...accountAgentEnv(workspaceAccount(ws), os.homedir(), process.env).set,
+  };
+}
+
+/** Inherited env keys to DROP before {@link resolveRepoAgentEnv} applies: the
+ * ambient auth vars a pinned account does not re-supply, which would otherwise
+ * override its login (ACCOUNT_AUTH_ENV_VARS). `[]` when no account is pinned,
+ * so the default login keeps Orchestra's env untouched. */
+export function resolveRepoAgentStripEnv(ws: Workspace): string[] {
+  if (!workspaceAccountConfigDir(ws, undefined)) return [];
+  return accountAgentEnv(workspaceAccount(ws), os.homedir(), process.env).strip;
+}
+
+/** The {@link Account} a workspace is pinned to, or undefined (no pin / dangling). */
+export function workspaceAccount(ws: Workspace): Account | undefined {
+  if (!ws.accountId) return undefined;
+  return store.accounts.find((a) => a.id === ws.accountId);
 }
 
 /** The expanded `CLAUDE_CONFIG_DIR` for the account a workspace logs in as, or
@@ -98,8 +118,7 @@ function resolveRepoAgentEnv(ws: Workspace): Record<string, string> {
  * Exported for the sandbox import (it packs this dir's login/config into the
  * payload so the container agent runs as the same account). */
 export function workspaceAccountConfigDir(ws: Workspace, _repo: RepoEntry | undefined): string {
-  if (!ws.accountId) return '';
-  const account = store.accounts.find((a) => a.id === ws.accountId);
+  const account = workspaceAccount(ws);
   if (!account) return '';
   return expandConfigDir(account.configDir, os.homedir(), process.env);
 }
@@ -1386,6 +1405,7 @@ async function startWorkspaceAgentHeadless(id: string): Promise<void> {
     rows: HEADLESS_ROWS,
     workspaceId: id,
     extraEnv,
+    stripEnv: resolveRepoAgentStripEnv(ws),
   });
   if (!ws.lastTask) return;
   const task = ws.lastTask;
@@ -2737,6 +2757,7 @@ export async function wakeAgentWithPrompt(id: string, prompt: string): Promise<b
     cols: priorSize?.cols ?? HEADLESS_COLS,
     rows: priorSize?.rows ?? HEADLESS_ROWS,
     workspaceId: id,
+    stripEnv: resolveRepoAgentStripEnv(ws),
     extraEnv: {
       // Per-repo env first so Orchestra's own vars below always take precedence.
       ...resolveRepoAgentEnv(ws),
@@ -4388,6 +4409,7 @@ export async function startAgentPty(ws: Workspace, cols: number, rows: number): 
     rows,
     workspaceId: ws.id,
     extraEnv,
+    stripEnv: resolveRepoAgentStripEnv(ws),
     host: ws.host,
   });
 }
