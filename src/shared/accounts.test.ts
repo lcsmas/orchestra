@@ -10,6 +10,7 @@ import {
   resolveWorkspaceAccountId,
   scratchDefaultAccountId,
   parseCredentials,
+  parseUsageHeaders,
   parseUsageResponse,
   accountAgentEnv,
   isApiKeyAccount,
@@ -581,4 +582,64 @@ test('accountAgentEnv: explicit env still overrides… nothing the apiKey mode o
   );
   assert.equal(r.set.ANTHROPIC_BASE_URL, 'https://mode');
   assert.equal(r.set.FOO, 'bar');
+});
+
+// ---- usage from rate-limit headers -------------------------------------------
+
+/** Header set as actually returned by the proxy on 2026-09-09 (POST /v1/messages). */
+const REAL_HEADERS: Record<string, string> = {
+  'anthropic-ratelimit-unified-5h-reset': '1788967800',
+  'anthropic-ratelimit-unified-5h-status': 'allowed',
+  'anthropic-ratelimit-unified-5h-utilization': '0.43',
+  'anthropic-ratelimit-unified-7d-reset': '1789106400',
+  'anthropic-ratelimit-unified-7d-status': 'allowed',
+  'anthropic-ratelimit-unified-7d-utilization': '0.37',
+  'anthropic-ratelimit-unified-status': 'allowed',
+};
+const getFrom =
+  (h: Record<string, string>) =>
+  (name: string): string | null =>
+    h[name] ?? null;
+
+test('parseUsageHeaders reads the real proxy header set, converting fractions to percent', () => {
+  const data = parseUsageHeaders(getFrom(REAL_HEADERS));
+  assert.ok(data);
+  assert.equal(data.fiveHour.utilization, 43);
+  assert.equal(data.sevenDay.utilization, 37);
+  assert.equal(data.fiveHour.resetsAt, new Date(1788967800 * 1000).toISOString());
+  assert.equal(data.sevenDay.resetsAt, new Date(1789106400 * 1000).toISOString());
+  // Neither is available over this channel — must be null, never a made-up 0.
+  assert.equal(data.extraUtilization, null);
+  assert.equal(data.fable, null);
+});
+
+test('parseUsageHeaders returns null when the endpoint strips the windows', () => {
+  // The bars must HIDE rather than render a fabricated 0%.
+  assert.equal(parseUsageHeaders(() => null), null);
+  assert.equal(parseUsageHeaders(getFrom({ 'anthropic-ratelimit-unified-status': 'allowed' })), null);
+});
+
+test('parseUsageHeaders tolerates one window missing, a blank value, and a non-numeric one', () => {
+  const only5h = parseUsageHeaders(getFrom({ 'anthropic-ratelimit-unified-5h-utilization': '0.5' }));
+  assert.ok(only5h);
+  assert.equal(only5h.fiveHour.utilization, 50);
+  assert.deepEqual(only5h.sevenDay, { utilization: 0, resetsAt: '' });
+  assert.equal(parseUsageHeaders(getFrom({ 'anthropic-ratelimit-unified-5h-utilization': '' })), null);
+  assert.equal(parseUsageHeaders(getFrom({ 'anthropic-ratelimit-unified-5h-utilization': 'n/a' })), null);
+});
+
+test('parseUsageHeaders clamps to 0-100 and drops an unusable reset', () => {
+  const over = parseUsageHeaders(
+    getFrom({
+      'anthropic-ratelimit-unified-5h-utilization': '1.4',
+      'anthropic-ratelimit-unified-5h-reset': '0',
+      'anthropic-ratelimit-unified-7d-utilization': '-0.2',
+      'anthropic-ratelimit-unified-7d-reset': 'nonsense',
+    }),
+  );
+  assert.ok(over);
+  assert.equal(over.fiveHour.utilization, 100);
+  assert.equal(over.fiveHour.resetsAt, '');
+  assert.equal(over.sevenDay.utilization, 0);
+  assert.equal(over.sevenDay.resetsAt, '');
 });

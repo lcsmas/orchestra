@@ -7,13 +7,16 @@ import { store } from './store';
 import {
   classifyHttpError,
   expandConfigDir,
+  isApiKeyAccount,
   isExpired,
   parseCredentials,
+  parseUsageHeaders,
   parseUsageResponse,
   resolveWorkspaceAccountId,
   type AccountUsageStatus,
   type RawUsageResponse,
 } from '../shared/accounts';
+import { getAccountApiKey } from './secrets';
 import type { Account, WorkspaceAccount } from '../shared/types';
 
 // Per-account usage poller, config-dir model. Each configured account is a
@@ -31,6 +34,9 @@ const OAUTH_BETA = 'oauth-2025-04-20';
 // Hard floor on how often we hit the endpoint per account (the requirement is
 // >=180s). A given account's token is fetched at most once per this window.
 const CACHE_MS = 180_000;
+// Cheapest model for the API-key usage probe: the reply is discarded, only the
+// rate-limit headers matter, so this is ~8 input + 1 output tokens per refresh.
+const USAGE_PROBE_MODEL = 'claude-haiku-4-5-20251001';
 // How often the loop wakes to refetch stale accounts — well under CACHE_MS so a
 // newly-added/just-logged-in account gets its first fetch promptly, but each
 // account is still gated by its own cache age.
@@ -193,6 +199,58 @@ async function fetchUsage(accountId: string, token: string, fetchedAt: number): 
   }
 }
 
+/** Usage for an API-KEY account. `/api/oauth/usage` requires an OAuth token
+ *  (403 otherwise), so the only channel here is the `anthropic-ratelimit-unified-*`
+ *  headers Anthropic attaches to a real API call. We make the smallest possible
+ *  one — haiku, `max_tokens: 1` — and read the headers; the reply body is
+ *  discarded. Gated by the same >=180s cache as the OAuth path, so this costs a
+ *  handful of tokens per account per hour.
+ *
+ *  A proxy that strips those headers yields `no usage data`, NOT a fabricated
+ *  0% — the bars then hide rather than lie. */
+async function fetchApiKeyUsage(
+  accountId: string,
+  apiKey: string,
+  baseUrl: string | undefined,
+  fetchedAt: number,
+): Promise<AccountUsageStatus> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15_000);
+  try {
+    const url = new URL('/v1/messages', baseUrl?.trim() || 'https://api.anthropic.com');
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+        'User-Agent': userAgent(),
+      },
+      body: JSON.stringify({
+        model: USAGE_PROBE_MODEL,
+        max_tokens: 1,
+        messages: [{ role: 'user', content: '.' }],
+      }),
+      signal: ctrl.signal,
+    });
+    // Headers carry the windows on success AND on a 429, so parse before status.
+    const data = parseUsageHeaders((name) => res.headers.get(name));
+    if (data) return { accountId, ok: true, data, errorKind: null, errorMessage: null, fetchedAt };
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      const { kind, message } = classifyHttpError(res.status, body);
+      if (kind === 'error') log.warn(`account usage probe HTTP ${res.status}`);
+      return fail(accountId, kind, message, fetchedAt);
+    }
+    return fail(accountId, 'error', 'no usage headers from endpoint', fetchedAt);
+  } catch (err) {
+    log.warn('account usage probe failed', err);
+    return fail(accountId, 'error', 'network error', fetchedAt);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Ensure each account has a status no older than CACHE_MS, doing network work
  *  only for accounts whose token is present and whose cache is stale. Returns
  *  the full per-account status map and whether anything changed. */
@@ -210,7 +268,27 @@ async function refreshStale(now: number): Promise<{ byId: Record<string, Account
   }
 
   const toFetch: Array<{ id: string; token: string; dir: string }> = [];
+  // API-key accounts, fetched from response headers rather than the OAuth
+  // endpoint (see fetchApiKeyUsage). Collected separately because they have no
+  // `.credentials.json` to read — a logged-out dir is their NORMAL state.
+  const toProbe: Array<{ id: string; apiKey: string; baseUrl?: string; dir: string }> = [];
   for (const acc of accounts) {
+    if (isApiKeyAccount(acc)) {
+      const dir = accountConfigDir(acc);
+      const prev = cache.get(acc.id);
+      const fresh = prev && prev.dir === dir && prev.status.ok && now - prev.status.fetchedAt < CACHE_MS;
+      if (fresh) continue;
+      const apiKey = await getAccountApiKey(acc.id);
+      if (!apiKey) {
+        if (!prev || prev.status.errorKind !== 'not-logged-in') {
+          cache.set(acc.id, { status: fail(acc.id, 'not-logged-in', 'no API key stored', now), dir });
+          changed = true;
+        }
+        continue;
+      }
+      toProbe.push({ id: acc.id, apiKey, baseUrl: acc.auth?.baseUrl, dir });
+      continue;
+    }
     const creds = readAccountCreds(acc);
     if ('error' in creds) {
       const msg = creds.error === 'no-dir' ? 'config dir not found' : 'not logged in';
@@ -254,6 +332,16 @@ async function refreshStale(now: number): Promise<{ byId: Record<string, Account
     const results = await Promise.all(toFetch.map((t) => fetchUsage(t.id, t.token, now)));
     for (let i = 0; i < results.length; i++) {
       cache.set(toFetch[i].id, { status: results[i], dir: toFetch[i].dir });
+    }
+    changed = true;
+  }
+
+  if (toProbe.length > 0) {
+    const results = await Promise.all(
+      toProbe.map((t) => fetchApiKeyUsage(t.id, t.apiKey, t.baseUrl, now)),
+    );
+    for (let i = 0; i < results.length; i++) {
+      cache.set(toProbe[i].id, { status: results[i], dir: toProbe[i].dir });
     }
     changed = true;
   }

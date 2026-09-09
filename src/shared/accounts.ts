@@ -417,6 +417,51 @@ export function classifyHttpError(status: number, _body?: string): { kind: Usage
   return { kind: 'error', message: `HTTP ${status}` };
 }
 
+// ---- usage from rate-limit response headers ----------------------------------
+
+/** Anthropic returns the SAME rolling windows the OAuth usage endpoint reports
+ *  as `anthropic-ratelimit-unified-*` response headers on every `/v1/messages`
+ *  call (measured 2026-09-09 against a proxy: `…-5h-utilization: 0.43`,
+ *  `…-7d-utilization: 0.37`, plus unix-epoch `…-reset`). That is the only usage
+ *  channel an API-key account has — `/api/oauth/usage` needs an OAuth token and
+ *  403s otherwise — so the bars for such an account are fed from here.
+ *
+ *  Utilization arrives as a FRACTION (0.43 = 43%), unlike the OAuth endpoint's
+ *  percentage; this converts so both paths produce one {@link UsageData} shape.
+ *  Returns null when neither window header is present, so a proxy that strips
+ *  them is reported as "no usage" rather than a fabricated 0%. */
+export function parseUsageHeaders(get: (name: string) => string | null | undefined): UsageData | null {
+  const num = (v: string | null | undefined): number | null => {
+    if (v == null || v.trim() === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  // Epoch SECONDS → ISO, matching UsageWindowDetail.resetsAt from the OAuth path.
+  const resetIso = (v: string | null | undefined): string => {
+    const n = num(v);
+    if (n == null || n <= 0) return '';
+    const ms = n * 1000;
+    return Number.isFinite(ms) ? new Date(ms).toISOString() : '';
+  };
+  const window = (prefix: string): UsageWindowDetail | null => {
+    const util = num(get(`anthropic-ratelimit-unified-${prefix}-utilization`));
+    if (util == null) return null;
+    return {
+      utilization: Math.max(0, Math.min(100, util * 100)),
+      resetsAt: resetIso(get(`anthropic-ratelimit-unified-${prefix}-reset`)),
+    };
+  };
+  const fiveHour = window('5h');
+  const sevenDay = window('7d');
+  if (!fiveHour && !sevenDay) return null;
+  return {
+    fiveHour: fiveHour ?? { utilization: 0, resetsAt: '' },
+    sevenDay: sevenDay ?? { utilization: 0, resetsAt: '' },
+    extraUtilization: null,
+    fable: null,
+  };
+}
+
 // ---- usage-limit detection -----------------------------------------------------
 
 /** The slice of usage data the limit check needs. Both {@link UsageData}
