@@ -23,6 +23,7 @@ const api: OrchestraAPI = {
 
   listAccounts: () => ipcRenderer.invoke('accounts:list'),
   setAccounts: (accounts) => ipcRenderer.invoke('accounts:set', accounts),
+  isSecretStorageEncrypted: () => ipcRenderer.invoke('accounts:secretsEncrypted'),
   listAccountApiKeyIds: () => ipcRenderer.invoke('accounts:apiKeyIds'),
   saveAccountApiKey: (accountId, key) => ipcRenderer.invoke('accounts:saveApiKey', accountId, key),
   clearAccountApiKey: (accountId) => ipcRenderer.invoke('accounts:clearApiKey', accountId),

@@ -224,6 +224,7 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   getUsage: 'usage:get',
   listAccounts: 'accounts:list',
   setAccounts: 'accounts:set',
+  isSecretStorageEncrypted: 'accounts:secretsEncrypted',
   listAccountApiKeyIds: 'accounts:apiKeyIds',
   saveAccountApiKey: 'accounts:saveApiKey',
   clearAccountApiKey: 'accounts:clearApiKey',
@@ -504,6 +505,8 @@ export const apiHandlers: ApiHandlerTable = {
   },
 
   // ---------- per-account Anthropic API keys (keystore, never in store.json) ----------
+
+  isSecretStorageEncrypted: async () => platform.isEncryptionAvailable(),
 
   listAccountApiKeyIds: async () => accountApiKeyIds(),
 

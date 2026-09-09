@@ -103,6 +103,9 @@ export function AccountsSettings({ onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   // The account currently being logged in (drives the login terminal modal).
   const [loginFor, setLoginFor] = useState<{ id: string; label: string } | null>(null);
+  // Whether the OS can actually encrypt stored secrets here — the key hint must
+  // not promise encryption on a box with no keyring (measured: this happens).
+  const [encrypted, setEncrypted] = useState(true);
   // What the global ~/.claude offers to inherit (populates the checkbox lists).
   const [inheritables, setInheritables] = useState<{ skills: string[]; mcpServers: string[] }>({
     skills: [],
@@ -115,9 +118,11 @@ export function AccountsSettings({ onClose }: Props) {
       window.orchestra.listAccounts(),
       window.orchestra.listGlobalInheritables().catch(() => ({ skills: [], mcpServers: [] })),
       window.orchestra.listAccountApiKeyIds().catch((): string[] => []),
+      window.orchestra.isSecretStorageEncrypted().catch(() => true),
     ])
-      .then(([accounts, available, keyIds]) => {
+      .then(([accounts, available, keyIds, isEncrypted]) => {
         if (cancelled) return;
+        setEncrypted(isEncrypted);
         const withKeys = new Set(keyIds);
         setRows(accounts.map((a) => ({ ...rowFromAccount(a), hasStoredKey: withKeys.has(a.id) })));
         setInheritables(available);
@@ -420,8 +425,16 @@ export function AccountsSettings({ onClose }: Props) {
                           )}
                         </div>
                         <em className="account-field-hint">
-                          Stored encrypted outside <code>store.json</code>, and never shown again. This
-                          account&apos;s agents use it instead of any OAuth login.
+                          {encrypted ? (
+                            <>Stored encrypted outside <code>store.json</code>, and never shown again.</>
+                          ) : (
+                            <>
+                              Stored outside <code>store.json</code> and never shown again — but this system
+                              offers no keyring, so it is saved <strong>unencrypted</strong> in a
+                              user-only file.
+                            </>
+                          )}{' '}
+                          This account&apos;s agents use it instead of any OAuth login.
                         </em>
                       </label>
                       <label className="account-field">

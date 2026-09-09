@@ -106,6 +106,11 @@ export interface OrchestraAPI {
    *  cleaned, persisted list. Also clears any repo's accountId that pointed at a
    *  now-removed account. */
   setAccounts: (accounts: Account[]) => Promise<Account[]>;
+  /** Whether the OS offers an encryption backend (keyring/Keychain/DPAPI) for
+   *  stored secrets. False on a box with no secret service, where secrets fall
+   *  back to a 0600 file — the settings UI must say so rather than promise
+   *  encryption it isn't getting. */
+  isSecretStorageEncrypted: () => Promise<boolean>;
   /** Ids of the accounts that have an Anthropic API key stored in the keystore.
    *  The KEY itself never crosses this boundary — the settings UI only needs to
    *  know whether one is set (to show "key saved" and offer to replace it). */
