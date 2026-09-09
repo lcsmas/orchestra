@@ -12,6 +12,8 @@ import {
   parseCredentials,
   parseUsageResponse,
   accountAgentEnv,
+  isApiKeyAccount,
+  sanitizeAccountAuth,
   expandAccountEnv,
   formatEnvLines,
   parseEnvLines,
@@ -506,4 +508,77 @@ test('parseEnvLines / formatEnvLines round-trip; comments, blanks and =-less lin
   assert.equal(formatEnvLines(env), 'ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}\nA=b=c');
   assert.equal(formatEnvLines(undefined), '');
   assert.deepEqual(parseEnvLines(formatEnvLines(env)), env);
+});
+
+// ---- per-account auth mode ----------------------------------------------------
+
+test('sanitizeAccountAuth returns undefined for anything that is not an explicit apiKey mode', () => {
+  assert.equal(sanitizeAccountAuth(undefined), undefined);
+  assert.equal(sanitizeAccountAuth(null), undefined);
+  assert.equal(sanitizeAccountAuth([]), undefined);
+  assert.equal(sanitizeAccountAuth({}), undefined);
+  assert.equal(sanitizeAccountAuth({ mode: 'oauth' }), undefined);
+  assert.equal(sanitizeAccountAuth({ mode: 'nonsense', baseUrl: 'https://p' }), undefined);
+});
+
+test('sanitizeAccountAuth keeps apiKey mode and a trimmed baseUrl, dropping a blank one', () => {
+  assert.deepEqual(sanitizeAccountAuth({ mode: 'apiKey' }), { mode: 'apiKey' });
+  assert.deepEqual(sanitizeAccountAuth({ mode: 'apiKey', baseUrl: '  https://proxy:3456 ' }), {
+    mode: 'apiKey',
+    baseUrl: 'https://proxy:3456',
+  });
+  assert.deepEqual(sanitizeAccountAuth({ mode: 'apiKey', baseUrl: '   ' }), { mode: 'apiKey' });
+  // A non-string baseUrl must not survive into the stored shape.
+  assert.deepEqual(sanitizeAccountAuth({ mode: 'apiKey', baseUrl: 42 }), { mode: 'apiKey' });
+});
+
+test('isApiKeyAccount is true only for an explicit apiKey mode', () => {
+  assert.equal(isApiKeyAccount(undefined), false);
+  assert.equal(isApiKeyAccount({ auth: undefined }), false);
+  assert.equal(isApiKeyAccount({ auth: { mode: 'oauth' } }), false);
+  assert.equal(isApiKeyAccount({ auth: { mode: 'apiKey' } }), true);
+});
+
+test('accountAgentEnv: apiKey mode injects the stored key + baseUrl and strips the rest', () => {
+  const r = accountAgentEnv(
+    { auth: { mode: 'apiKey', baseUrl: 'https://proxy:3456' } },
+    '/home/u',
+    { ANTHROPIC_API_KEY: 'ambient-key', ANTHROPIC_AUTH_TOKEN: 'ambient-tok' },
+    'stored-key',
+  );
+  // The AMBIENT key must never win over the account's own.
+  assert.deepEqual(r.set, { ANTHROPIC_API_KEY: 'stored-key', ANTHROPIC_BASE_URL: 'https://proxy:3456' });
+  assert.deepEqual(r.strip, ['ANTHROPIC_AUTH_TOKEN']);
+});
+
+test('accountAgentEnv: apiKey mode with no baseUrl leaves ANTHROPIC_BASE_URL stripped', () => {
+  const r = accountAgentEnv({ auth: { mode: 'apiKey' } }, '/home/u', { ANTHROPIC_BASE_URL: 'https://ambient' }, 'k');
+  assert.deepEqual(r.set, { ANTHROPIC_API_KEY: 'k' });
+  assert.deepEqual(r.strip, ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL']);
+});
+
+test('accountAgentEnv: apiKey mode with NO key on hand sets nothing and still strips the ambient key', () => {
+  // The failure mode this prevents: falling through to the shell's key, which
+  // would silently run the account on someone else's credentials.
+  const r = accountAgentEnv({ auth: { mode: 'apiKey' } }, '/home/u', { ANTHROPIC_API_KEY: 'ambient' }, undefined);
+  assert.deepEqual(r.set, {});
+  assert.deepEqual(r.strip, ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL']);
+});
+
+test('accountAgentEnv: an oauth account ignores a passed key entirely', () => {
+  const r = accountAgentEnv({ auth: { mode: 'oauth' } }, '/home/u', {}, 'should-be-ignored');
+  assert.deepEqual(r.set, {});
+});
+
+test('accountAgentEnv: explicit env still overrides… nothing the apiKey mode owns', () => {
+  // `env` is expanded FIRST, then apiKey mode writes its two vars — so the mode
+  // is authoritative for the account's identity, `env` for everything else.
+  const r = accountAgentEnv(
+    { auth: { mode: 'apiKey', baseUrl: 'https://mode' }, env: { ANTHROPIC_BASE_URL: 'https://env', FOO: 'bar' } },
+    '/home/u',
+    {},
+    'k',
+  );
+  assert.equal(r.set.ANTHROPIC_BASE_URL, 'https://mode');
+  assert.equal(r.set.FOO, 'bar');
 });

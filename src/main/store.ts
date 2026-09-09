@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { Account, PinnedTicket, RepoEntry, RepoScripts, Workspace } from '../shared/types';
-import { sanitizeAccountEnv, sanitizeAccountInherit } from '../shared/accounts';
+import { sanitizeAccountAuth, sanitizeAccountEnv, sanitizeAccountInherit } from '../shared/accounts';
 import type { SelfTuneRun } from '../shared/self-tune';
 import { scoped } from './logger';
 
@@ -311,9 +311,10 @@ class Store {
    *  trims fields, and keeps `id`/`label`/`configDir`/`inherit`/`env`. `configDir`
    *  is a path (optionally with `~`/`${VAR}`) — never a secret; the credentials
    *  live in that dir's `.credentials.json`, which Orchestra never persists here.
-   *  `inherit` / `env` are normalized via {@link sanitizeAccountInherit} /
-   *  {@link sanitizeAccountEnv} and omitted when empty (`env` values are
-   *  `${VAR}` templates, expanded only at spawn — never a secret either). */
+   *  `inherit` / `env` / `auth` are normalized via {@link sanitizeAccountInherit}
+   *  / {@link sanitizeAccountEnv} / {@link sanitizeAccountAuth} and omitted when
+   *  empty (`env` values are `${VAR}` templates, expanded only at spawn — never
+   *  a secret either; an apiKey account's KEY lives in secrets.json, not here). */
   async setAccounts(accounts: Account[]): Promise<Account[]> {
     const cleaned: Account[] = [];
     // At most one account may be the scratch-session default — keep the first.
@@ -324,6 +325,7 @@ class Store {
       if (!id || !label) continue;
       const inherit = sanitizeAccountInherit(a?.inherit);
       const env = sanitizeAccountEnv(a?.env);
+      const auth = sanitizeAccountAuth(a?.auth);
       const scratchDefault = a?.scratchDefault === true && !scratchDefaultSeen;
       if (scratchDefault) scratchDefaultSeen = true;
       cleaned.push({
@@ -333,6 +335,7 @@ class Store {
         ...(scratchDefault ? { scratchDefault: true } : {}),
         ...(inherit ? { inherit } : {}),
         ...(env ? { env } : {}),
+        ...(auth ? { auth } : {}),
       });
     }
     this.data.accounts = cleaned;

@@ -28,7 +28,14 @@ import {
   refreshPinnedTickets,
   spawnWorkspaceForTicket,
 } from './linear-tickets';
-import { setLinearApiKey, clearLinearApiKey } from './secrets';
+import {
+  setLinearApiKey,
+  clearLinearApiKey,
+  accountApiKeyIds,
+  setAccountApiKey,
+  clearAccountApiKey as clearAccountApiKeySecret,
+  pruneAccountApiKeys,
+} from './secrets';
 import { getEnvStatus } from './env-status';
 import {
   addRepoByPath,
@@ -216,6 +223,9 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   getUsage: 'usage:get',
   listAccounts: 'accounts:list',
   setAccounts: 'accounts:set',
+  listAccountApiKeyIds: 'accounts:apiKeyIds',
+  saveAccountApiKey: 'accounts:saveApiKey',
+  clearAccountApiKey: 'accounts:clearApiKey',
   setRepoAccount: 'repos:setAccount',
   migrateWorkspaceAccount: 'workspaces:migrateAccount',
   getAccountUsage: 'accounts:usage',
@@ -486,7 +496,23 @@ export const apiHandlers: ApiHandlerTable = {
     // effect immediately (symlinks added/removed, MCP servers merged/pruned).
     void syncAllAccountsInheritance();
     void refreshAccountsNow();
+    // A removed account's stored API key must not outlive it in the keystore.
+    await pruneAccountApiKeys(saved.map((a) => a.id)).catch(() => {});
     return saved;
+  },
+
+  // ---------- per-account Anthropic API keys (keystore, never in store.json) ----------
+
+  listAccountApiKeyIds: async () => accountApiKeyIds(),
+
+  saveAccountApiKey: async (accountId, key) => {
+    await setAccountApiKey(accountId, key);
+    void refreshAccountsNow();
+  },
+
+  clearAccountApiKey: async (accountId) => {
+    await clearAccountApiKeySecret(accountId);
+    void refreshAccountsNow();
   },
 
   setRepoAccount: async (repoPath, accountId) => {

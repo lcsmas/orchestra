@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Account, AccountInherit } from '../../shared/types';
 import { formatEnvLines, parseEnvLines, sanitizeAccountEnv } from '../../shared/accounts';
+import type { AccountAuth } from '../../shared/accounts';
 import { AccountLoginModal } from './AccountLoginModal';
 
 interface Props {
@@ -24,6 +25,14 @@ interface Row {
   scratchDefault: boolean;
   /** Per-account env as `KEY=value` lines (see Account.env). */
   env: string;
+  /** Auth mode: the OAuth login in the config dir, or a stored API key. */
+  authMode: 'oauth' | 'apiKey';
+  /** ANTHROPIC_BASE_URL for apiKey mode (optional — blank = api.anthropic.com). */
+  baseUrl: string;
+  /** A key already lives in the keystore for this account (never its value). */
+  hasStoredKey: boolean;
+  /** A NEW key typed in this session, to save. Blank = leave the stored one. */
+  apiKey: string;
 }
 
 /** Map a stored Account into the editable Row shape. */
@@ -38,7 +47,19 @@ function rowFromAccount(a: Account): Row {
     inheritMcp: a.inherit?.mcpServers ?? [],
     scratchDefault: a.scratchDefault ?? false,
     env: formatEnvLines(a.env),
+    authMode: a.auth?.mode === 'apiKey' ? 'apiKey' : 'oauth',
+    baseUrl: a.auth?.baseUrl ?? '',
+    hasStoredKey: false,
+    apiKey: '',
   };
+}
+
+/** Build the (possibly undefined) auth spec for a Row. `oauth` is the default,
+ *  so it stores nothing — keeping pre-existing accounts byte-identical. */
+function authFromRow(r: Row): AccountAuth | undefined {
+  if (r.authMode !== 'apiKey') return undefined;
+  const baseUrl = r.baseUrl.trim();
+  return baseUrl ? { mode: 'apiKey', baseUrl } : { mode: 'apiKey' };
 }
 
 /** Build the (possibly undefined) inherit spec for a Row. */
@@ -93,10 +114,12 @@ export function AccountsSettings({ onClose }: Props) {
     void Promise.all([
       window.orchestra.listAccounts(),
       window.orchestra.listGlobalInheritables().catch(() => ({ skills: [], mcpServers: [] })),
+      window.orchestra.listAccountApiKeyIds().catch((): string[] => []),
     ])
-      .then(([accounts, available]) => {
+      .then(([accounts, available, keyIds]) => {
         if (cancelled) return;
-        setRows(accounts.map(rowFromAccount));
+        const withKeys = new Set(keyIds);
+        setRows(accounts.map((a) => ({ ...rowFromAccount(a), hasStoredKey: withKeys.has(a.id) })));
         setInheritables(available);
         setLoaded(true);
       })
@@ -149,8 +172,23 @@ export function AccountsSettings({ onClose }: Props) {
         inheritMcp: [],
         scratchDefault: false,
         env: '',
+        authMode: 'oauth',
+        baseUrl: '',
+        hasStoredKey: false,
+        apiKey: '',
       },
     ]);
+
+  // Drop the stored key immediately (not on Save): it's a destructive act on a
+  // secret, so it should not sit pending behind an unsaved form.
+  const onClearKey = async (id: string) => {
+    try {
+      await window.orchestra.clearAccountApiKey(id);
+      setRows((rs) => rs.map((r) => (r.id === id ? { ...r, hasStoredKey: false, apiKey: '' } : r)));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
 
   const pickDir = async (id: string) => {
     const dir = await window.orchestra.pickDirectory();
@@ -177,6 +215,7 @@ export function AccountsSettings({ onClose }: Props) {
       .map((r) => {
         const inherit = inheritFromRow(r);
         const env = sanitizeAccountEnv(parseEnvLines(r.env));
+        const auth = authFromRow(r);
         return {
           id: r.id,
           label: r.label.trim(),
@@ -184,12 +223,24 @@ export function AccountsSettings({ onClose }: Props) {
           ...(r.scratchDefault ? { scratchDefault: true } : {}),
           ...(inherit ? { inherit } : {}),
           ...(env ? { env } : {}),
+          ...(auth ? { auth } : {}),
         };
       })
       .filter((r) => r.label);
     try {
+      // Keys go to the keystore, never through setAccounts: store.json holds the
+      // MODE, the secret lives encrypted in secrets.json. Saved first so the
+      // prune inside setAccounts (which drops keys of removed accounts) sees them.
+      for (const r of rows) {
+        if (r.authMode === 'apiKey' && r.apiKey.trim()) {
+          await window.orchestra.saveAccountApiKey(r.id, r.apiKey.trim());
+        }
+      }
       const saved = await window.orchestra.setAccounts(accounts);
-      setRows(saved.map(rowFromAccount));
+      const keyIds = new Set(await window.orchestra.listAccountApiKeyIds().catch(() => []));
+      // Re-derive rows from the persisted list, but keep the key-presence flag
+      // (server-side truth) and clear the typed-once secret from component state.
+      setRows(saved.map((a) => ({ ...rowFromAccount(a), hasStoredKey: keyIds.has(a.id) })));
       return saved;
     } catch (e) {
       setError((e as Error).message);
@@ -312,10 +363,87 @@ export function AccountsSettings({ onClose }: Props) {
                   </label>
 
                   <label className="account-field">
+                    <span className="account-field-label">Authentication</span>
+                    <div className="account-auth-modes">
+                      <label className="account-auth-mode">
+                        <input
+                          type="radio"
+                          name={`auth-${r.id}`}
+                          checked={r.authMode === 'oauth'}
+                          onChange={() => update(r.id, { authMode: 'oauth' })}
+                        />
+                        <span>
+                          Claude login <em>OAuth in the config dir — use the Login button</em>
+                        </span>
+                      </label>
+                      <label className="account-auth-mode">
+                        <input
+                          type="radio"
+                          name={`auth-${r.id}`}
+                          checked={r.authMode === 'apiKey'}
+                          onChange={() => update(r.id, { authMode: 'apiKey' })}
+                        />
+                        <span>
+                          API key <em>an Anthropic key, optionally via a proxy</em>
+                        </span>
+                      </label>
+                    </div>
+                  </label>
+
+                  {r.authMode === 'apiKey' && (
+                    <div className="account-auth-details">
+                      <label className="account-field">
+                        <span className="account-field-label">
+                          API key{r.hasStoredKey && <span className="account-key-set"> · saved</span>}
+                        </span>
+                        <div className="account-dir-row">
+                          <input
+                            className="accounts-input dir"
+                            type="password"
+                            placeholder={r.hasStoredKey ? 'Stored — type to replace' : 'sk-ant-…'}
+                            value={r.apiKey}
+                            spellCheck={false}
+                            autoComplete="off"
+                            autoCorrect="off"
+                            autoCapitalize="off"
+                            onChange={(e) => update(r.id, { apiKey: e.target.value })}
+                          />
+                          {r.hasStoredKey && (
+                            <button
+                              className="accounts-pick"
+                              title="Remove the stored key"
+                              aria-label={`Clear stored API key for ${r.label || 'unnamed'}`}
+                              onClick={() => void onClearKey(r.id)}
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
+                        <em className="account-field-hint">
+                          Stored encrypted outside <code>store.json</code>, and never shown again. This
+                          account&apos;s agents use it instead of any OAuth login.
+                        </em>
+                      </label>
+                      <label className="account-field">
+                        <span className="account-field-label">Base URL (optional)</span>
+                        <input
+                          className="accounts-input dir"
+                          placeholder="https://api.anthropic.com"
+                          value={r.baseUrl}
+                          spellCheck={false}
+                          autoCorrect="off"
+                          autoCapitalize="off"
+                          onChange={(e) => update(r.id, { baseUrl: e.target.value })}
+                        />
+                      </label>
+                    </div>
+                  )}
+
+                  <label className="account-field">
                     <span className="account-field-label">Extra env</span>
                     <textarea
                       className="accounts-input env"
-                      placeholder={'ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}\nANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}'}
+                      placeholder={'KEY=value\nOTHER=${FROM_SHELL}'}
                       value={r.env}
                       rows={2}
                       spellCheck={false}
@@ -326,7 +454,8 @@ export function AccountsSettings({ onClose }: Props) {
                     <em className="account-field-hint">
                       <code>KEY=value</code> per line; <code>{'${VAR}'}</code> expands from your shell env at
                       spawn. Your shell&apos;s <code>ANTHROPIC_API_KEY</code> / <code>ANTHROPIC_AUTH_TOKEN</code> /{' '}
-                      <code>ANTHROPIC_BASE_URL</code> are dropped for this account unless set here.
+                      <code>ANTHROPIC_BASE_URL</code> are dropped for this account unless set here or by the
+                      API-key mode above.
                     </em>
                   </label>
 

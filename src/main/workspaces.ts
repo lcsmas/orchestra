@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from './platform';
 import { store } from './store';
+import { getAccountApiKey } from './secrets';
 import {
   sdkDeliver,
   sdkDeliverConfirmed,
@@ -37,7 +38,7 @@ import {
   readScrollback,
   getPtySize,
 } from './pty';
-import { accountAgentEnv, expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
+import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
 import {
   resolveDirectChildTargets,
@@ -80,24 +81,36 @@ const execFileP = promisify(execFile);
  * Orchestra's default login.
  *
  * Returns `{}` when the repo has no account. */
-function resolveRepoAgentEnv(ws: Workspace): Record<string, string> {
+async function resolveRepoAgentEnv(ws: Workspace): Promise<Record<string, string>> {
   const configDir = workspaceAccountConfigDir(ws, undefined);
   if (!configDir) return {};
   // The account's own `env` (templates expanded here, so `${ANTHROPIC_API_KEY}`
-  // resolves from the shell exports shellEnvSync merged at boot) rides along.
+  // resolves from the shell exports shellEnvSync merged at boot) rides along,
+  // plus the stored key for an apiKey-mode account.
+  const account = workspaceAccount(ws);
   return {
     CLAUDE_CONFIG_DIR: configDir,
-    ...accountAgentEnv(workspaceAccount(ws), os.homedir(), process.env).set,
+    ...(await accountAgentEnvWithKey(account)).set,
   };
+}
+
+/** {@link accountAgentEnv} with the account's stored API key read from the
+ * keystore — the key is never in store.json, so every spawn path resolves it
+ * here rather than each reaching into secrets.ts. */
+async function accountAgentEnvWithKey(
+  account: Account | undefined,
+): Promise<{ set: Record<string, string>; strip: string[] }> {
+  const apiKey = account && isApiKeyAccount(account) ? await getAccountApiKey(account.id) : undefined;
+  return accountAgentEnv(account, os.homedir(), process.env, apiKey);
 }
 
 /** Inherited env keys to DROP before {@link resolveRepoAgentEnv} applies: the
  * ambient auth vars a pinned account does not re-supply, which would otherwise
  * override its login (ACCOUNT_AUTH_ENV_VARS). `[]` when no account is pinned,
  * so the default login keeps Orchestra's env untouched. */
-export function resolveRepoAgentStripEnv(ws: Workspace): string[] {
+export async function resolveRepoAgentStripEnv(ws: Workspace): Promise<string[]> {
   if (!workspaceAccountConfigDir(ws, undefined)) return [];
-  return accountAgentEnv(workspaceAccount(ws), os.homedir(), process.env).strip;
+  return (await accountAgentEnvWithKey(workspaceAccount(ws))).strip;
 }
 
 /** The {@link Account} a workspace is pinned to, or undefined (no pin / dangling). */
@@ -1389,7 +1402,7 @@ async function startWorkspaceAgentHeadless(id: string): Promise<void> {
   await clearReadyFile(id);
   const extraEnv: Record<string, string> = {
     // Per-repo env first so Orchestra's own vars below always take precedence.
-    ...resolveRepoAgentEnv(ws),
+    ...(await resolveRepoAgentEnv(ws)),
     ORCHESTRA_BRANCH: ws.branch,
     ORCHESTRA_BRANCH_AUTO: autoRenameActive(ws) ? '1' : '0',
     ORCHESTRA_AUTO_RENAME_COUNT: String(ws.autoRenameCount ?? 0),
@@ -1405,7 +1418,7 @@ async function startWorkspaceAgentHeadless(id: string): Promise<void> {
     rows: HEADLESS_ROWS,
     workspaceId: id,
     extraEnv,
-    stripEnv: resolveRepoAgentStripEnv(ws),
+    stripEnv: await resolveRepoAgentStripEnv(ws),
   });
   if (!ws.lastTask) return;
   const task = ws.lastTask;
@@ -2757,10 +2770,10 @@ export async function wakeAgentWithPrompt(id: string, prompt: string): Promise<b
     cols: priorSize?.cols ?? HEADLESS_COLS,
     rows: priorSize?.rows ?? HEADLESS_ROWS,
     workspaceId: id,
-    stripEnv: resolveRepoAgentStripEnv(ws),
+    stripEnv: await resolveRepoAgentStripEnv(ws),
     extraEnv: {
       // Per-repo env first so Orchestra's own vars below always take precedence.
-      ...resolveRepoAgentEnv(ws),
+      ...(await resolveRepoAgentEnv(ws)),
       ORCHESTRA_BRANCH: ws.branch,
       ORCHESTRA_BRANCH_AUTO: autoRenameActive(ws) ? '1' : '0',
       ORCHESTRA_AUTO_RENAME_COUNT: String(ws.autoRenameCount ?? 0),
@@ -4382,7 +4395,7 @@ export async function startAgentPty(ws: Workspace, cols: number, rows: number): 
   // clears on the next pty:start once the budget is spent.
   const extraEnv: Record<string, string> = {
     // Per-repo env first so Orchestra's own vars below always take precedence.
-    ...resolveRepoAgentEnv(ws),
+    ...(await resolveRepoAgentEnv(ws)),
     ORCHESTRA_BRANCH: ws.branch,
     ORCHESTRA_BRANCH_AUTO: autoRenameActive(ws) ? '1' : '0',
     ORCHESTRA_AUTO_RENAME_COUNT: String(ws.autoRenameCount ?? 0),
@@ -4409,7 +4422,7 @@ export async function startAgentPty(ws: Workspace, cols: number, rows: number): 
     rows,
     workspaceId: ws.id,
     extraEnv,
-    stripEnv: resolveRepoAgentStripEnv(ws),
+    stripEnv: await resolveRepoAgentStripEnv(ws),
     host: ws.host,
   });
 }

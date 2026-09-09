@@ -1,5 +1,6 @@
-// Persistent storage for the user's secrets (currently just the Linear API
-// key), set from the app's settings UI rather than an env var.
+// Persistent storage for the user's secrets (the Linear API key, and each
+// account's Anthropic API key), set from the app's settings UI rather than an
+// env var.
 //
 // The key is encrypted at rest with Electron's safeStorage (via the platform
 // seam) — on Linux this uses the OS secret service (libsecret / KDE wallet),
@@ -16,13 +17,25 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { log } from './logger';
 
-/** On-disk shape. `enc` marks whether `linearApiKey` is safeStorage ciphertext
- *  (base64) or a plaintext fallback, so reads decode correctly even if keyring
- *  availability changes between writes. */
+/** One stored secret: the value plus whether it is safeStorage ciphertext, so
+ *  a read decodes correctly even if keyring availability changed between
+ *  writes. Per-entry (not per-file) because accounts are written one at a time
+ *  and a global flag would mislabel every other entry. */
+interface StoredSecret {
+  value: string;
+  /** true → `value` is base64 safeStorage ciphertext; false → plaintext. */
+  enc: boolean;
+}
+
+/** On-disk shape. `linearApiKey`/`enc` are the ORIGINAL top-level pair and stay
+ *  as-is for backward compatibility (a file written by an older build must keep
+ *  working); per-account keys live under `accountApiKeys`, keyed by account id. */
 interface SecretsFile {
   linearApiKey?: string;
   /** true → `linearApiKey` is base64 safeStorage ciphertext; false → plaintext. */
   enc?: boolean;
+  /** Anthropic API key per account id (see Account.auth in shared/accounts.ts). */
+  accountApiKeys?: Record<string, StoredSecret>;
 }
 
 let cached: SecretsFile | null = null;
@@ -105,4 +118,76 @@ export async function clearAllSecrets(): Promise<void> {
   cached = {};
   const file = secretsPath();
   if (existsSync(file)) await rm(file).catch(() => {});
+}
+
+// ---- per-account Anthropic API keys ------------------------------------------
+
+/** Encrypt when the OS offers a backend, else store plaintext (same tradeoff as
+ *  the Linear key: the file is 0600 under userData). */
+function encodeSecret(value: string, what: string): StoredSecret {
+  if (platform.isEncryptionAvailable()) {
+    return { value: platform.encryptString(value).toString('base64'), enc: true };
+  }
+  log.warn(`safeStorage unavailable — storing ${what} unencrypted`, { file: secretsPath() });
+  return { value, enc: false };
+}
+
+/** Decode a stored secret, or undefined when the ciphertext can't be read (it
+ *  was written under a different OS user/keyring). */
+function decodeSecret(secret: StoredSecret | undefined, what: string): string | undefined {
+  if (!secret?.value) return undefined;
+  if (!secret.enc) return secret.value;
+  try {
+    return platform.decryptString(Buffer.from(secret.value, 'base64'));
+  } catch (err) {
+    log.warn(`could not decrypt stored ${what}`, { err: String(err) });
+    return undefined;
+  }
+}
+
+/** The Anthropic API key stored for one account, decrypted, or undefined. */
+export async function getAccountApiKey(accountId: string): Promise<string | undefined> {
+  const data = await readFileSafe();
+  return decodeSecret(data.accountApiKeys?.[accountId], `API key for account ${accountId}`);
+}
+
+/** Every account id that currently has a stored key — lets the renderer show
+ *  "key set" without the key itself ever crossing the IPC boundary. */
+export async function accountApiKeyIds(): Promise<string[]> {
+  const data = await readFileSafe();
+  return Object.entries(data.accountApiKeys ?? {})
+    .filter(([, v]) => Boolean(v?.value))
+    .map(([id]) => id);
+}
+
+/** Persist an account's API key, encrypted where supported. A blank value
+ *  clears it instead of storing an empty string. */
+export async function setAccountApiKey(accountId: string, key: string): Promise<void> {
+  const trimmed = key.trim();
+  if (!trimmed) return clearAccountApiKey(accountId);
+  const data = await readFileSafe();
+  const keys = { ...(data.accountApiKeys ?? {}) };
+  keys[accountId] = encodeSecret(trimmed, `API key for account ${accountId}`);
+  await writeFileSafe({ ...data, accountApiKeys: keys });
+}
+
+/** Remove one account's stored API key. */
+export async function clearAccountApiKey(accountId: string): Promise<void> {
+  const data = await readFileSafe();
+  if (!data.accountApiKeys?.[accountId]) return;
+  const keys = { ...data.accountApiKeys };
+  delete keys[accountId];
+  await writeFileSafe({ ...data, accountApiKeys: keys });
+}
+
+/** Drop keys whose account no longer exists, so a deleted account's secret
+ *  cannot linger on disk. Called after every accounts save. */
+export async function pruneAccountApiKeys(liveIds: string[]): Promise<void> {
+  const data = await readFileSafe();
+  const stored = data.accountApiKeys;
+  if (!stored) return;
+  const live = new Set(liveIds);
+  const keys = Object.fromEntries(Object.entries(stored).filter(([id]) => live.has(id)));
+  if (Object.keys(keys).length === Object.keys(stored).length) return;
+  await writeFileSafe({ ...data, accountApiKeys: keys });
 }

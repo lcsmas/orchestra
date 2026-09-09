@@ -4568,6 +4568,37 @@ button.danger-primary:active {
   border-color: rgba(110, 168, 255, 0.75);
   box-shadow: 0 0 0 3px rgba(110, 168, 255, 0.16);
 }
+.account-auth-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.account-auth-mode {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.account-auth-mode em {
+  margin-left: 6px;
+  font-style: normal;
+  opacity: 0.55;
+  font-size: 11px;
+}
+.account-auth-details {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 0 0 20px;
+  padding-left: 10px;
+  border-left: 2px solid rgba(255, 255, 255, 0.1);
+}
+.account-key-set {
+  color: var(--ok, #4ade80);
+  font-weight: 500;
+}
 .accounts-input.env {
   width: 100%;
   font-family: var(--font-mono, ui-monospace, monospace);

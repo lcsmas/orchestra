@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { accountAgentEnv } from '../shared/accounts';
+import { accountAgentEnv, isApiKeyAccount } from '../shared/accounts';
 // TYPE-ONLY import: erased at compile time, so it emits NO runtime require().
 // @anthropic-ai/claude-agent-sdk is a pure-ESM package (type:module, exports
 // only ./sdk.mjs, no CJS entry). Because it's externalized, a static value
@@ -23,6 +23,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import { platform } from './platform';
 import { store } from './store';
+import { getAccountApiKey } from './secrets';
 import { log, scoped } from './logger';
 import { decideGateRelease } from '../shared/session-wedge.ts';
 
@@ -680,7 +681,7 @@ function tildePath(p: string): string {
  *  own hooks no-op, and nobody else moves the dot. False otherwise (no PTY → SDK
  *  hooks + tailer drive it; remote → the container's spool tail drives it). The
  *  caller stores this on the Session for `driveStatusFromEvent` (see that function). */
-function buildSdkEnv(ws: Workspace): { env: Record<string, string>; driveStatus: boolean } {
+async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>; driveStatus: boolean }> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v === 'string') env[k] = v;
@@ -711,8 +712,11 @@ function buildSdkEnv(ws: Workspace): { env: Record<string, string>; driveStatus:
   if (configDir) {
     env.CLAUDE_CONFIG_DIR = configDir;
     // Account env parity with the terminal path (resolveRepoAgentEnv /
-    // resolveRepoAgentStripEnv): drop the ambient auth vars, inject the account's.
-    const acct = accountAgentEnv(workspaceAccount(ws), os.homedir(), process.env);
+    // resolveRepoAgentStripEnv): drop the ambient auth vars, inject the account's
+    // (including the stored key when the account authenticates with one).
+    const account = workspaceAccount(ws);
+    const apiKey = account && isApiKeyAccount(account) ? await getAccountApiKey(account.id) : undefined;
+    const acct = accountAgentEnv(account, os.homedir(), process.env, apiKey);
     for (const k of acct.strip) delete env[k];
     Object.assign(env, acct.set);
   }
@@ -1358,7 +1362,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   // will) can be captured on the session and read per-event by
   // driveStatusFromEvent. isPtyRunning is sampled here, at spawn — stable for the
   // subprocess's life.
-  const { env: sdkEnv, driveStatus } = buildSdkEnv(ws);
+  const { env: sdkEnv, driveStatus } = await buildSdkEnv(ws);
   const session: Session = {
     wsId,
     // q is assigned right after — the generator/canUseTool close over `session`,
@@ -2767,7 +2771,7 @@ export async function sdkRunBash(wsId: string, command: string): Promise<void> {
   // Start event — renders the command row with a running spinner immediately.
   emit(wsId, makeLocalCommand(session.ctx, { commandId, command: cmd, running: true }));
 
-  const { env } = buildSdkEnv(ws!);
+  const { env } = await buildSdkEnv(ws!);
   const cwd = ws!.worktreePath;
   const shell = process.env.SHELL || '/bin/bash';
 

@@ -23,6 +23,9 @@ const api: OrchestraAPI = {
 
   listAccounts: () => ipcRenderer.invoke('accounts:list'),
   setAccounts: (accounts) => ipcRenderer.invoke('accounts:set', accounts),
+  listAccountApiKeyIds: () => ipcRenderer.invoke('accounts:apiKeyIds'),
+  saveAccountApiKey: (accountId, key) => ipcRenderer.invoke('accounts:saveApiKey', accountId, key),
+  clearAccountApiKey: (accountId) => ipcRenderer.invoke('accounts:clearApiKey', accountId),
   setRepoAccount: (repoPath, accountId) => ipcRenderer.invoke('repos:setAccount', repoPath, accountId),
   migrateWorkspaceAccount: (id, accountId) =>
     ipcRenderer.invoke('workspaces:migrateAccount', id, accountId),

@@ -106,6 +106,15 @@ export interface OrchestraAPI {
    *  cleaned, persisted list. Also clears any repo's accountId that pointed at a
    *  now-removed account. */
   setAccounts: (accounts: Account[]) => Promise<Account[]>;
+  /** Ids of the accounts that have an Anthropic API key stored in the keystore.
+   *  The KEY itself never crosses this boundary — the settings UI only needs to
+   *  know whether one is set (to show "key saved" and offer to replace it). */
+  listAccountApiKeyIds: () => Promise<string[]>;
+  /** Store (encrypted where the OS supports it) one account's Anthropic API
+   *  key. A blank value clears it. Takes effect on that account's next spawn. */
+  saveAccountApiKey: (accountId: string, key: string) => Promise<void>;
+  /** Remove one account's stored API key. */
+  clearAccountApiKey: (accountId: string) => Promise<void>;
   /** Assign (or clear, with null/'') the account a repo's workspaces log in as.
    *  Rejects an unknown account id. Returns the updated repo. */
   setRepoAccount: (repoPath: string, accountId: string | null) => Promise<RepoEntry>;
