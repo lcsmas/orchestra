@@ -1532,6 +1532,16 @@ function Composer({
       setText('');
       return;
     }
+    // `/status` is Orchestra-side too: the Agent SDK has no such built-in (the
+    // CLI answers "isn't available in this environment"), so main renders the
+    // account/auth/endpoint card as a local-command row instead.
+    if (t === '/status') {
+      void window.orchestra
+        .agentSdkStatus(workspaceId)
+        .catch((e) => console.error('agentSdkStatus failed', e));
+      setText('');
+      return;
+    }
     // Allow send when there's text OR at least one pasted image (an image with
     // no caption is a valid turn).
     if (!t && pendingImages.length === 0) return;

@@ -310,6 +310,11 @@ export interface OrchestraAPI {
    *  the pair as context for the agent's NEXT real turn. Resolves when the command
    *  exits. Starts the session lazily so the context/echo have somewhere to live. */
   agentSdkRunBash: (wsId: string, command: string) => Promise<void>;
+  /** Render `/status` for a structured session as a local-command row. Orchestra
+   *  answers it itself — the Agent SDK has no `/status` built-in — reporting the
+   *  account, the auth the binary actually reports for this session's env, the
+   *  base URL and its liveness, model and session ids. */
+  agentSdkStatus: (wsId: string) => Promise<void>;
   /** Interrupt the in-flight turn of a workspace's SDK session. Surfaces to the
    *  UI as a `turn-end`/`error` event (the SDK iterator throws, spike d). */
   agentSdkInterrupt: (wsId: string) => Promise<void>;

@@ -2726,6 +2726,111 @@ const BASH_TIMEOUT_MS = 5 * 60_000;
  *  first; the transcript rows still show everything. */
 const LOCAL_CONTEXT_CAP = 60_000;
 
+/** Answer `/status` from ORCHESTRA, because the Agent SDK has no such built-in:
+ *  `claude -p /status` replies "isn't available in this environment" (measured
+ *  2026-09-09), so a structured session would otherwise get nothing. Renders as
+ *  one `local-command` row, the same channel bash mode uses.
+ *
+ *  The auth line is READ FROM THE REAL BINARY (`claude auth status --json`, run
+ *  with this session's exact env) rather than inferred from config: an ambient
+ *  ANTHROPIC_API_KEY silently overrides an OAuth login, so only asking the tool
+ *  that owns the semantics can report which credential a turn would actually use. */
+export async function sdkStatus(wsId: string): Promise<void> {
+  const session = await ensureSession(wsId);
+  const ws = store.getWorkspace(wsId);
+  const commandId = randomUUID();
+  emit(wsId, makeLocalCommand(session.ctx, { commandId, command: '/status', running: true }));
+
+  const lines: string[] = [];
+  try {
+    const { env } = await buildSdkEnv(ws!);
+    const account = ws ? workspaceAccount(ws) : undefined;
+    const configDir = env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
+
+    lines.push(`Account          ${account ? account.label : 'default login'}`);
+    lines.push(`Config dir       ${configDir}`);
+    lines.push(`Auth             ${await describeAuth(env)}`);
+    if (env.ANTHROPIC_BASE_URL) {
+      lines.push(`Base URL         ${env.ANTHROPIC_BASE_URL}`);
+      lines.push(`Endpoint         ${await probeEndpoint(env.ANTHROPIC_BASE_URL)}`);
+    }
+    lines.push(`Model            ${ws?.model ?? 'default'}`);
+    lines.push(`Workspace        ${ws?.branch ?? wsId} (${ws?.kind ?? 'worktree'})`);
+    if (ws?.worktreePath) lines.push(`Worktree         ${ws.worktreePath}`);
+    if (ws?.sdkSessionId) lines.push(`Session          ${ws.sdkSessionId}`);
+  } catch (err) {
+    lines.push(`Could not read status: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  emit(
+    wsId,
+    makeLocalCommand(session.ctx, {
+      commandId,
+      command: '/status',
+      running: false,
+      output: lines.join('\n'),
+      exitCode: 0,
+    }),
+  );
+}
+
+/** One-line summary of what `claude` reports for a given env, e.g.
+ *  `API key (ANTHROPIC_API_KEY)` or `Claude login — me@example.com (max)`. */
+async function describeAuth(env: Record<string, string>): Promise<string> {
+  const bin = resolveClaudeBinary(env) ?? 'claude';
+  const raw = await new Promise<string>((resolve) => {
+    let out = '';
+    const child = spawn(bin, ['auth', 'status'], { env, stdio: ['ignore', 'pipe', 'ignore'] });
+    const timer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    }, 10_000);
+    child.stdout?.on('data', (c: Buffer) => (out += c.toString('utf8')));
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolve('');
+    });
+    child.on('close', () => {
+      clearTimeout(timer);
+      resolve(out);
+    });
+  });
+  try {
+    const j = JSON.parse(raw) as {
+      loggedIn?: boolean;
+      authMethod?: string;
+      apiKeySource?: string;
+      email?: string | null;
+      subscriptionType?: string | null;
+    };
+    if (!j.loggedIn) return 'not logged in';
+    if (j.authMethod === 'api_key') return `API key (${j.apiKeySource ?? 'unknown source'})`;
+    const who = [j.email, j.subscriptionType].filter(Boolean).join(' · ');
+    return who ? `Claude login — ${who}` : 'Claude login';
+  } catch {
+    return 'unknown (could not read `claude auth status`)';
+  }
+}
+
+/** Liveness of a custom endpoint, so a dead proxy is visible here rather than as
+ *  a failed turn. Never sends credentials — a plain GET of the origin root. */
+async function probeEndpoint(baseUrl: string): Promise<string> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5_000);
+  const started = Date.now();
+  try {
+    const res = await fetch(new URL('/', baseUrl), { signal: ctrl.signal });
+    return `HTTP ${res.status} in ${Date.now() - started}ms`;
+  } catch (err) {
+    return `unreachable (${err instanceof Error ? err.message : String(err)})`;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Run a `!command` bash-mode command (composer bash mode — parity with Claude
  *  Code). The command runs LOCALLY in the workspace's worktree (never the model),
  *  its command+output render inline in the transcript, and the pair is queued as
