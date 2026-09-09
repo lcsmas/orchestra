@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from './platform';
 import { store } from './store';
-import { getAccountApiKey } from './secrets';
+import { getAccountApiKey, getAccountBaseUrl } from './secrets';
 import {
   sdkDeliver,
   sdkDeliverConfirmed,
@@ -100,8 +100,11 @@ async function resolveRepoAgentEnv(ws: Workspace): Promise<Record<string, string
 async function accountAgentEnvWithKey(
   account: Account | undefined,
 ): Promise<{ set: Record<string, string>; strip: string[] }> {
-  const apiKey = account && isApiKeyAccount(account) ? await getAccountApiKey(account.id) : undefined;
-  return accountAgentEnv(account, os.homedir(), process.env, apiKey);
+  const useKey = account && isApiKeyAccount(account);
+  const [apiKey, baseUrl] = useKey
+    ? await Promise.all([getAccountApiKey(account.id), getAccountBaseUrl(account.id)])
+    : [undefined, undefined];
+  return accountAgentEnv(account, os.homedir(), process.env, apiKey, baseUrl);
 }
 
 /** Inherited env keys to DROP before {@link resolveRepoAgentEnv} applies: the

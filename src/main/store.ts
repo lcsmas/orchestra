@@ -1,9 +1,15 @@
 import { platform } from './platform';
+import { migrateBaseUrlsIntoKeystore } from './secrets';
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { Account, PinnedTicket, RepoEntry, RepoScripts, Workspace } from '../shared/types';
-import { sanitizeAccountAuth, sanitizeAccountEnv, sanitizeAccountInherit } from '../shared/accounts';
+import {
+  legacyStoreBaseUrl,
+  sanitizeAccountAuth,
+  sanitizeAccountEnv,
+  sanitizeAccountInherit,
+} from '../shared/accounts';
 import type { SelfTuneRun } from '../shared/self-tune';
 import { scoped } from './logger';
 
@@ -110,6 +116,11 @@ class Store {
       }
       this.data = DEFAULT;
     }
+    // v0.5.265 stored an apiKey account's `auth.baseUrl` in store.json; a private
+    // proxy hostname is sensitive, so lift any such value into the keystore and
+    // drop it from config. Runs before anything reads accounts, and is a no-op
+    // once done (the sanitizer never writes the field back).
+    await this.migrateAuthBaseUrls();
     // `running` across a restart can only be stale state from a prior PTY
     // that no longer exists — reset to idle. The unread "agent finished" signal
     // from the previous session is still intentionally preserved so it survives
@@ -301,6 +312,32 @@ class Store {
   getRepoScripts(absPath: string): RepoScripts {
     const repo = this.data.repos.find((r) => r.path === absPath);
     return repo?.scripts ?? {};
+  }
+
+  /** One-shot: move `auth.baseUrl` values written by v0.5.265 into the keystore,
+   *  then strip them from store.json so the hostname lives in exactly one place.
+   *  Best-effort — a keystore failure leaves the config untouched so the value
+   *  is never lost between the two. */
+  private async migrateAuthBaseUrls(): Promise<void> {
+    const accounts = this.data.accounts ?? [];
+    const legacy: Array<{ id: string; baseUrl: string }> = [];
+    for (const acc of accounts) {
+      const baseUrl = legacyStoreBaseUrl(acc);
+      if (baseUrl && acc.id) legacy.push({ id: acc.id, baseUrl });
+    }
+    if (legacy.length === 0) return;
+    try {
+      const moved = await migrateBaseUrlsIntoKeystore(legacy);
+      // Strip the field from EVERY legacy account, including one whose value was
+      // already in the keystore — leaving a copy behind defeats the migration.
+      for (const acc of accounts) {
+        if (legacyStoreBaseUrl(acc)) delete (acc.auth as unknown as Record<string, unknown>).baseUrl;
+      }
+      await this.save();
+      slog.info(`migrated ${moved.length} account base URL(s) out of store.json into the keystore`);
+    } catch (e) {
+      slog.error('could not migrate account base URLs into the keystore — left in store.json', e);
+    }
   }
 
   get accounts(): Account[] {

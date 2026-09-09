@@ -44,21 +44,19 @@ export interface Account {
   env?: Record<string, string>;
   /** How this account authenticates. Absent → `oauth` (the login in
    *  `configDir`), which is what every pre-existing account is. `apiKey` means
-   *  the agent runs on a stored Anthropic key instead; the key itself is NEVER
-   *  here (it lives encrypted in secrets.json, keyed by account id) — only the
-   *  optional `baseUrl` and the mode. See {@link accountAgentEnv}. */
+   *  the agent runs on a stored Anthropic key instead; neither the key NOR its
+   *  optional base URL is here (both live in secrets.json, keyed by account id)
+   *  — only the mode. See {@link accountAgentEnv}. */
   auth?: AccountAuth;
 }
 
 /** Auth mode for an account. `oauth`: the `.credentials.json` login in
  *  `configDir` (Claude Code mints and refreshes it; Orchestra only reads it for
- *  usage). `apiKey`: an Anthropic API key from the keystore, optionally against
- *  a non-default `baseUrl` (a proxy/gateway). */
+ *  usage). `apiKey`: an Anthropic API key from the keystore — as is its optional
+ *  `ANTHROPIC_BASE_URL`, since a private proxy hostname names reachable
+ *  infrastructure and belongs beside the key, not in store.json. */
 export interface AccountAuth {
   mode: 'oauth' | 'apiKey';
-  /** `ANTHROPIC_BASE_URL` for `apiKey` mode — a proxy/gateway endpoint. Empty
-   *  or absent → the default api.anthropic.com. Ignored for `oauth`. */
-  baseUrl?: string;
 }
 
 /** Per-account selection of what to inherit from the global `~/.claude`.
@@ -197,8 +195,20 @@ export function sanitizeAccountAuth(v: unknown): AccountAuth | undefined {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
   const src = v as Record<string, unknown>;
   if (src.mode !== 'apiKey') return undefined;
-  const baseUrl = typeof src.baseUrl === 'string' ? src.baseUrl.trim() : '';
-  return baseUrl ? { mode: 'apiKey', baseUrl } : { mode: 'apiKey' };
+  // A legacy `baseUrl` (v0.5.265 stored it here) is deliberately DROPPED: the
+  // migration lifts it into the keystore, and keeping a copy here would leave
+  // the private hostname in plain config. See legacyStoreBaseUrl.
+  return { mode: 'apiKey' };
+}
+
+/** Read a legacy `auth.baseUrl` off a raw stored account, for the one-shot
+ *  migration into the keystore. Returns '' when there is none. */
+export function legacyStoreBaseUrl(v: unknown): string {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return '';
+  const auth = (v as Record<string, unknown>).auth;
+  if (!auth || typeof auth !== 'object') return '';
+  const raw = (auth as Record<string, unknown>).baseUrl;
+  return typeof raw === 'string' ? raw.trim() : '';
 }
 
 /** True when the account authenticates with a stored API key rather than the
@@ -233,17 +243,20 @@ export function accountAgentEnv(
   home: string,
   source: Record<string, string | undefined>,
   apiKey?: string,
+  baseUrl?: string,
 ): { set: Record<string, string>; strip: string[] } {
   if (!account) return { set: {}, strip: [] };
   const set = expandAccountEnv(account.env, home, source);
-  // apiKey mode: the stored key (and its optional proxy URL) win over `env`,
-  // which stays an escape hatch for anything else. A mode with no key on hand
-  // sets nothing — the agent then hits a clear "not logged in" instead of
+  // apiKey mode: the stored key and proxy URL (both from the keystore) win over
+  // `env`, which stays an escape hatch for anything else. A mode with no key on
+  // hand sets nothing — the agent then hits a clear "not logged in" instead of
   // silently falling through to the ambient key, which is what `strip` prevents.
-  if (isApiKeyAccount(account)) {
-    if (apiKey) set.ANTHROPIC_API_KEY = apiKey;
-    const baseUrl = account.auth?.baseUrl?.trim();
-    if (baseUrl) set.ANTHROPIC_BASE_URL = baseUrl;
+  if (isApiKeyAccount(account) && apiKey) {
+    // The base URL rides on the KEY: without one the agent is unauthenticated,
+    // and pointing it at a private proxy would leak that hostname to a process
+    // that cannot use it. No key → set nothing, and `strip` clears both.
+    set.ANTHROPIC_API_KEY = apiKey;
+    if (baseUrl?.trim()) set.ANTHROPIC_BASE_URL = baseUrl.trim();
   }
   const strip = ACCOUNT_AUTH_ENV_VARS.filter((k) => !(k in set));
   return { set, strip };

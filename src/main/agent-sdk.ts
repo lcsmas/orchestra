@@ -23,7 +23,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import { platform } from './platform';
 import { store } from './store';
-import { getAccountApiKey } from './secrets';
+import { getAccountApiKey, getAccountBaseUrl } from './secrets';
 import { log, scoped } from './logger';
 import { decideGateRelease } from '../shared/session-wedge.ts';
 
@@ -715,8 +715,11 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
     // resolveRepoAgentStripEnv): drop the ambient auth vars, inject the account's
     // (including the stored key when the account authenticates with one).
     const account = workspaceAccount(ws);
-    const apiKey = account && isApiKeyAccount(account) ? await getAccountApiKey(account.id) : undefined;
-    const acct = accountAgentEnv(account, os.homedir(), process.env, apiKey);
+    const useKey = account && isApiKeyAccount(account);
+    const [apiKey, baseUrl] = useKey
+      ? await Promise.all([getAccountApiKey(account.id), getAccountBaseUrl(account.id)])
+      : [undefined, undefined];
+    const acct = accountAgentEnv(account, os.homedir(), process.env, apiKey, baseUrl);
     for (const k of acct.strip) delete env[k];
     Object.assign(env, acct.set);
   }

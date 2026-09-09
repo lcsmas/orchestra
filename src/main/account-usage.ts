@@ -16,7 +16,7 @@ import {
   type AccountUsageStatus,
   type RawUsageResponse,
 } from '../shared/accounts';
-import { getAccountApiKey } from './secrets';
+import { getAccountApiKey, getAccountBaseUrl } from './secrets';
 import type { Account, WorkspaceAccount } from '../shared/types';
 
 // Per-account usage poller, config-dir model. Each configured account is a
@@ -278,7 +278,10 @@ async function refreshStale(now: number): Promise<{ byId: Record<string, Account
       const prev = cache.get(acc.id);
       const fresh = prev && prev.dir === dir && prev.status.ok && now - prev.status.fetchedAt < CACHE_MS;
       if (fresh) continue;
-      const apiKey = await getAccountApiKey(acc.id);
+      const [apiKey, baseUrl] = await Promise.all([
+        getAccountApiKey(acc.id),
+        getAccountBaseUrl(acc.id),
+      ]);
       if (!apiKey) {
         if (!prev || prev.status.errorKind !== 'not-logged-in') {
           cache.set(acc.id, { status: fail(acc.id, 'not-logged-in', 'no API key stored', now), dir });
@@ -286,7 +289,7 @@ async function refreshStale(now: number): Promise<{ byId: Record<string, Account
         }
         continue;
       }
-      toProbe.push({ id: acc.id, apiKey, baseUrl: acc.auth?.baseUrl, dir });
+      toProbe.push({ id: acc.id, apiKey, baseUrl, dir });
       continue;
     }
     const creds = readAccountCreds(acc);

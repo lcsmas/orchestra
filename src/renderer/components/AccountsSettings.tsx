@@ -27,8 +27,11 @@ interface Row {
   env: string;
   /** Auth mode: the OAuth login in the config dir, or a stored API key. */
   authMode: 'oauth' | 'apiKey';
-  /** ANTHROPIC_BASE_URL for apiKey mode (optional — blank = api.anthropic.com). */
+  /** A NEW base URL typed in this session, to save. Blank = leave the stored one.
+   *  Like the key, the stored VALUE never comes back to the renderer. */
   baseUrl: string;
+  /** A base URL already lives in the keystore for this account. */
+  hasStoredBaseUrl: boolean;
   /** A key already lives in the keystore for this account (never its value). */
   hasStoredKey: boolean;
   /** A NEW key typed in this session, to save. Blank = leave the stored one. */
@@ -48,7 +51,8 @@ function rowFromAccount(a: Account): Row {
     scratchDefault: a.scratchDefault ?? false,
     env: formatEnvLines(a.env),
     authMode: a.auth?.mode === 'apiKey' ? 'apiKey' : 'oauth',
-    baseUrl: a.auth?.baseUrl ?? '',
+    baseUrl: '',
+    hasStoredBaseUrl: false,
     hasStoredKey: false,
     apiKey: '',
   };
@@ -58,8 +62,8 @@ function rowFromAccount(a: Account): Row {
  *  so it stores nothing — keeping pre-existing accounts byte-identical. */
 function authFromRow(r: Row): AccountAuth | undefined {
   if (r.authMode !== 'apiKey') return undefined;
-  const baseUrl = r.baseUrl.trim();
-  return baseUrl ? { mode: 'apiKey', baseUrl } : { mode: 'apiKey' };
+  // The base URL is a keystore secret, not config — persisted separately.
+  return { mode: 'apiKey' };
 }
 
 /** Build the (possibly undefined) inherit spec for a Row. */
@@ -119,12 +123,20 @@ export function AccountsSettings({ onClose }: Props) {
       window.orchestra.listGlobalInheritables().catch(() => ({ skills: [], mcpServers: [] })),
       window.orchestra.listAccountApiKeyIds().catch((): string[] => []),
       window.orchestra.isSecretStorageEncrypted().catch(() => true),
+      window.orchestra.listAccountBaseUrlIds().catch((): string[] => []),
     ])
-      .then(([accounts, available, keyIds, isEncrypted]) => {
+      .then(([accounts, available, keyIds, isEncrypted, urlIds]) => {
         if (cancelled) return;
         setEncrypted(isEncrypted);
         const withKeys = new Set(keyIds);
-        setRows(accounts.map((a) => ({ ...rowFromAccount(a), hasStoredKey: withKeys.has(a.id) })));
+        const withUrls = new Set(urlIds);
+        setRows(
+          accounts.map((a) => ({
+            ...rowFromAccount(a),
+            hasStoredKey: withKeys.has(a.id),
+            hasStoredBaseUrl: withUrls.has(a.id),
+          })),
+        );
         setInheritables(available);
         setLoaded(true);
       })
@@ -179,6 +191,7 @@ export function AccountsSettings({ onClose }: Props) {
         env: '',
         authMode: 'oauth',
         baseUrl: '',
+        hasStoredBaseUrl: false,
         hasStoredKey: false,
         apiKey: '',
       },
@@ -190,6 +203,17 @@ export function AccountsSettings({ onClose }: Props) {
     try {
       await window.orchestra.clearAccountApiKey(id);
       setRows((rs) => rs.map((r) => (r.id === id ? { ...r, hasStoredKey: false, apiKey: '' } : r)));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  // Same immediate-clear semantics as the key: a stored secret is removed now,
+  // not on Save.
+  const onClearBaseUrl = async (id: string) => {
+    try {
+      await window.orchestra.saveAccountBaseUrl(id, '');
+      setRows((rs) => rs.map((r) => (r.id === id ? { ...r, hasStoredBaseUrl: false, baseUrl: '' } : r)));
     } catch (e) {
       setError((e as Error).message);
     }
@@ -237,15 +261,26 @@ export function AccountsSettings({ onClose }: Props) {
       // MODE, the secret lives encrypted in secrets.json. Saved first so the
       // prune inside setAccounts (which drops keys of removed accounts) sees them.
       for (const r of rows) {
-        if (r.authMode === 'apiKey' && r.apiKey.trim()) {
-          await window.orchestra.saveAccountApiKey(r.id, r.apiKey.trim());
-        }
+        if (r.authMode !== 'apiKey') continue;
+        if (r.apiKey.trim()) await window.orchestra.saveAccountApiKey(r.id, r.apiKey.trim());
+        if (r.baseUrl.trim()) await window.orchestra.saveAccountBaseUrl(r.id, r.baseUrl.trim());
       }
       const saved = await window.orchestra.setAccounts(accounts);
-      const keyIds = new Set(await window.orchestra.listAccountApiKeyIds().catch(() => []));
-      // Re-derive rows from the persisted list, but keep the key-presence flag
-      // (server-side truth) and clear the typed-once secret from component state.
-      setRows(saved.map((a) => ({ ...rowFromAccount(a), hasStoredKey: keyIds.has(a.id) })));
+      const [keyIds, urlIds] = await Promise.all([
+        window.orchestra.listAccountApiKeyIds().catch((): string[] => []),
+        window.orchestra.listAccountBaseUrlIds().catch((): string[] => []),
+      ]);
+      const withKeys = new Set(keyIds);
+      const withUrls = new Set(urlIds);
+      // Re-derive rows from the persisted list, but keep the presence flags
+      // (server-side truth) and clear the typed-once secrets from component state.
+      setRows(
+        saved.map((a) => ({
+          ...rowFromAccount(a),
+          hasStoredKey: withKeys.has(a.id),
+          hasStoredBaseUrl: withUrls.has(a.id),
+        })),
+      );
       return saved;
     } catch (e) {
       setError((e as Error).message);
@@ -438,16 +473,37 @@ export function AccountsSettings({ onClose }: Props) {
                         </em>
                       </label>
                       <label className="account-field">
-                        <span className="account-field-label">Base URL (optional)</span>
-                        <input
-                          className="accounts-input dir"
-                          placeholder="https://api.anthropic.com"
-                          value={r.baseUrl}
-                          spellCheck={false}
-                          autoCorrect="off"
-                          autoCapitalize="off"
-                          onChange={(e) => update(r.id, { baseUrl: e.target.value })}
-                        />
+                        <span className="account-field-label">
+                          Base URL (optional)
+                          {r.hasStoredBaseUrl && <span className="account-key-set"> · saved</span>}
+                        </span>
+                        <div className="account-dir-row">
+                          <input
+                            className="accounts-input dir"
+                            type="password"
+                            placeholder={r.hasStoredBaseUrl ? 'Stored — type to replace' : 'https://api.anthropic.com'}
+                            value={r.baseUrl}
+                            spellCheck={false}
+                            autoComplete="off"
+                            autoCorrect="off"
+                            autoCapitalize="off"
+                            onChange={(e) => update(r.id, { baseUrl: e.target.value })}
+                          />
+                          {r.hasStoredBaseUrl && (
+                            <button
+                              className="accounts-pick"
+                              title="Remove the stored base URL"
+                              aria-label={`Clear stored base URL for ${r.label || 'unnamed'}`}
+                              onClick={() => void onClearBaseUrl(r.id)}
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
+                        <em className="account-field-hint">
+                          A private proxy hostname is sensitive, so it is stored with the key rather than
+                          in <code>store.json</code>. Blank uses <code>api.anthropic.com</code>.
+                        </em>
                       </label>
                     </div>
                   )}

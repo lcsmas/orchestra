@@ -32,6 +32,8 @@ import {
   setLinearApiKey,
   clearLinearApiKey,
   accountApiKeyIds,
+  accountBaseUrlIds,
+  setAccountBaseUrl,
   setAccountApiKey,
   clearAccountApiKey as clearAccountApiKeySecret,
   pruneAccountApiKeys,
@@ -227,6 +229,8 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   isSecretStorageEncrypted: 'accounts:secretsEncrypted',
   listAccountApiKeyIds: 'accounts:apiKeyIds',
   saveAccountApiKey: 'accounts:saveApiKey',
+  listAccountBaseUrlIds: 'accounts:baseUrlIds',
+  saveAccountBaseUrl: 'accounts:saveBaseUrl',
   clearAccountApiKey: 'accounts:clearApiKey',
   setRepoAccount: 'repos:setAccount',
   migrateWorkspaceAccount: 'workspaces:migrateAccount',
@@ -512,6 +516,13 @@ export const apiHandlers: ApiHandlerTable = {
 
   saveAccountApiKey: async (accountId, key) => {
     await setAccountApiKey(accountId, key);
+    void refreshAccountsNow();
+  },
+
+  listAccountBaseUrlIds: async () => accountBaseUrlIds(),
+
+  saveAccountBaseUrl: async (accountId, url) => {
+    await setAccountBaseUrl(accountId, url);
     void refreshAccountsNow();
   },
 

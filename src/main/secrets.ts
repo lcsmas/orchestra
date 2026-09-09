@@ -36,6 +36,10 @@ interface SecretsFile {
   enc?: boolean;
   /** Anthropic API key per account id (see Account.auth in shared/accounts.ts). */
   accountApiKeys?: Record<string, StoredSecret>;
+  /** `ANTHROPIC_BASE_URL` per account id. A private proxy/gateway hostname is a
+   *  secret too (it names reachable infrastructure), so it lives here beside the
+   *  key rather than in store.json, which is plain config. */
+  accountBaseUrls?: Record<string, StoredSecret>;
 }
 
 let cached: SecretsFile | null = null;
@@ -184,10 +188,75 @@ export async function clearAccountApiKey(accountId: string): Promise<void> {
  *  cannot linger on disk. Called after every accounts save. */
 export async function pruneAccountApiKeys(liveIds: string[]): Promise<void> {
   const data = await readFileSafe();
-  const stored = data.accountApiKeys;
-  if (!stored) return;
   const live = new Set(liveIds);
-  const keys = Object.fromEntries(Object.entries(stored).filter(([id]) => live.has(id)));
-  if (Object.keys(keys).length === Object.keys(stored).length) return;
-  await writeFileSafe({ ...data, accountApiKeys: keys });
+  const keep = (m: Record<string, StoredSecret> | undefined) =>
+    m ? Object.fromEntries(Object.entries(m).filter(([id]) => live.has(id))) : undefined;
+  const keys = keep(data.accountApiKeys);
+  const urls = keep(data.accountBaseUrls);
+  const keysChanged = keys && Object.keys(keys).length !== Object.keys(data.accountApiKeys ?? {}).length;
+  const urlsChanged = urls && Object.keys(urls).length !== Object.keys(data.accountBaseUrls ?? {}).length;
+  if (!keysChanged && !urlsChanged) return;
+  await writeFileSafe({
+    ...data,
+    ...(keys ? { accountApiKeys: keys } : {}),
+    ...(urls ? { accountBaseUrls: urls } : {}),
+  });
+}
+
+// ---- per-account base URLs ---------------------------------------------------
+
+/** The `ANTHROPIC_BASE_URL` stored for one account, decrypted, or undefined. */
+export async function getAccountBaseUrl(accountId: string): Promise<string | undefined> {
+  const data = await readFileSafe();
+  return decodeSecret(data.accountBaseUrls?.[accountId], `base URL for account ${accountId}`);
+}
+
+/** Persist an account's base URL. A blank value clears it (→ api.anthropic.com). */
+export async function setAccountBaseUrl(accountId: string, url: string): Promise<void> {
+  const trimmed = url.trim();
+  if (!trimmed) return clearAccountBaseUrl(accountId);
+  const data = await readFileSafe();
+  const urls = { ...(data.accountBaseUrls ?? {}) };
+  urls[accountId] = encodeSecret(trimmed, `base URL for account ${accountId}`);
+  await writeFileSafe({ ...data, accountBaseUrls: urls });
+}
+
+/** Remove one account's stored base URL. */
+export async function clearAccountBaseUrl(accountId: string): Promise<void> {
+  const data = await readFileSafe();
+  if (!data.accountBaseUrls?.[accountId]) return;
+  const urls = { ...data.accountBaseUrls };
+  delete urls[accountId];
+  await writeFileSafe({ ...data, accountBaseUrls: urls });
+}
+
+/** Ids of the accounts that have a stored base URL — lets the settings UI show
+ *  "set" without the value crossing IPC. */
+export async function accountBaseUrlIds(): Promise<string[]> {
+  const data = await readFileSafe();
+  return Object.entries(data.accountBaseUrls ?? {})
+    .filter(([, v]) => Boolean(v?.value))
+    .map(([id]) => id);
+}
+
+/** One-shot migration for accounts released with `auth.baseUrl` in store.json
+ *  (v0.5.265): move each value into the keystore. Returns the ids it migrated so
+ *  the caller can strip them from store.json — leaving the URL in both places
+ *  would defeat the point. Skips an account that already has one stored. */
+export async function migrateBaseUrlsIntoKeystore(
+  fromStore: Array<{ id: string; baseUrl: string }>,
+): Promise<string[]> {
+  if (fromStore.length === 0) return [];
+  const data = await readFileSafe();
+  const urls = { ...(data.accountBaseUrls ?? {}) };
+  const moved: string[] = [];
+  for (const { id, baseUrl } of fromStore) {
+    const trimmed = baseUrl.trim();
+    if (!trimmed || urls[id]?.value) continue;
+    urls[id] = encodeSecret(trimmed, `base URL for account ${id}`);
+    moved.push(id);
+  }
+  if (moved.length === 0) return [];
+  await writeFileSafe({ ...data, accountBaseUrls: urls });
+  return moved;
 }

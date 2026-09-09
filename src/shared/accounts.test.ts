@@ -14,6 +14,7 @@ import {
   parseUsageResponse,
   accountAgentEnv,
   isApiKeyAccount,
+  legacyStoreBaseUrl,
   sanitizeAccountAuth,
   expandAccountEnv,
   formatEnvLines,
@@ -522,15 +523,23 @@ test('sanitizeAccountAuth returns undefined for anything that is not an explicit
   assert.equal(sanitizeAccountAuth({ mode: 'nonsense', baseUrl: 'https://p' }), undefined);
 });
 
-test('sanitizeAccountAuth keeps apiKey mode and a trimmed baseUrl, dropping a blank one', () => {
+test('sanitizeAccountAuth keeps only the mode — a baseUrl never returns to store.json', () => {
   assert.deepEqual(sanitizeAccountAuth({ mode: 'apiKey' }), { mode: 'apiKey' });
-  assert.deepEqual(sanitizeAccountAuth({ mode: 'apiKey', baseUrl: '  https://proxy:3456 ' }), {
+  // A private proxy hostname is a secret: the legacy field is DROPPED here and
+  // lifted into the keystore by the migration, never written back to config.
+  assert.deepEqual(sanitizeAccountAuth({ mode: 'apiKey', baseUrl: 'https://proxy:3456' }), {
     mode: 'apiKey',
-    baseUrl: 'https://proxy:3456',
   });
-  assert.deepEqual(sanitizeAccountAuth({ mode: 'apiKey', baseUrl: '   ' }), { mode: 'apiKey' });
-  // A non-string baseUrl must not survive into the stored shape.
   assert.deepEqual(sanitizeAccountAuth({ mode: 'apiKey', baseUrl: 42 }), { mode: 'apiKey' });
+});
+
+test('legacyStoreBaseUrl reads a v0.5.265 auth.baseUrl, and nothing else', () => {
+  assert.equal(legacyStoreBaseUrl({ auth: { mode: 'apiKey', baseUrl: '  https://p:3456 ' } }), 'https://p:3456');
+  assert.equal(legacyStoreBaseUrl({ auth: { mode: 'apiKey' } }), '');
+  assert.equal(legacyStoreBaseUrl({ auth: { mode: 'oauth', baseUrl: 'https://p' } }), 'https://p');
+  assert.equal(legacyStoreBaseUrl({}), '');
+  assert.equal(legacyStoreBaseUrl(undefined), '');
+  assert.equal(legacyStoreBaseUrl({ auth: { baseUrl: 42 } }), '');
 });
 
 test('isApiKeyAccount is true only for an explicit apiKey mode', () => {
@@ -542,10 +551,11 @@ test('isApiKeyAccount is true only for an explicit apiKey mode', () => {
 
 test('accountAgentEnv: apiKey mode injects the stored key + baseUrl and strips the rest', () => {
   const r = accountAgentEnv(
-    { auth: { mode: 'apiKey', baseUrl: 'https://proxy:3456' } },
+    { auth: { mode: 'apiKey' } },
     '/home/u',
     { ANTHROPIC_API_KEY: 'ambient-key', ANTHROPIC_AUTH_TOKEN: 'ambient-tok' },
     'stored-key',
+    'https://proxy:3456',
   );
   // The AMBIENT key must never win over the account's own.
   assert.deepEqual(r.set, { ANTHROPIC_API_KEY: 'stored-key', ANTHROPIC_BASE_URL: 'https://proxy:3456' });
@@ -575,10 +585,11 @@ test('accountAgentEnv: explicit env still overrides… nothing the apiKey mode o
   // `env` is expanded FIRST, then apiKey mode writes its two vars — so the mode
   // is authoritative for the account's identity, `env` for everything else.
   const r = accountAgentEnv(
-    { auth: { mode: 'apiKey', baseUrl: 'https://mode' }, env: { ANTHROPIC_BASE_URL: 'https://env', FOO: 'bar' } },
+    { auth: { mode: 'apiKey' }, env: { ANTHROPIC_BASE_URL: 'https://env', FOO: 'bar' } },
     '/home/u',
     {},
     'k',
+    'https://mode',
   );
   assert.equal(r.set.ANTHROPIC_BASE_URL, 'https://mode');
   assert.equal(r.set.FOO, 'bar');
@@ -642,4 +653,11 @@ test('parseUsageHeaders clamps to 0-100 and drops an unusable reset', () => {
   assert.equal(over.fiveHour.resetsAt, '');
   assert.equal(over.sevenDay.utilization, 0);
   assert.equal(over.sevenDay.resetsAt, '');
+});
+
+test('accountAgentEnv: a stored baseUrl with no key still sets nothing (key is what authenticates)', () => {
+  const r = accountAgentEnv({ auth: { mode: 'apiKey' } }, '/home/u', {}, undefined, 'https://proxy');
+  assert.equal(r.set.ANTHROPIC_API_KEY, undefined);
+  // The URL alone would point an unauthenticated agent at the proxy; strip both.
+  assert.deepEqual(r.strip, ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL']);
 });

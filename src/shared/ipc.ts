@@ -118,6 +118,12 @@ export interface OrchestraAPI {
   /** Store (encrypted where the OS supports it) one account's Anthropic API
    *  key. A blank value clears it. Takes effect on that account's next spawn. */
   saveAccountApiKey: (accountId: string, key: string) => Promise<void>;
+  /** Ids of the accounts that have a base URL stored. Like the key, the VALUE
+   *  never crosses back — a private proxy hostname is itself sensitive. */
+  listAccountBaseUrlIds: () => Promise<string[]>;
+  /** Store one account's `ANTHROPIC_BASE_URL` (a proxy/gateway). Blank clears
+   *  it, falling back to api.anthropic.com. */
+  saveAccountBaseUrl: (accountId: string, url: string) => Promise<void>;
   /** Remove one account's stored API key. */
   clearAccountApiKey: (accountId: string) => Promise<void>;
   /** Assign (or clear, with null/'') the account a repo's workspaces log in as.
