@@ -7,7 +7,8 @@ interface Props {
 
 /**
  * Renders a `local-command` RenderMessage — a `!command` bash-mode run (composer
- * bash mode, parity with Claude Code). Shows the command with a `bash` chip, a
+ * bash mode, parity with Claude Code), or an Orchestra-answered slash command
+ * like `/status`. Shows the command with a chip naming what actually ran, a
  * running spinner while it executes, then its captured stdout/stderr in a mono
  * block with a non-zero exit code badge. The command ran LOCALLY in the
  * worktree (not the model); its output is also fed to the agent's next turn.
@@ -20,13 +21,16 @@ function LocalCommandCardImpl({ message }: Props) {
   if (!lc) return null;
   const { command, running, output, exitCode } = lc;
   const failed = exitCode !== null && exitCode !== undefined && exitCode !== 0;
+  // Orchestra answers a few slash commands itself (see sdkStatus) and reports
+  // them through this same row; labelling those `bash` would be a lie.
+  const chip = command.startsWith('/') ? command.split(/\s/)[0] : 'bash';
   const hasOutput = typeof output === 'string' && output.length > 0;
 
   return (
     <div className="av-localcmd" data-running={running ? 'true' : 'false'} data-failed={failed ? 'true' : 'false'}>
       <div className="av-localcmd-head">
-        <span className="av-localcmd-chip">bash</span>
-        <code className="av-localcmd-cmd">{command}</code>
+        <span className="av-localcmd-chip">{chip}</span>
+        {chip === 'bash' && <code className="av-localcmd-cmd">{command}</code>}
         {running ? (
           <span className="av-localcmd-spinner" aria-label="Running" title="Running" />
         ) : failed ? (
