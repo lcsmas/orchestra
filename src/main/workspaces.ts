@@ -560,7 +560,7 @@ export function orchestratorBrief(
   'Child reporting is PULL-BASED: nothing auto-notifies you when a child makes progress or finishes — the harness Task/Agent auto-re-invoke applies only to harness subagents, never to `orchestra spawn` peers, and the idle/waiting status in `orchestra peers` is a between-tool-calls snapshot rather than a progress signal. So in EACH spawn prompt, instruct the child to run `orchestra message <your-id>` on completion AND when it hits a blocking question; between those, poll it yourself with `orchestra read <id>`. ' +
   "Follow-up work in an area a child agent already owns goes back to THAT child via `orchestra message` — route it to the owner however small it looks. " +
   'For a milestone-sized piece that itself needs several agents, you may create a SUB-orchestrator: spawn it, then run `orchestra promote <child-id>` — its branch becomes that milestone\'s integration branch and the agents IT spawns nest beneath it. Keep the tree shallow: at most one sub-orchestrator level. ' +
-  'Spawn every child on Opus 5: pass `--model opus` (spawn\'s "model" param) unless the user asks for a cheaper tier. Do NOT downgrade implementation workers to save tokens — that trade is the user\'s call to make, not yours. Maintain a swarm FIELD GUIDE (see the orchestra-spawn skill) — a line-budgeted notes file injected into every child at session start — so conventions and pitfalls reach all siblings without per-child messages. ' +
+  'Spawn every child on Opus 4.8: that is the DEFAULT applied when you pass no "model" param, so simply omit it. To override, pass a full wire id (the short alias `opus-4-8` is rejected; `opus` means Opus 5). Do NOT downgrade implementation workers to save tokens — that trade is the user\'s call to make, not yours. Maintain a swarm FIELD GUIDE (see the orchestra-spawn skill) — a line-budgeted notes file injected into every child at session start — so conventions and pitfalls reach all siblings without per-child messages. ' +
   'Close the loop before reporting anything as done: a child\'s "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child must end in one of two EXPLICIT states: LANDED — run `orchestra verify-landed <child-id> --into <branch-it-merged-into>` and require 0 unmerged commits — or INTENTIONALLY UNMERGED, for work whose brief said not to merge (a spike, an experiment, evidence-gathering); state that disposition when you close it. The only forbidden outcome is the silent third state: a child believed merged that isn\'t. ' +
   'Start by asking the user what they want orchestrated and which repo(s) the work belongs in.'
   );
@@ -1538,6 +1538,17 @@ async function waitForSubmitConfirmed(id: string, timeoutMs: number): Promise<bo
   return false;
 }
 
+/** Model every spawned child is pinned to when the caller passes no explicit
+ *  `--model`. Opus 4.8 on the user's instruction (2026-09-10) — a deliberate
+ *  downgrade from the account default (Opus 5), not a staleness artifact.
+ *
+ *  Must be the FULL wire id: the runtime rejects the short alias `opus-4-8`
+ *  with `unrecognized_model`. Opus 4.8 is delisted from `supportedModels()` but
+ *  still served under its own identity (measured 2026-09-10, claude 2.1.267) —
+ *  if that ever stops, every spawn starts failing at the child's own launch,
+ *  because the spawn guard is a charset check and cannot catch a dead model. */
+export const DEFAULT_CHILD_MODEL = 'claude-opus-4-8';
+
 export interface SpawnResult {
   ok: boolean;
   id?: string;
@@ -1574,7 +1585,10 @@ export async function dispatchSpawnRequest(
   // Model pin: passed verbatim to `claude --model` (args array, no shell), so
   // the only validation needed is a sanity charset/length guard — a typo'd
   // model errors loudly at the agent's own launch, which is the right place.
-  const model = input.model?.trim() || undefined;
+  // No explicit --model → pin the child to DEFAULT_CHILD_MODEL rather than
+  // letting it inherit the login default, so every spawned agent runs the
+  // model the user chose for children.
+  const model = input.model?.trim() || DEFAULT_CHILD_MODEL;
   if (model && !/^[A-Za-z0-9._:/-]{1,64}$/.test(model)) {
     return { ok: false, error: `invalid model: ${model.slice(0, 80)}` };
   }
@@ -3411,10 +3425,11 @@ Optional flags:
 - \`--repo <abs path of another repo already added to orchestra>\` — spawn in a different repo.
 - \`--base <branch>\` — cut the new branch from a specific base.
 - \`--model <model>\` — pin the new agent to a model (an alias like \`haiku\`/
-  \`sonnet\`/\`opus\` or a full model id). **Pass \`--model opus\` (Opus 5) on
-  every spawn** unless the user explicitly asks for a cheaper tier. Do NOT
-  downgrade implementation workers on your own initiative to economize — that
-  trade-off is the user's call, not yours.
+  \`sonnet\`/\`opus\` or a full model id). **Omitting it pins the child to Opus
+  4.8** (\`claude-opus-4-8\`), the configured default for spawned agents. Note
+  \`opus\` means Opus 5, and the short form \`opus-4-8\` is rejected — override
+  with a full wire id. Do NOT downgrade implementation workers on your own
+  initiative to economize — that trade-off is the user's call, not yours.
 - \`--detached\` — create the workspace with NO parent, so it appears as its own
   top-level section grouped under its repo instead of nesting under you.
   Default to nesting (no flag). Pass \`--detached\` only when the user's request

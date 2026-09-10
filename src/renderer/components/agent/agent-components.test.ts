@@ -194,6 +194,19 @@ test('MODEL_CHOICES offers Fable and uses date-suffix-free aliases', () => {
   }
 });
 
+test('the static fallback offers Opus 4.8 exactly once (no extras duplication)', () => {
+  // MODEL_CHOICES carries a 4.8 card AND EXTRA_MODEL_CHOICES carries one. The
+  // static path returns MODEL_CHOICES untouched (extras apply only to a LIVE
+  // list), so exactly one card must be present — never two.
+  const staticValues = modelChoicesFrom(undefined).map((c) => c.value);
+  assert.equal(
+    staticValues.filter((v) => v === 'claude-opus-4-8').length,
+    1,
+    'exactly one Opus 4.8 card in the static fallback',
+  );
+  assert.ok(staticValues.includes('claude-opus-5'), 'Opus 5 stays selectable');
+});
+
 test('describeLiveModel maps a known base to its card label', () => {
   assert.deepEqual(describeLiveModel('claude-opus-5'), {
     label: 'Opus 5',
@@ -230,11 +243,35 @@ test('modelChoicesFrom prefers the live runtime list and falls back to the stati
     { value: 'claude-haiku-4-5', displayName: 'Haiku 4.5', description: 'Fast' },
   ];
   const choices = modelChoicesFrom(live);
+  // Live rows first and verbatim; the delisted-but-served extras (Opus 4.8,
+  // absent from this list) are appended after them.
   assert.deepEqual(
     choices.map((c) => c.label),
-    ['Opus 5', 'Haiku 4.5'],
+    ['Opus 5', 'Haiku 4.5', 'Opus 4.8'],
   );
   assert.equal(choices[0].resolvedModel, 'claude-opus-5');
+});
+
+test('modelChoicesFrom appends delisted-but-served extras the live list omits', () => {
+  // The real 2026-09-10 live list: 5 rows, no Opus 4.8. Since the live list
+  // otherwise wins VERBATIM, a card added only to MODEL_CHOICES would vanish
+  // the moment a session inits — this is the regression that guards it.
+  const live = [
+    { value: 'default', resolvedModel: 'claude-opus-5[1m]', displayName: 'Default (recommended)', description: 'Opus 5 with 1M context · Best for everyday, complex tasks' },
+    { value: 'opus[1m]', resolvedModel: 'claude-opus-5[1m]', displayName: 'Opus (1M context)', description: 'Opus 5 with 1M context · Best for everyday, complex tasks' },
+    { value: 'sonnet', resolvedModel: 'claude-sonnet-5', displayName: 'Sonnet', description: 'Sonnet 5 · Efficient for routine tasks' },
+  ];
+  const values = modelChoicesFrom(live).map((c) => c.value);
+  assert.ok(values.includes('claude-opus-4-8'), 'Opus 4.8 must stay selectable');
+  assert.deepEqual(values.slice(0, 3), ['default', 'opus[1m]', 'sonnet'], 'live rows keep their order and win');
+
+  // If the runtime ever RELISTS 4.8, its live row wins and the extra is not
+  // duplicated — the whole point of gating the append on choiceCovers.
+  const relisted = [
+    { value: 'opus-4-8-live', resolvedModel: 'claude-opus-4-8', displayName: 'Opus', description: 'Opus 4.8 · Previous release' },
+  ];
+  const relistedValues = modelChoicesFrom(relisted).map((c) => c.value);
+  assert.deepEqual(relistedValues, ['opus-4-8-live'], 'no duplicate 4.8 card');
 });
 
 test('choiceCovers matches value, resolved id, static aliases, and [1m] suffixes', () => {
@@ -302,7 +339,7 @@ test('modelChoicesFrom labels cards by version and keeps the default row verbati
   ]);
   assert.deepEqual(
     cards.map((c) => c.label),
-    ['Default (recommended)', 'Opus 5', 'Fable 5', 'Sonnet 5', 'Haiku 4.5'],
+    ['Default (recommended)', 'Opus 5', 'Fable 5', 'Sonnet 5', 'Haiku 4.5', 'Opus 4.8'],
   );
   // No label may carry context noise.
   for (const c of cards) assert.ok(!/context/i.test(c.label), `${c.label} must not mention context`);
@@ -351,8 +388,10 @@ test('choiceCovers strips the context suffix on BOTH sides (v0.5.165 regression)
   // resolvedModel is the date-suffixed snapshot, which is a different key).
   assert.deepEqual(covering('haiku'), ['Haiku 4.5']);
   assert.deepEqual(covering('claude-haiku-4-5'), ['Haiku 4.5']);
+  // Opus 4.8 is a real card now (delisted from supportedModels() but still
+  // served), so it is covered by its own entry rather than by nothing.
+  assert.deepEqual(covering('claude-opus-4-8'), ['Opus 4.8']);
   // Cross-family and unknown models must NOT match anything.
-  assert.deepEqual(covering('claude-opus-4-8'), []);
   assert.deepEqual(covering('some-future-model'), []);
 });
 

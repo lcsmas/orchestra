@@ -155,6 +155,7 @@ Usage:
   orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]
                                                  Spawn a new worktree + agent
                                                  (--model: pin the agent's model, e.g. haiku/sonnet/opus;
+                                                  default when omitted: claude-opus-4-8;
                                                   --detached: top-level, not nested under the caller)
   orchestra rename <id> <branch>                 Rename a workspace's branch
   orchestra set-base <id> <branch>               Retarget the base branch (Diff/merge target)

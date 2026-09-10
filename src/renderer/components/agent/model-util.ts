@@ -24,8 +24,29 @@ export const MODEL_CHOICES: ModelChoice[] = [
   { value: 'claude-fable-5-1', label: 'Fable 5.1', description: 'Most capable — hardest work' },
   { value: 'claude-fable-5', label: 'Fable 5', description: 'Previous Fable release' },
   { value: 'claude-opus-5', label: 'Opus 5', description: 'Highly capable — deep work' },
+  { value: 'claude-opus-4-8', label: 'Opus 4.8', description: 'Previous Opus release' },
   { value: 'claude-sonnet-5', label: 'Sonnet 5', description: 'Balanced speed and depth' },
   { value: 'claude-haiku-4-5', label: 'Haiku 4.5', description: 'Fastest — light tasks' },
+];
+
+/** Models that are **delisted but still served**: the runtime's
+ *  `supportedModels()` no longer offers them, yet the API still answers under
+ *  their own identity, so they remain a legitimate explicit choice.
+ *
+ *  Measured 2026-09-10 on claude 2.1.267 / SDK 0.3.241: `supportedModels()`
+ *  returns 5 rows and none is Opus 4.8, while
+ *  `claude --print --model claude-opus-4-8` exits 0 with
+ *  `canonicalModel: "claude-opus-4-8"` (NOT aliased to Opus 5). Only the full
+ *  wire id works — the short alias `opus-4-8` is rejected with
+ *  `unrecognized_model`.
+ *
+ *  These are APPENDED to the live list (never shadowing a live row covering the
+ *  same model), because the live list otherwise wins verbatim — so a card added
+ *  only to {@link MODEL_CHOICES} would be invisible the moment a session inits.
+ *  A delisted model is on borrowed time: when the runtime stops serving one,
+ *  drop its entry here. */
+export const EXTRA_MODEL_CHOICES: ModelChoice[] = [
+  { value: 'claude-opus-4-8', label: 'Opus 4.8', description: 'Previous Opus release' },
 ];
 
 /** Claude Code's short model aliases → the canonical id we hold a card for.
@@ -81,12 +102,20 @@ export function versionedLabel(m: AgentModelInfo): string {
  *  it is the account default rather than a specific model. */
 export function modelChoicesFrom(models: AgentModelInfo[] | undefined): ModelChoice[] {
   if (!models?.length) return MODEL_CHOICES;
-  return models.map((m) => ({
+  const live: ModelChoice[] = models.map((m) => ({
     value: m.value,
     label: m.value === 'default' ? m.displayName : versionedLabel(m),
     description: m.description,
     resolvedModel: m.resolvedModel,
   }));
+  // Append the delisted-but-served cards the live list omits. Guarded by
+  // choiceCovers so a model the runtime DOES list is never duplicated — if
+  // Opus 4.8 ever returns to the picker, its live row wins and the extra is
+  // dropped, with no code change.
+  const extras = EXTRA_MODEL_CHOICES.filter(
+    (e) => !live.some((l) => choiceCovers(l, e.value)),
+  );
+  return [...live, ...extras];
 }
 
 /** Split a model string into its base id and bracketed context suffix

@@ -1556,7 +1556,13 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   agent-sdk.ts — the Agent SDK's `query.supportedModels()`, the same source as
   Claude Code's `/model` picker, cached in-memory per ACCOUNT config dir so
   sessionless workspaces reuse a sibling's fetch; `[]` = unknown). New models
-  therefore appear without an Orchestra release. `modelChoicesFrom(models)`
+  therefore appear without an Orchestra release. **`EXTRA_MODEL_CHOICES`** covers the
+  inverse case — models DELISTED from `supportedModels()` but still served by
+  the API (Opus 4.8, measured 2026-09-10: absent from the 5-row live list, yet
+  `--model claude-opus-4-8` exits 0 under its own `canonicalModel`). Those are
+  appended to the live rows, gated on `choiceCovers` so a relisted model is
+  never duplicated. Adding a card to `MODEL_CHOICES` ALONE is invisible in
+  practice, since the live list wins verbatim once any session inits. `modelChoicesFrom(models)`
   maps the wire rows (`AgentModelInfo {value, resolvedModel?, displayName,
   description}`) to `ModelChoice`s and falls back to the static
   `MODEL_CHOICES` (**Fable 5, Opus 5, Sonnet 5, Haiku 4.5**; canonical
