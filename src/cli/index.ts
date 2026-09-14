@@ -669,13 +669,20 @@ async function openBusForVerb(): Promise<{
   bus: BusVerbCtx['bus'];
   file: string;
 }> {
+  // Resolved BEFORE the try. It can itself fail(), and a CliFailure raised
+  // inside the try would be caught below and re-wrapped by
+  // describeBusOpenFailure — printing the refusal twice, the second time under
+  // a "bus: cannot open" headline that names the wrong cause. Measured while
+  // building the rig: a bogus ORCHESTRA_BUS_BUSY_TIMEOUT_MS printed its correct
+  // message and then blamed the database file for it.
+  const busyTimeoutMs = busyTimeoutOverride();
   let bus: typeof import('../main/bus.ts');
   let file = '<unresolved>';
   try {
     bus = await import('../main/bus.ts');
     file = bus.busPath();
     // The CONSTRUCT + migrate. Anything ABI-shaped throws here, not above.
-    const db = bus.openBus(file, { busyTimeoutMs: busyTimeoutOverride() });
+    const db = bus.openBus(file, { busyTimeoutMs });
     return { db, bus, file };
   } catch (err) {
     fail(describeBusOpenFailure(err, file));

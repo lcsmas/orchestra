@@ -472,17 +472,85 @@ record(
 // AppImage's `cli` mode is Electron-as-node, ABI 130), so this is not a weaker
 // runtime — it is the same one, minus the browser process.
 
+/**
+ * One arm of T115.1: `writers` concurrent processes, each issuing `inserts` real
+ * `orchestra send` invocations, with a long-lived reader attached throughout.
+ *
+ * WHAT "REAL CLI" MEANS HERE, AND THE TWO WAYS I GOT IT WRONG FIRST.
+ *
+ * (1) `electron dist-electron/cli.js send …` under ELECTRON_RUN_AS_NODE is a
+ *     SILENT NO-OP — RC 0, no output, no row. The bundle's auto-run block is
+ *     guarded on `!process.versions.electron`, and the packaged app reaches the
+ *     CLI through src/main/index.ts, which imports the bundle and calls
+ *     runCli() explicitly. Every writer no-opped and the arm was about to
+ *     "measure" an empty database. So each writer runs the same shim
+ *     src/main/index.ts uses.
+ *
+ * (2) One PROCESS PER INSERT does not contend. Measured: 150/150 on BOTH arms,
+ *     including the busy_timeout=0 control that is supposed to lose rows. An
+ *     Electron start is ~150ms and the write itself is microseconds, so two
+ *     writers essentially never overlap inside a transaction — the rig created
+ *     no contention and the passing arm proved nothing. (The repo's own
+ *     scripts/verify-bus-contention.mjs loses 87/1000 on the same control,
+ *     because its writers loop TIGHTLY inside one process.)
+ *
+ * So a writer is one process making `inserts` back-to-back runCli() calls —
+ * genuinely the shipped verb, genuinely overlapping. Each call opens and closes
+ * its own connection exactly as a separate invocation would; the only thing
+ * shared is the process, which is what buys the overlap.
+ *
+ * runCli() ends by exiting the process, so the writer cannot simply await it in
+ * a loop: process.exit is neutralised for the duration and restored after, and
+ * the SEQUENCES PRINTED are captured — the writer reports what the verb told it,
+ * and the arm compares that against what the DATABASE holds.
+ */
 async function contentionArm(busyTimeoutMs, writers, inserts, tag) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), `orchestra-bus-cont-${tag}-`));
+  homes.push(home);
   const file = path.join(home, 'bus.sqlite');
   const bs3 = path.join(ROOT, 'node_modules', 'better-sqlite3');
 
-  // Create the schema with ONE real send, so the writers below race each other
-  // rather than the migration — busy_timeout is the only variable under test.
-  spawnSync(ELECTRON, [CLI, 'send', '--type', 'status', '--as', 'seed', '--run', 'contention', 'seed'], {
+  const writerJs = path.join(home, 'writer.cjs');
+  fs.writeFileSync(
+    writerJs,
+    `const { runCli } = require(${JSON.stringify(CLI)});
+     const who = process.argv[2];
+     const n = Number(process.argv[3]);
+     // runCli() ends in process.exit(). Neutralise it for the loop, and capture
+     // stdout so we know what the VERB claimed, independently of what the DB
+     // ends up holding — a writer that believes it committed is the failure
+     // mode this arm is about.
+     const realExit = process.exit.bind(process);
+     const realWrite = process.stdout.write.bind(process.stdout);
+     let captured = '';
+     process.exit = () => {};
+     process.stdout.write = (chunk, ...rest) => { captured += chunk; return true; };
+     (async () => {
+       let claimed = 0, refused = 0;
+       for (let i = 0; i < n; i++) {
+         captured = '';
+         process.exitCode = 0;
+         try {
+           await runCli(['send', '--type', 'dispatch', '--as', who, '--run', 'contention', who + ':' + i]);
+           if (Number(captured.trim()) > 0) claimed++; else refused++;
+         } catch { refused++; }
+       }
+       process.stdout.write = realWrite;
+       process.stdout.write(JSON.stringify({ who, claimed, refused }));
+       realExit(0);
+     })();`,
+  );
+
+  // Create the schema with ONE real send, so the writers race each other rather
+  // than the migration — busy_timeout is the only variable under test.
+  const seed = spawnSync(ELECTRON, [writerJs, 'seed', '1'], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', ORCHESTRA_HOME: home },
     encoding: 'utf8',
   });
+  if (seed.status !== 0 || !fs.existsSync(file)) {
+    console.error(`[rig] contention seed FAILED (RC=${seed.status}) stdout=${JSON.stringify(seed.stdout)} stderr=${seed.stderr.slice(0, 400)}`);
+    process.exit(1);
+  }
 
   // A long-lived reader attached for the whole arm — WAL's promise is that
   // readers never block writers, and without one this would be writers only.
@@ -493,7 +561,7 @@ async function contentionArm(busyTimeoutMs, writers, inserts, tag) {
      const db = new Database(${JSON.stringify(file)}, { readonly: true });
      db.pragma('busy_timeout = 5000');
      let reads = 0;
-     const t = setInterval(() => { try { db.prepare('SELECT COUNT(*) c FROM messages').get(); reads++; } catch {} }, 5);
+     const t = setInterval(() => { try { db.prepare('SELECT COUNT(*) c FROM messages').get(); reads++; } catch {} }, 2);
      process.on('SIGTERM', () => { clearInterval(t); process.stdout.write(String(reads)); process.exit(0); });`,
   );
   const reader = spawn(ELECTRON, [readerJs], {
@@ -502,41 +570,14 @@ async function contentionArm(busyTimeoutMs, writers, inserts, tag) {
   });
   let readerReads = '';
   reader.stdout.on('data', (d) => (readerReads += d));
-  await new Promise((r) => setTimeout(r, 300));
+  await new Promise((r) => setTimeout(r, 400));
 
-  // EACH WRITER IS THE REAL CLI BINARY. Not a harness importing send(): a driver
-  // that re-implements its subject measures the re-implementation (the defect
-  // scripts/verify-bus-contention.mjs's header records). The only difference
-  // between the two arms is $ORCHESTRA_BUS_BUSY_TIMEOUT_MS, which the shipped
-  // binary reads in busyTimeoutOverride().
-  //
-  // One process per INSERT would be N Electron cold starts; instead each writer
-  // is a shell loop issuing `inserts` real `orchestra send` invocations, so the
-  // concurrency is between genuinely separate short-lived CLI processes — the
-  // shape #108 Q2 describes.
-  const writerSh = path.join(home, 'writer.sh');
-  fs.writeFileSync(
-    writerSh,
-    `#!/bin/sh
-     who="$1"; n="$2"; committed=0; failed=0
-     i=0
-     while [ "$i" -lt "$n" ]; do
-       if "${ELECTRON}" "${CLI}" send --type dispatch --as "$who" --run contention "$who:$i" >/dev/null 2>>"${home}/writer-err.log"; then
-         committed=$((committed+1))
-       else
-         failed=$((failed+1))
-       fi
-       i=$((i+1))
-     done
-     printf '{"who":"%s","committed":%d,"failed":%d}' "$who" "$committed" "$failed"`,
-  );
-  fs.chmodSync(writerSh, 0o755);
-
-  const procs = [];
-  for (let w = 0; w < writers; w++) {
-    procs.push(
+  // Launch every writer at once. Spawning them in a loop with an await between
+  // would serialise the very thing under test.
+  const per = await Promise.all(
+    Array.from({ length: writers }, (_, w) =>
       new Promise((resolve) => {
-        const c = spawn('/bin/sh', [writerSh, `w${w}`, String(inserts)], {
+        const c = spawn(ELECTRON, [writerJs, `w${w}`, String(inserts)], {
           env: {
             ...process.env,
             ELECTRON_RUN_AS_NODE: '1',
@@ -546,74 +587,74 @@ async function contentionArm(busyTimeoutMs, writers, inserts, tag) {
           stdio: ['ignore', 'pipe', 'pipe'],
         });
         let o = '';
+        let e = '';
         c.stdout.on('data', (d) => (o += d));
+        c.stderr.on('data', (d) => (e += d));
         c.on('close', () => {
           try {
-            resolve(JSON.parse(o.trim()));
+            resolve(JSON.parse(o.slice(o.lastIndexOf('{'))));
           } catch {
-            resolve({ who: `w${w}`, committed: 0, failed: inserts, parseFail: o.slice(0, 200) });
+            resolve({ who: `w${w}`, claimed: 0, refused: inserts, parseFail: o.slice(-200), stderr: e.slice(-300) });
           }
         });
       }),
-    );
-  }
-  const per = await Promise.all(procs);
+    ),
+  );
   reader.kill('SIGTERM');
   await new Promise((r) => reader.on('close', r));
 
-  // THE COUNT COMES FROM THE DATABASE, never from the writers' self-reports — a
-  // writer that BELIEVES it committed is precisely the failure mode here, and a
-  // rig that trusts it would report the belief.
+  // THE COUNT COMES FROM THE DATABASE, never from the writers' self-reports.
   const countOut = spawnSync(ELECTRON, ['-e', `
      const Database = require(${JSON.stringify(bs3)});
      const db = new Database(${JSON.stringify(file)}, { readonly: true });
      db.pragma('busy_timeout = 5000');
      process.stdout.write(String(db.prepare("SELECT COUNT(*) c FROM messages WHERE run_id='contention' AND sender LIKE 'w%'").get().c));
    `], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8' });
-  const inDb = Number(countOut.stdout.trim());
-  const errLog = fs.existsSync(path.join(home, 'writer-err.log'))
-    ? fs.readFileSync(path.join(home, 'writer-err.log'), 'utf8')
-    : '';
-  fs.rmSync(home, { recursive: true, force: true });
+  // NaN, not 0, when the probe itself failed — 0 would read as "every insert was
+  // lost", a plausible-looking verdict from an instrument that never ran.
+  const inDb = countOut.status === 0 ? Number(countOut.stdout.trim()) : NaN;
+  if (!Number.isFinite(inDb)) {
+    console.error(`[rig] the row-count probe FAILED (RC=${countOut.status}): ${countOut.stderr.slice(0, 400)}`);
+    process.exit(1);
+  }
   return {
     inDb,
     expected: writers * inserts,
-    failedSends: per.reduce((a, p) => a + (p.failed ?? 0), 0),
-    claimedCommitted: per.reduce((a, p) => a + (p.committed ?? 0), 0),
+    claimed: per.reduce((a, p) => a + (p.claimed ?? 0), 0),
+    refused: per.reduce((a, p) => a + (p.refused ?? 0), 0),
     readerReads: Number(readerReads.trim()) || 0,
-    busyLines: (errLog.match(/SQLITE_BUSY/g) ?? []).length,
     per,
   };
 }
 
 {
-  const WRITERS = 6;
-  const INSERTS = 25;
+  const WRITERS = 10;
+  const INSERTS = 100;
   const pass = await contentionArm(5000, WRITERS, INSERTS, 'pass');
   record(
-    `T115.1 ${WRITERS} concurrent REAL CLI writers + a live reader → NO lost rows`,
-    pass.inDb === pass.expected && pass.failedSends === 0 && pass.readerReads > 0,
-    `rows in DB ${pass.inDb}/${pass.expected}, failed sends=${pass.failedSends}, ` +
-      `concurrent reader completed ${pass.readerReads} reads (0 would mean nothing was contending)`,
+    `T115.1 ${WRITERS} concurrent CLI writers x ${INSERTS} real sends + a live reader → NO lost rows`,
+    pass.inDb === pass.expected && pass.refused === 0 && pass.readerReads > 0,
+    `rows in DB ${pass.inDb}/${pass.expected}, verb refused ${pass.refused} sends, ` +
+      `the concurrent reader completed ${pass.readerReads} reads`,
   );
-  // THE CONTROL IS THE POINT. Same rig, same shipped binary, busy_timeout=0. If
-  // it comes back CLEAN the rig created no contention and the arm above proved
-  // nothing — so a clean control FAILS this script.
+  // THE CONTROL IS THE POINT. Same rig, same shipped binary, busy_timeout=0.
+  // The spike measured 7-27% loss; the repo's own scripts/verify-bus-contention.mjs
+  // loses ~8.7% on this machine. If this comes back CLEAN the rig created no
+  // contention and the arm above proved nothing — so a clean control FAILS.
   const ctl = await contentionArm(0, WRITERS, INSERTS, 'ctl');
   const lost = ctl.expected - ctl.inDb;
   record(
     'T115.1b MUST-FAIL CONTROL busy_timeout=0 on the same rig LOSES rows (a clean control = no contention = the arm above proved nothing)',
     lost > 0,
     `rows in DB ${ctl.inDb}/${ctl.expected} → LOST ${lost} (${((lost / ctl.expected) * 100).toFixed(1)}%), ` +
-      `writers reported ${ctl.failedSends} failed sends, ${ctl.busyLines} SQLITE_BUSY lines on stderr`,
+      `the verb REFUSED ${ctl.refused} of them`,
   );
-  // And the loss is SILENT-ish only in the DB sense: the CLI itself must have
-  // REFUSED those sends rather than printing an id for a row it did not write.
+  // The loss must be REFUSED, not silently reported as success: the verb must
+  // never print a sequence for a row it did not write.
   record(
-    'T115.1c under the control, the CLI REFUSED the lost sends (it never printed an id for a row it did not write)',
-    lost === 0 || ctl.claimedCommitted === ctl.inDb,
-    `writers claimed ${ctl.claimedCommitted} committed, DB holds ${ctl.inDb} — a claim ABOVE the DB count would mean ` +
-      'the verb reported success for a lost insert',
+    'T115.1c the CLI never claimed a send it did not land (claimed == rows in DB on both arms)',
+    ctl.claimed === ctl.inDb && pass.claimed === pass.inDb,
+    `control: claimed ${ctl.claimed} vs DB ${ctl.inDb}; must-pass arm: claimed ${pass.claimed} vs DB ${pass.inDb}`,
   );
 }
 
