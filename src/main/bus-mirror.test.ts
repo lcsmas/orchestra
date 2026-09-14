@@ -501,7 +501,11 @@ test('T116.4 — the duplicate detector distinguishes MIRRORED TWICE from SENT T
 
 test('migration v2 adds mirror_records without disturbing v1', (t) => {
   const { db } = tmpBus(t);
-  assert.equal(SCHEMA_VERSION, 2, 'the mirror ships as schema v2');
+  // Assert the PROPERTY, not a pinned integer: mirror_records ships in MIGRATIONS[2]
+  // and must persist at every later version. #118 appended MIGRATIONS[3] (run_flags)
+  // and bumped SCHEMA_VERSION to 3 (ledger #123 Q-B2, cross-ticket seam), so pinning
+  // === 2 here would falsely redden on an unrelated, later migration.
+  assert.ok(SCHEMA_VERSION >= 2, 'mirror_records ships at v2 and persists at every later version');
   const tables = (
     db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as {
       name: string;
@@ -637,8 +641,11 @@ test('C11 — migrate() upgrades a DB STAMPED at each version below v2, not just
     // Build a DB that really is at version `from`: open it (which migrates to
     // HEAD), then rewind the stamp and drop what `from` did not have. Rewinding
     // alone would leave v2's table present and the arm would pass vacuously.
+    // mirror_records is created by MIGRATIONS[2], so it is ABSENT only at from<2;
+    // at from>=2 it legitimately EXISTS and must survive the upgrade to HEAD
+    // (ledger #123 Q-B2: #118 appended v3, so SCHEMA_VERSION-1 now includes 2).
     const seed = openBus(file);
-    seed.exec('DROP TABLE IF EXISTS mirror_records');
+    if (from < 2) seed.exec('DROP TABLE IF EXISTS mirror_records');
     seed.pragma(`user_version = ${from}`);
     // A row written BEFORE the upgrade — it must survive.
     const seq = busSend(seed, {
@@ -650,19 +657,28 @@ test('C11 — migrate() upgrades a DB STAMPED at each version below v2, not just
     });
     seed.close();
 
-    // MUST-FAIL CONTROL, in the same command (carry-forward 4): at version
-    // `from` the mirror table is genuinely absent. Without it, the assertion
-    // after the upgrade could be passing on a table that was never dropped —
-    // i.e. on a DB that was already at HEAD. Run on a SEPARATE file, because
-    // opening the real one immediately migrates it past the state under audit.
+    // CONTROL, in the same command (carry-forward 4): prove the seed's pre-upgrade
+    // state is what we think. For from<2 the mirror table is genuinely ABSENT
+    // (dropped above) — without this, the post-upgrade assertion could be passing
+    // on a table that was never dropped. For from>=2 the table legitimately EXISTS
+    // at that stamp (MIGRATIONS[2] created it), so the control asserts PRESENCE
+    // instead: the arm still discriminates, it just measures the true pre-state.
+    // Run on a SEPARATE file, because opening the real one immediately migrates it
+    // past the state under audit.
     const probeFile = path.join(dir, `probe-v${from}.sqlite`);
     const probe = openBus(probeFile);
-    probe.exec('DROP TABLE IF EXISTS mirror_records');
+    if (from < 2) probe.exec('DROP TABLE IF EXISTS mirror_records');
     probe.pragma(`user_version = ${from}`);
-    const absent = probe
-      .prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='mirror_records'")
-      .get() as { n: number };
-    assert.equal(absent.n, 0, `control: at v${from} mirror_records really is absent`);
+    const mirrorTables = (
+      probe
+        .prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='mirror_records'")
+        .get() as { n: number }
+    ).n;
+    if (from < 2) {
+      assert.equal(mirrorTables, 0, `control: at v${from} mirror_records really is absent`);
+    } else {
+      assert.equal(mirrorTables, 1, `control: at v${from} mirror_records already exists (MIGRATIONS[2])`);
+    }
     probe.close();
 
     // Now the real upgrade: opening runs migrate() from the stamped version.
