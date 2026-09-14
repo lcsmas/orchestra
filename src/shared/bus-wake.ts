@@ -39,6 +39,21 @@ export interface ReaderPendingState {
   /** Highest OPEN gate id addressed to this reader (0 when none) — the gate
    *  arm's dedup high-water, independent of `pendingThroughSeq`. */
   gateThroughSeq?: number;
+  /**
+   * True when this reader is parked on an UNANSWERED ask/gate it is the RECIPIENT
+   * of — a durable pending state that does NOT clear on the reader's own ack
+   * (#119: "reading without answering re-wakes until answered", #108 Q15). This
+   * is what lets the ask re-wake loop fire a SECOND wake after the recipient acks
+   * without answering: the recipient's ack (cursor advance) re-arms the dedup
+   * while the ask stays pending. `false` for ordinary lot traffic, which clears
+   * on ack the ordinary way.
+   */
+  reWakeUntilAnswered?: boolean;
+  /** This reader's durable cursor position (`cursors.acked_seq`, 0 when none).
+   *  The re-arm signal for {@link reWakeUntilAnswered}: an advance past the
+   *  cursor recorded at the last wake means the reader acked and must be re-woken
+   *  while the ask is still unanswered. */
+  cursorSeq?: number;
 }
 
 /** Everything about the reader's SESSION the decision needs. */
@@ -56,6 +71,12 @@ export interface ReaderSessionState {
 export interface WakeLedgerEntry {
   /** `pendingThroughSeq` at the moment we last fired (or counted) a wake. */
   wokeThroughSeq: number;
+  /** The reader's durable cursor at the moment we last woke it (#119). Only the
+   *  re-wake-until-answered path reads it: when the reader's cursor later moves
+   *  PAST this, the reader acked without answering and is re-armed for a second
+   *  wake while the ask stays open. `undefined` for the ordinary lot path, which
+   *  re-arms by pending going false, not by cursor advance. */
+  cursorAtWake?: number;
 }
 
 export type WakeAction =

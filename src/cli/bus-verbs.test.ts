@@ -388,6 +388,82 @@ test('gate refuses an unknown subcommand, an empty question and an empty ruling'
   assert.match(r.fails[3], /usage: orchestra gate resolve/);
 });
 
+// ─── T119.2 — gate --to recipient, --resolution, list, re-resolve refused ─────
+
+test('T119.2 gate open --to records the recipient; gate list surfaces it to R only', (t) => {
+  // COVERS: verbGate 'open' --to parse + openGate(recipient) + 'list' via
+  //   openGatesForRecipient.
+  // MUTANT: pass `null` instead of `to.value` in verbGate open → the recipient is
+  //   never stored and R's `gate list` returns [] → this arm red.
+  const r = rig(t);
+  verbGate(r.ctx('lead'), 'open', ['--to', 'ws-R', 'ship', 'or', 'hold?']);
+  const gateId = Number(r.out[r.out.length - 1]);
+  assert.ok(gateId > 0);
+  const g = bus.getGate(r.ctx('lead').db, gateId)!;
+  assert.equal(g.recipient, 'ws-R', 'the recipient is stored on the row');
+  assert.equal(g.question, 'ship or hold?', '--to is stripped, not folded into the question');
+
+  // R sees it via gate list; a NON-recipient does not (recipient-scoped).
+  verbGate(r.ctx('ws-R'), 'list', []);
+  const rList = JSON.parse(r.out[r.out.length - 1]) as Array<{ id: number; question: string }>;
+  assert.deepEqual(rList.map((x) => x.id), [gateId]);
+  verbGate(r.ctx('ws-other'), 'list', []);
+  const otherList = JSON.parse(r.out[r.out.length - 1]) as unknown[];
+  assert.deepEqual(otherList, [], 'a gate addressed to ws-R must not appear for ws-other');
+});
+
+test('T119.2 an unaddressed gate (no --to) appears in NOBODY\'s gate list', (t) => {
+  // The coexistence-safe default: a gate with a NULL recipient wakes nobody and
+  // is listed for nobody. (Positive control lives in the --to arm above.)
+  // MUTANT: default recipient to ctx.id.handle instead of null → the opener would
+  //   see it here → red.
+  const r = rig(t);
+  verbGate(r.ctx('lead'), 'open', ['unaddressed?']);
+  verbGate(r.ctx('lead'), 'list', []);
+  assert.deepEqual(JSON.parse(r.out[r.out.length - 1]), []);
+});
+
+test('T119.2 gate resolve --resolution records once; check of the run surfaces the resolution; re-resolve REFUSED', (t) => {
+  // COVERS: --resolution flag path + resolveGate idempotent-by-refusal, AND that
+  //   the RESOLUTION is readable (the gate leaves R's `check`/`gate list` once
+  //   resolved).
+  // MUTANT: drop the `WHERE resolved_at IS NULL` in resolveGate → the second
+  //   resolve succeeds → the "REFUSED" assertion red.
+  const r = rig(t);
+  verbGate(r.ctx('lead'), 'open', ['--to', 'ws-R', 'ship?']);
+  const gateId = Number(r.out[r.out.length - 1]);
+
+  // Before resolve, R's check surfaces the open gate.
+  verbCheck(r.ctx('ws-R'), { ackPrevious: false, markdown: false, limit: 100 });
+  const beforeGates = (JSON.parse(r.out[r.out.length - 1]) as { gates: Array<{ id: number }> }).gates;
+  assert.deepEqual(beforeGates.map((x) => x.id), [gateId], 'an open gate is surfaced by check to R');
+
+  verbGate(r.ctx('lead'), 'resolve', [String(gateId), '--resolution', 'ship it now']);
+  assert.equal(r.out[r.out.length - 1], `resolved ${gateId}\n`);
+  const g = bus.getGate(r.ctx('lead').db, gateId)!;
+  assert.equal(g.resolution, 'ship it now', 'the ruling text is recorded from --resolution');
+  assert.equal(g.resolved_by, 'lead');
+
+  // The resolution is readable and the gate is GONE from R's open surface.
+  verbCheck(r.ctx('ws-R'), { ackPrevious: false, markdown: false, limit: 100 });
+  const afterGates = (JSON.parse(r.out[r.out.length - 1]) as { gates: unknown[] }).gates;
+  assert.deepEqual(afterGates, [], 'a resolved gate no longer surfaces to R');
+
+  // Re-resolve is REFUSED, resolution unchanged.
+  assert.throws(() => verbGate(r.ctx('ops'), 'resolve', [String(gateId), '--resolution', 'hold']));
+  assert.match(r.fails[r.fails.length - 1], /was NOT overwritten/);
+  assert.equal(bus.getGate(r.ctx('lead').db, gateId)!.resolution, 'ship it now', 'first ruling stands');
+});
+
+test('T119.2 --resolution needs a value; --to needs a recipient', (t) => {
+  const r = rig(t);
+  verbGate(r.ctx('lead'), 'open', ['q?']);
+  assert.throws(() => verbGate(r.ctx('lead'), 'resolve', ['1', '--resolution']));
+  assert.match(r.fails[r.fails.length - 1], /--resolution needs a ruling/);
+  assert.throws(() => verbGate(r.ctx('lead'), 'open', ['--to']));
+  assert.match(r.fails[r.fails.length - 1], /--to needs a recipient/);
+});
+
 // ─── output shapes ──────────────────────────────────────────────────────────
 
 test('the markdown render names the lot, the replay and the ack command', (t) => {

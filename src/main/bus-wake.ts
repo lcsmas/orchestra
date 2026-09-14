@@ -178,22 +178,40 @@ export function readPendingReaders(
        AND m.sequence > COALESCE(
              (SELECT c.acked_seq FROM cursors c WHERE c.reader = ? AND c.run_id = m.run_id), 0)
   `);
-  // An open QUESTION message keeps the reader pending even with no unread lot: a
-  // reader parked on a question is `waiting`, never stale (#117 Intent). Unlike a
-  // gate (D2, above), a question has a recipient and `check` returns it, so the
-  // wake order can actually surface it.
+  // An UNANSWERED question addressed to the reader keeps it pending until the ask
+  // is ANSWERED — not until the reader acks (#119, #108 Q15: "reading without
+  // answering re-wakes until answered"). "Answered" = a message threaded to the
+  // question (`thread_id = question.sequence`), which is what `send --thread
+  // <ask-id>` writes. This is deliberately NOT cursor-based like the lot half: a
+  // recipient that reads the ask and acks WITHOUT answering must still be re-woken
+  // (the sweep's cursor-advance re-arm below drives that), because an unanswered
+  // ask is exactly the reader the asker is blocked on. Unlike a gate before #119,
+  // a question has a recipient and `check` surfaces it, so the wake order works.
   const openQuestion = db.prepare(`
-    SELECT COALESCE(MAX(m.sequence), 0) AS hi
-      FROM messages m
-     WHERE m.run_id = ? AND m.kind = 'question' AND m.recipient = ?
-       AND m.sequence > COALESCE(
-             (SELECT c.acked_seq FROM cursors c WHERE c.reader = ? AND c.run_id = m.run_id), 0)
+    SELECT COALESCE(MAX(q.sequence), 0) AS hi
+      FROM messages q
+     WHERE q.run_id = ? AND q.kind = 'question' AND q.recipient = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM messages r
+          WHERE r.run_id = q.run_id AND r.thread_id = CAST(q.sequence AS TEXT)
+       )
   `);
+  const cursorOf = db.prepare(
+    'SELECT COALESCE(acked_seq, 0) AS c FROM cursors WHERE run_id = ? AND reader = ?',
+  );
 
   const out: ReaderPendingState[] = [];
   for (const { reader, runId } of readers) {
     const hi = Number((lotHigh.get(runId, reader, reader) as { hi: number }).hi);
-    const qhi = Number((openQuestion.get(runId, reader, reader) as { hi: number }).hi);
+    const qhi = Number((openQuestion.get(runId, reader) as { hi: number }).hi);
+    const cursorSeq = Number(
+      ((cursorOf.get(runId, reader) as { c: number } | undefined)?.c) ?? 0,
+    );
+    // The lot half is cursor-based and clears on ack; the question half is
+    // answer-based and does NOT. `pending` is either; `reWakeUntilAnswered` marks
+    // that the question half is what keeps it pending, so the sweep uses the
+    // cursor-advance re-arm rather than the ordinary prune-on-clear.
+    const reWakeUntilAnswered = qhi > 0;
     const pendingThroughSeq = Math.max(hi, qhi);
     // Gate half (#119), computed SEPARATELY — it rides the `askGate` switch, not
     // `wake`. `gateThroughSeq` is the highest OPEN gate id addressed to this
@@ -208,6 +226,8 @@ export function readPendingReaders(
       pending: pendingThroughSeq > 0,
       gatePending: gates.length > 0,
       gateThroughSeq,
+      reWakeUntilAnswered,
+      cursorSeq,
     });
   }
   return out;
@@ -382,12 +402,37 @@ export async function sweepBusWake(): Promise<void> {
       } catch (e) {
         log.warn(`bus-wake: askGate switch read failed for ${p.reader} — treating as OFF`, e);
       }
+      // ── The ask re-wake-until-answered re-arm (#119, #108 Q15) ──────────────
+      // A reader parked on an UNANSWERED ask does not clear its pending state by
+      // acking (the ask half is answer-based, not cursor-based). So the ordinary
+      // prune-on-clear re-arm never fires and it would be woken exactly once —
+      // but the ticket requires "reading without answering re-wakes until
+      // answered". The re-arm signal is the reader's CURSOR advancing past where
+      // it was when we last woke it: that is the reader having read (and acked)
+      // the ask without answering. When we see that, drop the ledger entry so
+      // decideWake fires a fresh wake. Bounded by ACKS, not sweeps: after we
+      // re-fire we record the new cursor, so the reader is not re-woken again
+      // until it acks again. An answered ask clears `pending` and prunes normally.
+      const prev = ledger.get(p.reader);
+      if (
+        prev &&
+        p.reWakeUntilAnswered === true &&
+        prev.cursorAtWake !== undefined &&
+        (p.cursorSeq ?? 0) > prev.cursorAtWake
+      ) {
+        ledger.delete(p.reader);
+      }
       const action = decideWake(p, session, ledger.get(p.reader), switchOn, askGateOn);
       if (action.kind === 'skip') continue;
       // Mark BEFORE the await, not after: `sdkWake` yields, and a second sweep
       // entering during that yield would otherwise see no ledger entry and fire
       // a duplicate — the same shape as #112's duplicate prompt.
-      ledger.set(action.reader, { wokeThroughSeq: action.throughSeq });
+      ledger.set(action.reader, {
+        wokeThroughSeq: action.throughSeq,
+        // Record the cursor only for the re-wake-until-answered path, so a later
+        // advance re-arms it. Left undefined for ordinary lot wakes.
+        cursorAtWake: p.reWakeUntilAnswered === true ? (p.cursorSeq ?? 0) : undefined,
+      });
       if (action.kind === 'count') {
         counters.counted++;
         log.info(

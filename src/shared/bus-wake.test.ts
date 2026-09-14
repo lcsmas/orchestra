@@ -140,3 +140,52 @@ test('isWakeOrder is as SPECIFIC as the claim it certifies', () => {
   assert.equal(isWakeOrder('please run `orchestra check` when you can'), false);
   assert.equal(isWakeOrder('the order mentions orchestra check but is prose'), false);
 });
+
+// ── TWO SWITCHES, ONE ORDER (#119): the gate half rides askGate, not wake ────
+
+test('gate-only pending fires under askGate, NOT under wake', () => {
+  // MUTANT: gate `gateFires` on `switchOn` instead of `askGateOn` → the first
+  //   assertion (wake ON, askGate OFF) would fire → red.
+  const gateOnly = pending({ pending: false, gatePending: true, gateThroughSeq: 4 });
+  // wake ON but askGate OFF: the gate must NOT fire — it is counted.
+  const wakeOnly = decideWake(gateOnly, WAKEABLE, undefined, true, false);
+  assert.equal(wakeOnly.kind, 'count', 'a gate does not fire on the wake switch');
+  // askGate ON: it fires, at the GATE high-water (4), not the message seq.
+  const gateOn = decideWake(gateOnly, WAKEABLE, undefined, false, true);
+  assert.equal(gateOn.kind, 'fire');
+  assert.equal(gateOn.kind === 'fire' && gateOn.throughSeq, 4, 'the fire covers the gate id, not a lot seq');
+});
+
+test('a reader pending for BOTH a lot and a gate produces ONE action (one order)', () => {
+  // The coalescing invariant "at most one wake per reader". With both switches ON,
+  // one fire, at the max of the two justifying high-waters.
+  const both = pending({ pendingThroughSeq: 7, gatePending: true, gateThroughSeq: 9 });
+  const a = decideWake(both, WAKEABLE, undefined, true, true);
+  assert.equal(a.kind, 'fire');
+  assert.equal(a.kind === 'fire' && a.throughSeq, 9, 'the one order covers both — max high-water');
+});
+
+test('mixed switches: only the ON source raises the high-water', () => {
+  // wake OFF, askGate ON: fire, and the mark is the GATE seq only — the OFF lot
+  // must not raise it, or its counted-not-fired state is masked next sweep.
+  // MUTANT: use `Math.max(lotSeq, gateSeq)` unconditionally in the fire branch →
+  //   throughSeq becomes 7 → red.
+  const both = pending({ pendingThroughSeq: 7, gatePending: true, gateThroughSeq: 4 });
+  const a = decideWake(both, WAKEABLE, undefined, false, true);
+  assert.equal(a.kind, 'fire');
+  assert.equal(a.kind === 'fire' && a.throughSeq, 4, 'only the ON (gate) source justifies the mark');
+});
+
+test('neither switch on, both pending → count across every pending source', () => {
+  const both = pending({ pendingThroughSeq: 7, gatePending: true, gateThroughSeq: 9 });
+  const a = decideWake(both, WAKEABLE, undefined, false, false);
+  assert.equal(a.kind, 'count');
+  assert.equal(a.kind === 'count' && a.throughSeq, 9, 'counted at the max pending high-water');
+});
+
+test('gate default: omitting askGateOn keeps the pre-#119 behaviour (gate never fires)', () => {
+  // Back-compat: the 4-arg call every #117 caller makes leaves gates OFF.
+  const gateOnly = pending({ pending: false, gatePending: true, gateThroughSeq: 4 });
+  const a = decideWake(gateOnly, WAKEABLE, undefined, true /* wake */); // no 5th arg
+  assert.equal(a.kind, 'count', 'without the askGate arg a gate is counted, never fired');
+});
