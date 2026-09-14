@@ -204,6 +204,11 @@ test('the static fallback offers Opus 4.8 exactly once (no extras duplication)',
     1,
     'exactly one Opus 4.8 card in the static fallback',
   );
+  assert.equal(
+    staticValues.filter((v) => v === 'claude-fable-5').length,
+    1,
+    'exactly one Fable 5 card in the static fallback',
+  );
   assert.ok(staticValues.includes('claude-opus-5'), 'Opus 5 stays selectable');
 });
 
@@ -243,11 +248,11 @@ test('modelChoicesFrom prefers the live runtime list and falls back to the stati
     { value: 'claude-haiku-4-5', displayName: 'Haiku 4.5', description: 'Fast' },
   ];
   const choices = modelChoicesFrom(live);
-  // Live rows first and verbatim; the delisted-but-served extras (Opus 4.8,
-  // absent from this list) are appended after them.
+  // Live rows first and verbatim; the delisted-but-served extras (Opus 4.8 and
+  // Fable 5, both absent from this list) are appended after them.
   assert.deepEqual(
     choices.map((c) => c.label),
-    ['Opus 5', 'Haiku 4.5', 'Opus 4.8'],
+    ['Opus 5', 'Haiku 4.5', 'Opus 4.8', 'Fable 5'],
   );
   assert.equal(choices[0].resolvedModel, 'claude-opus-5');
 });
@@ -263,6 +268,7 @@ test('modelChoicesFrom appends delisted-but-served extras the live list omits', 
   ];
   const values = modelChoicesFrom(live).map((c) => c.value);
   assert.ok(values.includes('claude-opus-4-8'), 'Opus 4.8 must stay selectable');
+  assert.ok(values.includes('claude-fable-5'), 'Fable 5 must stay selectable');
   assert.deepEqual(values.slice(0, 3), ['default', 'opus[1m]', 'sonnet'], 'live rows keep their order and win');
 
   // If the runtime ever RELISTS 4.8, its live row wins and the extra is not
@@ -271,7 +277,9 @@ test('modelChoicesFrom appends delisted-but-served extras the live list omits', 
     { value: 'opus-4-8-live', resolvedModel: 'claude-opus-4-8', displayName: 'Opus', description: 'Opus 4.8 · Previous release' },
   ];
   const relistedValues = modelChoicesFrom(relisted).map((c) => c.value);
-  assert.deepEqual(relistedValues, ['opus-4-8-live'], 'no duplicate 4.8 card');
+  // 4.8's live row wins (no duplicate card); the OTHER extra (Fable 5, still not
+  // in this list) is appended, so it is the only trailing entry.
+  assert.deepEqual(relistedValues, ['opus-4-8-live', 'claude-fable-5'], 'no duplicate 4.8 card');
 });
 
 test('choiceCovers matches value, resolved id, static aliases, and [1m] suffixes', () => {

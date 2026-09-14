@@ -38,7 +38,9 @@ export const MODEL_CHOICES: ModelChoice[] = [
  *  `claude --print --model claude-opus-4-8` exits 0 with
  *  `canonicalModel: "claude-opus-4-8"` (NOT aliased to Opus 5). Only the full
  *  wire id works — the short alias `opus-4-8` is rejected with
- *  `unrecognized_model`.
+ *  `unrecognized_model`. Same measured 2026-09-14 (claude 2.1.270) for
+ *  `claude-fable-5`: served under its own identity (`modelUsage` key
+ *  `claude-fable-5`, NOT aliased to Fable 5.1), short alias `fable-5` rejected.
  *
  *  These are APPENDED to the live list (never shadowing a live row covering the
  *  same model), because the live list otherwise wins verbatim — so a card added
@@ -47,6 +49,7 @@ export const MODEL_CHOICES: ModelChoice[] = [
  *  drop its entry here. */
 export const EXTRA_MODEL_CHOICES: ModelChoice[] = [
   { value: 'claude-opus-4-8', label: 'Opus 4.8', description: 'Previous Opus release' },
+  { value: 'claude-fable-5', label: 'Fable 5', description: 'Previous Fable release' },
 ];
 
 /** Claude Code's short model aliases → the canonical id we hold a card for.

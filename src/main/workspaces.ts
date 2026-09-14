@@ -1538,9 +1538,13 @@ async function waitForSubmitConfirmed(id: string, timeoutMs: number): Promise<bo
   return false;
 }
 
-/** Model every spawned child is pinned to when the caller passes no explicit
- *  `--model`. Opus 4.8 on the user's instruction (2026-09-10) — a deliberate
- *  downgrade from the account default (Opus 5), not a staleness artifact.
+/** Orchestra's default model for EVERY workspace instance that has no explicit
+ *  `ws.model` — spawned children (via `orchestra spawn` with no `--model`) AND
+ *  a workspace's own structured session started from the UI (agent-sdk.ts's
+ *  session-start `model` fallback and `sdkDefaultModel`). Opus 4.8 on the user's
+ *  instruction (2026-09-10, reaffirmed 2026-09-14 as the app-wide default) — a
+ *  deliberate downgrade from the account default (Opus 5), not a staleness
+ *  artifact. An explicit pick (dropdown / `--model`) always wins over this.
  *
  *  Must be the FULL wire id: the runtime rejects the short alias `opus-4-8`
  *  with `unrecognized_model`. Opus 4.8 is delisted from `supportedModels()` but

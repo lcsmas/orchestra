@@ -1558,10 +1558,12 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   sessionless workspaces reuse a sibling's fetch; `[]` = unknown). New models
   therefore appear without an Orchestra release. **`EXTRA_MODEL_CHOICES`** covers the
   inverse case — models DELISTED from `supportedModels()` but still served by
-  the API (Opus 4.8, measured 2026-09-10: absent from the 5-row live list, yet
-  `--model claude-opus-4-8` exits 0 under its own `canonicalModel`). Those are
-  appended to the live rows, gated on `choiceCovers` so a relisted model is
-  never duplicated. Adding a card to `MODEL_CHOICES` ALONE is invisible in
+  the API (**Opus 4.8** and **Fable 5**: absent from the live list, yet
+  `--model claude-opus-4-8` / `--model claude-fable-5` exit 0 under their own
+  `canonicalModel` — Opus 4.8 measured 2026-09-10, Fable 5 measured 2026-09-14;
+  the short aliases `opus-4-8` / `fable-5` are rejected, only the full wire id
+  works). Those are appended to the live rows, gated on `choiceCovers` so a
+  relisted model is never duplicated. Adding a card to `MODEL_CHOICES` ALONE is invisible in
   practice, since the live list wins verbatim once any session inits. `modelChoicesFrom(models)`
   maps the wire rows (`AgentModelInfo {value, resolvedModel?, displayName,
   description}`) to `ModelChoice`s and falls back to the static
@@ -1592,20 +1594,18 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   suffix (`[1m]`/`[200k]` → "· 1M context"), maps Claude Code short aliases,
   and reuses the matching card's label. Unknown ids fall back to the raw
   string, prepended as a verbatim card.
-- **Account-default model in the switcher (pre-session).** Before a turn starts
+- **Default model in the switcher (pre-session).** Before a turn starts
   there's no `session.model`; rather than an opaque placeholder, `AgentControls`
   fetches the model a fresh session *will* run on via **`agentSdkDefaultModel`**
   (`agent:sdkDefaultModel` → `sdkDefaultModel(wsId)` in agent-sdk.ts) and shows it
   (through `describeLiveModel`). The resolver returns an explicit `ws.model` if set,
-  else reads Claude Code's `settings.json` `model` in the SDK's load precedence
-  (`['user','project','local']`, last wins): worktree `.claude/settings.local.json`
-  → worktree `.claude/settings.json` → the pinned account config dir's
-  `settings.json` (default `~/.claude`). The stored value is an ALIAS
-  (`opus[1m]`), which the SDK resolves to a full id (`claude-opus-4-8[1m]`) only at
-  `session/init` — so `describeLiveModel`'s alias map is what lets the pre-session
-  trigger read the same friendly label. Returns `''` when nothing configures it
-  (the CLI's own built-in default, resolvable only once a session inits) — the
-  `"Account default"` placeholder remains only in that case. **Display precedence
+  else **Orchestra's app-wide default `DEFAULT_CHILD_MODEL` (Opus 4.8,
+  `claude-opus-4-8`)** — the SAME value the session-start path pins (the `model`
+  option in `startAgentSdk`: `ws.model || DEFAULT_CHILD_MODEL`). Neither path
+  consults Claude Code's `settings.json` `model` any more: the app default
+  overrides the account default so EVERY workspace instance starts on Opus 4.8
+  unless the user picks otherwise, and the pre-session badge must match what will
+  actually run. **Display precedence
   gates on `session.sessionId`** (`effectiveModel` in model-util.ts): a folded
   session's model/permissionMode count only once `session/init` actually landed —
   a history-backfilled session (reopened workspace, no live subprocess) folds
