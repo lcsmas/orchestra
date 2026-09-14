@@ -197,6 +197,21 @@ test('T120.4: a #119 bus-WAITING member is not escalated (consumed, not reimplem
   );
 });
 
+test('the waiting accessor receives {reader, runId} pairs (run-scoped, #119 shape)', (t) => {
+  // Locks the call-site shape against #119's readWaitingReaders(db, {reader,
+  // runId}[]) signature: a bare-handle list would collapse a handle present in
+  // two runs. Capture what the sweep passes and assert the pairs carry runId.
+  const db = tmpBus(t);
+  armSweep(db, [member({ reader: 'ws-a', runId: 'run-X' })]);
+  let seen: readonly { reader: string; runId: string }[] = [];
+  setLivenessWaiting((_db, readers) => {
+    seen = readers;
+    return new Set<string>();
+  });
+  sweepBusLiveness();
+  assert.deepEqual(seen, [{ reader: 'ws-a', runId: 'run-X' }]);
+});
+
 test('a failing #119 waiting accessor does not suppress a real stall', (t) => {
   // D1-shaped: #119's accessor throwing must be treated as "nobody bus-waiting"
   // (the safe direction), NOT as an excuse to skip the sweep. The stale member

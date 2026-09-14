@@ -81,15 +81,30 @@ export function setLivenessRoster(fn: () => LivenessMember[]): void {
 // tests before #119 lands: the default returns an empty set (nobody bus-waiting),
 // which is the coexistence-safe direction — it never SUPPRESSES an escalation the
 // app-level `waiting` did not already cover, so a missing #119 cannot hide a real
-// stall. Wired to #119's real export at rebase (see the ledger §Open-questions
-// Q-C1 for the frozen signature).
+// stall.
+//
+// SIGNATURE FROZEN to #119's actual export (Q-C1 confirmed on ledger #125, read
+// off `origin/bus-asks-gates-119` src/main/bus-wake.ts before rebase):
+//   readWaitingReaders(db, readers: {reader, runId}[]): Set<string>
+// It returns the SENDER/OPENER side — a reader that AUTHORED an open ask or
+// OPENED an unresolved gate (waiting for an answer), which is exactly the "asker
+// in waiting" #120 excludes from staleness (NOT the recipient, who is woken by
+// #119's predicate). At rebase this seam is wired to that export verbatim, with
+// no shape change: the sweep already passes `{reader, runId}` pairs below.
 
-let readBusWaiting: (db: BusDb, readers: readonly string[]) => ReadonlySet<string> = () =>
+/** The pair #119's `readWaitingReaders` consumes — the same shape its wake
+ *  predicate uses ({reader, runId}), so the run-scoping is preserved. */
+export interface WaitingReaderKey {
+  reader: string;
+  runId: string;
+}
+
+let readBusWaiting: (db: BusDb, readers: readonly WaitingReaderKey[]) => Set<string> = () =>
   new Set<string>();
 
-/** Wire in #119's asker-`waiting` accessor (or a rig's). */
+/** Wire in #119's asker-`waiting` accessor (`readWaitingReaders`) or a rig's. */
 export function setLivenessWaiting(
-  fn: (db: BusDb, readers: readonly string[]) => ReadonlySet<string>,
+  fn: (db: BusDb, readers: readonly WaitingReaderKey[]) => Set<string>,
 ): void {
   readBusWaiting = fn;
 }
@@ -184,9 +199,11 @@ export function sweepBusLiveness(): void {
     // #119's bus-`waiting` set, ORed with each member's app-level `waiting`.
     let busWaiting: ReadonlySet<string> = new Set<string>();
     try {
+      // Pass {reader, runId} pairs — #119's readWaitingReaders is run-scoped, so
+      // a bare-handle list would collapse a handle that exists in two runs.
       busWaiting = readBusWaiting(
         db,
-        members.map((m) => m.reader),
+        members.map((m) => ({ reader: m.reader, runId: m.runId })),
       );
     } catch (e) {
       // A failing #119 accessor must not take the whole sweep down or SUPPRESS
