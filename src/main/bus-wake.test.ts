@@ -128,30 +128,40 @@ test('new mail arriving AFTER an ack makes the reader pending again', (t) => {
   assert.equal(p.pendingThroughSeq, seq2);
 });
 
-// ── The ask/gate half of the predicate (#108 Q15) ──────────────────────────
+// ── D2 (ledger #123 Q-B3): an open GATE does NOT wake; a QUESTION message does ─
 
-test('an OPEN gate keeps a reader pending with no unread lot at all', (t) => {
-  // COVERS: the decision_gates half of the predicate.
-  // MUTANT: delete the openAsk query and its `|| asks > 0` → red.
-  // WHY IT MATTERS: "a reader parked on an ask is waiting, never stale" (#117
-  //   Intent). Without this half, a reader whose only outstanding item is a
-  //   question is reported quiet and is never re-woken to answer it.
+test('D2 must-FAIL arm — an open GATE does NOT make a reader pending', (t) => {
+  // LEAD §Decisions D2: gate-driven wakes are dropped from #117 and move to
+  // #119. The order a wake carries is `orchestra check`, which reads `messages`
+  // only — a gate has no recipient column and no `gate list` verb, so a gate can
+  // never be surfaced by the order. Waking on it would order the reader to look
+  // where the gate is invisible, ack nothing, loop forever, and over-count the
+  // shadow `counted` signal the promotion bar reads.
+  // MUTANT: restore the `decision_gates`/`asks` half of the predicate → red.
   const db = tmpBus(t);
   assert.equal(pendingFor(db, READER).pending, false, 'baseline: quiet');
   openGate(db, RUN, OTHER, 'ship it?');
-  assert.equal(pendingFor(db, READER).pending, true);
+  assert.equal(pendingFor(db, READER).pending, false, 'a gate must be INVISIBLE to the wake predicate (D2)');
+  // Positive control, same command: a QUESTION message addressed to the reader
+  // — which `check` CAN surface — DOES make it pending, so the zero above is D2
+  // in force, not a dead predicate that says no to everything.
+  send(db, { runId: RUN, sender: OTHER, kind: 'question', body: 'still ship it?', recipient: READER });
+  assert.equal(pendingFor(db, READER).pending, true, 'a question message the order can surface DOES wake');
 });
 
-test('a gate the reader itself asked does NOT keep that reader pending', (t) => {
-  // MUTANT: drop the `asked_by <> ?` clause → red.
-  // WHY IT MATTERS: otherwise the asker wakes itself forever — a self-sustaining
-  //   wake loop that never terminates, since answering is someone else's act.
+test('an open QUESTION message keeps a reader pending with no unread lot', (t) => {
+  // COVERS: the openQuestion half — the "ask addressed to the reader" D2 keeps.
+  // MUTANT: delete the openQuestion query / its qhi contribution → red.
+  // WHY IT MATTERS: "a reader parked on a question is waiting, never stale"
+  //   (#117 Intent). A question has a recipient and `check` returns it, so
+  //   unlike a gate it is genuinely surfaceable by the wake order.
   const db = tmpBus(t);
-  openGate(db, RUN, READER, 'ship it?');
-  assert.equal(pendingFor(db, READER).pending, false);
-  // Positive control: the SAME gate does make another reader pending, so this
-  // is not passing merely because gates are invisible to the predicate.
-  assert.equal(pendingFor(db, OTHER).pending, true);
+  assert.equal(pendingFor(db, READER).pending, false, 'baseline: quiet');
+  send(db, { runId: RUN, sender: OTHER, kind: 'question', body: 'ship it?', recipient: READER });
+  assert.equal(pendingFor(db, READER).pending, true);
+  // Negative control, same command: a question addressed to READER does NOT make
+  // OTHER pending — the predicate is recipient-scoped, not a blanket "any question".
+  assert.equal(pendingFor(db, OTHER).pending, false);
 });
 
 // ── Batch shape ────────────────────────────────────────────────────────────
@@ -169,18 +179,17 @@ test('readPendingReaders answers per reader in one pass, not one answer for all'
   );
 });
 
-test('an open gate in ANOTHER run does not make this reader pending', (t) => {
-  // COVERS: `run_id = ?` in the openAsk query.
+test('an open QUESTION in ANOTHER run does not make this reader pending', (t) => {
+  // COVERS: `run_id = ?` in the openQuestion query.
   // MUTANT: replace it with `? IS NOT NULL` → red.
-  // WHY IT MATTERS: gates are the half of the predicate with NO cursor to clear
-  // it. A gate leaking across runs makes the reader permanently pending — woken
-  // every sweep, forever, over a question asked in a run it cannot even see.
-  // (Caught by mutation: this clause survived its first mutant, so it was
-  // decoration until this arm existed.)
+  // WHY IT MATTERS: run-scoping is what keeps the per-run switch coherent — a
+  // question leaking across runs would wake a reader to `orchestra check`,
+  // which — scoped to ITS run by the CLI — returns an empty lot, so the reader
+  // acks nothing and is woken every sweep forever.
   const db = tmpBus(t);
-  openGate(db, 'a-different-run', OTHER, 'ship it?');
+  send(db, { runId: 'a-different-run', sender: OTHER, kind: 'question', body: 'ship it?', recipient: READER });
   assert.equal(pendingFor(db, READER, RUN).pending, false);
-  // Positive control, same command: the SAME gate read from ITS run does make
-  // the reader pending, so the zero above is scoping, not a blind query.
+  // Positive control, same command: the SAME question read from ITS run does
+  // make the reader pending, so the zero above is scoping, not a blind query.
   assert.equal(pendingFor(db, READER, 'a-different-run').pending, true);
 });

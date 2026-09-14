@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openBus, send, check, ack, type BusDb } from './bus.ts';
+import { openBus, send, check, ack, openGate, type BusDb } from './bus.ts';
 import {
   sweepBusWake,
   busWakeCounters,
@@ -468,4 +468,29 @@ test('a switch accessor that THROWS is treated as OFF, and does not kill the swe
     1,
     'one reader\'s broken switch must not take the whole sweep down',
   );
+});
+
+test('D2 must-FAIL arm — an open GATE fires 0 wakes AND counts 0 (ledger #123 Q-B3)', async (t) => {
+  // LEAD §Decisions D2: gate-driven wakes are dropped from #117 (they move to
+  // #119). Asserted at the SWEEP with the switch ON, because a gate must be
+  // invisible to the WHOLE mechanism, not just the predicate: 0 fired AND
+  // 0 counted. The counter half is load-bearing — a gate that merely didn't fire
+  // but still COUNTED would feed a false divergence into the promotion bar (the
+  // exact over-count Q-B3 raised).
+  // MUTANT: restore the `decision_gates` half of readPendingReaders → this arm
+  //   fires 1 (switch ON) and the OFF variant would count 1 → red.
+  const db = tmpDb(t);
+  const wakes = rig(db, { switchOn: true });
+  openGate(db, RUN, 'ws-asker', 'ship it?'); // a gate addressed at the run, not R1
+  await sweepBusWake();
+  assert.equal(wakes.length, 0, 'an open gate must fire NO wake (D2 — check cannot surface a gate)');
+  assert.equal(busWakeCounters().counted, 0, 'and it must NOT be counted — no false divergence to the promotion bar');
+  assert.equal(busWakeCounters().fired, 0);
+
+  // Positive control, same command: a QUESTION message the order CAN surface
+  // DOES wake — so the zeros above are D2 in force, not a dead sweep.
+  send(db, { runId: RUN, sender: 'ws-asker', kind: 'question', body: 'still?', recipient: R1 });
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'a question message addressed to the reader still wakes');
+  assert.equal(busWakeCounters().fired, 1);
 });

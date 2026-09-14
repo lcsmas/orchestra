@@ -118,9 +118,9 @@ const ledger = new Map<string, WakeLedgerEntry>();
 /**
  * Compute, for every reader we could wake, whether it has PENDING state.
  *
- * Pending = an unread lot OR an open ask/gate addressed to the reader (#108
- * Q15). Read entirely from DURABLE tables — `messages`/`cursors`/`deliveries`/
- * `decision_gates` — so a restart recomputes the identical answer.
+ * Pending = an unread lot OR an open QUESTION message addressed to the reader.
+ * Read entirely from DURABLE tables — `messages`/`cursors`/`deliveries` — so a
+ * restart recomputes the identical answer.
  *
  * The lot half is deliberately expressed as "is there anything past the reader's
  * durable cursor", NOT "is there an outstanding delivery row". Those differ in
@@ -128,6 +128,18 @@ const ledger = new Map<string, WakeLedgerEntry>();
  * all, and an outstanding-row predicate would report it as having nothing
  * pending — the reader that most needs waking is the one such a predicate is
  * blind to.
+ *
+ * ── Open GATES do NOT wake (LEAD §Decisions D2, ledger #123 Q-B3) ────────────
+ *
+ * An earlier version also treated an open `decision_gates` row as pending. That
+ * was wrong: the ORDER a wake carries is `orchestra check`, and `check` reads
+ * `messages` only — a gate has no recipient column and there is no `gate list`
+ * verb, so a gate-woken reader is ordered to look somewhere that can never show
+ * the gate, acks nothing, and (worse) the shadow `counted` signal over-counts a
+ * divergence the promotion bar reads. Gate-driven wakes move to #119, where
+ * gates get a recipient and a surfacing verb. A `question` MESSAGE is different
+ * and STAYS: it has a recipient and `check` returns it, so it is genuinely
+ * surfaceable by the order.
  */
 export function readPendingReaders(
   db: BusDb,
@@ -149,12 +161,10 @@ export function readPendingReaders(
        AND m.sequence > COALESCE(
              (SELECT c.acked_seq FROM cursors c WHERE c.reader = ? AND c.run_id = m.run_id), 0)
   `);
-  // An open ask/gate keeps the reader pending even with no unread lot: a reader
-  // parked on an ask is `waiting`, never stale (#117 Intent).
-  const openAsk = db.prepare(`
-    SELECT COUNT(*) AS n FROM decision_gates
-     WHERE run_id = ? AND resolved_at IS NULL AND asked_by <> ?
-  `);
+  // An open QUESTION message keeps the reader pending even with no unread lot: a
+  // reader parked on a question is `waiting`, never stale (#117 Intent). Unlike a
+  // gate (D2, above), a question has a recipient and `check` returns it, so the
+  // wake order can actually surface it.
   const openQuestion = db.prepare(`
     SELECT COALESCE(MAX(m.sequence), 0) AS hi
       FROM messages m
@@ -167,12 +177,11 @@ export function readPendingReaders(
   for (const { reader, runId } of readers) {
     const hi = Number((lotHigh.get(runId, reader, reader) as { hi: number }).hi);
     const qhi = Number((openQuestion.get(runId, reader, reader) as { hi: number }).hi);
-    const asks = Number((openAsk.get(runId, reader) as { n: number }).n);
     const pendingThroughSeq = Math.max(hi, qhi);
     out.push({
       reader,
       pendingThroughSeq,
-      pending: pendingThroughSeq > 0 || asks > 0,
+      pending: pendingThroughSeq > 0,
     });
   }
   return out;

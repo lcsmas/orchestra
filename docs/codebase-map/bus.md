@@ -635,7 +635,7 @@ with nothing armed, then requires the first sweep to fire.
 
 ## The pending predicate — `readPendingReaders` (`src/main/bus-wake.ts:132`)
 
-Pending = **an unread lot OR an open ask/gate addressed to the reader** (#108 Q15).
+Pending = **an unread lot OR an open QUESTION message addressed to the reader**.
 
 The lot half asks *"is there anything past the reader's durable cursor"*, **not**
 *"is there an outstanding `deliveries` row"*. Those differ in the case that
@@ -647,8 +647,18 @@ The cursor read is `cursors.acked_seq`, which **only `ack()` advances**. So
 ack is woken again. Keying on `deliveries.to_seq` instead would rebuild the lying
 "Delivered" the bus exists to kill, one layer up.
 
-`asked_by <> ?` excludes the asker's own gate: otherwise a reader that opens a
-gate wakes itself forever, since answering is someone else's act.
+**Open GATES do NOT wake — deferred to #119 (LEAD §Decisions D2, ledger #123
+Q-B3).** The order a wake carries is `orchestra check`, which reads `messages`
+only; a `decision_gates` row has no recipient column and there is no `gate list`
+verb, so a gate can never be surfaced by the order. An earlier predicate woke on
+open gates: the reader was ordered to look where the gate is invisible, acked
+nothing, looped, and the shadow `counted` signal over-counted a divergence the
+promotion bar reads. Gate-driven wakes move to **#119** (gates get a recipient +
+a surfacing verb there). A `kind='question'` MESSAGE is different and STAYS: it
+has a recipient and `check` returns it, so the order can surface it. The
+must-FAIL arms (`bus-wake.test.ts` predicate + `bus-wake-sweep.test.ts` sweep)
+assert an open gate → **0 pending, 0 wakes, 0 counted**, with a question message
+as the same-command positive control.
 
 ## Dedup: ledger PRESENCE, not a sequence comparison
 

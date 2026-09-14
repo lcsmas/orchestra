@@ -21,7 +21,10 @@ export interface ReaderPendingState {
   reader: string;
   /** Highest `messages.sequence` addressed to this reader (0 when none). */
   pendingThroughSeq: number;
-  /** True when a lot is available OR outstanding, or an ask/gate is open. */
+  /** True when a lot is available/outstanding, or a QUESTION message addressed
+   *  to the reader is open. An open decision GATE does NOT count (LEAD D2,
+   *  ledger #123 Q-B3): `orchestra check` cannot surface a gate, so gate-driven
+   *  wakes are deferred to #119. */
   pending: boolean;
 }
 
