@@ -279,7 +279,8 @@ test('F1: a member stale while OFF escalates EXACTLY ONCE when the switch flips 
   armSweep(db, [member()], /* switchOn */ false);
   sweepBusLiveness();
   assert.equal(escalationCount(db, 'ws-ops', 'ws-worker'), 0, 'OFF → no row (counted)');
-  assert.ok(busLivenessCounters().counted >= 1, 'OFF → counted');
+  const countedWhileOff = busLivenessCounters().counted;
+  assert.ok(countedWhileOff >= 1, 'OFF → the shadow COUNT is recorded');
   // Flip the switch ON (same member, still continuously silent).
   setLivenessSwitchReader(() => true);
   sweepBusLiveness();
@@ -288,6 +289,14 @@ test('F1: a member stale while OFF escalates EXACTLY ONCE when the switch flips 
     1,
     'the switch flipping ON must escalate the already-stale member exactly once',
   );
+  // The shadow COUNT from the OFF phase is NOT lost by the flip (OPS-C refinement:
+  // counted-while-OFF must survive AND the member must escalate once on ON).
+  assert.equal(
+    busLivenessCounters().counted,
+    countedWhileOff,
+    'the OFF-phase shadow count is preserved across the flip, not reset',
+  );
+  assert.equal(busLivenessCounters().fired, 1, 'exactly one real escalation fired on the flip');
   sweepBusLiveness();
   assert.equal(escalationCount(db, 'ws-ops', 'ws-worker'), 1, 'no double-fire on the next ON sweep');
 });
