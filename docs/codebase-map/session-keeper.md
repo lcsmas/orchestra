@@ -66,6 +66,38 @@ completion, relaunch reattach + transcript, explicit-stop kill).
   account migration must not leave an orphan CLI running a discarded
   conversation (`sdkStopIfLive` in sdk-delivery.ts therefore always calls
   `stop`, even with no live session).
+  ⚠️ **A stop BEFORE the CLI's first `result` cannot ride the graceful close
+  (D3, audit 2026-09-14).** The SDK ends stdin only after `waitForFirstResult()`
+  resolves, and `interrupt()` is a control request the CLI does not service
+  before init completes — so a graceful `sdkStop` on a never-`result` CLI
+  reaches the keeper with NOTHING (no `stdinEnd`, no `kill`) and the CLI lives
+  on inside a since-removed worktree until its own ~600 s deadline (measured:
+  26/26 of the exit-1 cluster were workspaces deleted/hibernated 1–6 min after
+  spawn). `Session.sawResult` latches on the FIRST `result` seen in `consume()`;
+  `sdkStop` reads it (captured BEFORE the interrupt await, so a late result
+  can't retroactively skip the kill) and, when no result has been seen, falls
+  THROUGH to `await killKeeper(wsId)` — the same terminate path `sdkMcpRefresh`
+  uses. `killKeeper` awaits the process's death (bounded, then SIGKILL), so
+  `deleteWorkspace` &c. — which already `await sdkStopIfLive` — can safely rm
+  the worktree after it returns; no `workspaces.ts` await was added. Gates:
+  `src/main/stop-semantics.test.ts` (decision + source guards),
+  `scripts/e2e-stop-semantics.mjs` (arms `s3_no_result`/`s3_with_result`:
+  killKeeper 1×/0× fixed, 0×/0× unfixed), `scripts/e2e-keeper-kill-authority.mjs`
+  (real keeper + real never-result child both dead within 20 s of `killKeeper`).
+- **A session's teardown removes ONLY itself (D2, audit 2026-09-14).** The
+  `sessions` map is keyed by wsId, not by identity, so `consume()`'s `finally`
+  must delete/`reconcileExited` only `if (sessions.get(session.wsId) ===
+  session)`. Without the guard, a stop→restart evicts the SUCCESSOR: `sdkStop`
+  removes session A, a restart registers session B in the same slot, and A's
+  still-unwinding consume loop then deletes B — B keeps running but
+  `sdkHasSession` reads false, peer deliveries return `'none'` (the only path to
+  it, `sdkDeliverConfirmed`, sdk-delivery.ts) and the next send spawns a rival
+  third session. `reconcileExited` is inside the same guard so a live
+  successor's status dot is not floored by the predecessor's teardown. Gate:
+  `scripts/e2e-stop-semantics.mjs` arm `s2_successor` (fixed → hasSession true /
+  delivery `'started'`; unfixed → false / `'none'`) + the `s2_sole_dies` control
+  (a lone session's teardown DOES clear the slot), and the source/decision
+  guards in `src/main/stop-semantics.test.ts`.
 - **Shutdown policy** (daemon-side, from the pure state machine): detached +
   turn complete (`"type":"result"` seen on stdout; `system` lines are neutral
   so an attach's fresh init doesn't hold an idle CLI) → linger 15 min

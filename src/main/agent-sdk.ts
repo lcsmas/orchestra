@@ -243,6 +243,17 @@ export function __setQueryFactoryForTests(factory: QueryFactory | null): void {
   queryOverride = factory;
 }
 
+/** Test seam: observe {@link sdkStop}'s D3 fall-through kill without a real
+ *  keeper. A queryOverride rig has no keeper daemon, so the real
+ *  {@link killKeeper} is a no-op there — this lets a rig assert WHETHER the
+ *  no-first-result branch fired (the decision S3 makes), separately from the
+ *  real-keeper harness that proves `killKeeper` actually terminates the pids.
+ *  Null (the default) uses the real `killKeeper`. */
+let killKeeperOverride: ((wsId: string) => Promise<void>) | null = null;
+export function __setKillKeeperForTests(fn: ((wsId: string) => Promise<void>) | null): void {
+  killKeeperOverride = fn;
+}
+
 interface Session {
   wsId: string;
   q: Query;
@@ -379,6 +390,19 @@ interface Session {
    *  messages) must NOT be emitted — they'd land AFTER the `session/clear`
    *  reset and dirty the fresh transcript. */
   cleared?: boolean;
+  /** True once ANY `result` message has been seen on this query's stream (D3).
+   *
+   *  The SDK ends stdin only after the prompt iterator finishes AND its
+   *  `waitForFirstResult()` resolves; `interrupt()` is a control request the CLI
+   *  does not service before init completes. So a graceful {@link sdkStop} on a
+   *  CLI that has never produced a `result` reaches the keeper with NOTHING —
+   *  no `stdinEnd`, no `kill` — and the CLI lives on inside a since-removed
+   *  worktree until its own ~600 s deadline (measured: 26/26 of the exit-1
+   *  cluster). `sdkStop` therefore reads this flag: no result yet ⇒ fall through
+   *  to `await killKeeper` after the graceful attempt, so delete/archive/
+   *  hibernate/migrate/branch-switch never orphan a CLI. Set in consume()'s
+   *  `result` branch; a fresh session starts `false`. */
+  sawResult: boolean;
 }
 
 const sessions = new Map<string, Session>();
@@ -1093,6 +1117,12 @@ async function consume(session: Session): Promise<void> {
         void persistSessionId(session.wsId, sid);
       }
       if (msg.type === 'result') {
+        // D3: a `result` means the CLI has finished its first turn, so a
+        // graceful stop can now reach the keeper through the SDK's stdin-end.
+        // Latched (never reset): once ANY result has landed, the query's stdin
+        // is serviceable and `sdkStop`'s graceful close terminates without the
+        // fall-through kill. See Session.sawResult.
+        session.sawResult = true;
         // Turn boundary — the interrupt (if any) is fully accounted for, so
         // reset the flag: it must not linger and mislabel/suppress a FUTURE
         // turn's genuine error as interrupt fallout. (emitFrom already ran for
@@ -1265,16 +1295,27 @@ async function consume(session: Session): Promise<void> {
     session.stopping = true;
     session.pump?.();
     session.turnGate?.();
-    sessions.delete(session.wsId);
-    // Status-dot reconciliation floor, mirroring the terminal PTY's exit handler
-    // (pty.ts reconcileExited): once the SDK subprocess is gone — natural end,
-    // interrupt, crash, or kill — the agent can't be `running`, so self-heal a
-    // dot the activity `stop` hook may not have flipped (a crash never fires it).
-    // Guard on no live PTY: if a terminal PTY owns the dot for this workspace,
-    // let ITS exit handler reconcile — knocking it to `waiting` here would fight
-    // a still-live terminal agent. reconcileExited itself no-ops unless status is
-    // currently `running`, so this is safe when the agent legitimately idled.
-    if (!isPtyRunning(session.wsId)) reconcileExited(session.wsId);
+    // D2: remove ONLY ourselves. `sessions` is keyed by wsId, not by identity,
+    // so an unconditional `delete(wsId)` here deletes whatever session currently
+    // owns the slot — which, after a stop→restart, is the SUCCESSOR (session B):
+    // `sdkStop` removed A and A's still-unwinding consume loop would then evict
+    // B. B keeps running but `sdkHasSession` reads false, peer deliveries return
+    // `'none'` (the only path to it, sdk-delivery.ts) and the next send spawns a
+    // rival third session. Delete + reconcile only while WE still own the slot.
+    if (sessions.get(session.wsId) === session) {
+      sessions.delete(session.wsId);
+      // Status-dot reconciliation floor, mirroring the terminal PTY's exit
+      // handler (pty.ts reconcileExited): once the SDK subprocess is gone —
+      // natural end, interrupt, crash, or kill — the agent can't be `running`,
+      // so self-heal a dot the activity `stop` hook may not have flipped (a
+      // crash never fires it). Guard on no live PTY: if a terminal PTY owns the
+      // dot for this workspace, let ITS exit handler reconcile — knocking it to
+      // `waiting` here would fight a still-live terminal agent. reconcileExited
+      // itself no-ops unless status is currently `running`, so this is safe when
+      // the agent legitimately idled. Inside the identity guard: a live
+      // successor's dot must not be floored by the predecessor's teardown.
+      if (!isPtyRunning(session.wsId)) reconcileExited(session.wsId);
+    }
   }
 }
 
@@ -1390,6 +1431,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     driveStatus,
     pendingLocalContext: [],
     recentEchoes: [],
+    sawResult: false,
   };
 
   // Resolve the query factory: a test override, else the dynamically-imported
@@ -4209,6 +4251,12 @@ export async function sdkStop(wsId: string): Promise<void> {
     return;
   }
   session.stopping = true;
+  // Latch BEFORE any await: `session.sawResult` can flip on a late `result`
+  // that lands between here and the interrupt, and the decision below must be
+  // "had this CLI produced a result by the time the user asked to stop?" — a
+  // result racing in after the stop request does not retroactively make the
+  // graceful close reach the keeper in time.
+  const sawResult = session.sawResult;
   // Anything still queued when the session is torn down will never run, so any
   // sender holding a delivery receipt for it is told now (issue #57 fault b).
   // Done here as well as in consume()'s finally because an explicit stop can
@@ -4224,10 +4272,23 @@ export async function sdkStop(wsId: string): Promise<void> {
     // interrupt on an already-ended query throws; ignore.
   }
   sessions.delete(wsId);
-  // NOTE: no killKeeper here — the SDK's graceful close ends stdin, which the
-  // bridge forwards as a stdinEnd frame; the keeper then EOF→SIGTERM→SIGKILL
-  // escalates on its own clock. That preserves the CLI's clean shutdown
-  // (transcript flush) where an immediate SIGTERM would race it.
+  // D3: a CLI that has NEVER emitted a `result` cannot be stopped gracefully.
+  // The SDK ends stdin only after `waitForFirstResult()` resolves, and
+  // `interrupt()` is a control request the CLI does not service before init
+  // completes — so the graceful close above reaches the keeper with nothing
+  // (no `stdinEnd`, no `kill`) and the CLI lives on inside a since-removed
+  // worktree until its own ~600 s deadline (measured: 26/26 of the exit-1
+  // cluster were workspaces deleted/hibernated 1–6 min after spawn). When no
+  // result has been seen, fall through to killKeeper — the same terminate path
+  // sdkMcpRefresh uses — so delete/archive/hibernate/migrate/branch-switch
+  // never orphan a CLI. killKeeper AWAITS the process's death (bounded, then
+  // SIGKILL), so the caller (deleteWorkspace &c.) can safely rm the worktree
+  // after this returns. For a session that HAS produced a result, keep the
+  // graceful close alone — it preserves the CLI's transcript flush, where an
+  // immediate SIGTERM would race it.
+  if (!sawResult) {
+    await (killKeeperOverride ?? killKeeper)(wsId);
+  }
 }
 
 /** Clear the conversation (composer `/clear` — parity with Claude Code): tear
