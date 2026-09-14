@@ -285,6 +285,54 @@ test('T119.4 an ASKER parked on an open ask is `waiting`; the ANSWERER-silent wo
   assert.equal(waiting.has('lead'), false, 'a RESOLVED gate no longer marks the opener waiting');
 });
 
+// ══ F1 (review-119) — "answered" is scoped to the target→asker reply ═════════
+
+test('F1 must-FAIL arm: a 3rd-party or SELF threaded message does NOT answer the ask', async (t) => {
+  // review-119 F1: the "answered" predicate matched ANY message threaded to the
+  // ask-seq, so a 3rd-party `send --thread`, or the asker self-replying, silently
+  // closed the ask — R never re-woken (breaks acceptance-1), asker's waiting
+  // exclusion cleared while genuinely blocked (breaks acceptance-3 / #120).
+  //
+  // MUTANT = the PRE-FIX predicate (drop `AND r.sender=q.recipient AND
+  //   r.recipient=q.sender` from BOTH queries): every assertion below flips —
+  //   the ask reads answered, R is not re-woken, the asker is not waiting. Shown
+  //   red through this same rig before the fix (see the F1 disposition).
+  const db = tmpDb(t);
+  const wakes = rig(db, { wake: true, readers: [ASKER, R] });
+  const askSeq = send(db, { runId: RUN, sender: ASKER, kind: 'question', body: 'q?', recipient: R });
+
+  await sweepBusWake();
+  assert.equal(wakes.filter((w) => w.reader === R).length, 1, 'R woken for the ask');
+
+  // ── a THIRD party threads a message to the ask-seq (not the target, not to the asker) ──
+  send(db, { runId: RUN, sender: OTHER, kind: 'status', body: 'i think ship', recipient: ASKER, threadId: String(askSeq) });
+  // ── and the ASKER self-replies on the same thread ──
+  send(db, { runId: RUN, sender: ASKER, kind: 'status', body: 'note to self', recipient: R, threadId: String(askSeq) });
+
+  // The ask is STILL open: R must be re-woken after acking (bounded by the ack).
+  const lot = check(db, RUN, R);
+  ack(db, RUN, R, lot.delivery!.id);
+  for (let i = 0; i < 5; i++) await sweepBusWake();
+  assert.equal(
+    wakes.filter((w) => w.reader === R).length,
+    2,
+    'a 3rd-party/self reply does NOT answer the ask — R is still re-woken',
+  );
+
+  // And the asker is STILL waiting (not stale-eligible for #120).
+  const waiting = readWaitingReaders(db, [{ reader: ASKER, runId: RUN }]);
+  assert.equal(waiting.has(ASKER), true, 'the asker is still waiting — an unscoped reply did not clear it');
+
+  // Positive control, same command: the TARGET answering the ASKER DOES close it.
+  send(db, { runId: RUN, sender: R, kind: 'status', body: 'ship', recipient: ASKER, threadId: String(askSeq) });
+  const stillWaiting = readWaitingReaders(db, [{ reader: ASKER, runId: RUN }]);
+  assert.equal(stillWaiting.has(ASKER), false, 'the TARGET→asker reply is what answers it');
+  const before = wakes.filter((w) => w.reader === R).length;
+  ack(db, RUN, R, check(db, RUN, R).delivery?.id ?? -1);
+  for (let i = 0; i < 5; i++) await sweepBusWake();
+  assert.equal(wakes.filter((w) => w.reader === R).length, before, 'a properly-answered ask stops re-waking R');
+});
+
 test('T119.4 run-scoped: an ask in another run does not mark the asker waiting HERE', async (t) => {
   // Same run-scoping the pending predicate has. Without it, #120 would exclude a
   // genuinely-silent member from staleness because it is waiting in an unrelated

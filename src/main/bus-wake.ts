@@ -187,6 +187,14 @@ export function readPendingReaders(
   // (the sweep's cursor-advance re-arm below drives that), because an unanswered
   // ask is exactly the reader the asker is blocked on. Unlike a gate before #119,
   // a question has a recipient and `check` surfaces it, so the wake order works.
+  // "Answered" must be scoped to the RECIPIENT answering the ASKER (review-119
+  // F1), not merely "some message is threaded to the ask". Without the sender/
+  // recipient scope, ANY threaded message — a 3rd party's `send --thread`, the
+  // asker self-replying, a mis-addressed reply — silently marks the ask answered,
+  // so R is never re-woken and the asker's waiting-exclusion clears while it is
+  // genuinely still blocked. The answer is the reply the ask verb documents:
+  // sent BY the target (`r.sender = q.recipient`) and routed back TO the asker
+  // (`r.recipient = q.sender`).
   const openQuestion = db.prepare(`
     SELECT COALESCE(MAX(q.sequence), 0) AS hi
       FROM messages q
@@ -194,6 +202,7 @@ export function readPendingReaders(
        AND NOT EXISTS (
          SELECT 1 FROM messages r
           WHERE r.run_id = q.run_id AND r.thread_id = CAST(q.sequence AS TEXT)
+            AND r.sender = q.recipient AND r.recipient = q.sender
        )
   `);
   const cursorOf = db.prepare(
@@ -256,9 +265,12 @@ export function readWaitingReaders(
   db: BusDb,
   readers: readonly { reader: string; runId: string }[],
 ): Set<string> {
-  // An open ask the reader SENT: a `question` it authored with no reply threaded
-  // to it. The reply is `send --thread <ask-id>` (bus-verbs.ts verbAsk), so an
-  // answered ask has a message whose thread_id = the question's sequence.
+  // An open ask the reader SENT: a `question` it authored with no reply from the
+  // TARGET back to it. Same F1 scope as the recipient side (review-119): the
+  // "answer" is the reply sent BY the target (`r.sender = q.recipient`) and
+  // routed back TO the asker (`r.recipient = q.sender`); a 3rd-party or self
+  // threaded message must NOT clear the asker's waiting-exclusion while it is
+  // genuinely still blocked (else #120 would treat the blocked asker as stale).
   const openAskSent = db.prepare(`
     SELECT 1
       FROM messages q
@@ -267,6 +279,7 @@ export function readWaitingReaders(
          SELECT 1 FROM messages r
           WHERE r.run_id = q.run_id
             AND r.thread_id = CAST(q.sequence AS TEXT)
+            AND r.sender = q.recipient AND r.recipient = q.sender
        )
      LIMIT 1
   `);
