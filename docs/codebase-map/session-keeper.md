@@ -172,6 +172,27 @@ completion, relaunch reattach + transcript, explicit-stop kill).
     transcript bubble itself. The `exactly_once` arm passes on the unfixed code
     too (its turn completes before the pass can misjudge it) and is labelled
     non-discriminating in the file rather than counted as a gate.
+    ⚠️ **The `result` branch also RE-DRIVES parked inbox mail at the turn
+    boundary (issue #124 D4 / S4).** When `session.queue` is empty (nothing of
+    its own to run), the session is not cleared, and `readInbox(wsId)` holds
+    blocks, `consume()` releases the FIRST block through `releaseInboxBlock`
+    (`inbox-tray.ts`, the exactly-once path and the ONLY remover). Fire-and-forget
+    (`void`, like `refreshContextUsage`) AFTER `openNext?.()` reopens the gate, so
+    `sendAwaitingStart` can start the re-driven turn; awaiting it would block the
+    consume loop on a full delivery round-trip. **One block per boundary** — the
+    turn it starts produces its own `result`, which re-drives the next; no new
+    drain path. **Why it matters:** a peer delivery that timed out waiting for a
+    busy turn to START is withdrawn and durably parked, but nothing started a new
+    turn when the current one ended, so the mail sat unseen until the watchdog
+    "recycled" a healthy idle session (into D1/D2 — the user-visible "not
+    responding"). Gate: `scripts/e2e-inbox-redrive.mjs` — the `redrive` arm parks
+    one block, drives one turn's `result`, asserts EXACTLY ONE `user-message`
+    broadcast for it and the file shrinking by one; `redrive_two` proves the
+    one-per-boundary chaining; `control_noresult` proves the rig can observe a
+    NON-re-drive (== the unfixed shape). MEASURED: `redrive` `ok:false`, 0
+    broadcasts, block still parked on master; `ok:true`, 1 broadcast, inbox empty
+    on the fix — same rig, RC 1 vs 0. `e2e-session-wedge-redelivery.mjs` stays
+    green (no double delivery).
   - **`session/attach`** (`AgentSessionAttachEvent`, types.ts): emitted from
     the keeper-spawn `onAttached` callback when a genuine mid-turn reattach
     happens; the fold flips `running`/`turnStartedAt` so the reattached turn

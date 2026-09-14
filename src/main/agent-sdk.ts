@@ -71,6 +71,7 @@ import {
 } from './activity';
 import { makeKeeperSpawn, killKeeper, probeKeeper } from './keeper-client';
 import { registerSdkDelivery } from './sdk-delivery';
+import { readInbox, releaseInboxBlock } from './inbox-tray';
 import { clearHibernated } from './hibernation.ts';
 import { buildBrowserToolServer } from './agent-browser-tools';
 import {
@@ -1150,6 +1151,25 @@ async function consume(session: Session): Promise<void> {
         // a beat later is fine, but blocking the consume loop on a control
         // request would stall every subsequent message.
         refreshContextUsage(session.wsId);
+        // #124 D4: re-drive parked inbox mail at the turn boundary. A peer
+        // delivery that timed out waiting for a running turn to START was
+        // withdrawn and parked in the durable inbox; nothing starts a new turn
+        // when this one ends, so the mail sat unseen until the watchdog
+        // "recycled" a healthy idle session (into D1/D2 — the user-visible "not
+        // responding"). When this session has nothing queued of its own and the
+        // inbox holds blocks, release the FIRST through the exactly-once path
+        // (`releaseInboxBlock`, the ONLY remover). One block per boundary: the
+        // turn it starts produces its own `result`, which re-drives the next.
+        // Fire-and-forget for the same reason as refreshContextUsage — the gate
+        // is already open (openNext ran above), so releaseInboxBlock's
+        // sendAwaitingStart can start the new turn; awaiting it here would block
+        // the consume loop on a full delivery round-trip.
+        if (session.queue.length === 0 && !session.cleared && readInbox(session.wsId).length > 0) {
+          const first = readInbox(session.wsId)[0];
+          void releaseInboxBlock(session.wsId, first.text).catch((e) =>
+            log.warn(`agent-sdk: inbox re-drive failed for ${session.wsId}`, e),
+          );
+        }
       }
     }
   } catch (err) {
