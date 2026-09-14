@@ -230,9 +230,12 @@ Usage:
   orchestra ask --to <handle> <question...>      Park a question on the bus for <handle>, print
                                                  its id and EXIT — never waits (the answer comes
                                                  back as an ordinary bus message)
-  orchestra gate open <question...>              Open a decision gate awaiting a human Ruling
-  orchestra gate resolve <id> <ruling...>        Record the Ruling (refuses to overwrite one)
-                                                 All five accept --run <id> (default: $ORCHESTRA_RUN_ID
+  orchestra gate open [--to <h>] <question...>   Open a decision gate awaiting a human Ruling;
+                                                 --to <h> addresses (and wakes) that reader until
+                                                 it is resolved, and surfaces it in their 'check'
+  orchestra gate resolve <id> --resolution <r>   Record the Ruling (refuses to overwrite one)
+  orchestra gate list                            Open gates addressed to you (also shown by 'check')
+                                                 All accept --run <id> (default: $ORCHESTRA_RUN_ID
                                                  or 'default') and --as <handle> (default: $ORCHESTRA_WS_ID)
   orchestra add-repo <path>                       Register a repo by path
   orchestra delete <id> [--yes]                  Delete a workspace (worktree + branch)

@@ -26,7 +26,7 @@
 // take a `fail` callback rather than exiting themselves — which also makes them
 // unit-testable without spawning a process.
 
-import type { BusDb, BusLot, BusMessageKind, BusMessage } from '../main/bus.ts';
+import type { BusDb, BusLot, BusMessageKind, BusMessage, BusDecisionGate } from '../main/bus.ts';
 
 /** The eight kinds `bus.send()` accepts. Duplicated as a VALUE here because
  *  bus.ts exports the list only as a type; keep in sync with MESSAGE_KINDS. */
@@ -143,8 +143,17 @@ export interface BusModule {
   }): number;
   check(db: BusDb, runId: string, reader: string, limit?: number): BusLot;
   ack(db: BusDb, runId: string, reader: string, lotId: number): boolean;
-  openGate(db: BusDb, runId: string, askedBy: string, question: string): number;
+  openGate(
+    db: BusDb,
+    runId: string,
+    askedBy: string,
+    question: string,
+    recipient?: string | null,
+  ): number;
   resolveGate(db: BusDb, gateId: number, resolvedBy: string, resolution: string): boolean;
+  /** Open gates addressed to `recipient` (#119) — surfaced by `check` and
+   *  `gate list` so a gate-woken reader can see what it was woken for. */
+  openGatesForRecipient(db: BusDb, runId: string, recipient: string): BusDecisionGate[];
 }
 
 // ─── send ───────────────────────────────────────────────────────────────────
@@ -203,9 +212,28 @@ export interface CheckOutput {
     body: string;
     created_at: number;
   }>;
+  /**
+   * Open decision gates addressed to this reader (#119). Surfaced HERE because
+   * the wake order is `orchestra check` and nothing else — a gate-woken reader
+   * must see the gate it was woken for without a second verb. Carried alongside
+   * the lot rather than folded into `messages`: a gate is not a lot message, it
+   * is not acked by `orchestra ack`, and it stays visible across checks until it
+   * is resolved (unlike a lot, which clears on ack). Always present (possibly
+   * empty) so a parser never has to distinguish "no gates" from "old build".
+   */
+  gates: Array<{
+    id: number;
+    asked_by: string;
+    question: string;
+    opened_at: number;
+  }>;
 }
 
-export function lotToOutput(id: BusIdentity, lot: BusLot): CheckOutput {
+export function lotToOutput(
+  id: BusIdentity,
+  lot: BusLot,
+  gates: readonly BusDecisionGate[] = [],
+): CheckOutput {
   return {
     run: id.runId,
     reader: id.handle,
@@ -223,11 +251,34 @@ export function lotToOutput(id: BusIdentity, lot: BusLot): CheckOutput {
       body: m.body,
       created_at: m.created_at,
     })),
+    gates: gates.map((g) => ({
+      id: g.id,
+      asked_by: g.asked_by,
+      question: g.question,
+      opened_at: g.opened_at,
+    })),
   };
 }
 
+function renderGatesMarkdown(o: CheckOutput): string {
+  if (o.gates.length === 0) return '';
+  const head = `\n## Open decision gate(s) addressed to ${o.reader} — ${o.gates.length}\n`;
+  const body = o.gates
+    .map(
+      (g) =>
+        `\n### gate ${g.id} · from ${g.asked_by}\n${g.question}\n\nAnswer it (LEAD, after the human rules): orchestra gate resolve ${g.id} --resolution "<ruling>"\n`,
+    )
+    .join('');
+  return `${head}${body}`;
+}
+
 export function renderLotMarkdown(o: CheckOutput): string {
-  if (o.count === 0) return `No pending messages for ${o.reader} in run ${o.run}.\n`;
+  const gatesMd = renderGatesMarkdown(o);
+  if (o.count === 0) {
+    // A gate is pending even when the lot is empty — a reader woken FOR a gate
+    // arrives with no lot messages, so "no messages" must still print the gate.
+    return `No pending messages for ${o.reader} in run ${o.run}.\n${gatesMd}`;
+  }
   const head = `## Lot ${o.lot}${o.replay ? ' (REPLAY — this lot was already outstanding)' : ''} — ${o.count} message(s), seq ${o.from + 1}..${o.to}\n`;
   const body = o.messages
     .map(
@@ -235,7 +286,7 @@ export function renderLotMarkdown(o: CheckOutput): string {
         `\n### ${m.sequence} · ${m.kind} · from ${m.sender}${m.recipient ? ` → ${m.recipient}` : ''}${m.thread_id ? ` · thread ${m.thread_id}` : ''}\n${m.body}\n`,
     )
     .join('');
-  return `${head}${body}\nAck it when you have acted on it: orchestra ack ${o.lot}\n`;
+  return `${head}${body}\nAck it when you have acted on it: orchestra ack ${o.lot}\n${gatesMd}`;
 }
 
 /**
@@ -251,6 +302,10 @@ export function renderLotMarkdown(o: CheckOutput): string {
  * so a reader in a loop does one call per turn instead of two.
  */
 export function verbCheck(ctx: BusVerbCtx, a: CheckArgs): void {
+  // Open gates addressed to this reader (#119) accompany EVERY check response —
+  // the wake order is `orchestra check`, so this one verb must surface both the
+  // lot and the gate a reader may have been woken for.
+  const gates = ctx.bus.openGatesForRecipient(ctx.db, ctx.id.runId, ctx.id.handle);
   if (a.ackPrevious) {
     const outstanding = ctx.bus.check(ctx.db, ctx.id.runId, ctx.id.handle, a.limit);
     if (outstanding.delivery && outstanding.replay) {
@@ -259,12 +314,12 @@ export function verbCheck(ctx: BusVerbCtx, a: CheckArgs): void {
       // No lot was outstanding, so `check` just took a FRESH one. Acking it now
       // would ack messages the caller has not seen — the caller asked to close
       // the PREVIOUS lot, and there was none. Hand this one back unacked.
-      ctx.out(emit(ctx, a, lotToOutput(ctx.id, outstanding)));
+      ctx.out(emit(ctx, a, lotToOutput(ctx.id, outstanding, gates)));
       return;
     }
   }
   const lot = ctx.bus.check(ctx.db, ctx.id.runId, ctx.id.handle, a.limit);
-  ctx.out(emit(ctx, a, lotToOutput(ctx.id, lot)));
+  ctx.out(emit(ctx, a, lotToOutput(ctx.id, lot, gates)));
 }
 
 function emit(_ctx: BusVerbCtx, a: CheckArgs, o: CheckOutput): string {
@@ -323,29 +378,65 @@ export function verbAsk(ctx: BusVerbCtx, to: string | undefined, question: strin
 
 // ─── gate ───────────────────────────────────────────────────────────────────
 
+/** Pull one `--flag value` out of a token list (first occurrence). Local to the
+ *  gate verb so it stays unit-testable from a raw `rest` array with no index.ts
+ *  machinery. `present` distinguishes "flag absent" from "flag with no value". */
+function pullFlag(tokens: string[], flag: string): { value?: string; present: boolean; rest: string[] } {
+  const idx = tokens.indexOf(flag);
+  if (idx === -1) return { present: false, rest: tokens };
+  const value = tokens[idx + 1];
+  const rest = [...tokens.slice(0, idx), ...tokens.slice(idx + 2)];
+  return { value, present: true, rest };
+}
+
 /**
- * `orchestra gate open <question...>` / `gate resolve <id> <ruling...>`.
+ * `orchestra gate open [--to <recipient>] <question...>`
+ * `orchestra gate resolve <id> --resolution <text...>`  (also accepts a
+ *     positional ruling, for back-compat with the pre-#119 form)
+ * `orchestra gate list`  — open gates addressed to the caller.
  *
  * A Ruling is the HUMAN's decision (CONTEXT.md), recorded by the LEAD after the
  * human has ruled — so `resolve` is a recording verb, never a deciding one, and
  * it is idempotent-by-refusal: bus.resolveGate() returns false on an already
  * resolved gate and we report that rather than overwriting the first ruling.
+ *
+ * `--to` (#119): who the gate is addressed to. That reader is woken (via the
+ * pending predicate) and sees the gate in `orchestra check` until it is resolved.
+ * Omitting `--to` opens a gate addressed to nobody — recorded, but it wakes no
+ * one; the coexistence-safe default.
  */
 export function verbGate(ctx: BusVerbCtx, sub: string | undefined, rest: string[]): void {
   if (sub === 'open') {
-    const question = rest.join(' ');
-    if (!question.trim()) ctx.fail('usage: orchestra gate open <question...>');
-    const gateId = ctx.bus.openGate(ctx.db, ctx.id.runId, ctx.id.handle, question);
+    const to = pullFlag(rest, '--to');
+    if (to.present && !to.value?.trim()) {
+      ctx.fail('orchestra gate open: --to needs a recipient handle');
+    }
+    const question = to.rest.join(' ');
+    if (!question.trim()) ctx.fail('usage: orchestra gate open [--to <recipient>] <question...>');
+    const gateId = ctx.bus.openGate(
+      ctx.db,
+      ctx.id.runId,
+      ctx.id.handle,
+      question,
+      to.value?.trim() || null,
+    );
     ctx.out(`${gateId}\n`);
     return;
   }
   if (sub === 'resolve') {
-    const gateId = Number(rest[0]);
-    if (!Number.isInteger(gateId) || gateId <= 0) {
-      ctx.fail('usage: orchestra gate resolve <gate-id> <ruling...>');
+    const res = pullFlag(rest, '--resolution');
+    if (res.present && !res.value?.trim()) {
+      ctx.fail('orchestra gate resolve: --resolution needs a ruling');
     }
-    const ruling = rest.slice(1).join(' ');
-    if (!ruling.trim()) ctx.fail('orchestra gate resolve: the ruling is empty');
+    const positional = res.rest;
+    const gateId = Number(positional[0]);
+    if (!Number.isInteger(gateId) || gateId <= 0) {
+      ctx.fail('usage: orchestra gate resolve <gate-id> --resolution <ruling...>');
+    }
+    // Prefer --resolution; fall back to the positional tail so the pre-#119
+    // `gate resolve <id> <ruling...>` form keeps working.
+    const ruling = (res.present ? res.value! : positional.slice(1).join(' ')).trim();
+    if (!ruling) ctx.fail('orchestra gate resolve: the ruling is empty');
     const ok = ctx.bus.resolveGate(ctx.db, gateId, ctx.id.handle, ruling);
     if (!ok) {
       ctx.fail(
@@ -356,5 +447,19 @@ export function verbGate(ctx: BusVerbCtx, sub: string | undefined, rest: string[
     ctx.out(`resolved ${gateId}\n`);
     return;
   }
-  ctx.fail('usage: orchestra gate open <question...> | orchestra gate resolve <gate-id> <ruling...>');
+  if (sub === 'list') {
+    const gates = ctx.bus.openGatesForRecipient(ctx.db, ctx.id.runId, ctx.id.handle);
+    ctx.out(`${JSON.stringify(gates.map((g) => ({
+      id: g.id,
+      asked_by: g.asked_by,
+      question: g.question,
+      opened_at: g.opened_at,
+    })))}\n`);
+    return;
+  }
+  ctx.fail(
+    'usage: orchestra gate open [--to <recipient>] <question...> | ' +
+      'orchestra gate resolve <gate-id> --resolution <ruling...> | ' +
+      'orchestra gate list',
+  );
 }

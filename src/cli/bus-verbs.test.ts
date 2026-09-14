@@ -216,6 +216,7 @@ test('check on an empty bus prints an empty lot, not a refusal', (t) => {
     to: 0,
     count: 0,
     messages: [],
+    gates: [], // #119: check always carries the (here empty) gate surface
   });
   assert.equal(r.fails.length, 0);
 });

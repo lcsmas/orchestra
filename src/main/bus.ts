@@ -83,12 +83,17 @@ export interface BusDecisionGate {
   resolution: string | null;
   resolved_by: string | null;
   resolved_at: number | null;
+  /** Who this gate is addressed to (#119, MIGRATIONS[4]). NULL for a gate opened
+   *  before #119 or addressed to no one in particular — such a gate wakes nobody
+   *  (the pending predicate matches on an exact recipient), which is the
+   *  coexistence-safe direction. */
+  recipient: string | null;
 }
 
 // ─── Schema ─────────────────────────────────────────────────────────────────
 
 /** Bumped by appending a migration to MIGRATIONS; never edit a shipped one. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * Forward-only migrations, indexed by the version they PRODUCE. `migrate()`
@@ -229,6 +234,30 @@ export const MIGRATIONS: Record<number, string> = {
       flags      TEXT NOT NULL,
       frozen_at  INTEGER NOT NULL
     );
+  `,
+  // #119 — decision gates get a RECIPIENT so a wake can be addressed and `check`
+  // can surface it. Wave B ruling D2 (ledger #123) deliberately left gates out of
+  // the #117 wake predicate because they had no recipient and no surfacing verb;
+  // this column and the `openGatesForRecipient` read below are what let #119 put
+  // "open gate addressed to the reader" back into the pending predicate.
+  //
+  // ALTER TABLE ADD COLUMN, not a table rebuild: it is a single metadata change,
+  // and every pre-existing gate row reads back `recipient = NULL` (SQLite fills
+  // the new column with NULL for existing rows) — which matches BusDecisionGate's
+  // `recipient: string | null` and wakes nobody, the coexistence-safe direction.
+  // There is NO `ADD COLUMN IF NOT EXISTS`, but that is fine here precisely
+  // because migrate() applies each MIGRATIONS index EXACTLY ONCE per DB (guarded
+  // by user_version), so this never runs twice against the same file.
+  //
+  // SLOT NUMBERING (ledger #125 §Briefing, inherited Q-B1 rule): the next free
+  // index after master's 3. Only #119 needs a migration this wave (#120 confirmed
+  // it reuses existing kinds). If a sibling migration lands on 4 first, RENUMBER
+  // this to the next free integer at rebase and bump SCHEMA_VERSION with it —
+  // never edit a merged migration.
+  4: `
+    ALTER TABLE decision_gates ADD COLUMN recipient TEXT;
+    CREATE INDEX IF NOT EXISTS idx_gates_recipient
+      ON decision_gates(run_id, recipient) WHERE resolved_at IS NULL;
   `,
 };
 
@@ -441,18 +470,27 @@ export function ack(db: BusDb, runId: string, reader: string, lotId: number): bo
   return tx.immediate();
 }
 
-/** Open a decision gate — a question parked on the bus awaiting a Ruling. */
+/**
+ * Open a decision gate — a question parked on the bus awaiting a Ruling.
+ *
+ * `recipient` (#119) is who the gate is addressed to; the wake predicate matches
+ * on it exactly, so an open gate wakes that reader until it is resolved. NULL (a
+ * gate addressed to no one, or opened by a pre-#119 caller) wakes nobody — the
+ * coexistence-safe direction, and what the D2 baseline arm in
+ * bus-wake-sweep.test.ts asserts.
+ */
 export function openGate(
   db: BusDb,
   runId: string,
   askedBy: string,
   question: string,
+  recipient: string | null = null,
 ): number {
   const info = db
     .prepare(
-      'INSERT INTO decision_gates (run_id, asked_by, question, opened_at) VALUES (?,?,?,?)',
+      'INSERT INTO decision_gates (run_id, asked_by, question, opened_at, recipient) VALUES (?,?,?,?,?)',
     )
-    .run(runId, askedBy, question, Date.now());
+    .run(runId, askedBy, question, Date.now(), recipient ?? null);
   return Number(info.lastInsertRowid);
 }
 
@@ -492,6 +530,29 @@ export function openGates(db: BusDb, runId: string): BusDecisionGate[] {
       'SELECT * FROM decision_gates WHERE run_id=? AND resolved_at IS NULL ORDER BY opened_at, id',
     )
     .all(runId) as BusDecisionGate[];
+}
+
+/**
+ * Open gates of a run addressed to `recipient`, oldest first (#119).
+ *
+ * The read behind both the wake predicate ("is this reader gate-pending") and
+ * `check`'s gate surface ("show the woken reader the gate it was woken for").
+ * Matches on the EXACT recipient — a NULL-recipient gate is addressed to nobody
+ * and never appears here, so it wakes nobody, which is what keeps a pre-#119 gate
+ * (recipient NULL after the migration backfill) from waking the whole fleet.
+ */
+export function openGatesForRecipient(
+  db: BusDb,
+  runId: string,
+  recipient: string,
+): BusDecisionGate[] {
+  return db
+    .prepare(
+      `SELECT * FROM decision_gates
+        WHERE run_id=? AND recipient=? AND resolved_at IS NULL
+        ORDER BY opened_at, id`,
+    )
+    .all(runId, recipient) as BusDecisionGate[];
 }
 
 // ─── Shadow mirror (#116) ───────────────────────────────────────────────────

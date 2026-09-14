@@ -22,10 +22,23 @@ export interface ReaderPendingState {
   /** Highest `messages.sequence` addressed to this reader (0 when none). */
   pendingThroughSeq: number;
   /** True when a lot is available/outstanding, or a QUESTION message addressed
-   *  to the reader is open. An open decision GATE does NOT count (LEAD D2,
-   *  ledger #123 Q-B3): `orchestra check` cannot surface a gate, so gate-driven
-   *  wakes are deferred to #119. */
+   *  to the reader is open. This half is gated on the `wake` switch. */
   pending: boolean;
+  /**
+   * True when an OPEN decision gate is addressed to this reader (#119). Carried
+   * SEPARATELY from `pending` because it is gated on a DIFFERENT switch —
+   * `askGate`, not `wake`. A reader may be pending for a lot (wake OFF → counted)
+   * and for a gate (askGate ON → fired) independently in one sweep, and folding
+   * the two into one boolean would force one switch to answer for both — the
+   * exact conflation D2 (ledger #123) left gates OUT of #117 to avoid. #119
+   * gives gates a recipient and a `check` surface, so they are now wakeable.
+   * Defaults false, so every pre-#119 caller (and the whole shared unit suite)
+   * behaves identically without editing a line.
+   */
+  gatePending?: boolean;
+  /** Highest OPEN gate id addressed to this reader (0 when none) — the gate
+   *  arm's dedup high-water, independent of `pendingThroughSeq`. */
+  gateThroughSeq?: number;
 }
 
 /** Everything about the reader's SESSION the decision needs. */
@@ -98,19 +111,47 @@ export type SkipReason = 'no-pending' | 'already-woken' | 'not-wakeable';
  * entry, so the shadow counter measures WAKES, not sweep ticks — a counter that
  * ticked 60 times a minute per idle reader would tell nobody anything.
  */
+/**
+ * TWO SWITCHES, ONE ORDER (#119). `switchOn` is the `wake` switch and gates the
+ * lot/question half (`pending`). `askGateOn` is a SECOND, independent switch
+ * (`askGate`) gating the gate half (`gatePending`). This stays the ONE decision
+ * site so "at most one wake per reader" holds: pending for a lot, a gate, or
+ * both, it returns ONE action and the sweep delivers ONE `orchestra check`.
+ *
+ *   fire  iff (pending && wake) || (gatePending && askGate)
+ *   count iff (pending || gatePending) && not fire      -- COUNTED, not FIRED
+ *
+ * `throughSeq` is the high-water of only the sources that JUSTIFIED the action
+ * (the ON sources for a fire, every pending source for a count). Gate ids and
+ * message sequences share no numbering, so a source whose switch is OFF must not
+ * raise the mark — that would mask its counted-not-fired state on the next sweep.
+ */
 export function decideWake(
   pending: ReaderPendingState,
   session: ReaderSessionState,
   previous: WakeLedgerEntry | undefined,
   switchOn: boolean,
+  askGateOn = false,
 ): WakeAction {
-  if (!pending.pending) return { kind: 'skip', reader: pending.reader, why: 'no-pending' };
+  const lotPending = pending.pending;
+  const gatePending = pending.gatePending === true;
+  if (!lotPending && !gatePending) {
+    return { kind: 'skip', reader: pending.reader, why: 'no-pending' };
+  }
   if (!session.wakeable) return { kind: 'skip', reader: pending.reader, why: 'not-wakeable' };
   if (previous) return { kind: 'skip', reader: pending.reader, why: 'already-woken' };
-  const throughSeq = pending.pendingThroughSeq;
-  return switchOn
-    ? { kind: 'fire', reader: pending.reader, throughSeq }
-    : { kind: 'count', reader: pending.reader, throughSeq };
+
+  const lotSeq = pending.pendingThroughSeq;
+  const gateSeq = pending.gateThroughSeq ?? 0;
+  const lotFires = lotPending && switchOn;
+  const gateFires = gatePending && askGateOn;
+
+  if (lotFires || gateFires) {
+    const throughSeq = Math.max(lotFires ? lotSeq : 0, gateFires ? gateSeq : 0);
+    return { kind: 'fire', reader: pending.reader, throughSeq };
+  }
+  const throughSeq = Math.max(lotPending ? lotSeq : 0, gatePending ? gateSeq : 0);
+  return { kind: 'count', reader: pending.reader, throughSeq };
 }
 
 /**

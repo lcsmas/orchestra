@@ -32,7 +32,7 @@
 // dropped anything.
 
 import fs from 'node:fs';
-import { getBus, busPath, type BusDb } from './bus.ts';
+import { getBus, busPath, openGatesForRecipient, type BusDb } from './bus.ts';
 import { log } from './logger.ts';
 import {
   decideWake,
@@ -89,6 +89,22 @@ export function setWakeSwitchReader(fn: WakeSwitchReader): void {
   readWakeSwitch = fn;
 }
 
+/**
+ * Reads the `askGate` flag OFF THE RUN ROW for `runId` (#119). SEPARATE from
+ * `readWakeSwitch`: gate-wakes are a distinct mechanism behind a distinct switch
+ * (`busSwitch(runId, 'ask_gate')`), so lot/question wakes and gate wakes flip
+ * independently. Same contract as the wake reader — a pure per-run read of the
+ * frozen flag, defaulting OFF (counted, not fired) until #118's accessor is
+ * wired at boot, so the shipped default for gate-wakes is shadow too. */
+export type AskGateSwitchReader = (runId: string) => boolean;
+
+let readAskGateSwitch: AskGateSwitchReader = () => false;
+
+/** Wire in #118's `askGate` accessor (or a rig's). */
+export function setAskGateSwitchReader(fn: AskGateSwitchReader): void {
+  readAskGateSwitch = fn;
+}
+
 /** True once startBusWake() has run — the sweep is inert before it. Replaces
  *  the old `switchOnForRun` cache, which conflated "started" with "the flag". */
 let started = false;
@@ -129,17 +145,18 @@ const ledger = new Map<string, WakeLedgerEntry>();
  * pending — the reader that most needs waking is the one such a predicate is
  * blind to.
  *
- * ── Open GATES do NOT wake (LEAD §Decisions D2, ledger #123 Q-B3) ────────────
+ * ── Open GATES wake their RECIPIENT (#119, reversing wave-B D2) ──────────────
  *
- * An earlier version also treated an open `decision_gates` row as pending. That
- * was wrong: the ORDER a wake carries is `orchestra check`, and `check` reads
- * `messages` only — a gate has no recipient column and there is no `gate list`
- * verb, so a gate-woken reader is ordered to look somewhere that can never show
- * the gate, acks nothing, and (worse) the shadow `counted` signal over-counts a
- * divergence the promotion bar reads. Gate-driven wakes move to #119, where
- * gates get a recipient and a surfacing verb. A `question` MESSAGE is different
- * and STAYS: it has a recipient and `check` returns it, so it is genuinely
- * surfaceable by the order.
+ * Wave B (ledger #123 Q-B3) deliberately left gates OUT because they had no
+ * recipient and `check` could not surface them, so a gate-woken reader was
+ * ordered to look somewhere that could never show the gate. #119 fixes both: a
+ * gate now carries a `recipient` (MIGRATIONS[4]) and `check` surfaces open gates
+ * addressed to the caller. So an open gate addressed to the reader is pending —
+ * carried in a SEPARATE field (`gatePending`/`gateThroughSeq`), because it is
+ * gated on the `askGate` switch, not `wake`: the two mechanisms flip
+ * independently and folding them into one boolean would make one switch answer
+ * for both. A gate with a NULL recipient (pre-#119, or addressed to nobody)
+ * matches no reader and wakes nobody — the coexistence-safe direction.
  */
 export function readPendingReaders(
   db: BusDb,
@@ -178,13 +195,74 @@ export function readPendingReaders(
     const hi = Number((lotHigh.get(runId, reader, reader) as { hi: number }).hi);
     const qhi = Number((openQuestion.get(runId, reader, reader) as { hi: number }).hi);
     const pendingThroughSeq = Math.max(hi, qhi);
+    // Gate half (#119), computed SEPARATELY — it rides the `askGate` switch, not
+    // `wake`. `gateThroughSeq` is the highest OPEN gate id addressed to this
+    // reader; 0 when none. Kept apart from `pendingThroughSeq` on purpose: gate
+    // ids and message sequences share no numbering, so a single combined mark
+    // could let a high gate id suppress a genuinely newer lot (or vice versa).
+    const gates = openGatesForRecipient(db, runId, reader);
+    const gateThroughSeq = gates.reduce((mx, g) => Math.max(mx, g.id), 0);
     out.push({
       reader,
       pendingThroughSeq,
       pending: pendingThroughSeq > 0,
+      gatePending: gates.length > 0,
+      gateThroughSeq,
     });
   }
   return out;
+}
+
+/**
+ * The readers currently in state `waiting` — parked on their OWN open ask or
+ * gate, awaiting an answer (#119; the export #120 consumes for staleness).
+ *
+ * A reader is `waiting` when it is the ASKER/OPENER of something still open:
+ *   - it SENT a `question` message that has no threaded reply yet (no message
+ *     whose `thread_id` equals that question's `sequence`), OR
+ *   - it OPENED a `decision_gates` row that is not yet resolved.
+ *
+ * This is the SENDER side, deliberately distinct from `readPendingReaders`'s
+ * RECIPIENT side: the recipient of an open ask/gate is woken (pending); the
+ * asker is idle-by-design and must be EXCLUDED from staleness, never flagged as
+ * a silent agent (#119 acceptance 3, T119.4). #120 subtracts this set from its
+ * staleness candidates.
+ *
+ * Run-scoped exactly like the pending predicate: a reader waiting in run A is
+ * not waiting for run B's traffic. Independent of any switch — being `waiting`
+ * is a truth about the reader's durable state, not a fired mechanism.
+ */
+export function readWaitingReaders(
+  db: BusDb,
+  readers: readonly { reader: string; runId: string }[],
+): Set<string> {
+  // An open ask the reader SENT: a `question` it authored with no reply threaded
+  // to it. The reply is `send --thread <ask-id>` (bus-verbs.ts verbAsk), so an
+  // answered ask has a message whose thread_id = the question's sequence.
+  const openAskSent = db.prepare(`
+    SELECT 1
+      FROM messages q
+     WHERE q.run_id = ? AND q.kind = 'question' AND q.sender = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM messages r
+          WHERE r.run_id = q.run_id
+            AND r.thread_id = CAST(q.sequence AS TEXT)
+       )
+     LIMIT 1
+  `);
+  // An open gate the reader OPENED (asked_by), not yet resolved.
+  const openGateOpened = db.prepare(`
+    SELECT 1 FROM decision_gates
+     WHERE run_id = ? AND asked_by = ? AND resolved_at IS NULL
+     LIMIT 1
+  `);
+  const waiting = new Set<string>();
+  for (const { reader, runId } of readers) {
+    if (openAskSent.get(runId, reader) || openGateOpened.get(runId, reader)) {
+      waiting.add(reader);
+    }
+  }
+  return waiting;
 }
 
 /** The readers the host could wake — every live workspace, keyed by its id,
@@ -270,7 +348,13 @@ export async function sweepBusWake(): Promise<void> {
   try {
     const readers = readRoster();
     const pending = readPendingReaders(db, readers);
-    const stillPending = new Set(pending.filter((p) => p.pending).map((p) => p.reader));
+    // A reader stays in the dedup ledger while pending for EITHER a lot/question
+    // OR a gate (#119): the re-arm is "no more pending state of any kind", so a
+    // reader that acked its lot but still has an open gate must NOT be pruned, or
+    // it would be woken again for the same gate on the next sweep.
+    const stillPending = new Set(
+      pending.filter((p) => p.pending || p.gatePending === true).map((p) => p.reader),
+    );
     pruneWakeLedger(ledger, stillPending);
 
     for (const p of pending) {
@@ -283,12 +367,22 @@ export async function sweepBusWake(): Promise<void> {
       // and the safe direction on an unreadable flag is OFF — counted, never
       // fired — rather than taking the whole sweep down.
       let switchOn = false;
+      let askGateOn = false;
       try {
         switchOn = entry ? readWakeSwitch(entry.runId) : false;
       } catch (e) {
-        log.warn(`bus-wake: switch read failed for ${p.reader} — treating as OFF`, e);
+        log.warn(`bus-wake: wake switch read failed for ${p.reader} — treating as OFF`, e);
       }
-      const action = decideWake(p, session, ledger.get(p.reader), switchOn);
+      // The `askGate` switch is read INDEPENDENTLY, in its own try, so a throw in
+      // one accessor cannot silently drag the other to OFF and mask which
+      // mechanism is actually unreadable. Both default OFF — counted, never
+      // fired — which is the standing coexistence-safe direction.
+      try {
+        askGateOn = entry ? readAskGateSwitch(entry.runId) : false;
+      } catch (e) {
+        log.warn(`bus-wake: askGate switch read failed for ${p.reader} — treating as OFF`, e);
+      }
+      const action = decideWake(p, session, ledger.get(p.reader), switchOn, askGateOn);
       if (action.kind === 'skip') continue;
       // Mark BEFORE the await, not after: `sdkWake` yields, and a second sweep
       // entering during that yield would otherwise see no ledger entry and fire
@@ -400,6 +494,7 @@ export function __resetBusWakeForTests(): void {
   counters.failed = 0;
   started = false;
   readWakeSwitch = () => false;
+  readAskGateSwitch = () => false;
   readBusDb = getBus;
   readRoster = () => [];
   deliverWake = async () => false;
@@ -411,7 +506,17 @@ export function __resetBusWakeForTests(): void {
  *  takes the ACCESSOR, never a pre-resolved boolean. The `boolean` overload is
  *  sugar for "every run answers this"; it deliberately cannot express a two-run
  *  case, which is exactly why the Q1 arm passes a function. */
-export function __freezeSwitchForTests(on: boolean | WakeSwitchReader): void {
+export function __freezeSwitchForTests(
+  on: boolean | WakeSwitchReader,
+  askGate?: boolean | AskGateSwitchReader,
+): void {
   setWakeSwitchReader(typeof on === 'function' ? on : () => on);
+  // The `askGate` switch (#119). Defaults to OFF when omitted, so every existing
+  // wake test that passes only the wake arg keeps gate-wakes OFF unchanged. A
+  // gate arm passes the second arg (a boolean, or a per-run reader for the
+  // two-runs case) exactly as the wake arg does.
+  if (askGate !== undefined) {
+    setAskGateSwitchReader(typeof askGate === 'function' ? askGate : () => askGate);
+  }
   started = true;
 }

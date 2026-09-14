@@ -646,6 +646,16 @@ test('C11 — migrate() upgrades a DB STAMPED at each version below v2, not just
     // (ledger #123 Q-B2: #118 appended v3, so SCHEMA_VERSION-1 now includes 2).
     const seed = openBus(file);
     if (from < 2) seed.exec('DROP TABLE IF EXISTS mirror_records');
+    // MIGRATIONS[4] (#119) ADDed decision_gates.recipient AND idx_gates_recipient
+    // on it. openBus above migrated to HEAD so both are present; a faithful v<4
+    // seed must remove them (index first — SQLite refuses to drop a column an
+    // index references), or re-running migrate() from `from` re-runs the ADD
+    // COLUMN and throws "duplicate column name" — the vacuous-pass this whole test
+    // guards against, one level up. (SQLite ALTER … DROP COLUMN, 3.35+.)
+    if (from < 4) {
+      seed.exec('DROP INDEX IF EXISTS idx_gates_recipient');
+      seed.exec('ALTER TABLE decision_gates DROP COLUMN recipient');
+    }
     seed.pragma(`user_version = ${from}`);
     // A row written BEFORE the upgrade — it must survive.
     const seq = busSend(seed, {
@@ -668,6 +678,10 @@ test('C11 — migrate() upgrades a DB STAMPED at each version below v2, not just
     const probeFile = path.join(dir, `probe-v${from}.sqlite`);
     const probe = openBus(probeFile);
     if (from < 2) probe.exec('DROP TABLE IF EXISTS mirror_records');
+    if (from < 4) {
+      probe.exec('DROP INDEX IF EXISTS idx_gates_recipient');
+      probe.exec('ALTER TABLE decision_gates DROP COLUMN recipient');
+    }
     probe.pragma(`user_version = ${from}`);
     const mirrorTables = (
       probe
