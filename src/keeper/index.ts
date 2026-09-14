@@ -97,6 +97,25 @@ function cleanupAndExit(code: number): void {
   process.exit(code);
 }
 
+/** SIGTERM now → SIGKILL after `afterMs`. Idempotent-safe (guarded by
+ *  `childExited`); the child's own 'exit' handler does cleanup. Shared by the
+ *  graceful `stdinEnd` path and the hard `kill` frame so BOTH escalate to
+ *  SIGKILL — a CLI that ignores SIGTERM must never be left alive (audit D5). */
+function escalateKill(afterMs: number, firstSignal: 'SIGTERM' | 'SIGKILL'): void {
+  if (!childExited) {
+    klog(`escalate ${firstSignal}`);
+    child?.kill(firstSignal);
+  }
+  if (firstSignal === 'SIGKILL') return;
+  const kill = setTimeout(() => {
+    if (!childExited) {
+      klog('escalate SIGKILL');
+      child?.kill('SIGKILL');
+    }
+  }, afterMs);
+  kill.unref();
+}
+
 /** EOF → SIGTERM → SIGKILL. Idempotent; the child's 'exit' handler finishes. */
 function beginShutdown(reason: string): void {
   if (shuttingDown) return;
@@ -111,20 +130,8 @@ function beginShutdown(reason: string): void {
   } catch {
     /* broken pipe */
   }
-  const term = setTimeout(() => {
-    if (!childExited) {
-      klog('escalate SIGTERM');
-      child?.kill('SIGTERM');
-    }
-  }, ESCALATE_TERM_MS);
-  const kill = setTimeout(() => {
-    if (!childExited) {
-      klog('escalate SIGKILL');
-      child?.kill('SIGKILL');
-    }
-  }, ESCALATE_KILL_MS + ESCALATE_TERM_MS);
+  const term = setTimeout(() => escalateKill(ESCALATE_KILL_MS, 'SIGTERM'), ESCALATE_TERM_MS);
   term.unref();
-  kill.unref();
 }
 
 function startChild(command: string, args: string[], cwd: string, env: Record<string, string | undefined>): void {
@@ -183,6 +190,11 @@ const server = net.createServer((sock) => {
       pid: child?.pid,
       everStarted: snap.everStarted,
       turnInFlight: snap.everStarted && !snap.turnComplete,
+      // A dying CLI (stdinEnd/kill/linger escalation in flight) still reports
+      // `running:true` until its 'exit' lands — surface the shutdown so an
+      // attaching client refuses it (audit D1); else it writes into a dropped
+      // `stdin` frame and the CLI exits 0 with the prompt lost.
+      shuttingDown,
     };
   };
 
@@ -230,17 +242,24 @@ const server = net.createServer((sock) => {
         case 'stdin':
           if (child && !childExited && !shuttingDown) {
             child.stdin?.write(Buffer.from(f.b64, 'base64'));
+          } else if (shuttingDown) {
+            // The CLI is dying; do NOT silently drop the frame (audit D1: a
+            // client that attached to a shutting-down keeper would think its
+            // wake prompt landed). Tell it so it can kill + respawn instead.
+            reply({ t: 'err', msg: 'shutting down' });
           }
           break;
         case 'stdinEnd':
           beginShutdown('stdinEnd from client');
           break;
-        case 'kill':
-          klog(`kill frame signal=${f.signal ?? 'SIGTERM'}`);
+        case 'kill': {
+          const signal = f.signal ?? 'SIGTERM';
+          klog(`kill frame signal=${signal}`);
           shuttingDown = true;
-          if (child && !childExited) child.kill(f.signal ?? 'SIGTERM');
+          if (child && !childExited) escalateKill(ESCALATE_KILL_MS, signal);
           else cleanupAndExit(0);
           break;
+        }
       }
     })
   );

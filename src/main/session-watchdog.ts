@@ -62,6 +62,7 @@ import {
 } from '../shared/session-wedge.ts';
 import { sdkSessionLive } from './sdk-delivery';
 import { sdkGateProbe, sdkReleaseStrandedGate, sdkStop, sdkWake } from './agent-sdk';
+import { killKeeper } from './keeper-client';
 import { readInbox, releaseInboxBlock } from './inbox-tray';
 
 /** How often the watchdog looks. Deliberately slow: the condition it treats is
@@ -146,6 +147,16 @@ export async function recycleSession(wsId: string, reason: string): Promise<void
   //    here — the senders' messages are already durable in the inbox, which is
   //    how they got parked in the first place.
   await sdkStop(wsId).catch((e) => log.warn(`session-watchdog: stop failed for ${wsId}`, e));
+
+  // 1b. Await the keeper PROCESS actually dying before the wake below spawns a
+  //     replacement (audit D1, modeled on sdkMcpRefresh). `sdkStop` on a LIVE
+  //     session rides the graceful close (stdinEnd → keeper escalation) and
+  //     RETURNS before the CLI has exited — the 0.5–15s window in which the
+  //     old recycle's `sdkWake` reattached to the dying CLI and the wake prompt
+  //     was dropped (13/13 field recycles). killKeeper resolves only once the
+  //     keeper pid is gone, so ensureSession (inside sdkWake) then launches a
+  //     genuinely fresh CLI.
+  await killKeeper(wsId).catch((e) => log.warn(`session-watchdog: killKeeper failed for ${wsId}`, e));
 
   // 2. Is there anything parked at all?
   const parked = readInbox(wsId);

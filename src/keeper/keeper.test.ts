@@ -371,6 +371,86 @@ test('mid-turn detach does NOT linger-kill (no result line yet)', async () => {
   process.kill(keeperPid, 'SIGTERM');
 });
 
+// A CLI that IGNORES stdin EOF and SIGTERM — it only dies on SIGKILL. Used to
+// prove the kill-frame's SIGTERM → SIGKILL escalation (audit D5) and that a
+// keeper reports `shuttingDown` for the whole dying window.
+const STUBBORN_CLI = `
+process.on('SIGTERM', () => { /* refuse — only SIGKILL ends me */ });
+let buf = '';
+process.stdin.on('data', (d) => {
+  buf += d.toString('utf8');
+  let i;
+  while ((i = buf.indexOf('\\n')) >= 0) {
+    const line = buf.slice(0, i); buf = buf.slice(i + 1);
+    if (!line.trim()) continue;
+    let m; try { m = JSON.parse(line); } catch { continue; }
+    if (m.echo !== undefined) process.stdout.write(JSON.stringify({ type: 'assistant', echo: m.echo }) + '\\n');
+  }
+});
+process.stdin.on('end', () => { /* do NOT exit on EOF */ });
+setInterval(() => {}, 1 << 30); // stay alive until killed
+`;
+
+function stubbornSpawnFrame(ctx: Ctx): KeeperClientFrame {
+  const stubborn = path.join(ctx.dir, 'stubborn-cli.cjs');
+  fs.writeFileSync(stubborn, STUBBORN_CLI);
+  return { t: 'spawn', command: process.execPath, args: [stubborn], cwd: ctx.dir, env: { PATH: process.env.PATH } };
+}
+
+const isErr = (f: KeeperDaemonFrame): f is Extract<KeeperDaemonFrame, { t: 'err' }> => f.t === 'err';
+
+test('kill frame escalates SIGTERM → SIGKILL on a stubborn CLI (audit D5)', async () => {
+  // A short escalation window so the test doesn't wait the 5s prod default.
+  const ctx = makeCtx({ ORCHESTRA_KEEPER_TICK_MS: '100' });
+  const c = await connect(ctx);
+  c.send({ t: 'hello', wsId: ctx.wsId });
+  await c.wait(isAck);
+  c.send(stubbornSpawnFrame(ctx));
+  c.send(stdinLine({ echo: 'up' }));
+  await c.wait(stdoutContaining('"echo":"up"'));
+  const keeperPid = pidOf(ctx);
+  // The child pid: read the keeper's helloAck for it via a fresh probe.
+  c.send({ t: 'kill', signal: 'SIGTERM' }); // stubborn CLI ignores SIGTERM
+  // The keeper must escalate to SIGKILL and the child must die → exit frame.
+  const exit = await c.wait(isExit, 12_000);
+  assert.equal(exit.signal, 'SIGKILL', 'SIGTERM-ignoring CLI is escalated to SIGKILL');
+  const log = fs.readFileSync(ctx.logFile, 'utf8');
+  assert.ok(/escalate SIGKILL/.test(log), 'keeper logged the SIGKILL escalation');
+  c.destroy();
+  await waitUntil(() => !alive(keeperPid), 5000, 'keeper gone after escalation');
+});
+
+test('helloAck carries shuttingDown once teardown begins; stdin during shutdown → err (audit D1)', async () => {
+  const ctx = makeCtx({ ORCHESTRA_KEEPER_TICK_MS: '100' });
+  const c = await connect(ctx);
+  c.send({ t: 'hello', wsId: ctx.wsId });
+  const ack0 = await c.wait(isAck);
+  assert.notEqual(ack0.shuttingDown, true, 'not shutting down before any teardown');
+  c.send(stubbornSpawnFrame(ctx)); // ignores EOF → stays alive across stdinEnd
+  c.send(stdinLine({ echo: 'work' }));
+  await c.wait(stdoutContaining('"echo":"work"'));
+  const keeperPid = pidOf(ctx); // capture BEFORE teardown unlinks the pid file
+  // Begin a graceful shutdown; the stubborn CLI keeps running so the keeper is
+  // in the shutting-down window for a real interval.
+  c.send({ t: 'stdinEnd' });
+  await sleep(200);
+  // A probe (read-only, doesn't claim the slot) must now report shuttingDown.
+  const p = await connect(ctx);
+  p.send({ t: 'probe', wsId: ctx.wsId });
+  const pack = await p.wait(isAck);
+  assert.equal(pack.running, true, 'CLI still alive (stubborn), so running is true');
+  assert.equal(pack.shuttingDown, true, 'keeper surfaces shuttingDown while tearing down');
+  p.destroy();
+  // A stdin frame from the claimed client during shutdown must be answered with
+  // an err, not silently dropped (audit D1: the wake-prompt-into-the-void bug).
+  c.send(stdinLine({ echo: 'late' }));
+  const err = await c.wait(isErr, 3000);
+  assert.match(err.msg, /shutting down/, 'stdin during shutdown gets an err reply');
+  c.destroy();
+  // Cleanup: the keeper will SIGKILL the stubborn CLI at the escalation deadline.
+  await waitUntil(() => !alive(keeperPid), 20_000, 'keeper eventually exits');
+});
+
 async function waitUntil(pred: () => boolean, ms: number, what: string): Promise<void> {
   const t0 = Date.now();
   while (!pred()) {
@@ -378,3 +458,70 @@ async function waitUntil(pred: () => boolean, ms: number, what: string): Promise
     await sleep(100);
   }
 }
+
+// ---------------------------------------------------------------------------
+// App-side wiring pins (S1: a restart never attaches to a dying CLI)
+//
+// These assert the three app-side halves of D1's fix that cannot be exercised
+// from the daemon socket alone — the facade refusing a `shuttingDown` ack, the
+// restart callers awaiting process death, and the −1-while-stopping relabel.
+// Same mechanical-guard rationale as mcp-refresh-mechanism.test.ts: each pin
+// reddens if the wiring is deleted (the negative controls confirm the slice is
+// non-empty first). Behaviour is proven end-to-end by the verifier's G1 rig.
+// ---------------------------------------------------------------------------
+
+const REPO2 = path.resolve(__dirname2, '..', '..');
+const read = (rel: string): string => fs.readFileSync(path.join(REPO2, rel), 'utf8');
+
+test('facade attach branch refuses a shuttingDown keeper (S1/D1)', () => {
+  const src = read('src/main/keeper-client.ts');
+  // The attach gate must AND-in `shuttingDown !== true`, and the stale branch's
+  // doc must name it — otherwise a dying CLI is attached to (the D1 bug).
+  assert.match(
+    src,
+    /ack\.running\s*&&\s*ack\.everStarted\s*!==\s*false\s*&&\s*ack\.shuttingDown\s*!==\s*true/,
+    'attach gate must reject shuttingDown === true',
+  );
+  assert.match(src, /shuttingDown\?: boolean/, 'KeeperProbe must carry shuttingDown');
+});
+
+test('sdkStop no-session path AWAITS killKeeper (S1/D1)', () => {
+  const src = read('src/main/agent-sdk.ts');
+  const i = src.indexOf('export async function sdkStop(');
+  assert.notEqual(i, -1, 'sdkStop not found — renamed?');
+  const body = src.slice(i, src.indexOf('\nexport ', i + 1));
+  assert.ok(body.length > 200, 'sdkStop body suspiciously short');
+  // The no-session path must AWAIT killKeeper, never fire-and-forget (`void`):
+  // the unawaited form let an immediate restart race the dying keeper (D1).
+  assert.match(body, /await killKeeper\(wsId\)/, 'sdkStop no-session path must await killKeeper');
+  assert.doesNotMatch(body, /void killKeeper\(/, 'sdkStop must not fire-and-forget killKeeper');
+});
+
+test('consume() relabels a stop-preemption −1 instead of a red error (S1)', () => {
+  const src = read('src/main/agent-sdk.ts');
+  // The stopping-preemption predicate must gate on BOTH session.stopping AND
+  // the synthetic exit −1, and must suppress the error banner + warn log.
+  assert.match(
+    src,
+    /session\.stopping\s*&&\s*\/exited with code -1\\b\/\.test\(message\)/,
+    'consume() must recognise a −1 preemption on an already-stopping session',
+  );
+  assert.match(src, /preemptedWhileStopping/, 'the −1-while-stopping relabel must exist');
+});
+
+test('recycleSession awaits keeper death before waking (S1/D1)', () => {
+  const src = read('src/main/session-watchdog.ts');
+  const i = src.indexOf('export async function recycleSession(');
+  assert.notEqual(i, -1, 'recycleSession not found — renamed?');
+  const body = src.slice(i, src.indexOf('\nexport ', i + 1) === -1 ? undefined : src.indexOf('\nexport ', i + 1));
+  assert.ok(body.length > 200, 'recycleSession body suspiciously short');
+  // sdkStop then killKeeper (await process death) then sdkWake — the sdkStop
+  // must precede killKeeper must precede the wake, or the wake reattaches to
+  // the dying CLI (the 13/13 field failures).
+  const stopAt = body.indexOf('sdkStop(wsId)');
+  const killAt = body.indexOf('killKeeper(wsId)');
+  const wakeAt = body.indexOf('sdkWake(wsId');
+  assert.ok(stopAt !== -1 && killAt !== -1 && wakeAt !== -1, 'stop/kill/wake all present');
+  assert.ok(stopAt < killAt && killAt < wakeAt, 'order must be sdkStop → killKeeper → sdkWake');
+  assert.match(body, /await killKeeper\(wsId\)/, 'recycleSession must AWAIT killKeeper');
+});

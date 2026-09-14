@@ -14,7 +14,7 @@ completion, relaunch reattach + transcript, explicit-stop kill).
 | Piece | File | Role |
 |---|---|---|
 | Frame protocol + shutdown policy | `src/shared/keeper-protocol.ts` (+ `.test.ts`) | Newline-JSON frames (`hello`/`probe`/`spawn`/`stdin`/`stdinEnd`/`kill` → `helloAck`/`stdout`/`exit`/`err`, b64 payloads), line splitter, and the PURE linger/wedge state machine (`createKeeperState`, time injected). |
-| The daemon | `src/keeper/index.ts` → `dist-electron/keeper.js` (`vite.keeper.config.ts`, `build:keeper`) | Owns the CLI child; one claimed client at a time (`hello` claims + preempts — last wins; `probe` is read-only). Always drains stdout (discards while detached — the CLI's own transcript is the catch-up story). Only `stdinEnd`/`kill` terminate (EOF → 10s → SIGTERM → 5s → SIGKILL); a bare socket drop is a detach. Cleans `<wsId>.sock/.pid` and exits when the child dies. Integration-tested in `src/keeper/keeper.test.ts` against a fake CLI. |
+| The daemon | `src/keeper/index.ts` → `dist-electron/keeper.js` (`vite.keeper.config.ts`, `build:keeper`) | Owns the CLI child; one claimed client at a time (`hello` claims + preempts — last wins; `probe` is read-only). Always drains stdout (discards while detached — the CLI's own transcript is the catch-up story). Only `stdinEnd`/`kill` terminate, and BOTH escalate to SIGKILL via the shared `escalateKill` (`stdinEnd`: EOF → 10s → SIGTERM → 5s → SIGKILL; `kill` frame: signal → 5s → SIGKILL — audit D5); a bare socket drop is a detach. While shutting down, `helloAck.shuttingDown` is true and an inbound `stdin` frame gets `err:'shutting down'` (never dropped). Cleans `<wsId>.sock/.pid` and exits when the child dies. Integration-tested in `src/keeper/keeper.test.ts` against a fake CLI. |
 | App-side client | `src/main/keeper-client.ts` | `installKeeper()` copies the bundle to `$ORCHESTRA_HOME/bin/keeper.js` at startup (a live keeper must not depend on the asar/AppImage mount after quit); `makeKeeperSpawn(wsId)` is the SDK `spawnClaudeCodeProcess` implementation (connect-or-launch behind a `SpawnedProcess` facade); `probeKeeper`/`killKeeper`/`listLiveKeepers`/`setAppQuitting`. Files live in `$ORCHESTRA_HOME/keepers/` (`<wsId>.sock/.pid/.log`). |
 
 ## The bridge facade (the load-bearing subtleties)
@@ -39,6 +39,16 @@ completion, relaunch reattach + transcript, explicit-stop kill).
 - Stale keeper (`helloAck.running === false` on an existing socket): kill it
   and launch fresh — a dead child slot is never reused (`spawn` on one is
   refused with `err: stale keeper`).
+- **Shutting-down keeper (`helloAck.shuttingDown === true`): treated EXACTLY
+  like stale** — destroy the socket, `await killKeeper`, launch fresh; never
+  attach (audit D1, ledger #124/S1). A dying CLI reports `running:true` for the
+  0.5–15 s between the `stdinEnd`/`kill`/linger escalation and its `exit`; a
+  client that attached in that window wrote its wake prompt into a `stdin`
+  frame the keeper now REJECTS with `err:'shutting down'` (it used to drop it
+  silently), then watched the CLI exit 0 with the message lost. This was the
+  13/13 watchdog-recycle failures. The facade gate is
+  `ack.running && ack.everStarted !== false && ack.shuttingDown !== true`;
+  `undefined` on either field (pre-field keeper) keeps legacy attach.
 
 ## Attach / lifecycle flow
 
@@ -61,11 +71,31 @@ completion, relaunch reattach + transcript, explicit-stop kill).
   without violating no-mass-resume.
 - **Explicit stops genuinely kill**: `sdkStop`'s live path rides the graceful
   close (interrupt → stdin EOF → keeper escalation — preserves the CLI's
-  transcript flush); its NO-SESSION path calls `killKeeper(wsId)` — critical
+  transcript flush); its NO-SESSION path `await`s `killKeeper(wsId)` (AWAITED,
+  audit D1: the old fire-and-forget `void killKeeper` let an immediate restart
+  — `sdkClear` → send, a peer delivery — race the dying keeper, whose new hello
+  preempted the old socket and attached to the SIGTERM'd child) — critical
   post-relaunch, where `/clear`, delete, archive, hibernate, branch switch and
   account migration must not leave an orphan CLI running a discarded
   conversation (`sdkStopIfLive` in sdk-delivery.ts therefore always calls
-  `stop`, even with no live session).
+  `stop`, even with no live session). A session preempted while `stopping`
+  surfaces the SDK's synthetic `exited with code -1` in consume()'s catch;
+  because `session.stopping` is set, it is relabelled a quiet "Session stopped"
+  notice (`preemptedWhileStopping`), never a red error row — that false alarm
+  was the visible half of D1.
+- **Restart-after-stop callers await process death** (audit D1, model on
+  `sdkMcpRefresh`: `await sdkStop → await killKeeper → ensureSession`).
+  `recycleSession` (session-watchdog.ts) inserts `await killKeeper(wsId)`
+  between its `sdkStop` and its `sdkWake` for exactly this reason: `sdkStop` on
+  a LIVE session returns before the CLI has exited (graceful escalation runs on
+  the keeper's clock), so without the kill the wake's `ensureSession`
+  reattached to the dying CLI (13/13 field recycles) and dropped the wake
+  prompt.
+- **The keeper's `kill` frame escalates SIGTERM → SIGKILL after 5 s** (audit
+  D5): both the graceful `stdinEnd` path and the hard `kill` frame now go
+  through the shared `escalateKill` — a CLI that ignores SIGTERM is force-killed
+  rather than left orphaned. (`stdinEnd`: EOF → 10 s → SIGTERM → 5 s → SIGKILL;
+  `kill` frame: signal now → 5 s → SIGKILL.)
 - **Shutdown policy** (daemon-side, from the pure state machine): detached +
   turn complete (`"type":"result"` seen on stdout; `system` lines are neutral
   so an attach's fresh init doesn't hold an idle CLI) → linger 15 min
@@ -82,12 +112,14 @@ completion, relaunch reattach + transcript, explicit-stop kill).
 - **The quit-right-after-send window** (user-reported: empty view on reopen,
   prompt vanished, output later with no Working indicator) is closed by three
   cooperating pieces beyond the init grace:
-  - `helloAck` carries **`everStarted`/`turnInFlight`** from the state
-    machine. `sdkAttachIfDetached` REFUSES to attach to a never-started CLI —
-    `await killKeeper(wsId)` (awaited: fire-and-forget once bridged a fresh
-    query onto the dying keeper's SIGTERM'd child — "exited with code 143")
-    then falls through to the recovery path; the facade's stale branch does
-    the same. `killKeeper` resolves only once the keeper PROCESS is dead.
+  - `helloAck` carries **`everStarted`/`turnInFlight`/`shuttingDown`** from the
+    state machine. `sdkAttachIfDetached` REFUSES to attach to a never-started
+    CLI — `await killKeeper(wsId)` (awaited: fire-and-forget once bridged a
+    fresh query onto the dying keeper's SIGTERM'd child — "exited with code
+    143") then falls through to the recovery path; the facade's stale branch
+    does the same, and now ALSO for `shuttingDown === true` (audit D1 — a CLI
+    mid-teardown still reads `running:true`). `killKeeper` resolves only once
+    the keeper PROCESS is dead.
   - **`ws.sdkPendingPrompts`** (types.ts): every sent prompt persists until
     its turn's `result` (set in `sdkSend`, cleared in `consume()`).
     `recoverPendingPrompts` (agent-sdk.ts, called from the `agentSdkHistory`
@@ -204,7 +236,8 @@ app — two changes keep that env valid across restarts:
 |---|---|
 | App quit / crash | no-op `kill()` + socket drop = detach; turn keeps running |
 | Explicit stop (interrupt/clear/rewind/archive/delete/hibernate/migrate/branch-switch) | graceful close → keeper escalation; `killKeeper` covers the no-session case → CLI + keeper die |
-| Keeper crash | facade emits synthetic exit (−1) → consume() ledger close; resume-by-id recovers |
+| Keeper crash | facade emits synthetic exit (−1) → consume() ledger close; resume-by-id recovers. If the session was already `stopping` (a legitimate restart preempted its socket), the −1 is relabelled a quiet "Session stopped" notice, not a red error (audit D1). |
+| Restart right after stop (watchdog recycle, sdkClear→send, peer delivery) | the restart caller awaits keeper death first (`await killKeeper`), and the facade refuses a `shuttingDown` ack — so the new turn always lands on a FRESH CLI, never the dying one (audit D1) |
 | CLI crash | attached: `exit` frame → existing error path; detached: keeper cleans up, relaunch resumes |
 | Turn ends detached | linger → graceful exit; relaunch = plain resume + backfill |
 | Workspace deleted while closed | startup orphan reap (+ linger bounds it anyway) |

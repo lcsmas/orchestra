@@ -1160,20 +1160,28 @@ async function consume(session: Session): Promise<void> {
     const message = err instanceof Error ? err.message : String(err);
     const interrupted =
       session.interruptRequested || /error_during_execution|ede_diagnostic/i.test(message);
-    endedByInterrupt = interrupted;
+    // A session we are already STOPPING whose socket is preempted by a
+    // legitimate new client surfaces the SDK's synthetic exit −1 here (audit
+    // D1: a restart's fresh hello destroys the old facade's socket → close
+    // handler emits `exit -1` → consume() throws). That is the stop we asked
+    // for, not a crash — painting a red `exited with code -1` row on the
+    // conversation the user just replaced is the false alarm the audit flagged.
+    // Label it as the stop it is (quiet notice, no error banner, no warn log).
+    const preemptedWhileStopping = session.stopping && /exited with code -1\b/.test(message);
+    endedByInterrupt = interrupted || preemptedWhileStopping;
     if (!session.cleared) {
-      // An interrupt is the user's own action, not a failure — surface it as a
-      // quiet `interrupted` notice (the fold collapses it into the stream's
+      // An interrupt (or a stop-preemption) is not a failure — surface it as a
+      // quiet notice (the fold collapses an interrupt into the stream's
       // "[Request interrupted by user]" marker when that already rendered)
       // instead of the red error banner it used to raise. Real crashes keep
       // the error row.
-      if (interrupted) {
+      if (interrupted || preemptedWhileStopping) {
         emit(session.wsId, {
           type: 'notice',
           kind: 'interrupted',
           seq: session.ctx.seq++,
           at: (session.ctx.now ?? Date.now)(),
-          text: 'Interrupted by user',
+          text: preemptedWhileStopping ? 'Session stopped' : 'Interrupted by user',
         });
       } else {
         emit(session.wsId, {
@@ -1186,7 +1194,7 @@ async function consume(session: Session): Promise<void> {
         });
       }
     }
-    if (!interrupted) {
+    if (!interrupted && !preemptedWhileStopping) {
       log.warn(`agent-sdk: session ${session.wsId} consume loop errored`, err);
     }
     // A stream-surfaced BAD-RESUME error (the transcript for ws.sdkSessionId is
@@ -4205,7 +4213,16 @@ export async function sdkStop(wsId: string): Promise<void> {
     // switch, account migration) funnels through here and must not leave an
     // orphan CLI running a conversation the app just discarded. Best-effort:
     // instant no-op when no keeper exists.
-    void killKeeper(wsId);
+    //
+    // AWAITED (audit D1, same family): a fire-and-forget `void killKeeper` let
+    // an immediate restart (sdkClear → send, a peer delivery) race the dying
+    // keeper — the new hello preempts the old socket, attaches to the SIGTERM'd
+    // child, and the wake prompt is lost. Resolving before returning means the
+    // caller's own `await sdkStop` sees the process actually gone (mirrors
+    // sdkMcpRefresh's `await sdkStop → await killKeeper` ordering).
+    await killKeeper(wsId).catch(() => {
+      /* no keeper / already gone */
+    });
     return;
   }
   session.stopping = true;

@@ -240,6 +240,11 @@ export interface KeeperProbe {
    *  `undefined` = pre-field keeper daemon (treat as started — legacy). */
   everStarted?: boolean;
   turnInFlight?: boolean;
+  /** True once the keeper has begun tearing its CLI down (stdinEnd/kill/linger
+   *  escalation). The CLI is dying but may still read `running:true`; callers
+   *  must NOT attach to it (audit D1) — kill + spawn fresh. `undefined` =
+   *  pre-field keeper daemon (legacy: treat as not shutting down). */
+  shuttingDown?: boolean;
 }
 
 export async function probeKeeper(wsId: string): Promise<KeeperProbe | null> {
@@ -251,6 +256,7 @@ export async function probeKeeper(wsId: string): Promise<KeeperProbe | null> {
         pid: reply.pid,
         everStarted: reply.everStarted,
         turnInFlight: reply.turnInFlight,
+        shuttingDown: reply.shuttingDown,
       };
     }
     return null;
@@ -456,7 +462,7 @@ export function makeKeeperSpawn(
     // an attached CLI can start streaming stdout the instant the claim lands,
     // and a listener gap would silently drop those frames (flowing-mode data
     // with no listener is lost, not buffered).
-    type Ack = { running: boolean; pid?: number; everStarted?: boolean; turnInFlight?: boolean };
+    type Ack = { running: boolean; pid?: number; everStarted?: boolean; turnInFlight?: boolean; shuttingDown?: boolean };
     let ackWaiter: { resolve: (a: Ack) => void; reject: (e: Error) => void } | null = null;
     const wireSocket = (s: net.Socket): void => {
       s.on(
@@ -465,7 +471,13 @@ export function makeKeeperSpawn(
           const f = parseKeeperFrame(line);
           if (!f) return;
           if (f.t === 'helloAck') {
-            ackWaiter?.resolve({ running: f.running, pid: f.pid, everStarted: f.everStarted, turnInFlight: f.turnInFlight });
+            ackWaiter?.resolve({
+              running: f.running,
+              pid: f.pid,
+              everStarted: f.everStarted,
+              turnInFlight: f.turnInFlight,
+              shuttingDown: f.shuttingDown,
+            });
             ackWaiter = null;
           } else if (f.t === 'stdout') {
             stdout.write(Buffer.from(f.b64, 'base64'));
@@ -537,21 +549,26 @@ export function makeKeeperSpawn(
         if (sock) {
           wireSocket(sock);
           const ack = await helloOn(sock);
-          // Attach only to a CLI that has genuinely RUN (everStarted). A
-          // running-but-never-started CLI is init-wedged (its init handshake
-          // died with a previous client) — sending into it queues the message
-          // behind a ~60s timeout; treat it as stale instead. `undefined`
+          // Attach only to a CLI that has genuinely RUN (everStarted) and is
+          // NOT shutting down. A running-but-never-started CLI is init-wedged
+          // (its init handshake died with a previous client) — sending into it
+          // queues the message behind a ~60s timeout. A `shuttingDown` CLI is
+          // mid-teardown (a graceful stop/kill/linger escalation in flight):
+          // attaching to it (audit D1) writes the wake prompt into a `stdin`
+          // frame the keeper rejects, then the CLI exits 0 with the prompt
+          // lost, so treat it as stale too. `undefined` on either field
           // (pre-field keeper) keeps the legacy attach behavior.
-          if (ack.running && ack.everStarted !== false) {
+          if (ack.running && ack.everStarted !== false && ack.shuttingDown !== true) {
             attached = true;
             attachedPid = ack.pid;
             attachedTurnInFlight = ack.turnInFlight === true;
           } else {
-            // Stale keeper (child gone, never spawned by us, or a
-            // never-started/init-wedged CLI): clear it out and start fresh —
-            // never reuse a dead-or-wedged child slot. killKeeper resolves
-            // only once the keeper PROCESS is gone, so the fresh launch below
-            // can't race a dying keeper still holding the socket path.
+            // Stale keeper (child gone, never spawned by us, a
+            // never-started/init-wedged CLI, or one already shutting down):
+            // clear it out and start fresh — never reuse a dead-or-wedged or
+            // dying child slot. killKeeper resolves only once the keeper
+            // PROCESS is gone, so the fresh launch below can't race a dying
+            // keeper still holding the socket path.
             const stale = sock;
             sock = null; // detach the router's close semantics first
             stale.destroy();
