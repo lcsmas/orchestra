@@ -4709,7 +4709,10 @@ export async function writeBusSwitchState(worktreePath: string, runId: string): 
   }
 }
 
-/** The all-OFF switch set — the coexistence-safe default when no run row / no bus. */
+/** The all-OFF switch set — the coexistence-safe default when no run row / no bus.
+ *  Sourced from DEFAULT_BUS_SWITCHES (the one maintained default) so a new
+ *  mechanism can never leave this literal short a field, silently reading a
+ *  handful of switches as `undefined`. */
 function getLiveSwitchesAllOff() {
   // Derive from DEFAULT_BUS_SWITCHES (every mechanism OFF) rather than a
   // hand-written literal, so a new BusMechanism (#128 fencing, #129 capability,

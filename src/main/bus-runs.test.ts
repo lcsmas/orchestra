@@ -62,9 +62,9 @@ function cleanup(db: BusDb, dir: string) {
   rmSync(dir, { recursive: true, force: true });
 }
 
-// #129/#128 — derive from the mechanism list so a new BusMechanism is all-ON
-// here too, rather than a hand-written literal that a sibling ticket's mechanism
-// would silently omit.
+// #128/#129/#130 — derive from the mechanism list so a new BusMechanism is
+// all-ON here too, rather than a hand-written literal that a sibling ticket's
+// mechanism would silently omit.
 const ALL_ON: BusSwitches = Object.fromEntries(
   BUS_MECHANISMS.map((m) => [m, true]),
 ) as BusSwitches;
@@ -95,7 +95,7 @@ test('T118.2 — flipping a switch MID-WAVE does not change the running run row'
   const { db, dir } = tmpDb();
   try {
     // Wave start: delivery ON, everything else OFF.
-    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, capability: false };
+    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false };
     startRun(db, { id: 'run-1', kind: 'vague', coordinator: 'ops-b' }, live);
     assert.equal(runFlags(db, 'run-1').delivery, true);
     assert.equal(runFlags(db, 'run-1').wake, false);
@@ -118,7 +118,7 @@ test('T118.2 — flipping a switch MID-WAVE does not change the running run row'
 test('T118.2 — a NEW run picks up the new switch values', () => {
   const { db, dir } = tmpDb();
   try {
-    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, capability: false };
+    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false };
     startRun(db, { id: 'run-1', kind: 'vague', coordinator: 'ops-b' }, live);
     live.wake = true;
     live.delivery = false;
@@ -145,7 +145,7 @@ test('MUTANT (C10) — reading flags LIVE instead of from the run row is detecta
   // here, T118.2's green would be decoration — it would pass on the mutant too.
   const { db, dir } = tmpDb();
   try {
-    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, capability: false };
+    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false };
     startRun(db, { id: 'run-1', kind: 'vague', coordinator: 'ops-b' }, live);
     live.wake = true;
     live.delivery = false;
@@ -156,8 +156,8 @@ test('MUTANT (C10) — reading flags LIVE instead of from the run row is detecta
       liveRead(),
       'if these agreed, T118.2 would pass on the mutant and prove nothing',
     );
-    assert.deepEqual(rowRead(), { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false });
-    assert.deepEqual(liveRead(), { delivery: false, wake: true, askGate: false, liveness: false, fencing: false, capability: false });
+    assert.deepEqual(rowRead(), { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false });
+    assert.deepEqual(liveRead(), { delivery: false, wake: true, askGate: false, liveness: false, fencing: false, capability: false, receipts: false });
   } finally {
     cleanup(db, dir);
   }
@@ -262,7 +262,7 @@ test('the freeze holds through the REAL write+read path, not just freezeSwitches
   // a freeze bypassed anywhere between the caller and the row.
   const { db, dir } = tmpDb();
   try {
-    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, capability: false };
+    const live: BusSwitches = { delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false };
     startRun(db, { id: 'run-1', kind: 'vague', coordinator: 'ops-b' }, live);
     live.delivery = false;
     live.wake = true;
@@ -321,7 +321,7 @@ test('normalizeSwitches accepts only literal true — a "true" STRING is OFF', (
   // A switch that turns itself on from a hand-edited store typo is exactly what
   // the freeze exists to prevent, so the coercion is === true, not truthiness.
   const s = normalizeSwitches({ delivery: 'true', wake: 1, askGate: true, liveness: {} });
-  assert.deepEqual(s, { delivery: false, wake: false, askGate: true, liveness: false, fencing: false, capability: false });
+  assert.deepEqual(s, { delivery: false, wake: false, askGate: true, liveness: false, fencing: false, capability: false, receipts: false });
 });
 
 test('normalizeSwitches defaults each mechanism independently', () => {
@@ -334,7 +334,7 @@ test('normalizeSwitches defaults each mechanism independently', () => {
 });
 
 test('serialize → parse round-trips every mechanism', () => {
-  const mixed: BusSwitches = { delivery: true, wake: false, askGate: true, liveness: false, fencing: true, capability: true };
+  const mixed: BusSwitches = { delivery: true, wake: false, askGate: true, liveness: false, fencing: true, capability: true, receipts: true };
   assert.deepEqual(parseSwitches(serializeSwitches(mixed)), mixed);
 });
 
@@ -446,7 +446,7 @@ test('the wave-A core verbs still work alongside run rows (no schema collision)'
 test('busSwitch(runId, wire) reads the FROZEN row, both directions', () => {
   const { db, dir } = tmpDb();
   try {
-    const live: BusSwitches = { delivery: true, wake: false, askGate: true, liveness: false, capability: false };
+    const live: BusSwitches = { delivery: true, wake: false, askGate: true, liveness: false, fencing: false, capability: false, receipts: false };
     startRun(db, { id: 'run-1', kind: 'vague', coordinator: 'ops-b' }, live);
     // Mid-wave flip: every value inverted.
     live.delivery = false;
@@ -576,5 +576,34 @@ test('C11 — a DB stamped ABOVE SCHEMA_VERSION is REFUSED, not silently run', (
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ─── #130 — the `receipts` mechanism reads off the frozen run row ─────────────
+
+test('busSwitch(db, runId, "receipts") reads the FROZEN receipts flag, not live (T130.3 production gate)', () => {
+  // COVERS: the production path the CLI's runMutation takes — busSwitch on the
+  // NEW `receipts` mechanism, off the run row. The rig in bus-verbs.test.ts
+  // stubs busSwitch; this asserts the REAL reader against a real frozen row.
+  // MUTANT: drop `receipts` from BUS_MECHANISMS/WIRE_TO_MECHANISM → mechanismFromWire
+  //   returns null → busSwitch returns false even when frozen ON → the ON arm RED.
+  const { db, dir } = tmpDb();
+  try {
+    // A run frozen with receipts ON, everything else OFF.
+    startRun(
+      db,
+      { id: 'run-r', kind: 'vague', coordinator: 'ops' },
+      { delivery: false, wake: false, askGate: false, liveness: false, receipts: true },
+    );
+    assert.equal(busSwitch(db, 'run-r', 'receipts'), true, 'a frozen receipts=ON reads ON');
+    assert.equal(busSwitch(db, 'run-r', 'delivery'), false, 'receipts is independent of delivery');
+
+    // A run frozen all-OFF: receipts reads OFF (coexistence-safe), and an
+    // unknown run reads OFF too.
+    startRun(db, { id: 'run-off', kind: 'vague', coordinator: 'ops' }, { ...DEFAULT_BUS_SWITCHES });
+    assert.equal(busSwitch(db, 'run-off', 'receipts'), false, 'frozen OFF reads OFF');
+    assert.equal(busSwitch(db, 'never', 'receipts'), false, 'an unknown run reads OFF, never live');
+  } finally {
+    cleanup(db, dir);
   }
 });

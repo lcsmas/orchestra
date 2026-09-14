@@ -32,18 +32,19 @@
  *  Wave B shipped four (delivery/wake/askGate/liveness). Wave D adds the bus-v2
  *  mechanisms, ONE SWITCH PER MECHANISM (ledger #131 RULING D1 — no shared
  *  bundle, so each promotes and rolls back on its own #108 Q4/Q5 bar): `fencing`
- *  (#128 coordinator generation), `capability` (#129 dispatch capability tokens);
- *  #130 adds `receipts`, appending here at rebase in merge order. Growing this
- *  enum is ADDITIVE and store-safe: `run_flags.flags` is a JSON object read back
- *  by builds that know more mechanisms than the writer did (bus.ts MIGRATIONS[3]
- *  comment), and "frozen" is frozen-PER-RUN-at-wave-start, not enum-frozen. */
+ *  (#128 coordinator generation), `capability` (#129 dispatch capability tokens),
+ *  `receipts` (#130 mutation receipts). Growing this enum is ADDITIVE and
+ *  store-safe: `run_flags.flags` is a JSON object read back by builds that know
+ *  more mechanisms than the writer did (bus.ts MIGRATIONS[3] comment), and
+ *  "frozen" is frozen-PER-RUN-at-wave-start, not enum-frozen. */
 export type BusMechanism =
   | 'delivery'
   | 'wake'
   | 'askGate'
   | 'liveness'
   | 'fencing' // #128
-  | 'capability'; // #129
+  | 'capability' // #129
+  | 'receipts'; // #130
 
 /** Every mechanism, in the order the pane renders them. */
 export const BUS_MECHANISMS: readonly BusMechanism[] = [
@@ -53,6 +54,7 @@ export const BUS_MECHANISMS: readonly BusMechanism[] = [
   'liveness',
   'fencing', // #128
   'capability', // #129
+  'receipts', // #130
 ];
 
 /** One boolean per mechanism. */
@@ -73,6 +75,7 @@ export const DEFAULT_BUS_SWITCHES: BusSwitches = Object.freeze({
   liveness: false,
   fencing: false, // #128
   capability: false, // #129
+  receipts: false, // #130
 });
 
 /** Human-facing label per mechanism (French in prose/UI per #108 ruling Q13). */
@@ -83,6 +86,7 @@ export const BUS_MECHANISM_LABEL: Record<BusMechanism, string> = {
   liveness: 'Liveness + phase',
   fencing: 'Fencing (coordinator generation)', // #128
   capability: 'Capability tokens (dispatch)', // #129
+  receipts: 'Mutation receipts (idempotence)', // #130
 };
 
 /**
@@ -191,7 +195,8 @@ export type BusMechanismWire =
   // #129 — capability's wire name equals its key (no snake/camel split), but it
   // MUST still route through this map so busSwitch(db,runId,'capability') and the
   // startup notice agree with everything else.
-  | 'capability';
+  | 'capability'
+  | 'receipts'; // #130 (wire == key)
 
 const WIRE_TO_MECHANISM: Record<BusMechanismWire, BusMechanism> = {
   delivery: 'delivery',
@@ -200,6 +205,10 @@ const WIRE_TO_MECHANISM: Record<BusMechanismWire, BusMechanism> = {
   liveness: 'liveness',
   fencing: 'fencing', // #128
   capability: 'capability', // #129
+  // #130: wire name == internal key (both `receipts`); no snake/camel split, but
+  // it still routes through this ONE map — the file header forbids writing the
+  // literal anywhere else.
+  receipts: 'receipts',
 };
 
 /** Wire name → internal key. Returns null for an unknown name (never a guess). */

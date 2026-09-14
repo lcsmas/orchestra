@@ -42,12 +42,14 @@ const ALL_OFF: BusSwitches = { ...DEFAULT_BUS_SWITCHES };
 
 test('BUS_MECHANISMS lists the wave B set plus the wave-D additions, and DEFAULT is every one OFF', () => {
   // Wave B: delivery/wake/askGate/liveness. Wave D appends one switch per bus-v2
-  // mechanism (ledger #131 RULING D1); #129 adds `capability` (#128 `fencing`,
-  // #130 `receipts` append at their rebases). Assert the wave-B four are present
-  // and in order, and that `capability` is present — not an exact whole-list
-  // match, so a sibling ticket appending its own mechanism does not redden this.
+  // mechanism (ledger #131 RULING D1): #128 `fencing`, #129 `capability`, #130
+  // `receipts`. Assert the wave-B four are present and in order, and that each
+  // wave-D mechanism is present — not an exact whole-list match, so a future
+  // sibling appending its own mechanism does not redden this.
   assert.deepEqual([...BUS_MECHANISMS].slice(0, 4), ['delivery', 'wake', 'askGate', 'liveness']);
+  assert.ok(BUS_MECHANISMS.includes('fencing'), '#128 adds the fencing mechanism');
   assert.ok(BUS_MECHANISMS.includes('capability'), '#129 adds the capability mechanism');
+  assert.ok(BUS_MECHANISMS.includes('receipts'), '#130 adds the receipts mechanism');
   // DEFAULT is every KNOWN mechanism OFF — derived, so it grows with the enum.
   for (const m of BUS_MECHANISMS) assert.equal(DEFAULT_BUS_SWITCHES[m], false, `${m} defaults OFF`);
   assert.equal(Object.keys(DEFAULT_BUS_SWITCHES).length, BUS_MECHANISMS.length);
@@ -163,12 +165,14 @@ test('mechanismEnabled reads === true off the frozen set', () => {
 
 // ─── the wire mapping — the one place snake_case meets camelCase ─────────────
 
-test('mechanismFromWire maps the wire names and refuses everything else', () => {
+test('mechanismFromWire maps every wire name and refuses everything else', () => {
   assert.equal(mechanismFromWire('delivery'), 'delivery');
   assert.equal(mechanismFromWire('wake'), 'wake');
   assert.equal(mechanismFromWire('ask_gate'), 'askGate', 'snake ask_gate → camel askGate');
   assert.equal(mechanismFromWire('liveness'), 'liveness');
+  assert.equal(mechanismFromWire('fencing'), 'fencing', '#128 fencing wire == key');
   assert.equal(mechanismFromWire('capability'), 'capability', '#129 capability wire == key');
+  assert.equal(mechanismFromWire('receipts'), 'receipts', '#130 receipts wire == key');
   // Unknown, and — critically — the INTERNAL key on the wire must be rejected.
   assert.equal(mechanismFromWire('askGate'), null, 'the internal key is not a wire name');
   assert.equal(mechanismFromWire('nope'), null);

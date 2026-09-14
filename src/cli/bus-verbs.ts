@@ -284,12 +284,15 @@ function fenced<T>(ctx: BusVerbCtx, verb: string, write: () => T): T {
 // ─── mutation receipts (#130) ──────────────────────────────────────────────────
 
 /**
- * The receipt-gating mechanism for #130 (ledger #131 ruling D1): the per-feature
- * `receipts` switch, NOT `delivery` — receipts flip independently of message
- * delivery. #118 contract: frozen on the run row, COUNTED-not-FIRED while OFF.
- * (The pre-D1 draft rode `delivery`; the very next rebase step rewires it here.)
+ * The receipt-gating mechanism for #130 (ledger #131 §Decisions, ruling D1): a
+ * NEW per-feature `receipts` switch, one per write-path v2 mechanism (#128
+ * `fencing`, #129 `capability`, #130 `receipts`) — NOT the `delivery` switch, so
+ * receipts flip independently of message delivery. #118 contract: frozen on the
+ * run row at wave start, COUNTED-not-FIRED while OFF. While `receipts=OFF` a
+ * retry is COUNTED but the mutation re-executes (v1); while ON, a retry short-
+ * circuits to the original receipt. One constant names the mechanism.
  */
-export const RECEIPT_SWITCH = 'delivery';
+export const RECEIPT_SWITCH = 'receipts';
 
 /**
  * The caller's stable fingerprint for a receipt key: the bus handle.

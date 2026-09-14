@@ -26,6 +26,9 @@ const MECHANISM_DESC: Record<BusMechanism, string> = {
   // #129 — dispatch capability tokens.
   capability:
     'Each dispatch mints a capability token its worker must carry back; a completion from a superseded or failed dispatch is rejected. While OFF a stale completion is only COUNTED, not rejected.',
+  // #130 — mutation receipts.
+  receipts:
+    'Retried CLI mutations (send / ack / gate resolve) carrying a request id are made idempotent — a replay returns the original receipt. While OFF the retry is counted but re-executes (v1 behaviour).',
 };
 
 /**
