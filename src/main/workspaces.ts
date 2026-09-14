@@ -42,6 +42,8 @@ import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration
 import { sanitizeStatusText } from '../shared/status-text.ts';
 import { busSwitchNotice } from '../shared/bus-switches.ts';
 import { getLiveSwitches } from './bus-settings.ts';
+import { getBus } from './bus.ts';
+import { runFlags } from './bus-runs.ts';
 import {
   resolveDirectChildTargets,
   normalizeExplicitTargets,
@@ -4484,9 +4486,12 @@ export async function startAgentPty(ws: Workspace, cols: number, rows: number): 
   const remote = ws.host?.kind === 'sandbox';
   // Idempotent: upgrades workspaces created before the activity hook landed.
   if (!remote) await installOrchestraHooks(ws.worktreePath);
-  // Refreshed on EVERY spawn, unlike the hash-gated hook bundle: the switch
-  // states change whenever a human flips one (#118).
-  if (!remote) await writeBusSwitchState(ws.worktreePath);
+  // Refreshed on EVERY spawn, unlike the hash-gated hook bundle. The switch
+  // states are FROZEN on the run row (#118 F2) — sourced from there, not from the
+  // live switches — so a mid-wave flip does not change a running run's notice.
+  // The run a workspace belongs to is its wave: its orchestrator if it has one,
+  // else itself. (When #115 plumbs $ORCHESTRA_RUN_ID this becomes that.)
+  if (!remote) await writeBusSwitchState(ws.worktreePath, ws.parentId ?? ws.id);
   // Materialize the pinned account's inherited global config into its login dir
   // right before spawn, so the agent sees the user's settings/skills/MCP. Pinned
   // account only (resolveRepoAgentEnv uses the same pin for CLAUDE_CONFIG_DIR).
@@ -4589,23 +4594,64 @@ const HOOKS_VERSION = createHash('sha256')
  * Write the fleet-bus switch states into the worktree, for the SessionStart
  * notice to print (#118 acceptance 3, ledger #123 T118.3).
  *
+ * SOURCES FROM THE RUN ROW, NOT THE LIVE SWITCHES (F2, reviewer 7c372e9a on
+ * ledger #123). The notice's own text says "frozen at wave start — a mid-wave
+ * flip does NOT change them", and the fleet skill BRANCHES on that freeze claim.
+ * Reading `getLiveSwitches()` here made the claim false: two agents spawned into
+ * the SAME run on either side of a human's flip received CONTRADICTORY notices,
+ * each asserting the opposite — verbatim the "half a fleet reading wake=on while
+ * the other half reads wake=off" split the freeze exists to prevent. So the
+ * frozen flags come from `runFlags(db, runId)` — what the run OBEYED, recorded
+ * on its row, invariant across every spawn of that run.
+ *
+ * A run whose row does not exist yet (the run lifecycle is #115's; until it
+ * lands no row is created here — creating one per workspace-spawn would populate
+ * the pane's run list with spurious rows and is not this function's job) reads
+ * ALL-OFF via `runFlags`, never the live switches. All-OFF is the coexistence-
+ * safe direction (the old channels stay authoritative) and it is STABLE, so the
+ * "frozen" wording holds even before a run row exists. When the bus is down
+ * (getBus() === null) the run also reads all-OFF — D1: a mechanism the bus would
+ * carry reads OFF for the run.
+ *
+ * `runId` is the run the workspace belongs to. Until #115 plumbs an explicit run
+ * id (`$ORCHESTRA_RUN_ID`), the caller passes the workspace's own run identity
+ * (its orchestrator/wave, else itself) — a run is a wave, and every spawn of one
+ * worktree is the same member of the same wave, which is exactly the grain the
+ * freeze must hold across.
+ *
  * DELIBERATELY OUTSIDE the hook-bundle hash short-circuit: `installOrchestraHooks`
- * skips its whole install when the script bundle is unchanged, and these values
- * change whenever a human flips a switch. Baking them into a hashed script body
- * would pin the notice to the switch states the workspace was FIRST provisioned
- * at, and no later spawn would ever correct it.
+ * skips its whole install when the script bundle is unchanged. This runs on every
+ * spawn so a run row that appears (or a run boundary crossed) is picked up — but
+ * within one run the row is frozen, so the notice does not change.
  *
  * Every mechanism is named in BOTH states — never "print the ON ones and stay
  * silent" — because an agent cannot tell an OFF switch from a build without
  * switches from a truncated notice. See busSwitchNotice().
  *
- * Best-effort: a write failure must not block a spawn (D1's spirit — no bus
- * concern blocks the app). The notice is then simply absent, and the script's
- * `-s` guard makes that a silent no-op rather than a false "all off" claim.
+ * Best-effort: a bus/write failure must not block a spawn (D1 — no bus concern
+ * blocks the app). On failure the notice is simply absent, and the script's `-s`
+ * guard makes that a silent no-op rather than a false "all off" claim.
  */
-export async function writeBusSwitchState(worktreePath: string): Promise<void> {
+export async function writeBusSwitchState(worktreePath: string, runId: string): Promise<void> {
   try {
-    const notice = busSwitchNotice(getLiveSwitches());
+    // The FROZEN flags for this run, read from the run row. Never getLiveSwitches().
+    // getBus() may be null (D1) — then the run reads all-OFF, which is what
+    // runFlags returns for an absent/unopened bus by construction below.
+    let frozen;
+    try {
+      const db = getBus();
+      frozen = db ? runFlags(db, runId) : undefined;
+    } catch (busErr) {
+      // A malformed/locked bus is "unavailable", not a spawn blocker (D1). Fall
+      // through to the coexistence-safe all-OFF notice.
+      log.warn('bus-switches: could not read the run row — notice reads all-OFF', busErr);
+      frozen = undefined;
+    }
+    // runFlags already returns all-OFF for an unknown run; when the bus itself is
+    // unavailable we default to the same all-OFF set so the run stays self-
+    // describing as unadopted rather than the notice vanishing.
+    const flags = frozen ?? getLiveSwitchesAllOff();
+    const notice = busSwitchNotice(flags);
     const file = path.join(worktreePath, '.orchestra', 'bus-switches');
     if (!notice) {
       await rm(file, { force: true });
@@ -4616,6 +4662,11 @@ export async function writeBusSwitchState(worktreePath: string): Promise<void> {
   } catch (err) {
     log.warn('bus-switches: could not write the per-worktree switch state', err);
   }
+}
+
+/** The all-OFF switch set — the coexistence-safe default when no run row / no bus. */
+function getLiveSwitchesAllOff() {
+  return { delivery: false, wake: false, askGate: false, liveness: false } as const;
 }
 
 export async function installOrchestraHooks(

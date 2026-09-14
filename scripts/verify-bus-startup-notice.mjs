@@ -71,6 +71,8 @@ export { writeBusSwitchState } from ${JSON.stringify(path.join(repoRoot, 'src/ma
 export { busSwitchNotice, busSwitchNoticeLines } from ${JSON.stringify(path.join(repoRoot, 'src/shared/bus-switches.ts'))};
 export { store } from ${JSON.stringify(path.join(repoRoot, 'src/main/store.ts'))};
 export { initPlatform } from ${JSON.stringify(path.join(repoRoot, 'src/main/platform/index.ts'))};
+export { initBus, getBus, closeBus } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus.ts'))};
+export { startRun } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus-runs.ts'))};
 `,
 );
 // Emit INSIDE the repo (like the render smokes): a bundle in /tmp cannot
@@ -148,6 +150,15 @@ mod.initPlatform({
 const storeFile = path.join(tmp, 'orchestra', 'store.json');
 fs.mkdirSync(path.dirname(storeFile), { recursive: true });
 
+// F2: the notice sources from the RUN ROW, not the live switches. So this rig
+// must open a real bus and SEED run rows (frozen flags), then read the notice
+// back. better-sqlite3 stays external (the runtime's own copy, constructed —
+// C12) so this is the real freeze, not a stub. ORCHESTRA_HOME is our tmp.
+const schema = mod.initBus();
+check('the bus opened for the notice rig', schema >= 2, 'schema v' + schema);
+const busDb = mod.getBus();
+check('getBus() is non-null after initBus()', !!busDb);
+
 // ── The generated hook script, taken from the SOURCE Orchestra installs ─────
 // Extracting the literal out of workspaces.ts (rather than retyping it) is the
 // point: if the shipped script changes, this rig runs the CHANGED one.
@@ -176,15 +187,36 @@ function runNotice() {
   }
 }
 
-async function setSwitchesAndWrite(sw) {
+/**
+ * Freeze a run at the given live switches, then write + read its notice.
+ *
+ * The FREEZE is `startRun` (idempotent — only the first call for a runId writes
+ * the flags; a later call with flipped switches is a no-op, which is exactly the
+ * property under test). The notice then reads the FROZEN run row, never the live
+ * switches. Different `runId`s freeze independently.
+ */
+async function seedRunAndWrite(runId, sw) {
   await mod.store.setBusSwitches(sw);
-  await mod.writeBusSwitchState(worktree);
+  mod.startRun(busDb, { id: runId, kind: 'vague', coordinator: 'ops-rig' }, sw);
+  await mod.writeBusSwitchState(worktree, runId);
+  return runNotice();
+}
+
+/**
+ * Write the notice for an ALREADY-FROZEN run at the CURRENT live switches, WITHOUT
+ * re-freezing. This is the mid-wave-flip path: the live switches are flipped, but
+ * the run row was frozen earlier, so the notice must not change. Used by the
+ * inverted freeze gate.
+ */
+async function flipLiveAndWrite(runId, sw) {
+  await mod.store.setBusSwitches(sw);
+  await mod.writeBusSwitchState(worktree, runId);
   return runNotice();
 }
 
 // ── Arm A: switch ON ────────────────────────────────────────────────────────
 console.log('\nT118.3 arm A — POSITIVE control (delivery ON):');
-const onOut = await setSwitchesAndWrite({
+const onOut = await seedRunAndWrite('run-A-on', {
   delivery: true,
   wake: false,
   askGate: false,
@@ -200,7 +232,7 @@ check('it states the freeze', /frozen at wave start/.test(onOut));
 
 // ── Arm B: switch OFF — the OPPOSITE string, not silence ────────────────────
 console.log('\nT118.3 arm B — NEGATIVE control (delivery OFF → the OPPOSITE string):');
-const offOut = await setSwitchesAndWrite({
+const offOut = await seedRunAndWrite('run-B-off', {
   delivery: false,
   wake: false,
   askGate: false,
@@ -226,13 +258,13 @@ check(
 
 // Every mechanism, both directions — not just `delivery`.
 console.log('\nT118.3 — every mechanism, in both states:');
-const allOn = await setSwitchesAndWrite({
+const allOn = await seedRunAndWrite('run-allon', {
   delivery: true,
   wake: true,
   askGate: true,
   liveness: true,
 });
-const allOff = await setSwitchesAndWrite({
+const allOff = await seedRunAndWrite('run-alloff', {
   delivery: false,
   wake: false,
   askGate: false,
@@ -282,17 +314,62 @@ const absent = runNotice();
 check('prints nothing', absent.trim() === '', `printed ${JSON.stringify(absent.slice(0, 120))}`);
 check('does NOT claim any switch state', !/bus switch \w+=(ON|OFF)/.test(absent));
 
-// ── The state file is refreshed, not baked ──────────────────────────────────
-// The trap this catches: the hook bundle short-circuits on a content hash, so a
-// value baked into a script body would be written once and never corrected.
-console.log('\nThe state file tracks a later flip (it is not baked at provision time):');
-const first = await setSwitchesAndWrite({ delivery: true, wake: false, askGate: false, liveness: false });
-const second = await setSwitchesAndWrite({ delivery: false, wake: true, askGate: false, liveness: false });
-check('first spawn saw delivery=ON', first.includes('bus switch delivery=ON'));
-check('after a flip, the next spawn sees delivery=OFF', second.includes('bus switch delivery=OFF'));
-check('and sees wake=ON', second.includes('bus switch wake=ON'));
-check('the two notices DIFFER', first !== second);
+// ── THE FREEZE — F2, ledger #123 (this gate is INVERTED from the pre-F2 rig) ──
+//
+// The pre-F2 rig asserted the notice TRACKS a live flip ("the two notices
+// DIFFER") — and that CERTIFIED THE DEFECT. The notice's own text says "frozen
+// at wave start — a mid-wave flip does NOT change them"; a gate asserting the
+// opposite makes the split it forbids look deliberate. Reviewer 7c372e9a's F2
+// ruling: the notice sources from the run row, the "frozen" wording stays true,
+// and this gate must FAIL when two notices IN ONE RUN differ.
+//
+// So: freeze a run at delivery=ON, then FLIP the live switches and re-spawn the
+// SAME run. The run row is frozen, so the two notices must be BYTE-IDENTICAL.
+console.log('\nThe notice is FROZEN per run — a mid-wave flip does NOT change a running run:');
+const frozenRun = 'run-freeze-1';
+const beforeFlip = await seedRunAndWrite(frozenRun, { delivery: true, wake: false, askGate: false, liveness: false });
+// A human flips delivery OFF and wake ON while the run is live; re-spawn the run.
+const afterFlip = await flipLiveAndWrite(frozenRun, { delivery: false, wake: true, askGate: false, liveness: false });
+check('the run froze delivery=ON', beforeFlip.includes('bus switch delivery=ON'));
+check(
+  'after a mid-wave flip, the SAME run still sees delivery=ON (frozen)',
+  afterFlip.includes('bus switch delivery=ON'),
+  'a running run must not adopt a flipped switch',
+);
+check(
+  'and does NOT pick up the flipped wake=ON',
+  !afterFlip.includes('bus switch wake=ON'),
+  'a running run must not adopt a flipped switch',
+);
+// THE inverted assertion: two notices in one run must be IDENTICAL, not DIFFER.
+check(
+  'the two notices in ONE run are BYTE-IDENTICAL (the freeze holds)',
+  beforeFlip === afterFlip,
+  'F2: two agents in the same run on either side of a flip got contradictory notices',
+);
 
+// ── A NEW run DOES pick up the flipped value (the freeze is per-run, not global)
+// The must-differ control, so "always identical" is not how the gate above passes.
+console.log('\nA NEW run picks up the flipped value (freeze is per-run):');
+const newRun = await seedRunAndWrite('run-freeze-2', { delivery: false, wake: true, askGate: false, liveness: false });
+check('a new run sees the flipped wake=ON', newRun.includes('bus switch wake=ON'));
+check('and the new run sees delivery=OFF', newRun.includes('bus switch delivery=OFF'));
+check('the new run DIFFERS from the frozen run (freeze is per-run, not global)', newRun !== beforeFlip);
+
+// ── The notice never reads the LIVE switches (F2 mutant surface) ─────────────
+// If writeBusSwitchState read getLiveSwitches() (the pre-F2 code, and C10's
+// mutant here), the afterFlip notice above would have shown wake=ON. It does not,
+// because it reads the frozen run row. Assert the run row and the live store
+// genuinely DISAGREE at this instant, so the identical-notice result is not
+// vacuous (it would also hold if the live store never actually changed).
+const liveNow = await mod.store.getBusSwitches();
+check(
+  'the live store and the frozen run DISAGREE right now (so the freeze test is not vacuous)',
+  liveNow.wake === true && !beforeFlip.includes('bus switch wake=ON'),
+  'live wake is ON but the frozen run notice still reads wake OFF',
+);
+
+mod.closeBus();
 fs.rmSync(tmp, { recursive: true, force: true });
 
 console.log('');
