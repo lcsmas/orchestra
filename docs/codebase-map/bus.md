@@ -885,3 +885,85 @@ reader's session; the E2E arm (`test:bus-wake-e2e`) closes that by counting the
 rendered `user-message`, and its `real_verb` arm drives #115's real `orchestra
 check`→`ack`. No human eye on the painted turn (stub CLI, not the real Claude
 binary), and no live two-agent wake through a running packaged app.
+
+## Asks + decision gates (#119) — questions and gates that wake and re-wake
+
+Wave C, ledger #125. Adopts orca's blocking ask WITHOUT a blocking process, and
+puts gate-driven wakes back into the predicate that wave-B D2 deliberately left
+out (gates had no recipient and `check` could not surface them).
+
+### Schema — `MIGRATIONS[4]`, `SCHEMA_VERSION=4` (`src/main/bus.ts`)
+
+`ALTER TABLE decision_gates ADD COLUMN recipient TEXT` + partial index
+`idx_gates_recipient(run_id, recipient) WHERE resolved_at IS NULL`. A pre-#119
+gate row reads `recipient = NULL` after the backfill and wakes NOBODY (the
+predicate matches an EXACT recipient) — the coexistence-safe direction.
+`migrate()` applies each index exactly once (guarded by `user_version`), so the
+`ADD COLUMN` never runs twice; the C11 gate seeds a faithful v<4 state by
+dropping the index THEN the column (SQLite refuses to drop a column an index
+references).
+
+### Verbs (`src/main/bus.ts`, `src/cli/bus-verbs.ts`)
+
+- `openGate(db, runId, askedBy, question, recipient=null)` — `orchestra gate open
+  [--to <recipient>] <question...>`.
+- `openGatesForRecipient(db, runId, recipient)` — the read behind BOTH the wake
+  predicate ("is R gate-pending") and `check`'s gate surface.
+- `orchestra gate resolve <id> --resolution <text>` (positional ruling still
+  accepted for back-compat); re-resolve REFUSED (`WHERE resolved_at IS NULL`).
+- `orchestra gate list` — open gates addressed to the caller.
+- `check` output carries a `gates: [{id, asked_by, question, opened_at}]` array
+  (always present, possibly empty) — the wake order is `orchestra check` and
+  nothing else, so a gate-woken reader must see the gate in that one verb.
+
+### The wake predicate — TWO switches, ONE order (`src/main/bus-wake.ts`, `src/shared/bus-wake.ts`)
+
+`readPendingReaders` now fills a SEPARATE gate half (`gatePending` /
+`gateThroughSeq`) from `openGatesForRecipient`, kept apart from the lot/question
+`pending` because it rides the **`askGate`** switch, not **`wake`** — the two
+mechanisms flip independently. The sweep reads both switches per reader per run
+(`readWakeSwitch` + `readAskGateSwitch`, each in its own try so one throw cannot
+mask the other) and passes both to `decideWake(p, session, prev, switchOn,
+askGateOn)`, which stays the ONE decision site:
+
+```
+fire  iff (pending && wake) || (gatePending && askGate)
+count iff (pending || gatePending) && not fire      -- COUNTED, not FIRED
+throughSeq = max high-water of only the sources that JUSTIFIED the action
+```
+
+Gate ids and message sequences share no numbering, so the ON-source-only
+high-water matters: an OFF source must not raise the mark or its
+counted-not-fired state is masked next sweep.
+
+### Ask re-wake-until-answered (#108 Q15)
+
+A `question` addressed to R is pending for R while UNANSWERED — answer = a message
+threaded to it (`thread_id = CAST(question.sequence AS TEXT)`, what `send --thread
+<ask-id>` writes). This is answer-based, NOT cursor-based: acking without
+answering does not clear it. The re-arm is the recipient's cursor ADVANCING past
+`WakeLedgerEntry.cursorAtWake` (their ack), so re-wakes are bounded by ACKS, not
+sweeps — no wake storm. An answered ask clears pending and prunes normally.
+
+### `readWaitingReaders(db, readers): Set<string>` — the export #120 consumes
+
+The SENDER/opener side (distinct from the recipient side above): a reader is
+`waiting` when it SENT an unanswered `question` or OPENED an unresolved gate. #120
+subtracts this set from its staleness candidates (an asker parked on an ask is
+idle-by-design, never stale). Run-scoped; switch-independent (being `waiting` is
+durable truth, not a fired mechanism).
+
+### Gates / arms
+
+`src/main/bus-asks-gates.test.ts` (sweep end-to-end) + additions to
+`src/cli/bus-verbs.test.ts` and `src/shared/bus-wake.test.ts`. T119.1 ask re-wake
+loop; T119.2 gate recipient/resolve/list/re-resolve + check surface; T119.3 the
+must-FAIL gate-wake arm (pre-#119 predicate shows ZERO gate wakes) + counted-off;
+T119.4 waiting excluded. Each shown RED under one mutation then GREEN.
+
+### Not wired here (deferred, like #117/#118)
+
+`setAskGateSwitchReader` (and `setWakeSwitchReader`) are NOT bound to `busSwitch`
+at boot on this branch — the shipped default is OFF (counted, not fired), i.e.
+shadow, matching #117/#118. Wiring the accessors to `busSwitch(getBus(), runId,
+'wake'|'ask_gate')` at `index.ts` is the promotion step, not this ticket.
