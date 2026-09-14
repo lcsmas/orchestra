@@ -72,6 +72,9 @@ export interface BusRunSummary {
   closedAt: number | null;
   /** Frozen at wave start. NOT the live switch values — see bus-switches.ts. */
   flags: BusSwitches;
+  /** Coordinator generation (#128). Bumped on an OPS respawn; the pane shows it
+   *  so a human can see which generation is authoritative for the run. */
+  coordinatorGeneration: number;
 }
 
 /** A message row, in total order. */

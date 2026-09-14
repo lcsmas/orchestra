@@ -27,8 +27,11 @@
 // draft of this comment pointed at a `src/main/bus-mechanism.ts` that does not
 // exist.
 
-/** The four mechanisms wave B is adopting behind independent switches. */
-export type BusMechanism = 'delivery' | 'wake' | 'askGate' | 'liveness';
+/** The mechanisms adopted behind independent switches. Wave B shipped the first
+ *  four; #128 (wave D) adds `fencing`. The list is DESIGNED to grow — every
+ *  reader defaults an unknown/absent mechanism independently (normalizeSwitches),
+ *  so a store or run row written by a build that knew only four upgrades cleanly. */
+export type BusMechanism = 'delivery' | 'wake' | 'askGate' | 'liveness' | 'fencing';
 
 /** Every mechanism, in the order the pane renders them. */
 export const BUS_MECHANISMS: readonly BusMechanism[] = [
@@ -36,6 +39,7 @@ export const BUS_MECHANISMS: readonly BusMechanism[] = [
   'wake',
   'askGate',
   'liveness',
+  'fencing',
 ];
 
 /** One boolean per mechanism. */
@@ -54,6 +58,7 @@ export const DEFAULT_BUS_SWITCHES: BusSwitches = Object.freeze({
   wake: false,
   askGate: false,
   liveness: false,
+  fencing: false,
 });
 
 /** Human-facing label per mechanism (French in prose/UI per #108 ruling Q13). */
@@ -62,6 +67,7 @@ export const BUS_MECHANISM_LABEL: Record<BusMechanism, string> = {
   wake: 'Wake-as-turn (Réveil)',
   askGate: 'Ask / Decision gate (Ruling)',
   liveness: 'Liveness + phase',
+  fencing: 'Fencing (coordinator generation)',
 };
 
 /**
@@ -161,13 +167,14 @@ export function mechanismEnabled(frozen: BusSwitches, mechanism: BusMechanism): 
  * outside this file, route it through `mechanismFromWire` instead — N copies of
  * a mapping is how the wire and the enum drift apart.
  */
-export type BusMechanismWire = 'delivery' | 'wake' | 'ask_gate' | 'liveness';
+export type BusMechanismWire = 'delivery' | 'wake' | 'ask_gate' | 'liveness' | 'fencing';
 
 const WIRE_TO_MECHANISM: Record<BusMechanismWire, BusMechanism> = {
   delivery: 'delivery',
   wake: 'wake',
   ask_gate: 'askGate',
   liveness: 'liveness',
+  fencing: 'fencing',
 };
 
 /** Wire name → internal key. Returns null for an unknown name (never a guess). */

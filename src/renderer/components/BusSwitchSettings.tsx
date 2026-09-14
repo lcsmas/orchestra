@@ -21,6 +21,8 @@ const MECHANISM_DESC: Record<BusMechanism, string> = {
     'Asks and decision gates are parked on the bus and resolved there. While OFF the ledger stays the place a ruling is recorded.',
   liveness:
     'Members publish liveness + phase heartbeats onto the bus. While OFF the pane shows only what other traffic reveals.',
+  fencing:
+    'A superseded coordinator’s writes (carrying an older generation) are rejected. While OFF the stale write still lands and the would-have-fenced event is counted.',
 };
 
 /**

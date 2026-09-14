@@ -656,6 +656,15 @@ test('C11 — migrate() upgrades a DB STAMPED at each version below v2, not just
       seed.exec('DROP INDEX IF EXISTS idx_gates_recipient');
       seed.exec('ALTER TABLE decision_gates DROP COLUMN recipient');
     }
+    // MIGRATIONS[5] (#128) ADDed runs.coordinator_generation AND the fence_events
+    // table. A faithful v<5 seed must remove BOTH (drop the fence_events index and
+    // table, then the column), or re-running migrate() from `from` re-runs the ADD
+    // COLUMN and throws "duplicate column name" — the vacuous pass this test guards.
+    if (from < 5) {
+      seed.exec('DROP INDEX IF EXISTS idx_fence_events_run');
+      seed.exec('DROP TABLE IF EXISTS fence_events');
+      seed.exec('ALTER TABLE runs DROP COLUMN coordinator_generation');
+    }
     seed.pragma(`user_version = ${from}`);
     // A row written BEFORE the upgrade — it must survive.
     const seq = busSend(seed, {
@@ -681,6 +690,11 @@ test('C11 — migrate() upgrades a DB STAMPED at each version below v2, not just
     if (from < 4) {
       probe.exec('DROP INDEX IF EXISTS idx_gates_recipient');
       probe.exec('ALTER TABLE decision_gates DROP COLUMN recipient');
+    }
+    if (from < 5) {
+      probe.exec('DROP INDEX IF EXISTS idx_fence_events_run');
+      probe.exec('DROP TABLE IF EXISTS fence_events');
+      probe.exec('ALTER TABLE runs DROP COLUMN coordinator_generation');
     }
     probe.pragma(`user_version = ${from}`);
     const mirrorTables = (

@@ -40,7 +40,7 @@ import {
 } from './pty';
 import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
-import { busSwitchNotice } from '../shared/bus-switches.ts';
+import { busSwitchNotice, DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 import { getBus } from './bus.ts';
 import { runFlags } from './bus-runs.ts';
 import { walkToRootId } from './wave-run-id.ts';
@@ -4699,7 +4699,9 @@ export async function writeBusSwitchState(worktreePath: string, runId: string): 
 
 /** The all-OFF switch set — the coexistence-safe default when no run row / no bus. */
 function getLiveSwitchesAllOff() {
-  return { delivery: false, wake: false, askGate: false, liveness: false } as const;
+  // The canonical all-OFF set, so a new mechanism (e.g. #128 `fencing`) is
+  // included automatically rather than silently dropped by a hand-listed literal.
+  return { ...DEFAULT_BUS_SWITCHES };
 }
 
 export async function installOrchestraHooks(

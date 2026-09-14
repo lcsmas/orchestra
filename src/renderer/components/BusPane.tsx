@@ -18,6 +18,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   BUS_MECHANISMS,
   BUS_MECHANISM_LABEL,
+  DEFAULT_BUS_SWITCHES,
   switchStateWord,
   type BusMechanism,
 } from '../../shared/bus-switches';
@@ -71,6 +72,15 @@ export function BusRunTree({
         <span className="bus-run-kind">{r.kind}</span>
         <span className="bus-run-title">{r.title || r.id}</span>
         <span className="bus-run-coordinator">{r.coordinator}</span>
+        {/* Coordinator generation (#128). Shown so a human can see which
+            generation a run is fenced to — a bumped run reads gen ≥ 1. */}
+        <span
+          className="bus-run-generation"
+          data-run-generation={r.coordinatorGeneration}
+          title="Coordinator generation — a write carrying an older generation is fenced"
+        >
+          gen {r.coordinatorGeneration}
+        </span>
         {/* The FROZEN flags, rendered per run — this is the run's own record of
             what it obeyed, not the live switches. A run started while `wake`
             was on keeps showing wake=ON after the switch is flipped off. */}
@@ -390,7 +400,7 @@ export function BusPane() {
         available: false,
         error: e instanceof Error ? e.message : String(e),
         path: '(unknown — the main process did not answer)',
-        liveSwitches: { delivery: false, wake: false, askGate: false, liveness: false },
+        liveSwitches: { ...DEFAULT_BUS_SWITCHES },
         runs: [],
         selectedRunId: null,
         messages: [],

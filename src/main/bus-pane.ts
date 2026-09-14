@@ -236,6 +236,7 @@ export function busSnapshot(runId?: string | null): BusSnapshot {
       createdAt: r.created_at,
       closedAt: r.closed_at,
       flags: r.flags,
+      coordinatorGeneration: r.coordinator_generation,
     }));
     const selected = runId && runs.some((r) => r.id === runId) ? runId : (runs[0]?.id ?? null);
     if (!selected) {

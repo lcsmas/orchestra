@@ -36,6 +36,9 @@ export interface BusRunRow {
   closed_at: number | null;
   /** The switch snapshot frozen when this run started. Never re-read live. */
   flags: BusSwitches;
+  /** The run's coordinator generation (#128). 0 until an OPS respawn bumps it;
+   *  a write carrying an OLDER generation is fenced. Rendered in the pane. */
+  coordinator_generation: number;
 }
 
 // THE `ensureRunFlagsSchema()` HELPER IS DELIBERATELY GONE. Do not reintroduce it.
@@ -210,5 +213,9 @@ function toRunRow(row: Record<string, unknown> & { flags_json?: string | null })
     created_at: Number(row.created_at),
     closed_at: (row.closed_at as number | null) ?? null,
     flags: parseSwitches(row.flags_json ?? null),
+    // `runs.coordinator_generation` (#128, MIGRATIONS[5]). A row read from a DB
+    // that predates the column reads undefined here — floored to 0, the same
+    // coexistence-safe default the migration's `DEFAULT 0` backfills.
+    coordinator_generation: Number(row.coordinator_generation ?? 0),
   };
 }

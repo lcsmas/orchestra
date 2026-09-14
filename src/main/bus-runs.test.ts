@@ -62,7 +62,13 @@ function cleanup(db: BusDb, dir: string) {
   rmSync(dir, { recursive: true, force: true });
 }
 
-const ALL_ON: BusSwitches = { delivery: true, wake: true, askGate: true, liveness: true };
+const ALL_ON: BusSwitches = {
+  delivery: true,
+  wake: true,
+  askGate: true,
+  liveness: true,
+  fencing: true,
+};
 const ALL_OFF: BusSwitches = { ...DEFAULT_BUS_SWITCHES };
 
 // ─── The freeze ─────────────────────────────────────────────────────────────
@@ -151,8 +157,20 @@ test('MUTANT (C10) — reading flags LIVE instead of from the run row is detecta
       liveRead(),
       'if these agreed, T118.2 would pass on the mutant and prove nothing',
     );
-    assert.deepEqual(rowRead(), { delivery: true, wake: false, askGate: false, liveness: false });
-    assert.deepEqual(liveRead(), { delivery: false, wake: true, askGate: false, liveness: false });
+    assert.deepEqual(rowRead(), {
+      delivery: true,
+      wake: false,
+      askGate: false,
+      liveness: false,
+      fencing: false,
+    });
+    assert.deepEqual(liveRead(), {
+      delivery: false,
+      wake: true,
+      askGate: false,
+      liveness: false,
+      fencing: false,
+    });
   } finally {
     cleanup(db, dir);
   }
@@ -316,7 +334,13 @@ test('normalizeSwitches accepts only literal true — a "true" STRING is OFF', (
   // A switch that turns itself on from a hand-edited store typo is exactly what
   // the freeze exists to prevent, so the coercion is === true, not truthiness.
   const s = normalizeSwitches({ delivery: 'true', wake: 1, askGate: true, liveness: {} });
-  assert.deepEqual(s, { delivery: false, wake: false, askGate: true, liveness: false });
+  assert.deepEqual(s, {
+    delivery: false,
+    wake: false,
+    askGate: true,
+    liveness: false,
+    fencing: false,
+  });
 });
 
 test('normalizeSwitches defaults each mechanism independently', () => {
@@ -329,7 +353,13 @@ test('normalizeSwitches defaults each mechanism independently', () => {
 });
 
 test('serialize → parse round-trips every mechanism', () => {
-  const mixed: BusSwitches = { delivery: true, wake: false, askGate: true, liveness: false };
+  const mixed: BusSwitches = {
+    delivery: true,
+    wake: false,
+    askGate: true,
+    liveness: false,
+    fencing: true,
+  };
   assert.deepEqual(parseSwitches(serializeSwitches(mixed)), mixed);
 });
 

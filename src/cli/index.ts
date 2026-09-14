@@ -703,6 +703,7 @@ function busCtx(
   db: import('../main/bus.ts').BusDb,
   bus: BusVerbCtx['bus'],
   id: { runId: string; handle: string },
+  fencing: { generation: number | null; fencingOn: boolean },
 ): BusVerbCtx {
   return {
     db,
@@ -712,7 +713,51 @@ function busCtx(
       process.stdout.write(text);
     },
     fail,
+    generation: fencing.generation,
+    fencingOn: fencing.fencingOn,
   };
+}
+
+/**
+ * FENCING (#128) — resolve the coordinator generation a verb presents and whether
+ * the `fencing` switch is ON for its run.
+ *
+ * The generation comes from `--generation <n>` or `$ORCHESTRA_COORDINATOR_GENERATION`;
+ * absent = null = the unfenced v1 path (every existing caller). A present-but-not-
+ * an-integer value is REFUSED rather than silently becoming null — a coordinator
+ * that meant to fence and typo'd its generation must not slip through unfenced.
+ *
+ * The switch is READ from the run's FROZEN flags (busSwitch, from bus-runs.ts),
+ * never the live store — the coexistence contract #118 froze. An unknown run or a
+ * down read defaults OFF (counted, not fired), the coexistence-safe direction.
+ */
+async function resolveFencing(
+  db: import('../main/bus.ts').BusDb,
+  runId: string,
+  generationFlag: string | undefined,
+): Promise<{ generation: number | null; fencingOn: boolean }> {
+  const raw = generationFlag ?? process.env.ORCHESTRA_COORDINATOR_GENERATION;
+  let generation: number | null = null;
+  if (raw !== undefined && raw.trim() !== '') {
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0) {
+      fail(
+        `orchestra: --generation / $ORCHESTRA_COORDINATOR_GENERATION must be a ` +
+          `non-negative integer, got ${JSON.stringify(raw)}`,
+      );
+    }
+    generation = n;
+  }
+  const runsMod = await import('../main/bus-runs.ts');
+  let fencingOn = false;
+  try {
+    fencingOn = runsMod.busSwitch(db, runId, 'fencing');
+  } catch {
+    // A switch read that throws is treated as OFF — the coexistence-safe
+    // direction; a defaulted-ON would fence real writes on an unreadable flag.
+    fencingOn = false;
+  }
+  return { generation, fencingOn };
 }
 
 /**
@@ -1269,12 +1314,14 @@ async function main(argv: string[]): Promise<void> {
       const t = takeFlag(args, '--type');
       const to = takeFlag(t.rest, '--to');
       const th = takeFlag(to.rest, '--thread');
-      const run = takeFlag(th.rest, '--run');
+      const gen = takeFlag(th.rest, '--generation'); // #128 hunk (fencing)
+      const run = takeFlag(gen.rest, '--run');
       const as = takeFlag(run.rest, '--as');
       const id = busIdentityOrFail({ run: run.value, as: as.value });
       const { db, bus } = await openBusForVerb();
       try {
-        verbSend(busCtx(db, bus, id), {
+        const fencing = await resolveFencing(db, id.runId, gen.value); // #128 hunk
+        verbSend(busCtx(db, bus, id, fencing), {
           kind: t.value,
           to: to.value ?? null,
           thread: th.value ?? null,
@@ -1301,9 +1348,11 @@ async function main(argv: string[]): Promise<void> {
       const id = busIdentityOrFail({ run: run.value, as: as.value });
       const { db, bus } = await openBusForVerb();
       try {
+        // `check` is a read (plus the reader's OWN ack) — not a coordinator
+        // mutation, so it is never fenced (#128): no generation, switch off.
         // `--markdown` opts IN to the human render; JSON is the default because
         // the réveil (#117) orders an agent to run this and parse it.
-        verbCheck(busCtx(db, bus, id), {
+        verbCheck(busCtx(db, bus, id, { generation: null, fencingOn: false }), {
           ackPrevious: ackPrev.present,
           markdown: md.present,
           limit,
@@ -1315,12 +1364,14 @@ async function main(argv: string[]): Promise<void> {
     }
 
     case 'ack': {
-      const run = takeFlag(args, '--run');
+      const gen = takeFlag(args, '--generation'); // #128 hunk (fencing)
+      const run = takeFlag(gen.rest, '--run');
       const as = takeFlag(run.rest, '--as');
       const id = busIdentityOrFail({ run: run.value, as: as.value });
       const { db, bus } = await openBusForVerb();
       try {
-        verbAck(busCtx(db, bus, id), as.rest[0]);
+        const fencing = await resolveFencing(db, id.runId, gen.value); // #128 hunk
+        verbAck(busCtx(db, bus, id, fencing), as.rest[0]);
       } finally {
         db.close();
       }
@@ -1334,9 +1385,11 @@ async function main(argv: string[]): Promise<void> {
       const id = busIdentityOrFail({ run: run.value, as: as.value });
       const { db, bus } = await openBusForVerb();
       try {
+        // `ask` parks a question and is not one of the three fenced coordinator
+        // mutations (#128 scope: send/ack/gate-resolve) — never fenced.
         // Writes the row, prints the id, RETURNS. No wait — the Bash tool caps
         // at 600s, so a blocking ask would report a false timeout (#108).
-        verbAsk(busCtx(db, bus, id), to.value, as.rest.join(' '));
+        verbAsk(busCtx(db, bus, id, { generation: null, fencingOn: false }), to.value, as.rest.join(' '));
       } finally {
         db.close();
       }
@@ -1344,12 +1397,14 @@ async function main(argv: string[]): Promise<void> {
     }
 
     case 'gate': {
-      const run = takeFlag(args, '--run');
+      const gen = takeFlag(args, '--generation'); // #128 hunk (fencing gate-resolve)
+      const run = takeFlag(gen.rest, '--run');
       const as = takeFlag(run.rest, '--as');
       const id = busIdentityOrFail({ run: run.value, as: as.value });
       const { db, bus } = await openBusForVerb();
       try {
-        verbGate(busCtx(db, bus, id), as.rest[0], as.rest.slice(1));
+        const fencing = await resolveFencing(db, id.runId, gen.value); // #128 hunk
+        verbGate(busCtx(db, bus, id, fencing), as.rest[0], as.rest.slice(1));
       } finally {
         db.close();
       }

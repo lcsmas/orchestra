@@ -18,9 +18,44 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { loadDatabaseCtor } from './bus-binding.ts';
 import { orchestraHome } from './platform/index.ts';
+import { decideFence } from '../shared/bus-fencing.ts';
 
 /** A live connection to the bus. */
 export type BusDb = Database;
+
+/**
+ * FENCING (#128). A write carrying a coordinator generation OLDER than the run's
+ * current generation is rejected with THIS typed error — not a bare `Error`, so
+ * a caller can catch fencing specifically (`err instanceof StaleGenerationError`)
+ * and distinguish "you are a superseded coordinator" from every other write
+ * failure. T128.1 requires the refusal to be TYPED: an untyped throw would force
+ * callers to string-match the message, which is the exact brittleness the ADR's
+ * source-of-truth guarantee cannot rest on.
+ */
+export class StaleGenerationError extends Error {
+  /** Discriminant that survives a structured-clone / IPC boundary where the
+   *  prototype chain does not — `err.name === 'StaleGenerationError'` still works. */
+  readonly name = 'StaleGenerationError';
+  /** The run whose generation was violated. */
+  readonly runId: string;
+  /** The generation the caller presented. */
+  readonly presented: number;
+  /** The run's current (authoritative) generation. */
+  readonly current: number;
+  // Explicit field assignment, NOT constructor parameter properties: the
+  // `node --test --experimental-strip-types` runner rejects parameter properties
+  // (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX), and every bus test imports this file.
+  constructor(runId: string, presented: number, current: number) {
+    super(
+      `bus: stale coordinator generation for run ${JSON.stringify(runId)} — ` +
+        `write presented generation ${presented}, but the run is at ${current}. ` +
+        `A newer coordinator has superseded this one; the write was REFUSED.`,
+    );
+    this.runId = runId;
+    this.presented = presented;
+    this.current = current;
+  }
+}
 
 /** The message kinds the bus carries (#108 round 3, Q12 v1 adoption set). */
 export type BusMessageKind =
@@ -93,7 +128,7 @@ export interface BusDecisionGate {
 // ─── Schema ─────────────────────────────────────────────────────────────────
 
 /** Bumped by appending a migration to MIGRATIONS; never edit a shipped one. */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * Forward-only migrations, indexed by the version they PRODUCE. `migrate()`
@@ -258,6 +293,51 @@ export const MIGRATIONS: Record<number, string> = {
     ALTER TABLE decision_gates ADD COLUMN recipient TEXT;
     CREATE INDEX IF NOT EXISTS idx_gates_recipient
       ON decision_gates(run_id, recipient) WHERE resolved_at IS NULL;
+  `,
+  // #128 — FENCING: every run carries a monotone `coordinator_generation`. An
+  // OPS respawn BUMPS it (bumpCoordinatorGeneration), and a send/ack/gate-resolve
+  // carrying an OLDER generation is REJECTED (assertCoordinatorGeneration →
+  // StaleGenerationError). This formalizes what waves B/C did by hand (an
+  // OPS-B → OPS-B2 recovery had to be trusted to stop writing manually).
+  //
+  // ALTER TABLE ADD COLUMN with a NOT NULL DEFAULT 0: SQLite backfills every
+  // EXISTING run row with 0 (a constant default is legal for ADD COLUMN, unlike
+  // a non-constant one). A pre-#128 run therefore reads generation 0, and the
+  // FIRST bump takes it to 1 — the coexistence-safe direction: an un-bumped run
+  // fences nobody (a caller at 0 is never < 0). There is no `ADD COLUMN IF NOT
+  // EXISTS`, but migrate() applies each index EXACTLY ONCE per DB (guarded by
+  // user_version), so this never runs twice against the same file.
+  //
+  // SLOT NUMBERING (ledger #131 §Seams, inherited Q-B1 rule): the next free
+  // index after master's 4. The schema trio #128 → #129 → #130 serializes on
+  // MIGRATIONS; each RENUMBERS to the next free integer at rebase and bumps
+  // SCHEMA_VERSION with it — never edit a merged migration. If a sibling lands on
+  // 5 first, renumber this to 6 (etc.) at rebase.
+  5: `
+    ALTER TABLE runs ADD COLUMN coordinator_generation INTEGER NOT NULL DEFAULT 0;
+
+    -- The COUNTED-not-FIRED shadow trail. While the \`fencing\` switch is OFF a
+    -- stale-generation write is NOT rejected (the old channel stays
+    -- authoritative) — instead ONE row lands here recording that the write WOULD
+    -- have been fenced. This is what makes the switch-off state OBSERVABLE (C5):
+    -- an OFF fencing switch with a growing fence_events count is measurably
+    -- different from a build with no fencing at all. Deliberately NOT a
+    -- main-memory counter like #116/#117: those events happen in-process, but a
+    -- fenced write happens in the CLI's OWN bus connection (the five verbs write
+    -- the DB directly), so the only place a CLI-side count survives to the pane
+    -- is the bus itself. No unique index: a duplicate stale write must be
+    -- RECORDABLE, not refused, or the counter could never leave zero.
+    CREATE TABLE IF NOT EXISTS fence_events (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id     TEXT NOT NULL,
+      verb       TEXT NOT NULL,   -- 'send' | 'ack' | 'gate-resolve'
+      presented  INTEGER NOT NULL,
+      current    INTEGER NOT NULL,
+      fired      INTEGER NOT NULL, -- 1 = write rejected (switch ON); 0 = counted only (switch OFF)
+      actor      TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_fence_events_run ON fence_events(run_id, id);
   `,
 };
 
@@ -553,6 +633,209 @@ export function openGatesForRecipient(
         ORDER BY opened_at, id`,
     )
     .all(runId, recipient) as BusDecisionGate[];
+}
+
+// ─── Fencing: coordinator generation (#128) ─────────────────────────────────
+
+/**
+ * The run's current coordinator generation. 0 for a run with no `runs` row (the
+ * generation column lives on that row) OR a run that has never been bumped — both
+ * read 0, which is the coexistence-safe floor: no caller can present a generation
+ * BELOW 0, so an un-bumped run fences nobody.
+ *
+ * Read from `runs`, not `run_flags`: the generation is a property of the run's
+ * coordinator lineage, not of the switch snapshot. An unknown run returns 0
+ * rather than throwing — a fencing check on a run that does not exist yet must
+ * not itself become a write failure (D1 shape: the mechanism degrades to inert).
+ */
+export function coordinatorGeneration(db: BusDb, runId: string): number {
+  const row = db
+    .prepare('SELECT coordinator_generation AS g FROM runs WHERE id=?')
+    .get(runId) as { g: number } | undefined;
+  return row ? Number(row.g) : 0;
+}
+
+/**
+ * BUMP the run's coordinator generation (an OPS respawn calls this). Returns the
+ * NEW generation. Formalizes the manual OPS-B → OPS-B2 handover: the moment a new
+ * coordinator takes over, it bumps, and every write the OLD coordinator still has
+ * in flight (carrying the pre-bump generation) is fenced out.
+ *
+ * Refuses a run with no `runs` row: you cannot fence a run nobody has started, and
+ * a silent no-op here would let a respawn THINK it superseded the old coordinator
+ * while every stale write kept landing. The caller (an OPS lifecycle) must have a
+ * run row — created by startRun (#118) — before it can bump.
+ *
+ * `+1` inside one IMMEDIATE transaction so two racing respawns cannot both read N
+ * and both write N+1 (which would leave two live coordinators at the same
+ * generation, the exact split fencing exists to prevent).
+ */
+export function bumpCoordinatorGeneration(db: BusDb, runId: string): number {
+  const tx = db.transaction((): number => {
+    const info = db
+      .prepare(
+        'UPDATE runs SET coordinator_generation = coordinator_generation + 1 WHERE id=?',
+      )
+      .run(runId);
+    if (info.changes === 0) {
+      throw new Error(
+        `bus.bumpCoordinatorGeneration: run ${JSON.stringify(runId)} has no runs row — ` +
+          'start the run before bumping its coordinator generation',
+      );
+    }
+    return coordinatorGeneration(db, runId);
+  });
+  return tx.immediate();
+}
+
+/**
+ * THE FENCE. Assert that a write presenting `presented` is at or above the run's
+ * current generation. Throws {@link StaleGenerationError} otherwise, and does NOT
+ * touch any row — the caller's write must be conditioned on this returning.
+ *
+ * `presented === undefined | null` means the caller did not opt into fencing (the
+ * v1 unfenced write path, and the shadow default while the switch is OFF). Such a
+ * write is NEVER fenced — coexistence: an old-channel write carries no generation
+ * and must keep working. Only a caller that presents a generation can be fenced,
+ * and it is fenced only when strictly BELOW the current one (equal is the live
+ * coordinator itself; above is impossible without a bump it performed).
+ */
+export function assertCoordinatorGeneration(
+  db: BusDb,
+  runId: string,
+  presented: number | null | undefined,
+): void {
+  if (presented === null || presented === undefined) return;
+  const current = coordinatorGeneration(db, runId);
+  if (presented < current) {
+    throw new StaleGenerationError(runId, presented, current);
+  }
+}
+
+/** One `fence_events` row — the COUNTED-not-FIRED shadow trail (#128). */
+export interface BusFenceEvent {
+  id: number;
+  run_id: string;
+  verb: string;
+  presented: number;
+  current: number;
+  /** 1 = the write was REJECTED (switch ON); 0 = counted only (switch OFF). */
+  fired: number;
+  actor: string;
+  created_at: number;
+}
+
+export interface FenceEventInput {
+  runId: string;
+  verb: string;
+  presented: number;
+  current: number;
+  fired: boolean;
+  actor: string;
+}
+
+/**
+ * Record ONE would-have-fenced (or did-fence) event. Called on every stale write
+ * — both when counted (switch OFF, write proceeds) and when fired (switch ON,
+ * write rejected) — so the pane can show the divergence in either state. A write
+ * that is NOT stale records nothing.
+ */
+export function recordFenceEvent(db: BusDb, input: FenceEventInput): number {
+  const info = db
+    .prepare(
+      `INSERT INTO fence_events (run_id, verb, presented, current, fired, actor, created_at)
+       VALUES (?,?,?,?,?,?,?)`,
+    )
+    .run(
+      input.runId,
+      input.verb,
+      input.presented,
+      input.current,
+      input.fired ? 1 : 0,
+      input.actor,
+      Date.now(),
+    );
+  return Number(info.lastInsertRowid);
+}
+
+/** Every fence event of a run, oldest first — the pane's read. */
+export function fenceEvents(db: BusDb, runId: string): BusFenceEvent[] {
+  return db
+    .prepare('SELECT * FROM fence_events WHERE run_id=? ORDER BY id')
+    .all(runId) as BusFenceEvent[];
+}
+
+/**
+ * How many fence events a run has recorded, split by whether they FIRED (write
+ * rejected, switch ON) or were merely COUNTED (write proceeded, switch OFF). The
+ * pane and bus-status read this to make the switch-off state observable (C5).
+ */
+export function fenceEventCounts(
+  db: BusDb,
+  runId: string,
+): { counted: number; fired: number } {
+  const row = db
+    .prepare(
+      `SELECT
+         SUM(CASE WHEN fired=0 THEN 1 ELSE 0 END) AS counted,
+         SUM(CASE WHEN fired=1 THEN 1 ELSE 0 END) AS fired
+       FROM fence_events WHERE run_id=?`,
+    )
+    .get(runId) as { counted: number | null; fired: number | null };
+  return { counted: Number(row.counted ?? 0), fired: Number(row.fired ?? 0) };
+}
+
+export interface FencedWriteInput {
+  runId: string;
+  /** Which mutation this is, for the shadow trail: 'send' | 'ack' | 'gate-resolve'. */
+  verb: string;
+  /** The generation the caller presented; null/undefined = the unfenced v1 path. */
+  presented: number | null | undefined;
+  /** The frozen `fencing` switch for this run (read via busSwitch in the caller,
+   *  which owns the bus-runs import — passed in so bus.ts stays cycle-free). */
+  fencingOn: boolean;
+  /** Who is writing, for the shadow trail. */
+  actor: string;
+}
+
+/**
+ * THE FENCE, applied around a write, honouring the coexistence switch.
+ *
+ * Reads the run's current generation, decides with the PURE {@link decideFence},
+ * and:
+ *   - 'pass'   → returns; the caller does its write unchanged.
+ *   - 'count'  → records a `fence_events` row with `fired=0` and returns; the
+ *                caller STILL does its write (switch OFF, old channel
+ *                authoritative — COUNTED, not FIRED).
+ *   - 'reject' → records a `fence_events` row with `fired=1` and THROWS
+ *                {@link StaleGenerationError}; the caller's write never runs.
+ *
+ * Keeping the decision here (not in send/ack/resolveGate) means those primitives
+ * stay usable by unfenced callers, and the switch is read exactly once per write
+ * at the boundary that owns it. The `fencing` boolean is injected rather than
+ * read here because busSwitch lives in bus-runs.ts, which imports bus.ts — taking
+ * the dependency the other way would be a cycle.
+ */
+export function fencedWrite(db: BusDb, input: FencedWriteInput): void {
+  if (input.presented === null || input.presented === undefined) return;
+  const current = coordinatorGeneration(db, input.runId);
+  const decision = decideFence({
+    presented: input.presented,
+    current,
+    fencingOn: input.fencingOn,
+  });
+  if (decision === 'pass') return;
+  recordFenceEvent(db, {
+    runId: input.runId,
+    verb: input.verb,
+    presented: input.presented,
+    current,
+    fired: decision === 'reject',
+    actor: input.actor,
+  });
+  if (decision === 'reject') {
+    throw new StaleGenerationError(input.runId, input.presented, current);
+  }
 }
 
 // ─── Shadow mirror (#116) ───────────────────────────────────────────────────
