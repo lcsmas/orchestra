@@ -423,14 +423,21 @@ dynamic import with a second hashed chunk the bin entry does not name.
 
 ## `ORCHESTRA_BUS_BUSY_TIMEOUT_MS`
 
-`busyTimeoutOverride` (`index.ts:720`) exists for exactly one caller: the
-must-FAIL control arm of `scripts/verify-bus-cli-verbs.mjs`, which runs the
-**shipped binary** with the timeout at 0 and watches it lose rows. Without it
-that control would have to re-implement `send()` — and a rig that re-implements
-its subject measures the re-implementation, a defect this repo has already been
-bitten by (see `scripts/verify-bus-contention.mjs`'s header). A non-numeric
-value is refused rather than silently becoming the 5000 ms default, which would
-make the control arm pass while measuring the ordinary configuration.
+`busyTimeoutOverride` (`index.ts:728`) lets a caller pin the CLI's
+`busy_timeout` via `$ORCHESTRA_BUS_BUSY_TIMEOUT_MS`. A non-numeric value is
+refused rather than silently becoming the 5000 ms default (which would make a
+control arm pass while measuring the ordinary configuration); that refusal is
+what `bus-verbs.test.ts` still exercises. The T115.1 contention arms in
+`scripts/verify-bus-cli-verbs.mjs` no longer read this env var — they drive the
+**shipped `open()`+`send()`** (`src/main/bus.ts`) directly with `busyTimeoutMs`
+as an argument, in 10 concurrent short-lived processes on the real disk, the
+same shape as `scripts/verify-bus-contention.mjs`. This is because looping
+`runCli()` back-to-back inside one process to force overlap is impossible: it
+ends in `exitAfterFlush()` (`Promise<never>`) whose only post-drain resolution
+is `process.exit`, so neutralising exit to keep the loop going makes
+`await runCli` never settle — every writer hangs on its first send and the
+must-FAIL control passes vacuously (both arms read 10/1000). The env override
+remains for anyone who does want to pin the real binary's timeout.
 
 ## Running the gates
 
@@ -439,13 +446,18 @@ pnpm run test                                     # includes 25 bus-verb tests; 
 bash scripts/e2e-contained-rig.sh node scripts/verify-bus-cli-verbs.mjs
 ```
 
-The second one is the runtime half and needs the contained sway rig: the arms
-drive **real Electron** (not `ELECTRON_RUN_AS_NODE`, which degrades it to plain
-node and hides the #59 exit defect), so they need a compositor — and no test
-window may reach the user's screen. Its arms: T115.1 concurrency + its
-must-FAIL `busy_timeout=0` control · T115.2 ack-replay across a real SIGKILL ·
-T115.3 app-down · T115.4 check-does-not-ack · T115.5 the ABI matrix with its
-positive control · T115.6 `ask` does not block.
+The second one is the runtime half and needs the contained sway rig: the verb
+arms (T115.2–T115.6) drive **real Electron** (not `ELECTRON_RUN_AS_NODE`, which
+degrades it to plain node and hides the #59 exit defect), so they need a
+compositor — and no test window may reach the user's screen. Its arms: T115.1
+concurrency + its must-FAIL `busy_timeout=0` control · T115.2 ack-replay across a
+real SIGKILL · T115.3 app-down · T115.4 check-does-not-ack · T115.5 the ABI
+matrix with its positive control · T115.6 `ask` does not block. T115.1 is the one
+exception: its writers run the shipped `open()`+`send()` under plain node (ABI
+127) rather than real Electron, because Electron 33 rejects
+`--experimental-strip-types` and one process per `runCli()` cannot contend (see
+`ORCHESTRA_BUS_BUSY_TIMEOUT_MS` above); the packaged ABI-130 runtime is proven
+directly by T115.5a/b/c instead.
 
 Each arm gets its **own** `ORCHESTRA_HOME` (`freshHome`). They shared one at
 first, and T115.4's reader then took a lot of five messages in an arm that sent
