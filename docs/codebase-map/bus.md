@@ -459,6 +459,7 @@ divergence counters), and **four per-mechanism switches** — `delivery`, `wake`
 | `src/shared/bus-view.ts` | The `BusSnapshot` wire shape the pane renders |
 | `src/main/bus-runs.ts` | Run rows + their frozen flags; `busSwitch()` |
 | `src/main/bus-settings.ts` | The LIVE switches (store-backed) — deliberately a different module from the frozen read |
+| `src/main/wave-run-id.ts` | `walkToRootId` — the pure walk-to-root that gives a workspace its wave anchor (N2), store-injected so it unit-tests |
 | `src/main/bus-pane.ts` | The read-only IPC and the snapshot assembly |
 | `src/renderer/components/BusPane.tsx` | The pane, incl. the bus-unavailable state |
 | `src/renderer/components/BusSwitchSettings.tsx` | Flipping the live switches (a WRITE, deliberately not a pane channel) |
@@ -539,9 +540,9 @@ fabricated measurement.
 
 ## The startup notice
 
-`writeBusSwitchState(worktreePath, runId)` (`src/main/workspaces.ts:4535`) writes
+`writeBusSwitchState(worktreePath, runId)` (`src/main/workspaces.ts:4656`) writes
 `.orchestra/bus-switches` on **every spawn**, and
-`BUS_SWITCHES_INSTRUCTION_SCRIPT` (`:3931`) cats it on SessionStart.
+`BUS_SWITCHES_INSTRUCTION_SCRIPT` (`:4032`) cats it on SessionStart.
 
 **It sources from the RUN ROW, never the live switches** (`runFlags(db, runId)`,
 F2). The notice's own text says "frozen at wave start — a mid-wave flip does NOT
@@ -549,12 +550,16 @@ change them", and the fleet skill BRANCHES on that claim. Reading
 `getLiveSwitches()` here (the pre-F2 code) made the claim false: two agents
 spawned into one run on either side of a human's flip received CONTRADICTORY
 notices, each asserting the opposite — the "half a fleet reads wake=on, the other
-half wake=off" split the freeze exists to prevent. `runId` is the workspace's run
-(its orchestrator/wave, else itself — `src/main/workspaces.ts:4395`; becomes
-`$ORCHESTRA_RUN_ID` when #115 plumbs it). An absent run row (no lifecycle yet) or
-a down bus (D1) reads **all-OFF**, the coexistence-safe and STABLE default, so
-"frozen" holds even before a row exists. No run row is created here — that is
-#115's lifecycle, not the notice's job.
+half wake=off" split the freeze exists to prevent. `runId` is the workspace's
+WAVE ANCHOR = the tree ROOT: `resolveWaveRunId(ws)` walks `parentId` up via
+`store.getWorkspace` to the topmost resolvable ancestor (N2, ledger #123). Walking
+a single level split a 3-deep tree — LEAD → OPS → IMPL got two ids and froze
+against different rows. The pure walk is `walkToRootId` in
+`src/main/wave-run-id.ts` (store-free, so it unit-tests: 3-level chain → one root,
+a broken link falls back to the deepest resolvable ancestor, a cycle terminates).
+An absent run row (no lifecycle yet) or a down bus (D1) reads **all-OFF**, the
+coexistence-safe and STABLE default, so "frozen" holds even before a row exists.
+No run row is created here — that is #115's lifecycle, not the notice's job.
 
 The state lives in a **file, not a script constant**, for a specific reason:
 `installOrchestraHooks` short-circuits on a **hash of the script bodies**, so a
@@ -649,3 +654,13 @@ Gate resolution from the UI (v2). Who calls `startRun` for a real wave — no
 production caller creates runs yet; the pane renders whatever rows exist, and
 the run lifecycle is #115's. Counter *production* is #116's; #118 only renders
 the frozen shape.
+
+**Run-id surface disagreement (declared, N2 tail — ledger #123).** The notice
+keys on the **root workspace id** (`resolveWaveRunId`), but the CLI verbs a
+spawned agent runs key on `env.ORCHESTRA_RUN_ID || 'default'` (`src/cli/bus-verbs.ts`)
+and #116's mirror on `ORCHESTRA_RUN_ID || host-<ts>`. **Nothing sets
+`ORCHESTRA_RUN_ID` into the agent env on master** (grep `workspaces.ts` — no
+write), so the two run-id surfaces disagree until a spawn path exports
+`ORCHESTRA_RUN_ID=<root>`. This is inert while every switch is OFF (COUNTED, not
+fired — coexistence), and unifying them (export the root id at spawn) is a
+wave-B-scope-boundary item, not #118's: it needs the run lifecycle #115 owns.

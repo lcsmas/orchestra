@@ -43,6 +43,7 @@ import { sanitizeStatusText } from '../shared/status-text.ts';
 import { busSwitchNotice } from '../shared/bus-switches.ts';
 import { getBus } from './bus.ts';
 import { runFlags } from './bus-runs.ts';
+import { walkToRootId } from './wave-run-id.ts';
 import {
   resolveDirectChildTargets,
   normalizeExplicitTargets,
@@ -4488,9 +4489,11 @@ export async function startAgentPty(ws: Workspace, cols: number, rows: number): 
   // Refreshed on EVERY spawn, unlike the hash-gated hook bundle. The switch
   // states are FROZEN on the run row (#118 F2) — sourced from there, not from the
   // live switches — so a mid-wave flip does not change a running run's notice.
-  // The run a workspace belongs to is its wave: its orchestrator if it has one,
-  // else itself. (When #115 plumbs $ORCHESTRA_RUN_ID this becomes that.)
-  if (!remote) await writeBusSwitchState(ws.worktreePath, ws.parentId ?? ws.id);
+  // The run a workspace belongs to is its WAVE = the tree ROOT (N2, ledger #123):
+  // walking one level up split a 3-deep tree (LEAD→OPS→IMPL got two run ids), so
+  // resolve the root anchor. `$ORCHESTRA_RUN_ID` is NOT plumbed on master, so this
+  // is the only run identity available (see resolveWaveRunId).
+  if (!remote) await writeBusSwitchState(ws.worktreePath, resolveWaveRunId(ws));
   // Materialize the pinned account's inherited global config into its login dir
   // right before spawn, so the agent sees the user's settings/skills/MCP. Pinned
   // account only (resolveRepoAgentEnv uses the same pin for CLAUDE_CONFIG_DIR).
@@ -4588,6 +4591,25 @@ const HOOKS_VERSION = createHash('sha256')
     ].join('\0'),
   )
   .digest('hex');
+
+/**
+ * The FREEZE run id for a workspace = its WAVE ANCHOR, the tree ROOT (N2/Q-B2,
+ * ledger #123). Walk `parentId` up to the topmost resolvable ancestor: a wave is
+ * LEAD → OPS → IMPL…, and every member of it must freeze against ONE run id or
+ * the notice splits (walking a single level gave a 3-deep tree two ids — the N2
+ * defect). `$ORCHESTRA_RUN_ID` is NOT plumbed into the agent env on master, so
+ * this store walk is the only wave identity available.
+ *
+ * FALLBACK: a broken parent link (parent absent from the store — a dangling
+ * `parentId` after a delete) stops the walk at the deepest RESOLVABLE ancestor,
+ * never throws. A cycle guard bounds the walk (a malformed parentId cycle would
+ * otherwise loop). A root (no parentId) resolves to itself.
+ */
+export function resolveWaveRunId(ws: Workspace): string {
+  // The pure walk lives in wave-run-id.ts so it is unit-testable without the
+  // store/Electron chain this module drags in; here we inject store.getWorkspace.
+  return walkToRootId(ws, (id) => store.getWorkspace(id));
+}
 
 /**
  * Write the fleet-bus switch states into the worktree, for the SessionStart
