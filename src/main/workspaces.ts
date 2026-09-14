@@ -41,7 +41,6 @@ import {
 import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
 import { busSwitchNotice } from '../shared/bus-switches.ts';
-import { getLiveSwitches } from './bus-settings.ts';
 import { getBus } from './bus.ts';
 import { runFlags } from './bus-runs.ts';
 import {

@@ -182,6 +182,53 @@ test('counters: an ABSENT source yields [], and the pane says so rather than sho
   assert.match(paneTsx, /NOT the same as zero divergence/);
 });
 
+// ─── N1 — the bus IPC must be registered at MODULE TOP LEVEL, not per-window ──
+//
+// Reviewer (ledger #123): `registerBusPaneIpc()` / `ipcMain.handle('bus:setSwitches')`
+// inside `createMainWindow()` crash on darwin, where a SECOND `ipcMain.handle`
+// for an already-registered channel THROWS — and `app.on('activate')` re-calls
+// `createMainWindow()` when 0 windows exist. A source-position guard, because
+// index.ts imports electron and cannot be unit-imported (same technique as
+// spawn-default-model.test.ts). It reddens if the registration drifts back
+// inside the function.
+test('N1 — bus IPC is registered OUTSIDE createMainWindow (no double-register crash)', () => {
+  const indexSrc = readFileSync(path.join(here, 'index.ts'), 'utf8');
+  // Span of createMainWindow(): from its declaration to the matching close brace,
+  // found by brace-depth walking (the function is top-level, so its body is the
+  // first depth-0 `}` after the opening `{`).
+  const declRe = /\basync function createMainWindow\s*\(/;
+  const declIdx = indexSrc.search(declRe);
+  assert.ok(declIdx >= 0, 'createMainWindow must exist');
+  const openIdx = indexSrc.indexOf('{', declIdx);
+  let depth = 0;
+  let closeIdx = -1;
+  for (let i = openIdx; i < indexSrc.length; i++) {
+    if (indexSrc[i] === '{') depth++;
+    else if (indexSrc[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        closeIdx = i;
+        break;
+      }
+    }
+  }
+  assert.ok(closeIdx > openIdx, 'createMainWindow body must be brace-balanced');
+  const body = indexSrc.slice(openIdx, closeIdx + 1);
+  // The registration must NOT appear inside the function body.
+  assert.ok(
+    !body.includes('registerBusPaneIpc('),
+    'registerBusPaneIpc() must NOT be inside createMainWindow (re-run by app.on(activate) → darwin double-register throw)',
+  );
+  assert.ok(
+    !/ipcMain\.handle\(\s*'bus:setSwitches'|handle\(\s*'bus:setSwitches'/.test(body),
+    "bus:setSwitches must NOT be registered inside createMainWindow",
+  );
+  // And the must-PASS half: they ARE registered somewhere at module scope. Without
+  // this, deleting the registration entirely would also satisfy the guard above.
+  assert.match(indexSrc, /^registerBusPaneIpc\(\);/m, 'registerBusPaneIpc must be registered at module top level');
+  assert.match(indexSrc, /^handle\(\s*'bus:setSwitches'/m, 'bus:setSwitches must be registered at module top level');
+});
+
 // ─── F3 — IN-PROCESS execution of the two functions, not source text ─────────
 //
 // The source-text arms above (T118.4 "refuses a write channel", T118.5

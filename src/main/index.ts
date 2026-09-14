@@ -339,22 +339,14 @@ async function createMainWindow() {
   // show "bus unavailable" (#118 renders it properly).
   //
   // SCOPE: opening the DB is ALL this does. Nothing reads or writes it yet.
-  // The pane's READ-ONLY IPC is registered BEFORE the open attempt, and
-  // unconditionally. If it were registered only on success, a failed open would
-  // leave `bus:snapshot` unhandled — the renderer's invoke would reject and the
-  // pane would render nothing at all, which is precisely the blank-pane failure
-  // D1/T118.5 forbid. Registered up front, a down bus answers with a proper
-  // `available: false` snapshot the pane can render loudly.
-  registerBusPaneIpc();
-  // The switch WRITE, registered here and NOT through registerBusPaneIpc().
-  // That separation is the read-only boundary (T118.4): the pane's registrar
-  // refuses write handlers, so a settings write must not be smuggled in as a
-  // pane channel. It writes the store ONLY — no run row is touched, which is
-  // what makes a mid-wave flip a no-op for runs already in flight (T118.2).
-  ipcMain.handle('bus:setSwitches', async (_e, next: Record<string, boolean>) => {
-    await setLiveSwitches(next ?? {});
-    return getLiveSwitches();
-  });
+  // The pane's READ-ONLY IPC and the switch-write handler are registered at
+  // MODULE TOP LEVEL (see the bus-IPC block after the METHOD_IPC_CHANNELS loop),
+  // not here. That satisfies the "registered before the open attempt, and
+  // unconditionally" requirement (module load precedes any window) AND fixes N1
+  // (reviewer, ledger #123): `createMainWindow()` is re-called by
+  // `app.on('activate')` when 0 windows exist, and on darwin a second
+  // `ipcMain.handle` for an already-registered channel THROWS — a re-registration
+  // here crashed the app on macOS re-activate. Top-level registration runs once.
   try {
     const version = initBus();
     log.info(`bus: opened ${busPath()} (schema v${version})`);
@@ -582,6 +574,28 @@ for (const [method, channel] of Object.entries(METHOD_IPC_CHANNELS)) {
   ) => unknown;
   handle(channel, (_e, ...args) => handler(...args));
 }
+
+// ── Fleet-bus IPC (#118) — registered ONCE at module top level ───────────────
+//
+// N1 (reviewer, ledger #123): these MUST NOT live in createMainWindow(), which
+// `app.on('activate')` re-calls when 0 windows exist. On darwin `ipcMain.handle`
+// THROWS on a second registration for the same channel, so a re-registration
+// crashed the app on macOS re-activate. Registering at module scope runs exactly
+// once, and still BEFORE any window / the bus open (module load precedes
+// app.whenReady) — which is what T118.5/D1 require: a down bus must answer
+// `bus:snapshot` with an `available:false` snapshot, never leave it unhandled and
+// blank the pane. The pane's registrar (registerBusPaneIpc) reads getBus()/
+// getLiveSwitches() LAZILY at invoke time, so top-level registration is safe.
+registerBusPaneIpc();
+// The switch WRITE, deliberately NOT through registerBusPaneIpc(): that registrar
+// refuses write handlers, so the read-only boundary (T118.4) stays enforced and a
+// settings write cannot be smuggled in as a pane channel. It writes the store
+// ONLY — no run row is touched, which is what makes a mid-wave flip a no-op for
+// runs already in flight (T118.2).
+handle('bus:setSwitches', async (_e, next: Record<string, boolean>) => {
+  await setLiveSwitches((next ?? {}) as Record<string, boolean>);
+  return getLiveSwitches();
+});
 
 // Frontend-local by design: the native directory picker needs a host window,
 // so it is NOT part of the shared table.
