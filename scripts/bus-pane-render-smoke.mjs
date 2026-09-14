@@ -101,7 +101,7 @@ const seedEntry = path.join(repoRoot, 'node_modules', '.cache', 'bus-pane-seed-e
 fs.writeFileSync(
   seedEntry,
   `
-export { openBus, send, check, openGate, resolveGate } from ${JSON.stringify(busMod)};
+export { openBus, send, check, openGate, resolveGate, bumpCoordinatorGeneration } from ${JSON.stringify(busMod)};
 export { startRun, listRuns } from ${JSON.stringify(runsMod)};
 `,
 );
@@ -168,6 +168,12 @@ const openId = bus.openGate(db, RUN_WAVE, COORD, GATE_Q);
 const resolvedId = bus.openGate(db, RUN_WAVE, COORD, 'seeded-resolved-question-3344');
 bus.resolveGate(db, resolvedId, 'lead-handle-11', GATE_RULING);
 
+// #128 — bump the wave run's coordinator generation to an UNMISTAKABLE value so
+// the pane's `data-run-generation` assertion below cannot be vacuous (a fresh run
+// reads 0, which could plausibly appear elsewhere; 7 cannot).
+const WAVE_GEN = 7;
+for (let i = 0; i < WAVE_GEN; i++) bus.bumpCoordinatorGeneration(db, RUN_WAVE);
+
 // The pane's snapshot is assembled in main (bus-pane.ts imports electron, which
 // this runner cannot load), so build the same projection here from the same DB
 // and the same shared types. The main-side assembly is gated separately by
@@ -181,6 +187,7 @@ const runs = bus.listRuns(db).map((r) => ({
   createdAt: r.created_at,
   closedAt: r.closed_at,
   flags: r.flags,
+  coordinatorGeneration: r.coordinator_generation,
 }));
 const messages = db
   .prepare('SELECT * FROM messages WHERE run_id=? ORDER BY sequence')
@@ -300,6 +307,9 @@ mustDiscriminate('open gate question', (h) => h.includes(GATE_Q));
 mustDiscriminate('open gate marked open', (h) => h.includes('data-gate-state="open"'));
 mustDiscriminate('resolved gate ruling', (h) => h.includes(GATE_RULING));
 mustDiscriminate('resolved gate marked resolved', (h) => h.includes('data-gate-state="resolved"'));
+mustDiscriminate('coordinator generation visible (T128.2)', (h) =>
+  h.includes(`data-run-generation="${WAVE_GEN}"`),
+);
 mustDiscriminate('member handle', (h) => h.includes(READER));
 mustDiscriminate('member phase', (h) => h.includes('escalation'));
 mustDiscriminate('pending lot rendered', (h) => /lot \d+ · 2 pending/.test(h));

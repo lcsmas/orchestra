@@ -1114,3 +1114,104 @@ path exports the root id — inert while the switch is OFF (COUNTED, not fired).
 live packaged two-agent escalation through a running app (the sweep is driven by
 a rig with a fake clock, not a real 10-min wall wait). #119's real `waiting`
 export is wired at rebase (ledger #125 Q-C1).
+
+---
+
+# Fencing — coordinator generation (#128)
+
+Appended by #128 (ledger [#131](https://github.com/lcsmas/orchestra/issues/131),
+wave D). Earlier sections are untouched.
+
+## What this adds
+
+Every run carries a monotone `coordinator_generation`. An OPS respawn BUMPS it,
+and a write (`send` / `ack` / `gate resolve`) carrying an OLDER generation is
+stale — the writer is a superseded coordinator, and its write is rejected with a
+TYPED error. This formalizes the manual OPS-B → OPS-B2 recovery of waves B/C
+(which relied on the old coordinator *choosing* to stop writing).
+
+Behind the same coexistence rule as v1: a NEW `fencing` switch (the FIFTH
+mechanism), **COUNTED not FIRED while OFF** — a stale write still lands and the
+would-have-fenced event is recorded, so the OFF state is observable. Ships OFF.
+
+| File | What |
+|---|---|
+| `src/shared/bus-fencing.ts` | The PURE `decideFence` predicate (`pass`/`count`/`reject`). No SQLite/Electron. |
+| `src/main/bus.ts` | `coordinatorGeneration` / `bumpCoordinatorGeneration` / `assertCoordinatorGeneration` / `fencedWrite` / `recordFenceEvent` / `fenceEvents` / `fenceEventCounts` / `StaleGenerationError`; migration `MIGRATIONS[5]` (`runs.coordinator_generation` + `fence_events`). |
+| `src/main/bus-runs.ts` | `BusRunRow.coordinator_generation` threaded through `getRun`/`listRuns`/`toRunRow`. |
+| `src/shared/bus-switches.ts` | The `fencing` mechanism added to the enum/labels/wire map. |
+| `src/cli/bus-verbs.ts` + `src/cli/index.ts` | `fencedWrite` called before send/ack/gate-resolve; `--generation` / `$ORCHESTRA_COORDINATOR_GENERATION`; `busSwitch(db,runId,'fencing')` read at the boundary. |
+| `src/renderer/components/BusPane.tsx` | `data-run-generation` per run. |
+
+## Schema — `MIGRATIONS[5]`, `SCHEMA_VERSION 4 → 5`
+
+`ALTER TABLE runs ADD COLUMN coordinator_generation INTEGER NOT NULL DEFAULT 0`
+(a constant DEFAULT is legal for `ADD COLUMN`; every existing run backfills to 0)
+plus the `fence_events` shadow-trail table. Next free slot after master's 4; the
+schema trio #128 → #129 → #130 serializes on `MIGRATIONS`, renumbering at rebase
+— never editing a merged migration (the Q-B1 index-collision trap). The C11 gate
+(bus-mirror.test.ts) seeds a faithful `from<5` DB by dropping the fence_events
+index+table THEN the column, or the re-run throws `duplicate column name`.
+
+## The three-way decision (why `count` ≠ `reject`)
+
+`decideFence(presented, current, fencingOn)`:
+- **no generation presented** → `pass` in EITHER state (the v1 unfenced channel —
+  every existing caller — must keep working: coexistence).
+- **presented ≥ current** → `pass` (equal = the live coordinator; above is
+  impossible without a bump it performed).
+- **presented < current, switch ON** → `reject` (StaleGenerationError).
+- **presented < current, switch OFF** → `count` (record a `fence_events` row with
+  `fired=0`, and let the write proceed — old channel authoritative).
+
+The count/reject split is the whole point of shadow: a mechanism whose OFF-state
+is indistinguishable from the feature being absent cannot be observed before
+promotion.
+
+## Why the shadow counter is a bus TABLE, not main memory
+
+#116/#117 keep their counters in main-process memory because those events happen
+in-process. A fenced write happens in the CLI's OWN bus connection (the five
+verbs write the DB directly), so the only place a CLI-side count survives to the
+pane is the bus itself — hence `fence_events`, read by `fenceEventCounts`.
+
+## The typed error
+
+`StaleGenerationError` (name discriminant `'StaleGenerationError'`, carries
+`runId`/`presented`/`current`). Fields are assigned explicitly, NOT via
+constructor parameter properties — the `node --test --experimental-strip-types`
+runner rejects those, and every bus test imports this file. The CLI's
+`fenceOrFail` catches it (via `err.name`, which survives an IPC boundary the
+prototype chain does not) and routes it through `fail()` (CliFailure), so a
+refusal exits cleanly under Electron (issue #59); any other error is re-thrown.
+
+## D1 — the bus never blocks boot
+
+The fencing read runs on an already-opened `db`: if the bus cannot open,
+`openBusForVerb` fails first with a diagnosable ABI sentence, not a stack trace.
+`coordinatorGeneration` on an unknown run returns 0 (never throws); a switch read
+that throws is treated as OFF (counted, not fired). The pane's generation read is
+inside `busSnapshot`'s existing try, so a down/broken bus renders the unavailable
+state, not a crash.
+
+## Gates (#128)
+
+```bash
+npx tsc --noEmit                                                         # C1
+node --test --experimental-strip-types src/shared/bus-fencing.test.ts    #  5 pure
+node --test --experimental-strip-types src/main/bus-fencing.test.ts      # 10 real-bus
+node scripts/bus-pane-render-smoke.mjs                                   # T128.2 generation visible
+pnpm run test                                                            # in the suite; # skipped must be 0
+```
+
+Each acceptance arm was shown RED under one mutation (decideFence → always
+`pass`; `recordFenceEvent` removed; the ADD COLUMN removed; the error `name`
+discriminant broken), mutant-string verified live, then GREEN restored.
+
+## Not covered here
+
+No production caller BUMPS generation yet — an OPS respawn calling
+`bumpCoordinatorGeneration` is the promotion step, not this ticket (like
+`ORCHESTRA_RUN_ID` still being unplumbed on master, #118 N2 tail). The fleet
+skill does not yet branch on the `fencing=OFF` notice line (inert while OFF). No
+live packaged two-generation refusal through a running app.
