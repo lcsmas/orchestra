@@ -18,6 +18,8 @@ import {
   verbSend,
   type BusVerbCtx,
 } from './bus-verbs.ts';
+import { startRun } from '../main/bus-runs.ts';
+import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 
 // These drive the verbs against a REAL SQLite bus on a real temp file, through
 // the REAL src/main/bus.ts — no fake bus module. The whole class of bug #115 can
@@ -38,7 +40,10 @@ import {
 const RUN = 'run-cli';
 
 interface Rig {
-  ctx: (handle: string) => BusVerbCtx;
+  /** `fencing` (#128) defaults to the unfenced path — no generation presented,
+   *  switch OFF — so every pre-#128 verb test runs with the fence inert (a pass),
+   *  which is what they assert. A fencing arm passes real values explicitly. */
+  ctx: (handle: string, fencing?: { generation?: number | null; fencingOn?: boolean }) => BusVerbCtx;
   out: string[];
   fails: string[];
 }
@@ -59,7 +64,7 @@ function rig(t: { after: (fn: () => void) => void }): Rig {
   return {
     out,
     fails,
-    ctx: (handle: string) => ({
+    ctx: (handle: string, fencing?: { generation?: number | null; fencingOn?: boolean }) => ({
       db,
       bus,
       id: { runId: RUN, handle },
@@ -72,6 +77,10 @@ function rig(t: { after: (fn: () => void) => void }): Rig {
         fails.push(message);
         throw new Error(`FAIL: ${message}`);
       }) as BusVerbCtx['fail'],
+      // #128 fencing (F2): carried explicitly so the verbs exercise the real
+      // fence, not a no-op from an undefined field. Defaults are the unfenced path.
+      generation: fencing?.generation ?? null,
+      fencingOn: fencing?.fencingOn ?? false,
     }),
   };
 }
@@ -545,4 +554,112 @@ test('describeBusOpenFailure does NOT claim an ABI problem for an unrelated one'
   assert.match(msg, /SQLITE_CANTOPEN/);
   assert.ok(!msg.includes('ELECTRON_RUN_AS_NODE'), 'must not blame the runtime for a disk error');
   assert.ok(!msg.includes('NODE_MODULE_VERSION'), 'must not invent an ABI diagnosis');
+});
+
+// ─── #128 fencing THROUGH THE VERB PATH (review F2 — committed, not an E2E script) ─
+
+// These drive the SHIPPED verbs (verbSend/verbAck/verbGate → fenced → bus.fencedWrite),
+// not fencedWrite directly, so they cover the ordering (fence BEFORE write), the
+// err.name→ctx.fail routing that keeps issue #59 at bay, and the atomic tx (F1).
+// Each seeds a run with the `fencing` switch frozen ON and bumps the generation so
+// a gen-0 caller is stale.
+
+function seedFencedRun(db: bus.BusDb, opts: { fencingOn: boolean; gen: number }): void {
+  startRun(db, { id: RUN, kind: 'vague', coordinator: 'ops' }, {
+    ...DEFAULT_BUS_SWITCHES,
+    fencing: opts.fencingOn,
+  });
+  for (let i = 0; i < opts.gen; i++) bus.bumpCoordinatorGeneration(db, RUN);
+}
+
+test('F2 — verbSend fences a stale generation: RC-refusal via ctx.fail, NO row, fence_events fired', (t) => {
+  const r = rig(t);
+  seedFencedRun(r.ctx('x').db, { fencingOn: true, gen: 1 }); // current = 1
+  const before = (r.ctx('x').db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=?').get(RUN) as { n: number }).n;
+  // The stale coordinator (gen 0) sends. fenced() catches the typed throw and
+  // routes it through ctx.fail (which throws FAIL:) — so the send never runs.
+  assert.throws(
+    () => verbSend(r.ctx('ops-old', { generation: 0, fencingOn: true }), { kind: 'dispatch', to: 'peer', thread: null, body: 'stale' }),
+    /FAIL: bus: stale coordinator generation/,
+  );
+  const after = (r.ctx('x').db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=?').get(RUN) as { n: number }).n;
+  assert.equal(after, before, 'the send never ran — messages row count unchanged');
+  const counts = bus.fenceEventCounts(r.ctx('x').db, RUN);
+  assert.equal(counts.fired, 1, 'the rejection recorded a FIRED fence event (survives the tx rollback)');
+  assert.equal(counts.counted, 0);
+  // Must-PASS control: the LIVE generation sends fine through the same verb.
+  verbSend(r.ctx('ops-new', { generation: 1, fencingOn: true }), { kind: 'dispatch', to: 'peer', thread: null, body: 'live' });
+  const afterLive = (r.ctx('x').db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=?').get(RUN) as { n: number }).n;
+  assert.equal(afterLive, before + 1, 'the live coordinator write lands');
+});
+
+test('F2 — verbSend with the switch OFF COUNTS a stale send but STILL writes (coexistence)', (t) => {
+  const r = rig(t);
+  seedFencedRun(r.ctx('x').db, { fencingOn: false, gen: 1 });
+  const before = (r.ctx('x').db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=?').get(RUN) as { n: number }).n;
+  // Switch OFF: no throw, the send lands, and the would-have-fenced event is counted.
+  verbSend(r.ctx('ops-old', { generation: 0, fencingOn: false }), { kind: 'dispatch', to: 'peer', thread: null, body: 'shadow' });
+  const after = (r.ctx('x').db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=?').get(RUN) as { n: number }).n;
+  assert.equal(after, before + 1, 'old channel authoritative — the write lands');
+  const counts = bus.fenceEventCounts(r.ctx('x').db, RUN);
+  assert.equal(counts.counted, 1, 'COUNTED not FIRED while OFF');
+  assert.equal(counts.fired, 0);
+});
+
+test('F2 — verbAck fences a stale ack: refused, lot stays outstanding (row unchanged)', (t) => {
+  const r = rig(t);
+  const db = r.ctx('x').db;
+  seedFencedRun(db, { fencingOn: true, gen: 0 }); // start at gen 0
+  bus.send(db, { runId: RUN, sender: 'peer', kind: 'dispatch', body: 'm1' });
+  const lot = bus.check(db, RUN, 'reader-1');
+  assert.ok(lot.delivery);
+  bus.bumpCoordinatorGeneration(db, RUN); // reader superseded, now gen 1
+  assert.throws(
+    () => verbAck(r.ctx('reader-1', { generation: 0, fencingOn: true }), String(lot.delivery!.id)),
+    /FAIL: bus: stale coordinator generation/,
+  );
+  const still = (db.prepare('SELECT acked_at FROM deliveries WHERE id=?').get(lot.delivery!.id) as { acked_at: number | null }).acked_at;
+  assert.equal(still, null, 'the lot stays outstanding — the ack never ran');
+});
+
+test('F2 — verbGate resolve fences a stale coordinator: refused, gate stays open', (t) => {
+  const r = rig(t);
+  const db = r.ctx('x').db;
+  seedFencedRun(db, { fencingOn: true, gen: 0 });
+  const gateId = bus.openGate(db, RUN, 'ops', 'ruling?', 'lead');
+  bus.bumpCoordinatorGeneration(db, RUN); // now gen 1
+  assert.throws(
+    () => verbGate(r.ctx('ops-old', { generation: 0, fencingOn: true }), 'resolve', [String(gateId), '--resolution', 'sneaky']),
+    /FAIL: bus: stale coordinator generation/,
+  );
+  assert.equal(bus.getGate(db, gateId)?.resolved_at, null, 'the gate stays open — the resolve never ran');
+});
+
+test('F1 — the fence and the write are ONE transaction: the generation is read AT write time', (t) => {
+  // Review F1 (TOCTOU): with a separate fence-check then write, a bump landing in
+  // the window lets a superseded coordinator write. The atomic form reads the
+  // generation INSIDE the same IMMEDIATE tx as the write, so the decision uses the
+  // generation current when the write happens — not a stale pre-read.
+  //
+  // In-process this is proven by: seed current=1, a gen-1 caller (live) writes; but
+  // if a gen-0 caller is checked against current=1 it is refused. The discriminator
+  // vs the OLD two-statement form: fencedWrite now takes the write as a CLOSURE it
+  // runs inside the tx, so there is no statement gap for a bump to slip into. We
+  // assert the shipped verb refuses a gen that is stale RELATIVE TO the tx-entry
+  // generation, and that a non-stale write inside the same tx commits atomically.
+  const r = rig(t);
+  const db = r.ctx('x').db;
+  seedFencedRun(db, { fencingOn: true, gen: 1 }); // current = 1
+  // A gen-1 (live) send commits — proving the closure runs inside the fence's tx.
+  verbSend(r.ctx('ops', { generation: 1, fencingOn: true }), { kind: 'dispatch', to: 'peer', thread: null, body: 'atomic-ok' });
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=? AND body=?').get(RUN, 'atomic-ok') as { n: number }).n, 1);
+  // A further bump to gen 2 makes the gen-1 caller stale — the SAME presented value
+  // that passed a moment ago is now refused, because the decision reads current at
+  // tx entry, not a value cached outside the tx.
+  bus.bumpCoordinatorGeneration(db, RUN); // current = 2
+  assert.throws(
+    () => verbSend(r.ctx('ops', { generation: 1, fencingOn: true }), { kind: 'dispatch', to: 'peer', thread: null, body: 'now-stale' }),
+    /FAIL: bus: stale coordinator generation/,
+  );
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=? AND body=?').get(RUN, 'now-stale') as { n: number }).n, 0, 'the now-stale write never landed');
 });

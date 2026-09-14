@@ -803,12 +803,24 @@ export interface FencedWriteInput {
  *
  * Reads the run's current generation, decides with the PURE {@link decideFence},
  * and:
- *   - 'pass'   → returns; the caller does its write unchanged.
- *   - 'count'  → records a `fence_events` row with `fired=0` and returns; the
- *                caller STILL does its write (switch OFF, old channel
- *                authoritative — COUNTED, not FIRED).
+ *   - 'pass'   → runs `write` (if given) and returns.
+ *   - 'count'  → records a `fence_events` row with `fired=0`, then STILL runs
+ *                `write` (switch OFF, old channel authoritative — COUNTED, not
+ *                FIRED).
  *   - 'reject' → records a `fence_events` row with `fired=1` and THROWS
- *                {@link StaleGenerationError}; the caller's write never runs.
+ *                {@link StaleGenerationError}; `write` never runs.
+ *
+ * ATOMICITY (review F1, ledger #131). The read-decide and the write MUST be one
+ * transaction, or a generation bump landing between them lets a superseded
+ * coordinator write (the TOCTOU window: `fencedWrite` reads gen G, a respawn bumps
+ * to G+1, the write then lands under the stale gen). So the SHIPPED path passes
+ * its write as the `write` closure and the whole read-decide-write runs inside ONE
+ * `db.transaction(...).immediate()`: IMMEDIATE takes the write lock up front, so no
+ * other connection can bump the generation between the read and the write. The
+ * inner `send`/`ack`/`resolveGate` open their own IMMEDIATE tx — better-sqlite3
+ * nests that as a SAVEPOINT under the outer one, which is correct (the outer lock
+ * is already held). A caller with no atomicity need (the direct-call unit tests,
+ * and the read-only pane) may omit `write`; it then fences-only, unchanged.
  *
  * Keeping the decision here (not in send/ack/resolveGate) means those primitives
  * stay usable by unfenced callers, and the switch is read exactly once per write
@@ -816,25 +828,64 @@ export interface FencedWriteInput {
  * read here because busSwitch lives in bus-runs.ts, which imports bus.ts — taking
  * the dependency the other way would be a cycle.
  */
-export function fencedWrite(db: BusDb, input: FencedWriteInput): void {
-  if (input.presented === null || input.presented === undefined) return;
-  const current = coordinatorGeneration(db, input.runId);
-  const decision = decideFence({
-    presented: input.presented,
-    current,
-    fencingOn: input.fencingOn,
-  });
-  if (decision === 'pass') return;
-  recordFenceEvent(db, {
-    runId: input.runId,
-    verb: input.verb,
-    presented: input.presented,
-    current,
-    fired: decision === 'reject',
-    actor: input.actor,
-  });
-  if (decision === 'reject') {
-    throw new StaleGenerationError(input.runId, input.presented, current);
+export function fencedWrite<T = void>(
+  db: BusDb,
+  input: FencedWriteInput,
+  write?: () => T,
+): T | undefined {
+  const run = (): T | undefined => {
+    if (input.presented !== null && input.presented !== undefined) {
+      const current = coordinatorGeneration(db, input.runId);
+      const decision = decideFence({
+        presented: input.presented,
+        current,
+        fencingOn: input.fencingOn,
+      });
+      if (decision !== 'pass') {
+        recordFenceEvent(db, {
+          runId: input.runId,
+          verb: input.verb,
+          presented: input.presented,
+          current,
+          fired: decision === 'reject',
+          actor: input.actor,
+        });
+        if (decision === 'reject') {
+          // Throws INSIDE the transaction → better-sqlite3 rolls it back, so the
+          // fence_events row is NOT persisted on a rejection that aborts. To keep
+          // the FIRED shadow trail durable we record it in its own committed
+          // statement before re-throwing (see the catch below).
+          throw new StaleGenerationError(input.runId, input.presented, current);
+        }
+      }
+    }
+    return write ? write() : undefined;
+  };
+
+  if (!write) {
+    // Fence-only (unit tests, pane). No enclosing write to serialize with, so no
+    // transaction — recordFenceEvent + throw behave exactly as before.
+    return run();
+  }
+
+  // The SHIPPED path: read-decide-write as ONE IMMEDIATE transaction (F1).
+  try {
+    return db.transaction(run).immediate();
+  } catch (err) {
+    if (err instanceof StaleGenerationError) {
+      // The rejection rolled back the transaction, discarding the fence_events
+      // row written inside it. Re-record it in an autonomous statement so the
+      // shadow trail (the COUNTED/FIRED observable) survives the rollback.
+      recordFenceEvent(db, {
+        runId: err.runId,
+        verb: input.verb,
+        presented: err.presented,
+        current: err.current,
+        fired: true,
+        actor: input.actor,
+      });
+    }
+    throw err;
   }
 }
 

@@ -166,11 +166,13 @@ export interface BusModule {
   /** Open gates addressed to `recipient` (#119) — surfaced by `check` and
    *  `gate list` so a gate-woken reader can see what it was woken for. */
   openGatesForRecipient(db: BusDb, runId: string, recipient: string): BusDecisionGate[];
-  /** FENCING (#128): apply the coordinator-generation fence around a write. Throws
-   *  StaleGenerationError when the switch is ON and the write is stale; records a
-   *  counted shadow event and returns when the switch is OFF; a no-op when the
-   *  caller presented no generation or is not stale. See bus.ts fencedWrite(). */
-  fencedWrite(
+  /** FENCING (#128): run `write` behind the coordinator-generation fence, as ONE
+   *  IMMEDIATE transaction (closes the TOCTOU window, review F1). Throws
+   *  StaleGenerationError when the switch is ON and the write is stale (the write
+   *  never runs); records a counted shadow event then runs the write when the
+   *  switch is OFF; runs the write directly when the caller presented no
+   *  generation or is not stale. See bus.ts fencedWrite(). */
+  fencedWrite<T>(
     db: BusDb,
     input: {
       runId: string;
@@ -179,31 +181,42 @@ export interface BusModule {
       fencingOn: boolean;
       actor: string;
     },
-  ): void;
+    write: () => T,
+  ): T | undefined;
 }
 
 // ─── fencing (#128) ───────────────────────────────────────────────────────────
 
 /**
- * Apply the coordinator-generation fence around a mutating verb.
+ * Run `write` behind the coordinator-generation fence, as ONE transaction.
+ *
+ * The fence and the write are ONE atomic unit (review F1, ledger #131): a bump
+ * landing between a separate fence-check and a separate write would let a
+ * superseded coordinator write. `bus.fencedWrite` takes the write as a closure and
+ * runs read-decide-write inside one IMMEDIATE transaction, so no concurrent bump
+ * can interleave. This function only adds the CLI-side error routing.
  *
  * `fencedWrite` THROWS a StaleGenerationError when the switch is ON and the write
- * is stale. That throw must become a CLI refusal, not an uncaught exception:
- * under Electron a bare throw of a non-CliFailure would escape runCli's catch and
- * a bare process.exit() cannot save it (issue #59). So we catch the typed error
- * and route it through `ctx.fail` (the CliFailure sentinel), preserving the typed
- * message. Any OTHER error (a bump-before-start, a DB fault) is re-thrown — it is
- * not a fencing refusal and must not be disguised as one.
+ * is stale. That throw must become a CLI refusal, not an uncaught exception: under
+ * Electron a bare throw of a non-CliFailure would escape runCli's catch and a bare
+ * process.exit() cannot save it (issue #59). So we catch the typed error (by
+ * `name`, which survives the boundaries `instanceof` does not) and route it
+ * through `ctx.fail` (the CliFailure sentinel). Any OTHER error (a DB fault) is
+ * re-thrown — it is not a fencing refusal and must not be disguised as one.
  */
-function fenceOrFail(ctx: BusVerbCtx, verb: string): void {
+function fenced<T>(ctx: BusVerbCtx, verb: string, write: () => T): T {
   try {
-    ctx.bus.fencedWrite(ctx.db, {
-      runId: ctx.id.runId,
-      verb,
-      presented: ctx.generation,
-      fencingOn: ctx.fencingOn,
-      actor: ctx.id.handle,
-    });
+    return ctx.bus.fencedWrite(
+      ctx.db,
+      {
+        runId: ctx.id.runId,
+        verb,
+        presented: ctx.generation,
+        fencingOn: ctx.fencingOn,
+        actor: ctx.id.handle,
+      },
+      write,
+    ) as T;
   } catch (err) {
     if (err instanceof Error && err.name === 'StaleGenerationError') {
       ctx.fail(err.message);
@@ -230,17 +243,19 @@ export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
     ctx.fail(`orchestra send: unknown --type ${JSON.stringify(a.kind)} (one of: ${BUS_KINDS.join(', ')})`);
   }
   if (!a.body.trim()) ctx.fail('orchestra send: the message body is empty');
-  // FENCE before the write (#128). A stale-generation send is rejected with the
-  // switch ON, counted with it OFF, and a no-op when the caller presented none.
-  fenceOrFail(ctx, 'send');
-  const seq = ctx.bus.send(ctx.db, {
-    runId: ctx.id.runId,
-    sender: ctx.id.handle,
-    kind: a.kind as BusMessageKind,
-    body: a.body,
-    recipient: a.to ?? null,
-    threadId: a.thread ?? null,
-  });
+  // FENCE + write as ONE transaction (#128, F1). A stale-generation send is
+  // rejected with the switch ON (the send never runs), counted with it OFF, and
+  // a straight write when the caller presented no generation.
+  const seq = fenced(ctx, 'send', () =>
+    ctx.bus.send(ctx.db, {
+      runId: ctx.id.runId,
+      sender: ctx.id.handle,
+      kind: a.kind as BusMessageKind,
+      body: a.body,
+      recipient: a.to ?? null,
+      threadId: a.thread ?? null,
+    }),
+  );
   ctx.out(`${seq}\n`);
 }
 
@@ -394,10 +409,12 @@ export function verbAck(ctx: BusVerbCtx, lotIdRaw: string | undefined): void {
   if (!Number.isInteger(lotId) || lotId <= 0) {
     ctx.fail(`orchestra ack: ${JSON.stringify(lotIdRaw)} is not a lot id (an integer, printed by 'orchestra check')`);
   }
-  // FENCE before the ack (#128) — a stale coordinator's ack is refused with the
-  // switch ON, leaving the lot's acked_at unchanged (T128.1's "row unchanged").
-  fenceOrFail(ctx, 'ack');
-  const closed = ctx.bus.ack(ctx.db, ctx.id.runId, ctx.id.handle, lotId);
+  // FENCE + ack as ONE transaction (#128, F1) — a stale coordinator's ack is
+  // refused with the switch ON, leaving the lot's acked_at unchanged (T128.1's
+  // "row unchanged"); the ack never runs.
+  const closed = fenced(ctx, 'ack', () =>
+    ctx.bus.ack(ctx.db, ctx.id.runId, ctx.id.handle, lotId),
+  );
   if (!closed) {
     // NOT silent: an ack that closes nothing means either a wrong id, someone
     // else's lot, or a double ack — all three are worth knowing about, and a
@@ -499,10 +516,12 @@ export function verbGate(ctx: BusVerbCtx, sub: string | undefined, rest: string[
     // `gate resolve <id> <ruling...>` form keeps working.
     const ruling = (res.present ? res.value! : positional.slice(1).join(' ')).trim();
     if (!ruling) ctx.fail('orchestra gate resolve: the ruling is empty');
-    // FENCE before recording the ruling (#128) — a superseded coordinator cannot
-    // resolve a gate with the switch ON; the gate's resolution stays unchanged.
-    fenceOrFail(ctx, 'gate-resolve');
-    const ok = ctx.bus.resolveGate(ctx.db, gateId, ctx.id.handle, ruling);
+    // FENCE + resolve as ONE transaction (#128, F1) — a superseded coordinator
+    // cannot resolve a gate with the switch ON; the resolution never runs and the
+    // gate's resolution stays unchanged.
+    const ok = fenced(ctx, 'gate-resolve', () =>
+      ctx.bus.resolveGate(ctx.db, gateId, ctx.id.handle, ruling),
+    );
     if (!ok) {
       ctx.fail(
         `orchestra gate resolve: gate ${gateId} is not open (already resolved, or unknown id) — ` +
