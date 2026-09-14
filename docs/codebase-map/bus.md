@@ -465,27 +465,32 @@ divergence counters), and **four per-mechanism switches** — `delivery`, `wake`
 
 ## The freeze — the one thing to understand
 
-`startRun()` (`src/main/bus-runs.ts:83`) snapshots the live switches **once** and
+`startRun()` (`src/main/bus-runs.ts:91`) snapshots the live switches **once** and
 writes them to `run_flags`. Everything that asks "is mechanism X on for this
-run?" goes through `runFlags()` (`:151`) or `busSwitch()` (`:169`), which read
+run?" goes through `runFlags()` (`:166`) or `busSwitch()` (`:184`), which read
 **the row**. A human flipping a switch mid-wave changes the store and **nothing
 else**: the running run's row is untouched, and the next `startRun` picks the new
 value up. Two runs with contradictory flags coexist in one DB by design.
 
 Three details that are load-bearing, each of which was a bug in an earlier draft:
 
-- **`INSERT OR IGNORE`, never `REPLACE`** (`:112`). A resume path calling
-  `startRun` again must be a no-op, not a re-freeze — a re-freeze is exactly the
-  mid-wave mutation the feature forbids, arriving through the most innocent path
-  there is.
-- **`startRun` reads the row BACK** (`:124`) instead of returning what it meant
+- **The freeze is ONE atomic decision, keyed on the `runs`-row existence**
+  (`src/main/bus-runs.ts:94`, F1). `startRun` writes `run_flags` **only when its
+  own `runs` INSERT created the row** (`info.changes === 1`). Two independent
+  `INSERT OR IGNORE`s were NOT atomic: a `runs` row that existed without a
+  `run_flags` row (a run made by a writer predating `run_flags` — #115's CLI
+  lifecycle, an older build, a partial v2) would take the `runs` ignore but WRITE
+  `run_flags` at the later call, freezing a running run at then-current live
+  switches and flipping `busSwitch` ON mid-wave. Now an existing run with no flags
+  reads all-OFF forever, never freezable-late.
+- **`startRun` reads the row BACK** (`:146`) instead of returning what it meant
   to write. Otherwise a second call *looks* like a re-freeze to its caller while
   the row says otherwise, and the two drift silently.
-- **An unknown run reads all-OFF, never live** (`:151`). A mechanism firing
+- **An unknown run reads all-OFF, never live** (`:166`). A mechanism firing
   because its row was missing is indistinguishable in the field from the switch
   genuinely being on.
 
-`freezeSwitches()` (`src/shared/bus-switches.ts:122`) also implements the LEAD's
+`freezeSwitches()` (`src/shared/bus-switches.ts:131`) also implements the LEAD's
 D1 reconciliation: **bus down ⇒ every mechanism freezes OFF for that run**, and
 that is recorded on the row, so the run stays self-describing about why it
 behaved as unadopted.
@@ -498,14 +503,14 @@ busSwitch(db, runId, 'delivery' | 'wake' | 'ask_gate' | 'liveness') -> boolean
 
 Note `ask_gate` (snake) on the **wire** vs `askGate` (camel) as the internal TS
 key. The mapping lives in exactly one place — `mechanismFromWire` /
-`mechanismToWire` (`src/shared/bus-switches.ts:155`) — because N copies is how a
+`mechanismToWire` (`src/shared/bus-switches.ts:174`) — because N copies is how a
 wire contract and an enum drift apart. Unknown run **or** unknown mechanism
 returns `false`, never a throw: false leaves the old channel authoritative.
 
 ## Read-only in v1 — enforced, not promised
 
 `BUS_PANE_IPC_CHANNELS` (`src/main/bus-pane.ts:43`) is the enumeration, and
-`registerBusPaneIpc()` (`:278`) **refuses to register** any entry marked
+`registerBusPaneIpc()` (`:298`) **refuses to register** any entry marked
 `writes: true`. So adding a v2 write handler requires editing the table, which
 turns the test red at the same moment. The switch WRITE lives on its own
 `bus:setSwitches` channel registered in `src/main/index.ts`, deliberately outside
@@ -513,10 +518,10 @@ that registrar — routing it through the pane would defeat the check.
 
 ## `getBus() === null` is normal (D1)
 
-`busSnapshot()` (`src/main/bus-pane.ts:201`) **never throws**: a missing bus, or
+`busSnapshot()` (`src/main/bus-pane.ts:219`) **never throws**: a missing bus, or
 a query that throws, both become `available: false` carrying the DB path and the
 error. The pane renders that as a loud block (`BusUnavailable`,
-`src/renderer/components/BusPane.tsx:252`).
+`src/renderer/components/BusPane.tsx:282`).
 
 Why `available` exists at all: a down bus and a quiet bus have *identical* empty
 runs/messages/gates arrays. Without the flag the pane could not tell them apart —
@@ -526,7 +531,7 @@ forbids. The pane's IPC is also registered **before** the open attempt
 blank the pane.
 
 Divergence counters come from #116 through `registerBusCounterSource()`
-(`:193`) — a runtime seam rather than a static import, so #118 builds before
+(`:209`) — a runtime seam rather than a static import, so #118 builds before
 #116 lands. An **absent** source renders as an explicit "not publishing counters"
 message, never as `0/0/0`: "#116 has not landed" and "zero divergence" are the
 same empty array on the wire, and showing zeros for the first would be a
@@ -534,26 +539,45 @@ fabricated measurement.
 
 ## The startup notice
 
-`writeBusSwitchState()` (`src/main/workspaces.ts:4506`) writes
+`writeBusSwitchState(worktreePath, runId)` (`src/main/workspaces.ts:4535`) writes
 `.orchestra/bus-switches` on **every spawn**, and
 `BUS_SWITCHES_INSTRUCTION_SCRIPT` (`:3931`) cats it on SessionStart.
+
+**It sources from the RUN ROW, never the live switches** (`runFlags(db, runId)`,
+F2). The notice's own text says "frozen at wave start — a mid-wave flip does NOT
+change them", and the fleet skill BRANCHES on that claim. Reading
+`getLiveSwitches()` here (the pre-F2 code) made the claim false: two agents
+spawned into one run on either side of a human's flip received CONTRADICTORY
+notices, each asserting the opposite — the "half a fleet reads wake=on, the other
+half wake=off" split the freeze exists to prevent. `runId` is the workspace's run
+(its orchestrator/wave, else itself — `src/main/workspaces.ts:4395`; becomes
+`$ORCHESTRA_RUN_ID` when #115 plumbs it). An absent run row (no lifecycle yet) or
+a down bus (D1) reads **all-OFF**, the coexistence-safe and STABLE default, so
+"frozen" holds even before a row exists. No run row is created here — that is
+#115's lifecycle, not the notice's job.
 
 The state lives in a **file, not a script constant**, for a specific reason:
 `installOrchestraHooks` short-circuits on a **hash of the script bodies**, so a
 value baked into a body would be written once at provision time and never
-corrected — the notice would confidently report last month's switch states
-forever.
+corrected.
 
 Every mechanism prints in **both** states (`busSwitchNoticeLines`,
-`src/shared/bus-switches.ts:195`): `delivery=ON — the bus is AUTHORITATIVE…` or
-`delivery=OFF — the OLD channel stays authoritative; the bus only COUNTS this
-mechanism…`. OFF is never encoded as silence, because an agent cannot distinguish
-an OFF switch from a build without switches from a truncated notice. A missing
-state file makes the script a **silent no-op** rather than a false "all off".
+`src/shared/bus-switches.ts:204`), and in the **WIRE name** (`ask_gate` via
+`mechanismToWire`, not the internal `askGate` — F4): `delivery=ON — the bus is
+AUTHORITATIVE…` or `delivery=OFF — the OLD channel stays authoritative; the bus
+only COUNTS this mechanism…`. OFF is never encoded as silence, because an agent
+cannot distinguish an OFF switch from a build without switches from a truncated
+notice. A missing state file makes the script a **silent no-op** rather than a
+false "all off".
+
+`scripts/verify-bus-startup-notice.mjs` (wired as `pnpm run test:bus-notice`)
+opens a real bus, seeds run rows, and asserts two notices in ONE run are
+BYTE-IDENTICAL across a flip while a NEW run picks the flip up — the INVERTED
+freeze gate (the pre-F2 rig asserted they DIFFER, which certified the defect).
 
 ## Schema
 
-`MIGRATIONS[2]` in `src/main/bus.ts:185` creates `run_flags` (a sidecar, because
+`MIGRATIONS[2]` in `src/main/bus.ts:193` creates `run_flags` (a sidecar, because
 SQLite has no `ADD COLUMN IF NOT EXISTS` and a re-run would throw
 `duplicate column name`). **Wave B renumbering rule** (ledger #123 Q-B1): four
 tickets each need DDL and `migrate()` applies **by version index**, so two
@@ -595,15 +619,22 @@ that makes a reader run `check` — is #117.
 ## Running the gates (#118 pane + switches)
 
 ```bash
+node --test --experimental-strip-types src/main/bus-pane.test.ts
+                                              # T118.4/T118.5 IN-PROCESS (F3): bundles the real
+                                              #   module to CJS, stubs ipcMain in require.cache,
+                                              #   and CALLS registerBusPaneIpc()/busSnapshot() —
+                                              #   a throw on either's first line goes RED here
 node scripts/bus-pane-render-smoke.mjs        # T118.1 — seeded values reach the HTML;
                                               #   every assertion re-run against an EMPTY
                                               #   bus and REQUIRED to fail (vacuity detector)
-node scripts/verify-bus-startup-notice.mjs    # T118.3 — 4 arms: ON / OFF / must-FAIL decoy /
-                                              #   absent state file
-RIG_WAYLAND=<marker-verified> node scripts/verify-bus-pane.mjs
+pnpm run test:bus-notice                      # T118.3 — inverted freeze gate: two notices in
+                                              #   ONE run BYTE-IDENTICAL across a flip; new run
+                                              #   picks the flip up; ON/OFF/decoy/absent arms
+RIG_WAYLAND=<marker-verified> pnpm run test:bus-pane
                                               # T118.4+T118.5 under REAL Electron: bus-down,
                                               #   seeded control arm, broken-table arm, and the
-                                              #   registrar refusing a writes:true channel
+                                              #   registrar refusing a writes:true channel.
+                                              #   Refuses RC=3 (not 0) without RIG_WAYLAND (F3)
 RIG_WAYLAND=<marker-verified> node scripts/bus-pane-screenshot.mjs
                                               # T118.1 second half — pixels, both states
 ```
