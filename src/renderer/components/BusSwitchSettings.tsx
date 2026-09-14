@@ -23,6 +23,9 @@ const MECHANISM_DESC: Record<BusMechanism, string> = {
     'Members publish liveness + phase heartbeats onto the bus. While OFF the pane shows only what other traffic reveals.',
   fencing:
     'A superseded coordinator’s writes (carrying an older generation) are rejected. While OFF the stale write still lands and the would-have-fenced event is counted.',
+  // #129 — dispatch capability tokens.
+  capability:
+    'Each dispatch mints a capability token its worker must carry back; a completion from a superseded or failed dispatch is rejected. While OFF a stale completion is only COUNTED, not rejected.',
 };
 
 /**

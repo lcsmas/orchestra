@@ -40,7 +40,7 @@ import {
 } from './pty';
 import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
-import { busSwitchNotice, DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
+import { DEFAULT_BUS_SWITCHES, busSwitchNotice } from '../shared/bus-switches.ts';
 import { getBus } from './bus.ts';
 import { runFlags } from './bus-runs.ts';
 import { walkToRootId } from './wave-run-id.ts';
@@ -4699,8 +4699,9 @@ export async function writeBusSwitchState(worktreePath: string, runId: string): 
 
 /** The all-OFF switch set — the coexistence-safe default when no run row / no bus. */
 function getLiveSwitchesAllOff() {
-  // The canonical all-OFF set, so a new mechanism (e.g. #128 `fencing`) is
-  // included automatically rather than silently dropped by a hand-listed literal.
+  // Derive from DEFAULT_BUS_SWITCHES (every mechanism OFF) rather than a
+  // hand-written literal, so a new BusMechanism (#128 fencing, #129 capability,
+  // #130 receipts) is included automatically rather than silently dropped.
   return { ...DEFAULT_BUS_SWITCHES };
 }
 

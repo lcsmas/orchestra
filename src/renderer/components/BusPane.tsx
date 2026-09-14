@@ -374,6 +374,16 @@ export function BusPaneView({
           counters={snapshot.counters}
           busAvailable={snapshot.countersBusAvailable}
         />
+        {/* #129 — the capability mechanism's COUNTED-not-FIRED tally: stale/absent
+            capability-token completions observed for this run. Shown even at 0 so
+            "capability present, nothing rejected" reads differently from a missing
+            mechanism (RULING D1: the capability mechanism is listed in the pane). */}
+        <div
+          className="bus-capability-rejections"
+          data-capability-rejections={snapshot.capabilityRejections}
+        >
+          Capability-token rejections (counted): {snapshot.capabilityRejections}
+        </div>
       </section>
       <section className="bus-section" data-section="messages">
         <h3>Messages</h3>
@@ -408,6 +418,7 @@ export function BusPane() {
         members: [],
         counters: [],
         countersBusAvailable: null,
+        capabilityRejections: 0, // #129
       });
     }
   }, [runId]);

@@ -5,12 +5,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import {
+  MIGRATIONS,
   SCHEMA_VERSION,
   ack,
   busPath,
+  capabilityRejectCount,
   check,
+  countCapabilityReject,
+  failCapability,
+  generateCapabilityToken,
+  getCapabilityByToken,
   getGate,
+  hashCapabilityToken,
   migrate,
+  mintCapability,
   open,
   openBus,
   openGate,
@@ -18,6 +26,8 @@ import {
   resolveGate,
   schemaVersion,
   send,
+  supersedeCapabilities,
+  verifyCapability,
   type BusDb,
 } from './bus.ts';
 
@@ -129,7 +139,16 @@ test('migrate() is idempotent, records its version, and refuses a newer schema',
       }[]
     ).map((r) => r.name),
   );
-  for (const t of ['runs', 'messages', 'deliveries', 'cursors', 'decision_gates']) {
+  for (const t of [
+    'runs',
+    'messages',
+    'deliveries',
+    'cursors',
+    'decision_gates',
+    // #129 — the capability-token tables the current SCHEMA_VERSION must create.
+    'dispatch_capabilities',
+    'capability_rejections',
+  ]) {
     assert.ok(tables.has(t), `migration must create the ${t} table (got ${[...tables].join(',')})`);
   }
 
@@ -754,4 +773,121 @@ test('an outstanding lot survives closing and reopening the database', (t) => {
   assert.equal(ack(b, RUN, 'worker-1', replayed.delivery!.id), true);
   assert.deepEqual(check(b, RUN, 'worker-1').messages, []);
   b.close();
+});
+
+// ─── #129 capability tokens ──────────────────────────────────────────────────
+
+test('#129 T129.4: a from-4 DB migrates to the current version and grows the capability tables', (t) => {
+  // COVERS: MIGRATIONS[5] applied AT ITS INDEX (the wave-B slot-collision trap:
+  // migrate() applies BY VERSION INDEX, so a duplicate number silently SKIPS the
+  // SQL). Replay the SHIPPED chain to v4, stamp it, then migrate the rest — the
+  // capability tables must appear and user_version must reach SCHEMA_VERSION.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-bus-cap-mig-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const db = open(path.join(dir, 'bus.sqlite'));
+
+  // Bring the DB to exactly v4 using the shipped SQL — not a hand copy.
+  for (let v = 1; v <= 4; v++) {
+    db.exec(`BEGIN IMMEDIATE; ${MIGRATIONS[v]}; PRAGMA user_version = ${v}; COMMIT;`);
+  }
+  assert.equal(schemaVersion(db), 4, 'staged to v4');
+  const at4 = new Set(
+    (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(
+      (r) => r.name,
+    ),
+  );
+  assert.ok(!at4.has('dispatch_capabilities'), 'capability table absent at v4 (would mean a duplicate index)');
+
+  assert.equal(migrate(db), SCHEMA_VERSION, 'migrate reaches the current version from v4');
+  const after = new Set(
+    (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(
+      (r) => r.name,
+    ),
+  );
+  assert.ok(after.has('dispatch_capabilities'), 'dispatch_capabilities created by the #129 migration');
+  assert.ok(after.has('capability_rejections'), 'capability_rejections created by the #129 migration');
+  db.close();
+});
+
+test('#129: hashCapabilityToken is deterministic sha256 hex, and mint stores only the hash', (t) => {
+  const db = tmpBus(t);
+  const tok = generateCapabilityToken();
+  assert.match(tok, /^dcap_[0-9a-f]{64}$/);
+  const h = hashCapabilityToken(tok);
+  assert.match(h, /^[0-9a-f]{64}$/);
+  assert.equal(hashCapabilityToken(tok), h, 'deterministic');
+  assert.notEqual(h, tok);
+
+  const seq = send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'go', recipient: 'w1' });
+  const minted = mintCapability(db, RUN, seq, 'w1');
+  const stored = db
+    .prepare('SELECT token_hash FROM dispatch_capabilities WHERE run_id=? AND dispatch_seq=?')
+    .get(RUN, seq) as { token_hash: string };
+  assert.equal(stored.token_hash, hashCapabilityToken(minted.token), 'the stored hash matches the clear token');
+  assert.notEqual(stored.token_hash, minted.token, 'the clear token is never stored');
+});
+
+test('#129 T129.1: verifyCapability accepts an active token and rejects a stale/absent one', (t) => {
+  const db = tmpBus(t);
+  const seq = send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'go', recipient: 'w1' });
+  const m = mintCapability(db, RUN, seq, 'w1');
+  assert.equal(verifyCapability(db, RUN, m.token), true);
+  // An unknown token never verifies.
+  assert.equal(verifyCapability(db, RUN, generateCapabilityToken()), false);
+  // Superseding it (a respawn) makes it fail — the must-FAIL arm. THE MUTANT:
+  // change verifyCapability's `state === 'active'` to `!= null` and this goes RED.
+  assert.equal(supersedeCapabilities(db, RUN, 'w1'), 1);
+  assert.equal(verifyCapability(db, RUN, m.token), false, 'a superseded token must not verify');
+});
+
+test('#129: mint supersedes the prior active capability for the SAME recipient', (t) => {
+  const db = tmpBus(t);
+  const s1 = send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'a', recipient: 'w1' });
+  const m1 = mintCapability(db, RUN, s1, 'w1');
+  const s2 = send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'b', recipient: 'w1' });
+  const m2 = mintCapability(db, RUN, s2, 'w1');
+  assert.equal(verifyCapability(db, RUN, m1.token), false, 'the first is superseded by the respawn');
+  assert.equal(verifyCapability(db, RUN, m2.token), true, 'the newest is active');
+  // Exactly ONE active row per recipient at any time.
+  const active = db
+    .prepare("SELECT COUNT(*) AS n FROM dispatch_capabilities WHERE run_id=? AND recipient='w1' AND state='active'")
+    .get(RUN) as { n: number };
+  assert.equal(active.n, 1);
+  // A DIFFERENT recipient is NOT affected — the supersede is scoped.
+  const s3 = send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'c', recipient: 'w2' });
+  const m3 = mintCapability(db, RUN, s3, 'w2');
+  assert.equal(verifyCapability(db, RUN, m2.token), true, 'w1 stays active when w2 is dispatched');
+  assert.equal(verifyCapability(db, RUN, m3.token), true);
+});
+
+test('#129: failCapability rejects a later answer, and is idempotent', (t) => {
+  const db = tmpBus(t);
+  const seq = send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'go', recipient: 'w1' });
+  const m = mintCapability(db, RUN, seq, 'w1');
+  assert.equal(failCapability(db, RUN, seq), true, 'moved an active row');
+  assert.equal(verifyCapability(db, RUN, m.token), false, 'a failed dispatch cannot be completed');
+  assert.equal(failCapability(db, RUN, seq), false, 'idempotent: a second fail moves nothing');
+});
+
+test('#129 T129.3: the shadow counter increments and reads back per run', (t) => {
+  const db = tmpBus(t);
+  assert.equal(capabilityRejectCount(db, RUN), 0);
+  assert.equal(countCapabilityReject(db, RUN), 1);
+  assert.equal(countCapabilityReject(db, RUN), 2);
+  assert.equal(capabilityRejectCount(db, RUN), 2);
+  // Scoped per run — another run's counter is independent.
+  assert.equal(capabilityRejectCount(db, 'other'), 0);
+  assert.equal(countCapabilityReject(db, 'other'), 1);
+  assert.equal(capabilityRejectCount(db, RUN), 2, 'RUN unchanged by the other run');
+});
+
+test('#129: getCapabilityByToken round-trips by clear token and returns null for an unknown one', (t) => {
+  const db = tmpBus(t);
+  const seq = send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'go', recipient: 'w1' });
+  const m = mintCapability(db, RUN, seq, 'w1');
+  const row = getCapabilityByToken(db, RUN, m.token);
+  assert.ok(row);
+  assert.equal(row.dispatch_seq, seq);
+  assert.equal(row.state, 'active');
+  assert.equal(getCapabilityByToken(db, RUN, generateCapabilityToken()), null);
 });

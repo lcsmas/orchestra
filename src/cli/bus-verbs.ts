@@ -26,7 +26,14 @@
 // take a `fail` callback rather than exiting themselves — which also makes them
 // unit-testable without spawning a process.
 
-import type { BusDb, BusLot, BusMessageKind, BusMessage, BusDecisionGate } from '../main/bus.ts';
+import type {
+  BusDb,
+  BusLot,
+  BusMessageKind,
+  BusMessage,
+  BusDecisionGate,
+  MintedCapability,
+} from '../main/bus.ts';
 
 /** The eight kinds `bus.send()` accepts. Duplicated as a VALUE here because
  *  bus.ts exports the list only as a type; keep in sync with MESSAGE_KINDS. */
@@ -140,6 +147,26 @@ export interface BusVerbCtx {
    * a stale write is COUNTED, not rejected (coexistence).
    */
   fencingOn: boolean;
+  /**
+   * #129 — is the `capability` switch ON for this run? (ledger #131 RULING D1:
+   * one switch PER bus-v2 mechanism, not the `delivery` switch.) Reads the FROZEN
+   * run-row flag (bus-runs.ts `busSwitch`), never the live store. Injected rather
+   * than imported so the unit tests can drive both ON and OFF without a run row,
+   * and so bus-verbs.ts stays free of a main-process import. Defaults to OFF (the
+   * coexistence-safe direction) when the caller does not supply it — a build that
+   * forgets to wire it keeps the old channel authoritative rather than firing a
+   * half-adopted mechanism.
+   *
+   * COUNTED-not-FIRED (T129.3): a stale capability token is COUNTED whether this
+   * is ON or OFF, but the completion is only REJECTED when it is ON. OFF = the
+   * old channel accepts the completion as v1.
+   */
+  capabilityEnabled?: () => boolean;
+  /** #129 — record that a would-be capability rejection was observed (shadow
+   *  counter). Called on every stale/absent token regardless of the switch, so
+   *  the counter moves in shadow mode. No-op if unwired (unit tests without a
+   *  counter). */
+  countCapabilityReject?: () => void;
 }
 
 /** The slice of src/main/bus.ts the verbs use (injected so a test can drive the
@@ -183,6 +210,16 @@ export interface BusModule {
     },
     write: () => T,
   ): T | undefined;
+  /** #129 — mint a capability for the dispatch at `dispatchSeq`, returning the
+   *  CLEAR token (printed once, never stored/logged). */
+  mintCapability(
+    db: BusDb,
+    runId: string,
+    dispatchSeq: number,
+    recipient?: string | null,
+  ): MintedCapability;
+  /** #129 — is this clear token an ACTIVE capability for the run? Pure lookup. */
+  verifyCapability(db: BusDb, runId: string, token: string): boolean;
 }
 
 // ─── fencing (#128) ───────────────────────────────────────────────────────────
@@ -232,20 +269,79 @@ export interface SendArgs {
   to?: string | null;
   thread?: string | null;
   body: string;
+  /** #129 — the capability token a completion (`worker_done`/`status`) carries,
+   *  minted by the dispatch it answers. Ignored for other kinds. */
+  cap?: string | null;
 }
 
-/** `orchestra send --type <kind> [--to <h>] [--thread <id>] <body...>` */
+/** #129 — the completion kinds that a capability token gates. A `worker_done`
+ *  or `status` row is a worker reporting on a dispatch; those are the rows a
+ *  stale token must not be able to forge. Other kinds (dispatch itself, gates,
+ *  questions, heartbeats) carry no capability. */
+export const CAPABILITY_COMPLETION_KINDS: readonly string[] = ['worker_done', 'status'];
+
+/**
+ * `orchestra send --type <kind> [--to <h>] [--thread <id>] [--cap <token>] <body...>`
+ *
+ * #129 capability tokens, two write-path hooks, both named:
+ *
+ *  - `--type dispatch`: after the row lands, MINT a `dcap_<32B>` for it (scoped
+ *    to `--to`), store only its hash, and print the CLEAR token on a second line
+ *    so the dispatcher can hand it to the worker. The token is NEVER in the
+ *    message body, the log, or the pane (T129.2).
+ *  - `--type worker_done | status` with `--cap <token>`: VERIFY the token. A
+ *    stale token (superseded by a respawn, or from a failed dispatch) is
+ *    COUNTED as a divergence always, and REJECTED only when the `capability`
+ *    switch is ON (T129.1 / T129.3 COUNTED-not-FIRED). With the switch OFF the
+ *    completion lands exactly as v1 — the old channel stays authoritative.
+ */
 export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
-  if (!a.kind) ctx.fail('usage: orchestra send --type <kind> [--to <handle>] [--thread <id>] <body...>');
+  if (!a.kind) ctx.fail('usage: orchestra send --type <kind> [--to <handle>] [--thread <id>] [--cap <token>] <body...>');
   // Validated HERE as well as in bus.send(), because the CLI can say what the
   // legal set IS. bus.send() refuses too — this is the message, not the guard.
   if (!BUS_KINDS.includes(a.kind!)) {
     ctx.fail(`orchestra send: unknown --type ${JSON.stringify(a.kind)} (one of: ${BUS_KINDS.join(', ')})`);
   }
   if (!a.body.trim()) ctx.fail('orchestra send: the message body is empty');
+
+  // #129 — capability verification BEFORE the write, so a rejected (fired)
+  // completion never lands at all. Independent of #128's fence: fencing gates on
+  // the WRITER's coordinator generation, capability on the DISPATCH the
+  // completion answers. Both may apply to one worker_done.
+  //
+  // FAIL-CLOSED (review F1): the gate is on the KIND, not on the presence of
+  // --cap. The ticket says a completion "must carry" its token, so an ABSENT cap
+  // is as invalid as a stale one — otherwise a hung worker bypasses the whole
+  // mechanism by simply omitting the flag, which is the exact threat #129 exists
+  // to stop. A missing token and a stale token therefore take the SAME path:
+  // COUNTED always, REJECTED when the switch is ON.
+  const cap = a.cap?.trim() || null;
+  if (CAPABILITY_COMPLETION_KINDS.includes(a.kind!)) {
+    const valid = cap !== null && ctx.bus.verifyCapability(ctx.db, ctx.id.runId, cap);
+    if (!valid) {
+      // COUNTED always (shadow counter moves in shadow mode) …
+      ctx.countCapabilityReject?.();
+      // … FIRED only when the `capability` switch is ON. OFF => fall through and
+      // land the completion as v1 (coexistence: old channel authoritative).
+      const fired = ctx.capabilityEnabled?.() === true;
+      if (fired) {
+        // Neutral wording (review F2): a rejected token may be a legitimate
+        // completion whose dispatch was superseded by a newer dispatch to the
+        // same recipient, not necessarily a "stale/hung" one. Name the two
+        // real causes without accusing the sender.
+        const why = cap === null
+          ? 'no --cap token was presented, and a completion must carry the token minted by its dispatch'
+          : 'the token is not an active capability — its dispatch was superseded by a newer dispatch to this recipient, or has been marked failed';
+        ctx.fail(
+          `orchestra send: ${a.kind} rejected — ${why}. The completion was NOT recorded.`,
+        );
+      }
+    }
+  }
+
   // FENCE + write as ONE transaction (#128, F1). A stale-generation send is
-  // rejected with the switch ON (the send never runs), counted with it OFF, and
-  // a straight write when the caller presented no generation.
+  // rejected with the fencing switch ON (the send never runs), counted with it
+  // OFF, and a straight write when the caller presented no generation.
   const seq = fenced(ctx, 'send', () =>
     ctx.bus.send(ctx.db, {
       runId: ctx.id.runId,
@@ -256,6 +352,14 @@ export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
       threadId: a.thread ?? null,
     }),
   );
+
+  // #129 — mint AFTER the dispatch row exists (the capability is keyed on its
+  // sequence). The clear token goes to stdout only; the DB holds its hash.
+  if (a.kind === 'dispatch') {
+    const minted = ctx.bus.mintCapability(ctx.db, ctx.id.runId, seq, a.to ?? null);
+    ctx.out(`${seq}\n${minted.token}\n`);
+    return;
+  }
   ctx.out(`${seq}\n`);
 }
 

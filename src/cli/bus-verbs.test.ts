@@ -44,8 +44,12 @@ interface Rig {
    *  switch OFF — so every pre-#128 verb test runs with the fence inert (a pass),
    *  which is what they assert. A fencing arm passes real values explicitly. */
   ctx: (handle: string, fencing?: { generation?: number | null; fencingOn?: boolean }) => BusVerbCtx;
+  db: import('../main/bus.ts').BusDb;
   out: string[];
   fails: string[];
+  /** #129 — flip the `capability` switch the capability seam reads. Off by
+   *  default (shadow mode), so the default rig exercises COUNTED-not-FIRED. */
+  setCapabilityEnabled: (on: boolean) => void;
 }
 
 function rig(t: { after: (fn: () => void) => void }): Rig {
@@ -61,9 +65,16 @@ function rig(t: { after: (fn: () => void) => void }): Rig {
   });
   const out: string[] = [];
   const fails: string[] = [];
+  // #129 — default OFF: the wave-D shadow default, so a test that does not opt
+  // in measures COUNTED-not-FIRED. flip via setCapabilityEnabled.
+  let capOn = false;
   return {
+    db,
     out,
     fails,
+    setCapabilityEnabled: (on: boolean) => {
+      capOn = on;
+    },
     ctx: (handle: string, fencing?: { generation?: number | null; fencingOn?: boolean }) => ({
       db,
       bus,
@@ -81,6 +92,14 @@ function rig(t: { after: (fn: () => void) => void }): Rig {
       // fence, not a no-op from an undefined field. Defaults are the unfenced path.
       generation: fencing?.generation ?? null,
       fencingOn: fencing?.fencingOn ?? false,
+      // #129 — the capability seam, wired to the REAL bus.ts shadow counter and
+      // a switch this rig controls (default OFF). index.ts wires the same two
+      // through busCtx from busRuns.busSwitch(...,'capability') and
+      // bus.countCapabilityReject.
+      capabilityEnabled: () => capOn,
+      countCapabilityReject: () => {
+        bus.countCapabilityReject(db, RUN);
+      },
     }),
   };
 }
@@ -128,8 +147,13 @@ test('resolveBusIdentity: no handle anywhere returns null, and whitespace is not
 test('send appends a row and prints its sequence', (t) => {
   const r = rig(t);
   verbSend(r.ctx('ops'), { kind: 'dispatch', to: 'w1', thread: 't-9', body: 'go' });
-  assert.equal(r.out.join(''), '1\n');
-  const lot = bus.check(r.ctx('w1').db, RUN, 'w1');
+  // #129: a dispatch prints its sequence AND, on a second line, the minted
+  // capability token. The sequence is still the FIRST line, unchanged for a
+  // parser reading `out.split('\n')[0]`.
+  const lines = r.out.join('').split('\n');
+  assert.equal(lines[0], '1');
+  assert.match(lines[1], /^dcap_[0-9a-f]{64}$/);
+  const lot = bus.check(r.db, RUN, 'w1');
   assert.equal(lot.messages.length, 1);
   assert.equal(lot.messages[0].body, 'go');
   assert.equal(lot.messages[0].recipient, 'w1');
@@ -662,4 +686,146 @@ test('F1 — the fence and the write are ONE transaction: the generation is read
     /FAIL: bus: stale coordinator generation/,
   );
   assert.equal((db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=? AND body=?').get(RUN, 'now-stale') as { n: number }).n, 0, 'the now-stale write never landed');
+});
+
+// ─── #129 capability tokens (CLI seam) ───────────────────────────────────────
+
+/** Mint a dispatch and return the CLEAR token the verb printed on line 2. */
+function dispatchAndCap(r: Rig, to: string, body = 'go'): string {
+  const before = r.out.length;
+  verbSend(r.ctx('ops'), { kind: 'dispatch', to, thread: null, body });
+  const printed = r.out.slice(before).join('');
+  const token = printed.split('\n')[1];
+  assert.match(token, /^dcap_[0-9a-f]{64}$/, 'dispatch must print a dcap token on line 2');
+  return token;
+}
+
+test('#129 T129.1: a dispatch mints an ACTIVE capability and a fresh token verifies', (t) => {
+  // COVERS: verbSend's dispatch mint branch + bus.verifyCapability. The token
+  // the dispatcher prints is accepted while the dispatch is live.
+  const r = rig(t);
+  const token = dispatchAndCap(r, 'w1');
+  assert.equal(bus.verifyCapability(r.db, RUN, token), true);
+  // The stored form is a HASH — the clear token is nowhere in the table.
+  const rows = r.db.prepare('SELECT * FROM dispatch_capabilities').all() as Array<{
+    token_hash: string;
+    state: string;
+  }>;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].state, 'active');
+  assert.notEqual(rows[0].token_hash, token, 'the clear token must NOT be stored');
+  assert.match(rows[0].token_hash, /^[0-9a-f]{64}$/);
+});
+
+test('#129 T129.1 must-FAIL arm: a stale (superseded) token is REJECTED when capability=ON', (t) => {
+  // COVERS: the reject clause in verbSend. A respawn to the same recipient mints
+  // a new capability and SUPERSEDES the first; the first worker's late
+  // worker_done, carrying the now-stale token, must be refused — it cannot mask
+  // the retry. THE MUTANT (C3): delete the `if (fired) ctx.fail(...)` block and
+  // this test goes green-when-it-should-be-red because the completion lands.
+  const r = rig(t);
+  r.setCapabilityEnabled(true); // capability=ON -> the mechanism FIRES
+  const stale = dispatchAndCap(r, 'w1'); // dispatch 1
+  const fresh = dispatchAndCap(r, 'w1'); // dispatch 2 (respawn) supersedes #1
+  assert.notEqual(stale, fresh);
+  assert.equal(bus.verifyCapability(r.db, RUN, stale), false, 'stale token must not verify');
+  assert.equal(bus.verifyCapability(r.db, RUN, fresh), true, 'fresh token still active');
+
+  // The late completion from the SUPERSEDED dispatch is refused, and NOTHING is
+  // written for it.
+  const seqBefore = (r.db.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n;
+  assert.throws(
+    () => verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, cap: stale, body: 'late done' }),
+    /worker_done rejected — the token is not an active capability/,
+  );
+  const seqAfter = (r.db.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n;
+  assert.equal(seqAfter, seqBefore, 'a rejected completion must not land a message row');
+
+  // The FRESH token's completion is accepted through the same path — the reject
+  // is specific to the stale token, not a blanket refusal (positive control).
+  verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, cap: fresh, body: 'real done' });
+  const bodies = (r.db.prepare("SELECT body FROM messages WHERE kind='worker_done'").all() as Array<{ body: string }>)
+    .map((m) => m.body);
+  assert.deepEqual(bodies, ['real done']);
+});
+
+test('#129 T129.3 COUNTED-not-FIRED: with capability=OFF a stale token is COUNTED but the completion LANDS', (t) => {
+  // COVERS: the C5 seam. capability=OFF (the rig default) => the shadow counter
+  // increments but the completion is NOT rejected — the old channel stays
+  // authoritative. THE MUTANT: drop the `if (fired)` guard (always reject) and
+  // this test goes RED because the completion no longer lands; drop the
+  // countCapabilityReject call and the counter assertion goes RED.
+  const r = rig(t);
+  // default: capability OFF
+  const stale = dispatchAndCap(r, 'w1');
+  dispatchAndCap(r, 'w1'); // supersede the first
+  assert.equal(bus.verifyCapability(r.db, RUN, stale), false);
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), 0, 'counter starts at 0');
+
+  // The stale completion LANDS (not fired) …
+  verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, cap: stale, body: 'late but landed' });
+  const landed = (r.db.prepare("SELECT body FROM messages WHERE kind='worker_done'").all() as Array<{ body: string }>)
+    .map((m) => m.body);
+  assert.deepEqual(landed, ['late but landed'], 'OFF: the completion is authoritative on the old channel');
+  // … AND it was COUNTED.
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), 1, 'OFF still COUNTS the divergence');
+});
+
+test('#129 T129.2: a minted token never appears in a message body, and nothing carries it in clear', (t) => {
+  // COVERS: --cap is extracted before the body join (index.ts) and the mint
+  // prints to stdout only. The token must not be findable in any messages.body
+  // nor in the capabilities table.
+  const r = rig(t);
+  r.setCapabilityEnabled(true);
+  const token = dispatchAndCap(r, 'w1');
+  verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, cap: token, body: 'done' });
+  const allBodies = (r.db.prepare('SELECT body FROM messages').all() as Array<{ body: string }>).map((m) => m.body);
+  for (const b of allBodies) {
+    assert.ok(!b.includes(token), `token leaked into a message body: ${b}`);
+  }
+  // And no durable table column holds it in clear.
+  const capRows = r.db.prepare('SELECT * FROM dispatch_capabilities').all() as Array<Record<string, unknown>>;
+  for (const row of capRows) {
+    for (const v of Object.values(row)) {
+      if (typeof v === 'string') assert.ok(!v.includes(token), `token leaked into a capability column: ${v}`);
+    }
+  }
+});
+
+// (REMOVED at review F1) The old "a no-cap completion is unaffected under ON"
+// test asserted the exact BYPASS F1 fixes — a hung worker omitting --cap slipped
+// through. Replaced by the two F1 fail-closed arms below (no-cap → rejected+counted
+// under ON; lands+counted under OFF). A non-completion kind carrying --cap being
+// ignored is still covered: dispatch mints (it is not a completion kind), and
+// `ask`/`gate` never pass through the CAPABILITY_COMPLETION_KINDS branch.
+
+test('#129 F1 fail-closed: a completion with NO --cap is REJECTED+COUNTED under capability=ON', (t) => {
+  // COVERS: the fail-closed gate — the guard is on the KIND, not on `cap`
+  // presence. A hung worker must not bypass the capability check by omitting the
+  // flag (the exact threat #129 exists to stop). THE MUTANT: restore the old
+  // `if (cap && ...)` guard and this test goes RED (the no-cap completion lands
+  // and is not counted).
+  const r = rig(t);
+  r.setCapabilityEnabled(true); // capability=ON -> FIRES
+  const before = (r.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE kind='worker_done'").get() as { n: number }).n;
+  assert.throws(
+    () => verbSend(r.ctx('w1'), { kind: 'worker_done', to: 'ops', thread: null, body: 'sneaky no-cap done' }),
+    /worker_done rejected — no --cap token was presented/,
+  );
+  const after = (r.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE kind='worker_done'").get() as { n: number }).n;
+  assert.equal(after, before, 'a no-cap completion must NOT land under capability=ON');
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), 1, 'the missing-token completion is COUNTED, same as a stale one');
+});
+
+test('#129 F1 coexistence: a completion with NO --cap LANDS+COUNTED under capability=OFF', (t) => {
+  // COVERS: the OFF half of fail-closed. While the switch is OFF the old channel
+  // stays authoritative, so a no-cap completion still lands — but it is COUNTED,
+  // so the shadow signal shows the bypass that WOULD have been rejected once ON.
+  // THE MUTANT: make the OFF path skip the count and the counter assertion reddens;
+  // make it reject (drop `if (fired)`) and the landed assertion reddens.
+  const r = rig(t); // default: capability OFF
+  verbSend(r.ctx('w1'), { kind: 'status', to: 'ops', thread: null, body: 'no-cap status' });
+  const landed = (r.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE kind='status'").get() as { n: number }).n;
+  assert.equal(landed, 1, 'OFF: a no-cap completion lands (old channel authoritative)');
+  assert.equal(bus.capabilityRejectCount(r.db, RUN), 1, 'OFF still COUNTS the missing-token completion');
 });

@@ -137,6 +137,15 @@ export interface BusSnapshot {
    *           are still populated (they live in memory, not in the bus).
    */
   countersBusAvailable: boolean | null;
+  /**
+   * #129 — how many stale/absent capability-token completions were OBSERVED for
+   * the selected run (the durable shadow counter, `capability_rejections`).
+   * Increments whether the `capability` switch is ON or OFF; the pane lists it so
+   * the capability mechanism's COUNTED-not-FIRED activity is visible without
+   * touching #116's frozen divergence report. 0 when the bus is down or no run
+   * is selected.
+   */
+  capabilityRejections: number;
 }
 
 /** The all-empty, bus-down snapshot. */
@@ -157,5 +166,6 @@ export function unavailableSnapshot(
     members: [],
     counters: [],
     countersBusAvailable: null,
+    capabilityRejections: 0, // #129
   };
 }

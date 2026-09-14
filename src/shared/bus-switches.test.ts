@@ -30,28 +30,27 @@ import {
   type BusMechanism,
 } from './bus-switches.ts';
 
-const ALL_ON: BusSwitches = {
-  delivery: true,
-  wake: true,
-  askGate: true,
-  liveness: true,
-  fencing: true,
-};
+// #129 — derive ALL_ON from the mechanism list so a new BusMechanism
+// (capability/fencing/receipts) is exercised by every ON arm without a hand
+// edit. ALL_OFF already derives from DEFAULT_BUS_SWITCHES.
+const ALL_ON: BusSwitches = Object.fromEntries(
+  BUS_MECHANISMS.map((m) => [m, true]),
+) as BusSwitches;
 const ALL_OFF: BusSwitches = { ...DEFAULT_BUS_SWITCHES };
 
 // ─── The shape ──────────────────────────────────────────────────────────────
 
-test('BUS_MECHANISMS has the five mechanisms, and DEFAULT is every one OFF', () => {
-  // #128 added `fencing` as the fifth mechanism (wave D). The list is designed to
-  // grow — a build that knew only four upgrades cleanly (normalizeSwitches arm).
-  assert.deepEqual([...BUS_MECHANISMS], ['delivery', 'wake', 'askGate', 'liveness', 'fencing']);
-  assert.deepEqual(DEFAULT_BUS_SWITCHES, {
-    delivery: false,
-    wake: false,
-    askGate: false,
-    liveness: false,
-    fencing: false,
-  });
+test('BUS_MECHANISMS lists the wave B set plus the wave-D additions, and DEFAULT is every one OFF', () => {
+  // Wave B: delivery/wake/askGate/liveness. Wave D appends one switch per bus-v2
+  // mechanism (ledger #131 RULING D1); #129 adds `capability` (#128 `fencing`,
+  // #130 `receipts` append at their rebases). Assert the wave-B four are present
+  // and in order, and that `capability` is present — not an exact whole-list
+  // match, so a sibling ticket appending its own mechanism does not redden this.
+  assert.deepEqual([...BUS_MECHANISMS].slice(0, 4), ['delivery', 'wake', 'askGate', 'liveness']);
+  assert.ok(BUS_MECHANISMS.includes('capability'), '#129 adds the capability mechanism');
+  // DEFAULT is every KNOWN mechanism OFF — derived, so it grows with the enum.
+  for (const m of BUS_MECHANISMS) assert.equal(DEFAULT_BUS_SWITCHES[m], false, `${m} defaults OFF`);
+  assert.equal(Object.keys(DEFAULT_BUS_SWITCHES).length, BUS_MECHANISMS.length);
   // Every mechanism has a human label (French per Q13) — no undefined leaks to UI.
   for (const m of BUS_MECHANISMS) assert.equal(typeof BUS_MECHANISM_LABEL[m], 'string');
 });
@@ -77,13 +76,7 @@ test('normalizeSwitches defaults each field independently and ignores unknowns',
   // A store written by a build that knew THREE mechanisms upgrades cleanly,
   // keeping the three it set; an unknown key from a NEWER build is dropped.
   const partial = normalizeSwitches({ delivery: true, wake: true });
-  assert.deepEqual(partial, {
-    delivery: true,
-    wake: true,
-    askGate: false,
-    liveness: false,
-    fencing: false,
-  });
+  assert.deepEqual(partial, { ...ALL_OFF, delivery: true, wake: true });
   const withUnknown = normalizeSwitches({ delivery: true, quantum: true });
   assert.equal('quantum' in withUnknown, false, 'an unknown mechanism is not carried');
   assert.equal(withUnknown.delivery, true);
@@ -105,27 +98,28 @@ test('a __proto__ payload does not pollute or turn a switch on', () => {
 // ─── serialize / parse round-trip ────────────────────────────────────────────
 
 test('serializeSwitches is stable, explicit, and key-ordered', () => {
-  const s = serializeSwitches({
-    liveness: true,
-    delivery: true,
-    wake: false,
-    askGate: false,
-    fencing: false,
-  });
+  const s = serializeSwitches({ ...ALL_OFF, liveness: true, delivery: true });
   // Keys in BUS_MECHANISMS order regardless of input order — never a bitmask,
   // because a later build with more mechanisms must read this unambiguously.
-  assert.equal(s, '{"delivery":true,"wake":false,"askGate":false,"liveness":true,"fencing":false}');
+  // Built from the mechanism list so a new mechanism extends the expected string
+  // rather than reddening it (all the added ones serialize false here).
+  const expected =
+    '{' +
+    BUS_MECHANISMS.map((m) => `"${m}":${m === 'delivery' || m === 'liveness'}`).join(',') +
+    '}';
+  assert.equal(s, expected);
+  // And the wave-B prefix is still exactly as frozen (positive control).
+  assert.ok(s.startsWith('{"delivery":true,"wake":false,"askGate":false,"liveness":true'));
 });
 
 test('parseSwitches round-trips serializeSwitches for every combination', () => {
-  for (let bits = 0; bits < 32; bits++) {
-    const sw: BusSwitches = {
-      delivery: !!(bits & 1),
-      wake: !!(bits & 2),
-      askGate: !!(bits & 4),
-      liveness: !!(bits & 8),
-      fencing: !!(bits & 16),
-    };
+  // 2^N combinations over the live mechanism list, so a new mechanism widens the
+  // sweep instead of leaving its bit untested.
+  const n = BUS_MECHANISMS.length;
+  for (let bits = 0; bits < 1 << n; bits++) {
+    const sw = Object.fromEntries(
+      BUS_MECHANISMS.map((m, i) => [m, !!(bits & (1 << i))]),
+    ) as BusSwitches;
     assert.deepEqual(parseSwitches(serializeSwitches(sw)), sw, `bits=${bits}`);
   }
 });
@@ -169,12 +163,12 @@ test('mechanismEnabled reads === true off the frozen set', () => {
 
 // ─── the wire mapping — the one place snake_case meets camelCase ─────────────
 
-test('mechanismFromWire maps the five wire names and refuses everything else', () => {
+test('mechanismFromWire maps the wire names and refuses everything else', () => {
   assert.equal(mechanismFromWire('delivery'), 'delivery');
   assert.equal(mechanismFromWire('wake'), 'wake');
   assert.equal(mechanismFromWire('ask_gate'), 'askGate', 'snake ask_gate → camel askGate');
   assert.equal(mechanismFromWire('liveness'), 'liveness');
-  assert.equal(mechanismFromWire('fencing'), 'fencing');
+  assert.equal(mechanismFromWire('capability'), 'capability', '#129 capability wire == key');
   // Unknown, and — critically — the INTERNAL key on the wire must be rejected.
   assert.equal(mechanismFromWire('askGate'), null, 'the internal key is not a wire name');
   assert.equal(mechanismFromWire('nope'), null);
@@ -186,7 +180,7 @@ test('mechanismToWire is the inverse, and ask_gate is the only remapped name', (
   assert.equal(mechanismToWire('delivery'), 'delivery');
   assert.equal(mechanismToWire('wake'), 'wake');
   assert.equal(mechanismToWire('liveness'), 'liveness');
-  assert.equal(mechanismToWire('fencing'), 'fencing');
+  assert.equal(mechanismToWire('capability'), 'capability', '#129 capability is not remapped');
 });
 
 test('fromWire ∘ toWire is identity on every mechanism (no drift)', () => {

@@ -14,7 +14,7 @@
 //      invoke and blank the pane — the exact failure T118.5 forbids.
 
 import { ipcMain } from 'electron';
-import { getBus, busPath, type BusDb } from './bus.ts';
+import { getBus, busPath, capabilityRejectCount, type BusDb } from './bus.ts';
 import { listRuns } from './bus-runs.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import {
@@ -252,6 +252,7 @@ export function busSnapshot(runId?: string | null): BusSnapshot {
         members: [],
         counters: [],
         countersBusAvailable: null,
+        capabilityRejections: 0, // #129 — no run selected
       };
     }
     const report = readDivergenceReport(selected);
@@ -277,6 +278,9 @@ export function busSnapshot(runId?: string | null): BusSnapshot {
       members: readMembers(d, selected),
       counters: report?.counters ?? [],
       countersBusAvailable: report ? report.busAvailable : null,
+      // #129 — the capability mechanism's COUNTED-not-FIRED tally for this run,
+      // read directly from the bus DB (durable, not #116's in-memory ledger).
+      capabilityRejections: capabilityRejectCount(d, selected),
     };
   } catch (e) {
     // A malformed/locked DB is "unavailable", not a crashed pane. Same D1

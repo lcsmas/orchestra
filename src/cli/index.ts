@@ -212,12 +212,19 @@ Usage:
   orchestra link --clear [--pr [<url>]] [--linear]
                                                  Drop links: --pr <url> removes one,
                                                  a bare --pr removes them all
-  orchestra send --type <kind> [--to <handle>] [--thread <id>] <body...>
+  orchestra send --type <kind> [--to <handle>] [--thread <id>] [--cap <token>] <body...>
                                                  Append a message to the FLEET BUS. Writes
                                                  SQLite directly, so it lands even while the
                                                  app is down. Prints the message's sequence.
                                                  <kind>: status dispatch worker_done escalation
                                                          handoff decision_gate question heartbeat
+                                                 --type dispatch also mints a capability token
+                                                 (printed on a 2nd line) — hand it to the worker.
+                                                 --cap <token>: a worker_done/status carries the
+                                                 token from its dispatch; a missing or superseded
+                                                 one is rejected once the capability switch is ON.
+                                                 --generation <n>: coordinator generation to fence
+                                                 the write on (#128); a stale one is rejected.
   orchestra check [--ack-previous] [--markdown] [--limit N]
                                                  Relève: print YOUR pending lot as JSON
                                                  (--markdown for a human render). NEVER acks —
@@ -670,6 +677,12 @@ function fail(message: string): never {
 async function openBusForVerb(): Promise<{
   db: import('../main/bus.ts').BusDb;
   bus: BusVerbCtx['bus'];
+  // #129 — the extra bus.ts helpers the capability seam needs, carried through
+  // the same module so the dynamic import (and its ABI gate) happens once.
+  capMod: {
+    countCapabilityReject: (db: import('../main/bus.ts').BusDb, runId: string) => number;
+    busSwitch: (db: import('../main/bus.ts').BusDb, runId: string, mechanism: string) => boolean;
+  };
   file: string;
 }> {
   // Resolved BEFORE the try. It can itself fail(), and a CliFailure raised
@@ -684,9 +697,21 @@ async function openBusForVerb(): Promise<{
   try {
     bus = await import('../main/bus.ts');
     file = bus.busPath();
+    // #129 — bus-runs holds busSwitch (the FROZEN run-row flag reader). Imported
+    // here, inside the same guarded block, so a bus-runs load failure surfaces
+    // as a bus-open refusal rather than a bare stack trace.
+    const busRuns = await import('../main/bus-runs.ts');
     // The CONSTRUCT + migrate. Anything ABI-shaped throws here, not above.
     const db = bus.openBus(file, { busyTimeoutMs });
-    return { db, bus, file };
+    return {
+      db,
+      bus,
+      capMod: {
+        countCapabilityReject: bus.countCapabilityReject,
+        busSwitch: busRuns.busSwitch,
+      },
+      file,
+    };
   } catch (err) {
     fail(describeBusOpenFailure(err, file));
   }
@@ -704,6 +729,12 @@ function busCtx(
   bus: BusVerbCtx['bus'],
   id: { runId: string; handle: string },
   fencing: { generation: number | null; fencingOn: boolean },
+  // #129 — the capability seam. Optional so callers that never touch
+  // capabilities work without passing it.
+  capMod?: {
+    countCapabilityReject: (db: import('../main/bus.ts').BusDb, runId: string) => number;
+    busSwitch: (db: import('../main/bus.ts').BusDb, runId: string, mechanism: string) => boolean;
+  },
 ): BusVerbCtx {
   return {
     db,
@@ -715,6 +746,18 @@ function busCtx(
     fail,
     generation: fencing.generation,
     fencingOn: fencing.fencingOn,
+    // #129 — the `capability` switch (ledger #131 RULING D1: ONE switch per
+    // bus-v2 mechanism, distinct from `fencing`) gates whether a stale-token
+    // completion is REJECTED (fired) or merely COUNTED. Reads the FROZEN run-row
+    // flag; OFF for an unknown run, the coexistence-safe default.
+    capabilityEnabled: capMod
+      ? () => capMod.busSwitch(db, id.runId, 'capability')
+      : undefined,
+    countCapabilityReject: capMod
+      ? () => {
+          capMod.countCapabilityReject(db, id.runId);
+        }
+      : undefined,
   };
 }
 
@@ -1315,16 +1358,20 @@ async function main(argv: string[]): Promise<void> {
       const to = takeFlag(t.rest, '--to');
       const th = takeFlag(to.rest, '--thread');
       const gen = takeFlag(th.rest, '--generation'); // #128 hunk (fencing)
-      const run = takeFlag(gen.rest, '--run');
+      // #129 — extract --cap BEFORE the body join so a token never lands in the
+      // message body (and never in the pane/log, which render the body verbatim).
+      const capf = takeFlag(gen.rest, '--cap');
+      const run = takeFlag(capf.rest, '--run');
       const as = takeFlag(run.rest, '--as');
       const id = busIdentityOrFail({ run: run.value, as: as.value });
-      const { db, bus } = await openBusForVerb();
+      const { db, bus, capMod } = await openBusForVerb();
       try {
         const fencing = await resolveFencing(db, id.runId, gen.value); // #128 hunk
-        verbSend(busCtx(db, bus, id, fencing), {
+        verbSend(busCtx(db, bus, id, fencing, capMod), {
           kind: t.value,
           to: to.value ?? null,
           thread: th.value ?? null,
+          cap: capf.value ?? null,
           body: as.rest.join(' '),
         });
       } finally {

@@ -14,6 +14,7 @@
 // wake, no UI, no shadow mirror — those are #115–#121. Opening the DB changes
 // nothing for any agent.
 
+import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { loadDatabaseCtor } from './bus-binding.ts';
@@ -128,7 +129,7 @@ export interface BusDecisionGate {
 // ─── Schema ─────────────────────────────────────────────────────────────────
 
 /** Bumped by appending a migration to MIGRATIONS; never edit a shipped one. */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /**
  * Forward-only migrations, indexed by the version they PRODUCE. `migrate()`
@@ -338,6 +339,61 @@ export const MIGRATIONS: Record<number, string> = {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_fence_events_run ON fence_events(run_id, id);
+  `,
+  // #129 — DISPATCH CAPABILITY TOKENS (bus v2). Each dispatch mints a
+  // `dcap_<32B>` token; a worker's completion/status row must carry it, and a
+  // LATE completion from a SUPERSEDED or failed dispatch is rejected so a hung
+  // retry cannot be masked by the original's stale answer.
+  //
+  // WHAT IS STORED: only the SHA-256 HASH of the token, never the clear token.
+  // The clear token is returned to the dispatcher's stdout once at mint time and
+  // travels back on the completion; nothing durable (this table, messages.body,
+  // the log, the pane) ever holds it in clear. T129.2's grep (a minted literal
+  // appears nowhere) holds by construction: there is no column that could carry
+  // it. `token_hash` is a hex digest, indistinguishable from any other hash.
+  //
+  // (run_id, dispatch_seq) is the PK: a capability belongs to exactly one
+  // dispatch message (its `messages.sequence`), scoped to the run. `state` moves
+  // active -> superseded | failed and is what the verify predicate reads: only
+  // 'active' accepts. A respawn/resend to the same recipient supersedes the
+  // prior active capability (see supersedeCapabilities) so the original's late
+  // answer is rejected.
+  //
+  // SLOT NUMBERING (ledger #131 §Seams): RENUMBERED to 6 at rebase onto #128's
+  // landed tip — #128's fencing migration took index 5 (MIGRATIONS[5] on master
+  // 4304381), so this is the next free integer, and SCHEMA_VERSION bumps to 6
+  // with it. `migrate()` applies BY INDEX, so a duplicate number would silently
+  // SKIP this SQL (wave B trap) — the whole reason the renumber is mandatory.
+  // Never edit #128's merged 5. #130 renumbers to 7 atop this.
+  6: `
+    CREATE TABLE IF NOT EXISTS dispatch_capabilities (
+      run_id       TEXT NOT NULL,
+      dispatch_seq INTEGER NOT NULL,   -- the messages.sequence of the dispatch
+      token_hash   TEXT NOT NULL,      -- sha256 hex of dcap_<32B>; NEVER the clear token
+      recipient    TEXT,               -- who the dispatch was addressed to (supersede scope)
+      state        TEXT NOT NULL,      -- 'active' | 'superseded' | 'failed'
+      minted_at    INTEGER NOT NULL,
+      resolved_at  INTEGER,            -- when it left 'active'
+      PRIMARY KEY (run_id, dispatch_seq)
+    );
+    -- The verify lookup is by hash; the supersede sweep is by (run, recipient,
+    -- state). One index each so neither is a table scan under a live fleet.
+    CREATE INDEX IF NOT EXISTS idx_dcap_hash ON dispatch_capabilities(run_id, token_hash);
+    CREATE INDEX IF NOT EXISTS idx_dcap_active
+      ON dispatch_capabilities(run_id, recipient) WHERE state = 'active';
+
+    -- SHADOW COUNTER (#129, C5 COUNTED-not-FIRED). One row per run holding how
+    -- many stale/absent-token completions were OBSERVED. It increments whether
+    -- the capability switch is ON or OFF; only the REJECTION (the fail() in the
+    -- CLI) is gated on the switch. Durable (not the in-memory DivergenceLedger)
+    -- because the CLI is a short-lived process — the count must survive across
+    -- invocations to be readable at wave close. NOT stored on messages: a
+    -- rejected completion never becomes a message row. (Mirrors #128's
+    -- fence_events shadow trail — same CLI-side-count-must-survive reasoning.)
+    CREATE TABLE IF NOT EXISTS capability_rejections (
+      run_id  TEXT PRIMARY KEY,
+      count   INTEGER NOT NULL DEFAULT 0
+    );
   `,
 };
 
@@ -955,6 +1011,201 @@ export function mirrorRecords(db: BusDb, runId: string): BusMirrorRecord[] {
   return db
     .prepare('SELECT * FROM mirror_records WHERE run_id=? ORDER BY id')
     .all(runId) as BusMirrorRecord[];
+}
+
+// ─── Dispatch capability tokens (#129) ──────────────────────────────────────
+//
+// Each dispatch mints a `dcap_<32B>` token and stores only its SHA-256 HASH.
+// The clear token travels back on the worker's completion; a completion whose
+// token hashes to a row that is no longer `active` (superseded by a respawn, or
+// marked failed) is REJECTED, so a hung/failed dispatch's late answer cannot
+// mask its retry. Nothing durable ever holds the clear token — see the
+// MIGRATIONS[5] comment and T129.2.
+
+/** The state machine of one dispatch capability. Only 'active' verifies. */
+export type CapabilityState = 'active' | 'superseded' | 'failed';
+
+/** One `dispatch_capabilities` row. `token_hash` is a hex digest — the clear
+ *  token is never stored, so nothing here can leak it. */
+export interface BusCapability {
+  run_id: string;
+  dispatch_seq: number;
+  token_hash: string;
+  recipient: string | null;
+  state: CapabilityState;
+  minted_at: number;
+  resolved_at: number | null;
+}
+
+/** A minted capability as {@link mintCapability} hands it back: the CLEAR token
+ *  (returned to the dispatcher ONCE, never logged) plus the dispatch it binds. */
+export interface MintedCapability {
+  /** `dcap_<64 hex>` — 32 random bytes. Returned to the dispatcher's stdout
+   *  only; it is NOT stored (only its hash is) and MUST NOT be logged. */
+  token: string;
+  dispatchSeq: number;
+}
+
+/** The token prefix. A `dcap_`-prefixed value is a dispatch capability; the
+ *  grep in T129.2 keys on the whole minted literal, not the prefix. */
+export const CAPABILITY_PREFIX = 'dcap_';
+
+/**
+ * Hash a capability token for storage/lookup. SHA-256 hex.
+ *
+ * The ONE place a clear token is turned into its stored form — mint and verify
+ * both go through here so they can never disagree on the algorithm. Never the
+ * inverse: there is no un-hash, by design.
+ */
+export function hashCapabilityToken(token: string): string {
+  return createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+/** Mint a fresh `dcap_<32B>` token. Exposed for the mint helper and rigs; the
+ *  clear value is ephemeral and must not be persisted or logged. */
+export function generateCapabilityToken(): string {
+  return CAPABILITY_PREFIX + randomBytes(32).toString('hex');
+}
+
+/**
+ * Mint a capability for `dispatchSeq`, storing only its hash, and return the
+ * CLEAR token to the caller.
+ *
+ * `recipient` scopes the supersede sweep: a later dispatch to the same recipient
+ * supersedes this one (a hung worker's late answer is then rejected). A respawn
+ * that reuses the same recipient is exactly the "hung retry" the ticket names.
+ *
+ * Marks any prior ACTIVE capability for the same (run, recipient) as
+ * `superseded` in the SAME transaction as the insert, so there is never a window
+ * where two active capabilities exist for one recipient.
+ *
+ * WAVE-D INVARIANT (review F2, ledger #131): AT MOST ONE OUTSTANDING DISPATCH PER
+ * (run, recipient). supersede-on-redispatch enforces exactly one `active`
+ * capability per recipient, so a second CONCURRENT dispatch to the same recipient
+ * invalidates the first — including the case where the first is a legitimate
+ * still-running job, whose completion is then refused. That is acceptable ONLY
+ * under this single-outstanding assumption; a fan-out that dispatches N
+ * concurrent jobs to ONE recipient is out of scope for wave D and would need a
+ * per-dispatch capability keyed on something finer than the recipient. The CLI
+ * refusal is worded neutrally (not "stale/hung") because a superseded token can
+ * be a legitimate concurrent completion, not a masking retry.
+ */
+export function mintCapability(
+  db: BusDb,
+  runId: string,
+  dispatchSeq: number,
+  recipient: string | null = null,
+): MintedCapability {
+  const token = generateCapabilityToken();
+  const tokenHash = hashCapabilityToken(token);
+  const now = Date.now();
+  const supersede = db.prepare(
+    `UPDATE dispatch_capabilities SET state='superseded', resolved_at=?
+       WHERE run_id=? AND recipient IS ? AND state='active'`,
+  );
+  const insert = db.prepare(
+    `INSERT INTO dispatch_capabilities
+       (run_id, dispatch_seq, token_hash, recipient, state, minted_at)
+     VALUES (?,?,?,?, 'active', ?)`,
+  );
+  const tx = db.transaction((): MintedCapability => {
+    // Supersede prior active caps for this recipient FIRST — a respawn's new
+    // dispatch invalidates the old one's outstanding token.
+    if (recipient !== null) supersede.run(now, runId, recipient);
+    insert.run(runId, dispatchSeq, tokenHash, recipient, now);
+    return { token, dispatchSeq };
+  });
+  return tx.immediate();
+}
+
+/** Read a capability row back by its clear token (hashes internally), or null. */
+export function getCapabilityByToken(
+  db: BusDb,
+  runId: string,
+  token: string,
+): BusCapability | null {
+  const hash = hashCapabilityToken(token);
+  return (
+    (db
+      .prepare('SELECT * FROM dispatch_capabilities WHERE run_id=? AND token_hash=?')
+      .get(runId, hash) as BusCapability | undefined) ?? null
+  );
+}
+
+/**
+ * Would this token be accepted as an ACTIVE capability?
+ *
+ * PURE PREDICATE — it does NOT mutate. `true` only when a row exists for this
+ * (run, token) AND its state is 'active'. A missing token, a superseded one, or
+ * a failed one all return `false`. The COUNTED-not-FIRED seam (delivery=OFF)
+ * lives in the CLI: it calls this to COUNT a would-be rejection but does not act
+ * on it while the switch is off (see verbSend / T129.3).
+ */
+export function verifyCapability(db: BusDb, runId: string, token: string): boolean {
+  const cap = getCapabilityByToken(db, runId, token);
+  return cap?.state === 'active';
+}
+
+/**
+ * Mark a capability failed (its worker will not complete) so a later answer
+ * carrying its token is rejected. Idempotent: returns true only if it moved an
+ * ACTIVE row.
+ */
+export function failCapability(db: BusDb, runId: string, dispatchSeq: number): boolean {
+  const info = db
+    .prepare(
+      `UPDATE dispatch_capabilities SET state='failed', resolved_at=?
+         WHERE run_id=? AND dispatch_seq=? AND state='active'`,
+    )
+    .run(Date.now(), runId, dispatchSeq);
+  return info.changes > 0;
+}
+
+/**
+ * Supersede every active capability for (run, recipient) — the explicit form of
+ * what {@link mintCapability} does implicitly. Returns how many rows moved.
+ */
+export function supersedeCapabilities(
+  db: BusDb,
+  runId: string,
+  recipient: string,
+): number {
+  const info = db
+    .prepare(
+      `UPDATE dispatch_capabilities SET state='superseded', resolved_at=?
+         WHERE run_id=? AND recipient IS ? AND state='active'`,
+    )
+    .run(Date.now(), runId, recipient);
+  return info.changes;
+}
+
+/**
+ * Record ONE observed capability rejection for a run (the shadow counter, C5).
+ *
+ * Incremented whether the delivery switch is ON or OFF — the count is the
+ * "COUNTED" half of COUNTED-not-FIRED, and it must move in shadow mode. Only the
+ * actual refusal (the CLI's fail()) is switch-gated. Returns the new total.
+ */
+export function countCapabilityReject(db: BusDb, runId: string): number {
+  const bump = db.prepare(
+    `INSERT INTO capability_rejections (run_id, count) VALUES (?, 1)
+       ON CONFLICT(run_id) DO UPDATE SET count = count + 1`,
+  );
+  const read = db.prepare('SELECT count FROM capability_rejections WHERE run_id=?');
+  const tx = db.transaction((): number => {
+    bump.run(runId);
+    return Number((read.get(runId) as { count: number }).count);
+  });
+  return tx.immediate();
+}
+
+/** How many capability rejections were observed for a run (0 if none). The
+ *  shadow read for the pane / bus-status and the T129.3 assertion. */
+export function capabilityRejectCount(db: BusDb, runId: string): number {
+  const row = db
+    .prepare('SELECT count FROM capability_rejections WHERE run_id=?')
+    .get(runId) as { count: number } | undefined;
+  return row ? Number(row.count) : 0;
 }
 
 // ─── Boot ───────────────────────────────────────────────────────────────────

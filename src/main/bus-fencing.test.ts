@@ -84,7 +84,11 @@ test('T128.4 — MIGRATIONS[5]: a from-4 DB migrates and coordinator_generation 
   const db = openBus(file);
   t.after(() => db.close());
   assert.equal(schemaVersion(db), SCHEMA_VERSION, 'migrate() reaches HEAD');
-  assert.equal(SCHEMA_VERSION, 5, 'SCHEMA_VERSION bumped 4 → 5');
+  // #128's fencing migration is MIGRATIONS[5]; SCHEMA_VERSION is >= 5 (bumped past
+  // 5 as later wave-D tickets append — #129 capability took 6). Assert the FLOOR,
+  // not an absolute, so a sibling ticket's bump does not redden #128's own test
+  // (updated at #129's rebase onto #128 per the merge-order renumber rule).
+  assert.ok(SCHEMA_VERSION >= 5, 'SCHEMA_VERSION bumped to at least 5 for fencing');
   const cols = (db.pragma('table_info(runs)') as { name: string }[]).map((c) => c.name);
   assert.ok(cols.includes('coordinator_generation'), 'the generation column is present after migrate');
   const fenceTbl = (

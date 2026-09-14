@@ -27,11 +27,23 @@
 // draft of this comment pointed at a `src/main/bus-mechanism.ts` that does not
 // exist.
 
-/** The mechanisms adopted behind independent switches. Wave B shipped the first
- *  four; #128 (wave D) adds `fencing`. The list is DESIGNED to grow — every
- *  reader defaults an unknown/absent mechanism independently (normalizeSwitches),
- *  so a store or run row written by a build that knew only four upgrades cleanly. */
-export type BusMechanism = 'delivery' | 'wake' | 'askGate' | 'liveness' | 'fencing';
+/** The mechanisms adopted behind independent switches.
+ *
+ *  Wave B shipped four (delivery/wake/askGate/liveness). Wave D adds the bus-v2
+ *  mechanisms, ONE SWITCH PER MECHANISM (ledger #131 RULING D1 — no shared
+ *  bundle, so each promotes and rolls back on its own #108 Q4/Q5 bar): `fencing`
+ *  (#128 coordinator generation), `capability` (#129 dispatch capability tokens);
+ *  #130 adds `receipts`, appending here at rebase in merge order. Growing this
+ *  enum is ADDITIVE and store-safe: `run_flags.flags` is a JSON object read back
+ *  by builds that know more mechanisms than the writer did (bus.ts MIGRATIONS[3]
+ *  comment), and "frozen" is frozen-PER-RUN-at-wave-start, not enum-frozen. */
+export type BusMechanism =
+  | 'delivery'
+  | 'wake'
+  | 'askGate'
+  | 'liveness'
+  | 'fencing' // #128
+  | 'capability'; // #129
 
 /** Every mechanism, in the order the pane renders them. */
 export const BUS_MECHANISMS: readonly BusMechanism[] = [
@@ -39,7 +51,8 @@ export const BUS_MECHANISMS: readonly BusMechanism[] = [
   'wake',
   'askGate',
   'liveness',
-  'fencing',
+  'fencing', // #128
+  'capability', // #129
 ];
 
 /** One boolean per mechanism. */
@@ -58,7 +71,8 @@ export const DEFAULT_BUS_SWITCHES: BusSwitches = Object.freeze({
   wake: false,
   askGate: false,
   liveness: false,
-  fencing: false,
+  fencing: false, // #128
+  capability: false, // #129
 });
 
 /** Human-facing label per mechanism (French in prose/UI per #108 ruling Q13). */
@@ -67,7 +81,8 @@ export const BUS_MECHANISM_LABEL: Record<BusMechanism, string> = {
   wake: 'Wake-as-turn (Réveil)',
   askGate: 'Ask / Decision gate (Ruling)',
   liveness: 'Liveness + phase',
-  fencing: 'Fencing (coordinator generation)',
+  fencing: 'Fencing (coordinator generation)', // #128
+  capability: 'Capability tokens (dispatch)', // #129
 };
 
 /**
@@ -167,14 +182,24 @@ export function mechanismEnabled(frozen: BusSwitches, mechanism: BusMechanism): 
  * outside this file, route it through `mechanismFromWire` instead — N copies of
  * a mapping is how the wire and the enum drift apart.
  */
-export type BusMechanismWire = 'delivery' | 'wake' | 'ask_gate' | 'liveness' | 'fencing';
+export type BusMechanismWire =
+  | 'delivery'
+  | 'wake'
+  | 'ask_gate'
+  | 'liveness'
+  | 'fencing' // #128 (wire == key)
+  // #129 — capability's wire name equals its key (no snake/camel split), but it
+  // MUST still route through this map so busSwitch(db,runId,'capability') and the
+  // startup notice agree with everything else.
+  | 'capability';
 
 const WIRE_TO_MECHANISM: Record<BusMechanismWire, BusMechanism> = {
   delivery: 'delivery',
   wake: 'wake',
   ask_gate: 'askGate',
   liveness: 'liveness',
-  fencing: 'fencing',
+  fencing: 'fencing', // #128
+  capability: 'capability', // #129
 };
 
 /** Wire name → internal key. Returns null for an unknown name (never a guess). */

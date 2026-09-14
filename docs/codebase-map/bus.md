@@ -1239,3 +1239,89 @@ No production caller BUMPS generation yet — an OPS respawn calling
 `ORCHESTRA_RUN_ID` still being unplumbed on master, #118 N2 tail). The fleet
 skill does not yet branch on the `fencing=OFF` notice line (inert while OFF). No
 live packaged two-generation refusal through a running app.
+---
+
+## Dispatch capability tokens (#129) — a stale completion cannot mask a hung retry
+
+Wave D, bus v2. Each `dispatch` mints a `dcap_<32B>` token; a worker's
+`worker_done`/`status` completion carries it back, and a completion whose token
+belongs to a **superseded or failed** dispatch is rejected — so a hung worker's
+late answer cannot mask the retry that replaced it.
+
+### Files / symbols (all in `src/main/bus.ts`, `## Dispatch capability tokens` section)
+
+- Migration `MIGRATIONS[6]` (renumbered from 5 at rebase onto #128, which took 5
+  for fencing) + `SCHEMA_VERSION` 5→6. Two tables:
+  - `dispatch_capabilities(run_id, dispatch_seq PK, token_hash, recipient, state, minted_at, resolved_at)`
+    — `state` ∈ `active | superseded | failed`; **only `active` verifies**.
+  - `capability_rejections(run_id PK, count)` — the durable shadow counter (C5).
+- `hashCapabilityToken` (sha256 hex), `generateCapabilityToken` (`dcap_`+32B),
+  `mintCapability` (supersedes the prior active cap for the SAME recipient in the
+  same tx, returns the CLEAR token), `verifyCapability` (pure predicate),
+  `failCapability`, `supersedeCapabilities`, `countCapabilityReject`,
+  `capabilityRejectCount`, `getCapabilityByToken`.
+
+### The token is NEVER stored/logged/rendered in clear (T129.2)
+
+Only the sha256 **hash** is persisted. The clear token is returned to the
+dispatcher's stdout once (`send --type dispatch` prints it on line 2) and travels
+back on the completion. `--cap` is extracted BEFORE the body join in
+`src/cli/index.ts` so it never lands in `messages.body` — which is what the pane
+renders verbatim (`bus-pane.ts toMessage`). There is no column that could carry
+the clear token, so the grep-for-a-literal check holds by construction.
+
+### COUNTED-not-FIRED (T129.3, C5) rides the `capability` switch (RULING D1)
+
+The bus-v2 write-path mechanisms gate on their OWN switch (ledger #131 RULING D1: one per mechanism); #129 rides `capability` (OFF in shadow). `verbSend` (`src/cli/bus-verbs.ts`)
+verifies a completion's token; an invalid token is **COUNTED always**
+(`countCapabilityReject`) but **REJECTED only when `busSwitch(db, runId, 'capability')` is ON**. OFF ⇒ the completion lands as v1, old channel authoritative.
+The seam is injected into `BusVerbCtx` as `capabilityEnabled` /
+`countCapabilityReject` (index.ts wires them from `busRuns.busSwitch` and
+`bus.countCapabilityReject`) so the unit suite drives both ON and OFF.
+
+**FAIL-CLOSED (review F1):** the gate is on the KIND, not on `--cap` presence —
+a completion (`worker_done`/`status`) with NO token is as invalid as one with a
+stale token (both COUNTED, both REJECTED when ON). Gating on `if (cap && …)`
+would let a hung worker bypass the whole mechanism by omitting the flag, which
+is the exact threat #129 exists to stop.
+
+**Single-outstanding invariant + neutral message (review F2):** supersede-on-
+redispatch enforces ≤1 `active` capability per (run, recipient), so a SECOND
+concurrent dispatch to one recipient invalidates the first — including a
+legitimate still-running job. Acceptable only under the wave-D "≤1 outstanding
+dispatch per recipient" assumption (documented at `mintCapability`); a fan-out of
+N concurrent jobs to one recipient is out of scope. The refusal is worded
+neutrally ("superseded by a newer dispatch … or marked failed"), not "stale/hung".
+
+**Failed-path caveat (review F3, LEAD ruling pending):** `failCapability` /
+`supersedeCapabilities` exist and are unit-tested but have no shipped PRODUCER
+yet — the "failed dispatch" half is unwired; supersede-via-redispatch is the live
+path. Do not wire a new producer until the §Open-questions Q3 ruling.
+
+### The `capability` switch + pane listing (RULING D1)
+
+`capability` is a 5th `BusMechanism` in `src/shared/bus-switches.ts` (camel key ==
+snake wire, no remap), appended to `BUS_MECHANISMS` / `DEFAULT_BUS_SWITCHES` /
+`BUS_MECHANISM_LABEL` / the wire map. Growing the enum is additive/store-safe
+(`run_flags.flags` is JSON read back by builds that know more mechanisms). It
+auto-appears in the startup notice (`busSwitchNoticeLines` iterates the list) and
+the settings toggles (`BusSwitchSettings` iterates the list). It is NOT wired into
+`orchestra bus-status` switch-STATE (ledger #131 Q2: the shared
+`BusDivergenceReport` is touched by #128/#129/#130 and must not be edited by
+three tickets concurrently — one coordinated owner if the LEAD wants it there).
+The capability REJECTION tally is surfaced in the PANE via `BusSnapshot`'s
+additive `capabilityRejections` field (read directly from `capability_rejections`
+in `bus-pane.ts busSnapshot`, rendered under "Shadow divergence") — the pane
+listing that satisfies D1 without touching #116's frozen report.
+
+### Gates
+
+```bash
+npx tsc --noEmit                                                    # C1
+node --test --experimental-strip-types src/main/bus.test.ts        # helper + migration-from-4
+node --test --experimental-strip-types src/cli/bus-verbs.test.ts   # CLI seam + COUNTED-not-FIRED
+```
+
+Mutation arms shown RED live: `verbSend` reject clause forced off (T129.1
+must-FAIL goes red), `verifyCapability` `state==='active'` → `!=null` (supersede
+test red), `countCapabilityReject` call dropped (T129.3 counter red).
