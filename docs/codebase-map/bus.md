@@ -1140,7 +1140,7 @@ would-have-fenced event is recorded, so the OFF state is observable. Ships OFF.
 | `src/main/bus.ts` | `coordinatorGeneration` / `bumpCoordinatorGeneration` / `assertCoordinatorGeneration` / `fencedWrite` / `recordFenceEvent` / `fenceEvents` / `fenceEventCounts` / `StaleGenerationError`; migration `MIGRATIONS[5]` (`runs.coordinator_generation` + `fence_events`). |
 | `src/main/bus-runs.ts` | `BusRunRow.coordinator_generation` threaded through `getRun`/`listRuns`/`toRunRow`. |
 | `src/shared/bus-switches.ts` | The `fencing` mechanism added to the enum/labels/wire map. |
-| `src/cli/bus-verbs.ts` + `src/cli/index.ts` | `fencedWrite` called before send/ack/gate-resolve; `--generation` / `$ORCHESTRA_COORDINATOR_GENERATION`; `busSwitch(db,runId,'fencing')` read at the boundary. |
+| `src/cli/bus-verbs.ts` + `src/cli/index.ts` | `fenced(ctx, verb, write)` runs the send/ack/gate-resolve write THROUGH `fencedWrite` (one IMMEDIATE tx, F1); `--generation` / `$ORCHESTRA_COORDINATOR_GENERATION`; `busSwitch(db,runId,'fencing')` read at the boundary. |
 | `src/renderer/components/BusPane.tsx` | `data-run-generation` per run. |
 
 ## Schema — `MIGRATIONS[5]`, `SCHEMA_VERSION 4 → 5`
@@ -1168,6 +1168,21 @@ The count/reject split is the whole point of shadow: a mechanism whose OFF-state
 is indistinguishable from the feature being absent cannot be observed before
 promotion.
 
+## Atomicity — the fence and the write are ONE transaction (review F1)
+
+`fencedWrite(db, input, write)` takes the write as a CLOSURE and runs
+read-decide-write inside one `db.transaction(...).immediate()`. Without this, a
+separate fence-check then a separate write is a TOCTOU window: `fencedWrite` reads
+generation G, a respawn bumps to G+1, the write then lands under the stale gen.
+IMMEDIATE takes the write lock up front so no other connection can bump between
+the read and the write; the inner `send`/`ack`/`resolveGate` open their own
+IMMEDIATE tx (nested as a SAVEPOINT). A rejection throws INSIDE the tx (rolling it
+back), so the FIRED `fence_events` row is re-recorded in an autonomous statement
+in the catch — the shadow trail survives the rollback. A caller with no
+enclosing write (the direct-call unit tests, the read-only pane) omits `write`
+and fences-only. This window is INERT on master (nothing bumps generation, switch
+OFF) but the atomic form is correct regardless of when bumping ships.
+
 ## Why the shadow counter is a bus TABLE, not main memory
 
 #116/#117 keep their counters in main-process memory because those events happen
@@ -1180,10 +1195,10 @@ pane is the bus itself — hence `fence_events`, read by `fenceEventCounts`.
 `StaleGenerationError` (name discriminant `'StaleGenerationError'`, carries
 `runId`/`presented`/`current`). Fields are assigned explicitly, NOT via
 constructor parameter properties — the `node --test --experimental-strip-types`
-runner rejects those, and every bus test imports this file. The CLI's
-`fenceOrFail` catches it (via `err.name`, which survives an IPC boundary the
-prototype chain does not) and routes it through `fail()` (CliFailure), so a
-refusal exits cleanly under Electron (issue #59); any other error is re-thrown.
+runner rejects those, and every bus test imports this file. The CLI's `fenced()`
+wrapper catches it (via `err.name`, which survives an IPC boundary the prototype
+chain does not) and routes it through `fail()` (CliFailure), so a refusal exits
+cleanly under Electron (issue #59); any other error is re-thrown.
 
 ## D1 — the bus never blocks boot
 
@@ -1199,14 +1214,23 @@ state, not a crash.
 ```bash
 npx tsc --noEmit                                                         # C1
 node --test --experimental-strip-types src/shared/bus-fencing.test.ts    #  5 pure
-node --test --experimental-strip-types src/main/bus-fencing.test.ts      # 10 real-bus
+node --test --experimental-strip-types src/main/bus-fencing.test.ts      # 10 real-bus (primitive + fencedWrite)
+node --test --experimental-strip-types src/cli/bus-verbs.test.ts         # +5 VERB-path arms (F2): verbSend/Ack/Gate → fenced → fencedWrite
 node scripts/bus-pane-render-smoke.mjs                                   # T128.2 generation visible
 pnpm run test                                                            # in the suite; # skipped must be 0
 ```
 
+The verb-path arms (F2) drive the SHIPPED verbs, not `fencedWrite` directly, so
+they cover the fence-before-write ordering, the `err.name`→`ctx.fail` routing
+(issue #59), and the atomic tx (F1). The `bus-verbs.test.ts` ctx builder carries
+real `generation`/`fencingOn` — omitting them (a TS2322 invisible because
+`.test.ts` is tsc-excluded) made fencing run as a no-op.
+
 Each acceptance arm was shown RED under one mutation (decideFence → always
 `pass`; `recordFenceEvent` removed; the ADD COLUMN removed; the error `name`
-discriminant broken), mutant-string verified live, then GREEN restored.
+discriminant broken; the verb-path fence bypassed → the 5 verb arms redden; the
+on-rollback fence-event re-record removed → the verbSend `fired=1` assertion
+reddens), mutant-string verified live, then GREEN restored.
 
 ## Not covered here
 
