@@ -327,7 +327,9 @@ let timer: ReturnType<typeof setInterval> | null = null;
 let watcher: fs.FSWatcher | null = null;
 let debounce: ReturnType<typeof setTimeout> | null = null;
 
-/** Start the wake subsystem (idempotent). Reads the switch ONCE, here. */
+/** Start the wake subsystem (idempotent). Does NOT bind the switch value: the
+ *  one `readWakeSwitch('default')` below is a shipped-state SIGNAL for the boot
+ *  gate only — every sweep reads the flag per-run, per-sweep (ledger #123 Q1). */
 export function startBusWake(): void {
   if (timer) return;
   started = true;
