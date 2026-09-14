@@ -346,6 +346,64 @@ test('Q1 an app RESTART does not change a running run\'s frozen flags', async (t
   assert.equal(busWakeCounters().counted, 1, 'and it is still COUNTED, not silently skipped');
 });
 
+test('#118-F1 blast radius: a mid-wave switch flip is read per-sweep, never latched', async (t) => {
+  // #118-F1 (ledger #123): #118's freeze storage could let a run be frozen LATE
+  // and its wake flag flip mid-wave. The freeze fix is #118's; THIS asserts my
+  // CONSUMPTION is correct no matter what the stored flag does — read per sweep,
+  // never a boot cache, and a transient flip cannot spam a reader already handled.
+  //
+  // A boot-scoped cache cannot pass the FIRE half below: cached OFF would count
+  // forever even after the row says ON. A per-sweep read fires the moment the
+  // flag reads ON for a re-armed reader — and only then.
+  const db = tmpDb(t);
+  let flag = false; // the run row's wake flag, as #118 would (mis)mutate it
+  const wakes: { reader: string; text: string }[] = [];
+  __resetBusWakeForTests();
+  __setBusReaderForTests(() => db);
+  setWakeRoster(() => [{ reader: R1, wakeable: true, runId: RUN }]);
+  setWakeDeliver(async (reader, text) => {
+    wakes.push({ reader, text });
+    return true;
+  });
+  __freezeSwitchForTests((runId: string) => runId === RUN && flag);
+
+  send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'work', recipient: R1 });
+  await sweepBusWake();
+  assert.equal(wakes.length, 0, 'flag OFF: counted, not fired');
+  assert.equal(busWakeCounters().counted, 1);
+
+  // #118-F1: the flag flips ON while the reader is STILL mid-pending-window
+  // (never acked). My per-sweep read sees ON now — but the dedup ledger already
+  // has this reader, so a transient flip must NOT re-fire it. No wake storm.
+  flag = true;
+  for (let i = 0; i < 3; i++) await sweepBusWake();
+  assert.equal(wakes.length, 0, 'a mid-window flip to ON does not re-fire an already-handled reader');
+
+  // The DISCRIMINATING half a boot-OFF cache cannot pass: the reader acks, a
+  // sweep observes the cleared pending state and prunes the ledger entry (the
+  // only re-arm — level-triggered, see decideWake), new mail arrives, and NOW
+  // the flag reads ON — so the next sweep FIRES. A cached-OFF boolean would
+  // still count here; only a per-sweep read fires.
+  const lot = check(db, RUN, R1);
+  ack(db, RUN, R1, lot.delivery!.id);
+  await sweepBusWake(); // the reconciling sweep that prunes the ledger after ack
+  send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'more', recipient: R1 });
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'per-sweep read: a re-armed reader fires once the row reads ON');
+  assert.equal(busWakeCounters().fired, 1);
+
+  // And the inverse latch: flip back OFF with the reader re-armed, new mail →
+  // counted again, never a fire left latched from the previous ON.
+  flag = false;
+  const lot2 = check(db, RUN, R1);
+  ack(db, RUN, R1, lot2.delivery!.id);
+  await sweepBusWake(); // reconcile again before the next lot
+  send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'off-again', recipient: R1 });
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'flag OFF again: no further fire — the ON was not latched');
+  assert.equal(busWakeCounters().counted, 2);
+});
+
 test('a reader is NOT woken for mail in a run it does not belong to', async (t) => {
   // Run-scoping of the PENDING PREDICATE, which the per-run switch depends on.
   // Unscoped, this reader is reported pending for another run's traffic and gets
