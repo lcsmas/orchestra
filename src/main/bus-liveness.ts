@@ -178,10 +178,12 @@ let sweeping = false;
 /**
  * One level-triggered pass: read members, decide per member, escalate or count.
  *
- * Re-entrancy guarded (the timer could land while a prior sweep's `send` is in
- * flight): two concurrent sweeps would each read the ledger before either wrote
- * it, the read-modify-write-across-a-yield that #57 measured losing an entry.
- * The guard makes the ledger single-writer.
+ * This body is FULLY SYNCHRONOUS — `send()` is synchronous and there is no
+ * `await`, so a second sweep cannot interleave with a first mid-body and the
+ * across-a-yield read-modify-write race #57 measured cannot occur here. The
+ * `sweeping` guard is cheap future-proofing: if `writeEscalation` ever becomes
+ * async, it keeps the ledger single-writer without a second review. (F4,
+ * review-120: the earlier comment claimed the race was live — it is not.)
  */
 export function sweepBusLiveness(): void {
   if (sweeping) return;
@@ -215,36 +217,35 @@ export function sweepBusLiveness(): void {
     // First pass: who is stale THIS tick (for the ledger prune / re-arm). Stale
     // = the decision would escalate-or-count. Computed independent of the switch
     // so a member re-arms whether the mechanism fired or only counted.
+    // The belt-and-braces floor for a member whose `lastActivityAt` arrives
+    // undefined (the roster floors it via index.ts, but a rig or a future caller
+    // might not). It MUST be a RECENT time (app-start / now), never 0 (epoch):
+    // with `appStartedAt: 0`, an undefined clock gives `silentForMs = now`, which
+    // is always past the threshold, so EVERY clockless member would escalate —
+    // the floor inverted from safe to dangerous (F3, review-120). `now` is the
+    // safe direction: a clockless member reads as just-active, never stale.
+    const floor = now;
+    const buildState = (m: LivenessMember): MemberLivenessState => ({
+      reader: m.reader,
+      coordinator: m.coordinator,
+      hasTask: m.hasTask,
+      lastActivityAt: m.lastActivityAt,
+      appStartedAt: floor,
+      running: m.running,
+      waiting: m.waiting || busWaiting.has(m.reader),
+    });
+
     const stale = new Set<string>();
     for (const m of members) {
-      const state: MemberLivenessState = {
-        reader: m.reader,
-        coordinator: m.coordinator,
-        hasTask: m.hasTask,
-        lastActivityAt: m.lastActivityAt,
-        appStartedAt: 0, // floored by caller below; not used when lastActivityAt set
-        running: m.running,
-        waiting: m.waiting || busWaiting.has(m.reader),
-      };
-      // Use the member's real activity floor: undefined clock → app-start, which
-      // the roster provides via lastActivityAt already (index.ts floors it), so
-      // appStartedAt is only the belt-and-braces default. Decide with no ledger
-      // to learn staleness, then again with the ledger to get the action.
-      const probe = decideEscalation(state, undefined, now, false);
+      // Decide with no ledger to learn staleness (independent of the switch and
+      // of prior marks), then again with the ledger below to get the action.
+      const probe = decideEscalation(buildState(m), undefined, now, false);
       if (probe.kind !== 'skip') stale.add(m.reader);
     }
     pruneEscalationLedger(ledger, stale);
 
     for (const m of members) {
-      const state: MemberLivenessState = {
-        reader: m.reader,
-        coordinator: m.coordinator,
-        hasTask: m.hasTask,
-        lastActivityAt: m.lastActivityAt,
-        appStartedAt: 0,
-        running: m.running,
-        waiting: m.waiting || busWaiting.has(m.reader),
-      };
+      const state = buildState(m);
       // PER SWEEP, PER RUN — never a process-wide cache. The safe direction on an
       // unreadable flag is OFF (counted, never fired), and it must not take the
       // sweep down for other members.
@@ -258,12 +259,10 @@ export function sweepBusLiveness(): void {
       }
       const action = decideEscalation(state, ledger.get(m.reader), now, switchOn);
       if (action.kind === 'skip') continue;
-      // Mark BEFORE the write, not after: even though `send` is synchronous, the
-      // ledger is what makes "one per silence" hold across the whole loop — set
-      // it the instant we decide to act (the #112/#57 shape, kept for safety if
-      // the write ever becomes async).
-      ledger.set(action.reader, { escalatedAtActivity: m.lastActivityAt });
       if (action.kind === 'count') {
+        // Mark as COUNTED (fired: false) so a second count is suppressed but the
+        // FIRST FIRE after a switch flips ON is NOT (F1). Once per silence.
+        ledger.set(action.reader, { escalatedAtActivity: m.lastActivityAt, fired: false });
         counters.counted++;
         log.info(
           `bus-liveness: would have escalated ${action.reader} → ${action.coordinator} ` +
@@ -271,18 +270,20 @@ export function sweepBusLiveness(): void {
         );
         continue;
       }
-      // FIRED: write an escalation row to the coordinator. A failed write must be
-      // observable (D1) and must WITHDRAW the ledger mark so the next sweep
-      // retries — leaving the mark would suppress every future escalation for
-      // this silence.
+      // FIRED: write an escalation row to the coordinator. Mark the ledger as
+      // FIRED (fired: true) only on a SUCCESSFUL write — a failed write must be
+      // observable (D1) and must NOT leave a mark, or the next sweep would treat
+      // this silence as already-escalated and never retry.
       const wrote = writeEscalation(db, m.runId, action.reader, action.coordinator, action.silentForMs);
       if (wrote) {
+        ledger.set(action.reader, { escalatedAtActivity: m.lastActivityAt, fired: true });
         counters.fired++;
         log.info(
           `bus-liveness: escalated ${action.reader} → ${action.coordinator} ` +
             `(silent ${Math.floor(action.silentForMs / 60_000)}m)`,
         );
       } else {
+        // Withdraw any prior count-mark too, so the failed fire fully re-arms.
         ledger.delete(action.reader);
       }
     }

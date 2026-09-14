@@ -87,15 +87,23 @@ export type EscalationSkip =
   | 'already-escalated'; // one escalation per silence — dedup holds
 
 /** What the sweep remembers between ticks — the dedup ledger, analogous to
- *  #117's wake ledger. Presence IS the dedup: a member with an entry has already
- *  been escalated for its CURRENT silence and is not escalated again until
- *  activity clears it (`pruneEscalationLedger`). ONCE per silence (acceptance 1). */
+ *  #117's wake ledger. Presence IS the dedup for the SAME action: a member
+ *  already FIRED this silence is not fired again; a member already COUNTED this
+ *  silence is not counted again (no count-storm). But a prior COUNT does NOT
+ *  suppress a FIRE — that is the switch-flip-ON case (F1, review-120): a member
+ *  continuously stale across an OFF→ON flip was counted while OFF and MUST still
+ *  escalate exactly once when the switch turns ON. Cleared by
+ *  `pruneEscalationLedger` on activity (acceptance 1). */
 export interface EscalationLedgerEntry {
-  /** `lastActivityAt` at the moment we escalated — carried for the log line and
-   *  the gate's assertions, deliberately NOT part of the suppression test (which
-   *  keys on PRESENCE, the #117 lesson: a high-water compare re-fires on rising
-   *  values). */
+  /** `lastActivityAt` at the moment we acted — carried for the log line and the
+   *  gate's assertions, deliberately NOT part of the suppression test (which keys
+   *  on PRESENCE + `fired`, the #117 lesson: a high-water compare re-fires on
+   *  rising values). */
   escalatedAtActivity: number | undefined;
+  /** True once a real escalation ROW was written for this silence (the switch was
+   *  ON). A `count`-only entry has `fired: false` and does NOT suppress the first
+   *  fire after a switch flips ON. */
+  fired: boolean;
 }
 
 /**
@@ -133,12 +141,24 @@ export function decideEscalation(
     return { kind: 'skip', reader: m.reader, why: 'fresh' };
   }
   // Past the threshold, silent, with a task and a coordinator, not running, not
-  // waiting → stale. ONCE per silence: presence in the ledger suppresses.
-  if (previous) return { kind: 'skip', reader: m.reader, why: 'already-escalated' };
+  // waiting → stale.
+  //
+  // Dedup (F1, review-120): a member already FIRED this silence never fires or
+  // counts again. But a prior COUNT-only entry (switch was OFF) does NOT suppress
+  // a FIRE — otherwise a member continuously stale across an OFF→ON flip, having
+  // been counted while OFF, would be marked `already-escalated` and NEVER
+  // escalate after the switch turns ON (the first real escalation silently lost).
+  // So: suppress iff we already fired, OR we are only about to count again.
+  if (previous?.fired) return { kind: 'skip', reader: m.reader, why: 'already-escalated' };
   const coordinator = m.coordinator;
-  return switchOn
-    ? { kind: 'escalate', reader: m.reader, coordinator, silentForMs }
-    : { kind: 'count', reader: m.reader, coordinator, silentForMs };
+  if (!switchOn) {
+    // Switch OFF → count, but only ONCE per silence (a prior count suppresses a
+    // second count — no 60×/min count-storm, the #117 lesson).
+    if (previous) return { kind: 'skip', reader: m.reader, why: 'already-escalated' };
+    return { kind: 'count', reader: m.reader, coordinator, silentForMs };
+  }
+  // Switch ON → fire (whether or not it was previously counted while OFF).
+  return { kind: 'escalate', reader: m.reader, coordinator, silentForMs };
 }
 
 /**

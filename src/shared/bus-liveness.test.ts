@@ -165,10 +165,10 @@ test('undefined clock floors at appStartedAt', () => {
 
 // ── ONE per silence (acceptance 1) ───────────────────────────────────────────
 
-test('a member already in the ledger → skip already-escalated', () => {
-  // MUTANT: drop the `if (previous) skip` guard → a stale member escalates on
-  //   EVERY sweep, not once per silence.
-  const prev: EscalationLedgerEntry = { escalatedAtActivity: NOW - 11 * 60 * 1000 };
+test('a member already FIRED this silence → skip already-escalated', () => {
+  // MUTANT: drop the `if (previous?.fired) skip` guard → a stale member escalates
+  //   on EVERY sweep, not once per silence.
+  const prev: EscalationLedgerEntry = { escalatedAtActivity: NOW - 11 * 60 * 1000, fired: true };
   const a = decideEscalation(staleMember(), prev, NOW, true);
   assert.equal(a.kind, 'skip');
   assert.equal(a.kind === 'skip' && a.why, 'already-escalated');
@@ -178,8 +178,8 @@ test('the ledger re-arms once the member is no longer stale', () => {
   // pruneEscalationLedger drops entries not in the still-stale set. A member that
   // resumed activity is pruned → its NEXT silence escalates again.
   const ledger = new Map<string, EscalationLedgerEntry>([
-    ['ws-worker', { escalatedAtActivity: 0 }],
-    ['ws-other', { escalatedAtActivity: 0 }],
+    ['ws-worker', { escalatedAtActivity: 0, fired: true }],
+    ['ws-other', { escalatedAtActivity: 0, fired: true }],
   ]);
   pruneEscalationLedger(ledger, new Set(['ws-other'])); // ws-worker no longer stale
   assert.equal(ledger.has('ws-worker'), false);
@@ -187,6 +187,41 @@ test('the ledger re-arms once the member is no longer stale', () => {
   // ws-worker, now pruned, escalates on its next silence (previous === undefined).
   const a = decideEscalation(staleMember(), ledger.get('ws-worker'), NOW, true);
   assert.equal(a.kind, 'escalate');
+});
+
+// ── F1 (review-120): a switch OFF→ON flip must not suppress the first fire ────
+
+test('F1: a member COUNTED while OFF still FIRES when the switch flips ON', () => {
+  // The switch-flip bug: a member continuously stale across an OFF→ON flip is
+  // counted while OFF (fired: false), and MUST escalate exactly once when ON.
+  // MUTANT: mark the count entry `fired: true` (or suppress on mere presence) →
+  //   this returns `skip already-escalated`, the first real escalation lost.
+  const counted: EscalationLedgerEntry = { escalatedAtActivity: NOW - 11 * 60 * 1000, fired: false };
+  const a = decideEscalation(staleMember(), counted, NOW, /* switchOn */ true);
+  assert.equal(a.kind, 'escalate', 'a prior COUNT must not suppress the first FIRE');
+});
+
+test('F1: a member COUNTED while OFF is not counted AGAIN on the next OFF sweep', () => {
+  // The other half: while still OFF, a prior count DOES suppress a second count
+  // (no 60×/min count-storm — the #117 lesson). MUTANT: allow re-count → a stale
+  //   member counts every sweep.
+  const counted: EscalationLedgerEntry = { escalatedAtActivity: NOW - 11 * 60 * 1000, fired: false };
+  const a = decideEscalation(staleMember(), counted, NOW, /* switchOn */ false);
+  assert.equal(a.kind, 'skip');
+  assert.equal(a.kind === 'skip' && a.why, 'already-escalated');
+});
+
+// ── F3 (review-120): an undefined clock floored SAFE, never dangerous ────────
+
+test('F3: an undefined lastActivityAt floored at `now` reads as FRESH, not stale', () => {
+  // The dangerous-floor bug: if the floor were 0 (epoch), `silentForMs = now`
+  // always exceeds the threshold → every clockless member escalates. Floored at
+  // `now` (what the sweep passes), a clockless member reads as just-active.
+  // MUTANT: set appStartedAt to 0 → this escalates (silentForMs = now).
+  const m = staleMember({ lastActivityAt: undefined, appStartedAt: NOW });
+  const a = decideEscalation(m, undefined, NOW, true);
+  assert.equal(a.kind, 'skip');
+  assert.equal(a.kind === 'skip' && a.why, 'fresh');
 });
 
 // ── The body is a specific marker (carry-forward 2) ──────────────────────────

@@ -267,6 +267,48 @@ test('C5: switch OFF → zero escalation rows, but the shadow counter increments
   assert.ok(busLivenessCounters().counted >= 1, 'the would-have-escalated is COUNTED');
 });
 
+// ── F1 (review-120): a switch OFF→ON flip fires the FIRST escalation ──────────
+
+test('F1: a member stale while OFF escalates EXACTLY ONCE when the switch flips ON', (t) => {
+  // The bug the reviewer found: while OFF the member is counted and ledger-marked;
+  // a naive presence-dedup then treats it as already-escalated when the switch
+  // turns ON, so the first real escalation is silently lost. Drive it: OFF sweep
+  // (0 rows, counted), then flip the switch reader to ON and sweep → exactly 1
+  // row; a further ON sweep → still 1 (no double-fire).
+  const db = tmpBus(t);
+  armSweep(db, [member()], /* switchOn */ false);
+  sweepBusLiveness();
+  assert.equal(escalationCount(db, 'ws-ops', 'ws-worker'), 0, 'OFF → no row (counted)');
+  assert.ok(busLivenessCounters().counted >= 1, 'OFF → counted');
+  // Flip the switch ON (same member, still continuously silent).
+  setLivenessSwitchReader(() => true);
+  sweepBusLiveness();
+  assert.equal(
+    escalationCount(db, 'ws-ops', 'ws-worker'),
+    1,
+    'the switch flipping ON must escalate the already-stale member exactly once',
+  );
+  sweepBusLiveness();
+  assert.equal(escalationCount(db, 'ws-ops', 'ws-worker'), 1, 'no double-fire on the next ON sweep');
+});
+
+// ── F3 (review-120): a member with an undefined clock is floored SAFE ────────
+
+test('F3: a member whose lastActivityAt is undefined is NOT escalated (safe floor)', (t) => {
+  // The dangerous-floor bug: with appStartedAt hardcoded 0, an undefined clock
+  // gives silentForMs = now → escalate every clockless member. The sweep now
+  // floors at `now`, so a clockless member reads as just-active. MUTANT: restore
+  //   appStartedAt: 0 in the sweep → this member escalates.
+  const db = tmpBus(t);
+  armSweep(db, [member({ lastActivityAt: undefined })]);
+  sweepBusLiveness();
+  assert.equal(
+    escalationCount(db, 'ws-ops', 'ws-worker'),
+    0,
+    'a member with no observed activity this run must not be escalated on an epoch floor',
+  );
+});
+
 // ── C4 — getBus() === null tolerance (D1) ────────────────────────────────────
 
 test('C4: a null bus makes the sweep a CLEAN no-op — no throw, no error log', (t) => {
