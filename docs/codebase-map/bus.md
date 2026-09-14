@@ -219,7 +219,7 @@ Agents change nothing. Promotion bar: 2 complete waves at 0/0/0 divergence.
 delivery**: it runs AFTER the old channel produced its result, returns an outcome
 (never a `MessageResult`), and never throws. A bus failure LOGS and CONTINUES.
 
-Wired as a **wrapper** — `dispatchMessageRequest` (`src/main/workspaces.ts:2771`)
+Wired as a **wrapper** — `dispatchMessageRequest` (`src/main/workspaces.ts:2826`)
 calls an untouched `dispatchMessageRequestUnmirrored` and returns `res` verbatim.
 Deliberately not N calls inside the body: that body has twelve `return`s, and a
 per-return mirror is one that silently misses the path added next — which would

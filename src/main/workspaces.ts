@@ -2847,11 +2847,13 @@ export async function dispatchMessageRequest(
   // The mirror is READ-ONLY with respect to delivery: `res` is returned
   // untouched, `mirrorDispatch` never throws, and nothing here awaits it.
   //
-  // ONE normalization, shared (review F5): the body is trimmed and capped in
-  // exactly one place and handed to both the delivery path and the mirror. Two
-  // copies of `trim().slice(0, MESSAGE_MAX_CHARS)` is how the mirror silently
-  // starts recording a different string from the one delivered the day either
-  // cap moves.
+  // ONE cap, shared (review F5): the body is trimmed and capped in exactly one
+  // place and handed to both paths. The mirror stores this PAYLOAD, not the
+  // delivered RENDERING — the delivery path re-wraps it via formatPeerMessage
+  // (attribution + CR-strip), by design, since the bus is the source of truth
+  // for the message, not the TUI transcript (review F6). What F5 keeps aligned
+  // is the CAP: two copies of `trim().slice(0, MESSAGE_MAX_CHARS)` would drift
+  // the day either moves.
   const body = input.text.trim().slice(0, MESSAGE_MAX_CHARS);
   const res = await dispatchMessageRequestUnmirrored({ ...input, text: body });
   mirrorDispatch({
