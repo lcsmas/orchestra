@@ -257,15 +257,15 @@ old channel delivered nothing either.
 ### Divergence counters — the FROZEN inter-ticket contract (ledger #123 §Seams)
 
 `{ mechanism, missed, duplicate, lostWake }[]`, scoped to a run, wrapped in
-`BusDivergenceReport` (`src/shared/bus-mirror.ts:190`) which also carries
+`BusDivergenceReport` (`src/shared/bus-mirror.ts:196`) which also carries
 `busAvailable`. Three surfaces, ONE builder (`busDivergenceReport`,
-`src/main/bus-mirror.ts:153`) so they cannot drift:
+`src/main/bus-mirror.ts:191`) so they cannot drift:
 
 | Surface | Anchor |
 |---|---|
-| IPC `bus:divergence` | `src/main/api-handlers.ts:213` / `:459` |
+| IPC `bus:divergence` | `src/main/api-handlers.ts:223` / `:476` |
 | socket `/busStatus` | `src/main/hooks-server.ts:378` |
-| `orchestra bus-status` | `src/cli/index.ts:1169` |
+| `orchestra bus-status` | `src/cli/index.ts:1170` |
 
 The counters live in **main-process memory, not in the bus**: D1 says `getBus()`
 may be null at any moment, and the counter that must record "the bus was down for
