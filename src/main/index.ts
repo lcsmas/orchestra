@@ -175,10 +175,18 @@ import { initBus, closeBus, busPath } from './bus';
 import { registerBusPaneIpc } from './bus-pane';
 import { setLiveSwitches, getLiveSwitches } from './bus-settings';
 import { startBusWake, stopBusWake, setWakeRoster, setWakeDeliver } from './bus-wake';
+import {
+  startBusLiveness,
+  stopBusLiveness,
+  setLivenessRoster,
+  type LivenessMember,
+} from './bus-liveness';
+import { getLastActivity, getAppStartedAt } from './hibernation-activity';
 import { sdkStartAndDeliver } from './sdk-delivery';
 import {
   ensureRoot,
   pruneOrphanedWorkspaces,
+  resolveWaveRunId,
 } from './workspaces';
 import { stopAll } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
@@ -441,6 +449,47 @@ async function createMainWindow() {
   // session (resuming prior context) and delivers the order as that turn.
   setWakeDeliver((wsId, text) => sdkStartAndDeliver(wsId, text));
   startBusWake();
+  // Liveness + phase (#120): DERIVE staleness from the app's own activity signals
+  // (the status dot's sources) and escalate a silent-with-a-task member to its
+  // coordinator. Reuses `getLastActivity` (fed by `applyAgentEvent`'s
+  // `noteActivity` on every lifecycle event incl. tool-call START) — NO new
+  // probe. The roster is INJECTED for the same reason as the wake roster:
+  // `store.ts` reaches the platform seam through a directory import the
+  // strip-types test runner cannot resolve. SHIPS OFF — the `liveness` switch
+  // (#118) defaults false, so out of the box this only COUNTS. Tolerates
+  // `getBus() === null` (D1): the sweep logs once and returns. #119's asker
+  // `waiting` surface is wired via `setLivenessWaiting` once #119 lands (ledger
+  // #125 Q-C1); until then the app-level `waiting` status is the only exclusion,
+  // the coexistence-safe direction (it never SUPPRESSES a real stall).
+  setLivenessRoster((): LivenessMember[] =>
+    store.workspaces.map((ws) => {
+      // Coordinator = the member's parent, resolved to a LIVE workspace. A
+      // dangling parentId (parent deleted) resolves to null → the member is
+      // never escalated (nobody to escalate to), matching parentId's documented
+      // dangling semantics.
+      const parent = ws.parentId ? store.getWorkspace(ws.parentId) : undefined;
+      return {
+        reader: ws.id,
+        coordinator: parent && !parent.archived ? parent.id : null,
+        // A DISPATCHED member carries a `lastTask` (set at spawn). A hand-made UI
+        // workspace has none and is not a fleet member — never escalated.
+        hasTask: !!ws.lastTask,
+        // Floor an absent clock at app-start so a just-launched app never
+        // escalates on an empty/stale in-memory map (hibernation-activity's own
+        // safe default), NOT on createdAt (which for an old workspace reads as a
+        // stall of days).
+        lastActivityAt: getLastActivity(ws.id) ?? getAppStartedAt(),
+        // A turn IN FLIGHT is alive regardless of the discrete clock — the
+        // dead-vs-slow-reader anti-trap (acceptance 2).
+        running: ws.status === 'running',
+        // App-level parked signal: an agent showing the needs-input `waiting`
+        // status is silent on purpose. #119's bus `waiting` ORs in on top.
+        waiting: ws.status === 'waiting',
+        runId: resolveWaveRunId(ws),
+      };
+    }),
+  );
+  startBusLiveness();
   // Stop the agent processes of long-idle workspaces to reclaim their memory;
   // the conversation survives (terminal `--continue`, SDK sdkSessionId) so a
   // hibernated agent restores on the next keystroke/send/activation.
@@ -723,6 +772,9 @@ function shutdownSubsystems(): void {
   // Before closeBus(): the sweep reads the bus connection, so stopping it after
   // the close would leave a timer able to fire against a closed handle.
   stopBusWake();
+  // Same reason as stopBusWake: the liveness sweep reads the bus connection, so
+  // stop its timer before closeBus() so it can never fire against a closed handle.
+  stopBusLiveness();
   // Last: a clean close checkpoints the WAL back into the main file and
   // truncates it to 0 (spike #109 arm 3 measured ~600 KB left behind by a
   // crash). Committed rows survive either way — WAL recovery reads them on the

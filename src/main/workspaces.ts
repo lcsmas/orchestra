@@ -44,6 +44,8 @@ import { busSwitchNotice } from '../shared/bus-switches.ts';
 import { getBus } from './bus.ts';
 import { runFlags } from './bus-runs.ts';
 import { walkToRootId } from './wave-run-id.ts';
+import { recordPhaseChange } from './bus-liveness.ts';
+import { phaseChanged } from '../shared/bus-liveness.ts';
 import {
   resolveDirectChildTargets,
   normalizeExplicitTargets,
@@ -2637,6 +2639,16 @@ export async function dispatchStatusRequest(input: {
   };
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
+  // PHASE (#120): the store broadcast above stays authoritative; this ALSO
+  // records a `status` bus row on a GENUINE change so a coordinator can read a
+  // member's phase transitions in total order. The change guard is the positive
+  // control the counter reads zero on: an unchanged re-set (same normalized text)
+  // writes nothing (acceptance 3). No timer — phase is event-driven off the note
+  // write. `recordPhaseChange` is switch-gated (COUNTED, not fired while OFF) and
+  // tolerates a null bus (D1), so it can never break `orchestra status`.
+  if (phaseChanged(ws.statusText ?? '', text)) {
+    recordPhaseChange(resolveWaveRunId(ws), ws.id, text);
+  }
   return { ok: true, ...(text ? { statusText: text } : {}) };
 }
 

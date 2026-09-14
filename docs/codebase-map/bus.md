@@ -967,3 +967,114 @@ T119.4 waiting excluded. Each shown RED under one mutation then GREEN.
 at boot on this branch — the shipped default is OFF (counted, not fired), i.e.
 shadow, matching #117/#118. Wiring the accessors to `busSwitch(getBus(), runId,
 'wake'|'ask_gate')` at `index.ts` is the promotion step, not this ticket.
+
+---
+
+# Liveness + phase (#120) — host-derived staleness escalation and phase rows
+
+Appended by #120 (ledger [#125](https://github.com/lcsmas/orchestra/issues/125)).
+Earlier sections are untouched.
+
+## What this adds
+
+Two host-derived signals, both reusing EXISTING kinds (`escalation`, `status`) —
+**no migration** (they were already in the `BusMessageKind` enum since #114):
+
+- **Liveness**: a level-triggered sweep DERIVES staleness from the app's own
+  activity signals (the status dot's sources) and writes an `escalation` message
+  row to a silent member's COORDINATOR — once per silence, cleared on activity.
+- **Phase**: every genuine `orchestra status` note CHANGE writes a `status`
+  message row, with NO timer (event-driven off the note write).
+
+| File | What it is |
+|---|---|
+| `src/shared/bus-liveness.ts` | The PURE policy — `decideEscalation`, `pruneEscalationLedger`, `phaseChanged`, `escalationBody`, `STALE_AFTER_MS`. No Electron/bus imports, so it is unit- and mutation-testable directly. |
+| `src/main/bus-liveness.ts` | The effectful half — the sweep, the escalation/status writers, the injected roster/waiting/switch seams, the counters, D1 tolerance. |
+| `src/shared/bus-liveness.test.ts` | 14 pure policy tests; each names the mutant it kills. |
+| `src/main/bus-liveness.test.ts` | 13 tests over a real SQLite bus (T120.1–T120.4, C4, C5, phase). |
+
+## The one thing to understand — bound on PROGRESS, not wall-clock (acceptance 2)
+
+A member running an 8-minute build is ALIVE, not stale. A naive
+`now - lastActivity > 10min` cannot tell a dead session from a slow one: both
+look identical to a wall-clock timer once the clock ages past the bound (the
+dead-vs-slow-reader trap, `~/.claude/LESSONS.md`). So `decideEscalation`
+(`src/shared/bus-liveness.ts`) checks `running` (a turn IS in flight — status
+`running`, no turn-end yet) BEFORE the staleness test, and skips it. The activity
+clock catches the gap BETWEEN turns; the `running` flag catches an in-flight long
+tool call. Guard order is load-bearing and its own test (`running is checked
+BEFORE the wall-clock test`) pins it.
+
+## The activity signal is REUSED, not a new probe (ticket boundary)
+
+`getLastActivity(wsId)` (`src/main/hibernation-activity.ts:33`) is the same
+in-memory clock the hibernation sweeper reads, fed by `noteActivity` at
+`src/main/activity.ts:973` — the one funnel `applyAgentEvent` crosses for EVERY
+lifecycle event, incl. tool-call START (`pretool`). The roster
+(`index.ts`, wired via `setLivenessRoster`) floors an absent clock at
+`getAppStartedAt()` (NOT `createdAt`, which for an old workspace reads as a stall
+of days), so a just-launched app never escalates on an empty in-memory map.
+
+## Coordinator routing
+
+A member escalates to its `parentId`, resolved to a LIVE workspace
+(`index.ts` roster; a dangling/archived parent → `coordinator: null` → never
+escalated, matching `parentId`'s documented dangling semantics). Single hop, not
+`walkToRootId`: a worker's coordinator is OPS, an OPS's is LEAD.
+
+## `waiting` is CONSUMED from #119, never reimplemented (seam)
+
+Two exclusions OR together: the app-level needs-input `waiting` WorkspaceStatus
+(`ws.status === 'waiting'`, in the roster), and #119's bus-level asker `waiting`
+(parked on an open ask/gate). The latter arrives through the injected
+`setLivenessWaiting(fn)` seam — #120 MUST NOT reimplement `readPendingReaders`
+(#119 owns it). The default returns an empty set (nobody bus-waiting), the
+coexistence-safe direction: a missing/failing #119 accessor never SUPPRESSES a
+real stall (the app-level `waiting` still excludes needs-input members).
+
+## COUNTED, not FIRED — the `liveness` switch (C5)
+
+Both halves gate on `busSwitch(db, runId, 'liveness')`, read PER SWEEP / PER
+NOTE-CHANGE, keyed on the member's run (#118's frozen flags). While OFF, the
+escalation sweep increments `counted` and the phase half increments
+`countedPhase` but NEITHER writes a row — the old channel (the store's
+`statusText` broadcast, untouched) stays authoritative. Ships OFF.
+
+## D1 — the bus never blocks boot
+
+`sweepBusLiveness` and `recordPhaseChange` both tolerate `getBus() === null`: they
+return before touching any member (the C4 arm asserts `counted` stays 0, not just
+`fired === 0` — a null-db sweep that FALLS THROUGH degrades `busSwitch` to false
+and COUNTS the member, the "silent no-op" the D1 rule forbids). A failed
+escalation write withdraws the dedup ledger mark so the next sweep retries.
+
+## The phase change-guard is the zero control (acceptance 3)
+
+`dispatchStatusRequest` (`src/main/workspaces.ts`) calls `recordPhaseChange` only
+when `phaseChanged(ws.statusText ?? '', text)` — so an UNCHANGED re-set writes
+zero rows (the positive control the counter reads zero on). `phaseChanged` is a
+pure predicate in `src/shared/bus-liveness.ts` so the zero-control is
+mutation-tested without importing `workspaces.ts` (which cannot load under the
+strip-types runner).
+
+## Running the gates (#120)
+
+```bash
+npx tsc --noEmit                                                          # C1
+node --test --experimental-strip-types src/shared/bus-liveness.test.ts   # 14 pure
+node --test --experimental-strip-types src/main/bus-liveness.test.ts     # 13 real-bus
+pnpm run test                                                            # in the suite; # skipped must be 0
+```
+
+Each acceptance arm was shown RED under one mutation (running guard removed,
+dedup removed, waiting guard removed, switch gate always-fire, D1 guard removed,
+phase switch-gate removed), mutant-string verified live, then GREEN restored.
+
+## Not covered here
+
+`ORCHESTRA_RUN_ID` is still unplumbed on master (#118 N2 tail), so the roster's
+`resolveWaveRunId` and the CLI's `'default'` fallback can disagree until a spawn
+path exports the root id — inert while the switch is OFF (COUNTED, not fired). No
+live packaged two-agent escalation through a running app (the sweep is driven by
+a rig with a fake clock, not a real 10-min wall wait). #119's real `waiting`
+export is wired at rebase (ledger #125 Q-C1).
