@@ -703,9 +703,29 @@ async function openBusForVerb(): Promise<{
     const busRuns = await import('../main/bus-runs.ts');
     // The CONSTRUCT + migrate. Anything ABI-shaped throws here, not above.
     const db = bus.openBus(file, { busyTimeoutMs });
+    // The verb slice injected into busCtx: the base bus.ts verbs, #128 fencing
+    // (fencedWrite), #129 capability (mint/verify), and #130 receipts
+    // (withReceipt) + the frozen-flag reader busSwitch. withReceipt lives in the
+    // sibling bus-receipts.ts; pulled in through the same guarded dynamic import
+    // (pure JS over the same `db`, no extra native cost). busRuns (busSwitch) is
+    // already imported above for the capability seam.
+    const receipts = await import('../main/bus-receipts.ts');
+    const busSlice: BusVerbCtx['bus'] = {
+      send: bus.send,
+      check: bus.check,
+      ack: bus.ack,
+      openGate: bus.openGate,
+      resolveGate: bus.resolveGate,
+      openGatesForRecipient: bus.openGatesForRecipient,
+      fencedWrite: bus.fencedWrite,
+      mintCapability: bus.mintCapability,
+      verifyCapability: bus.verifyCapability,
+      withReceipt: receipts.withReceipt,
+      busSwitch: busRuns.busSwitch,
+    };
     return {
       db,
-      bus,
+      bus: busSlice,
       capMod: {
         countCapabilityReject: bus.countCapabilityReject,
         busSwitch: busRuns.busSwitch,
@@ -1361,7 +1381,8 @@ async function main(argv: string[]): Promise<void> {
       // #129 — extract --cap BEFORE the body join so a token never lands in the
       // message body (and never in the pane/log, which render the body verbatim).
       const capf = takeFlag(gen.rest, '--cap');
-      const run = takeFlag(capf.rest, '--run');
+      const reqId = takeFlag(capf.rest, '--request-id'); // #130 hunk (receipts)
+      const run = takeFlag(reqId.rest, '--run');
       const as = takeFlag(run.rest, '--as');
       const id = busIdentityOrFail({ run: run.value, as: as.value });
       const { db, bus, capMod } = await openBusForVerb();
@@ -1372,6 +1393,7 @@ async function main(argv: string[]): Promise<void> {
           to: to.value ?? null,
           thread: th.value ?? null,
           cap: capf.value ?? null,
+          requestId: reqId.value ?? null,
           body: as.rest.join(' '),
         });
       } finally {
@@ -1412,13 +1434,14 @@ async function main(argv: string[]): Promise<void> {
 
     case 'ack': {
       const gen = takeFlag(args, '--generation'); // #128 hunk (fencing)
-      const run = takeFlag(gen.rest, '--run');
+      const reqId = takeFlag(gen.rest, '--request-id'); // #130 hunk (receipts)
+      const run = takeFlag(reqId.rest, '--run');
       const as = takeFlag(run.rest, '--as');
       const id = busIdentityOrFail({ run: run.value, as: as.value });
-      const { db, bus } = await openBusForVerb();
+      const { db, bus, capMod } = await openBusForVerb();
       try {
         const fencing = await resolveFencing(db, id.runId, gen.value); // #128 hunk
-        verbAck(busCtx(db, bus, id, fencing), as.rest[0]);
+        verbAck(busCtx(db, bus, id, fencing, capMod), as.rest[0], reqId.value ?? null);
       } finally {
         db.close();
       }

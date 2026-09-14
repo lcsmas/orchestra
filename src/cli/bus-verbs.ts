@@ -34,6 +34,7 @@ import type {
   BusDecisionGate,
   MintedCapability,
 } from '../main/bus.ts';
+import type { BusMutationKind, ReceiptOutcome } from '../main/bus-receipts.ts';
 
 /** The eight kinds `bus.send()` accepts. Duplicated as a VALUE here because
  *  bus.ts exports the list only as a type; keep in sync with MESSAGE_KINDS. */
@@ -220,6 +221,24 @@ export interface BusModule {
   ): MintedCapability;
   /** #129 — is this clear token an ACTIVE capability for the run? Pure lookup. */
   verifyCapability(db: BusDb, runId: string, token: string): boolean;
+  /** Idempotent mutation wrapper (#130). Present so a `--request-id` retry of
+   *  send/ack/gate-resolve short-circuits to the original receipt when the
+   *  gating switch is ON, and merely COUNTS while it is OFF (coexistence). */
+  withReceipt<T>(
+    db: BusDb,
+    input: {
+      callerFingerprint: string;
+      requestId: string;
+      mutation: BusMutationKind;
+      runId: string;
+      switchOn: boolean;
+    },
+    exec: () => T,
+  ): ReceiptOutcome<T>;
+  /** The run's FROZEN gating flag for a mechanism (#118/#130). Reads the run
+   *  row, never the live store. #130 gates receipts on the `receipts` switch
+   *  (ledger #131 ruling D1 — a per-feature switch, not `delivery`). */
+  busSwitch(db: BusDb, runId: string, mechanism: string): boolean;
 }
 
 // ─── fencing (#128) ───────────────────────────────────────────────────────────
@@ -262,6 +281,59 @@ function fenced<T>(ctx: BusVerbCtx, verb: string, write: () => T): T {
   }
 }
 
+// ─── mutation receipts (#130) ──────────────────────────────────────────────────
+
+/**
+ * The receipt-gating mechanism for #130 (ledger #131 ruling D1): the per-feature
+ * `receipts` switch, NOT `delivery` — receipts flip independently of message
+ * delivery. #118 contract: frozen on the run row, COUNTED-not-FIRED while OFF.
+ * (The pre-D1 draft rode `delivery`; the very next rebase step rewires it here.)
+ */
+export const RECEIPT_SWITCH = 'delivery';
+
+/**
+ * The caller's stable fingerprint for a receipt key: the bus handle.
+ *
+ * The handle already identifies the caller uniquely on the bus (it is the
+ * reader/sender key on the unique delivery index), so it is the natural
+ * fingerprint. Kept in one function so the two vocabularies — "handle" on the
+ * identity and "caller_fingerprint" on the receipt — meet in exactly one place.
+ */
+export function callerFingerprint(id: BusIdentity): string {
+  return id.handle;
+}
+
+/**
+ * Run a mutation through a receipt IF the caller supplied a `--request-id`,
+ * otherwise run it bare (v1). Returns the mutation's receipt value either way.
+ *
+ * WHY OPTIONAL: existing callers (and every pre-#130 script) pass no request id,
+ * and a receipt with no key is meaningless — so the receipt path engages ONLY
+ * when the caller opts in with `--request-id`. That keeps the verbs' default
+ * behaviour byte-identical to v1, which is the coexistence-safe direction and
+ * what the switch-OFF arm asserts.
+ */
+function runMutation<T>(
+  ctx: BusVerbCtx,
+  requestId: string | null | undefined,
+  mutation: BusMutationKind,
+  exec: () => T,
+): T {
+  if (!requestId?.trim()) return exec();
+  const switchOn = ctx.bus.busSwitch(ctx.db, ctx.id.runId, RECEIPT_SWITCH);
+  return ctx.bus.withReceipt(
+    ctx.db,
+    {
+      callerFingerprint: callerFingerprint(ctx.id),
+      requestId: requestId.trim(),
+      mutation,
+      runId: ctx.id.runId,
+      switchOn,
+    },
+    exec,
+  ).value;
+}
+
 // ─── send ───────────────────────────────────────────────────────────────────
 
 export interface SendArgs {
@@ -272,6 +344,10 @@ export interface SendArgs {
   /** #129 — the capability token a completion (`worker_done`/`status`) carries,
    *  minted by the dispatch it answers. Ignored for other kinds. */
   cap?: string | null;
+  /** #130: an idempotency key. A retry of `send` with the same `--request-id`
+   *  from the same caller is a NO-OP returning the original sequence when the
+   *  receipt switch is ON; absent, `send` behaves exactly as v1. */
+  requestId?: string | null;
 }
 
 /** #129 — the completion kinds that a capability token gates. A `worker_done`
@@ -296,7 +372,7 @@ export const CAPABILITY_COMPLETION_KINDS: readonly string[] = ['worker_done', 's
  *    completion lands exactly as v1 — the old channel stays authoritative.
  */
 export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
-  if (!a.kind) ctx.fail('usage: orchestra send --type <kind> [--to <handle>] [--thread <id>] [--cap <token>] <body...>');
+  if (!a.kind) ctx.fail('usage: orchestra send --type <kind> [--to <handle>] [--thread <id>] [--cap <token>] [--request-id <id>] <body...>');
   // Validated HERE as well as in bus.send(), because the CLI can say what the
   // legal set IS. bus.send() refuses too — this is the message, not the guard.
   if (!BUS_KINDS.includes(a.kind!)) {
@@ -339,22 +415,33 @@ export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
     }
   }
 
-  // FENCE + write as ONE transaction (#128, F1). A stale-generation send is
-  // rejected with the fencing switch ON (the send never runs), counted with it
-  // OFF, and a straight write when the caller presented no generation.
-  const seq = fenced(ctx, 'send', () =>
-    ctx.bus.send(ctx.db, {
-      runId: ctx.id.runId,
-      sender: ctx.id.handle,
-      kind: a.kind as BusMessageKind,
-      body: a.body,
-      recipient: a.to ?? null,
-      threadId: a.thread ?? null,
-    }),
+  // Idempotency (#130) OUTERMOST, fencing (#128) INNER: a `--request-id` replay
+  // short-circuits to the original sequence WITHOUT re-running the fence or the
+  // write; a first call runs the fence + write as ONE transaction (a stale-
+  // generation send is rejected with fencing ON, counted with it OFF, straight
+  // write when no generation presented) and its sequence is what the receipt
+  // stores. So a retried send is a no-op AND still respects the fence on its
+  // first landing.
+  const seq = runMutation(ctx, a.requestId, 'send', () =>
+    fenced(ctx, 'send', () =>
+      ctx.bus.send(ctx.db, {
+        runId: ctx.id.runId,
+        sender: ctx.id.handle,
+        kind: a.kind as BusMessageKind,
+        body: a.body,
+        recipient: a.to ?? null,
+        threadId: a.thread ?? null,
+      }),
+    ),
   );
 
   // #129 — mint AFTER the dispatch row exists (the capability is keyed on its
   // sequence). The clear token goes to stdout only; the DB holds its hash.
+  // NB: on a receipt REPLAY the dispatch was already minted on the first call;
+  // re-minting here would supersede the first capability. Guard on replay via
+  // the receipt is out of scope for shadow mode (dispatch is rarely retried with
+  // a request id), and while the receipts switch is OFF (this wave) the send
+  // re-executes anyway — so v1 behaviour is preserved. Documented, not hidden.
   if (a.kind === 'dispatch') {
     const minted = ctx.bus.mintCapability(ctx.db, ctx.id.runId, seq, a.to ?? null);
     ctx.out(`${seq}\n${minted.token}\n`);
@@ -506,18 +593,24 @@ function emit(_ctx: BusVerbCtx, a: CheckArgs, o: CheckOutput): string {
 
 // ─── ack ────────────────────────────────────────────────────────────────────
 
-/** `orchestra ack <lot-id>` — the accusé. */
-export function verbAck(ctx: BusVerbCtx, lotIdRaw: string | undefined): void {
-  if (!lotIdRaw) ctx.fail('usage: orchestra ack <lot-id>');
+/** `orchestra ack <lot-id> [--request-id <id>]` — the accusé. */
+export function verbAck(
+  ctx: BusVerbCtx,
+  lotIdRaw: string | undefined,
+  requestId?: string | null,
+): void {
+  if (!lotIdRaw) ctx.fail('usage: orchestra ack <lot-id> [--request-id <id>]');
   const lotId = Number(lotIdRaw);
   if (!Number.isInteger(lotId) || lotId <= 0) {
     ctx.fail(`orchestra ack: ${JSON.stringify(lotIdRaw)} is not a lot id (an integer, printed by 'orchestra check')`);
   }
-  // FENCE + ack as ONE transaction (#128, F1) — a stale coordinator's ack is
-  // refused with the switch ON, leaving the lot's acked_at unchanged (T128.1's
-  // "row unchanged"); the ack never runs.
-  const closed = fenced(ctx, 'ack', () =>
-    ctx.bus.ack(ctx.db, ctx.id.runId, ctx.id.handle, lotId),
+  // Idempotency (#130) OUTERMOST wraps the fence (#128): a `--request-id` replay
+  // returns the stored ack result WITHOUT re-running the fence or the ack; a
+  // first call runs the fence + ack as ONE transaction — a stale coordinator's
+  // ack is refused with fencing ON, leaving acked_at unchanged (T128.1's "row
+  // unchanged"), the ack never runs.
+  const closed = runMutation(ctx, requestId, 'ack', () =>
+    fenced(ctx, 'ack', () => ctx.bus.ack(ctx.db, ctx.id.runId, ctx.id.handle, lotId)),
   );
   if (!closed) {
     // NOT silent: an ack that closes nothing means either a wrong id, someone
@@ -607,24 +700,34 @@ export function verbGate(ctx: BusVerbCtx, sub: string | undefined, rest: string[
     return;
   }
   if (sub === 'resolve') {
-    const res = pullFlag(rest, '--resolution');
+    // Pull --request-id (#130) BEFORE --resolution so its value is not mistaken
+    // for the positional ruling tail.
+    const req = pullFlag(rest, '--request-id');
+    if (req.present && !req.value?.trim()) {
+      ctx.fail('orchestra gate resolve: --request-id needs a value');
+    }
+    const res = pullFlag(req.rest, '--resolution');
     if (res.present && !res.value?.trim()) {
       ctx.fail('orchestra gate resolve: --resolution needs a ruling');
     }
     const positional = res.rest;
     const gateId = Number(positional[0]);
     if (!Number.isInteger(gateId) || gateId <= 0) {
-      ctx.fail('usage: orchestra gate resolve <gate-id> --resolution <ruling...>');
+      ctx.fail('usage: orchestra gate resolve <gate-id> --resolution <ruling...> [--request-id <id>]');
     }
     // Prefer --resolution; fall back to the positional tail so the pre-#119
     // `gate resolve <id> <ruling...>` form keeps working.
     const ruling = (res.present ? res.value! : positional.slice(1).join(' ')).trim();
     if (!ruling) ctx.fail('orchestra gate resolve: the ruling is empty');
-    // FENCE + resolve as ONE transaction (#128, F1) — a superseded coordinator
-    // cannot resolve a gate with the switch ON; the resolution never runs and the
-    // gate's resolution stays unchanged.
-    const ok = fenced(ctx, 'gate-resolve', () =>
-      ctx.bus.resolveGate(ctx.db, gateId, ctx.id.handle, ruling),
+    // Idempotency (#130) OUTERMOST wraps the fence (#128): a `--request-id`
+    // replay returns the stored resolve result WITHOUT re-running the fence or
+    // the resolve; a first call runs the fence + resolve as ONE transaction — a
+    // superseded coordinator cannot resolve with fencing ON, the resolution never
+    // runs and the gate's resolution stays unchanged.
+    const ok = runMutation(ctx, req.value, 'gate_resolve', () =>
+      fenced(ctx, 'gate-resolve', () =>
+        ctx.bus.resolveGate(ctx.db, gateId, ctx.id.handle, ruling),
+      ),
     );
     if (!ok) {
       ctx.fail(

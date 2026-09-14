@@ -128,8 +128,14 @@ export interface BusDecisionGate {
 
 // ─── Schema ─────────────────────────────────────────────────────────────────
 
-/** Bumped by appending a migration to MIGRATIONS; never edit a shipped one. */
-export const SCHEMA_VERSION = 6;
+/** Bumped by appending a migration to MIGRATIONS; never edit a shipped one.
+ *
+ *  #130 (mutation receipts) is LAST in the schema trio: #128 fencing took
+ *  index 5, #129 capability took 6 (both merged); this migration is RENUMBERED
+ *  to the next-free index 7 at this rebase and SCHEMA_VERSION bumped 6→7 with it.
+ *  `migrate()` applies BY INDEX, so a duplicate number would silently SKIP this
+ *  SQL (wave B trap) — hence 7, not a reused 5/6. Never edit a merged migration. */
+export const SCHEMA_VERSION = 7;
 
 /**
  * Forward-only migrations, indexed by the version they PRODUCE. `migrate()`
@@ -393,6 +399,47 @@ export const MIGRATIONS: Record<number, string> = {
     CREATE TABLE IF NOT EXISTS capability_rejections (
       run_id  TEXT PRIMARY KEY,
       count   INTEGER NOT NULL DEFAULT 0
+    );
+  `,
+  // #130 — MUTATION RECEIPTS (bus v2). A retried CLI mutation (send / ack /
+  // gate-resolve) keyed on (caller_fingerprint, request_id) is a NO-OP that
+  // returns the ORIGINAL receipt, giving per-message idempotency where v1 had
+  // only batch-ack granularity (#108). The COMPOSITE PRIMARY KEY is the whole
+  // correctness primitive: a second write with the same key hits the PK and is
+  // caught (INSERT OR IGNORE), so at most ONE row exists per caller+request and
+  // the stored receipt is authoritative. Two DIFFERENT request ids from the same
+  // caller are two rows — a distinct mutation each, never conflated.
+  //
+  // `mutation` records which verb produced the receipt (send | ack | gate_resolve)
+  // so a replay can refuse a request id reused across two different verbs rather
+  // than hand back a receipt of the wrong shape. `receipt` is the JSON-encoded
+  // original return value (a send's sequence, an ack's / resolve's boolean) —
+  // stored verbatim so the replay is byte-identical to the first call.
+  //
+  // WHY A TABLE, NOT A COLUMN ON messages: receipts cover ack and gate-resolve
+  // too, neither of which writes a messages row, and the key is the CALLER's
+  // identity + request id, not a message sequence. This is v2 scaffolding gated
+  // behind the coexistence switch (ledger #131): while the gating switch is OFF
+  // the row is still RECORDED (the shadow count) but the replay short-circuit
+  // does NOT fire — v1 behaviour, the mutation executes every time. See
+  // withReceipt() below and src/main/bus-receipts.ts's gating in the CLI.
+  //
+  // SLOT NUMBERING: RENUMBERED to index 7 at rebase onto master db2fe50 — #128's
+  // fencing took 5 and #129's capability took 6 (both merged), so 7 is the next
+  // free integer and SCHEMA_VERSION bumps to 7 with it. `migrate()` applies BY
+  // INDEX, so a reused 5/6 would silently SKIP this SQL (wave B trap). Never edit
+  // #128's merged 5 or #129's merged 6. `migrate()` runs each index EXACTLY ONCE
+  // per DB (guarded by user_version); IF NOT EXISTS is kept for parity and so a
+  // rig that hand-replays the chain twice does not throw.
+  7: `
+    CREATE TABLE IF NOT EXISTS mutation_receipts (
+      caller_fingerprint TEXT NOT NULL,
+      request_id         TEXT NOT NULL,
+      mutation           TEXT NOT NULL,   -- 'send' | 'ack' | 'gate_resolve'
+      run_id             TEXT NOT NULL,
+      receipt            TEXT NOT NULL,    -- JSON of the original return value
+      created_at         INTEGER NOT NULL,
+      PRIMARY KEY (caller_fingerprint, request_id)
     );
   `,
 };

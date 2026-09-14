@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as bus from '../main/bus.ts';
+import { withReceipt } from '../main/bus-receipts.ts';
 import {
   BUS_KINDS,
   DEFAULT_RUN_ID,
@@ -50,6 +51,10 @@ interface Rig {
   /** #129 — flip the `capability` switch the capability seam reads. Off by
    *  default (shadow mode), so the default rig exercises COUNTED-not-FIRED. */
   setCapabilityEnabled: (on: boolean) => void;
+  /** #130: the receipt gating switch this rig reports to the verbs, mutable per
+   *  test so both the ON (short-circuit) and OFF (counted-not-fired) arms run
+   *  through the SAME code path a real CLI takes. */
+  switchOn: boolean;
 }
 
 function rig(t: { after: (fn: () => void) => void }): Rig {
@@ -68,16 +73,38 @@ function rig(t: { after: (fn: () => void) => void }): Rig {
   // #129 — default OFF: the wave-D shadow default, so a test that does not opt
   // in measures COUNTED-not-FIRED. flip via setCapabilityEnabled.
   let capOn = false;
-  return {
+  const r: Rig = {
     db,
     out,
     fails,
+    switchOn: false,
     setCapabilityEnabled: (on: boolean) => {
       capOn = on;
     },
     ctx: (handle: string, fencing?: { generation?: number | null; fencingOn?: boolean }) => ({
       db,
-      bus,
+      // The bus slice index.ts injects (openBusForVerb): the real bus.ts verbs
+      // plus the #130 receipt wrapper and a busSwitch reader. busSwitch is stubbed
+      // to the rig's `switchOn` so a test drives both coexistence arms without a
+      // run row — the production reader (bus-runs.busSwitch off the frozen flags)
+      // is gated separately in bus-runs.test.ts.
+      bus: {
+        send: bus.send,
+        check: bus.check,
+        ack: bus.ack,
+        openGate: bus.openGate,
+        resolveGate: bus.resolveGate,
+        openGatesForRecipient: bus.openGatesForRecipient,
+        // #128 fencing + #129 capability, the real bus.ts helpers.
+        fencedWrite: bus.fencedWrite,
+        mintCapability: bus.mintCapability,
+        verifyCapability: bus.verifyCapability,
+        // #130 receipts + the frozen-flag reader. busSwitch is stubbed to the
+        // rig's `switchOn` so a test drives both coexistence arms without a run
+        // row (the production reader is gated in bus-runs.test.ts).
+        withReceipt,
+        busSwitch: () => r.switchOn,
+      },
       id: { runId: RUN, handle },
       out: (text) => out.push(text),
       // Mirrors index.ts's fail(): it THROWS, so a refusal genuinely stops the
@@ -102,6 +129,7 @@ function rig(t: { after: (fn: () => void) => void }): Rig {
       },
     }),
   };
+  return r;
 }
 
 const lastJson = (r: Rig): ReturnType<typeof lotToOutput> =>
@@ -828,4 +856,98 @@ test('#129 F1 coexistence: a completion with NO --cap LANDS+COUNTED under capabi
   const landed = (r.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE kind='status'").get() as { n: number }).n;
   assert.equal(landed, 1, 'OFF: a no-cap completion lands (old channel authoritative)');
   assert.equal(bus.capabilityRejectCount(r.db, RUN), 1, 'OFF still COUNTS the missing-token completion');
+});
+
+// ─── #130 mutation receipts through the CLI verbs ────────────────────────────
+
+const msgCount = (r: Rig): number =>
+  Number((r.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=?').get(RUN) as { n: number }).n);
+
+test('T130.1/T130.2 send: --request-id replay is a NO-OP returning the original seq (switch ON)', (t) => {
+  // COVERS: verbSend → runMutation → withReceipt short-circuit, the full CLI
+  // path a retried `orchestra send --request-id r1` takes.
+  // MUTANT: make runMutation ignore requestId (always `return exec()`) → the
+  //   second send lands a SECOND row and prints a NEW seq → RED.
+  const r = rig(t);
+  r.switchOn = true;
+  verbSend(r.ctx('ops'), { kind: 'dispatch', body: 'hi', requestId: 'r1' });
+  const firstSeq = r.out[r.out.length - 1].trim();
+  verbSend(r.ctx('ops'), { kind: 'dispatch', body: 'hi', requestId: 'r1' });
+  const secondSeq = r.out[r.out.length - 1].trim();
+  assert.equal(secondSeq, firstSeq, 'replay prints the ORIGINAL sequence');
+  assert.equal(msgCount(r), 1, 'exactly ONE message landed — the retry was a no-op');
+});
+
+test('T130.1b send: a DIFFERENT --request-id sends a second message (switch ON)', (t) => {
+  const r = rig(t);
+  r.switchOn = true;
+  verbSend(r.ctx('ops'), { kind: 'dispatch', body: 'a', requestId: 'r1' });
+  verbSend(r.ctx('ops'), { kind: 'dispatch', body: 'b', requestId: 'r2' });
+  assert.equal(msgCount(r), 2, 'two distinct request ids → two messages');
+});
+
+test('T130.3 send: switch OFF → the retry re-sends (v1); the old channel stays authoritative', (t) => {
+  // COVERS: runMutation reading busSwitch=false → withReceipt COUNTED-not-FIRED.
+  // MUTANT: fire regardless of switch → only one message → RED (expects two).
+  const r = rig(t);
+  r.switchOn = false;
+  verbSend(r.ctx('ops'), { kind: 'dispatch', body: 'x', requestId: 'r1' });
+  verbSend(r.ctx('ops'), { kind: 'dispatch', body: 'x', requestId: 'r1' });
+  assert.equal(msgCount(r), 2, 'switch OFF: two sends executed (v1 behaviour)');
+});
+
+test('send with NO --request-id behaves exactly as v1 (two sends → two rows)', (t) => {
+  // COVERS: runMutation's `if (!requestId?.trim()) return exec()` bypass — the
+  // default path every pre-#130 caller takes.
+  // MUTANT: engage the receipt with an empty key → withReceipt throws
+  //   "requestId is required" → the verb fails → RED.
+  const r = rig(t);
+  r.switchOn = true; // even ON, no key means no receipt.
+  verbSend(r.ctx('ops'), { kind: 'dispatch', body: 'x' });
+  verbSend(r.ctx('ops'), { kind: 'dispatch', body: 'x' });
+  assert.equal(r.fails.length, 0, 'no refusal — an absent key is not an error');
+  assert.equal(msgCount(r), 2, 'no key → no idempotency, v1 behaviour');
+});
+
+test('T130.2 ack: --request-id replay returns success without re-acking (switch ON)', (t) => {
+  const r = rig(t);
+  r.switchOn = true;
+  verbSend(r.ctx('ops'), { kind: 'dispatch', body: 'm1' });
+  verbCheck(r.ctx('reader'), { ackPrevious: false, markdown: false, limit: 100 });
+  const lot = lastJson(r);
+  assert.ok(lot.lot, 'a lot was taken');
+  verbAck(r.ctx('reader'), String(lot.lot), 'ack-r1');
+  const firstOut = r.out[r.out.length - 1];
+  assert.match(firstOut, /acked/);
+  // Replay: without the receipt this would FAIL (lot already acked). With it,
+  // the stored `true` is returned and the verb prints "acked" again, no refusal.
+  verbAck(r.ctx('reader'), String(lot.lot), 'ack-r1');
+  assert.equal(r.fails.length, 0, 'the ack replay did not refuse — the receipt short-circuited');
+});
+
+test('T130.2 gate resolve: --request-id replay returns success without re-resolving (switch ON)', (t) => {
+  const r = rig(t);
+  r.switchOn = true;
+  verbGate(r.ctx('ops'), 'open', ['--to', 'lead', 'ship?']);
+  const gateId = r.out[r.out.length - 1].trim();
+  verbGate(r.ctx('lead'), 'resolve', [gateId, '--resolution', 'yes', '--request-id', 'gr1']);
+  assert.match(r.out[r.out.length - 1], /resolved/);
+  // Replay: without the receipt this FAILS (already resolved). With it, success.
+  verbGate(r.ctx('lead'), 'resolve', [gateId, '--resolution', 'yes', '--request-id', 'gr1']);
+  assert.equal(r.fails.length, 0, 'the resolve replay did not refuse — the receipt short-circuited');
+});
+
+test('T130.3 gate resolve: switch OFF → replay re-resolves and REFUSES (v1 idempotent-by-refusal)', (t) => {
+  // The v1 behaviour resolveGate() already had: a second resolve returns false
+  // and the verb refuses. The receipt must NOT paper over that while OFF.
+  const r = rig(t);
+  r.switchOn = false;
+  verbGate(r.ctx('ops'), 'open', ['--to', 'lead', 'ship?']);
+  const gateId = r.out[r.out.length - 1].trim();
+  verbGate(r.ctx('lead'), 'resolve', [gateId, '--resolution', 'yes', '--request-id', 'gr1']);
+  assert.throws(
+    () => verbGate(r.ctx('lead'), 'resolve', [gateId, '--resolution', 'yes', '--request-id', 'gr1']),
+    /not open/,
+    'switch OFF: v1 refusal is preserved, the receipt did not short-circuit',
+  );
 });
