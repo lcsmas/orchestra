@@ -2,27 +2,33 @@
 // (T118.5), ledger #123.
 //
 // These run under `node --test --experimental-strip-types`, which cannot load
-// `electron`. So this file does NOT import src/main/bus-pane.ts (it imports
-// ipcMain at module scope). It tests the two things that are testable without
-// Electron and that carry the claims:
+// `electron`. The source-text arms below check the ENUMERATION and the
+// unavailable-snapshot SHAPE. But a source-text `assert.match` is NOT an
+// execution — reviewer 7c372e9a (F3) showed that a `throw` on the first line of
+// `registerBusPaneIpc` or `busSnapshot` left the whole suite green, because no
+// arm here CALLED either function. So the block at the bottom bundles the REAL
+// pane module to CJS (electron external), injects an `ipcMain` STUB into
+// require.cache, and INVOKES both functions in-process. Those arms turn red on
+// the throw mutants; the source-text arms are kept as a cheap belt.
 //
-//   T118.4 — the ENUMERATION itself, read out of the source as data.
-//   T118.5 — the unavailable snapshot's SHAPE, which is what makes "bus down"
-//            distinguishable from "quiet bus" in the renderer.
-//
-// The wired-up behaviour (a real `getBus() === null` producing that snapshot
-// through real IPC) is gated by scripts/verify-bus-pane.mjs under Electron.
+// The full end-to-end behaviour under REAL Electron (real ipcMain, a real
+// getBus() === null, a seeded bus) is scripts/verify-bus-pane.mjs, wired into
+// `pnpm run test:bus-pane` (F3: it refuses with RC=3 when RIG_WAYLAND is unset,
+// like test:cli-pipe, so an orchestrator cannot read its refusal as a pass).
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, globSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { unavailableSnapshot, type BusSnapshot } from '../shared/bus-view.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const paneSrc = readFileSync(path.join(here, 'bus-pane.ts'), 'utf8');
+const repoRoot = path.resolve(here, '..', '..');
 
 // ─── T118.4 — read-only, by ENUMERATION not by presence check ───────────────
 
@@ -174,4 +180,157 @@ test('counters: an ABSENT source yields [], and the pane says so rather than sho
     'utf8',
   );
   assert.match(paneTsx, /NOT the same as zero divergence/);
+});
+
+// ─── F3 — IN-PROCESS execution of the two functions, not source text ─────────
+//
+// The source-text arms above (T118.4 "refuses a write channel", T118.5
+// "written never to throw") are BLIND to a `throw` on the first line of the
+// function — the mutant leaves them green. These arms CALL the real functions.
+//
+// bus-pane.ts imports `ipcMain` from 'electron' at module scope, which the
+// strip-types runner cannot load. So bundle the real module to CJS with
+// electron EXTERNAL, then inject an ipcMain stub into require.cache before the
+// bundle requires it — the same runtime seam scripts/verify-bus-pane.mjs uses,
+// but in-process and without a compositor.
+
+interface PaneStubModule {
+  busSnapshot: (runId?: string | null) => BusSnapshot;
+  registerBusPaneIpc: () => void;
+  BUS_PANE_IPC_CHANNELS: { channel: string; writes: boolean; what: string }[];
+  getBus: () => unknown;
+  initPlatform: (p: unknown) => void;
+}
+
+interface StubIpcMain {
+  handle(ch: string, fn: (...a: unknown[]) => unknown): void;
+  removeHandler(ch: string): void;
+  _handled: string[];
+}
+
+/**
+ * Bundle the REAL bus-pane module to CJS and load it with a stubbed `ipcMain`.
+ * Returns the module plus the stub so an arm can read which channels registered.
+ * Throws (fails the arm, never skips) if esbuild is not resolvable — a skip here
+ * would be a false green on the very execution F3 requires.
+ */
+function loadPaneWithStub(tmp: string): { m: PaneStubModule; ipcMain: StubIpcMain; bundle: string } {
+  const require_ = createRequire(path.join(repoRoot, 'package.json'));
+  let esbuild: { buildSync: (o: unknown) => void };
+  try {
+    esbuild = require_('esbuild');
+  } catch {
+    const store = globSync(
+      path.join(repoRoot, 'node_modules/.pnpm/esbuild@*/node_modules/esbuild'),
+    );
+    if (!store.length) {
+      throw new Error('F3 arm: esbuild not resolvable — run `pnpm install` (a skip would be a false green)');
+    }
+    esbuild = require_(store[0]);
+  }
+  const entry = path.join(tmp, 'entry.ts');
+  writeFileSync(
+    entry,
+    `export { busSnapshot, registerBusPaneIpc, BUS_PANE_IPC_CHANNELS } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus-pane.ts'))};\n` +
+      `export { getBus } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus.ts'))};\n` +
+      `export { initPlatform } from ${JSON.stringify(path.join(repoRoot, 'src/main/platform/index.ts'))};\n`,
+  );
+  // The bundle MUST live under the repo's node_modules so its `require('electron')`
+  // resolves (to be overridden in require.cache). A /tmp bundle cannot resolve the
+  // bare `electron` specifier at all — MODULE_NOT_FOUND before the stub can apply.
+  const cacheDir = path.join(repoRoot, 'node_modules', '.cache');
+  mkdirSync(cacheDir, { recursive: true });
+  const bundle = path.join(cacheDir, `bus-pane-inproc-${path.basename(tmp)}.cjs`);
+  esbuild.buildSync({
+    entryPoints: [entry],
+    outfile: bundle,
+    bundle: true,
+    format: 'cjs',
+    platform: 'node',
+    external: ['electron', 'better-sqlite3', 'node-pty'],
+    logLevel: 'silent',
+  });
+  const req = createRequire(bundle);
+  const ipcMain: StubIpcMain = {
+    _handled: [],
+    handle(ch) {
+      this._handled.push(ch);
+    },
+    removeHandler() {},
+  };
+  const eid = req.resolve('electron');
+  req.cache[eid] = {
+    id: eid,
+    filename: eid,
+    loaded: true,
+    exports: { ipcMain },
+  } as unknown as NodeModule;
+  const m = req(bundle) as PaneStubModule;
+  m.initPlatform({
+    kind: 'rig',
+    broadcast() {},
+    broadcastPtyData() {},
+    canBroadcast: () => false,
+    isFocused: () => false,
+    getUserDataDir: () => tmp,
+  });
+  return { m, ipcMain, bundle };
+}
+
+test('T118.5 (F3) — busSnapshot() EXECUTES and RETURNS the unavailable state with the bus down', () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'bus-pane-inproc-'));
+  let bundle = '';
+  try {
+    const loaded = loadPaneWithStub(tmp);
+    bundle = loaded.bundle;
+    const { m } = loaded;
+    // Precondition: no bus is open, so getBus() is null. This is the branch the
+    // throw-first-line mutant would replace — the arm below CALLS busSnapshot,
+    // so a throw there fails this test rather than passing a source-text match.
+    assert.equal(m.getBus(), null, 'precondition: the bus is not open in this rig');
+    const down = m.busSnapshot(null);
+    assert.equal(down.available, false, 'a missing bus must RETURN available:false, not throw');
+    assert.equal(typeof down.error, 'string');
+    assert.ok((down.error ?? '').length > 10, 'the unavailable state carries a diagnosable reason');
+    assert.ok(String(down.path).endsWith('bus.sqlite'), 'and the bus path');
+    assert.deepEqual(down.runs, []);
+    assert.deepEqual(down.messages, []);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    if (bundle) rmSync(bundle, { force: true });
+  }
+});
+
+test('T118.4 (F3) — registerBusPaneIpc() EXECUTES: registers the reads and REFUSES a write', () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'bus-pane-inproc-'));
+  let bundle = '';
+  try {
+    const loaded = loadPaneWithStub(tmp);
+    bundle = loaded.bundle;
+    const { m, ipcMain } = loaded;
+    // Calling the real function (a throw on its first line fails HERE).
+    m.registerBusPaneIpc();
+    const enumerated = m.BUS_PANE_IPC_CHANNELS.map((c) => c.channel).sort();
+    assert.ok(enumerated.length >= 3, 'the enumeration is non-empty');
+    assert.deepEqual(
+      ipcMain._handled.slice().sort(),
+      enumerated,
+      'registers exactly the enumerated channels, through the real ipcMain seam',
+    );
+    // The MUST-FAIL control: inject a write entry and require the refusal. This
+    // proves the guard EXECUTES — a source-text match on `throw new Error` never
+    // could. Restore the table afterwards so a later arm sees a clean list.
+    m.BUS_PANE_IPC_CHANNELS.push({ channel: 'bus:resolveGate', writes: true, what: 'v2 write' });
+    assert.throws(
+      () => m.registerBusPaneIpc(),
+      /READ-ONLY in v1/,
+      'the registrar must refuse a writes:true channel at runtime',
+    );
+    m.BUS_PANE_IPC_CHANNELS.pop();
+    // And the refused channel was NOT registered on the stub.
+    assert.ok(!ipcMain._handled.includes('bus:resolveGate'));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    if (bundle) rmSync(bundle, { force: true });
+  }
 });

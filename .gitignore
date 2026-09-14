@@ -35,3 +35,8 @@ docs/swarm-dashboard.html
 # Per-ABI better-sqlite3 bindings built by scripts/build-bus-abi.mjs (#114).
 # ~2 MB each and machine/ABI specific — regenerate, never commit.
 build/bus-abi/
+
+# Bus-pane screenshots produced by scripts/bus-pane-screenshot.mjs (#118). Gate
+# EVIDENCE, not build input — regenerate with the rig; the images belong on the
+# ledger comment where the gate report is dated, never stale in the source tree.
+build/bus-pane-shots/

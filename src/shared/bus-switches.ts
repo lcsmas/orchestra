@@ -205,10 +205,17 @@ export function busSwitchNoticeLines(s: BusSwitches): string[] {
   const lines: string[] = [];
   for (const m of BUS_MECHANISMS) {
     const on = s[m] === true;
+    // Emit the WIRE name (`ask_gate`), never the internal camel key (`askGate`).
+    // The fleet skill greps this notice for the contract names it was frozen on
+    // (Q1, ledger #123: 'delivery'|'wake'|'ask_gate'|'liveness'); an internal
+    // `askGate` line reads to it as "no such switch in this build" — absence,
+    // which is the failure carry-forward 2 warns about. `mechanismToWire` is the
+    // one mapping; writing `ask_gate` here by hand is what the file header forbids.
+    const wire = mechanismToWire(m);
     lines.push(
       on
-        ? `- bus switch ${m}=ON — the bus is AUTHORITATIVE for this mechanism in this run; use it.`
-        : `- bus switch ${m}=OFF — the OLD channel stays authoritative; the bus only COUNTS this mechanism, it does not fire it.`,
+        ? `- bus switch ${wire}=ON — the bus is AUTHORITATIVE for this mechanism in this run; use it.`
+        : `- bus switch ${wire}=OFF — the OLD channel stays authoritative; the bus only COUNTS this mechanism, it does not fire it.`,
     );
   }
   return lines;

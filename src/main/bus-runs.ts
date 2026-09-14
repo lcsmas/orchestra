@@ -74,6 +74,19 @@ export interface BusRunRow {
  * the feature forbids, and it would arrive through the most innocent-looking
  * path there is — an idempotent-looking "ensure the run exists" call on a
  * resume. The row wins; the second caller's live switches are discarded.
+ *
+ * THE FREEZE IS ONE ATOMIC DECISION, keyed on the EXISTENCE OF THE `runs` ROW
+ * (F1, reviewer 7c372e9a on ledger #123). Two independent `INSERT OR IGNORE`s —
+ * one on `runs`, one on `run_flags` — is NOT atomic: a run whose `runs` row
+ * exists but whose `run_flags` row does not (a run created by a writer that
+ * predates run_flags — #115's CLI lifecycle, an older build, a partially-applied
+ * v2, a failed second insert) would take the `runs` ignore but WRITE `run_flags`
+ * at the later call, freezing the running run at then-current LIVE switches —
+ * exactly the mid-wave mutation T118.2 forbids, and it flips `busSwitch` ON under
+ * a run that was live before the switch was touched. So: if the `runs` row
+ * already existed when we got here, the run is ALREADY STARTED and we write NO
+ * flags. An existing run with no run_flags row therefore reads all-OFF forever
+ * (via `runFlags`), never freezable-late — the coexistence-safe direction.
  */
 export function startRun(
   db: BusDb,
@@ -92,7 +105,7 @@ export function startRun(
   const frozen = freezeSwitches(liveSwitches, busAvailable);
   const now = Date.now();
   const tx = db.transaction(() => {
-    db.prepare(
+    const info = db.prepare(
       `INSERT OR IGNORE INTO runs (id, kind, coordinator, parent_run_id, title, created_at)
        VALUES (?,?,?,?,?,?)`,
     ).run(
@@ -103,11 +116,20 @@ export function startRun(
       input.title ?? null,
       now,
     );
-    db.prepare('INSERT OR IGNORE INTO run_flags (run_id, flags, frozen_at) VALUES (?,?,?)').run(
-      input.id,
-      serializeSwitches(frozen),
-      now,
-    );
+    // ONE atomic decision: the run is NEW iff THIS insert created the row. Only a
+    // brand-new run freezes its flags. If the `runs` row already existed, the run
+    // was started earlier and we must not write `run_flags` now — writing it would
+    // freeze a running run at the CURRENT live switches, which is F1. `changes`
+    // reads the affected-row count of THIS statement inside the same transaction,
+    // so it is not racy against a concurrent writer.
+    const isNewRun = info.changes === 1;
+    if (isNewRun) {
+      db.prepare('INSERT OR IGNORE INTO run_flags (run_id, flags, frozen_at) VALUES (?,?,?)').run(
+        input.id,
+        serializeSwitches(frozen),
+        now,
+      );
+    }
   });
   tx.immediate();
   // Read the row BACK rather than returning what we intended to write: if the

@@ -174,6 +174,69 @@ test('startRun is idempotent and NEVER re-freezes an existing run', () => {
   }
 });
 
+test('F1 — a pre-existing runs row with NO run_flags is NOT freezable late', () => {
+  // Reviewer 7c372e9a on ledger #123. The blocking shape: a `runs` row that
+  // exists but has no `run_flags` row (a run created by a writer that predates
+  // run_flags — #115's CLI lifecycle, an older build, a partially-applied v2, a
+  // failed second insert). With two independent `INSERT OR IGNORE`s, startRun
+  // took the `runs` ignore but WROTE run_flags at the later call — freezing the
+  // running run at the then-current LIVE switches and flipping busSwitch ON under
+  // a run that was live before the switch was touched. This is T118.2's literal
+  // disproof: "the running run's flags change."
+  const { db, dir } = tmpDb();
+  try {
+    // Simulate the writer that predates run_flags: a bare `runs` row, no flags.
+    db.prepare(
+      `INSERT INTO runs (id, kind, coordinator, parent_run_id, title, created_at)
+       VALUES (?,?,?,?,?,?)`,
+    ).run('run-x', 'vague', 'ops-b', null, null, Date.now());
+    // Pre-state: no run_flags row, so the run reads all-OFF.
+    assert.equal(
+      db.prepare('SELECT COUNT(*) AS n FROM run_flags WHERE run_id=?').get('run-x') &&
+        (db.prepare('SELECT COUNT(*) AS n FROM run_flags WHERE run_id=?').get('run-x') as { n: number }).n,
+      0,
+    );
+    assert.deepEqual(runFlags(db, 'run-x'), ALL_OFF, 'a run with no flags row reads all-OFF');
+    assert.equal(busSwitch(db, 'run-x', 'wake'), false);
+
+    // The human flips ALL ON mid-wave; a resume path calls startRun('run-x', ALL_ON).
+    startRun(db, { id: 'run-x', kind: 'vague', coordinator: 'ops-b' }, ALL_ON);
+
+    // THE ASSERTION: the running run's flags must NOT have become ON. An existing
+    // runs row means "already started" — no run_flags is written, so it stays
+    // all-OFF, not freezable late. On the two-OR-IGNORE code this reads ALL_ON.
+    assert.deepEqual(
+      runFlags(db, 'run-x'),
+      ALL_OFF,
+      'F1: an existing run with no flags must not be freezable late at live switches',
+    );
+    assert.equal(busSwitch(db, 'run-x', 'wake'), false, 'busSwitch must not flip ON mid-wave');
+    assert.equal(listRuns(db).length, 1, 'no new run was created — this IS the running run');
+    // No run_flags row was written for the pre-existing run.
+    assert.equal(
+      (db.prepare('SELECT COUNT(*) AS n FROM run_flags WHERE run_id=?').get('run-x') as { n: number }).n,
+      0,
+      'no run_flags row is written for a run that already existed',
+    );
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('F1 control — a genuinely NEW run (no prior runs row) DOES freeze its flags', () => {
+  // The must-PASS counterpart, same command family as the F1 arm above: proves
+  // the fix did not simply stop freezing altogether. A brand-new run — one whose
+  // `runs` row this startRun creates — freezes at the live switches it is handed.
+  const { db, dir } = tmpDb();
+  try {
+    startRun(db, { id: 'fresh-run', kind: 'vague', coordinator: 'ops-b' }, ALL_ON);
+    assert.deepEqual(runFlags(db, 'fresh-run'), ALL_ON, 'a NEW run must freeze its live switches');
+    assert.equal(busSwitch(db, 'fresh-run', 'wake'), true);
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
 test('freezeSwitches returns a COPY — a later mutation of the caller cannot reach the run', () => {
   const live: BusSwitches = { ...ALL_ON };
   const frozen = freezeSwitches(live);
@@ -278,23 +341,38 @@ test('T118.3 — the notice names EVERY mechanism in BOTH states', () => {
   assert.equal(on.length, BUS_MECHANISMS.length);
   assert.equal(off.length, BUS_MECHANISMS.length);
   for (const m of BUS_MECHANISMS) {
+    // The notice emits the WIRE name (F4, ledger #123): `ask_gate`, not the
+    // internal `askGate`. Assert the wire spelling the fleet skill greps for.
+    const wire = mechanismToWire(m);
     // POSITIVE control: switch ON → the ON string appears.
     assert.ok(
-      on.some((l) => l.includes(`bus switch ${m}=ON`)),
-      `switch ${m} ON must print an ON line`,
+      on.some((l) => l.includes(`bus switch ${wire}=ON`)),
+      `switch ${wire} ON must print an ON line`,
     );
     // NEGATIVE control: switch OFF → the OPPOSITE string appears — not merely
     // the absence of the ON one (carry-forward 2). This is the assertion that
     // fails on a notice which prints ON lines and stays silent otherwise.
     assert.ok(
-      off.some((l) => l.includes(`bus switch ${m}=OFF`)),
-      `switch ${m} OFF must print its OWN line, not silence`,
+      off.some((l) => l.includes(`bus switch ${wire}=OFF`)),
+      `switch ${wire} OFF must print its OWN line, not silence`,
     );
     assert.ok(
-      !off.some((l) => l.includes(`bus switch ${m}=ON`)),
-      `switch ${m} OFF must not print an ON line`,
+      !off.some((l) => l.includes(`bus switch ${wire}=ON`)),
+      `switch ${wire} OFF must not print an ON line`,
     );
   }
+});
+
+test('T118.3 (F4) — the notice emits the WIRE name ask_gate, never the internal askGate', () => {
+  const on = busSwitchNoticeLines(ALL_ON).join('\n');
+  const off = busSwitchNoticeLines(ALL_OFF).join('\n');
+  // The internal camel key must never leak onto the wire the fleet skill reads.
+  assert.ok(!on.includes('askGate'), 'ON notice leaked the internal key askGate');
+  assert.ok(!off.includes('askGate'), 'OFF notice leaked the internal key askGate');
+  // And the wire name IS present — the must-PASS half so this is not vacuously
+  // satisfied by a notice that dropped the ask_gate line entirely.
+  assert.match(on, /bus switch ask_gate=ON/);
+  assert.match(off, /bus switch ask_gate=OFF/);
 });
 
 test('T118.3 — the OFF line names the old channel as authoritative (counted, not fired)', () => {
@@ -310,7 +388,7 @@ test('T118.3 — an all-OFF set still PRINTS a notice (silence is unreadable)', 
   const notice = busSwitchNotice(ALL_OFF);
   assert.ok(notice, 'all-OFF must still produce a notice');
   assert.match(notice, /frozen at wave start/);
-  for (const m of BUS_MECHANISMS) assert.ok(notice.includes(`${m}=OFF`));
+  for (const m of BUS_MECHANISMS) assert.ok(notice.includes(`${mechanismToWire(m)}=OFF`));
 });
 
 test('busSwitchNotice returns null only when there are no switches at all', () => {

@@ -238,11 +238,17 @@ const allOff = await setSwitchesAndWrite({
   askGate: false,
   liveness: false,
 });
-for (const mech of ['delivery', 'wake', 'askGate', 'liveness']) {
-  check(`${mech}: ON string present when ON`, allOn.includes(`bus switch ${mech}=ON`));
-  check(`${mech}: OFF string present when OFF`, allOff.includes(`bus switch ${mech}=OFF`));
-  check(`${mech}: no ON string when OFF`, !allOff.includes(`bus switch ${mech}=ON`));
+// The notice emits the WIRE names (F4, ledger #123): `ask_gate`, not `askGate`.
+// Assert the wire spelling — a fleet skill greps the notice for the contract
+// name it was frozen on, and the internal camel key would read as absence.
+for (const wire of ['delivery', 'wake', 'ask_gate', 'liveness']) {
+  check(`${wire}: ON string present when ON`, allOn.includes(`bus switch ${wire}=ON`));
+  check(`${wire}: OFF string present when OFF`, allOff.includes(`bus switch ${wire}=OFF`));
+  check(`${wire}: no ON string when OFF`, !allOff.includes(`bus switch ${wire}=ON`));
 }
+// F4 regression pin: the INTERNAL camel key must NOT leak into the notice.
+check('the internal key askGate never appears (wire name is ask_gate)', !allOn.includes('askGate') && !allOff.includes('askGate'));
+check('the wire name ask_gate DOES appear when ON', allOn.includes('bus switch ask_gate=ON'));
 
 // ── Arm C: THE MUST-FAIL CONTROL ────────────────────────────────────────────
 // Feed the SAME greps a notice that mentions the bus but NOT the switch states.
