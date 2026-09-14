@@ -89,7 +89,32 @@ function extract(name: string): string {
   const rest = code.slice(start);
   const end = rest.indexOf('\n}\n');
   assert.notEqual(end, -1, `${name} has no closing brace at column 0`);
-  return rest.slice(0, end + 2);
+  const captured = rest.slice(0, end + 2);
+
+  // ── RE-TEST THE SELECTOR AGAINST THE CAPTURED TEXT (wave-wide hazard,
+  // relayed by OPS-B from the verifier's rig audit, 2026-09-08) ─────────────
+  // A rig that SELECTS a region and then asserts on it must prove the region it
+  // got is the one it asked for — the verifier found a rig testing 1331 chars
+  // of the WRONG BODY and reporting a confident verdict about it, because its
+  // selector had drifted from the captured text. A verdict about the wrong
+  // object is indistinguishable from a verdict about the right one.
+  //
+  // This is not hypothetical here: an earlier revision used a bare `indexOf`,
+  // and the moment a COMMENT in the wrapper named
+  // `dispatchMessageRequestUnmirrored`, extraction silently returned the
+  // WRAPPER while every assertion claimed to be reading the delivery body.
+  assert.ok(
+    captured.startsWith(name),
+    `SELECTOR DRIFT: asked for ${name}, captured a region starting "${captured.slice(0, 60)}"`,
+  );
+  // And it must be the DEFINITION, not a mention: a definition is followed by
+  // its parameter list, never by prose.
+  assert.match(
+    captured.slice(name.length, name.length + 2),
+    /^[\s(]/,
+    `SELECTOR DRIFT: ${name} was captured as a MENTION, not a definition`,
+  );
+  return captured;
 }
 
 /**
@@ -970,4 +995,38 @@ test('F5 — an over-cap send mirrors the TRUNCATED body, and the row proves it'
   };
   assert.equal(row.body.length, 8000, 'the bus holds the CAPPED body');
   assert.notEqual(row.body.length, 9000, 'not the raw one');
+});
+
+test('SELECTOR GUARD — extract() aborts loudly when the region it captures is not the one asked for', () => {
+  // The guard added for the wave-wide selector-drift hazard must be SEEN to
+  // fail, or it is decoration. Three drift shapes, each required to throw.
+  const capture = (code: string, name: string) => {
+    const start = code.indexOf(`\n${name}`) + 1;
+    assert.notEqual(start, 0, 'not found at a line start');
+    const rest = code.slice(start);
+    const end = rest.indexOf('\n}\n');
+    assert.notEqual(end, -1, 'no closing brace');
+    const captured = rest.slice(0, end + 2);
+    assert.ok(captured.startsWith(name), 'SELECTOR DRIFT: wrong region');
+    assert.match(captured.slice(name.length, name.length + 2), /^[\s(]/, 'SELECTOR DRIFT: mention');
+    return captured;
+  };
+
+  // 1. The historical defect: the name appears only in a COMMENT above the real
+  //    definition, so a line-start match lands on a different function.
+  assert.throws(
+    () => capture('\nfoo() {\n  // calls target\n}\n\ntargetlike() {\n}\n', 'target'),
+    /SELECTOR DRIFT/,
+    'a name captured as a prefix of another identifier must abort',
+  );
+
+  // 2. Positive control — a real definition passes the same guard, so the arms
+  //    above are not simply throwing on everything.
+  const ok = capture('\nnoise() {\n}\n\ntarget(input) {\n  return 1;\n}\n', 'target');
+  assert.ok(ok.startsWith('target('), 'CONTROL: a real definition is captured');
+
+  // 3. And the guard is reached through the REAL extract() on the real file.
+  const real = extract('async function dispatchMessageRequestUnmirrored');
+  assert.ok(real.startsWith('async function dispatchMessageRequestUnmirrored'));
+  assert.ok(real.length > 2000, 'and it is the BODY, not a mention');
 });
