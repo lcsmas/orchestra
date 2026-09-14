@@ -580,6 +580,42 @@ opens a real bus, seeds run rows, and asserts two notices in ONE run are
 BYTE-IDENTICAL across a flip while a NEW run picks the flip up — the INVERTED
 freeze gate (the pre-F2 rig asserted they DIFFER, which certified the defect).
 
+### Who consumes the notice: the fleet protocol skill (#121)
+
+The one reader of these notice lines is the **`verified-fanout` fleet-protocol
+skill** (`~/.claude/skills/verified-fanout/SKILL.md`, canonical, git-tracked in
+the user's dotfiles repo — NOT restated here; that file is the source of truth
+for how a fleet coordinates). The skill has one section per mechanism, each
+CONDITIONED on the switch state this notice announces, so a spawned agent obeys
+**exactly one channel** per mechanism:
+
+| Wire name (`busSwitchNoticeLines`) | `=OFF` → old channel authoritative | `=ON` → bus authoritative |
+|---|---|---|
+| `delivery` | ledger/`orchestra message` (unordered, pull-first) | `send` / `check` / `ack` |
+| `wake` | self-wakeup rule (`ScheduleWakeup`) + lead ~15-min cron | host wake (Réveil); self-wakeup retired |
+| `ask_gate` | ledger §Open-questions + one-line ping | `ask` / decision gates (`gate open`/`resolve`) |
+| `liveness` | lead 15-min heartbeat cron | host-derived escalation |
+
+The lead's ~15-min cron serves BOTH `wake=OFF` (waking a sleeping fleet) and
+`liveness=OFF` (staleness detection), so it is retired only when **both** `wake`
+and `liveness` are ON; with exactly one ON it stays, narrowed to the OFF one.
+
+The switch is READ, never guessed: the skill greps the notice for the literal
+`- bus switch <wire>=ON …` / `=OFF …` strings this file emits. The wire names
+(`ask_gate`, not the internal `askGate`) are the contract — see `F4` above and
+`mechanismToWire` in `src/shared/bus-switches.ts`. Channel-INDEPENDENT rules
+(delete gate, verify-landed, adversarial review, the close-out sweep, prose
+rules) are unaffected by any switch and live unconditionally in the skill.
+
+The `=ON` CLI surfaces shipped with #119/#120 and the skill names them: `send`
+(`--type`/`--to`/`--thread`) / `check` / `ack` for delivery; `ask --to`, the
+threaded `send --thread <ask-id>` answer, and `gate open --to` / `gate resolve
+--resolution` / `gate list` for ask_gate; app-derived `escalation`/`status` rows
+(no agent-side verb) for liveness. Every anchor resolves against the BUILT CLI
+(`node dist-electron/cli.js --help`), not the stale installed binary. The v1
+default notice still prints `=OFF` for every switch, so an agent routes to the
+old channel until a run's switch is flipped — the safe coexistence default.
+
 ## Schema
 
 `MIGRATIONS[2]` in `src/main/bus.ts:193` creates `run_flags` (a sidecar, because
