@@ -174,11 +174,18 @@ import { store } from './store';
 import { initBus, closeBus, busPath } from './bus';
 import { registerBusPaneIpc } from './bus-pane';
 import { setLiveSwitches, getLiveSwitches } from './bus-settings';
-import { startBusWake, stopBusWake, setWakeRoster, setWakeDeliver } from './bus-wake';
+import {
+  startBusWake,
+  stopBusWake,
+  setWakeRoster,
+  setWakeDeliver,
+  readWaitingReaders,
+} from './bus-wake';
 import {
   startBusLiveness,
   stopBusLiveness,
   setLivenessRoster,
+  setLivenessWaiting,
   type LivenessMember,
 } from './bus-liveness';
 import { getLastActivity, getAppStartedAt } from './hibernation-activity';
@@ -458,9 +465,10 @@ async function createMainWindow() {
   // strip-types test runner cannot resolve. SHIPS OFF — the `liveness` switch
   // (#118) defaults false, so out of the box this only COUNTS. Tolerates
   // `getBus() === null` (D1): the sweep logs once and returns. #119's asker
-  // `waiting` surface is wired via `setLivenessWaiting` once #119 lands (ledger
-  // #125 Q-C1); until then the app-level `waiting` status is the only exclusion,
-  // the coexistence-safe direction (it never SUPPRESSES a real stall).
+  // `waiting` surface is CONSUMED via `setLivenessWaiting` (below) — #119 owns
+  // `readWaitingReaders` (the sender/opener parked on an open ask or gate), and
+  // #120 subtracts that set, on top of the app-level `waiting` status. The
+  // app-level exclusion alone stays coexistence-safe if the bus half ever fails.
   setLivenessRoster((): LivenessMember[] =>
     store.workspaces.map((ws) => {
       // Coordinator = the member's parent, resolved to a LIVE workspace. A
@@ -489,6 +497,11 @@ async function createMainWindow() {
       };
     }),
   );
+  // Wire #119's real asker-`waiting` accessor: readWaitingReaders(db, {reader,
+  // runId}[]) → the set of members parked as the OPENER of an unanswered ask or
+  // unresolved gate. #120 CONSUMES it verbatim — it never reimplements #119's
+  // predicate. The seam type was pre-aligned to this exact signature.
+  setLivenessWaiting(readWaitingReaders);
   startBusLiveness();
   // Stop the agent processes of long-idle workspaces to reclaim their memory;
   // the conversation survives (terminal `--continue`, SDK sdkSessionId) so a

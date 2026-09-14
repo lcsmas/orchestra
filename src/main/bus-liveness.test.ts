@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openBus, type BusDb } from './bus.ts';
+import { openBus, send, openGate, type BusDb } from './bus.ts';
+import { readWaitingReaders } from './bus-wake.ts';
 import {
   sweepBusLiveness,
   recordPhaseChange,
@@ -210,6 +211,34 @@ test('the waiting accessor receives {reader, runId} pairs (run-scoped, #119 shap
   });
   sweepBusLiveness();
   assert.deepEqual(seen, [{ reader: 'ws-a', runId: 'run-X' }]);
+});
+
+test('T120.4 INTEGRATION: the REAL #119 readWaitingReaders excludes a genuine asker', (t) => {
+  // The strongest waiting arm: NOT a stub — wire #119's SHIPPED readWaitingReaders
+  // and seed a REAL open ask (a `question` the asker SENT, unanswered) and a REAL
+  // open gate. Both openers must be excluded from staleness; a third member with
+  // no open ask/gate IS escalated (same-command negative control). This proves
+  // the two modules meet through the actual export, not a hand-built agreement.
+  const db = tmpBus(t);
+  // ws-asker opened an ask (a question with no threaded reply) → waiting.
+  send(db, { runId: RUN, sender: 'ws-asker', kind: 'question', body: 'may I?', recipient: 'ws-ops' });
+  // ws-gater opened a decision gate, unresolved → waiting.
+  openGate(db, RUN, 'ws-gater', 'ship it?');
+  // ws-silent did neither → NOT waiting.
+  armSweep(db, [
+    member({ reader: 'ws-asker' }),
+    member({ reader: 'ws-gater' }),
+    member({ reader: 'ws-silent' }),
+  ]);
+  setLivenessWaiting(readWaitingReaders); // the SHIPPED #119 export
+  sweepBusLiveness();
+  assert.equal(escalationCount(db, 'ws-ops', 'ws-asker'), 0, 'the real ask-opener is excluded');
+  assert.equal(escalationCount(db, 'ws-ops', 'ws-gater'), 0, 'the real gate-opener is excluded');
+  assert.equal(
+    escalationCount(db, 'ws-ops', 'ws-silent'),
+    1,
+    'a member with no open ask/gate IS escalated — the real exclusion is scoped',
+  );
 });
 
 test('a failing #119 waiting accessor does not suppress a real stall', (t) => {
