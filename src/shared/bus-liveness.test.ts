@@ -4,8 +4,12 @@ import {
   decideEscalation,
   pruneEscalationLedger,
   escalationBody,
+  hungCallEscalationBody,
+  toolClassCeilingMs,
   phaseChanged,
   STALE_AFTER_MS,
+  BASH_TOOL_CEILING_MS,
+  UNCAPPED_TOOL_CEILING_MS,
   type MemberLivenessState,
   type EscalationLedgerEntry,
 } from './bus-liveness.ts';
@@ -245,4 +249,204 @@ test('phaseChanged: a real transition is true, an unchanged re-set is false', ()
   assert.equal(phaseChanged('implementing', ''), true, 'set → cleared is a change');
   assert.equal(phaseChanged('implementing', 'implementing'), false, 'same text is NOT a change');
   assert.equal(phaseChanged('', ''), false, 'cleared → cleared is NOT a change');
+});
+
+// ═══ #127 — liveness v2, the PROGRESS bound (hung mid-tool-call) ══════════════
+//
+// The gap: a session HUNG mid-tool-call is `running: true` forever (a pretool
+// fired, no posttool ever follows), so the `running` guard skips it. The
+// progress bound catches it — a running member whose in-flight tool call blew
+// its per-tool-class ceiling with ZERO progress escalates. Each arm is paired
+// with a same-command control that must stay ALIVE (the dead-vs-slow trap).
+
+const HUNG_TOOL_NOW = NOW;
+
+/** A running member with a SINGLE in-flight tool call started `startedAt`.
+ *  Everything is set so the ONLY variable is what a test toggles. The default
+ *  call is an MCP call past its 30-min ceiling (hung). `lastActivityAt` is set
+ *  fresh on purpose — the progress bound is PER-CALL (list membership), NOT the
+ *  global clock, so a hung call escalates even with a recent activity stamp
+ *  (that is exactly the F1 fix: a fast sibling's posttool must not mask it). */
+function hungMember(
+  over: Partial<MemberLivenessState> = {},
+  toolOver: Partial<{ tool: string | null; startedAt: number }> = {},
+): MemberLivenessState {
+  const startedAt = toolOver.startedAt ?? HUNG_TOOL_NOW - (UNCAPPED_TOOL_CEILING_MS + 60_000);
+  return {
+    reader: 'ws-worker',
+    coordinator: 'ws-ops',
+    hasTask: true,
+    lastActivityAt: HUNG_TOOL_NOW - 30_000,
+    appStartedAt: APP_START,
+    running: true,
+    waiting: false,
+    inFlightTools: [{ tool: toolOver.tool ?? 'mcp__browser__click', startedAt }],
+    ...over,
+  };
+}
+
+test('toolClassCeilingMs: Bash gets the 600s cap, everything else the long floor', () => {
+  // MUTANT: swap the two returns → a Bash call would be flagged only after 30m
+  //   (missing a genuinely hung 11m Bash) OR an MCP call flagged at 10m (cutting
+  //   a legitimate long headless E2E). Assert each class maps to its constant.
+  assert.equal(toolClassCeilingMs('Bash'), BASH_TOOL_CEILING_MS, 'Bash → its own 600s cap');
+  assert.equal(toolClassCeilingMs('mcp__browser__click'), UNCAPPED_TOOL_CEILING_MS, 'MCP → floor');
+  assert.equal(toolClassCeilingMs('WebFetch'), UNCAPPED_TOOL_CEILING_MS, 'web → floor');
+  assert.equal(toolClassCeilingMs(null), UNCAPPED_TOOL_CEILING_MS, 'unknown name → floor');
+  assert.equal(toolClassCeilingMs(undefined), UNCAPPED_TOOL_CEILING_MS, 'no call → floor');
+});
+
+test('T127.1 arm A: a running member with a tool call PAST its ceiling, zero progress → escalate', () => {
+  // The HUNG arm. An MCP call in flight for ceiling+1m with no posttool.
+  // MUTANT: return `null` from hungCallForMs unconditionally (i.e. keep the old
+  //   unconditional `running` skip) → this goes RED (kind is `skip running`, no
+  //   escalation for a genuinely hung call — the #90 wedge stays invisible).
+  const a = decideEscalation(hungMember(), undefined, HUNG_TOOL_NOW, true);
+  assert.equal(a.kind, 'escalate', 'a hung mid-call member must escalate');
+  assert.equal(a.kind === 'escalate' && a.coordinator, 'ws-ops');
+  // The action carries the hung tool name so the body can name it.
+  assert.equal(a.kind === 'escalate' && a.hungTool, 'mcp__browser__click');
+});
+
+test('T127.1 arm B: a running Bash build UNDER its ceiling → stays alive (dead-vs-slow trap)', () => {
+  // The must-STAY-ALIVE control. A legitimate 8-min build: a Bash call in flight
+  // for 8m, under the 600s (10m) Bash ceiling. It MUST NOT escalate.
+  // MUTANT: drop the `elapsed < ceiling` continue (flag any in-flight call) →
+  //   this goes RED (an 8-min build escalates — the exact trap acceptance 2 forbids).
+  const eightMinAgo = HUNG_TOOL_NOW - 8 * 60 * 1000;
+  const a = decideEscalation(
+    hungMember({}, { tool: 'Bash', startedAt: eightMinAgo }),
+    undefined,
+    HUNG_TOOL_NOW,
+    true,
+  );
+  assert.equal(a.kind, 'skip', 'a build under its ceiling is alive');
+  assert.equal(a.kind === 'skip' && a.why, 'running');
+});
+
+test('F1 (review-127): a hung PARALLEL call escalates even beside a FAST sibling', () => {
+  // THE regression the fresh reviewer found. Two in-flight calls: a hung MCP call
+  // (past its 30-min ceiling) AND a fast Bash call started 1s ago. The OLD
+  // single-slot design let the fast call's posttool clear the whole slot and the
+  // global-clock progress check mark the hung call alive → never escalated (the
+  // #90 wedge re-opened). The per-call list must escalate the hung MCP call and
+  // NAME it, regardless of the fresh sibling / fresh activity clock.
+  // MUTANT: revert hungCall to read the global lastActivityAt for progress → RED
+  //   (the recent clock marks the hung call as progress → skip running).
+  const a = decideEscalation(
+    hungMember({
+      lastActivityAt: HUNG_TOOL_NOW - 1000, // a sibling just posttool'd — recent clock
+      inFlightTools: [
+        { tool: 'mcp__browser__click', startedAt: HUNG_TOOL_NOW - (UNCAPPED_TOOL_CEILING_MS + 60_000) },
+        { tool: 'Bash', startedAt: HUNG_TOOL_NOW - 1000 }, // fast sibling, under ceiling
+      ],
+    }),
+    undefined,
+    HUNG_TOOL_NOW,
+    true,
+  );
+  assert.equal(a.kind, 'escalate', 'a hung parallel call escalates despite a fast sibling');
+  assert.equal(a.kind === 'escalate' && a.hungTool, 'mcp__browser__click', 'names the HUNG tool, not the fast one');
+});
+
+test('F1: TWO hung calls → the MOST-OVERDUE is named (worst offender)', () => {
+  // Both past their ceilings; the escalation should name the one most overdue.
+  // MCP over by 10m, a null-tool call over by 20m → the null-tool one is worse.
+  const a = decideEscalation(
+    hungMember({
+      inFlightTools: [
+        { tool: 'mcp__browser__click', startedAt: HUNG_TOOL_NOW - (UNCAPPED_TOOL_CEILING_MS + 10 * 60_000) },
+        { tool: 'WebFetch', startedAt: HUNG_TOOL_NOW - (UNCAPPED_TOOL_CEILING_MS + 20 * 60_000) },
+      ],
+    }),
+    undefined,
+    HUNG_TOOL_NOW,
+    true,
+  );
+  assert.equal(a.kind, 'escalate');
+  assert.equal(a.kind === 'escalate' && a.hungTool, 'WebFetch', 'the most-overdue call is named');
+});
+
+test('T127.1: a running member with NO in-flight tool call is alive (thinking, not hung)', () => {
+  // A running member between tool calls (the THINKING label) has an empty list.
+  // It must be treated as alive — the progress bound only fires on a stuck CALL.
+  // MUTANT: treat an empty list as hung → every thinking member escalates.
+  const a = decideEscalation(
+    hungMember({ inFlightTools: [], lastActivityAt: 0 }),
+    undefined,
+    HUNG_TOOL_NOW,
+    true,
+  );
+  assert.equal(a.kind, 'skip');
+  assert.equal(a.kind === 'skip' && a.why, 'running');
+});
+
+test('T127.1: undefined inFlightTools (never tracked) is alive', () => {
+  // A member the tracker has no entry for at all → undefined list → alive.
+  const a = decideEscalation(
+    hungMember({ inFlightTools: undefined, lastActivityAt: 0 }),
+    undefined,
+    HUNG_TOOL_NOW,
+    true,
+  );
+  assert.equal(a.kind, 'skip');
+  assert.equal(a.kind === 'skip' && a.why, 'running');
+});
+
+test('T127.1 boundary: exactly AT the ceiling is hung (>=), one ms under is alive', () => {
+  // The `>=` boundary — at the ceiling a capped tool would already have produced
+  // a result, so the boundary tick is the first flag.
+  // MUTANT: change `>=` to `>` → the exact-ceiling tick stays alive one tick too
+  //   long. Assert both sides of the boundary.
+  const atCeiling = HUNG_TOOL_NOW - UNCAPPED_TOOL_CEILING_MS;
+  const overByAMs = HUNG_TOOL_NOW - UNCAPPED_TOOL_CEILING_MS + 1;
+  const at = decideEscalation(
+    hungMember({ lastActivityAt: atCeiling }, { startedAt: atCeiling }),
+    undefined,
+    HUNG_TOOL_NOW,
+    true,
+  );
+  assert.equal(at.kind, 'escalate', 'exactly at the ceiling → hung');
+  const under = decideEscalation(
+    hungMember({ lastActivityAt: overByAMs }, { startedAt: overByAMs }),
+    undefined,
+    HUNG_TOOL_NOW,
+    true,
+  );
+  assert.equal(under.kind, 'skip', 'one ms under the ceiling → alive');
+});
+
+test('T127.3: a hung call with the switch OFF → count, never escalate (C5)', () => {
+  // COVERS T127.3: COUNTED, not FIRED while liveness=OFF. The SHADOW-wave state.
+  // MUTANT: return `escalate` regardless of switchOn on the hung path → RED.
+  const a = decideEscalation(hungMember(), undefined, HUNG_TOOL_NOW, false);
+  assert.equal(a.kind, 'count', 'switch OFF → counted, not fired');
+  assert.equal(a.kind === 'count' && a.hungTool, 'mcp__browser__click');
+});
+
+test('T127.1: ONE escalation per hung call — a fired hung call is not re-fired', () => {
+  // The dedup shared with the staleness path (resolveStall). A member already
+  // FIRED this hung call must not fire again on the next sweep.
+  // MUTANT: drop the `previous?.fired` guard → a second sweep re-fires.
+  const fired: EscalationLedgerEntry = { escalatedAtActivity: undefined, fired: true };
+  const a = decideEscalation(hungMember(), fired, HUNG_TOOL_NOW, true);
+  assert.equal(a.kind, 'skip');
+  assert.equal(a.kind === 'skip' && a.why, 'already-escalated');
+});
+
+test('hungCallEscalationBody names the tool and the minutes, distinct from the staleness body', () => {
+  // Carry-forward 2: a marker as specific as the claim. The body must name the
+  // TOOL (a running member is not "silent" by the activity clock, so the #120
+  // body would misdescribe it) and the minutes-hung figure.
+  // MUTANT: reuse escalationBody for a hung call → no tool name, "no session
+  //   activity" wording — a coordinator can't tell a hung call from a dead one.
+  const body = hungCallEscalationBody('ws-worker', 'mcp__browser__click', 31 * 60_000 + 30_000);
+  assert.match(body, /ws-worker/);
+  assert.match(body, /mcp__browser__click/, 'the tool name is load-bearing');
+  assert.match(body, /31m/, 'the minutes-hung figure is load-bearing');
+  assert.match(body, /hung/, 'names the hung condition, not generic silence');
+  // A null tool name still produces a sensible body (unknown at call start).
+  const anon = hungCallEscalationBody('ws-worker', null, 31 * 60_000);
+  assert.match(anon, /a tool/, 'null tool name renders a generic phrase, not "null"');
+  assert.doesNotMatch(anon, /null/, 'never leaks the literal null');
 });

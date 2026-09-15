@@ -188,7 +188,7 @@ import {
   setLivenessWaiting,
   type LivenessMember,
 } from './bus-liveness';
-import { getLastActivity, getAppStartedAt } from './hibernation-activity';
+import { getLastActivity, getAppStartedAt, getInFlightTools } from './hibernation-activity';
 import { sdkStartAndDeliver } from './sdk-delivery';
 import {
   ensureRoot,
@@ -493,6 +493,11 @@ async function createMainWindow() {
         // App-level parked signal: an agent showing the needs-input `waiting`
         // status is silent on purpose. #119's bus `waiting` ORs in on top.
         waiting: ws.status === 'waiting',
+        // Liveness v2 (#127): EVERY tool call currently in flight (name + start),
+        // host-derived from `applyAgentEvent`'s pretool/posttool chokepoint — no
+        // new probe. The progress bound checks each against its ceiling to catch a
+        // session HUNG mid-tool-call, even a hung call parallel to a fast sibling.
+        inFlightTools: getInFlightTools(ws.id),
         runId: resolveWaveRunId(ws),
       };
     }),

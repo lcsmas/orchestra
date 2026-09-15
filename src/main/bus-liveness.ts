@@ -31,6 +31,7 @@ import {
   decideEscalation,
   pruneEscalationLedger,
   escalationBody,
+  hungCallEscalationBody,
   STALE_AFTER_MS,
   type MemberLivenessState,
   type EscalationLedgerEntry,
@@ -62,6 +63,12 @@ export interface LivenessMember {
    *  `waiting` is layered on top via {@link setLivenessWaiting}, so this stays
    *  the app half and the two OR together in the sweep. */
   waiting: boolean;
+  /** Liveness v2 (#127): EVERY in-flight tool call for this member (name +
+   *  start time), empty when none is running. Read from `getInFlightTools`
+   *  (hibernation-activity.ts) in the roster; the progress bound checks each
+   *  against its per-tool-class ceiling so a hung parallel call is never masked
+   *  by a fast sibling (review-127 F1). */
+  inFlightTools?: readonly { tool: string | null; startedAt: number }[];
   runId: string;
 }
 
@@ -233,6 +240,7 @@ export function sweepBusLiveness(): void {
       appStartedAt: floor,
       running: m.running,
       waiting: m.waiting || busWaiting.has(m.reader),
+      inFlightTools: m.inFlightTools,
     });
 
     const stale = new Set<string>();
@@ -259,6 +267,11 @@ export function sweepBusLiveness(): void {
       }
       const action = decideEscalation(state, ledger.get(m.reader), now, switchOn);
       if (action.kind === 'skip') continue;
+      // A hung-call action carries `hungTool` (may be null); a staleness action
+      // does not. The property's PRESENCE is the discriminator, so a hung call of
+      // an unknown-named tool (hungTool === null) still reads as hung.
+      const isHung = 'hungTool' in action;
+      const kindLabel = isHung ? 'hung mid-call' : 'silent';
       if (action.kind === 'count') {
         // Mark as COUNTED (fired: false) so a second count is suppressed but the
         // FIRST FIRE after a switch flips ON is NOT (F1). Once per silence.
@@ -266,7 +279,7 @@ export function sweepBusLiveness(): void {
         counters.counted++;
         log.info(
           `bus-liveness: would have escalated ${action.reader} → ${action.coordinator} ` +
-            `(silent ${Math.floor(action.silentForMs / 60_000)}m; switch OFF — counted, not fired)`,
+            `(${kindLabel} ${Math.floor(action.silentForMs / 60_000)}m; switch OFF — counted, not fired)`,
         );
         continue;
       }
@@ -274,13 +287,20 @@ export function sweepBusLiveness(): void {
       // FIRED (fired: true) only on a SUCCESSFUL write — a failed write must be
       // observable (D1) and must NOT leave a mark, or the next sweep would treat
       // this silence as already-escalated and never retry.
-      const wrote = writeEscalation(db, m.runId, action.reader, action.coordinator, action.silentForMs);
+      const wrote = writeEscalation(
+        db,
+        m.runId,
+        action.reader,
+        action.coordinator,
+        action.silentForMs,
+        isHung ? { tool: action.hungTool ?? null } : undefined,
+      );
       if (wrote) {
         ledger.set(action.reader, { escalatedAtActivity: m.lastActivityAt, fired: true });
         counters.fired++;
         log.info(
           `bus-liveness: escalated ${action.reader} → ${action.coordinator} ` +
-            `(silent ${Math.floor(action.silentForMs / 60_000)}m)`,
+            `(${kindLabel} ${Math.floor(action.silentForMs / 60_000)}m)`,
         );
       } else {
         // Withdraw any prior count-mark too, so the failed fire fully re-arms.
@@ -304,6 +324,9 @@ function writeEscalation(
   reader: string,
   coordinator: string,
   silentForMs: number,
+  /** Present for a #127 hung-tool-call escalation; its body names the stuck tool.
+   *  Absent for the #120 staleness escalation (between-turns silence). */
+  hung: { tool: string | null } | undefined,
 ): boolean {
   try {
     send(db, {
@@ -311,7 +334,9 @@ function writeEscalation(
       sender: reader,
       recipient: coordinator,
       kind: 'escalation',
-      body: escalationBody(reader, silentForMs),
+      body: hung
+        ? hungCallEscalationBody(reader, hung.tool, silentForMs)
+        : escalationBody(reader, silentForMs),
     });
     return true;
   } catch (e) {

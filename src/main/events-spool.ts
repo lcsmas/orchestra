@@ -230,6 +230,7 @@ function drain(id: string): void {
       seq?: unknown;
       event?: unknown;
       tool?: unknown;
+      toolUseId?: unknown;
       transcript?: unknown;
       crons?: unknown;
     };
@@ -238,6 +239,7 @@ function drain(id: string): void {
         seq?: unknown;
         event?: unknown;
         tool?: unknown;
+        toolUseId?: unknown;
         transcript?: unknown;
         crons?: unknown;
       };
@@ -262,6 +264,10 @@ function drain(id: string): void {
       cur.lastSeq = seq;
     }
     const tool = typeof ev.tool === 'string' && ev.tool.length ? ev.tool : undefined;
+    // #127: the tool_use id the hook mined from the PreToolUse/PostToolUse
+    // payload, so the in-flight tracker pairs a posttool with the exact call it
+    // ended (parallel-hang F1). Empty/absent (old hook) → null → FIFO fallback.
+    const toolUseId = typeof ev.toolUseId === 'string' && ev.toolUseId.length ? ev.toolUseId : null;
     const transcript =
       typeof ev.transcript === 'string' && ev.transcript.length ? ev.transcript : undefined;
     // Three-state loop level-signal mined from the Stop payload's
@@ -274,7 +280,7 @@ function drain(id: string): void {
     // good (the dot stuck on `running`). Swallow per-line so one bad event can
     // never strand the events behind it.
     try {
-      applyAgentEvent(id, ev.event, tool, transcript, undefined, crons);
+      applyAgentEvent(id, ev.event, tool, transcript, undefined, crons, toolUseId);
     } catch (e) {
       log.error(`events-spool: applyAgentEvent failed for ${id} seq=${seq} event=${ev.event}`, e);
     }

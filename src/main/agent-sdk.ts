@@ -506,11 +506,25 @@ function driveStatusFromEvent(session: Session, ev: AgentEvent): void {
   const spoolEvent = sdkEventToStatusEvent(ev);
   if (!spoolEvent) return;
   const tool = ev.type === 'tool-use' ? ev.name : undefined;
+  // #127: thread the tool_use id for pretool/posttool so the in-flight tracker
+  // pairs a posttool with the exact call it ended — a hung parallel sibling must
+  // survive a fast call's posttool (review-127 F1). Both AgentEvent types carry
+  // it; other event types have no id (undefined → treated as null downstream).
+  const toolUseId =
+    ev.type === 'tool-use' || ev.type === 'tool-result' ? ev.toolUseId : undefined;
   // Thread the turn-end reason through (undefined for every non-terminal event).
   // The SDK path is the only one that HAS a reason — Claude Code's Stop hook
   // carries no equivalent field — so this is where end_turn / interrupted /
   // max_turns / error stop being collapsed into one indistinguishable `waiting`.
-  applyAgentEvent(session.wsId, spoolEvent, tool, undefined, sdkEventToStopReason(ev));
+  applyAgentEvent(
+    session.wsId,
+    spoolEvent,
+    tool,
+    undefined,
+    sdkEventToStopReason(ev),
+    undefined, // crons: SDK path has no session_crons signal
+    toolUseId,
+  );
 }
 
 /** Normalize an SDK message and broadcast every event it produces, and (when this

@@ -17,7 +17,13 @@ import { THINKING_TOOL_LABEL, isScratchLike } from '../shared/types.ts';
 // here would close an import cycle, since it imports pty.ts which imports this
 // file. The .ts extension is required for VALUE imports reachable from the
 // strip-types test runner.
-import { getActiveWorkspaceId, noteActivity } from './hibernation-activity.ts';
+import {
+  getActiveWorkspaceId,
+  noteActivity,
+  noteToolStart,
+  noteToolEnd,
+  clearInFlightTools,
+} from './hibernation-activity.ts';
 
 /** How stale {@link Workspace.lastTurnStartAt} may get before a turn-start
  *  event is allowed through `setStatus`'s no-op guard to refresh it (#88,
@@ -963,6 +969,12 @@ export function applyAgentEvent(
    *  (older hook script/CLI, or a non-spool caller). Only consulted for
    *  turn-end events. */
   crons?: 'none' | 'some',
+  /** The tool_use id for a `pretool`/`posttool`, when the caller has it (#127).
+   *  The SDK path passes `ev.toolUseId`; the spool path passes the id mined from
+   *  the hook payload, or `null` on an old hook. Used ONLY to pair a posttool
+   *  with the exact in-flight call it ended, so a hung parallel sibling is not
+   *  cleared by a fast call's posttool (review-127 F1). */
+  toolUseId?: string | null,
 ): void {
   alog.trace(`event ${event}${tool ? ` tool=${tool}` : ''} ws=${id}`);
   // Every lifecycle event — from either agent path — is "this workspace did
@@ -988,6 +1000,12 @@ export function applyAgentEvent(
     case 'pretool':
       emitTool(id, tool ?? null);
       void setStatus(id, 'running', null, true);
+      // Liveness v2 (#127): a tool call just STARTED. Record it (name + start
+      // time + its tool_use id) so the liveness sweep can bound elapsed-in-call
+      // against a per-tool-class ceiling and catch a session HUNG mid-call — the
+      // one gap the `running` guard leaves open. Keyed by toolUseId so a PARALLEL
+      // hung call is not masked by a fast sibling (review-127 F1).
+      noteToolStart(id, tool ?? null, toolUseId ?? null);
       // A ScheduleWakeup call is the /loop skill re-arming its next iteration —
       // the observable that marks this workspace as LOOPING. Detected here
       // because this is the one chokepoint both agent paths cross with the
@@ -1010,6 +1028,12 @@ export function applyAgentEvent(
       // climbs live through a long turn, not only at turn-end.
       emitTool(id, THINKING_TOOL_LABEL);
       void emitContext(id, transcript);
+      // Liveness v2 (#127): the in-flight tool call RETURNED — this is the
+      // progress signal that proves THIS call was not hung. Remove exactly it by
+      // toolUseId; when the path carries no id (remote sandbox wire, legacy hook)
+      // the tool NAME scopes the id-less FIFO so a fast call can't clear a hung
+      // call of a different tool (review-127 F1/F3). A hung sibling stays.
+      noteToolEnd(id, toolUseId ?? null, tool ?? null);
       break;
     case 'stop':
     // Claude's `StopFailure` hook (turn ended on an API error) maps here too:
@@ -1018,6 +1042,10 @@ export function applyAgentEvent(
     // / overload turn-end.
     case 'stopfail':
       emitTool(id, null);
+      // Liveness v2 (#127): the turn ended (normally or on error) — no tool call
+      // can still be in flight, so clear ALL of them (a call whose posttool never
+      // came before an interrupt/error must not linger as a false hang).
+      clearInFlightTools(id);
       // Turn-end: persist the figure (piggybacks the status write fireFinished
       // is about to make) so the badge can be restored at next startup.
       void emitContext(id, transcript, true);
@@ -1041,9 +1069,16 @@ export function applyAgentEvent(
     case 'notify':
       emitTool(id, null);
       void emitContext(id, transcript, true);
+      // Liveness v2 (#127): the agent parked for input — the turn (and any tool
+      // call) is over; clear ALL in-flight calls.
+      clearInFlightTools(id);
       fireNeedsInput(id);
       break;
     case 'session':
+      // Liveness v2 (#127): a session boundary (startup/resume/clear/compact)
+      // means no prior in-flight tool call is still valid — drop any leftover so
+      // a stale entry can't escalate as a false hang after a restart.
+      clearInFlightTools(id);
       // SessionStart. The `tool` slot carries the hook payload's `source`
       // (startup | resume | clear | compact). clear/compact just invalidated
       // the persisted context figure — without this the badge kept showing the

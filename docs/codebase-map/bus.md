@@ -1239,6 +1239,7 @@ No production caller BUMPS generation yet — an OPS respawn calling
 `ORCHESTRA_RUN_ID` still being unplumbed on master, #118 N2 tail). The fleet
 skill does not yet branch on the `fencing=OFF` notice line (inert while OFF). No
 live packaged two-generation refusal through a running app.
+
 ---
 
 ## Dispatch capability tokens (#129) — a stale completion cannot mask a hung retry
@@ -1325,3 +1326,131 @@ node --test --experimental-strip-types src/cli/bus-verbs.test.ts   # CLI seam + 
 Mutation arms shown RED live: `verbSend` reject clause forced off (T129.1
 must-FAIL goes red), `verifyCapability` `state==='active'` → `!=null` (supersede
 test red), `countCapabilityReject` call dropped (T129.3 counter red).
+
+---
+
+# Liveness v2 — the PROGRESS bound (#127, hung mid-tool-call)
+
+Appended by #127 (ledger [#131](https://github.com/lcsmas/orchestra/issues/131)),
+wave D. Earlier sections untouched. **No migration** — reuses the `escalation`
+kind and `send`, exactly like #120.
+
+## The gap it closes
+
+#120's `running` guard skips a member with a turn in flight UNCONDITIONALLY — the
+anti-trap that keeps an 8-min build alive. But a session HUNG mid-tool-call
+(a `pretool` fired, no `posttool`/`stop` ever follows) is `running: true` FOREVER
+with its activity clock frozen at the call start, so #120 skips it too: the exact
+#90 wedge class (process alive, status stuck running, no result, no exit) is
+invisible to the staleness bound. #127 adds a **per-tool-class progress ceiling**
+INSIDE the `running` guard: a running member whose in-flight tool call has blown
+its ceiling with ZERO progress escalates like any other stall.
+
+## Bound on PROGRESS, not elapsed (wave-8 lesson) — the dead-vs-slow trap
+
+`hungCall` (`src/shared/bus-liveness.ts`) scans a member's `inFlightTools` LIST
+and returns the MOST-OVERDUE call — one whose `now - startedAt >=` its
+per-tool-class ceiling — or `null` when every in-flight call is under its ceiling
+(alive). Progress is PER-CALL via **list membership**, not the shared activity
+clock: a call is removed from the list only by ITS OWN `posttool` (keyed on
+`toolUseId`), so a call still in the list has provably made no progress. This is
+the review-127 F1 fix (see below) — the earlier single-slot design read the
+global `lastActivityAt`, which a fast parallel call's posttool advances, and so
+masked a hung sibling.
+
+`toolClassCeilingMs(tool)`: `Bash` → `BASH_TOOL_CEILING_MS` (600s, matching the
+Bash tool's OWN `timeout` cap enforced by the `claude` binary — a healthy Bash
+call always produces a result at/before 600s); everything else (MCP `mcp__*`,
+browser, WebFetch/WebSearch, custom, unknown/legacy-null) → `UNCAPPED_TOOL_CEILING_MS`
+(30 min, a conservative UNBASELINED floor — these have no built-in cap and may
+legitimately run long). Naming Bash explicitly keeps a NEW tool safe by default.
+Each call is judged against ITS OWN class ceiling, so a hung Bash and a
+legitimately-long MCP call are separated correctly side by side.
+
+## review-127 F1 — PARALLEL tool calls (the load-bearing correctness fix)
+
+An assistant turn issues N `tool_use` blocks at once. The first cut tracked ONE
+in-flight call per workspace (`Map<wsId, InFlightTool>`), so a fast Bash call's
+`posttool` cleared the whole slot and a hung MCP call beside it went untracked →
+never escalated = the exact #90 wedge #127 exists to catch. The fix: a LIST keyed
+by `toolUseId`. `noteToolEnd(wsId, toolUseId)` removes exactly the matching call
+(an id-less legacy-hook posttool falls back to FIFO over the id-less cohort only);
+a hung sibling stays. `toolUseId` is threaded end to end: the SDK path passes
+`ev.toolUseId` (on both `tool-use`/`tool-result` AgentEvents); the spool hook
+mines `tool_use_id` from the PreToolUse/PostToolUse payload into the jsonl line,
+and `events-spool.ts` reads it. A turn-end (`stop`/`stopfail`/`notify`/`session`)
+`clearInFlightTools` drops all calls (an interrupt/error can end a turn with calls
+still notionally in flight).
+
+## The two existing bounds this complements (MEASURED, not assumed)
+
+- **#90 turn-gate watchdog** (`session-watchdog.ts` `TICK_MS = 60_000`;
+  `session-wedge.ts` `GATE_SILENCE_RELEASE_MS = 10min`): a 60s-poll, 10-min
+  SDK-stream progress bound that RELEASES a stranded gate (or recycles the
+  session). Covers structured sessions with `turnGate` held AND `queuedCount > 0`.
+  It self-heals; it does NOT escalate to a coordinator, and a hung call with an
+  EMPTY queue (`queuedCount <= 0`) is refused. #127 fills both gaps: a
+  coordinator-visible escalation, keyed on a per-tool ceiling, with no queue
+  requirement.
+- **Bash 600s cap** (the SDK Bash TOOL's own `timeout` max, external): a Bash call
+  self-terminates ≤600s → a posttool = progress, so it can't masquerade as hung
+  past its cap. `agent-sdk.ts:2696 BASH_TIMEOUT_MS = 5min` is a DIFFERENT bound
+  (the composer's `!command` bash-MODE cap), not the agent's Bash tool.
+
+## How the in-flight calls are tracked — REUSED chokepoint, no new probe
+
+`hibernation-activity.ts` (the dependency-free leaf that already holds
+`lastActivity`) gains a `Map<wsId, InFlightTool[]>` + `noteToolStart`/
+`noteToolEnd`/`clearInFlightTools`/`getInFlightTools`. Fed from the SAME
+`applyAgentEvent` switch (`activity.ts`): `pretool` → `noteToolStart(id, tool,
+toolUseId)` (appends), `posttool` → `noteToolEnd(id, toolUseId, tool)` (removes
+exactly that call by id; when the path carries no id — the REMOTE/sandbox wire
+and the legacy hook — the tool NAME scopes an id-less FIFO so a fast call cannot
+clear a hung call of a DIFFERENT tool, review-127 F3), and
+`stop`/`stopfail`/`notify`/`session` → `clearInFlightTools`. The roster
+(`index.ts`) reads `getInFlightTools(ws.id)` into `LivenessMember.inFlightTools`.
+
+| File | #127 change |
+|---|---|
+| `src/main/hibernation-activity.ts` | `InFlightTool[]` tracker keyed by toolUseId + `noteToolStart`/`noteToolEnd`/`clearInFlightTools`/`getInFlightTools`; `forgetHibernationActivity` clears it. |
+| `src/main/agent-sdk.ts` | `driveStatusFromEvent` threads `ev.toolUseId` for tool-use/tool-result. |
+| `src/main/events-spool.ts` + hook (`workspaces.ts`) | hook mines `tool_use_id` into the jsonl; spool reads `toolUseId` and passes it to `applyAgentEvent`. |
+| `src/main/activity.ts` | `applyAgentEvent` calls start/end at the pretool/posttool/turn-end cases. |
+| `src/shared/bus-liveness.ts` | `toolClassCeilingMs`, `hungCallForMs`, `resolveStall` (shared dedup/switch, extracted so the staleness & hung paths keep ONE copy), `hungCallEscalationBody`, `InFlightToolState`; `decideEscalation`'s `running` guard now checks the progress bound. |
+| `src/main/bus-liveness.ts` | roster carries `inFlightTools` (list); the hung-call body + log wording; `writeEscalation` takes the hung tool. |
+| `src/shared/bus-liveness.test.ts` | pure tests: ceiling, hung, build-alive, **F1 parallel-hang + most-overdue**, boundary `>=`, switch-OFF count, dedup, body. |
+| `src/main/bus-liveness.test.ts` | real-bus tests: T127.1 both arms, **F1 parallel-hang end-to-end**, T127.3 counted-not-fired. |
+| `src/main/hibernation-activity.test.ts` | **NEW — tracker-level (review-127 F2)**: the produce-from-events seam; F1 regression (fast sibling posttool does not clear a hung parallel call), **F3 remote id-less cross-tool masking**, tool-name FIFO, no-op-match, clear-all. |
+
+## COUNTED-not-FIRED while `liveness=OFF` (T127.3, C5)
+
+The hung-call escalation flows through the SAME switch gate as #120's staleness
+escalation (`resolveStall`): switch OFF → `count` (shadow counter increments, no
+row reaches the coordinator); the old channels stay authoritative. Its test asserts
+BOTH zero rows AND `counters.counted >= 1`.
+
+## Not covered here (NOT-VERIFIED)
+
+- No live packaged run drives a REAL hung MCP/browser call through a running app;
+  the rig injects `inFlightTools` + a fake clock (same posture as #120's sweep rig).
+  C6 (packaged boot) is verifier-owned; #127 adds no schema, so boot risk is nil.
+- The MCP/browser ceiling (30 min) is UNBASELINED — no fleet distribution of
+  longest legitimate uncapped-tool durations — chosen as a conservative floor.
+- Commit-as-progress is NOT read (a git call per member per sweep is a cost); a
+  real tool call emits a `posttool` (progress) so the activity clock already
+  covers it. A tool that silently makes git progress while emitting no lifecycle
+  event would only be caught at the ceiling — acceptable, and the safe direction.
+- **REMOTE/sandbox path (review-127 F3): the wire (`EventFrame`) carries a tool
+  NAME but no tool_use_id**, so remote calls use the id-less tool-name-scoped
+  FIFO. This closes the CROSS-tool masking (a fast Bash cannot clear a hung MCP
+  call). **Precise residual (review-127 F3-sharpened): on the REMOTE (id-less)
+  path, a SAME-TOOL parallel hang masks the HUNG call specifically.** The id-less
+  posttool removes the OLDEST same-tool call, and a hung call IS the oldest
+  (longest in-flight), so a fast sibling's posttool drops the hung call's OWN
+  escalation while the fast one lingers. Remote-only, same-tool-only; cross-tool
+  is closed; NOT a regression (no pre-#127 hang detection existed). The honest fix
+  is a tool_use_id on the sandbox wire — a protocol change out of #127 scope,
+  **deferred to [#132](https://github.com/lcsmas/orchestra/issues/132)** (LEAD
+  ruling D3(a), ledger #131 §Decisions): "Sandbox wire: carry toolUseId on remote
+  tool events so progress-liveness can attribute a hung call". Remote agents are
+  shadow/OFF in this wave, so it is COUNTED-not-fired regardless.

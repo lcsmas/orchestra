@@ -421,3 +421,139 @@ test('T120.3: the guard+write composed — change writes ONE, unchanged re-set w
   apply('implementing', 'testing'); // a change → 2
   assert.equal(statusCount(db, 'ws-worker'), 2);
 });
+
+// ═══ #127 — liveness v2 progress bound, END-TO-END through the real bus ═══════
+//
+// These drive the SHIPPED sweep and assert the escalation ROW that lands (the
+// observable a coordinator's `orchestra check` renders) for a HUNG mid-tool-call
+// member — the #90 wedge class the staleness bound alone cannot see. BOTH arms of
+// T127.1 (hung → exactly one row; a live 8-min build → zero) plus T127.3
+// (COUNTED-not-FIRED while OFF), each with a same-command control.
+
+const CEIL_OVER = 30 * 60 * 1000 + 60_000; // past the uncapped (MCP/browser) ceiling
+
+/** The body of the single escalation row for a member, or undefined when none. */
+function escalationBodyOf(db: BusDb, coordinator: string, reader: string): string | undefined {
+  const row = db
+    .prepare(
+      `SELECT body FROM messages
+        WHERE run_id=? AND kind='escalation' AND recipient=? AND sender=? LIMIT 1`,
+    )
+    .get(RUN, coordinator, reader) as { body: string } | undefined;
+  return row?.body;
+}
+
+/** A member HUNG mid-tool-call: running, an MCP call in flight past its 30-min
+ *  ceiling. `lastActivityAt` is deliberately RECENT — the progress bound is
+ *  per-call (list membership), not the global clock, so a hung call escalates
+ *  regardless of a fresh stamp (the F1 fix). */
+function hungMember(over: Partial<LivenessMember> = {}): LivenessMember {
+  const startedAt = NOW - CEIL_OVER;
+  return member({
+    running: true,
+    lastActivityAt: NOW - 30_000,
+    inFlightTools: [{ tool: 'mcp__browser__click', startedAt }],
+    ...over,
+  });
+}
+
+test('T127.1 arm A: a HUNG mid-tool-call member escalates exactly ONCE (the #90 wedge)', (t) => {
+  // COVERS T127.1 hung arm. MUTANT: restore the unconditional `running` skip
+  //   (drop the progress bound) → this goes RED (0 rows: a hung call is invisible,
+  //   which is the exact gap #127 exists to close). Same-command control: the row
+  //   NAMES the stuck tool (a hung-call body, not the staleness one).
+  const db = tmpBus(t);
+  armSweep(db, [hungMember()]);
+  sweepBusLiveness();
+  assert.equal(escalationCount(db, 'ws-ops', 'ws-worker'), 1, 'a hung mid-call member escalates');
+  const body = escalationBodyOf(db, 'ws-ops', 'ws-worker');
+  assert.match(body ?? '', /mcp__browser__click/, 'the row names the hung tool');
+  assert.match(body ?? '', /hung/, 'the row says hung, not generic silence');
+  // ONE per hung call: a second sweep with the same stuck call does not re-fire.
+  sweepBusLiveness();
+  assert.equal(escalationCount(db, 'ws-ops', 'ws-worker'), 1, 'no re-fire on the same stuck call');
+});
+
+test('T127.1 arm B: a legitimate 8-min Bash build → ZERO escalations (dead-vs-slow trap)', (t) => {
+  // COVERS T127.1 build arm / acceptance 2. A Bash call in flight 8m, UNDER its
+  //   600s (10m) ceiling. MUTANT: flag any in-flight call regardless of ceiling →
+  //   this goes RED (the build escalates). Same-command POSITIVE control: a second
+  //   member whose Bash call IS past the 600s ceiling DOES escalate — proving the
+  //   zero is a real distinction, not a dead instrument.
+  const db = tmpBus(t);
+  const eightMinAgo = NOW - 8 * 60 * 1000;
+  const overBash = NOW - (10 * 60 * 1000 + 60_000);
+  armSweep(db, [
+    member({
+      reader: 'ws-build',
+      running: true,
+      lastActivityAt: eightMinAgo,
+      inFlightTools: [{ tool: 'Bash', startedAt: eightMinAgo }],
+    }),
+    member({
+      reader: 'ws-hungbash',
+      running: true,
+      lastActivityAt: overBash,
+      inFlightTools: [{ tool: 'Bash', startedAt: overBash }],
+    }),
+  ]);
+  sweepBusLiveness();
+  assert.equal(
+    escalationCount(db, 'ws-ops', 'ws-build'),
+    0,
+    'an 8-min build under the Bash ceiling must NOT escalate',
+  );
+  assert.equal(
+    escalationCount(db, 'ws-ops', 'ws-hungbash'),
+    1,
+    'a Bash call PAST the 600s ceiling DOES escalate — the zero above is a real distinction',
+  );
+});
+
+test('F1 (review-127): a hung PARALLEL call escalates beside a FAST sibling — end to end', (t) => {
+  // THE regression, through the real bus. One member, TWO in-flight calls: a hung
+  // MCP call past its 30-min ceiling AND a fast Bash call started 1s ago, with a
+  // RECENT global activity clock (the fast sibling just posttool'd). The old
+  // single-slot design escalated 0 here (the fast call masked the hung one). Now
+  // exactly ONE escalation lands, naming the HUNG tool.
+  // MUTANT: read the global lastActivityAt for progress → RED (0 rows: the recent
+  //   clock masks the hung call, re-opening the #90 wedge).
+  const db = tmpBus(t);
+  const overMcp = NOW - CEIL_OVER;
+  armSweep(db, [
+    hungMember({
+      lastActivityAt: NOW - 1000, // a sibling just returned — fresh clock
+      inFlightTools: [
+        { tool: 'mcp__browser__click', startedAt: overMcp },
+        { tool: 'Bash', startedAt: NOW - 1000 }, // fast sibling under ceiling
+      ],
+    }),
+  ]);
+  sweepBusLiveness();
+  assert.equal(
+    escalationCount(db, 'ws-ops', 'ws-worker'),
+    1,
+    'a hung parallel call escalates despite a fast sibling + fresh clock',
+  );
+  const body = escalationBodyOf(db, 'ws-ops', 'ws-worker');
+  assert.match(body ?? '', /mcp__browser__click/, 'the row names the HUNG tool, not the fast Bash');
+});
+
+test('T127.3: a hung call with liveness=OFF is COUNTED, never emitted to the coordinator', (t) => {
+  // COVERS T127.3 (the SHADOW-wave state). MUTANT: emit regardless of switch on
+  //   the hung path → a row reaches the coordinator while OFF. Assert BOTH: zero
+  //   rows AND the shadow counter incremented (an off-state that is silent is
+  //   unobservable in shadow).
+  const db = tmpBus(t);
+  armSweep(db, [hungMember()], /* switchOn */ false);
+  sweepBusLiveness();
+  assert.equal(
+    escalationCount(db, 'ws-ops', 'ws-worker'),
+    0,
+    'no escalation row reaches the coordinator while liveness=OFF',
+  );
+  assert.ok(
+    busLivenessCounters().counted >= 1,
+    'the would-have-escalated hung call is COUNTED, not fired',
+  );
+});

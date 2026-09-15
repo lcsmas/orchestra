@@ -4295,6 +4295,7 @@ event="\${1:-}"
 # and the transcript path (so orchestra can compute the session's context size
 # in TypeScript rather than parsing JSONL here, which would be fragile).
 tool=""
+tooluseid=""
 transcript=""
 crons=""
 case "\$event" in
@@ -4306,6 +4307,17 @@ case "\$event" in
         rest="\${rest#*:}"
         rest="\${rest#*'"'}"
         tool="\${rest%%'"'*}"
+        ;;
+    esac
+    # #127: mine the tool_use id so the reader can pair a posttool with the exact
+    # in-flight call it ended (a hung PARALLEL call must survive a fast sibling's
+    # posttool). PreToolUse/PostToolUse payloads carry it; other events do not.
+    case "\$payload" in
+      *'"tool_use_id"'*)
+        rest="\${payload#*'"tool_use_id"'}"
+        rest="\${rest#*:}"
+        rest="\${rest#*'"'}"
+        tooluseid="\${rest%%'"'*}"
         ;;
     esac
     # SessionStart carries no tool; reuse the tool slot for its "source"
@@ -4381,7 +4393,7 @@ if command -v flock >/dev/null 2>&1; then
     case "\$cur" in ''|*[!0-9]*) cur=0 ;; esac
     seq=\$((cur + 1))
     printf '%s' "\$seq" >"\$seqf"
-    printf '{"seq":%s,"event":"%s","tool":"%s","transcript":"%s","crons":"%s"}\\n' "\$seq" "\$event" "\$tool" "\$transcript" "\$crons" >> "\$spool"
+    printf '{"seq":%s,"event":"%s","tool":"%s","toolUseId":"%s","transcript":"%s","crons":"%s"}\\n' "\$seq" "\$event" "\$tool" "\$tooluseid" "\$transcript" "\$crons" >> "\$spool"
     line_written=1
   fi
   exec 9>&-
@@ -4390,7 +4402,7 @@ fi
 # No flock, or the lock timed out: fall back to the unsequenced unlocked append
 # so an event is never silently dropped.
 if [ "\$line_written" = 0 ]; then
-  printf '{"seq":%s,"event":"%s","tool":"%s","transcript":"%s","crons":"%s"}\\n' "0" "\$event" "\$tool" "\$transcript" "\$crons" >> "\$spool"
+  printf '{"seq":%s,"event":"%s","tool":"%s","toolUseId":"%s","transcript":"%s","crons":"%s"}\\n' "0" "\$event" "\$tool" "\$tooluseid" "\$transcript" "\$crons" >> "\$spool"
 fi
 exit 0
 `;
