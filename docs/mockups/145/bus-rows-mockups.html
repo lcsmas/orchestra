@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>#145 — Bus wake + delivery rows: mockups</title>
+<style>
+  :root {
+    --av-surface: #1a1f26;
+    --av-surface-raised: #1f242c;
+    --av-surface-sunken: #14181e;
+    --av-hairline: #242a33;
+    --av-hairline-strong: #333b47;
+    --av-hairline-faint: rgba(255, 255, 255, 0.055);
+    --av-text: #e6e9ef;
+    --av-text-dim: #8b95a7;
+    --av-text-faint: #737e92;
+    --av-user: #7ee787;
+    --av-tool-active: #2159c8;
+    --av-warn: #ffc857;
+    --av-ok: #7ee787;
+    --av-danger: #f97583;
+    --av-accent: #58a6ff;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --av-fs-small: 11px;
+    --av-fs-tiny: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 0 60px;
+    background: var(--av-surface); color: var(--av-text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px; line-height: 1.5;
+  }
+  h1 { font-size: 15px; margin: 0 24px 4px; }
+  .sub { margin: 0 24px 24px; color: var(--av-text-dim); font-size: 12px; max-width: 900px; }
+  .variant { max-width: 760px; margin: 0 auto 40px; }
+  .variant > h2 {
+    font-size: 13px; margin: 0 24px 2px; color: var(--av-accent);
+    font-family: var(--font-mono);
+  }
+  .variant > .note { margin: 0 24px 12px; color: var(--av-text-faint); font-size: 11px; }
+  .pane {
+    border: 1px solid var(--av-hairline); border-radius: 10px;
+    background: var(--av-surface); padding: 10px 0; margin: 0 12px;
+  }
+  .label { margin: 14px 24px 4px; color: var(--av-text-faint); font-size: 10px;
+    text-transform: uppercase; letter-spacing: .06em; }
+  /* a plain assistant/user bubble for context */
+  .ctx-user {
+    margin: 4px 24px; padding: 8px 12px; border-radius: 12px;
+    background: color-mix(in srgb, var(--av-user) 12%, var(--av-surface-raised));
+    border: 1px solid color-mix(in srgb, var(--av-user) 30%, var(--av-hairline));
+    color: var(--av-text); max-width: 520px; margin-left: auto;
+  }
+  .ctx-asst { margin: 4px 24px; color: var(--av-text); }
+  .glyph { flex: none; display: inline-flex; }
+
+  /* ============ shared caret ============ */
+  .caret { transition: transform 120ms; }
+  .open .caret { transform: rotate(90deg); }
+
+  /* ============ VARIANT A — "quiet rows" (peer-family, tinted) ============ */
+  .a-wake { margin: 3px 24px; }
+  .a-wake-hdr {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 4px 10px; border: none; border-radius: 8px; cursor: pointer;
+    background: color-mix(in srgb, var(--av-warn) 8%, transparent);
+    color: var(--av-warn); font: inherit; font-size: var(--av-fs-small); text-align: left;
+  }
+  .a-wake-hdr .glyph { color: var(--av-warn); }
+  .a-chip {
+    font-family: var(--font-mono); font-size: 9.5px; padding: 1px 6px;
+    border-radius: 999px; background: color-mix(in srgb, var(--av-warn) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--av-warn) 30%, transparent);
+    color: var(--av-warn); letter-spacing: .02em;
+  }
+  .a-wake.open .a-wake-body {
+    margin: 2px 24px 8px; padding: 8px 12px;
+    border: 1px solid color-mix(in srgb, var(--av-warn) 22%, var(--av-hairline));
+    border-radius: 8px; background: var(--av-surface-raised);
+    font-family: var(--font-mono); font-size: var(--av-fs-small); color: var(--av-text-dim);
+  }
+  .a-wake-body .cmd { color: var(--av-text); }
+
+  .a-deliv { margin: 4px 24px 8px; border: 1px solid var(--av-hairline);
+    border-radius: 8px; background: var(--av-surface-raised); overflow: hidden; }
+  .a-deliv-hdr {
+    display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 10px;
+    background: none; border: none; cursor: pointer; color: var(--av-text-dim);
+    font: inherit; font-size: var(--av-fs-small); text-align: left;
+  }
+  .a-deliv-hdr .glyph { color: var(--av-tool-active); }
+  .a-lot { font-family: var(--font-mono); font-size: 9.5px; color: var(--av-text-faint); }
+  .a-runchip {
+    font-family: var(--font-mono); font-size: 9.5px; padding: 1px 6px; border-radius: 999px;
+    background: color-mix(in srgb, var(--av-tool-active) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--av-tool-active) 30%, transparent);
+    color: var(--av-accent);
+  }
+  .badge { margin-left: auto; font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+    letter-spacing: .05em; padding: 1px 7px; border-radius: 999px; text-transform: uppercase; }
+  .badge.acked { color: var(--av-ok); background: color-mix(in srgb, var(--av-ok) 15%, transparent);
+    border: 1px solid color-mix(in srgb, var(--av-ok) 35%, transparent); }
+  .badge.pending { color: var(--av-warn); background: color-mix(in srgb, var(--av-warn) 15%, transparent);
+    border: 1px solid color-mix(in srgb, var(--av-warn) 35%, transparent); }
+  .a-deliv-body { border-top: 1px solid var(--av-hairline-faint); padding: 2px 0; }
+  .a-msg { padding: 6px 12px; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+  .a-msg + .a-msg { border-top: 1px solid var(--av-hairline-faint); }
+  .a-msg-meta { font-family: var(--font-mono); font-size: 9px; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--av-text-faint); white-space: nowrap; }
+  .a-msg-kind { color: var(--av-accent); }
+  .a-msg-body { color: var(--av-text-dim); font-size: var(--av-fs-small);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ============ VARIANT B — "banded strip" (left rail accent) ============ */
+  .b-wake { display: flex; margin: 4px 24px; border-radius: 8px; overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--av-warn) 28%, var(--av-hairline));
+    background: color-mix(in srgb, var(--av-warn) 7%, var(--av-surface-raised)); }
+  .b-rail { flex: none; width: 3px; background: var(--av-warn); }
+  .b-rail.tool { background: var(--av-tool-active); }
+  .b-body { flex: 1; min-width: 0; }
+  .b-wake-hdr { display: flex; align-items: center; gap: 8px; padding: 5px 10px;
+    cursor: pointer; color: var(--av-text-dim); font-size: var(--av-fs-small); }
+  .b-wake-hdr b { color: var(--av-warn); font-weight: 600; }
+  .b-cmds { padding: 0 12px 8px 34px; font-family: var(--font-mono);
+    font-size: var(--av-fs-small); color: var(--av-text); }
+  .b-cmds .n { color: var(--av-text-faint); margin-right: 6px; }
+  .b-deliv { display: flex; margin: 4px 24px; border-radius: 8px; overflow: hidden;
+    border: 1px solid var(--av-hairline); background: var(--av-surface-raised); }
+  .b-deliv-hdr { display: flex; align-items: center; gap: 8px; padding: 5px 10px;
+    cursor: pointer; color: var(--av-text-dim); font-size: var(--av-fs-small); }
+  .b-tbl { padding: 2px 12px 8px 34px; }
+  .b-row { display: grid; grid-template-columns: 20px 150px 1fr; gap: 12px; padding: 3px 0;
+    font-size: var(--av-fs-small); align-items: baseline; }
+  .b-row + .b-row { border-top: 1px solid var(--av-hairline-faint); }
+  .b-seq { font-family: var(--font-mono); color: var(--av-text-faint); font-size: 9.5px; }
+  .b-route { font-family: var(--font-mono); font-size: 9.5px; color: var(--av-accent); white-space: nowrap; }
+  .b-msgbody { color: var(--av-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ============ VARIANT C — "chat-card" (framed, bell avatar) ============ */
+  .c-wake { display: flex; gap: 10px; margin: 8px 24px; align-items: flex-start; }
+  .c-avatar { flex: none; width: 28px; height: 28px; border-radius: 8px;
+    display: grid; place-items: center; margin-top: 2px; }
+  .c-avatar.wake { background: color-mix(in srgb, var(--av-warn) 18%, transparent); color: var(--av-warn); }
+  .c-avatar.deliv { background: color-mix(in srgb, var(--av-tool-active) 18%, transparent); color: var(--av-accent); }
+  .c-card { flex: 1; min-width: 0; border: 1px solid var(--av-hairline);
+    border-radius: 10px; background: var(--av-surface-raised); overflow: hidden; }
+  .c-card.wake { border-color: color-mix(in srgb, var(--av-warn) 25%, var(--av-hairline)); }
+  .c-head { display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer; }
+  .c-title { font-weight: 600; font-size: 12px; }
+  .c-title.wake { color: var(--av-warn); }
+  .c-sub { color: var(--av-text-faint); font-size: var(--av-fs-small); }
+  .c-cmds { padding: 4px 12px 10px; border-top: 1px solid var(--av-hairline-faint);
+    font-family: var(--font-mono); font-size: var(--av-fs-small); color: var(--av-text); }
+  .c-cmds .line { padding: 2px 0; }
+  .c-cmds .n { color: var(--av-text-faint); }
+  .c-msglist { border-top: 1px solid var(--av-hairline-faint); }
+  .c-msg { padding: 7px 12px; }
+  .c-msg + .c-msg { border-top: 1px solid var(--av-hairline-faint); }
+  .c-msg-top { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+  .c-route { font-family: var(--font-mono); font-size: 10px; color: var(--av-accent); }
+  .c-kind { font-family: var(--font-mono); font-size: 9px; text-transform: uppercase;
+    letter-spacing: .05em; color: var(--av-text-faint); padding: 0 5px; border-radius: 4px;
+    background: var(--av-surface-sunken); }
+  .c-msg-body { color: var(--av-text-dim); font-size: var(--av-fs-small);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  svg { display: block; }
+</style>
+</head>
+<body>
+<h1>#145 — Bus wake orders & deliveries as first-class rows</h1>
+<p class="sub">Three selectable mockups. Each shows the SAME canary exchange rendered by both new row families:
+a <b>wake row</b> (marker-keyed on <code>WAKE_ORDER_HEADER</code>, collapsed→expandable to the ordered commands)
+and a <b>delivery row</b> (an <code>orchestra check</code> tool card folded into a lot view with an ACKED/PENDING badge that flips on the matching <code>ack</code>).
+For contrast, the "must-FAIL control" line at the bottom of each pane is a plain human turn containing the words "lot pending" — it must render as an ordinary bubble, NOT a wake row.
+Dark theme uses the real <code>--av-*</code> tokens.</p>
+
+<!-- ============================ VARIANT A ============================ -->
+<div class="variant">
+  <h2>Variant A — "quiet rows" (peer-family idiom, #56/#64 lineage)</h2>
+  <p class="note">Borderless tinted rows in the same family as the existing peer/inbox compact rows. Wake = amber bell chip line; delivery = a bordered card that expands to a per-message grid. Lowest visual weight — reads as fleet traffic, not conversation.</p>
+  <div class="pane">
+    <div class="label">wake row — collapsed</div>
+    <div class="a-wake open" style="margin-bottom:0">
+      <button class="a-wake-hdr">
+        <span class="glyph"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5a1 1 0 0 1 1 1v.4a4 4 0 0 1 3 3.87v2.4l1 1.3v.53H3v-.53l1-1.3v-2.4a4 4 0 0 1 3-3.87v-.4a1 1 0 0 1 1-1Zm0 13a1.6 1.6 0 0 1-1.5-1h3A1.6 1.6 0 0 1 8 14.5Z"/></svg></span>
+        <span class="caret" style="transform:rotate(90deg)"><svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5.5 3 10.5 8 5.5 13"/></svg></span>
+        <b>Wake order</b>
+        <span class="a-chip">check 2 runs</span>
+      </button>
+    </div>
+    <div class="a-wake open">
+      <div class="a-wake-body">
+        <div><span style="color:var(--av-text-faint)">1</span> <span class="cmd">orchestra check --run wave-g-canary</span></div>
+        <div><span style="color:var(--av-text-faint)">2</span> <span class="cmd">orchestra check --run lead-ancestor</span></div>
+      </div>
+    </div>
+
+    <div class="label">delivery row — ACKED</div>
+    <div class="a-deliv">
+      <button class="a-deliv-hdr open">
+        <span class="glyph"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M2 4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4Zm1.4.5L8 8.2l4.6-3.7"/></svg></span>
+        <span class="caret" style="transform:rotate(90deg)"><svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5.5 3 10.5 8 5.5 13"/></svg></span>
+        <span>Lot <span class="a-lot">#312</span> · 2 messages</span>
+        <span class="a-runchip">wave-g-canary</span>
+        <span class="badge acked">acked</span>
+      </button>
+      <div class="a-deliv-body">
+        <div class="a-msg"><span class="a-msg-meta">42 · <span class="a-msg-kind">status</span></span><span></span>
+          <span class="a-msg-meta">impl-144 → ops-g</span><span class="a-msg-body">G1–G6 green, branch pushed, nominating</span></div>
+        <div class="a-msg"><span class="a-msg-meta">43 · <span class="a-msg-kind">ask</span></span><span></span>
+          <span class="a-msg-meta">impl-142 → ops-g</span><span class="a-msg-body">restart path: keep --no-restart refusal wording?</span></div>
+      </div>
+    </div>
+
+    <div class="label">delivery row — PENDING (not yet acked)</div>
+    <div class="a-deliv">
+      <button class="a-deliv-hdr">
+        <span class="glyph"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M2 4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4Zm1.4.5L8 8.2l4.6-3.7"/></svg></span>
+        <span class="caret"><svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5.5 3 10.5 8 5.5 13"/></svg></span>
+        <span>Lot <span class="a-lot">#313</span> · 1 message</span>
+        <span class="a-runchip">lead-ancestor</span>
+        <span class="badge pending">pending</span>
+      </button>
+    </div>
+
+    <div class="label">must-FAIL control — plain human turn (NOT a wake row)</div>
+    <div class="ctx-user">is there a lot pending on the canary run? just checking before I step away</div>
+  </div>
+</div>
+
+<!-- ============================ VARIANT B ============================ -->
+<div class="variant">
+  <h2>Variant B — "banded strip" (left-rail accent)</h2>
+  <p class="note">Full-width strips with a colored left rail (amber = wake, blue = delivery), inline expansion. Rail gives instant category scanning down the transcript; the lot table is denser (seq · sender→recipient · body). Medium weight.</p>
+  <div class="pane">
+    <div class="label">wake row — expanded</div>
+    <div class="b-wake">
+      <div class="b-rail"></div>
+      <div class="b-body">
+        <div class="b-wake-hdr">
+          <span class="glyph" style="color:var(--av-warn)"><svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5a1 1 0 0 1 1 1v.4a4 4 0 0 1 3 3.87v2.4l1 1.3v.53H3v-.53l1-1.3v-2.4a4 4 0 0 1 3-3.87v-.4a1 1 0 0 1 1-1Zm0 13a1.6 1.6 0 0 1-1.5-1h3A1.6 1.6 0 0 1 8 14.5Z"/></svg></span>
+          <b>Wake order</b> — check 2 runs
+        </div>
+        <div class="b-cmds">
+          <div><span class="n">1</span>orchestra check --run wave-g-canary</div>
+          <div><span class="n">2</span>orchestra check --run lead-ancestor</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="label">delivery row — ACKED</div>
+    <div class="b-deliv">
+      <div class="b-rail tool"></div>
+      <div class="b-body">
+        <div class="b-deliv-hdr">
+          <span class="glyph" style="color:var(--av-accent)"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M2 4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4Zm1.4.5L8 8.2l4.6-3.7"/></svg></span>
+          Lot <b style="color:var(--av-text)">#312</b> · 2 messages · <span style="color:var(--av-accent);font-family:var(--font-mono);font-size:10px">wave-g-canary</span>
+          <span class="badge acked">acked</span>
+        </div>
+        <div class="b-tbl">
+          <div class="b-row"><span class="b-seq">42</span><span class="b-route">impl-144→ops-g · status</span><span class="b-msgbody">G1–G6 green, branch pushed, nominating</span></div>
+          <div class="b-row"><span class="b-seq">43</span><span class="b-route">impl-142→ops-g · ask</span><span class="b-msgbody">restart path: keep --no-restart refusal wording?</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="label">delivery row — PENDING (collapsed)</div>
+    <div class="b-deliv">
+      <div class="b-rail tool"></div>
+      <div class="b-body">
+        <div class="b-deliv-hdr">
+          <span class="glyph" style="color:var(--av-accent)"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M2 4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4Zm1.4.5L8 8.2l4.6-3.7"/></svg></span>
+          Lot <b style="color:var(--av-text)">#313</b> · 1 message · <span style="color:var(--av-accent);font-family:var(--font-mono);font-size:10px">lead-ancestor</span>
+          <span class="badge pending">pending</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="label">must-FAIL control — plain human turn (NOT a wake row)</div>
+    <div class="ctx-user">is there a lot pending on the canary run? just checking before I step away</div>
+  </div>
+</div>
+
+<!-- ============================ VARIANT C ============================ -->
+<div class="variant">
+  <h2>Variant C — "chat-card" (framed, bell/inbox avatar)</h2>
+  <p class="note">A framed card with a leading square avatar glyph, echoing the peer-message avatar treatment. Most prominent — a wake/delivery reads as a distinct actor in the conversation. Delivery messages each get their own routed sub-row with a kind pill. Highest weight.</p>
+  <div class="pane">
+    <div class="label">wake row — expanded</div>
+    <div class="c-wake">
+      <div class="c-avatar wake"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5a1 1 0 0 1 1 1v.4a4 4 0 0 1 3 3.87v2.4l1 1.3v.53H3v-.53l1-1.3v-2.4a4 4 0 0 1 3-3.87v-.4a1 1 0 0 1 1-1Zm0 13a1.6 1.6 0 0 1-1.5-1h3A1.6 1.6 0 0 1 8 14.5Z"/></svg></div>
+      <div class="c-card wake">
+        <div class="c-head">
+          <span class="c-title wake">Wake order</span>
+          <span class="c-sub">check 2 runs, then ack each lot</span>
+        </div>
+        <div class="c-cmds">
+          <div class="line"><span class="n">1 · </span>orchestra check --run wave-g-canary</div>
+          <div class="line"><span class="n">2 · </span>orchestra check --run lead-ancestor</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="label">delivery row — ACKED</div>
+    <div class="c-wake">
+      <div class="c-avatar deliv"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M2 4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4Zm1.4.5L8 8.2l4.6-3.7"/></svg></div>
+      <div class="c-card">
+        <div class="c-head">
+          <span class="c-title">Lot #312</span>
+          <span class="c-sub">2 messages · wave-g-canary</span>
+          <span class="badge acked" style="margin-left:auto">acked</span>
+        </div>
+        <div class="c-msglist">
+          <div class="c-msg">
+            <div class="c-msg-top"><span class="c-route">impl-144 → ops-g</span><span class="c-kind">status</span></div>
+            <div class="c-msg-body">G1–G6 green, branch pushed, nominating</div>
+          </div>
+          <div class="c-msg">
+            <div class="c-msg-top"><span class="c-route">impl-142 → ops-g</span><span class="c-kind">ask</span></div>
+            <div class="c-msg-body">restart path: keep --no-restart refusal wording?</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="label">delivery row — PENDING (collapsed)</div>
+    <div class="c-wake">
+      <div class="c-avatar deliv"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M2 4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4Zm1.4.5L8 8.2l4.6-3.7"/></svg></div>
+      <div class="c-card">
+        <div class="c-head">
+          <span class="c-title">Lot #313</span>
+          <span class="c-sub">1 message · lead-ancestor</span>
+          <span class="badge pending" style="margin-left:auto">pending</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="label">must-FAIL control — plain human turn (NOT a wake row)</div>
+    <div class="ctx-user">is there a lot pending on the canary run? just checking before I step away</div>
+  </div>
+</div>
+
+</body>
+</html>
