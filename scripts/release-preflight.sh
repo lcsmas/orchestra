@@ -78,36 +78,50 @@ rp_newest_origin_tag() {
 
 # ---- T78.1 two-way discriminator -------------------------------------------
 #
-# Given the newest origin tag and origin/master (both refs must be resolvable in
-# the current repo — the caller fetches them), decide whether a release is due.
+# Given the newest origin tag and the ref about to be tagged (HEAD in release.sh
+# — NOT origin/master; see the F1 rationale at the release.sh call site), decide
+# whether a release is due. BOTH directions are load-bearing (review F2):
+#   ahead  = commits the ref-being-tagged has that the tag lacks  (tag..ref)
+#   behind = commits the tag has that the ref-being-tagged lacks  (ref..tag)
+#
 # Prints exactly one verdict line and returns:
-#   0  → master is ahead: 'master ahead by N commits → shipping them'
-#   3  → the tag already contains master: 'tag already contains master → refuse …'
-#         (nonzero, with the evidence, so release.sh aborts)
+#   0  → ref is a clean superset, ahead>0, behind==0:
+#          'ahead by N commits → shipping them'
+#   3  → ref adds nothing (ahead==0): 'tag already contains … → refuse duplicate'
+#          (nonzero + evidence, so release.sh aborts) — the 3rd race shape.
+#   6  → the tag is DIVERGED (behind>0): the tag carries commits the ref lacks, so
+#          shipping the ref would silently orphan that tagged work. Refuse with
+#          evidence — a diverged tag is a wrong-line ship, not a normal advance.
 #   4  → a range could not be computed (bad ref / instrument error) — fail closed
 #
-# Arg 1: newest tag ref (e.g. v0.5.270). Arg 2: master ref (default origin/master).
+# Arg 1: newest tag ref (e.g. v0.5.270). Arg 2: the ref being tagged (default HEAD).
 rp_two_way_discriminator() {
-  local tag="$1" master="${2:-origin/master}"
+  local tag="$1" ref="${2:-HEAD}"
   if [ -z "$tag" ]; then
     echo "release-preflight: no origin tag found → first release, nothing to compare → proceeding"
     return 0
   fi
   local ahead behind
-  ahead="$(_rp_log_count "$tag" "$master")"      # commits master has that the tag lacks
-  behind="$(_rp_log_count "$master" "$tag")"     # commits the tag has that master lacks
+  ahead="$(_rp_log_count "$tag" "$ref")"      # commits the ref has that the tag lacks
+  behind="$(_rp_log_count "$ref" "$tag")"     # commits the tag has that the ref lacks
   case "$ahead$behind" in
     *ERR*|*[!0-9]*|"")
-      echo "release-preflight: ERROR could not compute $tag..$master ranges (ahead='$ahead' behind='$behind') → refusing (fail closed)" >&2
+      echo "release-preflight: ERROR could not compute $tag..$ref ranges (ahead='$ahead' behind='$behind') → refusing (fail closed)" >&2
       return 4 ;;
   esac
   if [ "$ahead" -eq 0 ]; then
-    # master adds nothing beyond the newest tag → cutting a new tag here would be
+    # the ref adds nothing beyond the newest tag → cutting a new tag here would be
     # a DUPLICATE of already-released code. This is the 3rd race shape.
-    echo "release-preflight: tag already contains master → refuse to cut a duplicate (newest tag $tag is level with or ahead of $master; master adds 0 commits, tag adds $behind)" >&2
+    echo "release-preflight: tag already contains this ref → refuse to cut a duplicate (newest tag $tag is level with or ahead of $ref; $ref adds 0 commits, tag adds $behind)" >&2
     return 3
   fi
-  echo "release-preflight: master ahead by $ahead commits → shipping them (newest origin tag $tag; $master adds $ahead, tag adds $behind)"
+  if [ "$behind" -ne 0 ]; then
+    # the tag has commits the ref lacks → the tag was cut from a DIVERGED line.
+    # Shipping the ref would orphan the tag's $behind commit(s) with no notice.
+    echo "release-preflight: DIVERGED tag → refuse (newest tag $tag carries $behind commit(s) $ref lacks while $ref adds $ahead; the tag is on a different line — rebase/merge before shipping, or you silently orphan the tagged work)" >&2
+    return 6
+  fi
+  echo "release-preflight: ahead by $ahead commits → shipping them (newest origin tag $tag; $ref adds $ahead, tag adds 0)"
   return 0
 }
 

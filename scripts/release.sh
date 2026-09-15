@@ -300,31 +300,57 @@ fi
 # ---------------------------------------- tag-vs-master preflight (issue #78) ---
 # The local `git rev-parse "$TAG"` above only sees the LOCAL tag namespace. Three
 # consecutive ships (v0.5.257/260/261) died to the "3rd race shape": a stale
-# package.json `version` plus an ORIGIN tag that does NOT contain master's work.
-# The two-way discriminator (rp_two_way_discriminator) resolves the newest ORIGIN
-# tag by version order and refuses to cut a duplicate when master adds nothing
-# beyond it; rp_next_version_free asserts the chosen NEW is free on BOTH origin
-# tags and gh releases (the v0.5.253 race took the number between the two reads).
-# Runs BEFORE the version bump so a refusal costs nothing. Skipped under --ci-only
-# only if master is unfetchable; --dry-run still runs it (it is read-only).
+# package.json `version` plus an ORIGIN tag that does NOT contain the work about to
+# be released.
+#
+# The discriminator compares the newest origin tag against HEAD — the ref that
+# `pnpm version` (below) actually tags — NOT origin/master. This is deliberate
+# (review F1): the canonical `ship --to-master` flow advances origin/master to
+# HEAD only LATER (see "Advance origin/master → HEAD" below, and the post-bump
+# push), so at THIS point origin/master is still the previous release and equals
+# the newest tag — comparing against it would FALSE-REFUSE every real --to-master
+# release (ahead=0). HEAD is what gets tagged, so `<newest-tag>..HEAD` is the true
+# "what would this tag add" question.
+#
+# rp_two_way_discriminator refuses (nonzero) when HEAD adds nothing beyond the
+# newest tag (duplicate), and CAUTIONS on a diverged tag (the tag carries commits
+# HEAD lacks — review F2). rp_next_version_free asserts the chosen NEW is free on
+# BOTH origin tags and gh releases (the v0.5.253 race took the number between the
+# two reads). Runs BEFORE the bump so a refusal costs nothing; --dry-run still
+# runs it (read-only).
+#
+# FAILS CLOSED on fetch failure (review F3): a release that cannot reach origin
+# cannot push a tag anyway, and skipping the guard is exactly how the 3rd race
+# shape shipped. --ci-only does not exempt it (CI builds from the pushed tag, so
+# the same duplicate risk applies).
 say "Tag-vs-master preflight (issue #78)"
-if git fetch origin master --tags --quiet 2>/dev/null; then
-  RP_NEWEST_TAG="$(rp_newest_origin_tag)"
-  rp_two_way_discriminator "$RP_NEWEST_TAG" "origin/master" || {
-    echo "       This is the 3rd race shape (#78): the newest origin tag already" >&2
-    echo "       contains master's work, so a new tag would duplicate a release." >&2
-    echo "       If master genuinely has unreleased work, fetch/rebase and retry." >&2
-    exit 1
-  }
-  rp_next_version_free "$TAG" || {
-    echo "       The chosen next version is already taken on origin — another ship" >&2
-    echo "       may have claimed it mid-flight (the v0.5.253 race). Re-run to take" >&2
-    echo "       the next free number." >&2
-    exit 1
-  }
+if [ "$DRY_RUN" = 1 ]; then
+  # A dry run may be offline / on a throwaway branch with no origin; a fetch
+  # failure there must not abort the walkthrough. Try to fetch, but continue.
+  git fetch origin master --tags --quiet 2>/dev/null || \
+    echo "  [dry-run] note: could not fetch origin (offline?) — comparing against local refs"
 else
-  echo "  warn: could not fetch origin/master + tags — skipping #78 tag-vs-master preflight" >&2
+  git fetch origin master --tags --quiet 2>/dev/null || {
+    echo "error: #78 preflight: could not fetch origin tags/master — refusing (fail closed)." >&2
+    echo "       A release that can't reach origin can't push a tag, and skipping the" >&2
+    echo "       tag-vs-master guard is how the 3rd race shape shipped. Fix connectivity." >&2
+    exit 1
+  }
 fi
+RP_NEWEST_TAG="$(rp_newest_origin_tag)"
+rp_two_way_discriminator "$RP_NEWEST_TAG" "HEAD" || {
+  echo "       This is the 3rd race shape (#78): the newest origin tag already" >&2
+  echo "       contains the commits about to be tagged, so a new tag would" >&2
+  echo "       duplicate a release. If there is genuinely unreleased work, fetch/" >&2
+  echo "       rebase so HEAD carries it and retry." >&2
+  exit 1
+}
+rp_next_version_free "$TAG" || {
+  echo "       The chosen next version is already taken on origin — another ship" >&2
+  echo "       may have claimed it mid-flight (the v0.5.253 race). Re-run to take" >&2
+  echo "       the next free number." >&2
+  exit 1
+}
 
 say "Releasing $CURRENT → $NEW  (tag $TAG)"
 

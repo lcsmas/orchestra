@@ -71,24 +71,48 @@ else
   fail "E newest-tag-version-order" "got [$RUN_OUT] rc=$RUN_RC (want v0.5.270)"
 fi
 
-# ---- Arm A: tag == master (master adds 0) → REFUSE -------------------------
-# ahead = _rp_log_count tag master = 0 ; behind = _rp_log_count master tag = 0
-run_arm "export RP_LOG_COUNT_CMD='echo 0'" rp_two_way_discriminator v0.5.270 origin/master
-assert "A tag==master REFUSE" 3 "refuse to cut a duplicate"
+# ---- Arm A: ref adds 0 beyond newest tag → REFUSE (duplicate) --------------
+# ahead = _rp_log_count tag ref = 0 ; behind = _rp_log_count ref tag = 0
+run_arm "export RP_LOG_COUNT_CMD='echo 0'" rp_two_way_discriminator v0.5.270 HEAD
+assert "A tag==ref REFUSE" 3 "refuse to cut a duplicate"
 
-# ---- Arm B: master ahead by N → PROCEED ------------------------------------
-# ahead (tag..master) = 5 ; behind (master..tag) = 0. RP_LOG_COUNT_CMD sees $1 $2.
+# ---- Arm B: ref ahead by N, tag not diverged → PROCEED ---------------------
+# ahead (tag..ref) = 5 ; behind (ref..tag) = 0. RP_LOG_COUNT_CMD sees $1 $2:
+# when $1 is the tag we are in the tag..ref (ahead) direction → 5, else 0.
 run_arm "export RP_LOG_COUNT_CMD='if [ \"\$1\" = v0.5.270 ]; then echo 5; else echo 0; fi'" \
-        rp_two_way_discriminator v0.5.270 origin/master
-assert "B master-ahead PROCEED" 0 "master ahead by 5 commits"
+        rp_two_way_discriminator v0.5.270 HEAD
+assert "B ref-ahead PROCEED" 0 "ahead by 5 commits"
 
 # ---- Arm C: first release (no origin tag) ----------------------------------
-run_arm "export RP_LOG_COUNT_CMD='echo 0'" rp_two_way_discriminator "" origin/master
+run_arm "export RP_LOG_COUNT_CMD='echo 0'" rp_two_way_discriminator "" HEAD
 assert "C first-release" 0 "first release"
 
 # ---- Arm D: instrument error (fail closed) ---------------------------------
-run_arm "export RP_LOG_COUNT_CMD='echo ERR'" rp_two_way_discriminator v0.5.270 origin/master
+run_arm "export RP_LOG_COUNT_CMD='echo ERR'" rp_two_way_discriminator v0.5.270 HEAD
 assert "D instrument-error fail-closed" 4 "fail closed"
+
+# ---- Arm F1 (review): compares against the REF-BEING-TAGGED, not origin/master.
+# The canonical --to-master flow: at preflight time origin/master == newest tag
+# (advanced only later), while HEAD carries the unreleased work. Simulate BOTH
+# refs off ONE stub keyed on the RANGE ENDPOINTS ($1=A $2=B of A..B):
+#   tag..origin/master → 0  (master not yet advanced → FALSE-refuse if we used it)
+#   tag..HEAD          → 3  (HEAD really is ahead)
+#   HEAD..tag / master..tag → 0 (not diverged)
+# must-FAIL: discriminating against origin/master REFUSES a real release (rc 3);
+# must-PASS: discriminating against HEAD PROCEEDS (rc 0). The fix is choosing HEAD.
+F1_STUB='case "$1 $2" in "v0.5.270 origin/master") echo 0;; "v0.5.270 HEAD") echo 3;; *) echo 0;; esac'
+run_arm "export RP_LOG_COUNT_CMD='$F1_STUB'" rp_two_way_discriminator v0.5.270 origin/master
+assert "F1 vs-master would-FALSE-REFUSE" 3 "refuse to cut a duplicate"
+run_arm "export RP_LOG_COUNT_CMD='$F1_STUB'" rp_two_way_discriminator v0.5.270 HEAD
+assert "F1 vs-HEAD PROCEEDS (the fix)" 0 "ahead by 3 commits"
+
+# ---- Arm F2 (review): DIVERGED tag → REFUSE --------------------------------
+# ahead (tag..ref) = 2 (ref has new work) AND behind (ref..tag) = 4 (tag carries
+# commits ref lacks → cut from a different line). Must refuse rather than silently
+# orphan the tagged work. $1=tag → ahead=2, else behind=4.
+run_arm "export RP_LOG_COUNT_CMD='if [ \"\$1\" = v0.5.270 ]; then echo 2; else echo 4; fi'" \
+        rp_two_way_discriminator v0.5.270 HEAD
+assert "F2 diverged-tag REFUSE" 6 "DIVERGED tag"
 
 # ---- Arm F: next version free ----------------------------------------------
 run_arm "export RP_LS_REMOTE_TAGS='$TAGS_OUTPUT'; export RP_GH_RELEASE_TAGS='printf \"v0.5.270\nv0.5.268\n\"'" \
@@ -106,13 +130,56 @@ run_arm "export RP_LS_REMOTE_TAGS='printf \"\n\"'; export RP_GH_RELEASE_TAGS='pr
         rp_next_version_free v0.5.271
 assert "H next-version-taken-release" 5 "ALREADY TAKEN"
 
+# ---- Arm F3 (review): release.sh FAILS CLOSED on fetch failure -------------
+# The wrapper in release.sh used to `warn … skipping` when `git fetch origin`
+# failed — a no-network release then shipped WITHOUT the guard (exactly how the
+# 3rd race shape got through). Drive the real release.sh in an isolated temp repo
+# whose `origin` points at a nonexistent path so the fetch fails, non-dry-run,
+# and require it to REFUSE with 'fail closed' (rc != 0), NOT proceed past the
+# preflight. This exercises the actual release.sh branch, not a copy.
+#
+# We stop the script AT the preflight: RP_LS_REMOTE_TAGS is irrelevant because a
+# fetch failure must abort BEFORE reading tags. gh auth is real (already checked
+# above by the caller's env). Everything before the preflight is satisfied by the
+# temp repo: clean tree, on a branch, not behind (origin/<branch> unfetchable →
+# behind-check warns and continues).
+RELEASE_SH="$(cd "$(dirname "$0")/.." && pwd)/scripts/release.sh"
+F3_TMP="$(mktemp -d /tmp/release-preflight-f3.XXXXXX)"
+(
+  cd "$F3_TMP"
+  git init -q
+  git config user.email t@t; git config user.name t
+  # A package.json the release.sh integrity check + version read both accept.
+  cat > package.json <<'PKG'
+{ "name": "t", "version": "0.5.0",
+  "scripts": { "a":"a","b":"b","c":"c","d":"d","e":"e","release":"bash scripts/release.sh" },
+  "devDependencies": {}, "build": {} }
+PKG
+  mkdir -p scripts
+  # release.sh sources scripts/release-preflight.sh via the repo toplevel — copy both.
+  cp "$RELEASE_SH" scripts/release.sh
+  cp "$(dirname "$RELEASE_SH")/release-preflight.sh" scripts/release-preflight.sh
+  git add -A; git commit -qm init
+  # origin that cannot be fetched → the preflight's fetch fails.
+  git remote add origin "$F3_TMP/nonexistent-remote.git"
+) >/dev/null 2>&1
+f3_out="$(cd "$F3_TMP" && bash scripts/release.sh patch 2>&1)"; f3_rc=$?
+if [ "$f3_rc" = 0 ]; then
+  fail "F3 fetch-fail FAIL-CLOSED" "release.sh proceeded (rc 0) on a fetch failure — fails OPEN"
+else
+  case "$f3_out" in
+    *"fail closed"*) pass "F3 fetch-fail FAIL-CLOSED" "rc=$f3_rc refused with 'fail closed'" ;;
+    *) fail "F3 fetch-fail FAIL-CLOSED" "rc=$f3_rc but no 'fail closed' marker; out tail=[$(printf '%s' "$f3_out" | tail -3 | tr '\n' '|')]" ;;
+  esac
+fi
+
 # ---- MUTATION check (C3): invert the refuse condition, arm A must go GREEN --
 # Copy the lib, flip `-eq 0` to `-ne 0` in the discriminator, re-run arm A. A
 # correctly-detecting test now sees the tag==master case PROCEED (rc=0) instead
 # of refuse — i.e. the arm's rc-3 assertion would FAIL on the mutant. We assert
 # the mutant is DETECTED: under the mutation, arm A's condition no longer fires.
 MUT="$(mktemp /tmp/release-preflight-mut.XXXXXX.sh)"
-trap 'rm -f "$MUT"' EXIT
+trap 'rm -f "$MUT"; rm -rf "$F3_TMP"' EXIT
 sed 's/if \[ "\$ahead" -eq 0 \]; then/if [ "$ahead" -ne 0 ]; then/' "$LIB" > "$MUT"
 if ! grep -q 'if \[ "\$ahead" -ne 0 \]; then' "$MUT"; then
   fail "MUT mutation-applied" "sed did not flip the condition — mutation string not present in $MUT"
@@ -121,7 +188,7 @@ else
     set -uo pipefail
     export RP_LOG_COUNT_CMD='echo 0'
     . '$MUT'
-    rp_two_way_discriminator v0.5.270 origin/master
+    rp_two_way_discriminator v0.5.270 HEAD
   " 2>&1)"; mrc=$?
   # On the mutant, ahead=0 no longer triggers refuse (rc=3); it falls through to
   # the 'shipping them' branch (rc=0). So arm A's rc-3 assertion would fail → the
