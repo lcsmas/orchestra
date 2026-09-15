@@ -8,9 +8,12 @@ import {
   MIGRATIONS,
   SCHEMA_VERSION,
   ack,
+  badRecipientRows,
   busPath,
   capabilityRejectCount,
   check,
+  ownRunRecipientSql,
+  relatedRunRecipientSql,
   countCapabilityReject,
   failCapability,
   generateCapabilityToken,
@@ -936,4 +939,122 @@ test('#129: getCapabilityByToken round-trips by clear token and returns null for
   assert.equal(row.dispatch_seq, seq);
   assert.equal(row.state, 'active');
   assert.equal(getCapabilityByToken(db, RUN, generateCapabilityToken()), null);
+});
+
+// ─── #144 recipient-scoped check() + the shared predicate ────────────────────
+
+const READER_X = 'aaaaaaaa-1111-4111-8111-111111111111';
+const READER_Y = 'bbbbbbbb-2222-4222-8222-222222222222';
+
+test('#144 check() hands a reader ONLY its own mail, not another reader\'s in the same run', (t) => {
+  // COVERS: the `ownRunRecipientSql` filter on `rowsAfter` in check(). Before
+  // #144 check() returned EVERY row in the run above the cursor with NO
+  // recipient filter (canary rows 444–448: the LEAD's `check --run <ops-run>`
+  // was handed the OPS's mail).
+  // MUTANT: drop the `AND ${ownRunRecipientSql()}` from `rowsAfter` → X's lot
+  // then contains Y's message too, and the count is 3 not 2.
+  const db = tmpBus(t);
+  send(db, { runId: RUN, sender: 's', recipient: READER_X, kind: 'dispatch', body: 'for-X-1' });
+  send(db, { runId: RUN, sender: 's', recipient: READER_Y, kind: 'dispatch', body: 'for-Y' });
+  send(db, { runId: RUN, sender: 's', recipient: READER_X, kind: 'dispatch', body: 'for-X-2' });
+
+  const lot = check(db, RUN, READER_X);
+  assert.equal(lot.messages.length, 2, 'X gets exactly its two messages');
+  assert.deepEqual(
+    lot.messages.map((m) => m.body),
+    ['for-X-1', 'for-X-2'],
+    'and never Y\'s message',
+  );
+});
+
+test('#144 check() still hands a reader NULL-recipient broadcasts in its own run', (t) => {
+  // The own-run scope is `recipient = reader OR recipient IS NULL`: a run-wide
+  // broadcast (null recipient) must still reach every reader, as before #144.
+  // MUTANT: change `ownRunRecipientSql` to exact-only (`recipient = ?`) → the
+  // broadcast vanishes from X's lot and the count drops to 1.
+  const db = tmpBus(t);
+  send(db, { runId: RUN, sender: 's', recipient: null, kind: 'dispatch', body: 'broadcast' });
+  send(db, { runId: RUN, sender: 's', recipient: READER_X, kind: 'dispatch', body: 'for-X' });
+
+  const lot = check(db, RUN, READER_X);
+  assert.deepEqual(lot.messages.map((m) => m.body), ['broadcast', 'for-X']);
+});
+
+test('#144 a recipient-scoped REPLAY returns the byte-identical rows the first take did', (t) => {
+  // A crashed reader that re-checks before ack must get back EXACTLY what it was
+  // handed — the recipient filter is applied to `rowsInRange` too, so the frozen
+  // from/to re-select the same reader's rows.
+  // MUTANT: leave `rowsInRange` unscoped → the replay folds in Y's message that
+  // sits inside the frozen range, so the replay differs from the take.
+  const db = tmpBus(t);
+  send(db, { runId: RUN, sender: 's', recipient: READER_X, kind: 'dispatch', body: 'x1' });
+  send(db, { runId: RUN, sender: 's', recipient: READER_Y, kind: 'dispatch', body: 'y1' });
+  send(db, { runId: RUN, sender: 's', recipient: READER_X, kind: 'dispatch', body: 'x2' });
+
+  const first = check(db, RUN, READER_X);
+  const replay = check(db, RUN, READER_X);
+  assert.equal(replay.replay, true);
+  assert.deepEqual(
+    replay.messages.map((m) => m.body),
+    first.messages.map((m) => m.body),
+    'replay is byte-identical to the take, never folding in Y\'s mid-range row',
+  );
+  assert.deepEqual(first.messages.map((m) => m.body), ['x1', 'x2']);
+});
+
+test('#144 check() is scoped: a reader with NO mail in the run gets an empty lot even when others have some', (t) => {
+  const db = tmpBus(t);
+  send(db, { runId: RUN, sender: 's', recipient: READER_X, kind: 'dispatch', body: 'x1' });
+  const lot = check(db, RUN, READER_Y);
+  assert.equal(lot.messages.length, 0);
+  assert.equal(lot.delivery, null);
+});
+
+test('#144 ownRunRecipientSql / relatedRunRecipientSql are the ONE shared predicate (no drift)', () => {
+  // The whole G4 point: `check()` (bus.ts) and `readPendingReaders`
+  // (bus-wake.ts) reference the SAME function, so the wake predicate and the lot
+  // scope cannot drift. This asserts the fragment shape both consume, and — the
+  // structural half — that both call sites literally import it (grep below).
+  assert.equal(ownRunRecipientSql(), '(recipient = ? OR recipient IS NULL)');
+  assert.equal(ownRunRecipientSql('m'), '(m.recipient = ? OR m.recipient IS NULL)');
+  assert.equal(relatedRunRecipientSql('m'), '(m.recipient = ?)');
+});
+
+test('#144 both check() and readPendingReaders SOURCE-reference the shared predicate', () => {
+  // STRUCTURAL must-FAIL (carry-forward: a marker as specific as the claim). If
+  // a future edit re-inlines the clause in either file, the shared function is
+  // no longer the single source and this reddens. Keyed on the fragment name,
+  // not on prose.
+  const busSrc = fs.readFileSync(new URL('./bus.ts', import.meta.url), 'utf8');
+  const wakeSrc = fs.readFileSync(new URL('./bus-wake.ts', import.meta.url), 'utf8');
+  // check() lives in bus.ts and must USE the exported fragment, not a re-inlined copy.
+  assert.match(busSrc, /ownRunRecipientSql\(\)/, 'check() uses ownRunRecipientSql');
+  assert.match(wakeSrc, /ownRunRecipientSql\('m'\)/, 'readPendingReaders uses ownRunRecipientSql');
+  assert.match(wakeSrc, /relatedRunRecipientSql\('m'\)/, 'readPendingReaders uses relatedRunRecipientSql');
+});
+
+// ─── #144 bus-status flags short/invalid recipients ──────────────────────────
+
+test('#144 badRecipientRows flags a SHORT-handle recipient and ignores full ids + nulls', (t) => {
+  // COVERS: the `bus-status` G7 check. A row addressed by the 8-char handle can
+  // never wake its reader; badRecipientRows surfaces it.
+  // MUTANT: invert `!isFullWorkspaceId` → full ids get flagged, the short one
+  // does not, so the seeded short row is NOT reported (the must-FAIL: an unfixed
+  // status does not flag it).
+  const db = tmpBus(t);
+  send(db, { runId: RUN, sender: 's', recipient: READER_X, kind: 'dispatch', body: 'good' });
+  send(db, { runId: RUN, sender: 's', recipient: null, kind: 'dispatch', body: 'broadcast' });
+  send(db, { runId: RUN, sender: 's', recipient: '0a5c25bb', kind: 'dispatch', body: 'BAD short handle' });
+
+  const bad = badRecipientRows(db);
+  assert.equal(bad.length, 1, 'exactly the one short-handle row');
+  assert.equal(bad[0].recipient, '0a5c25bb');
+  assert.equal(bad[0].sender, 's');
+});
+
+test('#144 badRecipientRows returns [] on a clean bus (all full ids or nulls)', (t) => {
+  const db = tmpBus(t);
+  send(db, { runId: RUN, sender: 's', recipient: READER_X, kind: 'dispatch', body: 'a' });
+  send(db, { runId: RUN, sender: 's', recipient: null, kind: 'dispatch', body: 'b' });
+  assert.deepEqual(badRecipientRows(db), []);
 });

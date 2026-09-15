@@ -257,9 +257,12 @@ surface as a permanently non-zero `missed` nobody could attribute.
 
 `busSend` used to be unconditional, so all four refusal shapes (empty text,
 unknown target, message-yourself, inbox write failed) landed as real
-`kind='dispatch'` rows — and `bus.check` has no recipient filter, so a reader was
-handed messages the **authoritative** channel explicitly refused, inside the
-artifact ADR 0002 calls the source of truth. Old channel delivers 1, bus asserts 5.
+`kind='dispatch'` rows — and at the time `bus.check` had no recipient filter, so a
+reader was handed messages the **authoritative** channel explicitly refused,
+inside the artifact ADR 0002 calls the source of truth. Old channel delivers 1,
+bus asserts 5. (**#144** later added the recipient filter to `check` — see the
+#144 section below; a REFUSED send is still not mirrored, and now even a mirrored
+one is only handed to its actual recipient.)
 
 It was invisible to the very instrument built to detect it: `withdrawn` is
 deliberately not `missed`, so the counters read the exact **0/0/0 promotion bar**
@@ -1689,3 +1692,102 @@ dir-import), so the seam decision is pure exports (`nearestOrchestratorId` /
 `parentOrchestratorId`, wave-run-id.ts) and the effect is a platform-free function
 (`maybeStartRunAtAnchor`) the integration test drives for real — never a
 re-implementation.
+
+---
+
+# Delivery core: recipient canonicalization + the shared predicate (#144)
+
+The first canary with `delivery=ON`/`wake=ON` (ledger #143 §Canary) found three
+delivery defects. All three are fixed here; none rewrites existing rows (canary
+data), and `bus-status` now FLAGS the bad rows so an operator can see them.
+
+## 1. `send` canonicalizes `--to` to a FULL workspace id
+
+The fleet types the 8-char handle (`orchestra send --to 0a5c25bb …`). Pre-#144
+the bus stored `recipient='0a5c25bb'`, but the wake predicate and `check` compare
+against the reader's **full uuid**, so the row never matched and the OPS was never
+woken (rows 444–448). Full-uuid probes (443, 450) woke it in ~40 s — the path
+worked only with full ids.
+
+`send` now resolves `--to` (full id / 8-char prefix / workspace **name**) to the
+full id BEFORE any row is written. **The bus never stores a short handle.**
+
+| Piece | Where |
+|---|---|
+| Pure resolver (rules, ambiguity/unknown refusals) | `src/cli/resolve-handle.ts` `resolveHandle()` |
+| Candidate fetch — socket up | `src/main/hooks-server.ts` `/resolveHandle` → `dispatchResolveHandleRequest` (`src/main/workspaces.ts`) |
+| Candidate fetch — app DOWN | `src/cli/index.ts` `offlineHandleCandidates()` reads `<ORCHESTRA_HOME>/userData/orchestra/store.json` |
+| Wired into the verb | `src/cli/index.ts` `send` case → `canonicalizeRecipientOrFail()` before `verbSend` |
+
+**The offline-path trap:** the app relocates userData to `<HOME>/userData` via
+`app.setPath` ONLY when NOT in CLI mode (`src/main/index.ts`), so
+`app.getPath('userData')` is the WRONG source from inside the CLI. The offline
+reader derives the home-relative path itself (`cliOrchestraHome()`), matching
+what the running app writes. An unreadable store yields `[]` → the send is
+REFUSED (never a silent short-handle land).
+
+Resolution precedence (most specific first): exact id → exact name → id prefix.
+Ambiguous (two ids share a prefix, or two workspaces share a name) or unknown →
+`fail()` (rc≠0) naming the candidates. A full id wins even when it is a prefix of
+a longer id.
+
+**Known adjacent gap (follow-up, NOT fixed here):** `orchestra message <handle>`
+has the SAME short-handle miss (`message 0524718f` fails, the full id works) —
+#144's scope is `send`/`check`/mirror/`bus-status`, so the message path is left
+for a follow-up. The resolver is reusable there.
+
+## 2. `check` is recipient-scoped by ONE shared predicate
+
+Pre-#144 `check()` (`src/main/bus.ts`) built the lot from EVERY message in the run
+above the reader's cursor with **no recipient filter**, so any reader could
+consume any run's mail. It now filters by `ownRunRecipientSql()` — the reader's
+own run: `recipient = reader OR recipient IS NULL` (a broadcast still reaches
+everyone). Applied to BOTH the fresh-take query and the replay query, so a
+redelivered lot stays byte-identical.
+
+**The predicate is ONE function, referenced at both call sites** — the classic
+guard/consumer drift bug is that `check`'s scope and the wake predicate's scope
+diverge. `ownRunRecipientSql(alias?)` / `relatedRunRecipientSql(alias?)` live in
+`src/main/bus.ts`; `check()` uses `ownRunRecipientSql()`, and
+`readPendingReaders` (`src/main/bus-wake.ts`) uses `ownRunRecipientSql('m')` +
+`relatedRunRecipientSql('m')`. There is no second copy of the clause. A
+source-binding test (`bus.test.ts`) reddens if either file re-inlines it.
+
+## 3. The mirror lands in the parties' resolved run
+
+`mirrorDispatch` (`src/main/bus-mirror.ts`) took its run id from the MAIN
+process's env (`ORCHESTRA_RUN_ID`, absent → per-boot `host-…`), so every mirrored
+row went to `host-…` (row 451), invisible to any party's `check`. It now accepts
+an optional `runId` — the PARTIES' resolved run — set by the caller
+(`dispatchMessageRequest` in `workspaces.ts` resolves the RECIPIENT's wave run via
+`resolveWaveRunId`). Absent → the `host-…` fallback, unchanged. **Only the ROW's
+run moves; the divergence ledger stays keyed on `mirrorRunId()`** (its frozen
+#123 contract) — this redirects where a party's `check` finds the row, not the
+aggregate counters.
+
+## 4. `bus-status` flags short/invalid recipients
+
+`badRecipientRows(db)` (`src/main/bus.ts`) returns every message whose recipient
+is non-null and NOT a full workspace id (`isFullWorkspaceId`,
+`src/shared/types.ts` — a v4 UUID test). `/busStatus` returns `badRecipientCount`
++ a capped `badRecipients` sample; `orchestra bus-status` prints a WARNING block
+when the count is > 0 (`printBadRecipients`, `src/cli/index.ts`), quiet on a clean
+bus. No existing row is rewritten — the canary rows are left as evidence.
+
+## Gates (#144)
+
+- **G3** canonicalize — `src/cli/resolve-handle.test.ts` (8-char→full, name→full,
+  ambiguous/unknown refused) + `src/cli/canonicalize-recipient.test.ts` (the
+  offline store path). must-FAIL: dropping a resolver tier refuses / lands raw.
+- **G4** shared predicate — `bus.test.ts` #144 arms (check recipient-scoped;
+  replay byte-identical; the ONE-shared-function source binding). must-FAIL:
+  dropping the filter folds another reader's mail into the lot.
+- **G5** mirror — `bus-mirror.test.ts` #144 G5 (supplied runId → parties' run;
+  absent → host fallback). must-FAIL: ignore `input.runId` → row lands `host-…`.
+- **G6** CANARY REPLAY (packaged app) — owned with VERIFY-G: a member `send --to
+  <8-char-OPS>` wakes its reader within one sweep; unfixed build never wakes.
+- **G7** bus-status — `bus.test.ts` `badRecipientRows` flags a seeded short row,
+  quiet on a clean bus. must-FAIL: invert the id test → the short row is missed.
+- **The CANARY at the predicate layer** — `bus-wake.test.ts` #144: a short-handle
+  recipient never wakes the full-id reader; the full id does (same command,
+  positive + negative arm).

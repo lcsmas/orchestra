@@ -88,6 +88,16 @@ export interface MirrorInput {
   result: MirrorableResult;
   /** Test seam: an explicit db instead of the boot connection. */
   db?: BusDb | null;
+  /**
+   * The PARTIES' resolved run (#144). The old channel names sender/recipient
+   * workspace ids; their wave run (the recipient's anchor) is where the mirrored
+   * row belongs so a `check --run <that>` finds it and the wake predicate scoped
+   * to it matches. Absent (the caller could not resolve it) → the row lands in
+   * the per-boot `host-…` id as before, the coexistence-safe fallback. Before
+   * #144 EVERY mirrored row went to `host-…` (canary row 451), invisible to any
+   * party's `check`.
+   */
+  runId?: string | null;
 }
 
 /**
@@ -107,7 +117,13 @@ export function mirrorDispatch(input: MirrorInput): MirrorOutcome {
   let rows = 0;
   try {
     outcome = outcomeFor(input.result);
-    const runId = mirrorRunId();
+    // #144 — the row lands in the PARTIES' resolved run when the caller supplied
+    // one; else the per-boot `host-…` fallback (mirrorRunId). This is the run
+    // stamped on the `messages`/`mirror_records` rows, NOT the counter scope: the
+    // divergence ledger stays keyed on `mirrorRunId()` (its frozen #123 contract)
+    // — this ticket redirects the ROW so a party's `check` can see it, not the
+    // aggregate.
+    const runId = input.runId?.trim() || mirrorRunId();
     const sendId = randomUUID();
     // ── F1 (BLOCKING, review 2026-09-08) ────────────────────────────────────
     // A REFUSED send must NOT become a bus row.

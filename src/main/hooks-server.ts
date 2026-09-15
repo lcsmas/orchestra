@@ -10,6 +10,7 @@ import {
   dispatchLinkRequest,
   dispatchSpawnRequest,
   dispatchPeersRequest,
+  dispatchResolveHandleRequest,
   dispatchReadRequest,
   dispatchMessageRequest,
   dispatchBroadcastMessageRequest,
@@ -26,7 +27,7 @@ import {
   dispatchStatusRequest,
 } from './workspaces';
 import { busDivergenceReport } from './bus-mirror.ts';
-import { getBus } from './bus.ts';
+import { getBus, badRecipientRows as busBadRecipientRows } from './bus.ts';
 import { runFlags } from './bus-runs.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import { serializeSwitches } from '../shared/bus-switches.ts';
@@ -286,6 +287,10 @@ export async function startHooksServer(): Promise<void> {
                 stats: msg.stats === true,
               }),
             );
+          } else if (route === '/resolveHandle') {
+            // #144 — id+name of every live workspace, for the CLI `send --to`
+            // canonicalizer. Read-only, no caller context needed.
+            send(200, dispatchResolveHandleRequest());
           } else if (route === '/read') {
             if (typeof msg.id === 'string') {
               send(
@@ -427,7 +432,28 @@ export async function startHooksServer(): Promise<void> {
                 liveFlags: serializeSwitches(getLiveSwitches()),
               };
             }
-            send(200, { ok: true, ...report, ...runFlagsExtra });
+            // #144 — flag any message whose recipient is not a full workspace id
+            // (the canary's short handles). Cross-run: a bad recipient anywhere
+            // in the bus is a delivery hazard, not scoped to the caller's run.
+            // Null bus → count 0 (nothing to report, D1). `badRecipientCount` is
+            // the authoritative total; `badRecipients` is a capped sample so a
+            // huge bus does not return an unbounded list.
+            const badDb = getBus();
+            const allBad = badDb ? busBadRecipientRows(badDb) : [];
+            const badRecipientCount = allBad.length;
+            const badRecipients = allBad.slice(0, 50).map((r) => ({
+              sequence: r.sequence,
+              run_id: r.run_id,
+              sender: r.sender,
+              recipient: r.recipient,
+            }));
+            send(200, {
+              ok: true,
+              ...report,
+              ...runFlagsExtra,
+              badRecipientCount,
+              badRecipients,
+            });
           } else if (route === '/whoami') {
             if (typeof msg.id === 'string') {
               send(200, dispatchWhoamiRequest({ id: msg.id }));

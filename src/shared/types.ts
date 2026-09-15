@@ -67,6 +67,22 @@ export interface QueuedPrompt {
   queuedAt: number;
 }
 
+/**
+ * Is `s` a FULL workspace id (a v4 UUID, `randomUUID()`)? (#144)
+ *
+ * Workspace ids are `crypto.randomUUID()` (36-char UUIDs). The bus stores a
+ * message's `recipient` as a workspace id, and the wake predicate / `check`
+ * compare it against the reader's full id — so a SHORT handle (`0a5c25bb`, the
+ * 8-char prefix the fleet types) stored as a recipient never matches and its
+ * reader is never woken (canary rows 444–448). `send` canonicalizes handles to
+ * the full id before writing; this predicate is what `bus-status` uses to FLAG
+ * any legacy/short recipient that slipped in before the fix. Case-insensitive on
+ * the hex, since UUIDs may be upper- or lower-cased by different producers.
+ */
+export function isFullWorkspaceId(s: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+}
+
 export interface Workspace {
   id: string;
   name: string;

@@ -94,6 +94,27 @@ test('a BROADCAST (recipient IS NULL) makes every reader pending', (t) => {
   assert.equal(pendingFor(db, OTHER).pending, true);
 });
 
+test('#144 THE CANARY: a SHORT-handle recipient never wakes the full-id reader; the full id does', (t) => {
+  // THE EXACT canary defect (rows 444–448): the fleet sent `--to 0a5c25bb` and
+  // the row stored `recipient='0a5c25bb'`, but the reader is identified on the
+  // wake predicate by its FULL uuid — so the exact-match never fired and the OPS
+  // was never woken. The #144 fix is `send` canonicalizing the handle to the
+  // full id BEFORE the row exists; this test proves the wake predicate's side of
+  // that contract: only a full-id recipient matches a full-id reader.
+  const FULL = 'b3f55639-1d61-4d21-b6bf-0d701445dc12';
+  const SHORT = 'b3f55639';
+  const db = tmpBus(t);
+  // Pre-fix behavior: a short-handle recipient row does NOT make the full-id
+  // reader pending. This is the must-FAIL the canonicalizer removes upstream.
+  send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'report', recipient: SHORT });
+  assert.equal(pendingFor(db, FULL).pending, false, 'a short handle never wakes the full-id reader');
+  // Post-fix behavior: the canonicalized full-id recipient DOES wake it. Same
+  // command as the negative, so the predicate is proven able to say yes here.
+  const seq = send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'report2', recipient: FULL });
+  assert.equal(pendingFor(db, FULL).pending, true, 'the full-id recipient wakes the reader');
+  assert.equal(pendingFor(db, FULL).pendingThroughSeq, seq);
+});
+
 // ── The ack path — T117.4's mechanism, at the durable layer ────────────────
 
 test('check() alone does NOT clear pending; the reader ACK does', (t) => {

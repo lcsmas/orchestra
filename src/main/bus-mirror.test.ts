@@ -1074,3 +1074,55 @@ test('SELECTOR GUARD — extract() aborts loudly when the region it captures is 
   assert.ok(real.startsWith('async function dispatchMessageRequestUnmirrored'));
   assert.ok(real.length > 2000, 'and it is the BODY, not a mention');
 });
+
+// ─── #144 G5 — the mirrored row lands in the PARTIES' resolved run ───────────
+
+test('#144 G5 — a supplied runId puts the mirrored row in that run, NOT the host id', (t) => {
+  // COVERS: the `input.runId?.trim() || mirrorRunId()` in mirrorDispatch. Before
+  // #144 EVERY mirrored row went to the per-boot `host-…` id (canary row 451),
+  // invisible to any party's `check`.
+  // MUTANT: revert to `const runId = mirrorRunId()` (ignore input.runId) → the
+  // row lands in `host-…`, so PARTIES_RUN has 0 rows and this reddens.
+  const { db } = tmpBus(t);
+  const PARTIES_RUN = 'ops-0524718f';
+  // A per-boot host id distinct from PARTIES_RUN, to prove the row did NOT go there.
+  setMirrorRunId('host-somethingelse');
+  mirrorDispatch({
+    sender: 'ws-sender',
+    recipient: 'ws-target',
+    body: 'member report',
+    result: { ok: true, delivery: 'live', branch: 'b' },
+    db,
+    runId: PARTIES_RUN,
+  });
+
+  // The message row is in PARTIES_RUN and a `check --run PARTIES_RUN` sees it.
+  const rowsInParties = db
+    .prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id = ?')
+    .get(PARTIES_RUN).n;
+  assert.equal(rowsInParties, 1, 'the mirrored message is in the parties\' run');
+  const rowsInHost = db
+    .prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id = ?')
+    .get('host-somethingelse').n;
+  assert.equal(rowsInHost, 0, 'and NOT in the host run (row 451 symptom is gone)');
+  // The mirror_record is scoped to the same run, so mirrorRecords finds it.
+  assert.equal(mirrorRecords(db, PARTIES_RUN).length, 1);
+});
+
+test('#144 G5 — with NO runId supplied the row falls back to the host id (unchanged behavior)', (t) => {
+  const { db } = tmpBus(t);
+  setMirrorRunId('host-fallback');
+  mirrorDispatch({
+    sender: 'ws-sender',
+    recipient: 'ws-target',
+    body: 'x',
+    result: { ok: true, delivery: 'live', branch: 'b' },
+    db,
+    // no runId
+  });
+  assert.equal(
+    db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id = ?').get('host-fallback').n,
+    1,
+    'absent runId → host fallback, the coexistence-safe default',
+  );
+});

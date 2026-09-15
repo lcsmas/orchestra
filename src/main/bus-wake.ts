@@ -32,7 +32,14 @@
 // dropped anything.
 
 import fs from 'node:fs';
-import { getBus, busPath, openGatesForRecipient, type BusDb } from './bus.ts';
+import {
+  getBus,
+  busPath,
+  openGatesForRecipient,
+  ownRunRecipientSql,
+  relatedRunRecipientSql,
+  type BusDb,
+} from './bus.ts';
 import { getRelatedRunIds } from './bus-runs.ts';
 import { log } from './logger.ts';
 import {
@@ -187,8 +194,8 @@ export function readPendingReaders(
       FROM messages m
      WHERE m.run_id IN (SELECT value FROM json_each(?))
        AND (
-         (m.run_id = ? AND (m.recipient = ? OR m.recipient IS NULL))  -- own run: exact OR broadcast
-         OR (m.run_id != ? AND m.recipient = ?)                       -- related run: exact ONLY
+         (m.run_id = ? AND ${ownRunRecipientSql('m')})      -- own run: exact OR broadcast
+         OR (m.run_id != ? AND ${relatedRunRecipientSql('m')}) -- related run: exact ONLY
        )
        AND m.sequence > COALESCE(
              (SELECT c.acked_seq FROM cursors c WHERE c.reader = ? AND c.run_id = m.run_id), 0)
@@ -228,8 +235,8 @@ export function readPendingReaders(
         FROM messages m
        WHERE m.run_id IN (SELECT value FROM json_each(?))
          AND (
-           (m.run_id = ? AND (m.recipient = ? OR m.recipient IS NULL))
-           OR (m.run_id != ? AND m.recipient = ?)
+           (m.run_id = ? AND ${ownRunRecipientSql('m')})
+           OR (m.run_id != ? AND ${relatedRunRecipientSql('m')})
          )
          AND m.sequence > COALESCE(
                (SELECT c.acked_seq FROM cursors c WHERE c.reader = ? AND c.run_id = m.run_id), 0)

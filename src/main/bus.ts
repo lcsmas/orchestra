@@ -20,6 +20,7 @@ import type Database from 'better-sqlite3';
 import { loadDatabaseCtor } from './bus-binding.ts';
 import { orchestraHome } from './platform/index.ts';
 import { decideFence } from '../shared/bus-fencing.ts';
+import { isFullWorkspaceId } from '../shared/types.ts';
 
 /** A live connection to the bus. */
 export type BusDb = Database;
@@ -575,6 +576,43 @@ export function send(db: BusDb, input: SendInput): number {
 }
 
 /**
+ * The recipient scope for a reader in its OWN run (#144).
+ *
+ * A message is addressed to a reader in its own run when its `recipient` is that
+ * reader OR is NULL (a run-wide broadcast). This is the ONE authoritative
+ * expression of "is this row for this reader in this run" — `check()` below
+ * scopes its lot by it, and `readPendingReaders` (src/main/bus-wake.ts) scopes
+ * the wake predicate by it. They MUST agree, or a reader is woken for mail
+ * `check` then hides (or handed mail the wake predicate says is not pending) —
+ * guard/consumer drift, the exact bug #144 exists to close. So both call sites
+ * reference THIS function; there is no second copy of the clause.
+ *
+ * `alias` prefixes the column (`'m'` → `m.recipient`), or `''` for a bare
+ * `messages` query. The one bound parameter is the reader handle (a FULL id;
+ * `send` canonicalizes short handles away before any row is written, so an
+ * `= reader` comparison against the full uuid always matches — the canary's
+ * short-handle rows never matched, which is why its OPS was never woken).
+ */
+export function ownRunRecipientSql(alias = ''): string {
+  const col = alias ? `${alias}.recipient` : 'recipient';
+  return `(${col} = ? OR ${col} IS NULL)`;
+}
+
+/**
+ * The recipient scope for a reader in a RELATED (ancestor/descendant) run (#144).
+ *
+ * EXACT only — a NULL broadcast belongs to the run it was sent in, never up or
+ * down the tree (pulling it across would wake unrelated parties). Used only by
+ * `readPendingReaders`; `check()` is always own-run scoped. Shared here so the
+ * two halves of the wake predicate cannot drift from each other or from
+ * `ownRunRecipientSql`.
+ */
+export function relatedRunRecipientSql(alias = ''): string {
+  const col = alias ? `${alias}.recipient` : 'recipient';
+  return `(${col} = ?)`;
+}
+
+/**
  * Relève: hand `reader` its pending lot for `runId`.
  *
  * If a lot is already outstanding it is REPLAYED — the same `from_seq`/`to_seq`,
@@ -582,6 +620,15 @@ export function send(db: BusDb, input: SendInput): number {
  * outstanding are deliberately NOT folded in: a reader that crashed mid-lot gets
  * back exactly what it was handed, which is what makes redelivery safe (spike
  * #109 arm 2).
+ *
+ * RECIPIENT-SCOPED (#144). Every message query below is filtered by
+ * `ownRunRecipientSql` — the lot carries ONLY mail addressed to this reader in
+ * this run (or a NULL broadcast), never another reader's mail in the same run.
+ * Before #144 `check` returned EVERY row in the run above the cursor with no
+ * recipient filter, so any reader consuming any run's mail was a `check` away
+ * (canary rows 444–448). `to_seq` is the last MATCHING message's sequence, so
+ * the cursor a later `ack` advances never skips past a message the reader was
+ * not shown.
  *
  * The cursor is NOT advanced here. Advancing at take time is the naive design
  * the spike's must-FAIL control used, and it permanently loses a SIGKILLed
@@ -596,11 +643,14 @@ export function check(db: BusDb, runId: string, reader: string, limit = 100): Bu
     'SELECT * FROM deliveries WHERE run_id=? AND reader=? AND acked_at IS NULL',
   );
   const getCursor = db.prepare('SELECT acked_seq FROM cursors WHERE run_id=? AND reader=?');
+  // Recipient-scoped by the SHARED predicate (#144). The bound param order is
+  // (run_id, from_seq, [to_seq,] recipient[, limit]) — recipient comes last so
+  // the fragment's single `?` is bound after the range bounds.
   const rowsInRange = db.prepare(
-    'SELECT * FROM messages WHERE run_id=? AND sequence>? AND sequence<=? ORDER BY sequence',
+    `SELECT * FROM messages WHERE run_id=? AND sequence>? AND sequence<=? AND ${ownRunRecipientSql()} ORDER BY sequence`,
   );
   const rowsAfter = db.prepare(
-    'SELECT * FROM messages WHERE run_id=? AND sequence>? ORDER BY sequence LIMIT ?',
+    `SELECT * FROM messages WHERE run_id=? AND sequence>? AND ${ownRunRecipientSql()} ORDER BY sequence LIMIT ?`,
   );
   const insertDelivery = db.prepare(
     'INSERT INTO deliveries (run_id, reader, from_seq, to_seq, taken_at) VALUES (?,?,?,?,?)',
@@ -612,12 +662,15 @@ export function check(db: BusDb, runId: string, reader: string, limit = 100): Bu
       return {
         delivery: out,
         replay: true,
-        messages: rowsInRange.all(runId, out.from_seq, out.to_seq) as BusMessage[],
+        // Recipient-scoped replay: the frozen from/to bound the range, the shared
+        // predicate re-selects THIS reader's rows in it — byte-identical to the
+        // original take (which used the same predicate), so redelivery stays safe.
+        messages: rowsInRange.all(runId, out.from_seq, out.to_seq, reader) as BusMessage[],
       };
     }
     const cur = getCursor.get(runId, reader) as { acked_seq: number } | undefined;
     const from = cur ? cur.acked_seq : 0;
-    const messages = rowsAfter.all(runId, from, limit) as BusMessage[];
+    const messages = rowsAfter.all(runId, from, reader, limit) as BusMessage[];
     if (messages.length === 0) return { delivery: null, replay: false, messages: [] };
     const to = messages[messages.length - 1].sequence;
     const taken_at = Date.now();
@@ -1067,6 +1120,34 @@ export function mirrorRecords(db: BusDb, runId: string): BusMirrorRecord[] {
   return db
     .prepare('SELECT * FROM mirror_records WHERE run_id=? ORDER BY id')
     .all(runId) as BusMirrorRecord[];
+}
+
+/** One message row whose `recipient` is not a full workspace id (#144). */
+export interface BadRecipientRow {
+  sequence: number;
+  run_id: string;
+  sender: string;
+  recipient: string;
+}
+
+/**
+ * Every message whose `recipient` is NON-NULL and NOT a full workspace id (#144)
+ * — the canary's short-handle rows (`recipient='0a5c25bb'`). `bus-status`
+ * surfaces these so an operator can SEE that mail was addressed by a handle the
+ * wake predicate can never match, without any row being rewritten (canary data
+ * is left as-is per #144). NULL recipients (legitimate broadcasts) are excluded.
+ *
+ * The full-id test is a JS regex (`isFullWorkspaceId`), not SQL, so we pull the
+ * non-null recipients and filter in-process — the table is small and this runs
+ * only on an explicit `bus-status`, never on a hot path.
+ */
+export function badRecipientRows(db: BusDb): BadRecipientRow[] {
+  const rows = db
+    .prepare(
+      'SELECT sequence, run_id, sender, recipient FROM messages WHERE recipient IS NOT NULL ORDER BY sequence',
+    )
+    .all() as BadRecipientRow[];
+  return rows.filter((r) => !isFullWorkspaceId(r.recipient));
 }
 
 // ─── Dispatch capability tokens (#129) ──────────────────────────────────────

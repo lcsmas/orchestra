@@ -2740,6 +2740,24 @@ export async function dispatchPeersRequest(input: {
   return { ok: true, peers };
 }
 
+/** Every non-archived workspace as `{id, name}`, for the CLI's `send --to`
+ *  canonicalizer (#144). Deliberately NOT `/peers` (which excludes the caller and
+ *  carries git/status fields): resolution needs the FULL set — a member may send
+ *  to its OPS, an OPS to the LEAD — and only id+name, so this is the minimal,
+ *  caller-agnostic surface. Archived workspaces are excluded: their ids are dead
+ *  and resolving a handle to one would land mail nobody reads. */
+export function dispatchResolveHandleRequest(): {
+  ok: boolean;
+  workspaces: Array<{ id: string; name: string }>;
+} {
+  return {
+    ok: true,
+    workspaces: store.workspaces
+      .filter((w) => !w.archived)
+      .map((w) => ({ id: w.id, name: w.name })),
+  };
+}
+
 export interface ReadResult {
   ok: boolean;
   branch?: string;
@@ -2898,11 +2916,19 @@ export async function dispatchMessageRequest(
   // the day either moves.
   const body = input.text.trim().slice(0, MESSAGE_MAX_CHARS);
   const res = await dispatchMessageRequestUnmirrored({ ...input, text: body });
+  // #144 — resolve the PARTIES' run so the mirrored row lands where the reader's
+  // `check` looks. The recipient reads the mail, so its wave anchor is the run
+  // (mail sits in the reader's run; the wake predicate scopes to it). An unknown
+  // recipient (a refused send) has no run → undefined, and the mirror falls back
+  // to the host id — harmless, since a refused send is not mirrored anyway.
+  const recipientWs = store.getWorkspace(input.to);
+  const partiesRunId = recipientWs ? resolveWaveRunId(recipientWs) : undefined;
   mirrorDispatch({
     sender: input.from ?? 'external',
     recipient: input.to,
     body,
     result: res,
+    runId: partiesRunId,
   });
   return res;
 }

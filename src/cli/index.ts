@@ -30,6 +30,7 @@ import {
   mechanismToWire,
   switchStateWord,
 } from '../shared/bus-switches.ts';
+import { resolveHandle, type HandleCandidate } from './resolve-handle.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -155,6 +156,33 @@ function table(rows: Array<Record<string, string>>, columns: string[]): string {
   const sep = pad(columns.map((_, i) => '-'.repeat(widths[i])));
   const lines = rows.map((r) => pad(columns.map((col) => r[col] ?? '')));
   return [header, sep, ...lines].join('\n');
+}
+
+/** #144 — print the bus-status short-handle-recipient warning block. A row
+ *  whose recipient is not a full workspace id (the canary's `0a5c25bb`) can
+ *  never match the wake predicate, so an operator must SEE it. Prints nothing
+ *  when the count is 0 (the healthy state) so a clean bus stays quiet. */
+function printBadRecipients(res: OrchestraResponse): void {
+  const count = typeof res.badRecipientCount === 'number' ? res.badRecipientCount : 0;
+  if (count <= 0) return;
+  const sample =
+    (res.badRecipients as
+      | Array<{ sequence: number; run_id: string; sender: string; recipient: string }>
+      | undefined) ?? [];
+  process.stdout.write(
+    `\nWARNING: ${count} message(s) have a SHORT/invalid recipient (not a full workspace id) — ` +
+      `these can never wake their reader (#144).\n`,
+  );
+  const rows = sample.map((r) => ({
+    seq: String(r.sequence),
+    run: r.run_id,
+    sender: r.sender,
+    recipient: r.recipient,
+  }));
+  process.stdout.write(`${table(rows, ['seq', 'run', 'sender', 'recipient'])}\n`);
+  if (count > sample.length) {
+    process.stdout.write(`… and ${count - sample.length} more.\n`);
+  }
 }
 
 const USAGE = `Orchestra CLI — talk to a running Orchestra app over its Unix socket.
@@ -746,6 +774,70 @@ async function openBusForVerb(): Promise<{
   } catch (err) {
     fail(describeBusOpenFailure(err, file));
   }
+}
+
+/** The Orchestra home root, mirroring `orchestraHome()` in the main process
+ *  (src/main/platform/index.ts) — `$ORCHESTRA_HOME` wins, else `~/.orchestra`.
+ *  Re-derived here rather than imported because the CLI must resolve the offline
+ *  store path WITHOUT paying for a main-process import (and its Electron/ABI
+ *  cost) on the common path. */
+function cliOrchestraHome(): string {
+  return process.env.ORCHESTRA_HOME || path.join(os.homedir(), '.orchestra');
+}
+
+/** Read the persisted workspace list off disk when the app is DOWN (#144).
+ *
+ *  The store lives at `<ORCHESTRA_HOME>/userData/orchestra/store.json` — the app
+ *  writes it there via `app.setPath('userData', <HOME>/userData)` at boot
+ *  (src/main/index.ts). Note that path override runs ONLY when NOT in CLI mode,
+ *  so `app.getPath('userData')` is the WRONG source from inside the CLI; the
+ *  home-relative path is the one both the running app and this reader agree on.
+ *  Returns `[]` on any read/parse failure — the caller then refuses the send
+ *  with "matches no workspace", which is correct: an unreadable store cannot
+ *  canonicalize anything, and landing a short handle would reintroduce the bug. */
+export function offlineHandleCandidates(): HandleCandidate[] {
+  const file = path.join(cliOrchestraHome(), 'userData', 'orchestra', 'store.json');
+  try {
+    const raw = fs.readFileSync(file, 'utf8');
+    const parsed = JSON.parse(raw) as { workspaces?: Array<{ id?: unknown; name?: unknown }> };
+    const ws = Array.isArray(parsed.workspaces) ? parsed.workspaces : [];
+    return ws
+      .filter((w) => typeof w.id === 'string' && (w.id as string).length > 0)
+      .map((w) => ({ id: w.id as string, name: typeof w.name === 'string' ? (w.name as string) : '' }));
+  } catch {
+    return [];
+  }
+}
+
+/** Canonicalize a `send --to` handle to a FULL workspace id (#144).
+ *
+ *  Fetches the candidate workspaces (socket `/resolveHandle` when the app is up,
+ *  else the offline store), then applies the pure `resolveHandle` rules. A
+ *  refusal (ambiguous/unknown) goes through `fail()` — never silently through,
+ *  because a silent short handle is exactly the canary defect. Returns the full
+ *  id on success. */
+async function canonicalizeRecipientOrFail(to: string): Promise<string> {
+  let candidates: HandleCandidate[];
+  try {
+    const res = await request('/resolveHandle', {});
+    if (res.ok && Array.isArray(res.workspaces)) {
+      candidates = (res.workspaces as Array<{ id: string; name?: string }>).map((w) => ({
+        id: w.id,
+        name: w.name ?? '',
+      }));
+    } else {
+      // App answered but without the route (older build) → fall back to disk so
+      // canonicalization still happens rather than landing a raw handle.
+      candidates = offlineHandleCandidates();
+    }
+  } catch {
+    // Socket unreachable (app down/restarting — the exact case #108 Q2 keeps the
+    // bus verbs working through). Resolve against the persisted store.
+    candidates = offlineHandleCandidates();
+  }
+  const resolved = resolveHandle(to, candidates);
+  if (!resolved.ok) fail(resolved.error);
+  return (resolved as { ok: true; id: string }).id;
 }
 
 /** Bind a bus verb to this process's stdout and this file's `fail()`.
@@ -1422,12 +1514,20 @@ async function main(argv: string[]): Promise<void> {
       const run = takeFlag(reqId.rest, '--run');
       const as = takeFlag(run.rest, '--as');
       const id = busIdentityOrFail({ run: run.value, as: as.value });
+      // #144 — canonicalize the recipient to a FULL workspace id BEFORE the row
+      // is written. The bus never stores a short handle: the wake predicate and
+      // `check` both compare recipient against the reader's full uuid, so a
+      // stored 8-char handle (the canary's `--to 0a5c25bb`) never matches and the
+      // reader is never woken. Unknown/ambiguous → fail() here (rc≠0), never a
+      // silent land. Done BEFORE openBusForVerb so a resolution refusal does not
+      // pay the native bus-open cost.
+      const canonTo = to.value != null ? await canonicalizeRecipientOrFail(to.value) : null;
       const { db, bus, capMod } = await openBusForVerb();
       try {
         const fencing = await resolveFencing(db, id.runId, gen.value); // #128 hunk
         verbSend(busCtx(db, bus, id, fencing, capMod), {
           kind: t.value,
-          to: to.value ?? null,
+          to: canonTo,
           thread: th.value ?? null,
           cap: capf.value ?? null,
           requestId: reqId.value ?? null,
@@ -1620,6 +1720,7 @@ async function main(argv: string[]): Promise<void> {
       process.stdout.write(`${table(flagRows, ['mechanism', 'frozen', 'live'])}\n`);
       if (counters.length === 0) {
         process.stdout.write('No mechanisms mirroring.\n');
+        printBadRecipients(res);
         return;
       }
       const rows = counters.map((c) => ({
@@ -1631,6 +1732,7 @@ async function main(argv: string[]): Promise<void> {
       process.stdout.write(
         `${table(rows, ['mechanism', 'missed', 'duplicate', 'lost-wake'])}\n`,
       );
+      printBadRecipients(res);
       return;
     }
 
