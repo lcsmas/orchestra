@@ -66,3 +66,39 @@ test('#144 offline: malformed records are dropped, not crashed on', (t) => {
   const cands = offlineHandleCandidates();
   assert.deepEqual(cands, [{ id: FULL, name: 'ok' }]);
 });
+
+// ─── REVIEW-144 F1 — offline must EXCLUDE archived, matching the online path ──
+
+const LIVE = '0a5c25bb-1111-4222-8333-444455556666';
+const ARCHIVED = '0a5c25bb-9999-4888-8777-666655554444'; // same 8-char prefix
+
+test('#144 F1: offline candidates EXCLUDE archived workspaces (online parity)', (t) => {
+  withStore(t, [
+    { id: LIVE, name: 'live', archived: false },
+    { id: ARCHIVED, name: 'dead', archived: true },
+  ]);
+  const cands = offlineHandleCandidates();
+  // MUTANT: drop the `w.archived !== true` filter → the archived id is a
+  // candidate, and both repro cases below flip.
+  assert.deepEqual(cands, [{ id: LIVE, name: 'live' }], 'only the live workspace');
+});
+
+test('#144 F1 repro A: a prefix hitting 1 live + 1 archived resolves to the LIVE id (not a false refusal)', (t) => {
+  // Pre-fix the archived id was also a candidate, so `0a5c25bb` matched TWO →
+  // offline FALSE-refused a legitimate live send (rc≠0 ambiguous). Post-fix the
+  // archived id is gone, so the prefix has exactly one live match.
+  withStore(t, [
+    { id: LIVE, name: 'live', archived: false },
+    { id: ARCHIVED, name: 'dead', archived: true },
+  ]);
+  assert.deepEqual(resolveHandle('0a5c25bb', offlineHandleCandidates()), { ok: true, id: LIVE });
+});
+
+test('#144 F1 repro B: a prefix hitting ONLY an archived id is REFUSED (never resolves to a dead id)', (t) => {
+  // Pre-fix this resolved to the archived id → mail addressed to a workspace
+  // nobody reads. Post-fix the archived id is not a candidate, so the prefix
+  // matches nothing and the send is refused.
+  withStore(t, [{ id: ARCHIVED, name: 'dead', archived: true }]);
+  const r = resolveHandle('0a5c25bb', offlineHandleCandidates());
+  assert.equal(r.ok, false, 'a prefix matching only an archived id must be refused');
+});

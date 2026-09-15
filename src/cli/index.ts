@@ -799,10 +799,22 @@ export function offlineHandleCandidates(): HandleCandidate[] {
   const file = path.join(cliOrchestraHome(), 'userData', 'orchestra', 'store.json');
   try {
     const raw = fs.readFileSync(file, 'utf8');
-    const parsed = JSON.parse(raw) as { workspaces?: Array<{ id?: unknown; name?: unknown }> };
+    const parsed = JSON.parse(raw) as {
+      workspaces?: Array<{ id?: unknown; name?: unknown; archived?: unknown }>;
+    };
     const ws = Array.isArray(parsed.workspaces) ? parsed.workspaces : [];
     return ws
-      .filter((w) => typeof w.id === 'string' && (w.id as string).length > 0)
+      // EXCLUDE archived, to MATCH the online path (REVIEW-144 F1): the socket
+      // `dispatchResolveHandleRequest` filters `!w.archived`. Without the same
+      // filter here the two resolvers DISAGREE — a prefix hitting one live + one
+      // archived id would falsely refuse a legitimate send offline (ambiguous),
+      // and a prefix hitting only an archived id would resolve to a DEAD id
+      // nobody reads. `archived` is an optional boolean on the persisted record
+      // (types.ts), so `=== true` treats absent as not-archived.
+      .filter(
+        (w) =>
+          typeof w.id === 'string' && (w.id as string).length > 0 && w.archived !== true,
+      )
       .map((w) => ({ id: w.id as string, name: typeof w.name === 'string' ? (w.name as string) : '' }));
   } catch {
     return [];
