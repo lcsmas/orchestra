@@ -107,12 +107,20 @@ export function maybeStartRunAtAnchor(deps: BusRunAnchorDeps, anchor: AnchorInfo
       },
       deps.getLiveSwitches(),
     );
-    // D1b — WAVE BOUNDARY: a NEW nested (OPS) run just started, so re-freeze its
-    // parent MISSION row to the current live switches. `refreezeRun` is a no-op
-    // unless the parent is a mission, and it touches ONLY the mission row — the
-    // OPS/member rows are never re-frozen (F1). Fired here (new-nested-run only),
-    // never on a member spawn that merely READS an existing OPS row.
-    if (anchor.parentRunId) {
+    // D1b — WAVE BOUNDARY: re-freeze the parent MISSION row to the current live
+    // switches, so the LEAD's plain children track the latest flip. `refreezeRun`
+    // is a no-op unless the parent is a mission, and touches ONLY the mission row
+    // (the OPS/member rows are never re-frozen — F1).
+    //
+    // FIRED ONLY WHEN THE ANCHOR LAUNCHES ITSELF (`anchor.wsId === anchor.anchorId`)
+    // — the true wave boundary (an OPS spawns-as / is promoted). A MEMBER spawn
+    // that LAZILY creates a missing OPS row (`wsId !== anchorId`) must NOT
+    // re-freeze the mission: D1b says "re-freeze only at wave boundaries, never on
+    // member spawn" (review-F1 F1 — the lazy path was re-freezing the mission on a
+    // member spawn, at-most-once/wave but violating the invariant). The lazy path
+    // still NESTS the OPS (its row + parent_run_id above); it just doesn't touch
+    // the mission's frozen flags.
+    if (anchor.parentRunId && anchor.wsId === anchor.anchorId) {
       try {
         deps.refreezeRun(db, anchor.parentRunId, deps.getLiveSwitches());
       } catch (e) {

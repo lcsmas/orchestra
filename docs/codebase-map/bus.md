@@ -1680,6 +1680,7 @@ an own-run-retrieval must-FAIL that shows the permanent loop as RED.
 - **G9** packaged boot + spawn-notice under real Electron — owned by VERIFY-F.
 
 `workspaces.ts` is un-importable under `node --test` (its `./platform`
-dir-import), so the seam decision is a pure export (`isRootAnchor`) and the effect
-is a platform-free function (`maybeStartRunAtAnchor`) the integration test drives
-for real — never a re-implementation.
+dir-import), so the seam decision is pure exports (`nearestOrchestratorId` /
+`parentOrchestratorId`, wave-run-id.ts) and the effect is a platform-free function
+(`maybeStartRunAtAnchor`) the integration test drives for real — never a
+re-implementation.

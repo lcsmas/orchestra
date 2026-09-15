@@ -263,6 +263,49 @@ test('G4b F1 — an OPS (vague) row is NEVER re-frozen: byte-identical across a 
   }
 });
 
+test('G4b F1 (review-F1) — the LAZY member-spawn creates the OPS row but does NOT re-freeze the mission', () => {
+  // The bug review-F1 caught: the lazy path (a MEMBER launches under an OPS whose
+  // row does not exist yet) was firing refreezeRun('lead') when it created the OPS
+  // row — re-freezing the MISSION on a MEMBER spawn, which D1b explicitly forbids
+  // ("re-freeze only at wave boundaries, never on member spawn"). G4b's existing
+  // arm missed it because it creates the OPS row FIRST (early-return, lazy path
+  // never exercised). This arm drives the lazy path with NO wave boundary between
+  // the flip and the member spawn.
+  const { db, dir } = tmpDb();
+  try {
+    const live = { v: switches({ wake: false }) };
+    const d = deps(db, live);
+    // Mission starts frozen wake=OFF. The OPS row is deliberately NOT created here.
+    maybeStartRunAtAnchor(d, anchorInfoOf(LEAD, WAVE));
+    assert.equal(runFlags(db, 'lead').wake, false, 'mission frozen OFF');
+    assert.equal(getRun(db, 'ops'), null, 'the OPS row does NOT exist yet (lazy path precondition)');
+
+    // Human flips wake ON. NO wave boundary follows (no OPS spawns-as/promote) —
+    // then a MEMBER spawns under the OPS, lazily creating the OPS row.
+    live.v = switches({ wake: true });
+    const memberAnchor = anchorInfoOf(IMPL, WAVE); // wsId=impl, anchorId=ops (a member launch)
+    assert.notEqual(memberAnchor.wsId, memberAnchor.anchorId, 'this IS a member launch (lazy path)');
+    maybeStartRunAtAnchor(d, memberAnchor);
+
+    // The lazy path DID nest the OPS: its row + parent_run_id exist.
+    assert.ok(getRun(db, 'ops'), 'the lazy member-spawn created the OPS row');
+    assert.equal(getRun(db, 'ops')!.parent_run_id, 'lead', 'and nested it under the LEAD');
+    // The OPS froze the flipped value (it is a NEW run at the moment of creation).
+    assert.equal(runFlags(db, 'ops').wake, true, 'the OPS wave froze the live value at creation');
+
+    // THE F1 ASSERTION: the mission was NOT re-frozen — a member spawn is not a
+    // wave boundary. The unfixed code (refreeze on any new nested run) flips this
+    // false→true and reddens the arm.
+    assert.equal(
+      runFlags(db, 'lead').wake,
+      false,
+      'D1b: the mission is NOT re-frozen on a member spawn (stays its wave-start OFF)',
+    );
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
 test('G4 — flipping the live switch AFTER a run started does NOT change that run', () => {
   const { db, dir } = tmpDb();
   try {
