@@ -148,8 +148,14 @@ export async function sampleResources(): Promise<ResourceSnapshot> {
   //
   // `sampleVolumes()` is ASYNC (issue #96): the statfs runs on libuv's
   // threadpool, not synchronously on the main thread, so a hung network mount
-  // can no longer freeze the UI. Still fresh every tick (no cache); a mount
-  // that does not answer within STATFS_TIMEOUT_MS is reported UNMEASURED.
+  // can no longer FREEZE the UI (the primary #96 hazard). Still fresh every tick
+  // (no cache); a mount that does not answer within STATFS_TIMEOUT_MS is
+  // reported UNMEASURED. NOTE (review F1): the timeout unblocks the main thread
+  // but does not free the hung pool thread, so statfs is single-flight per path
+  // (see disk-space.ts) to CAP — not eliminate — pool pressure during an outage;
+  // a hard-hung mount can still degrade background async fs I/O and push the
+  // disk rows to UNMEASURED. That is bounded (≤ one stuck thread per hung mount)
+  // and strictly better than the old sync freeze, not free.
   const volumes = await sampleVolumes();
 
   return {

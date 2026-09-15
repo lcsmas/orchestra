@@ -55,22 +55,39 @@ Dependency-free so `node --test` covers it without Electron:
   is one syscall, and a mount filling fast is exactly when a 60s-stale reading
   is most dangerous. Uses `bavail`, not `bfree` (`bfree` counts root-reserved
   blocks an agent cannot write into).
-  - **ASYNC, off the hot path (issue #96):** `sampleVolumes()` / `statVolume()` /
-    `statVolumeFor()` are `async` and go through `fs.promises.statfs`, not
-    `fs.statfsSync`. The old sync call ran on the **main thread** every 2s tick;
-    on a hung network mount (NFS/sshfs whose server has gone away) `statfsSync`
-    blocks indefinitely and freezes the whole UI. The async call runs on libuv's
-    threadpool and never blocks the event loop. Each probe is raced against
-    `STATFS_TIMEOUT_MS` (1 s, exported) — a mount that does not answer in time is
-    reported `null` = **UNMEASURED** (the same "never silently plenty" contract),
-    so one wedged mount cannot stall the tick either. The three probes run
-    concurrently (`Promise.all`) and de-dup/order is applied after they settle.
-    **No cache introduced** — still fresh every tick, so #87's anti-stale design
-    is intact; `STATFS_TIMEOUT_MS` is a per-tick abandon bound for a dead mount,
-    not a TTL. `resources.ts` `awaits sampleVolumes()`. `nearestExisting()` stays
-    sync on purpose (it's `lstat`/`existsSync` on local path components, not the
-    `statfs` that blocks). `scripts/disk-guard.cjs` keeps its own **sync** statfs
-    — it's a run-to-completion CLI, not on any 2s tick.
+  - **ASYNC + SINGLE-FLIGHT, off the hot path (issue #96):** `sampleVolumes()` /
+    `statVolume()` / `statVolumeFor()` are `async` and go through
+    `fs.promises.statfs`, not `fs.statfsSync`. The old sync call ran on the
+    **main thread** every 2s tick; on a hung network mount (NFS/sshfs whose
+    server has gone away) `statfsSync` blocks indefinitely and freezes the whole
+    UI. The async call runs on libuv's threadpool and never blocks the event
+    loop. Each probe is raced against `STATFS_TIMEOUT_MS` (1 s, exported) so the
+    CALLER gets a `null` = **UNMEASURED** result promptly (the same "never
+    silently plenty" contract) instead of awaiting a dead mount forever. The
+    three probes run concurrently (`Promise.all`); de-dup/order is applied after
+    they settle. **No cache** — still fresh every tick for LIVE mounts, so #87's
+    anti-stale design is intact; the timeout is a per-tick abandon bound, not a
+    TTL.
+  - **The threadpool trap (review F1, MEASURED):** the timeout unblocks the main
+    thread but does **not** free the libuv work-thread — `fs.promises.statfs` on
+    a hard-hung mount holds its pool thread on `statfs(2)` uninterruptibly
+    (libuv cannot cancel dispatched fs work). Dispatching a fresh statfs every
+    tick during an outage would pile up hung threads and exhaust the default
+    `UV_THREADPOOL_SIZE=4` (~6 s in), starving all other async fs I/O in main and
+    cascading the healthy probes to UNMEASURED. So statfs/stat are **single-flight
+    per path** (`statfsInFlight`/`statInFlight` maps in `disk-space.ts`): while a
+    probe's syscall is still pending from a prior tick, later ticks reuse that one
+    pending promise instead of dispatching another. The ceiling of stuck pool
+    threads is then the number of distinct hung mounts (≤ 3), CONSTANT across an
+    outage — no accumulation. It cannot be zero (one dispatch per hung mount is
+    unavoidable), so a hard-hung mount can still *degrade* background fs I/O — the
+    guarantee is **bounded, not free**, which is what the corrected `resources.ts`
+    comment now says. Diagnostics: `inFlightStatfsCount()`; `__resetInFlightForTest()`
+    is test-only.
+  - `resources.ts` `awaits sampleVolumes()`. `nearestExisting()` stays sync on
+    purpose (it's `lstat`/`existsSync` on local path components, not the `statfs`
+    that blocks). `scripts/disk-guard.cjs` keeps its own **sync** statfs — it's a
+    run-to-completion CLI, not on any 2s tick.
 
 ## UI — ResourcesView.tsx
 Rendered by `App.tsx` as an **overlay** on `.main` (`position:absolute`,

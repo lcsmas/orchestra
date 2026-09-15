@@ -22,12 +22,30 @@
 // syscall — negligible (0.007 ms) on a local mount, but UNBOUNDED on a hung
 // network mount (NFS/sshfs whose server has gone away), which would freeze the
 // entire UI. So every statfs here goes through `fs.promises.statfs`, which runs
-// on libuv's threadpool and never blocks the main thread, and each probe is
-// raced against a short timeout so one wedged mount cannot stall the tick
-// either: a timed-out (or failed) mount is reported as `null` = UNMEASURED, the
-// same "never silently plenty" contract the sync version had. Freshness is
-// unchanged — still sampled fresh every tick, no cache (#87: a mount filling
-// fast is exactly when a stale reading is most dangerous).
+// on libuv's threadpool and never blocks the main thread. Each probe is raced
+// against a short timeout so the CALLER gets a `null` = UNMEASURED result
+// promptly (the same "never silently plenty" contract the sync version had)
+// instead of awaiting a dead mount forever.
+//
+// THE THREADPOOL TRAP (#96 review F1, MEASURED). The timeout unblocks the main
+// thread, but it does NOT free the libuv work-thread: `fs.promises.statfs` on a
+// hard-hung mount holds its pool thread on the `statfs(2)` syscall
+// UNINTERRUPTIBLY (libuv cannot cancel fs work already dispatched). Naively
+// dispatching a fresh statfs every 2s tick during an outage would therefore
+// pile up hung threads — with the default UV_THREADPOOL_SIZE=4 the pool is
+// exhausted ~6 s in, starving ALL other async fs I/O in main AND cascading the
+// healthy probes to UNMEASURED (measured: a healthy probe times out at ~1001 ms
+// under saturation). So statfs/stat are SINGLE-FLIGHT PER PATH: while a probe's
+// syscall is still pending from a prior tick, later ticks REUSE that one pending
+// promise instead of dispatching another. The ceiling of stuck pool threads is
+// then the number of distinct hung mounts (≤ the 3 probes), CONSTANT across an
+// outage of any length — no accumulation. It cannot be zero (one dispatch per
+// hung mount is unavoidable — libuv has no cancel), so background fs I/O can
+// still be degraded during an outage; the guarantee is bounded, not free.
+//
+// Freshness is unchanged for LIVE mounts — a probe that answers within the
+// budget clears its in-flight entry, so the next tick dispatches fresh; no
+// cache (#87: a mount filling fast is when a stale reading is most dangerous).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -40,8 +58,10 @@ import type { VolumeStat } from '../shared/disk-space.ts';
 export const STATFS_TIMEOUT_MS = 1_000;
 
 /** Reject a promise if it has not settled within `ms`. On timeout the loser is
- *  abandoned (statfs on a hung mount may never resolve) — that is fine, it runs
- *  on the threadpool and holds nothing on the main thread. */
+ *  abandoned by the CALLER (statfs on a hung mount may never resolve) — the
+ *  main thread holds nothing, but the underlying libuv work-thread is NOT freed
+ *  (see the threadpool-trap note above); that is what the single-flight guard
+ *  below bounds. */
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`statfs timed out after ${ms}ms`)), ms);
@@ -60,21 +80,65 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   });
 }
 
+// Single-flight per path (the pool-exhaustion guard, #96 F1). Keyed by the
+// resolved probe path: while an entry is present a syscall is already in flight
+// on the pool for that path, so a later tick joins it rather than dispatching a
+// second. The entry is cleared on settle (success OR error), so a recovered
+// mount is re-dispatched fresh next tick. Exported for the gate to inspect that
+// N ticks against a hung mount produce ONE dispatch, not N.
+const statfsInFlight = new Map<string, Promise<fs.StatsFs>>();
+const statInFlight = new Map<string, Promise<fs.Stats>>();
+
+function singleFlight<T>(map: Map<string, Promise<T>>, key: string, start: () => Promise<T>): Promise<T> {
+  const existing = map.get(key);
+  if (existing) return existing;
+  const p = start();
+  map.set(key, p);
+  // Clear on settle so the next tick re-dispatches a fresh syscall (freshness)
+  // and a hung entry does not wedge the path forever after recovery.
+  p.then(
+    () => map.delete(key),
+    () => map.delete(key),
+  );
+  return p;
+}
+
+/** Number of statfs syscalls currently pending on the pool (test/diagnostic). */
+export function inFlightStatfsCount(): number {
+  return statfsInFlight.size;
+}
+
+/** Test-only: forget the in-flight entries so a suite that injected a
+ *  never-settling stub does not leak a stuck promise into later tests. The real
+ *  app never calls this — a live entry always self-clears on settle. */
+export function __resetInFlightForTest(): void {
+  statfsInFlight.clear();
+  statInFlight.clear();
+}
+
 /** statfs one path. Returns null when the path does not exist, statfs fails
  *  (a non-Linux platform without statfs support, a vanished dir, …) or the
  *  mount does not answer within `STATFS_TIMEOUT_MS` (a hung network mount) —
  *  a null volume is reported as "unmeasured", never as "plenty of room".
- *  Async so a hung mount never blocks the main-process event loop (#96). */
+ *  Async + single-flight per path so a hung mount neither blocks the main
+ *  event loop nor accumulates pool threads across ticks (#96). */
 export async function statVolume(probePath: string, label: string): Promise<VolumeStat | null> {
   let st: fs.StatsFs;
   try {
-    st = await withTimeout(fs.promises.statfs(probePath), STATFS_TIMEOUT_MS);
+    st = await withTimeout(
+      singleFlight(statfsInFlight, probePath, () => fs.promises.statfs(probePath)),
+      STATFS_TIMEOUT_MS,
+    );
   } catch {
     return null;
   }
   let deviceId = probePath;
   try {
-    deviceId = String((await withTimeout(fs.promises.stat(probePath), STATFS_TIMEOUT_MS)).dev);
+    const s = await withTimeout(
+      singleFlight(statInFlight, probePath, () => fs.promises.stat(probePath)),
+      STATFS_TIMEOUT_MS,
+    );
+    deviceId = String(s.dev);
   } catch {
     /* keep the path as a fallback identity */
   }

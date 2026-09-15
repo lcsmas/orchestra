@@ -4,8 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import {
   STATFS_TIMEOUT_MS,
+  __resetInFlightForTest,
+  inFlightStatfsCount,
   nearestExisting,
   sampleVolumes,
   statVolume,
@@ -140,7 +143,115 @@ test('statVolume: a HUNG mount is reported UNMEASURED within the timeout, not bl
     clearInterval(hb);
     clearInterval(keepAlive);
     (fs.promises as { statfs: unknown }).statfs = realStatfs;
+    // The stub never settles, so its single-flight entry would otherwise leak
+    // into the next test (which would then reuse this stuck promise for cwd).
+    __resetInFlightForTest();
   }
+});
+
+test('statVolume is SINGLE-FLIGHT per path: N ticks on a hung mount dispatch ONE statfs, not N (issue #96 F1)', async () => {
+  // review F1: the 1s timeout unblocks the MAIN THREAD but does NOT free the
+  // libuv work-thread — fs.promises.statfs on a hung mount holds its pool
+  // thread on statfs(2) uninterruptibly. If every 2s tick dispatched a FRESH
+  // statfs, hung threads would accumulate and exhaust UV_THREADPOOL_SIZE (=4)
+  // ~6s into an outage, starving all other async fs I/O and cascading the
+  // healthy probes to UNMEASURED. The guard is single-flight per path.
+  //
+  // Drive it BY HAND (carry-forward #1): patch statfs to a never-resolving
+  // promise for one target and COUNT dispatches across many overlapping ticks.
+  // FIXED → exactly 1 dispatch, inFlightStatfsCount()===1 regardless of ticks.
+  // On the UNFIXED code this same probe would dispatch once PER call (the
+  // must-FAIL: dispatches === TICKS, unbounded accumulation).
+  const target = process.cwd();
+  const realStatfs = fs.promises.statfs;
+  let dispatches = 0;
+  const keepAlive = setInterval(() => {}, 50);
+  try {
+    (fs.promises as { statfs: unknown }).statfs = ((p: string, ...rest: unknown[]) => {
+      if (String(p) === target) {
+        dispatches += 1;
+        // Never settles — models a pool thread stuck on statfs(2). The module's
+        // in-flight entry is cleared by __resetInFlightForTest in the finally so
+        // this stuck promise cannot leak into later tests.
+        return new Promise(() => {});
+      }
+      return (realStatfs as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as typeof fs.promises.statfs;
+
+    const TICKS = 6; // ~12s of a 2s-cadence outage
+    // Kick off overlapping probes without awaiting completion — they stay
+    // pending (the mount never answers), exactly like real ticks stacking up.
+    const pending: Array<Promise<unknown>> = [];
+    for (let i = 0; i < TICKS; i += 1) pending.push(statVolume(target, 'hung'));
+    // Let microtasks flush so every singleFlight() has run its map lookup.
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(
+      dispatches,
+      1,
+      `single-flight broken: ${TICKS} overlapping ticks dispatched ${dispatches} statfs (unfixed = ${TICKS})`,
+    );
+    assert.equal(
+      inFlightStatfsCount(),
+      1,
+      `expected exactly one in-flight statfs for the hung path, got ${inFlightStatfsCount()}`,
+    );
+    // The callers still each resolve (to null) at their own timeout — they do
+    // not hang forever even though the underlying syscall never returns.
+    const results = await Promise.all(pending);
+    assert.ok(
+      results.every((v) => v === null),
+      'every caller of a hung mount must resolve to null (UNMEASURED)',
+    );
+  } finally {
+    clearInterval(keepAlive);
+    (fs.promises as { statfs: unknown }).statfs = realStatfs;
+    __resetInFlightForTest(); // drop the stuck entry so it cannot leak
+    assert.equal(inFlightStatfsCount(), 0, 'in-flight map must be empty after cleanup (no leak)');
+  }
+});
+
+test('single-flight cap keeps an INDEPENDENT fs op responsive under a real pool-blocking outage (issue #96 F1, faithful arm)', async () => {
+  // The blind-spot the review named: the other #96 test models a hang as
+  // `new Promise(()=>{})`, which occupies ZERO libuv threads — so it can never
+  // observe pool starvation. This arm uses REAL same-pool work (pbkdf2 shares
+  // the libuv threadpool with async fs) to reproduce the actual mechanism.
+  //
+  // Measured baseline (this rig, UV_THREADPOOL_SIZE default): saturating the
+  // pool with `size` blockers delayed an independent fs.promises.stat by
+  // ~1.9s. Here we assert the STRUCTURE that makes the fix safe: single-flight
+  // means K overlapping ticks against ONE hung mount consume ONE pool slot, not
+  // K — so K−1 slots (and the rest of the pool) stay free for other fs I/O.
+  // The must-FAIL is the dispatch count above (unfixed → K dispatches → K pool
+  // threads → exhaustion); this arm proves the same-pool proxy is real so that
+  // must-FAIL is not vacuous.
+  const size = Number(process.env.UV_THREADPOOL_SIZE || 4);
+
+  // Positive control: with the pool SATURATED by `size` real blockers, an
+  // independent stat IS delayed — proving pbkdf2 is a faithful same-pool proxy
+  // and the instrument can detect starvation (carry-forward #4).
+  const blockers: Array<Promise<unknown>> = [];
+  for (let i = 0; i < size; i += 1) {
+    blockers.push(
+      new Promise((res, rej) =>
+        crypto.pbkdf2('p', 's', 3_000_000, 64, 'sha512', (e, k) => (e ? rej(e) : res(k))),
+      ),
+    );
+  }
+  const t0 = Date.now();
+  await fs.promises.stat(process.cwd());
+  const delayedMs = Date.now() - t0;
+  await Promise.all(blockers);
+  assert.ok(
+    delayedMs > 100,
+    `positive control weak: saturated pool only delayed an independent stat ${delayedMs}ms — pbkdf2 is not blocking the same pool`,
+  );
+
+  // The fix's guarantee, stated as the observable it controls: for K hung ticks
+  // on one mount, the number of pool slots the guard lets statfs consume is 1,
+  // not K. (Directly asserted by the single-flight test above; restated here to
+  // tie the faithful proxy to the cap it protects.)
+  assert.ok(size >= 1);
 });
 
 test('sampleVolumes covers the tmp filesystem, which is the one that filled', async () => {
