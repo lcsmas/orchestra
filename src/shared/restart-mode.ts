@@ -123,3 +123,74 @@ export async function routeRestart(
   await effects.restartPty(fresh);
   return 'pty';
 }
+
+/** The reply the `/restart` route answers and the CLI renders. `ok:false`
+ *  carries a human-actionable `error` (the CLI turns it into a `fail()` /
+ *  non-zero exit) — never a stack trace. */
+export interface RestartResult {
+  ok: boolean;
+  /** Which surface was restarted (only on success). */
+  mode?: RestartMode;
+  /** True when `--fresh` was applied (conversation cleared). */
+  fresh?: boolean;
+  error?: string;
+}
+
+/** The workspace record `resolveRestart` reads — the classifier's fields plus
+ *  the guard flags. `null` = the id resolved to no workspace. */
+export interface RestartWorkspace extends RestartWorkspaceView {
+  /** An archived workspace has no running agent and must not be respawned. */
+  archived?: boolean;
+}
+
+/** End-to-end restart glue, PURE and injectable so every guard + the routing +
+ *  the error wrap has a runtime arm without Electron (issue #111 F1). The
+ *  effectful `dispatchRestartRequest` in src/main/restart-workspace.ts is a thin
+ *  adapter: it resolves the store record + liveness probes + real effects and
+ *  hands them here.
+ *
+ *  Guards, in order — each answers `{ok:false,error}` (diagnosable, never a
+ *  stack trace), and none of them fires an effect:
+ *   - missing id → 'missing id'
+ *   - unknown ws (`ws === null`) → 'unknown workspace: <id>'
+ *   - archived → refuse
+ *   - classifyRestartMode === 'unknown' (nothing ever ran) → refuse rather than
+ *     spawn a stray agent
+ *
+ *  On a resolvable surface it routes to the injected effect and reports
+ *  `{ok:true, mode, fresh}`. A THROWN effect is caught and wrapped as
+ *  `{ok:false, error:'restart failed: …'}` (via `onError` so the caller can
+ *  log). */
+export async function resolveRestart(input: {
+  id: string | undefined;
+  ws: RestartWorkspace | null;
+  live: RestartLiveness;
+  fresh: boolean;
+  effects: RestartEffects;
+  /** Called with (mode, message) when an effect throws — the caller logs it. */
+  onError?: (mode: RestartMode, message: string) => void;
+}): Promise<RestartResult> {
+  const { id, ws, live, fresh, effects } = input;
+  if (!id) return { ok: false, error: 'missing id' };
+  if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
+  if (ws.archived) {
+    return { ok: false, error: `workspace is archived: ${id} — cannot restart` };
+  }
+  const mode = classifyRestartMode(ws, live);
+  if (mode === 'unknown') {
+    return {
+      ok: false,
+      error:
+        `workspace ${id} has no agent to restart yet ` +
+        `(no terminal or structured session has run). Open it first.`,
+    };
+  }
+  try {
+    const fired = await routeRestart(mode, fresh, effects);
+    return { ok: true, mode: fired, fresh };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    input.onError?.(mode, message);
+    return { ok: false, error: `restart failed: ${message}` };
+  }
+}

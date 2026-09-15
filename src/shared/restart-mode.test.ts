@@ -1,13 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyRestartMode, routeRestart, type RestartEffects } from './restart-mode.ts';
+import {
+  classifyRestartMode,
+  routeRestart,
+  resolveRestart,
+  type RestartEffects,
+  type RestartWorkspace,
+} from './restart-mode.ts';
 
 // ISSUE #111 gap #3 — the CLI restart must route the STRUCTURED surface to its
 // own restart path, never silently through the PTY branch (the UI Restart
 // button's bug: it gates on `isRunning(id)` = PTY-only). These pins are the
-// pure decision the effectful handler acts on; the T111.4 must-FAIL control
-// (mode-dispatch forced to always take the PTY branch) is asserted against the
-// built handler in src/main/restart-workspace.test.ts.
+// pure decision the effectful handler acts on. The whole restart glue — every
+// guard, the routing, the error wrap — lives here in `resolveRestart` (pure,
+// runtime-tested below); src/main/restart-workspace.ts is a thin Electron
+// adapter over it that only injects the store record, the live probes, and the
+// real side effects (issue #111 F1: the glue must have a runtime arm, not just
+// type-checking).
 
 test('live PTY → pty (the running terminal agent)', () => {
   assert.equal(
@@ -141,3 +150,86 @@ test('T111.4 positive: the REAL routeRestart does NOT mishandle a structured ws'
   await routeRestart('structured', false, fx);
   assert.equal(fx.calls[0].kind, 'structured', 'a structured ws must take the structured branch');
 });
+
+// --- resolveRestart: the full glue (guards + routing + error wrap) ----------
+//
+// This is the runtime arm for the effectful handler's logic (issue #111 F1):
+// dispatchRestartRequest is a thin adapter over resolveRestart, so exercising
+// resolveRestart directly covers every guard and the effect wiring WITHOUT
+// Electron. Each guard test asserts NO effect fired (a guard that leaked into a
+// restart would be a stray-agent spawn).
+
+const liveNone = { ptyLive: false, sdkLive: false };
+
+test('resolveRestart: missing id → {ok:false} before any effect', async () => {
+  const fx = recordingEffects();
+  const r = await resolveRestart({ id: undefined, ws: null, live: liveNone, fresh: false, effects: fx });
+  assert.deepEqual(r, { ok: false, error: 'missing id' });
+  assert.deepEqual(fx.calls, []);
+});
+
+test('resolveRestart: unknown workspace (ws=null) → diagnosable, no effect', async () => {
+  const fx = recordingEffects();
+  const r = await resolveRestart({ id: 'ghost', ws: null, live: liveNone, fresh: false, effects: fx });
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? '', /unknown workspace: ghost/);
+  assert.deepEqual(fx.calls, []);
+});
+
+test('resolveRestart: archived workspace → refused, no effect', async () => {
+  const fx = recordingEffects();
+  const ws: RestartWorkspace = { archived: true, sdkSessionId: 'x' };
+  const r = await resolveRestart({ id: 'ws-arch', ws, live: liveNone, fresh: false, effects: fx });
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? '', /archived/);
+  assert.deepEqual(fx.calls, [], 'an archived ws must not restart');
+});
+
+test('resolveRestart: nothing-ever-ran (mode unknown) → refused, no effect', async () => {
+  const fx = recordingEffects();
+  const r = await resolveRestart({ id: 'ws-new', ws: {}, live: liveNone, fresh: false, effects: fx });
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? '', /no agent to restart yet/);
+  assert.deepEqual(fx.calls, []);
+});
+
+test('resolveRestart: structured ws → structured effect fires, {ok, mode, fresh}', async () => {
+  const fx = recordingEffects();
+  const ws: RestartWorkspace = { sdkSessionId: 'sess-1' };
+  const r = await resolveRestart({ id: 'ws-s', ws, live: liveNone, fresh: true, effects: fx });
+  assert.deepEqual(r, { ok: true, mode: 'structured', fresh: true });
+  assert.deepEqual(fx.calls, [{ kind: 'structured', fresh: true }]);
+});
+
+test('resolveRestart: terminal-only ws → pty effect fires (fresh=false)', async () => {
+  const fx = recordingEffects();
+  const ws: RestartWorkspace = { hasInput: true };
+  const r = await resolveRestart({ id: 'ws-p', ws, live: liveNone, fresh: false, effects: fx });
+  assert.deepEqual(r, { ok: true, mode: 'pty', fresh: false });
+  assert.deepEqual(fx.calls, [{ kind: 'pty', fresh: false }]);
+});
+
+test('resolveRestart: a THROWN effect is wrapped as {ok:false} + onError called', async () => {
+  let logged: { mode: string; message: string } | null = null;
+  const ws: RestartWorkspace = { sdkSessionId: 'sess-1' };
+  const r = await resolveRestart({
+    id: 'ws-s',
+    ws,
+    live: liveNone,
+    fresh: false,
+    effects: {
+      restartStructured: async () => { throw new Error('boom'); },
+      restartPty: async () => {},
+    },
+    onError: (mode, message) => { logged = { mode, message }; },
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? '', /restart failed: boom/);
+  // Diagnosable, not a raw throw escaping to the socket.
+  assert.doesNotMatch(r.error ?? '', /\n\s+at\s/);
+  assert.deepEqual(logged, { mode: 'structured', message: 'boom' });
+});
+
+// C3 for the guards: delete the archived guard and its arm goes RED — proving
+// the arm reaches that clause. (Documented here; the live mutation is run in
+// the nomination's C3 pass, same as the classifier/router arms.)

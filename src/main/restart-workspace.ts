@@ -33,23 +33,9 @@ import { isRunning, stopPty, getPtySize } from './pty';
 import { startAgentPty } from './workspaces';
 import { sdkRestart } from './agent-sdk';
 import { sdkSessionLive } from './sdk-delivery.ts';
-import {
-  classifyRestartMode,
-  routeRestart,
-  type RestartMode,
-} from '../shared/restart-mode.ts';
+import { resolveRestart, type RestartResult } from '../shared/restart-mode.ts';
 
-/** The reply the CLI renders. `ok:false` carries a human-actionable `error`
- *  (the CLI turns it into a `fail()` / non-zero exit) — never a stack trace. */
-export interface RestartResult {
-  ok: boolean;
-  /** Which surface was restarted (only on success) — so `orchestra restart`
-   *  reports "restarted (structured, conversation preserved)" honestly. */
-  mode?: RestartMode;
-  /** True when `--fresh` was applied (conversation cleared). */
-  fresh?: boolean;
-  error?: string;
-}
+export type { RestartResult } from '../shared/restart-mode.ts';
 
 // A stopped PTY has no live winsize; a socket restart has no renderer to assert
 // one. Reuse the size the terminal last had (survives stopPty in pty.ts), else
@@ -58,69 +44,44 @@ const RESTART_FALLBACK_COLS = 120;
 const RESTART_FALLBACK_ROWS = 32;
 
 /** Restart the workspace's agent process. `id` is a workspace id; `fresh` maps
- *  to the CLI `--fresh` flag. */
+ *  to the CLI `--fresh` flag.
+ *
+ *  This is the THIN Electron adapter: it resolves the store record, the live
+ *  probes (`isRunning`/`sdkSessionLive`), and the real side effects, then hands
+ *  them to the PURE `resolveRestart` (src/shared) which owns every guard, the
+ *  mode routing, and the error wrap — so all of that has a runtime arm without
+ *  Electron (issue #111 F1, restart-mode.test.ts). Neither effect runs any git
+ *  op → worktree/branch/commits untouched (T111.3). */
 export async function dispatchRestartRequest(input: {
   id?: string;
   fresh?: boolean;
 }): Promise<RestartResult> {
   const id = input.id;
-  if (!id) return { ok: false, error: 'missing id' };
-  const ws = store.getWorkspace(id);
-  if (!ws) {
-    // Diagnosable, not a stack trace (T111.1): the caller passed an id that is
-    // not a workspace, or is stale.
-    return { ok: false, error: `unknown workspace: ${id}` };
-  }
-  if (ws.archived) {
-    return { ok: false, error: `workspace is archived: ${id} — cannot restart` };
-  }
+  const ws = id ? (store.getWorkspace(id) ?? null) : null;
   const fresh = input.fresh === true;
-  const mode = classifyRestartMode(ws, {
-    ptyLive: isRunning(id),
-    sdkLive: sdkSessionLive(id),
-  });
-
-  if (mode === 'unknown') {
-    // Nothing has ever run under either surface — there is no process to
-    // relaunch and no conversation to preserve. Refuse rather than spawn a
-    // stray agent nobody asked to start.
-    return {
-      ok: false,
-      error:
-        `workspace ${id} has no agent to restart yet ` +
-        `(no terminal or structured session has run). Open it first.`,
-    };
-  }
-
-  try {
-    // routeRestart is the pure routing (src/shared) that the T111.4 gate class
-    // pins; here we inject the real effects. Never touches worktree/branch/
-    // commits — neither branch runs any git op.
-    await routeRestart(mode, fresh, {
-      restartStructured: (f) =>
-        // sdkStop + killKeeper + ensureSession (default, resumes) or sdkClear (fresh).
-        sdkRestart(id, { fresh: f }),
+  return resolveRestart({
+    id,
+    ws,
+    live: { ptyLive: id ? isRunning(id) : false, sdkLive: id ? sdkSessionLive(id) : false },
+    fresh,
+    effects: {
+      // sdkStop + killKeeper + ensureSession (default, resumes) or sdkClear (fresh).
+      restartStructured: (f) => sdkRestart(id!, { fresh: f }),
       restartPty: async (f) => {
         // Stop the live process (if any), then respawn main-side. When already
         // stopped, isRunning is false and stopPty is a no-op — we just
         // (re)launch. Reuse the last known size so an open terminal keeps its
         // width across the out-of-band respawn.
-        if (isRunning(id)) stopPty(id);
-        const size = getPtySize(id);
+        if (isRunning(id!)) stopPty(id!);
+        const size = getPtySize(id!);
         await startAgentPty(
-          ws,
+          ws!,
           size?.cols ?? RESTART_FALLBACK_COLS,
           size?.rows ?? RESTART_FALLBACK_ROWS,
           { fresh: f },
         );
       },
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log.warn(`restart: ${mode} restart failed for ${id}: ${message}`);
-    return { ok: false, error: `restart failed: ${message}` };
-  }
-
-  log.info(`restart: ${id} (${mode}${fresh ? ', fresh' : ', conversation preserved'})`);
-  return { ok: true, mode, fresh };
+    },
+    onError: (mode, message) => log.warn(`restart: ${mode} restart failed for ${id}: ${message}`),
+  });
 }
