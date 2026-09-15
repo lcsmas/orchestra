@@ -1,8 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import {
   SandboxConnection,
   EXIT_CONNECTION_LOST,
+  applyRemoteAgentEvent,
+  type ApplyAgentEvent,
   type SandboxSocket,
 } from './sandbox-connection.ts';
 import { createRemoteTransport } from './remote.ts';
@@ -13,6 +17,15 @@ import {
   type ClientFrame,
   type SandboxFrame,
 } from '../../shared/sandbox-protocol.ts';
+// The REAL #127 in-flight-tool tracker (platform-free — the hibernation module
+// has no Electron dep, so it imports under the strip-types runner where
+// activity.ts / sandbox-manager.ts cannot; see ERR_UNSUPPORTED_DIR_IMPORT).
+import {
+  noteToolStart,
+  noteToolEnd,
+  getInFlightTools,
+  forgetHibernationActivity,
+} from '../hibernation-activity.ts';
 
 // ─── A fake socket that records what the connection sends and lets a test
 //     inject inbound bytes, mirroring the ws message/close/error surface. ─────
@@ -193,6 +206,124 @@ test('#132: an event frame carrying a wire toolUseId hands it to onEvent (4th ar
     ['ws-1', 'posttool', 'mcp__browser__click', 'toolu_fast'],
     ['ws-1', 'posttool', 'Bash', undefined],
   ]);
+});
+
+// ─── #132 end-to-end: real EventFrame → SandboxConnection → applyRemoteAgentEvent
+//     → REAL #127 tracker. This is the arm the per-hop tests (parseSpoolChunk,
+//     onEvent 4th-arg) cannot be: it drives the wire delivery THROUGH the bridge
+//     that maps toolUseId onto applyAgentEvent's 7th slot and asserts the tracker
+//     outcome — so it FAILS on any master where the wire drops the id, unlike a
+//     tracker-only test that would pass byte-identically on master.
+//
+//     `applyAgentEvent` itself (activity.ts) cannot be imported here — it pulls in
+//     `./platform` (ERR_UNSUPPORTED_DIR_IMPORT). We inject an `apply` that mirrors
+//     EXACTLY activity.ts's pretool/posttool arms (`case 'pretool': noteToolStart(
+//     id, tool??null, toolUseId??null)`; `case 'posttool': noteToolEnd(id,
+//     toolUseId??null, tool??null)` — activity.ts:1008/1036), forwarding to the
+//     REAL tracker. The mapping under test — wire toolUseId → slot 7 → the
+//     tracker's id key — is production code (`applyRemoteAgentEvent`), shared with
+//     sandbox-manager, not re-implemented here. ────────────────────────────────
+
+const E2E_WS = 'ws-e2e-132';
+
+/** An `apply` that mirrors activity.ts's pretool/posttool arms onto the REAL
+ *  #127 tracker. Only these two arms touch the in-flight list, so a faithful
+ *  copy of just them exercises the exact attribution path. */
+const trackerApply: ApplyAgentEvent = (session, event, tool, _t, _s, _c, toolUseId) => {
+  if (event === 'pretool') noteToolStart(session, tool ?? null, toolUseId ?? null);
+  else if (event === 'posttool') noteToolEnd(session, toolUseId ?? null, tool ?? null);
+};
+
+test('#132 E2E: two DISTINCT wire toolUseIds (same tool) → the HUNG oldest call SURVIVES through the real bridge+tracker', () => {
+  // Drive real EventFrames carrying distinct wire toolUseIds through a real
+  // SandboxConnection whose onEvent is wired EXACTLY as sandbox-manager wires it
+  // (via applyRemoteAgentEvent), into the real tracker. End the FAST call BY ITS
+  // WIRE ID → the hung oldest must remain. On any build where the wire drops the
+  // id (master, or a wire mutation), both frames arrive id-less → the tracker's
+  // name-only FIFO removes the oldest (hung) → this arm goes RED. THIS is what
+  // proves #132's WIRE (not #127's tracker) delivers the id.
+  forgetHibernationActivity(E2E_WS);
+  const sock = new FakeSocket();
+  const conn = new SandboxConnection(sock, {
+    onEvent: (session, event, tool, toolUseId) =>
+      applyRemoteAgentEvent(trackerApply, session, event, tool, toolUseId),
+  });
+  conn.registerSession(E2E_WS, { handleData() {}, handleExit() {} });
+
+  // Two parallel same-tool calls; the OLDER hangs. Distinct wire ids on the frame.
+  sock.inbound({
+    t: 'event', session: E2E_WS, event: 'pretool',
+    tool: 'mcp__browser__click', toolUseId: 'toolu_hung',
+  });
+  sock.inbound({
+    t: 'event', session: E2E_WS, event: 'pretool',
+    tool: 'mcp__browser__click', toolUseId: 'toolu_fast',
+  });
+  assert.equal(getInFlightTools(E2E_WS).length, 2, 'both parallel calls tracked');
+  // The FAST call returns — its posttool carries its own wire id.
+  sock.inbound({
+    t: 'event', session: E2E_WS, event: 'posttool',
+    tool: 'mcp__browser__click', toolUseId: 'toolu_fast',
+  });
+
+  const left = getInFlightTools(E2E_WS);
+  assert.equal(left.length, 1, 'exactly one same-tool call remains');
+  assert.equal(left[0].toolUseId, 'toolu_hung', 'the HUNG (oldest) call survives — the wire delivered the id');
+  forgetHibernationActivity(E2E_WS);
+});
+
+test('#132 E2E must-FAIL control: id STRIPPED from the wire frames → OLD masking returns (survivor = fast) through the SAME path', () => {
+  // Same scenario, SAME real bridge+tracker path, but the wire frames carry NO
+  // toolUseId (simulating master / a dropped-id wire). Both calls are id-less →
+  // the posttool's name-only FIFO removes the OLDEST (hung) → the fast sibling
+  // survives, reproducing the mis-attribution #132 fixes. This is the load-bearing
+  // control: if it still attributed correctly, the wire id would not be doing the
+  // work.
+  forgetHibernationActivity(E2E_WS);
+  const sock = new FakeSocket();
+  const conn = new SandboxConnection(sock, {
+    onEvent: (session, event, tool, toolUseId) =>
+      applyRemoteAgentEvent(trackerApply, session, event, tool, toolUseId),
+  });
+  conn.registerSession(E2E_WS, { handleData() {}, handleExit() {} });
+
+  sock.inbound({ t: 'event', session: E2E_WS, event: 'pretool', tool: 'mcp__browser__click' }); // hung, id-less
+  sock.inbound({ t: 'event', session: E2E_WS, event: 'pretool', tool: 'mcp__browser__click' }); // fast, id-less
+  sock.inbound({ t: 'event', session: E2E_WS, event: 'posttool', tool: 'mcp__browser__click' }); // id-less → FIFO
+
+  const left = getInFlightTools(E2E_WS);
+  assert.equal(left.length, 1, 'one same-tool call remains');
+  assert.equal(left[0].toolUseId, null, 'survivor is the id-less fast call — hung oldest MASKED (old behaviour)');
+  forgetHibernationActivity(E2E_WS);
+});
+
+test('#132 E2E fidelity pin: activity.ts pretool/posttool arms match the injected trackerApply', () => {
+  // The E2E above injects a `trackerApply` that mirrors activity.ts's pretool/
+  // posttool arms (which cannot be imported here — ERR_UNSUPPORTED_DIR_IMPORT).
+  // This pin fails LOUDLY if those arms drift from the mirror, so the E2E can
+  // never quietly test a stale copy: it slices each arm from activity.ts source
+  // and asserts it still calls the tracker with toolUseId the way trackerApply
+  // does. (Same source-pin approach as turn-start-stamp.test.ts.)
+  const src = readFileSync(path.join(process.cwd(), 'src', 'main', 'activity.ts'), 'utf8');
+  const arm = (name: string): string => {
+    const start = src.indexOf(`case '${name}':`);
+    assert.notEqual(start, -1, `case '${name}' not found in activity.ts — was it renamed?`);
+    const end = src.indexOf('break;', start);
+    assert.notEqual(end, -1, `case '${name}' has no break`);
+    return src.slice(start, end);
+  };
+  const pre = arm('pretool');
+  assert.match(
+    pre,
+    /noteToolStart\(\s*id,\s*tool \?\? null,\s*toolUseId \?\? null\s*\)/,
+    'pretool arm must call noteToolStart(id, tool??null, toolUseId??null) — trackerApply mirrors this',
+  );
+  const post = arm('posttool');
+  assert.match(
+    post,
+    /noteToolEnd\(\s*id,\s*toolUseId \?\? null,\s*tool \?\? null\s*\)/,
+    'posttool arm must call noteToolEnd(id, toolUseId??null, tool??null) — trackerApply mirrors this',
+  );
 });
 
 test('rpc is dispatched and its reply is sent back as an rpcReply with the same id', () => {

@@ -100,15 +100,24 @@ it being dropped in transit. The thread:
 | wire type | `sandbox-protocol.ts:136` (`EventFrame.toolUseId?`) + vendored `sandbox/shim/sandbox-protocol.ts` (regen `sync-protocol.mjs`, gate `npm run check-protocol`) | adds the optional field to the frame |
 | spool parse | `shim-core.ts:66` (`SpoolEvent.toolUseId?` `:18`) | mines `toolUseId` from the spool line (was dropped) |
 | shim emit | `shim.ts:322` | puts `ev.toolUseId` on the emitted `event` frame |
-| client onEvent | `sandbox-connection.ts:65` (sig, 4th arg) / `:250` (call) | surfaces `f.toolUseId` |
-| manager | `sandbox-manager.ts:332` | passes it to `applyAgentEvent`'s 7th slot (`activity.ts:977`) → `noteToolStart`/`noteToolEnd` (`hibernation-activity.ts:89`/`:117`) |
+| client onEvent | `sandbox-connection.ts:65` (sig, 4th arg) / `:289` (call) | surfaces `f.toolUseId` |
+| bridge | `applyRemoteAgentEvent` `sandbox-connection.ts:127` (platform-free, exported) | maps the wire fields onto `applyAgentEvent`'s 7th slot; `sandbox-manager` and the E2E test both call it (no positional-slot drift) |
+| manager | `sandbox-manager.ts:339` | calls `applyRemoteAgentEvent(applyAgentEvent, …)` → 7th slot (`activity.ts:977`) → `noteToolStart`/`noteToolEnd` (`hibernation-activity.ts:89`/`:117`) |
 
 Absent id (old shim / no id on the line) → `undefined` → `null` → the tracker's
 id-less name-scoped FIFO, identical to the local legacy-hook path. This path is
 pure wire/spool: it does NOT read the bus (the #127 tracker is a module-global
-`Map`, not `bus.sqlite`). Acceptance: `hibernation-activity.test.ts` `#132
-acceptance` (hung oldest survives) + `#132 must-FAIL control` (id stripped →
-old masking); wire coverage `sandbox-connection.test.ts` + `shim-core.test.ts`.
+`Map`, not `bus.sqlite`). Coverage: the END-TO-END arm (`sandbox-connection.test.ts`
+`#132 E2E`) drives real `EventFrame`s through the real `SandboxConnection` +
+`applyRemoteAgentEvent` bridge into the REAL #127 tracker — distinct wire ids →
+hung oldest survives; id-stripped control → old masking. It goes RED on any build
+where the wire drops the id (master) or the bridge maps the wrong slot, so it
+tests the WIRE, not the tracker. `applyAgentEvent` (activity.ts) can't be imported
+under the strip-types runner (`./platform` dir-import); the E2E injects an `apply`
+mirroring its pretool/posttool arms, guarded by a source-pin (`#132 E2E fidelity
+pin`) that fails if those arms drift. Per-hop mutation-gated tests still cover the
+pieces: `shim-core.test.ts` (parseSpoolChunk mines id), `sandbox-connection.test.ts`
+(onEvent 4th arg). The tracker-only arms live in `hibernation-activity.test.ts`.
 
 ## Provisioning: import / export / eject / backups
 Payload grammar (both directions): tgz of `meta.json` + `repo.bundle`

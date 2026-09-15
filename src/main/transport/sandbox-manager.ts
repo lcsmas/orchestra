@@ -33,7 +33,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { platform } from '../platform';
-import { SandboxConnection, type SandboxSocket } from './sandbox-connection';
+import { SandboxConnection, applyRemoteAgentEvent, type SandboxSocket } from './sandbox-connection';
 import { backoffDelayMs, shouldGiveUp } from './reconnect-policy';
 import type { SandboxControlState } from '../../shared/types';
 import type { RpcRoute, RpcRequestPayloads, RpcReplyPayload } from '../../shared/sandbox-protocol';
@@ -331,9 +331,12 @@ export async function getSandboxConnection(endpoint: string): Promise<SandboxCon
   const conn = new SandboxConnection(adaptSocket(ws), {
     // #132: thread the wire tool_use id into applyAgentEvent's 7th slot (the same
     // chokepoint the local spool path uses) so the #127 tracker keys a remote
-    // posttool by id, not just tool name. undefined → null → id-less FIFO.
+    // posttool by id, not just tool name. undefined → null → id-less FIFO. The
+    // positional mapping lives in the platform-free `applyRemoteAgentEvent` so the
+    // wire→apply→tracker chain has one end-to-end test (this module can't be
+    // imported by the strip-types runner — it pulls in `./platform`).
     onEvent: (session, event, tool, toolUseId) =>
-      applyAgentEvent(session, event, tool, undefined, undefined, undefined, toolUseId ?? null),
+      applyRemoteAgentEvent(applyAgentEvent, session, event, tool, toolUseId),
     onControl: (state) => {
       const s: SandboxControlState = {
         endpoint,

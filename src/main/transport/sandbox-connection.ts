@@ -95,6 +95,45 @@ export interface SandboxConnectionHandlers {
   onError?: (err: Error) => void;
 }
 
+/** The `applyAgentEvent` shape the remote path bridges into — the same function
+ *  the local spool tail calls, injected so this platform-free module (and its
+ *  tests) need not import `activity.ts` (which pulls in Electron/platform). The
+ *  positional signature MUST match `activity.ts`'s `applyAgentEvent`: the 7th
+ *  slot is `toolUseId` and slots 4/5/6 (transcript/stopReason/crons) are unused
+ *  on the remote path. */
+export type ApplyAgentEvent = (
+  session: string,
+  event: string,
+  tool: string | undefined,
+  transcript?: string,
+  stopReason?: undefined,
+  crons?: undefined,
+  toolUseId?: string | null,
+) => void;
+
+/** #132: bridge a remote `event` frame's fields onto `applyAgentEvent`, threading
+ *  the wire `toolUseId` into its 7th slot so the #127 in-flight-tool tracker keys
+ *  a remote posttool by id (not just tool name) — the fix for the same-tool
+ *  parallel-hang mis-attribution. `undefined` (old shim / no id on the line) → the
+ *  tracker's id-less name-scoped FIFO, identical to the local legacy-hook path.
+ *
+ *  Extracted as a named, pure, platform-free function so the wire→apply→tracker
+ *  chain has ONE end-to-end test drive (via a real SandboxConnection feeding real
+ *  EventFrames) that could NOT live in sandbox-manager.ts — that module imports
+ *  `./platform`, an extensionless dir-import the strip-types test runner refuses
+ *  (ERR_UNSUPPORTED_DIR_IMPORT; see turn-start-stamp.test.ts). `sandbox-manager`'s
+ *  onEvent and the test both call THIS function, so the positional 7-tuple mapping
+ *  (the F2 slot the reviewer flagged) cannot drift between prod and test. */
+export function applyRemoteAgentEvent(
+  apply: ApplyAgentEvent,
+  session: string,
+  event: string,
+  tool: string | undefined,
+  toolUseId: string | undefined,
+): void {
+  apply(session, event, tool, undefined, undefined, undefined, toolUseId ?? null);
+}
+
 export class SandboxConnection {
   private decoder = new FrameDecoder();
   private readonly sinks = new Map<string, SessionSink>();
