@@ -211,47 +211,79 @@ test('statVolume is SINGLE-FLIGHT per path: N ticks on a hung mount dispatch ONE
   }
 });
 
-test('single-flight cap keeps an INDEPENDENT fs op responsive under a real pool-blocking outage (issue #96 F1, faithful arm)', async () => {
-  // The blind-spot the review named: the other #96 test models a hang as
-  // `new Promise(()=>{})`, which occupies ZERO libuv threads — so it can never
-  // observe pool starvation. This arm uses REAL same-pool work (pbkdf2 shares
-  // the libuv threadpool with async fs) to reproduce the actual mechanism.
+test('single-flight keeps an INDEPENDENT fs op responsive: K hung ticks consume ONE real pool slot, not K (issue #96 F1, load-bearing arm)', async () => {
+  // review F2: the earlier "faithful arm" had a genuine positive control
+  // (pbkdf2 blocks the pool) but its cap assertion was a vacuous
+  // `assert.ok(size>=1)`, deferring the real proof to the zero-thread
+  // dispatch-count test — so no SINGLE arm both drove the fix's statfs through
+  // the REAL pool AND asserted an independent op stays responsive. This is that
+  // one load-bearing arm.
   //
-  // Measured baseline (this rig, UV_THREADPOOL_SIZE default): saturating the
-  // pool with `size` blockers delayed an independent fs.promises.stat by
-  // ~1.9s. Here we assert the STRUCTURE that makes the fix safe: single-flight
-  // means K overlapping ticks against ONE hung mount consume ONE pool slot, not
-  // K — so K−1 slots (and the rest of the pool) stay free for other fs I/O.
-  // The must-FAIL is the dispatch count above (unfixed → K dispatches → K pool
-  // threads → exhaustion); this arm proves the same-pool proxy is real so that
-  // must-FAIL is not vacuous.
+  // The stub makes a hung statfs occupy a REAL libuv pool thread: it kicks off
+  // a long `crypto.pbkdf2` (same threadpool as async fs) and returns a
+  // never-settling promise (so `statVolume` times out to null on its own). With
+  // single-flight, K overlapping ticks on ONE hung path dispatch ONE statfs =>
+  // ONE pbkdf2 => ONE pool slot; the other size-1 slots stay free, so an
+  // independent `fs.promises.stat` returns immediately. On the UNFIXED
+  // accumulation each tick would dispatch its own pbkdf2 (K == size => pool
+  // exhausted => the independent stat is delayed by seconds — the must-FAIL,
+  // measured on the no-guard mutant in /tmp: dispatches=4, indep stat 9312ms).
   const size = Number(process.env.UV_THREADPOOL_SIZE || 4);
-
-  // Positive control: with the pool SATURATED by `size` real blockers, an
-  // independent stat IS delayed — proving pbkdf2 is a faithful same-pool proxy
-  // and the instrument can detect starvation (carry-forward #4).
+  const target = process.cwd();
+  const realStatfs = fs.promises.statfs;
+  let dispatches = 0;
+  // Track each dispatched pbkdf2 so cleanup can await it — a still-running
+  // pbkdf2 would otherwise hold a pool thread into the next test.
   const blockers: Array<Promise<unknown>> = [];
-  for (let i = 0; i < size; i += 1) {
-    blockers.push(
-      new Promise((res, rej) =>
-        crypto.pbkdf2('p', 's', 3_000_000, 64, 'sha512', (e, k) => (e ? rej(e) : res(k))),
-      ),
-    );
-  }
-  const t0 = Date.now();
-  await fs.promises.stat(process.cwd());
-  const delayedMs = Date.now() - t0;
-  await Promise.all(blockers);
-  assert.ok(
-    delayedMs > 100,
-    `positive control weak: saturated pool only delayed an independent stat ${delayedMs}ms — pbkdf2 is not blocking the same pool`,
-  );
+  const keepAlive = setInterval(() => {}, 50);
+  try {
+    (fs.promises as { statfs: unknown }).statfs = ((p: string, ...rest: unknown[]) => {
+      if (String(p) === target) {
+        dispatches += 1;
+        // 2M iterations ≈ 0.6s on this machine — long enough to still be
+        // running through the probe below, short enough to settle in cleanup.
+        blockers.push(
+          new Promise((res) => crypto.pbkdf2('p', 's', 2_000_000, 64, 'sha512', () => res(null))),
+        );
+        return new Promise(() => {}); // the statfs result never arrives (hung mount)
+      }
+      return (realStatfs as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as typeof fs.promises.statfs;
 
-  // The fix's guarantee, stated as the observable it controls: for K hung ticks
-  // on one mount, the number of pool slots the guard lets statfs consume is 1,
-  // not K. (Directly asserted by the single-flight test above; restated here to
-  // tie the faithful proxy to the cap it protects.)
-  assert.ok(size >= 1);
+    const K = size; // enough ticks that, unguarded, every pool slot would fill
+    const pending: Array<Promise<unknown>> = [];
+    for (let i = 0; i < K; i += 1) pending.push(statVolume(target, 'hung'));
+    // Let the dispatched pbkdf2(s) actually occupy their pool thread(s).
+    await new Promise((r) => setTimeout(r, 150));
+
+    // Single-flight must have collapsed K ticks to ONE real pool job.
+    assert.equal(
+      dispatches,
+      1,
+      `single-flight broken: ${K} ticks dispatched ${dispatches} pool jobs (unfixed = ${K} => pool exhausted)`,
+    );
+
+    // The load-bearing assertion: an INDEPENDENT fs op still returns within
+    // budget because size-1 slots are free. (Fixed measured ~1ms; the no-guard
+    // mutant measured 9312ms with K=size — the budget sits far below it.)
+    const t0 = Date.now();
+    await fs.promises.stat('/etc/hostname');
+    const indepMs = Date.now() - t0;
+    assert.ok(
+      indepMs < 500,
+      `independent fs.stat was delayed ${indepMs}ms — a hung mount starved the pool (single-flight cap failed)`,
+    );
+
+    // Callers of the hung mount still each resolve to null (never hang forever).
+    const results = await Promise.all(pending);
+    assert.ok(results.every((v) => v === null), 'hung-mount callers must resolve to null');
+  } finally {
+    clearInterval(keepAlive);
+    (fs.promises as { statfs: unknown }).statfs = realStatfs;
+    __resetInFlightForTest();
+    // Await the pbkdf2 so its pool thread is freed before the next test runs.
+    await Promise.all(blockers);
+  }
 });
 
 test('sampleVolumes covers the tmp filesystem, which is the one that filled', async () => {
