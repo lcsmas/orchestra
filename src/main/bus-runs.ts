@@ -226,47 +226,85 @@ export function busSwitch(db: BusDb, runId: string, mechanism: string): boolean 
 }
 
 /**
- * The run `rootId` PLUS every run nested under it (its descendants via
- * `parent_run_id`), for the D1a innermost-run wake routing (#134, OQ2 ruling A).
+ * The set of runs whose flags a reader in `readerRunId` may be governed by, for
+ * the D1a/D1a-bis BIDIRECTIONAL innermost-run wake routing (#134, ledger #135):
+ * `readerRunId` itself, every DESCENDANT (nested below via `parent_run_id`), AND
+ * every ANCESTOR (up the `parent_run_id` chain).
  *
- * WHY DESCENDANTS: a message is governed by the INNERMOST (deeper) run of its two
- * parties. For an OPS→LEAD digest the mail sits in the OPS's run, which is a
- * DESCENDANT of the LEAD's mission run (`parent_run_id` = LEAD). So the LEAD's
- * wake sweep must look for mail addressed to it not only in its own run but in
- * every run below it. (Rulings-down are symmetric: the LEAD→OPS mail lands in the
- * LEAD's run — an ANCESTOR of the OPS — but is addressed to the OPS, and the OPS
- * reads its own run directly; the descendant widening is what the digest-up case
- * needs, per the ruling's direction correction.)
+ * WHY BOTH DIRECTIONS (D1a-bis): a message is governed by the INNERMOST (deeper)
+ * run of its two parties, and the store-less CLI writes mail with the SENDER's
+ * run:
+ *   - an OPS→LEAD digest sits in the OPS run — a DESCENDANT of the LEAD's mission;
+ *   - a LEAD→OPS ruling sits in the LEAD's mission run — an ANCESTOR of the OPS.
+ * So a reader must look for mail addressed to it in its own run OR any run related
+ * to it up or down the chain. Which run's SWITCH governs is decided separately in
+ * the sweep, by DEPTH ({@link runDepthMap}): the deeper of (mail run, reader run).
  *
- * Returns `[rootId, ...descendants]`, always including `rootId` itself even when
- * it has no run row yet (a reader whose run was never started still checks its
- * own run). Bounded by a `seen` set against a malformed `parent_run_id` cycle.
- * One query reads the whole edge set, then the tree is walked in memory — the
- * `runs` table is small (one row per orchestrator), so this is cheap per sweep.
+ * Returns `{ ids, depth }` — `ids` always includes `readerRunId` (even with no
+ * row yet), `depth` maps every run id in `ids` to its distance from a top-level
+ * mission (root = 0). One query reads the whole edge set; the tree is walked in
+ * memory (the `runs` table is one row per orchestrator). Bounded against a
+ * malformed `parent_run_id` cycle by `seen` sets.
  */
-export function getDescendantRunIds(db: BusDb, rootId: string): string[] {
+export function getRelatedRunIds(
+  db: BusDb,
+  readerRunId: string,
+): { ids: string[]; depth: Map<string, number> } {
   const edges = db
-    .prepare('SELECT id, parent_run_id FROM runs WHERE parent_run_id IS NOT NULL')
-    .all() as { id: string; parent_run_id: string }[];
+    .prepare('SELECT id, parent_run_id FROM runs')
+    .all() as { id: string; parent_run_id: string | null }[];
+  const parentOf = new Map<string, string | null>();
   const childrenOf = new Map<string, string[]>();
   for (const e of edges) {
-    const list = childrenOf.get(e.parent_run_id) ?? [];
-    list.push(e.id);
-    childrenOf.set(e.parent_run_id, list);
-  }
-  const out: string[] = [rootId];
-  const seen = new Set<string>([rootId]);
-  const queue = [rootId];
-  while (queue.length) {
-    const cur = queue.shift()!;
-    for (const child of childrenOf.get(cur) ?? []) {
-      if (seen.has(child)) continue; // cycle guard
-      seen.add(child);
-      out.push(child);
-      queue.push(child);
+    parentOf.set(e.id, e.parent_run_id);
+    if (e.parent_run_id) {
+      const list = childrenOf.get(e.parent_run_id) ?? [];
+      list.push(e.id);
+      childrenOf.set(e.parent_run_id, list);
     }
   }
-  return out;
+  const ids = new Set<string>([readerRunId]);
+  // Ancestors: walk parent_run_id up.
+  {
+    const seen = new Set<string>([readerRunId]);
+    let cur: string | null | undefined = parentOf.get(readerRunId);
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      ids.add(cur);
+      cur = parentOf.get(cur);
+    }
+  }
+  // Descendants: walk children down.
+  {
+    const seen = new Set<string>([readerRunId]);
+    const queue = [readerRunId];
+    while (queue.length) {
+      const c = queue.shift()!;
+      for (const child of childrenOf.get(c) ?? []) {
+        if (seen.has(child)) continue;
+        seen.add(child);
+        ids.add(child);
+        queue.push(child);
+      }
+    }
+  }
+  // Depth of every related run = hops to a top-level mission (parent null / absent).
+  const depth = new Map<string, number>();
+  const depthOf = (id: string): number => {
+    if (depth.has(id)) return depth.get(id)!;
+    const seen = new Set<string>();
+    let d = 0;
+    let cur: string | null | undefined = id;
+    while (cur && parentOf.get(cur) && !seen.has(cur)) {
+      seen.add(cur);
+      cur = parentOf.get(cur);
+      d++;
+    }
+    depth.set(id, d);
+    return d;
+  };
+  for (const id of ids) depthOf(id);
+  return { ids: [...ids], depth };
 }
 
 /** Every run, newest first — the pane's mission/wave tree source. */

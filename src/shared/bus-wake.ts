@@ -55,13 +55,22 @@ export interface ReaderPendingState {
    *  while the ask is still unanswered. */
   cursorSeq?: number;
   /**
-   * The run id of the INNERMOST run the pending lot/question actually sits in
-   * (#134 D1a, OQ2 ruling A). Usually the reader's own run; for an OPS→LEAD
-   * digest it is the OPS's (descendant) run, because the mail was written with
-   * the sender's run id. The sweep reads the `wake` switch for THIS run — "the
-   * flags of the innermost run of the two parties govern" — not the reader's own
-   * run. `undefined` when there is no lot/question pending (only a gate). */
+   * The run id the pending lot/question physically SITS in (#134 D1a-bis) — where
+   * the reader retrieves it (`check --run <this>`) and acks it. Usually the
+   * reader's own run; for an OPS→LEAD digest it is the OPS's DESCENDANT run, for a
+   * LEAD→OPS ruling it is the LEAD's ANCESTOR run (the store-less CLI writes mail
+   * with the SENDER's run). `undefined` when only a gate is pending.
+   */
   pendingRunId?: string;
+  /**
+   * The run whose `wake` flag GOVERNS this pending item (#134 D1a-bis): the
+   * INNERMOST = the DEEPER of (mail run, reader run). For upward mail (OPS→LEAD)
+   * that is the mail run (the OPS wave); for downward mail (LEAD→OPS) it is the
+   * reader run (the OPS wave). The sweep reads `readWakeSwitch(switchRunId)` — a
+   * mutant that reads the reader's own run for upward mail, or the mail's run for
+   * downward mail, reddens the G4a fire arm. `undefined` when only a gate pends.
+   */
+  switchRunId?: string;
 }
 
 /** Everything about the reader's SESSION the decision needs. */

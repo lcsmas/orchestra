@@ -21,11 +21,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openBus, send, type BusDb } from './bus.ts';
+import { openBus, send, check, ack, type BusDb } from './bus.ts';
 import { startRun, busSwitch } from './bus-runs.ts';
 import {
   sweepBusWake,
   busWakeCounters,
+  readPendingReaders,
   setWakeRoster,
   setWakeDeliver,
   setWakeSwitchReader,
@@ -231,4 +232,121 @@ test('G4a must-FAIL (descendant widening) — WITHOUT the parent_run_id nesting 
   assert.equal(wakes.length, 0, 'no nesting ⇒ the mail is not in a descendant run ⇒ the LEAD is NOT woken');
   assert.equal(busWakeCounters().fired, 0);
   assert.equal(busWakeCounters().counted, 0, 'not even counted — the LEAD never saw the mail');
+});
+
+// ─── G4a DOWNWARD (D1a-bis) — a LEAD→OPS ruling wakes the OPS via ANCESTOR mail ─
+//
+// The LEAD sends a ruling DOWN to the OPS; the store-less CLI writes it in the
+// LEAD's mission run — an ANCESTOR of the OPS's wave run. The OPS reader (roster
+// run = the OPS wave) must be woken via the ancestor widening, and the GOVERNING
+// switch is the DEEPER of (mail=LEAD mission, reader=OPS wave) = the OPS wave (the
+// reader's run) — the opposite deeper-run from the upward case.
+
+/** Arm with the OPS as the reader (roster run = the OPS wave). */
+function rigRulingDown(db: BusDb): { reader: string; text: string }[] {
+  const wakes: { reader: string; text: string }[] = [];
+  __resetBusWakeForTests();
+  __setBusReaderForTests(() => db);
+  setWakeRoster(() => [{ reader: 'ops-ws', wakeable: true, runId: OPS_RUN }]);
+  setWakeDeliver(async (reader, text) => {
+    wakes.push({ reader, text });
+    return true;
+  });
+  setWakeSwitchReader((runId) => busSwitch(db, runId, 'wake'));
+  setAskGateSwitchReader((runId) => busSwitch(db, runId, 'ask_gate'));
+  __armStartedForTests();
+  return wakes;
+}
+
+/** Start the nested runs and send a LEAD→OPS ruling (written in the LEAD's
+ *  mission run, addressed to the OPS). */
+function seedRulingDown(db: BusDb, leadWake: boolean, opsWake: boolean) {
+  startRun(db, { id: LEAD_RUN, kind: 'mission', coordinator: 'lead-ws' }, sw({ wake: leadWake }));
+  startRun(db, { id: OPS_RUN, kind: 'vague', coordinator: 'ops-ws', parentRunId: LEAD_RUN }, sw({ wake: opsWake }));
+  send(db, { runId: LEAD_RUN, sender: 'lead-ws', kind: 'dispatch', body: 'ruling', recipient: 'ops-ws' });
+}
+
+test('G4a DOWNWARD (i) — OPS-wave wake=ON + mission OFF → the OPS is FIRED (reader run governs)', async (t) => {
+  const db = tmpDb(t);
+  const wakes = rigRulingDown(db);
+  // Mail is in the LEAD (ancestor) run; the GOVERNING run is the DEEPER = the OPS
+  // wave (reader's run), which is ON → FIRE. Reading the mail's (LEAD) run, OFF,
+  // would COUNT — the downward mutant this arm forbids.
+  seedRulingDown(db, /*leadWake*/ false, /*opsWake*/ true);
+
+  await sweepBusWake();
+
+  assert.equal(wakes.length, 1, 'the OPS is woken for the ruling in its ancestor (LEAD) run');
+  assert.equal(wakes[0].reader, 'ops-ws');
+  assert.equal(busWakeCounters().fired, 1, 'FIRED — the innermost (OPS reader) wake flag governs');
+  assert.equal(busWakeCounters().counted, 0);
+});
+
+test('G4a DOWNWARD (ii) — reverse (OPS-wave OFF, mission ON) → COUNTED not fired', async (t) => {
+  const db = tmpDb(t);
+  const wakes = rigRulingDown(db);
+  seedRulingDown(db, /*leadWake*/ true, /*opsWake*/ false);
+
+  await sweepBusWake();
+
+  assert.equal(wakes.length, 0, 'the innermost (OPS reader) flag is OFF — nothing fires');
+  assert.equal(busWakeCounters().fired, 0);
+  assert.equal(busWakeCounters().counted, 1, 'COUNTED — governed by the reader run, not the mission mail run');
+});
+
+// ─── G4a ROUND-TRIP (OQ3) — fire → check → ack → pending clears → NOT re-woken ─
+//
+// The MANDATORY arm OPS-F required regardless of the OQ3 mechanism: a fire-only
+// assertion is latent-green over a permanent wake loop. This drives the reader's
+// FULL round-trip against the real bus, retrieving the mail from the run it
+// SITS in (`pendingRunId`, per OQ3(B) the wake order names it), acking it, and
+// asserting the next sweep does NOT re-wake. The single-run-retrieval must-FAIL
+// (reader checks its OWN run only) shows the loop as RED.
+
+test('G4a ROUND-TRIP — upward digest: LEAD fires, checks the MAIL run, acks, is NOT re-woken', async (t) => {
+  const db = tmpDb(t);
+  const wakes = rigDigestUp(db);
+  seedDigestUp(db, /*leadWake*/ false, /*opsWake*/ true); // wave ON governs → fire
+
+  // Sweep 1: the LEAD is FIRED.
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'sweep 1 wakes the LEAD');
+
+  // The reader learns WHICH run its mail sits in (the wake order names it, OQ3 B)
+  // and retrieves it from THAT run — not its own. This is the round-trip the
+  // fire-only arm never exercised.
+  const pend = readPendingReaders(db, [{ reader: LEAD, runId: LEAD_RUN }]);
+  const mailRun = pend[0].pendingRunId!;
+  assert.equal(mailRun, OPS_RUN, 'the mail sits in the OPS (descendant) run');
+  const lot = check(db, mailRun, LEAD);
+  assert.equal(lot.messages.length, 1, 'checking the MAIL run returns the digest');
+  assert.ok(lot.delivery, 'a lot was opened');
+  ack(db, mailRun, LEAD, lot.delivery!.id);
+
+  // Sweep 2: pending has cleared (the reader's cursor in the OPS run advanced) →
+  // NOT re-woken. This is what proves there is no permanent loop.
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'sweep 2 does NOT re-wake — pending cleared after the ack');
+  const pendAfter = readPendingReaders(db, [{ reader: LEAD, runId: LEAD_RUN }]);
+  assert.equal(pendAfter[0].pending, false, 'the reader is no longer pending after ack');
+});
+
+test('G4a ROUND-TRIP must-FAIL — checking only the reader OWN run never clears → the LOOP', async (t) => {
+  // The single-run-retrieval defect (OQ3): the reader checks its OWN run (the
+  // pre-D1a behaviour / a build without the run-naming order). The cross-run mail
+  // is never returned, never acked, so pending PERSISTS and the reader is re-woken
+  // on the next sweep — the permanent loop shown RED here as a positive assertion.
+  const db = tmpDb(t);
+  const wakes = rigDigestUp(db);
+  seedDigestUp(db, /*leadWake*/ false, /*opsWake*/ true);
+
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'sweep 1 wakes the LEAD');
+
+  // The BROKEN retrieval: check the reader's OWN run, not the mail run.
+  const lot = check(db, LEAD_RUN, LEAD);
+  assert.equal(lot.messages.length, 0, 'checking the OWN run returns NOTHING — the mail is in the OPS run');
+  // Nothing to ack; pending is unchanged. The reader stays pending → re-woken.
+  const stillPending = readPendingReaders(db, [{ reader: LEAD, runId: LEAD_RUN }]);
+  assert.equal(stillPending[0].pending, true, 'THE LOOP: own-run check left the reader still pending');
 });

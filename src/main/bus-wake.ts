@@ -33,7 +33,7 @@
 
 import fs from 'node:fs';
 import { getBus, busPath, openGatesForRecipient, type BusDb } from './bus.ts';
-import { getDescendantRunIds } from './bus-runs.ts';
+import { getRelatedRunIds } from './bus-runs.ts';
 import { log } from './logger.ts';
 import {
   decideWake,
@@ -163,32 +163,32 @@ export function readPendingReaders(
   db: BusDb,
   readers: readonly { reader: string; runId: string }[],
 ): ReaderPendingState[] {
-  // #134 D1a (OQ2 ruling A): a reader is pending for mail addressed to it in its
-  // OWN run OR a DESCENDANT run (a run nested under it via `parent_run_id`). The
-  // digest-up case — an OPS sends its LEAD a digest — writes the mail in the OPS's
-  // run (the sender's, store-less CLI), which is a DESCENDANT of the LEAD's
-  // mission run; without the widening the LEAD's sweep never sees it. The switch
-  // that governs is the MAIL's run (the innermost/deeper), read in the sweep from
-  // `pendingRunId` below — "the flags of the innermost run of the two parties".
+  // #134 D1a-bis (ledger #135): a reader is pending for mail addressed to it in
+  // its OWN run, any DESCENDANT run, OR any ANCESTOR run. The store-less CLI
+  // writes mail with the SENDER's run, so an OPS→LEAD digest sits in the OPS's
+  // DESCENDANT run and a LEAD→OPS ruling sits in the LEAD's ANCESTOR run — the
+  // reader must look both up and down its chain. Which run's `wake` flag GOVERNS
+  // is the INNERMOST = the DEEPER of (mail run, reader run), computed below from
+  // the depth map and carried as `switchRunId`; the sweep reads THAT flag.
   //
   // Two scopes, deliberately different:
   //   - the reader's OWN run: `recipient = reader OR NULL` (a null-recipient
   //     BROADCAST in the reader's own run still wakes it, as before);
-  //   - a DESCENDANT run: `recipient = reader` EXACTLY — never a null broadcast.
-  //     A descendant's broadcast is addressed to that sub-wave, not up the tree;
-  //     pulling it into the parent would wake the LEAD for every OPS broadcast.
+  //   - a RELATED (ancestor/descendant) run: `recipient = reader` EXACTLY — never
+  //     a null broadcast. A broadcast belongs to the run it was sent in, not up or
+  //     down the tree; pulling it across would wake unrelated parties.
   //
-  // Still run-scoped (never a bare cross-run read): the mail must be in a run the
-  // reader is entitled to see, so the reader is never ordered to `orchestra check`
-  // a run it has no lot in. The cursor subquery self-scopes to `m.run_id`, so a
-  // descendant lot clears against the reader's cursor IN THAT descendant run.
+  // Still run-scoped (never a bare cross-run read): the mail must be in a run
+  // RELATED to the reader, so the reader is never woken for a stranger run's
+  // traffic. The cursor subquery self-scopes to `m.run_id`, so the lot clears
+  // against the reader's cursor IN THE RUN THE MAIL SITS IN.
   const lotRows = db.prepare(`
     SELECT m.run_id AS run_id, m.sequence AS seq
       FROM messages m
      WHERE m.run_id IN (SELECT value FROM json_each(?))
        AND (
          (m.run_id = ? AND (m.recipient = ? OR m.recipient IS NULL))  -- own run: exact OR broadcast
-         OR (m.run_id != ? AND m.recipient = ?)                       -- descendant run: exact ONLY
+         OR (m.run_id != ? AND m.recipient = ?)                       -- related run: exact ONLY
        )
        AND m.sequence > COALESCE(
              (SELECT c.acked_seq FROM cursors c WHERE c.reader = ? AND c.run_id = m.run_id), 0)
@@ -196,7 +196,7 @@ export function readPendingReaders(
      LIMIT 1
   `);
   // An UNANSWERED question addressed to the reader keeps it pending until the ask
-  // is ANSWERED — not until the reader acks (#119, #108 Q15). Same descendant
+  // is ANSWERED — not until the reader acks (#119, #108 Q15). Same related-run
   // widening as the lot half (recipient EXACT outside the own run). "Answered" =
   // a reply sent BY the target (`r.sender = q.recipient`) TO the asker
   // (`r.recipient = q.sender`), threaded to the question, in the SAME run as the
@@ -220,10 +220,11 @@ export function readPendingReaders(
 
   const out: ReaderPendingState[] = [];
   for (const { reader, runId } of readers) {
-    // The reader's run + every run nested under it. json_each turns the array into
-    // a table so ONE prepared statement covers a variable-size run set.
-    const runSet = getDescendantRunIds(db, runId);
-    const runSetJson = JSON.stringify(runSet);
+    // The reader's run + every ancestor + every descendant, with a depth map.
+    // json_each turns the id array into a table so ONE prepared statement covers
+    // a variable-size run set.
+    const related = getRelatedRunIds(db, runId);
+    const runSetJson = JSON.stringify(related.ids);
     const lot = lotRows.get(runSetJson, runId, reader, runId, reader, reader) as
       | { run_id: string; seq: number }
       | undefined;
@@ -232,23 +233,28 @@ export function readPendingReaders(
       | undefined;
     const hi = Number(lot?.seq ?? 0);
     const qhi = Number(q?.seq ?? 0);
-    // The MAIL's run — the innermost run the pending item sits in — is the run of
-    // whichever of {lot, question} has the higher seq (seqs are a global total
-    // order, so the newest pending item wins). This is what the sweep reads the
-    // wake switch for. Falls back to the reader's own run when nothing is pending.
-    const pendingRunId =
-      hi >= qhi ? (lot?.run_id ?? q?.run_id) : (q?.run_id ?? lot?.run_id);
-    // The re-arm cursor is the reader's cursor IN THE MAIL'S run (the run the
-    // ack will advance), not the reader's own run — for a descendant digest the
-    // reader acks in the descendant run.
-    const cursorRun = pendingRunId ?? runId;
+    // The MAIL's run — where the newest pending item sits (seqs are a global total
+    // order). This is the retrieval + ack run (the wake order names it). Falls
+    // back to the reader's own run when nothing pends.
+    const mailRunId =
+      (hi >= qhi ? (lot?.run_id ?? q?.run_id) : (q?.run_id ?? lot?.run_id)) ?? runId;
+    // The GOVERNING run = the INNERMOST = the DEEPER of (mail run, reader run).
+    // Upward mail (OPS→LEAD): mail (OPS) is deeper → mail run. Downward mail
+    // (LEAD→OPS): reader (OPS) is deeper → reader run. Equal/unknown depth (same
+    // run, or an unrelated run with no depth) → the mail run, which for own-run
+    // mail is the reader run anyway.
+    const mailDepth = related.depth.get(mailRunId) ?? 0;
+    const readerDepth = related.depth.get(runId) ?? 0;
+    const switchRunId = readerDepth > mailDepth ? runId : mailRunId;
+    // The re-arm cursor is the reader's cursor IN THE MAIL'S run (the run the ack
+    // advances), not the reader's own run.
     const cursorSeq = Number(
-      ((cursorOf.get(cursorRun, reader) as { c: number } | undefined)?.c) ?? 0,
+      ((cursorOf.get(mailRunId, reader) as { c: number } | undefined)?.c) ?? 0,
     );
     const reWakeUntilAnswered = qhi > 0;
     const pendingThroughSeq = Math.max(hi, qhi);
     // Gate half (#119) — rides the `askGate` switch, own run only (a gate has an
-    // explicit recipient and is not part of the digest-up widening #134 added).
+    // explicit recipient and is not part of the cross-run widening #134 added).
     const gates = openGatesForRecipient(db, runId, reader);
     const gateThroughSeq = gates.reduce((mx, g) => Math.max(mx, g.id), 0);
     out.push({
@@ -259,7 +265,8 @@ export function readPendingReaders(
       gateThroughSeq,
       reWakeUntilAnswered,
       cursorSeq,
-      pendingRunId: pendingThroughSeq > 0 ? pendingRunId : undefined,
+      pendingRunId: pendingThroughSeq > 0 ? mailRunId : undefined,
+      switchRunId: pendingThroughSeq > 0 ? switchRunId : undefined,
     });
   }
   return out;
@@ -424,15 +431,14 @@ export async function sweepBusWake(): Promise<void> {
       // fired — rather than taking the whole sweep down.
       let switchOn = false;
       let askGateOn = false;
-      // #134 D1a (OQ2 ruling correction 2): the `wake` switch is read for the
-      // MAIL'S run — the INNERMOST run the pending lot/question sits in
-      // (`p.pendingRunId`) — NOT the reader's own run. "Governed by the flags of
-      // the innermost run of the two parties": for an OPS→LEAD digest the mail is
-      // in the OPS's wave run, so the OPS's wake flag decides fire-vs-count, not
-      // the LEAD's mission flag. Falls back to the reader's own run when there is
-      // no lot/question run to read (e.g. gate-only). Reading `entry.runId` here
-      // is the mutant the G4a fire arm reddens.
-      const wakeRunId = p.pendingRunId ?? entry?.runId;
+      // #134 D1a-bis: the `wake` switch is read for the GOVERNING run — the
+      // INNERMOST = the DEEPER of (mail run, reader run), precomputed as
+      // `p.switchRunId`. Upward mail (OPS→LEAD) → the mail's (OPS) run governs;
+      // downward mail (LEAD→OPS) → the reader's (OPS) run governs. Reading the
+      // reader's own run for upward mail, or the mail's run for downward mail, is
+      // the mutant the two G4a fire arms redden. Falls back to the reader's own
+      // run when nothing lot/question-shaped pends (e.g. gate-only).
+      const wakeRunId = p.switchRunId ?? entry?.runId;
       try {
         switchOn = wakeRunId ? readWakeSwitch(wakeRunId) : false;
       } catch (e) {

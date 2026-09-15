@@ -1621,29 +1621,33 @@ serialized JSON. The CLI prints the run it resolved (`--run` > `$ORCHESTRA_RUN_I
 > `default`), **never** the main process's `host-…` mirror id, plus a
 frozen-vs-live flag table (WIRE names). No write path.
 
-## D1a innermost-run wake routing (OQ2 ruling A — wake-side, DESCENDANT)
+## D1a-bis BIDIRECTIONAL innermost-run wake routing (OQ2 ruling A, wake-side)
 
 The store-less CLI writes mail with the SENDER's run (unchanged; a socket
 round-trip was rejected). The innermost-run decision lives in the wake sweep
-(main, store-aware):
+(main, store-aware), and is BIDIRECTIONAL (D1a-bis):
 
-- **`readPendingReaders` widens to DESCENDANT runs** (`getDescendantRunIds`,
-  bus-runs.ts — walk `parent_run_id` children down): a reader is pending for mail
-  addressed EXACTLY to it (never a null broadcast) in its own run OR a descendant
-  run. An OPS→LEAD digest is written in the OPS's run, a DESCENDANT of the LEAD's
-  mission run, so the LEAD's sweep now sees it. (Direction is descendant, not
-  ancestor — the digest-up mail is DEEPER than the reader's run.) A descendant's
-  null-recipient broadcast is NOT pulled up (own-run only), or the LEAD would wake
-  for every sub-wave broadcast.
-- **The wake switch is read for the MAIL'S run** (`ReaderPendingState.pendingRunId`
-  = the innermost run the pending item sits in), NOT the reader's own run — "the
-  flags of the INNERMOST run of the two parties govern". For the OPS→LEAD digest
-  the OPS wave's `wake` flag decides fire-vs-count, not the LEAD's mission flag.
-  Gates (askGate) are own-run only — not part of the digest-up widening.
+- **`readPendingReaders` widens to RELATED runs** (`getRelatedRunIds`, bus-runs.ts
+  — own ∪ every ANCESTOR up `parent_run_id` ∪ every DESCENDANT down, with a depth
+  map): a reader is pending for mail addressed EXACTLY to it (never a null
+  broadcast) in its own run OR any related run. An OPS→LEAD digest sits in the OPS
+  DESCENDANT run; a LEAD→OPS ruling sits in the LEAD ANCESTOR run — both are now
+  seen. A null-recipient broadcast stays own-run only (never pulled across).
+- **The wake switch is read for the GOVERNING run = the INNERMOST = the DEEPER of
+  (mail run, reader run)** (`ReaderPendingState.switchRunId`, by the depth map):
+  upward mail (OPS→LEAD) → the mail's (OPS) run governs; downward mail (LEAD→OPS)
+  → the reader's (OPS) run governs. `pendingRunId` separately carries the run the
+  mail SITS in (the retrieval + ack run). Gates (askGate) are own-run only.
+- **OQ3 round-trip:** the wake order names the mail's run so the reader
+  `check`s the run the mail sits in (OQ3 default B, pending a LEAD ruling);
+  `check`/`ack`/cursor stay per-run (one lot = one run). Without it a reader woken
+  for cross-run mail would check its own run, find nothing, and loop forever.
 
-Both are mutation-verified: reading the reader's-run switch reddens the fire arm;
-dropping the descendant widening reddens the "LEAD woken at all" precondition
-(`src/main/bus-wake-run-switch.test.ts` G4a).
+Mutation-verified (`src/main/bus-wake-run-switch.test.ts`): a switch read pinned
+to the reader's run reddens the UPWARD fire arms; pinned to the mail's run reddens
+the DOWNWARD fire arms; dropping the widening reddens "woken at all"; and the
+ROUND-TRIP arm drives fire→check(mail run)→ack→pending-clears→not-re-woken, with
+an own-run-retrieval must-FAIL that shows the permanent loop as RED.
 
 ## Gates
 
@@ -1662,10 +1666,12 @@ dropping the descendant widening reddens the "LEAD woken at all" precondition
   promote branches call `startRunForPromoted`; roster mutant `'default'` reddens.
 - `scripts/verify-bus-status-cli.mjs` — REAL built CLI over a fake socket: G8 wave
   run id not `host-…` (+ must-FAIL) + frozen-vs-live table.
-- **G4a (D1a innermost wake routing)** — `src/main/bus-wake-run-switch.test.ts`:
-  (i) OPS wave wake=ON + LEAD mission OFF → LEAD FIRED; (ii) reverse → COUNTED;
-  must-FAIL: read-reader's-run-switch mutant reddens (i)+(ii); drop-descendant-
-  widening mutant reddens the woken-at-all precondition (both verified live).
+- **G4a (D1a-bis bidirectional wake routing)** — `src/main/bus-wake-run-switch.test.ts`:
+  UPWARD (OPS→LEAD digest) fired/counted; DOWNWARD (LEAD→OPS ruling) fired/counted;
+  a reader's-run-switch mutant reddens the upward fire arms, a mail's-run-switch
+  mutant reddens the downward ones, drop-widening reddens woken-at-all; and the
+  ROUND-TRIP arm (fire→check mail run→ack→not-re-woken) with an own-run-retrieval
+  must-FAIL showing the loop. All verified live.
 - **G9** packaged boot + spawn-notice under real Electron — owned by VERIFY-F.
 
 `workspaces.ts` is un-importable under `node --test` (its `./platform`
