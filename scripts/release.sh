@@ -97,6 +97,11 @@ fi
 
 cd "$(git rev-parse --show-toplevel)"
 
+# The tag-vs-master race guards live in a sourceable library so a fixture rig can
+# exercise them without driving a real release (issue #78, T78.1/T78.2).
+# shellcheck source=scripts/release-preflight.sh
+. "$(git rev-parse --show-toplevel)/scripts/release-preflight.sh"
+
 say()  { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 # In dry-run, mutating steps are printed instead of run.
 run()  { if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] %s\n' "$*"; else eval "$*"; fi; }
@@ -291,6 +296,36 @@ TAG="v$NEW"
 if git rev-parse "$TAG" >/dev/null 2>&1; then
   echo "error: tag $TAG already exists" >&2; exit 1
 fi
+
+# ---------------------------------------- tag-vs-master preflight (issue #78) ---
+# The local `git rev-parse "$TAG"` above only sees the LOCAL tag namespace. Three
+# consecutive ships (v0.5.257/260/261) died to the "3rd race shape": a stale
+# package.json `version` plus an ORIGIN tag that does NOT contain master's work.
+# The two-way discriminator (rp_two_way_discriminator) resolves the newest ORIGIN
+# tag by version order and refuses to cut a duplicate when master adds nothing
+# beyond it; rp_next_version_free asserts the chosen NEW is free on BOTH origin
+# tags and gh releases (the v0.5.253 race took the number between the two reads).
+# Runs BEFORE the version bump so a refusal costs nothing. Skipped under --ci-only
+# only if master is unfetchable; --dry-run still runs it (it is read-only).
+say "Tag-vs-master preflight (issue #78)"
+if git fetch origin master --tags --quiet 2>/dev/null; then
+  RP_NEWEST_TAG="$(rp_newest_origin_tag)"
+  rp_two_way_discriminator "$RP_NEWEST_TAG" "origin/master" || {
+    echo "       This is the 3rd race shape (#78): the newest origin tag already" >&2
+    echo "       contains master's work, so a new tag would duplicate a release." >&2
+    echo "       If master genuinely has unreleased work, fetch/rebase and retry." >&2
+    exit 1
+  }
+  rp_next_version_free "$TAG" || {
+    echo "       The chosen next version is already taken on origin — another ship" >&2
+    echo "       may have claimed it mid-flight (the v0.5.253 race). Re-run to take" >&2
+    echo "       the next free number." >&2
+    exit 1
+  }
+else
+  echo "  warn: could not fetch origin/master + tags — skipping #78 tag-vs-master preflight" >&2
+fi
+
 say "Releasing $CURRENT → $NEW  (tag $TAG)"
 
 # ------------------------------------------------- advance master (pre-bump) ---

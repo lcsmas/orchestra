@@ -52,6 +52,7 @@
     "test:rig-selftest": "bash scripts/run-rig-selftest.sh",
     "test:fork-control": "node scripts/verify-fork-control.mjs",
     "test:gates": "bash scripts/run-gates.sh",
+    "test:release-preflight": "bash scripts/verify-release-preflight.sh",
     "release": "bash scripts/release.sh"
   },
   "devDependencies": {
