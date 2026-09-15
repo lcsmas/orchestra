@@ -1067,7 +1067,7 @@ export function mirrorRecords(db: BusDb, runId: string): BusMirrorRecord[] {
 // token hashes to a row that is no longer `active` (superseded by a respawn, or
 // marked failed) is REJECTED, so a hung/failed dispatch's late answer cannot
 // mask its retry. Nothing durable ever holds the clear token — see the
-// MIGRATIONS[5] comment and T129.2.
+// MIGRATIONS[6] comment and T129.2.
 
 /** The state machine of one dispatch capability. Only 'active' verifies. */
 export type CapabilityState = 'active' | 'superseded' | 'failed';

@@ -778,7 +778,7 @@ test('an outstanding lot survives closing and reopening the database', (t) => {
 // ─── #129 capability tokens ──────────────────────────────────────────────────
 
 test('#129 T129.4: a from-4 DB migrates to the current version and grows the capability tables', (t) => {
-  // COVERS: MIGRATIONS[5] applied AT ITS INDEX (the wave-B slot-collision trap:
+  // COVERS: MIGRATIONS[6] applied AT ITS INDEX (the wave-B slot-collision trap:
   // migrate() applies BY VERSION INDEX, so a duplicate number silently SKIPS the
   // SQL). Replay the SHIPPED chain to v4, stamp it, then migrate the rest — the
   // capability tables must appear and user_version must reach SCHEMA_VERSION.
