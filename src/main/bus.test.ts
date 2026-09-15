@@ -809,6 +809,52 @@ test('#129 T129.4: a from-4 DB migrates to the current version and grows the cap
   db.close();
 });
 
+test('#130 T130.4: a from-6 DB migrates to v7 and grows mutation_receipts at index 7', (t) => {
+  // COVERS: MIGRATIONS[7] applied AT ITS INDEX after #128's 5 and #129's 6 (the
+  // wave-B slot-collision trap: migrate() applies BY VERSION INDEX, so a receipts
+  // migration reusing 5 or 6 would be silently SKIPPED and this table never made).
+  // Replay the SHIPPED chain to v6, stamp it, then migrate — mutation_receipts
+  // must appear and user_version must reach 7, with the composite PK intact.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-bus-rcpt-mig-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const db = open(path.join(dir, 'bus.sqlite'));
+
+  for (let v = 1; v <= 6; v++) {
+    db.exec(`BEGIN IMMEDIATE; ${MIGRATIONS[v]}; PRAGMA user_version = ${v}; COMMIT;`);
+  }
+  assert.equal(schemaVersion(db), 6, 'staged to v6 (post-#129)');
+  const at6 = new Set(
+    (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(
+      (r) => r.name,
+    ),
+  );
+  assert.ok(!at6.has('mutation_receipts'), 'receipts table absent at v6 (would mean a duplicate index)');
+
+  assert.equal(migrate(db), SCHEMA_VERSION, 'migrate reaches v7 from v6');
+  assert.equal(SCHEMA_VERSION, 7, 'the receipts migration bumps SCHEMA_VERSION to 7');
+  const after = new Set(
+    (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(
+      (r) => r.name,
+    ),
+  );
+  assert.ok(after.has('mutation_receipts'), 'mutation_receipts created by the #130 migration at index 7');
+
+  // The composite PRIMARY KEY is the whole correctness primitive — assert it is
+  // actually enforced on the migrated table (a table made with the wrong key
+  // shape would let a replay double-insert). A second insert on the same key must
+  // be ignored by INSERT OR IGNORE.
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO mutation_receipts
+       (caller_fingerprint, request_id, mutation, run_id, receipt, created_at)
+     VALUES (?,?,?,?,?,?)`,
+  );
+  ins.run('ops', 'r1', 'send', RUN, '1', Date.now());
+  ins.run('ops', 'r1', 'send', RUN, '1', Date.now());
+  const n = (db.prepare('SELECT COUNT(*) AS n FROM mutation_receipts').get() as { n: number }).n;
+  assert.equal(n, 1, 'the composite PK (caller_fingerprint, request_id) is enforced — one row');
+  db.close();
+});
+
 test('#129: hashCapabilityToken is deterministic sha256 hex, and mint stores only the hash', (t) => {
   const db = tmpBus(t);
   const tok = generateCapabilityToken();

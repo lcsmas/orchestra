@@ -316,15 +316,15 @@ export function callerFingerprint(id: BusIdentity): string {
  * behaviour byte-identical to v1, which is the coexistence-safe direction and
  * what the switch-OFF arm asserts.
  */
-function runMutation<T>(
+function runMutationOutcome<T>(
   ctx: BusVerbCtx,
   requestId: string | null | undefined,
   mutation: BusMutationKind,
   exec: () => T,
-): T {
-  if (!requestId?.trim()) return exec();
+): { value: T; replayed: boolean } {
+  if (!requestId?.trim()) return { value: exec(), replayed: false };
   const switchOn = ctx.bus.busSwitch(ctx.db, ctx.id.runId, RECEIPT_SWITCH);
-  return ctx.bus.withReceipt(
+  const out = ctx.bus.withReceipt(
     ctx.db,
     {
       callerFingerprint: callerFingerprint(ctx.id),
@@ -334,7 +334,18 @@ function runMutation<T>(
       switchOn,
     },
     exec,
-  ).value;
+  );
+  return { value: out.value, replayed: out.replayed };
+}
+
+/** The common case: just the receipt value. */
+function runMutation<T>(
+  ctx: BusVerbCtx,
+  requestId: string | null | undefined,
+  mutation: BusMutationKind,
+  exec: () => T,
+): T {
+  return runMutationOutcome(ctx, requestId, mutation, exec).value;
 }
 
 // ─── send ───────────────────────────────────────────────────────────────────
@@ -425,7 +436,7 @@ export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
   // write when no generation presented) and its sequence is what the receipt
   // stores. So a retried send is a no-op AND still respects the fence on its
   // first landing.
-  const seq = runMutation(ctx, a.requestId, 'send', () =>
+  const sent = runMutationOutcome(ctx, a.requestId, 'send', () =>
     fenced(ctx, 'send', () =>
       ctx.bus.send(ctx.db, {
         runId: ctx.id.runId,
@@ -437,15 +448,19 @@ export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
       }),
     ),
   );
+  const seq = sent.value;
 
   // #129 — mint AFTER the dispatch row exists (the capability is keyed on its
   // sequence). The clear token goes to stdout only; the DB holds its hash.
-  // NB: on a receipt REPLAY the dispatch was already minted on the first call;
-  // re-minting here would supersede the first capability. Guard on replay via
-  // the receipt is out of scope for shadow mode (dispatch is rarely retried with
-  // a request id), and while the receipts switch is OFF (this wave) the send
-  // re-executes anyway — so v1 behaviour is preserved. Documented, not hidden.
-  if (a.kind === 'dispatch') {
+  //
+  // SEAM WITH #130 (receipts): a receipt REPLAY short-circuits the send WITHOUT
+  // re-running it, so the dispatch row (and its capability) already exist from
+  // the first call. Re-minting here would hit the (run_id, dispatch_seq) PK and
+  // throw. So a replayed dispatch does NOT re-mint — it prints the original
+  // sequence only. The clear token is unrecoverable (only its hash is stored),
+  // which is correct: the dispatcher already received it on the first, non-replay
+  // call; a retry that reprinted it would leak a token the caller already holds.
+  if (a.kind === 'dispatch' && !sent.replayed) {
     const minted = ctx.bus.mintCapability(ctx.db, ctx.id.runId, seq, a.to ?? null);
     ctx.out(`${seq}\n${minted.token}\n`);
     return;

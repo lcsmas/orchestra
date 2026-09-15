@@ -863,6 +863,10 @@ test('#129 F1 coexistence: a completion with NO --cap LANDS+COUNTED under capabi
 const msgCount = (r: Rig): number =>
   Number((r.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id=?').get(RUN) as { n: number }).n);
 
+// NB: these use kind `handoff` — NOT `dispatch` (which mints a #129 capability
+// and prints a second token line) and NOT a completion kind (`worker_done`/
+// `status`, which the #129 seam gates). `handoff` exercises the #130 receipt in
+// isolation; the dispatch+receipt seam has its own arm below.
 test('T130.1/T130.2 send: --request-id replay is a NO-OP returning the original seq (switch ON)', (t) => {
   // COVERS: verbSend → runMutation → withReceipt short-circuit, the full CLI
   // path a retried `orchestra send --request-id r1` takes.
@@ -870,9 +874,9 @@ test('T130.1/T130.2 send: --request-id replay is a NO-OP returning the original 
   //   second send lands a SECOND row and prints a NEW seq → RED.
   const r = rig(t);
   r.switchOn = true;
-  verbSend(r.ctx('ops'), { kind: 'dispatch', body: 'hi', requestId: 'r1' });
+  verbSend(r.ctx('ops'), { kind: 'handoff', body: 'hi', requestId: 'r1' });
   const firstSeq = r.out[r.out.length - 1].trim();
-  verbSend(r.ctx('ops'), { kind: 'dispatch', body: 'hi', requestId: 'r1' });
+  verbSend(r.ctx('ops'), { kind: 'handoff', body: 'hi', requestId: 'r1' });
   const secondSeq = r.out[r.out.length - 1].trim();
   assert.equal(secondSeq, firstSeq, 'replay prints the ORIGINAL sequence');
   assert.equal(msgCount(r), 1, 'exactly ONE message landed — the retry was a no-op');
@@ -881,8 +885,8 @@ test('T130.1/T130.2 send: --request-id replay is a NO-OP returning the original 
 test('T130.1b send: a DIFFERENT --request-id sends a second message (switch ON)', (t) => {
   const r = rig(t);
   r.switchOn = true;
-  verbSend(r.ctx('ops'), { kind: 'dispatch', body: 'a', requestId: 'r1' });
-  verbSend(r.ctx('ops'), { kind: 'dispatch', body: 'b', requestId: 'r2' });
+  verbSend(r.ctx('ops'), { kind: 'handoff', body: 'a', requestId: 'r1' });
+  verbSend(r.ctx('ops'), { kind: 'handoff', body: 'b', requestId: 'r2' });
   assert.equal(msgCount(r), 2, 'two distinct request ids → two messages');
 });
 
@@ -891,9 +895,28 @@ test('T130.3 send: switch OFF → the retry re-sends (v1); the old channel stays
   // MUTANT: fire regardless of switch → only one message → RED (expects two).
   const r = rig(t);
   r.switchOn = false;
-  verbSend(r.ctx('ops'), { kind: 'dispatch', body: 'x', requestId: 'r1' });
-  verbSend(r.ctx('ops'), { kind: 'dispatch', body: 'x', requestId: 'r1' });
+  verbSend(r.ctx('ops'), { kind: 'handoff', body: 'x', requestId: 'r1' });
+  verbSend(r.ctx('ops'), { kind: 'handoff', body: 'x', requestId: 'r1' });
   assert.equal(msgCount(r), 2, 'switch OFF: two sends executed (v1 behaviour)');
+});
+
+test('T130 seam: a dispatch replay does NOT re-mint its capability (switch ON)', (t) => {
+  // COVERS: verbSend's `a.kind === 'dispatch' && !sent.replayed` guard. Without
+  // it, a receipt replay re-runs mintCapability on the already-minted dispatch
+  // and hits the (run_id, dispatch_seq) PK.
+  // MUTANT: drop `&& !sent.replayed` → the second call throws SQLITE_CONSTRAINT.
+  const r = rig(t);
+  r.switchOn = true;
+  verbSend(r.ctx('ops'), { kind: 'dispatch', to: 'w1', body: 'go', requestId: 'd1' });
+  const firstLines = r.out.join('').trim().split('\n');
+  assert.match(firstLines[1], /^dcap_[0-9a-f]{64}$/, 'first dispatch mints a token');
+  const before = r.out.length;
+  verbSend(r.ctx('ops'), { kind: 'dispatch', to: 'w1', body: 'go', requestId: 'd1' });
+  assert.equal(r.fails.length, 0, 'the dispatch replay did not throw (no re-mint)');
+  // The replay printed exactly ONE line (the original seq), no new token.
+  const replayOut = r.out.slice(before).join('');
+  assert.equal(replayOut.trim(), firstLines[0], 'replay prints the original seq only');
+  assert.equal(msgCount(r), 1, 'one dispatch row — the retry was a no-op');
 });
 
 test('send with NO --request-id behaves exactly as v1 (two sends → two rows)', (t) => {
