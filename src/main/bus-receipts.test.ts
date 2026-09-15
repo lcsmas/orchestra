@@ -246,14 +246,68 @@ test('withReceipt requires a fingerprint, a request id, and a known mutation', (
 
 test('lookupReceipt reads a stored receipt back and returns null for an unknown key', (t) => {
   const db = tmpBus(t);
-  assert.equal(lookupReceipt(db, FP, 'absent'), null);
+  assert.equal(lookupReceipt(db, RUN, FP, 'absent'), null);
   withReceipt(
     db,
     { callerFingerprint: FP, requestId: 'r1', mutation: 'send', runId: RUN, switchOn: true },
     () => send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'x' }),
   );
-  const row = lookupReceipt(db, FP, 'r1');
+  const row = lookupReceipt(db, RUN, FP, 'r1');
   assert.ok(row, 'the receipt is readable back');
   assert.equal(row!.mutation, 'send');
   assert.equal(row!.run_id, RUN);
+  // The key is run-scoped: the SAME fingerprint+request_id in a DIFFERENT run
+  // does not resolve (review #130 F1).
+  assert.equal(lookupReceipt(db, 'other-run', FP, 'r1'), null, 'a receipt is scoped to its run');
+});
+
+test('F1: same (fingerprint, request_id) in a DIFFERENT run does NOT collide — BOTH execute (switch ON)', (t) => {
+  // COVERS: run_id in the PK + in getExisting/lookup (review #130 F1). Without
+  // run_id in the key, run B's send would short-circuit to run A's stored receipt
+  // and vanish, handing the caller run A's stale sequence.
+  // MUTANT: drop run_id from the PK (or from getExisting) → run B execRan=false,
+  //   0 rows in run B, B.value == A's seq → this arm goes RED.
+  const db = tmpBus(t);
+  let execA = 0;
+  let execB = 0;
+  // Same handle FP, same request_id 'r1', switch ON — but two distinct runs.
+  const a = withReceipt(
+    db,
+    { callerFingerprint: FP, requestId: 'r1', mutation: 'send', runId: 'run-A', switchOn: true },
+    () => {
+      execA++;
+      return send(db, { runId: 'run-A', sender: 'ops', kind: 'dispatch', body: 'a' });
+    },
+  );
+  const b = withReceipt(
+    db,
+    { callerFingerprint: FP, requestId: 'r1', mutation: 'send', runId: 'run-B', switchOn: true },
+    () => {
+      execB++;
+      return send(db, { runId: 'run-B', sender: 'ops', kind: 'dispatch', body: 'b' });
+    },
+  );
+  assert.equal(execA, 1, 'run A executed');
+  assert.equal(execB, 1, 'run B ALSO executed — the key is run-scoped, not global');
+  assert.equal(b.replayed, false, 'run B is not a replay of run A');
+  assert.notEqual(a.value, b.value, 'each run got its own sequence');
+  // One message landed per run; one receipt row per run.
+  const msgsA = (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE run_id='run-A'").get() as { n: number }).n;
+  const msgsB = (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE run_id='run-B'").get() as { n: number }).n;
+  assert.equal(msgsA, 1, 'run A has its message');
+  assert.equal(msgsB, 1, 'run B has its message — did NOT vanish');
+  assert.equal(receiptRowCount(db, 'run-A'), 1);
+  assert.equal(receiptRowCount(db, 'run-B'), 1);
+  // And WITHIN a run the same key is still idempotent (the property F1 preserves).
+  const aReplay = withReceipt(
+    db,
+    { callerFingerprint: FP, requestId: 'r1', mutation: 'send', runId: 'run-A', switchOn: true },
+    () => {
+      execA++;
+      return send(db, { runId: 'run-A', sender: 'ops', kind: 'dispatch', body: 'a' });
+    },
+  );
+  assert.equal(execA, 1, 'the in-run replay still short-circuits (exec not re-run)');
+  assert.equal(aReplay.replayed, true);
+  assert.equal(aReplay.value, a.value, 'the in-run replay returns run A original seq');
 });

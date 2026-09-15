@@ -1460,41 +1460,47 @@ BOTH zero rows AND `counters.counted >= 1`.
 ## Mutation receipts (#130, bus v2) — `src/main/bus-receipts.ts`
 
 Per-message idempotency for the CLI mutations `send` / `ack` / `gate resolve`,
-keyed on `(caller_fingerprint, request_id)`. v1's ack is BATCH-granular (one ack
-closes a whole lot), so a retried mutation had no per-message idempotency key —
-a re-run shell one-liner, a keeper replay or a network blip could double-send or
-double-resolve. The receipt makes a retry a NO-OP returning the ORIGINAL receipt.
+keyed on `(run_id, caller_fingerprint, request_id)`. v1's ack is BATCH-granular
+(one ack closes a whole lot), so a retried mutation had no per-message idempotency
+key — a re-run shell one-liner, a keeper replay or a network blip could
+double-send or double-resolve. The receipt makes a retry a NO-OP returning the
+ORIGINAL receipt.
 
-- **Table `mutation_receipts`** — `bus.ts` migration, **pre-rebase index 5** (next
-  free on master; RENUMBER to the next free integer, expected 7, at rebase onto
-  #129's landed tip — `migrate()` applies BY INDEX, a duplicate number silently
-  skips this SQL). Composite `PRIMARY KEY (caller_fingerprint, request_id)` is the
-  whole correctness primitive: a retry hits the PK (`INSERT OR IGNORE`), so at most
-  one row per key. `mutation` (`send|ack|gate_resolve`) + `receipt` (JSON of the
-  original return) + `run_id` + `created_at`.
+- **Table `mutation_receipts`** — `bus.ts` migration **index 7** (after #128's
+  fencing=5 and #129's capability=6; `migrate()` applies BY INDEX, so a reused
+  number silently skips this SQL — the wave-B trap). Composite
+  `PRIMARY KEY (run_id, caller_fingerprint, request_id)` is the whole correctness
+  primitive: a retry hits the PK (`INSERT OR IGNORE`), so at most one row per
+  (run, caller, request). **`run_id` is IN the key** (review #130 F1): the
+  fingerprint is the caller's stable ws-id, so a key without run_id would collide
+  across runs — the same handle + request_id in a different run would short-circuit
+  to the wrong run's receipt. `mutation` (`send|ack|gate_resolve`) + `receipt`
+  (JSON of the original return) + `created_at`.
 - **`withReceipt(db, {callerFingerprint, requestId, mutation, runId, switchOn}, exec)`**
-  — one transaction: lookup → if found and `switchOn`, return the stored receipt
-  and DON'T run `exec` (FIRED); if found and `!switchOn`, run `exec` (v1) but keep
-  COUNTING (`countedReplays`); if absent, run `exec`, store its return, `recorded++`.
-  A request id reused across two DIFFERENT verbs is REFUSED (shape mismatch), not
-  handed the wrong receipt. Nested `.immediate()` inside `ack`/`resolveGate`'s own
-  transaction is savepoint-safe (measured).
-- **COUNTED-not-FIRED (coexistence):** while the gating switch is OFF the row is
-  still RECORDED (the shadow count) but the short-circuit does NOT fire — the
+  — one transaction: lookup by the full key → a cross-verb reuse REFUSES (shape
+  mismatch) BEFORE counting (so a rollback leaves no counter skew, review #130 F3);
+  else COUNT the retry; if `switchOn`, return the stored receipt and DON'T run
+  `exec` (FIRED); if `!switchOn`, run `exec` (v1); if absent, run `exec`, store,
+  `recorded++`. Nested `.immediate()` inside `ack`/`resolveGate`/`fencedWrite`'s
+  own transaction is savepoint-safe (measured, better-sqlite3@11.10.0).
+- **COUNTED-not-FIRED (coexistence):** while the `receipts` switch is OFF the row
+  is still RECORDED (the shadow count) but the short-circuit does NOT fire — the
   mutation re-executes, two identical `--request-id` sends → two rows (v1). Only
-  ON does a replay short-circuit. Same choice `mirror_records` makes: recording
-  the row while off is what lets the divergence counter leave zero.
+  ON does a replay short-circuit. Same choice `mirror_records` makes.
 - **CLI wiring** (`bus-verbs.ts`): `send`/`ack`/`gate resolve` take `--request-id`;
-  `runMutation()` engages the receipt ONLY when a key is supplied (absent = v1,
-  byte-identical to pre-#130). Gated on the **`delivery`** switch (`RECEIPT_SWITCH`)
-  — receipts protect the send/ack/gate WRITE path, which is the `delivery`
-  mechanism, and `delivery=OFF`=old-channel-authoritative maps to v1 behaviour.
-  This mechanism assignment is a pending LEAD ruling (ledger #131 §Open-questions;
-  named in ONE constant so a ruling changes one line).
+  `runMutation()`/`runMutationOutcome()` engage the receipt ONLY when a key is
+  supplied (absent = v1, byte-identical to pre-#130). Gated on the dedicated
+  **`receipts`** switch (`RECEIPT_SWITCH`, ledger #131 ruling **D1** — a per-feature
+  switch, NOT `delivery`), read off the run's FROZEN flags via `busSwitch`. On a
+  dispatch REPLAY the send is composed OUTERMOST around #128's `fenced` and #129's
+  mint is SKIPPED (`!sent.replayed`) so it does not re-hit the capability PK.
 - **Counters** `busReceiptCounters()` = `{recorded, countedReplays, firedReplays}`
   for the shadow-observation deliverable (module-global, like bus-liveness).
 
-Gates: `src/main/bus-receipts.test.ts` (8, core) + the `#130` block in
-`src/cli/bus-verbs.test.ts` (CLI path, both switch arms). Each acceptance arm
-shown RED under one mutation (short-circuit re-runs exec; PK drops request_id;
-switch gate always-fires; runMutation ignores request-id), then GREEN restored.
+Gates: `src/main/bus-receipts.test.ts` (core, incl. the F1 two-run arm + T130.4
+from-6→v7 migration in `bus.test.ts`) + the `#130` block in
+`src/cli/bus-verbs.test.ts` (CLI path, both switch arms + the dispatch-replay
+seam). Each acceptance arm shown RED under one mutation (short-circuit re-runs
+exec; PK drops request_id; PK drops run_id → cross-run collision; switch gate
+always-fires; runMutation ignores request-id; migration index collision;
+drop `!sent.replayed` → re-mint PK throw), then GREEN restored.

@@ -42,18 +42,21 @@ export interface BusMutationReceipt {
   created_at: number;
 }
 
-/** Read one stored receipt back by its composite key, or null. */
+/** Read one stored receipt back by its composite key, or null. The key is
+ *  (run_id, caller_fingerprint, request_id) — run_id is part of it (review #130
+ *  F1), so a request id is scoped to its run, never global. */
 export function lookupReceipt(
   db: BusDb,
+  runId: string,
   callerFingerprint: string,
   requestId: string,
 ): BusMutationReceipt | null {
   return (
     (db
       .prepare(
-        'SELECT * FROM mutation_receipts WHERE caller_fingerprint=? AND request_id=?',
+        'SELECT * FROM mutation_receipts WHERE run_id=? AND caller_fingerprint=? AND request_id=?',
       )
-      .get(callerFingerprint, requestId) as BusMutationReceipt | undefined) ?? null
+      .get(runId, callerFingerprint, requestId) as BusMutationReceipt | undefined) ?? null
   );
 }
 
@@ -145,33 +148,38 @@ export function withReceipt<T>(
     throw new Error(`bus.withReceipt: unknown mutation ${JSON.stringify(input.mutation)}`);
   }
 
+  // The key is (run_id, caller_fingerprint, request_id) — run_id scoped so the
+  // same handle + request_id in a DIFFERENT run does NOT collide (review #130 F1).
   const getExisting = db.prepare(
-    'SELECT * FROM mutation_receipts WHERE caller_fingerprint=? AND request_id=?',
+    'SELECT * FROM mutation_receipts WHERE run_id=? AND caller_fingerprint=? AND request_id=?',
   );
   const insert = db.prepare(
     `INSERT OR IGNORE INTO mutation_receipts
-       (caller_fingerprint, request_id, mutation, run_id, receipt, created_at)
+       (run_id, caller_fingerprint, request_id, mutation, receipt, created_at)
      VALUES (?,?,?,?,?,?)`,
   );
 
   const tx = db.transaction((): ReceiptOutcome<T> => {
-    const existing = getExisting.get(input.callerFingerprint, input.requestId) as
+    const existing = getExisting.get(input.runId, input.callerFingerprint, input.requestId) as
       | BusMutationReceipt
       | undefined;
 
     if (existing) {
-      // A retry: a prior receipt exists. COUNTED always.
-      counters.countedReplays++;
       // A request id reused across two DIFFERENT verbs is a caller bug, not a
       // retry — the stored receipt shape would not match. Refuse rather than
-      // hand back the wrong shape.
+      // hand back the wrong shape. This throw rolls back the DB transaction, so
+      // the COUNTED increment must come AFTER it (review #130 F3): incrementing
+      // before would leave the JS module-global counter inflated with no matching
+      // row when the tx rolls back — a shadow-metric skew the DB does not have.
       if (existing.mutation !== input.mutation) {
         throw new Error(
           `bus.withReceipt: request id ${JSON.stringify(input.requestId)} for ` +
-            `${input.callerFingerprint} was first used for mutation ${JSON.stringify(existing.mutation)}, ` +
-            `now ${JSON.stringify(input.mutation)} — a request id is per-mutation`,
+            `${input.callerFingerprint} in run ${JSON.stringify(input.runId)} was first used for mutation ` +
+            `${JSON.stringify(existing.mutation)}, now ${JSON.stringify(input.mutation)} — a request id is per-mutation`,
         );
       }
+      // A genuine retry (same verb): COUNTED always, past the mismatch guard.
+      counters.countedReplays++;
       if (input.switchOn) {
         // FIRED: return the original receipt, DO NOT re-run exec.
         counters.firedReplays++;
@@ -185,10 +193,10 @@ export function withReceipt<T>(
     // First call for this key: run the mutation, then record its receipt.
     const value = exec();
     insert.run(
+      input.runId,
       input.callerFingerprint,
       input.requestId,
       input.mutation,
-      input.runId,
       JSON.stringify(value),
       Date.now(),
     );

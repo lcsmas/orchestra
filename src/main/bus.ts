@@ -402,13 +402,22 @@ export const MIGRATIONS: Record<number, string> = {
     );
   `,
   // #130 — MUTATION RECEIPTS (bus v2). A retried CLI mutation (send / ack /
-  // gate-resolve) keyed on (caller_fingerprint, request_id) is a NO-OP that
-  // returns the ORIGINAL receipt, giving per-message idempotency where v1 had
-  // only batch-ack granularity (#108). The COMPOSITE PRIMARY KEY is the whole
+  // gate-resolve) keyed on (run_id, caller_fingerprint, request_id) is a NO-OP
+  // that returns the ORIGINAL receipt, giving per-message idempotency where v1
+  // had only batch-ack granularity (#108). The COMPOSITE PRIMARY KEY is the whole
   // correctness primitive: a second write with the same key hits the PK and is
-  // caught (INSERT OR IGNORE), so at most ONE row exists per caller+request and
-  // the stored receipt is authoritative. Two DIFFERENT request ids from the same
-  // caller are two rows — a distinct mutation each, never conflated.
+  // caught (INSERT OR IGNORE), so at most ONE row exists per (run, caller,
+  // request) and the stored receipt is authoritative. Two DIFFERENT request ids
+  // from the same caller are two rows — a distinct mutation each, never conflated.
+  //
+  // WHY run_id IS IN THE KEY (review #130 F1, ledger #131): the fingerprint is
+  // the caller's stable ws-id (bus-verbs.ts callerFingerprint = id.handle), so
+  // the SAME handle issuing the SAME request_id in a DIFFERENT run would COLLIDE
+  // if the key were (fingerprint, request_id) alone — run B's mutation would
+  // silently short-circuit to run A's stored receipt and vanish, once the switch
+  // is ON. Scoping the key by run makes a request id idempotent WITHIN its run,
+  // never across runs. Amended in place (this migration has never shipped and no
+  // receipt row exists on any DB) rather than adding a second migration.
   //
   // `mutation` records which verb produced the receipt (send | ack | gate_resolve)
   // so a replay can refuse a request id reused across two different verbs rather
@@ -433,13 +442,13 @@ export const MIGRATIONS: Record<number, string> = {
   // rig that hand-replays the chain twice does not throw.
   7: `
     CREATE TABLE IF NOT EXISTS mutation_receipts (
+      run_id             TEXT NOT NULL,
       caller_fingerprint TEXT NOT NULL,
       request_id         TEXT NOT NULL,
       mutation           TEXT NOT NULL,   -- 'send' | 'ack' | 'gate_resolve'
-      run_id             TEXT NOT NULL,
       receipt            TEXT NOT NULL,    -- JSON of the original return value
       created_at         INTEGER NOT NULL,
-      PRIMARY KEY (caller_fingerprint, request_id)
+      PRIMARY KEY (run_id, caller_fingerprint, request_id)
     );
   `,
 };
