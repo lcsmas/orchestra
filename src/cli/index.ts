@@ -170,6 +170,10 @@ Usage:
                                                   --detached: top-level, not nested under the caller)
   orchestra rename <id> <branch>                 Rename a workspace's branch
   orchestra set-base <id> <branch>               Retarget the base branch (Diff/merge target)
+  orchestra restart [<id>] [--fresh]             Relaunch a workspace's claude process so it re-reads
+                                                 CLAUDE.md/settings, WITHOUT touching worktree/branch/commits
+                                                 (default: THIS workspace; handles terminal + structured;
+                                                  default keeps the conversation, --fresh starts vierge)
   orchestra reload-skills [<id>|--all] [--plugins]
                                                  Make out-of-band skill/plugin installs visible to
                                                  ALREADY-RUNNING sessions, without restarting them
@@ -1153,6 +1157,32 @@ async function main(argv: string[]): Promise<void> {
       const res = await request('/setBase', { id, baseBranch });
       if (!res.ok) fail(res.error ?? 'failed to set base branch');
       process.stdout.write(`Base branch set to ${res.baseBranch as string}\n`);
+      return;
+    }
+
+    case 'restart': {
+      // Relaunch a workspace's claude process so a fresh boot re-reads
+      // CLAUDE.md/settings, WITHOUT touching worktree/branch/commits (issue
+      // #111). A rule added to ~/.claude/CLAUDE.md is read only at startup; a
+      // live session never re-reads it — restart is how an agent (or a peer)
+      // picks it up by script. Handles BOTH terminal (PTY) and structured (SDK)
+      // sessions main-side. Defaults to THIS workspace, like `status`/`link`/
+      // `reload-skills`: the common caller is an agent restarting itself.
+      const { present: fresh, rest } = takeBoolFlag(args, '--fresh');
+      const target = rest[0] ?? selfWorkspaceId();
+      if (!target) {
+        fail(
+          'could not determine which workspace to restart (no ORCHESTRA_WS_ID) — ' +
+            'pass an <id>\nusage: orchestra restart [<id>] [--fresh]',
+        );
+      }
+      const res = await request('/restart', { id: target, fresh });
+      if (!res.ok) fail(res.error ?? 'failed to restart workspace');
+      // Report the surface and whether the conversation survived — the two
+      // things the caller cares about (default keeps it, --fresh clears it).
+      const mode = res.mode === 'structured' ? 'structured' : 'terminal';
+      const conv = res.fresh ? 'fresh (conversation cleared)' : 'conversation preserved';
+      process.stdout.write(`Restarted ${target} (${mode}, ${conv})\n`);
       return;
     }
 

@@ -3914,6 +3914,53 @@ export async function sdkMcpRefresh(wsId: string): Promise<AgentMcpServer[]> {
   return servers;
 }
 
+/** Restart a STRUCTURED (SDK) session — issue #111's `orchestra restart <id>`,
+ *  structured branch. Relaunches the workspace's `claude` process so a fresh
+ *  boot re-reads CLAUDE.md/settings, WITHOUT touching worktree/branch/commits.
+ *
+ *  Two modes, mirroring the composer surfaces the ticket names:
+ *   - default (`fresh` false): CONVERSATION PRESERVED. Reuses the internal
+ *     recipe `sdkMcpRefresh` already relies on — `sdkStop` (graceful, lets the
+ *     CLI flush its transcript) → `killKeeper` (so `ensureSession` can't
+ *     reattach the very process we are replacing) → `ensureSession` (resumes
+ *     `ws.sdkSessionId` via query({resume}) — the agent keeps its memory). No
+ *     MCP settle / notice: that coupling is `sdkMcpRefresh`'s job, not a
+ *     general restart's.
+ *   - `fresh` true: CONVERSATION CLEARED. Delegates to `sdkClear`, which stops
+ *     the session and blanks `sdkSessionId` to `''` (the explicit cleared
+ *     marker); the NEXT send starts a brand-new conversation in the same
+ *     worktree. Vierge — the CLI restart's `--fresh`.
+ *
+ *  Refuses while a turn is in flight (same guard as `sdkMcpRefresh`): tearing a
+ *  session down mid-turn would discard the running work.
+ *
+ *  #124 BOUNDARY: this CALLS `sdkStop`/`ensureSession`/`killKeeper`/`sdkClear`
+ *  through their existing behaviour and modifies none of them (issue #124 owns
+ *  `sdkStop`/`consume`). It adds no schema and no new lifecycle semantics — only
+ *  a named composition of the existing restart recipe. */
+export async function sdkRestart(wsId: string, opts: { fresh: boolean }): Promise<void> {
+  if (opts.fresh) {
+    // sdkClear = sdkStop + persist sdkSessionId:'' + broadcast session/clear.
+    // The next send spawns a vierge session in the same worktree.
+    await sdkClear(wsId);
+    return;
+  }
+  const live = sessions.get(wsId);
+  // `turnGate` is non-null exactly while a turn is in flight — same guard
+  // `sdkMcpRefresh` uses. Restarting mid-turn would throw the running turn away.
+  if (live && live.turnGate !== null) {
+    throw new Error('The agent is working — interrupt it first, then restart.');
+  }
+  await sdkStop(wsId);
+  await killKeeper(wsId).catch(() => {
+    /* already gone — the common case after a graceful stop */
+  });
+  // Resumes ws.sdkSessionId (query({resume})) → same transcript, fresh CLI that
+  // re-reads CLAUDE.md/settings. A workspace that only ever ran the terminal
+  // agent (hasInput, no sdkSessionId) is not routed here — see classifyRestartMode.
+  await ensureSession(wsId);
+}
+
 /** Reconnect one MCP server (SDK `reconnectMcpServer`) — the popover's retry
  *  action for a `failed` / `needs-auth` server. Emits the outcome notice and a
  *  `session/mcp` refresh; returns the refreshed list. */

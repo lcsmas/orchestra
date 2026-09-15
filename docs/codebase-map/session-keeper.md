@@ -208,6 +208,7 @@ app — two changes keep that env valid across restarts:
 | CLI crash | attached: `exit` frame → existing error path; detached: keeper cleans up, relaunch resumes |
 | Turn ends detached | linger → graceful exit; relaunch = plain resume + backfill |
 | Workspace deleted while closed | startup orphan reap (+ linger bounds it anyway) |
+| `orchestra restart` (issue #111, structured branch) | `sdkRestart(wsId,{fresh})` in `agent-sdk.ts` — default = `sdkStop`→`killKeeper`→`ensureSession` (same teardown+respawn recipe as `sdkMcpRefresh`, resumes `sdkSessionId` → same transcript); `--fresh` = `sdkClear` (vierge). Refuses while `turnGate!==null`. Composes existing exports only, no change to `sdkStop`/`consume` (issue #124 boundary). The CLI/socket wiring + PTY-mode branch live in `main/restart-workspace.ts` / `shared/restart-mode.ts` — see `hooks-cli-socket.md`. |
 
 Not covered while detached (by design): queued sends/`pendingLocalContext`
 die with the app; permission prompts park in the CLI and redeliver on attach;

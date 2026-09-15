@@ -4449,8 +4449,22 @@ function removeHookCommand(list: unknown[], match: (cmd: string) => boolean): un
  *  submitted at least one prompt (`ws.hasInput`), since `--continue` fails with
  *  "No conversation found to continue" against a session that only ever printed
  *  its startup TUI. */
-export async function startAgentPty(ws: Workspace, cols: number, rows: number): Promise<void> {
-  const resuming = ws.hasInput === true;
+export async function startAgentPty(
+  ws: Workspace,
+  cols: number,
+  rows: number,
+  opts?: {
+    /** Force a VIERGE launch: spawn `claude` WITHOUT `--continue` even though
+     *  `ws.hasInput` is set, so the terminal agent starts a blank conversation
+     *  (issue #111 `orchestra restart <id> --fresh`, PTY branch). Does NOT
+     *  persist `hasInput:false` — that flag records "the user has typed here"
+     *  and a future normal open must still resume; this only skips the resume
+     *  for THIS launch. Omitted / false → the normal resume-from-hasInput path,
+     *  byte-identical to before. */
+    fresh?: boolean;
+  },
+): Promise<void> {
+  const resuming = ws.hasInput === true && opts?.fresh !== true;
   const claudeArgs = resuming
     ? ['--continue', '--dangerously-skip-permissions']
     : ['--dangerously-skip-permissions'];

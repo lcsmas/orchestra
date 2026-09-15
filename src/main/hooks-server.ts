@@ -35,6 +35,7 @@ import {
 import { classifyMessageRoute } from '../shared/broadcast-targets.ts';
 import { dispatchLoginUrlRequest } from './login-url';
 import { dispatchReloadSkillsRequest } from './agent-sdk';
+import { dispatchRestartRequest } from './restart-workspace.ts';
 import { log } from './logger';
 import { orchestraHome } from './platform';
 
@@ -217,6 +218,24 @@ export async function startHooksServer(): Promise<void> {
                 plugins: msg.plugins === true,
               }),
             );
+          } else if (route === '/restart') {
+            // orchestra restart <id> [--fresh]: relaunch the workspace's claude
+            // process so a fresh boot re-reads CLAUDE.md/settings, WITHOUT
+            // touching worktree/branch/commits (issue #111). Handles BOTH the
+            // PTY (terminal) and structured (SDK) surfaces — the mode routing
+            // lives in restart-workspace.ts (classifyRestartMode). `fresh` maps
+            // to --fresh (vierge / sdkClear-equivalent).
+            if (typeof msg.id === 'string') {
+              send(
+                200,
+                await dispatchRestartRequest({
+                  id: msg.id,
+                  fresh: msg.fresh === true,
+                }),
+              );
+            } else {
+              send(200, { ok: false, error: 'missing id' });
+            }
           } else if (route === '/link') {
             if (typeof msg.id === 'string') {
               send(
