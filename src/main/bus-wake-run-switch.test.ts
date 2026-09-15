@@ -139,3 +139,96 @@ test('G7 must-FAIL twin (defect repro) — an UNWIRED accessor never fires even 
   assert.equal(wakes.length, 0, 'unwired accessor: a wake=ON run still never fires');
   assert.equal(busWakeCounters().counted, 1, 'it is only counted — the exact reproduced defect');
 });
+
+// ─── G4a (D1a, OQ2 ruling A) — innermost-run wake routing, digest UP ─────────
+//
+// Topology: LEAD mission run 'lead' ← OPS wave run 'ops' (parent_run_id='lead').
+// The OPS sends a digest UP to the LEAD; the store-less CLI writes it in the
+// OPS's (sender's) run — a DESCENDANT of the LEAD's run. Two D1a rules under test:
+//   (1) the LEAD is woken AT ALL only because readPendingReaders widens to
+//       descendant runs (drop the widening → the LEAD never sees the mail);
+//   (2) fire-vs-count reads the wake switch of the MAIL'S run (the OPS wave),
+//       NOT the LEAD's mission run (read the reader's run → the fire arm reddens).
+
+const LEAD_RUN = 'lead-mission';
+const OPS_RUN = 'ops-wave';
+const LEAD = 'lead-ws';
+
+/** Arm the sweep with the LEAD as the reader (its roster run = the mission run),
+ *  the REAL production wake accessor, and a recorder. The OPS wave is nested
+ *  under the LEAD via parent_run_id. */
+function rigDigestUp(db: BusDb): { reader: string; text: string }[] {
+  const wakes: { reader: string; text: string }[] = [];
+  __resetBusWakeForTests();
+  __setBusReaderForTests(() => db);
+  setWakeRoster(() => [{ reader: LEAD, wakeable: true, runId: LEAD_RUN }]);
+  setWakeDeliver(async (reader, text) => {
+    wakes.push({ reader, text });
+    return true;
+  });
+  setWakeSwitchReader((runId) => busSwitch(db, runId, 'wake'));
+  setAskGateSwitchReader((runId) => busSwitch(db, runId, 'ask_gate'));
+  __armStartedForTests();
+  return wakes;
+}
+
+/** Start the nested runs with explicit frozen flags, and send an OPS→LEAD digest
+ *  (written in the OPS's run, addressed to the LEAD). */
+function seedDigestUp(db: BusDb, leadWake: boolean, opsWake: boolean) {
+  startRun(db, { id: LEAD_RUN, kind: 'mission', coordinator: LEAD }, sw({ wake: leadWake }));
+  startRun(db, { id: OPS_RUN, kind: 'vague', coordinator: 'ops', parentRunId: LEAD_RUN }, sw({ wake: opsWake }));
+  // The digest UP: written in the OPS's (sender's) run, addressed to the LEAD.
+  send(db, { runId: OPS_RUN, sender: 'ops', kind: 'dispatch', body: 'digest', recipient: LEAD });
+}
+
+test('G4a (i) — OPS wave wake=ON + LEAD mission wake=OFF → the LEAD is FIRED (innermost governs)', async (t) => {
+  const db = tmpDb(t);
+  const wakes = rigDigestUp(db);
+  // The load-bearing D1a case: mission OFF, wave ON. The switch of the MAIL's run
+  // (the OPS wave, ON) must govern → the LEAD fires. Reading the LEAD's own
+  // mission run (OFF) would COUNT — the mutant this arm forbids.
+  seedDigestUp(db, /*leadWake*/ false, /*opsWake*/ true);
+  assert.equal(busSwitch(db, LEAD_RUN, 'wake'), false, 'precondition: mission wake=OFF');
+  assert.equal(busSwitch(db, OPS_RUN, 'wake'), true, 'precondition: wave wake=ON');
+
+  await sweepBusWake();
+
+  assert.equal(wakes.length, 1, 'the LEAD is woken for the digest in the descendant OPS run');
+  assert.equal(wakes[0].reader, LEAD);
+  assert.equal(wakes[0].text, WAKE_ORDER);
+  assert.equal(busWakeCounters().fired, 1, 'FIRED — the innermost (OPS) wake flag is ON');
+  assert.equal(busWakeCounters().counted, 0);
+});
+
+test('G4a (ii) — reverse (wave OFF, mission ON) → COUNTED not fired (fired=0)', async (t) => {
+  const db = tmpDb(t);
+  const wakes = rigDigestUp(db);
+  // Mission ON, wave OFF. The innermost (OPS) flag is OFF → COUNTED. Reading the
+  // LEAD's mission run (ON) would wrongly FIRE — the same mutant, other direction.
+  seedDigestUp(db, /*leadWake*/ true, /*opsWake*/ false);
+
+  await sweepBusWake();
+
+  assert.equal(wakes.length, 0, 'the innermost (OPS) flag is OFF — nothing fires');
+  assert.equal(busWakeCounters().fired, 0);
+  assert.equal(busWakeCounters().counted, 1, 'COUNTED — governed by the innermost run, not the mission');
+});
+
+test('G4a must-FAIL (descendant widening) — WITHOUT the parent_run_id nesting the LEAD is never woken', async (t) => {
+  // The precondition mutant: if the OPS run were NOT a descendant of the LEAD's
+  // (no parent_run_id), the digest-up mail would be invisible to the LEAD's sweep
+  // — the exact OQ2 defect. Prove the widening is load-bearing by breaking the
+  // nesting and showing the LEAD is not woken at all.
+  const db = tmpDb(t);
+  const wakes = rigDigestUp(db);
+  startRun(db, { id: LEAD_RUN, kind: 'mission', coordinator: LEAD }, sw({ wake: false }));
+  // OPS run started with NO parentRunId → NOT a descendant of the LEAD.
+  startRun(db, { id: OPS_RUN, kind: 'vague', coordinator: 'ops' }, sw({ wake: true }));
+  send(db, { runId: OPS_RUN, sender: 'ops', kind: 'dispatch', body: 'digest', recipient: LEAD });
+
+  await sweepBusWake();
+
+  assert.equal(wakes.length, 0, 'no nesting ⇒ the mail is not in a descendant run ⇒ the LEAD is NOT woken');
+  assert.equal(busWakeCounters().fired, 0);
+  assert.equal(busWakeCounters().counted, 0, 'not even counted — the LEAD never saw the mail');
+});

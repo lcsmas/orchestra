@@ -54,6 +54,14 @@ export interface ReaderPendingState {
    *  cursor recorded at the last wake means the reader acked and must be re-woken
    *  while the ask is still unanswered. */
   cursorSeq?: number;
+  /**
+   * The run id of the INNERMOST run the pending lot/question actually sits in
+   * (#134 D1a, OQ2 ruling A). Usually the reader's own run; for an OPS→LEAD
+   * digest it is the OPS's (descendant) run, because the mail was written with
+   * the sender's run id. The sweep reads the `wake` switch for THIS run — "the
+   * flags of the innermost run of the two parties govern" — not the reader's own
+   * run. `undefined` when there is no lot/question pending (only a gate). */
+  pendingRunId?: string;
 }
 
 /** Everything about the reader's SESSION the decision needs. */

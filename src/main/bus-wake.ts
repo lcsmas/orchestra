@@ -33,6 +33,7 @@
 
 import fs from 'node:fs';
 import { getBus, busPath, openGatesForRecipient, type BusDb } from './bus.ts';
+import { getDescendantRunIds } from './bus-runs.ts';
 import { log } from './logger.ts';
 import {
   decideWake,
@@ -162,48 +163,56 @@ export function readPendingReaders(
   db: BusDb,
   readers: readonly { reader: string; runId: string }[],
 ): ReaderPendingState[] {
-  // EVERY query is scoped to the reader's OWN run. Without `run_id = ?` a reader
-  // in run A is reported pending for run B's traffic, and would then be woken to
-  // run `orchestra check`, which — scoped to ITS run by the CLI — returns an
-  // empty lot. The reader is ordered to look at nothing, finds nothing, acks
-  // nothing, and the pending state never clears, so it is woken again on every
-  // sweep: a permanent wake loop whose only symptom is an agent repeatedly told
-  // to check an empty mailbox. Run-scoping is also what makes the per-run switch
-  // coherent — flags frozen per run are meaningless if the mail is not.
-  const lotHigh = db.prepare(`
-    SELECT COALESCE(MAX(m.sequence), 0) AS hi
+  // #134 D1a (OQ2 ruling A): a reader is pending for mail addressed to it in its
+  // OWN run OR a DESCENDANT run (a run nested under it via `parent_run_id`). The
+  // digest-up case — an OPS sends its LEAD a digest — writes the mail in the OPS's
+  // run (the sender's, store-less CLI), which is a DESCENDANT of the LEAD's
+  // mission run; without the widening the LEAD's sweep never sees it. The switch
+  // that governs is the MAIL's run (the innermost/deeper), read in the sweep from
+  // `pendingRunId` below — "the flags of the innermost run of the two parties".
+  //
+  // Two scopes, deliberately different:
+  //   - the reader's OWN run: `recipient = reader OR NULL` (a null-recipient
+  //     BROADCAST in the reader's own run still wakes it, as before);
+  //   - a DESCENDANT run: `recipient = reader` EXACTLY — never a null broadcast.
+  //     A descendant's broadcast is addressed to that sub-wave, not up the tree;
+  //     pulling it into the parent would wake the LEAD for every OPS broadcast.
+  //
+  // Still run-scoped (never a bare cross-run read): the mail must be in a run the
+  // reader is entitled to see, so the reader is never ordered to `orchestra check`
+  // a run it has no lot in. The cursor subquery self-scopes to `m.run_id`, so a
+  // descendant lot clears against the reader's cursor IN THAT descendant run.
+  const lotRows = db.prepare(`
+    SELECT m.run_id AS run_id, m.sequence AS seq
       FROM messages m
-     WHERE m.run_id = ?
-       AND (m.recipient = ? OR m.recipient IS NULL)
+     WHERE m.run_id IN (SELECT value FROM json_each(?))
+       AND (
+         (m.run_id = ? AND (m.recipient = ? OR m.recipient IS NULL))  -- own run: exact OR broadcast
+         OR (m.run_id != ? AND m.recipient = ?)                       -- descendant run: exact ONLY
+       )
        AND m.sequence > COALESCE(
              (SELECT c.acked_seq FROM cursors c WHERE c.reader = ? AND c.run_id = m.run_id), 0)
+     ORDER BY m.sequence DESC
+     LIMIT 1
   `);
   // An UNANSWERED question addressed to the reader keeps it pending until the ask
-  // is ANSWERED — not until the reader acks (#119, #108 Q15: "reading without
-  // answering re-wakes until answered"). "Answered" = a message threaded to the
-  // question (`thread_id = question.sequence`), which is what `send --thread
-  // <ask-id>` writes. This is deliberately NOT cursor-based like the lot half: a
-  // recipient that reads the ask and acks WITHOUT answering must still be re-woken
-  // (the sweep's cursor-advance re-arm below drives that), because an unanswered
-  // ask is exactly the reader the asker is blocked on. Unlike a gate before #119,
-  // a question has a recipient and `check` surfaces it, so the wake order works.
-  // "Answered" must be scoped to the RECIPIENT answering the ASKER (review-119
-  // F1), not merely "some message is threaded to the ask". Without the sender/
-  // recipient scope, ANY threaded message — a 3rd party's `send --thread`, the
-  // asker self-replying, a mis-addressed reply — silently marks the ask answered,
-  // so R is never re-woken and the asker's waiting-exclusion clears while it is
-  // genuinely still blocked. The answer is the reply the ask verb documents:
-  // sent BY the target (`r.sender = q.recipient`) and routed back TO the asker
-  // (`r.recipient = q.sender`).
-  const openQuestion = db.prepare(`
-    SELECT COALESCE(MAX(q.sequence), 0) AS hi
+  // is ANSWERED — not until the reader acks (#119, #108 Q15). Same descendant
+  // widening as the lot half (recipient EXACT outside the own run). "Answered" =
+  // a reply sent BY the target (`r.sender = q.recipient`) TO the asker
+  // (`r.recipient = q.sender`), threaded to the question, in the SAME run as the
+  // question (review-119 F1: a 3rd-party/self/mis-addressed reply must not clear it).
+  const questionRows = db.prepare(`
+    SELECT q.run_id AS run_id, q.sequence AS seq
       FROM messages q
-     WHERE q.run_id = ? AND q.kind = 'question' AND q.recipient = ?
+     WHERE q.run_id IN (SELECT value FROM json_each(?))
+       AND q.kind = 'question' AND q.recipient = ?
        AND NOT EXISTS (
          SELECT 1 FROM messages r
           WHERE r.run_id = q.run_id AND r.thread_id = CAST(q.sequence AS TEXT)
             AND r.sender = q.recipient AND r.recipient = q.sender
        )
+     ORDER BY q.sequence DESC
+     LIMIT 1
   `);
   const cursorOf = db.prepare(
     'SELECT COALESCE(acked_seq, 0) AS c FROM cursors WHERE run_id = ? AND reader = ?',
@@ -211,22 +220,35 @@ export function readPendingReaders(
 
   const out: ReaderPendingState[] = [];
   for (const { reader, runId } of readers) {
-    const hi = Number((lotHigh.get(runId, reader, reader) as { hi: number }).hi);
-    const qhi = Number((openQuestion.get(runId, reader) as { hi: number }).hi);
+    // The reader's run + every run nested under it. json_each turns the array into
+    // a table so ONE prepared statement covers a variable-size run set.
+    const runSet = getDescendantRunIds(db, runId);
+    const runSetJson = JSON.stringify(runSet);
+    const lot = lotRows.get(runSetJson, runId, reader, runId, reader, reader) as
+      | { run_id: string; seq: number }
+      | undefined;
+    const q = questionRows.get(runSetJson, reader) as
+      | { run_id: string; seq: number }
+      | undefined;
+    const hi = Number(lot?.seq ?? 0);
+    const qhi = Number(q?.seq ?? 0);
+    // The MAIL's run — the innermost run the pending item sits in — is the run of
+    // whichever of {lot, question} has the higher seq (seqs are a global total
+    // order, so the newest pending item wins). This is what the sweep reads the
+    // wake switch for. Falls back to the reader's own run when nothing is pending.
+    const pendingRunId =
+      hi >= qhi ? (lot?.run_id ?? q?.run_id) : (q?.run_id ?? lot?.run_id);
+    // The re-arm cursor is the reader's cursor IN THE MAIL'S run (the run the
+    // ack will advance), not the reader's own run — for a descendant digest the
+    // reader acks in the descendant run.
+    const cursorRun = pendingRunId ?? runId;
     const cursorSeq = Number(
-      ((cursorOf.get(runId, reader) as { c: number } | undefined)?.c) ?? 0,
+      ((cursorOf.get(cursorRun, reader) as { c: number } | undefined)?.c) ?? 0,
     );
-    // The lot half is cursor-based and clears on ack; the question half is
-    // answer-based and does NOT. `pending` is either; `reWakeUntilAnswered` marks
-    // that the question half is what keeps it pending, so the sweep uses the
-    // cursor-advance re-arm rather than the ordinary prune-on-clear.
     const reWakeUntilAnswered = qhi > 0;
     const pendingThroughSeq = Math.max(hi, qhi);
-    // Gate half (#119), computed SEPARATELY — it rides the `askGate` switch, not
-    // `wake`. `gateThroughSeq` is the highest OPEN gate id addressed to this
-    // reader; 0 when none. Kept apart from `pendingThroughSeq` on purpose: gate
-    // ids and message sequences share no numbering, so a single combined mark
-    // could let a high gate id suppress a genuinely newer lot (or vice versa).
+    // Gate half (#119) — rides the `askGate` switch, own run only (a gate has an
+    // explicit recipient and is not part of the digest-up widening #134 added).
     const gates = openGatesForRecipient(db, runId, reader);
     const gateThroughSeq = gates.reduce((mx, g) => Math.max(mx, g.id), 0);
     out.push({
@@ -237,6 +259,7 @@ export function readPendingReaders(
       gateThroughSeq,
       reWakeUntilAnswered,
       cursorSeq,
+      pendingRunId: pendingThroughSeq > 0 ? pendingRunId : undefined,
     });
   }
   return out;
@@ -401,15 +424,26 @@ export async function sweepBusWake(): Promise<void> {
       // fired — rather than taking the whole sweep down.
       let switchOn = false;
       let askGateOn = false;
+      // #134 D1a (OQ2 ruling correction 2): the `wake` switch is read for the
+      // MAIL'S run — the INNERMOST run the pending lot/question sits in
+      // (`p.pendingRunId`) — NOT the reader's own run. "Governed by the flags of
+      // the innermost run of the two parties": for an OPS→LEAD digest the mail is
+      // in the OPS's wave run, so the OPS's wake flag decides fire-vs-count, not
+      // the LEAD's mission flag. Falls back to the reader's own run when there is
+      // no lot/question run to read (e.g. gate-only). Reading `entry.runId` here
+      // is the mutant the G4a fire arm reddens.
+      const wakeRunId = p.pendingRunId ?? entry?.runId;
       try {
-        switchOn = entry ? readWakeSwitch(entry.runId) : false;
+        switchOn = wakeRunId ? readWakeSwitch(wakeRunId) : false;
       } catch (e) {
         log.warn(`bus-wake: wake switch read failed for ${p.reader} — treating as OFF`, e);
       }
       // The `askGate` switch is read INDEPENDENTLY, in its own try, so a throw in
       // one accessor cannot silently drag the other to OFF and mask which
       // mechanism is actually unreadable. Both default OFF — counted, never
-      // fired — which is the standing coexistence-safe direction.
+      // fired — which is the standing coexistence-safe direction. Gates are NOT
+      // part of the digest-up widening (own-run only), so this stays keyed on the
+      // reader's own run.
       try {
         askGateOn = entry ? readAskGateSwitch(entry.runId) : false;
       } catch (e) {

@@ -225,6 +225,50 @@ export function busSwitch(db: BusDb, runId: string, mechanism: string): boolean 
   return mechanismEnabled(runFlags(db, runId), key);
 }
 
+/**
+ * The run `rootId` PLUS every run nested under it (its descendants via
+ * `parent_run_id`), for the D1a innermost-run wake routing (#134, OQ2 ruling A).
+ *
+ * WHY DESCENDANTS: a message is governed by the INNERMOST (deeper) run of its two
+ * parties. For an OPS→LEAD digest the mail sits in the OPS's run, which is a
+ * DESCENDANT of the LEAD's mission run (`parent_run_id` = LEAD). So the LEAD's
+ * wake sweep must look for mail addressed to it not only in its own run but in
+ * every run below it. (Rulings-down are symmetric: the LEAD→OPS mail lands in the
+ * LEAD's run — an ANCESTOR of the OPS — but is addressed to the OPS, and the OPS
+ * reads its own run directly; the descendant widening is what the digest-up case
+ * needs, per the ruling's direction correction.)
+ *
+ * Returns `[rootId, ...descendants]`, always including `rootId` itself even when
+ * it has no run row yet (a reader whose run was never started still checks its
+ * own run). Bounded by a `seen` set against a malformed `parent_run_id` cycle.
+ * One query reads the whole edge set, then the tree is walked in memory — the
+ * `runs` table is small (one row per orchestrator), so this is cheap per sweep.
+ */
+export function getDescendantRunIds(db: BusDb, rootId: string): string[] {
+  const edges = db
+    .prepare('SELECT id, parent_run_id FROM runs WHERE parent_run_id IS NOT NULL')
+    .all() as { id: string; parent_run_id: string }[];
+  const childrenOf = new Map<string, string[]>();
+  for (const e of edges) {
+    const list = childrenOf.get(e.parent_run_id) ?? [];
+    list.push(e.id);
+    childrenOf.set(e.parent_run_id, list);
+  }
+  const out: string[] = [rootId];
+  const seen = new Set<string>([rootId]);
+  const queue = [rootId];
+  while (queue.length) {
+    const cur = queue.shift()!;
+    for (const child of childrenOf.get(cur) ?? []) {
+      if (seen.has(child)) continue; // cycle guard
+      seen.add(child);
+      out.push(child);
+      queue.push(child);
+    }
+  }
+  return out;
+}
+
 /** Every run, newest first — the pane's mission/wave tree source. */
 export function listRuns(db: BusDb, limit = 200): BusRunRow[] {
   const rows = db
