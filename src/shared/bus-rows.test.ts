@@ -8,6 +8,7 @@ import {
   isCheckInvocation,
   isAckInvocation,
   ackLotId,
+  ackedLotId,
   parseCheckOutput,
   toolResultText,
   deliveryPreview,
@@ -210,6 +211,56 @@ test('isAckInvocation + ackLotId: reads the lot id', () => {
 test('ackLotId: skips flags, reads the positional integer', () => {
   assert.equal(ackLotId(checkCard(SAMPLE_CHECK, 'orchestra ack 45 --request-id abc')), 45);
   assert.equal(ackLotId(checkCard(SAMPLE_CHECK, '/x/orchestra ack 7')), 7);
+});
+
+test('REVIEW-145 F1 must-FAIL: a value-flag BEFORE the id — the flag value is NOT the lot id', () => {
+  // The CLI strips `--request-id 7` with takeFlag (any order), leaving [312] →
+  // lot 312. A naive "first bare integer after ack" reads 7 (the flag's value).
+  assert.equal(ackLotId(checkCard(SAMPLE_CHECK, 'orchestra ack --request-id 7 312')), 312);
+  assert.equal(ackLotId(checkCard(SAMPLE_CHECK, 'orchestra ack --run r5 --request-id 7 312')), 312);
+  assert.equal(ackLotId(checkCard(SAMPLE_CHECK, 'orchestra ack --generation 9 --as ops-g 312')), 312);
+  // And the id-then-flag form still parses (the arm the original test covered).
+  assert.equal(ackLotId(checkCard(SAMPLE_CHECK, 'orchestra ack 312 --request-id 7')), 312);
+  // An unknown boolean-style flag is skipped without consuming the id.
+  assert.equal(ackLotId(checkCard(SAMPLE_CHECK, 'orchestra ack --verbose 312')), 312);
+});
+
+test('REVIEW-145 F2: ackedLotId gates on !isError — a FAILED ack does not close the lot', () => {
+  const okAck = {
+    role: 'tool' as const,
+    toolUse: { name: 'Bash', input: { command: 'orchestra ack 312' } },
+    toolResult: { content: 'acked', isError: false },
+  };
+  const failedAck = {
+    role: 'tool' as const,
+    toolUse: { name: 'Bash', input: { command: 'orchestra ack 312' } },
+    toolResult: { content: 'orchestra ack: lot 312 is not outstanding (fenced)', isError: true },
+  };
+  // The raw parser reads the lot id either way (it is a syntax read)…
+  assert.equal(ackLotId(okAck), 312);
+  assert.equal(ackLotId(failedAck), 312);
+  // …but the badge-flip variant refuses a failed ack (must-FAIL arm).
+  assert.equal(ackedLotId(okAck), 312);
+  assert.equal(ackedLotId(failedAck), null);
+});
+
+test('REVIEW-145 F2: a failed ack does not flip the delivery badge to ACKED (fold end-to-end)', () => {
+  // Simulate the pre-scan: a failed ack must leave the lot PENDING.
+  const failedAck = {
+    role: 'tool' as const,
+    toolUse: { name: 'Bash', input: { command: 'orchestra ack 312' } },
+    toolResult: { content: 'refused', isError: true },
+  };
+  const ackedLots = new Set<number>();
+  const lot = ackedLotId(failedAck);
+  if (lot !== null) ackedLots.add(lot);
+  assert.equal(foldDelivery(SAMPLE_CHECK, ackedLots).acked, false);
+  // Positive control: a successful ack flips it.
+  const okAck = { ...failedAck, toolResult: { content: 'acked', isError: false } };
+  const acked2 = new Set<number>();
+  const lot2 = ackedLotId(okAck);
+  if (lot2 !== null) acked2.add(lot2);
+  assert.equal(foldDelivery(SAMPLE_CHECK, acked2).acked, true);
 });
 
 test('ackLotId: a check invocation is not an ack', () => {

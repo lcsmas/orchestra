@@ -135,25 +135,58 @@ export function isAckInvocation(m: BusToolCandidate): boolean {
 const CHECK_RE = /(?:^|\s|\/)orchestra\s+check(?:\s|$)/;
 const ACK_RE = /(?:^|\s|\/)orchestra\s+ack(?:\s|$)/;
 
-/** The lot id an `orchestra ack <lot-id>` invocation names, or null. The id is
- *  the first positional integer after `ack` (flags like `--request-id` are
- *  skipped). Matches `verbAck`'s contract: a lot id is a positive integer. */
+/** The flags `orchestra ack` accepts, each consuming the NEXT token as its value
+ *  (`--flag <value>`). Mirrors the CLI's `ack` case (src/cli/index.ts:1472),
+ *  which strips these with `takeFlag` in ANY order and then reads the lot id as
+ *  the first remaining positional (`as.rest[0]`). Kept here so `ackLotId` parses
+ *  the SAME grammar — a flag value must never be mistaken for the lot id
+ *  (REVIEW-145 F1: `ack --request-id 7 312` is lot 312, not 7). */
+const ACK_VALUE_FLAGS = new Set(['--generation', '--request-id', '--run', '--as']);
+
+/** The lot id an `orchestra ack <lot-id>` invocation names, or null.
+ *
+ *  Parses the CLI's OWN grammar (src/cli/index.ts:1472): each known `--flag
+ *  <value>` pair is stripped FIRST — in any order — then the lot id is the first
+ *  remaining positional integer. A naive "first bare integer after ack" is WRONG
+ *  because a flag placed BEFORE the id puts its value first
+ *  (`ack --request-id 7 312` → 312, not 7). Matches `verbAck`'s contract: a lot
+ *  id is a positive integer. */
 export function ackLotId(m: BusToolCandidate): number | null {
   if (!isAckInvocation(m)) return null;
   const cmd = toolCommand(m);
-  // Take the substring after the `ack` verb, then find the first bare positive
-  // integer token that is not attached to a flag.
   const after = cmd.replace(/^.*?(?:^|\s|\/)orchestra\s+ack\s+/, '');
-  for (const tok of after.split(/\s+/)) {
-    if (tok.startsWith('-')) continue; // a flag, or its value handled below
+  const toks = after.split(/\s+/).filter((t) => t.length > 0);
+  for (let i = 0; i < toks.length; i++) {
+    const tok = toks[i];
+    // A known value-flag consumes the NEXT token — skip BOTH, exactly as
+    // `takeFlag` removes the pair. This is what keeps the flag's value from
+    // being read as the lot id.
+    if (ACK_VALUE_FLAGS.has(tok)) {
+      i++; // skip the value too
+      continue;
+    }
+    // Any other `--flag` (an unknown/boolean flag) — skip just the flag.
+    if (tok.startsWith('-')) continue;
     if (/^\d+$/.test(tok)) {
       const n = Number(tok);
       if (Number.isInteger(n) && n > 0) return n;
     }
-    // A non-numeric non-flag token is not a lot id; keep scanning in case a flag
-    // value preceded it, but the CLI's own grammar puts the lot id first.
+    // A non-numeric positional is not a lot id (the CLI rejects it); the real
+    // lot id, if any, is a later positional — keep scanning.
   }
   return null;
+}
+
+/** The lot id a SUCCESSFUL `orchestra ack <lot>` closed, or null. Like
+ *  {@link ackLotId} but additionally requires the tool result NOT to be an error
+ *  — a FAILED ack (a stale-fence refusal rc≠0, a wrong lot id, a thrown CLI
+ *  error) did NOT close the lot, so it must not flip the delivery badge to ACKED
+ *  (REVIEW-145 F2: the pre-scan ignored `isError` and an errored ack still
+ *  flipped the badge). `parseCheckOutput` already guards `isError` for the check
+ *  side; this is its ack-side mirror. */
+export function ackedLotId(m: BusToolCandidate): number | null {
+  if (m.toolResult?.isError) return null;
+  return ackLotId(m);
 }
 
 /** Parse the `check` result content into a `CheckOutput`, or null when the card

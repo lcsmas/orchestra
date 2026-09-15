@@ -255,16 +255,92 @@ check('delivery: a seeded message body is on screen', pending.text.includes('see
 check('delivery: the routes are on screen', pending.text.includes('impl-144') && pending.text.includes('impl-142'));
 check('pending: the PENDING badge is on screen', /pending/i.test(pending.text));
 check('acked: the ACKED badge is on screen', /acked/i.test(acked.text));
-// THE flip discriminator: pending must NOT read acked, and vice-versa.
-check('pending does NOT read "acked"', !/\backed\b/i.test(pending.text));
-check('the two captures DIFFER (the badge flipped)', pending.text !== acked.text);
+// THE flip discriminator, DOM half: pending must NOT read acked, and vice-versa.
+check('pending does NOT read "acked" (DOM)', !/\backed\b/i.test(pending.text));
+check('the two captures DIFFER in DOM text (badge label flipped)', pending.text !== acked.text);
 
-// PIXEL HALF — a glyph-less frame is the classic headless artifact. The byte
-// threshold is placed BETWEEN the two observed populations: a font-race capture
-// (correct layout, ZERO glyphs) measured ~12k in this repo's other rigs, a
-// painted one ~90-99k. Our rows are less text-dense than the bus pane, so the
-// threshold is set conservatively at 18000 and the OBSERVED sizes are printed so
-// a future reader can re-place it if the content changes.
+// PIXEL HALF — decode the actual pixels. A glyph-less/blank frame is the classic
+// headless artifact, and DOM text ≠ painted glyphs (measured in this repo: a
+// capture with correct layout and ZERO glyphs passed every innerText assertion).
+// Two pixel claims, each failing differently:
+//   (a) NON-BLANK — each frame has many distinct colours (not a solid box), and
+//   (b) THE FLIP IS IN PIXELS — the two frames differ in a meaningful number of
+//       decoded pixels (REVIEW-145 F3: the "captures differ" check compared DOM
+//       TEXT, so the pixel half never proved the badge visually flipped).
+
+// Minimal PNG decoder → { w, h, px: Uint8Array RGBA }. Handles 8-bit truecolour
+// (+alpha), the only forms Electron's capturePage().toPNG() emits here.
+function decodePng(buf) {
+  const zlib = require_('node:zlib');
+  if (buf.readUInt32BE(0) !== 0x89504e47) throw new Error('not a PNG');
+  let i = 8, w = 0, h = 0, bitd = 8, colt = 6;
+  const idat = [];
+  while (i < buf.length) {
+    const len = buf.readUInt32BE(i);
+    const type = buf.toString('ascii', i + 4, i + 8);
+    const chunk = buf.subarray(i + 8, i + 8 + len);
+    if (type === 'IHDR') { w = chunk.readUInt32BE(0); h = chunk.readUInt32BE(4); bitd = chunk[8]; colt = chunk[9]; }
+    else if (type === 'IDAT') idat.push(chunk);
+    else if (type === 'IEND') break;
+    i += 12 + len;
+  }
+  if (bitd !== 8 || (colt !== 6 && colt !== 2)) throw new Error(`unsupported PNG bitd=${bitd} colt=${colt}`);
+  const ch = colt === 6 ? 4 : 3;
+  const raw = zlib.inflateSync(Buffer.concat(idat));
+  const stride = w * ch;
+  const out = Buffer.alloc(h * stride);
+  const paeth = (a, b, c) => { const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c); return pa <= pb && pa <= pc ? a : pb <= pc ? b : c; };
+  let p = 0;
+  for (let y = 0; y < h; y++) {
+    const f = raw[p++];
+    const line = raw.subarray(p, p + stride); p += stride;
+    const o = y * stride, po = o - stride;
+    for (let x = 0; x < stride; x++) {
+      const a = x >= ch ? out[o + x - ch] : 0;
+      const b = y > 0 ? out[po + x] : 0;
+      const c = x >= ch && y > 0 ? out[po + x - ch] : 0;
+      let v = line[x];
+      if (f === 1) v += a; else if (f === 2) v += b; else if (f === 3) v += (a + b) >> 1; else if (f === 4) v += paeth(a, b, c);
+      out[o + x] = v & 255;
+    }
+  }
+  return { w, h, ch, px: out };
+}
+
+const pendPng = decodePng(fs.readFileSync(path.join(outDir, pending.file)));
+const ackPng = decodePng(fs.readFileSync(path.join(outDir, acked.file)));
+
+function distinctColours(png, cap = 5000) {
+  const seen = new Set();
+  for (let k = 0; k < png.px.length; k += png.ch) {
+    seen.add((png.px[k] << 16) | (png.px[k + 1] << 8) | png.px[k + 2]);
+    if (seen.size >= cap) break;
+  }
+  return seen.size;
+}
+const pendColours = distinctColours(pendPng);
+const ackColours = distinctColours(ackPng);
+check('pending frame is not blank (many distinct colours)', pendColours > 50, `${pendColours} colours — a solid/glyph-less frame has ~1`);
+check('acked frame is not blank (many distinct colours)', ackColours > 50, `${ackColours} colours`);
+
+// Pixel diff between the two frames. Same dimensions ⇒ compare pixel-by-pixel.
+let diffPx = 0;
+const sameDims = pendPng.w === ackPng.w && pendPng.h === ackPng.h && pendPng.ch === ackPng.ch;
+if (sameDims) {
+  for (let k = 0; k < pendPng.px.length; k += pendPng.ch) {
+    if (pendPng.px[k] !== ackPng.px[k] || pendPng.px[k + 1] !== ackPng.px[k + 1] || pendPng.px[k + 2] !== ackPng.px[k + 2]) diffPx++;
+  }
+}
+console.log(`  decoded ${pendPng.w}x${pendPng.h} · pending colours ${pendColours} · acked colours ${ackColours} · differing pixels ${diffPx}`);
+check('the two frames have identical dimensions (comparable)', sameDims, `${pendPng.w}x${pendPng.h} vs ${ackPng.w}x${ackPng.h}`);
+// The badge flips green↔amber over a small region; a handful of differing pixels
+// would be AA noise, so require a real region changed. The badge pill is ~60x18
+// = ~1000px; 200 is a conservative floor well above sub-pixel noise.
+check('the two frames DIFFER in PIXELS (the badge visibly flipped)', diffPx > 200, `only ${diffPx} pixels differ — the badge flip is not visible in pixels (DOM≠pixels)`);
+
+// PIXEL HALF, non-glyph-less floor (byte-size proxy, kept alongside the decoded
+// colour count above). A font-race capture (correct layout, ZERO glyphs)
+// measured ~12k in this repo's rigs; a painted one ~30k here.
 const pendBytes = fs.statSync(path.join(outDir, pending.file)).size;
 const ackBytes = fs.statSync(path.join(outDir, acked.file)).size;
 console.log(`  observed PNG sizes — pending: ${pendBytes} bytes · acked: ${ackBytes} bytes`);

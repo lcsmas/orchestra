@@ -33,7 +33,7 @@ import {
   isBusWakeMessage,
   isCheckInvocation,
   isAckInvocation,
-  ackLotId,
+  ackedLotId,
   parseCheckOutput,
   foldDelivery,
   type BusDelivery,
@@ -942,9 +942,12 @@ function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
   // into `foldDelivery`; the ack tool cards themselves are dropped from the
   // render (the badge conveys the outcome — a raw `orchestra ack` bash line is
   // exactly the noise #145 removes).
+  // A FAILED ack (toolResult.isError — a stale-fence refusal, a wrong lot id)
+  // did NOT close the lot, so `ackedLotId` gates on !isError (REVIEW-145 F2):
+  // only a successful ack flips the badge to ACKED.
   const ackedLots = new Set<number>();
   for (const m of messages) {
-    const lot = ackLotId(m as Parameters<typeof ackLotId>[0]);
+    const lot = ackedLotId(m as Parameters<typeof ackedLotId>[0]);
     if (lot !== null) ackedLots.add(lot);
   }
   // TURN DIVIDER bookkeeping: each USER turn gets a divider above its bubble

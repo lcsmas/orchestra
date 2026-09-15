@@ -51,8 +51,8 @@ const entry = `
 import { WakeRow } from ${JSON.stringify(path.join(agentDir, 'WakeRow.tsx'))};
 import { DeliveryRow } from ${JSON.stringify(path.join(agentDir, 'DeliveryRow.tsx'))};
 import { MessageBubble } from ${JSON.stringify(path.join(agentDir, 'MessageBubble.tsx'))};
-import { isBusWakeMessage, isCheckInvocation, parseCheckOutput, foldDelivery, ackLotId } from ${JSON.stringify(path.join(sharedDir, 'bus-rows.ts'))};
-export { WakeRow, DeliveryRow, MessageBubble, isBusWakeMessage, isCheckInvocation, parseCheckOutput, foldDelivery, ackLotId };
+import { isBusWakeMessage, isCheckInvocation, parseCheckOutput, foldDelivery, ackLotId, ackedLotId } from ${JSON.stringify(path.join(sharedDir, 'bus-rows.ts'))};
+export { WakeRow, DeliveryRow, MessageBubble, isBusWakeMessage, isCheckInvocation, parseCheckOutput, foldDelivery, ackLotId, ackedLotId };
 `;
 const entryFile = path.join(repoRoot, 'node_modules', '.cache', 'bus-rows-entry.tsx');
 fs.mkdirSync(path.dirname(entryFile), { recursive: true });
@@ -83,6 +83,7 @@ const {
   parseCheckOutput,
   foldDelivery,
   ackLotId,
+  ackedLotId,
 } = await import(`${outfile}?t=${Date.now()}`);
 
 const text = (html) => html.replace(/<!-- -->/g, '');
@@ -195,6 +196,11 @@ const realCard = { role: 'tool', toolUse: { name: 'Bash', input: { command: 'orc
 check('positive control: a real check card parses', parseCheckOutput(realCard) !== null);
 // Ack detection reads the lot id.
 check('ack detection reads the lot id', ackLotId({ role: 'tool', toolUse: { name: 'Bash', input: { command: 'orchestra ack 312' } } }) === 312);
+// F1: a value-flag BEFORE the id — the flag value is not the lot id.
+check('F1: ack --request-id 7 312 reads lot 312 (not 7)', ackLotId({ role: 'tool', toolUse: { name: 'Bash', input: { command: 'orchestra ack --request-id 7 312' } } }) === 312);
+// F2: a FAILED ack does not flip the badge (ackedLotId gates on !isError).
+check('F2: a failed ack does not close the lot', ackedLotId({ role: 'tool', toolUse: { name: 'Bash', input: { command: 'orchestra ack 312' } }, toolResult: { content: 'refused', isError: true } }) === null);
+check('F2 positive control: a successful ack closes the lot', ackedLotId({ role: 'tool', toolUse: { name: 'Bash', input: { command: 'orchestra ack 312' } }, toolResult: { content: 'acked', isError: false } }) === 312);
 
 console.log(`\n${failures === 0 ? 'PASS' : `FAIL (${failures})`}`);
 process.exit(failures === 0 ? 0 : 1);
