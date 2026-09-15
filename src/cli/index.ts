@@ -15,6 +15,7 @@ import {
 import type { DivergenceCounters } from '../shared/bus-mirror.ts';
 import {
   resolveBusIdentity,
+  DEFAULT_RUN_ID,
   describeBusOpenFailure,
   verbSend,
   verbCheck,
@@ -23,6 +24,12 @@ import {
   verbGate,
   type BusVerbCtx,
 } from './bus-verbs.ts';
+import {
+  BUS_MECHANISMS,
+  parseSwitches,
+  mechanismToWire,
+  switchStateWord,
+} from '../shared/bus-switches.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -1567,22 +1574,50 @@ async function main(argv: string[]): Promise<void> {
     }
 
     case 'bus-status': {
-      // #116. READ-ONLY: prints the shadow mirror's divergence counters for the
-      // current run and nothing else. It has no write path by construction --
-      // /busStatus takes no input.
+      // #116/#134. READ-ONLY: the shadow mirror's divergence counters, plus
+      // (#134) the WAVE run this CLI belongs to and its FROZEN switch flags
+      // beside the LIVE ones. It has no write path — /busStatus mutates nothing;
+      // `runFlags`/`getLiveSwitches` on the app side are pure reads.
       //
-      // The numbers come from the app's own builder over the socket rather than
+      // The counters come from the app's own builder over the socket rather than
       // being re-derived here from the DB. Re-deriving them would give a SECOND
       // implementation of the same aggregate, and T116.4 requires the CLI and
       // the pane to print the SAME numbers -- two assemblers is how they drift.
-      const res = await request('/busStatus', {});
+      //
+      // The run id we PRINT is our own resolved wave run (--run > $ORCHESTRA_RUN_ID
+      // > default), NOT the report's `runId` — that is the MAIN process's mirror
+      // id, a per-boot `host-…` (D1), which is exactly the value #134 replaces on
+      // this surface. We pass it to the app so it can read THAT run's frozen row.
+      const { value: runFlag, rest: bsRest } = takeFlag(args, '--run');
+      const displayRunId =
+        runFlag?.trim() || process.env.ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
+      void bsRest;
+      const res = await request('/busStatus', { runId: displayRunId });
       if (!res.ok) fail(res.error ?? 'failed to read bus status');
       const counters = (res.counters as DivergenceCounters[] | undefined) ?? [];
-      process.stdout.write(`run: ${(res.runId as string) ?? '?'}\n`);
+      // #134 — the WAVE run, not the host mirror run. `res.displayRunId` echoes
+      // what we asked for; fall back to our own resolution if an older app did
+      // not echo it (never to the host `res.runId`).
+      process.stdout.write(`run: ${(res.displayRunId as string) ?? displayRunId}\n`);
       // Printed unconditionally, not only when it is false: an operator reading
       // a row of zeros must be able to tell "nothing diverged" from "nothing
       // could be written" without going to the log (D1).
       process.stdout.write(`bus: ${res.busAvailable ? 'available' : 'UNAVAILABLE'}\n`);
+      // #134 — frozen (run row) vs live (store) flags, one row per mechanism.
+      // Frozen null means no run row exists yet → all-OFF, the coexistence-safe
+      // reading; the app already collapses that to an all-OFF set, so `null`
+      // here prints OFF, never blank. WIRE names (`ask_gate`), never the camel
+      // key, to match the notice and the verbs.
+      const frozen = parseSwitches(
+        typeof res.frozenFlags === 'string' ? res.frozenFlags : null,
+      );
+      const live = parseSwitches(typeof res.liveFlags === 'string' ? res.liveFlags : null);
+      const flagRows = BUS_MECHANISMS.map((m) => ({
+        mechanism: mechanismToWire(m),
+        frozen: switchStateWord(frozen[m]),
+        live: switchStateWord(live[m]),
+      }));
+      process.stdout.write(`${table(flagRows, ['mechanism', 'frozen', 'live'])}\n`);
       if (counters.length === 0) {
         process.stdout.write('No mechanisms mirroring.\n');
         return;

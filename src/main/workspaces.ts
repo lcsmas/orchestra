@@ -42,7 +42,9 @@ import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration
 import { sanitizeStatusText } from '../shared/status-text.ts';
 import { DEFAULT_BUS_SWITCHES, busSwitchNotice } from '../shared/bus-switches.ts';
 import { getBus } from './bus.ts';
-import { runFlags } from './bus-runs.ts';
+import { runFlags, startRun } from './bus-runs.ts';
+import { getLiveSwitches } from './bus-settings.ts';
+import { maybeStartRunAtAnchor } from './bus-run-anchor.ts';
 import { walkToRootId } from './wave-run-id.ts';
 import { recordPhaseChange } from './bus-liveness.ts';
 import { phaseChanged } from '../shared/bus-liveness.ts';
@@ -4524,14 +4526,29 @@ export async function startAgentPty(
   const remote = ws.host?.kind === 'sandbox';
   // Idempotent: upgrades workspaces created before the activity hook landed.
   if (!remote) await installOrchestraHooks(ws.worktreePath);
+  // The run a workspace belongs to is its WAVE = the tree ROOT (N2, ledger #123):
+  // walking one level up split a 3-deep tree (LEAD→OPS→IMPL got two run ids), so
+  // resolve the root anchor once and reuse it for the run-start, the frozen
+  // notice, and the plumbed `$ORCHESTRA_RUN_ID` below.
+  const waveRunId = resolveWaveRunId(ws);
+  // #134 — START THE RUN AT THE WAVE ANCHOR. When this workspace IS the anchor
+  // (`waveRunId === ws.id` — a tree root with no orchestrator above it), create
+  // (and FREEZE) its run row from the live switches. INSERT-OR-IGNORE on the
+  // `runs` row existence (#123 F1), so calling it on every launch is idempotent
+  // and never re-freezes; a MEMBER (waveRunId !== ws.id) shares the anchor's run
+  // and starts nothing. Best-effort — a null/failing bus logs and the spawn
+  // proceeds reading all-OFF (D1), so this can never block a launch.
+  if (!remote) {
+    maybeStartRunAtAnchor(
+      { getBus, startRun, getLiveSwitches, warn: (m, e) => log.warn(m, e) },
+      ws,
+      waveRunId,
+    );
+  }
   // Refreshed on EVERY spawn, unlike the hash-gated hook bundle. The switch
   // states are FROZEN on the run row (#118 F2) — sourced from there, not from the
   // live switches — so a mid-wave flip does not change a running run's notice.
-  // The run a workspace belongs to is its WAVE = the tree ROOT (N2, ledger #123):
-  // walking one level up split a 3-deep tree (LEAD→OPS→IMPL got two run ids), so
-  // resolve the root anchor. `$ORCHESTRA_RUN_ID` is NOT plumbed on master, so this
-  // is the only run identity available (see resolveWaveRunId).
-  if (!remote) await writeBusSwitchState(ws.worktreePath, resolveWaveRunId(ws));
+  if (!remote) await writeBusSwitchState(ws.worktreePath, waveRunId);
   // Materialize the pinned account's inherited global config into its login dir
   // right before spawn, so the agent sees the user's settings/skills/MCP. Pinned
   // account only (resolveRepoAgentEnv uses the same pin for CLAUDE_CONFIG_DIR).
@@ -4560,6 +4577,13 @@ export async function startAgentPty(
     // sentinel as the mid-session-promotion fallback) to gate the standing
     // delegation reminder to orchestrator sessions only.
     ORCHESTRA_KIND: ws.kind ?? 'worktree',
+    // #134 — the WAVE run id (tree anchor). Plumbed so the CLI bus verbs
+    // (`resolveBusIdentity`: run > $ORCHESTRA_RUN_ID > 'default'), the mirror
+    // (`mirrorRunId`), and `orchestra bus-status` all address the WAVE run this
+    // member belongs to, instead of the CLI's `default` fallback / the mirror's
+    // per-boot `host-…`. A member and its anchor share this id, so a member's
+    // `send`/`check`/`ack` land in the same run the anchor froze.
+    ORCHESTRA_RUN_ID: waveRunId,
   };
   // A pinned account's CLAUDE_CONFIG_DIR is a HOST path; shipped to a sandbox
   // it points at nothing and would shadow the container's seeded ~/.claude

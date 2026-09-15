@@ -558,6 +558,15 @@ export function __resetBusWakeForTests(): void {
   deliverWake = async () => false;
 }
 
+/** Rig seam: arm the sweep (`started = true`) WITHOUT touching the switch
+ *  accessors — for a rig (like #134's G7) that has already wired the REAL
+ *  production `setWakeSwitchReader`/`setAskGateSwitchReader` and must NOT have
+ *  them overwritten by `__freezeSwitchForTests`. Does not start the timer or the
+ *  fs watcher (a unit rig wants neither). */
+export function __armStartedForTests(): void {
+  started = true;
+}
+
 /** Rig seam: arm the sweep WITHOUT starting the timer or the fs watcher.
  *  `startBusWake()` is the production path and does both; a unit rig wants
  *  neither, but must drive the SAME per-run switch read that ships — so this

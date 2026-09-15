@@ -44,3 +44,26 @@ export function walkToRootId(
   }
   return cur.id;
 }
+
+/**
+ * Is `ws` the WAVE ANCHOR — the tree ROOT that starts (and freezes) the run?
+ *
+ * True iff `walkToRootId(ws) === ws.id`: the workspace has no resolvable
+ * orchestrator above it. This is the single condition #134 gates `startRun` on:
+ * only the anchor starts a run; every MEMBER resolves the SAME anchor id (via
+ * `walkToRootId`) and shares its run row, so a member must NOT start its own run
+ * — doing so would give one wave two run rows with independently-frozen flags,
+ * which is the N2 split the freeze exists to prevent.
+ *
+ * NOTE on nesting: because `walkToRootId` walks to the TOPMOST resolvable
+ * ancestor, an anchor by this predicate has no run above it — so under the
+ * current store/tree model `parent_run_id` is always null (a LEAD→OPS nesting
+ * resolves the OPS member to the LEAD root, so the OPS is never its own anchor).
+ * See ledger #135 OQ1.
+ */
+export function isRootAnchor(
+  ws: WaveNode,
+  lookup: (id: string) => WaveNode | undefined,
+): boolean {
+  return walkToRootId(ws, lookup) === ws.id;
+}

@@ -1,0 +1,115 @@
+// #134 — SOURCE-LEVEL guard for the seam wiring that lives in un-importable
+// modules (workspaces.ts, index.ts, hooks-server.ts).
+//
+// HONEST LIMITATION (same as spawn-default-model.test.ts): `workspaces.ts`
+// imports `./store`/`./platform`/the SDK chain and cannot be loaded under
+// `node --test`, so the PRESENCE of the wiring is asserted against source text,
+// not by calling `startAgentPty`. The behaviour of the pieces IS driven for
+// real (bus-run-anchor.test.ts drives `maybeStartRunAtAnchor`; bus-wake-run-
+// switch.test.ts drives the real accessor). What this file catches is the
+// realistic regression this ticket exists to prevent: the wiring being deleted
+// or reverted to the master state (no startRun call, no ORCHESTRA_RUN_ID,
+// hardcoded 'default', unwired switch reader). Every assertion has a negative
+// control so it cannot pass against an empty/wrong file.
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const read = (p: string) => fs.readFileSync(path.join(repoRoot, p), 'utf8');
+const workspacesSrc = read('src/main/workspaces.ts');
+const indexSrc = read('src/main/index.ts');
+const hooksSrc = read('src/main/hooks-server.ts');
+
+test('CONTROL: the three sources are readable and non-trivial', () => {
+  assert.ok(workspacesSrc.length > 10_000, `workspaces.ts short: ${workspacesSrc.length}`);
+  assert.ok(indexSrc.length > 10_000, `index.ts short: ${indexSrc.length}`);
+  assert.ok(hooksSrc.length > 5_000, `hooks-server.ts short: ${hooksSrc.length}`);
+  assert.doesNotMatch(workspacesSrc, /zzzNoSuchPatternZzz/);
+});
+
+// ─── P1 — startRun is called at the anchor, in startAgentPty ─────────────────
+
+/** The body of startAgentPty from its declaration to the `await startPty({`
+ *  call — everything the seam wiring lives inside. */
+function startAgentPtyBody(): string {
+  const start = workspacesSrc.indexOf('export async function startAgentPty(');
+  assert.ok(start > 0, 'startAgentPty not found');
+  const end = workspacesSrc.indexOf('await startPty({', start);
+  assert.ok(end > start, 'startPty call not found — startAgentPty shape changed');
+  return workspacesSrc.slice(start, end);
+}
+
+test('P1 — startAgentPty calls maybeStartRunAtAnchor with the wave run id', () => {
+  const body = startAgentPtyBody();
+  assert.match(body, /const waveRunId = resolveWaveRunId\(ws\)/, 'the wave run id must be resolved once');
+  assert.match(
+    body,
+    /maybeStartRunAtAnchor\(\s*\{\s*getBus,\s*startRun,\s*getLiveSwitches,/,
+    'the anchor-start must be wired with the real bus collaborators',
+  );
+  // Negative control: the master state had NO startRun caller at all.
+  assert.ok(
+    /startRun/.test(body),
+    'a build reverted to the master defect (no startRun caller) fails here',
+  );
+});
+
+// ─── P2a — ORCHESTRA_RUN_ID is plumbed into extraEnv = the wave run id ────────
+
+test('P2a — ORCHESTRA_RUN_ID is set in startAgentPty extraEnv to waveRunId', () => {
+  const body = startAgentPtyBody();
+  assert.match(
+    body,
+    /ORCHESTRA_RUN_ID:\s*waveRunId/,
+    'ORCHESTRA_RUN_ID must be plumbed (was only a comment on master)',
+  );
+});
+
+// ─── P2b — the wake roster maps the real run id, not the hardcoded default ────
+
+test('P2b — setWakeRoster maps runId to resolveWaveRunId(ws), not the string default', () => {
+  const start = indexSrc.indexOf('setWakeRoster(');
+  assert.ok(start > 0, 'setWakeRoster not found');
+  const body = indexSrc.slice(start, start + 1400);
+  assert.match(body, /runId:\s*resolveWaveRunId\(ws\)/, 'the roster must carry the wave run id');
+  // The exact master defect: a hardcoded 'default' inside the roster mapper.
+  assert.doesNotMatch(
+    body,
+    /runId:\s*'default'/,
+    'the wake roster still hardcodes runId: \'default\' — the reproduced defect',
+  );
+});
+
+// ─── P2b — the switch readers are WIRED (were () => false on master) ──────────
+
+test('P2b — setWakeSwitchReader + setAskGateSwitchReader are wired to busSwitch', () => {
+  assert.match(
+    indexSrc,
+    /setWakeSwitchReader\(\(runId\)\s*=>\s*\{[\s\S]*?busSwitch\(db,\s*runId,\s*'wake'\)/,
+    'the wake switch reader must read the frozen flag off the run row',
+  );
+  assert.match(
+    indexSrc,
+    /setAskGateSwitchReader\(\(runId\)\s*=>\s*\{[\s\S]*?busSwitch\(db,\s*runId,\s*'ask_gate'\)/,
+    'the askGate switch reader must be wired too',
+  );
+  // Negative control: a build that never wires them (the master state) has no
+  // such call, so this file reddens on the reproduced defect.
+  assert.ok(indexSrc.includes('setWakeSwitchReader('), 'wake reader wiring absent');
+});
+
+// ─── P4 — bus-status returns frozen + live flags for a CLI-supplied run id ────
+
+test('P4 — /busStatus reads runFlags + getLiveSwitches for the CLI run id', () => {
+  const start = hooksSrc.indexOf("route === '/busStatus'");
+  assert.ok(start > 0, '/busStatus route not found');
+  const body = hooksSrc.slice(start, start + 2400);
+  assert.match(body, /runFlags\(db,\s*cliRunId\)/, 'frozen flags must come from the run row');
+  assert.match(body, /getLiveSwitches\(\)/, 'live flags must come from the store');
+  assert.match(body, /frozenFlags:/, 'the frozen flags must be returned');
+  assert.match(body, /liveFlags:/, 'the live flags must be returned');
+});

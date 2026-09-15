@@ -171,7 +171,7 @@ import { createElectronPlatform } from './platform/electron';
 import { initBrowserPanels } from './browser-panel';
 import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
-import { initBus, closeBus, busPath } from './bus';
+import { initBus, closeBus, busPath, getBus } from './bus';
 import { registerBusPaneIpc } from './bus-pane';
 import { setLiveSwitches, getLiveSwitches } from './bus-settings';
 import {
@@ -179,8 +179,11 @@ import {
   stopBusWake,
   setWakeRoster,
   setWakeDeliver,
+  setWakeSwitchReader,
+  setAskGateSwitchReader,
   readWaitingReaders,
 } from './bus-wake';
+import { busSwitch } from './bus-runs';
 import {
   startBusLiveness,
   stopBusLiveness,
@@ -441,17 +444,32 @@ async function createMainWindow() {
       // resurrect a workspace the human retired. `ws.archived` is the flag the
       // #90 watchdog gates on too (session-watchdog.ts:233).
       wakeable: !ws.archived && !!ws.worktreePath,
-      // `'default'` MATCHES THE CLI'S OWN FALLBACK (#115: `--run` >
-      // `$ORCHESTRA_RUN_ID` > `default`), so the host looks for a reader's
-      // pending mail in the same run the CLI wrote it to. There is no
-      // per-workspace bus run to read yet — the run lifecycle is #115/#118's —
-      // and inventing one here would put every workspace in a run no CLI writes
-      // to, which reads as a permanently quiet fleet: the wake would fire for
-      // nobody, and nothing would report it. When a workspace carries its run,
-      // this maps it; the seam is already the right shape.
-      runId: 'default',
+      // #134 — the WAVE run this reader belongs to (its tree anchor), the SAME
+      // id `$ORCHESTRA_RUN_ID` plumbs into the member's CLI, so the host looks
+      // for a reader's pending mail in the run the CLI actually wrote it to. Was
+      // hardcoded `'default'` (the CLI's pre-#134 fallback), which — now that
+      // members send under their wave run id — would have the sweep read an
+      // empty `default` run and never wake anyone. A root anchor resolves to
+      // itself; a member resolves to its anchor (walkToRootId).
+      runId: resolveWaveRunId(ws),
     })),
   );
+  // #134 — wire the per-run switch readers the wake sweep consults. Until now
+  // these stayed the shipped default `() => false`, so even a run frozen wake=ON
+  // was COUNTED, never fired. Each reads the flag FROZEN ON THE RUN ROW (never
+  // the live store — that is the freeze), tolerating `getBus() === null` (D1):
+  // an unopened bus reads OFF, the coexistence-safe direction. `busSwitch`
+  // returns false for an unknown run/mechanism, so a reader whose run row does
+  // not exist is counted, not fired. Wake and askGate flip independently, so
+  // they are wired to their OWN mechanisms.
+  setWakeSwitchReader((runId) => {
+    const db = getBus();
+    return db ? busSwitch(db, runId, 'wake') : false;
+  });
+  setAskGateSwitchReader((runId) => {
+    const db = getBus();
+    return db ? busSwitch(db, runId, 'ask_gate') : false;
+  });
   // `sdkStartAndDeliver` is the cycle-safe seam over sdkWake: it lazy-starts a
   // session (resuming prior context) and delivers the order as that turn.
   setWakeDeliver((wsId, text) => sdkStartAndDeliver(wsId, text));

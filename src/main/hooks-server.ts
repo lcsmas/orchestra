@@ -26,6 +26,10 @@ import {
   dispatchStatusRequest,
 } from './workspaces';
 import { busDivergenceReport } from './bus-mirror.ts';
+import { getBus } from './bus.ts';
+import { runFlags } from './bus-runs.ts';
+import { getLiveSwitches } from './bus-settings.ts';
+import { serializeSwitches } from '../shared/bus-switches.ts';
 import {
   dispatchLinearAddRequest,
   dispatchLinearListRequest,
@@ -395,11 +399,35 @@ export async function startHooksServer(): Promise<void> {
               send(200, { ok: false, error: 'missing id' });
             }
           } else if (route === '/busStatus') {
-            // #116. Read-only, no input: the shadow mirror's divergence
-            // counters for the current run, in the frozen ledger-#123 shape.
-            // Same builder the IPC method uses, so `orchestra bus-status` and
-            // #118's pane can never print different numbers.
-            send(200, { ok: true, ...busDivergenceReport() });
+            // #116. Read-only: the shadow mirror's divergence counters, in the
+            // frozen ledger-#123 shape. Same builder the IPC method uses, so
+            // `orchestra bus-status` and #118's pane can never print different
+            // numbers.
+            //
+            // #134 — when the CLI supplies its own resolved `runId` (from the
+            // plumbed `$ORCHESTRA_RUN_ID`), also return that run's FROZEN flags
+            // beside the LIVE ones, and echo the run id the CLI addressed. The
+            // report's own `runId` is the MAIN process's mirror id (a per-boot
+            // `host-…`, D1); the CLI must print the WAVE run it belongs to, not
+            // the host's. Read-only: `runFlags` and `getLiveSwitches` never
+            // write, and there is still no input that mutates anything.
+            const report = busDivergenceReport();
+            const cliRunId = typeof msg.runId === 'string' ? msg.runId.trim() : '';
+            let runFlagsExtra: Record<string, unknown> = {};
+            if (cliRunId) {
+              const db = getBus();
+              // Frozen flags come from the run row (all-OFF for an unknown run /
+              // a null bus — the coexistence-safe direction); live from the
+              // store. Serialized as the stable sorted JSON object both sides
+              // parse, so the CLI never re-derives the shape.
+              const frozen = db ? runFlags(db, cliRunId) : undefined;
+              runFlagsExtra = {
+                displayRunId: cliRunId,
+                frozenFlags: frozen ? serializeSwitches(frozen) : null,
+                liveFlags: serializeSwitches(getLiveSwitches()),
+              };
+            }
+            send(200, { ok: true, ...report, ...runFlagsExtra });
           } else if (route === '/whoami') {
             if (typeof msg.id === 'string') {
               send(200, dispatchWhoamiRequest({ id: msg.id }));
