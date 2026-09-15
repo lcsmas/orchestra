@@ -23,12 +23,49 @@ const read = (p: string) => fs.readFileSync(path.join(repoRoot, p), 'utf8');
 const workspacesSrc = read('src/main/workspaces.ts');
 const indexSrc = read('src/main/index.ts');
 const hooksSrc = read('src/main/hooks-server.ts');
+const agentSdkSrc = read('src/main/agent-sdk.ts');
 
-test('CONTROL: the three sources are readable and non-trivial', () => {
+test('CONTROL: the four sources are readable and non-trivial', () => {
   assert.ok(workspacesSrc.length > 10_000, `workspaces.ts short: ${workspacesSrc.length}`);
   assert.ok(indexSrc.length > 10_000, `index.ts short: ${indexSrc.length}`);
   assert.ok(hooksSrc.length > 5_000, `hooks-server.ts short: ${hooksSrc.length}`);
+  assert.ok(agentSdkSrc.length > 10_000, `agent-sdk.ts short: ${agentSdkSrc.length}`);
   assert.doesNotMatch(workspacesSrc, /zzzNoSuchPatternZzz/);
+});
+
+// ── EVERY LAUNCH PATH must reach the run row + notice (LEAD, post-G9) ──────────
+// The G9 miss was that ONE path (structured default) was unwired. This block
+// enumerates ALL launch paths and asserts each reaches the row+notice (and the
+// structured path also plumbs ORCHESTRA_RUN_ID), so no single path can silently
+// regress again. Source-grep (workspaces.ts/agent-sdk.ts are un-importable under
+// node --test); the packaged G9 (VERIFY-F) is the authoritative end-to-end arm.
+
+test('ALL-PATHS — the row+notice write lives at the common CREATION chokepoint (covers structured default)', () => {
+  // The structured default spawn is dispatchSpawnRequest → createWorkspace →
+  // startWorkspaceAgentHeadless → sdkStartAndDeliver. The row+notice come from
+  // createWorkspace (the chokepoint); startWorkspaceAgentHeadless does NOT (and
+  // must not need to) write them itself.
+  assert.match(
+    fnBody(workspacesSrc, 'export async function dispatchSpawnRequest('),
+    /await createWorkspace\(/,
+    'the CLI/structured spawn routes through createWorkspace (the chokepoint)',
+  );
+  const headless = fnBody(workspacesSrc, 'async function startWorkspaceAgentHeadless(');
+  assert.match(headless, /sdkStartAndDeliver\(/, 'the structured default delivers via sdkStartAndDeliver');
+  // createWorkspace is where the row+notice is written (asserted by the G9-FIX
+  // test below); the headless path must not be the ONLY writer.
+});
+
+test('ALL-PATHS — the structured SDK session env plumbs ORCHESTRA_RUN_ID (parity with the PTY path)', () => {
+  // The G9-class second half: the structured session builds its env in
+  // agent-sdk.ts buildSdkEnv, NOT startAgentPty. Without ORCHESTRA_RUN_ID there,
+  // the default agent's CLI verbs resolve 'default'/host-, not the wave run.
+  const body = fnBody(agentSdkSrc, 'async function buildSdkEnv(');
+  assert.match(
+    body,
+    /env\.ORCHESTRA_RUN_ID = resolveWaveRunId\(ws\)/,
+    'the structured session env must carry the wave ORCHESTRA_RUN_ID (parity with startAgentPty extraEnv)',
+  );
 });
 
 // ─── P1 — startRun is called at the anchor, in startAgentPty ─────────────────

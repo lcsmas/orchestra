@@ -39,6 +39,7 @@ import {
   autoRenameActive,
   orchestratorBrief,
   createWorkspace,
+  resolveWaveRunId,
   DEFAULT_CHILD_MODEL,
 } from './workspaces';
 import { forkBranchName } from '../shared/fork-session';
@@ -740,6 +741,13 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
   }
   env.ORCHESTRA_BRANCH = ws.branch;
   env.ORCHESTRA_KIND = ws.kind ?? 'worktree';
+  // #134 — the WAVE run id (nearest-orchestrator anchor), PARITY with the
+  // terminal path's extraEnv (workspaces.ts startAgentPty). The STRUCTURED session
+  // is the DEFAULT spawn surface (sdkStartAndDeliver), so without this its CLI
+  // verbs (send/check/ack/ask/gate) and the mirror resolve ORCHESTRA_RUN_ID →
+  // 'default'/host- instead of the wave — the same G9-class miss as the run row,
+  // one env var over. Set unconditionally (independent of the spool gate below).
+  env.ORCHESTRA_RUN_ID = resolveWaveRunId(ws);
   // Auto-rename gate parity with startAgentPty (workspaces.ts): the SessionStart
   // /UserPromptSubmit rename-instruction hook hard-gates on
   // `ORCHESTRA_BRANCH_AUTO=1` and reads `ORCHESTRA_AUTO_RENAME_COUNT` to pick the
