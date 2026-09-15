@@ -55,13 +55,21 @@ export interface ReaderPendingState {
    *  while the ask is still unanswered. */
   cursorSeq?: number;
   /**
-   * The run id the pending lot/question physically SITS in (#134 D1a-bis) — where
-   * the reader retrieves it (`check --run <this>`) and acks it. Usually the
-   * reader's own run; for an OPS→LEAD digest it is the OPS's DESCENDANT run, for a
-   * LEAD→OPS ruling it is the LEAD's ANCESTOR run (the store-less CLI writes mail
-   * with the SENDER's run). `undefined` when only a gate is pending.
+   * The run id the NEWEST pending lot/question physically SITS in (#134 D1a-bis)
+   * — usually the reader's own run; for an OPS→LEAD digest the OPS's DESCENDANT
+   * run, for a LEAD→OPS ruling the LEAD's ANCESTOR run (the store-less CLI writes
+   * mail with the SENDER's run). `undefined` when only a gate is pending. See
+   * {@link pendingRunIds} for the FULL set the wake order names.
    */
   pendingRunId?: string;
+  /**
+   * EVERY run (own ∪ related) with pending exact-mail for this reader (#134 D2) —
+   * the set the wake ORDER names, one `orchestra check --run <r>` line per run.
+   * A reader may have unread mail in several runs at once (its own wave + a
+   * digest up from a sub-wave + a ruling down from the mission); D2 says the
+   * order lists them all, and the reader checks/acks each PER-RUN. Empty/undefined
+   * when only a gate is pending. `pendingRunId` is the newest of this set. */
+  pendingRunIds?: string[];
   /**
    * The run whose `wake` flag GOVERNS this pending item (#134 D1a-bis): the
    * INNERMOST = the DEEPER of (mail run, reader run). For upward mail (OPS→LEAD)
@@ -211,18 +219,58 @@ export function pruneWakeLedger(
   }
 }
 
-/** The ORDER a wake turn carries. A CONSTANT, and the only string the host puts
- *  in a wake — the message BODY never travels this path (#117 acceptance 5).
- *
- *  Why the body is banned rather than merely discouraged: a host that pastes the
- *  message into the turn has silently delivered it, and the reader's `ack` then
- *  certifies a read that the bus never handed over. The order keeps the bus the
- *  single delivery path, so a lot is read exactly where it is acked. */
-export const WAKE_ORDER = 'lot pending — run `orchestra check`';
+/** The header line of a wake order — the only prose the host puts in a wake; the
+ *  message BODY never travels this path (#117 acceptance 5). Why the body is
+ *  banned rather than discouraged: a host that pastes the message into the turn
+ *  has silently delivered it, and the reader's `ack` then certifies a read the
+ *  bus never handed over. The order keeps the bus the single delivery path — a
+ *  lot is read exactly where it is acked. */
+export const WAKE_ORDER_HEADER = 'lot pending — run the check command(s) below, then ack each lot:';
 
-/** True when `text` is a wake order this module produced. Used by the gate to
- *  assert the order is present, and by the body-leak check to assert it is the
- *  ONLY thing present. */
+/**
+ * BUILD the wake order (#134 D2, ledger #135, rules OQ3). The order NAMES the
+ * run(s) the reader must check — one `orchestra check --run <r>` line per run
+ * with pending mail for this reader — because a wake carries an order, never
+ * content, and a run id is part of the order. `check`/`ack`/cursor stay per-run
+ * (#115's one-lot-one-run contract untouched); a plain `orchestra check` still
+ * means "my own run", so the explicit `--run` is what lets a reader retrieve mail
+ * in a RELATED run (an OPS→LEAD digest in a descendant, a LEAD→OPS ruling in an
+ * ancestor) that a plain check would never see — the OQ3 permanent-loop fix.
+ *
+ * Runs are sorted for a stable, testable string. At least one run is always
+ * present when this is called (the sweep only wakes a reader that is pending).
+ */
+export function buildWakeOrder(runIds: readonly string[]): string {
+  const runs = [...new Set(runIds)].sort();
+  const lines = runs.map((r) => `orchestra check --run ${r}`);
+  return [WAKE_ORDER_HEADER, ...lines].join('\n');
+}
+
+/** The legacy single-run constant, kept for the shape the older gate arms assert
+ *  (a wake for one own-run lot). Equivalent to `buildWakeOrder([ownRun])` minus
+ *  the run id — retained ONLY where a test needs a run-agnostic sentinel. New
+ *  code builds the order with {@link buildWakeOrder}. */
+export const WAKE_ORDER = WAKE_ORDER_HEADER;
+
+/** True when `text` is a wake order this module produced (#134 D2): the header
+ *  followed by ≥1 `orchestra check --run <r>` line, and NOTHING else. Used by the
+ *  gate to assert the order is present, and by the body-leak check to assert it
+ *  is the ONLY thing present — a pasted message body would add a non-matching
+ *  line and fail this. */
 export function isWakeOrder(text: string): boolean {
-  return text.trim() === WAKE_ORDER;
+  const lines = text.trim().split('\n');
+  if (lines[0] !== WAKE_ORDER_HEADER) return false;
+  if (lines.length < 2) return false; // must name at least one run
+  return lines.slice(1).every((l) => /^orchestra check --run \S+$/.test(l.trim()));
+}
+
+/** The run ids a wake order names (#134 D2) — what the reader checks. Empty for a
+ *  non-order string. The recognizer above guarantees the shape; this extracts. */
+export function wakeOrderRuns(text: string): string[] {
+  if (!isWakeOrder(text)) return [];
+  return text
+    .trim()
+    .split('\n')
+    .slice(1)
+    .map((l) => l.trim().replace(/^orchestra check --run /, ''));
 }

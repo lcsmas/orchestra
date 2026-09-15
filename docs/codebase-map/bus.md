@@ -1638,10 +1638,15 @@ round-trip was rejected). The innermost-run decision lives in the wake sweep
   upward mail (OPS→LEAD) → the mail's (OPS) run governs; downward mail (LEAD→OPS)
   → the reader's (OPS) run governs. `pendingRunId` separately carries the run the
   mail SITS in (the retrieval + ack run). Gates (askGate) are own-run only.
-- **OQ3 round-trip:** the wake order names the mail's run so the reader
-  `check`s the run the mail sits in (OQ3 default B, pending a LEAD ruling);
-  `check`/`ack`/cursor stay per-run (one lot = one run). Without it a reader woken
-  for cross-run mail would check its own run, find nothing, and loop forever.
+- **The wake ORDER names the runs (D2, rules OQ3):** `buildWakeOrder(runIds)`
+  (`src/shared/bus-wake.ts`) emits the header + one `orchestra check --run <r>`
+  line per run with pending mail for the reader (`ReaderPendingState.pendingRunIds`,
+  the full own∪related set). `isWakeOrder`/`wakeOrderRuns` recognize/extract the
+  shape. `deliverWake(reader, order)` carries it. The reader runs EXACTLY those
+  checks and acks each; `check`/`ack`/cursor stay per-run (one lot = one run), a
+  plain `check` = own run. Without the `--run` a reader woken for cross-run mail
+  would check its own run, find nothing, and loop forever (the OQ3 defect). The
+  fleet-skill `wake=ON` wording lives in `~/.claude` (LEAD owns it), not this repo.
 
 Mutation-verified (`src/main/bus-wake-run-switch.test.ts`): a switch read pinned
 to the reader's run reddens the UPWARD fire arms; pinned to the mail's run reddens

@@ -14,7 +14,7 @@ import {
   __freezeSwitchForTests,
   stopBusWake,
 } from './bus-wake.ts';
-import { WAKE_ORDER, isWakeOrder } from '../shared/bus-wake.ts';
+import { isWakeOrder, wakeOrderRuns } from '../shared/bus-wake.ts';
 
 // The SWEEP, driven end to end over a real SQLite bus (#117 acceptance 1-5,
 // ledger #123 T117.1-T117.5).
@@ -114,7 +114,9 @@ test('T117.5 the wake carries the order and NOT the message body', async (t) => 
   const hits = wakes.filter((w) => w.text.includes(BODY)).length;
   assert.equal(hits, 0, 'the body must appear ZERO times in the wake');
   assert.equal(wakes.filter((w) => isWakeOrder(w.text)).length, 1, 'the order appears exactly once');
-  assert.equal(wakes[0].text, WAKE_ORDER);
+  // #134 D2: the order NAMES the run to check (own run here) — one `check --run`.
+  assert.ok(isWakeOrder(wakes[0].text), 'the wake is a valid run-naming order');
+  assert.deepEqual(wakeOrderRuns(wakes[0].text), [RUN], 'and it names the reader run');
 });
 
 // ── T117.2 — coalescing: 3 inserts = exactly ONE wake ──────────────────────

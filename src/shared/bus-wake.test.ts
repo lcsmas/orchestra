@@ -4,7 +4,9 @@ import {
   decideWake,
   pruneWakeLedger,
   isWakeOrder,
-  WAKE_ORDER,
+  buildWakeOrder,
+  wakeOrderRuns,
+  WAKE_ORDER_HEADER,
   type ReaderPendingState,
   type WakeLedgerEntry,
 } from './bus-wake.ts';
@@ -125,20 +127,31 @@ test('after an ack, a re-inserted lot at a LOWER sequence still wakes', () => {
 
 // ── The order carries NO body (T117.5) ─────────────────────────────────────
 
-test('WAKE_ORDER names the verb and contains no message body slot', () => {
-  assert.match(WAKE_ORDER, /orchestra check/);
-  // A format string would be the only way a body could reach this path.
-  assert.equal(/%s|\{\}|\$\{/.test(WAKE_ORDER), false);
+test('#134 D2 — buildWakeOrder names each run and carries no body slot', () => {
+  const order = buildWakeOrder(['ops-wave', 'lead-mission']);
+  assert.match(order, /orchestra check --run ops-wave/);
+  assert.match(order, /orchestra check --run lead-mission/);
+  // Runs are sorted + deduped for a stable string.
+  assert.equal(buildWakeOrder(['b', 'a', 'a']), buildWakeOrder(['a', 'b']));
+  // No format-string slot could smuggle a body in.
+  assert.equal(/%s|\{\}|\$\{/.test(order), false);
 });
 
-test('isWakeOrder is as SPECIFIC as the claim it certifies', () => {
-  // Carry-forward 2: fed a string that MENTIONS the marker without being the
-  // order, it must be red. A `.includes('orchestra check')` predicate would
-  // pass all three of these and certify nothing.
-  assert.equal(isWakeOrder(WAKE_ORDER), true);
-  assert.equal(isWakeOrder(`${WAKE_ORDER}\n\nsecret body text`), false);
+test('#134 D2 — isWakeOrder is as SPECIFIC as the claim it certifies (carry-forward 2)', () => {
+  const order = buildWakeOrder(['r1']);
+  assert.equal(isWakeOrder(order), true);
+  // A pasted body adds a non-matching line → red (the body-leak guard).
+  assert.equal(isWakeOrder(`${order}\nsecret body text`), false);
+  // The bare header with NO run line is not a valid order (must name a run).
+  assert.equal(isWakeOrder(WAKE_ORDER_HEADER), false);
+  // Prose that merely MENTIONS the verb is not the order.
   assert.equal(isWakeOrder('please run `orchestra check` when you can'), false);
   assert.equal(isWakeOrder('the order mentions orchestra check but is prose'), false);
+});
+
+test('#134 D2 — wakeOrderRuns extracts exactly the runs the order names', () => {
+  assert.deepEqual(wakeOrderRuns(buildWakeOrder(['a', 'b'])), ['a', 'b']);
+  assert.deepEqual(wakeOrderRuns('not an order'), []);
 });
 
 // ── TWO SWITCHES, ONE ORDER (#119): the gate half rides askGate, not wake ────

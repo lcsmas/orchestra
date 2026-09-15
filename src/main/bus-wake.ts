@@ -38,7 +38,7 @@ import { log } from './logger.ts';
 import {
   decideWake,
   pruneWakeLedger,
-  WAKE_ORDER,
+  buildWakeOrder,
   type ReaderPendingState,
   type WakeLedgerEntry,
 } from '../shared/bus-wake.ts';
@@ -217,6 +217,34 @@ export function readPendingReaders(
   const cursorOf = db.prepare(
     'SELECT COALESCE(acked_seq, 0) AS c FROM cursors WHERE run_id = ? AND reader = ?',
   );
+  // #134 D2: the DISTINCT set of runs (own ∪ related) that currently have pending
+  // mail for the reader — a pending lot OR an unanswered question. The wake order
+  // names EVERY one of these (`orchestra check --run <r>` per run), because a
+  // reader can have unread mail in several runs at once. Same predicates as the
+  // newest-item queries above, without the LIMIT 1, grouped to distinct runs.
+  const pendingRunSet = db.prepare(`
+    SELECT DISTINCT run_id FROM (
+      SELECT m.run_id AS run_id
+        FROM messages m
+       WHERE m.run_id IN (SELECT value FROM json_each(?))
+         AND (
+           (m.run_id = ? AND (m.recipient = ? OR m.recipient IS NULL))
+           OR (m.run_id != ? AND m.recipient = ?)
+         )
+         AND m.sequence > COALESCE(
+               (SELECT c.acked_seq FROM cursors c WHERE c.reader = ? AND c.run_id = m.run_id), 0)
+      UNION
+      SELECT q.run_id AS run_id
+        FROM messages q
+       WHERE q.run_id IN (SELECT value FROM json_each(?))
+         AND q.kind = 'question' AND q.recipient = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM messages r
+            WHERE r.run_id = q.run_id AND r.thread_id = CAST(q.sequence AS TEXT)
+              AND r.sender = q.recipient AND r.recipient = q.sender
+         )
+    )
+  `);
 
   const out: ReaderPendingState[] = [];
   for (const { reader, runId } of readers) {
@@ -253,6 +281,13 @@ export function readPendingReaders(
     );
     const reWakeUntilAnswered = qhi > 0;
     const pendingThroughSeq = Math.max(hi, qhi);
+    // The FULL set of runs with pending mail — the wake order names them all (D2).
+    const pendingRunIds =
+      pendingThroughSeq > 0
+        ? (pendingRunSet.all(runSetJson, runId, reader, runId, reader, reader, runSetJson, reader) as {
+            run_id: string;
+          }[]).map((r) => r.run_id)
+        : [];
     // Gate half (#119) — rides the `askGate` switch, own run only (a gate has an
     // explicit recipient and is not part of the cross-run widening #134 added).
     const gates = openGatesForRecipient(db, runId, reader);
@@ -266,6 +301,7 @@ export function readPendingReaders(
       reWakeUntilAnswered,
       cursorSeq,
       pendingRunId: pendingThroughSeq > 0 ? mailRunId : undefined,
+      pendingRunIds: pendingThroughSeq > 0 ? pendingRunIds : undefined,
       switchRunId: pendingThroughSeq > 0 ? switchRunId : undefined,
     });
   }
@@ -493,9 +529,19 @@ export async function sweepBusWake(): Promise<void> {
         );
         continue;
       }
+      // #134 D2: the wake ORDER names every run the reader must check — its
+      // pending lot/question runs (own ∪ related), else its OWN run for a
+      // gate-only wake (gates are own-run and `check` surfaces them). One
+      // `orchestra check --run <r>` line per run; the reader checks/acks each
+      // per-run. `entry.runId` is the reader's own run (the gate/fallback run).
+      const orderRuns =
+        p.pendingRunIds && p.pendingRunIds.length > 0
+          ? p.pendingRunIds
+          : [entry?.runId ?? p.reader];
+      const order = buildWakeOrder(orderRuns);
       let delivered = false;
       try {
-        delivered = await deliverWake(action.reader, WAKE_ORDER);
+        delivered = await deliverWake(action.reader, order);
       } catch (e) {
         log.warn(`bus-wake: wake threw for ${action.reader}`, e);
       }

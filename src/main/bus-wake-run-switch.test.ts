@@ -35,7 +35,7 @@ import {
   __resetBusWakeForTests,
   __armStartedForTests,
 } from './bus-wake.ts';
-import { WAKE_ORDER } from '../shared/bus-wake.ts';
+import { isWakeOrder, wakeOrderRuns } from '../shared/bus-wake.ts';
 import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.ts';
 
 const RUN = 'wave-lead';
@@ -95,7 +95,8 @@ test('G7 — a run FROZEN wake=ON fires the wake for its recipient (real accesso
 
   assert.equal(wakes.length, 1, 'the recipient was woken');
   assert.equal(wakes[0].reader, R1);
-  assert.equal(wakes[0].text, WAKE_ORDER);
+  assert.ok(isWakeOrder(wakes[0].text), 'a valid run-naming order (#134 D2)');
+  assert.deepEqual(wakeOrderRuns(wakes[0].text), [RUN], 'names the reader own run');
   assert.equal(busWakeCounters().fired, 1);
   assert.equal(busWakeCounters().counted, 0);
 });
@@ -196,7 +197,11 @@ test('G4a (i) — OPS wave wake=ON + LEAD mission wake=OFF → the LEAD is FIRED
 
   assert.equal(wakes.length, 1, 'the LEAD is woken for the digest in the descendant OPS run');
   assert.equal(wakes[0].reader, LEAD);
-  assert.equal(wakes[0].text, WAKE_ORDER);
+  // #134 D2: the order names the run the mail SITS in (the OPS descendant run),
+  // NOT the LEAD's own run — so a plain `check` would miss it; the reader must
+  // `check --run ops-wave`.
+  assert.ok(isWakeOrder(wakes[0].text), 'a valid run-naming order');
+  assert.deepEqual(wakeOrderRuns(wakes[0].text), [OPS_RUN], 'the order names the OPS (mail) run');
   assert.equal(busWakeCounters().fired, 1, 'FIRED — the innermost (OPS) wake flag is ON');
   assert.equal(busWakeCounters().counted, 0);
 });
@@ -312,16 +317,18 @@ test('G4a ROUND-TRIP — upward digest: LEAD fires, checks the MAIL run, acks, i
   await sweepBusWake();
   assert.equal(wakes.length, 1, 'sweep 1 wakes the LEAD');
 
-  // The reader learns WHICH run its mail sits in (the wake order names it, OQ3 B)
-  // and retrieves it from THAT run — not its own. This is the round-trip the
-  // fire-only arm never exercised.
-  const pend = readPendingReaders(db, [{ reader: LEAD, runId: LEAD_RUN }]);
-  const mailRun = pend[0].pendingRunId!;
-  assert.equal(mailRun, OPS_RUN, 'the mail sits in the OPS (descendant) run');
-  const lot = check(db, mailRun, LEAD);
-  assert.equal(lot.messages.length, 1, 'checking the MAIL run returns the digest');
-  assert.ok(lot.delivery, 'a lot was opened');
-  ack(db, mailRun, LEAD, lot.delivery!.id);
+  // The reader obeys the ORDER LITERALLY (OQ3 D2): it runs each `check --run <r>`
+  // the wake named, and acks each lot. Parse the runs OUT of the emitted order
+  // string — the round-trip is driven by what the wake actually said, not by a
+  // run the test knew out of band.
+  const namedRuns = wakeOrderRuns(wakes[0].text);
+  assert.deepEqual(namedRuns, [OPS_RUN], 'the order names exactly the OPS (mail) run');
+  for (const r of namedRuns) {
+    const lot = check(db, r, LEAD);
+    assert.equal(lot.messages.length, 1, `checking the named run ${r} returns the digest`);
+    assert.ok(lot.delivery, 'a lot was opened');
+    ack(db, r, LEAD, lot.delivery!.id);
+  }
 
   // Sweep 2: pending has cleared (the reader's cursor in the OPS run advanced) →
   // NOT re-woken. This is what proves there is no permanent loop.
