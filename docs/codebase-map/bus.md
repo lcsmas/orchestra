@@ -580,15 +580,19 @@ change them", and the fleet skill BRANCHES on that claim. Reading
 spawned into one run on either side of a human's flip received CONTRADICTORY
 notices, each asserting the opposite — the "half a fleet reads wake=on, the other
 half wake=off" split the freeze exists to prevent. `runId` is the workspace's
-WAVE ANCHOR = the tree ROOT: `resolveWaveRunId(ws)` walks `parentId` up via
-`store.getWorkspace` to the topmost resolvable ancestor (N2, ledger #123). Walking
-a single level split a 3-deep tree — LEAD → OPS → IMPL got two ids and froze
-against different rows. The pure walk is `walkToRootId` in
-`src/main/wave-run-id.ts` (store-free, so it unit-tests: 3-level chain → one root,
-a broken link falls back to the deepest resolvable ancestor, a cycle terminates).
-An absent run row (no lifecycle yet) or a down bus (D1) reads **all-OFF**, the
-coexistence-safe and STABLE default, so "frozen" holds even before a row exists.
-No run row is created here — that is #115's lifecycle, not the notice's job.
+run ANCHOR = its NEAREST ORCHESTRATOR (LEAD ruling D1, ledger #135 — this
+OVERTURNED the earlier tree-root model of #118 N2): `resolveWaveRunId(ws)` calls
+`nearestOrchestratorId(ws, store.getWorkspace)`, which returns `ws` if it
+`canOrchestrate` else the first `canOrchestrate` ancestor (an OPS is a promoted
+worktree carrying the flag — NOT `kind==='orchestrator'` alone), else `ws` (a
+plain standalone spawn is its own run). The pure walk lives in
+`src/main/wave-run-id.ts` (store-free, unit-tested: member→OPS not LEAD, a
+capability-flag promoted worktree is the anchor, standalone→self, broken link,
+cycle). `walkToRootId` is retained there for any tree-root caller but is NOT the
+run anchor. `parentOrchestratorId` gives the nested `parent_run_id`. **#134 now
+CREATES the run row here-adjacent** (see the #134 section); an absent run row or a
+down bus (D1) still reads **all-OFF**, the coexistence-safe STABLE default, so
+"frozen" holds even before a row exists.
 
 The state lives in a **file, not a script constant**, for a specific reason:
 `installOrchestraHooks` short-circuits on a **hash of the script bodies**, so a
@@ -937,20 +941,19 @@ to X11 and would reach the human's screen even with a correct `WAYLAND_DISPLAY`.
 
 ## Not covered here
 
-Gate resolution from the UI (v2). Who calls `startRun` for a real wave — no
-production caller creates runs yet; the pane renders whatever rows exist, and
-the run lifecycle is #115's. Counter *production* is #116's; #118 only renders
-the frozen shape.
+Gate resolution from the UI (v2). Who calls `startRun` for a real wave — **#134
+now does** (`maybeStartRunAtAnchor` at the nearest-orchestrator anchor + `/promote`);
+before it, no production caller created runs. Counter *production* is #116's; #118
+only renders the frozen shape.
 
-**Run-id surface disagreement (declared, N2 tail — ledger #123).** The notice
-keys on the **root workspace id** (`resolveWaveRunId`), but the CLI verbs a
-spawned agent runs key on `env.ORCHESTRA_RUN_ID || 'default'` (`src/cli/bus-verbs.ts`)
-and #116's mirror on `ORCHESTRA_RUN_ID || host-<ts>`. **Nothing sets
-`ORCHESTRA_RUN_ID` into the agent env on master** (grep `workspaces.ts` — no
-write), so the two run-id surfaces disagree until a spawn path exports
-`ORCHESTRA_RUN_ID=<root>`. This is inert while every switch is OFF (COUNTED, not
-fired — coexistence), and unifying them (export the root id at spawn) is a
-wave-B-scope-boundary item, not #118's: it needs the run lifecycle #115 owns.
+**Run-id surface disagreement — CLOSED by #134 (was the N2 tail, ledger #123).**
+The notice keys on `resolveWaveRunId` (now the nearest-orchestrator anchor, D1),
+the CLI verbs on `env.ORCHESTRA_RUN_ID || 'default'`, and #116's mirror on
+`ORCHESTRA_RUN_ID || host-<ts>`. #134 sets `ORCHESTRA_RUN_ID = anchor.anchorId`
+into the agent env (`workspaces.ts` `extraEnv`), so all three surfaces now agree
+on the wave run. Remaining open detail: D1a send-side innermost routing (OQ2) — a
+LEAD→OPS `send` still lands in the LEAD's run, not the OPS's, because the CLI is
+store-less; see the #134 section.
 
 **#117 honest gaps.** The wake unit arms stop at the delivery seam — they prove
 the order is handed to `sdkStartAndDeliver`, not that a turn RENDERS in the
@@ -1545,82 +1548,106 @@ drop `!sent.replayed` → re-mint PK throw), then GREEN restored.
 
 ---
 
-# Run lifecycle at the wave anchor + `ORCHESTRA_RUN_ID` plumbing (#134)
+# Run lifecycle at the NEAREST-ORCHESTRATOR anchor + `ORCHESTRA_RUN_ID` (#134)
 
-Appended by #134 (ledger [#135](https://github.com/lcsmas/orchestra/issues/135)).
-This is the ticket that made the #118 switch/freeze machinery **actually reach
-production** — before it, `startRun` had zero callers, so no `runs` row was ever
-created, every `busSwitch(runId, …)` read all-OFF, and the freeze was vacuous.
+Appended by #134 (ledger [#135](https://github.com/lcsmas/orchestra/issues/135),
+LEAD ruling **D1/D1a/D1b**). This is the ticket that made the #118 switch/freeze
+machinery **actually reach production** — before it, `startRun` had zero callers,
+so no `runs` row was ever created, every `busSwitch(runId, …)` read all-OFF, and
+the freeze was vacuous.
 
 ## The gap it closed (the reproduced defect at `ba3da60`)
 
-- `startRun` (`bus-runs.ts:94`) had NO production caller — only `scripts/*` rigs.
+- `startRun` had NO production caller — only `scripts/*` rigs.
 - `ORCHESTRA_RUN_ID` appeared only in `workspaces.ts` **comments**, never in
-  `extraEnv`; the CLI's `resolveBusIdentity` therefore resolved `default` for
-  every real member, and the mirror fell back to a per-boot `host-…`.
+  `extraEnv`; the CLI's `resolveBusIdentity` resolved `default` for every member,
+  and the mirror fell back to a per-boot `host-…`.
 - `setWakeRoster` hardcoded `runId:'default'`; `setWakeSwitchReader` /
   `setAskGateSwitchReader` were never wired → `() => false` for every run.
 
+## The anchor is the NEAREST ORCHESTRATOR (D1 — NOT the tree root)
+
+The topology is LEAD (long-lived orchestrator) → OPS (promoted worktree, one per
+wave) → members. If the anchor were the tree root, every wave would freeze on the
+LEAD's lifetime run — no per-wave flip. So `resolveWaveRunId(ws)` =
+`nearestOrchestratorId(ws, store.getWorkspace)` (`src/main/wave-run-id.ts`, pure):
+`ws` if it `canOrchestrate` (kind `'orchestrator'` OR the capability flag — an OPS
+is a *promoted worktree*, so NEVER key on kind alone), else the first
+`canOrchestrate` ancestor, else `ws` (a plain standalone spawn is its own run).
+`parentOrchestratorId` gives the OPS's `parent_run_id` = the LEAD's run → **nested
+LEAD→OPS = two run rows.** `walkToRootId` is retained for tree-root callers but is
+NOT the run anchor.
+
 ## Where the run starts — `maybeStartRunAtAnchor` (`src/main/bus-run-anchor.ts`)
 
-`startAgentPty` (`src/main/workspaces.ts`) resolves `waveRunId =
-resolveWaveRunId(ws)` (the tree ROOT via `walkToRootId`) ONCE and, when this
-workspace **IS** the anchor (`waveRunId === ws.id`), calls
-`maybeStartRunAtAnchor({ getBus, startRun, getLiveSwitches, warn }, ws, waveRunId)`.
+`startAgentPty` resolves `resolveAnchorInfo(ws)` = `{ anchorId, anchorIsOrchestrator,
+parentRunId }` ONCE and calls `maybeStartRunAtAnchor(deps, anchor)`:
 
-- **Idempotent, never re-freezes:** `startRun` is INSERT-OR-IGNORE keyed on the
-  `runs` row EXISTENCE (#123 F1). Calling it on every launch (spawn/promote/
-  resume) writes flags only when the row is NEW.
-- **Members start nothing:** a member resolves the SAME anchor id, so
-  `waveRunId !== ws.id` and the function returns null — one wave, one run row,
-  one frozen-flags source. `isRootAnchor` (`src/main/wave-run-id.ts`) is the pure,
-  unit-tested predicate.
-- **D1 — never blocks a spawn:** `getBus()` may be null and `startRun` may throw;
-  both are caught, logged, and return null. The spawn proceeds reading all-OFF.
-- **`parent_run_id` is null (OQ1, ledger #135):** `walkToRootId` resolves to the
-  TOPMOST ancestor, so an anchor by definition has no run above it — a LEAD→OPS
-  nesting resolves the OPS *member* to the LEAD root, so the OPS is never its own
-  anchor. Real nesting is not expressible under the tree walk today; this is the
-  one line to change if a future model plumbs an explicit run id.
+- **Fires when a workspace BECOMES an orchestrator** (spawn-as-orchestrator: the
+  anchor is itself) AND **lazily** when a MEMBER launches under a pre-existing
+  orchestrator whose row is missing (a LEAD/OPS promoted before this shipped). A
+  plain standalone workspace (`anchorId===ws.id` but NOT `canOrchestrate`) gets NO
+  row.
+- **`/promote`** (`dispatchPromoteRequest`) also calls it via `startRunForPromoted`
+  in BOTH success branches — a promote does not relaunch the pty, so the OPS's own
+  row is created at that wave boundary.
+- **Idempotent, freeze-once (F1):** `startRun` is INSERT-OR-IGNORE on the `runs`
+  row existence; a `getRun` short-circuit skips the INSERT when the row exists.
+- **`kind`** = `'mission'` for a top-level orchestrator (parentRunId null),
+  `'vague'` for a nested one — the discriminator `refreezeRun` gates on.
+- **D1b mission re-freeze:** when a NEW nested (OPS) run is created,
+  `refreezeRun(db, parentRunId, live)` UPDATEs the parent **mission** row's flags
+  to the current live switches (SQL WHERE `kind='mission'` — the guard, so an
+  OPS/member row is NEVER re-frozen). Wave-boundary only (new-nested-run), never on
+  a member spawn that merely reads an existing OPS row. Keeps the LEAD's own plain
+  children tracking the latest flip while preserving F1 for OPS/member rows.
+- **D1 — never blocks a spawn:** `getBus()` null / `startRun` throw are caught,
+  logged, return null; the spawn proceeds all-OFF.
 
 ## The plumbing (`src/main/index.ts`, beside `startBusWake()`)
 
-- `extraEnv.ORCHESTRA_RUN_ID = waveRunId` → CLI verbs, the mirror, and the wake
-  predicate all address the WAVE run.
-- `setWakeRoster` maps `runId: resolveWaveRunId(ws)` (was `'default'`).
+- `extraEnv.ORCHESTRA_RUN_ID = anchor.anchorId` (the nearest-orchestrator run).
+- `setWakeRoster` maps `runId: resolveWaveRunId(ws)` — each reader keyed on its
+  **innermost** run (D1a roster side; was `'default'`). The liveness roster
+  already used `resolveWaveRunId`.
 - `setWakeSwitchReader` / `setAskGateSwitchReader` →
   `(runId) => { const db = getBus(); return db ? busSwitch(db, runId, 'wake'|'ask_gate') : false; }`.
-  (Liveness already had its own default `busSwitch(db, runId, 'liveness')` reader.)
 
 ## `orchestra bus-status` (#134 addition, read-only)
 
-`/busStatus` (`hooks-server.ts`) now accepts the CLI's resolved `runId` and
-returns `displayRunId` + `frozenFlags` (from `runFlags(db, runId)`) +
-`liveFlags` (from `getLiveSwitches()`), all serialized as the stable JSON object.
-The CLI prints the WAVE run id it resolved (`--run` > `$ORCHESTRA_RUN_ID` >
-`default`), **never** the main process's `host-…` mirror id, plus a
-frozen-vs-live flag table (WIRE names). Still no write path — `runFlags` /
-`getLiveSwitches` are pure reads.
+`/busStatus` accepts the CLI's resolved `runId` and returns `displayRunId` +
+`frozenFlags` (`runFlags(db, runId)`) + `liveFlags` (`getLiveSwitches()`),
+serialized JSON. The CLI prints the run it resolved (`--run` > `$ORCHESTRA_RUN_ID`
+> `default`), **never** the main process's `host-…` mirror id, plus a
+frozen-vs-live flag table (WIRE names). No write path.
+
+## Open — D1a send-side innermost routing (OQ2, ledger #135)
+
+The wake ROSTER keys each reader on its innermost run (done). The SEND side — a
+LEAD's `send --to <ops>` landing in the OPS's (innermost) run — is unresolved: the
+CLI writes the bus directly with the SENDER's `ORCHESTRA_RUN_ID` and is
+**store-less**, so it cannot resolve the recipient's run at send time. See OQ2 for
+the proposed mechanism (a wake-side ancestor match, or a socket round-trip).
 
 ## Gates
 
-- `src/main/wave-run-id.test.ts` — `isRootAnchor` (root/member/broken-link).
-- `src/main/bus-run-anchor.test.ts` — G3 row-created-at-anchor (+ must-FAIL: noop
-  `startRun` → row ABSENT), G4 freeze/T118.2 (flip-after-start no-op; new anchor
-  freezes new; + live-vs-frozen disagreement mutant), G5 member shares anchor /
-  starts nothing (+ stray-row control), D1 null/throwing bus, idempotence×5.
-- `src/main/bus-wake-run-switch.test.ts` — G7 the REAL production accessor
-  (`busSwitch` off the run row) fires a frozen-ON run, COUNTS a frozen-OFF run,
-  and the **unwired-accessor** arm reproduces the master defect (wake=ON run still
-  only counted).
-- `src/main/wave-run-anchor-wiring.test.ts` — source-level guard for the
-  un-importable seams (workspaces.ts / index.ts / hooks-server.ts), each with a
-  negative control; the roster mutant `runId:'default'` reddens P2b.
-- `scripts/verify-bus-status-cli.mjs` — the REAL built CLI over a fake socket:
-  G8 prints the wave run id not `host-…` (+ must-FAIL against `host-`), frozen-vs-
-  live flag table.
-- G9 packaged boot + spawn-notice under real Electron (headless sway) — owned by
-  VERIFY-F against the installed build.
+- `src/main/wave-run-id.test.ts` — `nearestOrchestratorId` (member→OPS not LEAD;
+  capability-flag anchor; standalone→self; broken link; cycle) + `parentOrchestratorId`
+  (OPS→LEAD; LEAD→null; skip-plain-wrapper). A tree-root mutant reddens 4 arms.
+- `src/main/bus-run-anchor.test.ts` — G3 row-created-at-anchor (+ must-FAIL noop
+  `startRun` → ABSENT), G5 member anchors on OPS + lazy-creates it (+ nearest≠tree-root
+  control), G4-D1 member anchored on OPS not LEAD, **G4b** mission re-freeze at wave
+  boundary (+ no-refreeze control ⇒ stale) and OPS-row byte-identity across a member
+  spawn (F1), standalone → no row, D1 null/throwing bus, idempotence.
+- `src/main/bus-wake-run-switch.test.ts` — G7 the REAL accessor fires a frozen-ON
+  run, COUNTS a frozen-OFF run, unwired-accessor arm reproduces the master defect.
+- `src/main/wave-run-anchor-wiring.test.ts` — source guards for the un-importable
+  seams; `resolveWaveRunId` uses `nearestOrchestratorId` not `walkToRootId`; both
+  promote branches call `startRunForPromoted`; roster mutant `'default'` reddens.
+- `scripts/verify-bus-status-cli.mjs` — REAL built CLI over a fake socket: G8 wave
+  run id not `host-…` (+ must-FAIL) + frozen-vs-live table.
+- **G4a (D1a innermost wake routing) — NOT YET**: blocked on OQ2. **G9** packaged
+  boot + spawn-notice under real Electron — owned by VERIFY-F.
 
 `workspaces.ts` is un-importable under `node --test` (its `./platform`
 dir-import), so the seam decision is a pure export (`isRootAnchor`) and the effect

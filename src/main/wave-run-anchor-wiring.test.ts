@@ -43,19 +43,35 @@ function startAgentPtyBody(): string {
   return workspacesSrc.slice(start, end);
 }
 
-test('P1 — startAgentPty calls maybeStartRunAtAnchor with the wave run id', () => {
+test('P1 — startAgentPty resolves the anchor and calls maybeStartRunAtAnchor', () => {
   const body = startAgentPtyBody();
-  assert.match(body, /const waveRunId = resolveWaveRunId\(ws\)/, 'the wave run id must be resolved once');
+  assert.match(body, /const anchor = resolveAnchorInfo\(ws\)/, 'the anchor must be resolved once');
   assert.match(
     body,
-    /maybeStartRunAtAnchor\(\s*\{\s*getBus,\s*startRun,\s*getLiveSwitches,/,
-    'the anchor-start must be wired with the real bus collaborators',
+    /maybeStartRunAtAnchor\(\s*\{\s*getBus,\s*startRun,\s*getRun,\s*refreezeRun,\s*getLiveSwitches,[\s\S]*?\},\s*anchor,?\s*\)/,
+    'the anchor-start must be wired with the real bus collaborators (incl. refreezeRun) + the resolved anchor',
   );
   // Negative control: the master state had NO startRun caller at all.
-  assert.ok(
-    /startRun/.test(body),
-    'a build reverted to the master defect (no startRun caller) fails here',
-  );
+  assert.ok(/startRun/.test(body), 'a build reverted to the master defect (no startRun caller) fails here');
+});
+
+test('P1 D1 — resolveWaveRunId uses nearestOrchestratorId, NOT walkToRootId (the tree-root defect)', () => {
+  const start = workspacesSrc.indexOf('export function resolveWaveRunId(');
+  assert.ok(start > 0, 'resolveWaveRunId not found');
+  const body = workspacesSrc.slice(start, start + 400);
+  assert.match(body, /nearestOrchestratorId\(ws,/, 'the run anchor must be the nearest orchestrator (D1)');
+  // The exact overturned model: walkToRootId as the run anchor.
+  assert.doesNotMatch(body, /return walkToRootId\(ws,/, 'resolveWaveRunId must NOT use the tree root (D1 overturned it)');
+});
+
+test('P1 D1 — /promote starts the run row (a promote does not relaunch the pty)', () => {
+  const start = workspacesSrc.indexOf('export async function dispatchPromoteRequest(');
+  assert.ok(start > 0, 'dispatchPromoteRequest not found');
+  const end = workspacesSrc.indexOf('export interface DemoteResult', start);
+  const body = workspacesSrc.slice(start, end > start ? end : start + 3000);
+  // Both success branches (capability + kind swap) must start the run.
+  const hits = (body.match(/startRunForPromoted\(updated\)/g) ?? []).length;
+  assert.equal(hits, 2, 'both promote success branches must start the OPS run row');
 });
 
 // ─── P2a — ORCHESTRA_RUN_ID is plumbed into extraEnv = the wave run id ────────

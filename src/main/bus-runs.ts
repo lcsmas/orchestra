@@ -145,6 +145,41 @@ export function startRun(
   return row;
 }
 
+/**
+ * RE-FREEZE a MISSION run's flags at a wave boundary (#134 D1a/D1b, ledger #135).
+ *
+ * The LEAD is the ONE permanent node; if its mission row froze once and never
+ * again, the LEAD's own plain children (ship agents) spawned after a later flip
+ * would read stale flags. So each time the LEAD starts a new wave (spawns-as- or
+ * promotes an OPS), its mission row is re-frozen to the CURRENT live switches.
+ *
+ * DELIBERATELY NARROW — the invariant that keeps #123 F1 intact:
+ *   - MISSION ROWS ONLY (`kind = 'mission'`). An OPS/member row is NEVER
+ *     re-frozen (that is the mid-wave mutation the freeze forbids); the UPDATE's
+ *     WHERE clause is the guard, so a caller cannot re-freeze a vague row even by
+ *     mistake. G4b asserts an OPS row is byte-identical across a member spawn.
+ *   - WAVE-BOUNDARY ONLY (the caller fires this only when a mission spawns/
+ *     promotes a child orchestrator, never on member spawn). A mission has no
+ *     mid-wave members of its OWN to split, so re-freezing it is not a late
+ *     freeze of anything that governs a running member (members obey the OPS
+ *     row, which is untouched here).
+ *
+ * A no-op when the run does not exist, is not a mission, or has no run_flags row
+ * (nothing to update). `startRun` stays INSERT-OR-IGNORE freeze-once; this is the
+ * SEPARATE explicit path D1b requires — never fold re-freeze into `startRun`.
+ */
+export function refreezeRun(db: BusDb, runId: string, liveSwitches: BusSwitches): boolean {
+  const frozen = freezeSwitches(liveSwitches);
+  const info = db
+    .prepare(
+      `UPDATE run_flags SET flags = ?, frozen_at = ?
+        WHERE run_id = ?
+          AND EXISTS (SELECT 1 FROM runs r WHERE r.id = run_flags.run_id AND r.kind = 'mission')`,
+    )
+    .run(serializeSwitches(frozen), Date.now(), runId);
+  return info.changes === 1;
+}
+
 /** Read one run row with its frozen flags, or null. */
 export function getRun(db: BusDb, runId: string): BusRunRow | null {
   const row = db

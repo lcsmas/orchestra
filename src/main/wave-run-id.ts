@@ -1,34 +1,107 @@
-// The FREEZE run id for a workspace = its WAVE ANCHOR, the tree ROOT
-// (#118 N2/Q-B2, ledger #123).
+// The bus RUN id for a workspace = its NEAREST ORCHESTRATOR at or above it
+// (LEAD ruling D1, ledger #135 §Decisions — this OVERTURNED the earlier
+// tree-root/walkToRootId model of #118 N2).
 //
-// PURE and dependency-free ON PURPOSE: `workspaces.ts` imports the Electron
-// platform seam and the SDK chain, so it cannot be loaded under `node --test`.
-// The walk-to-root logic lives here so its arms (the 3-level chain, the broken
-// link, the cycle) run as plain unit tests, with the store injected as a lookup.
+// WHY NOT THE TREE ROOT: the real topology is LEAD (tree root, long-lived,
+// promoted) → OPS (promoted under the LEAD, one per wave) → members. With the
+// tree root, EVERY wave resolves to the LEAD's run, so the switches would freeze
+// ONCE for the LEAD's lifetime and never per wave — breaking the "read at WAVE
+// start" granularity (#108 Q17) and making the canary's "flip → next wave"
+// impossible. So the anchor is the NEAREST orchestrator: the OPS gets its own
+// run, nested under the LEAD's via `parent_run_id`.
+//
+// PURE and dependency-free ON PURPOSE (only `import type` + the pure
+// `canOrchestrate` from types.ts): `workspaces.ts` imports the Electron platform
+// seam and cannot load under `node --test`, so the walk lives here with the
+// store injected as a lookup, and its arms (the promoted-worktree capability, a
+// scratch orchestrator kind, the broken link, the cycle) run as plain unit tests.
 
-/** The minimal workspace shape the walk needs: an id and an optional parent. */
+import { canOrchestrate } from '../shared/types.ts';
+
+/** The minimal workspace shape the walks need: id, optional parent, and the two
+ *  fields `canOrchestrate()` reads (kind + the capability flag). */
 export interface WaveNode {
   id: string;
   parentId?: string;
+  kind?: string;
+  canOrchestrate?: boolean;
+}
+
+/** `canOrchestrate` over the minimal node shape — an orchestrator is the KIND
+ *  `'orchestrator'` OR the capability flag (a PROMOTED worktree), never the kind
+ *  alone (D1: an OPS is a promoted worktree carrying the flag). */
+function nodeOrchestrates(n: WaveNode): boolean {
+  return canOrchestrate({ kind: n.kind as never, canOrchestrate: n.canOrchestrate });
 }
 
 /**
- * Walk `parentId` up to the topmost RESOLVABLE ancestor and return its id.
+ * The run id a workspace belongs to = the NEAREST orchestrator at or above it.
  *
- * A wave is LEAD → OPS → IMPL…, and every member must freeze against ONE run id
- * or the startup notice splits — walking a single level up gave a 3-deep tree
- * two different ids, which is exactly the N2 defect. `$ORCHESTRA_RUN_ID` is NOT
- * plumbed into the agent env on master, so this store walk is the only wave
- * identity available.
+ * Itself if it is an orchestrator (an OPS/LEAD is its own run); else walk
+ * `parentId` up to the first ancestor that `canOrchestrate`. A plain workspace
+ * with NO orchestrator anywhere above it is its own run (a bare `orchestra spawn
+ * --detached` with no coordinator) — the coexistence-safe fallback, matching the
+ * design guardrail "a workspace with no anchor above it is its own run".
  *
  * @param lookup resolves a parent id to its node, or undefined for a broken/
- *   absent link (a dangling `parentId` after a delete).
+ *   absent link (a dangling `parentId` after a delete) — the walk then stops at
+ *   the deepest resolvable node and returns the nearest orchestrator found so
+ *   far, else that node's own id. Never throws; a cycle is bounded by `seen`.
+ */
+export function nearestOrchestratorId(
+  ws: WaveNode,
+  lookup: (id: string) => WaveNode | undefined,
+): string {
+  let cur: WaveNode = ws;
+  const seen = new Set<string>([cur.id]);
+  // The workspace itself, then each resolvable ancestor: the FIRST orchestrator
+  // is the run. Checking `cur` first is what makes "self if it orchestrates" hold.
+  for (;;) {
+    if (nodeOrchestrates(cur)) return cur.id;
+    if (!cur.parentId) break;
+    const parent = lookup(cur.parentId);
+    if (!parent || seen.has(parent.id)) break;
+    seen.add(parent.id);
+    cur = parent;
+  }
+  // No orchestrator at or above `ws` (or a broken link before one was found):
+  // `ws` is its own run. NOT the deepest ancestor — a plain member whose whole
+  // chain is non-orchestrators is a standalone run, and using an arbitrary
+  // ancestor would put unrelated members in one run.
+  return ws.id;
+}
+
+/**
+ * For a workspace that BECOMES an orchestrator, the run id of its PARENT
+ * orchestrator (the nested-run pointer, `parent_run_id`) — or null if it is a
+ * top-level orchestrator (a LEAD with no orchestrator above it).
  *
- * Invariants:
- *  - a root (no `parentId`) resolves to itself;
- *  - a broken link stops at the deepest resolvable ancestor, never throws;
- *  - a cycle is bounded by the `seen` set (a malformed `parentId` cycle would
- *    otherwise loop forever).
+ * Walk STARTS at `ws.parentId` (never `ws` itself — `ws` is the new orchestrator
+ * whose own row we are creating), and returns the first ancestor that
+ * `canOrchestrate`. This is what makes LEAD→OPS two rows with the OPS's
+ * `parent_run_id` = the LEAD's run id.
+ */
+export function parentOrchestratorId(
+  ws: WaveNode,
+  lookup: (id: string) => WaveNode | undefined,
+): string | null {
+  if (!ws.parentId) return null;
+  const seen = new Set<string>([ws.id]);
+  let cur = lookup(ws.parentId);
+  while (cur && !seen.has(cur.id)) {
+    if (nodeOrchestrates(cur)) return cur.id;
+    seen.add(cur.id);
+    if (!cur.parentId) break;
+    cur = lookup(cur.parentId);
+  }
+  return null;
+}
+
+/**
+ * Walk `parentId` up to the topmost RESOLVABLE ancestor and return its id (the
+ * OLD tree-root model). RETAINED only for any caller that still needs the tree
+ * root; the bus RUN anchor is `nearestOrchestratorId` now (D1). Do NOT use this
+ * for run identity — it puts every wave on the LEAD's run.
  */
 export function walkToRootId(
   ws: WaveNode,
@@ -43,27 +116,4 @@ export function walkToRootId(
     cur = parent;
   }
   return cur.id;
-}
-
-/**
- * Is `ws` the WAVE ANCHOR — the tree ROOT that starts (and freezes) the run?
- *
- * True iff `walkToRootId(ws) === ws.id`: the workspace has no resolvable
- * orchestrator above it. This is the single condition #134 gates `startRun` on:
- * only the anchor starts a run; every MEMBER resolves the SAME anchor id (via
- * `walkToRootId`) and shares its run row, so a member must NOT start its own run
- * — doing so would give one wave two run rows with independently-frozen flags,
- * which is the N2 split the freeze exists to prevent.
- *
- * NOTE on nesting: because `walkToRootId` walks to the TOPMOST resolvable
- * ancestor, an anchor by this predicate has no run above it — so under the
- * current store/tree model `parent_run_id` is always null (a LEAD→OPS nesting
- * resolves the OPS member to the LEAD root, so the OPS is never its own anchor).
- * See ledger #135 OQ1.
- */
-export function isRootAnchor(
-  ws: WaveNode,
-  lookup: (id: string) => WaveNode | undefined,
-): boolean {
-  return walkToRootId(ws, lookup) === ws.id;
 }

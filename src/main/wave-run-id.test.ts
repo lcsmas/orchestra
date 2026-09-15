@@ -9,7 +9,12 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { walkToRootId, isRootAnchor, type WaveNode } from './wave-run-id.ts';
+import {
+  walkToRootId,
+  nearestOrchestratorId,
+  parentOrchestratorId,
+  type WaveNode,
+} from './wave-run-id.ts';
 
 /** A Map-backed lookup, the store stand-in. */
 function lookupOf(nodes: WaveNode[]): (id: string) => WaveNode | undefined {
@@ -60,37 +65,89 @@ test('N2 cycle guard — a malformed parentId cycle terminates, never loops', ()
   assert.ok(got === 'a' || got === 'b', `cycle must terminate at a or b, got ${got}`);
 });
 
-// ─── #134 isRootAnchor — only the tree ROOT starts (and freezes) the run ─────
+// ─── #134 D1 — the run anchor is the NEAREST ORCHESTRATOR, not the tree root ──
+//
+// Topology under test: LEAD (orchestrator kind) → OPS (promoted worktree,
+// canOrchestrate flag) → IMPL (plain member). The OPS is its OWN run (nested
+// under the LEAD); the member obeys the OPS's run. The tree-root model (a
+// walkToRootId mutant) would put the member on the LEAD's run — the exact defect
+// ruling D1 forbids, and the arm each of these must redden on that mutant.
 
-test('#134 — the ROOT is an anchor; every MEMBER under it is NOT', () => {
-  const root: WaveNode = { id: 'lead-root' };
-  const mid: WaveNode = { id: 'ops-mid', parentId: 'lead-root' };
-  const leaf: WaveNode = { id: 'impl-leaf', parentId: 'ops-mid' };
-  const lookup = lookupOf([root, mid, leaf]);
-  // THE #134 condition: startRun is called iff this holds. The root owns the run
-  // row; mid and leaf resolve (via walkToRootId) to the SAME root and must NOT
-  // start their own run, or one wave gets two independently-frozen run rows.
-  assert.equal(isRootAnchor(root, lookup), true, 'the root IS the anchor');
-  assert.equal(isRootAnchor(mid, lookup), false, 'a mid member is NOT an anchor');
-  assert.equal(isRootAnchor(leaf, lookup), false, 'a leaf member is NOT an anchor');
+const LEAD: WaveNode = { id: 'lead', kind: 'orchestrator' };
+const OPS: WaveNode = { id: 'ops', parentId: 'lead', kind: 'worktree', canOrchestrate: true };
+const IMPL: WaveNode = { id: 'impl', parentId: 'ops', kind: 'worktree' };
+const WAVE = lookupOf([LEAD, OPS, IMPL]);
+
+test('#134 D1 — a member resolves to its NEAREST orchestrator (the OPS), NOT the LEAD root', () => {
+  // The load-bearing D1 assertion: IMPL's run is the OPS, not the LEAD. A
+  // walkToRootId mutant returns 'lead' here and this reddens.
+  assert.equal(nearestOrchestratorId(IMPL, WAVE), 'ops', 'member runs on its OPS, not the LEAD');
+  assert.notEqual(nearestOrchestratorId(IMPL, WAVE), 'lead', 'the tree-root model is WRONG (D1)');
 });
 
-test('#134 — a plain solo workspace (no parent) is its own anchor', () => {
-  const solo: WaveNode = { id: 'solo' };
-  assert.equal(isRootAnchor(solo, lookupOf([solo])), true);
+test('#134 D1 — an orchestrator (OPS or LEAD) is its OWN run', () => {
+  assert.equal(nearestOrchestratorId(OPS, WAVE), 'ops', 'the OPS is its own run');
+  assert.equal(nearestOrchestratorId(LEAD, WAVE), 'lead', 'the LEAD is its own run');
 });
 
-test('#134 — a member with a BROKEN parent link is an anchor at its deepest resolvable ancestor', () => {
-  // mid's parent is absent; mid becomes the deepest resolvable root, so mid is
-  // its own anchor and leaf (which resolves to mid) is not. Mirrors the
-  // walkToRootId dangling-link fallback so a delete never leaves a member unable
-  // to find any anchor.
-  const mid: WaveNode = { id: 'mid', parentId: 'gone-root' };
-  const leaf: WaveNode = { id: 'leaf', parentId: 'mid' };
-  const lookup = lookupOf([mid, leaf]);
-  assert.equal(isRootAnchor(mid, lookup), true, 'mid is the deepest resolvable root');
-  assert.equal(isRootAnchor(leaf, lookup), false, 'leaf resolves up to mid, not itself');
+test('#134 D1 — canOrchestrate is the CAPABILITY flag, not the kind alone (a promoted worktree)', () => {
+  // The OPS has kind==='worktree' — keying on kind==='orchestrator' alone would
+  // walk PAST it to the LEAD. The capability flag is what makes it the anchor.
+  const kindOnlyWrong = OPS.kind === 'orchestrator';
+  assert.equal(kindOnlyWrong, false, 'the OPS is NOT kind orchestrator — it is a promoted worktree');
+  assert.equal(nearestOrchestratorId(IMPL, WAVE), 'ops', 'yet the member still anchors on it (via the flag)');
 });
+
+test('#134 D1 — a plain standalone workspace (no orchestrator above) is its own run', () => {
+  const solo: WaveNode = { id: 'solo', kind: 'worktree' };
+  assert.equal(nearestOrchestratorId(solo, lookupOf([solo])), 'solo');
+  // A plain chain with NO orchestrator anywhere: each is its own run, never an
+  // arbitrary ancestor.
+  const a: WaveNode = { id: 'a', kind: 'worktree' };
+  const b: WaveNode = { id: 'b', parentId: 'a', kind: 'worktree' };
+  assert.equal(nearestOrchestratorId(b, lookupOf([a, b])), 'b', 'a plain member with no orchestrator is standalone');
+});
+
+test('#134 D1 — a broken parent link stops the walk and returns self (never throws)', () => {
+  const orphanMember: WaveNode = { id: 'm', parentId: 'gone', kind: 'worktree' };
+  assert.equal(nearestOrchestratorId(orphanMember, lookupOf([orphanMember])), 'm');
+});
+
+test('#134 D1 — a cycle terminates (never loops)', () => {
+  const x: WaveNode = { id: 'x', parentId: 'y', kind: 'worktree' };
+  const y: WaveNode = { id: 'y', parentId: 'x', kind: 'worktree' };
+  const got = nearestOrchestratorId(x, lookupOf([x, y]));
+  assert.ok(got === 'x' || got === 'y', `must terminate, got ${got}`);
+});
+
+// ─── parentOrchestratorId — the parent_run_id nested pointer ─────────────────
+
+test('#134 D1 — the OPS parent_run_id points at the LEAD run (nested runs)', () => {
+  assert.equal(parentOrchestratorId(OPS, WAVE), 'lead', 'OPS nests under the LEAD');
+});
+
+test('#134 D1 — a top-level orchestrator (LEAD) has NULL parent_run_id', () => {
+  assert.equal(parentOrchestratorId(LEAD, WAVE), null);
+});
+
+test('#134 D1 — parentOrchestratorId walks PAST plain ancestors to the next orchestrator', () => {
+  // A sub-orchestrator SUB under a plain wrapper W under the LEAD: SUB's parent
+  // orchestrator is the LEAD, skipping the plain W (which has no run).
+  const W: WaveNode = { id: 'w', parentId: 'lead', kind: 'worktree' };
+  const SUB: WaveNode = { id: 'sub', parentId: 'w', kind: 'worktree', canOrchestrate: true };
+  const lk = lookupOf([LEAD, W, SUB]);
+  assert.equal(parentOrchestratorId(SUB, lk), 'lead', 'skips the plain wrapper to the LEAD');
+  // And SUB is its own run (nearest orchestrator = itself).
+  assert.equal(nearestOrchestratorId(SUB, lk), 'sub');
+});
+
+test('#134 D1 — parentOrchestratorId starts ABOVE self (an orchestrator does not nest under itself)', () => {
+  // OPS.parentId='lead'; the walk must not return 'ops' even though OPS
+  // canOrchestrate — the parent pointer is the orchestrator ABOVE it.
+  assert.equal(parentOrchestratorId(OPS, WAVE), 'lead');
+});
+
+// ─── the retained tree-root walk (walkToRootId) — unchanged behaviour ────────
 
 test('N2 — a deep chain (5 levels) still reaches the single root', () => {
   const nodes: WaveNode[] = [

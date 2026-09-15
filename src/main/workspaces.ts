@@ -42,10 +42,10 @@ import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration
 import { sanitizeStatusText } from '../shared/status-text.ts';
 import { DEFAULT_BUS_SWITCHES, busSwitchNotice } from '../shared/bus-switches.ts';
 import { getBus } from './bus.ts';
-import { runFlags, startRun } from './bus-runs.ts';
+import { runFlags, startRun, getRun, refreezeRun } from './bus-runs.ts';
 import { getLiveSwitches } from './bus-settings.ts';
-import { maybeStartRunAtAnchor } from './bus-run-anchor.ts';
-import { walkToRootId } from './wave-run-id.ts';
+import { maybeStartRunAtAnchor, type AnchorInfo } from './bus-run-anchor.ts';
+import { nearestOrchestratorId, parentOrchestratorId } from './wave-run-id.ts';
 import { recordPhaseChange } from './bus-liveness.ts';
 import { phaseChanged } from '../shared/bus-liveness.ts';
 import {
@@ -1795,6 +1795,9 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
       // stays free to do its own work.
       await markOrchestratorWorktree(ws.worktreePath, true);
       platform.broadcast('workspace:update', updated);
+      // #134 (D1): a promote is a wave boundary — start the OPS's own run row now
+      // (the pty is not relaunched, so startAgentPty won't do it until a member).
+      startRunForPromoted(updated);
       log.info(`promoted worktree ${ws.branch} (${id}) to orchestrator (capability)`);
       return { ok: true, id, branch: updated.branch, kind: updated.kind };
     } catch (e) {
@@ -1816,6 +1819,8 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
     // very next prompt — no pty restart required.
     await markOrchestratorWorktree(ws.worktreePath);
     platform.broadcast('workspace:update', updated);
+    // #134 (D1): wave boundary — start the run row now (pty not relaunched).
+    startRunForPromoted(updated);
     log.info(`promoted scratch ${ws.branch} (${id}) to orchestrator`);
     return { ok: true, id, branch: updated.branch, kind: 'orchestrator' };
   } catch (e) {
@@ -4526,23 +4531,22 @@ export async function startAgentPty(
   const remote = ws.host?.kind === 'sandbox';
   // Idempotent: upgrades workspaces created before the activity hook landed.
   if (!remote) await installOrchestraHooks(ws.worktreePath);
-  // The run a workspace belongs to is its WAVE = the tree ROOT (N2, ledger #123):
-  // walking one level up split a 3-deep tree (LEAD→OPS→IMPL got two run ids), so
-  // resolve the root anchor once and reuse it for the run-start, the frozen
-  // notice, and the plumbed `$ORCHESTRA_RUN_ID` below.
-  const waveRunId = resolveWaveRunId(ws);
-  // #134 — START THE RUN AT THE WAVE ANCHOR. When this workspace IS the anchor
-  // (`waveRunId === ws.id` — a tree root with no orchestrator above it), create
-  // (and FREEZE) its run row from the live switches. INSERT-OR-IGNORE on the
-  // `runs` row existence (#123 F1), so calling it on every launch is idempotent
-  // and never re-freezes; a MEMBER (waveRunId !== ws.id) shares the anchor's run
-  // and starts nothing. Best-effort — a null/failing bus logs and the spawn
-  // proceeds reading all-OFF (D1), so this can never block a launch.
+  // The run a workspace belongs to is its NEAREST ORCHESTRATOR (D1, ledger #135):
+  // an OPS/LEAD is its own run; a member obeys the OPS's. Resolved once and reused
+  // for the run-start, the frozen notice, and the plumbed `$ORCHESTRA_RUN_ID`.
+  const anchor = resolveAnchorInfo(ws);
+  const waveRunId = anchor.anchorId;
+  // #134 — START (and FREEZE) THE RUN AT THE ANCHOR. Fires when an orchestrator
+  // launches (anchor === self) and LAZILY when a member launches under a
+  // pre-existing orchestrator whose row is missing (D1). A plain standalone
+  // workspace (anchorId === ws.id but NOT an orchestrator) gets no row.
+  // INSERT-OR-IGNORE on the `runs` row existence (#123 F1) → idempotent, never
+  // re-freezes. Best-effort — a null/failing bus logs and the spawn proceeds
+  // all-OFF (D1), so it can never block a launch.
   if (!remote) {
     maybeStartRunAtAnchor(
-      { getBus, startRun, getLiveSwitches, warn: (m, e) => log.warn(m, e) },
-      ws,
-      waveRunId,
+      { getBus, startRun, getRun, refreezeRun, getLiveSwitches, warn: (m, e) => log.warn(m, e) },
+      anchor,
     );
   }
   // Refreshed on EVERY spawn, unlike the hash-gated hook bundle. The switch
@@ -4655,22 +4659,70 @@ const HOOKS_VERSION = createHash('sha256')
   .digest('hex');
 
 /**
- * The FREEZE run id for a workspace = its WAVE ANCHOR, the tree ROOT (N2/Q-B2,
- * ledger #123). Walk `parentId` up to the topmost resolvable ancestor: a wave is
- * LEAD → OPS → IMPL…, and every member of it must freeze against ONE run id or
- * the notice splits (walking a single level gave a 3-deep tree two ids — the N2
- * defect). `$ORCHESTRA_RUN_ID` is NOT plumbed into the agent env on master, so
- * this store walk is the only wave identity available.
+ * The bus RUN id a workspace belongs to = its NEAREST ORCHESTRATOR at or above
+ * it (LEAD ruling D1, ledger #135 §Decisions — this REPLACED the earlier
+ * tree-root walk of #118 N2). Itself if it is an orchestrator (an OPS/LEAD is
+ * its own run); else the first `canOrchestrate` ancestor; else itself (a plain
+ * spawn with no coordinator is its own run). Using the tree root instead would
+ * put every wave on the LEAD's lifetime run, freezing the switches once and
+ * defeating the per-wave "flip → next wave" the canary needs.
  *
- * FALLBACK: a broken parent link (parent absent from the store — a dangling
- * `parentId` after a delete) stops the walk at the deepest RESOLVABLE ancestor,
- * never throws. A cycle guard bounds the walk (a malformed parentId cycle would
- * otherwise loop). A root (no parentId) resolves to itself.
+ * A broken parent link (dangling `parentId` after a delete) stops the walk and
+ * returns the nearest orchestrator found so far, else `ws` itself; never throws;
+ * a cycle is bounded by the resolver's `seen` set.
  */
 export function resolveWaveRunId(ws: Workspace): string {
   // The pure walk lives in wave-run-id.ts so it is unit-testable without the
   // store/Electron chain this module drags in; here we inject store.getWorkspace.
-  return walkToRootId(ws, (id) => store.getWorkspace(id));
+  return nearestOrchestratorId(ws, (id) => store.getWorkspace(id));
+}
+
+/**
+ * The `parent_run_id` for a workspace that BECOMES an orchestrator = its PARENT
+ * orchestrator's run id (the nested-run pointer), or null for a top-level
+ * orchestrator (a LEAD with no orchestrator above it). This is what makes
+ * LEAD→OPS two run rows with the OPS's row pointing at the LEAD's (D1).
+ */
+export function resolveParentRunId(ws: Workspace): string | null {
+  return parentOrchestratorId(ws, (id) => store.getWorkspace(id));
+}
+
+/**
+ * Resolve everything the anchor-start needs about a launching workspace: the
+ * nearest-orchestrator run id, whether that anchor is a REAL orchestrator (a
+ * plain standalone spawn resolves to itself WITHOUT being one — no run row), and
+ * the anchor's own parent orchestrator run id (`parent_run_id`, the nested-run
+ * pointer). The anchor may be a DIFFERENT workspace than `ws` (when `ws` is a
+ * member), so `parent_run_id` is computed from the ANCHOR node, not `ws`.
+ */
+export function resolveAnchorInfo(ws: Workspace): AnchorInfo {
+  const anchorId = resolveWaveRunId(ws);
+  const anchorWs = anchorId === ws.id ? ws : store.getWorkspace(anchorId);
+  const anchorIsOrchestrator = anchorWs ? canOrchestrate(anchorWs) : false;
+  return {
+    wsId: ws.id,
+    anchorId,
+    anchorIsOrchestrator,
+    // The anchor's parent orchestrator — computed from the anchor node so a
+    // member launch that lazily creates the OPS row still nests it under the LEAD.
+    parentRunId: anchorWs ? resolveParentRunId(anchorWs) : null,
+  };
+}
+
+/**
+ * #134 — start the run row when a workspace BECOMES an orchestrator via
+ * `/promote` (D1). A promote does NOT relaunch the pty, so `startAgentPty`'s
+ * anchor-start will not fire until the OPS next spawns a member — this creates
+ * the OPS's own run row immediately, at the wave boundary, freezing the live
+ * switches then. `newlyOrchestrator` is the just-promoted record (kind or
+ * capability already flipped), so `resolveAnchorInfo` sees it as its own anchor.
+ * Best-effort, never throws (D1).
+ */
+function startRunForPromoted(newlyOrchestrator: Workspace): void {
+  maybeStartRunAtAnchor(
+    { getBus, startRun, getRun, refreezeRun, getLiveSwitches, warn: (m, e) => log.warn(m, e) },
+    resolveAnchorInfo(newlyOrchestrator),
+  );
 }
 
 /**
