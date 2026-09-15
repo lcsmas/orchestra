@@ -58,6 +58,35 @@ resolution).
 - `pnpm` `onlyBuiltDependencies: [electron, node-pty]` — always rebuilt on install
   (native bindings differ per platform/arch). After install, run
   `pnpm exec electron-rebuild` for node-pty against Electron's ABI.
+- `pnpm run test:gates` — **the compositor-dependent gate aggregate**
+  (`scripts/run-gates.sh`, issue #80). Runs the two fail-closed E2E gates #76
+  (PR #79) shipped runnable-but-uninvoked: `test:rig-selftest`
+  (`scripts/run-rig-selftest.sh` — boots its own headless sway, so called
+  DIRECTLY) and `test:cli-pipe` (run THROUGH `scripts/e2e-contained-rig.sh`,
+  which exports `RIG_WAYLAND`; a bare invocation exits `rc=3`). It is
+  **deliberately NOT in `pnpm run test`**: both need a live compositor, and a
+  compositor-dependent test in the headless suite would self-skip → a false
+  green (the wave-6 shape). **Fail-closed and never papered over with
+  `|| true`/`continue-on-error`** (`run-gates.sh:20,45-58`): the aggregate rc is
+  the STRONGEST outcome — `1` (a gate ran red) dominates `2`
+  (`PRECONDITION-UNMET`, no compositor → surfaced as "not exercised", NEVER
+  green) dominates `0` (all exercised+green). See the `raise()` severity ladder
+  (`run-gates.sh:39-49`).
+  - **DECISION ON RECORD (issue #80's three valid answers): gate it in the
+    release/verifier flow, NOT a CI job.** The repo's only GitHub Actions
+    workflow (`.github/workflows/release.yml`) is release-only (triggers on `v*`
+    tag push / `workflow_dispatch`) with no compositor and no test/PR job — there
+    is nowhere in existing CI to wire a compositor gate. So the enforcement is the
+    fleet model: the build-verifier runs `pnpm run test:gates` and the release
+    checklist names it. Provisioning sway in CI and a scheduled runner were the
+    two alternatives; both were rejected because no verification-CI surface exists
+    to attach to.
+  - **PATH trap (issue #80, T80.3):** the no-compositor `rc=2` reproduces only
+    with a FULLY usable PATH minus the compositor binaries. A hand-stripped PATH
+    that also drops `grep`/`uname` breaks the wrapper's OWN toolchain and
+    fabricates a spurious "produced NO outcome line" `rc=1` — the exact PATH trap
+    #76 carried. The aggregate inherits the invoker's PATH; the contained rig sets
+    its own `PATH=/usr/local/bin:/usr/bin:/bin` for the Electron child.
 
 ## Release — scripts/release.sh (~265 lines)
 **Worktree-safe** (never checks out master). Invoke via
@@ -81,6 +110,11 @@ do it), `--notes-file`. On build failure it prints the undo
 (`git tag -d $TAG && git reset --hard HEAD~1`).
 
 ## CI — .github/workflows/release.yml (~90 lines)
+**This is the ONLY workflow file — a release BUILDER, not a verification CI**
+(issue #80, T80.0): it triggers on `push` tag `v*` / `workflow_dispatch`, so
+nothing runs on a push or PR, and its ubuntu runners have no compositor. That is
+why the compositor gates (`pnpm run test:gates`, above) are wired into the
+verifier/release flow, not a CI job — there is no test-CI surface to attach to.
 Triggers on `push` tag `v*` (or manual `workflow_dispatch` with a tag). Build
 matrix: `ubuntu-latest`→x64, `ubuntu-24.04-arm`→arm64. Each: checkout the tag,
 pnpm + Node 20, `apt install build-essential libfuse2`, `pnpm install

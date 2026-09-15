@@ -51,6 +51,7 @@
     "test:native-manifest": "node scripts/verify-native-manifest.mjs",
     "test:rig-selftest": "bash scripts/run-rig-selftest.sh",
     "test:fork-control": "node scripts/verify-fork-control.mjs",
+    "test:gates": "bash scripts/run-gates.sh",
     "release": "bash scripts/release.sh"
   },
   "devDependencies": {
