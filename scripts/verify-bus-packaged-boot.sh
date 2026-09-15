@@ -326,8 +326,58 @@ WAKE_FAIL="$(grep -F 'bus-wake: started' "$WORK/fail.applog" 2>/dev/null | head 
 }
 echo "  bus DEAD: wake still started (tolerates getBus() === null)"
 
+# ─── 7. EVERY native module CONSTRUCTS in the packaged app (#126) ───────────
+#
+# #126's C6 is load-bearing: the bus arms above prove better-sqlite3 constructs,
+# but node-pty is a SECOND native module and boots lazily (only on a PTY spawn),
+# so a plain boot never exercises it. Assert it CONSTRUCTS under the SAME
+# packaged Electron runtime the app spawns PTYs with — require it from the
+# UNPACKED package dir (exactly native-pin.ts's pin), which for an N-API module
+# loads the native at import time and IS the construct/ABI proof. Then the
+# must-FAIL arm: rename the unpacked pty.node away and confirm the pinned resolver
+# REFUSES rather than resolving the in-asar copy.
+echo
+echo "── #126: node-pty CONSTRUCTS under the packaged Electron runtime ──"
+NP_ELECTRON="$EXTRACT/usr/lib/orchestra/orchestra"
+[ -x "$NP_ELECTRON" ] || NP_ELECTRON="$(find "$EXTRACT" -type f -name orchestra -path '*orchestra*' | head -1)"
+[ -x "$NP_ELECTRON" ] || fail "#126: no packaged electron binary in the extracted tree to probe node-pty with"
+NP_PKGDIR="$(dirname "$(find "$EXTRACT" -path '*app.asar.unpacked/node_modules/node-pty/package.json' | head -1)")"
+[ -n "$NP_PKGDIR" ] || fail "#126: node-pty not found in app.asar.unpacked — it never shipped unpacked"
+NP_BIN="$NP_PKGDIR/build/Release/pty.node"
+[ -f "$NP_BIN" ] || fail "#126: node-pty/build/Release/pty.node absent from the unpacked tree"
+
+np_probe='const pty=require(process.argv[1]);if(process.platform!=="win32"&&!pty.native)throw new Error("native handle absent");if(typeof pty.spawn!=="function")throw new Error("spawn missing");console.log("NODEPTY_OK abi="+process.versions.modules);'
+NP_OUT="$(ELECTRON_RUN_AS_NODE=1 "$NP_ELECTRON" -e "$np_probe" "$NP_PKGDIR" 2>&1 || true)"
+case "$NP_OUT" in
+  *NODEPTY_OK*) echo "  node-pty loads + exposes native handle & spawn under packaged Electron: ${NP_OUT##*NODEPTY_OK }" ;;
+  *) echo "  probe output: $NP_OUT" >&2; fail "#126: node-pty did NOT construct under the packaged Electron runtime" ;;
+esac
+
+echo
+echo "── #126 must-FAIL: node-pty unpacked binary renamed away → load FAILS, no in-asar fallback ──"
+mv "$NP_BIN" "$NP_BIN.moved" || fail "#126: could not rename the node-pty binding"
+# Actually REQUIRE the shipped node-pty package from its unpacked dir (what the
+# pin does). With the .node gone, node-pty's own loader must THROW rather than
+# silently resolving the copy inside app.asar — that silent fallback is the whole
+# defect the pin removes. If it constructs anyway, the load came from elsewhere.
+np_fail='try{const pty=require(process.argv[1]);const n=(process.platform!=="win32"&&pty&&pty.native);console.log(n?"LOADED_ANYWAY":"LOADED_NO_NATIVE");}catch(e){console.log("LOAD_FAILED "+String(e.message).split(String.fromCharCode(10))[0].slice(0,100));}'
+NP_REFUSE="$(ELECTRON_RUN_AS_NODE=1 "$NP_ELECTRON" -e "$np_fail" "$NP_PKGDIR" 2>&1 || true)"
+mv "$NP_BIN.moved" "$NP_BIN"   # RESTORE, always
+case "$NP_REFUSE" in
+  *LOAD_FAILED*) echo "  binary gone → node-pty load FAILED loudly (no in-asar fallback): ${NP_REFUSE##*LOAD_FAILED }" ;;
+  *LOADED_ANYWAY*) fail "#126 must-FAIL: node-pty loaded its native ANYWAY with the unpacked .node gone — it resolved the in-asar copy, the exact defect #126 removes" ;;
+  *) echo "  probe output: $NP_REFUSE" >&2; fail "#126 must-FAIL: node-pty refusal probe produced no verdict" ;;
+esac
+# And prove node-pty CONSTRUCTS AGAIN after restore — the rename did not corrupt it.
+NP_OUT2="$(ELECTRON_RUN_AS_NODE=1 "$NP_ELECTRON" -e "$np_probe" "$NP_PKGDIR" 2>&1 || true)"
+case "$NP_OUT2" in
+  *NODEPTY_OK*) echo "  restored: node-pty constructs again" ;;
+  *) fail "#126: node-pty did not construct after restore (probe: $NP_OUT2)" ;;
+esac
+
 echo
 echo "PASS — D1 gate, 2 arms x 2 assertions:"
 echo "  intact : window ($PASS_WINS) + startup COMPLETED + bus opened (schema v${PASS_SCHEMA:-?})"
 echo "  broken : window ($FAIL_WINS) + startup COMPLETED + bus failed LOUDLY, no abort"
 echo "  #117   : wake started in BOTH arms, switch OFF, no wake fired"
+echo "  #126   : node-pty CONSTRUCTS under packaged Electron; missing-binary refusal proven; restored"

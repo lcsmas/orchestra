@@ -5,12 +5,29 @@ import type {
   TransportExit,
   TransportSpawnOptions,
 } from './types';
+import { requirePinnedNative } from '../native-pin.ts';
 
-/** node-pty is a native addon; keep the lazy import so the module only loads
- *  when a local PTY is actually spawned (mirrors the prior `loadPty` in pty.ts). */
+/** node-pty is a native addon; keep the lazy load so the module only resolves
+ *  when a local PTY is actually spawned (mirrors the prior `loadPty` in pty.ts).
+ *
+ *  #126: route the load through the PINNED resolver, not a bare
+ *  `import('node-pty')`. In a packaged app electron-builder unpacks node-pty
+ *  (it contains a .node) but ALSO leaves a copy inside app.asar; a bare require
+ *  can resolve the in-archive copy, whose `.node` cannot be dlopen'd — "correct
+ *  only by coincidence". requirePinnedNative loads node-pty from its UNPACKED
+ *  package dir and refuses if that binary is missing.
+ *
+ *  node-pty is N-API (ABI-stable) and loads its native at import time, so a
+ *  successful load IS the construction/ABI proof — no separate construct step
+ *  (unlike better-sqlite3, which defers and needs a `new Database()`). */
 let ptyMod: typeof import('node-pty') | null = null;
 async function loadPty() {
-  if (!ptyMod) ptyMod = await import('node-pty');
+  if (!ptyMod) {
+    ptyMod = requirePinnedNative<typeof import('node-pty')>(
+      'node-pty',
+      'build/Release/pty.node',
+    );
+  }
   return ptyMod;
 }
 

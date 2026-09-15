@@ -19,12 +19,15 @@ reads or writes the bus yet, and nothing changes for any agent.
 | File | What it is |
 |---|---|
 | `src/main/bus.ts` | Schema, migrations, `open()`, and the five verbs |
-| `src/main/bus-binding.ts` | Which native `.node` to load, and the ABI trap it exists for |
+| `src/main/native-pin.ts` | **(#126)** The ONE generic pinned-native resolver — every `.node` loads from `app.asar.unpacked`, refusing the in-asar duplicate |
+| `src/main/bus-binding.ts` | better-sqlite3-specific layer: composes `native-pin.ts` + the wrong-ABI construct gate |
+| `src/main/native-pin.test.ts` | **(#126)** 7 tests: packaged path logic + the resolution-contrast must-FAIL (bare require = in-asar, pinned = refuses) |
 | `src/main/better-sqlite3.d.ts` | Minimal ambient types (the package ships none) |
 | `src/main/bus.test.ts` | 18 tests over a real SQLite file; each names the clause it kills |
 | `scripts/build-bus-abi.mjs` | Builds both ABIs; gates each by CONSTRUCTION |
 | `scripts/verify-bus-contention.mjs` | Spike #109 arm 1 + its must-FAIL control |
-| `scripts/after-pack-check.cjs` | Packaged-binary gate (constructs a DB, does not just look) |
+| `scripts/verify-native-manifest.mjs` | **(#126)** afterPack enumeration gate + its add/remove must-FAIL arms |
+| `scripts/after-pack-check.cjs` | Packaged-binary gate: enumerates EVERY `.node` vs a manifest, constructs each loadable one |
 
 ## Schema (`src/main/bus.ts:99`, migration v1)
 
@@ -118,17 +121,39 @@ could not construct a real database at all.
 constructs with its own binding, **refuses** the other's) plus the require-trap
 itself.
 
-### 4. Packaging — the `.node` must leave the asar
+### 4. Packaging — the `.node` must leave the asar (generalised to EVERY native module, #126)
 
 A native `.node` cannot be `dlopen`'d from inside `app.asar`. So
-`package.json` `build.asarUnpack` carries
-`**/node_modules/better-sqlite3/build/Release/*.node`, and `vite.config.ts` keeps
-`better-sqlite3` **external** so it stays a runtime `require`.
+`package.json` `build.asarUnpack` carries a glob **per native module**
+(`**/node_modules/better-sqlite3/build/Release/*.node` AND
+`**/node_modules/node-pty/build/Release/*.node`), and `vite.config.ts` keeps both
+**external** so they stay runtime `require`s.
 
-`scripts/after-pack-check.cjs` gates this — and it **constructs a database with
-the packaged binary under the packaged Electron runtime**, not merely checks the
-file is present. A build shipping a node-ABI binary would pass a presence check
-*and* a require check, then die on the user's machine.
+**The pin (`src/main/native-pin.ts`, #126).** `asarUnpack` COPIES rather than
+moves, so a packaged app carries each `.node` (and its JS) in BOTH `app.asar` and
+`app.asar.unpacked`. A BARE `require` can silently resolve the in-archive copy —
+"correct only by coincidence". `requirePinnedNative(module, probeRel)` loads a
+module from its UNPACKED package dir and REFUSES loudly if the pinned binary is
+absent, never falling back. `bus-binding.ts` composes it for better-sqlite3;
+`transport/local-pty.ts` routes node-pty through it.
+
+**Per-module ABI (measured #126, do not re-derive):** better-sqlite3 is a raw V8
+addon (`node_register_module_v127`), NODE_MODULE_VERSION-pinned, and DEFERS its
+native load — so `require()` is a false green under the wrong ABI; only
+CONSTRUCTING a DB proves it. node-pty@1.1.0 is **N-API** (`napi_*`), ABI-stable,
+and loads its native at IMPORT time — a successful require IS its proof, and it
+has no wrong-ABI to refuse. So #126's core gate is RESOLUTION (pin vs in-asar),
+not ABI, for BOTH modules.
+
+`scripts/after-pack-check.cjs` gates this — it **enumerates EVERY shipped `.node`
+and asserts the set exactly equals a manifest** (`EXPECTED_NATIVE`), then
+**CONSTRUCTS/loads each module that runs on this platform under the packaged
+Electron runtime**, not merely checks presence. A count-only check is not enough
+(two wrong sets can share a count), so the diff names both directions; an
+unexpected `.node` is a new native dep nobody pinned. `scripts/verify-native-manifest.mjs`
+proves the add/remove must-FAIL arms; `native-pin.test.ts` proves the
+resolution-contrast arm; `verify-bus-packaged-boot.sh` §7 asserts node-pty
+constructs in the real packaged AppImage.
 
 ## Boot
 
@@ -182,9 +207,12 @@ into the real home's bus (#108 ruling Q3: one DB per home, `run_id` isolates).
 
 ```bash
 pnpm run build:bus-abi        # both ABIs + the 4-arm construct matrix
-pnpm run test                 # 15 bus tests among the suite; # skipped must be 0
+pnpm run test                 # bus + native-pin tests among the suite; # skipped must be 0
 pnpm run test:bus-contention  # 10×100 with its must-FAIL busy_timeout=0 control
+pnpm run test:native-manifest # (#126) afterPack enumeration + add/remove must-FAIL arms
 npx tsc --noEmit              # the static gate (pnpm run lint is unrunnable here)
+# (#126) packaged boot gate — asserts bus AND node-pty CONSTRUCT in the AppImage:
+bash scripts/verify-bus-packaged-boot.sh   # needs a fresh `pnpm run build` first
 ```
 
 ## Not covered here

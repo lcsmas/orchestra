@@ -48,6 +48,7 @@
     "test:bus-pane": "node scripts/verify-bus-pane.mjs",
     "test:bus-notice": "node scripts/verify-bus-startup-notice.mjs",
     "build:bus-abi": "node scripts/build-bus-abi.mjs",
+    "test:native-manifest": "node scripts/verify-native-manifest.mjs",
     "test:rig-selftest": "bash scripts/run-rig-selftest.sh",
     "test:fork-control": "node scripts/verify-fork-control.mjs",
     "release": "bash scripts/release.sh"
@@ -124,7 +125,8 @@
       "target": "nsis"
     },
     "asarUnpack": [
-      "**/node_modules/better-sqlite3/build/Release/*.node"
+      "**/node_modules/better-sqlite3/build/Release/*.node",
+      "**/node_modules/node-pty/build/Release/*.node"
     ]
   }
 }

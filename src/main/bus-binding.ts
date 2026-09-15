@@ -1,5 +1,11 @@
 // Which better-sqlite3 native binding to load, and the ONE place that decides.
 //
+// GENERALISED (#126): the packaged-app asar-duplicate pin (name the unpacked
+// path, refuse the in-archive copy) now lives in native-pin.ts and serves EVERY
+// native module. THIS file keeps the better-sqlite3-SPECIFIC concern layered on
+// top: better-sqlite3 is a RAW V8 addon and is NODE_MODULE_VERSION-pinned, so it
+// has a WRONG-ABI failure mode that node-pty (N-API, ABI-stable) does not.
+//
 // THE TRAP THIS FILE EXISTS FOR (spike #109's headline finding, reproduced live
 // while implementing #114): better-sqlite3 defers loading its `.node` until the
 // first `new Database()`. So `require('better-sqlite3')` SUCCEEDS under the
@@ -22,64 +28,22 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import {
+  currentAbi,
+  isPackaged,
+  moduleDir,
+  pinnedRequire,
+  unpackedNativePath,
+} from './native-pin.ts';
 
-// This module is consumed TWO ways with different module semantics: bundled to
-// CJS in dist-electron/main.js (where `__dirname` exists and `import.meta` does
-// not), and loaded as ESM by node's type-stripping test runner (the reverse).
-// Resolve the directory under whichever one is actually present.
-declare const __dirname: string | undefined;
-const HERE: string =
-  typeof __dirname !== 'undefined'
-    ? __dirname
-    : path.dirname(fileURLToPath(import.meta.url));
-
-const require_ = createRequire(
-  typeof __dirname !== 'undefined' ? path.join(HERE, 'index.js') : import.meta.url,
-);
-
-/** ABI of the runtime we are executing under: '127' on system node, '130' on Electron. */
-export function currentAbi(): string {
-  return process.versions.modules;
-}
+export { currentAbi, isPackaged } from './native-pin.ts';
 
 /**
  * In a packaged app, the absolute path to the UNPACKED better_sqlite3.node.
- *
- * WHY THIS IS PINNED AND NOT LEFT TO `bindings`. electron-builder's `asarUnpack`
- * COPIES the file out of the archive — it does not remove it — so a packaged app
- * carries the .node in BOTH `app.asar` and `app.asar.unpacked`. Left to resolve
- * itself, better-sqlite3 can load the in-ARCHIVE copy. Measured: the G6 arm
- * renamed the unpacked binary away and the app booted the bus ANYWAY, off the
- * asar copy (scripts/verify-bus-packaged-boot.sh caught it). That fallback is
- * not something to rely on — loading a native module from inside an asar works
- * only via Electron's fs shim, is documented as unsupported, and would make
- * "which binary am I actually running" unanswerable at exactly the moment an ABI
- * mismatch needs diagnosing. So: name the unpacked path explicitly, and let it
- * fail loudly if it is missing.
+ * See native-pin.ts for WHY this is pinned and not left to `bindings`.
  */
-export function isPackaged(): boolean {
-  return HERE.includes(`app.asar${path.sep}`) || HERE.includes('app.asar/');
-}
-
-/** Where the unpacked binding MUST be when running packaged. */
 export function unpackedBindingPath(): string | null {
-  if (!isPackaged()) return null;
-  const root = HERE.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`).replace(
-    'app.asar/',
-    'app.asar.unpacked/',
-  );
-  // dist-electron/ -> the app root, then into node_modules.
-  const appRoot = path.resolve(root, '..');
-  return path.join(
-    appRoot,
-    'node_modules',
-    'better-sqlite3',
-    'build',
-    'Release',
-    'better_sqlite3.node',
-  );
+  return unpackedNativePath('better-sqlite3', 'build/Release/better_sqlite3.node');
 }
 
 /**
@@ -88,14 +52,11 @@ export function unpackedBindingPath(): string | null {
  * node_modules at the right ABI already, so no override is wanted).
  */
 export function abiBindingPath(): string | null {
-  // dist-electron/main.js sits one level under the app root; this module's
-  // source sits two (src/main/). Probe both so the same code works from the
-  // TypeScript source (tests) and from the bundle.
-  const roots = [
-    path.resolve(HERE, '..', '..'),
-    path.resolve(HERE, '..'),
-    process.cwd(),
-  ];
+  // This module sits in dist-electron/main.js (bundled, one level under the app
+  // root) and in src/main/ (tests, two levels). Probe both so the same code
+  // works from the TypeScript source and from the bundle.
+  const here = moduleDir();
+  const roots = [path.resolve(here, '..', '..'), path.resolve(here, '..'), process.cwd()];
   for (const root of roots) {
     const p = path.join(root, 'build', 'bus-abi', `better_sqlite3-abi${currentAbi()}.node`);
     if (fs.existsSync(p)) return p;
@@ -113,7 +74,7 @@ type DatabaseCtor = new (file: string, opts?: Record<string, unknown>) => unknow
  * anything, because constructing is the caller's gate (see bus.ts `open()`).
  */
 export function loadDatabaseCtor(): DatabaseCtor {
-  const Base = require_('better-sqlite3') as DatabaseCtor;
+  const Base = pinnedRequire('better-sqlite3') as DatabaseCtor;
 
   // PACKAGED: the unpacked binding is MANDATORY, and its absence is FATAL.
   //
