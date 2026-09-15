@@ -632,6 +632,52 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   image; `.av-peer-run*` classes). Gate: `scripts/peer-rows-render-smoke.mjs`
   (collapsed + expanded + a human-turn CONTROL whose text mimics a peer
   envelope), wired into `pnpm run test:render`.
+- **Bus wake orders + deliveries → first-class rows** (issue #145, "Variant A —
+  quiet rows", the human's mockup pick). Two fleet-bus artefacts used to render
+  as raw noise indistinguishable from the conversation: a WAKE arrived as a
+  synthetic user-looking prompt (`WAKE_ORDER_HEADER` + `orchestra check --run <r>`
+  lines, `src/shared/bus-wake.ts`); a DELIVERY was a raw `orchestra check` JSON
+  blob in a Bash tool card, and its `ack` was another bash line. They now render
+  as dedicated compact rows in the peer/inbox (#56/#64) idiom.
+
+  **WAKE row** (`WakeRow.tsx`, `.av-wake*`): an amber bell chip line
+  ("🔔 › Wake order · [check N runs]"), collapsed by default, expanding to the
+  exact ordered `orchestra check --run` commands.
+
+  **DELIVERY row** (`DeliveryRow.tsx`, `.av-deliv*`): the `orchestra check` lot
+  folds into a bordered card — lot id, message count, run chip, and an
+  **ACKED/PENDING badge** — expanding to a per-message grid (seq · kind ·
+  sender→recipient · first body line). The badge flips PENDING→ACKED when a later
+  `orchestra ack <lot>` runs anywhere in the transcript. An empty lot (a check
+  that found no mail) renders a quiet "No pending messages" line with no badge.
+
+  **MARKER/CLI-keyed, never body text** (the G3/G4 must-FAILs). Detection is pure
+  in `src/shared/bus-rows.ts` (`isBusWakeMessage`/`busWakeCommands` delegate to
+  `bus-wake.ts`'s `isWakeOrder`; `isCheckInvocation`/`isAckInvocation`/`ackLotId`
+  read the Bash `toolUse.input.command`; `parseCheckOutput` validates the
+  published `CheckOutput` contract (#123) structurally; `foldDelivery` resolves
+  the ack state), so a human turn merely saying "lot pending" is NOT a wake, and a
+  non-bus Bash card whose output only looks JSON-ish is NOT a delivery.
+  Unit-tested in `bus-rows.test.ts` (23 tests incl. both must-FAIL controls).
+
+  **IDENTICAL live and backfill** (the #57 lesson). Both paths converge on the
+  same folded `RenderMessage[]` that `buildRenderItems` consumes: a wake is
+  delivered via `setWakeDeliver` → `sdkStartAndDeliver` → `sdkSend` →
+  `makeUserMessage` (the composer-prompt path, no `isMeta`), so it survives the
+  backfill fold as a plain user line; a check/ack is a `tool` Bash card with the
+  same `toolUse`/`toolResult` live and on disk. `buildRenderItems`
+  (StructuredView.tsx) runs a one-pass ack PRE-SCAN over the whole list
+  (`ackedLots`), then routes wake→`wake` item, check→`delivery` item, and drops
+  the raw `ack` Bash card (the badge conveys it); an unparseable check falls
+  through to a normal tool card. Gates: `scripts/bus-rows-render-smoke.mjs`
+  (collapsed/expanded wake, PENDING vs ACKED delivery + the flip, empty lot, and
+  the G3/G4 must-FAIL controls), wired into `pnpm run test:render`; and
+  `scripts/bus-rows-screenshot.mjs` — the G6 headless-sway screenshot gate (DOM
+  half + pixel half: `document.fonts.ready` + a settle frame, a byte-size floor
+  between the glyph-less and painted populations, and the acked/pending captures
+  must DIFFER). Boundaries: renderer-only — the bus core (`src/main/bus.ts`,
+  `bus-wake.ts`, `workspaces.ts`) is untouched; the fold reads #144's `check`
+  output SHAPE, confirmed unchanged (ledger #146 seam).
 - **Claude Code's non-conversational user frames** — the stream/transcript
   writes slash-command INVOCATIONS (`<command-name>/x</command-name>…`), their
   acks (`<local-command-stdout>…</local-command-stdout>`) and the interrupt

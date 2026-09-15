@@ -3348,3 +3348,107 @@ h6.av-md-h {
   color: var(--av-text-faint); margin-bottom: 4px;
 }
 .av-peer-msg-text { color: var(--av-text-dim); font-size: var(--av-fs-small); }
+
+/* ── Bus wake orders + deliveries as first-class rows (#145, Variant A) ────────
+   "Quiet rows" in the peer/inbox (#56/#64) idiom: a bus WAKE is an amber bell
+   chip line expanding to the ordered check commands; a bus DELIVERY is a
+   bordered card expanding to a per-message grid with an ACKED/PENDING badge.
+   Green = --av-user (the view's success green in both themes), amber = --av-warn. */
+
+/* Wake row — the amber bell chip line. */
+.av-wake { margin: 3px 24px; }
+.av-wake-header {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 4px 10px; border: none; border-radius: 8px; cursor: pointer;
+  background: color-mix(in srgb, var(--av-warn) 8%, transparent);
+  color: var(--av-warn); font: inherit; font-size: var(--av-fs-small); text-align: left;
+  transition: background 120ms var(--av-ease);
+}
+.av-wake-header:hover { background: color-mix(in srgb, var(--av-warn) 14%, transparent); }
+.av-wake-header:focus-visible {
+  outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--av-warn) 45%, transparent);
+}
+.av-wake-bell { flex: none; display: inline-flex; color: var(--av-warn); }
+.av-wake .av-caret { flex: none; display: inline-flex; transition: transform 120ms var(--av-ease); }
+.av-wake .av-caret-open { transform: rotate(90deg); }
+.av-wake-label { flex: none; font-weight: 600; letter-spacing: 0.005em; white-space: nowrap; }
+.av-wake-chip {
+  flex: none; font-family: var(--font-mono); font-size: 9.5px; padding: 1px 6px;
+  border-radius: 999px; letter-spacing: 0.02em;
+  background: color-mix(in srgb, var(--av-warn) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--av-warn) 30%, transparent);
+  color: var(--av-warn);
+}
+.av-wake-body {
+  margin: 2px 24px 8px; padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--av-warn) 22%, var(--av-hairline));
+  border-radius: 8px; background: var(--av-surface-raised);
+  font-family: var(--font-mono); font-size: var(--av-fs-small); color: var(--av-text-dim);
+}
+.av-wake-cmd { display: flex; gap: 8px; padding: 1px 0; }
+.av-wake-cmd-n { flex: none; color: var(--av-text-faint); }
+.av-wake-cmd-text { color: var(--av-text); word-break: break-all; }
+
+/* Delivery row — the bordered card + per-message grid. */
+.av-deliv {
+  margin: 4px 24px 8px; border: 1px solid var(--av-hairline);
+  border-radius: 8px; background: var(--av-surface-raised); overflow: hidden;
+}
+.av-deliv-header {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 10px;
+  background: none; border: none; cursor: pointer; color: var(--av-text-dim);
+  font: inherit; font-size: var(--av-fs-small); text-align: left;
+  transition: color 120ms var(--av-ease);
+}
+.av-deliv-header:hover:not(:disabled) { color: var(--av-text); }
+.av-deliv-header:disabled { cursor: default; }
+.av-deliv-header:focus-visible {
+  outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--av-tool-active) 40%, transparent);
+}
+.av-deliv-icon { flex: none; display: inline-flex; color: var(--av-tool-active); }
+.av-deliv .av-caret { flex: none; display: inline-flex; transition: transform 120ms var(--av-ease); }
+.av-deliv .av-caret-open { transform: rotate(90deg); }
+.av-deliv-title { flex: none; white-space: nowrap; }
+.av-deliv-runchip {
+  flex: none; font-family: var(--font-mono); font-size: 9.5px; padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--av-tool-active) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--av-tool-active) 30%, transparent);
+  color: var(--av-tool-active);
+}
+.av-deliv-badge {
+  margin-left: auto; flex: none; font-family: var(--font-mono);
+  font-size: 9px; font-weight: 600; letter-spacing: 0.05em;
+  padding: 1px 7px; border-radius: 999px; text-transform: uppercase;
+}
+.av-deliv-badge.av-acked {
+  color: var(--av-user);
+  background: color-mix(in srgb, var(--av-user) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--av-user) 35%, transparent);
+}
+.av-deliv-badge.av-pending {
+  color: var(--av-warn);
+  background: color-mix(in srgb, var(--av-warn) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--av-warn) 35%, transparent);
+}
+.av-deliv-body { border-top: 1px solid var(--av-hairline-faint); padding: 2px 0; }
+.av-deliv-msg {
+  padding: 6px 12px;
+  display: grid; grid-template-columns: max-content max-content 1fr; gap: 2px 12px;
+  align-items: baseline;
+}
+.av-deliv-msg + .av-deliv-msg { border-top: 1px solid var(--av-hairline-faint); }
+.av-deliv-msg-meta {
+  grid-column: 1; display: flex; gap: 6px; align-items: baseline;
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--av-text-faint); white-space: nowrap;
+}
+.av-deliv-msg-kind { color: var(--av-tool-active); }
+.av-deliv-msg-route {
+  grid-column: 2; font-family: var(--font-mono); font-size: 9.5px;
+  color: var(--av-text-faint); white-space: nowrap;
+}
+.av-deliv-msg-body {
+  grid-column: 3; color: var(--av-text-dim); font-size: var(--av-fs-small);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}

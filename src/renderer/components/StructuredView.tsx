@@ -29,6 +29,15 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { isPeerMessage } from '../../shared/peer-messages';
+import {
+  isBusWakeMessage,
+  isCheckInvocation,
+  isAckInvocation,
+  ackLotId,
+  parseCheckOutput,
+  foldDelivery,
+  type BusDelivery,
+} from '../../shared/bus-rows';
 import { scoped } from '../log';
 import { WorkspaceAccountBadge } from './AccountBadge';
 import { CmComposer, type CmComposerHandle } from './agent/CmComposer';
@@ -70,6 +79,8 @@ import {
   AgentMessage,
   ToolGroup,
   PeerMessageGroup,
+  WakeRow,
+  DeliveryRow,
   PermissionDialog,
   AgentControls,
   RemoteControl,
@@ -905,7 +916,13 @@ type RenderItem =
   | { kind: 'tool-group'; id: string; tools: RenderMessage[] }
   // A run of consecutive INTER-AGENT messages, collapsed to compact rows so
   // fleet traffic doesn't drown the human's conversation (issue #56).
-  | { kind: 'peer-group'; id: string; messages: RenderMessage[] };
+  | { kind: 'peer-group'; id: string; messages: RenderMessage[] }
+  // A bus WAKE ORDER — the synthetic "run the check command(s)…" prompt,
+  // rendered as a compact dedicated row instead of raw text (issue #145).
+  | { kind: 'wake'; id: string; message: RenderMessage; divider?: TurnDivider }
+  // A bus DELIVERY — an `orchestra check` lot, folded into a readable lot view
+  // with an ACKED/PENDING badge (issue #145).
+  | { kind: 'delivery'; id: string; delivery: BusDelivery };
 
 /** Tools that must NOT be folded into a collapsed group — they own a first-class,
  *  always-visible surface. TodoWrite is the live task list (Claude-Code shows it
@@ -917,6 +934,19 @@ function isStandaloneTool(m: RenderMessage): boolean {
 function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
   const items: RenderItem[] = [];
   let run: RenderMessage[] | null = null;
+  // BUS ACK PRE-PASS (issue #145). A delivery row's ACKED/PENDING badge flips
+  // when a LATER `orchestra ack <lot>` runs. Scan the whole transcript once up
+  // front to collect every acked lot id, so a `check` at position i renders
+  // ACKED as soon as its matching ack exists anywhere in the list — the same in
+  // live and backfill (both are `tool` Bash cards). Acked lots are then folded
+  // into `foldDelivery`; the ack tool cards themselves are dropped from the
+  // render (the badge conveys the outcome — a raw `orchestra ack` bash line is
+  // exactly the noise #145 removes).
+  const ackedLots = new Set<number>();
+  for (const m of messages) {
+    const lot = ackLotId(m as Parameters<typeof ackLotId>[0]);
+    if (lot !== null) ackedLots.add(lot);
+  }
   // TURN DIVIDER bookkeeping: each USER turn gets a divider above its bubble
   // (time + day-on-change + idle gap ≥ 10 min). `prevAt` is the last stamped
   // message of ANY role, so the gap measures real transcript silence, not just
@@ -952,6 +982,49 @@ function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
       continue;
     }
     flushPeers();
+    // BUS WAKE (issue #145): a synthetic `role:'user'` prompt whose text is the
+    // wake order (marker-keyed via `isBusWakeMessage`, never body text — a human
+    // turn saying "lot pending" fails the structured shape and falls through to
+    // the ordinary user bubble below). Breaks a tool run like any user turn and
+    // carries its own turn divider.
+    if (isBusWakeMessage(m)) {
+      flush();
+      const divider =
+        m.at !== undefined ? computeTurnDivider(m.at, prevAt, nowMs) : undefined;
+      items.push({ kind: 'wake', id: m.id, message: m, ...(divider ? { divider } : {}) });
+      if (m.at !== undefined) prevAt = m.at;
+      continue;
+    }
+    // BUS ACK (issue #145): an `orchestra ack <lot>` Bash card folds away — its
+    // outcome is the delivery row's badge flip (collected in the pre-pass). Drop
+    // it from the render so no raw ack bash line survives. Checked BEFORE the
+    // tool-run branch so it never joins a collapsed tool group.
+    if (isAckInvocation(m as Parameters<typeof isAckInvocation>[0])) {
+      flush();
+      if (m.at !== undefined) prevAt = m.at;
+      continue;
+    }
+    // BUS DELIVERY (issue #145): an `orchestra check` Bash card whose result
+    // parses to the published CheckOutput shape folds into a first-class
+    // delivery row. Keyed on the CLI INVOCATION + a parseable result, never body
+    // text — a non-bus Bash card, or a check whose output is unparseable, falls
+    // through to the ordinary tool run. Same detection live and backfill (both
+    // are `tool` Bash cards with the same toolUse/toolResult).
+    if (isCheckInvocation(m as Parameters<typeof isCheckInvocation>[0])) {
+      const out = parseCheckOutput(m as Parameters<typeof parseCheckOutput>[0]);
+      if (out) {
+        flush();
+        items.push({
+          kind: 'delivery',
+          id: `bd:${m.id}`,
+          delivery: foldDelivery(out, ackedLots),
+        });
+        if (m.at !== undefined) prevAt = m.at;
+        continue;
+      }
+      // An unparseable check (an error, a truncated stream) is left as a normal
+      // tool card so the user still sees SOMETHING went wrong — fall through.
+    }
     if (m.role === 'tool' && !isStandaloneTool(m)) {
       (run ??= []).push(m);
     } else {
@@ -980,18 +1053,27 @@ function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
 function ItemSlot({ item }: { item: RenderItem }) {
   if (item.kind === 'tool-group') return <ToolGroup tools={item.tools} />;
   if (item.kind === 'peer-group') return <PeerMessageGroup messages={item.messages} />;
+  // Bus DELIVERY row (issue #145) — no turn divider (it is not a user turn).
+  if (item.kind === 'delivery') return <DeliveryRow delivery={item.delivery} />;
+  // A bus WAKE row (issue #145) and an ordinary `message` both carry an optional
+  // turn divider; only the body differs.
+  const divider = item.divider ? (
+    <div className="av-turn-divider" title={item.divider.title} aria-hidden="true">
+      <span className="av-turn-divider-label">
+        {item.divider.day ? <b>{item.divider.day} · </b> : null}
+        {item.divider.time}
+        {item.divider.gap ? <span className="av-turn-divider-gap"> · {item.divider.gap}</span> : null}
+      </span>
+    </div>
+  ) : null;
   return (
     <>
-      {item.divider ? (
-        <div className="av-turn-divider" title={item.divider.title} aria-hidden="true">
-          <span className="av-turn-divider-label">
-            {item.divider.day ? <b>{item.divider.day} · </b> : null}
-            {item.divider.time}
-            {item.divider.gap ? <span className="av-turn-divider-gap"> · {item.divider.gap}</span> : null}
-          </span>
-        </div>
-      ) : null}
-      <AgentMessage message={item.message} />
+      {divider}
+      {item.kind === 'wake' ? (
+        <WakeRow message={item.message} />
+      ) : (
+        <AgentMessage message={item.message} />
+      )}
     </>
   );
 }

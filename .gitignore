@@ -40,3 +40,6 @@ build/bus-abi/
 # EVIDENCE, not build input — regenerate with the rig; the images belong on the
 # ledger comment where the gate report is dated, never stale in the source tree.
 build/bus-pane-shots/
+# Bus-rows screenshots produced by scripts/bus-rows-screenshot.mjs (#145). Same
+# rule: gate EVIDENCE, regenerate with the rig, keep them off the source tree.
+build/bus-rows-shots/

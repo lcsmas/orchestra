@@ -41,3 +41,5 @@ export {
   buildAskUserQuestionReply,
 } from './askUserQuestion';
 export { PeerMessageGroup } from './PeerMessageGroup';
+export { WakeRow } from './WakeRow';
+export { DeliveryRow } from './DeliveryRow';
