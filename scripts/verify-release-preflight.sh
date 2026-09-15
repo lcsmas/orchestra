@@ -173,13 +173,80 @@ else
   esac
 fi
 
+# ---- Arm F1-call-site (review): release.sh INVOKES the discriminator with HEAD -
+# The library arms above prove rp_two_way_discriminator discriminates on whatever
+# ref it is HANDED — but nothing there asserts release.sh's CALL SITE hands it
+# HEAD rather than origin/master (the original F1 defect). Mutating the call site
+# HEAD->origin/master leaves those arms green. So drive the REAL release.sh
+# --dry-run in a temp repo whose state makes the two refs DIVERGE:
+#   tag v0.5.270 == origin/master == commit T   (the --to-master pre-advance state)
+#   HEAD         == T + 2 commits                (the unreleased work being tagged)
+# As-shipped (call site = HEAD): tag..HEAD = 2 > 0 -> PROCEEDS ('ahead by 2').
+# Mutant  (call site = origin/master): tag..origin/master = 0 -> REFUSES.
+# RP_LS_REMOTE_TAGS is stubbed so rp_newest_origin_tag resolves v0.5.270 without a
+# network; RP_GH_RELEASE_TAGS stubbed so next-version-free passes; RP_LOG_COUNT_CMD
+# is UNSET so the discriminator computes the REAL git ranges — the whole point is
+# which ref the call site feeds those real ranges.
+CS_TMP="$(mktemp -d /tmp/release-preflight-cs.XXXXXX)"
+ORIGIN_BARE="$CS_TMP/origin.git"
+WORK="$CS_TMP/work"
+(
+  git init -q --bare "$ORIGIN_BARE"
+  git init -q "$WORK"; cd "$WORK"
+  git config user.email t@t; git config user.name t
+  cat > package.json <<'PKG'
+{ "name": "t", "version": "0.5.270",
+  "scripts": { "a":"a","b":"b","c":"c","d":"d","e":"e","release":"bash scripts/release.sh" },
+  "devDependencies": {}, "build": {} }
+PKG
+  mkdir -p scripts
+  cp "$RELEASE_SH" scripts/release.sh
+  cp "$(dirname "$RELEASE_SH")/release-preflight.sh" scripts/release-preflight.sh
+  git add -A; git commit -qm "T: base"      # commit T
+  git branch -M master
+  git tag v0.5.270                            # tag == T
+  git remote add origin "$ORIGIN_BARE"
+  git push -q origin master --tags            # origin/master == T, tag on origin
+  # HEAD moves 2 commits ahead of T (the work being released); master stays at T.
+  echo a >> package.json.note && git add -A && git commit -qm "work 1"
+  echo b >> package.json.note && git add -A && git commit -qm "work 2"
+) >/dev/null 2>&1
+
+# Env that makes the newest-tag + gh reads hermetic while the ranges stay REAL.
+CS_ENV="export RP_LS_REMOTE_TAGS='printf \"x\trefs/tags/v0.5.270\n\"'; export RP_GH_RELEASE_TAGS='printf \"v0.5.270\n\"'"
+
+# As-shipped: must PROCEED with 'ahead by 2'.
+cs_out="$(cd "$WORK" && bash -c "$CS_ENV; bash scripts/release.sh 0.5.271 --dry-run" 2>&1)"; cs_rc=$?
+case "$cs_rc:$cs_out" in
+  0:*"ahead by 2 commits"*) pass "F1-callsite ships-HEAD" "real release.sh --dry-run proceeded 'ahead by 2' (call site passes HEAD)" ;;
+  *) fail "F1-callsite ships-HEAD" "rc=$cs_rc out tail=[$(printf '%s' "$cs_out" | grep -i 'release-preflight\|refuse\|ahead' | tr '\n' '|')]" ;;
+esac
+
+# must-FAIL control: mutate the call site HEAD->origin/master in the temp copy and
+# re-drive. It must now REFUSE (rc!=0, 'refuse to cut a duplicate') — proving the
+# ships-HEAD arm actually depends on the call site's ref, not just the library.
+sed -i 's#rp_two_way_discriminator "\$RP_NEWEST_TAG" "HEAD"#rp_two_way_discriminator "$RP_NEWEST_TAG" "origin/master"#' "$WORK/scripts/release.sh"
+# Commit the mutation: release.sh's own dirty-tree preflight would otherwise abort
+# BEFORE the #78 block, masking the call-site defect behind a dirty-tree error.
+( cd "$WORK" && git add -A && git commit -qm "mutate call site" ) >/dev/null 2>&1
+if ! grep -q 'rp_two_way_discriminator "\$RP_NEWEST_TAG" "origin/master"' "$WORK/scripts/release.sh"; then
+  fail "F1-callsite mutation-applied" "sed did not flip the call site — mutation string absent"
+else
+  cs_mout="$(cd "$WORK" && bash -c "$CS_ENV; bash scripts/release.sh 0.5.271 --dry-run" 2>&1)"; cs_mrc=$?
+  case "$cs_mrc:$cs_mout" in
+    0:*) fail "F1-callsite mutant-REFUSES" "mutant STILL proceeded (rc 0) — ships-HEAD arm is blind to the call site ref" ;;
+    *"refuse to cut a duplicate"*) pass "F1-callsite mutant-REFUSES" "call site->origin/master REFUSED (rc=$cs_mrc) → ships-HEAD arm detects it (RED)" ;;
+    *) fail "F1-callsite mutant-REFUSES" "rc=$cs_mrc but no refuse marker; tail=[$(printf '%s' "$cs_mout" | grep -i 'release-preflight\|refuse\|ahead' | tr '\n' '|')]" ;;
+  esac
+fi
+
 # ---- MUTATION check (C3): invert the refuse condition, arm A must go GREEN --
 # Copy the lib, flip `-eq 0` to `-ne 0` in the discriminator, re-run arm A. A
 # correctly-detecting test now sees the tag==master case PROCEED (rc=0) instead
 # of refuse — i.e. the arm's rc-3 assertion would FAIL on the mutant. We assert
 # the mutant is DETECTED: under the mutation, arm A's condition no longer fires.
 MUT="$(mktemp /tmp/release-preflight-mut.XXXXXX.sh)"
-trap 'rm -f "$MUT"; rm -rf "$F3_TMP"' EXIT
+trap 'rm -f "$MUT"; rm -rf "$F3_TMP" "$CS_TMP"' EXIT
 sed 's/if \[ "\$ahead" -eq 0 \]; then/if [ "$ahead" -ne 0 ]; then/' "$LIB" > "$MUT"
 if ! grep -q 'if \[ "\$ahead" -ne 0 \]; then' "$MUT"; then
   fail "MUT mutation-applied" "sed did not flip the condition — mutation string not present in $MUT"

@@ -130,7 +130,11 @@ Both functions read every external surface through injectable `RP_*` env seams s
 `scripts/verify-release-preflight.sh` (`pnpm run test:release-preflight`) can
 exercise all arms — the duplicate/diverged/instrument-error refuse arms, the F1
 vs-master-would-false-refuse vs vs-HEAD-proceeds pair, the F3 fetch-fail arm that
-drives the real `release.sh` in a temp repo with an unreachable origin, and a
+drives the real `release.sh` in a temp repo with an unreachable origin, a
+**call-site arm** that drives the real `release.sh --dry-run` in a temp repo where
+`origin/master`==tag but HEAD is ahead (asserts it PROCEEDS on HEAD; the must-FAIL
+control mutates the call site HEAD→origin/master and requires it to REFUSE — so
+the arm depends on the shipped call site's ref, not just the library), and a
 mutation of the refuse condition — with stubbed ls-remote/gh, never driving a real
 release. The preflight is read-only, so it runs under `--dry-run` too.
 
