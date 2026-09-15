@@ -24,24 +24,40 @@ const REQUIRED = [
   ['dist-electron/keeper.js', 'detached session keeper (structured SDK sessions)'],
 ];
 
-// EXPECTED NATIVE MANIFEST (#126) — every .node this app ships, keyed by its
-// path relative to app.asar.unpacked/node_modules. `probe` marks the one binary
-// per module that actually LOADS on this platform (Linux); cross-platform
-// prebuilds ship but never load here, so they are enumerated (count-exact) but
-// not construct-probed. Exported so verify-native-manifest.mjs can drive the
-// add/remove must-FAIL arms without a full electron-builder run.
+// EXPECTED NATIVE MANIFEST (#126) — every .node this app may ship, keyed by its
+// path relative to app.asar.unpacked/node_modules. Exported so
+// verify-native-manifest.mjs can drive the add/remove must-FAIL arms without a
+// full electron-builder run.
+//
+// TWO CLASSES (review F-MED, MEASURED against v0.5.267 vs v0.5.269):
+//   STRICT   — part of the npm package / runtime-load-bearing; MUST be present
+//              exactly. A STRICT entry missing = an unpack that stopped working;
+//              a shipped .node matching no manifest entry = a new unpinned dep.
+//   OPTIONAL — build-INCIDENTAL, ZERO runtime role, NOT stable across build envs
+//              (present-OR-absent tolerated). Pinning these strict was the bug:
+//              they were ABSENT from v0.5.267 (10 .node) and PRESENT in v0.5.269
+//              (12), so an exact-set on them FATALLY FAILS a release whenever the
+//              build env reverts or runs on another arch/ABI:
+//                - node-pty bin/<platform>-<arch>-<abi>/node-pty.node: an
+//                  @electron/rebuild output, NOT in the node-pty npm package,
+//                  NEVER loaded (loadNativeModule checks only build/Release,
+//                  build/Debug, prebuilds/<platform>-<arch>). Its name embeds
+//                  arch+ABI, so it is matched by PATTERN, not a fixed path.
+//                - better-sqlite3 build/Release/test_extension.node: a
+//                  source-compile artifact, absent if a prebuilt is resolved.
+//
+// `probe` marks the one binary per module that actually LOADS on this platform
+// (Linux) — construct/load-tested. Cross-platform prebuilds are part of the npm
+// package (STRICT) but never load here, so enumerated, not probed.
 //
 // ABI note (measured #126): better-sqlite3 is a RAW V8 addon, NODE_MODULE_VERSION-
 // pinned, and DEFERS its native load — only CONSTRUCTING a DB proves the ABI.
 // node-pty is N-API (ABI-stable) and loads its native at IMPORT time — a
 // successful require IS its proof.
 const EXPECTED_NATIVE = [
+  // ── STRICT: runtime-load-bearing / npm-package files (exact-set) ───────────
   { rel: 'better-sqlite3/build/Release/better_sqlite3.node', probe: 'better-sqlite3' },
-  // better-sqlite3 ships a stray test_extension.node from its own build; harmless
-  // but it MUST be in the manifest or the exact-set diff would flag it.
-  { rel: 'better-sqlite3/build/Release/test_extension.node', probe: null },
   { rel: 'node-pty/build/Release/pty.node', probe: 'node-pty' },
-  { rel: 'node-pty/bin/linux-arm64-130/node-pty.node', probe: null },
   { rel: 'node-pty/prebuilds/darwin-arm64/pty.node', probe: null },
   { rel: 'node-pty/prebuilds/darwin-x64/pty.node', probe: null },
   { rel: 'node-pty/prebuilds/win32-arm64/conpty.node', probe: null },
@@ -50,6 +66,15 @@ const EXPECTED_NATIVE = [
   { rel: 'node-pty/prebuilds/win32-x64/conpty.node', probe: null },
   { rel: 'node-pty/prebuilds/win32-x64/conpty_console_list.node', probe: null },
   { rel: 'node-pty/prebuilds/win32-x64/pty.node', probe: null },
+];
+
+// OPTIONAL build-incidental .node — present-OR-absent tolerated. `match` is a
+// RegExp on the rel path (the bin/ name embeds arch+ABI, so it cannot be a fixed
+// string). A shipped .node matching one of these is NEITHER unexpected NOR
+// required.
+const OPTIONAL_NATIVE = [
+  { match: /^node-pty\/bin\/[^/]+\/node-pty\.node$/, what: '@electron/rebuild output (not in npm package, never loaded)' },
+  { match: /^better-sqlite3\/build\/Release\/test_extension\.node$/, what: 'better-sqlite3 source-compile artifact' },
 ];
 
 /** Enumerate every .node under an app.asar.unpacked/node_modules dir, sorted. */
@@ -71,23 +96,33 @@ function enumerateShippedNative(unpackedRoot) {
   return shipped.sort();
 }
 
+function isOptionalNative(rel, optional = OPTIONAL_NATIVE) {
+  return optional.some((o) => o.match.test(rel));
+}
+
 /**
- * Exact-set diff between the shipped .node set and the expected manifest.
- * Returns { unexpected, absent } (each a sorted array of rel paths). Empty
- * arrays mean the sets match exactly. Naming both directions makes a count
- * mismatch diagnosable (two wrong sets can share a count).
+ * Diff the shipped .node set against the manifest with two classes:
+ *   - STRICT entries (`expected`) must be present exactly.
+ *   - OPTIONAL entries (`optional`, matched by RegExp) are tolerated present-or-
+ *     absent and never flagged.
+ * Returns { unexpected, absent } (sorted). `unexpected` = a shipped .node that is
+ * neither a STRICT entry nor an OPTIONAL match (= a new unpinned dep). `absent` =
+ * a STRICT entry not shipped (= an unpack that stopped working). Naming both
+ * directions makes a mismatch diagnosable (two wrong sets can share a count).
  */
-function diffNativeManifest(shipped, expected) {
+function diffNativeManifest(shipped, expected = EXPECTED_NATIVE, optional = OPTIONAL_NATIVE) {
   const expectedSet = new Set(expected.map((e) => e.rel));
   const shippedSet = new Set(shipped);
   return {
-    unexpected: shipped.filter((r) => !expectedSet.has(r)),
+    unexpected: shipped.filter((r) => !expectedSet.has(r) && !isOptionalNative(r, optional)),
     absent: expected.map((e) => e.rel).filter((r) => !shippedSet.has(r)),
   };
 }
 
 exports.EXPECTED_NATIVE = EXPECTED_NATIVE;
+exports.OPTIONAL_NATIVE = OPTIONAL_NATIVE;
 exports.enumerateShippedNative = enumerateShippedNative;
+exports.isOptionalNative = isOptionalNative;
 exports.diffNativeManifest = diffNativeManifest;
 
 exports.default = async function afterPack(context) {
@@ -136,11 +171,14 @@ exports.default = async function afterPack(context) {
   // failure is invisible to any compile, typecheck or unit test.
   //
   // #126 GENERALISED the #114 bus-only check: enumerate EVERY unpacked .node and
-  // assert the set EXACTLY equals an expected manifest. The must-FAIL arm is an
-  // added or removed .node — a new native dependency (or a stray build artifact)
-  // that nobody pinned would otherwise ship and only fail on a user's machine.
-  // A count-only check is not enough: two different wrong sets can share a count,
-  // so we diff the full set and name every unexpected/missing path.
+  // diff against a manifest with two classes — STRICT entries must be present
+  // exactly, OPTIONAL build-incidental entries are tolerated present-or-absent
+  // (review F-MED: pinning @electron/rebuild + source-compile artifacts strict
+  // fatally failed a release whenever the build env varied). The must-FAIL arm is
+  // an added or MISSING STRICT .node — a new native dependency, or an unpack that
+  // stopped working, that would otherwise fail only on a user's machine. A
+  // count-only check is not enough: two wrong sets can share a count, so we name
+  // every unexpected/missing path.
   //
   // ABI note (measured #126): better-sqlite3 is a RAW V8 addon, NODE_MODULE_VERSION-
   // pinned (127 node / 130 Electron), and DEFERS its native load — so `require()`
@@ -158,32 +196,36 @@ exports.default = async function afterPack(context) {
 
   for (const rel of shipped) console.log(`  • afterPack: native .node unpacked — node_modules/${rel}`);
 
-  // EXACT-SET DIFF — the count assertion, but naming both directions so it is
-  // diagnosable when it fires. An unexpected .node = a new native dep nobody
-  // pinned; a missing one = an unpack that silently stopped working.
-  const { unexpected, absent } = diffNativeManifest(shipped, EXPECTED);
+  // TWO-CLASS DIFF — STRICT exact-set + OPTIONAL tolerated; name both directions
+  // so a mismatch is diagnosable. An unexpected .node = a new native dep nobody
+  // pinned (and not an OPTIONAL build-incidental match); a missing one = a STRICT
+  // entry whose unpack silently stopped working.
+  const { unexpected, absent } = diffNativeManifest(shipped, EXPECTED, OPTIONAL_NATIVE);
+  const optionalPresent = shipped.filter((r) => isOptionalNative(r, OPTIONAL_NATIVE));
   if (unexpected.length > 0 || absent.length > 0) {
     const parts = [];
     if (unexpected.length)
       parts.push(
         `UNEXPECTED .node (${unexpected.length}) — a native module nobody pinned; add it to ` +
-          `EXPECTED in scripts/after-pack-check.cjs AND to package.json build.asarUnpack, ` +
-          `and route its load through native-pin.ts (#126):\n` +
+          `EXPECTED_NATIVE (or OPTIONAL_NATIVE if build-incidental) in scripts/after-pack-check.cjs ` +
+          `AND to package.json build.asarUnpack, and route its load through native-pin.ts (#126):\n` +
           unexpected.map((r) => `  + node_modules/${r}`).join('\n')
       );
     if (absent.length)
       parts.push(
-        `MISSING .node (${absent.length}) — expected but not unpacked; the module cannot load at ` +
-          `runtime. Check package.json build.asarUnpack still unpacks it:\n` +
+        `MISSING strict .node (${absent.length}) — expected but not unpacked; the module cannot ` +
+          `load at runtime. Check package.json build.asarUnpack still unpacks it:\n` +
           absent.map((r) => `  - node_modules/${r}`).join('\n')
       );
     throw new Error(
-      `afterPack: shipped native .node set does not match the expected manifest ` +
-        `(shipped ${shipped.length}, expected ${EXPECTED.length}):\n${parts.join('\n\n')}`
+      `afterPack: shipped native .node set does not match the manifest ` +
+        `(shipped ${shipped.length}, strict ${EXPECTED.length}, optional-present ${optionalPresent.length}):\n` +
+        parts.join('\n\n')
     );
   }
   console.log(
-    `  • afterPack: native .node set matches manifest exactly — ${shipped.length} file(s)`
+    `  • afterPack: native .node manifest OK — ${EXPECTED.length} strict present, ` +
+      `${optionalPresent.length} optional build-incidental tolerated (${shipped.length} total)`
   );
 
   // CONSTRUCT/LOAD each module that loads on this platform, under the packaged
