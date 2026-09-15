@@ -6,11 +6,16 @@
 
 import type { RpcRoute, ControlFrame } from './sandbox-protocol.js';
 
-/** An activity event extracted from one spool line: the {event, tool?} pair the
- *  agent's hooks append and the host feeds to applyAgentEvent. */
+/** An activity event extracted from one spool line: the {event, tool?, toolUseId?}
+ *  tuple the agent's hooks append and the host feeds to applyAgentEvent.
+ *  `toolUseId` (#132) is the tool_use id the in-container hook mined from the
+ *  Pre/PostToolUse payload — carried through so the host tracker pairs a remote
+ *  posttool with the exact call it ended (mirrors events-spool.ts:270). Empty or
+ *  absent line field → undefined. */
 export interface SpoolEvent {
   event: string;
   tool?: string;
+  toolUseId?: string;
 }
 
 /** Result of parsing a chunk of appended spool text. Mirrors events-spool.ts's
@@ -47,15 +52,23 @@ export function parseSpoolChunk(prevBuffer: string, chunk: string): SpoolParseRe
   for (const line of parts) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    let ev: { event?: unknown; tool?: unknown };
+    let ev: { event?: unknown; tool?: unknown; toolUseId?: unknown };
     try {
-      ev = JSON.parse(trimmed) as { event?: unknown; tool?: unknown };
+      ev = JSON.parse(trimmed) as { event?: unknown; tool?: unknown; toolUseId?: unknown };
     } catch {
       continue; // skip a corrupt/partial line rather than wedge the tail
     }
     if (typeof ev.event !== 'string') continue;
     const tool = typeof ev.tool === 'string' && ev.tool.length ? ev.tool : undefined;
-    events.push(tool ? { event: ev.event, tool } : { event: ev.event });
+    // #132: carry the tool_use id forward so a remote posttool pairs with the
+    // exact in-flight call it ended (mirrors events-spool.ts:270). Empty/absent
+    // → undefined → the host tracker's id-less FIFO, same as the legacy hook.
+    const toolUseId =
+      typeof ev.toolUseId === 'string' && ev.toolUseId.length ? ev.toolUseId : undefined;
+    const out: SpoolEvent = { event: ev.event };
+    if (tool) out.tool = tool;
+    if (toolUseId) out.toolUseId = toolUseId;
+    events.push(out);
     if (ev.event === 'stop' || ev.event === 'notify') lastTerminal = ev.event;
     else lastTerminal = null;
   }

@@ -87,6 +87,29 @@ serves the `$ORCHESTRA_SOCK` unix socket forwarding the five hook routes as
 (`startWsServer` `:538`): `GET /healthz`, `POST /import`, `GET /export`.
 Sessions survive client detach — the whole point of the always-on sandbox.
 
+### toolUseId on remote activity events (#132)
+The remote `event` frame carries `toolUseId` end-to-end so #127's in-flight-tool
+tracker can pair a remote posttool with the *exact* call it ended — without it,
+two parallel calls of the SAME tool where one hangs let the fast sibling's
+posttool mask the hung one (name-only FIFO). The id already exists on the
+in-container spool line (the hook writes it — `workspaces.ts:4396`); #132 stops
+it being dropped in transit. The thread:
+
+| Point | file:line | What it does |
+|---|---|---|
+| wire type | `sandbox-protocol.ts:136` (`EventFrame.toolUseId?`) + vendored `sandbox/shim/sandbox-protocol.ts` (regen `sync-protocol.mjs`, gate `npm run check-protocol`) | adds the optional field to the frame |
+| spool parse | `shim-core.ts:66` (`SpoolEvent.toolUseId?` `:18`) | mines `toolUseId` from the spool line (was dropped) |
+| shim emit | `shim.ts:322` | puts `ev.toolUseId` on the emitted `event` frame |
+| client onEvent | `sandbox-connection.ts:65` (sig, 4th arg) / `:250` (call) | surfaces `f.toolUseId` |
+| manager | `sandbox-manager.ts:332` | passes it to `applyAgentEvent`'s 7th slot (`activity.ts:977`) → `noteToolStart`/`noteToolEnd` (`hibernation-activity.ts:89`/`:117`) |
+
+Absent id (old shim / no id on the line) → `undefined` → `null` → the tracker's
+id-less name-scoped FIFO, identical to the local legacy-hook path. This path is
+pure wire/spool: it does NOT read the bus (the #127 tracker is a module-global
+`Map`, not `bus.sqlite`). Acceptance: `hibernation-activity.test.ts` `#132
+acceptance` (hung oldest survives) + `#132 must-FAIL control` (id stripped →
+old masking); wire coverage `sandbox-connection.test.ts` + `shim-core.test.ts`.
+
 ## Provisioning: import / export / eject / backups
 Payload grammar (both directions): tgz of `meta.json` + `repo.bundle`
 (`git bundle --all`) + `worktree/` overlay (uncommitted modifications,

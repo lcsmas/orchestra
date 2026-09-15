@@ -30,6 +30,32 @@ test('empty tool becomes undefined (no tool key)', () => {
   assert.equal('tool' in r.events[0], false);
 });
 
+test('#132: parseSpoolChunk mines toolUseId from the spool line', () => {
+  // Strip point 2: the in-container spool line already carries toolUseId (the
+  // hook writes it — src/main/workspaces.ts printf). parseSpoolChunk must carry
+  // it forward so the shim can put it on the wire.
+  // MUTANT: drop the toolUseId extraction → the id-bearing event loses its id.
+  const r = parseSpoolChunk(
+    '',
+    '{"event":"posttool","tool":"mcp__browser__click","toolUseId":"toolu_fast"}\n',
+  );
+  assert.deepEqual(r.events, [
+    { event: 'posttool', tool: 'mcp__browser__click', toolUseId: 'toolu_fast' },
+  ]);
+});
+
+test('#132: empty/absent toolUseId becomes undefined (no key)', () => {
+  const r = parseSpoolChunk(
+    '',
+    '{"event":"posttool","tool":"Bash","toolUseId":""}\n{"event":"pretool","tool":"Read"}\n',
+  );
+  assert.deepEqual(r.events, [
+    { event: 'posttool', tool: 'Bash' },
+    { event: 'pretool', tool: 'Read' },
+  ]);
+  assert.equal('toolUseId' in r.events[0], false);
+});
+
 test('a trailing partial line is carried forward, not emitted', () => {
   const r = parseSpoolChunk('', '{"event":"submit"}\n{"event":"pre');
   assert.deepEqual(r.events, [{ event: 'submit' }]);

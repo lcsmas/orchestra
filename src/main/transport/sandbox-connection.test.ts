@@ -168,6 +168,33 @@ test('event frames are handed to onEvent with tool normalized', () => {
   ]);
 });
 
+test('#132: an event frame carrying a wire toolUseId hands it to onEvent (4th arg)', () => {
+  // The wire-side half of #132: the sandbox EventFrame now carries toolUseId, and
+  // the connection must surface it as onEvent's 4th argument so the host tracker
+  // keys a remote posttool by id. A frame WITHOUT the field yields undefined
+  // (old shim → id-less FIFO, unchanged).
+  // MUTANT: drop `f.toolUseId` from the onEvent call in sandbox-connection.ts →
+  //   the id-bearing row's 4th element becomes undefined → this goes RED.
+  const sock = new FakeSocket();
+  const seen: Array<[string, string, string | undefined, string | undefined]> = [];
+  const conn = new SandboxConnection(sock, {
+    onEvent: (s, e, tool, toolUseId) => seen.push([s, e, tool, toolUseId]),
+  });
+  conn.registerSession('ws-1', { handleData() {}, handleExit() {} });
+  sock.inbound({
+    t: 'event',
+    session: 'ws-1',
+    event: 'posttool',
+    tool: 'mcp__browser__click',
+    toolUseId: 'toolu_fast',
+  });
+  sock.inbound({ t: 'event', session: 'ws-1', event: 'posttool', tool: 'Bash' }); // no id
+  assert.deepEqual(seen, [
+    ['ws-1', 'posttool', 'mcp__browser__click', 'toolu_fast'],
+    ['ws-1', 'posttool', 'Bash', undefined],
+  ]);
+});
+
 test('rpc is dispatched and its reply is sent back as an rpcReply with the same id', () => {
   const sock = new FakeSocket();
   const conn = new SandboxConnection(sock, {

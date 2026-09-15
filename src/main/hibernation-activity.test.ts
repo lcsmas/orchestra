@@ -112,24 +112,48 @@ test('F3: an id-less posttool for an unknown tool falls back to oldest-id-less (
   reset();
 });
 
-test('F3 residual (DOCUMENTED, remote same-tool): an id-less posttool masks the HUNG (oldest) same-tool call', () => {
-  // The reviewer-sharpened residual, pinned as an EXECUTABLE disclosure so it
-  // cannot silently change. On the id-less REMOTE wire, two SAME-tool calls where
-  // the OLDER is hung: an id-less posttool for that tool removes the OLDEST (the
-  // hung one), so the fast sibling survives and the hung call's escalation is
-  // dropped. This is the known limitation (NOT-VERIFIED / T127.4): remote-only,
-  // same-tool-only, not a regression, honest fix needs a wire tool_use_id —
-  // DEFERRED to #132 (LEAD ruling D3(a): carry toolUseId on remote tool events).
-  // If #132 lands a wire tool_use_id, THIS assertion flips and the residual is
-  // gone — that is the intended signal.
+test('#132 acceptance (remote same-tool, wire toolUseId): the HUNG (oldest) same-tool call SURVIVES its fast sibling', () => {
+  // The #127 residual, now CLOSED by #132 (LEAD ruling D3(a): carry toolUseId on
+  // remote tool events). On a REMOTE session two parallel calls of the SAME tool
+  // where the OLDER hangs: because the sandbox wire now carries a DISTINCT
+  // tool_use id per call (threaded EventFrame → parseSpoolChunk → shim emit →
+  // onEvent → applyAgentEvent's 7th slot), ending the FAST call BY ITS ID removes
+  // exactly that call — the hung oldest is untouched and still escalates.
+  // This is the FLIP of the old F3-residual disclosure: same scenario, distinct
+  // ids, opposite (correct) survivor.
+  // MUTANT (id-threading clause): strip toolUseId on the wire so both calls are
+  //   id-less again → this goes RED, reproducing the old masking (T132.3 asserts
+  //   that stripped arm explicitly below).
   reset();
-  noteToolStart(WS, 'mcp__browser__click', null); // HUNG, started first (oldest)
-  noteToolStart(WS, 'mcp__browser__click', null); // fast sibling, same tool, newer
-  noteToolEnd(WS, null, 'mcp__browser__click'); // fast one returns (id-less)
+  noteToolStart(WS, 'mcp__browser__click', 'toolu_hung'); // HUNG, started first (oldest)
+  noteToolStart(WS, 'mcp__browser__click', 'toolu_fast'); // fast sibling, same tool, newer
+  noteToolEnd(WS, 'toolu_fast', 'mcp__browser__click'); // fast one returns, BY ID
+  const left = getInFlightTools(WS);
+  assert.equal(left.length, 1, 'exactly one same-tool call remains');
+  // The SURVIVOR is the HUNG (oldest) call — its own id was never ended. The fast
+  // sibling no longer masks it: the id, not the name, decided which call ended.
+  assert.equal(left[0].toolUseId, 'toolu_hung', 'the HUNG call survives (id-scoped, not masked)');
+  assert.equal(left[0].tool, 'mcp__browser__click');
+  reset();
+});
+
+test('#132 must-FAIL control (T132.3): id STRIPPED from the wire reproduces the OLD masking', () => {
+  // The load-bearing control. If toolUseId were NOT what makes the fix work, this
+  // arm — the SAME remote same-tool scenario but with the wire id stripped (both
+  // calls id-less, posttool scoped by tool NAME only, exactly what the sandbox
+  // path did before #132) — would still attribute correctly. It must NOT: the
+  // id-less name-only FIFO removes the OLDEST same-tool call (the hung one), so
+  // the fast sibling survives and the hung call's escalation is dropped. This is
+  // the OLD behaviour, proving toolUseId is load-bearing (C4 disproof arm).
+  reset();
+  noteToolStart(WS, 'mcp__browser__click', null); // HUNG, started first (oldest), id STRIPPED
+  noteToolStart(WS, 'mcp__browser__click', null); // fast sibling, same tool, id STRIPPED
+  noteToolEnd(WS, null, 'mcp__browser__click'); // fast one returns, id-less → name-only FIFO
   const left = getInFlightTools(WS);
   assert.equal(left.length, 1, 'one same-tool call remains (>=1 always survives)');
-  // The SURVIVOR is the newer (fast) call — the hung oldest was masked. This is
-  // the residual, asserted honestly, not a bug the test pretends is fixed.
+  // The SURVIVOR is the NEWER (fast) call — the hung oldest was MASKED, the exact
+  // defect #132 fixes. Contrast the acceptance arm above (survivor = the hung one).
+  assert.equal(left[0].toolUseId, null, 'the survivor is an id-less (fast) call — hung oldest masked');
   assert.equal(left[0].tool, 'mcp__browser__click');
   reset();
 });

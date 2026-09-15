@@ -329,7 +329,11 @@ export async function getSandboxConnection(endpoint: string): Promise<SandboxCon
   const ready = open.then(() => log.info(`sandbox connection open: ${endpoint}`));
 
   const conn = new SandboxConnection(adaptSocket(ws), {
-    onEvent: (session, event, tool) => applyAgentEvent(session, event, tool),
+    // #132: thread the wire tool_use id into applyAgentEvent's 7th slot (the same
+    // chokepoint the local spool path uses) so the #127 tracker keys a remote
+    // posttool by id, not just tool name. undefined → null → id-less FIFO.
+    onEvent: (session, event, tool, toolUseId) =>
+      applyAgentEvent(session, event, tool, undefined, undefined, undefined, toolUseId ?? null),
     onControl: (state) => {
       const s: SandboxControlState = {
         endpoint,

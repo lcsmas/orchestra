@@ -117,15 +117,23 @@ export interface ExitFrame {
   exitCode: number;
 }
 
-/** An activity event from the sandbox — the {event, tool?} pair events-spool.ts
- *  would otherwise read from the on-disk spool line. The shim tails the spool
- *  inside the sandbox and emits one of these per line; the client feeds it
- *  straight into applyAgentEvent. */
+/** An activity event from the sandbox — the {event, tool?, toolUseId?} tuple
+ *  events-spool.ts would otherwise read from the on-disk spool line. The shim
+ *  tails the spool inside the sandbox and emits one of these per line; the
+ *  client feeds it straight into applyAgentEvent.
+ *
+ *  `toolUseId` (#132) carries the tool_use id the in-container hook already mined
+ *  into the spool line, so a REMOTE posttool pairs with the exact call it ended.
+ *  Without it, #127's tracker can only scope by tool NAME, and two parallel calls
+ *  of the SAME tool where one hangs let the fast sibling's posttool mask the hung
+ *  one. Absent (old shim / no id on the line) → undefined → tracker's id-less
+ *  name-scoped FIFO, exactly the local legacy-hook path. */
 export interface EventFrame {
   t: 'event';
   session: string;
   event: string;
   tool?: string;
+  toolUseId?: string;
 }
 
 /** A hook control-plane call originating inside the sandbox (the agent POSTed to

@@ -317,7 +317,9 @@ function drainSpool(id: string): void {
   const { events, leftover, truncate } = parseSpoolChunk(cur.buffer, chunk);
   cur.buffer = leftover;
   for (const ev of events) {
-    send({ t: 'event', session: id, event: ev.event, tool: ev.tool });
+    // #132: forward toolUseId so the host tracker can pair a remote posttool with
+    // the exact call it ended (same-tool parallel-hang attribution).
+    send({ t: 'event', session: id, event: ev.event, tool: ev.tool, toolUseId: ev.toolUseId });
   }
 
   if (truncate) {

@@ -61,8 +61,16 @@ export interface SessionSink {
 }
 
 export interface SandboxConnectionHandlers {
-  /** An activity event arrived from the sandbox (replaces the spool tail). */
-  onEvent?: (session: string, event: string, tool: string | undefined) => void;
+  /** An activity event arrived from the sandbox (replaces the spool tail).
+   *  `toolUseId` (#132) is the wire tool_use id when the shim carried one — fed
+   *  to the host tracker so a remote posttool pairs with the exact call it ended
+   *  (same-tool parallel-hang attribution); undefined on an old shim → id-less. */
+  onEvent?: (
+    session: string,
+    event: string,
+    tool: string | undefined,
+    toolUseId: string | undefined,
+  ) => void;
   /** The sandbox broadcast its ownership state (who drives; are we it). Fired
    *  on attach and on every change — the P4 layer surfaces it to the UI. */
   onControl?: (state: ControlFrame) => void;
@@ -239,7 +247,7 @@ export class SandboxConnection {
       }
       case 'event': {
         const f = frame as EventFrame;
-        this.handlers.onEvent?.(f.session, f.event, f.tool);
+        this.handlers.onEvent?.(f.session, f.event, f.tool, f.toolUseId);
         break;
       }
       case 'control': {
