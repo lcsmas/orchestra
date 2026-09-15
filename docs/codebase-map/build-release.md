@@ -72,6 +72,13 @@ resolution).
   (`PRECONDITION-UNMET`, no compositor → surfaced as "not exercised", NEVER
   green) dominates `0` (all exercised+green). See the `raise()` severity ladder
   (`run-gates.sh:39-49`).
+  - **A full `/tmp` is a PROVISION precondition, not a red (issue #80, F1).** A
+    disk-full mount makes the contained rig's disk-guard exit `DISK_FULL_EXIT=17`,
+    which would otherwise score as an investigate-the-code failure (`rc=1`). An
+    up-front preflight (`run-gates.sh`, same `disk-guard.cjs --preset e2e-rig
+    /tmp` the rig uses) catches it BEFORE either gate and exits `rc=2` (`disk full
+    → provision the box`), so it can't be masked as a red; gate 2 keeps a
+    `ORCHESTRA_DISK_FULL`-marker re-check for a mid-run fill.
   - **DECISION ON RECORD (issue #80's three valid answers): gate it in the
     release/verifier flow, NOT a CI job.** The repo's only GitHub Actions
     workflow (`.github/workflows/release.yml`) is release-only (triggers on `v*`
