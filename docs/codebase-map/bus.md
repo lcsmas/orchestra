@@ -346,9 +346,10 @@ own stated disproof) · the v2 migration's table renamed (C11 + 9).
 
 ### Not covered here
 
-The run LIFECYCLE (#115 owns `runs` rows; the mirror names a run from
-`$ORCHESTRA_RUN_ID` or a per-boot id and never INSERTs into `runs`, which
-migration v1 documents as legal). `lostWake` is exposed and tested but is
+The run LIFECYCLE — **#134 now creates the `runs` row at the wave anchor** (see
+the #134 section below); the mirror still names a run from `$ORCHESTRA_RUN_ID`
+(plumbed by #134 in the agent env) or a per-boot `host-…` id in the MAIN process,
+and never INSERTs into `runs` itself. `lostWake` is exposed and tested but is
 INCREMENTED by the staleness sweep #117 owns — this ticket ships the counter, not
 the sweep. The pane rendering these numbers is #118.
 
@@ -775,13 +776,21 @@ so all 17 mutants and all of C1–C10 passed on it, and the switch-off gate arm
 
 So the switch is read **per sweep, keyed on the run the reader belongs to**
 (`src/main/bus-wake.ts:278`), via `setWakeSwitchReader` (`:88`,
-`(runId: string) => boolean`), which **defaults to OFF for every run**.
-`WakeableReader.runId` (`:196`) is what carries the key.
+`(runId: string) => boolean`). It defaults to `() => false` (every run OFF) and
+is **wired in production by #134** (`src/main/index.ts`, beside `startBusWake()`)
+to `(runId) => { const db = getBus(); return db ? busSwitch(db, runId, 'wake') : false; }`
+— reading the flag frozen on the run row, tolerating a null bus (D1).
+`setAskGateSwitchReader` is wired the same way to `busSwitch(db, runId, 'ask_gate')`.
+Before #134 these stayed the `() => false` default (never wired), so **even a run
+frozen wake=ON was counted, never fired** — the defect #134 closes.
+`WakeableReader.runId` (`:196`) is what carries the key; #134 sets it to
+`resolveWaveRunId(ws)` (was hardcoded `'default'`).
 
-The **freeze** is then the storage's job — #118 writes the flags onto the run row
-when the run starts and never mutates them — which is where it belongs: freezing
-is a property of the run's data, not of how long this process has been up. An app
-restart mid-run re-reads the same row and behaves identically.
+The **freeze** is then the storage's job — the run row's flags are written **once,
+at the anchor, by `startRun` (#134 — see below)** and never mutated — which is
+where it belongs: freezing is a property of the run's data, not of how long this
+process has been up. An app restart mid-run re-reads the same row and behaves
+identically.
 
 A switch accessor that **throws** is treated as OFF and counted, and does not
 take the sweep down for other readers (`:279`): the two wrong answers are
@@ -1025,12 +1034,13 @@ loop; T119.2 gate recipient/resolve/list/re-resolve + check surface; T119.3 the
 must-FAIL gate-wake arm (pre-#119 predicate shows ZERO gate wakes) + counted-off;
 T119.4 waiting excluded. Each shown RED under one mutation then GREEN.
 
-### Not wired here (deferred, like #117/#118)
+### Wiring (WAS deferred #117/#118/#119 — now done by #134)
 
-`setAskGateSwitchReader` (and `setWakeSwitchReader`) are NOT bound to `busSwitch`
-at boot on this branch — the shipped default is OFF (counted, not fired), i.e.
-shadow, matching #117/#118. Wiring the accessors to `busSwitch(getBus(), runId,
-'wake'|'ask_gate')` at `index.ts` is the promotion step, not this ticket.
+`setAskGateSwitchReader` and `setWakeSwitchReader` are bound to `busSwitch` at
+boot **by #134** (`src/main/index.ts`, beside `startBusWake()`):
+`(runId) => { const db = getBus(); return db ? busSwitch(db, runId, 'wake'|'ask_gate') : false; }`.
+Until #134 they stayed the `() => false` default, so the switches could never
+fire in production even with a frozen-ON run row — see the #134 section below.
 
 ---
 
@@ -1532,3 +1542,87 @@ seam). Each acceptance arm shown RED under one mutation (short-circuit re-runs
 exec; PK drops request_id; PK drops run_id → cross-run collision; switch gate
 always-fires; runMutation ignores request-id; migration index collision;
 drop `!sent.replayed` → re-mint PK throw), then GREEN restored.
+
+---
+
+# Run lifecycle at the wave anchor + `ORCHESTRA_RUN_ID` plumbing (#134)
+
+Appended by #134 (ledger [#135](https://github.com/lcsmas/orchestra/issues/135)).
+This is the ticket that made the #118 switch/freeze machinery **actually reach
+production** — before it, `startRun` had zero callers, so no `runs` row was ever
+created, every `busSwitch(runId, …)` read all-OFF, and the freeze was vacuous.
+
+## The gap it closed (the reproduced defect at `ba3da60`)
+
+- `startRun` (`bus-runs.ts:94`) had NO production caller — only `scripts/*` rigs.
+- `ORCHESTRA_RUN_ID` appeared only in `workspaces.ts` **comments**, never in
+  `extraEnv`; the CLI's `resolveBusIdentity` therefore resolved `default` for
+  every real member, and the mirror fell back to a per-boot `host-…`.
+- `setWakeRoster` hardcoded `runId:'default'`; `setWakeSwitchReader` /
+  `setAskGateSwitchReader` were never wired → `() => false` for every run.
+
+## Where the run starts — `maybeStartRunAtAnchor` (`src/main/bus-run-anchor.ts`)
+
+`startAgentPty` (`src/main/workspaces.ts`) resolves `waveRunId =
+resolveWaveRunId(ws)` (the tree ROOT via `walkToRootId`) ONCE and, when this
+workspace **IS** the anchor (`waveRunId === ws.id`), calls
+`maybeStartRunAtAnchor({ getBus, startRun, getLiveSwitches, warn }, ws, waveRunId)`.
+
+- **Idempotent, never re-freezes:** `startRun` is INSERT-OR-IGNORE keyed on the
+  `runs` row EXISTENCE (#123 F1). Calling it on every launch (spawn/promote/
+  resume) writes flags only when the row is NEW.
+- **Members start nothing:** a member resolves the SAME anchor id, so
+  `waveRunId !== ws.id` and the function returns null — one wave, one run row,
+  one frozen-flags source. `isRootAnchor` (`src/main/wave-run-id.ts`) is the pure,
+  unit-tested predicate.
+- **D1 — never blocks a spawn:** `getBus()` may be null and `startRun` may throw;
+  both are caught, logged, and return null. The spawn proceeds reading all-OFF.
+- **`parent_run_id` is null (OQ1, ledger #135):** `walkToRootId` resolves to the
+  TOPMOST ancestor, so an anchor by definition has no run above it — a LEAD→OPS
+  nesting resolves the OPS *member* to the LEAD root, so the OPS is never its own
+  anchor. Real nesting is not expressible under the tree walk today; this is the
+  one line to change if a future model plumbs an explicit run id.
+
+## The plumbing (`src/main/index.ts`, beside `startBusWake()`)
+
+- `extraEnv.ORCHESTRA_RUN_ID = waveRunId` → CLI verbs, the mirror, and the wake
+  predicate all address the WAVE run.
+- `setWakeRoster` maps `runId: resolveWaveRunId(ws)` (was `'default'`).
+- `setWakeSwitchReader` / `setAskGateSwitchReader` →
+  `(runId) => { const db = getBus(); return db ? busSwitch(db, runId, 'wake'|'ask_gate') : false; }`.
+  (Liveness already had its own default `busSwitch(db, runId, 'liveness')` reader.)
+
+## `orchestra bus-status` (#134 addition, read-only)
+
+`/busStatus` (`hooks-server.ts`) now accepts the CLI's resolved `runId` and
+returns `displayRunId` + `frozenFlags` (from `runFlags(db, runId)`) +
+`liveFlags` (from `getLiveSwitches()`), all serialized as the stable JSON object.
+The CLI prints the WAVE run id it resolved (`--run` > `$ORCHESTRA_RUN_ID` >
+`default`), **never** the main process's `host-…` mirror id, plus a
+frozen-vs-live flag table (WIRE names). Still no write path — `runFlags` /
+`getLiveSwitches` are pure reads.
+
+## Gates
+
+- `src/main/wave-run-id.test.ts` — `isRootAnchor` (root/member/broken-link).
+- `src/main/bus-run-anchor.test.ts` — G3 row-created-at-anchor (+ must-FAIL: noop
+  `startRun` → row ABSENT), G4 freeze/T118.2 (flip-after-start no-op; new anchor
+  freezes new; + live-vs-frozen disagreement mutant), G5 member shares anchor /
+  starts nothing (+ stray-row control), D1 null/throwing bus, idempotence×5.
+- `src/main/bus-wake-run-switch.test.ts` — G7 the REAL production accessor
+  (`busSwitch` off the run row) fires a frozen-ON run, COUNTS a frozen-OFF run,
+  and the **unwired-accessor** arm reproduces the master defect (wake=ON run still
+  only counted).
+- `src/main/wave-run-anchor-wiring.test.ts` — source-level guard for the
+  un-importable seams (workspaces.ts / index.ts / hooks-server.ts), each with a
+  negative control; the roster mutant `runId:'default'` reddens P2b.
+- `scripts/verify-bus-status-cli.mjs` — the REAL built CLI over a fake socket:
+  G8 prints the wave run id not `host-…` (+ must-FAIL against `host-`), frozen-vs-
+  live flag table.
+- G9 packaged boot + spawn-notice under real Electron (headless sway) — owned by
+  VERIFY-F against the installed build.
+
+`workspaces.ts` is un-importable under `node --test` (its `./platform`
+dir-import), so the seam decision is a pure export (`isRootAnchor`) and the effect
+is a platform-free function (`maybeStartRunAtAnchor`) the integration test drives
+for real — never a re-implementation.

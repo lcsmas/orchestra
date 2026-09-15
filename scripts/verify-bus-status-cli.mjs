@@ -40,6 +40,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bus-status-116-'));
 const sock = path.join(dir, 'orchestra.sock');
 let reply = {};
 
+let lastRequestBody = null;
 const server = http.createServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
@@ -48,8 +49,22 @@ const server = http.createServer((req, res) => {
       res.writeHead(404).end('{}');
       return;
     }
+    try {
+      lastRequestBody = JSON.parse(body || '{}');
+    } catch {
+      lastRequestBody = {};
+    }
+    // #134 — the REAL /busStatus handler echoes the CLI's requested runId as
+    // `displayRunId` and returns that run's frozen/live flags. The fake server
+    // mirrors that behaviour when the reply asks it to (via `echoDisplayRunId`),
+    // so the rig exercises the contract the CLI actually consumes.
+    const payload = { ...reply };
+    if (reply.echoDisplayRunId && lastRequestBody && typeof lastRequestBody.runId === 'string') {
+      payload.displayRunId = lastRequestBody.runId;
+    }
+    delete payload.echoDisplayRunId;
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(reply));
+    res.end(JSON.stringify(payload));
   });
 });
 
@@ -65,10 +80,10 @@ const server = http.createServer((req, res) => {
  * a raw net server: the CLI sends a complete, correct POST /busStatus in both
  * cases.
  */
-function run() {
+function run(extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const p = spawn(process.execPath, [CLI, 'bus-status'], {
-      env: { ...process.env, ORCHESTRA_SOCK: sock },
+      env: { ...process.env, ORCHESTRA_SOCK: sock, ...extraEnv },
     });
     let out = '';
     let err = '';
@@ -106,15 +121,29 @@ try {
   console.log('A1 counters present');
   reply = {
     ok: true,
-    runId: 'run-alpha',
+    // #134 — `runId` here is the MAIN process's mirror id (host-…). The CLI must
+    // NOT print it; it prints the WAVE run it resolved (echoed as displayRunId).
+    runId: 'host-should-not-print',
+    echoDisplayRunId: true,
     busAvailable: true,
+    frozenFlags: JSON.stringify({ delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false }),
+    liveFlags: JSON.stringify({ delivery: true, wake: true, askGate: false, liveness: false, fencing: false, capability: false, receipts: false }),
     counters: [
       { mechanism: 'peer-message', missed: 7, duplicate: 3, lostWake: 11 },
       { mechanism: 'inbox-file', missed: 0, duplicate: 0, lostWake: 0 },
     ],
   };
-  let out = await run();
-  check('prints the run id', out.includes('run-alpha'), out);
+  let out = await run({ ORCHESTRA_RUN_ID: 'wave-alpha' });
+  // G8 — the CLI prints the WAVE run id it resolved, never the host mirror id.
+  check('prints the WAVE run id', /run:\s*wave-alpha/.test(out), out);
+  check('does NOT print the host mirror id', !out.includes('host-should-not-print'), out);
+  // #134 — frozen vs live flag table: delivery frozen ON, wake frozen OFF but
+  // live ON (the freeze holds against a mid-wave flip).
+  const drow = out.split('\n').find((l) => /(^|\s)delivery(\s|$)/.test(l)) ?? '';
+  check('delivery row shows frozen ON + live ON', /ON/.test(drow) && !/OFF/.test(drow), drow);
+  const wrow = out.split('\n').find((l) => /(^|\s)wake(\s|$)/.test(l)) ?? '';
+  check('wake row shows frozen OFF, live ON (freeze visible)', /OFF/.test(wrow) && /ON/.test(wrow), wrow);
+  check('ask_gate printed as the WIRE name', /ask_gate/.test(out), out);
   check('prints bus: available', /bus:\s*available/.test(out), out);
   check('prints the mechanism', out.includes('peer-message'), out);
   // Each number asserted INDIVIDUALLY. A single "contains 7" would pass on a
@@ -154,16 +183,27 @@ try {
   console.log('A4 must-FAIL control (wrong numbers served)');
   reply = {
     ok: true,
-    runId: 'run-delta',
+    runId: 'host-delta',
+    echoDisplayRunId: true,
     busAvailable: true,
     counters: [{ mechanism: 'peer-message', missed: 999, duplicate: 888, lostWake: 777 }],
   };
-  out = await run();
+  out = await run({ ORCHESTRA_RUN_ID: 'wave-delta' });
   const crow = out.split('\n').find((l) => l.includes('peer-message')) ?? '';
   check('control: 7 is GONE', !/\b7\b/.test(crow.replace(/777/g, '')), crow);
   check('control: 11 is GONE', !/\b11\b/.test(crow), crow);
-  check('control: run-alpha is GONE', !out.includes('run-alpha'), out);
+  check('control: A1 wave-alpha is GONE', !out.includes('wave-alpha'), out);
   check('control: the served 999 IS present', /999/.test(crow), crow);
+
+  // ── A5 (#134 G8) — the run id printed is the CLI's WAVE run, never host- ────
+  // must-FAIL against host-: even when the server's own runId is a host- id, the
+  // CLI prints the wave run it resolved. Asserting the host- id is ABSENT is the
+  // disproof of the reproduced defect (bus-status printing the per-boot host run).
+  console.log('A5 G8: prints the wave run id, never host-');
+  reply = { ok: true, runId: 'host-abc123', echoDisplayRunId: true, busAvailable: true, counters: [] };
+  out = await run({ ORCHESTRA_RUN_ID: 'lead-anchor-42' });
+  check('prints the wave run id', /run:\s*lead-anchor-42/.test(out), out);
+  check('the host- id never appears', !/host-abc123/.test(out), out);
 } finally {
   server.close();
   fs.rmSync(dir, { recursive: true, force: true });
