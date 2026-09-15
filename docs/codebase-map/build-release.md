@@ -106,24 +106,33 @@ clean tree; branch not behind `origin/<branch>`; for `--to-master`, that
 **Tag-vs-master preflight (issue #78, `release.sh:310`, after the version is
 computed and before the bump).** The bare `git rev-parse "$TAG"` check
 (`release.sh:296`) only sees the LOCAL tag namespace; the "3rd race shape" (stale
-`package.json` version + an ORIGIN tag that does not contain master's work) fired
-on v0.5.257/260/261. `release.sh` now `git fetch origin master --tags` then
-sources `scripts/release-preflight.sh` and calls:
-- `rp_two_way_discriminator <newest-origin-tag> origin/master` — resolves the
-  newest tag by **version sort** (`sort -V`, not ls-remote's alphabetical order),
-  runs both `tag..master` and `master..tag`; refuses (rc 3) with the printed
-  verdict `tag already contains master → refuse to cut a duplicate` when master
-  adds 0 commits, else prints `master ahead by N commits → shipping them` (rc 0);
-  fails closed (rc 4) if a range can't be computed.
+`package.json` version + an ORIGIN tag that does not contain the work being
+released) fired on v0.5.257/260/261. `release.sh` `git fetch origin master --tags`
+(FAILS CLOSED on a non-dry-run fetch failure — a no-network release can't push a
+tag, and skipping the guard is how the 3rd shape shipped; `--dry-run` tolerates
+offline), then sources `scripts/release-preflight.sh` and calls:
+- `rp_two_way_discriminator <newest-origin-tag> HEAD` — compares against **HEAD**,
+  the ref `pnpm version` tags, NOT `origin/master` (review F1: `ship --to-master`
+  advances `origin/master` to HEAD only later, so at preflight time it still equals
+  the newest tag → comparing against it would false-refuse every real release).
+  Resolves the newest tag by **version sort** (`sort -V`, not ls-remote's
+  alphabetical order), runs both `tag..HEAD` and `HEAD..tag`:
+  - HEAD adds 0 → rc 3, `tag already contains this ref → refuse to cut a duplicate`
+  - tag diverged (`HEAD..tag` nonzero) → rc 6, `DIVERGED tag → refuse` (review F2:
+    the tag carries commits HEAD lacks; shipping HEAD would orphan them)
+  - clean superset (ahead>0, behind==0) → rc 0, `ahead by N commits → shipping them`
+  - range uncomputable → rc 4, fail closed
 - `rp_next_version_free <tag>` — the chosen `NEW` tag must be absent from BOTH
   `git ls-remote --tags` AND `gh release list` (the v0.5.253 race took the number
   between the two reads); rc 5 if taken.
 
 Both functions read every external surface through injectable `RP_*` env seams so
 `scripts/verify-release-preflight.sh` (`pnpm run test:release-preflight`) can
-exercise all arms — including the tag==master must-FAIL arm and a mutation of the
-refuse condition — with stubbed ls-remote/gh, never driving a real release. The
-preflight is read-only, so it runs under `--dry-run` too.
+exercise all arms — the duplicate/diverged/instrument-error refuse arms, the F1
+vs-master-would-false-refuse vs vs-HEAD-proceeds pair, the F3 fetch-fail arm that
+drives the real `release.sh` in a temp repo with an unreachable origin, and a
+mutation of the refuse condition — with stubbed ls-remote/gh, never driving a real
+release. The preflight is read-only, so it runs under `--dry-run` too.
 
 Then: compute version → (if `--to-master`) `git push origin HEAD:master` →
 `pnpm version` (bump+commit+tag) → (unless `--ci-only`) `pnpm run build` +
