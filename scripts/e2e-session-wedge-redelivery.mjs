@@ -42,7 +42,21 @@ if (!arm) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
 
 // INBOX_ROOT keys off os.homedir(), NOT ORCHESTRA_HOME — override HOME or the
 // rig reads the real user's inbox.
-const tmpHome = path.join(process.env.WEDGE_HOME ?? '/tmp/wedge90-r2', ARM);
+// Guard the rm -rf: WEDGE_HOME is env-overridable and this child is also
+// runnable standalone, so a bad value (e.g. WEDGE_HOME=$HOME) would otherwise
+// fs.rmSync a real dir (#100 review F2). path.resolve() normalizes `..`, so a
+// traversal that starts with the prefix but escapes it (F1) is caught here too.
+// Use the CANONICAL path for every subsequent op so the guarded value and the
+// deleted/created value are the same.
+const WEDGE_PREFIX = '/tmp/wedge90-';
+const tmpHomeRaw = path.join(process.env.WEDGE_HOME ?? '/tmp/wedge90-r2', ARM);
+const tmpHome = path.resolve(tmpHomeRaw);
+if (!tmpHome.startsWith(WEDGE_PREFIX)) {
+  console.error(
+    `[wedge-r2] refusing to remove unexpected path: ${tmpHomeRaw} (resolved: ${tmpHome})`,
+  );
+  process.exit(2);
+}
 fs.rmSync(tmpHome, { recursive: true, force: true });
 fs.mkdirSync(path.join(tmpHome, '.orchestra', 'inbox'), { recursive: true });
 process.env.ORCHESTRA_HOME = tmpHome;
