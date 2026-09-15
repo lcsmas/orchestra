@@ -16,12 +16,12 @@ import os from 'node:os';
  *  (click focuses the window + workspace). */
 export interface UiNotification {
   wsId: string;
-  /** `watchdogStandDown` (issue #97): the self-healing watchdog has spent its
-   *  anti-flap budget on a workspace and stopped auto-recycling it — the one
-   *  condition where a human MUST intervene, so it earns an OS-level toast like
-   *  `needsInput`, not just a log line and a badge (#88's stall badge may itself
-   *  be suppressed for the same ws). */
-  kind: 'finished' | 'needsInput' | 'watchdogStandDown';
+  /** `needsInput` covers both an agent waiting on the user AND the watchdog's
+   *  flap-limit stand-down (issue #97) — both are "this workspace needs a
+   *  human". The active impl (electron.ts) renders every kind identically, so a
+   *  distinct kind for the stand-down would be inert; the surface distinction
+   *  lives in the title/body, not the kind. */
+  kind: 'finished' | 'needsInput';
   title: string;
   body: string;
 }

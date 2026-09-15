@@ -176,6 +176,23 @@ test('R1 guard: the recycle decision is fed live progress evidence', () => {
   );
 });
 
+test('F1 guard: the flap-limit surface is edge-triggered and re-arms on recovery', () => {
+  const src = sourceOf('session-watchdog.ts');
+  // The surface must be gated on a once-set (`stoodDown`) so it fires on the
+  // transition, not every tick. The behaviour is proven by the exactly-once
+  // count arm below; this pins the two structural halves so a refactor that
+  // dropped either fails with a NAME.
+  assert.match(src, /if\s*\(\s*!stoodDown\.has\(ws\.id\)\s*\)/, 'surface must be gated on the once-set');
+  assert.match(src, /stoodDown\.add\(ws\.id\)/, 'the transition must mark the ws stood-down');
+  // ...and it must CLEAR when the ws is no longer at flap-limit, or the surface
+  // never re-arms after a recovery (a permanently silenced stand-down).
+  assert.match(
+    src,
+    /decision\.action\s*!==\s*'flap-limit'\).*stoodDown\.delete\(ws\.id\)/s,
+    'the once-set must clear on any non-flap-limit decision so recovery re-arms it',
+  );
+});
+
 // ── Issue #97: flap-limit SURFACE + widening BACKOFF, driven end-to-end ──────
 //
 // The pure-policy tests in session-wedge.test.ts prove decideSessionRecycle
@@ -219,6 +236,9 @@ test('#97: recycles WIDEN and the stand-down SURFACES to a human', () => {
     backoffGaps: number[];
     backoffSpaced: boolean;
     flapLimitTick: number | null;
+    overBudgetTicks: number;
+    flapBroadcastCount: number;
+    flapNotifyCount: number;
     flapBroadcast: boolean;
     flapNotify: boolean;
     surfacedChannels: string[];
@@ -243,13 +263,31 @@ test('#97: recycles WIDEN and the stand-down SURFACES to a human', () => {
   }
 
   // G3 — the surface. On the unfixed build surfacedChannels is ONLY
-  // `workspace:update` and flapBroadcast/flapNotify are false (the measured
-  // defect). Require BOTH the in-app broadcast and the OS notify.
+  // `workspace:update` and the counts are 0 (the measured defect). Require BOTH
+  // the in-app broadcast and the OS notify.
   assert.equal(r.flapBroadcast, true, 'flap-limit must emit the watchdog:flap-limit broadcast');
   assert.equal(r.flapNotify, true, 'flap-limit must emit an OS notify()');
   assert.ok(typeof r.flapLimitTick === 'number', 'the stand-down must actually fire within the run');
   assert.ok(
     r.surfacedChannels.includes('watchdog:flap-limit') && r.surfacedChannels.includes('NOTIFY'),
     `human surface missing — surfacedChannels was ${JSON.stringify(r.surfacedChannels)}`,
+  );
+
+  // review F1/F2 — the surface is EDGE-triggered, asserted as a COUNT not a
+  // boolean. The flap-limit CONDITION holds for `overBudgetTicks` (>= 7 here),
+  // but the human surface must fire EXACTLY ONCE — a boolean `true` is identical
+  // for "once" and "storm", which is exactly how the first cut's un-guarded
+  // ~54-toasts/hr regression stayed green. must-FAIL: the un-guarded build fires
+  // `flapBroadcastCount === flapNotifyCount === overBudgetTicks` (measured 7/7).
+  assert.ok(r.overBudgetTicks >= 2, `the condition must hold for multiple ticks to make the once-guard meaningful (was ${r.overBudgetTicks})`);
+  assert.equal(
+    r.flapBroadcastCount,
+    1,
+    `the broadcast must fire ONCE across ${r.overBudgetTicks} over-budget ticks, not per tick (was ${r.flapBroadcastCount} — a storm)`,
+  );
+  assert.equal(
+    r.flapNotifyCount,
+    1,
+    `the OS notify must fire ONCE across ${r.overBudgetTicks} over-budget ticks, not per tick (was ${r.flapNotifyCount} — a toast storm)`,
   );
 });

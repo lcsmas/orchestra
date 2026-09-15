@@ -93,6 +93,19 @@ const recycleLedger = new Map<string, number[]>();
  *  distinguish "wedged" from "between messages". */
 const lastGateSeen = new Map<string, string | null>();
 
+/** Workspaces currently in the flap-limit STOOD-DOWN state (issue #97, review
+ *  F1). The flap-limit branch does not recycle, touch the ledger, or change
+ *  `ws.status` — so without this a stood-down workspace re-enters the branch on
+ *  EVERY 60s tick and re-fires the (non-focus-suppressed) OS toast + broadcast
+ *  for the whole ~54-tick window: a toast STORM, where the pre-#97 code only
+ *  repeated a benign `log.error`. The surface must fire ONCE on the transition
+ *  into stand-down and stay quiet until the workspace recovers.
+ *
+ *  Cleared when `inWindow` drops back below the budget (a recycle aged out of
+ *  the rolling window, so the watchdog may auto-heal again) — the NEXT time the
+ *  budget is spent is a fresh transition and surfaces again. */
+const stoodDown = new Set<string>();
+
 let timer: NodeJS.Timeout | null = null;
 
 /** Recycle ONE wedged session: stop it, then wake it on the SAME conversation
@@ -256,7 +269,10 @@ export function surfaceFlapLimit(
   });
   platform.notify({
     wsId,
-    kind: 'watchdogStandDown',
+    // `needsInput`: the flap-limit stand-down is "this workspace needs a human"
+    // (review F3 — a distinct kind would be inert; electron.ts renders all kinds
+    // the same). The surface distinction is in the title/body.
+    kind: 'needsInput',
     title: 'Auto-repair gave up — needs you',
     body:
       `${wsName} stalled ${stalledForMin}min and was auto-restarted ` +
@@ -321,6 +337,12 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
       now,
     });
 
+    // Any decision OTHER than flap-limit means the workspace is no longer stood
+    // down (it recovered → `none`, or a recycle aged out of the window →
+    // `recycle`/`backoff`). Clear the once-guard here so the NEXT time the budget
+    // is spent counts as a fresh transition and surfaces again (review F1).
+    if (decision.action !== 'flap-limit') stoodDown.delete(ws.id);
+
     if (decision.action === 'none') continue;
 
     if (decision.action === 'backoff') {
@@ -337,21 +359,26 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
     }
 
     if (decision.action === 'flap-limit') {
-      // SURFACED, never silent. A watchdog that quietly gives up leaves the
-      // human with neither a working agent nor a reason — the worst of both.
-      // The #88 badge is still on the row saying the workspace is stalled; this
-      // line is what explains that the automatic repair has stood down.
       const minutes = Math.round(decision.stalledForMs / 60_000);
+      // A stall log line every tick is benign; a NON-focus-suppressed OS toast
+      // every tick is a storm (review F1). So the LOG is level-triggered (the
+      // condition still holds, useful in the field trail) but the SURFACE is
+      // EDGE-triggered — fired once on the transition into stand-down and quiet
+      // until the workspace recovers (`stoodDown` cleared above on any other
+      // decision). Without this the branch re-fires ~54 toasts/hr per stuck ws.
       log.error(
         `session-watchdog: ${ws.id} stalled ${minutes}min but ` +
           `already recycled ${decision.recyclesInWindow}x this hour — STANDING DOWN, needs a human (issue #90/#97)`,
       );
-      // A log line is not a surface (issue #97): the human is not watching the
-      // main log, and #88's stall badge may be suppressed for this very ws. Emit
-      // a dedicated broadcast (so a view can badge/toast it) AND an OS-level
-      // notification — this is the ONE watchdog outcome that genuinely needs a
-      // human, so it earns the same surface as `agent:needs-input`.
-      surfaceFlapLimit(ws.id, ws.name, decision.recyclesInWindow, minutes);
+      if (!stoodDown.has(ws.id)) {
+        stoodDown.add(ws.id);
+        // A log line is not a surface (issue #97): the human is not watching the
+        // main log, and #88's stall badge may be suppressed for this very ws.
+        // Emit a dedicated broadcast (so a view can badge/toast it) AND an
+        // OS-level notification — the ONE watchdog outcome that genuinely needs
+        // a human, so it earns the same surface as `agent:needs-input`.
+        surfaceFlapLimit(ws.id, ws.name, decision.recyclesInWindow, minutes);
+      }
       continue;
     }
 
@@ -380,6 +407,7 @@ export function stopSessionWatchdog(): void {
   }
   recycleLedger.clear();
   lastGateSeen.clear();
+  stoodDown.clear();
 }
 
 /** Test/rig seam: reset the in-memory state so a rig can drive ticks from a
@@ -388,4 +416,5 @@ export function __resetSessionWatchdogForTests(since: number = Date.now()): void
   observableSince = since;
   recycleLedger.clear();
   lastGateSeen.clear();
+  stoodDown.clear();
 }

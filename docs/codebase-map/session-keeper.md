@@ -226,9 +226,12 @@ times).
 - **flap-limit SURFACES to a human (`surfaceFlapLimit`, #97).** A log line is not
   a surface: it emits `platform.broadcast('watchdog:flap-limit', {workspaceId,
   recyclesInWindow, stalledForMin})` (in-app) AND `platform.notify({kind:
-  'watchdogStandDown', …})` (OS toast, NOT focus-suppressed — this is the one
-  watchdog outcome that genuinely needs a human, and #88's stall badge may be
-  suppressed for the same ws).
+  'needsInput', …})` (OS toast, NOT focus-suppressed — this is the one watchdog
+  outcome that genuinely needs a human, and #88's stall badge may be suppressed
+  for the same ws). **Edge-triggered** (review F1): a `stoodDown` Set fires the
+  surface ONCE on the transition into stand-down and clears when `inWindow`
+  drops back below budget — the log line stays level-triggered, but a
+  non-suppressed toast every 60s tick for the whole window would be a storm.
 - **Gates.** Pure policy: `src/shared/session-wedge.test.ts` (backoff growth +
   ordering). Module end-to-end: `src/main/session-watchdog.test.ts` drives the
   R2 redelivery rig AND `scripts/wedge90-rigs/flap-budget.mjs` (14 real ticks:

@@ -197,10 +197,12 @@ export const RECYCLE_WINDOW_MS = 60 * 60 * 1000;
  *  UNBASELINED, and chosen as spacings rather than tuned rates (same footing as
  *  MAX_RECYCLES_PER_HOUR). Base 2 min: comfortably above one 60s tick, so the
  *  second attempt is always deferred by at least one tick rather than firing on
- *  the very next one. Cap 15 min: keeps the third attempt from pushing past the
- *  point where `flap-limit` would take over anyway, so backoff widens the
- *  spacing without ever silently disabling the watchdog for longer than the
- *  window. */
+ *  the very next one. Cap 15 min: at the current `MAX_RECYCLES_PER_HOUR = 3`
+ *  the flap ceiling is hit before any 4th backoff computes, so the LARGEST gap
+ *  ever actually used is N=2 → `base*2 = 4 min` — the cap is unreachable today
+ *  and exists only to bound the interval if `MAX_RECYCLES_PER_HOUR` is later
+ *  raised (without it, `base*2^(N-1)` would grow unbounded and could silently
+ *  disable the watchdog for longer than the window). Review F4. */
 export const RECYCLE_BACKOFF_BASE_MS = 2 * 60 * 1000;
 export const RECYCLE_BACKOFF_MAX_MS = 15 * 60 * 1000;
 

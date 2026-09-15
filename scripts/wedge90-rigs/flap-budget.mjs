@@ -86,8 +86,23 @@ clearInterval(ka);
 // calls the real module made -- an unaudited zero cannot masquerade as a pass.
 const surfacedChannels=[...new Set(broadcasts.map(c=>c.startsWith('NOTIFY:')?'NOTIFY':c))]
   .filter(c=>!c.startsWith('agent:'));
-const flapBroadcast=broadcasts.includes('watchdog:flap-limit');
-const flapNotify=broadcasts.some(c=>c.startsWith('NOTIFY:'));
+// COUNT the surface fires, do NOT collapse to a boolean (review F2): `true` is
+// identical for "fired once" and "fired 54 times", so a boolean assertion is
+// structurally blind to the toast STORM F1 fixes. The edge-triggered surface
+// must fire EXACTLY ONCE even though the flap-limit CONDITION holds for many
+// ticks (overBudgetTicks below). On the un-guarded build these counts equal
+// overBudgetTicks (the storm); on the fixed build they are 1.
+const flapBroadcastCount=broadcasts.filter(c=>c==='watchdog:flap-limit').length;
+const flapNotifyCount=broadcasts.filter(c=>c.startsWith('NOTIFY:')).length;
+// How many ticks the flap-limit CONDITION held (the surface COULD have fired).
+// Once the budget is spent at flapLimitTick, the condition holds for EVERY
+// remaining tick in this rig: the run is 14 min, the recycle window is 60 min so
+// nothing ages out, status stays idle and the stream stays backdated. So the
+// number of condition-holding ticks is TICKS - flapLimitTick (>= 7 here). The
+// un-guarded build fires the surface on ALL of them; the fixed build fires once.
+const overBudgetTicks=flapLimitTick===null?0:TICKS-flapLimitTick;
+const flapBroadcast=flapBroadcastCount>0;
+const flapNotify=flapNotifyCount>0;
 // The backoff observable: recycles must NOT be on consecutive ticks. The pre-#97
 // build recycles on 0,1,2; this build spaces them as the interval doubles.
 const gaps=recycleTicks.slice(1).map((t,i)=>t-recycleTicks[i]);
@@ -98,13 +113,16 @@ if(!flapBroadcast){ console.error('[rig] SURFACE GUARD: flap-limit never fired i
 
 console.log(JSON.stringify({
   totalRecycles:interrupts,
-  recycleTicks,          // spacing between these = the #97 backoff, observed end-to-end
+  recycleTicks,           // spacing between these = the #97 backoff, observed end-to-end
   backoffGaps:gaps,
-  backoffSpaced:spaced,  // POSITIVE: recycles are NOT back-to-back (pre-#97 was 0,1,2)
-  flapLimitTick,         // POSITIVE: the tick the stand-down surfaced
-  flapBroadcast,         // POSITIVE: watchdog:flap-limit broadcast fired
-  flapNotify,            // POSITIVE: an OS notify() fired
-  surfacedChannels,      // human-visible channels the real module emitted
+  backoffSpaced:spaced,   // POSITIVE: recycles are NOT back-to-back (pre-#97 was 0,1,2)
+  flapLimitTick,          // POSITIVE: the tick the stand-down first surfaced
+  overBudgetTicks,        // how many ticks the flap-limit condition held (surface COULD fire)
+  flapBroadcastCount,     // review F2: COUNT, not boolean. Fixed=1, un-guarded storm=overBudgetTicks
+  flapNotifyCount,        // review F2: COUNT of OS toasts. Fixed=1, un-guarded storm=overBudgetTicks
+  flapBroadcast,          // POSITIVE: watchdog:flap-limit broadcast fired at least once
+  flapNotify,             // POSITIVE: an OS notify() fired at least once
+  surfacedChannels,       // human-visible channels the real module emitted
   perTick:rows,
 },null,1));
 process.exit(0);
