@@ -192,3 +192,35 @@ export function removeBlock(contents: string, text: string): RemoveResult {
 export function serializeInboxBlocks(texts: string[]): string {
   return texts.map((t) => `\n${INBOX_DELIMITER}\n${t}\n${INBOX_DELIMITER}\n`).join('');
 }
+
+/** The write decision for the composer's file re-derive (issue #91), extracted
+ *  pure so the renderer and its test drive the SAME logic (the renderer can't be
+ *  imported under the node test runner).
+ *
+ *  The tray re-reads the inbox FILE on focus / mount / turn-start to retract a
+ *  stale chip even when the directory watcher misses the drain. But the read is
+ *  async, and the turn-start edge fires the instant the prompt is QUEUED —
+ *  strictly BEFORE the CLI hook `rm`s the file — so the read can observe a block
+ *  that is about to be deleted. If, while that read is in flight, the watcher
+ *  fires `inbox:update` and the store retracts, writing the stale read back would
+ *  RESURRECT the exact #91 stale chip (REVIEW-91 F1). A per-workspace
+ *  drain-generation, bumped on every `inbox:update`, is the staleness token:
+ *
+ *  - `genNow !== genAtRead` → a fresher watcher event landed during the read;
+ *    DISCARD (`{ write: false }`), the watcher's value stands.
+ *  - otherwise the read is authoritative: write it, unless it is byte-identical
+ *    to `prev` (a no-op we skip so an unchanged cache doesn't notify
+ *    subscribers on every turn start). */
+export function resolveInboxReDerive(args: {
+  genAtRead: number;
+  genNow: number;
+  prev: InboxBlock[];
+  read: InboxBlock[];
+}): { write: false } | { write: true; blocks: InboxBlock[] } {
+  const { genAtRead, genNow, prev, read } = args;
+  if (genNow !== genAtRead) return { write: false };
+  if (prev.length === read.length && prev.every((b, i) => b.text === read[i].text)) {
+    return { write: false };
+  }
+  return { write: true, blocks: read };
+}

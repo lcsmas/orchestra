@@ -97,6 +97,38 @@ silently and the human was the detector.
   cache is hydrated PER-PANE (`StructuredView`'s mount effect), so a workspace
   nobody has opened has no entry — which is exactly the fleet-freeze case, since
   nobody looking at the frozen agent is why it stays frozen.
+- **The composer tray RE-DERIVES `store.parkedInbox` from the FILE, never from a
+  cached parse (issue #91).** The `inbox:update` retract (main's directory
+  watcher → `count:0` → store clears) is the fast path, but `fs.watch` is
+  best-effort and drops events; a missed drain used to leave the chip reading
+  "N held" with LIVE Release ▶ / Refuse ✕ buttons for a message the hook already
+  delivered. So `Composer` in `StructuredView.tsx` calls `refreshInbox`
+  (`window.orchestra.listInbox` → **authoritatively REPLACES** the cache,
+  including clearing it to empty — the old mount read only ever SET a non-empty
+  list, so it could never retract) at the moments a drain most likely just
+  happened: mount/workspace-change, this pane gaining focus (`isActive`), and
+  every turn-start edge (`session.running` false→true — the `UserPromptSubmit`
+  hook `cat`s+`rm`s the file exactly as the turn begins). The retract is thus
+  independent of the watcher firing. **STALENESS TOKEN (the turn-start edge
+  RACES the hook):** status flips `running` the instant the prompt is QUEUED
+  (`agent-sdk.ts` — before the first SDK event), which is strictly *before* the
+  hook `rm`s the file, so `refreshInbox`'s async `listInbox` can read the block
+  while it is still on disk; if the watcher then retracts (`inbox:update
+  count:0`) before that read resolves, writing the stale read back would
+  resurrect the exact #91 chip. So `refreshInbox` snapshots a per-workspace
+  drain-generation (`store.parkedInboxGen`, bumped on EVERY `inbox:update`) before
+  the read and DISCARDS its write when the gen advanced meanwhile — the watcher's
+  value is strictly fresher. The write decision is the pure `resolveInboxReDerive`
+  (`shared/inbox-blocks.ts`), shared with the test so both drive the same logic; a
+  rejected read is `.catch`-logged, never left to wedge the tray. Clicking
+  Release ▶ on a phantom row (file already gone) is a clean no-op:
+  `releaseInboxBlock` re-reads the file, matches by content, and returns
+  `{ ok:false, reason:'gone' }` BEFORE reaching `sdkDeliverConfirmed`, so a stale
+  renderer body can never re-deliver. Covered by source-binding guards in
+  `inbox-tray-rmw.test.ts` (each fails on its mutant), a behavioural
+  drain-vs-read interleave test in `inbox-blocks.test.ts` (#91 F1, fails on the
+  no-gen-check mutant), and the headless-sway real-app drive (both arms,
+  DOM+screenshot).
 - **Render** — `src/renderer/components/QueueStallBadge.tsx`, dropped into BOTH
   Sidebar render paths (spawn-tree rows and repo-section rows) so they cannot
   drift. A numeric PILL styled on `ws-hidden-count` (`.ws-stall-badge` in

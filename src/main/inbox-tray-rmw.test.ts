@@ -195,3 +195,99 @@ test('SOURCE-BINDING GUARD: both mutators really do re-read before writing', () 
     'queueInbox must sanitize the body at write time (R1)',
   );
 });
+
+test('PHANTOM-RELEASE GUARD (#91): a Release on an absent file no-ops BEFORE any delivery', () => {
+  // The user can click Release ▶ on a tray row whose backing file the hook
+  // already drained (the #91 stale chip). The backend must re-derive from the
+  // FILE and no-op cleanly — never re-deliver from the text the renderer passed
+  // (which is a cached body). `releaseInboxBlock` re-reads the file, matches the
+  // block by CONTENT, and on no match returns `{ ok:false, reason:'gone' }`
+  // WITHOUT reaching `sdkDeliverConfirmed`. That ordering is the guarantee, so
+  // assert it structurally (the module can't be imported — Electron deps).
+  const src = fs
+    .readFileSync(new URL('./inbox-tray.ts', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '');
+  const start = src.indexOf('export async function releaseInboxBlock(');
+  assert.ok(start > -1, 'releaseInboxBlock not found — the subject moved');
+  const next = src.indexOf('\nexport ', start + 1);
+  const body = src.slice(start, next === -1 ? undefined : next);
+
+  // The file is re-read into `blocks` and the target matched by content.
+  const readIdx = body.search(/const blocks = readInbox\(workspaceId\)/);
+  const matchIdx = body.search(/blocks\.find\(/);
+  const goneReturnIdx = body.search(/return \{ ok: false, reason: 'gone'/);
+  const deliverIdx = body.search(/sdkDeliverConfirmed\(/);
+  assert.ok(readIdx > -1, 'release must re-read the file (readInbox)');
+  assert.ok(matchIdx > readIdx, 'release must match the target against the fresh read');
+  assert.ok(goneReturnIdx > -1, "release must have a 'gone' early return");
+  assert.ok(deliverIdx > -1, 'release must call sdkDeliverConfirmed on the happy path');
+  // The load-bearing ordering: the 'gone' return precedes the delivery call, so
+  // an absent block can NEVER reach delivery from a cached body.
+  assert.ok(
+    goneReturnIdx < deliverIdx,
+    "the 'gone' no-op must return BEFORE sdkDeliverConfirmed — else a phantom row could re-deliver a cached body",
+  );
+});
+
+test('TRAY RE-DERIVE GUARD (#91): the composer re-reads the inbox FILE on focus and on turn start', () => {
+  // #91's stale chip: the renderer's `parkedInbox` cache retracted ONLY via the
+  // fs.watch-driven `inbox:update` event, which is best-effort and drops events
+  // — so a drained file left the chip reading "N held" with LIVE buttons. The
+  // fix makes the tray re-derive from the file authoritatively at focus and at
+  // every turn start, independent of the watcher. Assert that wiring is present
+  // in the real source (comments stripped so design prose can't satisfy it).
+  const src = fs
+    .readFileSync(new URL('../renderer/components/StructuredView.tsx', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '');
+
+  // A refresh callback that reads the file via the IPC and writes it back.
+  assert.match(
+    src,
+    /const refreshInbox = useCallback\(/,
+    'the tray must have a refreshInbox callback',
+  );
+  assert.match(
+    src,
+    /window\.orchestra\s*\.listInbox\(workspaceId\)/,
+    'refreshInbox must re-read the inbox FILE (listInbox), not trust the cache',
+  );
+  // It must REPLACE the cache authoritatively — including clearing to empty —
+  // rather than the old "only set when non-empty" mount read that could never
+  // retract. The write goes through the shared `resolveInboxReDerive` decision.
+  assert.match(
+    src,
+    /parkedInbox: \{ \.\.\.st\.parkedInbox, \[workspaceId\]: decision\.blocks \}/,
+    'refreshInbox must write the freshly-read blocks back authoritatively',
+  );
+  // STALENESS TOKEN (REVIEW-91 F1): the write must run through the shared
+  // decision that discards a read invalidated by a concurrent watcher retract,
+  // and it must snapshot the generation BEFORE the async read. Without this the
+  // turn-start re-derive re-introduces the #91 stale chip via a clobber race —
+  // the behaviour is driven end-to-end in inbox-blocks.test.ts (#91 F1).
+  assert.match(
+    src,
+    /const genAtRead = useStore\.getState\(\)\.parkedInboxGen\[workspaceId\] \?\? 0;/,
+    'refreshInbox must snapshot the drain-generation BEFORE the async read',
+  );
+  assert.match(
+    src,
+    /resolveInboxReDerive\(\{[\s\S]*?genAtRead,[\s\S]*?genNow: st\.parkedInboxGen\[workspaceId\]/,
+    'refreshInbox must gate the write on the staleness token (resolveInboxReDerive)',
+  );
+  // A rejected read must not throw unhandled (F3).
+  assert.match(src, /\.catch\(\(e\) => \{[\s\S]*?inbox re-derive failed/, 'refreshInbox must .catch its read');
+  // Triggered on focus (isActive) …
+  assert.match(
+    src,
+    /if \(isActive\) return refreshInbox\(\);/,
+    'the tray must re-derive when the workspace gains focus',
+  );
+  // … and on the turn-start edge (running false -> true).
+  assert.match(
+    src,
+    /if \(running && !wasRunning\.current\) refreshInbox\(\);/,
+    'the tray must re-derive on turn start (running false->true edge)',
+  );
+});

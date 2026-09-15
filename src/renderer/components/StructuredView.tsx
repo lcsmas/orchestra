@@ -34,7 +34,7 @@ import { WorkspaceAccountBadge } from './AccountBadge';
 import { CmComposer, type CmComposerHandle } from './agent/CmComposer';
 import { QueueTray } from './agent/QueueTray';
 import { InboxTray } from './agent/InboxTray';
-import type { InboxBlock } from '../../shared/inbox-blocks';
+import { resolveInboxReDerive, type InboxBlock } from '../../shared/inbox-blocks';
 import { useVoiceDictation } from './agent/useVoiceDictation';
 import { McpPopover, McpIndicator } from './agent/McpPopover';
 import { readComposerVim, writeComposerVim, vimChipLabel, type VimMode } from '../composer-vim-pref';
@@ -1198,20 +1198,77 @@ function Composer({
   // on every agent:tool tick. EMPTY_BLOCKS is a module constant, not a fresh
   // `[]`, because a new array identity every render would defeat the memo.
   const parkedInbox = useStore((s) => s.parkedInbox[workspaceId]) ?? EMPTY_BLOCKS;
-  // The `inbox:update` event only fires on CHANGE, so a workspace whose file
-  // was already non-empty when this view mounted needs one explicit read.
-  useEffect(() => {
+  // The tray must RE-DERIVE from the on-disk file, never trust the cached parse
+  // (issue #91). The `inbox:update` retract path (main's directory watcher →
+  // `count:0`) is the fast path, but `fs.watch` is best-effort and drops events
+  // — a missed drain used to leave the chip reading "N held" with LIVE Release
+  // buttons for a message the hook already delivered. So we authoritatively
+  // re-read the file and REPLACE the cache — including clearing it to empty when
+  // the file is gone — at the moments the file is most likely to have just been
+  // drained: this workspace gaining focus, and every turn start (the
+  // UserPromptSubmit hook drains the inbox exactly as a turn begins). This makes
+  // the retract independent of the watcher firing.
+  //
+  // STALENESS TOKEN (issue #91, REVIEW-91 F1). The turn-start edge races the
+  // hook: status flips `running` the instant the prompt is QUEUED (agent-sdk.ts
+  // — "before the first SDK event lands"), which is strictly BEFORE the CLI hook
+  // `rm`s the file. So our `listInbox` can read the block while it is still
+  // present, and by the time that async read resolves the watcher may already
+  // have fired `inbox:update count:0` and retracted the chip correctly — writing
+  // our stale read back would RESURRECT the exact #91 stale chip. So we snapshot
+  // the per-workspace drain-generation (bumped on every `inbox:update`) before
+  // the read and DISCARD our write if it advanced meanwhile: a watcher event
+  // that landed during the read is strictly fresher. When NO watcher event fires
+  // (the missed-drain case #91 exists for) the gen is unchanged and we write —
+  // exactly the authoritative retract we want.
+  const refreshInbox = useCallback(() => {
     let live = true;
-    void window.orchestra.listInbox(workspaceId).then((blocks) => {
-      if (!live || blocks.length === 0) return;
-      useStore.setState((st) => ({
-        parkedInbox: { ...st.parkedInbox, [workspaceId]: blocks },
-      }));
-    });
+    const genAtRead = useStore.getState().parkedInboxGen[workspaceId] ?? 0;
+    window.orchestra
+      .listInbox(workspaceId)
+      .then((blocks) => {
+        if (!live) return;
+        useStore.setState((st) => {
+          // The staleness-token + no-op decision is a pure function shared with
+          // the test (which can't import this component) so both drive the same
+          // logic — a concurrent `inbox:update` (fresher) makes this DISCARD.
+          const decision = resolveInboxReDerive({
+            genAtRead,
+            genNow: st.parkedInboxGen[workspaceId] ?? 0,
+            prev: st.parkedInbox[workspaceId] ?? EMPTY_BLOCKS,
+            read: blocks,
+          });
+          if (!decision.write) return st;
+          return { parkedInbox: { ...st.parkedInbox, [workspaceId]: decision.blocks } };
+        });
+      })
+      .catch((e) => {
+        // A rejected read must not throw unhandled (F3) — leave the last good
+        // cache (and any watcher retract) in place rather than wedging the tray.
+        log.warn('inbox re-derive failed', e);
+      });
     return () => {
       live = false;
     };
   }, [workspaceId]);
+
+  // One read on mount / when the workspace changes (a file already non-empty
+  // when the view mounts gets no `inbox:update`).
+  useEffect(() => refreshInbox(), [refreshInbox]);
+  // Re-derive when this workspace gains focus — the drain may have happened
+  // while its pane was in the background and the watcher event was missed.
+  useEffect(() => {
+    if (isActive) return refreshInbox();
+  }, [isActive, refreshInbox]);
+  // Re-derive on every turn start: the UserPromptSubmit hook `cat`s and `rm`s
+  // the inbox file as the turn begins, so a turn starting is the strongest
+  // signal that a parked message was just delivered and the chip must retract.
+  // (`running` is computed above.)
+  const wasRunning = useRef(running);
+  useEffect(() => {
+    if (running && !wasRunning.current) refreshInbox();
+    wasRunning.current = running;
+  }, [running, refreshInbox]);
 
   // Voice dictation (mic + voice-edit in the bar; ghost partials in the doc).
   // The workspace's branch + repo folder ride into the speaker dictionary so

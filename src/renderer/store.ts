@@ -115,6 +115,16 @@ interface State {
    *  shell hook can drain without the main process's involvement — so this is a
    *  cache refreshed by `inbox:update` events, never authoritative. */
   parkedInbox: Record<string, InboxBlock[]>;
+  /** Monotonic drain-generation per workspace, bumped on every `inbox:update`
+   *  (issue #91). The composer's file re-derive (`refreshInbox`) snapshots this
+   *  BEFORE its async `listInbox` read and discards its own write if the gen
+   *  advanced meanwhile — a watcher-driven retract that landed during the read
+   *  is strictly fresher, so a stale read must not clobber it back. Without this,
+   *  the turn-start re-derive races the CLI hook's `rm` (status flips `running`
+   *  the instant the prompt is queued, BEFORE the hook drains the file) and
+   *  re-writes an already-delivered block over the watcher's correct retract —
+   *  resurrecting the exact #91 stale chip. Never persisted. */
+  parkedInboxGen: Record<string, number>;
   /** Per-repo base-branch sync state (behind/ahead of origin/<base>),
    *  keyed by repoPath. Updated by `repo:syncState` events. */
   repoSync: Record<string, RepoSyncState>;
@@ -247,6 +257,7 @@ export const useStore = create<State>((set, get) => ({
   agentSessions: {},
   designPicks: {},
   parkedInbox: {},
+  parkedInboxGen: {},
   repoSync: {},
   accountUsage: {},
   workspaceAccounts: {},
@@ -796,7 +807,8 @@ window.orchestra.onWorkspaceRemoved((id) => {
     const { [id]: _goneCtx, ...contextTokens } = s.contextTokens;
     const { [id]: _goneSession, ...agentSessions } = s.agentSessions;
     const { [id]: _goneInbox, ...parkedInbox } = s.parkedInbox;
-    return { workspaces, activeId, prs, checks, linear, stats, tools, contextTokens, agentSessions, parkedInbox };
+    const { [id]: _goneInboxGen, ...parkedInboxGen } = s.parkedInboxGen;
+    return { workspaces, activeId, prs, checks, linear, stats, tools, contextTokens, agentSessions, parkedInbox, parkedInboxGen };
   });
 });
 window.orchestra.onWorkspacesRemoved((ids) => {
@@ -820,6 +832,7 @@ window.orchestra.onWorkspacesRemoved((ids) => {
       contextTokens: prune(s.contextTokens),
       agentSessions: prune(s.agentSessions),
       parkedInbox: prune(s.parkedInbox),
+      parkedInboxGen: prune(s.parkedInboxGen),
     };
   });
 });
@@ -930,13 +943,27 @@ window.orchestra.onReposUpdate((repos) => {
 // there is actually something parked. Fires for hook-performed drains too (main
 // watches the directory), which is what makes the tray retract on its own.
 window.orchestra.onInboxUpdate((wsId, count) => {
+  // Bump the drain-generation on EVERY inbox:update (issue #91) — this is the
+  // staleness token the composer's `refreshInbox` checks to discard a read that
+  // started before this authoritative watcher event. Bumped even on the
+  // empty-staying-empty short-circuit below, so a re-derive in flight against a
+  // still-present file is correctly invalidated the moment the hook drains it.
+  const bumpGen = (s: State) => ({
+    parkedInboxGen: { ...s.parkedInboxGen, [wsId]: (s.parkedInboxGen[wsId] ?? 0) + 1 },
+  });
   if (count === 0) {
-    // Guard before setState: zustand notifies every subscriber on ANY set, and
-    // an empty inbox staying empty is by far the most common event.
-    if (!useStore.getState().parkedInbox[wsId]?.length) return;
-    useStore.setState((s) => ({ parkedInbox: { ...s.parkedInbox, [wsId]: [] } }));
+    // An empty inbox staying empty is by far the most common event — but the gen
+    // must still advance so an in-flight stale read can't clobber this retract,
+    // so we cannot early-return before bumping. We still avoid rewriting the
+    // (already empty) block list to keep the common case from notifying the
+    // block-list subscribers.
+    const hadBlocks = !!useStore.getState().parkedInbox[wsId]?.length;
+    useStore.setState((s) =>
+      hadBlocks ? { ...bumpGen(s), parkedInbox: { ...s.parkedInbox, [wsId]: [] } } : bumpGen(s),
+    );
     return;
   }
+  useStore.setState(bumpGen);
   void window.orchestra.listInbox(wsId).then((blocks) => {
     useStore.setState((s) => ({ parkedInbox: { ...s.parkedInbox, [wsId]: blocks } }));
   });

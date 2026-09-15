@@ -4,8 +4,10 @@ import {
   parseInboxBlocks,
   removeBlock,
   serializeInboxBlocks,
+  resolveInboxReDerive,
   INBOX_DELIMITER,
   sanitizeInboxBody,
+  type InboxBlock,
 } from './inbox-blocks.ts';
 
 // The fixture below is a REAL block, copied byte-for-byte out of a live
@@ -277,4 +279,80 @@ test('serialize→parse round-trips, and matches queueInbox framing byte-for-byt
   assert.equal(round.length, 1);
   assert.equal(round[0].text, REAL_BLOCK);
   assert.equal(serializeInboxBlocks([]), '');
+});
+
+// ── #91 REVIEW-91 F1: the turn-start/focus re-derive must NOT clobber a chip the
+//    watcher just retracted. Drives the real interleave through the SAME pure
+//    decision the renderer uses (`resolveInboxReDerive`) against a mini-store,
+//    so this is behaviour, not a source-regex guard.
+
+/** A minimal model of the renderer store's parkedInbox + drain-generation and
+ *  the two writers that race: the composer's async file re-derive and the
+ *  directory watcher's `inbox:update`. */
+function makeInboxStore(initialBlocks: InboxBlock[]) {
+  let blocks = initialBlocks;
+  let gen = 0;
+  return {
+    blocks: () => blocks,
+    gen: () => gen,
+    /** The watcher fired `inbox:update` — bump the gen (always) and set blocks. */
+    watcherUpdate(next: InboxBlock[]) {
+      gen += 1;
+      blocks = next;
+    },
+    /** Begin a re-derive: snapshot the gen NOW; the returned resolve() applies
+     *  the async read's result through the real decision when it lands later. */
+    beginReDerive(read: InboxBlock[]) {
+      const genAtRead = gen;
+      return () => {
+        const decision = resolveInboxReDerive({ genAtRead, genNow: gen, prev: blocks, read });
+        if (decision.write) blocks = decision.blocks;
+      };
+    },
+  };
+}
+
+test('#91 F1: a re-derive that started before a watcher retract does NOT resurrect the chip', () => {
+  const B = parseInboxBlocks(`\n${INBOX_DELIMITER}\n${REAL_BLOCK}\n${INBOX_DELIMITER}\n`);
+  assert.equal(B.length, 1, 'fixture parses to one block');
+  const store = makeInboxStore(B); // chip shows "1 held"
+
+  // (1) Turn starts (running flips the instant the prompt is QUEUED, BEFORE the
+  //     hook rm's the file) → the re-derive's listInbox reads B STILL PRESENT.
+  const resolveStaleRead = store.beginReDerive(B);
+  // (2) The CLI hook rm's the file → watcher fires inbox:update count:0 → retract.
+  store.watcherUpdate([]);
+  assert.equal(store.blocks().length, 0, 'watcher correctly retracted the chip');
+  // (3) The stale read from step 1 resolves LAST.
+  resolveStaleRead();
+
+  // FIXED: the drain-generation advanced during the read, so the stale write is
+  // discarded and the chip STAYS empty.
+  assert.equal(store.blocks().length, 0, 'stale re-derive must not resurrect the delivered block');
+});
+
+test('#91 F1 CONTROL: without the staleness token the SAME interleave DOES resurrect it', () => {
+  // The must-FAIL arm — model the pre-fix behaviour (write the read back
+  // unconditionally, no gen check). If this ever stops resurrecting, the test
+  // above is proving nothing.
+  const B = parseInboxBlocks(`\n${INBOX_DELIMITER}\n${REAL_BLOCK}\n${INBOX_DELIMITER}\n`);
+  let blocks = B;
+  // (1) read reads B present. (2) watcher retracts. (3) stale read clobbers.
+  const read = B;
+  blocks = []; // watcher retract
+  // pre-fix write: unconditional
+  blocks = read;
+  assert.equal(blocks.length, 1, 'CONTROL: the un-guarded write reproduces the #91 stale chip');
+});
+
+test('#91: with NO concurrent watcher event, the re-derive DOES write (the retract #91 exists for)', () => {
+  // The gen guard must not neuter the whole fix: when nothing races (the missed
+  // drain the ticket is about), the read is authoritative and is written.
+  const B = parseInboxBlocks(`\n${INBOX_DELIMITER}\n${REAL_BLOCK}\n${INBOX_DELIMITER}\n`);
+  const store = makeInboxStore(B); // stale cache says "1 held"
+  // The file is already drained on disk (no watcher event ever fired). A focus
+  // re-derive reads EMPTY and, with the gen unchanged, writes the retract.
+  const resolve = store.beginReDerive([]);
+  resolve();
+  assert.equal(store.blocks().length, 0, 'a genuine re-derive still retracts a stale chip');
 });
