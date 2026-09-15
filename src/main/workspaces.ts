@@ -510,8 +510,14 @@ export async function createWorkspace(input: CreateWorkspaceInput): Promise<Work
   // default structured `sdkStartAndDeliver` that never calls startAgentPty). A
   // plain member under an orchestrator lazily creates the OPS run row here; a
   // plain standalone workspace no-ops. Best-effort, never blocks creation (D1).
+  //
+  // SKIPPED WHOLESALE for a sandbox workspace (review-F2 R3, LEAD D3): the bus is
+  // the HOST's, and a remote member's run + notice belong to its container's bus,
+  // not the host's — starting a host-side row here would leave an orphan run no
+  // host member reads. Parity with startAgentPty's own `if (!remote)` guard;
+  // passing `remote` to the helper only suppressed the NOTICE, not the run-start.
   const remote = input.host?.kind === 'sandbox';
-  await startBusRunAndWriteNotice(ws, remote);
+  if (!remote) await startBusRunAndWriteNotice(ws, remote);
 
   // Do NOT spawn the agent PTY here. The renderer's TerminalView will invoke
   // `pty:start` once the terminal container has real dimensions, so the agent

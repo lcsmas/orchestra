@@ -98,14 +98,18 @@ function fnBody(src: string, decl: string): string {
 // with a negative control; a build that reverts to startAgentPty-only reddens
 // the two creation guards (the exact miss the original wiring test had).
 
-test('G9 FIX — createWorkspace (the DEFAULT spawn chokepoint) starts the run + writes the notice', () => {
+test('G9 FIX — createWorkspace (the DEFAULT spawn chokepoint) starts the run + writes the notice, LOCAL-only (R3)', () => {
   const body = fnBody(workspacesSrc, 'export async function createWorkspace(');
+  // review-F2 R3 / LEAD D3: the call is guarded behind `!remote` (parity with
+  // startAgentPty) so a SANDBOX orchestrator makes no orphan HOST run row. The
+  // regex requires the `if (!remote)` guard on the same statement — an unguarded
+  // `await startBusRunAndWriteNotice(ws, remote)` (the R3 defect) reddens it.
   assert.match(
     body,
-    /await startBusRunAndWriteNotice\(ws, remote\)/,
-    'createWorkspace must start the run + notice — the default structured spawn never calls startAgentPty',
+    /if \(!remote\) await startBusRunAndWriteNotice\(ws, remote\)/,
+    'createWorkspace must start the run + notice for LOCAL spawns, guarded !remote (R3)',
   );
-  // Negative control: the ORIGINAL defect was the call living only in startAgentPty.
+  // Negative control: the ORIGINAL G9 defect was the call living only in startAgentPty.
   assert.ok(
     body.includes('startBusRunAndWriteNotice'),
     'the default-path chokepoint is unwired — the G9 no-op regression',
