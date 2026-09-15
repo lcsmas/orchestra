@@ -4,13 +4,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { nearestExisting, sampleVolumes, statVolume, statVolumeFor } from './disk-space.ts';
+import {
+  STATFS_TIMEOUT_MS,
+  nearestExisting,
+  sampleVolumes,
+  statVolume,
+  statVolumeFor,
+} from './disk-space.ts';
 
 // These drive the REAL statfs against REAL mounts on this machine, because the
 // bug class here is not arithmetic — it is reading the wrong field or the wrong
 // mount, and a hand-built fixture would just re-encode whichever choice I made.
 
-test('statVolume reports bavail, NOT bfree', () => {
+test('statVolume reports bavail, NOT bfree', async () => {
   // WHY THIS TEST EXISTS: G5 mutation arm 3 (`st.bavail` → `st.bfree`) SURVIVED
   // the whole suite — it typechecks, and nothing asserted which field is read.
   // `bfree` includes root-reserved blocks an unprivileged agent cannot write
@@ -18,7 +24,7 @@ test('statVolume reports bavail, NOT bfree', () => {
   // `df --output=avail` reports bavail, so it is an INDEPENDENT instrument for
   // the same quantity.
   const probe = process.cwd();
-  const v = statVolume(probe, 'test');
+  const v = await statVolume(probe, 'test');
   assert.ok(v, 'statVolume returned null on the repo cwd');
 
   const raw = fs.statfsSync(probe);
@@ -50,11 +56,11 @@ test('statVolume reports bavail, NOT bfree', () => {
   assert.ok(drift < 0.05, `statVolume ${v.freeBytes} vs df ${dfAvail} — drift ${drift}`);
 });
 
-test('statVolume returns null for a path that cannot be measured', () => {
+test('statVolume returns null for a path that cannot be measured', async () => {
   // An unmeasurable mount must be reported as UNMEASURED (null), never as
   // "plenty of room" — a guard that waves through when its instrument breaks
   // is worse than no guard.
-  assert.equal(statVolume('/definitely/not/a/real/path/xyz', 'x'), null);
+  assert.equal(await statVolume('/definitely/not/a/real/path/xyz', 'x'), null);
 });
 
 test('nearestExisting walks up to a real ancestor', () => {
@@ -67,18 +73,18 @@ test('nearestExisting walks up to a real ancestor', () => {
   assert.equal(nearestExisting(process.cwd()), process.cwd());
 });
 
-test('statVolumeFor reports the path the CALLER asked about, not the ancestor', () => {
+test('statVolumeFor reports the path the CALLER asked about, not the ancestor', async () => {
   // The mount name in an error message has to be the thing the caller cares
   // about; measuring an ancestor is an implementation detail.
   const notYet = path.join(process.cwd(), 'release-not-created-yet');
-  const v = statVolumeFor(notYet, 'Build output');
+  const v = await statVolumeFor(notYet, 'Build output');
   assert.ok(v, 'expected a measurement via the ancestor');
   assert.equal(v.path, notYet);
   assert.ok(v.totalBytes > 0);
 });
 
-test('sampleVolumes de-duplicates by device, never by path', () => {
-  const vols = sampleVolumes();
+test('sampleVolumes de-duplicates by device, never by path', async () => {
+  const vols = await sampleVolumes();
   assert.ok(vols.length >= 1, 'expected at least one measurable volume');
 
   const devices = vols.map((v) => v.deviceId);
@@ -95,11 +101,53 @@ test('sampleVolumes de-duplicates by device, never by path', () => {
   }
 });
 
-test('sampleVolumes covers the tmp filesystem, which is the one that filled', () => {
+test('statVolume: a HUNG mount is reported UNMEASURED within the timeout, not blocking (issue #96)', async () => {
+  // #96: the statfs is async and raced against STATFS_TIMEOUT_MS so a hung
+  // network mount can neither freeze the main thread nor stall the tick
+  // forever. Model the hang BY HAND: patch fs.promises.statfs to never settle
+  // for one target path. The shipped code must (a) abandon it after the
+  // timeout and return null = UNMEASURED (never "plenty"), and (b) not have
+  // blocked the event loop — proven by a heartbeat counter that keeps ticking.
+  const target = process.cwd();
+  const realStatfs = fs.promises.statfs;
+  let beats = 0;
+  const hb = setInterval(() => {
+    beats += 1;
+  }, 10);
+  // Keep the loop alive: the shipped watchdog timer is .unref()'d so it must
+  // not, on its own, hold a bare test process open.
+  const keepAlive = setInterval(() => {}, 50);
+  try {
+    (fs.promises as { statfs: unknown }).statfs = ((p: string, ...rest: unknown[]) => {
+      if (String(p) === target) return new Promise(() => {}); // never resolves
+      return (realStatfs as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as typeof fs.promises.statfs;
+
+    const t0 = Date.now();
+    const v = await statVolume(target, 'hung');
+    const elapsed = Date.now() - t0;
+
+    assert.equal(v, null, 'a hung mount must be reported null (UNMEASURED), never a volume');
+    // Abandoned at ~the timeout, not hanging forever and not returning early.
+    assert.ok(
+      elapsed >= STATFS_TIMEOUT_MS - 50 && elapsed < STATFS_TIMEOUT_MS + 500,
+      `expected abandon near ${STATFS_TIMEOUT_MS}ms, got ${elapsed}ms`,
+    );
+    // The discriminating observable: on the OLD sync code this window froze the
+    // loop (0 beats). Async keeps it free — require a healthy count.
+    assert.ok(beats > 20, `event loop was starved during the hung statfs: only ${beats} beats`);
+  } finally {
+    clearInterval(hb);
+    clearInterval(keepAlive);
+    (fs.promises as { statfs: unknown }).statfs = realStatfs;
+  }
+});
+
+test('sampleVolumes covers the tmp filesystem, which is the one that filled', async () => {
   // The incident: /tmp is a SEPARATE tmpfs and it hit 100% while $HOME had
   // hundreds of GiB free. A guard reading only $HOME's filesystem would have
   // missed it entirely, so this pins that tmp is actually probed.
-  const vols = sampleVolumes();
+  const vols = await sampleVolumes();
   const tmp = os.tmpdir();
   const tmpDev = String(fs.statSync(tmp).dev);
   assert.ok(

@@ -145,7 +145,12 @@ export async function sampleResources(): Promise<ResourceSnapshot> {
   // wrong trade for the thing this exists to catch — a mount filling FAST
   // (issue #87: /tmp went to 100% mid-wave) is exactly when a 60s-stale
   // reading is most dangerous.
-  const volumes = sampleVolumes();
+  //
+  // `sampleVolumes()` is ASYNC (issue #96): the statfs runs on libuv's
+  // threadpool, not synchronously on the main thread, so a hung network mount
+  // can no longer freeze the UI. Still fresh every tick (no cache); a mount
+  // that does not answer within STATFS_TIMEOUT_MS is reported UNMEASURED.
+  const volumes = await sampleVolumes();
 
   return {
     at: now,
