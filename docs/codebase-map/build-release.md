@@ -103,6 +103,28 @@ Preflight (fails before any mutation): `gh auth status`; not detached HEAD;
 clean tree; branch not behind `origin/<branch>`; for `--to-master`, that
 `origin/master` fast-forwards to HEAD; for `--install`, resolvable destination.
 
+**Tag-vs-master preflight (issue #78, `release.sh:310`, after the version is
+computed and before the bump).** The bare `git rev-parse "$TAG"` check
+(`release.sh:296`) only sees the LOCAL tag namespace; the "3rd race shape" (stale
+`package.json` version + an ORIGIN tag that does not contain master's work) fired
+on v0.5.257/260/261. `release.sh` now `git fetch origin master --tags` then
+sources `scripts/release-preflight.sh` and calls:
+- `rp_two_way_discriminator <newest-origin-tag> origin/master` — resolves the
+  newest tag by **version sort** (`sort -V`, not ls-remote's alphabetical order),
+  runs both `tag..master` and `master..tag`; refuses (rc 3) with the printed
+  verdict `tag already contains master → refuse to cut a duplicate` when master
+  adds 0 commits, else prints `master ahead by N commits → shipping them` (rc 0);
+  fails closed (rc 4) if a range can't be computed.
+- `rp_next_version_free <tag>` — the chosen `NEW` tag must be absent from BOTH
+  `git ls-remote --tags` AND `gh release list` (the v0.5.253 race took the number
+  between the two reads); rc 5 if taken.
+
+Both functions read every external surface through injectable `RP_*` env seams so
+`scripts/verify-release-preflight.sh` (`pnpm run test:release-preflight`) can
+exercise all arms — including the tag==master must-FAIL arm and a mutation of the
+refuse condition — with stubbed ls-remote/gh, never driving a real release. The
+preflight is read-only, so it runs under `--dry-run` too.
+
 Then: compute version → (if `--to-master`) `git push origin HEAD:master` →
 `pnpm version` (bump+commit+tag) → (unless `--ci-only`) `pnpm run build` +
 validate AppImage → (if `--install`) **atomic** cp-to-temp + `mv` over the
