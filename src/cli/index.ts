@@ -31,6 +31,7 @@ import {
   switchStateWord,
 } from '../shared/bus-switches.ts';
 import { resolveHandle, type HandleCandidate } from './resolve-handle.ts';
+import { staleRunRefusalMessage } from '../shared/reparent-run.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -329,6 +330,48 @@ export function resolveSelfWorkspaceId(env: {
 
 function selfWorkspaceId(): string | undefined {
   return resolveSelfWorkspaceId(process.env);
+}
+
+/** #142 — report the run-reconcile side effects of a re-parent (attach/detach/
+ *  adopt): which live sessions were restarted to pick up the new run, and which
+ *  were left 'stale run' (bus sends refused until they restart) under
+ *  `--no-restart`. Returns a trailing block (starting with a newline) or `''`. */
+function reparentSuffix(res: Record<string, unknown>): string {
+  const restarted = Array.isArray(res.restarted) ? (res.restarted as string[]) : [];
+  const stale = Array.isArray(res.markedStale) ? (res.markedStale as string[]) : [];
+  let out = '';
+  if (restarted.length)
+    out += `\n  restarted to pick up the new run: ${restarted.join(', ')}`;
+  if (stale.length)
+    out +=
+      `\n  STALE RUN (bus sends refused until restart): ${stale.join(', ')}` +
+      `\n  run \`orchestra restart <id>\` on each to activate the new run`;
+  return out + '\n';
+}
+
+/** #142 — the `.orchestra/bus-run-stale` marker for the workspace the CLI runs
+ *  in. The store-less bus verbs run with cwd = the worktree (Claude Code's cwd),
+ *  so the marker lives at `<cwd>/.orchestra/bus-run-stale`. An explicit
+ *  `$ORCHESTRA_WORKSPACE_PATH` (set for setup/run scripts) wins when present. */
+function staleRunMarkerFile(): string {
+  const base = process.env.ORCHESTRA_WORKSPACE_PATH || process.cwd();
+  return path.join(base, '.orchestra', 'bus-run-stale');
+}
+
+/** #142 — refuse a bus `send` when this workspace was re-parented with
+ *  `--no-restart`: its live session still holds the OLD run id, so the send would
+ *  land in the stale run. Reads the marker (never the store — the CLI is
+ *  store-less) and `fail()`s with its first line. A missing/unreadable marker is
+ *  NOT stale (the common, non-refused case), so a read error is swallowed. */
+function refuseIfStaleRun(): void {
+  let firstLine: string | undefined;
+  try {
+    const body = fs.readFileSync(staleRunMarkerFile(), 'utf8');
+    firstLine = body.split('\n', 1)[0];
+  } catch {
+    return; // no marker → not stale → proceed
+  }
+  if (firstLine) fail(staleRunRefusalMessage(firstLine));
 }
 
 /** Pull `--flag value` out of args, returning the value and the leftover args. */
@@ -1403,24 +1446,31 @@ async function main(argv: string[]): Promise<void> {
     }
 
     case 'attach': {
-      const id = args[0];
-      const parentId = args[1];
-      if (!id || !parentId) fail('usage: orchestra attach <id> <parentId>');
-      const res = await request('/attach', { id, parentId });
+      // #142 --no-restart: re-parent WITHOUT restarting the live session; the
+      // workspace is marked 'stale run' and its bus sends are refused until it
+      // restarts (default is a conversation-preserving restart that re-derives
+      // the run id).
+      const { present: noRestart, rest } = takeBoolFlag(args, '--no-restart');
+      const id = rest[0];
+      const parentId = rest[1];
+      if (!id || !parentId) fail('usage: orchestra attach <id> <parentId> [--no-restart]');
+      const res = await request('/attach', { id, parentId, noRestart });
       if (!res.ok) fail(res.error ?? 'failed to attach workspace');
       process.stdout.write(
-        `Attached ${res.id as string} under orchestrator ${res.parentId as string}\n`,
+        `Attached ${res.id as string} under orchestrator ${res.parentId as string}` +
+          reparentSuffix(res),
       );
       return;
     }
 
     case 'detach': {
-      const id = args[0];
-      if (!id) fail('usage: orchestra detach <id>');
+      const { present: noRestart, rest } = takeBoolFlag(args, '--no-restart');
+      const id = rest[0];
+      if (!id) fail('usage: orchestra detach <id> [--no-restart]');
       // Omitting parentId tells /attach to clear it (detach to own section).
-      const res = await request('/attach', { id });
+      const res = await request('/attach', { id, noRestart });
       if (!res.ok) fail(res.error ?? 'failed to detach workspace');
-      process.stdout.write(`Detached ${res.id as string}\n`);
+      process.stdout.write(`Detached ${res.id as string}` + reparentSuffix(res));
       return;
     }
 
@@ -1445,13 +1495,16 @@ async function main(argv: string[]): Promise<void> {
       // Gives a repo-LESS orchestrator a real checkout, so its agent can read
       // the repo's docs/scripts and its git-tracked project skills. Unlike
       // set-repo (a display-only grouping preference) this creates a worktree.
-      const { value: base, rest } = takeFlag(args, '--base');
+      const { present: noRestart, rest: afterNoRestart } = takeBoolFlag(args, '--no-restart');
+      const { value: base, rest } = takeFlag(afterNoRestart, '--base');
       const id = rest[0];
       const repoPath = rest[1];
-      if (!id || !repoPath) fail('usage: orchestra adopt-repo <id> <repoPath> [--base <branch>]');
+      if (!id || !repoPath)
+        fail('usage: orchestra adopt-repo <id> <repoPath> [--base <branch>] [--no-restart]');
       const res = await request('/adoptRepo', {
         id,
         repoPath,
+        noRestart,
         ...(base ? { baseBranch: base } : {}),
       });
       if (!res.ok) fail(res.error ?? 'failed to adopt repo');
@@ -1460,7 +1513,8 @@ async function main(argv: string[]): Promise<void> {
           `  checkout: ${res.worktreePath as string}\n` +
           (res.previousDir
             ? `  previous scratch dir left in place: ${res.previousDir as string}\n`
-            : ''),
+            : '') +
+          reparentSuffix(res).replace(/^\n/, ''),
       );
       return;
     }
@@ -1515,6 +1569,19 @@ async function main(argv: string[]): Promise<void> {
     // the app — the ONLY verbs in this file that do. See openBusForVerb().
 
     case 'send': {
+      // #142 — REFUSE a send from a workspace re-parented with `--no-restart`:
+      // its live session still holds the OLD run's $ORCHESTRA_RUN_ID, so the
+      // send would land in the STALE run. The store-less CLI cannot read the
+      // Workspace record, so it keys on the `.orchestra/bus-run-stale` marker the
+      // admin path wrote alongside the flag (see src/shared/reparent-run.ts). The
+      // marker is cleared by `orchestra restart`, which re-derives the run.
+      // Deliberately BEFORE busIdentityOrFail/openBusForVerb — no bus is opened
+      // for a refused send. This is a NEW pre-send gate, NOT the recipient
+      // predicate (#144 owns verbSend/readPendingReaders). check/ack stay ALLOWED
+      // under stale (reading old mail is never blocked; only new sends are —
+      // ledger #146 D1 condition 3). If #144 later moves `send` into a shared
+      // module, this gate moves with it (ledger #146 D1).
+      refuseIfStaleRun();
       const t = takeFlag(args, '--type');
       const to = takeFlag(t.rest, '--to');
       const th = takeFlag(to.rest, '--thread');

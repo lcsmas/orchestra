@@ -172,7 +172,7 @@ import { initBrowserPanels } from './browser-panel';
 import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
 import { initBus, closeBus, busPath, getBus } from './bus';
-import { registerBusPaneIpc } from './bus-pane';
+import { registerBusPaneIpc, registerStaleRunSource } from './bus-pane';
 import { setLiveSwitches, getLiveSwitches } from './bus-settings';
 import {
   startBusWake,
@@ -197,6 +197,7 @@ import {
   ensureRoot,
   pruneOrphanedWorkspaces,
   resolveWaveRunId,
+  listStaleRunWorkspaces,
 } from './workspaces';
 import { stopAll } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
@@ -706,6 +707,10 @@ for (const [method, channel] of Object.entries(METHOD_IPC_CHANNELS)) {
 // blank the pane. The pane's registrar (registerBusPaneIpc) reads getBus()/
 // getLiveSwitches() LAZILY at invoke time, so top-level registration is safe.
 registerBusPaneIpc();
+// #142 — wire the stale-run source so the pane can list workspaces re-parented
+// with --no-restart (store flag `busRunStale`). A LAZY read at snapshot time, so
+// top-level registration is safe (same shape as the counter source seam).
+registerStaleRunSource(listStaleRunWorkspaces);
 // The switch WRITE, deliberately NOT through registerBusPaneIpc(): that registrar
 // refuses write handlers, so the read-only boundary (T118.4) stays enforced and a
 // settings write cannot be smuggled in as a pane channel. It writes the store

@@ -602,6 +602,17 @@ The state lives in a **file, not a script constant**, for a specific reason:
 value baked into a body would be written once at provision time and never
 corrected.
 
+**#142 — a re-parent re-derives the run and REWRITES this notice.** The run anchor
+is derived at creation, but `attach`/`detach`/`adopt`/`demote` move the tree. On
+any such op, `reconcileRunAfterReparent` (`workspaces.ts`) re-derives the anchor
+and calls `writeBusSwitchState(worktreePath, newRunId)` for the new run, then
+restarts the session conversation-preserving (#111) so its `$ORCHESTRA_RUN_ID` env
+is re-read — or, with `--no-restart`, marks the workspace 'stale run' (the
+`busRunStale` store flag + a `.orchestra/bus-run-stale` marker) and the store-less
+CLI `send` refuses from it until restart. See `docs/codebase-map/workspaces.md`
+§"Re-parenting re-derives the bus run (#142)". The pane lists stale workspaces via
+`BusSnapshot.staleRunWorkspaces` (`registerStaleRunSource` seam).
+
 Every mechanism prints in **both** states (`busSwitchNoticeLines`,
 `src/shared/bus-switches.ts:204`), and in the **WIRE name** (`ask_gate` via
 `mechanismToWire`, not the internal `askGate` — F4): `delivery=ON — the bus is

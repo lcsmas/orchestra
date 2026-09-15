@@ -46,6 +46,12 @@ import { runFlags, startRun, getRun, refreezeRun } from './bus-runs.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import { maybeStartRunAtAnchor, type AnchorInfo } from './bus-run-anchor.ts';
 import { nearestOrchestratorId, parentOrchestratorId } from './wave-run-id.ts';
+import {
+  decideReparentAction,
+  staleRunMarkerBody,
+  type ReparentCandidate,
+} from '../shared/reparent-run.ts';
+import type { BusStaleRunView } from '../shared/bus-view.ts';
 import { recordPhaseChange } from './bus-liveness.ts';
 import { phaseChanged } from '../shared/bus-liveness.ts';
 import {
@@ -1793,6 +1799,154 @@ export interface PromoteResult {
  *   `isScratchLike` true and silently strip all of the above — the delete path
  *   would skip `removeWorktree` and leak the git worktree, and rename would
  *   stop running `git branch -m`. */
+// ---------- Re-parent run reconcile (#142) ----------
+
+/** The path of the stale-run marker the store-less CLI reads to refuse a send
+ *  that would land in the OLD run (see src/shared/reparent-run.ts). */
+function staleRunMarkerPath(worktreePath: string): string {
+  return path.join(worktreePath, '.orchestra', 'bus-run-stale');
+}
+
+/**
+ * Snapshot the CURRENT bus-run anchor of a workspace and every descendant whose
+ * run it governs, taken BEFORE a re-parent mutates the store. The caller mutates
+ * the tree, then hands this snapshot to {@link reconcileRunAfterReparent}, which
+ * re-derives each anchor against the NEW store and acts only where it changed.
+ *
+ * Scope is the subtree rooted at `rootId` (a re-parented workspace and its
+ * nested members): a member's run is its nearest orchestrator, so moving `root`
+ * moves every member below it that has no closer orchestrator — exactly the set
+ * `collectWorkspaceTree` walks by `parentId`. Coordinators inside the subtree are
+ * their OWN anchor and unaffected, but they are cheap to include: their old and
+ * new anchors are equal, so the decision is a no-op for them.
+ */
+function snapshotRunAnchors(rootId: string): Map<string, string> {
+  const snap = new Map<string, string>();
+  for (const ws of collectWorkspaceTree(rootId)) {
+    snap.set(ws.id, resolveWaveRunId(ws));
+  }
+  return snap;
+}
+
+/**
+ * #142 — after a re-parent (attach/detach/adopt/demote) moved the tree, re-derive
+ * each affected workspace's bus run id and reconcile the RUNNING session:
+ *   - anchor unchanged → nothing (the run is the same);
+ *   - anchor changed, no live session → rewrite the `.orchestra/bus-switches`
+ *     notice for the new run (the next launch re-reads `$ORCHESTRA_RUN_ID`);
+ *   - anchor changed, live session, restart allowed → rewrite the notice AND
+ *     restart conversation-preserving so the env is re-read (`orchestra restart`,
+ *     issue #111);
+ *   - anchor changed, live session, `--no-restart` → rewrite the notice, mark the
+ *     workspace 'stale run' (pane) and write the `.orchestra/bus-run-stale` marker
+ *     so the store-less CLI refuses its bus sends until it restarts.
+ *
+ * `oldAnchors` is the pre-mutation snapshot from {@link snapshotRunAnchors}; the
+ * NEW anchor is resolved live against the just-mutated store. Best-effort per
+ * workspace (D1: no bus concern breaks an admin op) — a failure on one candidate
+ * logs and the rest proceed. Returns the ids that were restarted and the ids
+ * marked stale, for the caller's result envelope.
+ */
+async function reconcileRunAfterReparent(
+  oldAnchors: Map<string, string>,
+  opts: { noRestart: boolean },
+): Promise<{ restarted: string[]; markedStale: string[] }> {
+  const restarted: string[] = [];
+  const markedStale: string[] = [];
+  for (const [wsId, oldAnchorId] of oldAnchors) {
+    const ws = store.getWorkspace(wsId);
+    // The workspace vanished mid-op (deleted concurrently) — nothing to reconcile.
+    if (!ws) continue;
+    // A sandbox-hosted workspace keeps its hooks/notice in the container; the
+    // local worktree write + local restart do not apply. Its own relaunch there
+    // re-derives the run, matching startAgentPty's `!remote` guard.
+    if (ws.host?.kind === 'sandbox') continue;
+    try {
+      const newAnchorId = resolveWaveRunId(ws);
+      const candidate: ReparentCandidate = {
+        oldAnchorId,
+        newAnchorId,
+        live: isRunning(ws.id) || sdkSessionLive(ws.id),
+      };
+      const action = decideReparentAction(candidate, opts.noRestart);
+      if (action.kind === 'noop') continue;
+
+      // Every non-noop rewrites the notice for the NEW run FIRST — this is the
+      // self-heal a plain relaunch already gives, made to happen now so a cold
+      // workspace (notice-only) is correct without a restart, and so a stale
+      // workspace's notice already names the run it will adopt on restart.
+      await writeBusSwitchState(ws.worktreePath, newAnchorId);
+      // Lazily create the NEW anchor's run row if it does not exist yet (the
+      // member moved under an OPS whose row was never started) — same idempotent
+      // best-effort call every launch makes.
+      maybeStartRunAtAnchor(busRunAnchorDeps, resolveAnchorInfo(ws));
+
+      if (action.kind === 'notice-only') continue;
+
+      if (action.kind === 'mark-stale') {
+        // Write the marker BEFORE flipping the flag, so a reader that sees the
+        // flag can always find the file (and the CLI refusal is armed before the
+        // pane says 'stale').
+        await mkdir(path.join(ws.worktreePath, '.orchestra'), { recursive: true });
+        await writeFile(staleRunMarkerPath(ws.worktreePath), staleRunMarkerBody(newAnchorId));
+        const updated: Workspace = { ...ws, busRunStale: true };
+        await store.upsertWorkspace(updated);
+        platform.broadcast('workspace:update', updated);
+        markedStale.push(ws.id);
+        continue;
+      }
+
+      // action.kind === 'restart' — conversation-preserving relaunch re-reads
+      // ORCHESTRA_RUN_ID (env is rebuilt from resolveWaveRunId at every launch).
+      // Dynamic import breaks the workspaces.ts ↔ restart-workspace.ts cycle
+      // (restart-workspace imports startAgentPty from here).
+      const { dispatchRestartRequest } = await import('./restart-workspace.ts');
+      const res = await dispatchRestartRequest({ id: ws.id, fresh: false });
+      if (res.ok) {
+        // A prior --no-restart may have left this workspace stale; the restart
+        // clears it. Idempotent when it was never stale.
+        await clearBusRunStale(ws.id);
+        restarted.push(ws.id);
+      } else {
+        log.warn(`reparent-run: restart failed for ${ws.id}: ${res.error ?? 'unknown'}`);
+      }
+    } catch (e) {
+      log.warn(`reparent-run: reconcile failed for ${wsId}`, e);
+    }
+  }
+  return { restarted, markedStale };
+}
+
+/** #142 — the workspaces currently in the 'stale run' state (re-parented with
+ *  `--no-restart`, live session still on the old run). Sourced from the store
+ *  flag, with the NEW run each will adopt on restart (`resolveWaveRunId` against
+ *  the current tree). Read by the bus pane via the registered seam (index.ts).
+ *  Store-only, so it is correct even when the bus is down (D1). */
+export function listStaleRunWorkspaces(): BusStaleRunView[] {
+  return store.workspaces
+    .filter((w) => w.busRunStale)
+    .map((w) => ({ wsId: w.id, branch: w.branch, newRunId: resolveWaveRunId(w) }));
+}
+
+/** Clear the 'stale run' state — drop the record flag + remove the marker file.
+ *  Called by a conversation-preserving restart (which re-derives the run) and
+ *  usable from the restart path so a manual `orchestra restart` also un-stales.
+ *  Best-effort and idempotent (a workspace that was never stale is untouched). */
+export async function clearBusRunStale(id: string): Promise<void> {
+  const ws = store.getWorkspace(id);
+  if (!ws) return;
+  try {
+    await rm(staleRunMarkerPath(ws.worktreePath), { force: true });
+  } catch (e) {
+    log.warn(`reparent-run: could not remove stale marker for ${id}`, e);
+  }
+  if (ws.busRunStale) {
+    const updated: Workspace = { ...ws, busRunStale: undefined };
+    await store.upsertWorkspace(updated);
+    platform.broadcast('workspace:update', updated);
+  }
+}
+
 export async function dispatchPromoteRequest(input: { id?: string }): Promise<PromoteResult> {
   const id = input.id?.trim();
   if (!id) return { ok: false, error: 'missing id' };
@@ -1856,6 +2010,10 @@ export interface DemoteResult {
   kind?: Workspace['kind'];
   /** Ids that were detached because they lost their parent. */
   detachedChildren?: string[];
+  /** #142 — ids whose live session was restarted to pick up the new run. */
+  restarted?: string[];
+  /** #142 — ids marked 'stale run' because `--no-restart` suppressed the restart. */
+  markedStale?: string[];
   error?: string;
 }
 
@@ -1873,11 +2031,17 @@ export interface DemoteResult {
  * non-orchestrator would render nowhere (the sidebar only walks trees from
  * orchestrator roots), so the rows would silently vanish from the UI. Clearing
  * the edge floats each child back to its own repo section. Never throws. */
-export async function dispatchDemoteRequest(input: { id?: string }): Promise<DemoteResult> {
+export async function dispatchDemoteRequest(input: {
+  id?: string;
+  /** #142 — suppress the conversation-preserving restart of detached children;
+   *  mark them 'stale run' instead. */
+  noRestart?: boolean;
+}): Promise<DemoteResult> {
   const id = input.id?.trim();
   if (!id) return { ok: false, error: 'missing id' };
   const ws = store.getWorkspace(id);
   if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
+  const noRestart = input.noRestart === true;
   // A REPO-LESS orchestrator still cannot be demoted: demoting means "become a
   // plain workspace", and there is no repo to become a worktree of. That reason
   // evaporates once it has adopted one — then demotion is exactly the inverse of
@@ -1894,6 +2058,17 @@ export async function dispatchDemoteRequest(input: { id?: string }): Promise<Dem
     return { ok: true, id, branch: ws.branch, kind: ws.kind, detachedChildren: [] };
   try {
     const children = store.workspaces.filter((w) => w.parentId === id);
+    // #142 (REVIEW-142 F1) — snapshot the demoted node ITSELF plus its whole
+    // subtree BEFORE the demote moves the tree. `snapshotRunAnchors(id)` walks
+    // `collectWorkspaceTree(id)` = `id` + its children, and at PRE-mutation time
+    // `id` still `canOrchestrate`, so its children still resolve to it. This must
+    // include `id`: a promoted worktree (or a repo-owning orchestrator) is its
+    // OWN run anchor while it coordinates; the demote strips `canOrchestrate`, so
+    // `id`'s own anchor moves too (to its nearest-orchestrator ancestor, or itself
+    // as a plain standalone). Snapshotting only the CHILD subtrees left the
+    // demoted node's LIVE session on a defunct self-run — the exact #142 bug for
+    // the demoted node (F1: `collectWorkspaceTree(child.id)` never reaches `id`).
+    const oldAnchors = snapshotRunAnchors(id);
     for (const child of children) {
       const detached: Workspace = { ...child, parentId: undefined };
       await store.upsertWorkspace(detached);
@@ -1919,12 +2094,17 @@ export async function dispatchDemoteRequest(input: { id?: string }): Promise<Dem
     log.info(
       `demoted worktree ${ws.branch} (${id}); detached ${children.length} child(ren)`,
     );
+    // #142 — the coordinator is gone from the tree; reconcile every detached
+    // child's run (re-derive → notice → restart / mark-stale).
+    const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
     return {
       ok: true,
       id,
       branch: updated.branch,
       kind: updated.kind,
       detachedChildren: children.map((c) => c.id),
+      restarted,
+      markedStale,
     };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'demote failed' };
@@ -1939,6 +2119,10 @@ export interface AttachResult {
   /** The new parent after the call: an orchestrator id on attach, `null` on detach. */
   parentId?: string | null;
   branch?: string;
+  /** #142 — ids whose live session was restarted to pick up the new run. */
+  restarted?: string[];
+  /** #142 — ids marked 'stale run' because `--no-restart` suppressed the restart. */
+  markedStale?: string[];
   error?: string;
 }
 
@@ -1964,11 +2148,15 @@ export interface AttachResult {
 export async function dispatchAttachRequest(input: {
   id?: string;
   parentId?: string | null;
+  /** #142 — suppress the conversation-preserving restart; mark 'stale run'
+   *  instead (bus sends refused until the session restarts). */
+  noRestart?: boolean;
 }): Promise<AttachResult> {
   const id = input.id?.trim();
   if (!id) return { ok: false, error: 'missing id' };
   const ws = store.getWorkspace(id);
   if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
+  const noRestart = input.noRestart === true;
 
   const rawParent = typeof input.parentId === 'string' ? input.parentId.trim() : '';
 
@@ -1977,11 +2165,14 @@ export async function dispatchAttachRequest(input: {
   // pure no-op success.
   if (!rawParent) {
     if (ws.parentId === undefined) return { ok: true, id, parentId: null, branch: ws.branch };
+    // #142 — snapshot the OLD run anchors of this subtree BEFORE the tree moves.
+    const oldAnchors = snapshotRunAnchors(id);
     const updated: Workspace = { ...ws, parentId: undefined };
     await store.upsertWorkspace(updated);
     platform.broadcast('workspace:update', updated);
     log.info(`detached ${ws.branch} (${id}) from its parent`);
-    return { ok: true, id, parentId: null, branch: ws.branch };
+    const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
+    return { ok: true, id, parentId: null, branch: ws.branch, restarted, markedStale };
   }
 
   if (rawParent === id) return { ok: false, error: 'a workspace cannot be its own parent' };
@@ -2007,11 +2198,14 @@ export async function dispatchAttachRequest(input: {
   // Idempotent re-attach to the same parent.
   if (ws.parentId === rawParent) return { ok: true, id, parentId: rawParent, branch: ws.branch };
 
+  // #142 — snapshot the OLD run anchors of this subtree BEFORE the tree moves.
+  const oldAnchors = snapshotRunAnchors(id);
   const updated: Workspace = { ...ws, parentId: rawParent };
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
   log.info(`attached ${ws.branch} (${id}) under orchestrator ${parent.branch} (${rawParent})`);
-  return { ok: true, id, parentId: rawParent, branch: ws.branch };
+  const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
+  return { ok: true, id, parentId: rawParent, branch: ws.branch, restarted, markedStale };
 }
 
 // ---------- Associate an orchestrator with a repo (sidebar grouping only) ----------
@@ -2033,6 +2227,10 @@ export interface AdoptRepoResult {
   worktreePath?: string;
   /** The now-unused scratch directory, left on disk for the user to inspect. */
   previousDir?: string;
+  /** #142 — ids whose live session was restarted to pick up the new run. */
+  restarted?: string[];
+  /** #142 — ids marked 'stale run' because `--no-restart` suppressed the restart. */
+  markedStale?: string[];
   error?: string;
 }
 
@@ -2067,11 +2265,16 @@ export async function dispatchAdoptRepoRequest(input: {
   id?: string;
   repoPath?: string;
   baseBranch?: string;
+  /** #142 — suppress the conversation-preserving restart; mark 'stale run'
+   *  instead. (Adopt keeps the orchestrator's OWN run id, so this only matters
+   *  if the moved worktree's notice must be re-derived — see the reconcile.) */
+  noRestart?: boolean;
 }): Promise<AdoptRepoResult> {
   const id = input.id?.trim();
   if (!id) return { ok: false, error: 'missing id' };
   const ws = store.getWorkspace(id);
   if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
+  const noRestart = input.noRestart === true;
   if (ws.kind !== 'orchestrator') {
     return {
       ok: false,
@@ -2151,11 +2354,23 @@ export async function dispatchAdoptRepoRequest(input: {
       // A display-only association is now superseded by real ownership.
       repoAssociation: undefined,
     };
+    // #142 — snapshot BEFORE the store write so the anchor is resolved against
+    // the pre-adopt record. Adopt keeps the orchestrator's OWN run id (it stays
+    // its own anchor), so this is normally a no-op for the run — but the worktree
+    // PATH moved, so the notice must exist FRESH at the new path (the copied
+    // `.orchestra` carries the old one, which names the same run; we rewrite it
+    // unconditionally so a run row that now exists is reflected).
+    const oldAnchors = snapshotRunAnchors(id);
     await store.upsertWorkspace(updated);
     platform.broadcast('workspace:update', updated);
     log.info(
       `orchestrator ${id} adopted ${repoPath} on branch ${branch} at ${newWorktreePath} (was ${oldDir})`,
     );
+    // The worktree moved: write the frozen notice at the NEW path regardless of
+    // whether the anchor changed, and start the anchor's run row if missing.
+    await writeBusSwitchState(newWorktreePath, resolveWaveRunId(updated));
+    maybeStartRunAtAnchor(busRunAnchorDeps, resolveAnchorInfo(updated));
+    const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
     return {
       ok: true,
       id,
@@ -2163,6 +2378,8 @@ export async function dispatchAdoptRepoRequest(input: {
       repoPath,
       worktreePath: newWorktreePath,
       previousDir: oldDir,
+      restarted,
+      markedStale,
     };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'adopt failed' };

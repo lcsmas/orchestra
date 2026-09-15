@@ -358,6 +358,7 @@ export async function startHooksServer(): Promise<void> {
                 await dispatchAttachRequest({
                   id: msg.id,
                   parentId: typeof msg.parentId === 'string' ? msg.parentId : null,
+                  noRestart: msg.noRestart === true, // #142
                 }),
               );
             } else {
@@ -385,6 +386,7 @@ export async function startHooksServer(): Promise<void> {
                   id: msg.id,
                   repoPath: typeof msg.repoPath === 'string' ? msg.repoPath : undefined,
                   baseBranch: typeof msg.baseBranch === 'string' ? msg.baseBranch : undefined,
+                  noRestart: msg.noRestart === true, // #142
                 }),
               );
             } else {

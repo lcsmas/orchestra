@@ -30,7 +30,7 @@
 import { store } from './store';
 import { log } from './logger';
 import { isRunning, stopPty, getPtySize } from './pty';
-import { startAgentPty } from './workspaces';
+import { startAgentPty, clearBusRunStale } from './workspaces';
 import { sdkRestart } from './agent-sdk';
 import { sdkSessionLive } from './sdk-delivery.ts';
 import { resolveRestart, type RestartResult } from '../shared/restart-mode.ts';
@@ -59,7 +59,7 @@ export async function dispatchRestartRequest(input: {
   const id = input.id;
   const ws = id ? (store.getWorkspace(id) ?? null) : null;
   const fresh = input.fresh === true;
-  return resolveRestart({
+  const res = await resolveRestart({
     id,
     ws,
     live: { ptyLive: id ? isRunning(id) : false, sdkLive: id ? sdkSessionLive(id) : false },
@@ -84,4 +84,13 @@ export async function dispatchRestartRequest(input: {
     },
     onError: (mode, message) => log.warn(`restart: ${mode} restart failed for ${id}: ${message}`),
   });
+  // #142 (REVIEW-142 F2) — the relaunch re-reads ORCHESTRA_RUN_ID (env rebuilt
+  // from resolveWaveRunId at every launch), so a --no-restart re-parent's 'stale
+  // run' block is resolved BY a successful restart. Clear the marker + flag ONLY
+  // when the restart SUCCEEDED — mirroring the reconcile path (workspaces.ts,
+  // which clears on `res.ok`). Clearing before/regardless would, if the relaunch
+  // throws, drop the marker while the OLD session is still on the OLD run →
+  // sends unblocked into the stale run (the exact fault the marker prevents).
+  if (id && ws && res.ok) await clearBusRunStale(id);
+  return res;
 }

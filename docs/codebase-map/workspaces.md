@@ -288,6 +288,44 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 | `dispatchAddRepoRequest` | `:1024` | `/addRepo` | Register repo. |
 | `dispatchDeleteWorkspaceRequest` | `:1054` | `/deleteWorkspace` | Hard-delete. |
 
+## Re-parenting re-derives the bus run (#142)
+
+A workspace's bus run id is its **nearest orchestrator** (`resolveWaveRunId` →
+`nearestOrchestratorId`, #134 D1), derived at `createWorkspace` and baked into the
+member's env (`ORCHESTRA_RUN_ID`) + its `.orchestra/bus-switches` notice. So
+`attach`/`detach`/`adopt`/`demote` change the **tree** but a RUNNING session keeps
+sending into the OLD run and reads the OLD frozen flags until it restarts — the gap
+#142 closes (ledger #135 review-F2 R2, carved by ruling D3; D1a-bis: a message is
+governed by the flags of the **innermost** run of its two parties).
+
+- **The pure decision** — `src/shared/reparent-run.ts` `decideReparentAction`:
+  anchor UNCHANGED → `noop`; anchor changed + no live session → `notice-only`
+  (the next launch re-reads the env); + live + restart allowed → `restart`;
+  + live + `--no-restart` → `mark-stale`. Unit-tested (`reparent-run.test.ts`).
+- **The effectful reconcile** — `reconcileRunAfterReparent(oldAnchors, {noRestart})`
+  (`workspaces.ts`, near the admin handlers). Each handler `snapshotRunAnchors(root)`
+  (the subtree's run ids) BEFORE mutating the store, then reconciles AFTER: it
+  re-derives each anchor, rewrites the notice for the new run
+  (`writeBusSwitchState`), lazily starts the new run row (`maybeStartRunAtAnchor`),
+  and then restarts conversation-preserving (#111 `dispatchRestartRequest`,
+  `fresh:false`, via a dynamic import that breaks the workspaces↔restart-workspace
+  cycle) OR — with `--no-restart` — writes the `.orchestra/bus-run-stale` marker +
+  sets the `busRunStale` store flag. Best-effort per workspace (D1). Wired into
+  `dispatchAttachRequest` (both branches), `dispatchDemoteRequest` (the detached
+  children), `dispatchAdoptRepoRequest` (the moved worktree path).
+- **`--no-restart`** — CLI flag on `attach`/`detach`/`adopt-repo` (forwarded through
+  `/attach`, `/adoptRepo`). Marks the workspace 'stale run'; the store-less CLI
+  `send` REFUSES from it (`refuseIfStaleRun`, keyed on the `.orchestra/bus-run-stale`
+  marker — a NEW pre-send gate, NOT the #144 recipient predicate) until a restart.
+  `dispatchRestartRequest` calls `clearBusRunStale` (marker + flag) on every restart,
+  so the block self-heals. The bus PANE lists stale workspaces via `BusStaleRunView`
+  (`listStaleRunWorkspaces` seam → `busSnapshot.staleRunWorkspaces` → `BusStaleRunList`).
+- **Acceptance** — `reparent-run.test.ts` (pure decision, mutant arms),
+  `reparent-run-binding.test.ts` (the handlers/CLI actually WIRE the reconcile),
+  `scripts/verify-reparent-run-notice.mjs` (G5: the notice names the NEW run's
+  frozen flags over a REAL bus + the shipped `writeBusSwitchState`, with a
+  same-command must-FAIL control). The packaged send/wake drive is VERIFY-G's.
+
 ## Branch management
 - `randomBranchName` ~`:249` (1024 adjective-noun combos).
 - **`renameWorkspaceBranch(id, newBranch, {manual, bumpAutoCount}, window)`**

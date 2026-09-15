@@ -25,6 +25,7 @@ import {
   type BusMemberLiveness,
   type BusDivergenceCounter,
   type BusRunSummary,
+  type BusStaleRunView,
   unavailableSnapshot,
 } from '../shared/bus-view.ts';
 import { scoped } from './logger.ts';
@@ -213,17 +214,46 @@ export function registerBusCounterSource(
 }
 
 /**
+ * #142 — the seam that lists workspaces re-parented with `--no-restart` whose
+ * live session still holds a stale run id (the `busRunStale` store flag). Wired
+ * in index.ts from `workspaces.ts`, so bus-pane.ts stays free of the store/
+ * Electron chain and unit-testable. Absent source (or a throw) → empty list, the
+ * coexistence-safe direction: a missing seam must never fabricate a stale row.
+ */
+export function registerStaleRunSource(fn: () => BusStaleRunView[]): void {
+  (globalThis as Record<string, unknown>).__orchestraStaleRuns = fn;
+}
+
+/** Read the stale-run seam, tolerating an absent/throwing source (→ []). */
+function readStaleRunWorkspaces(): BusStaleRunView[] {
+  const fn = (globalThis as Record<string, unknown>).__orchestraStaleRuns as
+    | (() => BusStaleRunView[])
+    | undefined;
+  if (!fn) return [];
+  try {
+    return fn() ?? [];
+  } catch (e) {
+    log.warn('bus-pane: stale-run source threw — rendering no stale rows', e);
+    return [];
+  }
+}
+
+/**
  * Assemble the pane snapshot. NEVER THROWS — a failure becomes an
  * `available: false` snapshot carrying the reason.
  */
 export function busSnapshot(runId?: string | null): BusSnapshot {
   const live = getLiveSwitches();
+  // #142 — store-sourced, so it is present even when the bus is down (a
+  // --no-restart re-parent does not hide because the bus failed to open).
+  const staleRunWorkspaces = readStaleRunWorkspaces();
   const d = db();
   if (!d) {
     return unavailableSnapshot(
       busPath(),
       'The fleet bus is not open. Orchestra started normally (the bus never blocks boot) — see the log for the open failure.',
       live,
+      staleRunWorkspaces,
     );
   }
   try {
@@ -253,6 +283,7 @@ export function busSnapshot(runId?: string | null): BusSnapshot {
         counters: [],
         countersBusAvailable: null,
         capabilityRejections: 0, // #129 — no run selected
+        staleRunWorkspaces, // #142
       };
     }
     const report = readDivergenceReport(selected);
@@ -281,6 +312,7 @@ export function busSnapshot(runId?: string | null): BusSnapshot {
       // #129 — the capability mechanism's COUNTED-not-FIRED tally for this run,
       // read directly from the bus DB (durable, not #116's in-memory ledger).
       capabilityRejections: capabilityRejectCount(d, selected),
+      staleRunWorkspaces, // #142
     };
   } catch (e) {
     // A malformed/locked DB is "unavailable", not a crashed pane. Same D1
@@ -291,6 +323,7 @@ export function busSnapshot(runId?: string | null): BusSnapshot {
       busPath(),
       e instanceof Error ? e.message : String(e),
       live,
+      staleRunWorkspaces,
     );
   }
 }

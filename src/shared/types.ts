@@ -405,6 +405,17 @@ export interface Workspace {
    * CC's own menu — or after a safety timeout. Purely a guard around CC's
    * native gate; Orchestra never auto-answers the menu. */
   heavyResumePending?: boolean;
+  /** #142 — the workspace was re-parented (attach/detach/adopt/demote) with
+   * `--no-restart`, so its LIVE session still holds the OLD run's
+   * `$ORCHESTRA_RUN_ID` + the OLD frozen switch notice in memory: its bus sends
+   * would land in the STALE run. The `.orchestra/bus-switches` notice file has
+   * already been rewritten for the NEW run, so the mismatch clears the instant
+   * the session restarts (which re-reads the env). While this is set the pane
+   * shows a 'stale run' marker and the store-less CLI refuses bus sends (it keys
+   * on the `.orchestra/bus-run-stale` marker the admin path writes alongside
+   * this flag). Cleared by a conversation-preserving `orchestra restart`.
+   * Stored ABSENT rather than `false` so store.json accrues no dead key. */
+  busRunStale?: boolean;
   /** Epoch ms when the idle sweeper HIBERNATED this workspace — stopped its
    * agent process (PTY and/or SDK session) to reclaim memory after it sat
    * `idle` past the threshold (src/main/hibernation.ts, eligibility in

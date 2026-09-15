@@ -29,6 +29,7 @@ import type {
   BusGateView,
   BusMemberLiveness,
   BusDivergenceCounter,
+  BusStaleRunView,
 } from '../../shared/bus-view';
 
 function fmtTime(ts: number | null): string {
@@ -209,6 +210,25 @@ export function BusGateList({ gates }: { gates: BusGateView[] }) {
   );
 }
 
+/** #142 — workspaces re-parented with `--no-restart` whose live session still
+ *  holds the OLD run id (bus sends refused until they restart). READ-ONLY: the
+ *  fix is a human `orchestra restart <id>`, named in the row. Rendered only when
+ *  the list is non-empty (the parent gates the section on length). */
+export function BusStaleRunList({ staleRuns }: { staleRuns: BusStaleRunView[] }) {
+  return (
+    <div className="bus-stale-runs">
+      {staleRuns.map((s) => (
+        <div key={s.wsId} className="bus-stale-run" data-stale-ws={s.wsId} data-new-run={s.newRunId}>
+          <span className="bus-stale-run-badge">STALE RUN</span>
+          <span className="bus-stale-run-branch">{s.branch}</span>
+          <span className="bus-stale-run-target">→ {s.newRunId}</span>
+          <span className="bus-stale-run-fix">restart to activate; bus sends refused meanwhile</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /**
  * Shadow divergence counters, per mechanism — #116's numbers in the frozen
  * shape (ledger #123 §Seams).
@@ -368,6 +388,15 @@ export function BusPaneView({
         <h3>Asks &amp; gates</h3>
         <BusGateList gates={snapshot.gates} />
       </section>
+      {/* #142 — workspaces re-parented with --no-restart whose live session still
+          holds the OLD run id; their bus sends are refused until they restart.
+          Only rendered when non-empty (the common case is none). */}
+      {snapshot.staleRunWorkspaces.length > 0 ? (
+        <section className="bus-section" data-section="stale-runs">
+          <h3>Stale runs</h3>
+          <BusStaleRunList staleRuns={snapshot.staleRunWorkspaces} />
+        </section>
+      ) : null}
       <section className="bus-section" data-section="counters">
         <h3>Shadow divergence</h3>
         <BusCounterTable
@@ -419,6 +448,7 @@ export function BusPane() {
         counters: [],
         countersBusAvailable: null,
         capabilityRejections: 0, // #129
+        staleRunWorkspaces: [], // #142
       });
     }
   }, [runId]);

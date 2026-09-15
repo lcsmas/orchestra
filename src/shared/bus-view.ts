@@ -89,6 +89,22 @@ export interface BusMessageView {
   createdAt: number;
 }
 
+/**
+ * #142 — a workspace re-parented with `--no-restart` whose LIVE session still
+ * holds the OLD run id (its `.orchestra/bus-switches` notice was already rewritten
+ * for the new run, but the running process reads the stale env). Its bus sends are
+ * refused until it restarts. The pane lists these so the mismatch between the
+ * tree and the running sessions is visible.
+ */
+export interface BusStaleRunView {
+  /** The re-parented workspace's id. */
+  wsId: string;
+  /** Its branch/label, for a human-readable pane row. */
+  branch: string;
+  /** The NEW run it now belongs to (and will adopt on restart). */
+  newRunId: string;
+}
+
 /** An open ask / decision gate awaiting a Ruling. */
 export interface BusGateView {
   id: number;
@@ -146,13 +162,23 @@ export interface BusSnapshot {
    * is selected.
    */
   capabilityRejections: number;
+  /**
+   * #142 — workspaces re-parented with `--no-restart` that still hold a stale run
+   * id in their live session (bus sends refused until they restart). Empty in the
+   * common case. Sourced from the STORE (the `busRunStale` flag), not the bus, so
+   * it is present even when the bus is down.
+   */
+  staleRunWorkspaces: BusStaleRunView[];
 }
 
-/** The all-empty, bus-down snapshot. */
+/** The all-empty, bus-down snapshot. `staleRunWorkspaces` is still populated
+ *  (it is store-sourced, not bus-sourced): a down bus does not hide a workspace
+ *  that was re-parented with `--no-restart` (#142). */
 export function unavailableSnapshot(
   path: string,
   error: string,
   liveSwitches: BusSwitches,
+  staleRunWorkspaces: BusStaleRunView[] = [],
 ): BusSnapshot {
   return {
     available: false,
@@ -167,5 +193,6 @@ export function unavailableSnapshot(
     counters: [],
     countersBusAvailable: null,
     capabilityRejections: 0, // #129
+    staleRunWorkspaces, // #142
   };
 }
