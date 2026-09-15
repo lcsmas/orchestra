@@ -505,6 +505,14 @@ export async function createWorkspace(input: CreateWorkspaceInput): Promise<Work
     });
   }
 
+  // #134 — start the bus run at this workspace's anchor + write the frozen switch
+  // notice, at CREATION (the common chokepoint for EVERY spawn path, incl. the
+  // default structured `sdkStartAndDeliver` that never calls startAgentPty). A
+  // plain member under an orchestrator lazily creates the OPS run row here; a
+  // plain standalone workspace no-ops. Best-effort, never blocks creation (D1).
+  const remote = input.host?.kind === 'sandbox';
+  await startBusRunAndWriteNotice(ws, remote);
+
   // Do NOT spawn the agent PTY here. The renderer's TerminalView will invoke
   // `pty:start` once the terminal container has real dimensions, so the agent
   // is spawned at the correct cols/rows instead of a fixed default that would
@@ -630,6 +638,11 @@ async function createScratchLikeWorkspace(
   // Same prompt map push as createWorkspace: without it the session's account
   // badge sits on stale data until the next poll tick.
   void refreshAccountsNow().catch(() => {});
+  // #134 — a scratch ORCHESTRATOR is its own wave anchor, so start its run + write
+  // the notice at creation (the structured session boots without startAgentPty).
+  // A plain scratch (kind 'scratch') no-ops in maybeStartRunAtAnchor (not an
+  // orchestrator). Best-effort (D1).
+  await startBusRunAndWriteNotice(ws);
   return ws;
 }
 
@@ -4532,27 +4545,17 @@ export async function startAgentPty(
   // Idempotent: upgrades workspaces created before the activity hook landed.
   if (!remote) await installOrchestraHooks(ws.worktreePath);
   // The run a workspace belongs to is its NEAREST ORCHESTRATOR (D1, ledger #135):
-  // an OPS/LEAD is its own run; a member obeys the OPS's. Resolved once and reused
-  // for the run-start, the frozen notice, and the plumbed `$ORCHESTRA_RUN_ID`.
-  const anchor = resolveAnchorInfo(ws);
-  const waveRunId = anchor.anchorId;
-  // #134 — START (and FREEZE) THE RUN AT THE ANCHOR. Fires when an orchestrator
-  // launches (anchor === self) and LAZILY when a member launches under a
-  // pre-existing orchestrator whose row is missing (D1). A plain standalone
-  // workspace (anchorId === ws.id but NOT an orchestrator) gets no row.
-  // INSERT-OR-IGNORE on the `runs` row existence (#123 F1) → idempotent, never
-  // re-freezes. Best-effort — a null/failing bus logs and the spawn proceeds
-  // all-OFF (D1), so it can never block a launch.
-  if (!remote) {
-    maybeStartRunAtAnchor(
-      { getBus, startRun, getRun, refreezeRun, getLiveSwitches, warn: (m, e) => log.warn(m, e) },
-      anchor,
-    );
-  }
-  // Refreshed on EVERY spawn, unlike the hash-gated hook bundle. The switch
-  // states are FROZEN on the run row (#118 F2) — sourced from there, not from the
-  // live switches — so a mid-wave flip does not change a running run's notice.
-  if (!remote) await writeBusSwitchState(ws.worktreePath, waveRunId);
+  // an OPS/LEAD is its own run; a member obeys the OPS's. `waveRunId` is reused
+  // for the plumbed `$ORCHESTRA_RUN_ID` below.
+  const waveRunId = resolveAnchorInfo(ws).anchorId;
+  // #134 — start the run at the anchor + refresh the frozen notice. Idempotent
+  // (the run row is created at workspace CREATION now — see startBusRunAndWriteNotice
+  // — so this launch-time call is normally a no-op re-affirming it), which also
+  // upgrades workspaces created before #134 shipped. Best-effort (D1): never
+  // blocks a launch. Refreshed on every launch (unlike the hash-gated hook
+  // bundle) so a run boundary crossed since creation is picked up; within one run
+  // the frozen row makes the notice stable.
+  if (!remote) await startBusRunAndWriteNotice(ws, remote);
   // Materialize the pinned account's inherited global config into its login dir
   // right before spawn, so the agent sees the user's settings/skills/MCP. Pinned
   // account only (resolveRepoAgentEnv uses the same pin for CLAUDE_CONFIG_DIR).
@@ -4709,19 +4712,52 @@ export function resolveAnchorInfo(ws: Workspace): AnchorInfo {
   };
 }
 
+/** The injected collaborators for the anchor-start (#134). One place, so every
+ *  call site is byte-identical and a new dep is added once. */
+const busRunAnchorDeps = {
+  getBus,
+  startRun,
+  getRun,
+  refreezeRun,
+  getLiveSwitches,
+  warn: (m: string, e?: unknown) => log.warn(m, e),
+};
+
 /**
- * #134 — start the run row when a workspace BECOMES an orchestrator via
- * `/promote` (D1). A promote does NOT relaunch the pty, so `startAgentPty`'s
- * anchor-start will not fire until the OPS next spawns a member — this creates
- * the OPS's own run row immediately, at the wave boundary, freezing the live
- * switches then. `newlyOrchestrator` is the just-promoted record (kind or
- * capability already flipped), so `resolveAnchorInfo` sees it as its own anchor.
- * Best-effort, never throws (D1).
+ * #134 — start (and freeze) the bus run at `ws`'s anchor AND write the frozen
+ * switch notice into its worktree. THE ONE place both effects happen, called
+ * from every workspace-creation + promote + launch chokepoint so the run row and
+ * the `.orchestra/bus-switches` notice exist REGARDLESS of the launch path.
+ *
+ * WHY AT CREATION, NOT ONLY startAgentPty (review-F1/VERIFY-F G9): the DEFAULT
+ * spawn is `dispatchSpawnRequest → startWorkspaceAgentHeadless → sdkStartAndDeliver`
+ * (the structured session), which NEVER calls `startAgentPty` (the Raw-tab PTY
+ * path). Wiring only into `startAgentPty` made the whole feature a NO-OP on the
+ * real AppImage — a spawned orchestrator got RUNS=0 / no notice, the exact canary
+ * symptom the ticket exists to kill. `createWorkspace`/`createScratchLikeWorkspace`
+ * are the common chokepoint for EVERY spawn, so the effects live here.
+ *
+ * Idempotent (INSERT-OR-IGNORE + the notice re-write is stable per run), so the
+ * later `startAgentPty` call on the same ws is a harmless no-op. Best-effort:
+ * `maybeStartRunAtAnchor` never throws (D1) and the notice write swallows its own
+ * errors; a bus/notice failure must never break workspace creation.
+ *
+ * `remote` (sandbox) skips the local worktree notice write — the hooks/worktree
+ * live in the container — matching `startAgentPty`'s own `!remote` guard.
  */
+async function startBusRunAndWriteNotice(ws: Workspace, remote = false): Promise<void> {
+  const anchor = resolveAnchorInfo(ws);
+  maybeStartRunAtAnchor(busRunAnchorDeps, anchor);
+  if (!remote) await writeBusSwitchState(ws.worktreePath, anchor.anchorId);
+}
+
+/** #134 — start the run row when a workspace BECOMES an orchestrator via
+ * `/promote` (D1, wave boundary). A promote does NOT relaunch the pty, so this
+ * creates the OPS's own run row immediately, freezing the live switches then, and
+ * refreshes the notice. Best-effort. */
 function startRunForPromoted(newlyOrchestrator: Workspace): void {
-  maybeStartRunAtAnchor(
-    { getBus, startRun, getRun, refreezeRun, getLiveSwitches, warn: (m, e) => log.warn(m, e) },
-    resolveAnchorInfo(newlyOrchestrator),
+  void startBusRunAndWriteNotice(newlyOrchestrator).catch((e) =>
+    log.warn(`bus-run-anchor: promote run-start/notice failed for ${newlyOrchestrator.id}`, e),
   );
 }
 

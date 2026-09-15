@@ -43,16 +43,53 @@ function startAgentPtyBody(): string {
   return workspacesSrc.slice(start, end);
 }
 
-test('P1 — startAgentPty resolves the anchor and calls maybeStartRunAtAnchor', () => {
-  const body = startAgentPtyBody();
-  assert.match(body, /const anchor = resolveAnchorInfo\(ws\)/, 'the anchor must be resolved once');
+/** The body of a named function, decl → the next `\nexport ` / `\nasync function`
+ *  / `\nfunction ` at column 0 (good enough for these single-function slices). */
+function fnBody(src: string, decl: string): string {
+  const start = src.indexOf(decl);
+  assert.ok(start > 0, `${decl} not found`);
+  const after = src.slice(start + decl.length);
+  const rel = after.search(/\n(export (async )?function|async function|function) /);
+  return after.slice(0, rel > 0 ? rel : 4000);
+}
+
+// The G9 regression: the run-start + notice were wired ONLY into startAgentPty
+// (the Raw-tab PTY path), but the DEFAULT spawn is
+// dispatchSpawnRequest → startWorkspaceAgentHeadless → sdkStartAndDeliver, which
+// never calls startAgentPty — so the feature was a NO-OP on the real AppImage.
+// The fix wires it at the CREATION chokepoints. These guards assert THAT, each
+// with a negative control; a build that reverts to startAgentPty-only reddens
+// the two creation guards (the exact miss the original wiring test had).
+
+test('G9 FIX — createWorkspace (the DEFAULT spawn chokepoint) starts the run + writes the notice', () => {
+  const body = fnBody(workspacesSrc, 'export async function createWorkspace(');
   assert.match(
     body,
-    /maybeStartRunAtAnchor\(\s*\{\s*getBus,\s*startRun,\s*getRun,\s*refreezeRun,\s*getLiveSwitches,[\s\S]*?\},\s*anchor,?\s*\)/,
-    'the anchor-start must be wired with the real bus collaborators (incl. refreezeRun) + the resolved anchor',
+    /await startBusRunAndWriteNotice\(ws, remote\)/,
+    'createWorkspace must start the run + notice — the default structured spawn never calls startAgentPty',
   );
-  // Negative control: the master state had NO startRun caller at all.
-  assert.ok(/startRun/.test(body), 'a build reverted to the master defect (no startRun caller) fails here');
+  // Negative control: the ORIGINAL defect was the call living only in startAgentPty.
+  assert.ok(
+    body.includes('startBusRunAndWriteNotice'),
+    'the default-path chokepoint is unwired — the G9 no-op regression',
+  );
+});
+
+test('G9 FIX — createScratchLikeWorkspace (orchestrator/scratch spawn) starts the run + writes the notice', () => {
+  const body = fnBody(workspacesSrc, 'async function createScratchLikeWorkspace(');
+  assert.match(body, /await startBusRunAndWriteNotice\(ws\)/, 'a scratch orchestrator must get its row+notice at creation');
+});
+
+test('G9 FIX — startBusRunAndWriteNotice does BOTH the run-start and the notice write', () => {
+  const body = fnBody(workspacesSrc, 'async function startBusRunAndWriteNotice(');
+  assert.match(body, /maybeStartRunAtAnchor\(busRunAnchorDeps, anchor\)/, 'starts the run at the anchor');
+  assert.match(body, /await writeBusSwitchState\(ws\.worktreePath, anchor\.anchorId\)/, 'writes the frozen notice');
+});
+
+test('P1 — startAgentPty also starts the run + notice (idempotent, upgrades pre-#134 workspaces)', () => {
+  const body = startAgentPtyBody();
+  assert.match(body, /const waveRunId = resolveAnchorInfo\(ws\)\.anchorId/, 'the wave run id is resolved for ORCHESTRA_RUN_ID');
+  assert.match(body, /await startBusRunAndWriteNotice\(ws, remote\)/, 'startAgentPty re-affirms the run+notice');
 });
 
 test('P1 D1 — resolveWaveRunId uses nearestOrchestratorId, NOT walkToRootId (the tree-root defect)', () => {

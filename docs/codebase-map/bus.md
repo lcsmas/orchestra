@@ -675,9 +675,11 @@ for an agent, and never acks on one's behalf.** Frozen on #108 comments 4-5.
 
 A turn that runs a blocking `orchestra check` burns against the **600s Bash cap**
 and reads as a hang. So the waiting lives where waiting is free — the main
-process — and what reaches the agent is a fixed ORDER string
-(`WAKE_ORDER`, `src/shared/bus-wake.ts:139`), never the message body. The reader
-then runs `orchestra check` itself and acks with its own `orchestra ack`.
+process — and what reaches the agent is an ORDER, never the message body. The
+order NAMES the run(s) to check (#134 D2): `buildWakeOrder` emits a header + one
+`orchestra check --run <r>` line per run with pending mail for the reader
+(`src/shared/bus-wake.ts`). The reader runs exactly those checks itself and acks
+each with its own `orchestra ack`.
 
 ## `fs.watch` is NOT the mechanism — only an accelerator
 
@@ -951,9 +953,12 @@ The notice keys on `resolveWaveRunId` (now the nearest-orchestrator anchor, D1),
 the CLI verbs on `env.ORCHESTRA_RUN_ID || 'default'`, and #116's mirror on
 `ORCHESTRA_RUN_ID || host-<ts>`. #134 sets `ORCHESTRA_RUN_ID = anchor.anchorId`
 into the agent env (`workspaces.ts` `extraEnv`), so all three surfaces now agree
-on the wave run. Remaining open detail: D1a send-side innermost routing (OQ2) — a
-LEAD→OPS `send` still lands in the LEAD's run, not the OPS's, because the CLI is
-store-less; see the #134 section.
+on the wave run. The store-less CLI still writes mail with the SENDER's run
+(D1a-bis/D2, rules OQ2/OQ3): the innermost-run decision is wake-side — the sweep
+widens to related runs and reads the switch on the deeper of (mail,reader) run,
+and the wake order NAMES each run to check — so a LEAD↔OPS message is governed and
+retrieved on the OPS's (innermost) run without a send-side change. See the #134
+section.
 
 **#117 honest gaps.** The wake unit arms stop at the delivery seam — they prove
 the order is handed to `sdkStartAndDeliver`, not that a turn RENDERS in the
