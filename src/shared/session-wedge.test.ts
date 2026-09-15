@@ -4,8 +4,11 @@ import {
   decideGateRelease,
   decideSessionRecycle,
   pruneRecycles,
+  recycleBackoffMs,
   GATE_SILENCE_RELEASE_MS,
   MAX_RECYCLES_PER_HOUR,
+  RECYCLE_BACKOFF_BASE_MS,
+  RECYCLE_BACKOFF_MAX_MS,
 } from './session-wedge.ts';
 import { decideQueueStall } from './queue-stall.ts';
 
@@ -320,5 +323,105 @@ test('R1 POSITIVE CONTROL: a genuinely silent stalled session IS still recycled'
       now: NOW,
     }).action,
     'recycle',
+  );
+});
+
+// ── Issue #97: the WIDENING BACKOFF interval ────────────────────────────────
+//
+// The anti-flap COUNT (tested above) is necessary but not sufficient: without a
+// widening interval a session that re-wedges instantly burns its whole budget on
+// consecutive ticks (TICK_MS = 60s → three recycles in three minutes). These
+// cases pin that the interval GROWS with each recycle already spent, and that a
+// too-soon attempt returns the distinct `backoff` action rather than recycling.
+
+test('backoff fn: the interval doubles per recycle and caps', () => {
+  // The growth is the claim, so assert the actual computed delays, not a flag.
+  assert.equal(recycleBackoffMs(0), 0, 'first recycle waits nothing');
+  assert.equal(recycleBackoffMs(1), RECYCLE_BACKOFF_BASE_MS, 'second waits base');
+  assert.equal(recycleBackoffMs(2), RECYCLE_BACKOFF_BASE_MS * 2, 'third waits 2×base');
+  assert.equal(recycleBackoffMs(3), RECYCLE_BACKOFF_BASE_MS * 4);
+  // Strictly increasing until the cap, then clamped.
+  assert.ok(recycleBackoffMs(2) > recycleBackoffMs(1));
+  assert.ok(recycleBackoffMs(3) > recycleBackoffMs(2));
+  assert.equal(recycleBackoffMs(100), RECYCLE_BACKOFF_MAX_MS, 'clamped at the cap');
+  assert.ok(RECYCLE_BACKOFF_BASE_MS > 60_000, 'base must exceed one 60s tick so the 2nd attempt defers');
+});
+
+test('backoff: a 2nd recycle too soon after the 1st WAITS, then fires once the interval passes', () => {
+  // One recycle in the window, base backoff = 2min. An attempt 1min later is
+  // inside the interval → backoff, NOT recycle. The SAME inputs 3min later (past
+  // the 2min interval) DO recycle. The two together prove the interval is real
+  // and eventually crosses — not a permanent refusal.
+  const oneRecycleAgo = (agoMs: number) => ({
+    sessionLive: true,
+    stalled,
+    lastStreamAt: NOW - GATE_SILENCE_RELEASE_MS - 1,
+    recentRecycles: [NOW - agoMs],
+    now: NOW,
+  });
+  const tooSoon = decideSessionRecycle(oneRecycleAgo(60_000)); // 1min < 2min base
+  assert.equal(tooSoon.action, 'backoff', '1min after a recycle must back off, not recycle again');
+  assert.ok(
+    tooSoon.action === 'backoff' && tooSoon.waitMs > 0 && tooSoon.recyclesInWindow === 1,
+    'backoff carries the remaining wait and the count',
+  );
+
+  const enoughLater = decideSessionRecycle(oneRecycleAgo(RECYCLE_BACKOFF_BASE_MS + 1_000));
+  assert.equal(enoughLater.action, 'recycle', 'once the interval passes the recycle proceeds');
+});
+
+test('backoff: the interval WIDENS — 2 recycles need a longer gap than 1', () => {
+  // MUST-FAIL mutant target: a constant (non-widening) interval passes the
+  // single-recycle case but fails this one, because the gap that satisfied
+  // attempt 2 (just over base) is NOT enough for attempt 3 (2×base).
+  const twoRecyclesGap = RECYCLE_BACKOFF_BASE_MS + 1_000; // enough for attempt 2, not attempt 3
+  const d = decideSessionRecycle({
+    sessionLive: true,
+    stalled,
+    lastStreamAt: NOW - GATE_SILENCE_RELEASE_MS - 1,
+    // Two recycles in the window; the most recent is `twoRecyclesGap` ago.
+    recentRecycles: [NOW - 40 * 60_000, NOW - twoRecyclesGap],
+    now: NOW,
+  });
+  assert.equal(
+    d.action,
+    'backoff',
+    'the 3rd attempt needs 2×base; a gap that satisfied the 2nd must NOT satisfy it',
+  );
+  // And a gap that DOES satisfy 2×base recycles — pinning that it is the
+  // widened interval, not an always-backoff.
+  const wide = decideSessionRecycle({
+    sessionLive: true,
+    stalled,
+    lastStreamAt: NOW - GATE_SILENCE_RELEASE_MS - 1,
+    recentRecycles: [NOW - 40 * 60_000, NOW - (RECYCLE_BACKOFF_BASE_MS * 2 + 1_000)],
+    now: NOW,
+  });
+  assert.equal(wide.action, 'recycle');
+});
+
+test('backoff: the FIRST recycle (empty ledger) is never delayed', () => {
+  // A genuine one-off stall — both 2026-08-25 field occurrences — must be
+  // treated instantly; backoff only applies once at least one recycle is spent.
+  assert.equal(
+    decideSessionRecycle({
+      sessionLive: true,
+      stalled,
+      lastStreamAt: SILENT,
+      recentRecycles: [],
+      now: NOW,
+    }).action,
+    'recycle',
+  );
+});
+
+test('backoff never masks the flap ceiling: at budget it is flap-limit, not backoff', () => {
+  // Ordering pin: the ceiling is checked before backoff, so a workspace AT the
+  // budget stands down (surfaced) rather than silently backing off forever.
+  const recent = [NOW - 50 * 60_000, NOW - 30 * 60_000, NOW - 10 * 60_000];
+  assert.equal(recent.length, MAX_RECYCLES_PER_HOUR);
+  assert.equal(
+    decideSessionRecycle({ sessionLive: true, stalled, lastStreamAt: SILENT, recentRecycles: recent, now: NOW }).action,
+    'flap-limit',
   );
 });

@@ -175,3 +175,81 @@ test('R1 guard: the recycle decision is fed live progress evidence', () => {
     'decideSessionRecycle must receive the live stream stamp',
   );
 });
+
+// ── Issue #97: flap-limit SURFACE + widening BACKOFF, driven end-to-end ──────
+//
+// The pure-policy tests in session-wedge.test.ts prove decideSessionRecycle
+// returns `backoff`/`flap-limit`, but they are STRUCTURALLY BLIND to whether the
+// MODULE actually spaces its real recycles and emits a human surface — that
+// lives in `watchdogTick` composing the real `decideSessionRecycle`,
+// `platform.broadcast` and `platform.notify` against a real store and a live
+// session. The flap-budget rig drives 14 real ticks and reports what the module
+// actually did; this test asserts on that JSON. Same subprocess pattern and
+// reasoning as the R2 arms above (the module can't be imported bare under the
+// strip-types runner — it pulls in `./platform` as a directory import).
+
+const FLAP_RIG = path.join(REPO, 'scripts', 'wedge90-rigs', 'flap-budget.mjs');
+
+test('flap rig and its register hook exist', () => {
+  assert.ok(fs.existsSync(FLAP_RIG), `${FLAP_RIG} missing`);
+});
+
+test('#97: recycles WIDEN and the stand-down SURFACES to a human', () => {
+  const out = execFileSync(
+    process.execPath,
+    ['--experimental-strip-types', '--import', REGISTER, FLAP_RIG],
+    {
+      encoding: 'utf8',
+      timeout: 120_000,
+      cwd: REPO,
+      env: { ...process.env, FLAP_HOME: `/tmp/flap97-unit-${process.pid}` },
+      // stderr carries the rig's VACUITY/SURFACE guards; keep it off the parsed
+      // channel but let the JSON come through stdout.
+      stdio: ['ignore', 'pipe', 'ignore'],
+    },
+  );
+  // The flap rig prints ONE pretty-printed JSON object on stdout (stderr, which
+  // carries the MODULE_TYPELESS warning and the rig's guards, is discarded
+  // above). Parse the whole stdout, not the last line — the object spans lines.
+  const text = out.trim();
+  assert.ok(text, 'the flap rig produced no output — it did not run');
+  const r = JSON.parse(text) as {
+    totalRecycles: number;
+    recycleTicks: number[];
+    backoffGaps: number[];
+    backoffSpaced: boolean;
+    flapLimitTick: number | null;
+    flapBroadcast: boolean;
+    flapNotify: boolean;
+    surfacedChannels: string[];
+  };
+
+  // G4 — the widening backoff, as an OBSERVED DIFFERENCE: the pre-#97 build
+  // recycles on consecutive ticks [0,1,2]; this build spaces them as the
+  // interval doubles (measured [0,2,6], gaps [2,4]). Assert the spacing, not a
+  // flag the module could set without acting.
+  assert.equal(r.totalRecycles, 3, 'the full budget is still spent (3/hour)');
+  assert.ok(r.backoffSpaced, `recycles must NOT be back-to-back — gaps were ${JSON.stringify(r.backoffGaps)}`);
+  assert.ok(
+    r.backoffGaps.some((g) => g > 1),
+    'at least one inter-recycle gap must widen past a single tick (the backoff)',
+  );
+  // The gaps must be non-decreasing — a widening interval, not a random one.
+  for (let i = 1; i < r.backoffGaps.length; i++) {
+    assert.ok(
+      r.backoffGaps[i] >= r.backoffGaps[i - 1],
+      `gap ${i} (${r.backoffGaps[i]}) must be >= gap ${i - 1} (${r.backoffGaps[i - 1]})`,
+    );
+  }
+
+  // G3 — the surface. On the unfixed build surfacedChannels is ONLY
+  // `workspace:update` and flapBroadcast/flapNotify are false (the measured
+  // defect). Require BOTH the in-app broadcast and the OS notify.
+  assert.equal(r.flapBroadcast, true, 'flap-limit must emit the watchdog:flap-limit broadcast');
+  assert.equal(r.flapNotify, true, 'flap-limit must emit an OS notify()');
+  assert.ok(typeof r.flapLimitTick === 'number', 'the stand-down must actually fire within the run');
+  assert.ok(
+    r.surfacedChannels.includes('watchdog:flap-limit') && r.surfacedChannels.includes('NOTIFY'),
+    `human surface missing — surfacedChannels was ${JSON.stringify(r.surfacedChannels)}`,
+  );
+});

@@ -161,6 +161,62 @@ export function decideGateRelease(input: GateReleaseInput): boolean {
 export const MAX_RECYCLES_PER_HOUR = 3;
 export const RECYCLE_WINDOW_MS = 60 * 60 * 1000;
 
+/** Minimum gap between the PREVIOUS automatic recycle and the next, and how it
+ *  WIDENS with each attempt inside the window (issue #97).
+ *
+ *  ## The defect this closes
+ *
+ *  The anti-flap budget above is a hard COUNT in a rolling hour, with no spacing
+ *  between attempts. So a session that wedges the instant it is recycled spends
+ *  its whole budget as fast as the tick allows — three recycles in three ticks
+ *  (`TICK_MS` = 60s), three warm subprocesses torn down inside three minutes —
+ *  and only THEN stands down for the rest of the hour. A count without a
+ *  widening interval is not anti-flap; it is a burst limiter that front-loads
+ *  the damage.
+ *
+ *  ## Exponential, keyed on the number of recycles already spent
+ *
+ *  With N recycles already in the window, the NEXT one must wait
+ *  `RECYCLE_BACKOFF_BASE_MS * 2^(N-1)` after the most recent one, capped at
+ *  `RECYCLE_BACKOFF_MAX_MS` — so N=0 (empty ledger) waits nothing, N=1 waits
+ *  base, N=2 waits 2×base. The FIRST recycle is therefore treated instantly — a
+ *  genuine one-off stall, which is the common case both 2026-08-25 field
+ *  occurrences were. Each subsequent attempt costs
+ *  the flapping workspace progressively more real time before it may burn the
+ *  next budget slot, so the budget now spans a widening fraction of the hour
+ *  instead of three back-to-back ticks.
+ *
+ *  ## Why a SEPARATE action, not a longer window
+ *
+ *  `backoff` is NOT `flap-limit`: the budget is not spent, the workspace is not
+ *  stood down, and nothing needs a human. It is simply "not yet" — the next tick
+ *  re-evaluates and eventually crosses the interval. Collapsing it into either
+ *  `none` (indistinguishable from "not stalled") or `flap-limit` (surfaces a
+ *  false alarm and consumes the human's attention) would lose that distinction.
+ *
+ *  UNBASELINED, and chosen as spacings rather than tuned rates (same footing as
+ *  MAX_RECYCLES_PER_HOUR). Base 2 min: comfortably above one 60s tick, so the
+ *  second attempt is always deferred by at least one tick rather than firing on
+ *  the very next one. Cap 15 min: keeps the third attempt from pushing past the
+ *  point where `flap-limit` would take over anyway, so backoff widens the
+ *  spacing without ever silently disabling the watchdog for longer than the
+ *  window. */
+export const RECYCLE_BACKOFF_BASE_MS = 2 * 60 * 1000;
+export const RECYCLE_BACKOFF_MAX_MS = 15 * 60 * 1000;
+
+/** The widening interval the Nth recycle (0-indexed by recycles already spent
+ *  in the window) must observe since the previous recycle. Pure, exported for
+ *  the rig and the tests so the growth can be asserted directly. */
+export function recycleBackoffMs(
+  recyclesInWindow: number,
+  baseMs: number = RECYCLE_BACKOFF_BASE_MS,
+  maxMs: number = RECYCLE_BACKOFF_MAX_MS,
+): number {
+  if (recyclesInWindow <= 0) return 0;
+  const widened = baseMs * 2 ** (recyclesInWindow - 1);
+  return Math.min(widened, maxMs);
+}
+
 export interface RecycleInput {
   /** True when a live structured session owns this workspace. A workspace with
    *  no session cannot be wedged in the sense this watchdog treats — there is
@@ -218,12 +274,20 @@ export interface RecycleInput {
   now: number;
   maxPerWindow?: number;
   windowMs?: number;
+  /** Backoff params (issue #97); injectable for tests. */
+  backoffBaseMs?: number;
+  backoffMaxMs?: number;
 }
 
 export type RecycleDecision =
   | { action: 'none' }
   /** Recycle now. `parkedCount` rides along for the log/telemetry line. */
   | { action: 'recycle'; parkedCount: number; stalledForMs: number }
+  /** Under budget, but the widening backoff interval since the last recycle has
+   *  not elapsed yet (issue #97). NOT a stand-down: no budget is spent, no human
+   *  is needed. The next tick re-evaluates; `waitMs` is how much longer the
+   *  interval had to run, for the log/telemetry line only. */
+  | { action: 'backoff'; waitMs: number; recyclesInWindow: number }
   /** Budget exhausted — do NOT recycle, and SURFACE it. Never silent: a
    *  watchdog that quietly gives up leaves the human with neither a working
    *  agent nor a reason. */
@@ -245,6 +309,8 @@ export function decideSessionRecycle(input: RecycleInput): RecycleDecision {
     maxPerWindow = MAX_RECYCLES_PER_HOUR,
     windowMs = RECYCLE_WINDOW_MS,
     silenceMs = GATE_SILENCE_RELEASE_MS,
+    backoffBaseMs = RECYCLE_BACKOFF_BASE_MS,
+    backoffMaxMs = RECYCLE_BACKOFF_MAX_MS,
   } = input;
 
   if (!stalled) return { action: 'none' };
@@ -262,10 +328,30 @@ export function decideSessionRecycle(input: RecycleInput): RecycleDecision {
   if (lastStreamAt === null) return { action: 'none' };
   if (now - lastStreamAt < silenceMs) return { action: 'none' };
 
-  const inWindow = recentRecycles.filter((t) => now - t < windowMs).length;
+  const recentInWindow = recentRecycles.filter((t) => now - t < windowMs);
+  const inWindow = recentInWindow.length;
   if (inWindow >= maxPerWindow) {
     return { action: 'flap-limit', recyclesInWindow: inWindow, stalledForMs: stalled.stalledForMs };
   }
+
+  // WIDENING BACKOFF (issue #97), checked AFTER the flap ceiling but BEFORE the
+  // recycle: under budget is a necessary precondition, but the Nth attempt must
+  // also wait a widening interval since the LAST recycle so a session that
+  // re-wedges instantly cannot burn its whole budget on consecutive ticks. The
+  // first attempt (empty ledger) waits nothing — `recycleBackoffMs(0)` is 0 —
+  // so a genuine one-off stall is still treated immediately.
+  const requiredGap = recycleBackoffMs(inWindow, backoffBaseMs, backoffMaxMs);
+  if (requiredGap > 0 && inWindow > 0) {
+    // `Math.max`, not "the last element": the doc says newest-last, but a
+    // destructive gate must not depend on caller ordering — the most RECENT
+    // recycle is the one the interval is measured from however the list arrived.
+    const lastRecycle = Math.max(...recentInWindow);
+    const sinceLast = now - lastRecycle;
+    if (sinceLast < requiredGap) {
+      return { action: 'backoff', waitMs: requiredGap - sinceLast, recyclesInWindow: inWindow };
+    }
+  }
+
   return {
     action: 'recycle',
     parkedCount: stalled.parkedCount,

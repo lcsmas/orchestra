@@ -54,6 +54,7 @@
 
 import { store } from './store';
 import { log } from './logger';
+import { platform } from './platform';
 import { workspaceQueueStall } from '../shared/queue-stall.ts';
 import {
   decideSessionRecycle,
@@ -226,6 +227,44 @@ export async function recycleSession(wsId: string, reason: string): Promise<void
   }
 }
 
+/** Surface a flap-limit stand-down to the human (issue #97).
+ *
+ *  Two channels, both human-visible and neither gated on a window being open:
+ *   • `platform.broadcast('watchdog:flap-limit', …)` — a dedicated event any
+ *     attached view can badge/toast from. Kept distinct from `workspace:update`
+ *     so a view can react to the stand-down specifically rather than diffing an
+ *     opaque workspace patch.
+ *   • `platform.notify(…)` — an OS-level toast, the same surface `fireNeedsInput`
+ *     uses. This is the one watchdog outcome that genuinely needs a human: the
+ *     automatic repair has exhausted its budget and given up. Unlike
+ *     `fireNeedsInput` this is NOT suppressed when the window is focused — a
+ *     stand-down is rare and load-bearing enough that a focused human should
+ *     still get the toast; the broadcast covers the in-app surface either way.
+ *
+ *  Exported for the flap-budget rig so the surface can be asserted directly
+ *  (carry-forward 2: the marker must be as specific as the claim). */
+export function surfaceFlapLimit(
+  wsId: string,
+  wsName: string,
+  recyclesInWindow: number,
+  stalledForMin: number,
+): void {
+  platform.broadcast('watchdog:flap-limit', {
+    workspaceId: wsId,
+    recyclesInWindow,
+    stalledForMin,
+  });
+  platform.notify({
+    wsId,
+    kind: 'watchdogStandDown',
+    title: 'Auto-repair gave up — needs you',
+    body:
+      `${wsName} stalled ${stalledForMin}min and was auto-restarted ` +
+      `${recyclesInWindow}x this hour without recovering. Orchestra has stopped ` +
+      `retrying — it needs a human.`,
+  });
+}
+
 /** One pass over every workspace. Exported for the E2E rig, which drives ticks
  *  explicitly rather than waiting out real minutes. */
 export async function watchdogTick(now: number = Date.now()): Promise<void> {
@@ -284,15 +323,35 @@ export async function watchdogTick(now: number = Date.now()): Promise<void> {
 
     if (decision.action === 'none') continue;
 
+    if (decision.action === 'backoff') {
+      // UNDER budget, but the widening backoff interval since the last recycle
+      // (issue #97) has not elapsed. NOT a stand-down and NOT surfaced: no
+      // budget is spent and no human is needed — the next tick re-evaluates and
+      // eventually crosses the interval. Logged at info for the field trail
+      // only, so a flapping session's slowing cadence is legible in the log.
+      log.info(
+        `session-watchdog: ${ws.id} under budget (${decision.recyclesInWindow} this hour) but ` +
+          `backing off ${Math.round(decision.waitMs / 1000)}s more before the next recycle (issue #97)`,
+      );
+      continue;
+    }
+
     if (decision.action === 'flap-limit') {
       // SURFACED, never silent. A watchdog that quietly gives up leaves the
       // human with neither a working agent nor a reason — the worst of both.
       // The #88 badge is still on the row saying the workspace is stalled; this
       // line is what explains that the automatic repair has stood down.
+      const minutes = Math.round(decision.stalledForMs / 60_000);
       log.error(
-        `session-watchdog: ${ws.id} stalled ${Math.round(decision.stalledForMs / 60_000)}min but ` +
-          `already recycled ${decision.recyclesInWindow}x this hour — STANDING DOWN, needs a human (issue #90)`,
+        `session-watchdog: ${ws.id} stalled ${minutes}min but ` +
+          `already recycled ${decision.recyclesInWindow}x this hour — STANDING DOWN, needs a human (issue #90/#97)`,
       );
+      // A log line is not a surface (issue #97): the human is not watching the
+      // main log, and #88's stall badge may be suppressed for this very ws. Emit
+      // a dedicated broadcast (so a view can badge/toast it) AND an OS-level
+      // notification — this is the ONE watchdog outcome that genuinely needs a
+      // human, so it earns the same surface as `agent:needs-input`.
+      surfaceFlapLimit(ws.id, ws.name, decision.recyclesInWindow, minutes);
       continue;
     }
 

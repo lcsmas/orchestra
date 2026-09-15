@@ -198,6 +198,45 @@ app — two changes keep that env valid across restarts:
 - `buildSdkEnv` deletes any inherited `ORCHESTRA_SOCK` before setting its own
   (same hygiene as `ORCHESTRA_WS_ID`).
 
+## Self-healing watchdog (issue #90/#97)
+
+A keeper-hosted session can WEDGE — stop starting turns while messages wait —
+and every external probe still reads healthy (see the defect walkthrough atop
+`src/shared/session-wedge.ts`). `src/main/session-watchdog.ts` treats it on one
+main-side timer (`TICK_MS` = 60s, single-writer so N open windows don't act N
+times).
+
+- **Two independent layers per tick (`watchdogTick`).** Layer 1 force-releases a
+  stranded turn gate (`decideGateRelease` → `sdkReleaseStrandedGate`) only when
+  the SAME turn was seen silent across two ticks (`GATE_SILENCE_RELEASE_MS`, a
+  10-min PROGRESS bound, not a duration cap). Layer 2 is a cause-agnostic
+  recycle: `decideSessionRecycle` (fed #88's `workspaceQueueStall` verdict PLUS
+  the destructive path's own `lastStreamAt` progress evidence, review R1) →
+  `recycleSession` (`sdkStop` then `sdkWake` on the SAME conversation, parked
+  mail re-driven via `releaseInboxBlock` exactly-once).
+- **Anti-flap = COUNT + WIDENING BACKOFF (`session-wedge.ts`).**
+  `MAX_RECYCLES_PER_HOUR` = 3 in `RECYCLE_WINDOW_MS` = 1h caps recycles;
+  `recycleBackoffMs(n)` = `RECYCLE_BACKOFF_BASE_MS`·2^(n−1) (base 2 min, capped
+  at `RECYCLE_BACKOFF_MAX_MS` 15 min) then spaces them so a session that
+  re-wedges instantly can't burn its budget on consecutive ticks. The decision
+  is a 4-way union: `none` / `recycle` / `backoff` (under budget, interval not
+  elapsed — logged at info, no surface) / `flap-limit` (budget spent). Order in
+  `decideSessionRecycle`: not-stalled/not-live → progress-refusal → flap ceiling
+  → backoff → recycle. All thresholds are UNBASELINED, named constants.
+- **flap-limit SURFACES to a human (`surfaceFlapLimit`, #97).** A log line is not
+  a surface: it emits `platform.broadcast('watchdog:flap-limit', {workspaceId,
+  recyclesInWindow, stalledForMin})` (in-app) AND `platform.notify({kind:
+  'watchdogStandDown', …})` (OS toast, NOT focus-suppressed — this is the one
+  watchdog outcome that genuinely needs a human, and #88's stall badge may be
+  suppressed for the same ws).
+- **Gates.** Pure policy: `src/shared/session-wedge.test.ts` (backoff growth +
+  ordering). Module end-to-end: `src/main/session-watchdog.test.ts` drives the
+  R2 redelivery rig AND `scripts/wedge90-rigs/flap-budget.mjs` (14 real ticks:
+  recycles at [0,2,6] gaps [2,4] widening, flap-limit surfaces at tick 7 →
+  `watchdog:flap-limit` + `NOTIFY`; the pre-#97 build recycled [0,1,2] and never
+  surfaced). Both rigs run through `scripts/.r2-register.mjs` because the module
+  can't be imported bare under the strip-types runner (`./platform` dir-import).
+
 ## Kill/quit semantics
 
 | Scenario | Outcome |

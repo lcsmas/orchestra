@@ -16,7 +16,12 @@ import os from 'node:os';
  *  (click focuses the window + workspace). */
 export interface UiNotification {
   wsId: string;
-  kind: 'finished' | 'needsInput';
+  /** `watchdogStandDown` (issue #97): the self-healing watchdog has spent its
+   *  anti-flap budget on a workspace and stopped auto-recycling it — the one
+   *  condition where a human MUST intervene, so it earns an OS-level toast like
+   *  `needsInput`, not just a log line and a badge (#88's stall badge may itself
+   *  be suppressed for the same ws). */
+  kind: 'finished' | 'needsInput' | 'watchdogStandDown';
   title: string;
   body: string;
 }
