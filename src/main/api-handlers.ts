@@ -933,13 +933,27 @@ export const apiHandlers: ApiHandlerTable = {
   },
 
   restartAgent: async (id) => {
-    // Mirror the branch-switch path: stop the agent PTY (the frontend's
-    // terminal just resets) and tell it to spawn a fresh PTY. `pty:start`
-    // picks `claude --continue` since ws.hasInput is true, which is what
-    // makes MCP/settings.json edits take effect.
-    if (!isRunning(id)) return;
-    stopPty(id);
-    platform.broadcast('pty:restart', id);
+    // #148 gap #3: the toolbar Restart button used to gate on `isRunning(id)`
+    // (PTY-only) and silently no-op for a STRUCTURED-only workspace. Route the
+    // structured surface through the same conversation-preserving restart the
+    // CLI / #142 use (sdkRestart), tagged `toolbar` so the neutral restart row's
+    // detail names the producer. A live PTY keeps the existing renderer-driven
+    // terminal-reset path (unchanged behaviour for the terminal agent).
+    if (isRunning(id)) {
+      // Mirror the branch-switch path: stop the agent PTY (the frontend's
+      // terminal just resets) and tell it to spawn a fresh PTY. `pty:start`
+      // picks `claude --continue` since ws.hasInput is true, which is what
+      // makes MCP/settings.json edits take effect.
+      stopPty(id);
+      platform.broadcast('pty:restart', id);
+      return;
+    }
+    // No live PTY: dispatchRestartRequest classifies the surface (a live or
+    // persisted structured session → sdkRestart; a stopped PTY-only workspace →
+    // startAgentPty). It refuses diagnosably when nothing has ever run.
+    const { dispatchRestartRequest } = await import('./restart-workspace.ts');
+    const res = await dispatchRestartRequest({ id, fresh: false, trigger: 'toolbar' });
+    if (!res.ok) log.warn(`restartAgent: ${id} — ${res.error ?? 'unknown'}`);
   },
 
   stopAgent: async (id) => {

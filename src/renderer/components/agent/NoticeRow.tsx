@@ -26,6 +26,10 @@ const LABEL: Record<AgentNoticeKind, string> = {
   // Renders as a centered divider (see .av-notice-interrupted) — the text
   // carries the story, no shouty uppercase label.
   interrupted: '',
+  // An intentional restart (#148) is routed to the dedicated expandable
+  // RestartRow, never NoticeRow — but the map must stay exhaustive over the
+  // kind union. If it ever DID reach here, no shouty label (it is neutral).
+  restarted: '',
   // MCP connection outcomes (Option-D tracking): quiet hairline rows whose
   // dot color carries the state (green connected / red failed) — the text
   // ("context7 connected · 12 tools") is the whole story, no label.

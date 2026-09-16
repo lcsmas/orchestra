@@ -3389,6 +3389,32 @@ h6.av-md-h {
 .av-wake-cmd-n { flex: none; color: var(--av-text-faint); }
 .av-wake-cmd-text { color: var(--av-text); word-break: break-all; }
 
+/* Restart row (issue #148) — a QUIET NEUTRAL row for an intentional restart, in
+   the #145 quiet-rows idiom. Deliberately muted (text-dim, no warn/error accent)
+   so it reads as a benign lifecycle marker, never a failure. */
+.av-restart { margin: 3px 24px; }
+.av-restart-header {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 4px 10px; border: none; border-radius: 8px; cursor: pointer;
+  background: color-mix(in srgb, var(--av-text-dim) 6%, transparent);
+  color: var(--av-text-dim); font: inherit; font-size: var(--av-fs-small); text-align: left;
+  transition: background 120ms var(--av-ease);
+}
+.av-restart-header:hover { background: color-mix(in srgb, var(--av-text-dim) 12%, transparent); }
+.av-restart-header:focus-visible {
+  outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--av-text-dim) 40%, transparent);
+}
+.av-restart-icon { flex: none; display: inline-flex; color: var(--av-text-dim); }
+.av-restart-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.av-restart .av-caret { flex: none; display: inline-flex; transition: transform 120ms var(--av-ease); }
+.av-restart .av-caret-open { transform: rotate(90deg); }
+.av-restart-detail {
+  margin: 2px 24px 8px; padding: 6px 12px;
+  border: 1px solid var(--av-hairline);
+  border-radius: 8px; background: var(--av-surface-raised);
+  font-size: var(--av-fs-small); color: var(--av-text-dim);
+}
+
 /* Delivery row — the bordered card + per-message grid. */
 .av-deliv {
   margin: 4px 24px 8px; border: 1px solid var(--av-hairline);

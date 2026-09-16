@@ -205,6 +205,16 @@ export interface Workspace {
    *  Legacy `string[]` values written by older builds are migrated on read by
    *  `normalizePendingPrompts` rather than dropped. */
   sdkPendingPrompts?: PendingPrompt[];
+  /** Intentional restarts of this workspace's structured session (issue #148).
+   *  An `orchestra restart` / toolbar Restart / #142 re-parent restart records a
+   *  {@link RestartRecord} here so a REOPENED pane rebuilds the same neutral
+   *  restart row the live pane showed (the exit(-1) that drives the live row is
+   *  never written to the CLI transcript, so backfill has nothing else to key
+   *  on — the #57 backfill==live rule). `sdkHistory` interleaves each record by
+   *  `at`; scoped to `sessionId` so a cleared/forked conversation's restarts
+   *  never leak. Capped (oldest dropped) so a workspace restarted hundreds of
+   *  times can't grow the record unbounded. */
+  sdkRestarts?: RestartRecord[];
   repoPath: string;
   /** DISPLAY-ONLY repo association for a repo-less coordinator (`kind:
    * 'orchestrator'`). Purely a sidebar-grouping preference: it files the
@@ -1147,6 +1157,31 @@ export interface AgentMcpServersEvent extends AgentEventBase {
   servers: AgentMcpServer[];
 }
 
+/** Which producer triggered an INTENTIONAL restart (issue #148). Persisted
+ *  verbatim in a {@link RestartRecord} and rendered in the neutral restart row's
+ *  expandable detail. The three producers the ticket enumerates:
+ *   - `cli`      — `orchestra restart <id>` (issue #111).
+ *   - `toolbar`  — the structured view's Restart button.
+ *   - `reparent` — the #142 conversation-preserving re-parent restart. */
+export type RestartTrigger = 'cli' | 'toolbar' | 'reparent';
+
+/** A persisted record of one intentional restart, kept on the workspace
+ *  ({@link Workspace.sdkRestarts}) so a REOPENED pane can rebuild the same
+ *  neutral row the live pane showed (the #57 backfill==live rule). Orchestra
+ *  never writes the CLI's transcript, so the marker lives here instead and
+ *  `sdkHistory` interleaves it into the backfill by `at`. */
+export interface RestartRecord {
+  /** Epoch-ms the restart happened — the row's chronological anchor for the
+   *  backfill interleave. */
+  at: number;
+  /** The structured session id this restart preserved (`ws.sdkSessionId` at
+   *  restart time), so a record never leaks into an unrelated (cleared/forked)
+   *  transcript. */
+  sessionId: string;
+  /** Which producer triggered it. */
+  trigger: RestartTrigger;
+}
+
 /** Category of a {@link AgentNoticeEvent} — drives the row's icon/accent and
  *  lets the UI treat some kinds specially (e.g. `rate-limit` formats
  *  `resetsAt`). Open-ended by design: unknown kinds render as `info`. */
@@ -1162,6 +1197,7 @@ export type AgentNoticeKind =
   | 'info' // informational message (system/informational, low prominence)
   | 'command-output' // output of a built-in slash command (/compact, /usage …)
   | 'interrupted' // the user interrupted the turn (stream marker / manager notice)
+  | 'restarted' // an INTENTIONAL restart preserved the conversation (issue #148)
   | 'mcp' // an MCP server connected / was enabled (green-dot hairline)
   | 'mcp-error'; // an MCP server failed / needs auth / was disabled (red-dot hairline)
 
@@ -1191,6 +1227,10 @@ export interface AgentNoticeEvent extends AgentEventBase {
    *  structural bit the SDK gave us is carried through explicitly instead of
    *  being reconstructed downstream. */
   rejected?: boolean;
+  /** For `restarted` ONLY (issue #148): which producer triggered the intentional
+   *  restart — rendered in the row's expandable detail. Absent on every other
+   *  kind. See {@link RestartTrigger}. */
+  restartTrigger?: RestartTrigger;
 }
 
 /** The CLAUDE.md memory files that exceed the model's per-file char limit.
@@ -1911,6 +1951,9 @@ export interface RenderMessage {
   noticeKind?: AgentNoticeKind;
   /** For a `rate-limit` notice row: epoch seconds the limit resets. */
   noticeResetsAt?: number;
+  /** For a `restarted` notice row (issue #148): which producer triggered the
+   *  intentional restart — shown in the row's expandable detail. */
+  restartTrigger?: RestartTrigger;
   /** For a `user` message: where an externally-originated turn came from
    *  (Remote Control, peer delivery) — rendered as a badge. */
   origin?: string;

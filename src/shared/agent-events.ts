@@ -1864,6 +1864,9 @@ export function foldEvent(session: AgentSession, event: AgentEvent): AgentSessio
         text: event.text,
         noticeKind: event.kind,
         ...(event.resetsAt !== undefined ? { noticeResetsAt: event.resetsAt } : {}),
+        // #148: the intentional-restart row carries its trigger for the
+        // expandable detail. Present only on `kind: 'restarted'`.
+        ...(event.restartTrigger !== undefined ? { restartTrigger: event.restartTrigger } : {}),
         done: true,
       });
       return { ...next, messages };
