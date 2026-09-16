@@ -43,3 +43,6 @@ build/bus-pane-shots/
 # Bus-rows screenshots produced by scripts/bus-rows-screenshot.mjs (#145). Same
 # rule: gate EVIDENCE, regenerate with the rig, keep them off the source tree.
 build/bus-rows-shots/
+# Restart-row screenshots produced by scripts/restart-row-screenshot.mjs (#148).
+# Same rule: gate EVIDENCE, regenerate with the rig, keep them off the source tree.
+build/restart-row-shots/
