@@ -745,19 +745,37 @@ must-FAIL arms (`bus-wake.test.ts` predicate + `bus-wake-sweep.test.ts` sweep)
 assert an open gate → **0 pending, 0 wakes, 0 counted**, with a question message
 as the same-command positive control.
 
-## Dedup: ledger PRESENCE, not a sequence comparison
+## Dedup: ledger PRESENCE, re-armed by the reader's own ACK (#150)
 
-`decideWake` (`src/shared/bus-wake.ts:98`) suppresses when the reader already has
-a ledger entry. **Recorded disproof:** this first compared a high-water sequence
-(`wokeThroughSeq >= pendingThroughSeq`). Three inserts arriving while the reader
-is mid-turn come in at *rising* sequences (5, 6, 7), each passes that test, and
-the reader is woken **three** times — the exact failure T117.2 exists to catch,
-shipped by the guard meant to prevent it.
+`decideWake` (`src/shared/bus-wake.ts:208`) suppresses when the reader has a ledger
+entry **and has not yet acked through the seq it was last woken for** —
+`readerAckedThroughLastWake` (`:200`): `pending.cursorSeq >= previous.wokeThroughSeq`.
+While the outstanding `orchestra check` order is unfulfilled the reader is not
+re-woken; once its cursor advances past that mark the order is fulfilled and any
+pending that remains is NEW mail → the entry is re-armed and it wakes again
+through the fresh high-water.
 
-The only re-arm is `pruneWakeLedger` (`src/shared/bus-wake.ts:123`) dropping the
-entry once the reader's own ack clears its pending state. That is the right
-shape: one order to `orchestra check` covers everything outstanding when the
-reader obeys it.
+**Recorded disproof (two, do not re-derive):** (1) suppressing on a raw high-water
+(`wokeThroughSeq >= pendingThroughSeq`, or a bare `>`): three inserts arriving
+while the reader is mid-turn come in at *rising* sequences (5, 6, 7) with the
+cursor UNMOVED, each passes that test, and the reader wakes **three** times —
+T117.2. That is why the re-arm keys on the CURSOR (did it ack?), not on pending
+rising. (2) The pre-#150 pure `if (previous) skip`: a reader that acked through N
+but still held OLDER unacked mail kept a non-empty pending set, so
+`pruneWakeLedger` never dropped the entry and new mail N+1 never woke it (live
+repro 3 msgs / 14 min, ledger #147 C5).
+
+Two re-arms now: `pruneWakeLedger` (`src/shared/bus-wake.ts:248`) drops the entry
+when the reader's pending set EMPTIES, and the cursor test above re-arms when it
+acks the last wake while pending survives. The cursor re-arm is the **LOT path
+only** — two families are EXCLUDED and keep their exact pre-#150 behaviour:
+**ask readers** (`reWakeUntilAnswered`), whose pending is answer-based not
+cursor-based (#119), keeping their effectful `cursorAtWake` delete
+(`src/main/bus-wake.ts:512`); and **gate-pending readers** (`gatePending`), whose
+`wokeThroughSeq` may be a GATE ID that shares no numbering with the message cursor
+(fire branch `Math.max(lotSeq, gateSeq)`) — comparing a cursor to a gate id would
+spuriously re-arm, so gates keep the presence dedup and their answer-based re-wake
+is out of #150's scope.
 
 The ledger entry is written **before** the `await` on delivery (`:287`) — a
 second sweep entering during that yield would otherwise see no entry and fire a

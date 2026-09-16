@@ -117,35 +117,43 @@ export type SkipReason = 'no-pending' | 'already-woken' | 'not-wakeable';
 /**
  * Decide what to do about ONE reader on ONE sweep tick.
  *
- * ── The dedup rule: PRESENCE in the ledger, never a sequence comparison ─────
+ * ── The dedup rule: PRESENCE, re-armed by the reader's own ACK ──────────────
  *
  * "At most one pending wake per reader; N inserts while busy = ONE wake"
- * (#117 acceptance 2). The suppression test is therefore `previous !== undefined`
- * — the reader has an outstanding order to check, so it needs no second one.
+ * (#117 acceptance 2). A ledger entry means the reader has an OUTSTANDING order
+ * to `orchestra check` — one order covers every message pending when it obeys —
+ * so while that order is outstanding it is not re-woken. The suppression test is
+ * therefore: an entry exists AND the reader has NOT yet acked through the seq we
+ * last woke it for ({@link readerAckedThroughLastWake} — its `cursorSeq` is still
+ * below `previous.wokeThroughSeq`). Once the reader HAS acked through that mark,
+ * the order is fulfilled and any pending that remains is NEW mail (#150) → the
+ * entry is re-armed and the reader woken again through the fresh high-water.
  *
- * DISPROVED DESIGN, recorded here so it is not re-derived. This first suppressed
- * only when `previous.wokeThroughSeq >= pending.pendingThroughSeq`, reasoning
- * that a high-water mark "makes both directions observable". It does not: three
- * inserts landing while the reader is mid-turn arrive at RISING sequences (5, 6,
- * 7), each one passes a `>=` test against the previous mark, and the reader is
- * woken THREE times — the exact failure T117.2 exists to catch, shipped by the
- * guard meant to prevent it. The hand-written 3-insert test in bus-wake.test.ts
- * caught it before a line of it ran (carry-forward 1); it is kept as the
- * regression.
+ * DISPROVED DESIGN, recorded here so it is not re-derived. A first attempt
+ * suppressed only when `previous.wokeThroughSeq >= pending.pendingThroughSeq`,
+ * reasoning that a high-water mark "makes both directions observable". It does
+ * not: three inserts landing while the reader is mid-turn arrive at RISING
+ * sequences (5, 6, 7); the reader has acked NOTHING, yet each rising seq passes a
+ * `>=`/`>` test against the previous mark and the reader is woken THREE times —
+ * the exact failure T117.2 exists to catch. That is why the re-arm keys on the
+ * reader's CURSOR (did it ACK the last order?), NOT on the pending seq rising:
+ * rising pending with no ack is one busy window → one wake; a cursor advancing
+ * past the last wake is the reader having obeyed → a fresh order is owed (#150).
+ * The hand-written 3-insert test in bus-wake.test.ts is kept as the regression.
  *
- * The seq is still carried on the entry, because the log line and the gate need
- * to say WHICH traffic a wake covered. It is just not what decides suppression.
+ * ── #150: NEW mail after an ACK, while unrelated pending survives the prune ──
  *
- * ── Why an ACK does not appear here, and why that is the RE-ARM ─────────────
- *
- * It does not need to. An ack advances `cursors.acked_seq` past the lot, so the
- * next sweep computes `pending: false` and returns `no-pending` (#117 acceptance
- * 4). The ledger entry is then dropped by {@link pruneWakeLedger} — and THAT is
- * the only re-arm. It is the right one: an order to `orchestra check` covers
- * every message outstanding at the moment the reader runs it, so new traffic
- * arriving before the reader has obeyed the first order needs no second order.
- * A reader that has acked and then receives new mail has an empty ledger entry
- * and is woken normally.
+ * The straightforward re-arm is {@link pruneWakeLedger}: when a reader's pending
+ * set EMPTIES, its entry is dropped and it wakes normally for the next lot. But
+ * that only fires when the WHOLE set empties. A reader that acked through N yet
+ * still holds OLDER unacked unrelated mail keeps a non-empty pending set, so the
+ * prune never runs, the entry survives, and pre-#150 the presence test skipped
+ * every subsequent sweep — new mail N+1 never woke it (live repro: 3 msgs /
+ * 14 min, ledger #147 C5). The cursor-based re-arm here closes that: acking
+ * through the last wake's high-water re-arms independently of whether the set
+ * emptied. Ask readers (`reWakeUntilAnswered`) are EXCLUDED — their pending is
+ * answer-based, not cursor-based, and they keep their own effectful re-arm
+ * (src/main/bus-wake.ts, the `cursorAtWake` delete), left unchanged (#119).
  *
  * ── COUNTED, NOT FIRED ──────────────────────────────────────────────────────
  *
@@ -172,6 +180,46 @@ export type SkipReason = 'no-pending' | 'already-woken' | 'not-wakeable';
  * message sequences share no numbering, so a source whose switch is OFF must not
  * raise the mark — that would mask its counted-not-fired state on the next sweep.
  */
+/**
+ * The re-arm test for #150: has the reader ACKED through the high-water we last
+ * woke it for? Its durable cursor ({@link ReaderPendingState.cursorSeq}) reaching
+ * `previous.wokeThroughSeq` means it obeyed the outstanding order, so any pending
+ * that remains is NEW mail and a fresh wake is owed.
+ *
+ * Keyed on the CURSOR, not on `pendingThroughSeq`, so it is level-triggered by
+ * the ack and NOT by the pending seq merely rising: three rising inserts before
+ * any ack (T117.2) leave the cursor untouched and stay a single wake, while an
+ * ack that advances the cursor past the last wake re-arms exactly once (bounded
+ * by acks, not sweeps — the effectful sweep records the fresh cursor as the new
+ * `wokeThroughSeq`, so the reader is not re-woken again until it acks again).
+ *
+ * This re-arm is the LOT path ONLY — two families of reader are EXCLUDED so it
+ * cannot fire spuriously, and both keep their exact pre-#150 behaviour:
+ *
+ *  - Ask readers (`reWakeUntilAnswered`): pending is answer-based, not
+ *    cursor-based (#119). They keep their own effectful `cursorAtWake` re-arm
+ *    (src/main/bus-wake.ts), which this must not double-fire.
+ *  - Gate-pending readers (`gatePending`): `wokeThroughSeq` may have been raised
+ *    to a GATE ID, which shares no numbering with the message cursor (see the
+ *    fire branch: `Math.max(lotSeq, gateSeq)`). Comparing a message `cursorSeq`
+ *    against a gate id is meaningless — an unrelated acked-lot cursor crossing a
+ *    small gate id would spuriously re-arm a gate wake every sweep. Gates keep
+ *    the presence dedup (`if (previous) skip`) unchanged; a gate's own re-wake
+ *    (answer-based, #119) is out of #150's scope — this fix must not perturb it.
+ *
+ * With both excluded the comparison is cursor-vs-message-seq only: the reader's
+ * cursor reaching the seq we last woke it for means it obeyed the outstanding
+ * `orchestra check`, so any pending that remains is NEW mail and a wake is owed.
+ */
+function readerAckedThroughLastWake(
+  pending: ReaderPendingState,
+  previous: WakeLedgerEntry,
+): boolean {
+  if (pending.reWakeUntilAnswered === true) return false;
+  if (pending.gatePending === true) return false;
+  return (pending.cursorSeq ?? 0) >= previous.wokeThroughSeq;
+}
+
 export function decideWake(
   pending: ReaderPendingState,
   session: ReaderSessionState,
@@ -185,7 +233,9 @@ export function decideWake(
     return { kind: 'skip', reader: pending.reader, why: 'no-pending' };
   }
   if (!session.wakeable) return { kind: 'skip', reader: pending.reader, why: 'not-wakeable' };
-  if (previous) return { kind: 'skip', reader: pending.reader, why: 'already-woken' };
+  if (previous && !readerAckedThroughLastWake(pending, previous)) {
+    return { kind: 'skip', reader: pending.reader, why: 'already-woken' };
+  }
 
   const lotSeq = pending.pendingThroughSeq;
   const gateSeq = pending.gateThroughSeq ?? 0;

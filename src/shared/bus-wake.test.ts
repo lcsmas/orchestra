@@ -202,3 +202,119 @@ test('gate default: omitting askGateOn keeps the pre-#119 behaviour (gate never 
   const a = decideWake(gateOnly, WAKEABLE, undefined, true /* wake */); // no 5th arg
   assert.equal(a.kind, 'count', 'without the askGate arg a gate is counted, never fired');
 });
+
+// ── #150: re-wake for NEWER mail after the reader ACKED the outstanding order ─
+//
+// The three ticket must-FAIL arms, driving the CHANGED decideWake end-to-end
+// through a mini-sweep that mirrors the effectful loop: prune on the pending set,
+// pass `ledger.get(reader)` as `previous`, and on fire/count re-`set` the entry
+// with `wokeThroughSeq = action.throughSeq` (exactly src/main/bus-wake.ts L526).
+// The reader's cursor (`cursorSeq`) is the re-arm signal — MUTANT: revert the
+// L188 guard to `if (previous) skip('already-woken')` and arm (1) goes red while
+// arm (2) stays green; that pairing is what proves the fix is NOT a bare `>`.
+
+/** One sweep tick: prune the reader if it has no pending, then decide + record. */
+function sweep(
+  ledger: Map<string, WakeLedgerEntry>,
+  p: ReaderPendingState,
+  switchOn = true,
+): ReturnType<typeof decideWake> {
+  pruneWakeLedger(ledger, new Set(p.pending || p.gatePending === true ? [p.reader] : []));
+  const action = decideWake(p, WAKEABLE, ledger.get(p.reader), switchOn);
+  if (action.kind === 'fire' || action.kind === 'count') {
+    ledger.set(action.reader, { wokeThroughSeq: action.throughSeq });
+  }
+  return action;
+}
+
+test('#150 arm 1 — acked through N, mail N+1 arrives, unrelated pending survives → RE-WAKES', () => {
+  // Live repro shape: woken through 633, acked 633, new mail 636 then 638 while an
+  // OLDER unrelated lot keeps the pending set non-empty (so pruneWakeLedger never
+  // drops the entry). Pre-fix (bare `if (previous) skip`) the reader is NEVER
+  // re-woken; post-fix the sweep AFTER the ack re-wakes through the new high-water.
+  const ledger = new Map<string, WakeLedgerEntry>();
+
+  // Sweep 1: pending through 633, cursor 632 (633 not yet acked) → first wake.
+  const w1 = sweep(ledger, pending({ pendingThroughSeq: 633, cursorSeq: 632 }));
+  assert.equal(w1.kind, 'fire');
+  assert.equal(ledger.get(R)?.wokeThroughSeq, 633);
+
+  // The reader ACKS 633. New mail 636/638 arrives; older unrelated mail is still
+  // unacked so `pending` stays true and the entry is NOT pruned. cursor now 633.
+  const w2 = sweep(ledger, pending({ pendingThroughSeq: 638, cursorSeq: 633 }));
+  assert.equal(w2.kind, 'fire', 'the ack through 633 re-arms; 638 is new mail');
+  assert.equal(w2.kind === 'fire' && w2.throughSeq, 638);
+  assert.equal(ledger.get(R)?.wokeThroughSeq, 638);
+
+  // Bounded by ACKS not sweeps: without a further ack, no third wake.
+  const w3 = sweep(ledger, pending({ pendingThroughSeq: 638, cursorSeq: 633 }));
+  assert.equal(w3.kind, 'skip', 'no further ack → no re-wake, dedup holds');
+  assert.equal(w3.kind === 'skip' && w3.why, 'already-woken');
+});
+
+test('#150 arm 2 — woken through N, reader does NOT ack, no new mail → NOT re-woken', () => {
+  // The dedup-preservation arm. Same high-water across sweeps, cursor never moves
+  // (< wokeThroughSeq) → the reader stays suppressed. This is the arm that a bare
+  // `pendingThroughSeq > wokeThroughSeq` fix ALSO passes but that T117.2 (rising
+  // seqs) breaks — kept alongside arm 1 so the pair pins the cursor semantics.
+  const ledger = new Map<string, WakeLedgerEntry>();
+  const w1 = sweep(ledger, pending({ pendingThroughSeq: 633, cursorSeq: 632 }));
+  assert.equal(w1.kind, 'fire');
+
+  for (let i = 0; i < 3; i++) {
+    // three sweeps, no ack (cursor stuck at 632), no new mail (still 633).
+    const w = sweep(ledger, pending({ pendingThroughSeq: 633, cursorSeq: 632 }));
+    assert.equal(w.kind, 'skip');
+    assert.equal(w.kind === 'skip' && w.why, 'already-woken');
+  }
+});
+
+test('#150 — rising seqs WITHOUT an ack is still ONE wake (T117.2 preserved through cursor)', () => {
+  // The needle: NEW mail rising 5→6→7 before ANY ack must NOT re-wake (that is
+  // T117.2). Only a cursor advance re-arms. Distinct from the loop test above:
+  // here the cursor is explicitly held at 0 while pendingThroughSeq rises.
+  const ledger = new Map<string, WakeLedgerEntry>();
+  let fires = 0;
+  for (const seq of [5, 6, 7]) {
+    const a = sweep(ledger, pending({ pendingThroughSeq: seq, cursorSeq: 0 }));
+    if (a.kind === 'fire') fires++;
+  }
+  assert.equal(fires, 1, 'rising pending with no ack = one wake — no bare `>` re-fire');
+});
+
+test('#150 gate exclusion — a gate-pending reader is NOT re-armed by a message cursor', () => {
+  // review-150's probe: `wokeThroughSeq` for a gate wake is a GATE ID, which
+  // shares no numbering with the message cursor. A reader pending for a gate,
+  // woken through gate id 4, whose message cursor is HIGH (633 from unrelated
+  // acked lot traffic) must NOT be treated as "acked through the gate" — else the
+  // cursor (633 >= 4) would spuriously re-arm and re-fire the gate every sweep.
+  // Gates keep the presence dedup; their own re-wake is answer-based (#119), out
+  // of #150's scope. MUTANT: drop the `gatePending` guard in the helper → red.
+  const prev: WakeLedgerEntry = { wokeThroughSeq: 4 }; // a gate id
+  const gateReader = pending({
+    pending: false,
+    gatePending: true,
+    gateThroughSeq: 4,
+    cursorSeq: 633, // unrelated acked lot cursor, far past the gate id
+  });
+  const a = decideWake(gateReader, WAKEABLE, prev, false /* wake */, true /* askGate */);
+  assert.equal(a.kind, 'skip', 'a message cursor must not re-arm a gate wake');
+  assert.equal(a.kind === 'skip' && a.why, 'already-woken');
+});
+
+test('#150 arm 3 — the ask re-wake path (reWakeUntilAnswered) is UNCHANGED by the lot re-arm', () => {
+  // An ask reader's pending is answer-based: even after it acks (cursor advances
+  // past wokeThroughSeq) the LOT re-arm here must NOT re-fire it — the ask path
+  // keeps its own effectful `cursorAtWake` re-arm (src/main/bus-wake.ts), which
+  // this pure decision must leave to that layer. So with a `previous` present and
+  // reWakeUntilAnswered=true, decideWake SKIPS regardless of the cursor.
+  const prev: WakeLedgerEntry = { wokeThroughSeq: 633, cursorAtWake: 632 };
+  const askAckedPast = pending({
+    pendingThroughSeq: 633,
+    cursorSeq: 999, // acked far past — would re-arm a LOT reader
+    reWakeUntilAnswered: true,
+  });
+  const a = decideWake(askAckedPast, WAKEABLE, prev, true);
+  assert.equal(a.kind, 'skip', 'the pure lot re-arm never touches an ask reader');
+  assert.equal(a.kind === 'skip' && a.why, 'already-woken');
+});
