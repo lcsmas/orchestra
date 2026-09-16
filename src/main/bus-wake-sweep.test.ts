@@ -190,6 +190,62 @@ test('T117.4 after an ack, genuinely NEW mail DOES wake again', async (t) => {
   assert.equal(wakes.length, 2, 'new mail after an ack must wake');
 });
 
+test('#150 F1 CROSS-RUN — acked the woken run, NEW mail in a related run RE-WAKES (real bus)', async (t) => {
+  // review-150 F1, through the REAL readPendingReaders + sweepBusWake (the layer
+  // the pure suite is structurally blind to: the cross-run cursor SELECTION lives
+  // in src/main/bus-wake.ts, not decideWake). The reader's own run is B, nested
+  // under A, so A is a RELATED (ancestor) run and exact-recipient mail in A wakes
+  // it. Between sweeps the NEWEST pending item flips A→B, so `mailRunId`/`cursorSeq`
+  // flip too — the exact input that made the pre-fix single-run compare skip.
+  //   MUTANT: in readerAckedThroughLastWake compare `pending.cursorSeq >= …`
+  //   (ignore wokeRunId/cursorByRun) → the second wake never arrives → RED.
+  const db = tmpDb(t);
+  const RUN_A = 'run-A-anc';
+  const RUN_B = 'run-B-own';
+  const READER = 'ws-crossrun';
+  // Two related runs (B child of A). Bare rows are enough — the freeze fn is
+  // injected, and getRelatedRunIds only needs the parent edge.
+  db.prepare(
+    `INSERT INTO runs (id, kind, coordinator, parent_run_id, title, created_at) VALUES (?,?,?,?,?,?)`,
+  ).run(RUN_A, 'mission', 'lead', null, null, Date.now());
+  db.prepare(
+    `INSERT INTO runs (id, kind, coordinator, parent_run_id, title, created_at) VALUES (?,?,?,?,?,?)`,
+  ).run(RUN_B, 'wave', 'ops', RUN_A, null, Date.now());
+
+  const wakes: { reader: string; text: string }[] = [];
+  __resetBusWakeForTests();
+  __setBusReaderForTests(() => db);
+  setWakeRoster(() => [{ reader: READER, wakeable: true, runId: RUN_B }]);
+  setWakeDeliver(async (reader, text) => {
+    wakes.push({ reader, text });
+    return true;
+  });
+  __freezeSwitchForTests(true);
+
+  // Sweep 1's NEWEST pending item must sit in run A, so the wake's run (recorded
+  // as wokeRunId) is A. A single unacked item in A does that. B gets its (older)
+  // mail only AFTER, so between sweeps the newest flips A→B — the run flip the
+  // single-run compare is blind to.
+  send(db, { runId: RUN_A, sender: 'lead', kind: 'dispatch', body: 'a-1', recipient: READER });
+
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'first wake must happen or the negative is vacuous');
+
+  // The reader OBEYS: checks + acks run A (the woken run). Now A has no pending.
+  const lotA = check(db, RUN_A, READER);
+  assert.equal(ack(db, RUN_A, READER, lotA.delivery!.id), true);
+
+  // NEW mail lands in run B at a HIGHER global seq → sweep 2's mailRunId flips to
+  // B, and cursorSeq becomes B's cursor (0 — never acked in B). B's older-nothing
+  // means the entry would have pruned; but the reader is STILL pending in B, so the
+  // entry survives from A. Pre-fix (single-run compare): 0 (B cursor) >= A's seq →
+  // false → SKIP forever (the F1 starvation). Post-fix: reads A's cursor (acked) →
+  // re-arm → wake for B's mail.
+  send(db, { runId: RUN_B, sender: 'ops', kind: 'dispatch', body: 'b-new', recipient: READER });
+  for (let i = 0; i < 3; i++) await sweepBusWake();
+  assert.equal(wakes.length, 2, 'acked woken run A, newer mail in run B → must RE-WAKE (F1)');
+});
+
 // ── T117.3 — level-triggered: the sweep alone reconciles durable state ─────
 
 test('T117.3 a sweep with NO prior event still fires for an insert it never saw', async (t) => {
@@ -495,4 +551,65 @@ test('D2 must-FAIL arm — an open GATE fires 0 wakes AND counts 0 (ledger #123 
   await sweepBusWake();
   assert.equal(wakes.length, 1, 'a question message addressed to the reader still wakes');
   assert.equal(busWakeCounters().fired, 1);
+});
+
+test('D-H1 GATE AXIS re-wake — gate 1 woken, reads-not-resolves, gate 2 opens → RE-WAKES (real bus)', async (t) => {
+  // The D-H1 must-FAIL arm through the REAL readPendingReaders + sweepBusWake. A
+  // reader is woken for an addressed gate; it reads but does NOT resolve; a SECOND
+  // addressed gate opens → the gate high-water rises → a fresh wake is owed. This
+  // is the C5 starvation class on the GATE axis (askGate/P3 will ride it).
+  //   MUTANT: single-axis `if (previous) skip` (or the gatePending EXCLUSION) →
+  //   sweep after the 2nd gate SKIPS → no 2nd wake → RED.
+  const db = tmpDb(t);
+  const wakes: { reader: string; text: string }[] = [];
+  __resetBusWakeForTests();
+  __setBusReaderForTests(() => db);
+  setWakeRoster(() => [{ reader: R1, wakeable: true, runId: RUN }]);
+  setWakeDeliver(async (reader, text) => {
+    wakes.push({ reader, text });
+    return true;
+  });
+  // wake OFF, askGate ON: the gate axis FIRES; the lot axis is irrelevant here.
+  __freezeSwitchForTests(false, true);
+
+  // Gate 1 addressed TO the reader (recipient R1) → gatePending.
+  openGate(db, RUN, 'ws-asker', 'ship gate 1?', R1);
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'the first gate wake must happen, or the negative is vacuous');
+
+  // The reader reads but does NOT resolve gate 1 (it stays open). A SECOND gate
+  // opens, also addressed to R1 → the max open gate id (gateThroughSeq) rises.
+  openGate(db, RUN, 'ws-asker', 'ship gate 2?', R1);
+  for (let i = 0; i < 3; i++) await sweepBusWake();
+  assert.equal(wakes.length, 2, 'a new gate opened → the gate axis must RE-WAKE (D-H1)');
+
+  // Dedup: no further gate → no third wake.
+  for (let i = 0; i < 3; i++) await sweepBusWake();
+  assert.equal(wakes.length, 2, 'no new gate → no further wake, gate-axis dedup holds');
+});
+
+test('D-H1 rider — a re-armed gate under askGate OFF is COUNTED (real bus, not skip-before-count)', async (t) => {
+  // review-150's counter finding, closed end to end: pre-fix the re-armed gate hit
+  // `skip` BEFORE the count branch, so the OFF-state shadow counter undercounted
+  // re-armed gates. With askGate OFF a gate whose high-water rose must COUNT.
+  const db = tmpDb(t);
+  const wakes: { reader: string; text: string }[] = [];
+  __resetBusWakeForTests();
+  __setBusReaderForTests(() => db);
+  setWakeRoster(() => [{ reader: R1, wakeable: true, runId: RUN }]);
+  setWakeDeliver(async (reader, text) => {
+    wakes.push({ reader, text });
+    return true;
+  });
+  __freezeSwitchForTests(false, false); // BOTH OFF — the shadow state canary 4 measures
+
+  openGate(db, RUN, 'ws-asker', 'gate 1?', R1);
+  await sweepBusWake();
+  assert.equal(busWakeCounters().counted, 1, 'first gate wake counted (askGate OFF)');
+  assert.equal(wakes.length, 0, 'and nothing fired');
+
+  openGate(db, RUN, 'ws-asker', 'gate 2?', R1); // new gate → axis rises
+  for (let i = 0; i < 3; i++) await sweepBusWake();
+  assert.equal(busWakeCounters().counted, 2, 'the RE-ARMED gate is COUNTED, not skipped (rider)');
+  assert.equal(busWakeCounters().fired, 0);
 });

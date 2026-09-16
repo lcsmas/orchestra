@@ -52,8 +52,23 @@ export interface ReaderPendingState {
   /** This reader's durable cursor position (`cursors.acked_seq`, 0 when none).
    *  The re-arm signal for {@link reWakeUntilAnswered}: an advance past the
    *  cursor recorded at the last wake means the reader acked and must be re-woken
-   *  while the ask is still unanswered. */
+   *  while the ask is still unanswered. This is the cursor in {@link pendingRunId}
+   *  (the newest pending item's run); the ask path only ever reasons about that
+   *  one run. The LOT #150 re-arm needs cursors across runs — see {@link cursorByRun}. */
   cursorSeq?: number;
+  /**
+   * The reader's durable cursor (`cursors.acked_seq`, 0 when absent) in EACH run
+   * that could carry a wake for it — every pending run PLUS the run a prior wake
+   * was recorded for. The #150 lot re-arm is PER-RUN: `cursorSeq` alone is the
+   * cursor in the CURRENT sweep's newest-mail run, but the ledger's
+   * `wokeThroughSeq` was recorded against the run that fired LAST, and
+   * `messages.sequence` is global while `cursors` are per-run — so a cross-run
+   * sweep (mail newest in run B this tick, but woken for run A last tick) would
+   * compare A's global seq against B's cursor, a category error that re-introduces
+   * the #150 starvation across runs (review-150 F1). The re-arm instead reads the
+   * cursor IN THE WOKEN RUN from this map. `undefined`/absent run → treated as 0.
+   */
+  cursorByRun?: ReadonlyMap<string, number>;
   /**
    * The run id the NEWEST pending lot/question physically SITS in (#134 D1a-bis)
    * — usually the reader's own run; for an OPS→LEAD digest the OPS's DESCENDANT
@@ -94,8 +109,37 @@ export interface ReaderSessionState {
  *  sequence is carried for the log line and for the gate's assertions, and is
  *  deliberately NOT part of the suppression test — see {@link decideWake}. */
 export interface WakeLedgerEntry {
-  /** `pendingThroughSeq` at the moment we last fired (or counted) a wake. */
-  wokeThroughSeq: number;
+  /**
+   * The LOT axis high-water — the `pendingThroughSeq` (a global `messages.sequence`)
+   * the last wake covered for lot/question traffic. Re-armed by the reader's CURSOR
+   * in {@link wokeRunId} reaching it (#150 F1). 0 when the last wake was gate-only.
+   *
+   * TWO AXES, NOT ONE (D-H1, ledger #151): the lot and gate high-waters are tracked
+   * SEPARATELY because they re-arm on different signals and their numbers are not
+   * comparable — a `messages.sequence` and a gate id share no numbering. Folding
+   * them into one `wokeThroughSeq` (as the first #150 cut did) forced the gate axis
+   * through the lot's cursor re-arm, which is meaningless for gates (they clear by
+   * ANSWER, not by a cursor advance) — the F2/D-H1 defect.
+   */
+  wokeLotSeq: number;
+  /**
+   * The GATE axis high-water — the highest OPEN gate id the last wake covered
+   * (#119, D-H1). Re-armed when the reader's `gateThroughSeq` (max open gate id)
+   * EXCEEDS this: a genuinely NEW gate opened, so a fresh wake is owed. NEVER
+   * re-armed by the message cursor. 0 when the last wake was lot-only. Unlike the
+   * lot axis this needs no cursor: `gateThroughSeq` is the max of the CURRENTLY
+   * open gates, so it only rises when a new gate opens (the wake-worthy event) and
+   * a resolved gate drops out of the max — no rising-before-ack (T117.2) shape.
+   */
+  wokeGateSeq: number;
+  /** The run whose LOT high-water {@link wokeLotSeq} belongs to — the mail run
+   *  that JUSTIFIED the lot wake (`pendingRunId` at fire time). The #150 lot re-arm
+   *  reads the reader's cursor IN THIS run (from {@link ReaderPendingState.cursorByRun}),
+   *  because a global `messages.sequence` is only comparable to the per-run cursor
+   *  of the SAME run (review-150 F1). `undefined` for a gate-only wake (the gate
+   *  axis re-arms on its own high-water, not a cursor) and for legacy entries —
+   *  both then fall back to the single-run `cursorSeq`, preserving prior behaviour. */
+  wokeRunId?: string;
   /** The reader's durable cursor at the moment we last woke it (#119). Only the
    *  re-wake-until-answered path reads it: when the reader's cursor later moves
    *  PAST this, the reader acked without answering and is re-armed for a second
@@ -105,11 +149,15 @@ export interface WakeLedgerEntry {
 }
 
 export type WakeAction =
-  /** Fire the order into the reader's session. */
-  | { kind: 'fire'; reader: string; throughSeq: number }
+  /** Fire the order into the reader's session. `throughSeq` is the max of the two
+   *  axes for the human log line; `lotSeq`/`gateSeq` are recorded on the ledger
+   *  SEPARATELY (D-H1) so each axis re-arms on its own signal. Each is the
+   *  high-water of ONLY the sources that JUSTIFIED this action (0 for an axis that
+   *  did not fire/count). */
+  | { kind: 'fire'; reader: string; throughSeq: number; lotSeq: number; gateSeq: number; wokeRunId?: string }
   /** The switch is OFF: count a would-have-woken, fire nothing (standing ruling). */
-  | { kind: 'count'; reader: string; throughSeq: number }
-  /** Nothing to do — no pending state, or already woken for this high-water. */
+  | { kind: 'count'; reader: string; throughSeq: number; lotSeq: number; gateSeq: number; wokeRunId?: string }
+  /** Nothing to do — no pending state, or already woken on BOTH axes' high-waters. */
   | { kind: 'skip'; reader: string; why: SkipReason };
 
 export type SkipReason = 'no-pending' | 'already-woken' | 'not-wakeable';
@@ -117,35 +165,43 @@ export type SkipReason = 'no-pending' | 'already-woken' | 'not-wakeable';
 /**
  * Decide what to do about ONE reader on ONE sweep tick.
  *
- * ── The dedup rule: PRESENCE in the ledger, never a sequence comparison ─────
+ * ── The dedup rule: PRESENCE, re-armed by the reader's own ACK ──────────────
  *
  * "At most one pending wake per reader; N inserts while busy = ONE wake"
- * (#117 acceptance 2). The suppression test is therefore `previous !== undefined`
- * — the reader has an outstanding order to check, so it needs no second one.
+ * (#117 acceptance 2). A ledger entry means the reader has an OUTSTANDING order
+ * to `orchestra check` — one order covers every message pending when it obeys —
+ * so while that order is outstanding it is not re-woken. The suppression test is
+ * therefore: an entry exists AND the reader has NOT yet acked through the seq we
+ * last woke it for ({@link readerAckedThroughLastWake} — its `cursorSeq` is still
+ * below `previous.wokeThroughSeq`). Once the reader HAS acked through that mark,
+ * the order is fulfilled and any pending that remains is NEW mail (#150) → the
+ * entry is re-armed and the reader woken again through the fresh high-water.
  *
- * DISPROVED DESIGN, recorded here so it is not re-derived. This first suppressed
- * only when `previous.wokeThroughSeq >= pending.pendingThroughSeq`, reasoning
- * that a high-water mark "makes both directions observable". It does not: three
- * inserts landing while the reader is mid-turn arrive at RISING sequences (5, 6,
- * 7), each one passes a `>=` test against the previous mark, and the reader is
- * woken THREE times — the exact failure T117.2 exists to catch, shipped by the
- * guard meant to prevent it. The hand-written 3-insert test in bus-wake.test.ts
- * caught it before a line of it ran (carry-forward 1); it is kept as the
- * regression.
+ * DISPROVED DESIGN, recorded here so it is not re-derived. A first attempt
+ * suppressed only when `previous.wokeThroughSeq >= pending.pendingThroughSeq`,
+ * reasoning that a high-water mark "makes both directions observable". It does
+ * not: three inserts landing while the reader is mid-turn arrive at RISING
+ * sequences (5, 6, 7); the reader has acked NOTHING, yet each rising seq passes a
+ * `>=`/`>` test against the previous mark and the reader is woken THREE times —
+ * the exact failure T117.2 exists to catch. That is why the re-arm keys on the
+ * reader's CURSOR (did it ACK the last order?), NOT on the pending seq rising:
+ * rising pending with no ack is one busy window → one wake; a cursor advancing
+ * past the last wake is the reader having obeyed → a fresh order is owed (#150).
+ * The hand-written 3-insert test in bus-wake.test.ts is kept as the regression.
  *
- * The seq is still carried on the entry, because the log line and the gate need
- * to say WHICH traffic a wake covered. It is just not what decides suppression.
+ * ── #150: NEW mail after an ACK, while unrelated pending survives the prune ──
  *
- * ── Why an ACK does not appear here, and why that is the RE-ARM ─────────────
- *
- * It does not need to. An ack advances `cursors.acked_seq` past the lot, so the
- * next sweep computes `pending: false` and returns `no-pending` (#117 acceptance
- * 4). The ledger entry is then dropped by {@link pruneWakeLedger} — and THAT is
- * the only re-arm. It is the right one: an order to `orchestra check` covers
- * every message outstanding at the moment the reader runs it, so new traffic
- * arriving before the reader has obeyed the first order needs no second order.
- * A reader that has acked and then receives new mail has an empty ledger entry
- * and is woken normally.
+ * The straightforward re-arm is {@link pruneWakeLedger}: when a reader's pending
+ * set EMPTIES, its entry is dropped and it wakes normally for the next lot. But
+ * that only fires when the WHOLE set empties. A reader that acked through N yet
+ * still holds OLDER unacked unrelated mail keeps a non-empty pending set, so the
+ * prune never runs, the entry survives, and pre-#150 the presence test skipped
+ * every subsequent sweep — new mail N+1 never woke it (live repro: 3 msgs /
+ * 14 min, ledger #147 C5). The cursor-based re-arm here closes that: acking
+ * through the last wake's high-water re-arms independently of whether the set
+ * emptied. Ask readers (`reWakeUntilAnswered`) are EXCLUDED — their pending is
+ * answer-based, not cursor-based, and they keep their own effectful re-arm
+ * (src/main/bus-wake.ts, the `cursorAtWake` delete), left unchanged (#119).
  *
  * ── COUNTED, NOT FIRED ──────────────────────────────────────────────────────
  *
@@ -172,6 +228,60 @@ export type SkipReason = 'no-pending' | 'already-woken' | 'not-wakeable';
  * message sequences share no numbering, so a source whose switch is OFF must not
  * raise the mark — that would mask its counted-not-fired state on the next sweep.
  */
+/**
+ * The LOT-axis re-arm test (#150 F1): has the reader ACKED, IN THE WOKEN RUN,
+ * through the lot high-water we last woke it for? Its cursor in `previous.wokeRunId`
+ * reaching `previous.wokeLotSeq` means it obeyed the outstanding `orchestra check`,
+ * so any lot pending that remains is NEW mail and a fresh wake is owed.
+ *
+ * Keyed on the CURSOR, not on `pendingThroughSeq`, so it is level-triggered by the
+ * ack and NOT by the pending seq merely rising: three rising inserts before any
+ * ack (T117.2) leave the cursor untouched and stay a single wake, while an ack that
+ * advances the cursor past the last wake re-arms exactly once (bounded by acks, not
+ * sweeps — the sweep records the fresh cursor as the new `wokeLotSeq`).
+ *
+ * Ask readers (`reWakeUntilAnswered`) are EXCLUDED: their pending is answer-based,
+ * not cursor-based (#119), and they keep their own effectful `cursorAtWake` re-arm
+ * (src/main/bus-wake.ts), which this must not double-fire.
+ *
+ * PER-RUN: `wokeLotSeq` is a global `messages.sequence` recorded against
+ * `previous.wokeRunId`, and cursors are PER-RUN, so it is only comparable to the
+ * reader's cursor in that same run (review-150 F1). Cross-run: mail newest in run B
+ * this tick after a wake for run A reads A's cursor (still < A's seq until A is
+ * acked) → no false suppression.
+ */
+function lotAxisReArmed(pending: ReaderPendingState, previous: WakeLedgerEntry): boolean {
+  if (pending.reWakeUntilAnswered === true) return false;
+  // The cursor in the run the last LOT wake covered. Prefer the per-run map; fall
+  // back to the single-run `cursorSeq` only when the woken run is unknown (legacy
+  // entry) or matches the current mail run.
+  const wokeRun = previous.wokeRunId;
+  const cursorInWokeRun =
+    wokeRun !== undefined && pending.cursorByRun
+      ? (pending.cursorByRun.get(wokeRun) ?? 0)
+      : wokeRun === undefined || wokeRun === pending.pendingRunId
+        ? (pending.cursorSeq ?? 0)
+        : 0; // woken run known, but no cursor for it → not yet acked there
+  return cursorInWokeRun >= previous.wokeLotSeq;
+}
+
+/**
+ * The GATE-axis re-arm test (D-H1): a genuinely NEW gate opened since the last
+ * wake — the reader's `gateThroughSeq` (max OPEN gate id) EXCEEDS the gate
+ * high-water we last woke it for. NEVER keyed on the message cursor (a gate id and
+ * a `messages.sequence` share no numbering — that was the F2 mistake).
+ *
+ * A plain `>` is safe here where it is NOT for lots: `gateThroughSeq` is the max of
+ * the CURRENTLY open gates, so it rises only when a new gate opens (the wake-worthy
+ * event) and a resolved gate simply drops out of the max — there is no
+ * rising-before-ack (T117.2) shape to guard against. N gates opening before the
+ * first wake still coalesce to one wake: the first wake covers through the max, and
+ * `gateThroughSeq > wokeGateSeq` is false until a gate ABOVE that max opens.
+ */
+function gateAxisReArmed(pending: ReaderPendingState, previous: WakeLedgerEntry): boolean {
+  return (pending.gateThroughSeq ?? 0) > previous.wokeGateSeq;
+}
+
 export function decideWake(
   pending: ReaderPendingState,
   session: ReaderSessionState,
@@ -185,19 +295,44 @@ export function decideWake(
     return { kind: 'skip', reader: pending.reader, why: 'no-pending' };
   }
   if (!session.wakeable) return { kind: 'skip', reader: pending.reader, why: 'not-wakeable' };
-  if (previous) return { kind: 'skip', reader: pending.reader, why: 'already-woken' };
 
-  const lotSeq = pending.pendingThroughSeq;
-  const gateSeq = pending.gateThroughSeq ?? 0;
-  const lotFires = lotPending && switchOn;
-  const gateFires = gatePending && askGateOn;
-
-  if (lotFires || gateFires) {
-    const throughSeq = Math.max(lotFires ? lotSeq : 0, gateFires ? gateSeq : 0);
-    return { kind: 'fire', reader: pending.reader, throughSeq };
+  // ── TWO AXES, EACH WITH ITS OWN RE-ARM (D-H1) ───────────────────────────────
+  // An axis is "active" this sweep when it is pending AND either this is the first
+  // wake (no prior entry) or its own re-arm signal advanced: the LOT axis on the
+  // reader's cursor in the woken run (#150 F1), the GATE axis on its own high-water
+  // rising (a new gate opened). Suppress only when NEITHER axis is active — that is
+  // the dedup: an outstanding order on an un-advanced axis is not re-issued.
+  const lotActive = lotPending && (previous === undefined || lotAxisReArmed(pending, previous));
+  const gateActive = gatePending && (previous === undefined || gateAxisReArmed(pending, previous));
+  if (!lotActive && !gateActive) {
+    return { kind: 'skip', reader: pending.reader, why: 'already-woken' };
   }
-  const throughSeq = Math.max(lotPending ? lotSeq : 0, gatePending ? gateSeq : 0);
-  return { kind: 'count', reader: pending.reader, throughSeq };
+
+  const lotSeqNow = pending.pendingThroughSeq;
+  const gateSeqNow = pending.gateThroughSeq ?? 0;
+  // The marks to RECORD per axis: the current high-water for an axis that acted
+  // this sweep, else carry the prior mark forward so the other axis's re-arm is not
+  // lost when only one axis fires (a lot re-arm must not reset wokeGateSeq to 0, or
+  // the gate would spuriously re-fire next sweep).
+  const lotSeq = lotActive ? lotSeqNow : (previous?.wokeLotSeq ?? 0);
+  const gateSeq = gateActive ? gateSeqNow : (previous?.wokeGateSeq ?? 0);
+  // The run the recorded LOT mark belongs to — the current mail run when the lot
+  // axis acted, else carried forward with its mark (so a gate-only re-arm does not
+  // orphan the lot high-water from its run).
+  const wokeRunId = lotActive ? pending.pendingRunId : previous?.wokeRunId;
+
+  // fire vs count is per the SWITCH of each ACTIVE axis; the two coalesce into ONE
+  // action (at most one order per reader). A source whose switch is OFF is counted,
+  // never fired, and must not raise the FIRED mark — its counted-not-fired state
+  // stays observable next sweep.
+  const lotFires = lotActive && switchOn;
+  const gateFires = gateActive && askGateOn;
+  if (lotFires || gateFires) {
+    const throughSeq = Math.max(lotFires ? lotSeqNow : 0, gateFires ? gateSeqNow : 0);
+    return { kind: 'fire', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId };
+  }
+  const throughSeq = Math.max(lotActive ? lotSeqNow : 0, gateActive ? gateSeqNow : 0);
+  return { kind: 'count', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId };
 }
 
 /**

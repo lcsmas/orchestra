@@ -745,21 +745,58 @@ must-FAIL arms (`bus-wake.test.ts` predicate + `bus-wake-sweep.test.ts` sweep)
 assert an open gate → **0 pending, 0 wakes, 0 counted**, with a question message
 as the same-command positive control.
 
-## Dedup: ledger PRESENCE, not a sequence comparison
+## Dedup: TWO AXES, each re-armed by its own signal (#150 F1 + D-H1)
 
-`decideWake` (`src/shared/bus-wake.ts:98`) suppresses when the reader already has
-a ledger entry. **Recorded disproof:** this first compared a high-water sequence
-(`wokeThroughSeq >= pendingThroughSeq`). Three inserts arriving while the reader
-is mid-turn come in at *rising* sequences (5, 6, 7), each passes that test, and
-the reader is woken **three** times — the exact failure T117.2 exists to catch,
-shipped by the guard meant to prevent it.
+`decideWake` (`src/shared/bus-wake.ts:285`) tracks the LOT and GATE high-waters
+**separately** on the ledger entry (`WakeLedgerEntry.wokeLotSeq` / `.wokeGateSeq`),
+because they re-arm on different signals and their numbers are not comparable — a
+`messages.sequence` and a gate id share no numbering. A reader is suppressed
+(`skip 'already-woken'`) only when NEITHER axis is active; either axis being active
+issues ONE coalesced order. Each axis records its own mark, and the inactive axis's
+mark is **carried forward** so a lot re-arm never resets the gate mark (or gates
+would spuriously re-fire).
 
-The only re-arm is `pruneWakeLedger` (`src/shared/bus-wake.ts:123`) dropping the
-entry once the reader's own ack clears its pending state. That is the right
-shape: one order to `orchestra check` covers everything outstanding when the
-reader obeys it.
+- **LOT axis** — `lotAxisReArmed` (`:253`): re-arms when the reader's cursor **in
+  the woken run** reaches `wokeLotSeq` (it obeyed the order). PER-RUN: `wokeLotSeq`
+  is a global seq recorded against `wokeRunId`, cursors are per-run, so it is only
+  comparable to the cursor of that same run. `readPendingReaders` supplies
+  `cursorByRun` for every RELATED run (`src/main/bus-wake.ts:305`) because the woken
+  run may no longer be newest-pending this sweep. Ask readers
+  (`reWakeUntilAnswered`) are excluded — they keep their effectful `cursorAtWake`
+  re-arm (`src/main/bus-wake.ts:527`).
+- **GATE axis** — `gateAxisReArmed` (`:281`): re-arms when the max OPEN gate id
+  (`gateThroughSeq`) EXCEEDS `wokeGateSeq` — a genuinely new gate opened. NEVER the
+  message cursor. A plain `>` is safe here (unlike lots) because `gateThroughSeq` is
+  the max of currently-open gates, so it rises only on a new gate and a resolved
+  gate drops out — no rising-before-ack shape.
 
-The ledger entry is written **before** the `await` on delivery (`:287`) — a
+**Recorded disproof (three, do not re-derive):** (1) a raw high-water
+(`wokeThroughSeq >= pendingThroughSeq`, or a bare `>`) on the LOT axis: three
+inserts mid-turn arrive at rising seqs (5,6,7) with the cursor UNMOVED, each passes
+→ **three** wakes (T117.2). The lot re-arm keys on the CURSOR, not pending rising.
+(2) The pre-#150 pure `if (previous) skip`: a reader that acked through N but held
+OLDER unacked mail kept a non-empty pending set, so `pruneWakeLedger` never dropped
+the entry and mail N+1 never woke it (live repro 3 msgs / 14 min, #147 C5).
+(3) A SINGLE-RUN cursor compare (review-150 F1): `cursorSeq` is the cursor in the
+CURRENT sweep's newest-mail run, but the recorded seq belongs to a possibly-
+DIFFERENT run — acking woken run A while new mail is newest in run B reads B's
+cursor (0) against A's seq and skips forever. Closed by `wokeRunId` + `cursorByRun`.
+And the GATE version of the SAME class (D-H1): folding the gate into the lot's
+cursor re-arm (or excluding gates entirely) starves a new gate that opens while an
+earlier one is read-not-resolved — the gate axis fixes it, and its OFF-state count
+is now taken (the pre-fix `skip` preceded the count branch → undercounted re-armed
+gates; the rider fix makes a re-armed gate under `askGate=OFF` COUNT). Every re-arm
+arm (pure + real-bus `bus-wake-sweep.test.ts`) reddens on the single-axis presence
+dedup.
+
+`pruneWakeLedger` (`src/shared/bus-wake.ts:348`) still drops the entry when the
+pending set EMPTIES (the whole-set re-arm); the per-axis re-arms above cover the
+case where OTHER pending keeps the set non-empty. Known bound: with `wake=ON` and
+`askGate=OFF` a single coalesced `fire` action does not separately COUNT a
+simultaneously-counted gate axis; this wave runs both switches together so the case
+is not reachable (the promotion plan flips both at once).
+
+The ledger entry is written **before** the `await` on delivery (`src/main/bus-wake.ts:541`) — a
 second sweep entering during that yield would otherwise see no entry and fire a
 duplicate (the #112 shape). A delivery the seam *refuses* (`sdkStartAndDeliver`
 returns `false`, never throws) **withdraws** the entry so the next sweep retries;

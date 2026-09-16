@@ -295,6 +295,20 @@ export function readPendingReaders(
             run_id: string;
           }[]).map((r) => r.run_id)
         : [];
+    // Per-run cursors for the #150 re-arm (review-150 F1): the reader's cursor in
+    // EVERY RELATED run — not just the currently-pending ones. `messages.sequence`
+    // is global but cursors are PER-RUN, so the re-arm must read the cursor of the
+    // SAME run the ledger's high-water (`wokeThroughSeq`/`wokeRunId`) was recorded
+    // against. The woken run may NO LONGER be pending this sweep (the reader acked
+    // it; a different run is now newest), so populating only the pending runs would
+    // omit exactly the cursor the re-arm needs — the whole related set covers it.
+    const cursorByRun = new Map<string, number>();
+    for (const r of related.ids) {
+      cursorByRun.set(
+        r,
+        Number(((cursorOf.get(r, reader) as { c: number } | undefined)?.c) ?? 0),
+      );
+    }
     // Gate half (#119) — rides the `askGate` switch, own run only (a gate has an
     // explicit recipient and is not part of the cross-run widening #134 added).
     const gates = openGatesForRecipient(db, runId, reader);
@@ -307,6 +321,7 @@ export function readPendingReaders(
       gateThroughSeq,
       reWakeUntilAnswered,
       cursorSeq,
+      cursorByRun,
       pendingRunId: pendingThroughSeq > 0 ? mailRunId : undefined,
       pendingRunIds: pendingThroughSeq > 0 ? pendingRunIds : undefined,
       switchRunId: pendingThroughSeq > 0 ? switchRunId : undefined,
@@ -524,7 +539,17 @@ export async function sweepBusWake(): Promise<void> {
       // entering during that yield would otherwise see no ledger entry and fire
       // a duplicate — the same shape as #112's duplicate prompt.
       ledger.set(action.reader, {
-        wokeThroughSeq: action.throughSeq,
+        // TWO AXES recorded separately (D-H1): the LOT high-water re-arms on the
+        // cursor (#150 F1), the GATE high-water on its own id rising. decideWake
+        // carries each axis's mark forward when only the other axis acted, so a lot
+        // re-arm never resets the gate mark (which would spuriously re-fire gates).
+        wokeLotSeq: action.lotSeq,
+        wokeGateSeq: action.gateSeq,
+        // The run the LOT high-water belongs to — the mail run that justified it.
+        // The #150 lot re-arm reads the reader's cursor IN THIS run next sweep,
+        // because a global seq is only comparable to the same run's per-run cursor
+        // (review-150 F1). Carried forward by decideWake when only the gate acted.
+        wokeRunId: action.wokeRunId,
         // Record the cursor only for the re-wake-until-answered path, so a later
         // advance re-arms it. Left undefined for ordinary lot wakes.
         cursorAtWake: p.reWakeUntilAnswered === true ? (p.cursorSeq ?? 0) : undefined,
