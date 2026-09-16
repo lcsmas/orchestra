@@ -32,6 +32,7 @@
 // dropped anything.
 
 import fs from 'node:fs';
+import path from 'node:path';
 import {
   getBus,
   busPath,
@@ -581,6 +582,100 @@ let timer: ReturnType<typeof setInterval> | null = null;
 let watcher: fs.FSWatcher | null = null;
 let debounce: ReturnType<typeof setTimeout> | null = null;
 
+/** Rig seam (#149 acceptance): the must-FAIL arm disables the accelerator so the
+ *  wake latency reverts to the SWEEP_MS timer. Default true = the accelerator is
+ *  armed in production. Set false BEFORE startBusWake()/armBusWalWatcher(). */
+let watcherEnabled = true;
+
+/** #149: disable/enable the WAL accelerator. The disabled arm is the acceptance
+ *  must-FAIL control — with the watcher off, lone-message latency must revert to
+ *  the 60s sweep, which is what proves the watcher is what buys sub-second wake. */
+export function __setWatcherEnabledForTests(on: boolean): void {
+  watcherEnabled = on;
+}
+
+/** The bus DB path the accelerator watches. Production reads `busPath()` (the
+ *  live `<ORCHESTRA_HOME>/bus.sqlite`); a rig points it at its own temp bus so
+ *  the directory watch is driven against a real on-disk file WITHOUT touching the
+ *  live bus (contract rule 5). Resolved lazily per arm, never cached. */
+let watchBusPath: () => string = busPath;
+
+/** #149 rig seam: point the accelerator at a rig's temp bus file. */
+export function __setWatchPathForTests(fn: () => string): void {
+  watchBusPath = fn;
+}
+
+/**
+ * Arm the WAL accelerator: watch the DIRECTORY and filter events by the `-wal`
+ * basename, debouncing a sweep. Idempotent, and safe to call even when the DB
+ * file does not yet exist (the directory is what we watch).
+ *
+ * ── #149: why the DIRECTORY, not the `-wal` file inode ──────────────────────
+ *
+ * The shipped watcher armed `fs.watch(bus.sqlite-wal)`, which pins the inotify
+ * watch to the WAL file's INODE. Measured on this btrfs machine (ledger #151,
+ * `scripts/diag-149-wal-watch.mjs`): SQLite unlinks `-wal` when the last WAL-mode
+ * connection closes and recreates it at a NEW inode on the next write (inode
+ * 32138494 → 32138511). An inode-pinned watch cannot follow that swap — after the
+ * recycle it delivered 0/10 cross-process inserts while a directory watch
+ * delivered 10/10 — and the detach is SILENT: the FSWatcher never emits `'error'`,
+ * so the old fallback-on-throw never fired and the wake quietly rode the 60s
+ * sweep (the canary-3 58.84s worst case). (`wal_checkpoint(TRUNCATE)` alone does
+ * NOT recycle the inode — it truncates in place — so the trigger is any lifecycle
+ * that DELETES `-wal`, e.g. an app restart, not a checkpoint.)
+ *
+ * Watching the directory inode instead is stable across every `-wal`
+ * unlink/recreate: the parent directory's inode does not change, and `fs.watch`
+ * reports the child filename so we filter to exactly `bus.sqlite-wal`. The 60s
+ * sweep stays as the level-triggered safety net (never removed).
+ *
+ * A `null` filename (some platforms/kernels omit it) is treated as a match — a
+ * spurious sweep is cheap and the sweep is idempotent, whereas dropping a real
+ * WAL event is the exact failure this fixes.
+ */
+export function armBusWalWatcher(): void {
+  if (watcher) return; // already armed
+  // `ORCHESTRA_BUS_WATCHER=off` disables the accelerator in a PACKAGED app — the
+  // #149 acceptance must-FAIL arm (latency must revert to the 60s sweep), and a
+  // real operational escape hatch if the watch ever misbehaves. The test seam
+  // (`__setWatcherEnabledForTests`) is the unit-level equivalent.
+  const envOff = (process.env.ORCHESTRA_BUS_WATCHER || '').trim().toLowerCase() === 'off';
+  if (!watcherEnabled || envOff) {
+    log.info(`bus-wake: WAL accelerator DISABLED (${envOff ? 'ORCHESTRA_BUS_WATCHER=off' : 'test'}) — sweep-only`);
+    return;
+  }
+  const bus = watchBusPath();
+  const dir = path.dirname(bus);
+  const walName = `${path.basename(bus)}-wal`; // e.g. bus.sqlite-wal
+  const fire = () => {
+    // Opt-in diagnostic (OFF at the default `info` level): the exact latency
+    // observable for #149. `ORCHESTRA_LOG_LEVEL=debug` prints one line per WAL
+    // event so a rig can measure send→sweep latency directly — the packaged-app
+    // acceptance gate keys on it (`scripts/verify-149-wake-latency.mjs`). Costs
+    // nothing in production because `log.debug` is below the shipped threshold.
+    log.debug(`bus-wake: WAL event → sweep scheduled (+${WATCH_DEBOUNCE_MS}ms debounce)`);
+    if (debounce) clearTimeout(debounce);
+    debounce = setTimeout(() => void sweepBusWake(), WATCH_DEBOUNCE_MS);
+    debounce.unref?.();
+  };
+  try {
+    watcher = fs.watch(dir, (_event, filename) => {
+      // Filter to the WAL file. A null filename (platform-dependent) is treated
+      // as a match rather than dropped — a spurious idempotent sweep is cheaper
+      // than a missed wake, which is the whole defect (#149).
+      if (filename === null || filename === walName) fire();
+    });
+    watcher.on('error', (e) => {
+      // A directory-watch error is rare but must never be silent: log it and let
+      // the 60s sweep carry every wake, just later.
+      log.warn(`bus-wake: WAL directory watch errored — falling back to the ${SWEEP_MS}ms sweep`, e);
+    });
+    log.info(`bus-wake: WAL accelerator armed on directory ${dir} (filter ${walName})`);
+  } catch (e) {
+    log.warn(`bus-wake: could not watch directory ${dir} — falling back to the ${SWEEP_MS}ms sweep`, e);
+  }
+}
+
 /** Start the wake subsystem (idempotent). Does NOT bind the switch value: the
  *  one `readWakeSwitch('default')` below is a shipped-state SIGNAL for the boot
  *  gate only — every sweep reads the flag per-run, per-sweep (ledger #123 Q1). */
@@ -607,19 +702,10 @@ export function startBusWake(): void {
   timer = setInterval(() => void sweepBusWake(), SWEEP_MS);
   timer.unref();
 
-  // The accelerator. Watching the -wal file rather than bus.sqlite: in WAL mode
-  // the main DB file is barely touched, so a watch on it misses nearly every
-  // insert (spike #109 arm 4). Failure to arm is NOT fatal — the timer still
-  // delivers every wake, just later.
-  try {
-    watcher = fs.watch(`${busPath()}-wal`, () => {
-      if (debounce) clearTimeout(debounce);
-      debounce = setTimeout(() => void sweepBusWake(), WATCH_DEBOUNCE_MS);
-      debounce.unref?.();
-    });
-  } catch (e) {
-    log.warn(`bus-wake: could not watch ${busPath()}-wal — falling back to the ${SWEEP_MS}ms sweep`, e);
-  }
+  // The accelerator (#149: directory watch + filename filter, survives WAL inode
+  // recycle where the old `-wal` inode watch died silently). Failure to arm is
+  // NOT fatal — the timer still delivers every wake, just later.
+  armBusWalWatcher();
 }
 
 export function stopBusWake(): void {
@@ -644,6 +730,8 @@ export function __resetBusWakeForTests(): void {
   counters.counted = 0;
   counters.failed = 0;
   started = false;
+  watcherEnabled = true;
+  watchBusPath = busPath;
   readWakeSwitch = () => false;
   readAskGateSwitch = () => false;
   readBusDb = getBus;
