@@ -552,3 +552,64 @@ test('D2 must-FAIL arm — an open GATE fires 0 wakes AND counts 0 (ledger #123 
   assert.equal(wakes.length, 1, 'a question message addressed to the reader still wakes');
   assert.equal(busWakeCounters().fired, 1);
 });
+
+test('D-H1 GATE AXIS re-wake — gate 1 woken, reads-not-resolves, gate 2 opens → RE-WAKES (real bus)', async (t) => {
+  // The D-H1 must-FAIL arm through the REAL readPendingReaders + sweepBusWake. A
+  // reader is woken for an addressed gate; it reads but does NOT resolve; a SECOND
+  // addressed gate opens → the gate high-water rises → a fresh wake is owed. This
+  // is the C5 starvation class on the GATE axis (askGate/P3 will ride it).
+  //   MUTANT: single-axis `if (previous) skip` (or the gatePending EXCLUSION) →
+  //   sweep after the 2nd gate SKIPS → no 2nd wake → RED.
+  const db = tmpDb(t);
+  const wakes: { reader: string; text: string }[] = [];
+  __resetBusWakeForTests();
+  __setBusReaderForTests(() => db);
+  setWakeRoster(() => [{ reader: R1, wakeable: true, runId: RUN }]);
+  setWakeDeliver(async (reader, text) => {
+    wakes.push({ reader, text });
+    return true;
+  });
+  // wake OFF, askGate ON: the gate axis FIRES; the lot axis is irrelevant here.
+  __freezeSwitchForTests(false, true);
+
+  // Gate 1 addressed TO the reader (recipient R1) → gatePending.
+  openGate(db, RUN, 'ws-asker', 'ship gate 1?', R1);
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'the first gate wake must happen, or the negative is vacuous');
+
+  // The reader reads but does NOT resolve gate 1 (it stays open). A SECOND gate
+  // opens, also addressed to R1 → the max open gate id (gateThroughSeq) rises.
+  openGate(db, RUN, 'ws-asker', 'ship gate 2?', R1);
+  for (let i = 0; i < 3; i++) await sweepBusWake();
+  assert.equal(wakes.length, 2, 'a new gate opened → the gate axis must RE-WAKE (D-H1)');
+
+  // Dedup: no further gate → no third wake.
+  for (let i = 0; i < 3; i++) await sweepBusWake();
+  assert.equal(wakes.length, 2, 'no new gate → no further wake, gate-axis dedup holds');
+});
+
+test('D-H1 rider — a re-armed gate under askGate OFF is COUNTED (real bus, not skip-before-count)', async (t) => {
+  // review-150's counter finding, closed end to end: pre-fix the re-armed gate hit
+  // `skip` BEFORE the count branch, so the OFF-state shadow counter undercounted
+  // re-armed gates. With askGate OFF a gate whose high-water rose must COUNT.
+  const db = tmpDb(t);
+  const wakes: { reader: string; text: string }[] = [];
+  __resetBusWakeForTests();
+  __setBusReaderForTests(() => db);
+  setWakeRoster(() => [{ reader: R1, wakeable: true, runId: RUN }]);
+  setWakeDeliver(async (reader, text) => {
+    wakes.push({ reader, text });
+    return true;
+  });
+  __freezeSwitchForTests(false, false); // BOTH OFF — the shadow state canary 4 measures
+
+  openGate(db, RUN, 'ws-asker', 'gate 1?', R1);
+  await sweepBusWake();
+  assert.equal(busWakeCounters().counted, 1, 'first gate wake counted (askGate OFF)');
+  assert.equal(wakes.length, 0, 'and nothing fired');
+
+  openGate(db, RUN, 'ws-asker', 'gate 2?', R1); // new gate → axis rises
+  for (let i = 0; i < 3; i++) await sweepBusWake();
+  assert.equal(busWakeCounters().counted, 2, 'the RE-ARMED gate is COUNTED, not skipped (rider)');
+  assert.equal(busWakeCounters().fired, 0);
+});

@@ -539,13 +539,17 @@ export async function sweepBusWake(): Promise<void> {
       // entering during that yield would otherwise see no ledger entry and fire
       // a duplicate — the same shape as #112's duplicate prompt.
       ledger.set(action.reader, {
-        wokeThroughSeq: action.throughSeq,
-        // The run this wake's high-water belongs to — the mail run that justified
-        // it. The #150 lot re-arm reads the reader's cursor IN THIS run next sweep,
+        // TWO AXES recorded separately (D-H1): the LOT high-water re-arms on the
+        // cursor (#150 F1), the GATE high-water on its own id rising. decideWake
+        // carries each axis's mark forward when only the other axis acted, so a lot
+        // re-arm never resets the gate mark (which would spuriously re-fire gates).
+        wokeLotSeq: action.lotSeq,
+        wokeGateSeq: action.gateSeq,
+        // The run the LOT high-water belongs to — the mail run that justified it.
+        // The #150 lot re-arm reads the reader's cursor IN THIS run next sweep,
         // because a global seq is only comparable to the same run's per-run cursor
-        // (review-150 F1). Undefined for a gate-only wake (no mail run; excluded
-        // from the cursor re-arm anyway).
-        wokeRunId: p.pendingRunId,
+        // (review-150 F1). Carried forward by decideWake when only the gate acted.
+        wokeRunId: action.wokeRunId,
         // Record the cursor only for the re-wake-until-answered path, so a later
         // advance re-arms it. Left undefined for ordinary lot wakes.
         cursorAtWake: p.reWakeUntilAnswered === true ? (p.cursorSeq ?? 0) : undefined,
