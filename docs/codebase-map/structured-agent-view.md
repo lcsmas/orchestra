@@ -696,6 +696,48 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   next `result` boundary in `consume` so a FUTURE turn's genuine EDE still
   renders), and consume's catch path emits a quiet `interrupted` notice
   instead of the old "Turn interrupted." error row.
+- **An intentional restart is not an error either (issue #148)** — an
+  `orchestra restart` / toolbar Restart / #142 re-parent restart tears the SDK
+  session down, which makes the keeper synthesize `exit(-1)`, thrown by the SDK
+  as `Claude Code process exited with code -1` and caught in `consume()`. That
+  used to paint the red error box. It now renders a compact NEUTRAL row —
+  `↻ Session redémarrée — conversation préservée`, expandable to the trigger —
+  in the #145 quiet-rows idiom (`RestartRow.tsx`, `.av-restart*`).
+  **The discriminator is an EXPLICIT intent marker, never the exit code or
+  timing** (a `kill -9` crash also exits -1): `sdkRestart` sets
+  `session.restartRequested` (a `RestartTrigger`) BEFORE the teardown, and the
+  catch routes through the pure **`classifyConsumeTermination`**
+  (`src/shared/restart-notice.ts` — extracted so a unit test drives the SAME
+  decision agent-sdk runs, the #132 dir-import constraint): `cleared` →
+  suppress, `restartRequested` set → the neutral row via **`makeRestartNotice`**,
+  `interrupted` → interrupted notice, else → the error row. An unmarked -1
+  (a genuine crash) still renders the red box.
+  **The restart marker WINS over `interrupted` deterministically (D-H2)**: the
+  teardown rides the SDK `interrupt()`, so keying on `interrupted` first made the
+  label depend on SDK timing — a restart raced by an interrupt is truthfully
+  "Session redémarrée". `sdkRestart` also resets `session.interruptRequested` at
+  teardown start, scoped to the restart path so a genuine standalone interrupt is
+  never relabeled and still renders "Interrupted by user".
+  **Backfill==live (#57)** without Orchestra ever writing the CLI transcript:
+  the exit(-1) is never persisted there, so each restart is recorded in
+  `Workspace.sdkRestarts` (a `RestartRecord{at,sessionId,trigger}`), and
+  `sdkHistory` (`agent-sdk.ts`) rebuilds the row with the SAME `makeRestartNotice`
+  builder, interleaved into the transcript events by `at`
+  (`interleaveRestartRows`, scoped to the resumed session id so a cleared/forked
+  conversation's restarts never leak). The live catch and the reopened backfill
+  therefore produce a byte-identical row by construction.
+  **All three producers take the marked path**: the CLI verb and #142 re-parent
+  already funnel through `dispatchRestartRequest → sdkRestart`; the toolbar
+  button was PTY-only (`api-handlers.ts restartAgent` gated on `isRunning` —
+  #148 gap #3) and now routes a non-PTY (structured) workspace through
+  `dispatchRestartRequest({trigger:'toolbar'})`. Fold carries `restartTrigger`
+  onto the `system`/`restarted` `RenderMessage`; `StructuredView`'s `ItemSlot`
+  routes `noticeKind === 'restarted'` to `RestartRow` (not `NoticeRow`/the error
+  box). Gates: `src/shared/restart-notice.test.ts` (the classifier's must-FAIL
+  arms — marked→neutral, crash-no-marker→error — the fold carry, and live==
+  backfill equivalence, each mutation-proven) + `scripts/restart-row-render-smoke.mjs`
+  (neutral row, no error class, expandable trigger, per-producer detail), wired
+  into `pnpm run test:render`.
 - **Fold robustness** — the fold's default case tolerates unknown event types
   at runtime (compile-time exhaustiveness kept via a `never` assignment); the
   store's RAF flush try/catches per workspace so one bad event can't discard a

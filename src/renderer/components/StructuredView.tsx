@@ -81,6 +81,7 @@ import {
   PeerMessageGroup,
   WakeRow,
   DeliveryRow,
+  RestartRow,
   PermissionDialog,
   AgentControls,
   RemoteControl,
@@ -1069,11 +1070,23 @@ function ItemSlot({ item }: { item: RenderItem }) {
       </span>
     </div>
   ) : null;
+  // #148: an INTENTIONAL restart folds to a `system` notice with
+  // `noticeKind: 'restarted'` — render it as the dedicated neutral RestartRow
+  // (expandable, trigger in the detail) instead of the generic NoticeRow/red
+  // error box. Detected here rather than in buildRenderItems so the ordinary
+  // `message` item + its turn-divider bookkeeping stay untouched. Same row live
+  // and on backfill: both build the message from `makeRestartNotice` (#57).
+  const isRestartRow =
+    item.kind === 'message' &&
+    item.message.role === 'system' &&
+    item.message.noticeKind === 'restarted';
   return (
     <>
       {divider}
       {item.kind === 'wake' ? (
         <WakeRow message={item.message} />
+      ) : isRestartRow ? (
+        <RestartRow message={item.message} />
       ) : (
         <AgentMessage message={item.message} />
       )}

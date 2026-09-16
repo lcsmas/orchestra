@@ -34,6 +34,7 @@ import { startAgentPty, clearBusRunStale } from './workspaces';
 import { sdkRestart } from './agent-sdk';
 import { sdkSessionLive } from './sdk-delivery.ts';
 import { resolveRestart, type RestartResult } from '../shared/restart-mode.ts';
+import type { RestartTrigger } from '../shared/types';
 
 export type { RestartResult } from '../shared/restart-mode.ts';
 
@@ -55,10 +56,14 @@ const RESTART_FALLBACK_ROWS = 32;
 export async function dispatchRestartRequest(input: {
   id?: string;
   fresh?: boolean;
+  /** Which producer asked (issue #148) — recorded on the restart marker so the
+   *  neutral row's detail names it. Defaults to `cli` (the socket verb). */
+  trigger?: RestartTrigger;
 }): Promise<RestartResult> {
   const id = input.id;
   const ws = id ? (store.getWorkspace(id) ?? null) : null;
   const fresh = input.fresh === true;
+  const trigger: RestartTrigger = input.trigger ?? 'cli';
   const res = await resolveRestart({
     id,
     ws,
@@ -66,7 +71,7 @@ export async function dispatchRestartRequest(input: {
     fresh,
     effects: {
       // sdkStop + killKeeper + ensureSession (default, resumes) or sdkClear (fresh).
-      restartStructured: (f) => sdkRestart(id!, { fresh: f }),
+      restartStructured: (f) => sdkRestart(id!, { fresh: f, trigger }),
       restartPty: async (f) => {
         // Stop the live process (if any), then respawn main-side. When already
         // stopped, isRunning is false and stopPty is a no-op — we just

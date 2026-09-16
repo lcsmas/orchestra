@@ -1901,7 +1901,7 @@ async function reconcileRunAfterReparent(
       // Dynamic import breaks the workspaces.ts ↔ restart-workspace.ts cycle
       // (restart-workspace imports startAgentPty from here).
       const { dispatchRestartRequest } = await import('./restart-workspace.ts');
-      const res = await dispatchRestartRequest({ id: ws.id, fresh: false });
+      const res = await dispatchRestartRequest({ id: ws.id, fresh: false, trigger: 'reparent' });
       if (res.ok) {
         // A prior --no-restart may have left this workspace stale; the restart
         // clears it. Idempotent when it was never stale.

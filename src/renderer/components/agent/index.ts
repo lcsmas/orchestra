@@ -43,3 +43,4 @@ export {
 export { PeerMessageGroup } from './PeerMessageGroup';
 export { WakeRow } from './WakeRow';
 export { DeliveryRow } from './DeliveryRow';
+export { RestartRow } from './RestartRow';

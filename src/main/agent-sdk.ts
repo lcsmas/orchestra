@@ -123,8 +123,11 @@ import type {
   AgentSkillInfo,
   AgentStopReason,
   RemoteControlState,
+  RestartRecord,
+  RestartTrigger,
   Workspace,
 } from '../shared/types';
+import { makeRestartNotice, classifyConsumeTermination } from '../shared/restart-notice.ts';
 import {
   enabledPluginInstalls,
   firstSentenceOfDescription,
@@ -380,6 +383,15 @@ interface Session {
    *  messages) must NOT be emitted — they'd land AFTER the `session/clear`
    *  reset and dirty the fresh transcript. */
   cleared?: boolean;
+  /** Set by {@link sdkRestart} JUST BEFORE it tears the session down for an
+   *  INTENTIONAL restart (issue #148). The teardown makes the keeper synthesize
+   *  an `exit(-1)`, thrown by the SDK as `Claude Code process exited with code
+   *  -1`; the consume-loop catch reads THIS marker to render a neutral restart
+   *  row instead of the red error box. The DISCRIMINATOR is this explicit flag,
+   *  never the exit code or timing (a genuine crash exits -1 too, with the flag
+   *  UNSET → the error box still renders). Carries the trigger so the row's
+   *  detail names the producer. */
+  restartRequested?: RestartTrigger;
 }
 
 const sessions = new Map<string, Session>();
@@ -1182,14 +1194,33 @@ async function consume(session: Session): Promise<void> {
     const message = err instanceof Error ? err.message : String(err);
     const interrupted =
       session.interruptRequested || /error_during_execution|ede_diagnostic/i.test(message);
-    endedByInterrupt = interrupted;
-    if (!session.cleared) {
-      // An interrupt is the user's own action, not a failure — surface it as a
-      // quiet `interrupted` notice (the fold collapses it into the stream's
-      // "[Request interrupted by user]" marker when that already rendered)
-      // instead of the red error banner it used to raise. Real crashes keep
-      // the error row.
-      if (interrupted) {
+    // #148: an INTENTIONAL restart tore this session down, which makes the
+    // keeper synthesize exit(-1), thrown here as "Claude Code process exited
+    // with code -1". The DISCRIMINATOR is the explicit `restartRequested`
+    // marker set by sdkRestart, NEVER the exit code or timing — a genuine crash
+    // (kill -9) also exits -1 but leaves the marker UNSET, so it still renders
+    // the red error box (the #148 look-alike must-FAIL arm). The pure
+    // `classifyConsumeTermination` owns this decision so a unit test drives the
+    // SAME code (agent-sdk itself can't be imported under strip-types, #132).
+    // The restart marker WINS over `interrupted` deterministically (D-H2): a
+    // restart rides the SDK interrupt, so the label must not depend on whether
+    // the throw looked interrupt-shaped.
+    const outcome = classifyConsumeTermination({
+      cleared: session.cleared === true,
+      interrupted,
+      restartRequested: session.restartRequested,
+    });
+    // A restart is NOT an interrupt for the downstream turn-end/usage-limit
+    // bookkeeping — it is intentional teardown. Only a genuine interrupt (the
+    // `interrupted` outcome) marks the ended turn as interrupt-ended.
+    endedByInterrupt = outcome.kind === 'interrupted';
+    switch (outcome.kind) {
+      case 'suppress':
+        break;
+      case 'interrupted':
+        // An interrupt is the user's own action, not a failure — a quiet
+        // `interrupted` notice (the fold collapses it into the stream's
+        // "[Request interrupted by user]" marker when that already rendered).
         emit(session.wsId, {
           type: 'notice',
           kind: 'interrupted',
@@ -1197,7 +1228,14 @@ async function consume(session: Session): Promise<void> {
           at: (session.ctx.now ?? Date.now)(),
           text: 'Interrupted by user',
         });
-      } else {
+        break;
+      case 'restarted':
+        // Neutral restart row (#148), built by the ONE shared builder both the
+        // live path (here) and the backfill (sdkHistory) call — so the live row
+        // and the reopened row are byte-identical (#57). No red, no ERROR level.
+        emit(session.wsId, makeRestartNotice(session.ctx, outcome.trigger));
+        break;
+      case 'error':
         emit(session.wsId, {
           type: 'error',
           seq: session.ctx.seq++,
@@ -1206,9 +1244,11 @@ async function consume(session: Session): Promise<void> {
           apiErrorStatus: null,
           willRetry: false,
         });
-      }
+        break;
     }
-    if (!interrupted) {
+    if (outcome.kind === 'error') {
+      // Only a genuine failure is logged — a restart is intentional teardown, not
+      // a crash (logging it would read as a spurious failure on every restart).
       log.warn(`agent-sdk: session ${session.wsId} consume loop errored`, err);
     }
     // A stream-surfaced BAD-RESUME error (the transcript for ws.sdkSessionId is
@@ -1784,8 +1824,68 @@ export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
   // Pass the WORKSPACE's model: it is the only place the `[1m]` long-context
   // alias survives (the transcript records the base id), and without it the
   // gauge sizes a 1M session against 200k and reports >100%.
-  events.push(...transcriptToEvents(text, ctx, ws.model));
+  const transcriptEvents = transcriptToEvents(text, ctx, ws.model);
+  // #148: interleave the persisted intentional-restart rows into the transcript
+  // events by `at`. The exit(-1) that drives the LIVE restart row is never
+  // written to the CLI transcript, so the backfill has nothing in `text` to key
+  // on — the marker lives in the store (ws.sdkRestarts) and the row is rebuilt
+  // HERE with the SAME shared builder the live catch uses, so live == backfill
+  // (#57). Scoped to the resumed session id so a cleared/forked conversation's
+  // restarts never leak. Interleaved (not global-sorted) so every OTHER event
+  // keeps its exact relative order — a global sort would scramble same-`at`
+  // block triplets and push the reload-stamped truncation banner to the end.
+  const restarts = restartRecordsForBackfill(ws, file);
+  events.push(...interleaveRestartRows(transcriptEvents, restarts, ctx));
   return events;
+}
+
+/** Merge intentional-restart rows (#148) into a backfilled transcript's events
+ *  by timestamp. Each restart row is inserted BEFORE the first transcript event
+ *  whose `at` is strictly greater than the restart's `at`, so it lands between
+ *  the turn it followed and the next one. Ties keep the transcript event first
+ *  (the restart happened after that turn was written). Transcript events keep
+ *  their exact relative order (no global sort). Records with no matching gap
+ *  land at the end (a restart after the last recorded turn). */
+function interleaveRestartRows(
+  transcriptEvents: AgentEvent[],
+  restarts: RestartRecord[],
+  ctx: NormalizeContext,
+): AgentEvent[] {
+  if (restarts.length === 0) return transcriptEvents;
+  const rows = [...restarts]
+    .sort((a, b) => a.at - b.at)
+    .map((r) => ({ at: r.at, trigger: r.trigger }));
+  const out: AgentEvent[] = [];
+  let ri = 0;
+  for (const ev of transcriptEvents) {
+    const evAt = ev.at ?? Number.MAX_SAFE_INTEGER;
+    // Flush every restart row strictly older than this event before it.
+    while (ri < rows.length && rows[ri].at < evAt) {
+      out.push(makeRestartNotice(ctx, rows[ri].trigger, rows[ri].at));
+      ri++;
+    }
+    out.push(ev);
+  }
+  // Any restart after the last transcript event.
+  while (ri < rows.length) {
+    out.push(makeRestartNotice(ctx, rows[ri].trigger, rows[ri].at));
+    ri++;
+  }
+  return out;
+}
+
+/** The intentional-restart records (issue #148) that belong to the transcript
+ *  `sdkHistory` is backfilling. Scoped to the resumed session id when known —
+ *  the backfill file is `<sessionId>.jsonl`, so a record whose `sessionId`
+ *  matches the file being read belongs; records from a different (cleared /
+ *  forked) conversation are dropped so they never render on an unrelated
+ *  transcript. When the file is the newest-session FALLBACK (no persisted
+ *  `sdkSessionId`), match on that file's basename. */
+function restartRecordsForBackfill(ws: Workspace, file: string): RestartRecord[] {
+  const all = ws.sdkRestarts ?? [];
+  if (all.length === 0) return [];
+  const fileSessionId = path.basename(file, '.jsonl');
+  return all.filter((r) => r.sessionId === fileSessionId);
 }
 
 /** The model this workspace's structured session WILL start on when no explicit
@@ -3946,10 +4046,15 @@ export async function sdkMcpRefresh(wsId: string): Promise<AgentMcpServer[]> {
  *  through their existing behaviour and modifies none of them (issue #124 owns
  *  `sdkStop`/`consume`). It adds no schema and no new lifecycle semantics — only
  *  a named composition of the existing restart recipe. */
-export async function sdkRestart(wsId: string, opts: { fresh: boolean }): Promise<void> {
+export async function sdkRestart(
+  wsId: string,
+  opts: { fresh: boolean; trigger?: RestartTrigger },
+): Promise<void> {
   if (opts.fresh) {
     // sdkClear = sdkStop + persist sdkSessionId:'' + broadcast session/clear.
-    // The next send spawns a vierge session in the same worktree.
+    // The next send spawns a vierge session in the same worktree. A `--fresh`
+    // restart drops the conversation, so there is no "conversation préservée"
+    // row to render — the /clear reset is the surface, not a restart notice.
     await sdkClear(wsId);
     return;
   }
@@ -3959,6 +4064,30 @@ export async function sdkRestart(wsId: string, opts: { fresh: boolean }): Promis
   if (live && live.turnGate !== null) {
     throw new Error('The agent is working — interrupt it first, then restart.');
   }
+  // #148: mark the intent BEFORE the teardown that makes the keeper synthesize
+  // exit(-1). The consume-loop catch reads `restartRequested` to render a
+  // neutral row instead of the red error box. Set it on the live session (if
+  // any) so the catch sees it; if there is no in-memory session (a detached
+  // keeper), there is no consume loop to catch anything and no error row to
+  // suppress — the persisted record below still gives the reopened pane its row.
+  const trigger: RestartTrigger = opts.trigger ?? 'cli';
+  if (live) {
+    live.restartRequested = trigger;
+    // D-H2: deterministic precedence. The teardown below rides the SDK
+    // `interrupt()` (sdkStop), so a racing user interrupt could otherwise leave
+    // `interruptRequested` set and make the rendered label depend on timing.
+    // Clear it HERE — scoped to the restart path (a genuine standalone interrupt
+    // never enters sdkRestart, so it keeps its flag and still renders
+    // "Interrupted by user"). The classifier's restart-before-interrupted order
+    // is the primary guard; this keeps the session flag itself consistent.
+    live.interruptRequested = false;
+  }
+  // Persist the record NOW (before teardown), scoped to the session being
+  // resumed, so a REOPENED pane rebuilds the same neutral row (backfill==live,
+  // #57). `sdkHistory` interleaves it by `at`. The live catch will ALSO emit the
+  // row into the running pane, but a remount rebuilds the transcript from
+  // history, so the two never double (same as #145's live-vs-backfill wake).
+  await recordRestart(wsId, trigger);
   await sdkStop(wsId);
   await killKeeper(wsId).catch(() => {
     /* already gone — the common case after a graceful stop */
@@ -3967,6 +4096,30 @@ export async function sdkRestart(wsId: string, opts: { fresh: boolean }): Promis
   // re-reads CLAUDE.md/settings. A workspace that only ever ran the terminal
   // agent (hasInput, no sdkSessionId) is not routed here — see classifyRestartMode.
   await ensureSession(wsId);
+}
+
+/** Max intentional-restart records kept on a workspace (oldest dropped). A pane
+ *  restarted many times over a long conversation would otherwise grow the store
+ *  record unbounded; the backfill only needs the ones still in the visible
+ *  transcript window, and the cap is generous relative to any realistic session. */
+const MAX_RESTART_RECORDS = 200;
+
+/** Persist one {@link RestartRecord} onto the workspace, scoped to the session
+ *  currently being resumed. Best-effort and additive: a failure to record never
+ *  blocks the restart itself (the live row still renders; only the reopened row
+ *  is lost). Capped to {@link MAX_RESTART_RECORDS}, oldest dropped. */
+async function recordRestart(wsId: string, trigger: RestartTrigger): Promise<void> {
+  const ws = store.getWorkspace(wsId);
+  // Only conversation-preserving restarts get a record: a `''` (cleared) or
+  // absent id has no transcript to anchor the row into.
+  const sessionId = ws?.sdkSessionId;
+  if (!ws || !sessionId) return;
+  const rec: RestartRecord = { at: Date.now(), sessionId, trigger };
+  const next = [...(ws.sdkRestarts ?? []), rec];
+  const capped = next.length > MAX_RESTART_RECORDS ? next.slice(-MAX_RESTART_RECORDS) : next;
+  await persistWorkspacePatch(wsId, { sdkRestarts: capped }).catch((err) => {
+    log.warn(`agent-sdk: could not record restart for ${wsId}`, err);
+  });
 }
 
 /** Reconnect one MCP server (SDK `reconnectMcpServer`) — the popover's retry
