@@ -747,25 +747,35 @@ as the same-command positive control.
 
 ## Dedup: ledger PRESENCE, re-armed by the reader's own ACK (#150)
 
-`decideWake` (`src/shared/bus-wake.ts:208`) suppresses when the reader has a ledger
-entry **and has not yet acked through the seq it was last woken for** —
-`readerAckedThroughLastWake` (`:200`): `pending.cursorSeq >= previous.wokeThroughSeq`.
+`decideWake` (`src/shared/bus-wake.ts:261`) suppresses when the reader has a ledger
+entry **and has not yet acked, IN THE WOKEN RUN, through the seq it was last woken
+for** — `readerAckedThroughLastWake` (`:242`):
+`pending.cursorByRun.get(previous.wokeRunId) >= previous.wokeThroughSeq`.
 While the outstanding `orchestra check` order is unfulfilled the reader is not
-re-woken; once its cursor advances past that mark the order is fulfilled and any
-pending that remains is NEW mail → the entry is re-armed and it wakes again
-through the fresh high-water.
+re-woken; once its cursor in the woken run advances past that mark the order is
+fulfilled and any pending that remains is NEW mail → the entry is re-armed and it
+wakes again through the fresh high-water. The ledger entry records `wokeRunId`
+(the mail run that justified the wake); `readPendingReaders` supplies
+`cursorByRun` for every RELATED run (`src/main/bus-wake.ts:305`), because the
+woken run may no longer be the newest-pending run this sweep.
 
-**Recorded disproof (two, do not re-derive):** (1) suppressing on a raw high-water
-(`wokeThroughSeq >= pendingThroughSeq`, or a bare `>`): three inserts arriving
-while the reader is mid-turn come in at *rising* sequences (5, 6, 7) with the
-cursor UNMOVED, each passes that test, and the reader wakes **three** times —
+**Recorded disproof (three, do not re-derive):** (1) suppressing on a raw
+high-water (`wokeThroughSeq >= pendingThroughSeq`, or a bare `>`): three inserts
+arriving while the reader is mid-turn come in at *rising* sequences (5, 6, 7) with
+the cursor UNMOVED, each passes that test, and the reader wakes **three** times —
 T117.2. That is why the re-arm keys on the CURSOR (did it ack?), not on pending
 rising. (2) The pre-#150 pure `if (previous) skip`: a reader that acked through N
 but still held OLDER unacked mail kept a non-empty pending set, so
 `pruneWakeLedger` never dropped the entry and new mail N+1 never woke it (live
-repro 3 msgs / 14 min, ledger #147 C5).
+repro 3 msgs / 14 min, ledger #147 C5). (3) A SINGLE-RUN cursor compare
+(`pending.cursorSeq >= …`, review-150 F1): `cursorSeq` is the cursor in the
+CURRENT sweep's newest-mail run, but `wokeThroughSeq` is a global seq recorded
+against a possibly-DIFFERENT run, and cursors are per-run — so acking the woken
+run A while new mail is newest in run B reads B's cursor (0) against A's seq and
+skips forever. Keyed on `wokeRunId` + `cursorByRun` this is closed; the cross-run
+arm (pure + real-bus `bus-wake-sweep.test.ts`) reddens on the single-run compare.
 
-Two re-arms now: `pruneWakeLedger` (`src/shared/bus-wake.ts:248`) drops the entry
+Two re-arms now: `pruneWakeLedger` (`src/shared/bus-wake.ts:301`) drops the entry
 when the reader's pending set EMPTIES, and the cursor test above re-arms when it
 acks the last wake while pending survives. The cursor re-arm is the **LOT path
 only** — two families are EXCLUDED and keep their exact pre-#150 behaviour:

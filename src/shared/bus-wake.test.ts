@@ -213,7 +213,10 @@ test('gate default: omitting askGateOn keeps the pre-#119 behaviour (gate never 
 // L188 guard to `if (previous) skip('already-woken')` and arm (1) goes red while
 // arm (2) stays green; that pairing is what proves the fix is NOT a bare `>`.
 
-/** One sweep tick: prune the reader if it has no pending, then decide + record. */
+/** One sweep tick: prune the reader if it has no pending, then decide + record.
+ *  Mirrors the effectful ledger.set at src/main/bus-wake.ts:526 — INCLUDING
+ *  `wokeRunId: p.pendingRunId`, without which the cross-run re-arm (F1) is
+ *  untestable (the entry would forget which run's high-water it woke for). */
 function sweep(
   ledger: Map<string, WakeLedgerEntry>,
   p: ReaderPendingState,
@@ -222,9 +225,28 @@ function sweep(
   pruneWakeLedger(ledger, new Set(p.pending || p.gatePending === true ? [p.reader] : []));
   const action = decideWake(p, WAKEABLE, ledger.get(p.reader), switchOn);
   if (action.kind === 'fire' || action.kind === 'count') {
-    ledger.set(action.reader, { wokeThroughSeq: action.throughSeq });
+    ledger.set(action.reader, { wokeThroughSeq: action.throughSeq, wokeRunId: p.pendingRunId });
   }
   return action;
+}
+
+/** Build a single-run pending snapshot the way `readPendingReaders` would: the
+ *  mail's run named as `pendingRunId`, and the cursor carried BOTH as the legacy
+ *  `cursorSeq` and in the per-run `cursorByRun` map, so a re-arm keyed on either
+ *  path reads the same value. */
+function pendingIn(
+  run: string,
+  cursorInRun: number,
+  seq: number,
+  overrides: Partial<ReaderPendingState> = {},
+): ReaderPendingState {
+  return pending({
+    pendingThroughSeq: seq,
+    cursorSeq: cursorInRun,
+    pendingRunId: run,
+    cursorByRun: new Map([[run, cursorInRun]]),
+    ...overrides,
+  });
 }
 
 test('#150 arm 1 — acked through N, mail N+1 arrives, unrelated pending survives → RE-WAKES', () => {
@@ -235,21 +257,89 @@ test('#150 arm 1 — acked through N, mail N+1 arrives, unrelated pending surviv
   const ledger = new Map<string, WakeLedgerEntry>();
 
   // Sweep 1: pending through 633, cursor 632 (633 not yet acked) → first wake.
-  const w1 = sweep(ledger, pending({ pendingThroughSeq: 633, cursorSeq: 632 }));
+  const w1 = sweep(ledger, pendingIn('A', 632, 633));
   assert.equal(w1.kind, 'fire');
   assert.equal(ledger.get(R)?.wokeThroughSeq, 633);
+  assert.equal(ledger.get(R)?.wokeRunId, 'A');
 
   // The reader ACKS 633. New mail 636/638 arrives; older unrelated mail is still
   // unacked so `pending` stays true and the entry is NOT pruned. cursor now 633.
-  const w2 = sweep(ledger, pending({ pendingThroughSeq: 638, cursorSeq: 633 }));
+  const w2 = sweep(ledger, pendingIn('A', 633, 638));
   assert.equal(w2.kind, 'fire', 'the ack through 633 re-arms; 638 is new mail');
   assert.equal(w2.kind === 'fire' && w2.throughSeq, 638);
   assert.equal(ledger.get(R)?.wokeThroughSeq, 638);
 
   // Bounded by ACKS not sweeps: without a further ack, no third wake.
-  const w3 = sweep(ledger, pending({ pendingThroughSeq: 638, cursorSeq: 633 }));
+  const w3 = sweep(ledger, pendingIn('A', 633, 638));
   assert.equal(w3.kind, 'skip', 'no further ack → no re-wake, dedup holds');
   assert.equal(w3.kind === 'skip' && w3.why, 'already-woken');
+});
+
+test('#150 F1 — CROSS-RUN: acked the WOKEN run A, new mail in run B → RE-WAKES for B', () => {
+  // review-150 F1: the #150 starvation across runs. `messages.sequence` is global
+  // but cursors are PER-RUN. The mini-sweep FLIPS `pendingRunId` between ticks —
+  // the arm the single-run suite was structurally blind to.
+  //   MUTANT: revert readerAckedThroughLastWake to `pending.cursorSeq >= …`
+  //   (ignore wokeRunId/cursorByRun) → this arm goes RED (sweep 2 skips forever).
+  const ledger = new Map<string, WakeLedgerEntry>();
+
+  // Sweep 1: R pending in run A(633) and run B(500); newest is A → mailRunId=A.
+  // cursor in A = 632, cursor in B = 0. Fire through 633, wokeRunId='A'.
+  const s1 = pending({
+    pendingThroughSeq: 633,
+    cursorSeq: 632, // cursor in the mail run A
+    pendingRunId: 'A',
+    cursorByRun: new Map([['A', 632], ['B', 0]]),
+  });
+  const w1 = sweep(ledger, s1);
+  assert.equal(w1.kind, 'fire');
+  assert.equal(ledger.get(R)?.wokeRunId, 'A');
+
+  // R OBEYS: acks run A through 633. Run B's 500 keeps the set non-empty (NOT
+  // pruned). New mail lands in run B at global seq 640 → now newest → mailRunId=B.
+  // cursorSeq is now B's cursor (0) — the CATEGORY-MISMATCH input: 0 >= 633 would
+  // wrongly skip. The fix reads the WOKEN run A's cursor (now 633) instead.
+  const s2 = pending({
+    pendingThroughSeq: 640,
+    cursorSeq: 0, // cursor in the NEW mail run B — never acked there
+    pendingRunId: 'B',
+    cursorByRun: new Map([['A', 633], ['B', 0]]),
+  });
+  const w2 = sweep(ledger, s2);
+  assert.equal(w2.kind, 'fire', 'acked woken run A → run-B mail 640 must re-wake');
+  assert.equal(w2.kind === 'fire' && w2.throughSeq, 640);
+  assert.equal(ledger.get(R)?.wokeRunId, 'B');
+
+  // Now bounded in run B: no further ack in B → no re-wake.
+  const w3 = sweep(ledger, s2);
+  assert.equal(w3.kind, 'skip');
+  assert.equal(w3.kind === 'skip' && w3.why, 'already-woken');
+});
+
+test('#150 F1 — CROSS-RUN dedup: woken for run A, did NOT ack A, new-run mail → NOT re-woken', () => {
+  // The negative control for the cross-run arm: if R has NOT acked the woken run A
+  // (its cursor in A stays 632 < 633), a newer item appearing in run B must NOT
+  // re-wake — the run-A order is still outstanding. Guards against a fix that
+  // re-wakes on ANY run flip regardless of whether the woken run was obeyed.
+  const ledger = new Map<string, WakeLedgerEntry>();
+  const s1 = pending({
+    pendingThroughSeq: 633,
+    cursorSeq: 632,
+    pendingRunId: 'A',
+    cursorByRun: new Map([['A', 632], ['B', 0]]),
+  });
+  assert.equal(sweep(ledger, s1).kind, 'fire');
+
+  // Run B gets newer mail (640) but A was never acked (cursor in A still 632).
+  const s2 = pending({
+    pendingThroughSeq: 640,
+    cursorSeq: 0,
+    pendingRunId: 'B',
+    cursorByRun: new Map([['A', 632], ['B', 0]]), // A NOT acked
+  });
+  const w2 = sweep(ledger, s2);
+  assert.equal(w2.kind, 'skip', 'woken run A not obeyed → no re-wake yet');
+  assert.equal(w2.kind === 'skip' && w2.why, 'already-woken');
 });
 
 test('#150 arm 2 — woken through N, reader does NOT ack, no new mail → NOT re-woken', () => {
@@ -258,12 +348,12 @@ test('#150 arm 2 — woken through N, reader does NOT ack, no new mail → NOT r
   // `pendingThroughSeq > wokeThroughSeq` fix ALSO passes but that T117.2 (rising
   // seqs) breaks — kept alongside arm 1 so the pair pins the cursor semantics.
   const ledger = new Map<string, WakeLedgerEntry>();
-  const w1 = sweep(ledger, pending({ pendingThroughSeq: 633, cursorSeq: 632 }));
+  const w1 = sweep(ledger, pendingIn('A', 632, 633));
   assert.equal(w1.kind, 'fire');
 
   for (let i = 0; i < 3; i++) {
     // three sweeps, no ack (cursor stuck at 632), no new mail (still 633).
-    const w = sweep(ledger, pending({ pendingThroughSeq: 633, cursorSeq: 632 }));
+    const w = sweep(ledger, pendingIn('A', 632, 633));
     assert.equal(w.kind, 'skip');
     assert.equal(w.kind === 'skip' && w.why, 'already-woken');
   }
@@ -276,7 +366,7 @@ test('#150 — rising seqs WITHOUT an ack is still ONE wake (T117.2 preserved th
   const ledger = new Map<string, WakeLedgerEntry>();
   let fires = 0;
   for (const seq of [5, 6, 7]) {
-    const a = sweep(ledger, pending({ pendingThroughSeq: seq, cursorSeq: 0 }));
+    const a = sweep(ledger, pendingIn('A', 0, seq));
     if (a.kind === 'fire') fires++;
   }
   assert.equal(fires, 1, 'rising pending with no ack = one wake — no bare `>` re-fire');

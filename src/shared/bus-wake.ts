@@ -52,8 +52,23 @@ export interface ReaderPendingState {
   /** This reader's durable cursor position (`cursors.acked_seq`, 0 when none).
    *  The re-arm signal for {@link reWakeUntilAnswered}: an advance past the
    *  cursor recorded at the last wake means the reader acked and must be re-woken
-   *  while the ask is still unanswered. */
+   *  while the ask is still unanswered. This is the cursor in {@link pendingRunId}
+   *  (the newest pending item's run); the ask path only ever reasons about that
+   *  one run. The LOT #150 re-arm needs cursors across runs — see {@link cursorByRun}. */
   cursorSeq?: number;
+  /**
+   * The reader's durable cursor (`cursors.acked_seq`, 0 when absent) in EACH run
+   * that could carry a wake for it — every pending run PLUS the run a prior wake
+   * was recorded for. The #150 lot re-arm is PER-RUN: `cursorSeq` alone is the
+   * cursor in the CURRENT sweep's newest-mail run, but the ledger's
+   * `wokeThroughSeq` was recorded against the run that fired LAST, and
+   * `messages.sequence` is global while `cursors` are per-run — so a cross-run
+   * sweep (mail newest in run B this tick, but woken for run A last tick) would
+   * compare A's global seq against B's cursor, a category error that re-introduces
+   * the #150 starvation across runs (review-150 F1). The re-arm instead reads the
+   * cursor IN THE WOKEN RUN from this map. `undefined`/absent run → treated as 0.
+   */
+  cursorByRun?: ReadonlyMap<string, number>;
   /**
    * The run id the NEWEST pending lot/question physically SITS in (#134 D1a-bis)
    * — usually the reader's own run; for an OPS→LEAD digest the OPS's DESCENDANT
@@ -96,6 +111,14 @@ export interface ReaderSessionState {
 export interface WakeLedgerEntry {
   /** `pendingThroughSeq` at the moment we last fired (or counted) a wake. */
   wokeThroughSeq: number;
+  /** The run whose high-water {@link wokeThroughSeq} belongs to — the mail run
+   *  that JUSTIFIED the wake (`pendingRunId` at fire time). The #150 lot re-arm
+   *  reads the reader's cursor IN THIS run (from {@link ReaderPendingState.cursorByRun}),
+   *  because a global `messages.sequence` is only comparable to the per-run cursor
+   *  of the SAME run (review-150 F1). `undefined` for a gate-only wake (excluded
+   *  from the cursor re-arm) and for legacy entries — both then fall back to the
+   *  single-run `cursorSeq`, preserving prior behaviour. */
+  wokeRunId?: string;
   /** The reader's durable cursor at the moment we last woke it (#119). Only the
    *  re-wake-until-answered path reads it: when the reader's cursor later moves
    *  PAST this, the reader acked without answering and is re-armed for a second
@@ -207,9 +230,14 @@ export type SkipReason = 'no-pending' | 'already-woken' | 'not-wakeable';
  *    the presence dedup (`if (previous) skip`) unchanged; a gate's own re-wake
  *    (answer-based, #119) is out of #150's scope — this fix must not perturb it.
  *
- * With both excluded the comparison is cursor-vs-message-seq only: the reader's
- * cursor reaching the seq we last woke it for means it obeyed the outstanding
- * `orchestra check`, so any pending that remains is NEW mail and a wake is owed.
+ * With both excluded the comparison is cursor-vs-message-seq only, but it must be
+ * the cursor IN THE WOKEN RUN: `wokeThroughSeq` is a global `messages.sequence`
+ * recorded against `previous.wokeRunId`, and cursors are PER-RUN, so it is only
+ * comparable to the reader's cursor in that same run (review-150 F1). The reader's
+ * cursor in the woken run reaching the woken seq means it obeyed the outstanding
+ * `orchestra check` for that run, so any pending that remains is NEW mail and a
+ * wake is owed. Cross-run: mail newest in run B this tick after a wake for run A
+ * reads A's cursor (still < A's seq until A is acked) → no false suppression.
  */
 function readerAckedThroughLastWake(
   pending: ReaderPendingState,
@@ -217,7 +245,17 @@ function readerAckedThroughLastWake(
 ): boolean {
   if (pending.reWakeUntilAnswered === true) return false;
   if (pending.gatePending === true) return false;
-  return (pending.cursorSeq ?? 0) >= previous.wokeThroughSeq;
+  // The cursor in the run the last wake covered. Prefer the per-run map; fall back
+  // to the single-run `cursorSeq` only when the woken run is unknown (legacy entry)
+  // or the map is absent AND the woken run matches the current mail run.
+  const wokeRun = previous.wokeRunId;
+  const cursorInWokeRun =
+    wokeRun !== undefined && pending.cursorByRun
+      ? (pending.cursorByRun.get(wokeRun) ?? 0)
+      : wokeRun === undefined || wokeRun === pending.pendingRunId
+        ? (pending.cursorSeq ?? 0)
+        : 0; // woken run known, but no cursor for it → not yet acked there
+  return cursorInWokeRun >= previous.wokeThroughSeq;
 }
 
 export function decideWake(
