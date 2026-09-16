@@ -703,14 +703,41 @@ of which inserts it saw. Three things drive it, and they are not equals:
 
 | Driver | `src/main/bus-wake.ts` | Role |
 |---|---|---|
-| Startup sweep | `:351` | Fires wakes for inserts that landed while the app was closed |
-| 60s interval (`SWEEP_MS`) | `:46`, `:353` | The guarantee — every wake is produced by this alone |
-| `fs.watch` on `bus.sqlite-wal` | `:361` | Latency only (spike #109 arm 4: p50 0.23ms) |
+| Startup sweep | `startBusWake()` → `sweepBusWake()` | Fires wakes for inserts that landed while the app was closed |
+| 60s interval (`SWEEP_MS`) | `SWEEP_MS` const + `setInterval` in `startBusWake()` | The guarantee — every wake is produced by this alone |
+| `fs.watch` accelerator | `armBusWalWatcher()` | Latency only (spike #109 arm 4: p50 0.23ms) |
 
-Watching the **`-wal`** file, not `bus.sqlite`: in WAL mode the main DB file is
-barely touched, so a watch on it misses nearly every insert. Debounced 150ms
-(`WATCH_DEBOUNCE_MS`, `:51`) because a `check` writes a delivery row, which
-itself touches the WAL — an undebounced watcher re-enters the sweep it caused.
+**#149 — watch the DIRECTORY, filter by the `-wal` basename** (`armBusWalWatcher()`,
+`src/main/bus-wake.ts`). The accelerator targets `bus.sqlite-wal` (not
+`bus.sqlite`: in WAL mode the main file is barely touched and a watch on it misses
+nearly every insert), but it arms `fs.watch` on the **parent directory** and
+filters events to the `bus.sqlite-wal` filename — NOT `fs.watch` on the `-wal`
+file itself. An inode-pinned watch dies **silently** when SQLite recycles the WAL:
+measured on btrfs (ledger #151 STEP 1, `scripts/diag-149-wal-watch.mjs`), the
+`-wal` is unlinked on the last WAL-mode connection's close and recreated at a NEW
+inode on the next write (32138494 → 32138511), after which an inode watch delivers
+0/10 cross-process inserts while a directory watch delivers 10/10 — and the
+`FSWatcher` never emits `'error'`, so a fallback-on-throw could never fire.
+`wal_checkpoint(TRUNCATE)` alone does NOT recycle the inode (it truncates in
+place); the trigger is any lifecycle that DELETES `-wal`. The **proven**
+silent-detach path is boot-time: after a clean quit `closeBus` checkpoints `-wal`
+away, so an inode `fs.watch` armed at the next boot can `ENOENT` (or bind a
+stale/soon-recycled inode) and the whole session then rides the 60s sweep. Whether
+the canary-3 58.84s live-session worst case was ALSO a recycle is **UNCONFIRMED** —
+review-149 measured the inode stable across 2nd-connection churn (×50), 2000
+inserts and every checkpoint mode while ONE persistent connection is held open, as
+the app does mid-session; the app only closes the bus at quit. So the fix is
+strictly safer and closes a real boot-time case, but the exact live-session
+trigger is not pinned to the recycle. A directory watch is immune to all of these
+because the parent directory's inode is stable. Debounced 150ms
+(`WATCH_DEBOUNCE_MS`) because a `check` writes a delivery row, which itself touches
+the WAL — an undebounced watcher re-enters the sweep it caused. A `null` filename
+(platform-dependent) is treated as a match: a spurious idempotent sweep is cheaper
+than a missed wake. Gates: `bus-wake-watcher.test.ts` (drives `armBusWalWatcher()`
+end-to-end on btrfs — the recycle arm reddens if reverted to an inode watch;
+`__setWatcherEnabledForTests(false)` is the must-FAIL control) + the packaged-app
+latency rig (`scripts/verify-149-wake-latency.mjs`, measuring send→watcher-trigger
+latency p95=274ms; the DELIVERED wake is ≈ +150ms debounce + deliver, still ≪2s).
 
 **An edge-triggered design (watch fires → wake) reads identically in every happy
 path and loses every wake that lands while the app is closed.** The failure is
