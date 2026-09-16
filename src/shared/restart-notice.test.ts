@@ -96,11 +96,29 @@ test('ARM B (LOOK-ALIKE) — a crash: exit -1 but NO marker → error row, NOT p
   assert.equal(out.kind, 'error');
 });
 
-test('a user interrupt WINS over a restart marker (stop-then-restart is a stop)', () => {
+test('PRECEDENCE (D-H2) — restart marker WINS over interrupt-shaped teardown', () => {
+  // A restart rides the SDK interrupt(), so the throw can look interrupt-shaped
+  // (interrupted=true) even though the user asked for a restart. The label must
+  // be deterministic — "Session redémarrée", never dependent on SDK timing.
+  // Mutating the classifier order (interrupted before restartRequested) reddens
+  // this arm; ARM B (crash, no marker) stays an error either way.
   const out = classifyConsumeTermination({
     cleared: false,
     interrupted: true,
     restartRequested: 'toolbar',
+  });
+  assert.equal(out.kind, 'restarted');
+  assert.equal(out.kind === 'restarted' && out.trigger, 'toolbar');
+});
+
+test('a genuine standalone interrupt (NO restart marker) still renders interrupted', () => {
+  // The precedence swap must NOT relabel a real user stop: with no restart
+  // marker, an interrupt is still an interrupt (the plain-interrupt path is
+  // untouched — sdkRestart is the only place the marker/flag-reset happens).
+  const out = classifyConsumeTermination({
+    cleared: false,
+    interrupted: true,
+    restartRequested: undefined,
   });
   assert.equal(out.kind, 'interrupted');
 });

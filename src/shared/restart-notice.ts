@@ -82,14 +82,23 @@ export type ConsumeTermination =
  *
  *  Order and precedence (the #148 discriminator lives here):
  *   1. `cleared` → suppress everything (the /clear reset owns the surface).
- *   2. `interrupted` (our own interrupt OR an EDE-diagnostic throw) → interrupted
- *      notice. An interrupt WINS over a restart marker: a stop-then-restart is a
- *      stop first, and auto-resuming a just-interrupted session is wrong.
- *   3. `restartRequested` set (and NOT interrupted) → the neutral restart row.
- *      This is the ONLY thing that suppresses the error box, and it is an
- *      EXPLICIT marker — never the exit code or timing (a `kill -9` crash also
- *      exits -1 but leaves the marker UNSET → falls through to `error`).
- *   4. Otherwise → the red error row.
+ *   2. `restartRequested` set → the neutral restart row. **This WINS over
+ *      `interrupted` deterministically (D-H2)**: the intentional-restart
+ *      teardown rides the SDK's `interrupt()` (sdkStop calls it), which can make
+ *      the thrown message match the EDE-diagnostic regex and/or leave
+ *      `interruptRequested` set from a racing user interrupt — so keying the
+ *      label on `interrupted` first made the rendered row depend on SDK interrupt
+ *      TIMING. A restart raced by an interrupt is truthfully "Session
+ *      redémarrée" — the restart IS happening — so the explicit marker decides.
+ *      Belt-and-braces: `sdkRestart` also resets `interruptRequested` at teardown
+ *      start (agent-sdk.ts), scoped to the restart path so a GENUINE standalone
+ *      interrupt (which never sets `restartRequested`) is never relabeled and
+ *      still reaches branch 3.
+ *   3. `interrupted` (our own interrupt OR an EDE-diagnostic throw), with NO
+ *      restart marker → the quiet `interrupted` notice. A plain user stop.
+ *   4. `restartRequested` UNSET and not interrupted → the red error row. The
+ *      marker is the whole discriminator: a `kill -9` crash also exits -1 but
+ *      leaves it UNSET → falls through here (ARM B).
  *
  *  `restartRequested` is `undefined` for a crash and a `RestartTrigger` for an
  *  intentional restart; that is the whole discriminator. */
@@ -99,8 +108,9 @@ export function classifyConsumeTermination(input: {
   restartRequested: RestartTrigger | undefined;
 }): ConsumeTermination {
   if (input.cleared) return { kind: 'suppress' };
-  if (input.interrupted) return { kind: 'interrupted' };
+  // Restart marker WINS over `interrupted` (D-H2) — deterministic, timing-free.
   if (input.restartRequested) return { kind: 'restarted', trigger: input.restartRequested };
+  if (input.interrupted) return { kind: 'interrupted' };
   return { kind: 'error' };
 }
 

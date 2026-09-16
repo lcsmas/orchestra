@@ -1194,7 +1194,6 @@ async function consume(session: Session): Promise<void> {
     const message = err instanceof Error ? err.message : String(err);
     const interrupted =
       session.interruptRequested || /error_during_execution|ede_diagnostic/i.test(message);
-    endedByInterrupt = interrupted;
     // #148: an INTENTIONAL restart tore this session down, which makes the
     // keeper synthesize exit(-1), thrown here as "Claude Code process exited
     // with code -1". The DISCRIMINATOR is the explicit `restartRequested`
@@ -1203,11 +1202,18 @@ async function consume(session: Session): Promise<void> {
     // the red error box (the #148 look-alike must-FAIL arm). The pure
     // `classifyConsumeTermination` owns this decision so a unit test drives the
     // SAME code (agent-sdk itself can't be imported under strip-types, #132).
+    // The restart marker WINS over `interrupted` deterministically (D-H2): a
+    // restart rides the SDK interrupt, so the label must not depend on whether
+    // the throw looked interrupt-shaped.
     const outcome = classifyConsumeTermination({
       cleared: session.cleared === true,
       interrupted,
       restartRequested: session.restartRequested,
     });
+    // A restart is NOT an interrupt for the downstream turn-end/usage-limit
+    // bookkeeping — it is intentional teardown. Only a genuine interrupt (the
+    // `interrupted` outcome) marks the ended turn as interrupt-ended.
+    endedByInterrupt = outcome.kind === 'interrupted';
     switch (outcome.kind) {
       case 'suppress':
         break;
@@ -4065,7 +4071,17 @@ export async function sdkRestart(
   // keeper), there is no consume loop to catch anything and no error row to
   // suppress — the persisted record below still gives the reopened pane its row.
   const trigger: RestartTrigger = opts.trigger ?? 'cli';
-  if (live) live.restartRequested = trigger;
+  if (live) {
+    live.restartRequested = trigger;
+    // D-H2: deterministic precedence. The teardown below rides the SDK
+    // `interrupt()` (sdkStop), so a racing user interrupt could otherwise leave
+    // `interruptRequested` set and make the rendered label depend on timing.
+    // Clear it HERE — scoped to the restart path (a genuine standalone interrupt
+    // never enters sdkRestart, so it keeps its flag and still renders
+    // "Interrupted by user"). The classifier's restart-before-interrupted order
+    // is the primary guard; this keeps the session flag itself consistent.
+    live.interruptRequested = false;
+  }
   // Persist the record NOW (before teardown), scoped to the session being
   // resumed, so a REOPENED pane rebuilds the same neutral row (backfill==live,
   // #57). `sdkHistory` interleaves it by `at`. The live catch will ALSO emit the

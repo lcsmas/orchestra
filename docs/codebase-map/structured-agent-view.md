@@ -709,9 +709,15 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   catch routes through the pure **`classifyConsumeTermination`**
   (`src/shared/restart-notice.ts` — extracted so a unit test drives the SAME
   decision agent-sdk runs, the #132 dir-import constraint): `cleared` →
-  suppress, `interrupted` → interrupted notice, `restartRequested` set → the
-  neutral row via **`makeRestartNotice`**, else → the error row. An unmarked -1
+  suppress, `restartRequested` set → the neutral row via **`makeRestartNotice`**,
+  `interrupted` → interrupted notice, else → the error row. An unmarked -1
   (a genuine crash) still renders the red box.
+  **The restart marker WINS over `interrupted` deterministically (D-H2)**: the
+  teardown rides the SDK `interrupt()`, so keying on `interrupted` first made the
+  label depend on SDK timing — a restart raced by an interrupt is truthfully
+  "Session redémarrée". `sdkRestart` also resets `session.interruptRequested` at
+  teardown start, scoped to the restart path so a genuine standalone interrupt is
+  never relabeled and still renders "Interrupted by user".
   **Backfill==live (#57)** without Orchestra ever writing the CLI transcript:
   the exit(-1) is never persisted there, so each restart is recorded in
   `Workspace.sdkRestarts` (a `RestartRecord{at,sessionId,trigger}`), and
