@@ -717,18 +717,27 @@ measured on btrfs (ledger #151 STEP 1, `scripts/diag-149-wal-watch.mjs`), the
 `-wal` is unlinked on the last WAL-mode connection's close and recreated at a NEW
 inode on the next write (32138494 → 32138511), after which an inode watch delivers
 0/10 cross-process inserts while a directory watch delivers 10/10 — and the
-`FSWatcher` never emits `'error'`, so the old fallback-on-throw never fired and the
-wake quietly rode the 60s sweep (canary-3 58.84s worst case). `wal_checkpoint(TRUNCATE)`
-alone does NOT recycle the inode (it truncates in place); the trigger is any
-lifecycle that DELETES `-wal` (app restart etc.). A directory watch survives every
-recycle because the parent directory's inode is stable. Debounced 150ms
+`FSWatcher` never emits `'error'`, so a fallback-on-throw could never fire.
+`wal_checkpoint(TRUNCATE)` alone does NOT recycle the inode (it truncates in
+place); the trigger is any lifecycle that DELETES `-wal`. The **proven**
+silent-detach path is boot-time: after a clean quit `closeBus` checkpoints `-wal`
+away, so an inode `fs.watch` armed at the next boot can `ENOENT` (or bind a
+stale/soon-recycled inode) and the whole session then rides the 60s sweep. Whether
+the canary-3 58.84s live-session worst case was ALSO a recycle is **UNCONFIRMED** —
+review-149 measured the inode stable across 2nd-connection churn (×50), 2000
+inserts and every checkpoint mode while ONE persistent connection is held open, as
+the app does mid-session; the app only closes the bus at quit. So the fix is
+strictly safer and closes a real boot-time case, but the exact live-session
+trigger is not pinned to the recycle. A directory watch is immune to all of these
+because the parent directory's inode is stable. Debounced 150ms
 (`WATCH_DEBOUNCE_MS`) because a `check` writes a delivery row, which itself touches
 the WAL — an undebounced watcher re-enters the sweep it caused. A `null` filename
 (platform-dependent) is treated as a match: a spurious idempotent sweep is cheaper
 than a missed wake. Gates: `bus-wake-watcher.test.ts` (drives `armBusWalWatcher()`
 end-to-end on btrfs — the recycle arm reddens if reverted to an inode watch;
 `__setWatcherEnabledForTests(false)` is the must-FAIL control) + the packaged-app
-latency rig (`scripts/verify-149-wake-latency.mjs`).
+latency rig (`scripts/verify-149-wake-latency.mjs`, measuring send→watcher-trigger
+latency p95=274ms; the DELIVERED wake is ≈ +150ms debounce + deliver, still ≪2s).
 
 **An edge-triggered design (watch fires → wake) reads identically in every happy
 path and loses every wake that lands while the app is closed.** The failure is

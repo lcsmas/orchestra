@@ -619,10 +619,14 @@ export function __setWatchPathForTests(fn: () => string): void {
  * 32138494 → 32138511). An inode-pinned watch cannot follow that swap — after the
  * recycle it delivered 0/10 cross-process inserts while a directory watch
  * delivered 10/10 — and the detach is SILENT: the FSWatcher never emits `'error'`,
- * so the old fallback-on-throw never fired and the wake quietly rode the 60s
- * sweep (the canary-3 58.84s worst case). (`wal_checkpoint(TRUNCATE)` alone does
+ * so a fallback-on-throw could never fire. (`wal_checkpoint(TRUNCATE)` alone does
  * NOT recycle the inode — it truncates in place — so the trigger is any lifecycle
- * that DELETES `-wal`, e.g. an app restart, not a checkpoint.)
+ * that DELETES `-wal`.) The PROVEN silent-detach case is boot-time: after a clean
+ * quit `closeBus` checkpoints `-wal` away, so an inode watch armed at the next
+ * boot can ENOENT and ride the 60s sweep all session. Whether canary-3's 58.84s
+ * live-session worst case was also a recycle is UNCONFIRMED (review-149: the inode
+ * is stable while ONE connection is held open, as mid-session it is) — this fix is
+ * strictly safer regardless and a directory watch is immune to every recycle mode.
  *
  * Watching the directory inode instead is stable across every `-wal`
  * unlink/recreate: the parent directory's inode does not change, and `fs.watch`
