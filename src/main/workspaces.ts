@@ -77,7 +77,8 @@ import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scri
 import { log } from './logger';
 import { mirrorDispatch } from './bus-mirror.ts';
 import type { PeerOrigin } from '../shared/peer-messages.ts';
-import { INBOX_DELIMITER, sanitizeInboxBody, appendInboxBlock } from '../shared/inbox-blocks.ts';
+import { INBOX_DELIMITER, sanitizeInboxBody } from '../shared/inbox-blocks.ts';
+import { appendInboxBlock } from './inbox-write.ts';
 import { reportedDeliveryFor, requiresInboxFallback } from '../shared/delivery-status.ts';
 import { forgetWorkspaceProbes } from './activity';
 import { clearHibernated } from './hibernation.ts';
