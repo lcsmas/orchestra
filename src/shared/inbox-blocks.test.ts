@@ -10,11 +10,13 @@ import {
   removeBlock,
   serializeInboxBlocks,
   resolveInboxReDerive,
-  appendInboxBlock,
   INBOX_DELIMITER,
   sanitizeInboxBody,
   type InboxBlock,
 } from './inbox-blocks.ts';
+// Node-only writer: main-process module, kept out of shared so the renderer
+// bundle stays free of `node:fs` (see src/main/inbox-write.ts).
+import { appendInboxBlock } from '../main/inbox-write.ts';
 
 // The fixture below is a REAL block, copied byte-for-byte out of a live
 // `~/.orchestra/inbox/<wsid>.txt` (read with `cat -A` to confirm the framing and
