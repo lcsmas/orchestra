@@ -774,7 +774,7 @@ as the same-command positive control.
 
 ## Dedup: TWO AXES, each re-armed by its own signal (#150 F1 + D-H1)
 
-`decideWake` (`src/shared/bus-wake.ts:305`) tracks the LOT and GATE high-waters
+`decideWake` (`src/shared/bus-wake.ts:307`) tracks the LOT and GATE high-waters
 **separately** on the ledger entry (`WakeLedgerEntry.wokeLotSeq` / `.wokeGateSeq`),
 because they re-arm on different signals and their numbers are not comparable — a
 `messages.sequence` and a gate id share no numbering. A reader is suppressed
@@ -816,7 +816,7 @@ gates; the rider fix makes a re-armed gate under `askGate=OFF` COUNT). Every re-
 arm (pure + real-bus `bus-wake-sweep.test.ts`) reddens on the single-axis presence
 dedup.
 
-`pruneWakeLedger` (`src/shared/bus-wake.ts:381`) still drops the entry when the
+`pruneWakeLedger` (`src/shared/bus-wake.ts:383`) still drops the entry when the
 pending set EMPTIES (the whole-set re-arm); the per-axis re-arms above cover the
 case where OTHER pending keeps the set non-empty. Known bound: with `wake=ON` and
 `askGate=OFF` a single coalesced `fire` action does not separately COUNT a
@@ -851,7 +851,7 @@ that writes the count into the fire ledger), `acceptance 2` (steady-state ON ded
 intact), `acceptance 3` (counting still counts once across N sweeps and delivers
 nothing — counts dedup vs counts).
 
-The ledger entry is written **before** the `await` on delivery (`src/main/bus-wake.ts:541`) — a
+The FIRE ledger entry is written **before** the `await` on delivery (`src/main/bus-wake.ts:597`) — a
 second sweep entering during that yield would otherwise see no entry and fire a
 duplicate (the #112 shape). A delivery the seam *refuses* (`sdkStartAndDeliver`
 returns `false`, never throws) **withdraws** the entry so the next sweep retries;
