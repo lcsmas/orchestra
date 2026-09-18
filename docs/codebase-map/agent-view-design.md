@@ -147,8 +147,8 @@ strip-scoped rules (40px bar, `used` label hidden). Stats come from
 The gauge is a **button** (`.av-turn-context-btn`, inside `.av-ctx-anchor`)
 whenever its reading carries a breakdown, opening the `av-ctx-*` popover
 (`ContextBreakdownPanel.tsx`, issue #16): `.av-ctx-panel` (the `.av-rc-panel`
-glass language on `--av-*` tokens, `role="dialog"`, `max-height:60vh` with
-internal scroll) > `.av-ctx-head`/`-title`/`-total` + `.av-ctx-model` >
+glass language on `--av-*` tokens, `role="dialog"` + `aria-modal` + focus
+management — see the a11y note below, `max-height:60vh` with internal scroll) > `.av-ctx-head`/`-title`/`-total` + `.av-ctx-model` >
 `.av-ctx-bar` > `.av-ctx-seg{-1..-5}` (segment palette assigned BY RANK, never
 by category name — the CLI's names are presentation strings that drift between
 versions) > `.av-ctx-legend`/`-row` with `.av-ctx-dot` + `-legend-name`/
@@ -198,6 +198,33 @@ overflow once cited against it came from forcing the anchor to x=4, which
 though the conclusion holds; and `position:fixed` fixes the horizontal axis but
 breaks the vertical one, since `bottom:calc(100% + 8px)` then resolves against
 the viewport.
+
+**Vertical scroll is proven, not just styled (issue #33).** The `max-height:60vh`
++ `overflow-y:auto` was shipped in #16 but the overflow was never observed (the
+gated panel measured ~180px). `context-panel-scroll-screenshot.mjs`
+(`test:ctx-scroll-shot`, headless-sway) drives the real panel with a large
+payload (7 categories + 3 memory + 5 MCP servers + 50 skills) and measures the
+laid-out DOM: computed `max-height == 60vh`, `scrollHeight > clientHeight`
+(content box clamped at the cap), `scrollTop` moves to the true bottom, and the
+top-vs-bottom **decoded** PNGs differ (~31.8k px) — the scroll is real in paint,
+not a DOM-only claim.
+
+**Dialog a11y is component-enforced (issue #33), matching `AvMenu`'s idiom but at
+the stronger `role="dialog"` contract.** `ContextBreakdownPanel.tsx`: the panel
+is `tabIndex={-1}` + `aria-modal="true"` and **focuses itself on open**; it
+captures the opener (`document.activeElement`, the trigger button focused by the
+click) and **restores focus to it on unmount** (= close: Escape, outside-click,
+and the toggle all unmount it), guarded by `isConnected`. A **focus trap** on the
+capturing `keydown` swallows `Tab`/`Shift+Tab` (the read-only body has no
+tabbable descendants, so focus is pinned to the container and cannot fall through
+to the composer behind). Escape still `stopPropagation()`s so the composer's own
+handler doesn't also fire. The focused dialog shows a visible ring via
+`.av-ctx-panel:focus-visible` (`--av-focus-ring`). Source-bound assertions for
+all of this live in `context-gauge-render-smoke.mjs` (red-pre/green-post at #33).
+
+**Contrast:** `.av-ctx-section-count` (the count pill) uses `--av-text-dim`, not
+`--av-text-faint` — faint on the tinted `--av-code-bg` pill measured 3.34:1 dark
+/ 4.11:1 light, both below WCAG AA 4.5:1; `--av-text-dim` clears it (4.53 / 5.67).
 
 The stack holds the pasted-image
 strip above `.av-composer-cm`; the column's `gap:4px` is the ONLY vertical space

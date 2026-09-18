@@ -552,4 +552,94 @@ console.log('\nContext panel horizontal clamp (#35) — source-bound, NOT geomet
   );
 }
 
+// ── #33: DIALOG A11Y — FOCUS MANAGEMENT + CONTRAST, source-bound ─────────────
+//
+// SAME LIMITATION AS #35 ABOVE: renderToString has no layout engine and does no
+// focus dispatch, so this file CANNOT prove focus actually moves or that a Tab
+// is trapped — that is what the CDP driver / screenshot rig do. What it DOES:
+// fail loudly if the focus-management or contrast fix is DELETED, since these are
+// small effects/one CSS token exactly the shape a "simplify" pass strips, and
+// nothing else in the fast suite would notice. Each assertion below FAILED on the
+// pre-fix bundle (red-pre) and passes now (green-post) — recorded in the #33
+// close-out. Patterns matched against esbuild's ACTUAL emitted text.
+console.log('\nContext panel dialog a11y (#33) — source-bound, NOT behaviour:');
+{
+  const bundle = fs.readFileSync(outfile, 'utf8');
+  const css = fs.readFileSync(path.join(repoRoot, 'src/renderer/agent-view-theme.css'), 'utf8');
+
+  // CONTROL: the panel code is present, and a must-not pattern is absent.
+  check(
+    'CONTROL: bundle carries the panel dialog',
+    bundle.includes('av-ctx-panel') && bundle.includes('Context breakdown'),
+    `bundle length ${bundle.length}`,
+  );
+
+  // (1) FOCUS ON OPEN: the panel is programmatically focusable and grabs focus.
+  // Pre-fix the dialog had no tabIndex and never called focus(): a keyboard/AT
+  // user opened a role=dialog and stayed stranded on the trigger.
+  check(
+    'the dialog is programmatically focusable (tabIndex -1)',
+    /tabIndex:\s*-1/.test(bundle),
+    'no tabIndex=-1 on the panel — a role=dialog that cannot receive focus',
+  );
+  check(
+    'the dialog focuses itself on open',
+    /current\??\.focus\(\)/.test(bundle) || /ref\.current[^\n]*focus\(\)/.test(bundle),
+    'the focus-on-open call is gone — the dialog opens without moving focus into it',
+  );
+  // (2) FOCUS RESTORE: capture the opener and restore on unmount (=close).
+  check(
+    'the opener is captured for focus restore',
+    /document\.activeElement/.test(bundle),
+    'the opener capture is gone — focus is not returned to the trigger on close',
+  );
+  check(
+    'restore is guarded against a detached opener',
+    /isConnected/.test(bundle),
+    'the isConnected guard is gone — restoring focus to an unmounted node',
+  );
+  // (3) FOCUS TRAP: Tab is intercepted while the dialog is open.
+  check(
+    'Tab is trapped inside the dialog',
+    /["'`]Tab["'`]/.test(bundle) && /preventDefault\(\)/.test(bundle),
+    'the Tab trap is gone — focus can fall through to the composer behind the dialog',
+  );
+  // (4) aria-modal announces the dialog as modal to AT.
+  check(
+    'the dialog advertises aria-modal',
+    /aria-modal/.test(bundle),
+    'aria-modal is gone — AT will not treat the breakdown as a modal dialog',
+  );
+
+  // (5) CONTRAST: the count badge no longer uses --av-text-faint (measured
+  // 3.34:1 dark / 4.11:1 light on the tinted pill — below WCAG AA 4.5:1). Scope
+  // to the RULE BODY (a whole-file test is vacuous — many rules use text-faint).
+  const countRule = (() => {
+    const at = css.indexOf('.av-ctx-section-count {');
+    if (at < 0) return '';
+    const close = css.indexOf('}', at);
+    // Strip CSS comments so a token NAMED in a comment (e.g. "not
+    // --av-text-faint") cannot satisfy or defeat a declaration-level check.
+    return close < 0 ? '' : css.slice(at, close).replace(/\/\*[\s\S]*?\*\//g, '');
+  })();
+  check(
+    'CONTROL: the `.av-ctx-section-count` rule body was isolated',
+    countRule.length > 40 && countRule.includes('border-radius: 999px'),
+    `count rule length ${countRule.length}`,
+  );
+  // Match the COLOR declaration specifically, not any mention of the token.
+  const countColor = (countRule.match(/color:\s*var\((--av-[\w-]+)\)/) || [])[1] || '';
+  check(
+    'the count badge uses --av-text-dim (AA), not --av-text-faint (sub-AA)',
+    countColor === '--av-text-dim',
+    `count-badge color is var(${countColor || '?'}) — the sub-AA --av-text-faint would fail 4.5:1`,
+  );
+  // (6) The focus ring for the focused dialog exists in the stylesheet.
+  check(
+    'a visible focus ring is defined for the focused dialog',
+    /\.av-ctx-panel:focus-visible/.test(css) && /--av-focus-ring/.test(css),
+    'the dialog focus ring is gone — keyboard focus lands invisibly',
+  );
+}
+
 process.exit(failures === 0 ? 0 : 1);

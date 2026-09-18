@@ -328,6 +328,38 @@ export function ContextBreakdownPanel({
         // the same Escape would also reach the composer's own handler.
         e.stopPropagation();
         onDismiss();
+        return;
+      }
+      // FOCUS TRAP (issue #33). role=dialog carries a stronger a11y contract than
+      // the app's menus: Tab must stay INSIDE the dialog, never fall through to
+      // the composer behind it. The panel body has no interactive descendants
+      // today (it is read-only), so the only tabbable element is the panel
+      // container itself (tabIndex=-1 → programmatically focusable, not in the
+      // Tab order). We therefore keep focus pinned to the container: any Tab /
+      // Shift+Tab is swallowed and refocuses it. If the body ever gains buttons,
+      // this becomes a real min/max-element cycle — until then, one element is
+      // the whole cycle. Keyed on the panel, so Tab elsewhere is untouched.
+      if (e.key === 'Tab' && ref.current) {
+        const focusables = ref.current.querySelectorAll<HTMLElement>(
+          'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])',
+        );
+        if (focusables.length === 0) {
+          // Nothing tabbable inside → swallow Tab so focus can't escape to the
+          // composer, and keep the dialog itself focused.
+          e.preventDefault();
+          ref.current.focus();
+          return;
+        }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement as HTMLElement | null;
+        if (e.shiftKey && (active === first || active === ref.current)) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     };
     window.addEventListener('mousedown', onDown);
@@ -338,13 +370,37 @@ export function ContextBreakdownPanel({
     };
   }, [onDismiss]);
 
+  // FOCUS ON OPEN + RESTORE ON CLOSE (issue #33). A role=dialog must receive
+  // focus when it opens (so a keyboard/AT user lands in it, not stranded on the
+  // trigger with an unannounced dialog) and must return focus to whatever
+  // opened it when it closes (so Tab resumes where the user was). The opener is
+  // the trigger button, which is `document.activeElement` at mount because the
+  // click that toggled `open` focused it. Capture it here and restore on
+  // unmount — the panel only mounts while open, so unmount IS close (Escape,
+  // outside-click, and the toggle all unmount it).
+  React.useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    ref.current?.focus();
+    return () => {
+      // Guard against restoring focus to a detached node (opener unmounted).
+      if (opener && opener.isConnected) opener.focus();
+    };
+  }, []);
+
   // Defensive: the trigger is only rendered when `hasBreakdown` is true, so
   // this should be unreachable. It exists so a future caller that forgets the
   // gate degrades to nothing rather than to an empty popover.
   if (!breakdown) return null;
 
   return (
-    <div className="av-ctx-panel" role="dialog" aria-label="Context breakdown" ref={ref}>
+    <div
+      className="av-ctx-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Context breakdown"
+      tabIndex={-1}
+      ref={ref}
+    >
       <ContextBreakdownBody usage={usage} breakdown={breakdown} />
     </div>
   );

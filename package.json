@@ -49,6 +49,7 @@
     "test:bus-notice": "node scripts/verify-bus-startup-notice.mjs",
     "test:reparent-notice": "node scripts/verify-reparent-run-notice.mjs",
     "test:restart-row-shot": "node scripts/restart-row-screenshot.mjs",
+    "test:ctx-scroll-shot": "node scripts/context-panel-scroll-screenshot.mjs",
     "build:bus-abi": "node scripts/build-bus-abi.mjs",
     "test:native-manifest": "node scripts/verify-native-manifest.mjs",
     "test:rig-selftest": "bash scripts/run-rig-selftest.sh",
