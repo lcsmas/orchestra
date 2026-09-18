@@ -1,10 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { appendFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import nodePath from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   parseInboxBlocks,
   removeBlock,
   serializeInboxBlocks,
   resolveInboxReDerive,
+  appendInboxBlock,
   INBOX_DELIMITER,
   sanitizeInboxBody,
   type InboxBlock,
@@ -356,3 +362,104 @@ test('#91: with NO concurrent watcher event, the re-derive DOES write (the retra
   resolve();
   assert.equal(store.blocks().length, 0, 'a genuine re-derive still retracts a stale chip');
 });
+
+// ── #93: concurrent large appends must not splice one block inside another ────
+//
+// `queueInbox` framed a block and did ONE bare `await appendFile(path, block)`.
+// O_APPEND is atomic per write(2) syscall, NOT per multi-chunk appendFile — Node
+// splits a large buffer, so two appendFiles racing on the same path interleave
+// their chunks and SPLICE a block, adding phantom delimiter lines that make
+// parseInboxBlocks OVER-COUNT (no bytes lost). Fix: appendInboxBlock serializes
+// per-path in-process. Every arm here writes >=512KB blocks — past the bracketed
+// onset (448K ok / 512K wrong). SUBSTRATE MATTERS: the splice needs a real
+// filesystem; the rig pins its scratch dir to the same fs as prod (~/.orchestra
+// is btrfs on the dev box) and SKIPS LOUDLY off-btrfs rather than passing the
+// mutant vacuously on tmpfs.
+
+const CONC_N = 10;
+const CONC_SIZE = 512 * 1024;
+
+function fsTypeOf(dir: string): string {
+  try {
+    return execFileSync('findmnt', ['-no', 'FSTYPE', '-T', dir]).toString().trim();
+  } catch {
+    return 'unknown';
+  }
+}
+
+// Scratch under the repo tree (btrfs on the dev box), NOT os.tmpdir() (tmpfs),
+// so the concurrency defect can actually manifest. On any other fs the arms
+// SKIP so a green never masks an untested substrate.
+const REPO_DIR = nodePath.resolve(nodePath.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const SCRATCH_FS = fsTypeOf(REPO_DIR);
+
+async function driveConcurrent(
+  write: (file: string, body: string) => Promise<void>,
+): Promise<number[]> {
+  const base = await mkdtemp(nodePath.join(REPO_DIR, '.inbox93-'));
+  try {
+    const counts: number[] = [];
+    for (let trial = 0; trial < 5; trial++) {
+      const file = nodePath.join(base, `ws-${trial}.txt`);
+      await Promise.all(
+        Array.from({ length: CONC_N }, (_, i) =>
+          write(file, `writer-${i} ` + String.fromCharCode(97 + i).repeat(CONC_SIZE)),
+        ),
+      );
+      counts.push(parseInboxBlocks(await readFile(file, 'utf8')).length);
+    }
+    return counts;
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+}
+
+test('#93: appendInboxBlock reads exactly N blocks under concurrent large appends', async (t) => {
+  if (SCRATCH_FS !== 'btrfs') {
+    t.skip(`scratch fs is '${SCRATCH_FS}', not btrfs — the splice needs a real fs; SKIPPING loudly rather than passing vacuously`);
+    return;
+  }
+  const counts = await driveConcurrent(async (file, body) => {
+    const block = `\n${INBOX_DELIMITER}\n${sanitizeInboxBody(body)}\n${INBOX_DELIMITER}\n`;
+    await appendInboxBlock(file, block);
+  });
+  assert.deepEqual(
+    counts,
+    Array(counts.length).fill(CONC_N),
+    `every trial must parse exactly ${CONC_N} blocks; got ${counts.join(',')}`,
+  );
+});
+
+test('#93 CONTROL (the pre-fix mutant): a bare appendFile OVER-COUNTS — proving the rig discriminates', async (t) => {
+  if (SCRATCH_FS !== 'btrfs') {
+    t.skip(`scratch fs is '${SCRATCH_FS}', not btrfs — SKIPPING loudly`);
+    return;
+  }
+  // Exactly queueInbox's PREVIOUS body: mkdir + one bare appendFile, no lock.
+  const counts = await driveConcurrent(async (file, body) => {
+    const block = `\n${INBOX_DELIMITER}\n${sanitizeInboxBody(body)}\n${INBOX_DELIMITER}\n`;
+    await mkdir(nodePath.dirname(file), { recursive: true });
+    await appendFile(file, block, 'utf8');
+  });
+  // Reverting the fix reddens: at least one trial splices to more than N blocks.
+  assert.ok(
+    counts.some((c) => c > CONC_N),
+    `the unguarded write must splice at least once (got ${counts.join(',')}); if this is all ${CONC_N}, the rig lost its power`,
+  );
+});
+
+test('#93 source-pin: queueInbox appends through appendInboxBlock, not a bare appendFile', () => {
+  const ws = readFileSyncStripped(new URL('../main/workspaces.ts', import.meta.url));
+  // Isolate queueInbox's body.
+  const start = ws.indexOf('async function queueInbox(');
+  assert.ok(start > -1, 'queueInbox not found — subject moved');
+  const body = ws.slice(start, ws.indexOf('\nasync function', start + 1));
+  assert.match(body, /appendInboxBlock\(inboxPathFor\(id\)/, 'must use the serialized appendInboxBlock writer');
+  assert.doesNotMatch(body, /\bappendFile\(/, 'must NOT do a bare appendFile (the #93 splice)');
+});
+
+function readFileSyncStripped(url: URL): string {
+  return readFileSync(url, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '');
+}

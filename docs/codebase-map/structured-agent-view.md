@@ -562,7 +562,13 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   neighbouring real message and could deliver one sender's message as a
   semantic fragment (measured). Guarding at the write site keeps "one appended
   block is one message" true by construction; the parser cannot recover that
-  distinction after the fact. Backend: `src/main/inbox-tray.ts`;
+  distinction after the fact. **The same "one appended block is one message"
+  invariant is also protected against concurrency (issue #93):** `queueInbox`
+  appends through `appendInboxBlock` (same module), an in-process per-path async
+  mutex, so two concurrent large appends cannot splice — `appendFile` is atomic
+  per `write(2)` chunk, not per call, so unserialized concurrent appends over
+  ~448KB over-counted (latent: the only caller truncates to
+  `MESSAGE_MAX_CHARS = 8000`). Backend: `src/main/inbox-tray.ts`;
   IPC `inbox:{list,release,refuse,releaseAll}` + the `inbox:update` push.
   ⚠️ **This is a DIFFERENT CHANNEL from the SDK's `crossSessionInbound: 'hold'`
   buffer (issue #42)**, which lives in the CLI process heap with no API handle and
