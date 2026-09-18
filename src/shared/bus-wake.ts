@@ -209,9 +209,11 @@ export type SkipReason = 'no-pending' | 'already-woken' | 'not-wakeable';
  * whole point of the standing ruling: a mechanism whose off-state is
  * indistinguishable from the feature being absent cannot be observed in shadow,
  * so the switch-off arm of the gate would be vacuous (ledger #123 gate C7 names
- * exactly that as its own disproof). `count` still consumes the dedup ledger
- * entry, so the shadow counter measures WAKES, not sweep ticks — a counter that
- * ticked 60 times a minute per idle reader would tell nobody anything.
+ * exactly that as its own disproof). `count` still consumes a dedup entry — but in
+ * the SEPARATE count ledger (#153), never the fire ledger — so the shadow counter
+ * measures WAKES, not sweep ticks (a counter ticking 60 times a minute per idle
+ * reader tells nobody anything), while a later OFF→ON flip still finds an EMPTY fire
+ * ledger and delivers the wake OFF suppressed. See the two-ledger note above.
  */
 /**
  * TWO SWITCHES, ONE ORDER (#119). `switchOn` is the `wake` switch and gates the
@@ -282,12 +284,33 @@ function gateAxisReArmed(pending: ReaderPendingState, previous: WakeLedgerEntry)
   return (pending.gateThroughSeq ?? 0) > previous.wokeGateSeq;
 }
 
+/**
+ * TWO DEDUP LEDGERS, NOT ONE (#153). A `count` (switch OFF) must NEVER arm the
+ * FIRE dedup, or a mid-process OFF→ON flip strands every reader counted under OFF
+ * in `already-woken` starvation: the counted reader was never delivered a wake, so
+ * it never acked, so its cursor never reaches the `wokeLotSeq` the count recorded,
+ * so the ack-based re-arm can never fire and every ON-sweep after the flip skips it
+ * (the C5 eternal-sleep shape #150, reintroduced by the SHADOW path; found LIVE in
+ * canary-4, ledger #152 F-C4-1).
+ *
+ * The fix: fires dedup against fires, counts dedup against counts. The sweep keeps
+ * a SEPARATE `countLedger`, and `decideWake` is told BOTH prior entries. Because
+ * fire-vs-count per axis is decided purely by the switch (known here), each axis
+ * consults the ledger it would WRITE: the FIRE ledger when its switch is ON, the
+ * COUNT ledger when OFF. So a reader counted at seq N under OFF has an EMPTY fire
+ * ledger, and the first ON-sweep after new mail sees no prior FIRE entry → fires
+ * the full pending (acceptance 1). Counts still dedup against counts, so the shadow
+ * counter measures WAKES-worth of events, not 60 sweep-ticks a minute (acceptance
+ * 3). The ask re-wake-until-answered re-arm (#119) and the #150/#112/#134 rules are
+ * unchanged — they act per-axis on whichever entry governs.
+ */
 export function decideWake(
   pending: ReaderPendingState,
   session: ReaderSessionState,
-  previous: WakeLedgerEntry | undefined,
+  previousFire: WakeLedgerEntry | undefined,
   switchOn: boolean,
   askGateOn = false,
+  previousCount: WakeLedgerEntry | undefined = undefined,
 ): WakeAction {
   const lotPending = pending.pending;
   const gatePending = pending.gatePending === true;
@@ -296,37 +319,49 @@ export function decideWake(
   }
   if (!session.wakeable) return { kind: 'skip', reader: pending.reader, why: 'not-wakeable' };
 
+  // The prior entry each axis dedups AGAINST is the ledger it would WRITE this
+  // sweep — the FIRE ledger when the axis's switch is ON, the COUNT ledger when OFF
+  // (#153). A count recorded under OFF lives ONLY in `previousCount`, so an ON-sweep
+  // reads an absent FIRE entry and re-fires; and a count under OFF still dedups
+  // against the previous count. Selected per axis because the two switches flip
+  // independently (a lot can fire while a gate counts, or vice versa).
+  const lotPrev = switchOn ? previousFire : previousCount;
+  const gatePrev = askGateOn ? previousFire : previousCount;
+
   // ── TWO AXES, EACH WITH ITS OWN RE-ARM (D-H1) ───────────────────────────────
-  // An axis is "active" this sweep when it is pending AND either this is the first
-  // wake (no prior entry) or its own re-arm signal advanced: the LOT axis on the
-  // reader's cursor in the woken run (#150 F1), the GATE axis on its own high-water
-  // rising (a new gate opened). Suppress only when NEITHER axis is active — that is
-  // the dedup: an outstanding order on an un-advanced axis is not re-issued.
-  const lotActive = lotPending && (previous === undefined || lotAxisReArmed(pending, previous));
-  const gateActive = gatePending && (previous === undefined || gateAxisReArmed(pending, previous));
+  // An axis is "active" this sweep when it is pending AND either it has no prior
+  // entry in the ledger it dedups against, or its own re-arm signal advanced: the
+  // LOT axis on the reader's cursor in the woken run (#150 F1), the GATE axis on its
+  // own high-water rising (a new gate opened). Suppress only when NEITHER axis is
+  // active — that is the dedup: an outstanding order on an un-advanced axis is not
+  // re-issued.
+  const lotActive = lotPending && (lotPrev === undefined || lotAxisReArmed(pending, lotPrev));
+  const gateActive = gatePending && (gatePrev === undefined || gateAxisReArmed(pending, gatePrev));
   if (!lotActive && !gateActive) {
     return { kind: 'skip', reader: pending.reader, why: 'already-woken' };
   }
 
   const lotSeqNow = pending.pendingThroughSeq;
   const gateSeqNow = pending.gateThroughSeq ?? 0;
-  // The marks to RECORD per axis: the current high-water for an axis that acted
-  // this sweep, else carry the prior mark forward so the other axis's re-arm is not
-  // lost when only one axis fires (a lot re-arm must not reset wokeGateSeq to 0, or
-  // the gate would spuriously re-fire next sweep).
-  const lotSeq = lotActive ? lotSeqNow : (previous?.wokeLotSeq ?? 0);
-  const gateSeq = gateActive ? gateSeqNow : (previous?.wokeGateSeq ?? 0);
+  const lotFires = lotActive && switchOn;
+  const gateFires = gateActive && askGateOn;
+  // The marks to RECORD per axis: the current high-water for an axis that acted this
+  // sweep, else carry the prior mark forward so the other axis's re-arm is not lost
+  // when only one axis acts (a lot re-arm must not reset wokeGateSeq to 0, or the
+  // gate would spuriously re-fire next sweep). Carry EACH axis from the prior entry
+  // it dedups against (`lotPrev`/`gatePrev`) — never crossing the fire/count ledgers
+  // (#153), so a counted gate's mark is not resurrected from a stale fire entry.
+  const lotSeq = lotActive ? lotSeqNow : (lotPrev?.wokeLotSeq ?? 0);
+  const gateSeq = gateActive ? gateSeqNow : (gatePrev?.wokeGateSeq ?? 0);
   // The run the recorded LOT mark belongs to — the current mail run when the lot
   // axis acted, else carried forward with its mark (so a gate-only re-arm does not
   // orphan the lot high-water from its run).
-  const wokeRunId = lotActive ? pending.pendingRunId : previous?.wokeRunId;
+  const wokeRunId = lotActive ? pending.pendingRunId : lotPrev?.wokeRunId;
 
   // fire vs count is per the SWITCH of each ACTIVE axis; the two coalesce into ONE
   // action (at most one order per reader). A source whose switch is OFF is counted,
   // never fired, and must not raise the FIRED mark — its counted-not-fired state
   // stays observable next sweep.
-  const lotFires = lotActive && switchOn;
-  const gateFires = gateActive && askGateOn;
   if (lotFires || gateFires) {
     const throughSeq = Math.max(lotFires ? lotSeqNow : 0, gateFires ? gateSeqNow : 0);
     return { kind: 'fire', reader: pending.reader, throughSeq, lotSeq, gateSeq, wokeRunId };

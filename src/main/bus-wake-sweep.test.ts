@@ -430,25 +430,30 @@ test('#118-F1 blast radius: a mid-wave switch flip is read per-sweep, never latc
   assert.equal(wakes.length, 0, 'flag OFF: counted, not fired');
   assert.equal(busWakeCounters().counted, 1);
 
-  // #118-F1: the flag flips ON while the reader is STILL mid-pending-window
-  // (never acked). My per-sweep read sees ON now — but the dedup ledger already
-  // has this reader, so a transient flip must NOT re-fire it. No wake storm.
+  // OPTION A (LEAD ruling GATE-1, ledger D-C5-2, #153): the flag flips ON while the
+  // reader is still mid-pending-window (never acked). A COUNTED reader was NEVER
+  // delivered a wake, so the ON-sweep MUST fire it ONCE — it has real pending mail
+  // nobody handed over. DISPROOF: the pre-#153 assertion here was `wakes.length===0`
+  // ("do not re-fire an already-handled reader"), which encoded count==fire in ONE
+  // ledger — the exact canary-4 F-C4-1 starvation #153 removes (a counted reader is
+  // not a handled reader). It fires exactly ONCE: the fire records wokeLotSeq, so the
+  // ack-based re-arm keeps the dedup at one wake across every subsequent sweep.
   flag = true;
   for (let i = 0; i < 3; i++) await sweepBusWake();
-  assert.equal(wakes.length, 0, 'a mid-window flip to ON does not re-fire an already-handled reader');
+  assert.equal(wakes.length, 1, 'OFF→ON flip delivers the ONE wake OFF suppressed (Option A)');
+  assert.equal(busWakeCounters().fired, 1, 'fired exactly once — not per sweep (wokeLotSeq dedups)');
 
   // The DISCRIMINATING half a boot-OFF cache cannot pass: the reader acks, a
   // sweep observes the cleared pending state and prunes the ledger entry (the
   // only re-arm — level-triggered, see decideWake), new mail arrives, and NOW
-  // the flag reads ON — so the next sweep FIRES. A cached-OFF boolean would
-  // still count here; only a per-sweep read fires.
+  // the flag reads ON — so the next sweep FIRES again for the fresh lot.
   const lot = check(db, RUN, R1);
   ack(db, RUN, R1, lot.delivery!.id);
   await sweepBusWake(); // the reconciling sweep that prunes the ledger after ack
   send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'more', recipient: R1 });
   await sweepBusWake();
-  assert.equal(wakes.length, 1, 'per-sweep read: a re-armed reader fires once the row reads ON');
-  assert.equal(busWakeCounters().fired, 1);
+  assert.equal(wakes.length, 2, 'per-sweep read: a re-armed reader fires again for new mail while ON');
+  assert.equal(busWakeCounters().fired, 2);
 
   // And the inverse latch: flip back OFF with the reader re-armed, new mail →
   // counted again, never a fire left latched from the previous ON.
@@ -458,8 +463,137 @@ test('#118-F1 blast radius: a mid-wave switch flip is read per-sweep, never latc
   await sweepBusWake(); // reconcile again before the next lot
   send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'off-again', recipient: R1 });
   await sweepBusWake();
-  assert.equal(wakes.length, 1, 'flag OFF again: no further fire — the ON was not latched');
+  assert.equal(wakes.length, 2, 'flag OFF again: no further fire — the ON was not latched');
   assert.equal(busWakeCounters().counted, 2);
+});
+
+test('#153 acceptance 1b (Option A, LEAD D-C5-2): counted through N, flip ON, NO ack + NO new mail → exactly 1 wake', async (t) => {
+  // The Option-A must-FAIL arm: a counted reader with pending-through-N, on the
+  // OFF→ON flip, must be delivered the ONE wake OFF suppressed — even with NO new
+  // mail and NO ack. Pre-fix (count writes the fire ledger) the reader's fire-dedup
+  // entry is already at N and the ack-based re-arm can never fire (cursor 0 < N), so
+  // it stays SKIPPED across ≥3 ON-sweeps = the live starvation. Post-fix the fire
+  // ledger is EMPTY for a counted reader, so the flip fires ONCE and then dedups.
+  //   MUTANT (revert): count writes the FIRE ledger → 0 wakes here across 3 sweeps.
+  const db = tmpDb(t);
+  let wakeOn = false;
+  const wakes: { reader: string; text: string }[] = [];
+  __resetBusWakeForTests();
+  __setBusReaderForTests(() => db);
+  setWakeRoster(() => [{ reader: R1, wakeable: true, runId: RUN }]);
+  setWakeDeliver(async (reader, text) => {
+    wakes.push({ reader, text });
+    return true;
+  });
+  __freezeSwitchForTests((runId: string) => runId === RUN && wakeOn);
+
+  send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'through-N', recipient: R1 });
+  await sweepBusWake();
+  assert.equal(wakes.length, 0, 'OFF: counted, not fired');
+  assert.equal(busWakeCounters().counted, 1);
+
+  // Flip ON. NO ack, NO new mail — the exact case the ruling names.
+  wakeOn = true;
+  for (let i = 0; i < 3; i++) await sweepBusWake();
+  assert.equal(wakes.length, 1, 'counted reader gets its ONE suppressed wake on the flip (pre-fix: 0)');
+  assert.equal(busWakeCounters().fired, 1, 'and exactly once across 3 sweeps — wokeLotSeq dedups');
+  assert.ok(isWakeOrder(wakes[0].text));
+  assert.deepEqual(wakeOrderRuns(wakes[0].text), [RUN]);
+});
+
+// ── #153 — a switch-OFF COUNT must NOT arm the FIRE dedup ───────────────────
+//
+// The live repro (canary-4, ledger #152 F-C4-1): a boot sweep with wake OFF
+// COUNTS a pending reader and — pre-fix — records the fire-dedup high-water as if
+// it had really woken. After a mid-process OFF→ON flip the counted reader was
+// never delivered a wake, never acked, so its cursor never reaches that mark and
+// the ack-based re-arm (#150 F1) can never fire: every ON-sweep skips it
+// `already-woken`. New mail lands and the reader sleeps forever (the C5 shape).
+
+test('#153 acceptance 1: counted under OFF, flip ON + NEW mail → FIRES the full pending (real bus)', async (t) => {
+  // The load-bearing arm. Pre-fix (count writes the fire ledger): the reader is
+  // counted at seq N; the flip-ON sweep with new mail at seq M>N reads
+  // lotAxisReArmed = cursor(0) >= N → false → SKIP already-woken across every
+  // later sweep — the exact live starvation. Post-fix (separate count ledger):
+  // the fire ledger is EMPTY for a counted reader, so the first ON-sweep fires
+  // through the full pending.
+  //   MUTANT (revert the fix): move ledger.set back before the count branch, or
+  //   feed decideWake the count entry as `previousFire` → this arm goes RED.
+  const db = tmpDb(t);
+  let wakeOn = false; // the run row's wake flag; flips ON mid-process
+  const wakes: { reader: string; text: string }[] = [];
+  __resetBusWakeForTests();
+  __setBusReaderForTests(() => db);
+  setWakeRoster(() => [{ reader: R1, wakeable: true, runId: RUN }]);
+  setWakeDeliver(async (reader, text) => {
+    wakes.push({ reader, text });
+    return true;
+  });
+  __freezeSwitchForTests((runId: string) => runId === RUN && wakeOn);
+
+  // Boot sweep: switch OFF, reader pending → COUNTED, not fired.
+  send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'boot-mail', recipient: R1 });
+  await sweepBusWake();
+  assert.equal(wakes.length, 0, 'switch OFF at boot: nothing fires');
+  assert.equal(busWakeCounters().counted, 1, 'but the would-have-woken is counted');
+
+  // Mid-process OFF→ON flip (delivery+wake turned ON by the operator, run frozen ON).
+  wakeOn = true;
+
+  // Drive ≥3 sweeps with NO new mail first — this is the pre-fix "skipped across
+  // ≥3 sweeps" repro window. (Under contract A a same-seq flip may fire; this arm
+  // does not assert on that — it asserts the NEW-mail case below, which BOTH
+  // contracts require to fire.)
+  for (let i = 0; i < 3; i++) await sweepBusWake();
+
+  // NEW mail arrives at a HIGHER seq — the live 764→784 transition. The reader was
+  // NEVER delivered a wake, so this MUST fire a real wake through the full pending.
+  send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'new-mail-784', recipient: R1 });
+  for (let i = 0; i < 3; i++) await sweepBusWake();
+
+  const firedToR1 = wakes.filter((w) => w.reader === R1);
+  assert.ok(firedToR1.length >= 1, 'after OFF→ON + new mail the reader MUST be woken (F-C4-1)');
+  assert.equal(busWakeCounters().fired, firedToR1.length, 'and the fired counter matches');
+  // The wake is a real order naming the run.
+  assert.ok(isWakeOrder(firedToR1[0].text), 'the delivered wake is a valid run-naming order');
+  assert.deepEqual(wakeOrderRuns(firedToR1[0].text), [RUN]);
+});
+
+test('#153 acceptance 2: steady-state ON dedup unchanged — woken through N, no ack/no new mail → not re-woken', async (t) => {
+  // The count ledger must not weaken the FIRE dedup. Always ON: one wake, then
+  // silence until an ack or new mail — exactly T117.2's guarantee, re-asserted to
+  // prove the two-ledger split did not open a fire-storm.
+  const db = tmpDb(t);
+  const wakes = rig(db, { switchOn: true });
+  send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'work', recipient: R1 });
+  await sweepBusWake();
+  assert.equal(wakes.length, 1, 'the first wake fires');
+
+  for (let i = 0; i < 5; i++) await sweepBusWake();
+  assert.equal(wakes.length, 1, 'no ack, no new mail → not re-woken (fire dedup intact)');
+  assert.equal(busWakeCounters().fired, 1);
+});
+
+test('#153 acceptance 3: counting mode still COUNTS and still does NOT deliver, and dedups vs counts', async (t) => {
+  // Shadow metrics keep working: a pending reader under OFF counts ONCE (not once
+  // per sweep — the count ledger dedups counts against counts) and fires nothing.
+  const db = tmpDb(t);
+  const wakes = rig(db, { switchOn: false });
+  send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'shadow', recipient: R1 });
+
+  for (let i = 0; i < 5; i++) await sweepBusWake();
+  assert.equal(wakes.length, 0, 'switch OFF: nothing is ever delivered');
+  assert.equal(busWakeCounters().fired, 0);
+  assert.equal(busWakeCounters().counted, 1, 'counted exactly once across 5 sweeps (counts dedup vs counts)');
+
+  // NEW mail under OFF re-arms the count (the shadow signal tracks fresh events).
+  const lot = check(db, RUN, R1);
+  ack(db, RUN, R1, lot.delivery!.id);
+  await sweepBusWake(); // reconcile: pending cleared → count ledger prunes
+  send(db, { runId: RUN, sender: 'ops', kind: 'dispatch', body: 'shadow-2', recipient: R1 });
+  await sweepBusWake();
+  assert.equal(busWakeCounters().counted, 2, 'new mail after ack counts again (shadow keeps measuring)');
+  assert.equal(wakes.length, 0, 'and still nothing fired');
 });
 
 test('a reader is NOT woken for mail in a run it does not belong to', async (t) => {
