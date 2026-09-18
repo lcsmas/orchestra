@@ -180,6 +180,66 @@ export function refreezeRun(db: BusDb, runId: string, liveSwitches: BusSwitches)
   return info.changes === 1;
 }
 
+/** The typed outcome of an ADMIN refreeze (`orchestra run refreeze`, #156). Every
+ *  branch is a distinct refusal reason so the CLI can print WHY, and every arm of
+ *  the acceptance matrix keys on a specific value rather than a bare boolean. */
+export type RefreezeMissionOutcome =
+  | 'no-run' // the run id resolves to no `runs` row
+  | 'not-mission' // the run exists but is a vague (OPS) row — refused (arm 3)
+  | 'live-child' // a child is live mid-turn — refused, row untouched (arm 2)
+  | 'refrozen' // the mission row's flags were UPDATEd to the live switches (arm 1)
+  | 'no-flags'; // a mission row with no run_flags row — nothing to update (never late-inserted)
+
+/**
+ * ADMIN RE-FREEZE (#156): the explicit, safe path a FLAT mission needs.
+ *
+ * THE GAP #156 CLOSES: `bus-run-anchor.ts` D1b re-freezes a mission row ONLY when a
+ * nested OPS launches under it (a wave boundary). An orchestrator that runs FLAT —
+ * plain children only, never a promoted sub-OPS — hits that boundary NEVER, so its
+ * mission keeps the flags frozen at its first anchor forever and can never pick up
+ * a later switch flip. This is the operator-driven re-freeze that boundary can't
+ * provide, gated by the SAME invariants D1b relies on:
+ *
+ *   - MISSION ROWS ONLY. The gate is `refreezeRun`'s own WHERE (`kind = 'mission'`),
+ *     re-asserted here by reading the row first so a vague row is REFUSED with a
+ *     reason rather than silently no-op'd. An OPS/member row is never re-frozen.
+ *   - NO LIVE CHILD MID-TURN. The freeze invariant exists to keep an in-flight
+ *     wave's regime stable, so a refreeze is REFUSED while any child is live
+ *     (`hasLiveChild`, injected by the caller who owns the store's liveness probes
+ *     for BOTH surfaces — PTY `isRunning` AND structured/SDK `sdkSessionLive`).
+ *     The bus alone cannot see a plain child's turn state — that is why this is
+ *     injected, not read here.
+ *   - #134 F1: NO LATE INSERT. This calls only `refreezeRun`, which is a pure
+ *     UPDATE — it never creates a `runs` or `run_flags` row. A mission whose
+ *     run_flags row is absent returns `no-flags` (nothing to update), never a
+ *     late freeze.
+ *
+ * Deliberately NOT folded into `startRun`/`refreezeRun`: this adds the mission/
+ * live-child GATE around the existing UPDATE (D1b's caller-side invariant, moved
+ * to a place the CLI can reach), and returns a typed reason so the two failure
+ * modes (not-a-mission, live-child) are distinguishable at the CLI.
+ */
+export function refreezeMissionRun(
+  db: BusDb,
+  runId: string,
+  liveSwitches: BusSwitches,
+  opts: { hasLiveChild: boolean },
+): RefreezeMissionOutcome {
+  const row = getRun(db, runId);
+  if (!row) return 'no-run';
+  // Re-assert the mission gate at the CLI so a vague row is a REASONED refusal.
+  // refreezeRun's WHERE clause is the true guard (it cannot touch a vague row even
+  // if this check were wrong), but reading the kind here lets the CLI say WHY.
+  if (row.kind !== 'mission') return 'not-mission';
+  // The freeze invariant: never re-freeze a wave whose child is mid-turn.
+  if (opts.hasLiveChild) return 'live-child';
+  // Pure UPDATE — never a late insert (#134 F1). `false` here means the mission
+  // row exists but its run_flags row does not (nothing to update), which is the
+  // coexistence-safe direction: an unfrozen run reads all-OFF, not late-frozen.
+  const changed = refreezeRun(db, runId, liveSwitches);
+  return changed ? 'refrozen' : 'no-flags';
+}
+
 /** Read one run row with its frozen flags, or null. */
 export function getRun(db: BusDb, runId: string): BusRunRow | null {
   const row = db

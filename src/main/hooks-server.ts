@@ -25,6 +25,7 @@ import {
   dispatchMigrateAccountRequest,
   dispatchAccountsListRequest,
   dispatchStatusRequest,
+  dispatchRunRefreezeRequest,
 } from './workspaces';
 import { busDivergenceReport } from './bus-mirror.ts';
 import { getBus, badRecipientRows as busBadRecipientRows } from './bus.ts';
@@ -456,6 +457,21 @@ export async function startHooksServer(): Promise<void> {
               badRecipientCount,
               badRecipients,
             });
+          } else if (route === '/runRefreeze') {
+            // #156 — ADMIN re-freeze of a FLAT mission's frozen switch flags. A
+            // flat orchestrator (plain children only, never a promoted sub-OPS)
+            // never hits D1b's wave-boundary re-freeze, so its mission's flags are
+            // stuck at its first anchor forever; this is the explicit operator path
+            // to pick up a later flip. The gate (mission-only, refuse while a child
+            // is live mid-turn, no late insert) lives in dispatchRunRefreezeRequest
+            // + the pure refreezeMissionRun — the store side owns the live-child
+            // observable (`isRunning`) the bus cannot see.
+            send(
+              200,
+              dispatchRunRefreezeRequest({
+                runId: typeof msg.runId === 'string' ? msg.runId : undefined,
+              }),
+            );
           } else if (route === '/whoami') {
             if (typeof msg.id === 'string') {
               send(200, dispatchWhoamiRequest({ id: msg.id }));

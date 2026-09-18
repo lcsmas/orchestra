@@ -237,6 +237,12 @@ Usage:
                                                  for the current run (missed / duplicate /
                                                  lost-wake per mechanism), and whether the bus
                                                  is reachable at all. Read-only.
+  orchestra run refreeze [--run <id>]            Re-freeze a MISSION run's bus switches to the
+                                                 current live switches (default run: $ORCHESTRA_RUN_ID
+                                                 or 'default'). For a FLAT orchestrator whose mission
+                                                 never picks up a switch flip (no sub-OPS ever launches
+                                                 under it). Refused on a non-mission run, or while any
+                                                 child is live mid-turn. Never creates a run row.
   orchestra linear add <url|TEAM-123> [--repo <path>] [--spawn] [--model <m>]
                                                  Pin a Linear ticket into the sidebar
                                                  (--spawn: also create a worktree + agent for it,
@@ -1771,6 +1777,64 @@ async function main(argv: string[]): Promise<void> {
       process.stdout.write(
         res.statusText ? `Status set: ${res.statusText as string}\n` : 'Status cleared.\n',
       );
+      return;
+    }
+
+    case 'run': {
+      // #156 — ADMIN run subcommands. Only `refreeze` today. Routed to the app
+      // (NOT the store-less bus path) because the live-child gate needs the store's
+      // `isRunning` ground truth; the CLI is a thin wrapper that resolves the run
+      // and prints the typed outcome.
+      const sub = args[0];
+      if (sub !== 'refreeze') {
+        fail('usage: orchestra run refreeze [--run <id>]');
+      }
+      const { value: runFlag } = takeFlag(args.slice(1), '--run');
+      // Same resolution as bus-status: --run > $ORCHESTRA_RUN_ID > 'default'. An
+      // admin re-freezing a specific mission from outside its wave passes --run.
+      const targetRun = runFlag?.trim() || process.env.ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
+      const res = await request('/runRefreeze', { runId: targetRun });
+      if (!res.ok) fail(res.error ?? 'failed to refreeze run');
+      const outcome = res.outcome as string | undefined;
+      const echoed = (res.runId as string | undefined) ?? targetRun;
+      switch (outcome) {
+        case 'refrozen': {
+          // Print the flags now frozen, so the operator sees the regime they
+          // just pinned — the whole point of the verb.
+          const frozen = parseSwitches(
+            typeof res.frozenFlags === 'string' ? res.frozenFlags : null,
+          );
+          process.stdout.write(`Re-froze mission run ${echoed} to the current live switches:\n`);
+          const rows = BUS_MECHANISMS.map((m) => ({
+            mechanism: mechanismToWire(m),
+            frozen: switchStateWord(frozen[m]),
+          }));
+          process.stdout.write(`${table(rows, ['mechanism', 'frozen'])}\n`);
+          return;
+        }
+        case 'no-run':
+          fail(`orchestra run refreeze: no run row for ${echoed} — nothing to refreeze`);
+        // eslint-disable-next-line no-fallthrough
+        case 'not-mission':
+          fail(
+            `orchestra run refreeze: run ${echoed} is not a MISSION (only mission rows re-freeze) — refused`,
+          );
+        // eslint-disable-next-line no-fallthrough
+        case 'live-child':
+          fail(
+            `orchestra run refreeze: mission ${echoed} has a live child mid-turn — refused ` +
+              '(the freeze keeps an in-flight wave stable; retry when children are idle)',
+          );
+        // eslint-disable-next-line no-fallthrough
+        case 'no-flags':
+          fail(
+            `orchestra run refreeze: mission ${echoed} has no frozen-flags row to update — refused ` +
+              '(never late-inserted; the run reads all-OFF)',
+          );
+        // eslint-disable-next-line no-fallthrough
+        default:
+          fail(`orchestra run refreeze: unexpected outcome ${JSON.stringify(outcome)}`);
+      }
       return;
     }
 

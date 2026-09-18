@@ -40,9 +40,17 @@ import {
 } from './pty';
 import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
-import { DEFAULT_BUS_SWITCHES, busSwitchNotice } from '../shared/bus-switches.ts';
+import { DEFAULT_BUS_SWITCHES, busSwitchNotice, serializeSwitches } from '../shared/bus-switches.ts';
+import { anyChildLive } from '../shared/refreeze-liveness.ts';
 import { getBus } from './bus.ts';
-import { runFlags, startRun, getRun, refreezeRun } from './bus-runs.ts';
+import {
+  runFlags,
+  startRun,
+  getRun,
+  refreezeRun,
+  refreezeMissionRun,
+  type RefreezeMissionOutcome,
+} from './bus-runs.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import { maybeStartRunAtAnchor, type AnchorInfo } from './bus-run-anchor.ts';
 import { nearestOrchestratorId, parentOrchestratorId } from './wave-run-id.ts';
@@ -2955,6 +2963,60 @@ export async function dispatchPeersRequest(input: {
     );
   }
   return { ok: true, peers };
+}
+
+export interface RunRefreezeResult {
+  ok: boolean;
+  /** The typed outcome from `refreezeMissionRun` (only when `ok`). */
+  outcome?: RefreezeMissionOutcome;
+  /** The run id that was targeted (echoed so the CLI prints what it acted on). */
+  runId?: string;
+  /** The serialized flags now frozen on the mission row (only on `refrozen`). */
+  frozenFlags?: string | null;
+  error?: string;
+}
+
+/**
+ * ADMIN RE-FREEZE of a FLAT mission's switch flags (#156): `orchestra run refreeze`.
+ *
+ * The store side of the verb — it lives HERE, not in the store-less CLI, because
+ * the live-child gate needs ground truth the bus cannot see: whether any of the
+ * mission's plain children is currently running a turn (`isRunning`, a live PTY/
+ * SDK session). The mission run id IS its coordinator workspace id (see
+ * bus-run-anchor.ts: a top-level orchestrator's run id === its own ws id), so the
+ * mission's children are exactly the workspaces transitively parented under it.
+ *
+ * The pure `refreezeMissionRun` owns the mission/live-child/no-late-insert gate;
+ * this function only supplies the bus, the live switches, and the `hasLiveChild`
+ * observable, then serializes the outcome for the socket. A null bus (D1) refuses
+ * cleanly — there is no run row to refreeze without a bus.
+ */
+export function dispatchRunRefreezeRequest(input: { runId?: string }): RunRefreezeResult {
+  const runId = input.runId?.trim();
+  if (!runId) return { ok: false, error: 'missing runId' };
+  const db = getBus();
+  if (!db) {
+    return { ok: false, error: 'bus is unavailable — cannot refreeze (no run row without a bus)' };
+  }
+  // The mission's children = every workspace transitively parented under its
+  // coordinator (the run id), minus the coordinator itself. "Live mid-turn" must
+  // cover BOTH launch surfaces — a PTY session (`isRunning`) AND a structured/SDK
+  // session (`sdkSessionLive`); `isRunning` alone is the #111 PTY-only blind spot,
+  // and the DEFAULT spawn is structured (no PTY), so a live SDK child would read
+  // NOT running and the freeze invariant would be violated. The disjunction lives
+  // in the platform-free `anyChildLive` (src/shared/refreeze-liveness.ts) so a test
+  // can drive the REAL predicate; here we only wire the two real probes.
+  const tree = collectWorkspaceTree(runId);
+  const children = tree.slice(1); // drop the coordinator root
+  const hasLiveChild = anyChildLive(children.map((w) => w.id), isRunning, sdkSessionLive);
+  const outcome = refreezeMissionRun(db, runId, getLiveSwitches(), { hasLiveChild });
+  const frozen = outcome === 'refrozen' ? getRun(db, runId)?.flags : undefined;
+  return {
+    ok: true,
+    outcome,
+    runId,
+    ...(frozen !== undefined ? { frozenFlags: serializeSwitches(frozen) } : {}),
+  };
 }
 
 /** Every non-archived workspace as `{id, name}`, for the CLI's `send --to`
