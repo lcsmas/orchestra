@@ -697,7 +697,7 @@ each with its own `orchestra ack`.
 
 ## `fs.watch` is NOT the mechanism — only an accelerator
 
-The sweep (`sweepBusWake`, `src/main/bus-wake.ts:251`) is **level-triggered over
+The sweep (`sweepBusWake`, `src/main/bus-wake.ts:470`) is **level-triggered over
 durable state**: it reads what is pending *now* and acts on that, with no memory
 of which inserts it saw. Three things drive it, and they are not equals:
 
@@ -774,7 +774,7 @@ as the same-command positive control.
 
 ## Dedup: TWO AXES, each re-armed by its own signal (#150 F1 + D-H1)
 
-`decideWake` (`src/shared/bus-wake.ts:285`) tracks the LOT and GATE high-waters
+`decideWake` (`src/shared/bus-wake.ts:305`) tracks the LOT and GATE high-waters
 **separately** on the ledger entry (`WakeLedgerEntry.wokeLotSeq` / `.wokeGateSeq`),
 because they re-arm on different signals and their numbers are not comparable — a
 `messages.sequence` and a gate id share no numbering. A reader is suppressed
@@ -787,10 +787,10 @@ would spuriously re-fire).
   the woken run** reaches `wokeLotSeq` (it obeyed the order). PER-RUN: `wokeLotSeq`
   is a global seq recorded against `wokeRunId`, cursors are per-run, so it is only
   comparable to the cursor of that same run. `readPendingReaders` supplies
-  `cursorByRun` for every RELATED run (`src/main/bus-wake.ts:305`) because the woken
+  `cursorByRun` for every RELATED run (`src/main/bus-wake.ts:316`) because the woken
   run may no longer be newest-pending this sweep. Ask readers
   (`reWakeUntilAnswered`) are excluded — they keep their effectful `cursorAtWake`
-  re-arm (`src/main/bus-wake.ts:527`).
+  re-arm (`src/main/bus-wake.ts:549`).
 - **GATE axis** — `gateAxisReArmed` (`:281`): re-arms when the max OPEN gate id
   (`gateThroughSeq`) EXCEEDS `wokeGateSeq` — a genuinely new gate opened. NEVER the
   message cursor. A plain `>` is safe here (unlike lots) because `gateThroughSeq` is
@@ -816,12 +816,40 @@ gates; the rider fix makes a re-armed gate under `askGate=OFF` COUNT). Every re-
 arm (pure + real-bus `bus-wake-sweep.test.ts`) reddens on the single-axis presence
 dedup.
 
-`pruneWakeLedger` (`src/shared/bus-wake.ts:348`) still drops the entry when the
+`pruneWakeLedger` (`src/shared/bus-wake.ts:381`) still drops the entry when the
 pending set EMPTIES (the whole-set re-arm); the per-axis re-arms above cover the
 case where OTHER pending keeps the set non-empty. Known bound: with `wake=ON` and
 `askGate=OFF` a single coalesced `fire` action does not separately COUNT a
 simultaneously-counted gate axis; this wave runs both switches together so the case
 is not reachable (the promotion plan flips both at once).
+
+## Two dedup ledgers: a COUNT must not arm the FIRE dedup (#153)
+
+The sweep keeps **two** ledgers, not one (`src/main/bus-wake.ts`): `ledger` (the
+FIRE dedup — only a delivered `fire` writes it, mark-before-await #112) and
+`countLedger` (the COUNT dedup — only a switch-OFF `count` writes it). `decideWake`
+takes BOTH prior entries (`previousFire`, `previousCount`) and each axis dedups
+against the ledger it would WRITE this sweep: the FIRE ledger when its switch is ON,
+the COUNT ledger when OFF (`lotPrev`/`gatePrev`, selected per axis because the two
+switches flip independently).
+
+**Why (canary-4 F-C4-1, ledger #152).** Pre-fix `ledger.set(...)` ran BEFORE the
+`action.kind === 'count'` branch, so a counted (never-delivered) would-have-woken
+recorded `wokeLotSeq` exactly like a real fire. But `lotAxisReArmed` re-arms only
+when the reader's cursor reaches `wokeLotSeq`, and a **counted reader was never
+woken → never acked → its cursor never reaches the mark**. So after a mid-process
+OFF→ON flip every ON-sweep skipped it `already-woken` — the C5 eternal-sleep shape
+(#150) reintroduced by the SHADOW path. With separate ledgers a counted reader has
+an EMPTY fire ledger, so the first ON-sweep after new mail fires the full pending;
+counts still dedup against counts, so the shadow counter measures WAKES, not 60
+sweep-ticks a minute. Not a steady-state defect (an always-ON boot fires, an
+always-OFF boot only counts) — every canary/tick cycle crosses the transition.
+
+Gates (`bus-wake-sweep.test.ts`): `#153 acceptance 1` (counted under OFF, flip ON +
+NEW mail → FIRES the full pending — the live repro; reddens under the pre-fix mutant
+that writes the count into the fire ledger), `acceptance 2` (steady-state ON dedup
+intact), `acceptance 3` (counting still counts once across N sweeps and delivers
+nothing — counts dedup vs counts).
 
 The ledger entry is written **before** the `await` on delivery (`src/main/bus-wake.ts:541`) — a
 second sweep entering during that yield would otherwise see no entry and fire a

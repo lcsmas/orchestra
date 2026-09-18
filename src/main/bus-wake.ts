@@ -135,8 +135,18 @@ export function busWakeCounters(): BusWakeCounters {
   return { ...counters };
 }
 
-/** The dedup ledger: reader handle → the pending high-water we last acted on. */
+/** The FIRE dedup ledger: reader handle → the high-water a DELIVERED wake covered.
+ *  Only `fire` actions write here (mark-before-await, #112). */
 const ledger = new Map<string, WakeLedgerEntry>();
+
+/** The COUNT dedup ledger (#153): reader handle → the high-water a COUNTED (switch
+ *  OFF, never delivered) would-have-woken covered. SEPARATE from `ledger` so a count
+ *  never arms the FIRE dedup — a counted reader was never delivered a wake and never
+ *  acks, so if a count wrote the fire ledger, a mid-process OFF→ON flip would leave
+ *  it in `already-woken` starvation forever (the C5 shape #150, reintroduced by the
+ *  shadow path; canary-4 F-C4-1). Counts dedup against counts here, so the shadow
+ *  counter still measures WAKES, not 60 sweep-ticks a minute. */
+const countLedger = new Map<string, WakeLedgerEntry>();
 
 // ─── Reading pending state from the bus ────────────────────────────────────
 
@@ -478,6 +488,9 @@ export async function sweepBusWake(): Promise<void> {
       pending.filter((p) => p.pending || p.gatePending === true).map((p) => p.reader),
     );
     pruneWakeLedger(ledger, stillPending);
+    // #153: the COUNT ledger prunes on the SAME level-triggered signal as the fire
+    // ledger — a reader whose pending state cleared re-arms for the next count too.
+    pruneWakeLedger(countLedger, stillPending);
 
     for (const p of pending) {
       const entry = readers.find((r) => r.reader === p.reader);
@@ -525,21 +538,34 @@ export async function sweepBusWake(): Promise<void> {
       // decideWake fires a fresh wake. Bounded by ACKS, not sweeps: after we
       // re-fire we record the new cursor, so the reader is not re-woken again
       // until it acks again. An answered ask clears `pending` and prunes normally.
-      const prev = ledger.get(p.reader);
-      if (
-        prev &&
-        p.reWakeUntilAnswered === true &&
-        prev.cursorAtWake !== undefined &&
-        (p.cursorSeq ?? 0) > prev.cursorAtWake
-      ) {
-        ledger.delete(p.reader);
+      // The ask re-wake-until-answered re-arm (#119) applies to whichever ledger the
+      // reader's ask wake landed in — a FIRED ask (wake ON) or a COUNTED one (wake
+      // OFF): the reader acking without answering must re-arm the same-kind dedup.
+      for (const led of [ledger, countLedger]) {
+        const prev = led.get(p.reader);
+        if (
+          prev &&
+          p.reWakeUntilAnswered === true &&
+          prev.cursorAtWake !== undefined &&
+          (p.cursorSeq ?? 0) > prev.cursorAtWake
+        ) {
+          led.delete(p.reader);
+        }
       }
-      const action = decideWake(p, session, ledger.get(p.reader), switchOn, askGateOn);
+      const action = decideWake(
+        p,
+        session,
+        ledger.get(p.reader),
+        switchOn,
+        askGateOn,
+        countLedger.get(p.reader),
+      );
       if (action.kind === 'skip') continue;
-      // Mark BEFORE the await, not after: `sdkWake` yields, and a second sweep
-      // entering during that yield would otherwise see no ledger entry and fire
-      // a duplicate — the same shape as #112's duplicate prompt.
-      ledger.set(action.reader, {
+      // #153: write the FIRE mark to the fire ledger and the COUNT mark to the count
+      // ledger — NEVER cross them. A count writing the fire ledger is the exact bug:
+      // a counted reader never acks, so its fire-dedup entry can never re-arm, and a
+      // later OFF→ON flip strands it in `already-woken` starvation.
+      const ledgerEntry: WakeLedgerEntry = {
         // TWO AXES recorded separately (D-H1): the LOT high-water re-arms on the
         // cursor (#150 F1), the GATE high-water on its own id rising. decideWake
         // carries each axis's mark forward when only the other axis acted, so a lot
@@ -554,14 +580,21 @@ export async function sweepBusWake(): Promise<void> {
         // Record the cursor only for the re-wake-until-answered path, so a later
         // advance re-arms it. Left undefined for ordinary lot wakes.
         cursorAtWake: p.reWakeUntilAnswered === true ? (p.cursorSeq ?? 0) : undefined,
-      });
+      };
       if (action.kind === 'count') {
+        // A count arms ONLY the count ledger (dedup counts vs counts), never the
+        // fire ledger. No await follows, so this needs no mark-before-await.
+        countLedger.set(action.reader, ledgerEntry);
         counters.counted++;
         log.info(
           `bus-wake: would have woken ${action.reader} through seq ${action.throughSeq} (switch OFF — counted, not fired)`,
         );
         continue;
       }
+      // Mark BEFORE the await, not after: `sdkWake` yields, and a second sweep
+      // entering during that yield would otherwise see no ledger entry and fire
+      // a duplicate — the same shape as #112's duplicate prompt.
+      ledger.set(action.reader, ledgerEntry);
       // #134 D2: the wake ORDER names every run the reader must check — its
       // pending lot/question runs (own ∪ related), else its OWN run for a
       // gate-only wake (gates are own-run and `check` surfaces them). One
@@ -755,6 +788,7 @@ export function stopBusWake(): void {
  *  known baseline instead of inheriting a previous test's marks. */
 export function __resetBusWakeForTests(): void {
   ledger.clear();
+  countLedger.clear();
   counters.fired = 0;
   counters.counted = 0;
   counters.failed = 0;
