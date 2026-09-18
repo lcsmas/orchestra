@@ -1866,3 +1866,63 @@ bus. No existing row is rewritten — the canary rows are left as evidence.
 - **The CANARY at the predicate layer** — `bus-wake.test.ts` #144: a short-handle
   recipient never wakes the full-id reader; the full id does (same command,
   positive + negative arm).
+
+---
+
+# `send` refuses an UNANCHORED run (#155)
+
+The first canary with `delivery=ON`/`wake=ON` also produced ledger #152 F-C4-2b:
+a ship agent sent with `$ORCHESTRA_RUN_ID=<its own ws id>` (a brief env error),
+the CLI ACCEPTED it, and seq 793 landed under a `run_id` with **no row in
+`runs`**. That mail is ORPHANED: `busSwitch(<unknown run>, 'wake')` safe-defaults
+OFF (#123 F1), so the recipient is never woken, and the row is invisible to every
+run-scoped `check` — only a reader who already knows the phantom id can retrieve
+it. The v1 schema comment (`bus.ts` `MIGRATIONS[1]`) predicted this exact
+"parallel universe of messages no reader is checking".
+
+## The gate
+
+`orchestra send` now REFUSES a `run_id` absent from `runs`, in the `send` case of
+`src/cli/index.ts` — **after** `openBusForVerb()` (it needs the db) and **before**
+`verbSend`, so no row is ever written on refusal. It reads existence via
+`runExists` (surfaced from `openBusForVerb`, backed by `bus-runs.ts` `getRun`
+returning null for an unknown run) and fails with `unknownRunRefusalMessage`
+(`src/cli/bus-verbs.ts`), which **names the remedy**: `orchestra restart` to
+re-derive the anchor, or correct/unset `$ORCHESTRA_RUN_ID` / pass `--run`.
+
+**The `default` sentinel is EXEMPTED** (`id.runId !== DEFAULT_RUN_ID` guards the
+check). `default` never gets a `runs` row — rows are created only at orchestrator
+anchors (#134 `maybeStartRunAtAnchor`), and a plain standalone workspace
+deliberately gets none either. `default` is the documented fallback for a manual /
+standalone send, so refusing it would break every unanchored send. The gate is
+only for a run id that LOOKS anchored (a uuid) but has no row — the F-C4-2b shape.
+
+## Two INDEPENDENT pre-send gates, no clobber
+
+This is a NEW gate, distinct from #142's stale-marker refusal. They run in order
+and neither clobbers the other:
+
+| Gate | Fires from | When | Message |
+|---|---|---|---|
+| #142 `refuseIfStaleRun()` | the `.orchestra/bus-run-stale` marker FILE, **before any bus opens** | this workspace was re-parented with `--no-restart` | `staleRunRefusalMessage` |
+| #155 run-existence | the opened bus (`runExists`), after openBusForVerb | `run_id` (≠ `default`) has no `runs` row | `unknownRunRefusalMessage` |
+
+The #142 marker gate short-circuits first, so a stale + unanchored workspace sees
+#142's message, never #155's.
+
+## Gates (#155)
+
+`src/cli/send-unknown-run.test.ts` drives the BUILT `dist-electron/cli.js send`
+end-to-end against a REAL bus in an isolated `ORCHESTRA_HOME`+`HOME`, and reads
+`messages` back to prove no row landed on refusal (the gate is wired in
+`index.ts`, not `verbSend`, so the `bus-verbs.test.ts` unit rig — which stubs
+`busSwitch` and never opens a real bus — cannot reach it). No skip under
+`pnpm run test`: node_modules better-sqlite3 loads at the runner's system-node
+ABI. Arms:
+- **must-FAIL** — unknown uuid run → refused, remedy named, 0 rows. Mutation-
+  proven: removing the gate makes it rc 0 with 1 orphaned row (reddens ONLY this
+  arm).
+- valid anchored run (seeded via the shipped `startRun`) → accepted, 1 row.
+- `default` (env unset) and explicit `--run default` → exempt, accepted.
+- #142 stale-marker still refuses first (its message, not #155's) even with a
+  valid run → 0 rows.

@@ -59,6 +59,40 @@ export const BUS_KINDS: readonly string[] = [
  *  exact failure mode that comment warns about. */
 export const DEFAULT_RUN_ID = 'default';
 
+/**
+ * #155 — the refusal a `send` prints when its `run_id` names a run with NO row
+ * in `runs`.
+ *
+ * THE BUG (canary-4 close-out, ledger #152 F-C4-2b): a send with a typo'd/stale
+ * `$ORCHESTRA_RUN_ID` (there, a member's OWN ws id instead of its wave anchor)
+ * landed a row under a run that never existed in `runs`. That mail is ORPHANED:
+ * `readWakeSwitch(<unknown run>)` safe-defaults OFF so the recipient is never
+ * woken, and the row is invisible to every run-scoped `check` — only a reader who
+ * already knows the phantom id can retrieve it. Refusing here (same family as
+ * #142's stale-marker pre-send gate and #144's refuse-ambiguous-recipient) keeps
+ * a mistyped env from writing mail no wake path can reach.
+ *
+ * The `default` sentinel is EXEMPTED by the caller (never passed here): it never
+ * gets a `runs` row (rows are created only at orchestrator anchors, #134) and is
+ * the documented fallback for a manual / standalone send. This message is for a
+ * run id that LOOKS anchored (a uuid) but has no row — the F-C4-2b shape.
+ *
+ * The message NAMES the remedy (issue #155): restart so the anchor is re-derived,
+ * or correct/unset the env. Keyed here (not inlined at the call site) so the gate
+ * and its test read the same string.
+ */
+export function unknownRunRefusalMessage(runId: string): string {
+  return (
+    `refused: run ${JSON.stringify(runId)} has no row in the bus 'runs' table, so a message ` +
+    `sent to it would be ORPHANED — never woken (the wake switch safe-defaults OFF for an ` +
+    `unknown run) and invisible to every run-scoped 'check'.\n` +
+    `  This usually means $ORCHESTRA_RUN_ID is stale or typo'd (it should be your wave ANCHOR ` +
+    `= your nearest orchestrator's run, not your own workspace id).\n` +
+    `  fix: run 'orchestra restart' to re-derive this workspace's run anchor, or correct/unset ` +
+    `$ORCHESTRA_RUN_ID (or pass --run <anchor-run-id>) before sending.`
+  );
+}
+
 export interface BusIdentity {
   runId: string;
   handle: string;

@@ -22,6 +22,7 @@ import {
   verbAck,
   verbAsk,
   verbGate,
+  unknownRunRefusalMessage,
   type BusVerbCtx,
 } from './bus-verbs.ts';
 import {
@@ -765,6 +766,10 @@ async function openBusForVerb(): Promise<{
     countCapabilityReject: (db: import('../main/bus.ts').BusDb, runId: string) => number;
     busSwitch: (db: import('../main/bus.ts').BusDb, runId: string, mechanism: string) => boolean;
   };
+  // #155 — the run-row existence reader, surfaced so the `send` gate can refuse a
+  // run absent from `runs`. Carried through the SAME dynamic import so no extra
+  // native/ABI cost is paid.
+  runExists: (db: import('../main/bus.ts').BusDb, runId: string) => boolean;
   file: string;
 }> {
   // Resolved BEFORE the try. It can itself fail(), and a CliFailure raised
@@ -812,6 +817,9 @@ async function openBusForVerb(): Promise<{
         countCapabilityReject: bus.countCapabilityReject,
         busSwitch: busRuns.busSwitch,
       },
+      // #155 — getRun returns null for a run with no `runs` row (an UNKNOWN run
+      // reads all-OFF, #123 F1); the send gate refuses on that.
+      runExists: (d, runId) => busRuns.getRun(d, runId) !== null,
       file,
     };
   } catch (err) {
@@ -1601,8 +1609,22 @@ async function main(argv: string[]): Promise<void> {
       // silent land. Done BEFORE openBusForVerb so a resolution refusal does not
       // pay the native bus-open cost.
       const canonTo = to.value != null ? await canonicalizeRecipientOrFail(to.value) : null;
-      const { db, bus, capMod } = await openBusForVerb();
+      const { db, bus, capMod, runExists } = await openBusForVerb();
       try {
+        // #155 — REFUSE a send whose run_id has NO row in `runs`: that mail is
+        // ORPHANED (wake safe-defaults OFF for an unknown run, invisible to every
+        // run-scoped `check`). This is a DISTINCT gate from #142's stale-marker
+        // refusal above (which fires from a marker FILE before any bus is opened)
+        // — both can be present, and neither clobbers the other. The `default`
+        // sentinel is EXEMPTED: it never gets a `runs` row (rows are created only
+        // at orchestrator anchors, #134) and is the documented manual/standalone
+        // fallback, so refusing it would break every unanchored send. This is only
+        // for a run id that looks anchored (a uuid) but has no row — the F-C4-2b
+        // shape (a typo'd/stale $ORCHESTRA_RUN_ID). Done AFTER openBusForVerb (it
+        // needs the db) but BEFORE verbSend, so no row is ever written.
+        if (id.runId !== DEFAULT_RUN_ID && !runExists(db, id.runId)) {
+          fail(unknownRunRefusalMessage(id.runId));
+        }
         const fencing = await resolveFencing(db, id.runId, gen.value); // #128 hunk
         verbSend(busCtx(db, bus, id, fencing, capMod), {
           kind: t.value,
