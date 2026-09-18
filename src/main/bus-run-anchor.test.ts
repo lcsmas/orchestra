@@ -22,7 +22,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { openBus, type BusDb } from './bus.ts';
-import { startRun, getRun, runFlags, refreezeRun } from './bus-runs.ts';
+import { startRun, getRun, runFlags, refreezeRun, refreezeMissionRun } from './bus-runs.ts';
 import {
   maybeStartRunAtAnchor,
   type BusRunAnchorDeps,
@@ -334,6 +334,56 @@ test('#134 D1 — a plain standalone workspace (no orchestrator) starts NO run',
     const row = maybeStartRunAtAnchor(d, info);
     assert.equal(row, null, 'no run row for a plain standalone workspace');
     assert.equal(getRun(db, 'solo'), null);
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+// ─── #156 — the FLAT-mission gap D1b leaves, and the refreeze that closes it ──
+
+test('#156 — a FLAT mission (plain children only, no sub-OPS) NEVER re-freezes via D1b', () => {
+  const { db, dir } = tmpDb();
+  try {
+    // A FLAT orchestrator: a top-level orchestrator whose only descendants are
+    // PLAIN members (no promoted sub-OPS). Its children never cross D1b's wave
+    // boundary (`anchor.wsId === anchor.anchorId` WITH a parent), so nothing ever
+    // re-freezes the mission after its first anchor. This is the live bloc2 case.
+    const FLAT: WaveNode = { id: 'flat-mission', kind: 'orchestrator' };
+    const MEMBER: WaveNode = { id: 'plain-child', parentId: 'flat-mission', kind: 'worktree' };
+    const FLAT_WAVE = lookupOf([FLAT, MEMBER]);
+
+    const live = { v: switches({ delivery: false, wake: false }) };
+    const d = deps(db, live);
+
+    // The mission launches, freezing all-OFF.
+    maybeStartRunAtAnchor(d, anchorInfoOf(FLAT, FLAT_WAVE));
+    assert.equal(runFlags(db, 'flat-mission').delivery, false, 'mission froze delivery OFF');
+
+    // Human flips delivery + wake ON. Then a PLAIN member spawns — the only launch
+    // a flat mission ever sees. Its anchor is the mission itself (nearest
+    // orchestrator), and it is a MEMBER launch (wsId !== anchorId), so D1b does NOT
+    // fire (it fires only when `anchor.parentRunId && wsId === anchorId`).
+    live.v = switches({ delivery: true, wake: true });
+    const memberAnchor = anchorInfoOf(MEMBER, FLAT_WAVE);
+    assert.equal(memberAnchor.anchorId, 'flat-mission', 'the member anchors on the flat mission');
+    assert.equal(memberAnchor.parentRunId, null, 'the mission is top-level — no parent run');
+    maybeStartRunAtAnchor(d, memberAnchor);
+
+    // THE GAP: the mission is STILL frozen all-OFF. No shipped anchor path flipped
+    // it — a flat mission can never pick up the delivery+wake flip.
+    assert.equal(
+      runFlags(db, 'flat-mission').delivery,
+      false,
+      '#156: the flat mission stays STALE OFF — D1b never fires for a flat orchestrator',
+    );
+    assert.equal(runFlags(db, 'flat-mission').wake, false);
+
+    // #156 — the ADMIN refreeze closes the gap: children idle, take the live
+    // switches, flip the mission row (driving the REAL refreezeMissionRun).
+    const outcome = refreezeMissionRun(db, 'flat-mission', live.v, { hasLiveChild: false });
+    assert.equal(outcome, 'refrozen', 'the admin refreeze re-froze the flat mission');
+    assert.equal(runFlags(db, 'flat-mission').delivery, true, 'now it picks up delivery');
+    assert.equal(runFlags(db, 'flat-mission').wake, true, 'and wake');
   } finally {
     cleanup(db, dir);
   }

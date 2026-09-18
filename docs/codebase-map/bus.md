@@ -1687,6 +1687,46 @@ parentRunId }` ONCE and calls `maybeStartRunAtAnchor(deps, anchor)`:
 - **D1 — never blocks a spawn:** `getBus()` null / `startRun` throw are caught,
   logged, return null; the spawn proceeds all-OFF.
 
+## The FLAT-mission gap and the admin refreeze (`orchestra run refreeze`, #156)
+
+D1b re-freezes a mission ONLY at a wave boundary — a NEW nested (OPS) run created
+under it. A **FLAT orchestrator** (plain children only, never a promoted sub-OPS)
+crosses that boundary NEVER, so its mission stays frozen at its first anchor
+forever and can never pick up a later switch flip (live: the bloc2 orchestrator
+`36773f53` froze all-OFF and could not adopt promoted delivery+wake). #156 adds the
+explicit operator path:
+
+- **CLI:** `orchestra run refreeze [--run <id>]` — resolves the run (`--run` >
+  `$ORCHESTRA_RUN_ID` > `default`, same as `bus-status`) and hits the `/runRefreeze`
+  socket route. Refrozen → prints the flag table + exit 0; every refusal exits
+  non-zero with a diagnosable line (no stack). (`src/cli/index.ts` `case 'run'`;
+  arg/outcome contract in `src/cli/run-refreeze-args.test.ts`.)
+- **Store side (`dispatchRunRefreezeRequest`, `src/main/workspaces.ts`):** lives in
+  main, NOT the store-less CLI, because the live-child gate needs the store's
+  liveness probes — the bus cannot see a plain child's turn state. The mission run
+  id **is** its coordinator ws id, so its children are `collectWorkspaceTree(runId)`
+  minus the root; `hasLiveChild = anyChildLive(childIds, isRunning, sdkSessionLive)`
+  — the disjunction covers BOTH surfaces (PTY + structured/SDK). `isRunning` alone
+  is the #111 restart blind spot (its `sessions` map is PTY-only), and the DEFAULT
+  spawn is structured, so it would miss a live SDK child (REVIEW-156 HIGH). The
+  disjunction lives in the platform-free **`anyChildLive`
+  (`src/shared/refreeze-liveness.ts`)** so a test drives the REAL predicate — a
+  literal-into-the-pure-fn arm can't (REVIEW-156 MED, gate 4): the STRUCTURED-child
+  arm reddens the instant the `sdkSessionLive` disjunct is dropped while the PTY arm
+  stays green (`src/shared/refreeze-liveness.test.ts`).
+- **The gate (`refreezeMissionRun`, `src/main/bus-runs.ts`):** a typed outcome —
+  `no-run` | `not-mission` (re-asserts `refreezeRun`'s `kind='mission'` guard with a
+  reason) | `live-child` (refused mid-turn, the freeze invariant) | `refrozen` |
+  `no-flags`. It calls **only** `refreezeRun` (a pure UPDATE), so **#134 F1 holds —
+  never a late insert**; a mission with no `run_flags` row is `no-flags`, not a late
+  freeze (reads all-OFF, coexistence-safe).
+- **Gates:** `bus-runs.test.ts` T156.1–T156.4 drive the shipped `refreezeMissionRun`
+  with mutation-proven must-fail twins (each arm reddens under its own mutation);
+  `refreeze-liveness.test.ts` drives the REAL `anyChildLive` predicate (the
+  live-child WIRING) — a structured no-PTY child reddens when the `sdkSessionLive`
+  disjunct is dropped while the PTY arm stays green; `bus-run-anchor.test.ts` `#156`
+  documents the flat-mission gap D1b leaves and that the refreeze closes it.
+
 ## The plumbing (`src/main/index.ts`, beside `startBusWake()`)
 
 - `extraEnv.ORCHESTRA_RUN_ID = anchor.anchorId` (the nearest-orchestrator run).

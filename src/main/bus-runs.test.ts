@@ -31,6 +31,8 @@ import {
   runFlags,
   busSwitch,
   listRuns,
+  refreezeRun,
+  refreezeMissionRun,
 } from './bus-runs.ts';
 import {
   mechanismFromWire,
@@ -603,6 +605,163 @@ test('busSwitch(db, runId, "receipts") reads the FROZEN receipts flag, not live 
     startRun(db, { id: 'run-off', kind: 'vague', coordinator: 'ops' }, { ...DEFAULT_BUS_SWITCHES });
     assert.equal(busSwitch(db, 'run-off', 'receipts'), false, 'frozen OFF reads OFF');
     assert.equal(busSwitch(db, 'never', 'receipts'), false, 'an unknown run reads OFF, never live');
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+// ═══ #156 — ADMIN re-freeze of a FLAT mission (refreezeMissionRun) ════════════
+//
+// A FLAT orchestrator (plain children only, never a promoted sub-OPS) never hits
+// bus-run-anchor.ts D1b's wave-boundary re-freeze, so its mission keeps the flags
+// frozen at its first anchor forever. `refreezeMissionRun` is the explicit,
+// gated operator path. Every arm drives the SHIPPED pure function against a real
+// SQLite bus and carries its must-FAIL twin (a mutation that flips the arm).
+
+// Freeze a MISSION at all-OFF (the live bloc2 case: froze all-OFF, switches later
+// flipped ON, can never pick them up without this path).
+function seedMissionOff(db: BusDb, id: string): void {
+  startRun(db, { id, kind: 'mission', coordinator: id }, { ...DEFAULT_BUS_SWITCHES });
+}
+
+test('T156.1 — a FLAT mission frozen OFF, switches now ON, children idle → refreeze flips it ON', () => {
+  const { db, dir } = tmpDb();
+  try {
+    seedMissionOff(db, 'mission-flat');
+    // Pre-state: the freeze pinned all-OFF, and NOTHING the app ships can flip it
+    // (a flat mission never re-freezes). Assert that starting-point explicitly so
+    // the arm proves the transition, not a state that was already true.
+    for (const m of BUS_MECHANISMS) assert.equal(runFlags(db, 'mission-flat')[m], false);
+
+    // Human has since flipped delivery + wake ON. All children idle (hasLiveChild
+    // false). The refreeze takes the CURRENT live switches.
+    const live: BusSwitches = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true };
+    const outcome = refreezeMissionRun(db, 'mission-flat', live, { hasLiveChild: false });
+    assert.equal(outcome, 'refrozen', 'the mission row was re-frozen');
+    assert.equal(runFlags(db, 'mission-flat').delivery, true, 'delivery picked up the flip');
+    assert.equal(runFlags(db, 'mission-flat').wake, true, 'wake picked up the flip');
+    assert.equal(runFlags(db, 'mission-flat').askGate, false, 'an unset switch stays OFF');
+
+    // must-FAIL TWIN: the ONLY shipped pre-#156 path (startRun) CANNOT flip a
+    // running mission — it is INSERT-OR-IGNORE, freeze-once. Prove it: a second
+    // startRun with the flipped live switches is a no-op, the row stays all-OFF.
+    const { db: db2, dir: dir2 } = tmpDb();
+    try {
+      seedMissionOff(db2, 'mission-flat');
+      startRun(db2, { id: 'mission-flat', kind: 'mission', coordinator: 'mission-flat' }, live);
+      assert.equal(
+        runFlags(db2, 'mission-flat').delivery,
+        false,
+        'CONTROL: startRun (the only pre-#156 path) leaves the frozen mission all-OFF',
+      );
+    } finally {
+      cleanup(db2, dir2);
+    }
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('T156.2 — a mission with a live child mid-turn → REFUSED, row untouched', () => {
+  const { db, dir } = tmpDb();
+  try {
+    seedMissionOff(db, 'mission-busy');
+    const before = JSON.stringify(runFlags(db, 'mission-busy'));
+
+    const live: BusSwitches = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true };
+    const outcome = refreezeMissionRun(db, 'mission-busy', live, { hasLiveChild: true });
+    assert.equal(outcome, 'live-child', 'refused while a child is mid-turn');
+    assert.equal(
+      JSON.stringify(runFlags(db, 'mission-busy')),
+      before,
+      'the mission row is byte-identical — no flip happened',
+    );
+
+    // must-FAIL TWIN: with the live-child gate REMOVED (hasLiveChild ignored), the
+    // same call would flip the row. Drive that by passing hasLiveChild:false and
+    // showing it WOULD change — so a mutant dropping the gate reddens this arm.
+    const flippedIfUngated = refreezeMissionRun(db, 'mission-busy', live, { hasLiveChild: false });
+    assert.equal(flippedIfUngated, 'refrozen', 'CONTROL: the very same input flips once the gate is off');
+    assert.equal(runFlags(db, 'mission-busy').delivery, true, 'proving the gate was the only thing refusing');
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('T156.3 — a vague (OPS) run → no-op REFUSED (the refreezeRun mission gate, through refreezeMissionRun)', () => {
+  const { db, dir } = tmpDb();
+  try {
+    // A vague row frozen delivery=ON. Flip live to delivery=OFF/wake=ON.
+    startRun(db, { id: 'ops-vague', kind: 'vague', coordinator: 'ops-vague' }, {
+      ...DEFAULT_BUS_SWITCHES,
+      delivery: true,
+    });
+    const before = JSON.stringify(runFlags(db, 'ops-vague'));
+
+    const live: BusSwitches = { ...DEFAULT_BUS_SWITCHES, delivery: false, wake: true };
+    const outcome = refreezeMissionRun(db, 'ops-vague', live, { hasLiveChild: false });
+    assert.equal(outcome, 'not-mission', 'a vague row is refused with a reason');
+    assert.equal(
+      JSON.stringify(runFlags(db, 'ops-vague')),
+      before,
+      'the vague row is untouched (delivery still ON, wake still OFF)',
+    );
+
+    // The underlying gate is refreezeRun's WHERE (kind = mission): even the raw
+    // primitive refuses a vague row. This is the invariant the CLI re-asserts.
+    assert.equal(
+      refreezeRun(db, 'ops-vague', live),
+      false,
+      'refreezeRun itself is a NO-OP on a vague row — mission rows only',
+    );
+    assert.equal(JSON.stringify(runFlags(db, 'ops-vague')), before, 'still untouched after the raw call');
+
+    // An UNKNOWN run → no-run (the CLI prints "nothing to refreeze").
+    assert.equal(
+      refreezeMissionRun(db, 'no-such-run', live, { hasLiveChild: false }),
+      'no-run',
+      'an unknown run id resolves to no-run',
+    );
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('T156.4 — #134 F1 unchanged: refreeze NEVER late-inserts a row; it only UPDATEs an existing mission', () => {
+  const { db, dir } = tmpDb();
+  try {
+    const live: BusSwitches = { ...DEFAULT_BUS_SWITCHES, delivery: true };
+
+    // (a) No run row at all → refreeze creates NOTHING (no `runs`, no `run_flags`).
+    assert.equal(refreezeMissionRun(db, 'ghost', live, { hasLiveChild: false }), 'no-run');
+    assert.equal(getRun(db, 'ghost'), null, 'the run row was NOT late-created');
+    assert.equal(
+      (db.prepare('SELECT COUNT(*) AS n FROM run_flags WHERE run_id=?').get('ghost') as { n: number }).n,
+      0,
+      'and NO run_flags row was inserted',
+    );
+
+    // (b) A mission `runs` row that predates run_flags (an old build / a partial
+    // insert) — refreeze must NOT insert its run_flags row late (that IS the #134
+    // F1 mid-wave-freeze the invariant forbids). Simulate it by inserting a bare
+    // runs row with no matching run_flags row.
+    db.prepare(
+      "INSERT INTO runs (id, kind, coordinator, parent_run_id, title, created_at) VALUES (?,?,?,?,?,?)",
+    ).run('mission-bare', 'mission', 'mission-bare', null, null, Date.now());
+    assert.equal(
+      (db.prepare('SELECT COUNT(*) AS n FROM run_flags WHERE run_id=?').get('mission-bare') as { n: number }).n,
+      0,
+      'precondition: the mission has NO run_flags row',
+    );
+
+    const outcome = refreezeMissionRun(db, 'mission-bare', live, { hasLiveChild: false });
+    assert.equal(outcome, 'no-flags', 'a mission with no run_flags row is a no-op, not a late insert');
+    assert.equal(
+      (db.prepare('SELECT COUNT(*) AS n FROM run_flags WHERE run_id=?').get('mission-bare') as { n: number }).n,
+      0,
+      '#134 F1: NO run_flags row was inserted — the run reads all-OFF, never late-frozen',
+    );
+    assert.equal(runFlags(db, 'mission-bare').delivery, false, 'and it reads all-OFF (coexistence-safe)');
   } finally {
     cleanup(db, dir);
   }
