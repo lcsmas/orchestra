@@ -1168,7 +1168,13 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   `MarkdownBlock` keyed by content (React reuses those DOM subtrees), and re-renders only
   the growing tail block per frame — bounding per-frame work to the current paragraph.
   Measured: a 15.8KB message drops from a ~22ms worst frame to ~1.7ms. Verified by the
-  `__smoke__` harness's block-split-vs-naive equivalence checks at every streaming prefix.
+  `__smoke__` harness's block-split equivalence checks: the `done` full render is compared
+  against a plain `naive` single-pass, while the per-prefix STREAMING check compares against
+  a remend-aware `naiveStreaming` reference (the same fence-aware blocks with `remend` on the
+  tail that `MarkdownView` feeds react-markdown) — a plain-naive reference would falsely fail
+  at any prefix ending mid-inline-marker, since the split render deliberately closes the
+  dangling marker (issue #71). The check still reddens on a real token drop/dup/reorder
+  (mutation-proven against `MarkdownView`).
   **Dangling inline tokens** are closed by **`remend`** (zero-dep, Apache-2.0) applied
   ONLY to the still-streaming tail block, so a half-written `**bold` / `[link` /
   `` `code `` renders formatted instead of flashing raw markers; stable blocks and

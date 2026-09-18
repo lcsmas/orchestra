@@ -7,10 +7,13 @@ import React from 'react';
 import { renderToString } from 'react-dom/server';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
+import remend from 'remend';
 import type { RenderMessage } from '../../../../shared/types';
 import { AgentMessage } from '../AgentMessage';
 import { ThinkingIndicator } from '../ThinkingIndicator';
 import { MarkdownView } from '../MarkdownView';
+import { splitMarkdownBlocks } from '../../../../shared/markdown-blocks';
 import { RewindContext } from '../rewind-context';
 import { InboxTray } from '../InboxTray';
 import { parseInboxBlocks } from '../../../../shared/inbox-blocks';
@@ -285,6 +288,29 @@ const naive = (text: string) =>
     </div>
   );
 
+// The STREAMING reference. A naive single-pass render of a raw prefix is NOT the
+// ground truth mid-stream: MarkdownView deliberately runs `remend` on the active
+// tail block (MarkdownView.tsx) so a half-written `**bold` / `` `code `` / `[link`
+// renders as its intended formatting instead of flashing raw markers for a frame.
+// So `naive(prefix)` and the split render legitimately DIFFER at any prefix that
+// ends inside an inline marker — that difference is the feature, not a dropped
+// token. The honest reference therefore feeds react-markdown the SAME source
+// MarkdownView does: the fence-aware blocks with `remend` applied to the tail
+// only (stable blocks are final and skip it). This still catches a real
+// token-drop/dup/reorder bug — it just stops mistaking the streaming-polish for
+// one. See issue #71.
+const naiveStreaming = (text: string) => {
+  const blocks = splitMarkdownBlocks(text);
+  const source = blocks
+    .map((b, i) => (i === blocks.length - 1 ? remend(b) : b))
+    .join('');
+  return renderToString(
+    <div className="av-md">
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{source}</ReactMarkdown>
+    </div>
+  );
+};
+
 const sample =
   'Here is the **plan** with details.\n\n' +
   '- first item\n- second item\n- third item\n\n' +
@@ -303,19 +329,23 @@ check(
 );
 
 // Streaming prefixes: at EVERY prefix, the split render's visible content must
-// equal the naive render of that same prefix — proving no token is dropped,
-// duplicated, or reordered at any point in the stream (what would make output
-// look "block-y" or wrong). Spread of prefix lengths, including mid-fence.
+// equal the STREAMING reference (`naiveStreaming` — the same tail-remended source
+// MarkdownView feeds react-markdown) — proving no token is dropped, duplicated, or
+// reordered at any point in the stream (what would make output look "block-y" or
+// wrong). The reference is remend-aware on purpose: comparing against a raw
+// `naive(prefix)` reports a false failure at any prefix ending mid-inline-marker,
+// because MarkdownView closes the dangling marker by design (issue #71). Spread of
+// prefix lengths, including mid-fence.
 check(
-  'block-split streaming matches naive at every prefix',
+  'block-split streaming matches the streaming reference at every prefix',
   () => {
     for (let n = 1; n <= sample.length; n += 7) {
       const prefix = sample.slice(0, n);
       const split = renderToString(<div className="av-md"><MarkdownView text={prefix} done={false} /></div>);
-      const ref = naive(prefix);
+      const ref = naiveStreaming(prefix);
       if (contentOf(split) !== contentOf(ref)) {
         throw new Error(
-          `mismatch at prefix len ${n}:\n  split: ${contentOf(split)}\n  naive: ${contentOf(ref)}`
+          `mismatch at prefix len ${n}:\n  split: ${contentOf(split)}\n  ref:   ${contentOf(ref)}`
         );
       }
     }
