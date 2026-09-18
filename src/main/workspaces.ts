@@ -69,7 +69,7 @@ import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scri
 import { log } from './logger';
 import { mirrorDispatch } from './bus-mirror.ts';
 import type { PeerOrigin } from '../shared/peer-messages.ts';
-import { INBOX_DELIMITER, sanitizeInboxBody } from '../shared/inbox-blocks.ts';
+import { INBOX_DELIMITER, sanitizeInboxBody, appendInboxBlock } from '../shared/inbox-blocks.ts';
 import { reportedDeliveryFor, requiresInboxFallback } from '../shared/delivery-status.ts';
 import { forgetWorkspaceProbes } from './activity';
 import { clearHibernated } from './hibernation.ts';
@@ -3398,9 +3398,11 @@ export async function dispatchBroadcastMessageRequest(input: {
  * parser keeps "one appended block is one message" true by construction. */
 async function queueInbox(id: string, body: string): Promise<boolean> {
   try {
-    await mkdir(INBOX_ROOT, { recursive: true });
     const block = `\n${INBOX_DELIMITER}\n${sanitizeInboxBody(body)}\n${INBOX_DELIMITER}\n`;
-    await appendFile(inboxPathFor(id), block, 'utf8');
+    // Serialized per-path so two concurrent large appends cannot splice one
+    // block inside another (issue #93 — O_APPEND is atomic per write(2), not per
+    // multi-chunk appendFile). appendInboxBlock also mkdir's the parent.
+    await appendInboxBlock(inboxPathFor(id), block);
     return true;
   } catch (e) {
     log.warn(`inbox write failed for ${id}`, e);
