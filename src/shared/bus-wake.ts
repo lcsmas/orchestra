@@ -267,10 +267,23 @@ export type SkipReason = 'no-pending' | 'already-woken' | 'not-wakeable';
  */
 function lotAxisReArmed(pending: ReaderPendingState, previous: WakeLedgerEntry): boolean {
   if (pending.reWakeUntilAnswered === true) return false;
+  const wokeRun = previous.wokeRunId;
+  // #159: the woken run is ORPHANED — it fell out of the reader's related-run set,
+  // so `cursorByRun` (built over the CURRENT related set only, src/main/bus-wake.ts)
+  // has NO key for it. An absent key is NOT "cursor 0 / not yet acked" — it is "this
+  // high-water belongs to a run the reader no longer relates to". Treating it as 0
+  // made `0 >= wokeLotSeq` false → `already-woken` skip every sweep, silently, until
+  // an old-channel turn advanced a live-run cursor (F-C5-3 19min, F-C6 8min). The
+  // orphaning vector is a TOPOLOGY change (a related mail-run reparented/deleted, or
+  // a reparent around a restart) — NOT a bare `orchestra restart`, which re-resolves
+  // resolveWaveRunId to the SAME run (it is a pure parent-link walk). A stale
+  // high-water must RE-ARM, not suppress: drop the orphaned mark and wake afresh.
+  if (wokeRun !== undefined && pending.cursorByRun && !pending.cursorByRun.has(wokeRun)) {
+    return true;
+  }
   // The cursor in the run the last LOT wake covered. Prefer the per-run map; fall
   // back to the single-run `cursorSeq` only when the woken run is unknown (legacy
   // entry) or matches the current mail run.
-  const wokeRun = previous.wokeRunId;
   const cursorInWokeRun =
     wokeRun !== undefined && pending.cursorByRun
       ? (pending.cursorByRun.get(wokeRun) ?? 0)

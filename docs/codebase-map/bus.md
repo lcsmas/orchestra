@@ -683,6 +683,7 @@ for an agent, and never acks on one's behalf.** Frozen on #108 comments 4-5.
 | `src/main/bus-wake.ts` | The effectful half: reads durable state, fires the turn |
 | `src/shared/bus-wake.test.ts` | 11 policy tests; each names the clause it kills |
 | `src/main/bus-wake.test.ts` | 10 tests of the pending predicate over a real SQLite bus |
+| `src/main/bus-wake-restart.test.ts` | 6 tests: the #159 restart→orphan re-arm (mutation-proven RED pre-fix) + the wakeable-state transition log (once per transition, not per sweep). Runs on `$HOME` (btrfs), not tmpfs. |
 | `src/main/bus-wake-sweep.test.ts` | 15 tests driving the sweep end to end (T117.1–T117.5, D1, Q1 two-run + restart) |
 
 ## Why the host watches instead of the agent polling
@@ -803,7 +804,12 @@ would spuriously re-fire).
   `cursorByRun` for every RELATED run (`src/main/bus-wake.ts:316`) because the woken
   run may no longer be newest-pending this sweep. Ask readers
   (`reWakeUntilAnswered`) are excluded — they keep their effectful `cursorAtWake`
-  re-arm (`src/main/bus-wake.ts:549`).
+  re-arm (`src/main/bus-wake.ts:549`). **#159 ORPHAN re-arm:** when `wokeRunId` is
+  no longer in the reader's related set (a TOPOLOGY change — a related mail-run
+  reparented/deleted, or a reparent around a restart; NOT a bare `orchestra restart`,
+  which re-resolves `resolveWaveRunId` to the same run), `cursorByRun` has NO key for
+  it, so `lotAxisReArmed` RE-ARMS (returns true) instead of reading the absent cursor
+  as 0 — a stale high-water pointing at a run the reader left is not "not yet acked".
 - **GATE axis** — `gateAxisReArmed` (`:281`): re-arms when the max OPEN gate id
   (`gateThroughSeq`) EXCEEDS `wokeGateSeq` — a genuinely new gate opened. NEVER the
   message cursor. A plain `>` is safe here (unlike lots) because `gateThroughSeq` is
@@ -828,6 +834,18 @@ is now taken (the pre-fix `skip` preceded the count branch → undercounted re-a
 gates; the rider fix makes a re-armed gate under `askGate=OFF` COUNT). Every re-arm
 arm (pure + real-bus `bus-wake-sweep.test.ts`) reddens on the single-axis presence
 dedup.
+
+(4) The #159 ORPHAN starvation: when a TOPOLOGY change (a related mail-run
+reparented/deleted, or a reparent around a restart) drops the ledger's `wokeRunId`
+out of `getRelatedRunIds`, `cursorByRun` has no key for it; pre-fix `lotAxisReArmed`
+read the absent key as cursor 0 → `0 >= wokeLotSeq` false → `already-woken` (the ONE
+silent skip) every sweep, ~19 min (F-C5-3) / ~8 min (F-C6), until an OLD-CHANNEL turn
+advanced a cursor in a live run.
+Closed by the orphan re-arm above; regression in `bus-wake-restart.test.ts`.
+**Observability (#159):** the sweep now logs ONCE per reader wakeable-state
+TRANSITION (a `skipState` map, `src/main/bus-wake.ts`) — entering a skip while
+pending (`already-woken`/`not-wakeable`) WARNs once, recovery INFOs once — so a
+silent-skip window is never again diagnosable only by elimination.
 
 `pruneWakeLedger` (`src/shared/bus-wake.ts:383`) still drops the entry when the
 pending set EMPTIES (the whole-set re-arm); the per-axis re-arms above cover the

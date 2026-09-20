@@ -49,6 +49,7 @@ import {
   buildWakeOrder,
   type ReaderPendingState,
   type WakeLedgerEntry,
+  type SkipReason,
 } from '../shared/bus-wake.ts';
 
 /** How often the level-triggered sweep runs regardless of any fs event. */
@@ -147,6 +148,46 @@ const ledger = new Map<string, WakeLedgerEntry>();
  *  shadow path; canary-4 F-C4-1). Counts dedup against counts here, so the shadow
  *  counter still measures WAKES, not 60 sweep-ticks a minute. */
 const countLedger = new Map<string, WakeLedgerEntry>();
+
+/**
+ * #159 OBSERVABILITY — per-reader wakeable-state TRANSITION log.
+ *
+ * A `skip` in the sweep is the ONE outcome with no log line (fire → "woke",
+ * count → "would have woken", failed → "failed to wake"), so a reader stuck
+ * SKIPPED while it has pending mail — the #159 `already-woken` starvation, or a
+ * genuine `not-wakeable` — is invisible: a 19-min silent window was diagnosable
+ * only by elimination (F-C5-3, F-C6). This map records the last state we LOGGED
+ * for each reader so the sweep logs ONCE per transition (never per sweep, or a
+ * stuck reader would spam 60 lines a minute — the exact noise the count-ledger
+ * dedup avoids). State = `'active'` (fired/counted this sweep — the healthy
+ * observable already logs) or the `SkipReason` of a reader that HAS pending but
+ * was skipped. Only PENDING readers are tracked; a reader with nothing pending
+ * is not "silently skipped", it is correctly idle (and prunes below). */
+const skipState = new Map<string, 'active' | SkipReason>();
+
+/** Log a reader's wakeable-state transition ONCE (#159). No-op when the state is
+ *  unchanged since the last logged value — so a reader stuck `already-woken` for
+ *  18 sweeps logs a SINGLE line on entry, not one per sweep. Entering a skip state
+ *  warns (it is the diagnosable event); recovering to `active` is info. */
+function logWakeableTransition(reader: string, next: 'active' | SkipReason): void {
+  if (skipState.get(reader) === next) return;
+  const prev = skipState.get(reader);
+  skipState.set(reader, next);
+  if (next === 'active') {
+    // Only announce a RECOVERY, not the first-ever active observation — a reader
+    // that was never stuck has no transition worth a line (the fire/count log
+    // already records the healthy event).
+    if (prev !== undefined) {
+      log.info(`bus-wake: ${reader} wakeable again (was ${prev}) — pending wake will be delivered`);
+    }
+  } else {
+    log.warn(
+      `bus-wake: ${reader} is PENDING but not being woken — skip reason '${next}'` +
+        (prev && prev !== 'active' ? ` (was '${prev}')` : '') +
+        ' (this is logged once per transition, not per sweep — #159)',
+    );
+  }
+}
 
 // ─── Reading pending state from the bus ────────────────────────────────────
 
@@ -502,6 +543,19 @@ export async function sweepBusWake(): Promise<void> {
     // #153: the COUNT ledger prunes on the SAME level-triggered signal as the fire
     // ledger — a reader whose pending state cleared re-arms for the next count too.
     pruneWakeLedger(countLedger, stillPending);
+    // #159: a reader with NO pending state is not stuck — drop its transition state
+    // so a future stall re-logs. A reader that recovered by DRAINING (pending went
+    // false) logs the recovery here rather than via the `active` branch (which only
+    // sees readers still pending this sweep).
+    for (const reader of [...skipState.keys()]) {
+      if (!stillPending.has(reader)) {
+        const prev = skipState.get(reader);
+        skipState.delete(reader);
+        if (prev && prev !== 'active') {
+          log.info(`bus-wake: ${reader} no longer pending (was '${prev}') — resolved`);
+        }
+      }
+    }
 
     for (const p of pending) {
       const entry = readers.find((r) => r.reader === p.reader);
@@ -571,7 +625,17 @@ export async function sweepBusWake(): Promise<void> {
         askGateOn,
         countLedger.get(p.reader),
       );
-      if (action.kind === 'skip') continue;
+      // #159 transition log. `no-pending` is not a "silent skip" — the reader has
+      // nothing to wake for — so it is not tracked here (its entry is pruned below,
+      // which also LOGS the recovery if it was previously stuck). Any OTHER skip on a
+      // pending reader (`already-woken`, `not-wakeable`) is the invisible state: log
+      // the ENTRY into it and each CHANGE of reason, ONCE. fire/count are the
+      // recovery — log the transition back to active, then the healthy line follows.
+      if (action.kind === 'skip') {
+        if (action.why !== 'no-pending') logWakeableTransition(p.reader, action.why);
+        continue;
+      }
+      logWakeableTransition(action.reader, 'active');
       // #153: write the FIRE mark to the fire ledger and the COUNT mark to the count
       // ledger — NEVER cross them. A count writing the fire ledger is the exact bug:
       // a counted reader never acks, so its fire-dedup entry can never re-arm, and a
@@ -806,6 +870,7 @@ export function stopBusWake(): void {
 export function __resetBusWakeForTests(): void {
   ledger.clear();
   countLedger.clear();
+  skipState.clear();
   counters.fired = 0;
   counters.counted = 0;
   counters.failed = 0;
