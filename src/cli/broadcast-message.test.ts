@@ -228,6 +228,30 @@ test('--to: a single request carries every target (not N sequential calls)', nee
   assert.equal(r.seen[0].from, 'caller-1');
 });
 
+// #169 F3 (D-W8-1) — a broadcast is gated like a single send; ONLY a leading
+// --emergency threads into the broadcast body to request the bypass. Asserted on
+// the WIRE body the CLI sent, where the gate keys on it.
+test('#169 F3 (c) — leading --emergency threads into the BROADCAST body', needsBuild, () => {
+  const r = driveCli(
+    ['message', '--emergency', '--to', 'a,b', 'HALT', 'now'],
+    `return { ok: true, results: body.to.map((id) => ({ id, ok: true, delivery: 'live' })) };`,
+  );
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(r.seen[0].to, ['a', 'b'], '--emergency must not eat a target');
+  assert.equal(r.seen[0].text, 'HALT now', 'the flag must not leak into the body');
+  assert.equal(r.seen[0].emergency, true, 'the bypass must reach the wire for a broadcast too');
+});
+
+test('#169 F3 (c) — a plain broadcast carries NO emergency (gated like a single send)', needsBuild, () => {
+  const r = driveCli(
+    ['message', '--to', 'a,b', 'ordinary', 'coordination'],
+    `return { ok: true, results: body.to.map((id) => ({ id, ok: true, delivery: 'live' })) };`,
+  );
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.seen[0].emergency, undefined, 'no --emergency → the broadcast is gated');
+  assert.equal(r.seen[0].text, 'ordinary coordination');
+});
+
 // Duplicates collapse ON THE WIRE: delivering the same halt twice is not
 // harmless, it becomes two separate turns for that agent. Asserted on `seen`
 // (what the CLI actually sent) rather than on the printed report, because a

@@ -284,16 +284,25 @@ test('#169 ARM 2c — target with no run row is NEVER refused', async (t) => {
   assert.equal(r.delivered, true);
 });
 
-// ─── 3. F1 — the #86 emergency-halt BROADCAST bypasses the gate ────────────
+// ─── 3. F3 (LEAD D-W8-1) — the BROADCAST is gated too; only --emergency bypasses ──
 //
-// A broadcast IS the out-of-band group-stop. It routes through the SAME gated
-// single-target `dispatchMessageRequest`, so on a delivery-ON fleet it would be
-// refused for EVERY target unless it carries `emergency: true`. This drives the
-// REAL `dispatchBroadcastMessageRequest` body with a stub `dispatchMessageRequest`
-// that records the `emergency` flag it received per target — the pre-fix build
-// (no `emergency: true` in the call) records `undefined` and reddens the arm.
-async function runBroadcast(targets: string[]): Promise<{
-  result: { ok: boolean; results?: Array<{ id: string; ok: boolean }> };
+// A broadcast is NOT a bypass by virtue of its shape: `dispatchBroadcast
+// MessageRequest` threads the caller's EXPLICIT emergency flag per target, so an
+// ordinary `--to <peer>` of coordination text is refused on a delivery-ON fleet
+// just like a positional send, while ONLY `--emergency --to`/`--children` (the
+// #86 group-stop) bypasses and lands.
+//
+// This drives the REAL broadcast body with a stub `dispatchMessageRequest` that
+// applies the REAL `decideMessageChannel` against a fixed per-fleet delivery
+// state + the per-target emergency it received — so refusal/delivery is genuine
+// end-to-end, not asserted on a recorded flag. The pre-F3 build hard-coded
+// `emergency: true`, so arm (a) DELIVERED where it must now REFUSE.
+async function runBroadcast(opts: {
+  targets: string[];
+  fleetDeliveryOn: boolean;
+  emergency: boolean;
+}): Promise<{
+  results: Array<{ id: string; ok: boolean; error?: string }>;
   emergencySeen: Array<boolean | undefined>;
 }> {
   const body = extract('export async function dispatchBroadcastMessageRequest');
@@ -304,10 +313,15 @@ async function runBroadcast(targets: string[]): Promise<{
     resolveDirectChildTargets: () => [] as string[],
     store: { workspaces: [] as unknown[] },
     log: { info: () => {}, warn: () => {}, error: () => {} },
-    // Record the emergency flag each per-target call carries; report success so
-    // the arm measures the FLAG, not a delivery outcome.
-    dispatchMessageRequest: async (i: { emergency?: boolean }) => {
+    // The REAL gate, applied per target with the emergency flag the broadcast
+    // threaded — so a refused target is a genuine gate refusal, not a stub.
+    dispatchMessageRequest: async (i: { to: string; emergency?: boolean }) => {
       emergencySeen.push(i.emergency);
+      const gate = decideMessageChannel({
+        targetDeliveryOn: opts.fleetDeliveryOn,
+        emergency: i.emergency === true,
+      });
+      if (!gate.allow) return { ok: false, error: gate.error };
       return { ok: true, delivery: 'live', branch: 'br' };
     },
   };
@@ -315,17 +329,46 @@ async function runBroadcast(targets: string[]): Promise<{
     ...Object.keys(scope),
     `${stripWrapperTypes(body)}\nreturn dispatchBroadcastMessageRequest;`,
   )(...Object.values(scope));
-  const result = await fn({ from: 'ops', to: targets, text: 'HALT everything now' });
-  return { result, emergencySeen };
+  const result = await fn({
+    from: 'ops',
+    to: opts.targets,
+    text: 'coordination text',
+    ...(opts.emergency ? { emergency: true } : {}),
+  });
+  return { results: result.results ?? [], emergencySeen };
 }
 
-test('#169 F1 — a broadcast halt carries emergency:true to EVERY target', async () => {
-  const { result, emergencySeen } = await runBroadcast(['a', 'b', 'c']);
-  assert.equal(result.ok, true);
-  assert.equal(emergencySeen.length, 3, 'every target attempted');
-  assert.deepEqual(
-    emergencySeen,
-    [true, true, true],
-    'the broadcast MUST bypass the gate per target (pre-fix: [undefined,undefined,undefined] → refused on a delivery-ON fleet)',
-  );
+// ARM (a) — a plain --to broadcast of coordination text is REFUSED per target on
+// a delivery-ON fleet (pre-F3: delivered, the P4 hole). The DISCRIMINATING arm.
+test('#169 F3 ARM(a) — --to delivery-ON WITHOUT --emergency: REFUSED per target', async () => {
+  const { results, emergencySeen } = await runBroadcast({
+    targets: ['a', 'b', 'c'],
+    fleetDeliveryOn: true,
+    emergency: false,
+  });
+  assert.deepEqual(emergencySeen, [false, false, false], 'no --emergency threaded');
+  assert.equal(results.length, 3, 'every target attempted');
+  assert.ok(results.every((r) => !r.ok), 'every target refused on a delivery-ON fleet');
+  assert.ok(results.every((r) => /orchestra send/.test(r.error ?? '')), 'refusal names the bus verb');
+});
+
+// ARM (b) — --emergency --to on a delivery-ON fleet DELIVERS to all (the #86 halt).
+test('#169 F3 ARM(b) — --emergency --to delivery-ON: DELIVERS to all', async () => {
+  const { results, emergencySeen } = await runBroadcast({
+    targets: ['a', 'b', 'c'],
+    fleetDeliveryOn: true,
+    emergency: true,
+  });
+  assert.deepEqual(emergencySeen, [true, true, true], '--emergency threaded per target');
+  assert.ok(results.every((r) => r.ok), 'the group-stop lands on every target');
+});
+
+// ARM (d) — the delivery-OFF path stays OPEN without --emergency (look-alike).
+test('#169 F3 ARM(d) — delivery-OFF --to WITHOUT --emergency: DELIVERS (look-alike)', async () => {
+  const { results } = await runBroadcast({
+    targets: ['a', 'b'],
+    fleetDeliveryOn: false,
+    emergency: false,
+  });
+  assert.ok(results.every((r) => r.ok), 'a legacy delivery-OFF fleet is never refused');
 });

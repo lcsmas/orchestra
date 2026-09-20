@@ -318,13 +318,13 @@ export async function startHooksServer(): Promise<void> {
             // report cannot be squeezed into one `delivery` field without lying
             // about which target it describes.
             const from = typeof msg.from === 'string' ? msg.from : undefined;
-            // #169 — the surviving out-of-band escape on the single-target path
-            // (fleet coordination). The broadcast halt (#86) is itself an
-            // emergency channel, but it routes through the SAME gated
-            // single-target `dispatchMessageRequest`, so it is NOT exempt by
-            // virtue of being a broadcast — `dispatchBroadcastMessageRequest`
-            // passes `emergency: true` per target so the group-stop still lands
-            // on a delivery-ON fleet (review F1).
+            // #169 — the surviving out-of-band escape, and the SINGLE explicit
+            // bypass for BOTH the single-target and broadcast paths (F3 /
+            // D-W8-1). A broadcast is NOT exempt by virtue of being a broadcast:
+            // `dispatchBroadcastMessageRequest` threads this same flag per target,
+            // so the #86 group-stop bypasses the refusal ONLY when the caller
+            // passed --emergency, while a plain `--to <peer>` of coordination text
+            // is refused on a delivery-ON fleet exactly like the positional send.
             const emergency = msg.emergency === true;
             const shape = classifyMessageRoute(msg);
             if (shape.kind === 'single') {
@@ -340,6 +340,10 @@ export async function startHooksServer(): Promise<void> {
                   to: shape.to,
                   children: shape.children,
                   text: msg.text as string,
+                  // #169 P4 (F3 / D-W8-1): the broadcast is gated too — only an
+                  // explicit --emergency bypasses, and it does so by threading
+                  // this flag through, not by being a broadcast.
+                  emergency,
                 }),
               );
             } else {

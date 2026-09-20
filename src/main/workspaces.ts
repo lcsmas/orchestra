@@ -3427,6 +3427,13 @@ export async function dispatchBroadcastMessageRequest(input: {
   /** Resolve targets as the caller's direct children (`--children`). */
   children?: boolean;
   text: string;
+  /** #169 P4 (review F3, LEAD ruling D-W8-1). A broadcast is NOT a bypass by
+   *  virtue of its shape — an ordinary `--to <peer>` of coordination text must be
+   *  refused on a delivery-ON run exactly like the positional path, or arbitrary
+   *  fleet coordination dodges the bus via `--to`. Only an EXPLICIT `--emergency`
+   *  (the #86 group-stop) bypasses, and it does so by passing this flag THROUGH to
+   *  each per-target `dispatchMessageRequest` (never by hard-coding `true`). */
+  emergency?: boolean;
 }): Promise<BroadcastResult> {
   const text = input.text.trim();
   if (!text) return { ok: false, error: 'empty text' };
@@ -3480,14 +3487,18 @@ export async function dispatchBroadcastMessageRequest(input: {
   const results = await deliverToTargets(
     targets,
     async (id) => {
-      // #169 P4 (review F1) — a broadcast IS the #86 out-of-band emergency-halt
-      // channel: its whole reason to exist is reaching everyone when speed
-      // matters (a HUNG agent is exactly what it targets). So it MUST bypass the
-      // fleet-coordination refusal, or on the promoted bus (every wave run
-      // delivery=ON) the group-stop would refuse every target and land nowhere.
-      // Carries `emergency: true` per target — the same escape a single
-      // `orchestra message --emergency` uses.
-      const r = await dispatchMessageRequest({ from: input.from, to: id, text, emergency: true });
+      // #169 P4 (review F1→F3, LEAD ruling D-W8-1) — pass the caller's EXPLICIT
+      // emergency flag THROUGH per target, never a hard-coded `true`. The #86
+      // group-stop (`--emergency --to`/`--children`) thereby bypasses the
+      // fleet-coordination refusal and still lands on a delivery-ON fleet, while
+      // a plain `--to <peer>` of coordination text is refused exactly like the
+      // positional path — so a broadcast is no longer a bypass by virtue of shape.
+      const r = await dispatchMessageRequest({
+        from: input.from,
+        to: id,
+        text,
+        emergency: input.emergency === true,
+      });
       return {
         ok: r.ok,
         ...(r.branch ? { branch: r.branch } : {}),

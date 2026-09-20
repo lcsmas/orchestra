@@ -200,12 +200,15 @@ Usage:
                                                   'orchestra send'. Refused toward
                                                   a delivery-ON target unless
                                                   --emergency is the leading token)
-  orchestra message --children <text...>         Broadcast to your DIRECT children
+  orchestra message [--emergency] --children <text...>   Broadcast to your DIRECT children
                                                  (not the whole subtree)
-  orchestra message --to <id,id,...> <text...>   Broadcast to an explicit list
+  orchestra message [--emergency] --to <id,id,...> <text...>   Broadcast to an explicit list
                                                  (both broadcast forms print one
                                                   delivery line PER TARGET and exit
-                                                  non-zero if ANY target failed)
+                                                  non-zero if ANY target failed;
+                                                  gated like a single send on a
+                                                  delivery-ON run — the #86 group-
+                                                  stop needs a leading --emergency)
   orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]
                                                  Spawn a new worktree + agent
                                                  (--model: pin the agent's model, e.g. haiku/sonnet/opus;
@@ -1164,10 +1167,12 @@ async function main(argv: string[]): Promise<void> {
 
       if (isBroadcast) {
         // Flag parsing is confined to the broadcast branch, where bodyArgs[0] has
-        // already proven this is not a positional send. The broadcast halt is
-        // itself an out-of-band emergency channel (#86), so `--emergency` is not
-        // threaded here — it is meaningful only on the single-target coordination
-        // path the #169 refusal gates.
+        // already proven this is not a positional send. `--emergency` (parsed as
+        // the LEADING token above, before this split) threads into the request
+        // body below: a broadcast is gated like the single-target path (F3 /
+        // D-W8-1), so ONLY `orchestra message --emergency --to …`/`--children …`
+        // bypasses the #169 refusal — a bare `--to <peer>` of coordination text
+        // is refused on a delivery-ON fleet.
         const { present: children, rest: m1 } = takeBoolFlag(bodyArgs, '--children');
         const { value: toList, rest: m2 } = takeFlag(m1, '--to');
         if (children && toList !== undefined) {
@@ -1217,6 +1222,10 @@ async function main(argv: string[]): Promise<void> {
           from: selfWorkspaceId(),
           ...(children ? { children: true } : { to: ids }),
           text,
+          // #169 P4 (F3 / D-W8-1): a broadcast is gated like the single-target
+          // path — only an EXPLICIT leading `--emergency` (the #86 group-stop)
+          // bypasses the refusal on a delivery-ON fleet.
+          ...(emergency ? { emergency: true } : {}),
         });
         const results = res.results as BroadcastTargetResult[] | undefined;
         // No `results`, OR AN EMPTY ONE = the broadcast could not be ATTEMPTED
