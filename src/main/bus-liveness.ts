@@ -63,6 +63,15 @@ export interface LivenessMember {
    *  `waiting` is layered on top via {@link setLivenessWaiting}, so this stays
    *  the app half and the two OR together in the sweep. */
   waiting: boolean;
+  /** #160: True when this member's TASK reached done+released (member reported
+   *  done AND coordinator released it). A finished member is idle-and-drained on
+   *  purpose, so it is excluded from staleness like `waiting` — a POSITIVE task-
+   *  state marker, NEVER mail (a zombie with no mail must stay escalated). The
+   *  roster computes this from durable state via {@link setLivenessReleased}; the
+   *  app-side default is `false` (the safe direction — never suppresses an
+   *  escalation), and the bus-derived released set ORs in on top in the sweep,
+   *  symmetric to `waiting` + `busWaiting`. */
+  doneAndReleased?: boolean;
   /** Liveness v2 (#127): EVERY in-flight tool call for this member (name +
    *  start time), empty when none is running. Read from `getInFlightTools`
    *  (hibernation-activity.ts) in the roster; the progress bound checks each
@@ -114,6 +123,94 @@ export function setLivenessWaiting(
   fn: (db: BusDb, readers: readonly WaitingReaderKey[]) => Set<string>,
 ): void {
   readBusWaiting = fn;
+}
+
+// ─── #160: the done-released surface — a durable TASK-STATE set, never mail ───
+//
+// A member whose task reached done+released (it reported done AND its coordinator
+// released it) is idle-and-drained ON PURPOSE, so it is excluded from staleness —
+// the dead-vs-slow trap on the DONE axis (canary-5 F-C5-5, the 5-burst at wave
+// end). This accessor returns the set of members currently in that state, keyed
+// on durable state the roster owns. It is INJECTED (like the waiting seam) so the
+// policy + this module build and test without the store/task-lifecycle wiring:
+// the DEFAULT returns an empty set (nobody released), the coexistence-safe
+// direction — it never SUPPRESSES an escalation that was due, so a missing/broken
+// derivation can only OVER-escalate (the current, safe behaviour), never hide a
+// real stall or eat a zombie.
+//
+// HARD CONSTRAINT (ticket #160): the release signal is a POSITIVE completion
+// marker (a member reported done AND was released), NEVER "empty inbox / no
+// unacked mail". Canary-5's TRUE zombie catch had ZERO bus mail and must STAY
+// escalated — so this set MUST NOT be derived from mail state. The production
+// derivation (index.ts) computes it from task-lifecycle state only.
+
+let readReleasedMembers: (db: BusDb, readers: readonly WaitingReaderKey[]) => Set<string> = () =>
+  new Set<string>();
+
+/** Wire the done-released accessor (roster derivation) or a rig's. Returns the
+ *  set of members whose task reached done+released — a POSITIVE task-state marker,
+ *  never mail. Default: empty (nobody released — the safe over-escalate direction). */
+export function setLivenessReleased(
+  fn: (db: BusDb, readers: readonly WaitingReaderKey[]) => Set<string>,
+): void {
+  readReleasedMembers = fn;
+}
+
+/**
+ * The production derivation of the done-released set, wired at boot (index.ts).
+ * A member is done+released when BOTH durable, TASK-STATE facts hold — never mail:
+ *
+ *   1. REPORTED DONE: the member SENT a `worker_done` message in its run (the
+ *      completion signal the fleet-bus already carries; sender = the member).
+ *   2. COORDINATOR RELEASED IT: after that `worker_done`, the coordinator did NOT
+ *      re-task the member — there is no LATER `dispatch` message addressed TO the
+ *      member. A re-dispatch after completion means the member is working again,
+ *      so it is NOT released and its silence IS a stall to escalate.
+ *
+ * This mirrors #119's `readWaitingReaders` NOT-EXISTS shape (an open ask is one
+ * with no threaded reply) rather than inventing a new verb: "released" = "reported
+ * done and not since re-tasked". It is derived ENTIRELY from message rows the bus
+ * already writes, so it needs no schema change and no new probe.
+ *
+ * ## Why this is the correct constraint (ticket #160)
+ *
+ * It is a POSITIVE completion marker, NEVER "empty inbox / no unacked mail".
+ * Canary-5's TRUE zombie catch (a dispatched-never-started task) had ZERO bus mail
+ * AND never sent a `worker_done`, so it is NOT in this set and STILL escalates —
+ * the discriminator being `worker_done` presence (task state) rather than mail
+ * state is exactly what keeps the true positive RED (arm 2). A genuine mid-task
+ * stall likewise never sent `worker_done`, so it too stays escalated (arm 3).
+ *
+ * Run-scoped like every other predicate here: `worker_done` in run A does not
+ * release a handle in run B. Independent of any switch — being released is a truth
+ * about the member's durable state, not a fired mechanism.
+ */
+export function readReleasedReaders(
+  db: BusDb,
+  readers: readonly WaitingReaderKey[],
+): Set<string> {
+  // The member SENT a `worker_done` (reported done) AND the coordinator did not
+  // re-task it AFTER that completion (no later `dispatch` addressed to it). The
+  // MAX(sequence) of its `worker_done` vs. any later `dispatch` TO it: released
+  // iff a worker_done exists and no dispatch outranks it.
+  const releasedQ = db.prepare(`
+    SELECT 1
+      FROM messages wd
+     WHERE wd.run_id = ? AND wd.kind = 'worker_done' AND wd.sender = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM messages d
+          WHERE d.run_id = wd.run_id
+            AND d.kind = 'dispatch'
+            AND d.recipient = wd.sender
+            AND d.sequence > wd.sequence
+       )
+     LIMIT 1
+  `);
+  const released = new Set<string>();
+  for (const { reader, runId } of readers) {
+    if (releasedQ.get(runId, reader)) released.add(reader);
+  }
+  return released;
 }
 
 // ─── The switch seam (#118 owns the storage; this module only READS) ─────────
@@ -205,20 +302,28 @@ export function sweepBusLiveness(): void {
   try {
     const members = readMembers();
     const now = nowFn();
+    const readerKeys = members.map((m) => ({ reader: m.reader, runId: m.runId }));
     // #119's bus-`waiting` set, ORed with each member's app-level `waiting`.
     let busWaiting: ReadonlySet<string> = new Set<string>();
     try {
       // Pass {reader, runId} pairs — #119's readWaitingReaders is run-scoped, so
       // a bare-handle list would collapse a handle that exists in two runs.
-      busWaiting = readBusWaiting(
-        db,
-        members.map((m) => ({ reader: m.reader, runId: m.runId })),
-      );
+      busWaiting = readBusWaiting(db, readerKeys);
     } catch (e) {
       // A failing #119 accessor must not take the whole sweep down or SUPPRESS
       // an escalation. Empty set = "nobody bus-waiting", the safe direction: the
       // app-level `waiting` still excludes needs-input members.
       log.warn('bus-liveness: waiting accessor failed — treating as none', e);
+    }
+    // #160: the done-released set (POSITIVE task state, never mail), ORed with the
+    // member's own `doneAndReleased`. A failing accessor is the same safe
+    // direction as the waiting one: empty = "nobody released" = OVER-escalate, so
+    // a broken derivation can never hide a real stall or eat a zombie.
+    let released: ReadonlySet<string> = new Set<string>();
+    try {
+      released = readReleasedMembers(db, readerKeys);
+    } catch (e) {
+      log.warn('bus-liveness: released accessor failed — treating as none', e);
     }
 
     // First pass: who is stale THIS tick (for the ledger prune / re-arm). Stale
@@ -240,6 +345,9 @@ export function sweepBusLiveness(): void {
       appStartedAt: floor,
       running: m.running,
       waiting: m.waiting || busWaiting.has(m.reader),
+      // #160: excluded when finished — the member's own marker OR the bus-derived
+      // released set. Same OR shape as `waiting`, same safe default (false/empty).
+      doneAndReleased: (m.doneAndReleased ?? false) || released.has(m.reader),
       inFlightTools: m.inFlightTools,
     });
 
@@ -448,6 +556,7 @@ export function __resetBusLivenessForTests(): void {
   sweeping = false;
   readMembers = () => [];
   readBusWaiting = () => new Set<string>();
+  readReleasedMembers = () => new Set<string>();
   readLivenessSwitch = null;
   readBusDb = getBus;
   nowFn = () => Date.now();

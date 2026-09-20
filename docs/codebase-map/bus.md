@@ -1241,10 +1241,10 @@ Two host-derived signals, both reusing EXISTING kinds (`escalation`, `status`) �
 
 | File | What it is |
 |---|---|
-| `src/shared/bus-liveness.ts` | The PURE policy — `decideEscalation`, `pruneEscalationLedger`, `phaseChanged`, `escalationBody`, `STALE_AFTER_MS`. No Electron/bus imports, so it is unit- and mutation-testable directly. |
-| `src/main/bus-liveness.ts` | The effectful half — the sweep, the escalation/status writers, the injected roster/waiting/switch seams, the counters, D1 tolerance. |
-| `src/shared/bus-liveness.test.ts` | 14 pure policy tests; each names the mutant it kills. |
-| `src/main/bus-liveness.test.ts` | 13 tests over a real SQLite bus (T120.1–T120.4, C4, C5, phase). |
+| `src/shared/bus-liveness.ts` | The PURE policy — `decideEscalation` (guards incl. `done-released`, #160), `pruneEscalationLedger`, `phaseChanged`, `escalationBody`, `STALE_AFTER_MS`. No Electron/bus imports, so it is unit- and mutation-testable directly. |
+| `src/main/bus-liveness.ts` | The effectful half — the sweep, the escalation/status writers, the injected roster/waiting/**released** (`readReleasedReaders`, #160)/switch seams, the counters, D1 tolerance. |
+| `src/shared/bus-liveness.test.ts` | Pure policy tests (incl. the 4 #160 done-released arms); each names the mutant it kills. |
+| `src/main/bus-liveness.test.ts` | Tests over a real SQLite bus (T120.1–T120.4, C4, C5, phase). #160: the pure-boolean/sweep arms PLUS **discrete SQL arms S1–S6** that call the SHIPPED `readReleasedReaders(db, keys)` over real `send()` rows — S3 kills Mutant A (drop the re-task NOT-EXISTS clause), S4 kills Mutant B (drop `wd.kind='worker_done'`), S2 is the zombie true-positive driven through the derivation. |
 
 ## The one thing to understand — bound on PROGRESS, not wall-clock (acceptance 2)
 
@@ -1284,6 +1284,28 @@ Two exclusions OR together: the app-level needs-input `waiting` WorkspaceStatus
 (#119 owns it). The default returns an empty set (nobody bus-waiting), the
 coexistence-safe direction: a missing/failing #119 accessor never SUPPRESSES a
 real stall (the app-level `waiting` still excludes needs-input members).
+
+## `done-released` — the FINISHED exclusion (#160), TASK STATE not mail
+
+A member whose task reached done+released is idle-and-drained ON PURPOSE, so
+escalating it is the dead-vs-slow trap on the DONE axis (canary-5 F-C5-5: a
+5-escalation burst fired at wave end for members that had finished and been
+released, ZERO bus mail each). `decideEscalation` skips such a member as
+`done-released`, checked BEFORE the staleness clock (guard order pinned by its own
+test). The signal is a `doneAndReleased` boolean on `MemberLivenessState`, ORed
+in the sweep with the injected `setLivenessReleased(fn)` set (symmetric to
+`waiting` + `busWaiting`).
+
+Production derivation = `readReleasedReaders` (`src/main/bus-liveness.ts`, wired in
+`index.ts`): a member is released iff it **SENT a `worker_done`** in its run AND
+was **not since re-tasked** (no later `dispatch` addressed to it) — a NOT-EXISTS
+shape mirroring #119's open-ask predicate. **HARD CONSTRAINT: the discriminator is
+POSITIVE task state (`worker_done` presence), NEVER empty-inbox / unacked mail** —
+canary-5's TRUE zombie catch (dispatched, never started, ZERO mail, never sent
+`worker_done`) is NOT in this set and STILL escalates (arm 2); a mid-task stall
+likewise never sent `worker_done` (arm 3). The default set is empty (nobody
+released), the safe over-escalate direction: a broken derivation can only
+over-escalate, never hide a stall or eat a zombie. Run-scoped; switch-independent.
 
 ## COUNTED, not FIRED — the `liveness` switch (C5)
 

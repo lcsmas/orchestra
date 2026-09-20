@@ -10,6 +10,8 @@ import {
   recordPhaseChange,
   setLivenessRoster,
   setLivenessWaiting,
+  setLivenessReleased,
+  readReleasedReaders,
   setLivenessSwitchReader,
   busLivenessCounters,
   __setBusReaderForTests,
@@ -252,6 +254,214 @@ test('a failing #119 waiting accessor does not suppress a real stall', (t) => {
   });
   sweepBusLiveness();
   assert.equal(escalationCount(db, 'ws-ops', 'ws-worker'), 1);
+});
+
+// ── #160 — a done+released member is excluded; a zombie STILL escalates ───────
+//
+// The effectful mirror of the pure arms: driving the SHIPPED sweep end to end and
+// asserting the ROWS that land (the observable a coordinator's `orchestra check`
+// renders), not a bookkeeping counter. The discriminator is TASK STATE, never mail.
+
+test('#160 arm 1 (effectful): a done+released member produces NO escalation row', (t) => {
+  // The 5-burst at canary-5 wave end: a finished member (done, released, idle,
+  //   silent 30m, ZERO bus mail) escalated exactly like a stall. The `doneAndReleased`
+  //   marker on the roster member must suppress the row.
+  // MUTANT: remove the `m.doneAndReleased` guard → a row appears (the pre-fix bug).
+  const db = tmpBus(t);
+  armSweep(db, [member({ doneAndReleased: true, lastActivityAt: NOW - 30 * 60 * 1000 })]);
+  sweepBusLiveness();
+  assert.equal(
+    escalationCount(db, 'ws-ops', 'ws-worker'),
+    0,
+    'a finished member must not escalate',
+  );
+});
+
+test('#160 arm 1 control: an OTHERWISE-IDENTICAL member NOT released DOES escalate', (t) => {
+  // Same silence/idleness as arm 1 but `doneAndReleased: false`. Proves the
+  //   exclusion keys on TASK STATE, not on the silence both share — without it
+  //   arm 1 would pass on a sweep that writes zero rows for anything.
+  const db = tmpBus(t);
+  armSweep(db, [member({ doneAndReleased: false, lastActivityAt: NOW - 30 * 60 * 1000 })]);
+  sweepBusLiveness();
+  assert.equal(
+    escalationCount(db, 'ws-ops', 'ws-worker'),
+    1,
+    'an un-released silent member still escalates — the exclusion is scoped to task state',
+  );
+});
+
+test('#160 arm 2 (effectful): a ZOMBIE (no mail, never released) STILL escalates', (t) => {
+  // The true positive that must survive: a dispatched-never-started task with ZERO
+  //   bus mail (canary-5 831dc078). Because the discriminator is TASK STATE
+  //   (`doneAndReleased: false` — it never finished), NOT empty-inbox, the zombie
+  //   still escalates. A row MUST land.
+  // MUTANT: gate the exclusion on "no pending mail" → this no-mail zombie would be
+  //   wrongly suppressed. Keyed on task state, it escalates.
+  const db = tmpBus(t);
+  // No bus mail is seeded at all — the member's inbox is empty by construction.
+  armSweep(db, [member({ doneAndReleased: false, lastActivityAt: NOW - 60 * 60 * 1000 })]);
+  sweepBusLiveness();
+  assert.equal(
+    escalationCount(db, 'ws-ops', 'ws-worker'),
+    1,
+    'a dispatched-never-started zombie with no mail must STILL escalate',
+  );
+});
+
+test('#160: the injected released set excludes a member — scoped, not blanket', (t) => {
+  // The bus-derived released set (setLivenessReleased) ORs in on top of the
+  //   member's own marker, exactly like busWaiting. A member in the set is
+  //   excluded; a second member NOT in it IS escalated (same-command negative
+  //   control), proving the exclusion is scoped to the released set.
+  const db = tmpBus(t);
+  armSweep(db, [
+    member({ reader: 'ws-done', doneAndReleased: false }),
+    member({ reader: 'ws-stalled', doneAndReleased: false }),
+  ]);
+  setLivenessReleased(() => new Set(['ws-done']));
+  sweepBusLiveness();
+  assert.equal(escalationCount(db, 'ws-ops', 'ws-done'), 0, 'the released member is excluded');
+  assert.equal(
+    escalationCount(db, 'ws-ops', 'ws-stalled'),
+    1,
+    'a member NOT in the released set IS escalated — scoped, not blanket',
+  );
+});
+
+test('#160: a failing released accessor does not suppress a real stall (safe direction)', (t) => {
+  // D1-shaped: the released accessor throwing must be treated as "nobody released"
+  //   (OVER-escalate, the safe direction), NOT as an excuse to skip the sweep or
+  //   suppress. The stale member still escalates.
+  const db = tmpBus(t);
+  armSweep(db, [member({ doneAndReleased: false })]);
+  setLivenessReleased(() => {
+    throw new Error('boom');
+  });
+  sweepBusLiveness();
+  assert.equal(
+    escalationCount(db, 'ws-ops', 'ws-worker'),
+    1,
+    'a broken released derivation can only over-escalate, never hide a stall',
+  );
+});
+
+test('#160: the released accessor receives {reader, runId} pairs (run-scoped)', (t) => {
+  // Locks the call-site shape: run-scoped, so a handle present in two runs is not
+  // collapsed. Capture what the sweep passes and assert the pairs carry runId.
+  const db = tmpBus(t);
+  armSweep(db, [member({ reader: 'ws-a', runId: 'run-X', doneAndReleased: false })]);
+  let seen: readonly { reader: string; runId: string }[] = [];
+  setLivenessReleased((_db, readers) => {
+    seen = readers;
+    return new Set<string>();
+  });
+  sweepBusLiveness();
+  assert.deepEqual(seen, [{ reader: 'ws-a', runId: 'run-X' }]);
+});
+
+// ── #160 F-160-1 (review-160): the SHIPPED readReleasedReaders SQL, DISCRETE ──
+//
+// The mail-rows → task-state mapping (`readReleasedReaders`) is where #160's ENTIRE
+// "discriminator = task state, NEVER mail" constraint lives — so each scenario is
+// its OWN arm here, driving the SHIPPED `readReleasedReaders` over REAL `send()`
+// rows (never a stub, never the pre-computed boolean). Each names the SQL mutant it
+// kills so a reviewer can cite the specific RED arm:
+//   - Mutant A: drop the re-task `NOT EXISTS (…dispatch…)` clause → arm S3 RED.
+//   - Mutant B: drop `wd.kind = 'worker_done'` → arm S4 (chatty) RED.
+// Every arm here calls `readReleasedReaders(db, keys)` directly and asserts the
+// RETURNED set — the exact SQL result, not a downstream escalation the boolean
+// gates. (An end-to-end sweep arm — S6 — pairs the SQL with the escalation row.)
+
+test('#160 S1 (SQL): worker_done, not re-tasked → readReleasedReaders RELEASES it', (t) => {
+  const db = tmpBus(t);
+  send(db, { runId: RUN, sender: 'ws-done', kind: 'worker_done', body: 'shipped', recipient: 'ws-ops' });
+  const set = readReleasedReaders(db, [{ reader: 'ws-done', runId: RUN }]);
+  assert.equal(set.has('ws-done'), true, 'a member that reported done and was not re-tasked is released');
+});
+
+test('#160 S2 (SQL, arm-2 TRUE POSITIVE): zombie dispatched-only, NO mail → NOT released', (t) => {
+  // The ticket's true positive, driven THROUGH the derivation (not by hand): a
+  // dispatched-never-started zombie sent NO worker_done (and here has ZERO mail of
+  // any kind), so the SQL must NOT release it — its later stall stays escalated.
+  // The discriminator being worker_done PRESENCE (task state), not empty-inbox, is
+  // exactly what keeps this out of the released set.
+  const db = tmpBus(t);
+  // A dispatch TO the zombie exists (it was tasked) but it sent nothing back.
+  send(db, { runId: RUN, sender: 'ws-ops', kind: 'dispatch', body: 'go', recipient: 'ws-zombie' });
+  const set = readReleasedReaders(db, [{ reader: 'ws-zombie', runId: RUN }]);
+  assert.equal(set.has('ws-zombie'), false, 'a zombie that never sent worker_done is NOT released (task state, not mail)');
+});
+
+test('#160 S3 (SQL, MUTANT A): worker_done THEN re-dispatched → NOT released', (t) => {
+  // Kills Mutant A (drop the re-task NOT EXISTS dispatch clause): a member re-tasked
+  // AFTER reporting done is working again, so a later `dispatch` to it outranks its
+  // worker_done and it is NOT released. Without the clause it would be wrongly
+  // released and its next stall silently suppressed.
+  const db = tmpBus(t);
+  send(db, { runId: RUN, sender: 'ws-retasked', kind: 'worker_done', body: 'phase 1 done', recipient: 'ws-ops' });
+  send(db, { runId: RUN, sender: 'ws-ops', kind: 'dispatch', body: 'now do phase 2', recipient: 'ws-retasked' });
+  const set = readReleasedReaders(db, [{ reader: 'ws-retasked', runId: RUN }]);
+  assert.equal(set.has('ws-retasked'), false, 'a member re-tasked after worker_done is NOT released');
+});
+
+test('#160 S3b (SQL): re-dispatched THEN worker_done AGAIN → released (latest wins)', (t) => {
+  // The positive control for S3: once the re-tasked member finishes the NEW task
+  // (a later worker_done outranks the re-dispatch), it IS released again. Proves the
+  // clause is a recency test, not a blanket "ever re-dispatched → never released".
+  const db = tmpBus(t);
+  send(db, { runId: RUN, sender: 'ws-again', kind: 'worker_done', body: 'phase 1', recipient: 'ws-ops' });
+  send(db, { runId: RUN, sender: 'ws-ops', kind: 'dispatch', body: 'phase 2', recipient: 'ws-again' });
+  send(db, { runId: RUN, sender: 'ws-again', kind: 'worker_done', body: 'phase 2 done', recipient: 'ws-ops' });
+  const set = readReleasedReaders(db, [{ reader: 'ws-again', runId: RUN }]);
+  assert.equal(set.has('ws-again'), true, 'a later worker_done outranks the re-dispatch → released again');
+});
+
+test('#160 S4 (SQL, MUTANT B): chatty status/question only, NEVER worker_done → NOT released', (t) => {
+  // Kills Mutant B (drop `wd.kind = 'worker_done'`): a member that sent OTHER
+  // message kinds (a status, a question) but NEVER a worker_done is not finished.
+  // Without the kind predicate, ANY sender would count as done and this member
+  // would be wrongly released.
+  const db = tmpBus(t);
+  send(db, { runId: RUN, sender: 'ws-chatty', kind: 'status', body: 'still working', recipient: null });
+  send(db, { runId: RUN, sender: 'ws-chatty', kind: 'question', body: 'which way?', recipient: 'ws-ops' });
+  const set = readReleasedReaders(db, [{ reader: 'ws-chatty', runId: RUN }]);
+  assert.equal(set.has('ws-chatty'), false, 'a member that never sent worker_done is NOT released (release keys on worker_done kind, not any message)');
+});
+
+test('#160 S5 (SQL): RUN-SCOPED — worker_done in run A does not release the handle in run B', (t) => {
+  // A handle present in two runs: its worker_done in run A must not release the
+  // same handle in a different run. The derivation keys on (reader, runId).
+  const db = tmpBus(t);
+  send(db, { runId: 'run-A', sender: 'ws-dup', kind: 'worker_done', body: 'done in A', recipient: 'ws-ops' });
+  assert.equal(
+    readReleasedReaders(db, [{ reader: 'ws-dup', runId: RUN }]).has('ws-dup'),
+    false,
+    'worker_done in run-A must not release ws-dup in run-L',
+  );
+  assert.equal(
+    readReleasedReaders(db, [{ reader: 'ws-dup', runId: 'run-A' }]).has('ws-dup'),
+    true,
+    'in its OWN run the member IS released (positive control)',
+  );
+});
+
+test('#160 S6 (SQL→SWEEP): the SHIPPED derivation wired end-to-end drives real escalation rows', (t) => {
+  // Ties the SQL to the observable: wire `setLivenessReleased(readReleasedReaders)`
+  // and drive the whole sweep. A released member writes NO escalation row; a zombie
+  // (no worker_done) writes one — the derivation reaching the coordinator's inbox.
+  const db = tmpBus(t);
+  send(db, { runId: RUN, sender: 'ws-done', kind: 'worker_done', body: 'shipped', recipient: 'ws-ops' });
+  // ws-zombie: tasked (a dispatch to it) but never reported done.
+  send(db, { runId: RUN, sender: 'ws-ops', kind: 'dispatch', body: 'go', recipient: 'ws-zombie' });
+  armSweep(db, [
+    member({ reader: 'ws-done', doneAndReleased: false }),
+    member({ reader: 'ws-zombie', doneAndReleased: false }),
+  ]);
+  setLivenessReleased(readReleasedReaders); // the SHIPPED derivation, end-to-end
+  sweepBusLiveness();
+  assert.equal(escalationCount(db, 'ws-ops', 'ws-done'), 0, 'the released member escalates NOT');
+  assert.equal(escalationCount(db, 'ws-ops', 'ws-zombie'), 1, 'the zombie (no worker_done) STILL escalates');
 });
 
 // ── C5 — switch OFF: COUNTED, not FIRED ──────────────────────────────────────
