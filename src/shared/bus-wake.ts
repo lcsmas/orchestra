@@ -457,3 +457,43 @@ export function wakeOrderRuns(text: string): string[] {
     .slice(1)
     .map((l) => l.trim().replace(/^orchestra check --run /, ''));
 }
+
+/** The coalescing DECISION for a fresh send against the reader's UNSTARTED queue
+ *  (#162). Pure so `sdkSend` (agent-sdk.ts, un-importable under the strip-types
+ *  runner because of its `./platform` dir-import) and the acceptance test call
+ *  ONE implementation — the test never re-implements the rule it certifies.
+ *
+ *  `queuedTexts` are the texts of the entries CURRENTLY in `session.queue`, in
+ *  order. Every one is UNSTARTED by construction: the running turn was shifted
+ *  off the queue before this decision runs, so a merge target found here can
+ *  never be a started turn (acceptance arm 2).
+ *
+ *  Returns, when the incoming send is a wake order AND a queued wake order
+ *  exists to merge into:
+ *   - `mergeIndex`: the queue index whose entry absorbs the incoming order — the
+ *     FIRST queued wake order (`findIndex`), i.e. the existing/oldest one, not the
+ *     newest; any single unstarted wake order is a valid merge target since the
+ *     union is order-independent, and the first keeps one stable target, and
+ *   - `mergedText`: the UNION of both orders' named runs (`buildWakeOrder`
+ *     dedups + sorts) — a superset of each, so the single coalesced turn checks
+ *     every run either order would have.
+ *  Returns `null` (append a fresh turn as before) when the incoming send is NOT
+ *  a wake order, or when no queued wake order exists. Keyed on `isWakeOrder` for
+ *  BOTH sides, so an ordinary prompt or peer message never coalesces with a wake
+ *  order and #112's duplicate-prompt guard is untouched (acceptance arm 3).
+ *
+ *  This governs QUEUEING only; the engine-side ledger dedup in the sweep (which
+ *  governs FIRING) is unchanged. */
+export function coalesceWakeOrderInto(
+  incomingText: string,
+  queuedTexts: readonly string[],
+): { mergeIndex: number; mergedText: string } | null {
+  if (!isWakeOrder(incomingText)) return null;
+  const mergeIndex = queuedTexts.findIndex((t) => isWakeOrder(t));
+  if (mergeIndex < 0) return null;
+  const mergedText = buildWakeOrder([
+    ...wakeOrderRuns(queuedTexts[mergeIndex]),
+    ...wakeOrderRuns(incomingText),
+  ]);
+  return { mergeIndex, mergedText };
+}

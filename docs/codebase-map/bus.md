@@ -695,6 +695,19 @@ order NAMES the run(s) to check (#134 D2): `buildWakeOrder` emits a header + one
 (`src/shared/bus-wake.ts`). The reader runs exactly those checks itself and acks
 each with its own `orchestra ack`.
 
+**#162 — coalesce UNSTARTED queued wake orders at DELIVERY time.** During a long
+turn an ack mid-turn re-arms the ack-based re-wake (T117.2) while new mail fires a
+fresh, individually-justified wake order — so identical orders pile up behind the
+running turn (canary-5 '2 queued'). The fix lives in the queue enqueue path
+(`sdkSend`, `src/main/agent-sdk.ts`): a fresh wake order MERGES into an unstarted
+wake-order turn already queued (union of named runs) instead of appending a second
+turn. Every entry in `session.queue` is unstarted by construction (the running
+turn was `shift()`ed off in `promptStream`), so a STARTED turn is never touched.
+The decision is the pure `coalesceWakeOrderInto(incomingText, queuedTexts)`
+(`src/shared/bus-wake.ts`) — keyed on `isWakeOrder` for both sides, so ordinary
+prompts and #112's duplicate-prompt guard are unaffected. This governs QUEUEING;
+the engine-side ledger dedup in the sweep (which governs FIRING) is unchanged.
+
 ## `fs.watch` is NOT the mechanism — only an accelerator
 
 The sweep (`sweepBusWake`, `src/main/bus-wake.ts:470`) is **level-triggered over

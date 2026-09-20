@@ -56,6 +56,7 @@ import {
   type ReloadResult,
 } from '../shared/reload-skills';
 import { withCrossSessionInboundPolicy } from '../shared/cross-session-inbound';
+import { coalesceWakeOrderInto, wakeOrderRuns } from '../shared/bus-wake.ts';
 import { syncAccountInheritance } from './account-inherit';
 import { agentCliBinDir } from './cli-shim';
 import { getHookSocketPath } from './hooks-server';
@@ -2375,6 +2376,52 @@ export async function sdkSend(
   session.pendingLocalContext = [];
   const contextPrefix = localContext.length > 0 ? localContext.join('\n') + (text ? '\n\n' : '') : '';
   const sendText = contextPrefix + text;
+  // #162: coalesce a fresh WAKE ORDER into an UNSTARTED wake-order turn already
+  // queued for this reader, instead of appending a second turn.
+  //
+  // During a long turn an ack mid-turn re-arms the ack-based re-wake (T117.2);
+  // new mail arriving meanwhile fires a fresh, individually-justified wake order
+  // that parks behind the running turn — so identical orders pile up ('2 queued',
+  // the canary-5 screenshot). Each queued order is correct (it runs a check; a
+  // drained inbox acks nothing) but the turns are burned for nothing and the tray
+  // confuses the human.
+  //
+  // Every entry in `session.queue` is UNSTARTED by construction — the running
+  // turn was `shift()`ed off it in promptStream — so merging into the FIRST
+  // (existing) queued wake order can never touch a started turn (acceptance
+  // arm 2); `coalesceWakeOrderInto` picks it by `findIndex`, not the newest. The
+  // merge is the UNION of named runs (buildWakeOrder dedups + sorts), which is a
+  // superset of each order: the reader checks/acks every run either way, so the
+  // single coalesced turn is behaviourally identical to running both.
+  //
+  // Keyed strictly on `isWakeOrder` for BOTH sides (inside the pure decision), so
+  // an ordinary prompt (or a peer message) never coalesces with a wake order and
+  // #112's duplicate-prompt guard is untouched (acceptance arm 3). The engine-side
+  // ledger dedup in bus-wake.ts is unchanged — it governs FIRING; this QUEUEING.
+  const coalesce = coalesceWakeOrderInto(
+    sendText,
+    session.queue.map((m) => queueEntryText(m)),
+  );
+  if (coalesce) {
+    const existing = session.queue[coalesce.mergeIndex];
+    if (existing.uuid) {
+      setQueueEntryText(existing, coalesce.mergedText);
+      // The incoming order's content is now folded into the surviving turn —
+      // that turn is the honest delivery of this send, so return ITS uuid and
+      // settle any watcher against it (no-op on the wake path, which arms none).
+      onTurnQueued?.(existing.uuid);
+      settleDelivery(existing.uuid, true);
+      // Refresh the tray so the merged order's run list is what the human sees;
+      // no new user bubble is emitted (this is not a new turn) and no second
+      // pending-prompt insurance entry is appended (the durable inbox already
+      // holds every named run's mail — the wake carries an order, not content).
+      emitQueueUpdate(session);
+      log.info(
+        `agent-sdk: coalesced wake order into unstarted turn ${existing.uuid} for ${wsId} — runs [${wakeOrderRuns(coalesce.mergedText).join(', ')}]`,
+      );
+      return existing.uuid;
+    }
+  }
   // With pasted images, the SDK message content becomes an ARRAY of content
   // blocks — image blocks (base64 source, per the Messages API vision shape)
   // followed by the text block. Plain text stays a bare string (the common path).
