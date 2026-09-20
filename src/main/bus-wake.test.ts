@@ -94,6 +94,79 @@ test('a BROADCAST (recipient IS NULL) makes every reader pending', (t) => {
   assert.equal(pendingFor(db, OTHER).pending, true);
 });
 
+// ── #168: a sender's OWN broadcast must NOT pend for itself (self-wake loop) ──
+
+test("#168 a sender's OWN broadcast does NOT make the SENDER pending, but DOES wake every OTHER reader", (t) => {
+  // THE #168 DEFECT (canary-6 rows 539→549): an agent whose protocol is "send a
+  // status broadcast after each wake" self-loops — its own broadcast pends for
+  // ITSELF → wake → serve → status → new broadcast → re-wake, ≥8 cycles, each a
+  // full turn, zero external mail. Root: the own-run scope's NULL branch matched
+  // the reader even when the reader WAS the broadcast's sender.
+  //
+  // MUTANT: revert ownRunRecipientSql's NULL branch to `${col} IS NULL` (drop the
+  //   `AND sender != ?`) → the SENDER arm below flips true and reddens.
+  // POSITIVE CONTROL in the SAME test: OTHER (not the sender) is STILL woken by
+  //   the exact same broadcast, so the exclusion is proven to cut ONLY the sender,
+  //   not to have quietly killed the broadcast for everyone (which would also make
+  //   the sender arm pass, vacuously).
+  const db = tmpBus(t);
+  const seq = send(db, { runId: RUN, sender: READER, kind: 'status', body: 'status after wake' });
+  assert.equal(
+    pendingFor(db, READER).pending,
+    false,
+    "the sender's own broadcast must NOT pend for itself (#168 self-loop)",
+  );
+  const other = pendingFor(db, OTHER);
+  assert.equal(other.pending, true, 'a DIFFERENT reader IS still woken by that broadcast');
+  assert.equal(other.pendingThroughSeq, seq, 'and it names the broadcast as the pending high-water');
+});
+
+test('#168 the exclusion survives ≥3 sweeps — the sender never re-wakes on its own broadcast', (t) => {
+  // ACCEPTANCE arm 1: "agent sends a broadcast, idles → NOT woken across ≥3
+  // sweeps". readPendingReaders is deterministic over durable rows, so re-reading
+  // it N times with no intervening write models N idle sweeps exactly. Pre-fix
+  // every sweep returned pending:true → a wake per sweep = the loop.
+  // MUTANT: same as above (drop `AND sender != ?`) → sweep 1 already reddens.
+  const db = tmpBus(t);
+  send(db, { runId: RUN, sender: READER, kind: 'status', body: 'my status' });
+  for (let sweep = 1; sweep <= 3; sweep++) {
+    assert.equal(
+      pendingFor(db, READER).pending,
+      false,
+      `sweep ${sweep}: the sender is still not woken by its own broadcast`,
+    );
+  }
+});
+
+test('#168 a DIRECTED self-note (recipient = self) is UNCHANGED — still pending', (t) => {
+  // ACCEPTANCE arm 3, decided EXPLICITLY: the exclusion is scoped to the NULL
+  // (broadcast) branch only. An explicit `--to self` directed message is a
+  // deliberate self-note and MUST remain wakeable — it matches `recipient = ?`,
+  // never the NULL branch, so the sender!=reader guard never applies to it.
+  // MUTANT: broaden the guard to `AND sender != ?` OUTSIDE the NULL branch (i.e.
+  //   apply it to the whole predicate) → this arm reddens, catching an
+  //   over-broad fix that would also swallow legitimate directed self-mail.
+  const db = tmpBus(t);
+  const seq = send(db, { runId: RUN, sender: READER, kind: 'dispatch', body: 'note to self', recipient: READER });
+  const p = pendingFor(db, READER);
+  assert.equal(p.pending, true, 'a directed message to self is still pending (unchanged)');
+  assert.equal(p.pendingThroughSeq, seq);
+});
+
+test("#168 OTHER's broadcast still wakes the reader — the exclusion keys on THIS message's sender, not the reader's own past sends", (t) => {
+  // Guards against a mis-scoped fix that excludes a reader from ANY broadcast once
+  // it has ever sent one. The reader sends its own broadcast (not pending for it),
+  // THEN OTHER broadcasts — the reader MUST be woken by OTHER's, because the guard
+  // is per-message (`m.sender != reader`), not per-reader.
+  const db = tmpBus(t);
+  send(db, { runId: RUN, sender: READER, kind: 'status', body: 'mine' });
+  assert.equal(pendingFor(db, READER).pending, false, 'not woken by own broadcast');
+  const seq = send(db, { runId: RUN, sender: OTHER, kind: 'status', body: 'theirs' });
+  const p = pendingFor(db, READER);
+  assert.equal(p.pending, true, "woken by OTHER's broadcast");
+  assert.equal(p.pendingThroughSeq, seq, "and the pending high-water is OTHER's broadcast");
+});
+
 test('#144 THE CANARY: a SHORT-handle recipient never wakes the full-id reader; the full id does', (t) => {
   // THE EXACT canary defect (rows 444–448): the fleet sent `--to 0a5c25bb` and
   // the row stored `recipient='0a5c25bb'`, but the reader is identified on the

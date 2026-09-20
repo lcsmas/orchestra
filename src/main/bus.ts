@@ -588,15 +588,26 @@ export function send(db: BusDb, input: SendInput): number {
  * guard/consumer drift, the exact bug #144 exists to close. So both call sites
  * reference THIS function; there is no second copy of the clause.
  *
- * `alias` prefixes the column (`'m'` → `m.recipient`), or `''` for a bare
- * `messages` query. The one bound parameter is the reader handle (a FULL id;
- * `send` canonicalizes short handles away before any row is written, so an
+ * A NULL-recipient BROADCAST is scoped OUT for its OWN SENDER (#168): a sender's
+ * own broadcast must not pend for itself, or an agent whose protocol is "status
+ * after each wake" self-loops — its broadcast pends for it → wake → serve →
+ * status → new broadcast → re-wake, burning a turn per cycle (canary-6 rows
+ * 539→549, ≥8 cycles, zero external mail). A DIRECTED message to self
+ * (`recipient = reader`) is a deliberate self-note and is deliberately UNCHANGED
+ * (still pending) — only the broadcast-includes-its-own-sender case is excluded.
+ *
+ * `alias` prefixes the column (`'m'` → `m.recipient`/`m.sender`), or `''` for a
+ * bare `messages` query. TWO bound parameters now, BOTH the reader handle (a FULL
+ * id; `send` canonicalizes short handles away before any row is written, so an
  * `= reader` comparison against the full uuid always matches — the canary's
- * short-handle rows never matched, which is why its OPS was never woken).
+ * short-handle rows never matched, which is why its OPS was never woken): the
+ * `recipient = ?` and the `sender != ?` each bind the reader. Every call site
+ * must bind the reader TWICE where this fragment appears.
  */
 export function ownRunRecipientSql(alias = ''): string {
-  const col = alias ? `${alias}.recipient` : 'recipient';
-  return `(${col} = ? OR ${col} IS NULL)`;
+  const rcol = alias ? `${alias}.recipient` : 'recipient';
+  const scol = alias ? `${alias}.sender` : 'sender';
+  return `(${rcol} = ? OR (${rcol} IS NULL AND ${scol} != ?))`;
 }
 
 /**
@@ -644,9 +655,10 @@ export function check(db: BusDb, runId: string, reader: string, limit = 100): Bu
     'SELECT * FROM deliveries WHERE run_id=? AND reader=? AND acked_at IS NULL',
   );
   const getCursor = db.prepare('SELECT acked_seq FROM cursors WHERE run_id=? AND reader=?');
-  // Recipient-scoped by the SHARED predicate (#144). The bound param order is
-  // (run_id, from_seq, [to_seq,] recipient[, limit]) — recipient comes last so
-  // the fragment's single `?` is bound after the range bounds.
+  // Recipient-scoped by the SHARED predicate (#144, #168). The bound param order
+  // is (run_id, from_seq, [to_seq,] reader, reader[, limit]) — the fragment's TWO
+  // `?`s (recipient = ?, sender != ?) are bound after the range bounds, both the
+  // reader handle.
   const rowsInRange = db.prepare(
     `SELECT * FROM messages WHERE run_id=? AND sequence>? AND sequence<=? AND ${ownRunRecipientSql()} ORDER BY sequence`,
   );
@@ -666,12 +678,12 @@ export function check(db: BusDb, runId: string, reader: string, limit = 100): Bu
         // Recipient-scoped replay: the frozen from/to bound the range, the shared
         // predicate re-selects THIS reader's rows in it — byte-identical to the
         // original take (which used the same predicate), so redelivery stays safe.
-        messages: rowsInRange.all(runId, out.from_seq, out.to_seq, reader) as BusMessage[],
+        messages: rowsInRange.all(runId, out.from_seq, out.to_seq, reader, reader) as BusMessage[],
       };
     }
     const cur = getCursor.get(runId, reader) as { acked_seq: number } | undefined;
     const from = cur ? cur.acked_seq : 0;
-    const messages = rowsAfter.all(runId, from, reader, limit) as BusMessage[];
+    const messages = rowsAfter.all(runId, from, reader, reader, limit) as BusMessage[];
     if (messages.length === 0) return { delivery: null, replay: false, messages: [] };
     const to = messages[messages.length - 1].sequence;
     const taken_at = Date.now();

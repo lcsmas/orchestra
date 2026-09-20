@@ -980,6 +980,33 @@ test('#144 check() still hands a reader NULL-recipient broadcasts in its own run
   assert.deepEqual(lot.messages.map((m) => m.body), ['broadcast', 'for-X']);
 });
 
+test("#168 check parity: a sender's OWN broadcast is ABSENT from its own check-lot, PRESENT in another reader's", (t) => {
+  // ACCEPTANCE arm 4: the wake-side exclusion and the check-side lot MUST agree
+  // (the #144 no-drift invariant) — both scope through ownRunRecipientSql. X
+  // broadcasts; that broadcast must NOT appear in X's OWN check lot (or X serves
+  // its own status and re-broadcasts = the loop), but MUST appear in Y's lot.
+  // MUTANT: drop `AND sender != ?` from ownRunRecipientSql's NULL branch → the
+  //   broadcast reappears in X's lot and the X assertion reddens; the Y assertion
+  //   is the positive control proving the broadcast is genuinely deliverable.
+  const db = tmpBus(t);
+  send(db, { runId: RUN, sender: READER_X, recipient: null, kind: 'status', body: 'x-broadcast' });
+  send(db, { runId: RUN, sender: READER_X, recipient: READER_X, kind: 'dispatch', body: 'x-directed-self' });
+
+  const xLot = check(db, RUN, READER_X);
+  assert.deepEqual(
+    xLot.messages.map((m) => m.body),
+    ['x-directed-self'],
+    "X's own broadcast is absent from X's lot; its DIRECTED self-note stays (unchanged)",
+  );
+
+  const yLot = check(db, RUN, READER_Y);
+  assert.deepEqual(
+    yLot.messages.map((m) => m.body),
+    ['x-broadcast'],
+    "Y still receives X's broadcast (the exclusion cuts only the sender)",
+  );
+});
+
 test('#144 a recipient-scoped REPLAY returns the byte-identical rows the first take did', (t) => {
   // A crashed reader that re-checks before ack must get back EXACTLY what it was
   // handed — the recipient filter is applied to `rowsInRange` too, so the frozen
@@ -1015,8 +1042,11 @@ test('#144 ownRunRecipientSql / relatedRunRecipientSql are the ONE shared predic
   // (bus-wake.ts) reference the SAME function, so the wake predicate and the lot
   // scope cannot drift. This asserts the fragment shape both consume, and — the
   // structural half — that both call sites literally import it (grep below).
-  assert.equal(ownRunRecipientSql(), '(recipient = ? OR recipient IS NULL)');
-  assert.equal(ownRunRecipientSql('m'), '(m.recipient = ? OR m.recipient IS NULL)');
+  assert.equal(ownRunRecipientSql(), '(recipient = ? OR (recipient IS NULL AND sender != ?))');
+  assert.equal(
+    ownRunRecipientSql('m'),
+    '(m.recipient = ? OR (m.recipient IS NULL AND m.sender != ?))',
+  );
   assert.equal(relatedRunRecipientSql('m'), '(m.recipient = ?)');
 });
 

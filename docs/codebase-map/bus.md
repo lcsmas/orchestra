@@ -759,9 +759,15 @@ invisible precisely because the mechanism that would report it is the one that
 is off. `bus-wake-sweep.test.ts`'s T117.3 arm is the discriminator: it inserts
 with nothing armed, then requires the first sweep to fire.
 
-## The pending predicate — `readPendingReaders` (`src/main/bus-wake.ts:132`)
+## The pending predicate — `readPendingReaders` (`src/main/bus-wake.ts:221`)
 
 Pending = **an unread lot OR an open QUESTION message addressed to the reader**.
+
+A NULL-recipient BROADCAST pends for every reader in its own run **except its own
+sender** (`ownRunRecipientSql`'s `AND sender != ?`, #168) — a sender's own
+broadcast never wakes it, killing the "status after each wake" self-loop. A
+DIRECTED self-note (`recipient = reader`) is unchanged (still pends). See §2 of
+the #144 shared-predicate section below.
 
 The lot half asks *"is there anything past the reader's durable cursor"*, **not**
 *"is there an outstanding `deliveries` row"*. Those differ in the case that
@@ -1876,7 +1882,8 @@ round-trip was rejected). The innermost-run decision lives in the wake sweep
   map): a reader is pending for mail addressed EXACTLY to it (never a null
   broadcast) in its own run OR any related run. An OPS→LEAD digest sits in the OPS
   DESCENDANT run; a LEAD→OPS ruling sits in the LEAD ANCESTOR run — both are now
-  seen. A null-recipient broadcast stays own-run only (never pulled across).
+  seen. A null-recipient broadcast stays own-run only (never pulled across), and
+  in its own run it excludes its own sender (`AND sender != ?`, #168).
 - **The wake switch is read for the GOVERNING run = the INNERMOST = the DEEPER of
   (mail run, reader run)** (`ReaderPendingState.switchRunId`, by the depth map):
   upward mail (OPS→LEAD) → the mail's (OPS) run governs; downward mail (LEAD→OPS)
@@ -1977,17 +1984,32 @@ for a follow-up. The resolver is reusable there.
 Pre-#144 `check()` (`src/main/bus.ts`) built the lot from EVERY message in the run
 above the reader's cursor with **no recipient filter**, so any reader could
 consume any run's mail. It now filters by `ownRunRecipientSql()` — the reader's
-own run: `recipient = reader OR recipient IS NULL` (a broadcast still reaches
-everyone). Applied to BOTH the fresh-take query and the replay query, so a
+own run: `recipient = reader OR (recipient IS NULL AND sender != reader)`.
+
+**#168 — a sender's own broadcast is scoped OUT for itself.** The NULL-recipient
+(broadcast) branch now carries `AND sender != ?`: a broadcast wakes/delivers to
+every reader EXCEPT its own sender. Before, an agent whose protocol is "status
+broadcast after each wake" self-looped — its own broadcast pended for it → wake →
+serve → status → new broadcast → re-wake, ≥8 cycles, one turn each, zero external
+mail (canary-6 rows 539→549). A DIRECTED self-note (`recipient = reader`) is on
+the `recipient = ?` branch, NOT the NULL branch, so it is deliberately UNCHANGED
+(still wakes/delivers) — only broadcast-includes-its-own-sender is excluded. The
+fragment now binds the reader TWICE (`recipient = ?`, `sender != ?`); every call
+site binds it accordingly (`check`'s two lot queries, `readPendingReaders`'s lot
++ pendingRunSet queries). Applied to BOTH the fresh-take and replay queries, so a
 redelivered lot stays byte-identical.
 
 **The predicate is ONE function, referenced at both call sites** — the classic
 guard/consumer drift bug is that `check`'s scope and the wake predicate's scope
-diverge. `ownRunRecipientSql(alias?)` / `relatedRunRecipientSql(alias?)` live in
-`src/main/bus.ts`; `check()` uses `ownRunRecipientSql()`, and
-`readPendingReaders` (`src/main/bus-wake.ts`) uses `ownRunRecipientSql('m')` +
-`relatedRunRecipientSql('m')`. There is no second copy of the clause. A
-source-binding test (`bus.test.ts`) reddens if either file re-inlines it.
+diverge (so #168's exclusion lands in ONE place and cannot drift, the #158
+F-R158-1 same-lookup-two-sites precedent). `ownRunRecipientSql(alias?)` /
+`relatedRunRecipientSql(alias?)` live in `src/main/bus.ts`; `check()` uses
+`ownRunRecipientSql()`, and `readPendingReaders` (`src/main/bus-wake.ts`) uses
+`ownRunRecipientSql('m')` + `relatedRunRecipientSql('m')`. There is no second copy
+of the clause. A source-binding test (`bus.test.ts`) reddens if either file
+re-inlines it; the exact fragment string is asserted in the #144 shared-predicate
+test. #168 arms: `bus-wake.test.ts` (sender not self-pending, OTHER still woken,
+≥3 sweeps, directed-self unchanged) + `bus.test.ts` check-parity.
 
 ## 3. The mirror lands in the parties' resolved run
 
