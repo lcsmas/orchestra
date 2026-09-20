@@ -37,8 +37,21 @@ export interface ReaderPendingState {
    */
   gatePending?: boolean;
   /** Highest OPEN gate id addressed to this reader (0 when none) — the gate
-   *  arm's dedup high-water, independent of `pendingThroughSeq`. */
+   *  arm's dedup high-water, independent of `pendingThroughSeq`. Gate ids are a
+   *  GLOBAL monotonic sequence (one `decision_gates` table), so this stays a
+   *  cross-run-safe high-water even though #158 widens the gate LOOKUP to related
+   *  runs — the D-H1 gate-axis re-arm is unchanged. */
   gateThroughSeq?: number;
+  /**
+   * EVERY run (own ∪ related) an OPEN gate addressed to this reader sits in
+   * (#158). The wake ORDER names these too, so a reader woken for a CROSS-RUN gate
+   * (opened in the ASKER's run — an OPS→LEAD ruling ask) is told to run
+   * `orchestra check --run <gateRun>`, which is where the gate surfaces. Empty/
+   * undefined when no gate pends. Pre-#158 a gate could only be its OWN run and
+   * the order named the reader's own run, so a cross-run gate was woken-for a run
+   * that could never show it — the exact "no check surface" half of ledger #157
+   * F-C5-1. */
+  gateRunIds?: string[];
   /**
    * True when this reader is parked on an UNANSWERED ask/gate it is the RECIPIENT
    * of — a durable pending state that does NOT clear on the reader's own ack

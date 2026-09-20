@@ -781,24 +781,59 @@ export function openGates(db: BusDb, runId: string): BusDecisionGate[] {
 /**
  * Open gates of a run addressed to `recipient`, oldest first (#119).
  *
- * The read behind both the wake predicate ("is this reader gate-pending") and
- * `check`'s gate surface ("show the woken reader the gate it was woken for").
- * Matches on the EXACT recipient — a NULL-recipient gate is addressed to nobody
- * and never appears here, so it wakes nobody, which is what keeps a pre-#119 gate
- * (recipient NULL after the migration backfill) from waking the whole fleet.
+ * The read behind `check`'s gate surface for a SINGLE run (`check --run <r>`
+ * resolves `r` here). Matches on the EXACT recipient — a NULL-recipient gate is
+ * addressed to nobody and never appears here, so it wakes nobody, which is what
+ * keeps a pre-#119 gate (recipient NULL after the migration backfill) from waking
+ * the whole fleet.
+ *
+ * #158: this stays SINGLE-run for the CLI's own-run resolution, but the wake
+ * predicate and the plain-`check` surface both go through
+ * {@link openGatesForRecipientInRuns} so a CROSS-RUN gate (opened in run A,
+ * recipient in run B — an OPS→LEAD ruling ask) is visible to its recipient. A
+ * single-run lookup keyed on the READER's own run made every such gate
+ * structurally invisible: no wake, no check surface, no staleness (ledger #157
+ * F-C5-1).
  */
 export function openGatesForRecipient(
   db: BusDb,
   runId: string,
   recipient: string,
 ): BusDecisionGate[] {
+  return openGatesForRecipientInRuns(db, [runId], recipient);
+}
+
+/**
+ * Open gates addressed to `recipient` in ANY of `runIds`, oldest first (#158).
+ *
+ * The cross-run widening the gate half was missing. Mail got #134/#144's
+ * ancestor∪own∪descendant widening; gates never did, so a gate anchored in the
+ * ASKER's run with a recipient in ANOTHER run — the primary OPS→LEAD upward use
+ * case — was invisible to its recipient (ledger #157 F-C5-1: a LEAD sat idle ≥8
+ * sweeps with the gate absent from its own-run check).
+ *
+ * Scoped to the RELATED run set (never a bare cross-run read), symmetric with the
+ * lot half (`relatedRunRecipientSql`): the reader is only woken for a gate in a
+ * run related to it up or down the fleet tree, never a stranger run's traffic. A
+ * gate carries an EXPLICIT recipient, so the match is exact — NULL-recipient
+ * gates (addressed to nobody) never appear, exactly as in the single-run form.
+ *
+ * `json_each` turns the id array into a table so one prepared statement covers a
+ * variable-size run set (same shape as `readPendingReaders`'s lot query).
+ */
+export function openGatesForRecipientInRuns(
+  db: BusDb,
+  runIds: readonly string[],
+  recipient: string,
+): BusDecisionGate[] {
   return db
     .prepare(
       `SELECT * FROM decision_gates
-        WHERE run_id=? AND recipient=? AND resolved_at IS NULL
+        WHERE run_id IN (SELECT value FROM json_each(?))
+          AND recipient=? AND resolved_at IS NULL
         ORDER BY opened_at, id`,
     )
-    .all(runId, recipient) as BusDecisionGate[];
+    .all(JSON.stringify([...runIds]), recipient) as BusDecisionGate[];
 }
 
 // ─── Fencing: coordinator generation (#128) ─────────────────────────────────

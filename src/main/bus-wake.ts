@@ -36,7 +36,7 @@ import path from 'node:path';
 import {
   getBus,
   busPath,
-  openGatesForRecipient,
+  openGatesForRecipientInRuns,
   ownRunRecipientSql,
   relatedRunRecipientSql,
   type BusDb,
@@ -320,16 +320,27 @@ export function readPendingReaders(
         Number(((cursorOf.get(r, reader) as { c: number } | undefined)?.c) ?? 0),
       );
     }
-    // Gate half (#119) — rides the `askGate` switch, own run only (a gate has an
-    // explicit recipient and is not part of the cross-run widening #134 added).
-    const gates = openGatesForRecipient(db, runId, reader);
+    // Gate half (#119) — rides the `askGate` switch. WIDENED to the related run
+    // set (#158): a gate carries an explicit recipient, and an OPS→LEAD ruling
+    // gate is opened in the ASKER's run with the recipient in ANOTHER run, so the
+    // pre-#158 own-run-only lookup made every such gate invisible to its recipient
+    // — no wake, no check surface (ledger #157 F-C5-1). Now symmetric with the lot
+    // half: gates addressed to this reader in own ∪ ancestors ∪ descendants, the
+    // same `related.ids` computed above. `gateThroughSeq` stays a global gate-id
+    // high-water (one `decision_gates` table), so the D-H1 gate-axis re-arm is
+    // unchanged across runs.
+    const gates = openGatesForRecipientInRuns(db, related.ids, reader);
     const gateThroughSeq = gates.reduce((mx, g) => Math.max(mx, g.id), 0);
+    // The DISTINCT runs those open gates sit in — the wake order names them so the
+    // recipient's `orchestra check --run <gateRun>` surfaces the gate (D2 shape).
+    const gateRunIds = [...new Set(gates.map((g) => g.run_id))];
     out.push({
       reader,
       pendingThroughSeq,
       pending: pendingThroughSeq > 0,
       gatePending: gates.length > 0,
       gateThroughSeq,
+      gateRunIds: gates.length > 0 ? gateRunIds : undefined,
       reWakeUntilAnswered,
       cursorSeq,
       cursorByRun,
@@ -595,15 +606,21 @@ export async function sweepBusWake(): Promise<void> {
       // entering during that yield would otherwise see no ledger entry and fire
       // a duplicate — the same shape as #112's duplicate prompt.
       ledger.set(action.reader, ledgerEntry);
-      // #134 D2: the wake ORDER names every run the reader must check — its
-      // pending lot/question runs (own ∪ related), else its OWN run for a
-      // gate-only wake (gates are own-run and `check` surfaces them). One
-      // `orchestra check --run <r>` line per run; the reader checks/acks each
-      // per-run. `entry.runId` is the reader's own run (the gate/fallback run).
+      // #134 D2 + #158: the wake ORDER names every run the reader must check —
+      // its pending lot/question runs (own ∪ related) UNION every run an open gate
+      // addressed to it sits in (own ∪ related, #158). A cross-run gate is opened
+      // in the ASKER's run, so naming only the reader's own run (the pre-#158
+      // fallback) ordered a `check` against a run that could never surface the
+      // gate — the "no check surface" half of ledger #157 F-C5-1. When neither a
+      // lot nor a gate names a run (should not happen for a woken reader) fall
+      // back to the reader's own run. One `orchestra check --run <r>` line per
+      // run; the reader checks/acks each per-run.
+      const namedRuns = [
+        ...(p.pendingRunIds ?? []),
+        ...(p.gateRunIds ?? []),
+      ];
       const orderRuns =
-        p.pendingRunIds && p.pendingRunIds.length > 0
-          ? p.pendingRunIds
-          : [entry?.runId ?? p.reader];
+        namedRuns.length > 0 ? namedRuns : [entry?.runId ?? p.reader];
       const order = buildWakeOrder(orderRuns);
       let delivered = false;
       try {
