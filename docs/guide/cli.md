@@ -15,7 +15,8 @@ The CLI is bundled inside the app (the binary doubles as the CLI when invoked as
 ```bash
 orchestra peers                                    # list the other agent workspaces (id, branch, repo, status)
 orchestra read <id> [--lines N]                    # print a workspace's transcript (default 80, max 400 lines)
-orchestra message <id> <text...>                   # send a prompt to a workspace (queues if it's stopped)
+orchestra message <id> <text...>                   # LEGACY peer channel; refused on a delivery-ON bus run
+         [--emergency]                             #   (--emergency, leading token: out-of-band liveness poke)
 orchestra spawn --task <text>                      # spawn a new worktree + agent
          [--repo <path>] [--base <branch>] [--detached]
 orchestra rename <id> <branch>                     # rename a workspace's branch (drives the real git branch)

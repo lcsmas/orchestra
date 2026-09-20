@@ -195,12 +195,20 @@ Usage:
                                                  (--stats: + committed diff vs base per peer)
   orchestra read <id> [--lines N]                Print a workspace's transcript
   orchestra message <id> <text...>               Send a prompt to a workspace
-  orchestra message --children <text...>         Broadcast to your DIRECT children
+                                                 (LEGACY channel; for fleet
+                                                  coordination on a bus run use
+                                                  'orchestra send'. Refused toward
+                                                  a delivery-ON target unless
+                                                  --emergency is the leading token)
+  orchestra message [--emergency] --children <text...>   Broadcast to your DIRECT children
                                                  (not the whole subtree)
-  orchestra message --to <id,id,...> <text...>   Broadcast to an explicit list
+  orchestra message [--emergency] --to <id,id,...> <text...>   Broadcast to an explicit list
                                                  (both broadcast forms print one
                                                   delivery line PER TARGET and exit
-                                                  non-zero if ANY target failed)
+                                                  non-zero if ANY target failed;
+                                                  gated like a single send on a
+                                                  delivery-ON run — the #86 group-
+                                                  stop needs a leading --emergency)
   orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--detached]
                                                  Spawn a new worktree + agent
                                                  (--model: pin the agent's model, e.g. haiku/sonnet/opus;
@@ -1145,13 +1153,27 @@ async function main(argv: string[]): Promise<void> {
       // A message body is DATA. The only way it can never be parsed as flags is
       // to stop looking at it: everything after the leading token belongs to the
       // payload, so `message <id> …` never flag-scans at all.
-      const leading = args[0];
+      // #169 — the surviving out-of-band escape (the liveness poke when a
+      // member's bus reader is wedged). Recognised ONLY as the LEADING token, for
+      // the same body-hijack reason the routing below is chosen from args[0]
+      // before any flag scanning: a full argv scan would let a `--emergency`
+      // sitting inside the message body silently upgrade an ordinary send to the
+      // escape. `orchestra message --emergency <id> <text...>` — the flag, then
+      // the ordinary positional form, whose body is still used RAW after it.
+      const emergency = args[0] === '--emergency';
+      const bodyArgs = emergency ? args.slice(1) : args;
+      const leading = bodyArgs[0];
       const isBroadcast = leading === '--children' || leading === '--to';
 
       if (isBroadcast) {
-        // Flag parsing is confined to the broadcast branch, where args[0] has
-        // already proven this is not a positional send.
-        const { present: children, rest: m1 } = takeBoolFlag(args, '--children');
+        // Flag parsing is confined to the broadcast branch, where bodyArgs[0] has
+        // already proven this is not a positional send. `--emergency` (parsed as
+        // the LEADING token above, before this split) threads into the request
+        // body below: a broadcast is gated like the single-target path (F3 /
+        // D-W8-1), so ONLY `orchestra message --emergency --to …`/`--children …`
+        // bypasses the #169 refusal — a bare `--to <peer>` of coordination text
+        // is refused on a delivery-ON fleet.
+        const { present: children, rest: m1 } = takeBoolFlag(bodyArgs, '--children');
         const { value: toList, rest: m2 } = takeFlag(m1, '--to');
         if (children && toList !== undefined) {
           // KNOWN RESIDUAL, documented so it is not rediscovered as a bug
@@ -1200,6 +1222,10 @@ async function main(argv: string[]): Promise<void> {
           from: selfWorkspaceId(),
           ...(children ? { children: true } : { to: ids }),
           text,
+          // #169 P4 (F3 / D-W8-1): a broadcast is gated like the single-target
+          // path — only an EXPLICIT leading `--emergency` (the #86 group-stop)
+          // bypasses the refusal on a delivery-ON fleet.
+          ...(emergency ? { emergency: true } : {}),
         });
         const results = res.results as BroadcastTargetResult[] | undefined;
         // No `results`, OR AN EMPTY ONE = the broadcast could not be ATTEMPTED
@@ -1251,18 +1277,25 @@ async function main(argv: string[]): Promise<void> {
         return;
       }
 
-      // POSITIONAL SINGLE-TARGET FORM. `args` is used RAW — deliberately never
-      // flag-stripped — so the message text is passed through verbatim however
-      // many `--to`/`--children` tokens it happens to contain.
-      const id = args[0];
-      const text = args.slice(1).join(' ');
+      // POSITIONAL SINGLE-TARGET FORM. `bodyArgs` is used RAW — deliberately
+      // never flag-stripped — so the message text is passed through verbatim
+      // however many `--to`/`--children`/`--emergency` tokens it happens to
+      // contain. (`--emergency` was already consumed above, and ONLY as the
+      // leading token, so a `--emergency` here is part of the message body.)
+      const id = bodyArgs[0];
+      const text = bodyArgs.slice(1).join(' ');
       if (!id || !text)
         fail(
-          'usage: orchestra message <id> <text...>\n' +
+          'usage: orchestra message [--emergency] <id> <text...>\n' +
             '   or: orchestra message --children <text...>\n' +
             '   or: orchestra message --to <id,id,...> <text...>',
         );
-      const res = await request('/message', { from: selfWorkspaceId(), to: id, text });
+      const res = await request('/message', {
+        from: selfWorkspaceId(),
+        to: id,
+        text,
+        ...(emergency ? { emergency: true } : {}),
+      });
       if (!res.ok) fail(res.error ?? 'failed to deliver message');
       const delivery = (res.delivery as string | undefined) ?? 'ok';
       process.stdout.write(`Delivered (${delivery}).\n`);

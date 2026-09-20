@@ -25,12 +25,15 @@ The spawned agent shares **no context** with the spawner — the task text must 
 Agents in sibling workspaces can coordinate:
 
 ```bash
-orchestra peers                    # who else is running (id, branch, repo, status)
-orchestra read <id> [--lines N]    # read a peer's recent transcript
-orchestra message <id> <text...>   # hand a peer a prompt
+orchestra peers                        # who else is running (id, branch, repo, status)
+orchestra read <id> [--lines N]        # read a peer's recent transcript
+orchestra send --type status --to <id> <text...>   # message a peer on the bus (durable, ack'd)
+orchestra message <id> <text...>       # LEGACY channel (see below)
 ```
 
-Messages to a running agent are delivered live; a stopped agent is woken to handle the message; if it can't be, the message queues in an inbox delivered at its next session start. The recipient sees who sent it and can reply back.
+On a fleet-bus mission (any run with the `delivery` switch ON — the default), coordination goes through the **bus** (`orchestra send`): messages are durable, ack'd and re-driven, so they survive the peer being stopped, mid-turn or restarted.
+
+`orchestra message` is the pre-bus channel (it types into the peer's live TUI or wakes it). It is **refused for coordination on a delivery-ON run** and points you at `orchestra send`. It still works for a run with delivery OFF (a legacy mission), and via `orchestra message --emergency <id> <text...>` for an out-of-band liveness poke when the peer's bus reader is wedged. Live/woken/inbox delivery semantics apply to the legacy channel; the recipient sees who sent it and can reply back.
 
 **Use cases:** a spawner checking on delegated work (`read`), follow-up instructions after review (`message`), an agent asking the workspace that owns a subsystem to make a change instead of touching it cross-worktree.
 

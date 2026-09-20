@@ -53,7 +53,7 @@ export interface RpcRequestPayloads {
   spawn: { from?: string; repoPath?: string; baseBranch?: string; task: string };
   peers: { from?: string };
   read: { id: string; lines?: number };
-  message: { from?: string; to: string; text: string };
+  message: { from?: string; to: string; text: string; emergency?: boolean };
 }
 
 /** Every route's reply is the same `{ok, ...}` JSON the dispatchers return

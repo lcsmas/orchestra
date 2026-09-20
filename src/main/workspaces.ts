@@ -47,10 +47,12 @@ import {
   runFlags,
   startRun,
   getRun,
+  busSwitch,
   refreezeRun,
   refreezeMissionRun,
   type RefreezeMissionOutcome,
 } from './bus-runs.ts';
+import { decideMessageChannel } from '../shared/message-channel-gate.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import {
   maybeStartRunAtAnchor,
@@ -598,9 +600,9 @@ export function orchestratorBrief(
   orchestratorRepoParagraph(ws) +
   'Because THIS session is an orchestrator, spawn children WITHOUT `--detached` so they nest under you in the sidebar — `--detached` is only for spawning from a plain (non-orchestrator) scratch session and would pop the child out top-level. If a child was spawned detached by mistake, repair it with `orchestra attach <child-id> ' +
   "<this-session's-id>`. " +
-  'Track the agents you spawn with `orchestra peers`, read their progress with `orchestra read <id>`, and follow up with `orchestra message <id> <text>`. ' +
-  'Child reporting is PULL-BASED: nothing auto-notifies you when a child makes progress or finishes — the harness Task/Agent auto-re-invoke applies only to harness subagents, never to `orchestra spawn` peers, and the idle/waiting status in `orchestra peers` is a between-tool-calls snapshot rather than a progress signal. So in EACH spawn prompt, instruct the child to run `orchestra message <your-id>` on completion AND when it hits a blocking question; between those, poll it yourself with `orchestra read <id>`. ' +
-  "Follow-up work in an area a child agent already owns goes back to THAT child via `orchestra message` — route it to the owner however small it looks. " +
+  'Track the agents you spawn with `orchestra peers`, read their progress with `orchestra read <id>`, and follow up with `orchestra send --type status --to <id> <text>` on a bus (delivery-ON) run (`orchestra message` is the legacy channel — #169 refuses it for coordination on a delivery-ON run and points at `orchestra send`; it survives for delivery-OFF runs and via `orchestra message --emergency <id>` for an out-of-band poke). ' +
+  'Child reporting is PULL-BASED: nothing auto-notifies you when a child makes progress or finishes — the harness Task/Agent auto-re-invoke applies only to harness subagents, never to `orchestra spawn` peers, and the idle/waiting status in `orchestra peers` is a between-tool-calls snapshot rather than a progress signal. So in EACH spawn prompt, instruct the child to report to you (`orchestra send --type status --to <your-id>` on a bus run) on completion AND when it hits a blocking question; between those, poll it yourself with `orchestra read <id>`. ' +
+  "Follow-up work in an area a child agent already owns goes back to THAT child (`orchestra send` on a bus run) — route it to the owner however small it looks. " +
   'For a milestone-sized piece that itself needs several agents, you may create a SUB-orchestrator: spawn it, then run `orchestra promote <child-id>` — its branch becomes that milestone\'s integration branch and the agents IT spawns nest beneath it. Keep the tree shallow: at most one sub-orchestrator level. ' +
   'Spawn every child on Opus 4.8: that is the DEFAULT applied when you pass no "model" param, so simply omit it. To override, pass a full wire id (the short alias `opus-4-8` is rejected; `opus` means Opus 5). Do NOT downgrade implementation workers to save tokens — that trade is the user\'s call to make, not yours. Maintain a swarm FIELD GUIDE (see the orchestra-spawn skill) — a line-budgeted notes file injected into every child at session start — so conventions and pitfalls reach all siblings without per-child messages. ' +
   'Close the loop before reporting anything as done: a child\'s "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child must end in one of two EXPLICIT states: LANDED — run `orchestra verify-landed <child-id> --into <branch-it-merged-into>` and require 0 unmerged commits — or INTENTIONALLY UNMERGED, for work whose brief said not to merge (a spike, an experiment, evidence-gathering); state that disposition when you close it. The only forbidden outcome is the silent third state: a child believed merged that isn\'t. ' +
@@ -1551,10 +1553,14 @@ async function submitTaskWhenReady(id: string, task: string, readyFile: string):
   }
   if (!submitted) {
     // Loud, and actionable: name the recovery the coordinator can run by hand.
+    // This agent never took its prompt (its reader is wedged), so the recovery
+    // is the out-of-band ESCAPE — `orchestra send` would sit in a bus the agent
+    // is not draining. `--emergency` bypasses the #169 fleet-coordination refusal
+    // for exactly this liveness case.
     log.error(
       `agent ${id} NEVER ACCEPTED ITS OPENING PROMPT after ${SUBMIT_TYPE_ROUNDS} type rounds ` +
         `x ${SUBMIT_MAX_ATTEMPTS} submits — it is sitting idle with no task. ` +
-        `Recover with: orchestra message ${id} "<the task>"`,
+        `Recover with: orchestra message --emergency ${id} "<the task>"`,
     );
   }
   await clearReadyFile(id);
@@ -3150,7 +3156,15 @@ export interface MessageResult {
 const MESSAGE_MAX_CHARS = 8000;
 
 function formatPeerMessage(fromBranch: string, fromId: string, text: string): string {
-  return `[message from agent '${fromBranch}' (${fromId})]\n${text}\n\nReply with: orchestra message ${fromId} "<reply>"`;
+  // #169 P4 — on a bus (delivery-ON) run, replies go through `orchestra send`;
+  // `orchestra message` is the legacy fallback (this footer is only ever attached
+  // to a legacy/emergency delivery in the first place). Name the bus path first
+  // so a recipient on a delivery-ON run does not hit the coordination refusal.
+  return (
+    `[message from agent '${fromBranch}' (${fromId})]\n${text}\n\n` +
+    `Reply with: orchestra send --type status --to ${fromId} "<reply>" ` +
+    `(bus run) — or orchestra message ${fromId} "<reply>" on a legacy delivery-OFF run`
+  );
 }
 
 /** Wake a stopped agent and hand it `prompt` as a live turn. Wakes it as a
@@ -3241,8 +3255,36 @@ export async function dispatchMessageRequest(
     from?: string;
     to: string;
     text: string;
+    /** #169 — the surviving out-of-band escape. When set, the fleet-coordination
+     *  refusal below is bypassed (the liveness poke path, #172 life-support). */
+    emergency?: boolean;
   },
 ): Promise<MessageResult> {
+  // P4 (#169) — REFUSE this OLD channel for fleet coordination when the target's
+  // run has adopted the bus for delivery, pointing the sender at `orchestra send`.
+  // Checked BEFORE the mirror and the delivery body: a refused send neither
+  // delivers nor mirrors (the mirror comment below relies on this — an unknown /
+  // refused recipient has no run row and would fall back to the host id).
+  //
+  // The switch is read from the TARGET's frozen run flags: `busSwitch` reads a
+  // missing run row as OFF (bus-runs.ts contract), so a plain standalone target
+  // or a bloc2-legacy delivery-OFF mission is `false` here and NEVER refused —
+  // exactly the escapes acceptance arm 2 requires. The DECISION is the pure
+  // `decideMessageChannel` (src/shared) so it is unit-tested without this module's
+  // Electron/store chain; here we only resolve its two inputs.
+  const targetForGate = store.getWorkspace(input.to);
+  const db = getBus();
+  const targetDeliveryOn =
+    !!targetForGate && !!db
+      ? busSwitch(db, resolveWaveRunId(targetForGate), 'delivery')
+      : false;
+  const gate = decideMessageChannel({
+    targetDeliveryOn,
+    emergency: input.emergency === true,
+  });
+  if (!gate.allow) {
+    return { ok: false, error: gate.error };
+  }
   // SHADOW MIRROR (#116). The old channel runs FIRST and UNCHANGED; the mirror
   // sees only its finished result and returns void. Written as a wrapper around
   // the untouched body rather than as N calls inside it, deliberately:
@@ -3454,6 +3496,13 @@ export async function dispatchBroadcastMessageRequest(input: {
   /** Resolve targets as the caller's direct children (`--children`). */
   children?: boolean;
   text: string;
+  /** #169 P4 (review F3, LEAD ruling D-W8-1). A broadcast is NOT a bypass by
+   *  virtue of its shape — an ordinary `--to <peer>` of coordination text must be
+   *  refused on a delivery-ON run exactly like the positional path, or arbitrary
+   *  fleet coordination dodges the bus via `--to`. Only an EXPLICIT `--emergency`
+   *  (the #86 group-stop) bypasses, and it does so by passing this flag THROUGH to
+   *  each per-target `dispatchMessageRequest` (never by hard-coding `true`). */
+  emergency?: boolean;
 }): Promise<BroadcastResult> {
   const text = input.text.trim();
   if (!text) return { ok: false, error: 'empty text' };
@@ -3507,7 +3556,18 @@ export async function dispatchBroadcastMessageRequest(input: {
   const results = await deliverToTargets(
     targets,
     async (id) => {
-      const r = await dispatchMessageRequest({ from: input.from, to: id, text });
+      // #169 P4 (review F1→F3, LEAD ruling D-W8-1) — pass the caller's EXPLICIT
+      // emergency flag THROUGH per target, never a hard-coded `true`. The #86
+      // group-stop (`--emergency --to`/`--children`) thereby bypasses the
+      // fleet-coordination refusal and still lands on a delivery-ON fleet, while
+      // a plain `--to <peer>` of coordination text is refused exactly like the
+      // positional path — so a broadcast is no longer a bypass by virtue of shape.
+      const r = await dispatchMessageRequest({
+        from: input.from,
+        to: id,
+        text,
+        emergency: input.emergency === true,
+      });
       return {
         ok: r.ok,
         ...(r.branch ? { branch: r.branch } : {}),
@@ -3964,10 +4024,11 @@ description: Coordinate with the OTHER agents running in sibling Orchestra works
 # Talk to sibling agents
 
 Other agents may be running in sibling workspaces. You can discover them, read
-what they have been doing, and hand one a prompt. Three \`orchestra\` CLI
+what they have been doing, and hand one a message. A few \`orchestra\` CLI
 commands (each reads \$ORCHESTRA_SOCK / \$ORCHESTRA_WS_ID from your env, so they
 already know who you are). Keep any message self-contained — the peer does not
-share your conversation.
+share your conversation. On a bus (delivery-ON) run, coordination goes through
+\`orchestra send\` (§3); \`orchestra message\` is the legacy channel.
 
 ## 1. List the other agents
 
@@ -3992,15 +4053,33 @@ orchestra read <peer-id>
 Prints the peer's branch then its last ~80 lines of transcript. Pass
 \`--lines <n>\` (max 400) for more.
 
-## 3. Send a peer a prompt
+## 3. Send a peer a message
+
+On a bus-adopted mission (any run whose \`delivery\` switch is ON — the fleet-bus
+default now), FLEET COORDINATION GOES THROUGH THE BUS:
 
 \`\`\`bash
-orchestra message <peer-id> <your message...>
+orchestra send --type status --to <peer-id> <your message...>
 \`\`\`
 
-Prints \`Delivered (live).\` if the peer was running, or \`Delivered (started).\`
-if it was stopped and got woken to handle it now. The peer sees the message came
-from you and can reply back to your workspace.
+The bus is durable, ack'd and re-driven — a message survives the peer being
+stopped, mid-turn, or restarted, which the old channel could not guarantee.
+
+\`orchestra message\` is the PRE-BUS channel (it types into the peer's live TUI /
+wakes it, with #57-class duplicate/drop faults). On a delivery-ON run it is
+REFUSED for coordination and points you back here:
+
+\`\`\`bash
+orchestra message <peer-id> <your message...>   # refused on a delivery-ON run
+\`\`\`
+
+It still works in two cases, and only these:
+- a run whose \`delivery\` switch is OFF (a legacy / bloc2-style mission that never
+  adopted the bus, or a plain standalone workspace with no run);
+- \`orchestra message --emergency <peer-id> <text...>\` — the out-of-band liveness
+  poke, for when the peer's bus reader is wedged and you must wake it directly.
+  \`--emergency\` MUST be the leading token (anything after \`<peer-id>\` is the
+  message body, verbatim).
 
 ## 4. Verify a delegated branch actually landed
 
@@ -4369,11 +4448,11 @@ sentinel="\${ORCHESTRA_WORKTREE:-.}/.orchestra/.orchestrator"
 # work it exists to do. Only the pure-coordinator text is absolute.
 if [ "\$(cat "\$sentinel" 2>/dev/null)" = "dual" ]; then
 cat <<'EOF'
-[orchestra] Standing role reminder — you are an ORCHESTRATOR *and* a working branch. Child agents nest under this workspace, and this branch also carries your own commits, so both halves of the role are real: keep doing the integration/implementation work that belongs to THIS branch, and delegate work that belongs to a child. Route changes in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra message <id> "<task>"\`) rather than editing their worktree — you cannot edit another workspace's files anyway. Spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level — run \`orchestra whoami\`: if YOU have a parent, you are that level; don't create another). Keep tracking children (\`orchestra peers\`, \`orchestra read <id>\`) alongside your own work. And close the loop before declaring anything done: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child ends in one of two EXPLICIT states: LANDED — \`orchestra verify-landed <child-id>\` (checks the child's branch tip against THIS branch), 0 unmerged commits — or INTENTIONALLY UNMERGED (its brief said not to merge: a spike, an experiment; record that disposition when closing it). Never the silent third state: a child believed merged that isn't.
+[orchestra] Standing role reminder — you are an ORCHESTRATOR *and* a working branch. Child agents nest under this workspace, and this branch also carries your own commits, so both halves of the role are real: keep doing the integration/implementation work that belongs to THIS branch, and delegate work that belongs to a child. Route changes in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra send --type status --to <id> "<task>"\` on a bus (delivery-ON) run — \`orchestra message\` is the legacy channel, refused for coordination on a delivery-ON run per #169, surviving only for delivery-OFF runs and \`--emergency\`) rather than editing their worktree — you cannot edit another workspace's files anyway. Spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level — run \`orchestra whoami\`: if YOU have a parent, you are that level; don't create another). Keep tracking children (\`orchestra peers\`, \`orchestra read <id>\`) alongside your own work. And close the loop before declaring anything done: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child ends in one of two EXPLICIT states: LANDED — \`orchestra verify-landed <child-id>\` (checks the child's branch tip against THIS branch), 0 unmerged commits — or INTENTIONALLY UNMERGED (its brief said not to merge: a spike, an experiment; record that disposition when closing it). Never the silent third state: a child believed merged that isn't.
 EOF
 else
 cat <<'EOF'
-[orchestra] Standing role reminder — you are an ORCHESTRATOR. You coordinate child agents; you do not implement. Do NOT edit code, fix bugs, or take over follow-up work yourself — not even a "quick" fix, and regardless of what earlier (possibly compacted-away) context said: delegate it. Route work in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra message <id> "<task>"\`); spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level — run \`orchestra whoami\`: if YOU have a parent, you are that level; don't create another). Reserve your own turns for planning, delegating, tracking children (\`orchestra peers\`, \`orchestra read <id>\`), reviewing their results, and reporting to the user. And close the loop before relaying "done" upward: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child ends in one of two EXPLICIT states: LANDED — \`orchestra verify-landed <child-id> --into <branch-it-merged-into>\`, 0 unmerged commits — or INTENTIONALLY UNMERGED (its brief said not to merge: a spike, an experiment; record that disposition when closing it). Never the silent third state: a child believed merged that isn't.
+[orchestra] Standing role reminder — you are an ORCHESTRATOR. You coordinate child agents; you do not implement. Do NOT edit code, fix bugs, or take over follow-up work yourself — not even a "quick" fix, and regardless of what earlier (possibly compacted-away) context said: delegate it. Route work in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra send --type status --to <id> "<task>"\` on a bus (delivery-ON) run — \`orchestra message\` is the legacy channel, refused for coordination on a delivery-ON run per #169, surviving only for delivery-OFF runs and \`--emergency\`); spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level — run \`orchestra whoami\`: if YOU have a parent, you are that level; don't create another). Reserve your own turns for planning, delegating, tracking children (\`orchestra peers\`, \`orchestra read <id>\`), reviewing their results, and reporting to the user. And close the loop before relaying "done" upward: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child ends in one of two EXPLICIT states: LANDED — \`orchestra verify-landed <child-id> --into <branch-it-merged-into>\`, 0 unmerged commits — or INTENTIONALLY UNMERGED (its brief said not to merge: a spike, an experiment; record that disposition when closing it). Never the silent third state: a child believed merged that isn't.
 EOF
 fi
 exit 0
@@ -4654,7 +4733,7 @@ fi
 # Another workspace's files → block and point back at delegation.
 case "\$fp" in
   "\$HOME/.orchestra/worktrees/"*|"\$HOME/.orchestra/scratch/"*|"\$HOME/.orchestra-dev/worktrees/"*|"\$HOME/.orchestra-dev/scratch/"*)
-    echo "[orchestra] BLOCKED: you are an ORCHESTRATOR and '\$fp' belongs to another workspace. Never edit a child's files directly — delegate: send the change to the child agent that owns that worktree (\\\`orchestra message <id> \\"<task>\\"\\\`, see orchestra-comms skill) or spawn a new agent for it (orchestra-spawn skill)." >&2
+    echo "[orchestra] BLOCKED: you are an ORCHESTRATOR and '\$fp' belongs to another workspace. Never edit a child's files directly — delegate: send the change to the child agent that owns that worktree (\\\`orchestra send --type status --to <id> \\"<task>\\"\\\` on a bus run, see orchestra-comms skill) or spawn a new agent for it (orchestra-spawn skill)." >&2
     exit 2
     ;;
 esac

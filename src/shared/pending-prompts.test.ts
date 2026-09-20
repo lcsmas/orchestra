@@ -13,7 +13,13 @@ import {
   pendingPromptKey,
 } from './pending-prompts.ts';
 
+// #169 P4 — the CURRENT (bus-first) reply footer formatPeerMessage emits.
 const envelope = (from: string, id: string, body: string) =>
+  `[message from agent '${from}' (${id})]\n${body}\n\n` +
+  `Reply with: orchestra send --type status --to ${id} "<reply>" ` +
+  `(bus run) — or orchestra message ${id} "<reply>" on a legacy delivery-OFF run`;
+// The pre-#169 footer that on-disk transcripts still carry.
+const legacyEnvelope = (from: string, id: string, body: string) =>
   `[message from agent '${from}' (${id})]\n${body}\n\nReply with: orchestra message ${id} "<reply>"`;
 
 test('the key survives the backfill stripping the peer envelope (the whole bug)', () => {
@@ -21,6 +27,21 @@ test('the key survives the backfill stripping the peer envelope (the whole bug)'
   // What sdkSend persists vs what the transcript backfill renders.
   const stored = envelope('triage', 'ws-1', body);
   assert.equal(pendingPromptKey({ text: stored }), pendingPromptKey({ text: body }));
+});
+
+test('#169 the LEGACY peer-message footer strips to the same identity (backfill)', () => {
+  const body = 'stand down and wait for the re-brief';
+  // A pre-#169 on-disk delivery and a live one must share the prompt identity, or
+  // a re-delivery would dedup as a different body (the #57-class trap).
+  assert.equal(
+    pendingPromptKey({ text: legacyEnvelope('triage', 'ws-1', body) }),
+    pendingPromptKey({ text: body }),
+  );
+  // And the current footer strips to the SAME thing as the legacy one.
+  assert.equal(
+    pendingPromptKey({ text: envelope('triage', 'ws-1', body) }),
+    pendingPromptKey({ text: legacyEnvelope('triage', 'ws-1', body) }),
+  );
 });
 
 test('the legacy socket-curl footer is stripped too', () => {
