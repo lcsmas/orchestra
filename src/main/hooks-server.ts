@@ -318,9 +318,13 @@ export async function startHooksServer(): Promise<void> {
             // report cannot be squeezed into one `delivery` field without lying
             // about which target it describes.
             const from = typeof msg.from === 'string' ? msg.from : undefined;
-            // #169 — the surviving out-of-band escape. Only meaningful on the
-            // single-target path (fleet coordination); the broadcast halt (#86)
-            // is itself an emergency channel and is never gated.
+            // #169 — the surviving out-of-band escape on the single-target path
+            // (fleet coordination). The broadcast halt (#86) is itself an
+            // emergency channel, but it routes through the SAME gated
+            // single-target `dispatchMessageRequest`, so it is NOT exempt by
+            // virtue of being a broadcast — `dispatchBroadcastMessageRequest`
+            // passes `emergency: true` per target so the group-stop still lands
+            // on a delivery-ON fleet (review F1).
             const emergency = msg.emergency === true;
             const shape = classifyMessageRoute(msg);
             if (shape.kind === 'single') {

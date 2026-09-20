@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { openBus, type BusDb } from './bus.ts';
 import { startRun, busSwitch } from './bus-runs.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
+import { deliverToTargets, normalizeExplicitTargets } from '../shared/broadcast-targets.ts';
 import {
   decideMessageChannel,
   MESSAGE_CHANNEL_REFUSAL,
@@ -96,8 +97,15 @@ function stripWrapperTypes(body: string): string {
     // the destructured parameter annotation (now includes `emergency?: boolean`)
     .replace(/input:\s*\{[\s\S]*?\},?\s*\)/, 'input)')
     .replace(/\):\s*Promise<[^>]*>\s*\{/, ') {')
-    .replace(/\b(const|let)\s+(\w+):\s*[A-Za-z_$][\w$<>.|'\s[\]]*=/g, '$1 $2 =');
+    .replace(/\b(const|let)\s+(\w+):\s*[A-Za-z_$][\w$<>.|'\s[\]]*=/g, '$1 $2 =')
+    // a bare declaration with no initializer: `let targets: string[];`
+    .replace(/\b(let|const)\s+(\w+):\s*[A-Za-z_$][\w$<>.|'\s[\]]*;/g, '$1 $2;');
   assert.ok(!/:\s*Promise</.test(out), 'stripWrapperTypes left a return annotation — stale');
+  // No leftover `let x: T` / `const x: T` type annotations survived the strip.
+  assert.ok(
+    !/\b(let|const)\s+\w+\s*:/.test(out),
+    'stripWrapperTypes left a declaration annotation — stale',
+  );
   return out;
 }
 
@@ -274,4 +282,50 @@ test('#169 ARM 2c — target with no run row is NEVER refused', async (t) => {
   assert.equal(busSwitch(db, 'run-absent', 'delivery'), false, 'unknown run reads OFF');
   assert.equal(r.result.ok, true, 'no run row → not refused');
   assert.equal(r.delivered, true);
+});
+
+// ─── 3. F1 — the #86 emergency-halt BROADCAST bypasses the gate ────────────
+//
+// A broadcast IS the out-of-band group-stop. It routes through the SAME gated
+// single-target `dispatchMessageRequest`, so on a delivery-ON fleet it would be
+// refused for EVERY target unless it carries `emergency: true`. This drives the
+// REAL `dispatchBroadcastMessageRequest` body with a stub `dispatchMessageRequest`
+// that records the `emergency` flag it received per target — the pre-fix build
+// (no `emergency: true` in the call) records `undefined` and reddens the arm.
+async function runBroadcast(targets: string[]): Promise<{
+  result: { ok: boolean; results?: Array<{ id: string; ok: boolean }> };
+  emergencySeen: Array<boolean | undefined>;
+}> {
+  const body = extract('export async function dispatchBroadcastMessageRequest');
+  const emergencySeen: Array<boolean | undefined> = [];
+  const scope = {
+    normalizeExplicitTargets,
+    deliverToTargets,
+    resolveDirectChildTargets: () => [] as string[],
+    store: { workspaces: [] as unknown[] },
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    // Record the emergency flag each per-target call carries; report success so
+    // the arm measures the FLAG, not a delivery outcome.
+    dispatchMessageRequest: async (i: { emergency?: boolean }) => {
+      emergencySeen.push(i.emergency);
+      return { ok: true, delivery: 'live', branch: 'br' };
+    },
+  };
+  const fn = new Function(
+    ...Object.keys(scope),
+    `${stripWrapperTypes(body)}\nreturn dispatchBroadcastMessageRequest;`,
+  )(...Object.values(scope));
+  const result = await fn({ from: 'ops', to: targets, text: 'HALT everything now' });
+  return { result, emergencySeen };
+}
+
+test('#169 F1 — a broadcast halt carries emergency:true to EVERY target', async () => {
+  const { result, emergencySeen } = await runBroadcast(['a', 'b', 'c']);
+  assert.equal(result.ok, true);
+  assert.equal(emergencySeen.length, 3, 'every target attempted');
+  assert.deepEqual(
+    emergencySeen,
+    [true, true, true],
+    'the broadcast MUST bypass the gate per target (pre-fix: [undefined,undefined,undefined] → refused on a delivery-ON fleet)',
+  );
 });

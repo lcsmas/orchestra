@@ -95,9 +95,13 @@ function identityBody(text: string): string {
   let body = text;
   const header = /^\[message from agent '.+?' \([^)]+\)\]\n/.exec(body);
   if (header) body = body.slice(header[0].length);
-  // Both the legacy socket-curl footer and the current CLI one.
+  // Every reply-footer form, stripped so identity is stable across a delivery
+  // and its inbox re-delivery. #169 P4 added the bus-first
+  // `Reply with: orchestra send … — or orchestra message …` footer alongside the
+  // legacy `orchestra message` one; both must strip to the SAME identity or a
+  // re-delivered prompt would dedup as a different body (the #57-class trap).
   body = body
-    .replace(/\n\nReply with: orchestra message \S+ "<reply>"\s*$/, '')
+    .replace(/\n\nReply with: orchestra (?:send [\s\S]*?|message \S+ "<reply>")\s*$/, '')
     .replace(/\n\nReply via the orchestra socket:[\s\S]*$/, '');
   return body.trim().replace(/\s+/g, ' ');
 }
