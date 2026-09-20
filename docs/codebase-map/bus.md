@@ -1397,9 +1397,14 @@ live packaged two-generation refusal through a running app.
 ## Dispatch capability tokens (#129) — a stale completion cannot mask a hung retry
 
 Wave D, bus v2. Each `dispatch` mints a `dcap_<32B>` token; a worker's
-`worker_done`/`status` completion carries it back, and a completion whose token
-belongs to a **superseded or failed** dispatch is rejected — so a hung worker's
-late answer cannot mask the retry that replaced it.
+`worker_done` completion carries it back, and a completion whose token belongs to
+a **superseded or failed** dispatch is rejected — so a hung worker's late answer
+cannot mask the retry that replaced it. `worker_done` is the ONLY completion kind
+(`CAPABILITY_COMPLETION_KINDS = ['worker_done']`, `src/cli/bus-verbs.ts`);
+`status` was removed (#165) — it resolves no dispatch, is the fleet's
+highest-volume kind, and gating it made status unusable the moment `capability`
+flipped ON. A `status` (and every non-`worker_done` kind) passes untokened even
+under capability=ON; a `--cap` on a status is accepted but ignored (attribution).
 
 ### Files / symbols (all in `src/main/bus.ts`, `## Dispatch capability tokens` section)
 
@@ -1433,10 +1438,11 @@ The seam is injected into `BusVerbCtx` as `capabilityEnabled` /
 `bus.countCapabilityReject`) so the unit suite drives both ON and OFF.
 
 **FAIL-CLOSED (review F1):** the gate is on the KIND, not on `--cap` presence —
-a completion (`worker_done`/`status`) with NO token is as invalid as one with a
-stale token (both COUNTED, both REJECTED when ON). Gating on `if (cap && …)`
-would let a hung worker bypass the whole mechanism by omitting the flag, which
-is the exact threat #129 exists to stop.
+a `worker_done` completion with NO token is as invalid as one with a stale token
+(both COUNTED, both REJECTED when ON). Gating on `if (cap && …)` would let a hung
+worker bypass the whole mechanism by omitting the flag, which is the exact threat
+#129 exists to stop. (Since #165 the gate applies to `worker_done` alone —
+`status` is not a completion and never enters the branch.)
 
 **Single-outstanding invariant + neutral message (review F2):** supersede-on-
 redispatch enforces ≤1 `active` capability per (run, recipient), so a SECOND

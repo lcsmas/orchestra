@@ -267,9 +267,10 @@ Usage:
                                                          handoff decision_gate question heartbeat
                                                  --type dispatch also mints a capability token
                                                  (printed on a 2nd line) — hand it to the worker.
-                                                 --cap <token>: a worker_done/status carries the
-                                                 token from its dispatch; a missing or superseded
-                                                 one is rejected once the capability switch is ON.
+                                                 --cap <token>: a worker_done carries the token
+                                                 from its dispatch; a missing or superseded one is
+                                                 rejected once the capability switch is ON. A status
+                                                 may carry it for attribution but never requires it.
                                                  --generation <n>: coordinator generation to fence
                                                  the write on (#128); a stale one is rejected.
   orchestra check [--ack-previous] [--markdown] [--limit N]
